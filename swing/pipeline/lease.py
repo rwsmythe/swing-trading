@@ -108,6 +108,11 @@ class Lease:
         proceeds. Callers must do all their writes inside the `with` block;
         COMMIT happens automatically on clean exit, ROLLBACK on exception."""
         conn = connect(self.db_path)
+        # Autocommit so our explicit BEGIN/COMMIT/ROLLBACK are the authoritative
+        # transaction control — the sqlite3 module's default `isolation_level=""`
+        # injects implicit BEGIN before DML which can conflict with our manual
+        # BEGIN IMMEDIATE (adversarial review Batch 4 Round 3 Minor 1).
+        conn.isolation_level = None
         try:
             conn.execute("BEGIN IMMEDIATE")
             try:
