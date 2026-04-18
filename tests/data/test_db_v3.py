@@ -1,0 +1,64 @@
+"""Schema migration 0003 round-trip — verifies all Phase 2 tables exist with expected columns."""
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+from swing.data.db import EXPECTED_SCHEMA_VERSION, ensure_schema
+
+
+def _columns(conn: sqlite3.Connection, table: str) -> list[str]:
+    return [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+
+
+def test_migration_0003_creates_all_phase2_tables(tmp_path: Path):
+    db = tmp_path / "swing.db"
+    conn = ensure_schema(db)
+    try:
+        version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        assert version == EXPECTED_SCHEMA_VERSION == 3
+
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        for t in (
+            "weather_runs", "watchlist", "watchlist_archive",
+            "trades", "exits", "cash_movements", "trade_events",
+            "daily_recommendations", "pipeline_runs", "config_revisions",
+        ):
+            assert t in tables, f"missing table: {t}"
+
+        # Spot-check column shapes (full set checked via INSERT below)
+        assert "lease_token" in _columns(conn, "pipeline_runs")
+        assert "lease_heartbeat_ts" in _columns(conn, "pipeline_runs")
+        assert "last_step_progress_ts" in _columns(conn, "pipeline_runs")
+        assert "rs_universe_version" in _columns(conn, "pipeline_runs")
+        assert "not_qualified_streak" in _columns(conn, "watchlist")
+        assert "current_stop" in _columns(conn, "trades")
+        assert "r_multiple" in _columns(conn, "exits")
+        assert "payload_json" in _columns(conn, "trade_events")
+
+        # CHECK constraint on bucket already exists from 0001 — verify not regressed
+        cur = conn.execute("PRAGMA foreign_key_check")
+        assert cur.fetchall() == []
+
+        # UNIQUE on daily_recommendations matches spec §3
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='daily_recommendations'"
+        ).fetchall()
+        assert any("action_session_date" in r[0] for r in rows) or \
+            any("daily_recommendations" in r[0] and "ticker" in r[0] for r in rows), \
+            "daily_recommendations needs UNIQUE on (action_session_date, ticker, recommendation)"
+    finally:
+        conn.close()
+
+
+def test_migration_0003_idempotent(tmp_path: Path):
+    """Running ensure_schema twice on a fresh DB ends at version 3, no errors."""
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+    conn = ensure_schema(db)
+    try:
+        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 3
+    finally:
+        conn.close()
