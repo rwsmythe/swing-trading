@@ -129,6 +129,12 @@ class Lease:
                 yield conn
                 conn.execute("COMMIT")
             except LeaseRevoked:
+                # ROLLBACK explicitly so the write lock is released
+                # immediately rather than at conn.close() (R4 minor).
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.OperationalError:
+                    pass
                 raise
             except Exception:
                 conn.execute("ROLLBACK")
