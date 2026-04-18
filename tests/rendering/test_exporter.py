@@ -44,7 +44,11 @@ def test_writes_html_and_md(tmp_path: Path):
 
 
 def test_size_cap_delinks_charts(tmp_path: Path):
-    big_b64 = "data:image/png;base64," + ("A" * 800_000)
+    """Oversized HTML with a VALID inline PNG must delink + extract to a real file
+    so the final href resolves."""
+    import base64
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"x" * 800_000  # ~800 KB valid PNG
+    big_b64 = "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
     out = tmp_path / "exports" / "2026-04-16"
     vm = BriefingViewModel(
         action_session_date="2026-04-16", data_asof_date="2026-04-15",
@@ -67,7 +71,11 @@ def test_size_cap_delinks_charts(tmp_path: Path):
     html = (out / "briefing.html").read_text(encoding="utf-8")
     assert big_b64 not in html
     assert result.charts_delinked is True
-    assert 'href="charts/X.png"' in html or "charts/X.png" in html
+    assert 'href="charts/X.png"' in html
+    # Extracted file exists and is a valid PNG
+    extracted = out / "charts" / "X.png"
+    assert extracted.exists()
+    assert extracted.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
 
 
 def test_delinked_href_points_to_real_file_on_disk(tmp_path: Path):
@@ -139,3 +147,67 @@ def test_delink_drops_link_when_b64_malformed_and_no_file(tmp_path: Path):
     # No broken link
     assert 'href="charts/BAD.png"' not in html
     assert malformed not in html
+
+
+def test_oversized_flag_set_when_final_html_still_over_cap(tmp_path: Path):
+    """Spec §6.4: size governance is advisory. If delinking charts doesn't bring
+    HTML under cap (because non-chart content is bloated), briefing is still
+    written but ExportResult.oversized=True so caller can log a warning."""
+    # Huge non-chart text — delinking charts won't help
+    huge_text = "X" * 700_000
+    out = tmp_path / "exports" / "2026-04-16"
+    vm = BriefingViewModel(
+        action_session_date="2026-04-16", data_asof_date="2026-04-15",
+        generated_at="t",
+        status_strip=StatusStripVM(
+            weather=WeatherTileVM(status="Bullish", rationale=huge_text,
+                                  sizing_implication="OK"),
+            account=AccountTileVM(equity=1.0, open_count=0, soft_warn=4, hard_cap=6),
+            pipeline=PipelineTileVM(last_run_ts="t", is_stale=False, current_session_match=True),
+        ),
+        todays_decisions=[],
+        open_positions=[], watchlist=[], expansions=[],
+    )
+    result = export_briefing(
+        vm=vm, out_dir=out, chart_files={},
+        size_cap_kb=500, retain_markdown_sibling=False,
+    )
+    assert result.oversized is True
+    assert result.html_size_kb > 500
+    # File is written regardless
+    assert (out / "briefing.html").exists()
+
+
+def test_pngs_with_invalid_signature_are_rejected(tmp_path: Path):
+    """Round 2 Minor: _data_url_to_png_bytes must reject valid-base64-but-not-PNG
+    payloads (integrity — never write a non-PNG as a .png)."""
+    import base64
+    # Valid base64, but decoded bytes are not PNG (no 89 50 4E 47 header)
+    not_png = b"HELLO WORLD" + b"y" * 800_000
+    bad_b64 = "data:image/png;base64," + base64.b64encode(not_png).decode("ascii")
+    out = tmp_path / "exports" / "2026-04-16"
+    vm = BriefingViewModel(
+        action_session_date="2026-04-16", data_asof_date="2026-04-15",
+        generated_at="t",
+        status_strip=StatusStripVM(
+            weather=WeatherTileVM(status="Bullish", rationale="r",
+                                  sizing_implication="OK"),
+            account=AccountTileVM(equity=1.0, open_count=0, soft_warn=4, hard_cap=6),
+            pipeline=PipelineTileVM(last_run_ts="t", is_stale=False, current_session_match=True),
+        ),
+        todays_decisions=[TodaysDecisionVM(
+            ticker="FAKE", action_text="t", entry_target=1.0, stop_target=1.0,
+            shares=1, risk_dollars=1.0, risk_pct=1.0, rationale="r",
+            tt_score="", vcp_score="", chart_b64=bad_b64)],
+        open_positions=[], watchlist=[], expansions=[],
+    )
+    result = export_briefing(
+        vm=vm, out_dir=out, chart_files={},
+        size_cap_kb=500, retain_markdown_sibling=False,
+    )
+    assert result.charts_delinked is True
+    # No fake PNG written
+    assert not (out / "charts" / "FAKE.png").exists()
+    # No broken link in HTML
+    html = (out / "briefing.html").read_text(encoding="utf-8")
+    assert 'href="charts/FAKE.png"' not in html

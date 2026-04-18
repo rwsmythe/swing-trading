@@ -16,13 +16,20 @@ from swing.rendering.view_models import BriefingViewModel
 class ExportResult:
     html_path: Path
     md_path: Path | None
-    chart_paths: list[Path]
+    chart_paths: tuple[Path, ...]
     html_size_kb: float
     charts_delinked: bool
+    oversized: bool = False  # True if final briefing.html exceeds size_cap_kb even after delink
 
 
-def _data_url_to_bytes(data_url: str) -> bytes | None:
-    """Decode `data:image/png;base64,XXXX` → raw PNG bytes. Returns None on malformed input."""
+# PNG files start with this 8-byte signature.
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _data_url_to_png_bytes(data_url: str) -> bytes | None:
+    """Decode `data:image/png;base64,XXXX` → raw PNG bytes.
+    Returns None on malformed input OR if decoded bytes don't start with the
+    PNG signature (integrity check so we never write a non-PNG as a .png)."""
     if not data_url or not data_url.startswith("data:"):
         return None
     marker = ";base64,"
@@ -30,9 +37,13 @@ def _data_url_to_bytes(data_url: str) -> bytes | None:
     if idx < 0:
         return None
     try:
-        return base64.b64decode(data_url[idx + len(marker):])
+        # validate=True rejects non-base64 chars (stricter than default permissive mode)
+        raw = base64.b64decode(data_url[idx + len(marker):], validate=True)
     except (ValueError, base64.binascii.Error):
         return None
+    if not raw.startswith(_PNG_SIGNATURE):
+        return None
+    return raw
 
 
 def _delink_charts(
@@ -100,9 +111,9 @@ def export_briefing(
                 continue
             if not item.chart_b64:
                 continue
-            raw = _data_url_to_bytes(item.chart_b64)
+            raw = _data_url_to_png_bytes(item.chart_b64)
             if raw is None:
-                continue  # malformed — skip; delink will drop both b64 and href
+                continue  # malformed or not a valid PNG — delink will drop both b64 and href
             dst = chart_dest_dir / f"{item.ticker}.png"
             dst.write_bytes(raw)
             written.append(dst)
@@ -118,9 +129,16 @@ def export_briefing(
         md_path = out_dir / "briefing.md"
         md_path.write_text(render_briefing_md(vm), encoding="utf-8")
 
+    # Spec §6.4: size governance is advisory, not blocking. If the final file
+    # STILL exceeds the cap after delinking charts (because non-chart content is
+    # oversized — e.g. a pathologically long rationale), the briefing is written
+    # anyway with `oversized=True` so the caller can surface a warning.
+    final_size_kb = html_path.stat().st_size / 1024
+    oversized = final_size_kb > size_cap_kb
     return ExportResult(
         html_path=html_path, md_path=md_path,
-        chart_paths=written,
-        html_size_kb=html_path.stat().st_size / 1024,
+        chart_paths=tuple(written),
+        html_size_kb=final_size_kb,
         charts_delinked=delinked,
+        oversized=oversized,
     )
