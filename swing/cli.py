@@ -574,5 +574,114 @@ def tos_import_cmd(ctx, csv_path, dry_run, auto_confirm):
         )
 
 
+@main.group("pipeline")
+def pipeline_group() -> None:
+    """Nightly orchestrator: run, list, force-clear."""
+
+
+@pipeline_group.command("run")
+@click.option("--manual", is_flag=True, help="Mark as a manual (vs scheduled) run")
+@click.pass_context
+def pipeline_run_cmd(ctx, manual):
+    """Run the nightly pipeline."""
+    from swing.pipeline import run_pipeline
+    cfg = ctx.obj["config"]
+    result = run_pipeline(cfg=cfg, trigger="manual" if manual else "scheduled")
+    click.echo(f"Run id {result.run_id}: state={result.state}")
+    if result.error_message:
+        click.echo(f"Error: {result.error_message}", err=True)
+    if result.state == "blocked":
+        ctx.exit(2)
+    if result.state == "failed":
+        ctx.exit(1)
+
+
+@pipeline_group.command("list")
+@click.option("--limit", type=int, default=10)
+@click.pass_context
+def pipeline_list_cmd(ctx, limit):
+    """List recent pipeline runs."""
+    from swing.data.repos.pipeline import list_recent_runs
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        runs = list_recent_runs(conn, limit=limit)
+    finally:
+        conn.close()
+    if not runs:
+        click.echo("(no runs)")
+        return
+    click.echo(f"{'ID':>4} {'State':<14} {'Started':<19} {'Session':<10} {'Step':<14}")
+    for r in runs:
+        click.echo(
+            f"{r.id:>4} {r.state:<14} {r.started_ts:<19} "
+            f"{r.action_session_date:<10} {(r.current_step or ''):<14}"
+        )
+
+
+@pipeline_group.command("force-clear")
+@click.argument("run_id", type=int)
+@click.option("--reason", default="admin force clear")
+@click.option("--bypass-staleness-check", is_flag=True,
+              help="Skip the two-signal staleness check (use with care)")
+@click.pass_context
+def pipeline_force_clear_cmd(ctx, run_id, reason, bypass_staleness_check):
+    """Force-clear a stuck pipeline run (revokes its lease).
+
+    Spec §5.6 requires TWO signals for staleness: heartbeat age AND step-progress
+    age must BOTH exceed their thresholds. Only then is force-clear allowed.
+    Use --bypass-staleness-check to override (e.g. to clear a crashed run whose
+    heartbeat thread outlived the main loop).
+    """
+    from datetime import datetime as _dt
+    from swing.data.repos.pipeline import find_run, force_clear
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        run = find_run(conn, run_id)
+        if run is None:
+            raise click.ClickException(f"run {run_id} not found")
+        if run.state != "running":
+            raise click.ClickException(
+                f"run {run_id} not in 'running' state (currently {run.state})"
+            )
+
+        now = _dt.now()
+        heartbeat_age = float("inf")
+        step_age = float("inf")
+        if run.lease_heartbeat_ts:
+            heartbeat_age = (now - _dt.fromisoformat(run.lease_heartbeat_ts)).total_seconds()
+        if run.last_step_progress_ts:
+            step_age = (now - _dt.fromisoformat(run.last_step_progress_ts)).total_seconds()
+        hb_stale = heartbeat_age > cfg.pipeline.stale_lease_threshold_seconds
+        step_stale = step_age > cfg.pipeline.stale_step_threshold_seconds
+        is_stale = hb_stale and step_stale
+
+        if not is_stale and not bypass_staleness_check:
+            raise click.ClickException(
+                f"Run {run_id} does not meet staleness threshold "
+                f"(heartbeat age {heartbeat_age:.0f}s vs "
+                f"{cfg.pipeline.stale_lease_threshold_seconds}s; "
+                f"step-progress age {step_age:.0f}s vs "
+                f"{cfg.pipeline.stale_step_threshold_seconds}s). "
+                "Spec §5.6 requires BOTH signals to be stale. "
+                "Use --bypass-staleness-check to override."
+            )
+
+        click.confirm(
+            f"Force-clear run {run_id} (state={run.state}, "
+            f"heartbeat_age={heartbeat_age:.0f}s, step_age={step_age:.0f}s)? "
+            "Any still-live worker loses its lease and cannot commit further writes.",
+            abort=True,
+        )
+        with conn:
+            force_clear(conn, run_id=run_id,
+                        error_message=f"{reason} at {now.isoformat(timespec='seconds')}")
+    finally:
+        conn.close()
+    click.echo(f"Run {run_id} force-cleared.")
+
+
 if __name__ == "__main__":  # pragma: no cover
     main()
