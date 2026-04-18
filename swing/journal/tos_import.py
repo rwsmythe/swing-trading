@@ -171,6 +171,7 @@ def reconcile_tos(
                 report.new_cash_movements.append(c)
 
         within_batch_alloc: dict[int, int] = {}
+        claimed_exit_ids: set[int] = set()
         for f in fills:
             if f.open_close == "OPEN":
                 t = find_open_trade_by_match(
@@ -196,19 +197,24 @@ def reconcile_tos(
             else:
                 t = find_any_open_trade(conn, ticker=f.ticker)
                 # Historical re-import detection: a CLOSE fill whose
-                # (date, qty, price) matches a recorded exit on a PRIOR closed
-                # trade is already reconciled. When a current open position
-                # exists for the ticker (closed-then-reopened case, Round 2
-                # Major 2), only exits whose exit_date strictly precedes the
-                # current open's entry_date count — this stops
-                # _matches_recorded_exit from swallowing fills that should
-                # allocate to the current open lot (Round 3 Major 2).
+                # (date, qty, price) matches an UNCLAIMED recorded exit on a
+                # CLOSED trade is already reconciled. When a current open
+                # position exists for the ticker, we bound by its entry_date
+                # (inclusive) so same-day close-then-reopen still routes the
+                # morning close to history (Round 4 Major 2). Per-batch claim
+                # tracking stops the same recorded exit from absorbing two
+                # coincidentally matching CLOSE fills — the second falls
+                # through to live allocation so a live same-day sale survives
+                # (Round 5 Major 2).
                 reference_entry_date = t.entry_date if t is not None else None
-                if _matches_recorded_exit(
+                claimed = _find_unclaimed_recorded_exit(
                     conn, ticker=f.ticker, date=f.date, qty=f.qty,
                     price=f.price, price_tolerance=price_tolerance,
                     on_or_before_date=reference_entry_date,
-                ):
+                    claimed=claimed_exit_ids,
+                )
+                if claimed is not None:
+                    claimed_exit_ids.add(claimed)
                     report.already_reconciled_fills.append(f)
                     continue
                 if t is None:
@@ -246,23 +252,23 @@ def _matches_closed_trade(
     return any(abs(r[0] - price) <= price_tolerance for r in rows)
 
 
-def _matches_recorded_exit(
+def _find_unclaimed_recorded_exit(
     conn, *, ticker: str, date: str, qty: int, price: float,
-    price_tolerance: float, on_or_before_date: str | None = None,
-) -> bool:
-    """True if a recorded exit on a CLOSED trade matches this fill by
-    (exit_date, shares, exit_price±tolerance). When on_or_before_date is
-    provided, only count exits whose exit_date is on or before it.
+    price_tolerance: float, on_or_before_date: str | None,
+    claimed: set[int],
+) -> int | None:
+    """Return the id of an exit on a CLOSED trade that matches this fill by
+    (exit_date, shares, exit_price±tolerance) AND hasn't been claimed yet in
+    this reconciliation batch. `on_or_before_date` (inclusive) bounds which
+    historical exits qualify — used to cover same-day close-then-reopen.
 
-    Live allocations on the *current open* trade cannot be accidentally
-    swallowed here: the join filter `t.status='closed'` excludes any exits
-    belonging to the current open position. The `on_or_before_date` bound
-    stops us from claiming future-dated historical matches. Using `<=`
-    (rather than `<`) covers same-day close-then-reopen, where the prior
-    closed trade's exit_date equals the current open's entry_date at date
-    granularity — a real workflow that strict inequality missed."""
+    Claim tracking matters at date granularity: if the same recorded exit
+    coincidentally matches two CLOSE fills in one batch, only the first fill
+    is treated as already_reconciled; subsequent fills fall through to live
+    allocation so a live same-day sale isn't silently swallowed by a stale
+    historical match (adversarial review Batch 3 Round 5 Major 2)."""
     sql = (
-        "SELECT e.exit_price FROM exits e "
+        "SELECT e.id, e.exit_price FROM exits e "
         "JOIN trades t ON t.id = e.trade_id "
         "WHERE t.ticker=? AND e.exit_date=? AND e.shares=? AND t.status='closed'"
     )
@@ -270,5 +276,9 @@ def _matches_recorded_exit(
     if on_or_before_date is not None:
         sql += " AND e.exit_date <= ?"
         params.append(on_or_before_date)
-    rows = conn.execute(sql, params).fetchall()
-    return any(abs(r[0] - price) <= price_tolerance for r in rows)
+    for exit_id, exit_price in conn.execute(sql, params).fetchall():
+        if exit_id in claimed:
+            continue
+        if abs(exit_price - price) <= price_tolerance:
+            return exit_id
+    return None

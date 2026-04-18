@@ -49,11 +49,17 @@ def _preflight_migration_0004(conn: sqlite3.Connection) -> None:
         "Resolve the duplicates via the journal so the audit trail stays intact: "
         "for a legitimate exit, close the trade through `swing trade exit` "
         "(records an `exits` row and a `trade_events` row in one transaction); "
-        "for an erroneous INSERT, delete the bad `trades` row AND append a "
-        "matching `trade_events` row with event_type='note' documenting the "
-        "correction (allowed kinds: 'entry','stop_adjust','note','exit','flag') "
-        "in the same transaction. Do NOT flip `trades.status` directly — that "
-        "bypasses `exits` and `trade_events` and leaves audit-silent corruption."
+        "for an erroneous INSERT (no real fill ever occurred), keep the row "
+        "and mark it closed with a correction note in a SINGLE transaction: "
+        "(1) UPDATE trades SET status='closed' WHERE id=?; (2) INSERT INTO "
+        "trade_events (trade_id, ts, event_type, payload_json) VALUES (?, ?, "
+        "'note', json_object('correction','erroneous duplicate open — closed "
+        "to resolve one-open-per-ticker invariant')). Both statements inside "
+        "BEGIN/COMMIT. Never flip `trades.status` without the paired note "
+        "event — the CHECK constraint only allows event_type in "
+        "('entry','stop_adjust','note','exit','flag'), and deleting the bad "
+        "row won't work either because `trade_events.trade_id` cascades on "
+        "delete and would drop any audit note you try to attach."
     )
 
 
