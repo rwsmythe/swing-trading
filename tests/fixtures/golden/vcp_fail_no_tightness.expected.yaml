@@ -1,0 +1,3 @@
+expected_bucket: watch
+notes: Trend template passes; VCP tightness fails (no tight bars at end). 1 VCP fail
+  -> watch.

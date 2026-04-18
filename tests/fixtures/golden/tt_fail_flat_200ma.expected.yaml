@@ -1,0 +1,3 @@
+expected_bucket: skip
+notes: Flat closes - 200MA is flat (TT3 fail), multiple other TTs fail. Not enough
+  TT passes -> skip.

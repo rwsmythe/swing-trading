@@ -1,0 +1,3 @@
+expected_bucket: aplus
+notes: Same uptrend as aplus_clean_vcp but RS forced to lowest rank. TT8 fails, other
+  7 pass. Bucket still aplus (TT >= 7).
