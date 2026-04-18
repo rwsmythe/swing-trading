@@ -57,6 +57,22 @@ def test_ambiguous_same_date_raises(tmp_path: Path):
         select_csv(inbox)
 
 
+def test_undated_file_newer_than_dated_wins(tmp_path: Path):
+    """Adversarial review Batch 4 Round 1 Major 2: per-file max key — an undated
+    file whose mtime is newer than an old dated file's date-timestamp must win."""
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    old_dated = inbox / "finviz01Jan2020.csv"
+    fresh_undated = inbox / "screener_latest.csv"
+    old_dated.write_text("old", encoding="utf-8")
+    fresh_undated.write_text("new", encoding="utf-8")
+    # Force fresh_undated's mtime to be clearly newer than any plausible dated key.
+    import os
+    import time
+    os.utime(fresh_undated, (time.time(), time.time()))
+    assert select_csv(inbox) == fresh_undated
+
+
 def test_skips_rejected_subdir(tmp_path: Path):
     inbox = tmp_path / "inbox"
     inbox.mkdir()

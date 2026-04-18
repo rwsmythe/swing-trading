@@ -11,6 +11,7 @@ from swing.config import Config
 from swing.data.db import connect
 from swing.data.models import Candidate, EvaluationRun
 from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
+from swing.data.repos.pipeline import LeaseRevoked, find_run
 from swing.data.repos.recommendations import upsert_recommendation
 from swing.data.repos.trades import list_open_trades, list_all_exits
 from swing.data.repos.cash import list_cash
@@ -54,6 +55,26 @@ def _b64_chart(path: Path | None) -> str | None:
     return "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
 
 
+def _verify_lease_still_held(cfg: Config, lease: Lease) -> None:
+    """Re-read pipeline_runs for this run; raise LeaseRevoked if our token is no
+    longer bound to a 'running' row. Tightens the fencing window around DB-write
+    batches in non-pipeline_runs tables (adversarial review Batch 4 Round 1
+    Critical 1). Lease-bound pipeline_runs mutations (lease.step/status/release)
+    already fence at repo level; this helper extends the protection to
+    candidates/watchlist/recommendations batches that use repos without a
+    lease_token parameter."""
+    conn = connect(cfg.paths.db_path)
+    try:
+        run = find_run(conn, lease.run_id)
+    finally:
+        conn.close()
+    if run is None or run.lease_token != lease.token or run.state != "running":
+        raise LeaseRevoked(
+            f"lease revoked mid-run for run_id={lease.run_id} "
+            f"(state={run.state if run else 'missing'})"
+        )
+
+
 def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
     """Synchronous pipeline run. Caller owns the process — heartbeat is in this thread."""
     sweep = sweep_stale_artifacts(
@@ -72,45 +93,23 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
             cfg.pipeline.stale_lease_threshold_seconds,
         )
 
-    try:
-        csv_path = select_csv(cfg.paths.finviz_inbox_dir)
-    except (NoFilesError, AmbiguousInboxError) as exc:
-        log.error("Finviz inbox: %s", exc)
-        lease_dummy = acquire_lease(
-            db_path=cfg.paths.db_path, trigger=trigger,
-            data_asof_date=_date.today().isoformat(),
-            action_session_date=_date.today().isoformat(),
-            block_threshold_seconds=cfg.pipeline.block_if_running_within_seconds,
-        )
-        lease_dummy.release(state="failed", error_message=str(exc))
-        return RunResult(run_id=lease_dummy.run_id, state="failed", error_message=str(exc))
-
-    val = validate_csv(csv_path)
-    if not val.is_valid:
-        rejected_dir = cfg.paths.finviz_inbox_dir / "rejected"
-        reject_csv(csv_path, val, rejected_dir=rejected_dir)
-        msg = f"Finviz CSV rejected: {val.reasons}"
-        lease_dummy = acquire_lease(
-            db_path=cfg.paths.db_path, trigger=trigger,
-            data_asof_date=_date.today().isoformat(),
-            action_session_date=_date.today().isoformat(),
-            block_threshold_seconds=cfg.pipeline.block_if_running_within_seconds,
-        )
-        lease_dummy.release(state="failed", error_message=msg)
-        return RunResult(run_id=lease_dummy.run_id, state="failed", error_message=msg)
-
+    # Acquire the lease BEFORE touching the Finviz inbox so concurrent runs
+    # cannot both select/validate/reject the same file before one is fenced
+    # (adversarial review Batch 4 Round 1 Major 1). finviz_csv_path is set
+    # lease-fenced after select_csv resolves the file.
     run_now = _dt.now()
     action_session = action_session_for_run(run_now)
+    data_asof_str = last_completed_session(run_now).isoformat()
     universe = load_universe(cfg.paths.rs_universe_path)
     universe_hash = universe_version_hash(cfg.paths.rs_universe_path)
 
     try:
         lease = acquire_lease(
             db_path=cfg.paths.db_path, trigger=trigger,
-            data_asof_date=last_completed_session(run_now).isoformat(),
+            data_asof_date=data_asof_str,
             action_session_date=action_session.isoformat(),
             block_threshold_seconds=cfg.pipeline.block_if_running_within_seconds,
-            finviz_csv_path=str(csv_path),
+            finviz_csv_path=None,
             rs_universe_version=universe.version,
             rs_universe_hash=universe_hash,
         )
@@ -124,80 +123,132 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
     fetcher = PriceFetcher(cache_dir=cfg.paths.prices_cache_dir)
     eval_run_id = 0
     try:
-        lease.step("weather")
+        # Finviz selection/validation under the lease.
         try:
-            from swing.weather.runner import run_weather
-            run_weather(
-                db_path=cfg.paths.db_path, fetcher=fetcher,
-                ticker=cfg.rs.benchmark_ticker, as_of_date=None,
-                run_ts=_dt.now().isoformat(timespec="seconds"),
-            )
-            lease.status(weather_status="ok")
-        except Exception as exc:
-            log.warning("weather failed: %s", exc)
-            lease.status(weather_status="failed")
-
-        lease.step("evaluate")
-        try:
-            eval_run_id = _step_evaluate(
-                cfg=cfg, fetcher=fetcher, csv_path=csv_path,
-                universe=universe, universe_hash=universe_hash,
-                run_now=run_now, action_session=action_session,
-            )
-            lease.status(evaluation_status="ok")
-        except Exception as exc:
-            log.error("evaluation failed: %s", exc)
-            lease.status(evaluation_status="failed")
+            csv_path = select_csv(cfg.paths.finviz_inbox_dir)
+        except (NoFilesError, AmbiguousInboxError) as exc:
+            log.error("Finviz inbox: %s", exc)
             lease.release(state="failed", error_message=str(exc))
-            hb.stop()
             return RunResult(run_id=lease.run_id, state="failed", error_message=str(exc))
 
-        lease.step("watchlist")
-        try:
-            _step_watchlist(cfg=cfg, eval_run_id=eval_run_id,
-                            data_asof_date=lease_data_asof(cfg, lease))
-            lease.status(watchlist_status="ok")
-        except Exception as exc:
-            log.warning("watchlist failed: %s", exc)
-            lease.status(watchlist_status="failed")
+        val = validate_csv(csv_path)
+        if not val.is_valid:
+            rejected_dir = cfg.paths.finviz_inbox_dir / "rejected"
+            reject_csv(csv_path, val, rejected_dir=rejected_dir)
+            msg = f"Finviz CSV rejected: {val.reasons}"
+            lease.release(state="failed", error_message=msg)
+            return RunResult(run_id=lease.run_id, state="failed", error_message=msg)
 
-        lease.step("recommendations")
+        # Record the selected CSV path on the pipeline_runs row, lease-fenced.
+        conn = connect(cfg.paths.db_path)
         try:
-            _step_recommendations(cfg=cfg, eval_run_id=eval_run_id,
-                                   action_session=action_session,
-                                   data_asof=lease_data_asof(cfg, lease))
-            lease.status(recommendations_status="ok")
-        except Exception as exc:
-            log.warning("recommendations failed: %s", exc)
-            lease.status(recommendations_status="failed")
-
-        lease.step("charts")
-        chart_paths: dict[str, Path] = {}
-        try:
-            chart_paths = _step_charts(
-                cfg=cfg, lease=lease, eval_run_id=eval_run_id,
-                data_asof=lease_data_asof(cfg, lease), fetcher=fetcher,
+            conn.execute(
+                "UPDATE pipeline_runs SET finviz_csv_path = ? "
+                "WHERE id = ? AND lease_token = ? AND state = 'running'",
+                (str(csv_path), lease.run_id, lease.token),
             )
-            lease.status(charts_status="ok")
-        except ChartingUnavailable:
-            lease.status(charts_status="skipped")
-        except Exception as exc:
-            log.warning("charts failed: %s", exc)
-            lease.status(charts_status="failed")
+            conn.commit()
+        finally:
+            conn.close()
 
-        lease.step("export")
         try:
-            _step_export(cfg=cfg, lease=lease, eval_run_id=eval_run_id,
-                         action_session=action_session,
-                         data_asof=lease_data_asof(cfg, lease),
-                         chart_paths=chart_paths)
-            lease.status(export_status="ok")
-        except Exception as exc:
-            log.warning("export failed: %s", exc)
-            lease.status(export_status="failed")
+            lease.step("weather")
+            try:
+                from swing.weather.runner import run_weather
+                run_weather(
+                    db_path=cfg.paths.db_path, fetcher=fetcher,
+                    ticker=cfg.rs.benchmark_ticker, as_of_date=None,
+                    run_ts=_dt.now().isoformat(timespec="seconds"),
+                )
+                lease.status(weather_status="ok")
+            except LeaseRevoked:
+                raise
+            except Exception as exc:
+                log.warning("weather failed: %s", exc)
+                lease.status(weather_status="failed")
 
-        lease.step("complete")
-        lease.release(state="complete")
+            lease.step("evaluate")
+            try:
+                eval_run_id = _step_evaluate(
+                    cfg=cfg, fetcher=fetcher, csv_path=csv_path,
+                    universe=universe, universe_hash=universe_hash,
+                    run_now=run_now, action_session=action_session,
+                    lease=lease,
+                )
+                lease.status(evaluation_status="ok")
+            except LeaseRevoked:
+                raise
+            except Exception as exc:
+                log.error("evaluation failed: %s", exc)
+                lease.status(evaluation_status="failed")
+                lease.release(state="failed", error_message=str(exc))
+                return RunResult(run_id=lease.run_id, state="failed", error_message=str(exc))
+
+            lease.step("watchlist")
+            try:
+                _step_watchlist(cfg=cfg, eval_run_id=eval_run_id,
+                                data_asof_date=lease_data_asof(cfg, lease),
+                                lease=lease)
+                lease.status(watchlist_status="ok")
+            except LeaseRevoked:
+                raise
+            except Exception as exc:
+                log.warning("watchlist failed: %s", exc)
+                lease.status(watchlist_status="failed")
+
+            lease.step("recommendations")
+            try:
+                _step_recommendations(cfg=cfg, eval_run_id=eval_run_id,
+                                       action_session=action_session,
+                                       data_asof=lease_data_asof(cfg, lease),
+                                       lease=lease)
+                lease.status(recommendations_status="ok")
+            except LeaseRevoked:
+                raise
+            except Exception as exc:
+                log.warning("recommendations failed: %s", exc)
+                lease.status(recommendations_status="failed")
+
+            lease.step("charts")
+            chart_paths: dict[str, Path] = {}
+            try:
+                chart_paths = _step_charts(
+                    cfg=cfg, lease=lease, eval_run_id=eval_run_id,
+                    data_asof=lease_data_asof(cfg, lease), fetcher=fetcher,
+                )
+                lease.status(charts_status="ok")
+            except LeaseRevoked:
+                raise
+            except ChartingUnavailable:
+                lease.status(charts_status="skipped")
+            except Exception as exc:
+                log.warning("charts failed: %s", exc)
+                lease.status(charts_status="failed")
+
+            lease.step("export")
+            try:
+                _step_export(cfg=cfg, lease=lease, eval_run_id=eval_run_id,
+                             action_session=action_session,
+                             data_asof=lease_data_asof(cfg, lease),
+                             chart_paths=chart_paths)
+                lease.status(export_status="ok")
+            except LeaseRevoked:
+                raise
+            except Exception as exc:
+                log.warning("export failed: %s", exc)
+                lease.status(export_status="failed")
+
+            lease.step("complete")
+            lease.release(state="complete")
+        except LeaseRevoked as exc:
+            # Force-cleared mid-run. The pipeline_runs row has already moved to
+            # state='force_cleared'; we cannot lease.release() anymore. Just
+            # log, stop the heartbeat via `finally`, and surface the outcome.
+            log.warning("lease revoked during run: %s", exc)
+            return RunResult(
+                run_id=lease.run_id, state="force_cleared",
+                error_message=str(exc),
+            )
     finally:
         hb.stop()
 
@@ -218,8 +269,9 @@ def lease_data_asof(cfg: Config, lease: Lease) -> str:
 
 def _step_evaluate(
     *, cfg, fetcher, csv_path: Path, universe, universe_hash: str,
-    run_now: _dt, action_session: _date,
+    run_now: _dt, action_session: _date, lease: Lease,
 ) -> int:
+    _verify_lease_still_held(cfg, lease)
     import pandas as pd
     finviz_df = pd.read_csv(csv_path)
     if "Ticker" not in finviz_df.columns:
@@ -340,7 +392,10 @@ def _step_evaluate(
     return run_id
 
 
-def _step_watchlist(*, cfg, eval_run_id: int, data_asof_date: str) -> None:
+def _step_watchlist(
+    *, cfg, eval_run_id: int, data_asof_date: str, lease: Lease,
+) -> None:
+    _verify_lease_still_held(cfg, lease)
     from swing.data.repos.candidates import fetch_candidates_for_run
     conn = connect(cfg.paths.db_path)
     try:
@@ -364,7 +419,8 @@ def _step_watchlist(*, cfg, eval_run_id: int, data_asof_date: str) -> None:
 
 
 def _step_recommendations(*, cfg, eval_run_id: int,
-                           action_session, data_asof: str) -> None:
+                           action_session, data_asof: str, lease: Lease) -> None:
+    _verify_lease_still_held(cfg, lease)
     from swing.data.repos.candidates import fetch_candidates_for_run
     conn = connect(cfg.paths.db_path)
     try:
@@ -399,6 +455,7 @@ def _step_recommendations(*, cfg, eval_run_id: int,
 def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
                   fetcher: PriceFetcher) -> dict[str, Path]:
     """Render charts for A+ + top-N near-trigger watchlist via staging."""
+    _verify_lease_still_held(cfg, lease)
     from swing.data.repos.candidates import fetch_candidates_for_run
     conn = connect(cfg.paths.db_path)
     try:
@@ -441,6 +498,7 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
 
 def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
                   data_asof: str, chart_paths: dict[str, Path]) -> None:
+    _verify_lease_still_held(cfg, lease)
     from swing.data.repos.candidates import fetch_candidates_for_run
     from swing.data.repos.recommendations import list_for_session
     conn = connect(cfg.paths.db_path)

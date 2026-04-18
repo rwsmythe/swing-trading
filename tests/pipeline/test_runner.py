@@ -66,6 +66,67 @@ def test_runner_completes_all_steps(tmp_path: Path, monkeypatch):
         conn.close()
 
 
+def test_runner_detects_mid_run_lease_revocation(tmp_path: Path, monkeypatch):
+    """Adversarial review Batch 4 Round 1 Critical 1: a force-clear happening
+    between step-boundaries must abort subsequent DB-writing steps. The runner
+    calls _verify_lease_still_held at the start of each write-step; a revoked
+    lease raises LeaseRevoked which exits the step loop before canonical writes
+    happen."""
+    from tests.cli.test_cli_eval import _minimal_config
+    from swing.data.repos.pipeline import force_clear
+
+    project = tmp_path / "project"; project.mkdir()
+    home = tmp_path / "home"; home.mkdir()
+    cfg_path = _minimal_config(project, home)
+    from swing.config import load
+    cfg = load(cfg_path)
+    ensure_schema(cfg.paths.db_path).close()
+
+    csv = cfg.paths.finviz_inbox_dir / "finviz15Apr2026.csv"
+    csv.parent.mkdir(parents=True, exist_ok=True)
+    cols = "No.,Ticker,Sector,Industry,Country,Price,Change,Average Volume,Relative Volume,Average True Range,52-Week High,52-Week Low,Market Cap"
+    csv.write_text(cols + "\n1,AAPL,T,H,USA,180.0,2.5%,200000,1.5,5.0,200.0,150.0,3e9\n",
+                   encoding="utf-8")
+
+    # Monkeypatch: first time anything fetches OHLCV, we force-clear the lease.
+    # This simulates an admin revoking the lease after CSV validation but before
+    # the evaluate step's writes land.
+    import sqlite3
+    cleared = {"done": False}
+    original_get = None
+
+    def fetcher_get(self, ticker, lookback_days, *, as_of_date=None):
+        if not cleared["done"]:
+            conn = sqlite3.connect(cfg.paths.db_path)
+            try:
+                row = conn.execute(
+                    "SELECT id FROM pipeline_runs WHERE state='running'"
+                ).fetchone()
+                if row is not None:
+                    with conn:
+                        force_clear(conn, run_id=row[0],
+                                    error_message="test-revoke")
+                    cleared["done"] = True
+            finally:
+                conn.close()
+        return _ohlcv()
+
+    monkeypatch.setattr("swing.prices.PriceFetcher.get", fetcher_get)
+
+    from swing.pipeline.runner import run_pipeline_internal
+    result = run_pipeline_internal(cfg=cfg, trigger="manual")
+    # The runner catches LeaseRevoked at the top-level step loop and surfaces
+    # state='force_cleared' without attempting a lease.release() that would
+    # re-raise.
+    assert result.state == "force_cleared"
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        run = find_run(conn, result.run_id)
+        assert run.state == "force_cleared"
+    finally:
+        conn.close()
+
+
 def test_runner_aborts_on_evaluation_fail(tmp_path: Path, monkeypatch):
     """Spec §5.3: evaluation failure => abort. Watchlist/recommendations/charts/export skipped."""
     from tests.cli.test_cli_eval import _minimal_config
