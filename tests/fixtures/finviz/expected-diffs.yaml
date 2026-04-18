@@ -1,0 +1,10 @@
+# Expected divergences between new evaluator and legacy evaluator.
+# Each entry explains WHY the new result differs — usually because Trend Template
+# demoted a ticker that legacy didn't check.
+#
+# Schema: { <finviz_csv_filename>: { <ticker>: "reason string" } }
+#
+# Entries are added by reviewing `suggested-diffs-<fixture>.yaml` files produced
+# by the parity test on each run, then migrating each entry here with a human reason.
+
+{}
