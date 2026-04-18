@@ -12,10 +12,43 @@ class SchemaVersionMismatch(RuntimeError):
     """Raised when the DB schema version doesn't match what the code expects."""
 
 
+class DuplicateOpenTradesError(RuntimeError):
+    """Migration 0004 cannot apply while duplicate status='open' rows exist.
+
+    Adversarial review Batch 3 Round 2 Major: CREATE UNIQUE INDEX would fail
+    with a generic SQLite error, leaving users stuck at v3 with no forward path.
+    Preflight detects the duplicates and surfaces them with actionable guidance.
+    """
+
+
 def _apply_migration(conn: sqlite3.Connection, sql_path: Path) -> None:
     sql = sql_path.read_text(encoding="utf-8")
     conn.executescript(sql)
     conn.commit()
+
+
+def _preflight_migration_0004(conn: sqlite3.Connection) -> None:
+    """Reject migration 0004 if the trades table already has duplicate open rows."""
+    cur = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='trades'"
+    )
+    if cur.fetchone() is None:
+        return
+    rows = conn.execute(
+        "SELECT ticker, COUNT(*) AS n FROM trades WHERE status='open' "
+        "GROUP BY ticker HAVING n > 1 ORDER BY ticker"
+    ).fetchall()
+    if not rows:
+        return
+    details = ", ".join(f"{t} ({n} open)" for t, n in rows)
+    raise DuplicateOpenTradesError(
+        "Cannot apply migration 0004 (one-open-trade-per-ticker invariant): "
+        f"duplicate open trades exist for: {details}. "
+        "Inspect with: SELECT id, ticker, entry_date, entry_price, status FROM trades "
+        "WHERE status='open' ORDER BY ticker, entry_date; "
+        "Close the older duplicates "
+        "(UPDATE trades SET status='closed' WHERE id=?) and retry migrate."
+    )
 
 
 def _current_version(conn: sqlite3.Connection) -> int:
@@ -54,6 +87,8 @@ def ensure_schema(db_path: Path) -> sqlite3.Connection:
         except ValueError:
             continue
         if current < version <= EXPECTED_SCHEMA_VERSION:
+            if version == 4:
+                _preflight_migration_0004(conn)
             _apply_migration(conn, mig)
 
     if _current_version(conn) != EXPECTED_SCHEMA_VERSION:

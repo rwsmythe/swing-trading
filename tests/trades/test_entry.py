@@ -115,6 +115,38 @@ def test_watchlist_entry_auto_archived(tmp_path: Path):
         conn.close()
 
 
+def test_integrity_error_mapped_to_duplicate_exception(tmp_path: Path, monkeypatch):
+    """Adversarial review Batch 3 Round 2 Minor: when the app-layer duplicate
+    check is bypassed (simulated race between list_open_trades and INSERT),
+    the schema-level partial unique index fires IntegrityError, and
+    record_entry must map it to DuplicateOpenPositionException with the
+    race-detected suffix."""
+    from swing.data.repos.trades import insert_trade_with_event
+    from swing.trades import entry as entry_module
+    import sqlite3
+
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+    conn = sqlite3.connect(db)
+    try:
+        with conn:
+            insert_trade_with_event(
+                conn,
+                Trade(id=None, ticker="AAPL", entry_date="2026-04-15",
+                      entry_price=180.0, initial_shares=5, initial_stop=170.0,
+                      current_stop=170.0, status="open",
+                      watchlist_entry_target=None, watchlist_initial_stop=None,
+                      notes=None),
+                event_ts="2026-04-15T09:30:00",
+            )
+        # Simulate the race: app-layer duplicate check sees an empty list.
+        monkeypatch.setattr(entry_module, "list_open_trades", lambda c: [])
+        with pytest.raises(DuplicateOpenPositionException, match="race-detected"):
+            record_entry(conn, _req("AAPL"), soft_warn=10, hard_cap=10, force=False)
+    finally:
+        conn.close()
+
+
 def test_concurrent_entry_one_wins_schema_level(tmp_path: Path):
     """Adversarial review Batch 3 Critical: two concurrent record_entry calls
     for the SAME ticker — one wins, the other MUST get DuplicateOpenPositionException.

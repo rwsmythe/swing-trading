@@ -135,6 +135,58 @@ def test_reconcile_close_overfill_flagged(tmp_path: Path):
     assert len(report.unmatched_close_fills) == 1
 
 
+def test_reconcile_closed_then_reopened_ticker_routes_close_to_history(tmp_path: Path):
+    """Adversarial review Batch 3 Round 2 Major 2: a historical CLOSE fill for
+    an old closed trade must be recognized as already-reconciled even when a
+    NEW open position exists for the same ticker. The prior code bound CLOSE
+    fills to find_any_open_trade first and only fell back to _matches_recorded_exit
+    when no open trade existed, misallocating historical closes to the new
+    position whenever a ticker was closed-then-reopened."""
+    from swing.data.db import ensure_schema
+    from swing.trades.entry import EntryRequest, record_entry
+    from swing.trades.exit import ExitReason, ExitRequest, record_exit
+
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+    import sqlite3
+    conn = sqlite3.connect(db)
+    try:
+        tid = record_entry(conn, EntryRequest(
+            ticker="AAPL", entry_date="2026-04-01", entry_price=170.0,
+            shares=5, initial_stop=160.0, watchlist_entry_target=None,
+            watchlist_initial_stop=None, notes=None, rationale="first",
+            event_ts="2026-04-01T09:30:00",
+        ), soft_warn=10, hard_cap=10, force=False).trade_id
+        record_exit(conn, ExitRequest(
+            trade_id=tid, exit_date="2026-04-10", exit_price=175.0,
+            shares=5, reason=ExitReason.TARGET, notes=None,
+            rationale="first-close", event_ts="2026-04-10T15:30:00",
+        ))
+        # Reopen the ticker at a different price/date.
+        record_entry(conn, EntryRequest(
+            ticker="AAPL", entry_date="2026-04-15", entry_price=180.0,
+            shares=5, initial_stop=170.0, watchlist_entry_target=None,
+            watchlist_initial_stop=None, notes=None, rationale="reopen",
+            event_ts="2026-04-15T09:30:00",
+        ), soft_warn=10, hard_cap=10, force=False)
+    finally:
+        conn.close()
+
+    # TOS statement contains ONLY the OLD exit (already recorded against the
+    # first, now-closed trade). The new open position at $180 is a red herring.
+    tos_text = (
+        "Cash Balance\n\n"
+        "DATE,TIME,TYPE,REF #,DESCRIPTION,AMOUNT,BALANCE\n\n"
+        "Account Trade History\n\n"
+        "Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,PRICE,Net Price,Order Type,DATE,TIME\n"
+        "STOCK,SELL,5,TO CLOSE,AAPL,--,--,--,$175.00,--,LMT,2026-04-10,15:30:00\n"
+    )
+    report = reconcile_tos(db_path=db, tos_text=tos_text)
+    assert len(report.already_reconciled_fills) == 1
+    assert len(report.matched_fills) == 0
+    assert len(report.unmatched_close_fills) == 0
+
+
 def test_reconcile_already_closed_trade_reports_as_already_reconciled(tmp_path: Path):
     """Adversarial review Batch 3 Major 1: re-importing a TOS statement after the
     trade is already fully reconciled (entry + exit both recorded) must NOT flag

@@ -194,17 +194,20 @@ def reconcile_tos(
                 else:
                     report.unmatched_open_fills.append(f)
             else:
+                # Check historical exits FIRST: a CLOSE fill whose
+                # (date, qty, price) exactly matches a recorded exit is already
+                # reconciled, even if a new open position exists for the same
+                # ticker (closed-then-reopened case — adversarial review Batch 3
+                # Round 2 Major).
+                if _matches_recorded_exit(
+                    conn, ticker=f.ticker, date=f.date, qty=f.qty,
+                    price=f.price, price_tolerance=price_tolerance,
+                ):
+                    report.already_reconciled_fills.append(f)
+                    continue
                 t = find_any_open_trade(conn, ticker=f.ticker)
                 if t is None:
-                    # No open trade for this ticker. Check if it matches a
-                    # recorded exit on a closed trade (historical re-import).
-                    if _matches_recorded_exit(
-                        conn, ticker=f.ticker, date=f.date, qty=f.qty,
-                        price=f.price, price_tolerance=price_tolerance,
-                    ):
-                        report.already_reconciled_fills.append(f)
-                    else:
-                        report.unmatched_close_fills.append(f)
+                    report.unmatched_close_fills.append(f)
                     continue
                 sold_in_db = conn.execute(
                     "SELECT COALESCE(SUM(shares), 0) FROM exits WHERE trade_id = ?",
