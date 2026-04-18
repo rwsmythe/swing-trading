@@ -44,6 +44,11 @@ class ReconciliationReport:
     unmatched_open_fills: list[TosFill] = field(default_factory=list)
     unmatched_close_fills: list[TosFill] = field(default_factory=list)
     price_mismatch_fills: list[TosFill] = field(default_factory=list)
+    # Historical TOS statements may contain fills for trades that are ALREADY
+    # fully reconciled in the journal (entry + exit both recorded). These aren't
+    # "unmatched" in a problem sense — they're just re-imports the user can
+    # ignore. Tracked separately so the CLI can report cleanly.
+    already_reconciled_fills: list[TosFill] = field(default_factory=list)
     new_cash_movements: list[CashMovement] = field(default_factory=list)
     duplicate_cash_movements: list[CashMovement] = field(default_factory=list)
 
@@ -177,12 +182,29 @@ def reconcile_tos(
                         report.price_mismatch_fills.append(f)
                     else:
                         report.matched_fills.append(f)
+                    continue
+                # No open trade matched. Check historical (closed) trades —
+                # re-importing an old TOS statement is a routine case, and
+                # already-reconciled fills shouldn't be reported as unmatched.
+                if _matches_closed_trade(
+                    conn, ticker=f.ticker, date=f.date, qty=f.qty,
+                    price=f.price, side="OPEN", price_tolerance=price_tolerance,
+                ):
+                    report.already_reconciled_fills.append(f)
                 else:
                     report.unmatched_open_fills.append(f)
             else:
                 t = find_any_open_trade(conn, ticker=f.ticker)
                 if t is None:
-                    report.unmatched_close_fills.append(f)
+                    # No open trade for this ticker. Check if it matches a
+                    # recorded exit on a closed trade (historical re-import).
+                    if _matches_recorded_exit(
+                        conn, ticker=f.ticker, date=f.date, qty=f.qty,
+                        price=f.price, price_tolerance=price_tolerance,
+                    ):
+                        report.already_reconciled_fills.append(f)
+                    else:
+                        report.unmatched_close_fills.append(f)
                     continue
                 sold_in_db = conn.execute(
                     "SELECT COALESCE(SUM(shares), 0) FROM exits WHERE trade_id = ?",
@@ -198,3 +220,36 @@ def reconcile_tos(
     finally:
         conn.close()
     return report
+
+
+def _matches_closed_trade(
+    conn, *, ticker: str, date: str, qty: int, price: float,
+    side: str, price_tolerance: float,
+) -> bool:
+    """True if a closed trade exists matching (ticker, entry_date, qty, entry_price±tolerance)
+    — i.e., an OPEN fill already reconciled in the journal before the trade closed out."""
+    rows = conn.execute(
+        """
+        SELECT entry_price FROM trades
+        WHERE ticker=? AND entry_date=? AND initial_shares=? AND status='closed'
+        """,
+        (ticker, date, qty),
+    ).fetchall()
+    return any(abs(r[0] - price) <= price_tolerance for r in rows)
+
+
+def _matches_recorded_exit(
+    conn, *, ticker: str, date: str, qty: int, price: float,
+    price_tolerance: float,
+) -> bool:
+    """True if a recorded exit exists for this ticker matching (exit_date, shares, exit_price)
+    — i.e., a CLOSE fill already reconciled against a now-closed trade."""
+    rows = conn.execute(
+        """
+        SELECT e.exit_price FROM exits e
+        JOIN trades t ON t.id = e.trade_id
+        WHERE t.ticker=? AND e.exit_date=? AND e.shares=?
+        """,
+        (ticker, date, qty),
+    ).fetchall()
+    return any(abs(r[0] - price) <= price_tolerance for r in rows)

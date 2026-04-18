@@ -83,19 +83,30 @@ def record_entry(
     )
 
     archived = False
-    with conn:
-        trade_id = insert_trade_with_event(
-            conn, trade, event_ts=req.event_ts, rationale=req.rationale,
-        )
-        wl = get_watchlist_entry(conn, req.ticker)
-        if wl is not None:
-            archive_watchlist_entry(conn, WatchlistArchiveEntry(
-                id=None, ticker=req.ticker, added_date=wl.added_date,
-                removed_date=req.entry_date, reason="entered",
-                qualification_count=wl.qualification_count,
-                last_data_asof_date=wl.last_data_asof_date,
-                notes=wl.notes,
-            ))
-            archived = True
+    try:
+        with conn:
+            trade_id = insert_trade_with_event(
+                conn, trade, event_ts=req.event_ts, rationale=req.rationale,
+            )
+            wl = get_watchlist_entry(conn, req.ticker)
+            if wl is not None:
+                archive_watchlist_entry(conn, WatchlistArchiveEntry(
+                    id=None, ticker=req.ticker, added_date=wl.added_date,
+                    removed_date=req.entry_date, reason="entered",
+                    qualification_count=wl.qualification_count,
+                    last_data_asof_date=wl.last_data_asof_date,
+                    notes=wl.notes,
+                ))
+                archived = True
+    except sqlite3.IntegrityError as exc:
+        # Schema-level safety net (ux_trades_one_open_per_ticker, migration 0004):
+        # two concurrent record_entry calls raced past the app-layer list_open_trades
+        # check; the partial unique index rejected the second INSERT. Map to the same
+        # DuplicateOpenPositionException callers already handle.
+        if "UNIQUE" in str(exc) and "trades" in str(exc):
+            raise DuplicateOpenPositionException(
+                f"Already an open position in {req.ticker} (race-detected)"
+            ) from exc
+        raise
 
     return EntryResult(trade_id=trade_id, warning=warning, watchlist_archived=archived)

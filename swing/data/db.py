@@ -4,7 +4,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-EXPECTED_SCHEMA_VERSION = 3
+EXPECTED_SCHEMA_VERSION = 4  # partial unique index on trades(ticker) WHERE status='open'
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 

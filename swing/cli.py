@@ -503,6 +503,10 @@ def journal_cash_cmd(ctx, deposit, withdraw, date_str, ref, note):
         raise click.ClickException("Specify exactly one of --deposit or --withdraw")
     kind = "deposit" if deposit is not None else "withdraw"
     amount = deposit if deposit is not None else withdraw
+    if amount <= 0:
+        raise click.ClickException(
+            f"--{kind} amount must be > 0; got {amount}"
+        )
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
@@ -537,6 +541,7 @@ def tos_import_cmd(ctx, csv_path, dry_run, auto_confirm):
     for c in report.new_cash_movements:
         click.echo(f"  + {c.kind} ${c.amount:.2f} on {c.date} (ref={c.ref})")
     click.echo(f"Fills: matched={len(report.matched_fills)}, "
+               f"already-reconciled={len(report.already_reconciled_fills)}, "
                f"price-mismatch={len(report.price_mismatch_fills)}, "
                f"unmatched OPEN={len(report.unmatched_open_fills)}, "
                f"unmatched CLOSE={len(report.unmatched_close_fills)}")
@@ -544,6 +549,8 @@ def tos_import_cmd(ctx, csv_path, dry_run, auto_confirm):
         click.echo(f"  ! PRICE MISMATCH: {f.ticker} {f.date} qty={f.qty} TOS=${f.price:.2f}")
     for f in report.unmatched_open_fills:
         click.echo(f"  ? unmatched OPEN: {f.ticker} {f.date} qty={f.qty} @ ${f.price:.2f}")
+    for f in report.unmatched_close_fills:
+        click.echo(f"  ? unmatched CLOSE: {f.ticker} {f.date} qty={f.qty} @ ${f.price:.2f}")
 
     if dry_run:
         click.echo("Dry run \u2014 no changes committed.")

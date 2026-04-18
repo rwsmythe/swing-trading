@@ -133,3 +133,40 @@ def test_reconcile_close_overfill_flagged(tmp_path: Path):
     report = reconcile_tos(db_path=db, tos_text=text)
     assert len(report.unmatched_open_fills) == 1
     assert len(report.unmatched_close_fills) == 1
+
+
+def test_reconcile_already_closed_trade_reports_as_already_reconciled(tmp_path: Path):
+    """Adversarial review Batch 3 Major 1: re-importing a TOS statement after the
+    trade is already fully reconciled (entry + exit both recorded) must NOT flag
+    the fills as unmatched — instead, mark them as already_reconciled."""
+    from swing.data.db import ensure_schema
+    from swing.trades.entry import EntryRequest, record_entry
+    from swing.trades.exit import ExitReason, ExitRequest, record_exit
+
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+    import sqlite3
+    conn = sqlite3.connect(db)
+    try:
+        tid = record_entry(conn, EntryRequest(
+            ticker="AAPL", entry_date="2026-04-15", entry_price=180.0,
+            shares=5, initial_stop=170.0, watchlist_entry_target=None,
+            watchlist_initial_stop=None, notes=None, rationale="seed",
+            event_ts="2026-04-15T09:30:00",
+        ), soft_warn=10, hard_cap=10, force=False).trade_id
+        record_exit(conn, ExitRequest(
+            trade_id=tid, exit_date="2026-04-22", exit_price=190.0,
+            shares=5, reason=ExitReason.TARGET, notes=None,
+            rationale="seed-close", event_ts="2026-04-22T15:30:00",
+        ))
+    finally:
+        conn.close()
+
+    # The fixture's OPEN (2026-04-15 @ $180, 5sh) matches the closed trade's entry,
+    # and its CLOSE (2026-04-22 @ $190, 5sh) matches the recorded exit.
+    text = FIXTURE.read_text(encoding="utf-8")
+    report = reconcile_tos(db_path=db, tos_text=text)
+    assert len(report.already_reconciled_fills) == 2
+    assert len(report.unmatched_open_fills) == 0
+    assert len(report.unmatched_close_fills) == 0
+    assert len(report.matched_fills) == 0

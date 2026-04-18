@@ -16,7 +16,8 @@ def test_migration_0003_creates_all_phase2_tables(tmp_path: Path):
     conn = ensure_schema(db)
     try:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == EXPECTED_SCHEMA_VERSION == 3
+        # Track EXPECTED_SCHEMA_VERSION rather than hardcode; migration 0004 bumped from 3 → 4.
+        assert version == EXPECTED_SCHEMA_VERSION
 
         tables = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
@@ -53,12 +54,54 @@ def test_migration_0003_creates_all_phase2_tables(tmp_path: Path):
         conn.close()
 
 
-def test_migration_0003_idempotent(tmp_path: Path):
-    """Running ensure_schema twice on a fresh DB ends at version 3, no errors."""
+def test_migration_idempotent(tmp_path: Path):
+    """Running ensure_schema twice on a fresh DB ends at EXPECTED_SCHEMA_VERSION, no errors."""
     db = tmp_path / "swing.db"
     ensure_schema(db).close()
     conn = ensure_schema(db)
     try:
-        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 3
+        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == EXPECTED_SCHEMA_VERSION
+    finally:
+        conn.close()
+
+
+def test_migration_0004_enforces_one_open_trade_per_ticker(tmp_path: Path):
+    """Adversarial review Batch 3 Critical: schema-level partial unique index
+    catches the race where two concurrent record_entry calls both pass the
+    app-layer list_open_trades check."""
+    db = tmp_path / "swing.db"
+    conn = ensure_schema(db)
+    try:
+        # Insert one open trade directly
+        conn.execute(
+            """INSERT INTO trades
+               (ticker, entry_date, entry_price, initial_shares, initial_stop,
+                current_stop, status, watchlist_entry_target,
+                watchlist_initial_stop, notes)
+               VALUES (?, ?, ?, ?, ?, ?, 'open', NULL, NULL, NULL)""",
+            ("AAPL", "2026-04-15", 180.0, 5, 170.0, 170.0),
+        )
+        conn.commit()
+        # Second open AAPL must fail
+        import pytest as _pt
+        with _pt.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """INSERT INTO trades
+                   (ticker, entry_date, entry_price, initial_shares, initial_stop,
+                    current_stop, status, watchlist_entry_target,
+                    watchlist_initial_stop, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, 'open', NULL, NULL, NULL)""",
+                ("AAPL", "2026-04-16", 185.0, 5, 175.0, 175.0),
+            )
+        # But a CLOSED AAPL is allowed (history)
+        conn.execute(
+            """INSERT INTO trades
+               (ticker, entry_date, entry_price, initial_shares, initial_stop,
+                current_stop, status, watchlist_entry_target,
+                watchlist_initial_stop, notes)
+               VALUES (?, ?, ?, ?, ?, ?, 'closed', NULL, NULL, NULL)""",
+            ("AAPL", "2026-04-10", 175.0, 5, 165.0, 165.0),
+        )
+        conn.commit()
     finally:
         conn.close()
