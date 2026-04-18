@@ -187,6 +187,62 @@ def test_reconcile_closed_then_reopened_ticker_routes_close_to_history(tmp_path:
     assert len(report.unmatched_close_fills) == 0
 
 
+def test_reconcile_does_not_swallow_fill_that_matches_current_open_lot(tmp_path: Path):
+    """Adversarial review Batch 3 Round 3 Major 2: _matches_recorded_exit must
+    not over-classify a CLOSE fill as already_reconciled when the recorded exit
+    actually belongs to the CURRENT open trade's lot. When a prior closed trade
+    shares (ticker, date, qty, price) coincidence with a recorded exit on the
+    current open trade, the fill should allocate to the current open lot, not
+    be silently swallowed into already_reconciled_fills."""
+    from swing.data.db import ensure_schema
+    from swing.trades.entry import EntryRequest, record_entry
+    from swing.trades.exit import ExitReason, ExitRequest, record_exit
+
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+    import sqlite3
+    conn = sqlite3.connect(db)
+    try:
+        # Open trade (the one the CLOSE fill should allocate to).
+        tid = record_entry(conn, EntryRequest(
+            ticker="AAPL", entry_date="2026-04-15", entry_price=180.0,
+            shares=5, initial_stop=170.0, watchlist_entry_target=None,
+            watchlist_initial_stop=None, notes=None, rationale="current",
+            event_ts="2026-04-15T09:30:00",
+        ), soft_warn=10, hard_cap=10, force=False).trade_id
+        # Partial exit already recorded against the current open trade.
+        # If the reorder blindly matched any recorded exit, a re-imported
+        # TOS CLOSE at the same date/qty/price would be swallowed.
+        record_exit(conn, ExitRequest(
+            trade_id=tid, exit_date="2026-04-22", exit_price=190.0,
+            shares=3, reason=ExitReason.TARGET, notes=None,
+            rationale="partial", event_ts="2026-04-22T15:30:00",
+        ))
+    finally:
+        conn.close()
+
+    # Re-importing the same CLOSE a second time: the recorded exit belongs to
+    # the CURRENT open trade, not a prior closed one. The fill's date
+    # (2026-04-22) is after the current open's entry (2026-04-15), so the
+    # before_date filter excludes the match and the fill should attempt to
+    # allocate against the current open trade (where it overfills — only 2
+    # shares remain — and lands in unmatched_close_fills). It must NOT land in
+    # already_reconciled_fills.
+    tos_text = (
+        "Cash Balance\n\n"
+        "DATE,TIME,TYPE,REF #,DESCRIPTION,AMOUNT,BALANCE\n\n"
+        "Account Trade History\n\n"
+        "Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,PRICE,Net Price,Order Type,DATE,TIME\n"
+        "STOCK,SELL,3,TO CLOSE,AAPL,--,--,--,$190.00,--,LMT,2026-04-22,15:30:00\n"
+    )
+    report = reconcile_tos(db_path=db, tos_text=tos_text)
+    # Live exit on current open lot — exceeds remaining-shares budget on
+    # repeated import, so it flags as unmatched rather than already-reconciled.
+    assert len(report.already_reconciled_fills) == 0
+    # 3 + 3 = 6 > initial_shares=5, so the second allocation overflows.
+    assert len(report.unmatched_close_fills) == 1
+
+
 def test_reconcile_already_closed_trade_reports_as_already_reconciled(tmp_path: Path):
     """Adversarial review Batch 3 Major 1: re-importing a TOS statement after the
     trade is already fully reconciled (entry + exit both recorded) must NOT flag

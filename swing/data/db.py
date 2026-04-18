@@ -46,8 +46,13 @@ def _preflight_migration_0004(conn: sqlite3.Connection) -> None:
         f"duplicate open trades exist for: {details}. "
         "Inspect with: SELECT id, ticker, entry_date, entry_price, status FROM trades "
         "WHERE status='open' ORDER BY ticker, entry_date; "
-        "Close the older duplicates "
-        "(UPDATE trades SET status='closed' WHERE id=?) and retry migrate."
+        "Resolve the duplicates via the journal so the audit trail stays intact: "
+        "for a legitimate exit, close the trade through `swing trade exit` "
+        "(records an `exits` row and a `trade_events` row in one transaction); "
+        "for an erroneous INSERT, delete the bad `trades` row AND append a "
+        "matching `trade_events` row (kind='correction') in the same transaction. "
+        "Do NOT flip `trades.status` directly — that bypasses `exits` and "
+        "`trade_events` and leaves audit-silent corruption."
     )
 
 
@@ -80,20 +85,23 @@ def ensure_schema(db_path: Path) -> sqlite3.Connection:
             "Update the swing package."
         )
 
-    migration_files = sorted(_MIGRATIONS_DIR.glob("*.sql"))
-    for mig in migration_files:
-        try:
-            version = int(mig.stem.split("_", 1)[0])
-        except ValueError:
-            continue
-        if current < version <= EXPECTED_SCHEMA_VERSION:
-            if version == 4:
-                _preflight_migration_0004(conn)
-            _apply_migration(conn, mig)
+    try:
+        migration_files = sorted(_MIGRATIONS_DIR.glob("*.sql"))
+        for mig in migration_files:
+            try:
+                version = int(mig.stem.split("_", 1)[0])
+            except ValueError:
+                continue
+            if current < version <= EXPECTED_SCHEMA_VERSION:
+                if version == 4:
+                    _preflight_migration_0004(conn)
+                _apply_migration(conn, mig)
 
-    if _current_version(conn) != EXPECTED_SCHEMA_VERSION:
+        if _current_version(conn) != EXPECTED_SCHEMA_VERSION:
+            raise RuntimeError("Migration ran but schema_version did not reach expected value.")
+    except Exception:
         conn.close()
-        raise RuntimeError("Migration ran but schema_version did not reach expected value.")
+        raise
     return conn
 
 

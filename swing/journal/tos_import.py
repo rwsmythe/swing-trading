@@ -194,18 +194,23 @@ def reconcile_tos(
                 else:
                     report.unmatched_open_fills.append(f)
             else:
-                # Check historical exits FIRST: a CLOSE fill whose
-                # (date, qty, price) exactly matches a recorded exit is already
-                # reconciled, even if a new open position exists for the same
-                # ticker (closed-then-reopened case — adversarial review Batch 3
-                # Round 2 Major).
+                t = find_any_open_trade(conn, ticker=f.ticker)
+                # Historical re-import detection: a CLOSE fill whose
+                # (date, qty, price) matches a recorded exit on a PRIOR closed
+                # trade is already reconciled. When a current open position
+                # exists for the ticker (closed-then-reopened case, Round 2
+                # Major 2), only exits whose exit_date strictly precedes the
+                # current open's entry_date count — this stops
+                # _matches_recorded_exit from swallowing fills that should
+                # allocate to the current open lot (Round 3 Major 2).
+                reference_entry_date = t.entry_date if t is not None else None
                 if _matches_recorded_exit(
                     conn, ticker=f.ticker, date=f.date, qty=f.qty,
                     price=f.price, price_tolerance=price_tolerance,
+                    before_date=reference_entry_date,
                 ):
                     report.already_reconciled_fills.append(f)
                     continue
-                t = find_any_open_trade(conn, ticker=f.ticker)
                 if t is None:
                     report.unmatched_close_fills.append(f)
                     continue
@@ -243,16 +248,21 @@ def _matches_closed_trade(
 
 def _matches_recorded_exit(
     conn, *, ticker: str, date: str, qty: int, price: float,
-    price_tolerance: float,
+    price_tolerance: float, before_date: str | None = None,
 ) -> bool:
-    """True if a recorded exit exists for this ticker matching (exit_date, shares, exit_price)
-    — i.e., a CLOSE fill already reconciled against a now-closed trade."""
-    rows = conn.execute(
-        """
-        SELECT e.exit_price FROM exits e
-        JOIN trades t ON t.id = e.trade_id
-        WHERE t.ticker=? AND e.exit_date=? AND e.shares=?
-        """,
-        (ticker, date, qty),
-    ).fetchall()
+    """True if a recorded exit on a CLOSED trade matches this fill by
+    (exit_date, shares, exit_price±tolerance). When before_date is provided,
+    only count exits whose exit_date strictly precedes it — used to distinguish
+    a historical re-import from a live allocation when a new open position
+    exists for the same ticker."""
+    sql = (
+        "SELECT e.exit_price FROM exits e "
+        "JOIN trades t ON t.id = e.trade_id "
+        "WHERE t.ticker=? AND e.exit_date=? AND e.shares=? AND t.status='closed'"
+    )
+    params: list = [ticker, date, qty]
+    if before_date is not None:
+        sql += " AND e.exit_date < ?"
+        params.append(before_date)
+    rows = conn.execute(sql, params).fetchall()
     return any(abs(r[0] - price) <= price_tolerance for r in rows)
