@@ -7,8 +7,11 @@ from swing.recommendations.sizing import compute_shares, SizingResult
 
 
 def test_basic_sizing_constrained_by_risk():
+    # entry=100, stop=98 → rps=$2. equity=1200, max_risk=0.5% → $6 risk budget → 3 shares.
+    # Position cap raised to 30% so cap allows 3 shares (floor(1200*0.30/100)=3) — makes
+    # risk the binding constraint. Tie is resolved to "risk" per impl (shares_by_risk<=cap).
     r = compute_shares(entry=100.0, stop=98.0, equity=1200.0,
-                       max_risk_pct=0.005, position_pct_cap=0.15)
+                       max_risk_pct=0.005, position_pct_cap=0.30)
     assert r.shares == 3
     assert r.risk_dollars == pytest.approx(6.0)
     assert r.feasible is True
@@ -44,8 +47,9 @@ def test_zero_equity_returns_zero_shares():
 
 
 def test_result_carries_metrics():
+    # Same configuration as test_basic_sizing_constrained_by_risk — risk binds at 3 shares.
     r = compute_shares(entry=100.0, stop=98.0, equity=1200.0,
-                       max_risk_pct=0.005, position_pct_cap=0.15)
+                       max_risk_pct=0.005, position_pct_cap=0.30)
     assert r.notional == 300.0
     assert r.notional_pct == pytest.approx(25.0)
     assert r.risk_pct == pytest.approx(0.5)
