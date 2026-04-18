@@ -41,38 +41,50 @@ def insert_pipeline_run(
     return int(cur.lastrowid), token
 
 
-def _check_lease(conn: sqlite3.Connection, run_id: int, lease_token: str) -> None:
+def _raise_revoked_if_no_row(conn: sqlite3.Connection, run_id: int) -> None:
+    """If a lease-fenced UPDATE matched 0 rows, diagnose which condition failed
+    (run missing, lease_token mismatch, or state change) and raise LeaseRevoked
+    with a useful message. Called AFTER a rowcount==0 UPDATE so the read happens
+    inside the same transaction as the failed update."""
     row = conn.execute(
         "SELECT lease_token, state FROM pipeline_runs WHERE id = ?",
         (run_id,),
     ).fetchone()
     if row is None:
         raise LeaseRevoked(f"run {run_id} not found")
-    if row[0] != lease_token or row[1] != "running":
-        raise LeaseRevoked(
-            f"run {run_id} lease revoked or state changed (state={row[1]})"
-        )
+    raise LeaseRevoked(
+        f"run {run_id} lease revoked or state changed (state={row[1]})"
+    )
 
 
 def update_heartbeat(
     conn: sqlite3.Connection, *, run_id: int, lease_token: str, heartbeat_ts: str
 ) -> None:
-    _check_lease(conn, run_id, lease_token)
-    conn.execute(
-        "UPDATE pipeline_runs SET lease_heartbeat_ts = ? WHERE id = ?",
-        (heartbeat_ts, run_id),
+    # Lease fencing done in the UPDATE's WHERE clause (atomic — no TOCTOU race).
+    cur = conn.execute(
+        """
+        UPDATE pipeline_runs SET lease_heartbeat_ts = ?
+        WHERE id = ? AND lease_token = ? AND state = 'running'
+        """,
+        (heartbeat_ts, run_id, lease_token),
     )
+    if cur.rowcount == 0:
+        _raise_revoked_if_no_row(conn, run_id)
 
 
 def update_step(
     conn: sqlite3.Connection, *, run_id: int, lease_token: str,
     step: str, progress_ts: str,
 ) -> None:
-    _check_lease(conn, run_id, lease_token)
-    conn.execute(
-        "UPDATE pipeline_runs SET current_step = ?, last_step_progress_ts = ? WHERE id = ?",
-        (step, progress_ts, run_id),
+    cur = conn.execute(
+        """
+        UPDATE pipeline_runs SET current_step = ?, last_step_progress_ts = ?
+        WHERE id = ? AND lease_token = ? AND state = 'running'
+        """,
+        (step, progress_ts, run_id, lease_token),
     )
+    if cur.rowcount == 0:
+        _raise_revoked_if_no_row(conn, run_id)
 
 
 def update_status_columns(
@@ -80,8 +92,7 @@ def update_status_columns(
 ) -> None:
     """Update one or more *_status columns. Allowed keys: weather_status,
     evaluation_status, watchlist_status, recommendations_status,
-    charts_status, export_status."""
-    _check_lease(conn, run_id, lease_token)
+    charts_status, export_status. Lease-fenced atomically in the WHERE clause."""
     allowed = {
         "weather_status", "evaluation_status", "watchlist_status",
         "recommendations_status", "charts_status", "export_status",
@@ -92,10 +103,13 @@ def update_status_columns(
     if not status_cols:
         return
     set_clause = ", ".join(f"{k} = ?" for k in status_cols)
-    conn.execute(
-        f"UPDATE pipeline_runs SET {set_clause} WHERE id = ?",
-        (*status_cols.values(), run_id),
+    cur = conn.execute(
+        f"""UPDATE pipeline_runs SET {set_clause}
+            WHERE id = ? AND lease_token = ? AND state = 'running'""",
+        (*status_cols.values(), run_id, lease_token),
     )
+    if cur.rowcount == 0:
+        _raise_revoked_if_no_row(conn, run_id)
 
 
 def finalize_run(
@@ -103,19 +117,21 @@ def finalize_run(
     state: str, finished_ts: str, error_message: str | None = None,
     warnings_json: str | None = None,
 ) -> None:
-    """Move state to complete/failed and stamp finished_ts. Lease still required."""
+    """Move state to complete/failed and stamp finished_ts.
+    Lease-fenced atomically in the WHERE clause."""
     if state not in ("complete", "failed"):
         raise ValueError(f"invalid finalize state: {state}")
-    _check_lease(conn, run_id, lease_token)
-    conn.execute(
+    cur = conn.execute(
         """
         UPDATE pipeline_runs SET state = ?, finished_ts = ?,
                error_message = COALESCE(?, error_message),
                warnings_json = COALESCE(?, warnings_json)
-        WHERE id = ?
+        WHERE id = ? AND lease_token = ? AND state = 'running'
         """,
-        (state, finished_ts, error_message, warnings_json, run_id),
+        (state, finished_ts, error_message, warnings_json, run_id, lease_token),
     )
+    if cur.rowcount == 0:
+        _raise_revoked_if_no_row(conn, run_id)
 
 
 def force_clear(

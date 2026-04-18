@@ -3,11 +3,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from swing.data.db import ensure_schema
 from swing.data.models import WatchlistEntry, WatchlistArchiveEntry
 from swing.data.repos.watchlist import (
     upsert_watchlist_entry, get_watchlist_entry, list_active_watchlist,
-    archive_watchlist_entry, list_archive,
+    archive_watchlist_entry, list_archive, WatchlistEntryNotFound,
 )
 
 
@@ -71,5 +73,48 @@ def test_archive_removes_from_active(tmp_path: Path):
         archived = list_archive(conn, ticker="AAPL")
         assert len(archived) == 1
         assert archived[0].reason == "entered"
+    finally:
+        conn.close()
+
+
+def test_archive_unknown_ticker_raises_without_phantom_row(tmp_path: Path):
+    """Archiving a ticker not on the active list must raise and NOT leak a
+    phantom archive row (audit integrity)."""
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        wa = WatchlistArchiveEntry(
+            id=None, ticker="NONEXIST", added_date="2026-04-15",
+            removed_date="2026-04-20", reason="typo",
+            qualification_count=None, last_data_asof_date=None, notes=None,
+        )
+        with pytest.raises(WatchlistEntryNotFound):
+            with conn:
+                archive_watchlist_entry(conn, wa)
+        # No archive row should have been written
+        assert list_archive(conn, ticker="NONEXIST") == []
+    finally:
+        conn.close()
+
+
+def test_archive_twice_second_call_raises(tmp_path: Path):
+    """Second archive on the same ticker (already removed by first) must raise
+    rather than silently writing another archive row."""
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, _wl("AAPL"))
+        wa = WatchlistArchiveEntry(
+            id=None, ticker="AAPL", added_date="2026-04-15",
+            removed_date="2026-04-20", reason="entered",
+            qualification_count=1, last_data_asof_date="2026-04-19", notes=None,
+        )
+        with conn:
+            archive_watchlist_entry(conn, wa)
+        # Second call on already-archived ticker must raise
+        with pytest.raises(WatchlistEntryNotFound):
+            with conn:
+                archive_watchlist_entry(conn, wa)
+        # Exactly one archive row, not two
+        assert len(list_archive(conn, ticker="AAPL")) == 1
     finally:
         conn.close()

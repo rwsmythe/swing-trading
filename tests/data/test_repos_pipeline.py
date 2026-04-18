@@ -127,3 +127,67 @@ def test_list_recent_returns_descending(tmp_path: Path):
         assert [r.id for r in recent] == list(reversed(ids))
     finally:
         conn.close()
+
+
+def test_lease_fencing_is_atomic_toctou(tmp_path: Path):
+    """Simulate TOCTOU: a force_clear lands between the worker's _check_lease
+    and its UPDATE. Under the old two-statement design, the worker's UPDATE
+    would still commit. Under the fixed atomic WHERE-clause design, rowcount
+    is 0 and LeaseRevoked is raised.
+
+    We simulate the race by force-clearing BEFORE the write (in the same test
+    sequence) — the atomic version must still refuse the stale write."""
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        with conn:
+            rid, token = insert_pipeline_run(
+                conn, started_ts=_ts(0), trigger="scheduled",
+                data_asof_date="2026-04-15", action_session_date="2026-04-16",
+                lease_heartbeat_ts=_ts(1),
+            )
+        # Admin force-clears mid-workflow
+        with conn:
+            force_clear(conn, run_id=rid, error_message="race test")
+
+        # Every mutation with the stale token must now raise — the WHERE clause
+        # (AND lease_token = ? AND state = 'running') filters out the force-cleared row.
+        with pytest.raises(LeaseRevoked):
+            with conn:
+                update_step(conn, run_id=rid, lease_token=token,
+                            step="weather", progress_ts=_ts(2))
+        with pytest.raises(LeaseRevoked):
+            with conn:
+                update_status_columns(conn, run_id=rid, lease_token=token,
+                                       weather_status="ok")
+        with pytest.raises(LeaseRevoked):
+            with conn:
+                finalize_run(conn, run_id=rid, lease_token=token,
+                             state="complete", finished_ts=_ts(5))
+        # State unchanged — still force_cleared
+        assert find_run(conn, rid).state == "force_cleared"
+    finally:
+        conn.close()
+
+
+def test_update_heartbeat_is_lease_fenced(tmp_path: Path):
+    """update_heartbeat must raise LeaseRevoked with a stale token (covers
+    coverage gap where update_heartbeat wasn't tested in the original suite)."""
+    from swing.data.repos.pipeline import update_heartbeat
+
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        with conn:
+            rid, token = insert_pipeline_run(
+                conn, started_ts=_ts(0), trigger="scheduled",
+                data_asof_date="2026-04-15", action_session_date="2026-04-16",
+                lease_heartbeat_ts=_ts(1),
+            )
+        with conn:
+            update_heartbeat(conn, run_id=rid, lease_token=token, heartbeat_ts=_ts(5))
+        assert find_run(conn, rid).lease_heartbeat_ts == _ts(5)
+
+        with pytest.raises(LeaseRevoked):
+            with conn:
+                update_heartbeat(conn, run_id=rid, lease_token="wrong", heartbeat_ts=_ts(9))
+    finally:
+        conn.close()

@@ -64,10 +64,24 @@ def list_active_watchlist(conn: sqlite3.Connection) -> list[WatchlistEntry]:
     return [_row_to_entry(r) for r in rows]
 
 
+class WatchlistEntryNotFound(Exception):
+    """Raised when archive is called on a ticker not present in the active watchlist."""
+
+
 def archive_watchlist_entry(conn: sqlite3.Connection, a: WatchlistArchiveEntry) -> int:
     """Delete from `watchlist` and insert into `watchlist_archive` atomically.
-    Caller's `with conn:` wraps both statements in one transaction."""
-    cur = conn.execute(
+    Caller's `with conn:` wraps both statements in one transaction.
+
+    Raises WatchlistEntryNotFound if no active row for the ticker exists — the
+    archive is an audit trail, so we refuse to record removals that didn't happen.
+    Delete runs FIRST so the not-found case doesn't leak a phantom archive row.
+    """
+    cur = conn.execute("DELETE FROM watchlist WHERE ticker = ?", (a.ticker,))
+    if cur.rowcount == 0:
+        raise WatchlistEntryNotFound(
+            f"cannot archive {a.ticker}: not on active watchlist"
+        )
+    insert_cur = conn.execute(
         """
         INSERT INTO watchlist_archive
             (ticker, added_date, removed_date, reason, qualification_count,
@@ -77,9 +91,7 @@ def archive_watchlist_entry(conn: sqlite3.Connection, a: WatchlistArchiveEntry) 
         (a.ticker, a.added_date, a.removed_date, a.reason,
          a.qualification_count, a.last_data_asof_date, a.notes),
     )
-    archive_id = int(cur.lastrowid)
-    conn.execute("DELETE FROM watchlist WHERE ticker = ?", (a.ticker,))
-    return archive_id
+    return int(insert_cur.lastrowid)
 
 
 def list_archive(
