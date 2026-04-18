@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Swing Briefing — {{ vm.action_session_date }}</title>
+  <style>
+    body { font-family: -apple-system, Segoe UI, sans-serif; max-width: 900px; margin: 1em auto; padding: 0 1em; color: #222; }
+    .strip { display: flex; gap: 1em; margin-bottom: 1.5em; }
+    .tile { flex: 1; padding: 0.75em; border: 1px solid #ddd; border-radius: 6px; }
+    .tile h3 { margin: 0 0 0.25em; font-size: 0.85em; color: #666; text-transform: uppercase; }
+    .status-Bullish { background: #e6f4ea; }
+    .status-Caution { background: #fff3cd; }
+    .status-Bearish { background: #f8d7da; }
+    .status-STALE { background: #e9ecef; }
+    .panel { border: 1px solid #ddd; border-radius: 6px; padding: 1em; margin-bottom: 1em; }
+    .panel.amber { background: #fff8e1; border-color: #ffd54f; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.92em; }
+    th, td { text-align: left; padding: 0.4em 0.6em; border-bottom: 1px solid #eee; }
+    .near { background: #fff8c4; }
+    .pass { color: #28a745; }
+    .fail { color: #dc3545; }
+    .na { color: #6c757d; }
+    .chart { max-width: 100%; margin: 0.5em 0; }
+    .meta { font-size: 0.85em; color: #666; }
+  </style>
+</head>
+<body>
+  <h1>Swing Briefing — {{ vm.action_session_date }}</h1>
+  <p class="meta">Data as of {{ vm.data_asof_date }} · Generated {{ vm.generated_at }}</p>
+
+  <div class="strip">
+    <div class="tile status-{{ vm.status_strip.weather.status }}">
+      <h3>Market Weather</h3>
+      <strong>{{ vm.status_strip.weather.status }}</strong><br>
+      <small>{{ vm.status_strip.weather.rationale }}</small><br>
+      <em>{{ vm.status_strip.weather.sizing_implication }}</em>
+    </div>
+    <div class="tile">
+      <h3>Account</h3>
+      Equity ${{ "%.2f"|format(vm.status_strip.account.equity) }}<br>
+      Positions {{ vm.status_strip.account.open_count }} / {{ vm.status_strip.account.soft_warn }} (warn) / {{ vm.status_strip.account.hard_cap }} (cap)
+    </div>
+    <div class="tile">
+      <h3>Last Pipeline</h3>
+      {{ vm.status_strip.pipeline.last_run_ts }}{% if vm.status_strip.pipeline.is_stale %} <strong style="color:#dc3545">STALE</strong>{% endif %}
+    </div>
+  </div>
+
+  <div class="panel amber">
+    <h2>Today's Decisions</h2>
+    {% if not vm.todays_decisions %}
+      <em>No decisions today — watchlist below.</em>
+    {% else %}
+      {% for d in vm.todays_decisions %}
+        <div style="margin-bottom: 1em;">
+          <strong>{{ d.ticker }}</strong> — {{ d.action_text }}<br>
+          <small>Risk ${{ "%.0f"|format(d.risk_dollars) }} ({{ "%.2f"|format(d.risk_pct) }}%) · TT {{ d.tt_score }} · VCP {{ d.vcp_score }}</small><br>
+          <em>{{ d.rationale }}</em>
+          {% if d.chart_b64 %}<img class="chart" src="{{ d.chart_b64 }}" alt="{{ d.ticker }} chart">
+          {% elif d.chart_href %}<a class="chart-link" href="{{ d.chart_href }}">{{ d.ticker }} chart (linked)</a>
+          {% endif %}
+        </div>
+      {% endfor %}
+    {% endif %}
+  </div>
+
+  {% if vm.open_positions %}
+  <div class="panel">
+    <h2>Open Positions</h2>
+    <table>
+      <tr><th>Ticker</th><th>Shares</th><th>Entry</th><th>Stop</th><th>Last</th><th>Unrl P&L</th><th>R</th><th>Days</th></tr>
+      {% for p in vm.open_positions %}
+      <tr>
+        <td>{{ p.ticker }}</td><td>{{ p.shares }}</td>
+        <td>${{ "%.2f"|format(p.entry_price) }}</td>
+        <td>${{ "%.2f"|format(p.current_stop) }}</td>
+        <td>${{ "%.2f"|format(p.last_close) }}</td>
+        <td>${{ "%.2f"|format(p.unrealized_pnl) }}</td>
+        <td>{{ "%.2f"|format(p.r_so_far) }}R</td>
+        <td>{{ p.days_open }}</td>
+      </tr>
+      {% if p.advisory %}
+      <tr><td colspan="8" style="background:#f8f9fa;"><small>
+        {% for s in p.advisory %}<strong>{{ s.rule }}:</strong> {{ s.message }}<br>{% endfor %}
+      </small></td></tr>
+      {% endif %}
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+
+  {% if vm.watchlist %}
+  <div class="panel">
+    <h2>Watchlist</h2>
+    <table>
+      <tr><th></th><th>Ticker</th><th>Last</th><th>Pivot</th><th>%→</th><th>ADR</th><th>Stop</th><th>Status</th></tr>
+      {% for w in vm.watchlist %}
+      <tr class="{% if w.is_near_trigger %}near{% endif %}">
+        <td>{% if w.is_near_trigger %}⚡{% endif %}</td>
+        <td>{{ w.ticker }}</td>
+        <td>${{ "%.2f"|format(w.current_close) }}</td>
+        <td>${{ "%.2f"|format(w.entry_target) }}</td>
+        <td>{{ "%+.2f"|format(w.pct_to_pivot) }}%</td>
+        <td>{% if w.adr_pct %}{{ "%.1f"|format(w.adr_pct) }}%{% endif %}</td>
+        <td>${{ "%.2f"|format(w.current_stop) }}</td>
+        <td>{{ w.status }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+
+  {% if vm.expansions %}
+  <div class="panel">
+    <h2>A+ Detail</h2>
+    {% for x in vm.expansions %}
+    <div style="margin-bottom: 1.5em;">
+      <h3>{{ x.ticker }}</h3>
+      <p>{{ x.narrative }}</p>
+      <h4>Trend Template</h4>
+      <table>
+        {% for c in x.trend_template_grid %}
+        <tr><td>{{ c.name }}</td><td class="{{ c.result }}">{{ c.result|upper }}</td><td>{{ c.value or "" }}</td><td><small>{{ c.rule or "" }}</small></td></tr>
+        {% endfor %}
+      </table>
+      <h4>VCP</h4>
+      <table>
+        {% for c in x.vcp_grid %}
+        <tr><td>{{ c.name }}</td><td class="{{ c.result }}">{{ c.result|upper }}</td><td>{{ c.value or "" }}</td><td><small>{{ c.rule or "" }}</small></td></tr>
+        {% endfor %}
+      </table>
+      {% if x.chart_b64 %}<img class="chart" src="{{ x.chart_b64 }}" alt="{{ x.ticker }} chart">
+      {% elif x.chart_href %}<a class="chart-link" href="{{ x.chart_href }}">{{ x.ticker }} chart (linked)</a>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+</body>
+</html>
