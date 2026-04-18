@@ -71,6 +71,10 @@ def eval_cmd(ctx: click.Context, csv_path: str, as_of_date_str: str | None) -> N
     csv_file = Path(csv_path)
     as_of_date = _date.fromisoformat(as_of_date_str) if as_of_date_str else None
 
+    # Capture "now" once so data_asof/action_session/run_ts can't drift across a
+    # session boundary (e.g., NYSE close happening between calls).
+    run_now = datetime.now()
+
     # 1. Read tickers — require a `Ticker` column; fail fast on malformed CSV
     finviz_df = pd.read_csv(csv_file)
     if "Ticker" not in finviz_df.columns:
@@ -151,8 +155,8 @@ def eval_cmd(ctx: click.Context, csv_path: str, as_of_date_str: str | None) -> N
     else:
         # All fetches failed — fall back to the last completed NYSE session (not
         # wall-clock today, which could be a weekend/holiday or mid-session).
-        data_asof = last_completed_session(datetime.now())
-    action_session = action_session_for_run(datetime.now())
+        data_asof = last_completed_session(run_now)
+    action_session = action_session_for_run(run_now)
 
     # 6. Build contexts
     contexts: list[CandidateContext] = []
@@ -198,7 +202,7 @@ def eval_cmd(ctx: click.Context, csv_path: str, as_of_date_str: str | None) -> N
     conn = connect(cfg.paths.db_path)
     run = EvaluationRun(
         id=None,
-        run_ts=datetime.now().isoformat(timespec="seconds"),
+        run_ts=run_now.isoformat(timespec="seconds"),
         data_asof_date=data_asof.isoformat(),
         action_session_date=action_session.isoformat(),
         finviz_csv_path=str(csv_file),
