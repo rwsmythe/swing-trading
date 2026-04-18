@@ -207,3 +207,26 @@ def test_skip_bucket_for_existing_counts_as_fail():
     )
     assert len(delta.streak_increments) == 1
     assert delta.streak_increments[0].not_qualified_streak == 1
+
+
+def test_duplicate_data_asof_qualify_is_idempotent():
+    """Adversarial review Round 1 Major: same-day rerun where both runs qualify
+    must not double-increment qualification_count (was a bug where streak guard
+    only covered the fail path)."""
+    prior = [WatchlistEntry(
+        ticker="AAPL", added_date="2026-04-10", last_qualified_date="2026-04-15",
+        status="watch", qualification_count=3, not_qualified_streak=0,
+        last_data_asof_date="2026-04-15",  # already processed today
+        entry_target=99.0, initial_stop_target=95.0,
+        last_close=99.0, last_pivot=99.0, last_stop=95.0, last_adr_pct=3.0,
+        missing_criteria=None, notes=None,
+    )]
+    # Re-run: AAPL still qualifies → must be no-op (no requalify, no add)
+    delta = compute_watchlist_changes(
+        prior=prior, today_candidates=[_candidate("AAPL", bucket="watch")],
+        data_asof_date="2026-04-15",
+    )
+    assert delta.requalifies == []
+    assert delta.adds == []
+    assert delta.streak_increments == []
+    assert delta.removes == []

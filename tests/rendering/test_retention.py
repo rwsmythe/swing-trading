@@ -27,7 +27,7 @@ def test_recent_exports_untouched(tmp_path: Path):
     fresh = _make_export(root, date.today())
     result = archive_old_exports(exports_dir=root, retention_days=90, today=date.today())
     assert fresh.exists()
-    assert result.archived_paths == []
+    assert not result.archived_paths
 
 
 def test_old_exports_compressed(tmp_path: Path):
@@ -62,3 +62,32 @@ def test_multiple_old_same_month_into_same_zip(tmp_path: Path):
     with zipfile.ZipFile(archive) as z:
         dates = {name.split("/")[0] for name in z.namelist() if "/" in name}
         assert len(dates) == 2
+
+
+def test_hidden_files_excluded_from_zip(tmp_path: Path):
+    """Nested dotdirs and hidden files must NOT be archived (adversarial review Minor 2)."""
+    root = tmp_path / "exports"
+    today = date.today()
+    old_dt = today - timedelta(days=120)
+    d = _make_export(root, old_dt)
+    # Add hidden cruft
+    (d / ".DS_Store").write_text("cruft", encoding="utf-8")
+    (d / ".hidden_dir").mkdir()
+    (d / ".hidden_dir" / "secret.txt").write_text("secret", encoding="utf-8")
+    # Backdate so the dated dir is still considered old
+    ts = time.mktime(old_dt.timetuple())
+    for p in (d, d / ".DS_Store", d / ".hidden_dir", d / ".hidden_dir" / "secret.txt"):
+        os.utime(p, (ts, ts))
+
+    archive_old_exports(exports_dir=root, retention_days=90, today=today)
+
+    month_str = old_dt.strftime("%Y-%m")
+    archive = root / "archive" / f"{month_str}.zip"
+    assert archive.exists()
+    with zipfile.ZipFile(archive) as z:
+        names = z.namelist()
+        assert any("briefing.html" in n for n in names)
+        # Hidden files filtered out
+        assert not any(".DS_Store" in n for n in names)
+        assert not any(".hidden_dir" in n for n in names)
+        assert not any("secret.txt" in n for n in names)

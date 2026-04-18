@@ -1,6 +1,7 @@
 """Briefing exporter — writes HTML (+ optional MD) + chart files; enforces size cap."""
 from __future__ import annotations
 
+import base64
 import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -8,7 +9,7 @@ from typing import Mapping
 
 from swing.rendering.briefing_md import render_briefing_md
 from swing.rendering.html_renderer import render_briefing_html
-from swing.rendering.view_models import BriefingViewModel, TodaysDecisionVM, TickerExpansionVM
+from swing.rendering.view_models import BriefingViewModel
 
 
 @dataclass(frozen=True)
@@ -20,17 +21,49 @@ class ExportResult:
     charts_delinked: bool
 
 
-def _delink_charts(vm: BriefingViewModel) -> BriefingViewModel:
-    new_decisions = [
-        replace(d, chart_b64=None,
-                chart_href=f"charts/{d.ticker}.png" if d.chart_b64 else d.chart_href)
-        for d in vm.todays_decisions
-    ]
-    new_expansions = [
-        replace(x, chart_b64=None,
-                chart_href=f"charts/{x.ticker}.png" if x.chart_b64 else x.chart_href)
-        for x in vm.expansions
-    ]
+def _data_url_to_bytes(data_url: str) -> bytes | None:
+    """Decode `data:image/png;base64,XXXX` → raw PNG bytes. Returns None on malformed input."""
+    if not data_url or not data_url.startswith("data:"):
+        return None
+    marker = ";base64,"
+    idx = data_url.find(marker)
+    if idx < 0:
+        return None
+    try:
+        return base64.b64decode(data_url[idx + len(marker):])
+    except (ValueError, base64.binascii.Error):
+        return None
+
+
+def _delink_charts(
+    vm: BriefingViewModel, *, href_tickers: set[str]
+) -> BriefingViewModel:
+    """Swap inline chart_b64 → chart_href for tickers whose chart file was actually
+    written to out_dir/charts/. Tickers without a written chart have both cleared
+    (neither inline nor broken link — spec §6.4 integrity)."""
+    def _for(ticker: str, b64: str | None, href: str | None) -> tuple[str | None, str | None]:
+        if ticker in href_tickers:
+            return None, f"charts/{ticker}.png"
+        # No actual chart file — drop both rather than emit broken link
+        return None, href if ticker in href_tickers else None
+
+    new_decisions = []
+    for d in vm.todays_decisions:
+        if d.chart_b64 and d.ticker in href_tickers:
+            new_decisions.append(replace(d, chart_b64=None, chart_href=f"charts/{d.ticker}.png"))
+        elif d.chart_b64:
+            # inline was present but no file exists — drop both (no broken link)
+            new_decisions.append(replace(d, chart_b64=None, chart_href=None))
+        else:
+            new_decisions.append(d)
+    new_expansions = []
+    for x in vm.expansions:
+        if x.chart_b64 and x.ticker in href_tickers:
+            new_expansions.append(replace(x, chart_b64=None, chart_href=f"charts/{x.ticker}.png"))
+        elif x.chart_b64:
+            new_expansions.append(replace(x, chart_b64=None, chart_href=None))
+        else:
+            new_expansions.append(x)
     return replace(vm, todays_decisions=new_decisions, expansions=new_expansions)
 
 
@@ -41,11 +74,40 @@ def export_briefing(
     retain_markdown_sibling: bool = True,
 ) -> ExportResult:
     out_dir.mkdir(parents=True, exist_ok=True)
+    chart_dest_dir = out_dir / "charts"
+    chart_dest_dir.mkdir(exist_ok=True)
 
+    # Step 1: copy any provided chart PNG source files into out_dir/charts/.
+    written: list[Path] = []
+    ticker_has_chart_file: set[str] = set()
+    for ticker, src in chart_files.items():
+        if src.exists():
+            dst = chart_dest_dir / f"{ticker}.png"
+            shutil.copy2(src, dst)
+            written.append(dst)
+            ticker_has_chart_file.add(ticker)
+
+    # Step 2: render HTML. If over cap, delink inline charts — BUT before delinking,
+    # extract any inline chart_b64 to a real PNG file in charts/ so the href resolves.
+    # Without this, callers that pass inline b64 WITHOUT a corresponding chart_files
+    # entry would leave a broken <a href> in the delinked briefing.
     html = render_briefing_html(vm)
     delinked = False
     if len(html.encode("utf-8")) / 1024 > size_cap_kb:
-        html = render_briefing_html(_delink_charts(vm))
+        # Decode inline b64 for tickers that don't already have a chart file on disk.
+        for item in list(vm.todays_decisions) + list(vm.expansions):
+            if item.ticker in ticker_has_chart_file:
+                continue
+            if not item.chart_b64:
+                continue
+            raw = _data_url_to_bytes(item.chart_b64)
+            if raw is None:
+                continue  # malformed — skip; delink will drop both b64 and href
+            dst = chart_dest_dir / f"{item.ticker}.png"
+            dst.write_bytes(raw)
+            written.append(dst)
+            ticker_has_chart_file.add(item.ticker)
+        html = render_briefing_html(_delink_charts(vm, href_tickers=ticker_has_chart_file))
         delinked = True
 
     html_path = out_dir / "briefing.html"
@@ -55,15 +117,6 @@ def export_briefing(
     if retain_markdown_sibling:
         md_path = out_dir / "briefing.md"
         md_path.write_text(render_briefing_md(vm), encoding="utf-8")
-
-    chart_dest_dir = out_dir / "charts"
-    chart_dest_dir.mkdir(exist_ok=True)
-    written: list[Path] = []
-    for ticker, src in chart_files.items():
-        if src.exists():
-            dst = chart_dest_dir / f"{ticker}.png"
-            shutil.copy2(src, dst)
-            written.append(dst)
 
     return ExportResult(
         html_path=html_path, md_path=md_path,

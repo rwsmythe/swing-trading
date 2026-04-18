@@ -70,11 +70,23 @@ def compute_watchlist_changes(
         if candidate is None:
             continue
 
-        already_counted_streak_today = (
+        qualifies = _stable_passes(candidate) and candidate.bucket in ("watch", "aplus")
+
+        # Narrow idempotency guard (spec §5.4): a same-data_asof_date re-run with
+        # the SAME outcome as the prior recording is a no-op. A re-run with a
+        # DIFFERENT outcome (first fail → corrected qualify, or first qualify →
+        # newly fail) legitimately flips the decision.
+        # Prior outcome inferred from last_data_asof_date + not_qualified_streak:
+        #   if last_data_asof_date == today AND streak == 0 → prior was qualify
+        #   if last_data_asof_date == today AND streak  > 0 → prior was fail
+        same_day_rerun = (
             existing is not None and existing.last_data_asof_date == data_asof_date
         )
+        if same_day_rerun:
+            prior_was_qualify = existing.not_qualified_streak == 0
+            if prior_was_qualify == qualifies:
+                continue  # same outcome today as already recorded — no-op
 
-        qualifies = _stable_passes(candidate) and candidate.bucket in ("watch", "aplus")
         if qualifies:
             if candidate.pivot is None or candidate.initial_stop is None:
                 continue
@@ -110,8 +122,6 @@ def compute_watchlist_changes(
                 ))
         else:
             if existing is None:
-                continue
-            if already_counted_streak_today:
                 continue
             new_streak = existing.not_qualified_streak + 1
             if new_streak >= AGING_STREAK_THRESHOLD:

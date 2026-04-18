@@ -3,15 +3,25 @@ from __future__ import annotations
 
 import shutil
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
 
 @dataclass(frozen=True)
 class RetentionResult:
-    archived_paths: list[Path] = field(default_factory=list)
-    zip_paths: list[Path] = field(default_factory=list)
+    # Tuples (not lists) so the frozen=True contract delivers real immutability.
+    archived_paths: tuple[Path, ...] = ()
+    zip_paths: tuple[Path, ...] = ()
+
+
+def _is_hidden(path: Path, root: Path) -> bool:
+    """True if any path component from root to path starts with a dot."""
+    try:
+        rel = path.relative_to(root).parts
+    except ValueError:
+        return False
+    return any(p.startswith(".") for p in rel)
 
 
 def archive_old_exports(
@@ -20,12 +30,13 @@ def archive_old_exports(
 ) -> RetentionResult:
     """Walk exports_dir for date-named folders older than retention_days;
     compress each into exports/archive/<YYYY-MM>.zip, then delete the folder.
-    Skips `archive/` itself and any non-date-named dirs."""
+    Skips `archive/`, dotdirs at any depth, and hidden files."""
     today = today or date.today()
     if not exports_dir.exists():
         return RetentionResult()
 
-    result = RetentionResult([], [])
+    archived_paths: list[Path] = []
+    zip_paths: list[Path] = []
     archive_root = exports_dir / "archive"
     archive_root.mkdir(exist_ok=True)
 
@@ -48,12 +59,20 @@ def archive_old_exports(
         with zipfile.ZipFile(zip_path, mode, zipfile.ZIP_DEFLATED) as z:
             for dt, d in entries:
                 for f in d.rglob("*"):
-                    if f.is_file():
-                        arcname = f"{dt.isoformat()}/{f.relative_to(d).as_posix()}"
-                        if mode == "a" and arcname in z.namelist():
-                            continue
-                        z.write(f, arcname=arcname)
+                    if not f.is_file():
+                        continue
+                    if _is_hidden(f, d):
+                        # Skip .DS_Store, nested dotdir contents, etc.
+                        continue
+                    arcname = f"{dt.isoformat()}/{f.relative_to(d).as_posix()}"
+                    if mode == "a" and arcname in z.namelist():
+                        continue
+                    z.write(f, arcname=arcname)
                 shutil.rmtree(d)
-                result.archived_paths.append(d)
-        result.zip_paths.append(zip_path)
-    return result
+                archived_paths.append(d)
+        zip_paths.append(zip_path)
+
+    return RetentionResult(
+        archived_paths=tuple(archived_paths),
+        zip_paths=tuple(zip_paths),
+    )
