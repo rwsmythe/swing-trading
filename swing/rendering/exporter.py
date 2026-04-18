@@ -18,6 +18,10 @@ class ExportResult:
     md_path: Path | None
     chart_paths: tuple[Path, ...]
     html_size_kb: float
+    # charts_delinked = True means the size-cap branch ran (initial HTML was > cap).
+    # It does NOT guarantee that inline charts were converted to file links — that
+    # depends on whether any inline PNGs were present and valid. Callers wanting
+    # "were fallback files produced?" should check `len(chart_paths) > 0`.
     charts_delinked: bool
     oversized: bool = False  # True if final briefing.html exceeds size_cap_kb even after delink
 
