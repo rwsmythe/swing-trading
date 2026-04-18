@@ -50,9 +50,10 @@ def _preflight_migration_0004(conn: sqlite3.Connection) -> None:
         "for a legitimate exit, close the trade through `swing trade exit` "
         "(records an `exits` row and a `trade_events` row in one transaction); "
         "for an erroneous INSERT, delete the bad `trades` row AND append a "
-        "matching `trade_events` row (kind='correction') in the same transaction. "
-        "Do NOT flip `trades.status` directly — that bypasses `exits` and "
-        "`trade_events` and leaves audit-silent corruption."
+        "matching `trade_events` row with event_type='note' documenting the "
+        "correction (allowed kinds: 'entry','stop_adjust','note','exit','flag') "
+        "in the same transaction. Do NOT flip `trades.status` directly — that "
+        "bypasses `exits` and `trade_events` and leaves audit-silent corruption."
     )
 
 

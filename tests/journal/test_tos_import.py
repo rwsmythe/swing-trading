@@ -187,6 +187,59 @@ def test_reconcile_closed_then_reopened_ticker_routes_close_to_history(tmp_path:
     assert len(report.unmatched_close_fills) == 0
 
 
+def test_reconcile_same_day_close_then_reopen_routes_close_to_history(tmp_path: Path):
+    """Adversarial review Batch 3 Round 4 Major 2: a same-day round trip
+    (open + close morning, reopen afternoon — all on one calendar date) must
+    still recognize a re-imported TOS CLOSE fill as already_reconciled. The
+    on_or_before_date bound uses `<=` rather than `<` because date-granularity
+    storage can't distinguish morning from afternoon; the t.status='closed'
+    join filter still prevents live allocations on the current open trade from
+    being misclassified."""
+    from swing.data.db import ensure_schema
+    from swing.trades.entry import EntryRequest, record_entry
+    from swing.trades.exit import ExitReason, ExitRequest, record_exit
+
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+    import sqlite3
+    conn = sqlite3.connect(db)
+    try:
+        # Morning: open + close (same date).
+        tid = record_entry(conn, EntryRequest(
+            ticker="AAPL", entry_date="2026-04-17", entry_price=180.0,
+            shares=5, initial_stop=170.0, watchlist_entry_target=None,
+            watchlist_initial_stop=None, notes=None, rationale="am",
+            event_ts="2026-04-17T09:45:00",
+        ), soft_warn=10, hard_cap=10, force=False).trade_id
+        record_exit(conn, ExitRequest(
+            trade_id=tid, exit_date="2026-04-17", exit_price=182.0,
+            shares=5, reason=ExitReason.TARGET, notes=None,
+            rationale="am-close", event_ts="2026-04-17T11:30:00",
+        ))
+        # Afternoon: reopen same ticker, same calendar date.
+        record_entry(conn, EntryRequest(
+            ticker="AAPL", entry_date="2026-04-17", entry_price=181.0,
+            shares=5, initial_stop=171.0, watchlist_entry_target=None,
+            watchlist_initial_stop=None, notes=None, rationale="pm",
+            event_ts="2026-04-17T14:00:00",
+        ), soft_warn=10, hard_cap=10, force=False)
+    finally:
+        conn.close()
+
+    # Re-import the morning CLOSE only.
+    tos_text = (
+        "Cash Balance\n\n"
+        "DATE,TIME,TYPE,REF #,DESCRIPTION,AMOUNT,BALANCE\n\n"
+        "Account Trade History\n\n"
+        "Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,PRICE,Net Price,Order Type,DATE,TIME\n"
+        "STOCK,SELL,5,TO CLOSE,AAPL,--,--,--,$182.00,--,LMT,2026-04-17,11:30:00\n"
+    )
+    report = reconcile_tos(db_path=db, tos_text=tos_text)
+    assert len(report.already_reconciled_fills) == 1
+    assert len(report.matched_fills) == 0
+    assert len(report.unmatched_close_fills) == 0
+
+
 def test_reconcile_does_not_swallow_fill_that_matches_current_open_lot(tmp_path: Path):
     """Adversarial review Batch 3 Round 3 Major 2: _matches_recorded_exit must
     not over-classify a CLOSE fill as already_reconciled when the recorded exit

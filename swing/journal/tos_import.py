@@ -207,7 +207,7 @@ def reconcile_tos(
                 if _matches_recorded_exit(
                     conn, ticker=f.ticker, date=f.date, qty=f.qty,
                     price=f.price, price_tolerance=price_tolerance,
-                    before_date=reference_entry_date,
+                    on_or_before_date=reference_entry_date,
                 ):
                     report.already_reconciled_fills.append(f)
                     continue
@@ -248,21 +248,27 @@ def _matches_closed_trade(
 
 def _matches_recorded_exit(
     conn, *, ticker: str, date: str, qty: int, price: float,
-    price_tolerance: float, before_date: str | None = None,
+    price_tolerance: float, on_or_before_date: str | None = None,
 ) -> bool:
     """True if a recorded exit on a CLOSED trade matches this fill by
-    (exit_date, shares, exit_price±tolerance). When before_date is provided,
-    only count exits whose exit_date strictly precedes it — used to distinguish
-    a historical re-import from a live allocation when a new open position
-    exists for the same ticker."""
+    (exit_date, shares, exit_price±tolerance). When on_or_before_date is
+    provided, only count exits whose exit_date is on or before it.
+
+    Live allocations on the *current open* trade cannot be accidentally
+    swallowed here: the join filter `t.status='closed'` excludes any exits
+    belonging to the current open position. The `on_or_before_date` bound
+    stops us from claiming future-dated historical matches. Using `<=`
+    (rather than `<`) covers same-day close-then-reopen, where the prior
+    closed trade's exit_date equals the current open's entry_date at date
+    granularity — a real workflow that strict inequality missed."""
     sql = (
         "SELECT e.exit_price FROM exits e "
         "JOIN trades t ON t.id = e.trade_id "
         "WHERE t.ticker=? AND e.exit_date=? AND e.shares=? AND t.status='closed'"
     )
     params: list = [ticker, date, qty]
-    if before_date is not None:
-        sql += " AND e.exit_date < ?"
-        params.append(before_date)
+    if on_or_before_date is not None:
+        sql += " AND e.exit_date <= ?"
+        params.append(on_or_before_date)
     rows = conn.execute(sql, params).fetchall()
     return any(abs(r[0] - price) <= price_tolerance for r in rows)
