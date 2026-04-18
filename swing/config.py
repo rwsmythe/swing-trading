@@ -87,6 +87,46 @@ class FocusRanking:
 
 
 @dataclass(frozen=True)
+class NearTriggerConfig:
+    above_pct: float = 0.5
+    below_pct: float = 1.0
+
+
+@dataclass(frozen=True)
+class StopAdvisoryConfig:
+    breakeven_r_trigger: float = 1.0
+    trail_10ma_buffer_pct: float = 0.3
+    trail_20ma_buffer_pct: float = 0.3
+    time_stop_days: int = 10
+    time_stop_min_r: float = 0.5
+
+
+@dataclass(frozen=True)
+class SizingConfig:
+    """Position-sizing caps (spec §4, legacy parity)."""
+    position_pct_cap: float = 0.15
+
+
+@dataclass(frozen=True)
+class PipelineConfig:
+    stale_lease_threshold_seconds: int = 300
+    stale_step_threshold_seconds: int = 900
+    heartbeat_interval_seconds: int = 30
+    block_if_running_within_seconds: int = 120
+    staging_orphan_age_seconds: int = 3600
+    prev_dir_retention_days: int = 7
+    chart_top_n_watch: int = 5
+
+
+@dataclass(frozen=True)
+class ExportConfig:
+    size_cap_kb: int = 500
+    retain_markdown_sibling: bool = True
+    retention_days: int = 90
+    archive_compression_format: str = "zip"
+
+
+@dataclass(frozen=True)
 class Config:
     paths: Paths
     account: Account
@@ -97,6 +137,11 @@ class Config:
     rs: RS
     etf_exclusion: ETFExclusion
     focus_ranking: FocusRanking
+    near_trigger: NearTriggerConfig
+    stop_advisory: StopAdvisoryConfig
+    sizing: SizingConfig
+    pipeline: PipelineConfig
+    export: ExportConfig
 
 
 _PROJECT_INTERNAL_PREFIXES = ("data/", "exports/", "reference/")
@@ -166,4 +211,9 @@ def load(config_path: Path) -> Config:
             manual_allow=tuple(raw["etf_exclusion"]["manual_allow"]),
         ),
         focus_ranking=FocusRanking(**raw["focus_ranking"]),
+        near_trigger=NearTriggerConfig(**raw.get("near_trigger", {})),
+        stop_advisory=StopAdvisoryConfig(**raw.get("stop_advisory", {})),
+        sizing=SizingConfig(**raw.get("sizing", {})),
+        pipeline=PipelineConfig(**raw.get("pipeline", {})),
+        export=ExportConfig(**raw.get("export", {})),
     )
