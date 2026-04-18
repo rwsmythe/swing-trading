@@ -1,0 +1,19 @@
+Cash Balance
+
+DATE,TIME,TYPE,REF #,DESCRIPTION,AMOUNT,BALANCE
+2026-04-01,09:00:00,DEP,DEP-001,"WIRE DEPOSIT",$500.00,$1500.00
+2026-04-15,11:30:00,WD,WD-001,"WIRE WITHDRAWAL",($100.00),$1400.00
+
+Account Trade History
+
+Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,PRICE,Net Price,Order Type,DATE,TIME
+STOCK,BUY,5,TO OPEN,AAPL,--,--,--,$180.00,--,LMT,2026-04-15,09:30:00
+STOCK,SELL,5,TO CLOSE,AAPL,--,--,--,$190.00,--,LMT,2026-04-22,15:30:00
+
+Account Order History
+
+(no relevant fills)
+
+Account Summary
+
+Net Liq,$1700.00
