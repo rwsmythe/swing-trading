@@ -181,7 +181,7 @@ venv/
 
 # Swing app data (lives outside Drive folder, but cover stray files)
 swing-data/
-data/
+/data/                 # root-level only — do NOT write `data/` (that would also match swing/data/)
 .superpowers/
 
 # OS
