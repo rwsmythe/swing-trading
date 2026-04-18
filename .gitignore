@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Swing app data (lives outside Drive folder, but cover stray files)
+swing-data/
+data/
+.superpowers/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Legacy — archived for reference but not tracked
+reference/archive/
