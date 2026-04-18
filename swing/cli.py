@@ -254,5 +254,186 @@ def weather_cmd(ctx: click.Context, ticker: str, as_of_date_str: str | None) -> 
     click.echo(result.rationale)
 
 
+@main.group("trade")
+def trade_group() -> None:
+    """Trade lifecycle: entry, exit, list, stop adjust, advisory."""
+
+
+@trade_group.command("entry")
+@click.option("--ticker", required=True)
+@click.option("--entry-date", required=True, help="YYYY-MM-DD")
+@click.option("--entry-price", type=float, required=True)
+@click.option("--shares", type=int, required=True)
+@click.option("--initial-stop", type=float, required=True)
+@click.option("--watchlist-target", type=float, default=None)
+@click.option("--watchlist-stop", type=float, default=None)
+@click.option("--rationale", required=True)
+@click.option("--notes", default=None)
+@click.option("--force", is_flag=True, help="Bypass soft-warn cap (still subject to hard cap)")
+@click.pass_context
+def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
+                    watchlist_target, watchlist_stop, rationale, notes, force):
+    """Record a trade entry."""
+    from datetime import datetime as _dt
+    from swing.data.db import connect
+    from swing.trades.entry import (
+        EntryRequest, record_entry,
+        SoftWarnException, HardCapException, DuplicateOpenPositionException,
+    )
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        req = EntryRequest(
+            ticker=ticker.upper(), entry_date=entry_date, entry_price=entry_price,
+            shares=shares, initial_stop=initial_stop,
+            watchlist_entry_target=watchlist_target,
+            watchlist_initial_stop=watchlist_stop,
+            notes=notes, rationale=rationale,
+            event_ts=_dt.now().isoformat(timespec="seconds"),
+        )
+        try:
+            result = record_entry(
+                conn, req,
+                soft_warn=cfg.position_limits.soft_warn_open,
+                hard_cap=cfg.position_limits.hard_cap_open,
+                force=force,
+            )
+        except (SoftWarnException, HardCapException, DuplicateOpenPositionException) as exc:
+            raise click.ClickException(str(exc))
+    finally:
+        conn.close()
+
+    if result.warning:
+        click.echo(f"WARN: {result.warning}", err=True)
+    if result.watchlist_archived:
+        click.echo(f"Watchlist row for {ticker} archived (reason: entered)")
+    click.echo(f"Trade id {result.trade_id}: {ticker} {shares} sh @ ${entry_price:.2f}, stop ${initial_stop:.2f}")
+
+
+@trade_group.command("exit")
+@click.option("--trade-id", type=int, required=True)
+@click.option("--exit-date", required=True)
+@click.option("--exit-price", type=float, required=True)
+@click.option("--shares", type=int, required=True)
+@click.option("--reason", type=click.Choice(
+    ["stop-hit", "target", "manual", "time-stop", "weather", "partial", "other"]
+), required=True)
+@click.option("--notes", default=None)
+@click.option("--rationale", required=True)
+@click.pass_context
+def trade_exit_cmd(ctx, trade_id, exit_date, exit_price, shares, reason, notes, rationale):
+    """Record a trade exit (full or partial)."""
+    from datetime import datetime as _dt
+    from swing.data.db import connect
+    from swing.trades.exit import ExitReason, ExitRequest, record_exit
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        req = ExitRequest(
+            trade_id=trade_id, exit_date=exit_date, exit_price=exit_price,
+            shares=shares, reason=ExitReason(reason),
+            notes=notes, rationale=rationale,
+            event_ts=_dt.now().isoformat(timespec="seconds"),
+        )
+        result = record_exit(conn, req)
+    finally:
+        conn.close()
+    closed = " (FULL CLOSE)" if result.fully_closed else ""
+    click.echo(f"Exit {result.exit_id}: ${result.realized_pnl:+.2f} ({result.r_multiple:+.2f}R){closed}")
+
+
+@trade_group.command("list")
+@click.option("--all", "show_all", is_flag=True, help="Include closed trades")
+@click.pass_context
+def trade_list_cmd(ctx, show_all):
+    """List open (or all) trades."""
+    from swing.data.db import connect
+    from swing.data.repos.trades import list_open_trades, list_closed_trades
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        trades = list_open_trades(conn)
+        if show_all:
+            trades = trades + list_closed_trades(conn)
+    finally:
+        conn.close()
+    if not trades:
+        click.echo("(no trades)")
+        return
+    click.echo(f"{'ID':>4} {'Ticker':<6} {'Date':<10} {'Entry':>8} {'Stop':>8} {'Sh':>4} {'Status':<8}")
+    for t in trades:
+        click.echo(
+            f"{t.id or 0:>4} {t.ticker:<6} {t.entry_date:<10} "
+            f"${t.entry_price:>6.2f} ${t.current_stop:>6.2f} {t.initial_shares:>4} {t.status:<8}"
+        )
+
+
+@trade_group.command("stop-adjust")
+@click.option("--trade-id", type=int, required=True)
+@click.option("--new-stop", type=float, required=True)
+@click.option("--rationale", required=True)
+@click.option("--force", is_flag=True, help="Allow lowering the stop")
+@click.pass_context
+def trade_stop_adjust_cmd(ctx, trade_id, new_stop, rationale, force):
+    """Adjust the stop on an open trade. Refuses to lower without --force."""
+    from datetime import datetime as _dt
+    from swing.data.db import connect
+    from swing.trades.stop_adjust import StopAdjustRequest, adjust_stop, StopRegressionError
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        try:
+            adjust_stop(conn, StopAdjustRequest(
+                trade_id=trade_id, new_stop=new_stop, rationale=rationale,
+                event_ts=_dt.now().isoformat(timespec="seconds"), force=force,
+            ))
+        except StopRegressionError as exc:
+            raise click.ClickException(str(exc))
+    finally:
+        conn.close()
+    click.echo(f"Trade {trade_id} stop -> ${new_stop:.2f}")
+
+
+@trade_group.command("advisory")
+@click.option("--trade-id", type=int, required=True)
+@click.option("--current-price", type=float, required=True)
+@click.option("--sma10", type=float, default=None)
+@click.option("--sma20", type=float, default=None)
+@click.option("--weather", default="Bullish")
+@click.option("--as-of-date", default=None, help="default: today")
+@click.pass_context
+def trade_advisory_cmd(ctx, trade_id, current_price, sma10, sma20, weather, as_of_date):
+    """Print stop-advisory suggestions for an open trade."""
+    from datetime import date as _date
+    from swing.data.db import connect
+    from swing.data.repos.trades import get_trade
+    from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        trade = get_trade(conn, trade_id)
+        if trade is None:
+            raise click.ClickException(f"trade {trade_id} not found")
+    finally:
+        conn.close()
+    asof = as_of_date or _date.today().isoformat()
+    ctx_a = AdvisoryContext(
+        as_of_date=asof, current_price=current_price,
+        sma10=sma10, sma20=sma20, weather_status=weather,
+        config=cfg.stop_advisory,
+    )
+    sugs = compute_all_suggestions(trade, ctx_a)
+    if not sugs:
+        click.echo("(no advisories)")
+        return
+    for s in sugs:
+        click.echo(f"  [{s.rule}] {s.message}")
+
+
 if __name__ == "__main__":  # pragma: no cover
     main()
