@@ -32,12 +32,24 @@ def main(ctx: click.Context, config_path: str) -> None:
 @main.command("db-migrate")
 @click.pass_context
 def db_migrate(ctx: click.Context) -> None:
-    """Apply DB migrations. Safe to run multiple times."""
+    """Apply DB migrations. Safe to run multiple times. Backs up DB before migrating."""
+    import shutil
+
     cfg = ctx.obj["config"]
-    conn = ensure_schema(cfg.paths.db_path)
+    db_path = cfg.paths.db_path
+
+    # Spec §3: CLI db-migrate takes an automatic backup before running any migration.
+    if db_path.exists():
+        cfg.paths.backups_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%dT%H%M%S")
+        backup_path = cfg.paths.backups_dir / f"swing-{ts}.db"
+        shutil.copy2(db_path, backup_path)
+        click.echo(f"Backup: {backup_path}")
+
+    conn = ensure_schema(db_path)
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
     conn.close()
-    click.echo(f"DB at {cfg.paths.db_path} - schema version {version}")
+    click.echo(f"DB at {db_path} - schema version {version}")
 
 
 @main.command("eval")
@@ -51,10 +63,14 @@ def eval_cmd(ctx: click.Context, csv_path: str, as_of_date_str: str | None) -> N
     csv_file = Path(csv_path)
     as_of_date = _date.fromisoformat(as_of_date_str) if as_of_date_str else None
 
-    # 1. Read tickers
+    # 1. Read tickers — require a `Ticker` column; fail fast on malformed CSV
     finviz_df = pd.read_csv(csv_file)
-    ticker_col = "Ticker" if "Ticker" in finviz_df.columns else finviz_df.columns[1]
-    tickers = finviz_df[ticker_col].dropna().astype(str).str.upper().tolist()
+    if "Ticker" not in finviz_df.columns:
+        raise click.ClickException(
+            f"{csv_file.name}: required column 'Ticker' not found. "
+            f"Got columns: {list(finviz_df.columns)}"
+        )
+    tickers = finviz_df["Ticker"].dropna().astype(str).str.upper().tolist()
 
     click.echo(f"Evaluating {len(tickers)} tickers from {csv_file.name}")
 
@@ -166,7 +182,7 @@ def eval_cmd(ctx: click.Context, csv_path: str, as_of_date_str: str | None) -> N
             pattern_tag=None, notes="OHLCV fetch failed", criteria=(),
         ))
 
-    # 9. Persist
+    # 9. Persist atomically — run row + candidates + criteria in a single transaction
     conn = connect(cfg.paths.db_path)
     run = EvaluationRun(
         id=None,
@@ -180,10 +196,15 @@ def eval_cmd(ctx: click.Context, csv_path: str, as_of_date_str: str | None) -> N
         skip_count=sum(1 for c in candidates if c.bucket == "skip"),
         excluded_count=len(excluded_tickers),
         error_count=len(error_tickers),
+        rs_universe_version=universe.version,
+        rs_universe_hash=universe_hash,
     )
-    run_id = insert_evaluation_run(conn, run)
-    insert_candidates(conn, run_id, candidates)
-    conn.close()
+    try:
+        with conn:  # `with conn:` commits on success, rolls back on exception
+            run_id = insert_evaluation_run(conn, run)
+            insert_candidates(conn, run_id, candidates)
+    finally:
+        conn.close()
 
     click.echo(
         f"Run {run_id}: A+={run.aplus_count} watch={run.watch_count} "

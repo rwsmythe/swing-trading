@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from swing.evaluation.context import CandidateContext
 from swing.evaluation.criteria._base import Result, sma
+from swing.evaluation.rs import compute_rs
 
 LAYER = "trend_template"
 
@@ -119,36 +120,34 @@ def evaluate(ctx: CandidateContext) -> tuple[Result, ...]:
         )
 
     # TT8: RS rank >= threshold (or fallback excess return)
+    # Delegates ranking math to swing.evaluation.rs.compute_rs — one source of truth.
     threshold = ctx.config.rs.rs_rank_min_pass
     extreme = ctx.config.rs.fallback_extreme_pct / 100
-    ticker_return = ctx.batch.returns_12w_by_ticker.get(ctx.ticker)
-    in_universe = ctx.ticker in ctx.batch.universe_tickers
-    if ticker_return is None:
+    rs = compute_rs(
+        ctx.ticker,
+        ctx.batch.returns_12w_by_ticker,
+        ctx.batch.universe_tickers,
+        spy_return=ctx.batch.spy_return_12w,
+    )
+
+    if rs.method == "unavailable":
         results.append(Result.na_("no 12w return available", name=CHECK_NAMES[7], layer=LAYER))
-    elif in_universe:
-        universe_returns = sorted(
-            r for t, r in ctx.batch.returns_12w_by_ticker.items()
-            if t in ctx.batch.universe_tickers
+    elif rs.method == "universe":
+        assert rs.rank is not None  # guaranteed by compute_rs contract
+        v = f"RS rank {rs.rank} (universe v{ctx.batch.universe_version})"
+        rule = f"RS rank >= {threshold}"
+        results.append(
+            Result.pass_(v, rule, name=CHECK_NAMES[7], layer=LAYER)
+            if rs.rank >= threshold
+            else Result.fail_(v, rule, name=CHECK_NAMES[7], layer=LAYER)
         )
-        if not universe_returns:
-            results.append(Result.na_("universe returns empty", name=CHECK_NAMES[7], layer=LAYER))
-        else:
-            leq = sum(1 for r in universe_returns if r <= ticker_return)
-            rank = max(0, min(99, int((leq - 1) / max(1, len(universe_returns) - 1) * 99)))
-            v = f"RS rank {rank} (universe v{ctx.batch.universe_version})"
-            rule = f"RS rank >= {threshold}"
-            results.append(
-                Result.pass_(v, rule, name=CHECK_NAMES[7], layer=LAYER)
-                if rank >= threshold
-                else Result.fail_(v, rule, name=CHECK_NAMES[7], layer=LAYER)
-            )
-    else:
-        excess = ticker_return - ctx.batch.spy_return_12w
-        v = f"fallback, excess={excess:+.2%} vs SPY 12w"
+    else:  # method == "fallback_spy"
+        assert rs.return_vs_spy is not None
+        v = f"fallback, excess={rs.return_vs_spy:+.2%} vs SPY 12w"
         rule = f"outside universe; pass if excess >= +{extreme:.0%}"
-        if excess >= extreme:
+        if rs.return_vs_spy >= extreme:
             results.append(Result.pass_(v, rule, name=CHECK_NAMES[7], layer=LAYER))
-        elif excess <= -extreme:
+        elif rs.return_vs_spy <= -extreme:
             results.append(Result.fail_(v, rule, name=CHECK_NAMES[7], layer=LAYER))
         else:
             results.append(Result.na_(v, name=CHECK_NAMES[7], layer=LAYER))

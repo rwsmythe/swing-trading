@@ -47,7 +47,7 @@ orderliness_max_range_cv = 0.60
 
 [trend_template]
 min_passes = 7
-allowed_miss_names = ["TT8"]
+allowed_miss_names = ["TT8_rs_rank"]
 rising_ma_period_days = 21
 high_52w_margin_pct = 25.0
 low_52w_min_pct = 30.0

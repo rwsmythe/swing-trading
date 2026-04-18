@@ -8,13 +8,16 @@ from swing.data.models import Candidate, CriterionResult, EvaluationRun
 
 
 def insert_evaluation_run(conn: sqlite3.Connection, run: EvaluationRun) -> int:
+    """Insert an evaluation_runs row. Does NOT commit — caller wraps in a transaction
+    (e.g. `with conn:`) so the run + candidates + criteria persist atomically.
+    """
     cur = conn.execute(
         """
         INSERT INTO evaluation_runs
             (run_ts, data_asof_date, action_session_date, finviz_csv_path,
              tickers_evaluated, aplus_count, watch_count, skip_count,
-             excluded_count, error_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             excluded_count, error_count, rs_universe_version, rs_universe_hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             run.run_ts,
@@ -27,15 +30,17 @@ def insert_evaluation_run(conn: sqlite3.Connection, run: EvaluationRun) -> int:
             run.skip_count,
             run.excluded_count,
             run.error_count,
+            run.rs_universe_version,
+            run.rs_universe_hash,
         ),
     )
-    conn.commit()
     return int(cur.lastrowid)
 
 
 def insert_candidates(
     conn: sqlite3.Connection, run_id: int, candidates: Sequence[Candidate]
 ) -> None:
+    """Insert candidate + criteria rows. Does NOT commit — caller wraps in a transaction."""
     for c in candidates:
         cur = conn.execute(
             """
@@ -73,7 +78,6 @@ def insert_candidates(
                 """,
                 (cid, crit.criterion_name, crit.layer, crit.result, crit.value, crit.rule),
             )
-    conn.commit()
 
 
 def fetch_candidates_for_run(conn: sqlite3.Connection, run_id: int) -> list[Candidate]:

@@ -45,3 +45,5 @@ class EvaluationRun:
     skip_count: int
     excluded_count: int
     error_count: int
+    rs_universe_version: str | None = None
+    rs_universe_hash: str | None = None

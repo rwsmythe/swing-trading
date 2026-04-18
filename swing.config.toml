@@ -41,7 +41,8 @@ orderliness_max_range_cv = 0.60
 
 [trend_template]
 min_passes = 7                # of 8 TT checks; below this = skip bucket
-allowed_miss_names = ["TT8"]  # TT8 (RS) is the default acceptable miss
+# Criterion names that may fail without failing the gate. Values MUST match swing/evaluation/criteria/trend_template.py CHECK_NAMES.
+allowed_miss_names = ["TT8_rs_rank"]  # TT8 (RS) is the default acceptable miss
 rising_ma_period_days = 21    # for TT3 (200MA trending up >= 21 trading days)
 high_52w_margin_pct = 25.0    # TT7
 low_52w_min_pct = 30.0        # TT6

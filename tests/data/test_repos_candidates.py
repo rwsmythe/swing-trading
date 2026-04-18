@@ -28,30 +28,31 @@ def test_insert_candidate_with_no_criteria_roundtrips(tmp_db: Path):
         excluded_count=1,
         error_count=0,
     )
-    run_id = insert_evaluation_run(conn, run)
-    insert_candidates(
-        conn,
-        run_id,
-        [
-            Candidate(
-                ticker="UCO",
-                bucket="excluded",
-                close=None,
-                pivot=None,
-                initial_stop=None,
-                adr_pct=None,
-                tight_streak=None,
-                pullback_pct=None,
-                prior_trend_pct=None,
-                rs_rank=None,
-                rs_return_12w_vs_spy=None,
-                rs_method="unavailable",
-                pattern_tag=None,
-                notes="ETF blocklist",
-                criteria=(),
-            ),
-        ],
-    )
+    with conn:
+        run_id = insert_evaluation_run(conn, run)
+        insert_candidates(
+            conn,
+            run_id,
+            [
+                Candidate(
+                    ticker="UCO",
+                    bucket="excluded",
+                    close=None,
+                    pivot=None,
+                    initial_stop=None,
+                    adr_pct=None,
+                    tight_streak=None,
+                    pullback_pct=None,
+                    prior_trend_pct=None,
+                    rs_rank=None,
+                    rs_return_12w_vs_spy=None,
+                    rs_method="unavailable",
+                    pattern_tag=None,
+                    notes="ETF blocklist",
+                    criteria=(),
+                ),
+            ],
+        )
     fetched = fetch_candidates_for_run(conn, run_id)
     assert len(fetched) == 1
     assert fetched[0].bucket == "excluded"
@@ -75,9 +76,6 @@ def test_insert_run_and_candidates_roundtrip(tmp_db: Path):
         excluded_count=0,
         error_count=0,
     )
-    run_id = insert_evaluation_run(conn, run)
-    assert run_id > 0
-
     candidates = [
         Candidate(
             ticker="CE",
@@ -119,7 +117,10 @@ def test_insert_run_and_candidates_roundtrip(tmp_db: Path):
             ),
         ),
     ]
-    insert_candidates(conn, run_id, candidates)
+    with conn:
+        run_id = insert_evaluation_run(conn, run)
+        assert run_id > 0
+        insert_candidates(conn, run_id, candidates)
 
     fetched = fetch_candidates_for_run(conn, run_id)
     assert len(fetched) == 2

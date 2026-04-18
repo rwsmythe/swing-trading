@@ -18,6 +18,28 @@ def data_asof_from_ohlcv_max(df: pd.DataFrame) -> date:
     return idx_max  # type: ignore[return-value]
 
 
+def last_completed_session(now_local: datetime, *, tz: str = "Pacific/Honolulu") -> date:
+    """Most recent NYSE session whose close has already happened at `now_local`.
+
+    Used when `as_of_date` is omitted — never serve a partial in-progress daily bar.
+    """
+    local = now_local.replace(tzinfo=ZoneInfo(tz))
+    ny = local.astimezone(ZoneInfo("America/New_York"))
+    today_date = ny.date()
+
+    if _NYSE.is_session(pd.Timestamp(today_date)):
+        close_ts = _NYSE.session_close(pd.Timestamp(today_date))
+        ny_ts_utc = pd.Timestamp(ny).tz_convert("UTC")
+        if ny_ts_utc >= close_ts:
+            return today_date
+        # Before close — today's bar is incomplete; use prior session
+        prev_ts = _NYSE.previous_session(pd.Timestamp(today_date))
+        return prev_ts.date()
+
+    # Non-session day — last completed session is strictly before today
+    return _NYSE.date_to_session(pd.Timestamp(today_date), direction="previous").date()
+
+
 def action_session_for_run(now_local: datetime, *, tz: str = "Pacific/Honolulu") -> date:
     """The next NYSE trading session at or after `now_local`.
 

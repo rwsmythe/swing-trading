@@ -18,6 +18,7 @@ from swing.evaluation.criteria import (
     vcp,
 )
 from swing.evaluation.criteria._base import Result, adr_pct
+from swing.evaluation.rs import compute_rs
 from swing.evaluation.scoring import bucket_for
 
 
@@ -74,27 +75,16 @@ def evaluate_one(ctx: CandidateContext) -> Candidate:
     prior_r = _find(vcp_results, "prior_trend")
     prior_trend_value = prior_r.get_metric("prior_trend_pct") if prior_r else None
 
-    # RS: extract via batch, same logic as TT8
-    rs_rank = None
-    rs_return_vs_spy = None
-    rs_method = "unavailable"
-    ticker_ret = ctx.batch.returns_12w_by_ticker.get(ctx.ticker)
-    if ticker_ret is not None:
-        rs_return_vs_spy = ticker_ret - ctx.batch.spy_return_12w
-        if ctx.ticker in ctx.batch.universe_tickers:
-            rs_method = "universe"
-            universe_returns = sorted(
-                r for t, r in ctx.batch.returns_12w_by_ticker.items()
-                if t in ctx.batch.universe_tickers
-            )
-            if universe_returns:
-                leq = sum(1 for r in universe_returns if r <= ticker_ret)
-                rs_rank = max(
-                    0,
-                    min(99, int((leq - 1) / max(1, len(universe_returns) - 1) * 99)),
-                )
-        else:
-            rs_method = "fallback_spy"
+    # RS: single source of truth (swing.evaluation.rs.compute_rs)
+    rs = compute_rs(
+        ctx.ticker,
+        ctx.batch.returns_12w_by_ticker,
+        ctx.batch.universe_tickers,
+        spy_return=ctx.batch.spy_return_12w,
+    )
+    rs_rank = rs.rank
+    rs_return_vs_spy = rs.return_vs_spy
+    rs_method = rs.method
 
     criteria_models = tuple(_to_model(r) for r in tt_results + vcp_results + risk_results)
 

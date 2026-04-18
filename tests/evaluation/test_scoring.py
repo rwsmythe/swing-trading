@@ -10,12 +10,23 @@ def _make(layer: str, result: str, name: str = "x") -> Result:
 
 
 def test_aplus_when_tt_7plus_and_vcp_all_pass(sample_config):
+    # Only the criterion name in allowed_miss_names (TT8_rs_rank) may fail.
     tt = [_make("trend_template", "pass", f"TT{i}") for i in range(7)] + [
-        _make("trend_template", "fail", "TT8")
+        _make("trend_template", "fail", "TT8_rs_rank")
     ]
     vcp = [_make("vcp", "pass", f"v{i}") for i in range(10)]
     risk = [_make("risk", "pass", "risk")]
     assert bucket_for(tt, vcp, risk, sample_config) == "aplus"
+
+
+def test_skip_when_failing_tt_is_not_allowed_miss(sample_config):
+    # 7/8 pass but the fail is TT3 (not in allowed_miss_names) → must skip
+    tt = [_make("trend_template", "pass", f"TT{i}") for i in range(7)] + [
+        _make("trend_template", "fail", "TT3_200_rising")
+    ]
+    vcp = [_make("vcp", "pass", f"v{i}") for i in range(10)]
+    risk = [_make("risk", "pass", "risk")]
+    assert bucket_for(tt, vcp, risk, sample_config) == "skip"
 
 
 def test_watch_when_vcp_has_1_or_2_fails(sample_config):
