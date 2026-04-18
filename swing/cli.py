@@ -13,7 +13,7 @@ from swing.data.db import connect, ensure_schema
 from swing.data.models import Candidate, EvaluationRun
 from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
 from swing.evaluation.context import BatchContext, CandidateContext, MarketContext
-from swing.evaluation.dates import action_session_for_run
+from swing.evaluation.dates import action_session_for_run, last_completed_session
 from swing.evaluation.evaluator import evaluate_batch
 from swing.evaluation.rs import load_universe, universe_version_hash
 from swing.prices import PriceFetcher
@@ -33,17 +33,25 @@ def main(ctx: click.Context, config_path: str) -> None:
 @click.pass_context
 def db_migrate(ctx: click.Context) -> None:
     """Apply DB migrations. Safe to run multiple times. Backs up DB before migrating."""
-    import shutil
+    import sqlite3 as _sqlite3
 
     cfg = ctx.obj["config"]
     db_path = cfg.paths.db_path
 
-    # Spec §3: CLI db-migrate takes an automatic backup before running any migration.
+    # Spec §3: automatic backup before migration. DB runs in WAL mode, so a plain
+    # shutil.copy2 can miss committed data still in the -wal sidecar. Use SQLite's
+    # backup API, which produces a single consistent file regardless of WAL state.
     if db_path.exists():
         cfg.paths.backups_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%dT%H%M%S")
         backup_path = cfg.paths.backups_dir / f"swing-{ts}.db"
-        shutil.copy2(db_path, backup_path)
+        src = _sqlite3.connect(db_path)
+        dst = _sqlite3.connect(backup_path)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
         click.echo(f"Backup: {backup_path}")
 
     conn = ensure_schema(db_path)
@@ -138,8 +146,12 @@ def eval_cmd(ctx: click.Context, csv_path: str, as_of_date_str: str | None) -> N
     max_dates = [df.index.max() for df in ohlcv_by_ticker.values() if not df.empty]
     if max_dates:
         data_asof = max(max_dates).date()
+    elif as_of_date is not None:
+        data_asof = as_of_date
     else:
-        data_asof = as_of_date or datetime.now().date()
+        # All fetches failed — fall back to the last completed NYSE session (not
+        # wall-clock today, which could be a weekend/holiday or mid-session).
+        data_asof = last_completed_session(datetime.now())
     action_session = action_session_for_run(datetime.now())
 
     # 6. Build contexts
