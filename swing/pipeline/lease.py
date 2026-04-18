@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Iterator
 
 from swing.data.db import connect
 from swing.data.repos.pipeline import (
-    LeaseRevoked, find_active_run, finalize_run, insert_pipeline_run,
+    LeaseRevoked, find_active_run, finalize_run, find_run, insert_pipeline_run,
     update_heartbeat, update_status_columns, update_step,
 )
 
@@ -75,6 +77,57 @@ class Lease:
                     state=state, finished_ts=_now_iso(),
                     error_message=error_message, warnings_json=warnings_json,
                 )
+        finally:
+            conn.close()
+
+    def verify_held(self) -> None:
+        """Preflight check: re-read pipeline_runs and raise LeaseRevoked if our
+        token no longer matches a 'running' row. Cheap fail-fast; the
+        authoritative protection for write transactions is `fenced_write`."""
+        conn = connect(self.db_path)
+        try:
+            run = find_run(conn, self.run_id)
+        finally:
+            conn.close()
+        if run is None or run.lease_token != self.token or run.state != "running":
+            raise LeaseRevoked(
+                f"lease revoked for run_id={self.run_id} "
+                f"(state={run.state if run else 'missing'})"
+            )
+
+    @contextmanager
+    def fenced_write(self) -> Iterator[sqlite3.Connection]:
+        """Yield a connection inside a BEGIN IMMEDIATE transaction whose lease
+        is verified in the SAME transaction as the subsequent writes. This is
+        the authoritative atomic fencing for canonical DB mutations outside of
+        the `pipeline_runs` table (candidates, watchlist, recommendations,
+        weather_runs). If a concurrent `force_clear` committed before us, our
+        SELECT sees `state != 'running'` and we ROLLBACK + raise LeaseRevoked.
+        If a concurrent `force_clear` tries after we hold the RESERVED lock,
+        it waits until we COMMIT; our writes land atomically then force_clear
+        proceeds. Callers must do all their writes inside the `with` block;
+        COMMIT happens automatically on clean exit, ROLLBACK on exception."""
+        conn = connect(self.db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT state, lease_token FROM pipeline_runs WHERE id = ?",
+                    (self.run_id,),
+                ).fetchone()
+                if row is None or row[0] != "running" or row[1] != self.token:
+                    conn.execute("ROLLBACK")
+                    raise LeaseRevoked(
+                        f"lease revoked mid-txn for run_id={self.run_id} "
+                        f"(state={row[0] if row else 'missing'})"
+                    )
+                yield conn
+                conn.execute("COMMIT")
+            except LeaseRevoked:
+                raise
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
         finally:
             conn.close()
 

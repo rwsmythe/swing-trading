@@ -11,7 +11,7 @@ from swing.config import Config
 from swing.data.db import connect
 from swing.data.models import Candidate, EvaluationRun
 from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
-from swing.data.repos.pipeline import LeaseRevoked, find_run
+from swing.data.repos.pipeline import LeaseRevoked
 from swing.data.repos.recommendations import upsert_recommendation
 from swing.data.repos.trades import list_open_trades, list_all_exits
 from swing.data.repos.cash import list_cash
@@ -55,24 +55,6 @@ def _b64_chart(path: Path | None) -> str | None:
     return "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
 
 
-def _verify_lease_still_held(cfg: Config, lease: Lease) -> None:
-    """Re-read pipeline_runs for this run; raise LeaseRevoked if our token is no
-    longer bound to a 'running' row. Tightens the fencing window around DB-write
-    batches in non-pipeline_runs tables (adversarial review Batch 4 Round 1
-    Critical 1). Lease-bound pipeline_runs mutations (lease.step/status/release)
-    already fence at repo level; this helper extends the protection to
-    candidates/watchlist/recommendations batches that use repos without a
-    lease_token parameter."""
-    conn = connect(cfg.paths.db_path)
-    try:
-        run = find_run(conn, lease.run_id)
-    finally:
-        conn.close()
-    if run is None or run.lease_token != lease.token or run.state != "running":
-        raise LeaseRevoked(
-            f"lease revoked mid-run for run_id={lease.run_id} "
-            f"(state={run.state if run else 'missing'})"
-        )
 
 
 def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
@@ -140,26 +122,54 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
             return RunResult(run_id=lease.run_id, state="failed", error_message=msg)
 
         # Record the selected CSV path on the pipeline_runs row, lease-fenced.
+        # Zero-row UPDATE means the lease was revoked between acquire and now;
+        # raise explicitly rather than silently proceeding (adversarial review
+        # Batch 4 Round 2 Major 1).
         conn = connect(cfg.paths.db_path)
         try:
-            conn.execute(
+            cur = conn.execute(
                 "UPDATE pipeline_runs SET finviz_csv_path = ? "
                 "WHERE id = ? AND lease_token = ? AND state = 'running'",
                 (str(csv_path), lease.run_id, lease.token),
             )
             conn.commit()
+            if cur.rowcount == 0:
+                raise LeaseRevoked(
+                    f"lease revoked before finviz_csv_path update "
+                    f"for run_id={lease.run_id}"
+                )
         finally:
             conn.close()
 
         try:
             lease.step("weather")
             try:
-                from swing.weather.runner import run_weather
-                run_weather(
-                    db_path=cfg.paths.db_path, fetcher=fetcher,
-                    ticker=cfg.rs.benchmark_ticker, as_of_date=None,
-                    run_ts=_dt.now().isoformat(timespec="seconds"),
+                from swing.weather.classifier import classify_weather
+                from swing.data.models import WeatherRun
+                from swing.data.repos.weather import upsert_weather_run
+                ohlcv = fetcher.get(
+                    cfg.rs.benchmark_ticker, lookback_days=180, as_of_date=None,
                 )
+                classification = classify_weather(ohlcv)
+                # Lease-fenced write: BEGIN IMMEDIATE + in-txn lease check +
+                # upsert + COMMIT. A concurrent force_clear either commits
+                # before us (we ROLLBACK) or waits behind our RESERVED lock
+                # (our write lands atomically then force_clear proceeds).
+                with lease.fenced_write() as conn:
+                    upsert_weather_run(conn, WeatherRun(
+                        id=None,
+                        run_ts=_dt.now().isoformat(timespec="seconds"),
+                        asof_date=classification.asof_date,
+                        ticker=cfg.rs.benchmark_ticker,
+                        status=classification.status,
+                        close=classification.close,
+                        sma10=classification.sma10,
+                        sma20=classification.sma20,
+                        sma50=classification.sma50,
+                        slope20_5bar=classification.slope20_5bar,
+                        slope10_5bar=classification.slope10_5bar,
+                        rationale=classification.rationale,
+                    ))
                 lease.status(weather_status="ok")
             except LeaseRevoked:
                 raise
@@ -271,7 +281,7 @@ def _step_evaluate(
     *, cfg, fetcher, csv_path: Path, universe, universe_hash: str,
     run_now: _dt, action_session: _date, lease: Lease,
 ) -> int:
-    _verify_lease_still_held(cfg, lease)
+    lease.verify_held()
     import pandas as pd
     finviz_df = pd.read_csv(csv_path)
     if "Ticker" not in finviz_df.columns:
@@ -370,7 +380,6 @@ def _step_evaluate(
             pattern_tag=None, notes="OHLCV fetch failed", criteria=(),
         ))
 
-    conn = connect(cfg.paths.db_path)
     run = EvaluationRun(
         id=None, run_ts=run_now.isoformat(timespec="seconds"),
         data_asof_date=data_asof.isoformat(),
@@ -383,79 +392,83 @@ def _step_evaluate(
         excluded_count=len(excluded_tickers), error_count=len(error_tickers),
         rs_universe_version=universe.version, rs_universe_hash=universe_hash,
     )
-    try:
-        with conn:
-            run_id = insert_evaluation_run(conn, run)
-            insert_candidates(conn, run_id, candidates)
-    finally:
-        conn.close()
+    with lease.fenced_write() as conn:
+        run_id = insert_evaluation_run(conn, run)
+        insert_candidates(conn, run_id, candidates)
     return run_id
 
 
 def _step_watchlist(
     *, cfg, eval_run_id: int, data_asof_date: str, lease: Lease,
 ) -> None:
-    _verify_lease_still_held(cfg, lease)
     from swing.data.repos.candidates import fetch_candidates_for_run
-    conn = connect(cfg.paths.db_path)
+    # Read phase (no fence — reading is idempotent).
+    read_conn = connect(cfg.paths.db_path)
     try:
-        prior = list_active_watchlist(conn)
-        candidates = fetch_candidates_for_run(conn, eval_run_id)
-        delta = compute_watchlist_changes(
-            prior=prior, today_candidates=candidates,
-            data_asof_date=data_asof_date,
-        )
-        with conn:
-            for entry in delta.adds:
-                upsert_watchlist_entry(conn, entry)
-            for entry in delta.requalifies:
-                upsert_watchlist_entry(conn, entry)
-            for entry in delta.streak_increments:
-                upsert_watchlist_entry(conn, entry)
-            for archive in delta.removes:
-                archive_watchlist_entry(conn, archive)
+        prior = list_active_watchlist(read_conn)
+        candidates = fetch_candidates_for_run(read_conn, eval_run_id)
     finally:
-        conn.close()
+        read_conn.close()
+    delta = compute_watchlist_changes(
+        prior=prior, today_candidates=candidates,
+        data_asof_date=data_asof_date,
+    )
+    # Write phase (lease-fenced — atomic with lease verification).
+    with lease.fenced_write() as conn:
+        for entry in delta.adds:
+            upsert_watchlist_entry(conn, entry)
+        for entry in delta.requalifies:
+            upsert_watchlist_entry(conn, entry)
+        for entry in delta.streak_increments:
+            upsert_watchlist_entry(conn, entry)
+        for archive in delta.removes:
+            archive_watchlist_entry(conn, archive)
 
 
 def _step_recommendations(*, cfg, eval_run_id: int,
                            action_session, data_asof: str, lease: Lease) -> None:
-    _verify_lease_still_held(cfg, lease)
     from swing.data.repos.candidates import fetch_candidates_for_run
-    conn = connect(cfg.paths.db_path)
+    # Read phase (no fence).
+    read_conn = connect(cfg.paths.db_path)
     try:
-        candidates = fetch_candidates_for_run(conn, eval_run_id)
-        watchlist = list_active_watchlist(conn)
+        candidates = fetch_candidates_for_run(read_conn, eval_run_id)
+        watchlist = list_active_watchlist(read_conn)
         equity = current_equity(
             starting_equity=cfg.account.starting_equity,
-            exits=list_all_exits(conn), cash_movements=list_cash(conn),
+            exits=list_all_exits(read_conn), cash_movements=list_cash(read_conn),
         )
-        sized_eq = sizing_equity(real_equity=equity, floor=cfg.account.risk_equity_floor)
-        ctx = BuildContext(
-            evaluation_run_id=eval_run_id, data_asof_date=data_asof,
-            action_session_date=action_session.isoformat(),
-            current_equity=sized_eq,
-            max_risk_pct=cfg.risk.max_risk_pct,
-            position_pct_cap=cfg.sizing.position_pct_cap,
-            near_trigger_above_pct=cfg.near_trigger.above_pct,
-            near_trigger_below_pct=cfg.near_trigger.below_pct,
-        )
-        recs = build_recommendations(
-            ctx=ctx,
-            today_aplus=[c for c in candidates if c.bucket == "aplus"],
-            prior_watchlist=watchlist,
-        )
-        with conn:
-            for r in recs:
-                upsert_recommendation(conn, r)
     finally:
-        conn.close()
+        read_conn.close()
+    sized_eq = sizing_equity(real_equity=equity, floor=cfg.account.risk_equity_floor)
+    ctx = BuildContext(
+        evaluation_run_id=eval_run_id, data_asof_date=data_asof,
+        action_session_date=action_session.isoformat(),
+        current_equity=sized_eq,
+        max_risk_pct=cfg.risk.max_risk_pct,
+        position_pct_cap=cfg.sizing.position_pct_cap,
+        near_trigger_above_pct=cfg.near_trigger.above_pct,
+        near_trigger_below_pct=cfg.near_trigger.below_pct,
+    )
+    recs = build_recommendations(
+        ctx=ctx,
+        today_aplus=[c for c in candidates if c.bucket == "aplus"],
+        prior_watchlist=watchlist,
+    )
+    # Write phase (lease-fenced).
+    with lease.fenced_write() as conn:
+        for r in recs:
+            upsert_recommendation(conn, r)
 
 
 def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
                   fetcher: PriceFetcher) -> dict[str, Path]:
-    """Render charts for A+ + top-N near-trigger watchlist via staging."""
-    _verify_lease_still_held(cfg, lease)
+    """Render charts for A+ + top-N near-trigger watchlist via staging.
+
+    Writes go through `promote_staging`, which re-reads pipeline_runs in-line
+    and raises `LeaseRevoked` if the lease has been force-cleared before the
+    canonical rename. `verify_held()` is a cheap fail-fast so we don't render
+    a staging dir's worth of charts only to discard them at promote time."""
+    lease.verify_held()
     from swing.data.repos.candidates import fetch_candidates_for_run
     conn = connect(cfg.paths.db_path)
     try:
@@ -498,7 +511,7 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
 
 def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
                   data_asof: str, chart_paths: dict[str, Path]) -> None:
-    _verify_lease_still_held(cfg, lease)
+    lease.verify_held()
     from swing.data.repos.candidates import fetch_candidates_for_run
     from swing.data.repos.recommendations import list_for_session
     conn = connect(cfg.paths.db_path)

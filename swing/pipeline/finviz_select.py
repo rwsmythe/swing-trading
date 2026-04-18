@@ -62,13 +62,22 @@ def select_csv(inbox_dir: Path) -> Path:
     max_key = keyed[0][1]
     tied_at_max = [f for f, k in keyed if k == max_key]
 
-    # Ambiguity is only meaningful when multiple DATED files share the winning
-    # date — two undated files coincidentally tying on mtime resolve by
-    # stable-sort order (still deterministic given a stable directory listing).
-    dated_at_max = [f for f in tied_at_max if _parse_filename_date(f.name) is not None]
-    if len(dated_at_max) > 1:
-        d = _parse_filename_date(dated_at_max[0].name)
+    # Any tie at the winning key is ambiguous — the selector never silently
+    # picks among equally-ranked candidates. Covers: two dated files with the
+    # same filename date, two undated files with identical mtimes, and the
+    # mixed case where an undated file's mtime coincides with a dated file's
+    # noon-timestamp (adversarial review Batch 4 Round 2 Major 2). Filesystem
+    # enumeration order must never determine the run's input.
+    if len(tied_at_max) > 1:
+        dated_tied = [f for f in tied_at_max if _parse_filename_date(f.name) is not None]
+        if len(dated_tied) > 1:
+            d = _parse_filename_date(dated_tied[0].name)
+            raise AmbiguousInboxError(
+                f"Multiple files for date {d}: {sorted(f.name for f in dated_tied)}"
+            )
         raise AmbiguousInboxError(
-            f"Multiple files for date {d}: {sorted(f.name for f in dated_at_max)}"
+            f"Multiple files tie at the highest selection key "
+            f"(dated+undated or multiple undated with identical mtime): "
+            f"{sorted(f.name for f in tied_at_max)}"
         )
     return tied_at_max[0]
