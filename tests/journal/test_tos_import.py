@@ -293,6 +293,106 @@ def test_reconcile_second_matching_close_falls_through_to_live_allocation(tmp_pa
     assert len(report.unmatched_close_fills) == 0
 
 
+def test_reconcile_ignores_correction_closed_trades_for_open_matching(tmp_path: Path):
+    """Adversarial review Batch 3 Round 6 Major 1: a trade that was closed via
+    the preflight repair path (UPDATE status='closed' + trade_events.note with
+    json_extract payload_json $.correction IS NOT NULL) must NOT absorb real
+    TOS OPEN fills as already_reconciled — no real fill ever occurred for that
+    row."""
+    from swing.data.db import ensure_schema
+    import sqlite3
+
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+    conn = sqlite3.connect(db)
+    try:
+        # Simulate an erroneous row repaired via the preflight guidance:
+        # status='closed' + paired correction note, one transaction.
+        with conn:
+            conn.execute(
+                """INSERT INTO trades (ticker, entry_date, entry_price, initial_shares,
+                   initial_stop, current_stop, status, watchlist_entry_target,
+                   watchlist_initial_stop, notes)
+                   VALUES ('AAPL', '2026-04-15', 180.0, 5, 170.0, 170.0, 'closed',
+                           NULL, NULL, NULL)"""
+            )
+            trade_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.execute(
+                """INSERT INTO trade_events (trade_id, ts, event_type, payload_json)
+                   VALUES (?, ?, 'note',
+                   json_object('correction', 'erroneous duplicate'))""",
+                (trade_id, "2026-04-18T10:00:00"),
+            )
+    finally:
+        conn.close()
+
+    # TOS carries only the OPEN side — fixture's "AAPL 2026-04-15 $180 x 5sh"
+    # which would normally land in already_reconciled against a legitimately
+    # closed trade but must NOT be absorbed by the corrected one.
+    tos_text = (
+        "Cash Balance\n\n"
+        "DATE,TIME,TYPE,REF #,DESCRIPTION,AMOUNT,BALANCE\n\n"
+        "Account Trade History\n\n"
+        "Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,PRICE,Net Price,Order Type,DATE,TIME\n"
+        "STOCK,BUY,5,TO OPEN,AAPL,--,--,--,$180.00,--,LMT,2026-04-15,09:30:00\n"
+    )
+    report = reconcile_tos(db_path=db, tos_text=tos_text)
+    assert len(report.already_reconciled_fills) == 0
+    assert len(report.unmatched_open_fills) == 1
+
+
+def test_reconcile_claim_order_is_deterministic_across_csv_ordering(tmp_path: Path):
+    """Adversarial review Batch 3 Round 6 Major 2: claim tracking must not be
+    sensitive to CSV row ordering. The morning CLOSE (11:30) must claim the
+    historical exit regardless of whether the afternoon row (14:30) appears
+    first in the TOS export — reconcile_tos sorts fills by (date, time) before
+    processing."""
+    from swing.data.db import ensure_schema
+    from swing.trades.entry import EntryRequest, record_entry
+    from swing.trades.exit import ExitReason, ExitRequest, record_exit
+
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+    import sqlite3
+    conn = sqlite3.connect(db)
+    try:
+        tid = record_entry(conn, EntryRequest(
+            ticker="AAPL", entry_date="2026-04-17", entry_price=180.0,
+            shares=5, initial_stop=170.0, watchlist_entry_target=None,
+            watchlist_initial_stop=None, notes=None, rationale="am",
+            event_ts="2026-04-17T09:45:00",
+        ), soft_warn=10, hard_cap=10, force=False).trade_id
+        record_exit(conn, ExitRequest(
+            trade_id=tid, exit_date="2026-04-17", exit_price=182.0,
+            shares=5, reason=ExitReason.TARGET, notes=None,
+            rationale="am-close", event_ts="2026-04-17T11:30:00",
+        ))
+        record_entry(conn, EntryRequest(
+            ticker="AAPL", entry_date="2026-04-17", entry_price=181.0,
+            shares=10, initial_stop=171.0, watchlist_entry_target=None,
+            watchlist_initial_stop=None, notes=None, rationale="pm",
+            event_ts="2026-04-17T14:00:00",
+        ), soft_warn=10, hard_cap=10, force=False)
+    finally:
+        conn.close()
+
+    # CSV intentionally reverses chronological order (14:30 row before 11:30).
+    # After (date, time) sort, the 11:30 row processes first and claims the
+    # historical exit; the 14:30 row falls through to live allocation.
+    tos_text = (
+        "Cash Balance\n\n"
+        "DATE,TIME,TYPE,REF #,DESCRIPTION,AMOUNT,BALANCE\n\n"
+        "Account Trade History\n\n"
+        "Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,PRICE,Net Price,Order Type,DATE,TIME\n"
+        "STOCK,SELL,5,TO CLOSE,AAPL,--,--,--,$182.00,--,LMT,2026-04-17,14:30:00\n"
+        "STOCK,SELL,5,TO CLOSE,AAPL,--,--,--,$182.00,--,LMT,2026-04-17,11:30:00\n"
+    )
+    report = reconcile_tos(db_path=db, tos_text=tos_text)
+    assert len(report.already_reconciled_fills) == 1
+    assert len(report.matched_fills) == 1
+    assert len(report.unmatched_close_fills) == 0
+
+
 def test_reconcile_does_not_swallow_fill_that_matches_current_open_lot(tmp_path: Path):
     """Adversarial review Batch 3 Round 3 Major 2: _matches_recorded_exit must
     not over-classify a CLOSE fill as already_reconciled when the recorded exit

@@ -36,6 +36,11 @@ class TosFill:
     ticker: str
     qty: int
     price: float
+    # TOS statements carry a fill time per row. Keeping it lets reconcile_tos
+    # sort fills by (date, time) before claim-tracking so attribution is
+    # deterministic regardless of CSV row order (adversarial review Batch 3
+    # Round 6 Major 2). Empty string when the export omits the TIME column.
+    time: str = ""
 
 
 @dataclass(frozen=True)
@@ -142,11 +147,12 @@ def extract_stock_fills(rows: Iterable[dict]) -> list[TosFill]:
             continue
         price = _parse_tos_amount(row.get("Price") or row.get("PRICE") or "")
         date_str = (row.get("Date") or row.get("DATE") or "").strip()
+        time_str = (row.get("Time") or row.get("TIME") or "").strip()
         if qty <= 0 or not date_str:
             continue
         out.append(TosFill(
             date=date_str, side=side, open_close=oc,
-            ticker=ticker, qty=qty, price=price,
+            ticker=ticker, qty=qty, price=price, time=time_str,
         ))
     return out
 
@@ -159,7 +165,12 @@ def reconcile_tos(
     fills_rows = sections.get("Account Trade History", [])
 
     cash_candidates = extract_cash_movements(cash_rows)
-    fills = extract_stock_fills(fills_rows)
+    # Sort fills by (date, time) so claim-tracking is deterministic across
+    # CSV row orderings: a TOS export where the afternoon row appears before
+    # the morning row must still attribute the morning CLOSE to the morning
+    # exit (adversarial review Batch 3 Round 6 Major 2). Stable sort preserves
+    # original order when time strings tie.
+    fills = sorted(extract_stock_fills(fills_rows), key=lambda f: (f.date, f.time))
 
     report = ReconciliationReport()
     conn = connect(db_path)
@@ -240,12 +251,24 @@ def _matches_closed_trade(
     conn, *, ticker: str, date: str, qty: int, price: float,
     side: str, price_tolerance: float,
 ) -> bool:
-    """True if a closed trade exists matching (ticker, entry_date, qty, entry_price±tolerance)
-    — i.e., an OPEN fill already reconciled in the journal before the trade closed out."""
+    """True if a CLOSED trade exists matching (ticker, entry_date, qty, entry_price±tolerance)
+    — i.e., an OPEN fill already reconciled in the journal before the trade closed out.
+
+    Trades closed via the migration-0004 "erroneous INSERT" repair carry a
+    trade_events note with a `correction` marker. Those synthetic closures
+    represent trades that NEVER actually occurred, so they must not absorb
+    real TOS OPEN fills as already-reconciled (adversarial review Batch 3
+    Round 6 Major 1). Any closed trade with a correction note is excluded."""
     rows = conn.execute(
         """
-        SELECT entry_price FROM trades
-        WHERE ticker=? AND entry_date=? AND initial_shares=? AND status='closed'
+        SELECT t.entry_price FROM trades t
+        WHERE t.ticker=? AND t.entry_date=? AND t.initial_shares=? AND t.status='closed'
+          AND NOT EXISTS (
+            SELECT 1 FROM trade_events te
+            WHERE te.trade_id = t.id
+              AND te.event_type = 'note'
+              AND json_extract(te.payload_json, '$.correction') IS NOT NULL
+          )
         """,
         (ticker, date, qty),
     ).fetchall()
@@ -270,7 +293,13 @@ def _find_unclaimed_recorded_exit(
     sql = (
         "SELECT e.id, e.exit_price FROM exits e "
         "JOIN trades t ON t.id = e.trade_id "
-        "WHERE t.ticker=? AND e.exit_date=? AND e.shares=? AND t.status='closed'"
+        "WHERE t.ticker=? AND e.exit_date=? AND e.shares=? AND t.status='closed' "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM trade_events te "
+        "  WHERE te.trade_id = t.id "
+        "    AND te.event_type = 'note' "
+        "    AND json_extract(te.payload_json, '$.correction') IS NOT NULL"
+        ")"
     )
     params: list = [ticker, date, qty]
     if on_or_before_date is not None:
