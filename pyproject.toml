@@ -23,6 +23,7 @@ dev = [
     "pytest-cov>=5",
     "ruff>=0.5",
 ]
+charts = ["mplfinance>=0.12"]
 
 [project.scripts]
 swing = "swing.cli:main"
