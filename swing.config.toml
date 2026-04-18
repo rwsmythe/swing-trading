@@ -1,0 +1,65 @@
+# Swing trading config — see docs/superpowers/specs/ for rationale.
+# User-editable. Schema loaded by swing.config.load().
+
+[paths]
+# DB lives OUTSIDE the Drive folder (see spec §2.4). Defaults to a local swing-data/ folder.
+# Can be an absolute path; otherwise relative to $USERPROFILE (Windows) or $HOME.
+db_path = "swing-data/swing.db"
+data_dir = "swing-data"
+logs_dir = "swing-data/logs"
+charts_dir = "swing-data/charts"
+backups_dir = "swing-data/backups"
+prices_cache_dir = "swing-data/prices-cache"
+
+# Paths INSIDE the project folder (these are the only things the Drive folder holds that the app writes)
+finviz_inbox_dir = "data/finviz-inbox"
+exports_dir = "exports"
+rs_universe_path = "reference/rs-universe.csv"
+
+[account]
+starting_equity = 1200.0
+starting_date = "2026-03-16"
+risk_equity_floor = 7500.0
+
+[position_limits]
+soft_warn_open = 4
+hard_cap_open = 6
+
+[risk]
+# Max risk per trade as fraction of equity
+max_risk_pct = 0.005
+
+[vcp]
+prior_trend_min_pct = 25.0
+adr_min_pct = 4.0
+pullback_max_pct = 25.0
+proximity_max_pct = 5.0       # |price - 20MA| <= N% of 20MA
+tightness_days_required = 2
+tightness_range_factor = 0.67 # daily range <= factor * ADR
+orderliness_max_bar_ratio = 3.0
+orderliness_max_range_cv = 0.60
+
+[trend_template]
+min_passes = 7                # of 8 TT checks; below this = skip bucket
+allowed_miss_names = ["TT8"]  # TT8 (RS) is the default acceptable miss
+rising_ma_period_days = 21    # for TT3 (200MA trending up >= 21 trading days)
+high_52w_margin_pct = 25.0    # TT7
+low_52w_min_pct = 30.0        # TT6
+
+[rs]
+horizon_weeks = 12
+benchmark_ticker = "SPY"
+rs_rank_min_pass = 70         # TT8 threshold
+# Fallback for tickers not in universe: +/- N% excess vs SPY triggers pass/fail
+fallback_extreme_pct = 20.0
+
+[etf_exclusion]
+exclude_etfs = true
+manual_block = ["UCO"]
+manual_allow = []
+
+[focus_ranking]
+# Composite weights: closeness to pivot 50%, ADR 25%, prior trend 25%
+closeness_to_pivot = 0.50
+adr = 0.25
+prior_trend = 0.25
