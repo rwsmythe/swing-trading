@@ -683,5 +683,24 @@ def pipeline_force_clear_cmd(ctx, run_id, reason, bypass_staleness_check):
     click.echo(f"Run {run_id} force-cleared.")
 
 
+@main.group("rs-universe")
+def rs_universe_group() -> None:
+    """RS reference universe management."""
+
+
+@rs_universe_group.command("refresh")
+@click.option("--source", default="spx_ndx",
+              help="Source identifier (default: spx_ndx = SPX + NASDAQ-100)")
+@click.pass_context
+def rs_universe_refresh_cmd(ctx, source):
+    """Regenerate the RS reference universe from source. Snapshots the prior file."""
+    from swing.evaluation.rs_refresh import refresh_rs_universe
+    cfg = ctx.obj["config"]
+    new_version = refresh_rs_universe(dest=cfg.paths.rs_universe_path, source=source)
+    click.echo(f"RS universe refreshed: version {new_version}")
+    click.echo(f"  Path: {cfg.paths.rs_universe_path}")
+    click.echo(f"  Prior snapshot saved alongside")
+
+
 if __name__ == "__main__":  # pragma: no cover
     main()
