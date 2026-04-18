@@ -229,5 +229,30 @@ def eval_cmd(ctx: click.Context, csv_path: str, as_of_date_str: str | None) -> N
     click.echo(f"Data as of: {run.data_asof_date}  Action session: {run.action_session_date}")
 
 
+@main.command("weather")
+@click.option("--ticker", default="QQQ", help="Benchmark to classify (default: QQQ)")
+@click.option("--as-of-date", "as_of_date_str", default=None,
+              help="YYYY-MM-DD - cap OHLCV to bars <= this date (parity).")
+@click.pass_context
+def weather_cmd(ctx: click.Context, ticker: str, as_of_date_str: str | None) -> None:
+    """Classify market weather and persist to weather_runs."""
+    from datetime import date as _date, datetime as _dt
+    from swing.prices import PriceFetcher
+    from swing.weather.runner import run_weather
+
+    cfg = ctx.obj["config"]
+    fetcher = PriceFetcher(cache_dir=cfg.paths.prices_cache_dir)
+    run_ts = _dt.now().isoformat(timespec="seconds")
+    as_of = _date.fromisoformat(as_of_date_str) if as_of_date_str else None
+
+    result = run_weather(
+        db_path=cfg.paths.db_path, fetcher=fetcher,
+        ticker=ticker, as_of_date=as_of, run_ts=run_ts,
+    )
+    click.echo(f"Status: {result.status}  Close: ${result.close:.2f}  "
+               f"20MA slope: {result.slope20_5bar:+.2f}%/5b")
+    click.echo(result.rationale)
+
+
 if __name__ == "__main__":  # pragma: no cover
     main()
