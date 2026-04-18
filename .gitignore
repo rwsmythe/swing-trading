@@ -9,7 +9,7 @@ venv/
 
 # Swing app data (lives outside Drive folder, but cover stray files)
 swing-data/
-data/
+/data/
 .superpowers/
 
 # OS
