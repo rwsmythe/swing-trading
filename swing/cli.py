@@ -435,5 +435,137 @@ def trade_advisory_cmd(ctx, trade_id, current_price, sma10, sma20, weather, as_o
         click.echo(f"  [{s.rule}] {s.message}")
 
 
+@main.group("journal")
+def journal_group() -> None:
+    """Review stats + record cash movements."""
+
+
+@journal_group.command("review")
+@click.option("--period", type=click.Choice(["week", "month", "quarter", "ytd", "all"]),
+              default="all")
+@click.option("--today", default=None, help="YYYY-MM-DD; defaults to today")
+@click.pass_context
+def journal_review_cmd(ctx, period, today):
+    """Compute and print journal stats + behavioral flags."""
+    from datetime import date as _date
+    from swing.data.db import connect
+    from swing.data.repos.cash import list_cash
+    from swing.data.repos.trades import list_closed_trades, list_open_trades, list_all_exits
+    from swing.journal.flags import compute_flags
+    from swing.journal.stats import compute_stats, period_filter
+
+    cfg = ctx.obj["config"]
+    today = today or _date.today().isoformat()
+    conn = connect(cfg.paths.db_path)
+    try:
+        all_trades = list_open_trades(conn) + list_closed_trades(conn)
+        all_exits = list_all_exits(conn)
+        cash = list_cash(conn)
+        weather_rows = conn.execute(
+            "SELECT id, run_ts, asof_date, ticker, status, close, sma10, sma20, sma50, "
+            "slope20_5bar, slope10_5bar, rationale FROM weather_runs"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    from swing.data.models import WeatherRun
+    weather_runs = [WeatherRun(*row) for row in weather_rows]
+    filtered = period_filter(all_trades, all_exits, period=period, today=today)
+    stats = compute_stats(trades=filtered, exits=all_exits, cash_movements=cash)
+    flags = compute_flags(trades=filtered, exits=all_exits, weather_runs=weather_runs)
+
+    click.echo(f"=== Journal Review ({period}) \u2014 {today} ===")
+    click.echo(f"{stats.n_trades} trades \u00b7 {stats.n_wins}W / {stats.n_losses}L")
+    click.echo(f"Win rate {stats.win_rate*100:.1f}%  Expectancy {stats.expectancy_r:+.2f}R")
+    click.echo(f"Avg win {stats.avg_win_r:+.2f}R \u00b7 avg loss {stats.avg_loss_r:+.2f}R")
+    click.echo(f"Total {stats.total_r:+.2f}R \u00b7 ${stats.total_pnl:+.2f}")
+    click.echo(f"Streak: {stats.current_streak}{stats.current_streak_kind}")
+    if flags:
+        click.echo("\nBehavioral flags:")
+        for f in flags:
+            click.echo(f"  \u2022 {f.title} \u2014 {f.detail}")
+
+
+@journal_group.command("cash")
+@click.option("--deposit", "deposit", type=float, default=None)
+@click.option("--withdraw", "withdraw", type=float, default=None)
+@click.option("--date", "date_str", required=True, help="YYYY-MM-DD")
+@click.option("--ref", default=None)
+@click.option("--note", default=None)
+@click.pass_context
+def journal_cash_cmd(ctx, deposit, withdraw, date_str, ref, note):
+    """Log a cash movement."""
+    from swing.data.db import connect
+    from swing.data.models import CashMovement
+    from swing.data.repos.cash import insert_cash
+
+    if (deposit is None) == (withdraw is None):
+        raise click.ClickException("Specify exactly one of --deposit or --withdraw")
+    kind = "deposit" if deposit is not None else "withdraw"
+    amount = deposit if deposit is not None else withdraw
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            cid = insert_cash(conn, CashMovement(
+                id=None, date=date_str, kind=kind, amount=amount, ref=ref, note=note,
+            ))
+    finally:
+        conn.close()
+    click.echo(f"Cash {kind} #{cid}: ${amount:.2f}{f' ref={ref}' if ref else ''}")
+
+
+@main.command("tos-import")
+@click.option("--csv", "csv_path", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option("--dry-run", is_flag=True, help="Print report without committing anything")
+@click.option("--auto-confirm", is_flag=True, help="Commit new cash movements without prompting")
+@click.pass_context
+def tos_import_cmd(ctx, csv_path, dry_run, auto_confirm):
+    """Reconcile a TOS Account Statement CSV against the journal."""
+    from pathlib import Path as _Path
+    from swing.data.db import connect
+    from swing.data.repos.cash import insert_cash
+    from swing.journal.tos_import import reconcile_tos
+
+    cfg = ctx.obj["config"]
+    text = _Path(csv_path).read_text(encoding="utf-8")
+    report = reconcile_tos(db_path=cfg.paths.db_path, tos_text=text)
+
+    click.echo(f"Cash: {len(report.new_cash_movements)} new, "
+               f"{len(report.duplicate_cash_movements)} duplicate")
+    for c in report.new_cash_movements:
+        click.echo(f"  + {c.kind} ${c.amount:.2f} on {c.date} (ref={c.ref})")
+    click.echo(f"Fills: matched={len(report.matched_fills)}, "
+               f"price-mismatch={len(report.price_mismatch_fills)}, "
+               f"unmatched OPEN={len(report.unmatched_open_fills)}, "
+               f"unmatched CLOSE={len(report.unmatched_close_fills)}")
+    for f in report.price_mismatch_fills:
+        click.echo(f"  ! PRICE MISMATCH: {f.ticker} {f.date} qty={f.qty} TOS=${f.price:.2f}")
+    for f in report.unmatched_open_fills:
+        click.echo(f"  ? unmatched OPEN: {f.ticker} {f.date} qty={f.qty} @ ${f.price:.2f}")
+
+    if dry_run:
+        click.echo("Dry run \u2014 no changes committed.")
+        return
+
+    if report.new_cash_movements and (auto_confirm or click.confirm(
+            f"Commit {len(report.new_cash_movements)} new cash movements?", default=True)):
+        conn = connect(cfg.paths.db_path)
+        try:
+            with conn:
+                for c in report.new_cash_movements:
+                    insert_cash(conn, c)
+        finally:
+            conn.close()
+        click.echo("Cash movements committed.")
+
+    if report.unmatched_open_fills and not auto_confirm:
+        click.echo(
+            "Unmatched OPEN fills require manual entry via `swing trade entry`. "
+            "Listing only \u2014 no auto-creation."
+        )
+
+
 if __name__ == "__main__":  # pragma: no cover
     main()
