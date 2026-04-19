@@ -1,0 +1,10 @@
+{#- swing/web/templates/partials/force_clear_success.html.j2
+    Expects: run_id (int). Renders post-force-clear banner + Run-pipeline
+    button to replace the stale-run card. Spec §3.1. -#}
+<section id="stale-run-{{ run_id }}" class="force-clear-success">
+  <div class="banner banner-info" role="status">
+    ✓ Run #{{ run_id }} force-cleared. Ready to start a new pipeline run.
+  </div>
+  <button hx-post="/pipeline/run" hx-target="#run-panel" hx-swap="innerHTML"
+          hx-headers='{"HX-Request": "true"}'>Run now</button>
+</section>

@@ -327,3 +327,67 @@ def test_get_force_clear_confirm_404_for_non_eligible(test_cfg, seeded_db, seed_
             headers={"HX-Request": "true"},
         )
     assert r.status_code == 404
+
+
+def test_post_force_clear_happy_path(test_cfg, seeded_db, seed_stale_run):
+    """POST /pipeline/force-clear/{id} on an eligible run → success fragment;
+    DB row transitions to state='force_cleared'."""
+    from swing.data.db import connect
+    from swing.data.repos.pipeline import find_run
+    run_id = seed_stale_run(hb_age=600, step_age=1200)
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/pipeline/force-clear/{run_id}",
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 200
+    assert f'id="stale-run-{run_id}"' in r.text
+    assert "Run pipeline" in r.text or "Run now" in r.text  # Run-pipeline button
+    assert "cleared" in r.text.lower()
+    # DB state verified.
+    conn = connect(cfg.paths.db_path)
+    try:
+        run = find_run(conn, run_id)
+    finally:
+        conn.close()
+    assert run is not None and run.state == "force_cleared"
+    assert "dashboard force clear" in (run.error_message or "")
+
+
+def test_post_force_clear_404_for_non_eligible(test_cfg, seeded_db, seed_stale_run):
+    """POST on a non-stale run → 404 (TOCTOU pre-check)."""
+    run_id = seed_stale_run(hb_age=30, step_age=30)  # fresh both
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/pipeline/force-clear/{run_id}",
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 404
+
+
+def test_post_force_clear_post_write_state_conflict(test_cfg, seeded_db, seed_stale_run, monkeypatch):
+    """If force_clear() is called but the run somehow didn't transition to
+    force_cleared (concurrent writer changed state to 'failed' etc.), the
+    route must return a 409 rather than silently claim success."""
+    run_id = seed_stale_run(hb_age=600, step_age=1200)
+    cfg, cfg_path = test_cfg
+
+    # Monkeypatch force_clear to be a silent no-op (simulating a concurrent
+    # writer that changed state to 'failed' between our pre-check and write).
+    monkeypatch.setattr(
+        "swing.web.routes.pipeline.force_clear",
+        lambda conn, *, run_id, error_message: None,
+    )
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/pipeline/force-clear/{run_id}",
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 409
+    assert "conflict" in r.text.lower() or "refresh" in r.text.lower()

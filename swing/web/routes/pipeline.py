@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from swing.data.db import connect
-from swing.data.repos.pipeline import find_active_run, find_run
+from swing.data.repos.pipeline import find_active_run, find_run, force_clear
 from swing.data.repos.trades import list_open_trades
 from swing.data.repos.watchlist import list_active_watchlist
 from swing.pipeline.staleness import is_stale_eligible
@@ -195,6 +195,59 @@ def force_clear_confirm(request: Request, run_id: int):
         )
     return templates.TemplateResponse(
         request, "partials/force_clear_confirm.html.j2", {"run": run},
+    )
+
+
+@router.post("/pipeline/force-clear/{run_id}", response_class=HTMLResponse)
+def force_clear_post(request: Request, run_id: int):
+    """Execute force-clear after the 2-step confirm (spec §3.1, §4.2).
+
+    Pre-check: is_stale_eligible (TOCTOU guard against cancel/clear between
+    GET confirm and POST). Post-check: re-read the run and verify state
+    transitioned to 'force_cleared' (guards against a concurrent writer that
+    raced our UPDATE with a different state value — 409 fragment in that case).
+    """
+    cfg = request.app.state.cfg
+    templates = request.app.state.templates
+    iso_ts = datetime.now().isoformat(timespec="seconds")
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        run = find_run(conn, run_id)
+        if run is None or not is_stale_eligible(run, cfg):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Run #{run_id} is no longer stale-eligible — refresh the page",
+            )
+        with conn:
+            force_clear(
+                conn,
+                run_id=run_id,
+                error_message=f"dashboard force clear at {iso_ts}",
+            )
+        # Re-read to confirm the state transition landed.
+        updated = find_run(conn, run_id)
+    finally:
+        conn.close()
+
+    if updated is None or updated.state != "force_cleared":
+        # Concurrent writer raced us — state changed before our UPDATE but
+        # didn't become 'force_cleared'. Return 409 to signal the conflict.
+        return templates.TemplateResponse(
+            request, "partials/http_error_fragment.html.j2",
+            {
+                "status_code": 409,
+                "detail": (
+                    f"Run #{run_id} state conflict (currently "
+                    f"{updated.state if updated else 'missing'}). Refresh the page."
+                ),
+            },
+            status_code=409,
+        )
+
+    return templates.TemplateResponse(
+        request, "partials/force_clear_success.html.j2",
+        {"run_id": run_id},
     )
 
 
