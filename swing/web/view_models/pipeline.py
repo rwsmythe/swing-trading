@@ -23,7 +23,7 @@ class PipelineVM:
     ohlcv_source_degraded: bool = False              # NEW (Phase 3d §3.4)
 
 
-def build_pipeline(*, cfg: Config, limit: int = 10) -> PipelineVM:
+def build_pipeline(*, cfg: Config, limit: int = 10, ohlcv_degraded: bool = False) -> PipelineVM:
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
@@ -36,4 +36,5 @@ def build_pipeline(*, cfg: Config, limit: int = 10) -> PipelineVM:
         session_date=datetime.now().date().isoformat(),
         recent_runs=list(runs),
         stale_run=stale,
+        ohlcv_source_degraded=ohlcv_degraded,            # NEW (Phase 3d §3.4)
     )
