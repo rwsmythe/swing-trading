@@ -1,0 +1,20 @@
+{#- swing/web/templates/partials/csv_upload_form.html.j2
+    Optional context: uploaded_banner = {name, rows} on success; absent otherwise.
+    Submits multipart/form-data to /pipeline/csv-upload. Spec §3.1. -#}
+<section id="csv-upload-section">
+  <h2>Upload finviz CSV</h2>
+  {% if uploaded_banner %}
+    <div class="banner banner-info" role="status">
+      ✓ Uploaded: <code>{{ uploaded_banner.name }}</code>
+      ({{ uploaded_banner.rows }} rows). Run the pipeline when ready.
+    </div>
+  {% endif %}
+  <form hx-post="/pipeline/csv-upload"
+        hx-target="#csv-upload-section"
+        hx-swap="outerHTML"
+        hx-encoding="multipart/form-data"
+        hx-headers='{"HX-Request": "true"}'>
+    <input type="file" name="csv" accept=".csv" required>
+    <button type="submit">Upload</button>
+  </form>
+</section>

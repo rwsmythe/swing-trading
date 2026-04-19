@@ -104,3 +104,25 @@ def test_web_partial_override(tmp_path: Path):
     # Unspecified fields still at default
     assert cfg.web.host == "127.0.0.1"
     assert cfg.web.price_cache_ttl_seconds == 120
+
+
+def test_web_config_has_csv_upload_max_bytes_default():
+    """Phase 3c §3.1: Web.csv_upload_max_bytes defaults to 10 MB."""
+    from swing.config import Web
+    w = Web()
+    assert w.csv_upload_max_bytes == 10 * 1024 * 1024
+
+
+def test_web_config_csv_upload_max_bytes_parsed_from_toml(tmp_path: Path):
+    """Phase 3c §3.1: [web] csv_upload_max_bytes = N in TOML → cfg.web.csv_upload_max_bytes == N.
+    Follows the same two-dir pattern as existing partial-override tests in this file."""
+    project = tmp_path / "project"
+    project.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    cfg_path = _write_cfg(
+        project, home,
+        extra='[web]\ncsv_upload_max_bytes = 5242880\n',
+    )
+    cfg = load(cfg_path)
+    assert cfg.web.csv_upload_max_bytes == 5242880

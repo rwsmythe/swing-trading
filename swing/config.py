@@ -137,6 +137,7 @@ class Web:
     max_concurrent_price_fetches: int = 8
     circuit_breaker_cooldown_seconds: int = 60
     polling_interval_seconds: int = 2
+    csv_upload_max_bytes: int = 10 * 1024 * 1024
 
 
 @dataclass(frozen=True)

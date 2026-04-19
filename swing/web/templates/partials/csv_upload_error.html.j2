@@ -1,0 +1,22 @@
+{#- swing/web/templates/partials/csv_upload_error.html.j2
+    Expects: reasons (list[str]). Re-renders the upload form above a banner
+    listing validation failures. Spec §3.1. -#}
+<section id="csv-upload-section">
+  <h2>Upload finviz CSV</h2>
+  <div class="banner banner-degraded" role="alert">
+    <strong>Upload rejected.</strong>
+    <ul>
+      {% for reason in reasons %}
+        <li>{{ reason }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  <form hx-post="/pipeline/csv-upload"
+        hx-target="#csv-upload-section"
+        hx-swap="outerHTML"
+        hx-encoding="multipart/form-data"
+        hx-headers='{"HX-Request": "true"}'>
+    <input type="file" name="csv" accept=".csv" required>
+    <button type="submit">Upload</button>
+  </form>
+</section>
