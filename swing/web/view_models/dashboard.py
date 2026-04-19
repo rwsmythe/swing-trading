@@ -70,10 +70,14 @@ class DashboardVM:
     open_trade_rows: Mapping[int, object] = field(default_factory=dict)
 
 
-def build_dashboard(*, cfg: Config, cache: PriceCache, executor) -> DashboardVM:
-    """Read state + prices, return a frozen VM. `executor` may be None in
-    tests (the cache will fall back to serial `get()` behavior via the
-    monkeypatched `get_many`).
+def build_dashboard(
+    *, cfg: Config, cache: PriceCache, executor, ohlcv_cache=None,
+) -> DashboardVM:
+    """Read state + prices + OHLCV bundles, return a frozen VM.
+
+    When `ohlcv_cache=None` (transitional — wired in T14/15), the OHLCV fetch
+    is skipped and all SMA fields fall through to None, so the dashboard
+    renders without SMA advisories. `executor` may be None in tests.
     """
     from swing.web.view_models.open_positions_row import (
         OpenPositionsRowVM,
@@ -141,6 +145,14 @@ def build_dashboard(*, cfg: Config, cache: PriceCache, executor) -> DashboardVM:
         executor=executor,
     )
 
+    bundles: dict = {}
+    if ohlcv_cache is not None:
+        bundles = ohlcv_cache.get_many_bundles(
+            sorted(active_tickers),
+            deadline_seconds=cfg.web.price_fetch_deadline_seconds,
+            executor=executor,
+        )
+
     watchlist_last_prices = {w.ticker: prices[w.ticker] for w in top5 if w.ticker in prices}
 
     # Build per-row VMs via the pure assembler. No I/O here — all I/O already
@@ -157,13 +169,14 @@ def build_dashboard(*, cfg: Config, cache: PriceCache, executor) -> DashboardVM:
         )
         snap = prices.get(t.ticker)
         remaining = t.initial_shares - sum(e.shares for e in exits_by_trade.get(t.id, []))
+        bundle = bundles.get(t.ticker)        # may be None or all-None
         ctx_adv = AdvisoryContext(
             as_of_date=action_session,
             current_price=snap.price if snap else 0.0,
-            sma10=None,
-            sma20=None,
-            sma50=None,
-            previous_close=None,
+            sma10=bundle.sma10 if bundle else None,
+            sma20=bundle.sma20 if bundle else None,
+            sma50=bundle.sma50 if bundle else None,
+            previous_close=bundle.previous_close if bundle else None,
             weather_status=weather_status_str,
             config=cfg.stop_advisory,
         )
@@ -223,6 +236,9 @@ def build_dashboard(*, cfg: Config, cache: PriceCache, executor) -> DashboardVM:
         price_source_degraded=cache.is_degraded(),
         price_source_degraded_until=(
             degraded_until.isoformat(timespec="seconds") if degraded_until else None
+        ),
+        ohlcv_source_degraded=(
+            ohlcv_cache.is_degraded() if ohlcv_cache is not None else False
         ),
         open_trade_rows=open_trade_rows,
     )
