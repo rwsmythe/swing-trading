@@ -27,6 +27,7 @@ def main(ctx: click.Context, config_path: str) -> None:
     """Swing trading CLI."""
     ctx.ensure_object(dict)
     ctx.obj["config"] = load_config(Path(config_path))
+    ctx.obj["config_path"] = Path(config_path)
 
 
 @main.command("db-migrate")
@@ -700,6 +701,23 @@ def rs_universe_refresh_cmd(ctx, source):
     click.echo(f"RS universe refreshed: version {new_version}")
     click.echo(f"  Path: {cfg.paths.rs_universe_path}")
     click.echo(f"  Prior snapshot saved alongside")
+
+
+@main.command("web")
+@click.option("--host", default=None, help="Override [web].host from config")
+@click.option("--port", type=int, default=None)
+@click.option("--reload", is_flag=True, default=None, help="Enable auto-reload")
+@click.pass_context
+def web_cmd(ctx, host, port, reload):
+    """Run the dashboard on localhost."""
+    # Lazy import: do NOT hoist to module top — keeps base install working
+    # without [web] extra (invariant 12).
+    from swing.web.cli_cmd import run_server
+    run_server(
+        cfg=ctx.obj["config"],
+        cfg_path=ctx.obj.get("config_path"),
+        host=host, port=port, reload=reload,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover
