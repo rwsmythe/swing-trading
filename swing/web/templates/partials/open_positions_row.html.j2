@@ -1,0 +1,26 @@
+{#- Single open-positions row.
+    SINGLE contract: expects `row: OpenPositionsRowVM` with fields
+      trade (Trade), price_snapshot (PriceSnapshot|None),
+      remaining_shares (int), advisories (tuple[AdvisorySuggestionVM, ...]).
+    No dual-contract / legacy locals branch. All call sites MUST pass `row`.
+    Action buttons (Exit, Adjust stop) are appended in Tasks 13 and 15 as
+    their routes come online — this intermediate partial deliberately has no
+    action-button cell (R1 Major 2). -#}
+<tr id="open-position-{{ row.trade.id }}">
+  <td>{{ row.trade.ticker }}</td>
+  <td>{{ row.trade.entry_date }}</td>
+  <td>${{ '%.2f' | format(row.trade.entry_price) }}</td>
+  <td>{{ row.remaining_shares }} / {{ row.trade.initial_shares }}</td>
+  <td>${{ '%.2f' | format(row.trade.current_stop) }}</td>
+  <td>
+    {% if row.price_snapshot %}
+      ${{ '%.2f' | format(row.price_snapshot.price) }}
+      {% if row.price_snapshot.is_stale %}<span class="stale">(stale)</span>{% endif %}
+    {% else %}—{% endif %}
+  </td>
+  <td>
+    {% for s in row.advisories %}
+      <div>{{ s.message }}</div>
+    {% endfor %}
+  </td>
+</tr>

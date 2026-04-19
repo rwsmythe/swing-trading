@@ -5,27 +5,12 @@
   {% else %}
     <table>
       <thead><tr>
-        <th>Ticker</th><th>Entry</th><th>Current stop</th><th>Last</th><th>Advisory</th>
+        <th>Ticker</th><th>Entry date</th><th>Entry price</th><th>Shares</th><th>Current stop</th><th>Last</th><th>Advisory</th>
       </tr></thead>
       <tbody>
         {% for t in vm.open_trades %}
-          {% set snap = vm.open_trade_last_prices.get(t.ticker) %}
-          <tr>
-            <td>{{ t.ticker }}</td>
-            <td>${{ '%.2f' | format(t.entry_price) }}</td>
-            <td>${{ '%.2f' | format(t.current_stop) }}</td>
-            <td>
-              {% if snap %}
-                ${{ '%.2f' | format(snap.price) }}
-                {% if snap.is_stale %}<span class="stale">(stale)</span>{% endif %}
-              {% else %}—{% endif %}
-            </td>
-            <td>
-              {% for s in vm.open_trade_advisories.get(t.id, []) %}
-                <div>{{ s.message }}</div>
-              {% endfor %}
-            </td>
-          </tr>
+          {% set row = vm.open_trade_rows[t.id] %}
+          {% include "partials/open_positions_row.html.j2" %}
         {% endfor %}
       </tbody>
     </table>
