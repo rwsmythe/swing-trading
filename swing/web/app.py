@@ -16,6 +16,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from swing.config import Config
+from swing.web.middleware.body_size import MaxBodySizeMiddleware
 from swing.web.middleware.origin_guard import OriginGuardMiddleware
 from swing.web.middleware.request_id import (
     RequestIdMiddleware,
@@ -114,6 +115,15 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
     app.state.templates_dir = _templates_dir()
     app.state.templates = _build_templates(app.state.templates_dir)
 
+    # Body-size guard FIRST (innermost on request path) — runs AFTER OriginGuard
+    # on the request path because Starlette middleware is LIFO (earlier
+    # add_middleware = more-inner = runs AFTER the outer middleware). This
+    # preserves OriginGuard's 403-before-413 contract for strict mode.
+    app.add_middleware(
+        MaxBodySizeMiddleware,
+        path_prefix="/pipeline/csv-upload",
+        max_bytes=cfg.web.csv_upload_max_bytes,
+    )
     # Origin guard for all state-changing requests.
     app.add_middleware(
         OriginGuardMiddleware,
