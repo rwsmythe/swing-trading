@@ -66,6 +66,9 @@ class PriceCache:
             return None
         with self._lock:
             self._cache[ticker] = (snap, now)
+        # Evaluate breaker OUTSIDE the lock — _maybe_trip_breaker acquires
+        # self._lock itself, so calling it inside would deadlock.
+        self._maybe_trip_breaker()
         return snap
 
     def clear(self) -> None:
@@ -81,6 +84,8 @@ class PriceCache:
     # ---------- internals (single-ticker) ----------
 
     def _fetch_with_fallback(self, ticker: str) -> PriceSnapshot | None:
+        if self.is_degraded():
+            return self._fallback_snapshot(ticker)
         if not self.market_hours_now():
             last = self._last_close(ticker)
             if last is None:
@@ -177,14 +182,155 @@ class PriceCache:
             conn.close()
         return float(row[0]) if row else None
 
-    # ---------- circuit breaker (wired in Task 6) ----------
+    # ---------- circuit breaker ----------
 
     def _record_outcome(self, *, success: bool) -> None:
-        """Update the failure window + degraded flag atomically. Called
-        after every real fetch attempt. Live-only: last-close fallbacks
-        don't count as either success or failure."""
+        """Update the failure window atomically. Called after every real
+        fetch attempt. Live-only: last-close fallbacks don't count as
+        either success or failure."""
         with self._lock:
             self._failure_window.append(not success)  # True = failure
+
+    def is_degraded(self) -> bool:
+        with self._lock:
+            return self._degraded_until is not None and time.monotonic() < self._degraded_until
+
+    def degraded_until(self) -> datetime | None:
+        with self._lock:
+            if self._degraded_until is None:
+                return None
+            if time.monotonic() >= self._degraded_until:
+                return None
+            remaining = self._degraded_until - time.monotonic()
+            return datetime.fromtimestamp(time.time() + remaining)
+
+    def _maybe_trip_breaker(self) -> None:
+        """Enter degraded mode if failure fraction in window > 0.5."""
+        with self._lock:
+            if not self._failure_window:
+                return
+            failures = sum(1 for x in self._failure_window if x)
+            if failures / len(self._failure_window) > 0.5:
+                cooldown = self._cfg.web.circuit_breaker_cooldown_seconds
+                self._degraded_until = time.monotonic() + cooldown
+                log.warning(
+                    "price cache entered degraded mode for %ss (failures=%d/%d)",
+                    cooldown, failures, len(self._failure_window),
+                )
+
+    def reset_circuit_breaker(self) -> None:
+        """Clear degraded state + failure window. Called by the user-
+        initiated POST /prices/refresh flow so an operator can force-try
+        a live fetch even while the breaker is tripped (R2 Major 2). If
+        the refetch fails, the breaker will trip again on its own."""
+        with self._lock:
+            self._failure_window.clear()
+            self._degraded_until = None
+
+    # ---------- accepted limitation: executor saturation ----------
+    #
+    # Python threads cannot be forcibly killed (R4 Major 1). If yfinance's
+    # own timeout fails to unwind (e.g., socket stuck in kernel-level
+    # SYN-SENT), the corresponding executor worker remains occupied until
+    # the OS socket timeout eventually trips (typically 30-60s). Under a
+    # sustained stall, all `max_concurrent_price_fetches=8` workers can
+    # end up holding stuck tasks simultaneously.
+    #
+    # Mitigations designed in:
+    #   1. Shared executor caps worst-case occupied threads at 8 — prevents
+    #      unbounded growth.
+    #   2. Circuit breaker trips after ~11/20 failures + 60s cooldown
+    #      during which `get_many` short-circuits WITHOUT submitting
+    #      anything to the executor -> stuck threads get time to unwind.
+    #   3. `executor.shutdown(wait=False, cancel_futures=True)` in the
+    #      FastAPI lifespan releases queued tasks at shutdown; in-flight
+    #      threads die with the uvicorn process.
+    #
+    # Practical worst case: 8 fetches go stale simultaneously AND the
+    # breaker does not trip (e.g. alternating successes and failures).
+    # Each page load then waits up to `price_fetch_deadline_seconds`=6s
+    # before falling back to last-close. This is accepted — the
+    # alternatives (process-level worker pool, async rewrite) are out
+    # of scope for the localhost single-user Phase 3a tool. Operator
+    # recovery: restart `swing web` -> executor is recreated.
+
+    # ---------- batch API ----------
+
+    def get_many(
+        self, tickers: Sequence[str], deadline_seconds: float,
+        *, executor=None,
+    ) -> dict[str, PriceSnapshot]:
+        """Batch version of get(). Cache hits are served synchronously; misses
+        are dispatched to `executor` (required; app.state.price_fetch_executor
+        in production) with a total deadline.
+
+        Leaked threads on timeout are tolerated (spec §3.2): each is waiting
+        on an HTTP socket with yfinance's own timeout and terminates at most
+        one per-ticker-timeout window later.
+        """
+        # Degraded mode: skip all live fetches.
+        if self.is_degraded():
+            out: dict[str, PriceSnapshot] = {}
+            for t in tickers:
+                last = self._last_close(t)
+                if last is not None:
+                    out[t] = PriceSnapshot(
+                        ticker=t, price=last, asof=datetime.now(),
+                        is_stale=True, source="last_close",
+                    )
+            return out
+
+        if executor is None:
+            raise ValueError("executor is required — pass app.state.price_fetch_executor")
+
+        results: dict[str, PriceSnapshot] = {}
+        misses: list[str] = []
+        now = time.monotonic()
+        ttl = self._cfg.web.price_cache_ttl_seconds
+        with self._lock:
+            for t in tickers:
+                hit = self._cache.get(t)
+                if hit is not None and now - hit[1] <= ttl:
+                    results[t] = hit[0]
+                else:
+                    misses.append(t)
+
+        if not misses:
+            return results
+
+        from concurrent.futures import as_completed, TimeoutError as FuturesTimeout
+        futures = {executor.submit(self._fetch_with_fallback, t): t for t in misses}
+        try:
+            for future in as_completed(futures, timeout=deadline_seconds):
+                ticker = futures[future]
+                try:
+                    snap = future.result(timeout=0)
+                except Exception:
+                    snap = self._fallback_snapshot(ticker)
+                if snap is not None:
+                    results[ticker] = snap
+                    with self._lock:
+                        self._cache[ticker] = (snap, time.monotonic())
+        except FuturesTimeout:
+            pass
+
+        for ticker in misses:
+            if ticker not in results:
+                snap = self._fallback_snapshot(ticker)
+                if snap is not None:
+                    results[ticker] = snap
+
+        self._maybe_trip_breaker()
+        return results
+
+    def _fallback_snapshot(self, ticker: str) -> PriceSnapshot | None:
+        last = self._last_close(ticker)
+        if last is None:
+            return None
+        return PriceSnapshot(
+            ticker=ticker, price=last, asof=datetime.now(),
+            is_stale=True, source="last_close",
+        )
 
     # ---------- market hours ----------
 

@@ -101,3 +101,193 @@ def test_unknown_ticker_returns_none_price_fallback(seeded_db, monkeypatch):
     monkeypatch.setattr(cache, "market_hours_now", lambda: False)
     s = cache.get("NOPE")
     assert s is None
+
+
+def test_get_many_parallel_dispatch(seeded_db, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from swing.web.price_cache import PriceCache
+
+    cfg, _ = seeded_db
+    for t, px in (("AAPL", 180.0), ("MSFT", 420.0), ("NVDA", 900.0)):
+        _seed_candidate(cfg, t, px)
+
+    cache = PriceCache(cfg)
+    monkeypatch.setattr(cache, "market_hours_now", lambda: True)
+
+    def fake_fetch(ticker):
+        time.sleep(0.05)
+        return {"AAPL": 181.0, "MSFT": 421.0, "NVDA": 901.0}[ticker]
+
+    monkeypatch.setattr(cache, "_fetch_live_price", fake_fetch)
+
+    executor = ThreadPoolExecutor(max_workers=3)
+    try:
+        snaps = cache.get_many(["AAPL", "MSFT", "NVDA"], deadline_seconds=2.0, executor=executor)
+    finally:
+        executor.shutdown(wait=True)
+    assert set(snaps.keys()) == {"AAPL", "MSFT", "NVDA"}
+    assert snaps["AAPL"].price == 181.0
+    assert snaps["MSFT"].price == 421.0
+    assert snaps["NVDA"].price == 901.0
+    assert not any(s.is_stale for s in snaps.values())
+
+
+def test_get_many_deadline_falls_back(seeded_db, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from swing.web.price_cache import PriceCache
+
+    cfg, _ = seeded_db
+    _seed_candidate(cfg, "AAPL", 180.0)
+    _seed_candidate(cfg, "MSFT", 420.0)
+
+    cache = PriceCache(cfg)
+    monkeypatch.setattr(cache, "market_hours_now", lambda: True)
+
+    def slow(ticker):
+        time.sleep(5.0)
+        return 1.0
+
+    monkeypatch.setattr(cache, "_fetch_live_price", slow)
+
+    executor = ThreadPoolExecutor(max_workers=2)
+    t0 = time.monotonic()
+    try:
+        snaps = cache.get_many(["AAPL", "MSFT"], deadline_seconds=0.3, executor=executor)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    elapsed = time.monotonic() - t0
+    # Deadline is honored; both fall back to last_close.
+    assert elapsed < 2.0
+    assert snaps["AAPL"].is_stale and snaps["AAPL"].source == "last_close"
+    assert snaps["MSFT"].is_stale and snaps["MSFT"].source == "last_close"
+
+
+def test_circuit_breaker_trips_and_recovers(seeded_db, monkeypatch):
+    from swing.web.price_cache import PriceCache
+
+    cfg, _ = seeded_db
+    _seed_candidate(cfg, "AAPL", 180.0)
+    cache = PriceCache(cfg)
+    monkeypatch.setattr(cache, "market_hours_now", lambda: True)
+
+    # Record 15 failures to drive failure fraction > 0.5 over a 20-wide window.
+    for _ in range(15):
+        cache._record_outcome(success=False)
+    for _ in range(5):
+        cache._record_outcome(success=True)
+
+    # Force the breaker evaluation by calling _maybe_trip_breaker directly.
+    cache._maybe_trip_breaker()
+    assert cache.is_degraded()
+
+    # During degraded mode, get() returns last-close without touching the network.
+    def should_not_be_called(ticker):
+        raise AssertionError("live fetch must be skipped in degraded mode")
+
+    monkeypatch.setattr(cache, "_fetch_live_price", should_not_be_called)
+    s = cache.get("AAPL")
+    assert s.is_stale
+    assert s.source == "last_close"
+
+
+def test_circuit_breaker_is_instance_scoped(seeded_db):
+    from swing.web.price_cache import PriceCache
+    cfg, _ = seeded_db
+    a = PriceCache(cfg)
+    b = PriceCache(cfg)
+    for _ in range(20):
+        a._record_outcome(success=False)
+    a._maybe_trip_breaker()
+    assert a.is_degraded()
+    # The second instance must not inherit degraded state.
+    assert not b.is_degraded()
+
+
+def test_fetch_live_price_skips_trailing_nan_close(seeded_db, monkeypatch):
+    """Last minute bar can be NaN while yfinance streams a fresh minute
+    whose close hasn't finalized — R2 Minor 1. The cache must return the
+    most recent NON-NaN Close rather than raise."""
+    import numpy as np
+    import pandas as pd
+    from swing.web.price_cache import PriceCache
+
+    cfg, _ = seeded_db
+    cache = PriceCache(cfg)
+
+    closes = [181.25, 181.30, 181.28, np.nan]  # last bar NaN
+    df = pd.DataFrame(
+        {"Close": closes, "Open": closes, "High": closes, "Low": closes, "Volume": [0] * 4},
+        index=pd.date_range(end="2026-04-17 15:59", periods=4, freq="min"),
+    )
+    monkeypatch.setattr("yfinance.download", lambda *a, **kw: df)
+
+    price = cache._fetch_live_price("AAPL")
+    assert price == 181.28   # last NON-NaN close
+
+
+def test_fetch_live_price_raises_when_all_close_nan(seeded_db, monkeypatch):
+    import numpy as np
+    import pandas as pd
+    import pytest
+    from swing.web.price_cache import PriceCache
+
+    cfg, _ = seeded_db
+    cache = PriceCache(cfg)
+
+    df = pd.DataFrame(
+        {"Close": [np.nan, np.nan], "Open": [1.0, 1.0], "High": [1.0, 1.0],
+         "Low": [1.0, 1.0], "Volume": [0, 0]},
+        index=pd.date_range(end="2026-04-17 15:59", periods=2, freq="min"),
+    )
+    monkeypatch.setattr("yfinance.download", lambda *a, **kw: df)
+
+    with pytest.raises(RuntimeError, match="all Close"):
+        cache._fetch_live_price("AAPL")
+
+
+def test_fetch_live_price_raises_on_empty_frame(seeded_db, monkeypatch):
+    import pandas as pd
+    import pytest
+    from swing.web.price_cache import PriceCache
+
+    cfg, _ = seeded_db
+    cache = PriceCache(cfg)
+    monkeypatch.setattr("yfinance.download", lambda *a, **kw: pd.DataFrame())
+
+    with pytest.raises(RuntimeError, match="no bars"):
+        cache._fetch_live_price("AAPL")
+
+
+def test_refresh_all_invalidates_and_next_get_refetches(seeded_db, monkeypatch):
+    """refresh_all is invalidate-only: it pops entries from the cache so the
+    next get/get_many re-fetches. It does NOT itself hit the network (that
+    would duplicate work — POST /prices/refresh rebuilds the VM after calling
+    refresh_all, and the VM build triggers the actual re-fetch via get_many).
+    """
+    from swing.web.price_cache import PriceCache
+
+    cfg, _ = seeded_db
+    _seed_candidate(cfg, "AAPL", 180.0)
+    cache = PriceCache(cfg)
+    monkeypatch.setattr(cache, "market_hours_now", lambda: True)
+
+    fetch_calls = [0]
+    def counting_fetch(ticker):
+        fetch_calls[0] += 1
+        return 181.0
+
+    monkeypatch.setattr(cache, "_fetch_live_price", counting_fetch)
+
+    # Populate cache.
+    s1 = cache.get("AAPL")
+    assert s1.price == 181.0
+    assert fetch_calls[0] == 1
+
+    # Second get hits cache — no new fetch.
+    cache.get("AAPL")
+    assert fetch_calls[0] == 1
+
+    # refresh_all invalidates.
+    cache.refresh_all(["AAPL"])
+    cache.get("AAPL")
+    assert fetch_calls[0] == 2, "refresh_all must invalidate; next get re-fetches"
