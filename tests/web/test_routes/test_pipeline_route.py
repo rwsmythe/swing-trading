@@ -294,3 +294,36 @@ def test_get_stale_run_card_404_for_non_eligible(test_cfg, seeded_db, seed_stale
             headers={"HX-Request": "true"},
         )
     assert r.status_code == 404
+
+
+def test_get_force_clear_confirm_renders_for_eligible_run(test_cfg, seeded_db, seed_stale_run):
+    """GET /pipeline/force-clear/{id}/confirm → confirm fragment."""
+    run_id = seed_stale_run(hb_age=600, step_age=1200)
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(
+            f"/pipeline/force-clear/{run_id}/confirm",
+            headers={"HX-Request": "true", "HX-Target": f"stale-run-{run_id}"},
+        )
+    assert r.status_code == 200
+    assert f'id="stale-run-{run_id}"' in r.text
+    assert "Confirm force-clear" in r.text
+    assert "Cancel" in r.text
+    # Submit button POSTs to the execute endpoint.
+    assert f'hx-post="/pipeline/force-clear/{run_id}"' in r.text
+    # Cancel button reverts via the GET endpoint from Task 10.
+    assert f'hx-get="/pipeline/stale-run-card/{run_id}"' in r.text
+
+
+def test_get_force_clear_confirm_404_for_non_eligible(test_cfg, seeded_db, seed_stale_run):
+    """GET confirm on a non-stale run → 404 (HX-Target-aware fragment or page)."""
+    run_id = seed_stale_run(hb_age=30, step_age=30)  # both fresh → not eligible
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(
+            f"/pipeline/force-clear/{run_id}/confirm",
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 404

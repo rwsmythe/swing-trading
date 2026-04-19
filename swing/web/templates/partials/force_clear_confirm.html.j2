@@ -1,0 +1,24 @@
+{#- swing/web/templates/partials/force_clear_confirm.html.j2
+    Expects: run (PipelineRun). 2-step confirm fragment (spec §3.1). Replaces
+    the stale-run card; submit POSTs to /pipeline/force-clear/{id}; cancel
+    GETs /pipeline/stale-run-card/{id} to revert. -#}
+<section id="stale-run-{{ run.id }}" class="force-clear-confirm">
+  <div class="banner banner-degraded" role="alert">
+    <strong>⚠ Confirm force-clear of run #{{ run.id }}.</strong>
+    <p>
+      Marks the run as <code>force_cleared</code>. Any still-live worker loses
+      its lease and cannot commit further writes. This is irreversible.
+    </p>
+  </div>
+  <form hx-post="/pipeline/force-clear/{{ run.id }}"
+        hx-target="closest section[id^='stale-run-']"
+        hx-swap="outerHTML"
+        hx-headers='{"HX-Request": "true"}'>
+    <button type="submit">Confirm force-clear</button>
+    <button type="button"
+            hx-get="/pipeline/stale-run-card/{{ run.id }}"
+            hx-target="closest section[id^='stale-run-']"
+            hx-swap="outerHTML"
+            hx-headers='{"HX-Request": "true"}'>Cancel</button>
+  </form>
+</section>

@@ -178,6 +178,26 @@ def stale_run_card(request: Request, run_id: int):
     )
 
 
+@router.get("/pipeline/force-clear/{run_id}/confirm", response_class=HTMLResponse)
+def force_clear_confirm(request: Request, run_id: int):
+    """Render the 2-step confirm fragment for an eligible stale run (spec §3.1)."""
+    cfg = request.app.state.cfg
+    templates = request.app.state.templates
+    conn = connect(cfg.paths.db_path)
+    try:
+        run = find_run(conn, run_id)
+    finally:
+        conn.close()
+    if run is None or not is_stale_eligible(run, cfg):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Run #{run_id} is no longer stale-eligible — refresh the page",
+        )
+    return templates.TemplateResponse(
+        request, "partials/force_clear_confirm.html.j2", {"run": run},
+    )
+
+
 @router.post("/prices/refresh", response_class=HTMLResponse)
 def prices_refresh(request: Request):
     cfg = request.app.state.cfg
