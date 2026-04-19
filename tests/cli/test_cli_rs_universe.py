@@ -31,7 +31,8 @@ def test_refresh_creates_versioned_file(tmp_path: Path, monkeypatch):
     universe_path = project / "reference" / "rs-universe.csv"
     assert universe_path.exists()
     content = universe_path.read_text(encoding="utf-8")
-    assert "# version: 2026-04-18-" in content
+    from datetime import date
+    assert f"# version: {date.today().isoformat()}-" in content
     assert "AAPL" in content
 
 
