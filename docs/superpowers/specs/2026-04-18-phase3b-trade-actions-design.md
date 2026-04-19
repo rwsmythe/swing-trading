@@ -64,7 +64,9 @@ swing/web/
 │   ├── open_positions_row.html.j2        (NEW) — extracted from open_positions.html.j2; now includes
 │   │                                               Exit + Adjust stop buttons per row
 │   ├── watchlist_row.html.j2             (MODIFIED) — adds "Enter" button per row
-│   └── sizing_hint.html.j2               (NEW) — tiny fragment for hx-swap on price/stop edits
+│   ├── sizing_hint.html.j2               (NEW) — tiny fragment for hx-swap on price/stop edits;
+│   │                                               supports "dim" guidance mode for incomplete input
+│   └── http_error_fragment.html.j2       (NEW) — HTMX 4xx response body (e.g., 404 from form GETs)
 └── middleware/
     └── origin_guard.py                   (MODIFIED) — adds strict=True kwarg
 ```
@@ -136,31 +138,47 @@ class OpenPositionsRowVM:
     remaining_shares: int                          # initial_shares - sum(prior exits)
 ```
 
-### 3.4 `build_open_positions_row` (new narrow VM builder)
+### 3.4 `build_open_positions_row` — pure row render + batched dashboard use
+
+Two entry points: a pure render helper that accepts precomputed inputs, and a convenience wrapper for the single-row POST-success path. The dashboard continues to batch its price fetches and weather lookup (the 3a pattern); it does NOT do N+1 per-row calls.
 
 ```python
+def _open_positions_row_vm(
+    *, trade: Trade,
+    price_snapshot: PriceSnapshot | None,
+    remaining_shares: int,
+    advisories: tuple[AdvisorySuggestionVM, ...],
+) -> OpenPositionsRowVM:
+    """Pure render-input assembler. No I/O. Used by build_dashboard in the batched path
+    and by build_open_positions_row in the single-row path. This is the single source of
+    truth for what data an open-positions row renders from."""
+
+
 def build_open_positions_row(
     *, trade: Trade, cfg: Config, cache: PriceCache, executor,
     conn: sqlite3.Connection | None = None,
 ) -> OpenPositionsRowVM:
-    """Build the minimal VM to render a single open-positions row.
-
-    Calls: cache.get_many([trade.ticker], deadline=..., executor=...);
-           list_exits_for_trade(conn, trade.id) for remaining-shares;
-           compute_all_suggestions(trade, AdvisoryContext(sma10=None, sma20=None, ...))
-           — same 3a limitation: MA-dependent advisory rules return None until Phase 3c.
+    """Convenience wrapper for the POST-success path, which needs ONE row.
+    Internally: cache.get_many([trade.ticker], deadline=..., executor=...);
+               list_exits_for_trade(conn, trade.id) for remaining-shares;
+               compute_all_suggestions(trade, AdvisoryContext(sma10=None, sma20=None, ...))
+               — same 3a limitation: MA-dependent advisory rules return None until Phase 3c.
     The function opens its own read-snapshot `with conn:` if conn is None.
-    dashboard.py's build_dashboard uses this helper for every open-trade row, so the
-    dashboard and POST-success paths share one render recipe (spec §5 authority rule)."""
+    Callers that have batch context (dashboard.py) should NOT call this — they should
+    use `_open_positions_row_vm` directly with their precomputed snapshots + advisories."""
 ```
 
-3a's `build_dashboard` is refactored to call `build_open_positions_row(trade, cfg, cache, executor, conn)` for each trade and attach the results to `DashboardVM.open_trade_last_prices` / `open_trade_advisories`. This is a purely internal restructure — `DashboardVM`'s external field shape is unchanged.
+**dashboard.py's `build_dashboard` is minimally touched.** It keeps its batched `cache.get_many(all_active_tickers, ...)` call, keeps its single AdvisoryContext construction, and keeps its one weather lookup. It calls `_open_positions_row_vm(trade, snapshot, remaining, advisories)` for each open trade in a tight Python loop (no I/O per row) and attaches the results to `DashboardVM.open_trade_last_prices` / `open_trade_advisories` — external shape unchanged.
+
+POST-success handlers use `build_open_positions_row(trade, cfg, cache, executor)` — which DOES do one `get_many([ticker])` + one `list_exits_for_trade` + one advisory compute. That's correct for a single-row render after a mutation.
+
+This keeps the "single source of truth" property (both paths go through `_open_positions_row_vm`) without introducing the N+1 regression the naive refactor would cause.
 
 ### 3.2 Templates
 
 All three form partials share a common skeleton: `<form hx-post="..." hx-target="closest tr" hx-swap="outerHTML">`, required fields marked with `required`, `type="number" step="0.01" min="0"` where numeric, a Submit button, and a Cancel button (`hx-get` that returns the row in its normal non-form state).
 
-- `trade_entry_form.html.j2` shows 8 fields (ticker readonly, entry_date, entry_price, shares with inline sizing hint, initial_stop, watchlist_entry_target readonly, rationale textarea required, notes textarea). Sizing hint is its own element with `hx-post="/trades/entry/sizing-hint"` `hx-trigger="change from:input[name=entry_price],input[name=initial_stop] delay:200ms"` `hx-target="#sizing-hint"`.
+- `trade_entry_form.html.j2` shows 8 fields (ticker readonly, entry_date, entry_price, shares with inline sizing hint, initial_stop, watchlist_entry_target readonly, rationale textarea required, notes textarea). Sizing hint is its own element with `hx-get="/trades/entry/sizing-hint"` `hx-trigger="change from:input[name=entry_price],input[name=initial_stop] delay:200ms"` `hx-include="closest form"` `hx-target="#sizing-hint"`.
 
 - `trade_exit_form.html.j2` shows 6 fields (trade summary readonly, exit_date, exit_price, shares with max=remaining_shares, reason select, rationale textarea required, notes textarea).
 
@@ -188,7 +206,10 @@ GET  /trades/entry/form?ticker=<T>             → trade_entry_form fragment
 POST /trades/entry                             → open_positions_row + OOB (status_strip, watchlist_top5)
                                                  OR soft_warn_confirm fragment (1st submit at cap)
                                                  OR trade_form_error fragment (hard cap / duplicate / bad input)
-POST /trades/entry/sizing-hint                 → sizing_hint fragment (tiny, no OOB)
+GET  /trades/entry/sizing-hint?entry_price&initial_stop
+                                               → sizing_hint fragment (tiny, no OOB). Always 200.
+                                                 Missing/invalid params render a guidance fragment
+                                                 rather than erroring (see §4.6).
 
 GET  /trades/<trade_id>/exit/form              → trade_exit_form fragment
 POST /trades/<trade_id>/exit                   → open_positions_row (or empty if fully closed) + OOB (status_strip)
@@ -246,17 +267,21 @@ POST /trades/<trade_id>/stop                   → open_positions_row (new curre
 3. On `StopRegressionError`: render 400 error fragment with the CLI-`--force` hint verbatim.
 4. On success: render refreshed `open_positions_row` via `build_open_positions_row` (new `current_stop`; advisories regenerate by calling `compute_all_suggestions` with the updated trade — still the 3a reduced subset with `sma10=None, sma20=None`; MA-dependent rules `suggest_trail_ma` and `suggest_exit_close_below_ma` continue to return None until Phase 3c wires on-demand SMA computation). No OOB (status_strip and watchlist unchanged by a stop-adjust).
 
-### 4.6 Sizing-hint live recompute
+### 4.6 Sizing-hint live recompute — tolerant fragment contract
 
-`GET /trades/entry/sizing-hint?entry_price=<X>&initial_stop=<Y>` is a small read-only endpoint that:
-1. Reads `entry_price`, `initial_stop` from query params.
-2. Reads equity the same way as the form GET (via `current_equity` + repos).
-3. Calls `compute_shares(...)`.
-4. Returns just the `sizing_hint.html.j2` fragment (inline `<span>` with the new numbers).
+`GET /trades/entry/sizing-hint?entry_price=<X>&initial_stop=<Y>` is a small read-only endpoint that fires as the user types, so it must tolerate incomplete/invalid input without raising. Always returns 200 with a fragment; it does NOT rely on the generic 3b/3c error handlers.
 
-Chosen `GET` rather than `POST` because the endpoint has no side effects and exposes no state-changing surface — semantically appropriate, and GET under strict OriginGuard does not need `HX-Request` (safe methods pass through). HTMX fires the request via `hx-get="/trades/entry/sizing-hint" hx-trigger="change from:input[name=entry_price],input[name=initial_stop] delay:200ms" hx-include="closest form" hx-target="#sizing-hint"`, which serializes the form's input fields as query params.
+Contract:
+1. Parse `entry_price` and `initial_stop` from query params. Both optional and both tolerant of blank strings.
+2. If either is missing, non-numeric, ≤ 0, or `initial_stop >= entry_price` → render `sizing_hint.html.j2` in its "dim" mode with the guidance text `Enter a valid entry price and stop (stop < entry) to see sizing`. No compute_shares call.
+3. Otherwise: read equity via `current_equity` + repos; call `compute_shares(entry, stop, equity, max_risk_pct, position_pct_cap)`; render `sizing_hint.html.j2` with `ShareRecommendation`'s suggested share count, risk dollars, and risk pct.
+4. If `compute_shares` raises any unexpected exception (e.g., equity = 0), catch it, log at WARNING, and render the same "dim" guidance fragment with text `Sizing unavailable — check values`. Do NOT 500.
 
-This keeps UI math server-side and matches the Phase 3a "no client-side JS beyond HTMX" principle.
+The route is intentionally a closed error-handling island — the tight feedback loop during editing must never produce a 400/422/500 the HTMX target would swap into the UI. This is narrower than the generic "400 HTML for malformed query params" deferred to Phase 3c (§7); only this specific endpoint gets bespoke tolerance.
+
+HTMX fires the request via `hx-get="/trades/entry/sizing-hint" hx-trigger="change from:input[name=entry_price],input[name=initial_stop] delay:200ms" hx-include="closest form" hx-target="#sizing-hint"`, which serializes the form's price and stop inputs as query params.
+
+Chosen `GET` rather than `POST` because the endpoint has no side effects and exposes no state-changing surface — semantically appropriate, and GET under strict OriginGuard does not need `HX-Request` (safe methods pass through). This keeps UI math server-side and matches the Phase 3a "no client-side JS beyond HTMX" principle.
 
 ### 4.7 Post-submit latency and degraded-cache behavior
 
@@ -278,16 +303,37 @@ The POST handler does not block on price fetches beyond the configured deadline.
 | `DuplicateOpenPositionException` | `record_entry` | 400 | Error fragment: "Ticker already has an open trade (#{id})." |
 | `StopRegressionError` | `adjust_stop` | 400 | Error fragment: "New stop {new} is below current {old}. Use CLI `swing trade stop-adjust ... --force` if intentional." |
 | Exit shares > remaining | `record_exit` | 400 | Error fragment: "Cannot exit {shares} sh — only {remaining} remaining." |
-| Trade id not found / not open (for exit/stop form GET) | DB lookup | 404 | 3a's 404 handler (the row's HTMX target swaps in the 404 fragment) |
+| Trade id not found / not open (for exit/stop form GET) | DB lookup | 404 | HTMX-aware 404 fragment (see §5.2); the row's HTMX target swaps in a small "Trade #N not found or closed" fragment, not the default FastAPI JSON 404 body |
 | Unhandled | Anywhere | 500 | 3a's `error_fragment.html.j2` or `error.html.j2` (no change) |
 
 **OriginGuard violation** (unsafe method without HX-Request under strict mode) → 403 `"Missing HX-Request header (strict mode)"`. `X-Request-ID` still present (3a invariant).
+
+### 5.2 HTMX-aware HTTPException handler (3b extension to 3a)
+
+Phase 3a's generic exception handler (`swing/web/app.py::_handle_any`) already delegates `HTTPException` / `StarletteHTTPException` subclasses to FastAPI's default handler so route-raised 404s get the default JSON response. That is fine for API consumers but wrong for HTMX, which swaps response bodies into DOM targets — the user would see a JSON blob in the row. 3b adds one narrow override:
+
+```python
+@app.exception_handler(StarletteHTTPException)
+async def _handle_http_exc(request: Request, exc: StarletteHTTPException):
+    if request.headers.get("HX-Request", "").lower() == "true":
+        tpls = Jinja2Templates(directory=str(app.state.templates_dir))
+        return tpls.TemplateResponse(
+            request, "partials/http_error_fragment.html.j2",
+            {"status_code": exc.status_code, "detail": exc.detail},
+            status_code=exc.status_code,
+        )
+    return await http_exception_handler(request, exc)
+```
+
+New template `swing/web/templates/partials/http_error_fragment.html.j2` — a small banner-degraded div with `status_code` and `detail`. The route for `GET /trades/<trade_id>/exit/form` and `GET /trades/<trade_id>/stop/form` raises `HTTPException(404, detail="Trade #N not found or not open")` on missing/closed trades; the handler turns that into the HTMX fragment automatically. Non-HTMX 404s (e.g., typing a bad URL in the address bar) still hit FastAPI's default.
+
+This tightens — but does not replace — 3a's generic exception handler. The ordering contract: FastAPI dispatches to the most specific handler first, so `StarletteHTTPException` matches ahead of the `Exception` catch-all. Tests verify both code paths.
 
 ### 5.1 State-drift recovery
 
 Inline forms are populated from DB state at form-GET time. Between GET and POST, another tab (or the CLI) can mutate that state: create a duplicate open trade, close the trade being edited, exit some of its shares, adjust its stop. Phase 2 services already catch most of this at write time (`record_entry` re-checks `open_count`, `record_exit` re-checks `remaining_shares`, `adjust_stop` re-reads `current_stop`). The 3b UX contract on state-drift:
 
-1. On `DuplicateOpenPositionException` during entry POST: render `trade_form_error.html.j2` with banner `"Ticker already has an open trade (#<id>)."` Form fields stay populated but submit is disabled until user explicitly cancels (swaps row back to normal). User can check /trades tab to see the existing trade.
+1. On `DuplicateOpenPositionException` during entry POST: render `trade_form_error.html.j2` with banner `"Ticker already has an open trade (#<id>)."` Form fields stay populated but submit is disabled until user explicitly cancels (swaps row back to normal). The existing trade is visible in the dashboard's open-positions table; there is no separate /trades tab (rejected as a design decision — see §9.1).
 2. On `record_exit` raising a "shares-exceeds-remaining" error: re-fetch the trade + its exits from DB, re-render the exit form with the **authoritative** remaining-shares bound (new `max="<remaining>"`) and a banner explaining the conflict. The user sees the fresh limit; their previous input is preserved but clamped.
 3. On `adjust_stop` raising `StopRegressionError`: the route already re-reads `current_stop` inside the service, so the error message carries both the attempted `new_stop` and the actual `current_stop`. Re-render the stop form with the updated `current_stop` prefilled (not the user's attempted value) and the rationale preserved.
 4. On form GET discovering the trade is closed or missing: return a 404 fragment that replaces the row. A Phase 3c polling mechanism could notice this proactively; 3b accepts that the user sees "trade not found" only after clicking an action button.
@@ -301,7 +347,7 @@ These contracts are each tested individually (see §6.1). None of them depend on
 | File | Tests | Focus |
 |---|---|---|
 | `tests/web/test_view_models/test_trades.py` | 6 | Entry VM shape (prefills, sizing hint, soft/hard cap wiring). Exit VM shape. Stop VM shape. Sizing hint recompute on different (price, stop) combinations. Equity = starting_equity when no exits/cash. `build_open_positions_row` returns the correct snapshot + advisories (3a subset with sma=None) for a given trade. |
-| `tests/web/test_routes/test_trades_route.py` | 22 | GET each form returns expected fragment with ticker/trade_id context. POST entry success → row+OOB (status_strip + watchlist_top5 only, NOT full dashboard rebuild). POST entry soft-warn → confirm fragment → POST again with `force=true` → success. POST entry hard-cap → 400. POST entry duplicate → 400 with drift-recovery fragment (§5.1 case 1). POST exit full → row disappearance fragment + OOB status_strip only. POST exit partial → updated row with derived remaining-shares. POST exit shares-too-many after CLI drift → form re-rendered with updated max (§5.1 case 2). POST stop-adjust success → row (advisories regenerate with sma=None). POST stop-adjust regression → 400 with updated `current_stop` prefilled (§5.1 case 3). Form GET for a closed trade → 404 fragment (§5.1 case 4). GET /trades/entry/sizing-hint → fragment with updated numbers. GET /trades/entry/sizing-hint does NOT require HX-Request (it's a safe method). POST /trades/entry without HX-Request → 403 (strict mode). |
+| `tests/web/test_routes/test_trades_route.py` | 24 | GET each form returns expected fragment with ticker/trade_id context. POST entry success → row+OOB (status_strip + watchlist_top5 only, NOT full dashboard rebuild). POST entry soft-warn → confirm fragment → POST again with `force=true` → success. POST entry hard-cap → 400. POST entry duplicate → 400 with drift-recovery fragment (§5.1 case 1). POST exit full → row disappearance fragment + OOB status_strip only. POST exit partial → updated row with derived remaining-shares. POST exit shares-too-many after CLI drift → form re-rendered with updated max (§5.1 case 2). POST stop-adjust success → row (advisories regenerate with sma=None). POST stop-adjust regression → 400 with updated `current_stop` prefilled (§5.1 case 3). Form GET for a closed trade → HTMX-aware 404 fragment from §5.2 handler (not JSON). GET /trades/entry/sizing-hint happy path → fragment with numbers. GET /trades/entry/sizing-hint with missing/blank/invalid/stop-≥-entry params → 200 with "dim" guidance fragment (never 400/422/500). GET /trades/entry/sizing-hint does NOT require HX-Request (it's a safe method). POST /trades/entry without HX-Request → 403 (strict mode). HTMX 404 response is a fragment; non-HTMX 404 still uses FastAPI default. |
 | `tests/web/test_trades_integration.py` | 4 | End-to-end: seed watchlist → GET entry form → POST entry → verify DB `trades` row, `watchlist` archived, dashboard VM shows open_count+1, prices in status strip came from cache hits. End-to-end soft-warn loop (GET form → POST no force → confirm fragment → POST force=true → success). End-to-end stop-adjust updates `current_stop` and advisories regenerate (still 3a subset — no MA rules fire). Cold-cache submit path: `PriceCache` empty → POST entry → row renders with `last_close` fallback and `is_stale=True`, does not hang. |
 
 ### 6.2 Updated tests
@@ -321,7 +367,7 @@ Existing non-strict tests stay; they document the 3a behavior of the middleware 
 
 ### 6.4 Target test count
 
-351 (end of 3a) + 6 VM + 22 routes + 4 integration + 2 origin-guard strict = **~385 fast tests**. All new tests exercising POST routes use `with TestClient(app) as client:` so the lifespan-managed `price_fetch_executor` exists (established 3a invariant).
+351 (end of 3a) + 6 VM + 24 routes + 4 integration + 2 origin-guard strict = **~387 fast tests**. All new tests exercising POST routes use `with TestClient(app) as client:` so the lifespan-managed `price_fetch_executor` exists (established 3a invariant).
 
 ## 7. Out of scope (deferred)
 
@@ -338,7 +384,7 @@ Existing non-strict tests stay; they document the 3a behavior of the middleware 
 - [ ] After submit, status-strip (equity, open_count) and affected rows (watchlist archive, open-position new/updated/removed) reflect new state without full page reload.
 - [ ] Non-HTMX POST to any trade endpoint returns 403 with an `X-Request-ID` header.
 - [ ] `pip install -e ".[web]" && swing db-migrate && swing web` then exercising the full entry/exit/stop flow from a browser works against a freshly-migrated DB.
-- [ ] 385+ fast tests pass. Phase 2's 287 fast tests remain untouched.
+- [ ] 387+ fast tests pass. Phase 2's 287 fast tests remain untouched.
 - [ ] Phase 3a's 64 web tests remain green (the OriginGuard strict-mode flip is isolated behind a flag passed from `create_app`; existing tests that don't set strict mode still pass).
 
 ## 9. Decisions locked
@@ -351,4 +397,6 @@ Existing non-strict tests stay; they document the 3a behavior of the middleware 
 6. **Business logic unchanged** in Phase 2; 3b is purely a form-layer addition. `Trade.initial_shares` is never mutated by exits; remaining-shares is always a derived value.
 7. **No UI bypass for hard-cap, duplicate-open, stop-regression** — those remain CLI-only (`--force`) because silent bypass would undermine the invariants. State-drift recovery (§5.1) re-renders authoritative values so the user sees the conflict before clicking again.
 8. **Sizing-hint endpoint is GET**, not POST — it is semantically read-only and does not need to be covered by the strict unsafe-method policy.
-9. **Row-level VM builder** (`build_open_positions_row`) is the single source of truth for rendering an open-positions row; used by both `build_dashboard` and the POST-success handlers so the dashboard and form responses cannot drift.
+9. **Row-level VM builder** pair: `_open_positions_row_vm` (pure, no I/O) is the single source of truth for render inputs; `build_open_positions_row` (single-row convenience wrapper) is for POST-success handlers; `build_dashboard` stays BATCHED (one `get_many`, one weather lookup, then loops through `_open_positions_row_vm`) to avoid an N+1 regression.
+10. **HTMX-aware 404 handler** (§5.2) added in 3b so form GETs on missing/closed trades render a small fragment instead of FastAPI's default JSON 404 body. Non-HTMX 404s still use FastAPI default.
+11. **Sizing-hint endpoint tolerates incomplete/invalid query params** without ever returning 4xx (always 200 with either numbers or dim guidance text). This is deliberately narrower than the generic "400 HTML for malformed query params" deferred to 3c.
