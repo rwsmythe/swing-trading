@@ -6,11 +6,13 @@ from datetime import date
 
 from swing.config import Config
 from swing.data.db import connect
+from swing.data.models import Trade
 from swing.data.repos.cash import list_cash
-from swing.data.repos.trades import list_all_exits, list_open_trades
+from swing.data.repos.trades import get_trade, list_all_exits, list_exits_for_trade, list_open_trades
 from swing.data.repos.watchlist import list_active_watchlist
 from swing.recommendations.sizing import compute_shares
 from swing.trades.equity import current_equity
+from swing.trades.exit import ExitReason
 from swing.web.price_cache import PriceCache
 
 
@@ -93,4 +95,44 @@ def build_entry_form_vm(
         soft_warn_threshold=cfg.position_limits.soft_warn_open,
         hard_cap=cfg.position_limits.hard_cap_open,
         open_count=len(open_trades),
+    )
+
+
+@dataclass(frozen=True)
+class TradeExitFormVM:
+    trade: Trade
+    exit_date: str
+    exit_price: float
+    remaining_shares: int
+    reasons: tuple[str, ...]
+
+
+def build_exit_form_vm(
+    *, trade_id: int, cfg: Config, cache: PriceCache, executor,
+) -> TradeExitFormVM | None:
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            trade = get_trade(conn, trade_id)
+            if trade is None or trade.status != "open":
+                return None
+            exits = list_exits_for_trade(conn, trade_id)
+    finally:
+        conn.close()
+    remaining = trade.initial_shares - sum(e.shares for e in exits)
+
+    prices = cache.get_many(
+        [trade.ticker],
+        deadline_seconds=cfg.web.price_fetch_deadline_seconds,
+        executor=executor,
+    )
+    snap = prices.get(trade.ticker)
+    exit_price = snap.price if snap else trade.entry_price  # conservative fallback
+
+    return TradeExitFormVM(
+        trade=trade,
+        exit_date=date.today().isoformat(),
+        exit_price=exit_price,
+        remaining_shares=remaining,
+        reasons=tuple(r.value for r in ExitReason),
     )

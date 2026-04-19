@@ -315,3 +315,55 @@ def test_post_entry_duplicate_error(seeded_db, monkeypatch):
         )
     assert r.status_code == 400
     assert "already" in r.text.lower() or "open trade" in r.text.lower()
+
+
+def test_get_exit_form_renders(seeded_db, monkeypatch):
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event, list_open_trades
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=5, initial_stop=860.0,
+                current_stop=860.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            "NVDA": PriceSnapshot(
+                ticker="NVDA", price=932.0, asof=datetime.now(),
+                is_stale=False, source="live",
+            ),
+        })
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{trade.id}/exit/form",
+                       headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert "NVDA" in r.text
+    assert "932.00" in r.text  # exit price prefilled
+    assert "stop-hit" in r.text  # reasons select populated
+
+
+def test_get_exit_form_for_closed_trade_returns_404_fragment(seeded_db):
+    """Missing/closed trade → HTMX-aware 404 fragment (§5.1 case 4 + §5.2)."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/99999/exit/form",
+                       headers={"HX-Request": "true"})
+    assert r.status_code == 404
+    # Not JSON — HTMX-aware fragment.
+    assert "banner" in r.text
+    assert "not found" in r.text.lower() or "not open" in r.text.lower()

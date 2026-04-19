@@ -3,9 +3,7 @@
       trade (Trade), price_snapshot (PriceSnapshot|None),
       remaining_shares (int), advisories (tuple[AdvisorySuggestionVM, ...]).
     No dual-contract / legacy locals branch. All call sites MUST pass `row`.
-    Action buttons (Exit, Adjust stop) are appended in Tasks 13 and 15 as
-    their routes come online — this intermediate partial deliberately has no
-    action-button cell (R1 Major 2). -#}
+    Task 13: Exit button added. Adjust stop button appended in Task 15. -#}
 <tr id="open-position-{{ row.trade.id }}">
   <td>{{ row.trade.ticker }}</td>
   <td>{{ row.trade.entry_date }}</td>
@@ -22,5 +20,11 @@
     {% for s in row.advisories %}
       <div>{{ s.message }}</div>
     {% endfor %}
+  </td>
+  <td class="row-actions">
+    <button hx-get="/trades/{{ row.trade.id }}/exit/form"
+            hx-target="closest tr" hx-swap="outerHTML"
+            hx-headers='{"HX-Request": "true"}'>Exit</button>
+    {#- Adjust stop button appended in Task 15 as its route comes online -#}
   </td>
 </tr>

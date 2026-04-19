@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from markupsafe import Markup
 
@@ -22,7 +22,7 @@ from swing.trades.equity import current_equity
 from swing.web.routes.dashboard import _templates
 from swing.web.view_models.dashboard import build_dashboard
 from swing.web.view_models.open_positions_row import build_open_positions_row
-from swing.web.view_models.trades import build_entry_form_vm
+from swing.web.view_models.trades import build_entry_form_vm, build_exit_form_vm
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -233,3 +233,17 @@ def entry_post(
         f'{watchlist_section_html}'
         f'</section>'
     ))
+
+
+@router.get("/trades/{trade_id}/exit/form", response_class=HTMLResponse)
+def exit_form(request: Request, trade_id: int):
+    cfg = request.app.state.cfg
+    cache = request.app.state.price_cache
+    executor = request.app.state.price_fetch_executor
+    templates = _templates(request)
+    vm = build_exit_form_vm(trade_id=trade_id, cfg=cfg, cache=cache, executor=executor)
+    if vm is None:
+        raise HTTPException(status_code=404, detail=f"Trade #{trade_id} not found or not open")
+    return templates.TemplateResponse(
+        request, "partials/trade_exit_form.html.j2", {"vm": vm},
+    )

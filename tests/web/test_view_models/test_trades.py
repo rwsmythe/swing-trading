@@ -50,3 +50,47 @@ def test_build_entry_form_vm_shape(seeded_db, monkeypatch):
     assert vm.hard_cap == cfg.position_limits.hard_cap_open
     # suggested_shares: depends on equity/risk/stop distance — just assert >= 0.
     assert vm.suggested_shares >= 0
+
+
+def test_build_exit_form_vm_shape(seeded_db, monkeypatch):
+    """Exit form VM shows remaining_shares, live exit_price prefill, reason choices."""
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event, list_open_trades
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from swing.web.view_models.trades import build_exit_form_vm, TradeExitFormVM
+
+    cfg, _ = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=5, initial_stop=860.0,
+                current_stop=860.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+
+    cache = PriceCache(cfg)
+    monkeypatch.setattr(cache, "get_many",
+        lambda tickers, deadline_seconds, *, executor=None: {
+            "NVDA": PriceSnapshot(
+                ticker="NVDA", price=932.0, asof=datetime.now(),
+                is_stale=False, source="live",
+            ),
+        })
+
+    vm = build_exit_form_vm(
+        trade_id=trade.id, cfg=cfg, cache=cache, executor=None,
+    )
+    assert isinstance(vm, TradeExitFormVM)
+    assert vm.trade.ticker == "NVDA"
+    assert vm.exit_price == 932.0
+    assert vm.remaining_shares == 5  # no exits yet
+    assert "stop-hit" in vm.reasons
+    assert "manual" in vm.reasons
