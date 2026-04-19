@@ -6,8 +6,7 @@ A run is force-clear-eligible only when BOTH:
 AND state == 'running'.
 
 Shared by CLI (`swing pipeline force-clear`) and the web dashboard's
-force-clear route (Phase 3c). Spec §3c/§2.3 notes this module is NEW and
-replaces the inline check that lived in cli.py::pipeline_force_clear_cmd.
+force-clear route.
 """
 from __future__ import annotations
 
@@ -17,16 +16,24 @@ from swing.config import Config
 from swing.data.models import PipelineRun
 
 
-def is_stale_eligible(run: PipelineRun, cfg: Config) -> bool:
+def is_stale_eligible(
+    run: PipelineRun,
+    cfg: Config,
+    *,
+    now: datetime | None = None,
+) -> bool:
     """Return True iff the run is force-clear-eligible under spec §5.6.
 
     - Requires state == 'running'.
     - Requires BOTH heartbeat age AND step-progress age > their thresholds.
     - Missing timestamps are treated as infinitely stale (threshold exceeded).
+    - `now` is injectable for deterministic testing; defaults to `datetime.now()`
+      at call time.
     """
     if run.state != "running":
         return False
-    now = datetime.now()
+    if now is None:
+        now = datetime.now()
     hb_age = float("inf")
     step_age = float("inf")
     if run.lease_heartbeat_ts:

@@ -1,8 +1,7 @@
 """is_stale_eligible — two-signal (heartbeat + step-progress) staleness check.
-Spec §5.6, §3c/§2.3."""
+Spec §5.6."""
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import datetime, timedelta
 
 
@@ -10,13 +9,15 @@ def _mk_run(
     *, hb_age_seconds: float | None = None,
     step_age_seconds: float | None = None,
     state: str = "running",
+    now: datetime | None = None,
 ):
     from swing.data.models import PipelineRun
-    now = datetime.now()
-    hb = (now - timedelta(seconds=hb_age_seconds)).isoformat(timespec="seconds") if hb_age_seconds is not None else None
-    step = (now - timedelta(seconds=step_age_seconds)).isoformat(timespec="seconds") if step_age_seconds is not None else None
+    if now is None:
+        now = datetime.now()
+    hb = (now - timedelta(seconds=hb_age_seconds)).isoformat() if hb_age_seconds is not None else None
+    step = (now - timedelta(seconds=step_age_seconds)).isoformat() if step_age_seconds is not None else None
     return PipelineRun(
-        id=1, started_ts=now.isoformat(timespec="seconds"), finished_ts=None,
+        id=1, started_ts=now.isoformat(), finished_ts=None,
         trigger="manual", data_asof_date="2026-04-19",
         action_session_date="2026-04-19", state=state,
         lease_token="t-x", lease_heartbeat_ts=hb, last_step_progress_ts=step,
@@ -41,38 +42,54 @@ def _mk_cfg(lease_threshold=300, step_threshold=900):
 def test_is_stale_eligible_both_signals_stale():
     """Spec §5.6: only stale when BOTH heartbeat AND step-progress exceed thresholds."""
     from swing.pipeline.staleness import is_stale_eligible
-    run = _mk_run(hb_age_seconds=600, step_age_seconds=1200)
+    now = datetime.now()
+    run = _mk_run(hb_age_seconds=600, step_age_seconds=1200, now=now)
     cfg = _mk_cfg(lease_threshold=300, step_threshold=900)
-    assert is_stale_eligible(run, cfg) is True
+    assert is_stale_eligible(run, cfg, now=now) is True
 
 
 def test_is_stale_eligible_only_heartbeat_stale_returns_false():
     """Heartbeat stale but step-progress fresh → NOT stale (long-running step)."""
     from swing.pipeline.staleness import is_stale_eligible
-    run = _mk_run(hb_age_seconds=600, step_age_seconds=30)
+    now = datetime.now()
+    run = _mk_run(hb_age_seconds=600, step_age_seconds=30, now=now)
     cfg = _mk_cfg()
-    assert is_stale_eligible(run, cfg) is False
+    assert is_stale_eligible(run, cfg, now=now) is False
 
 
 def test_is_stale_eligible_only_step_stale_returns_false():
     """Step-progress stale but heartbeat fresh → NOT stale (wedged UI-side only)."""
     from swing.pipeline.staleness import is_stale_eligible
-    run = _mk_run(hb_age_seconds=30, step_age_seconds=1200)
+    now = datetime.now()
+    run = _mk_run(hb_age_seconds=30, step_age_seconds=1200, now=now)
     cfg = _mk_cfg()
-    assert is_stale_eligible(run, cfg) is False
+    assert is_stale_eligible(run, cfg, now=now) is False
 
 
 def test_is_stale_eligible_non_running_state_returns_false():
     """Only state='running' is eligible — 'force_cleared', 'complete', etc. are not."""
     from swing.pipeline.staleness import is_stale_eligible
-    run = _mk_run(hb_age_seconds=600, step_age_seconds=1200, state="force_cleared")
+    now = datetime.now()
+    run = _mk_run(hb_age_seconds=600, step_age_seconds=1200, state="force_cleared", now=now)
     cfg = _mk_cfg()
-    assert is_stale_eligible(run, cfg) is False
+    assert is_stale_eligible(run, cfg, now=now) is False
 
 
 def test_is_stale_eligible_missing_timestamps_treats_as_stale():
     """Either timestamp missing → treated as infinitely stale."""
     from swing.pipeline.staleness import is_stale_eligible
-    run = _mk_run(hb_age_seconds=None, step_age_seconds=None)
+    now = datetime.now()
+    run = _mk_run(hb_age_seconds=None, step_age_seconds=None, now=now)
     cfg = _mk_cfg()
-    assert is_stale_eligible(run, cfg) is True
+    assert is_stale_eligible(run, cfg, now=now) is True
+
+
+def test_is_stale_eligible_at_exact_threshold_not_stale():
+    """Age exactly at threshold → NOT stale (strict > comparison). With the
+    injected `now` seam, this boundary case is deterministic."""
+    from swing.pipeline.staleness import is_stale_eligible
+    now = datetime.now()
+    run = _mk_run(hb_age_seconds=300, step_age_seconds=900, now=now)
+    cfg = _mk_cfg(lease_threshold=300, step_threshold=900)
+    # Both ages == thresholds; helper uses strict >, so not stale.
+    assert is_stale_eligible(run, cfg, now=now) is False
