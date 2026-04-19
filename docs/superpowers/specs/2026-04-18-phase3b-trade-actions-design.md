@@ -229,7 +229,7 @@ POST /trades/<trade_id>/stop                   → open_positions_row (new curre
    - `list_open_trades(conn)` → `open_count`.
    - `list_all_exits(conn)` + `list_cash(conn)` → `current_equity(...)`.
 4. Route fetches live price: `cache.get_many(["AAPL"], deadline_seconds=cfg.web.price_fetch_deadline_seconds, executor=executor)`.
-5. Route calls `compute_shares(entry=entry_price, stop=initial_stop, equity=equity, max_risk_pct=cfg.risk.max_risk_pct, position_pct_cap=cfg.sizing.position_pct_cap)` → `ShareRecommendation` with the suggested share count and risk math. (Signature verified in `swing/recommendations/sizing.py:26`.)
+5. Route calls `compute_shares(entry=entry_price, stop=initial_stop, equity=equity, max_risk_pct=cfg.risk.max_risk_pct, position_pct_cap=cfg.sizing.position_pct_cap)` → `SizingResult(shares, risk_dollars, risk_pct, notional, notional_pct, feasible, constraint)`. (Signature and return type verified in `swing/recommendations/sizing.py:16`.)
 6. Builds `TradeEntryFormVM`, renders `trade_entry_form.html.j2`.
 
 ### 4.3 Form POST (entry with soft-warn flow)
@@ -245,11 +245,7 @@ POST /trades/<trade_id>/stop                   → open_positions_row (new curre
    ```
 4. On `SoftWarnException`: if `force` was missing/false, render `soft_warn_confirm.html.j2` with the submitted form values re-serialized in a hidden block plus `<input type="hidden" name="force" value="true">`. The user clicks "Submit anyway" → a fresh POST with `force=true` → route retries and on `SoftWarnException` now bypasses (Phase 2 behavior).
 5. On `HardCapException` / `DuplicateOpenPositionException`: render `trade_form_error.html.j2` with the Phase 2 error message prepended above the re-rendered form.
-6. On success: render `open_positions_row.html.j2` for the new trade as the primary target, using `build_open_positions_row(trade=<new>, ...)`. For OOB fragments, fetch ONLY what each fragment needs:
-   - `#status-strip` OOB: rebuild `StatusStripVM` (weather, equity via `current_equity`, open_count). No price fetches needed — cached prices untouched.
-   - `#watchlist-top5` OOB: rebuild `watchlist_top5` fragment by calling `list_active_watchlist` + `cache.get_many(top_5_tickers, …, executor)`. Prices are cache hits if the user just loaded the page (TTL 2min).
-
-   This avoids a full `build_dashboard` call on every submit. The entry path is the only one that touches the watchlist; exit and stop-adjust paths do not emit the watchlist OOB fragment. See §4.7 for the post-submit latency story.
+6. On success: rebuild `DashboardVM` via `build_dashboard(cfg=cfg, cache=cache, executor=executor)` — with warm cache this is in-memory work plus a single batched get_many (cache hits) plus one weather lookup, bounded by `price_fetch_deadline_seconds` on cold cache (§4.7). Render `open_positions_row.html.j2` for the new trade as the primary target (using `build_open_positions_row` or the `_open_positions_row_vm` data already inside the rebuilt `DashboardVM`). Emit OOB fragments directly from the rebuilt VM — the fragments render from exactly the same `StatusStripVM` / `watchlist_top5` / `flag_tags` / `watchlist_remaining_count` fields the dashboard template consumes, guaranteeing field-set parity. Exit and stop-adjust POSTs follow the same rebuild pattern but emit a narrower set of OOB fragments (exit: #status-strip only; stop: none).
 
 ### 4.4 Form POST (exit)
 
@@ -274,7 +270,7 @@ POST /trades/<trade_id>/stop                   → open_positions_row (new curre
 Contract:
 1. Parse `entry_price` and `initial_stop` from query params. Both optional and both tolerant of blank strings.
 2. If either is missing, non-numeric, ≤ 0, or `initial_stop >= entry_price` → render `sizing_hint.html.j2` in its "dim" mode with the guidance text `Enter a valid entry price and stop (stop < entry) to see sizing`. No compute_shares call.
-3. Otherwise: read equity via `current_equity` + repos; call `compute_shares(entry, stop, equity, max_risk_pct, position_pct_cap)`; render `sizing_hint.html.j2` with `ShareRecommendation`'s suggested share count, risk dollars, and risk pct.
+3. Otherwise: read equity via `current_equity` + repos; call `compute_shares(entry=..., stop=..., equity=..., max_risk_pct=..., position_pct_cap=...)`; render `sizing_hint.html.j2` with `SizingResult.shares`, `.risk_dollars`, `.risk_pct` (plus `.feasible` / `.constraint` if feasible=False, to tell the user whether risk or position-cap was binding).
 4. If `compute_shares` raises any unexpected exception (e.g., equity = 0), catch it, log at WARNING, and render the same "dim" guidance fragment with text `Sizing unavailable — check values`. Do NOT 500.
 
 The route is intentionally a closed error-handling island — the tight feedback loop during editing must never produce a 400/422/500 the HTMX target would swap into the UI. This is narrower than the generic "400 HTML for malformed query params" deferred to Phase 3c (§7); only this specific endpoint gets bespoke tolerance.
@@ -393,7 +389,7 @@ Existing non-strict tests stay; they document the 3a behavior of the middleware 
 2. **HX-Request-required** on unsafe methods — no token middleware, no double-submit cookie. The explicit threat model is §1.1; this is not "CSRF hardening" in the cryptographic sense. It blocks cross-origin form POSTs, not malicious same-origin scripts / extensions / local-process attackers.
 3. **Entry form carries a live sizing hint** using Phase 2's `compute_shares` with its actual signature `compute_shares(entry, stop, equity, max_risk_pct, position_pct_cap)`.
 4. **B+D validation**: HTML5 input attributes as cheap client-side guard + 2-step soft-warn UX prompt (not an enforcement boundary — see §1.1 and §8). No live field-level HTMX validation.
-5. **After submit**: narrow row swap + targeted OOB fragments (NOT a full `build_dashboard` rebuild). Entry emits `#status-strip` + `#watchlist-top5` OOBs. Exit emits `#status-strip` only. Stop-adjust emits no OOB.
+5. **After submit**: rebuild `DashboardVM` via `build_dashboard` (warm-cache fast path; cold-cache bounded by `price_fetch_deadline_seconds` per §4.7), then render a narrow set of fragments from the rebuilt VM: row swap + targeted OOB fragments. Entry emits `#status-strip` + `#watchlist-top5` OOBs. Exit emits `#status-strip` only. Stop-adjust emits no OOB (only the row). Fragments always render from the full, authoritative VM — no bespoke per-fragment fetch logic that could drift from the dashboard's field set.
 6. **Business logic unchanged** in Phase 2; 3b is purely a form-layer addition. `Trade.initial_shares` is never mutated by exits; remaining-shares is always a derived value.
 7. **No UI bypass for hard-cap, duplicate-open, stop-regression** — those remain CLI-only (`--force`) because silent bypass would undermine the invariants. State-drift recovery (§5.1) re-renders authoritative values so the user sees the conflict before clicking again.
 8. **Sizing-hint endpoint is GET**, not POST — it is semantically read-only and does not need to be covered by the strict unsafe-method policy.
