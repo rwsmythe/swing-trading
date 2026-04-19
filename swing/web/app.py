@@ -22,6 +22,7 @@ from swing.web.middleware.request_id import (
     RequestIdMiddleware,
     configure_web_logging,
 )
+from swing.web.ohlcv_cache import OhlcvCache
 from swing.web.price_cache import PriceCache
 
 log = logging.getLogger(__name__)
@@ -112,6 +113,7 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
     app.state.cfg = cfg
     app.state.cfg_path = cfg_path
     app.state.price_cache = PriceCache(cfg)
+    app.state.ohlcv_cache = OhlcvCache(cfg)     # NEW — Phase 3d §3.5
     app.state.templates_dir = _templates_dir()
     app.state.templates = _build_templates(app.state.templates_dir)
 

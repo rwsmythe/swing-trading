@@ -84,3 +84,13 @@ def test_app_state_templates_is_jinja2templates(test_cfg):
     cfg, cfg_path = test_cfg
     app = create_app(cfg, cfg_path)
     assert isinstance(app.state.templates, Jinja2Templates)
+
+
+def test_app_state_ohlcv_cache_is_ohlcv_cache(test_cfg):
+    """Spec §3.5: OhlcvCache is built at startup and attached to app.state."""
+    from swing.web.app import create_app
+    from swing.web.ohlcv_cache import OhlcvCache
+
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+    assert isinstance(app.state.ohlcv_cache, OhlcvCache)
