@@ -340,6 +340,31 @@ def stop_form(request: Request, trade_id: int):
     )
 
 
+@router.get("/trades/{trade_id}/cancel", response_class=HTMLResponse)
+def trade_cancel(request: Request, trade_id: int):
+    """Return the normal open-position row (no form). Used by Cancel buttons."""
+    cfg = request.app.state.cfg
+    cache = request.app.state.price_cache
+    executor = request.app.state.price_fetch_executor
+    templates = _templates(request)
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        trade = get_trade(conn, trade_id)
+    finally:
+        conn.close()
+    if trade is None or trade.status != "open":
+        raise HTTPException(status_code=404, detail=f"Trade #{trade_id} not found or not open")
+
+    row_vm = build_open_positions_row(
+        trade=trade, cfg=cfg, cache=cache, executor=executor,
+    )
+    # Single-contract partial: pass only `row` (R1 Major 3 fix).
+    return templates.TemplateResponse(
+        request, "partials/open_positions_row.html.j2", {"row": row_vm},
+    )
+
+
 @router.post("/trades/{trade_id}/stop", response_class=HTMLResponse)
 def stop_post(
     request: Request, trade_id: int,
