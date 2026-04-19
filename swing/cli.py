@@ -404,10 +404,13 @@ def trade_stop_adjust_cmd(ctx, trade_id, new_stop, rationale, force):
 @click.option("--current-price", type=float, required=True)
 @click.option("--sma10", type=float, default=None)
 @click.option("--sma20", type=float, default=None)
+@click.option("--sma50", type=float, default=None)
+@click.option("--previous-close", type=float, default=None)
 @click.option("--weather", default="Bullish")
 @click.option("--as-of-date", default=None, help="default: today")
 @click.pass_context
-def trade_advisory_cmd(ctx, trade_id, current_price, sma10, sma20, weather, as_of_date):
+def trade_advisory_cmd(ctx, trade_id, current_price, sma10, sma20, sma50,
+                        previous_close, weather, as_of_date):
     """Print stop-advisory suggestions for an open trade."""
     from datetime import date as _date
     from swing.data.db import connect
@@ -426,7 +429,7 @@ def trade_advisory_cmd(ctx, trade_id, current_price, sma10, sma20, weather, as_o
     ctx_a = AdvisoryContext(
         as_of_date=asof, current_price=current_price,
         sma10=sma10, sma20=sma20,
-        sma50=None, previous_close=None,
+        sma50=sma50, previous_close=previous_close,
         weather_status=weather,
         config=cfg.stop_advisory,
     )
