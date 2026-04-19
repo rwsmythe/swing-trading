@@ -42,8 +42,8 @@ def test_get_root_renders(seeded_db, monkeypatch):
     monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
 
     app = create_app(cfg, cfg_path)
-    client = TestClient(app)
-    r = client.get("/")
+    with TestClient(app) as client:
+        r = client.get("/")
     assert r.status_code == 200
     assert "Today's decisions" in r.text
     assert "Watchlist" in r.text

@@ -24,7 +24,7 @@ def _templates(request: Request) -> Jinja2Templates:
 def index(request: Request):
     cfg = request.app.state.cfg
     cache = request.app.state.price_cache
-    executor = getattr(request.app.state, "price_fetch_executor", None)
+    executor = request.app.state.price_fetch_executor
     vm = build_dashboard(cfg=cfg, cache=cache, executor=executor)
     return _templates(request).TemplateResponse(
         request, "dashboard.html.j2", {"vm": vm},
