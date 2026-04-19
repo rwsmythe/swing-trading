@@ -12,7 +12,10 @@ from fastapi.responses import HTMLResponse
 
 from swing.data.db import connect
 from swing.data.repos.pipeline import find_active_run, find_run
+from swing.data.repos.trades import list_open_trades
+from swing.data.repos.watchlist import list_active_watchlist
 from swing.web.routes.dashboard import _templates
+from swing.web.view_models.dashboard import _sort_by_proximity, build_dashboard
 from swing.web.view_models.pipeline import build_pipeline
 
 router = APIRouter()
@@ -152,6 +155,37 @@ def pipeline_status(request: Request, run_id: int):
     return templates.TemplateResponse(
         request, "partials/pipeline_progress.html.j2",
         {"run": run, "error_text": None, "poll_interval": poll_interval},
+    )
+
+
+@router.post("/prices/refresh", response_class=HTMLResponse)
+def prices_refresh(request: Request):
+    cfg = request.app.state.cfg
+    cache = request.app.state.price_cache
+    executor = request.app.state.price_fetch_executor
+    templates = _templates(request)
+
+    # Collect active tickers.
+    conn = connect(cfg.paths.db_path)
+    try:
+        open_trade_tickers = {t.ticker for t in list_open_trades(conn)}
+        top5_tickers = {w.ticker for w in _sort_by_proximity(list_active_watchlist(conn))[:5]}
+    finally:
+        conn.close()
+    active = sorted(open_trade_tickers | top5_tickers | {cfg.rs.benchmark_ticker})
+
+    # Manual refresh resets the circuit breaker (R2 Major 2). A user-clicked
+    # Refresh button is an INTENTIONAL override of the automatic degraded
+    # short-circuit — the breaker exists to protect request-driven fetches
+    # from cascading failure, not to block operator intervention. If the
+    # refetch attempt fails, the breaker will simply trip again on its own.
+    cache.reset_circuit_breaker()
+    cache.refresh_all(active)
+
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=executor)
+    return templates.TemplateResponse(
+        request, "partials/prices_refresh_container.html.j2",
+        {"vm": vm},
     )
 
 

@@ -1,0 +1,21 @@
+{#- swing/web/templates/partials/prices_refresh_container.html.j2 -#}
+<div id="status-strip" hx-swap-oob="true">
+  {% include "partials/status_strip.html.j2" %}
+</div>
+<div id="open-positions" hx-swap-oob="true">
+  {% include "partials/open_positions.html.j2" %}
+</div>
+<div id="watchlist-top5" hx-swap-oob="true">
+  <table class="watchlist">
+    <thead><tr>
+      <th></th><th>Ticker</th><th>Last</th><th>Pivot</th><th>% to pivot</th><th>ADR</th><th>Tags</th>
+    </tr></thead>
+    <tbody>
+      {% for w in vm.watchlist_top5 %}
+        {% set price = vm.watchlist_last_prices.get(w.ticker) %}
+        {% set tags = vm.flag_tags.get(w.ticker, ()) %}
+        {% include "partials/watchlist_row.html.j2" %}
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

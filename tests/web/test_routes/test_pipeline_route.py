@@ -188,3 +188,78 @@ def test_pipeline_status_missing_returns_error(seeded_db):
     with TestClient(app) as client:
         r = client.get("/pipeline/status/99999", headers={"HX-Request": "true"})
     assert r.status_code == 404
+
+
+def test_post_prices_refresh_emits_three_oob_regions(seeded_db, monkeypatch):
+    cfg, cfg_path = seeded_db
+    from swing.web.price_cache import PriceCache
+    calls = {"refresh": 0, "reset": 0}
+    orig_refresh = PriceCache.refresh_all
+    orig_reset = PriceCache.reset_circuit_breaker
+    def wrapped_refresh(self, tickers):
+        calls["refresh"] += 1
+        return orig_refresh(self, tickers)
+    def wrapped_reset(self):
+        calls["reset"] += 1
+        return orig_reset(self)
+    monkeypatch.setattr(PriceCache, "refresh_all", wrapped_refresh)
+    monkeypatch.setattr(PriceCache, "reset_circuit_breaker", wrapped_reset)
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {})
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/prices/refresh", headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    # Three oob containers with the expected IDs.
+    for marker in ("status-strip", "open-positions", "watchlist-top5"):
+        assert f'id="{marker}"' in r.text
+    assert "hx-swap-oob" in r.text
+    assert calls["refresh"] == 1
+    # Manual refresh resets the breaker (R2 Major 2).
+    assert calls["reset"] == 1
+
+
+def test_post_prices_refresh_bypasses_degraded_mode(seeded_db, monkeypatch):
+    """User-clicked Refresh now must force a live-fetch attempt even when
+    the breaker is tripped. This test narrowly asserts that
+    `reset_circuit_breaker` WAS called before `refresh_all` rebuilds the
+    VM — it does NOT assert the breaker stays un-tripped after the route
+    returns, because the rebuild might immediately re-trip on a fresh
+    fetch failure (that is correct behavior and independent of the
+    bypass-on-refresh contract) — R3 Minor 1."""
+    cfg, cfg_path = seeded_db
+    from swing.web.price_cache import PriceCache
+
+    call_order: list[str] = []
+    orig_reset = PriceCache.reset_circuit_breaker
+    orig_refresh = PriceCache.refresh_all
+
+    def wrapped_reset(self):
+        call_order.append("reset")
+        return orig_reset(self)
+
+    def wrapped_refresh(self, tickers):
+        call_order.append("refresh")
+        return orig_refresh(self, tickers)
+
+    monkeypatch.setattr(PriceCache, "reset_circuit_breaker", wrapped_reset)
+    monkeypatch.setattr(PriceCache, "refresh_all", wrapped_refresh)
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {})
+
+    app = create_app(cfg, cfg_path)
+    # Trip the breaker on the app's cache.
+    for _ in range(20):
+        app.state.price_cache._record_outcome(success=False)
+    app.state.price_cache._maybe_trip_breaker()
+    assert app.state.price_cache.is_degraded()
+
+    with TestClient(app) as client:
+        r = client.post("/prices/refresh", headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    # Reset was called BEFORE refresh (operator override before re-populate).
+    assert call_order[:2] == ["reset", "refresh"], (
+        f"expected reset then refresh, got {call_order}"
+    )
