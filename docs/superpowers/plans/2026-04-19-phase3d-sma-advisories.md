@@ -8,7 +8,7 @@
 
 **Tech Stack:** FastAPI + HTMX 2.x (existing), Jinja2 (autoescape via `_build_templates` Phase 3c helper), yfinance for OHLCV, pandas for SMA math (already in dependency tree via weather classifier). Python 3.14, Windows 11, gitbash. All commits go to `main`. Conventional commits (`feat(web):`, `fix(data):`, `refactor(...)`, etc.), NO Claude co-author footer, NO `--no-verify`.
 
-**Baseline:** Phase 3c shipped at commit `3e934ef`. Spec committed + Codex-approved at `c3d65df` (5 rounds, NO_NEW_CRITICAL_MAJOR). 444 fast tests green. Target: **~465** fast tests after Phase 3d.
+**Baseline:** Phase 3c shipped at commit `3e934ef`. Spec committed + Codex-approved at `c3d65df` (5 rounds, NO_NEW_CRITICAL_MAJOR). 444 fast tests green. Target: **~484** fast tests after Phase 3d (spec §10 projected ~465; this plan lands ~20 above because breaker coverage, in-progress-bar strip, and pipeline pass-through got more granular).
 
 ---
 
@@ -77,7 +77,7 @@ tests/
 │                                     #   double for ohlcv_cache.
 ```
 
-**Target test count:** 444 (end of 3c) + ~21 = **~465 fast tests** (spec §10).
+**Target test count:** 444 (end of 3c) + ~40 = **~484 fast tests** (spec §10 projected ~465; per-task math cascades to 484 — see §Task 18 summary).
 
 ---
 
@@ -697,8 +697,11 @@ from swing.cli import main
 def test_trade_advisory_accepts_sma50_and_previous_close(tmp_path: Path, monkeypatch):
     """The command accepts --sma50 and --previous-close and plumbs them
     into AdvisoryContext. Exit code 0; output references 50MA EXIT rule."""
-    # Minimal config + db setup mirroring existing CLI test pattern.
     from tests.cli.test_cli_eval import _minimal_config
+    from swing.data.db import connect
+    from swing.data.repos.trades import insert_trade_with_event
+    from swing.data.models import Trade
+
     project = tmp_path / "project"
     project.mkdir()
     home = tmp_path / "home"
@@ -706,17 +709,30 @@ def test_trade_advisory_accepts_sma50_and_previous_close(tmp_path: Path, monkeyp
     cfg = _minimal_config(project, home)
     runner = CliRunner()
     runner.invoke(main, ["--config", str(cfg), "db-migrate"])
-    # Seed an open trade so trade-advisory has something to act on.
-    runner.invoke(main, [
-        "--config", str(cfg), "trade", "enter",
-        "--ticker", "AAPL", "--entry-date", "2026-04-15",
-        "--entry-price", "180.0", "--shares", "10",
-        "--initial-stop", "170.0", "--rationale", "seed",
-    ])
+
+    # Seed an open trade by direct repo call — avoids coupling this test
+    # to the `swing trade entry` CLI (the real command name; the previous
+    # plan draft used `trade enter` which does not exist).
+    from swing.config import load as load_cfg
+    loaded_cfg = load_cfg(cfg)
+    conn = connect(loaded_cfg.paths.db_path)
+    try:
+        with conn:
+            trade = Trade(
+                id=None, ticker="AAPL", entry_date="2026-04-15",
+                entry_price=180.0, initial_shares=10,
+                initial_stop=170.0, current_stop=170.0,
+                status="open", watchlist_entry_target=None,
+                watchlist_initial_stop=None, notes=None,
+            )
+            tid = insert_trade_with_event(conn, trade, event_ts="2026-04-15T09:30:00")
+    finally:
+        conn.close()
+
     # Run advisory with SMA50 + previous-close.
     r = runner.invoke(main, [
         "--config", str(cfg), "trade", "advisory",
-        "--trade-id", "1",
+        "--trade-id", str(tid),
         "--current-price", "200.0",
         "--sma10", "198.0",
         "--sma20", "196.0",
@@ -1156,9 +1172,23 @@ class OhlcvCache:
 
         Spec §4.3: each ticker's outcome (success if bundle produced, failure
         if deadline miss OR fetch raised) is recorded in the sliding window.
+
+        Degraded short-circuit (R2 Major 2 resolution): when the breaker is
+        tripped, skip executor submission entirely — every ticker gets
+        `OhlcvBundle.empty()` without a fetch, reducing load on the failing
+        yfinance endpoint. `is_degraded()` auto-clears the window after the
+        cooldown expires so recovery can proceed.
         """
-        now = time.monotonic()
         normalized = [t.upper() for t in tickers]
+
+        # R2 Major 2: degraded short-circuit BEFORE any executor submission.
+        # Reduces load on yfinance during outages. Cooldown auto-clears the
+        # window via is_degraded(), so recovery happens naturally once the
+        # cooldown expires and fresh fetches start flowing.
+        if self.is_degraded():
+            return {t: OhlcvBundle.empty(fetched_at=time.monotonic()) for t in normalized}
+
+        now = time.monotonic()
         out: dict[str, OhlcvBundle] = {}
         to_fetch: list[str] = []
 
@@ -1171,28 +1201,33 @@ class OhlcvCache:
                 else:
                     to_fetch.append(t)
 
+        # Record one "success" outcome per cache hit (cache hits count as
+        # successful data acquisition for breaker accounting).
+        for _ in range(len(normalized) - len(to_fetch)):
+            self._record_outcome(success=True)
+
         if not to_fetch:
-            # All hits — every ticker counts as a success in the window.
-            for _ in normalized:
-                self._record_outcome(success=True)
             self._maybe_trip_breaker()
             return out
 
         # Dispatch misses.
         futures: dict[Future, str] = {}
         for t in to_fetch:
-            fut = executor.submit(self._fetch_bundle_semaphored, t)
+            fut = executor.submit(self._fetch_bundle_worker, t)
             futures[fut] = t
 
         deadline = time.monotonic() + deadline_seconds
         remaining = max(0.0, deadline - time.monotonic())
         done, pending = wait(list(futures.keys()), timeout=remaining)
 
-        # Completed fetches.
+        # Completed-in-deadline fetches — request thread owns the cache write
+        # (R1 Critical 1 resolution: worker MUST NOT mutate _store, because
+        # `fut.cancel()` on a running worker is a no-op and a late-completing
+        # worker would otherwise overwrite the empty bundle we just reported).
         for fut in done:
             t = futures[fut]
             try:
-                bundle = fut.result(timeout=0)  # already done
+                bundle = fut.result(timeout=0)
             except Exception as exc:
                 log.warning("ohlcv fetch raised for %s: %s", t, exc)
                 bundle = OhlcvBundle.empty(fetched_at=time.monotonic())
@@ -1206,28 +1241,36 @@ class OhlcvCache:
                 )
             )
             self._record_outcome(success=success)
+            # Cache only successful bundles, and ONLY from the request thread
+            # (for futures that completed in time). Late workers' results are
+            # discarded — their bundle is never visible to the caller OR the
+            # cache.
+            if success:
+                fetched = bundle.fetched_at
+                with self._lock:
+                    self._store[t] = (bundle, fetched)
 
-        # Deadline misses.
+        # Deadline misses — worker may still be running but its result will
+        # be discarded (we do not read its future again).
         for fut in pending:
             t = futures[fut]
-            fut.cancel()
+            fut.cancel()   # may or may not stop it; worker's result is ignored either way
             out[t] = OhlcvBundle.empty(fetched_at=time.monotonic())
             self._record_outcome(success=False)
-
-        # Cache-hit successes we already returned above.
-        hit_count = len(normalized) - len(to_fetch)
-        for _ in range(hit_count):
-            self._record_outcome(success=True)
 
         self._maybe_trip_breaker()
         return out
 
     def is_degraded(self) -> bool:
+        """Return True if the breaker is currently tripped. Auto-clears the
+        failure window when the cooldown expires so the next fetch attempt
+        starts with a clean slate (recovery path — R2 Major 2)."""
         with self._lock:
-            return (
-                self._degraded_until is not None
-                and time.monotonic() < self._degraded_until
-            )
+            if self._degraded_until is not None and time.monotonic() >= self._degraded_until:
+                # Cooldown expired — reset state for recovery.
+                self._failure_window.clear()
+                self._degraded_until = None
+            return self._degraded_until is not None
 
     def reset_circuit_breaker(self) -> None:
         """Clear degraded state + failure window. Phase 3d doesn't call this
@@ -1238,29 +1281,24 @@ class OhlcvCache:
 
     # ---------- internals ----------
 
-    def _fetch_bundle_semaphored(self, ticker: str) -> OhlcvBundle:
-        """Acquire the semaphore, fetch bars, build the bundle. Releases the
-        semaphore before returning (or on exception)."""
+    def _fetch_bundle_worker(self, ticker: str) -> OhlcvBundle:
+        """Worker: acquire semaphore, fetch bars, build bundle. Pure return —
+        does NOT touch self._store (cache writes happen on the request thread
+        in get_many_bundles; see R1 Critical 1)."""
         with self._sema:
             bars = ohlcv_mod.fetch_daily_bars(ticker, n_bars=60)
             now = time.monotonic()
             if bars is None:
-                # Do NOT cache an empty bundle — let the next call re-attempt.
                 return OhlcvBundle.empty(fetched_at=now)
             smas = ohlcv_mod.compute_smas(bars, [10, 20, 50])
             prev = ohlcv_mod.previous_close(bars)
-            bundle = OhlcvBundle(
+            return OhlcvBundle(
                 sma10=smas.get(10),
                 sma20=smas.get(20),
                 sma50=smas.get(50),
                 previous_close=prev,
                 fetched_at=now,
             )
-            # Only cache successful bundles.
-            if any(v is not None for v in (bundle.sma10, bundle.sma20, bundle.sma50, bundle.previous_close)):
-                with self._lock:
-                    self._store[ticker] = (bundle, now)
-            return bundle
 
     def _record_outcome(self, *, success: bool) -> None:
         with self._lock:
@@ -1640,6 +1678,27 @@ Spec §3.4 + §2.3. The dashboard's VM builder receives `ohlcv_cache`, calls it 
 Append to `tests/web/test_view_models/test_dashboard.py`:
 
 ```python
+def _seed_open_trade_direct(cfg, *, ticker: str, entry_price: float, shares: int) -> int:
+    """Helper: insert an open trade via the repo, returning its id. Avoids
+    coupling this test to any specific CLI command name."""
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            trade = Trade(
+                id=None, ticker=ticker, entry_date="2026-04-15",
+                entry_price=entry_price, initial_shares=shares,
+                initial_stop=entry_price * 0.95, current_stop=entry_price * 0.95,
+                status="open", watchlist_entry_target=None,
+                watchlist_initial_stop=None, notes=None,
+            )
+            return insert_trade_with_event(conn, trade, event_ts="2026-04-15T09:30:00")
+    finally:
+        conn.close()
+
+
 def test_build_dashboard_plumbs_ohlcv_bundle_into_advisory_context(
     test_cfg, seeded_db, monkeypatch,
 ):
@@ -1650,12 +1709,12 @@ def test_build_dashboard_plumbs_ohlcv_bundle_into_advisory_context(
     from swing.web.ohlcv_cache import OhlcvBundle, OhlcvCache
 
     cfg, _ = test_cfg
-
-    # Seed one open trade + one stub live price.
-    _seed_open_trade(cfg, ticker="AAPL", entry_price=180.0, shares=10)
+    _seed_open_trade_direct(cfg, ticker="AAPL", entry_price=180.0, shares=10)
 
     # Patch the ohlcv_cache to return a canned bundle.
-    def fake_bundles(tickers, *, deadline_seconds, executor):
+    # NB: monkeypatching a CLASS METHOD — the first arg is `self`, so the
+    # fake MUST accept it (Codex R1 Major 4 correction).
+    def fake_bundles(self, tickers, *, deadline_seconds, executor):
         return {t: OhlcvBundle(sma10=198.0, sma20=196.0, sma50=195.0,
                                 previous_close=190.0, fetched_at=0.0)
                 for t in tickers}
@@ -1720,7 +1779,7 @@ def test_build_dashboard_reflects_ohlcv_degraded_flag(test_cfg, seeded_db, monke
     assert vm.ohlcv_source_degraded is True
 ```
 
-If `_seed_open_trade` helper doesn't exist in this test file, use whatever the neighbor tests use to seed an open trade (likely a fixture or a `conn.execute(INSERT ...)` block). Inspect the existing file and follow the local pattern.
+Use `_seed_open_trade_direct` (defined above in this test file) — it's the local helper that inserts an open trade via the repo. `test_cfg` + `seeded_db` are existing conftest fixtures that give you a config and a migrated DB respectively.
 
 - [ ] **Step 2: Verify tests fail**
 
@@ -1729,17 +1788,21 @@ Expected: FAIL — `build_dashboard` doesn't accept `ohlcv_cache` kwarg yet.
 
 - [ ] **Step 3: Update `build_dashboard` signature + body**
 
-In `swing/web/view_models/dashboard.py`, change the signature:
+In `swing/web/view_models/dashboard.py`, change the signature. **The `ohlcv_cache` kwarg is OPTIONAL with a `None` default** so existing production call sites (dashboard route, 2× trades route, pipeline route) remain callable until Tasks 14-15 wire them — the codebase stays green between T12 and T14/15 (R2 Major 1 resolution):
 
 ```python
-def build_dashboard(*, cfg: Config, cache: PriceCache, ohlcv_cache, executor) -> DashboardVM:
-    """Read state + prices + OHLCV bundles, return a frozen VM. `executor`
-    may be None in tests (each cache's get_many falls back to serial behavior
-    via monkeypatched fixtures).
+def build_dashboard(
+    *, cfg: Config, cache: PriceCache, executor, ohlcv_cache=None,
+) -> DashboardVM:
+    """Read state + prices + OHLCV bundles, return a frozen VM.
+
+    When `ohlcv_cache=None` (transitional — wired in T14/15), the OHLCV fetch
+    is skipped and all SMA fields fall through to None, so the dashboard
+    renders without SMA advisories. `executor` may be None in tests.
     """
 ```
 
-Inside the body, **after** the existing `prices = cache.get_many(...)` call (around line 137-141), add the parallel OHLCV fetch:
+Inside the body, **after** the existing `prices = cache.get_many(...)` call (around line 137-141), add the conditional OHLCV fetch:
 
 ```python
     prices = cache.get_many(
@@ -1750,11 +1813,15 @@ Inside the body, **after** the existing `prices = cache.get_many(...)` call (aro
     # Sequential top-level call (spec §2.2) — each cache internally parallelizes
     # per-ticker fetches across the executor. Sequential ordering prevents a
     # nested-futures deadlock and starvation under small executor pools.
-    bundles = ohlcv_cache.get_many_bundles(
-        sorted(active_tickers),
-        deadline_seconds=cfg.web.price_fetch_deadline_seconds,
-        executor=executor,
-    )
+    # When ohlcv_cache is None (transitional — pre-T14/15 callers), skip the
+    # fetch entirely; bundles stays empty so SMA rules no-op gracefully.
+    bundles: dict = {}
+    if ohlcv_cache is not None:
+        bundles = ohlcv_cache.get_many_bundles(
+            sorted(active_tickers),
+            deadline_seconds=cfg.web.price_fetch_deadline_seconds,
+            executor=executor,
+        )
 ```
 
 Change the per-trade `AdvisoryContext` construction (around line 159-166) to pull from the bundle:
@@ -1776,7 +1843,7 @@ Change the per-trade `AdvisoryContext` construction (around line 159-166) to pul
         raw = compute_all_suggestions(t, ctx_adv) if snap else []
 ```
 
-At the end, populate `DashboardVM.ohlcv_source_degraded`:
+At the end, populate `DashboardVM.ohlcv_source_degraded` — guarded so `None` callers don't crash:
 
 ```python
     degraded_until = cache.degraded_until()
@@ -1799,7 +1866,9 @@ At the end, populate `DashboardVM.ohlcv_source_degraded`:
         price_source_degraded_until=(
             degraded_until.isoformat(timespec="seconds") if degraded_until else None
         ),
-        ohlcv_source_degraded=ohlcv_cache.is_degraded(),     # NEW
+        ohlcv_source_degraded=(
+            ohlcv_cache.is_degraded() if ohlcv_cache is not None else False
+        ),                                                       # NEW
         open_trade_rows=open_trade_rows,
     )
 ```
@@ -1917,16 +1986,17 @@ Expected: FAIL — `build_open_positions_row` doesn't accept `ohlcv_cache`.
 
 - [ ] **Step 3: Update `build_open_positions_row`**
 
-In `swing/web/view_models/open_positions_row.py`, change the signature:
+In `swing/web/view_models/open_positions_row.py`, change the signature. **`ohlcv_cache` is OPTIONAL with a `None` default** so existing call sites in `swing/web/routes/trades.py` (4 sites) remain callable until Task 15 wires them (R2 Major 1 resolution):
 
 ```python
 def build_open_positions_row(
-    *, trade: Trade, cfg: Config, cache: PriceCache, ohlcv_cache, executor,
+    *, trade: Trade, cfg: Config, cache: PriceCache, executor,
+    ohlcv_cache=None,
     conn: sqlite3.Connection | None = None,
 ) -> OpenPositionsRowVM:
 ```
 
-Update the body (around line 73-110). After `snapshot = prices.get(trade.ticker)` (line 78), add the OHLCV fetch:
+Update the body (around line 73-110). After `snapshot = prices.get(trade.ticker)` (line 78), add the conditional OHLCV fetch:
 
 ```python
     prices = cache.get_many(
@@ -1935,13 +2005,16 @@ Update the body (around line 73-110). After `snapshot = prices.get(trade.ticker)
         executor=executor,
     )
     snapshot = prices.get(trade.ticker)
-    # Sequential OHLCV fetch (spec §2.2).
-    bundles = ohlcv_cache.get_many_bundles(
-        [trade.ticker],
-        deadline_seconds=cfg.web.price_fetch_deadline_seconds,
-        executor=executor,
-    )
-    bundle = bundles.get(trade.ticker)
+    # Sequential OHLCV fetch (spec §2.2). When ohlcv_cache is None (pre-T15
+    # callers), skip the fetch; bundle stays None so SMA rules no-op.
+    bundle = None
+    if ohlcv_cache is not None:
+        bundles = ohlcv_cache.get_many_bundles(
+            [trade.ticker],
+            deadline_seconds=cfg.web.price_fetch_deadline_seconds,
+            executor=executor,
+        )
+        bundle = bundles.get(trade.ticker)
 ```
 
 Update the `AdvisoryContext` construction (around line 98-106):
@@ -1993,16 +2066,22 @@ git commit -m "feat(web): build_open_positions_row accepts ohlcv_cache + plumbs 
 
 ---
 
-## Task 14: Dashboard route passes `ohlcv_cache`
+## Task 14: All `build_dashboard` production call sites thread `ohlcv_cache`
 
 **Files:**
-- Modify: `swing/web/routes/dashboard.py`
+- Modify: `swing/web/routes/dashboard.py` (1 call site)
+- Modify: `swing/web/routes/trades.py` (2 `build_dashboard` call sites around lines 242 + 338)
+- Modify: `swing/web/routes/pipeline.py` (1 `build_dashboard` call site around line 309, inside `prices_refresh`)
 
-Spec §2.1. Route reads `request.app.state.ohlcv_cache` and passes to `build_dashboard`.
+Spec §2.1. All four production call sites of `build_dashboard` must pass `ohlcv_cache` (R2 Major 1 resolution — Codex flagged that the earlier plan missed trades ×2 and pipeline's `prices_refresh` handler).
 
-- [ ] **Step 1: Update the route**
+- [ ] **Step 1: Grep call sites to confirm**
 
-In `swing/web/routes/dashboard.py`:
+Run: `grep -n "build_dashboard(" swing/web/routes/ -r`
+
+Expected output lists 4 call sites: `dashboard.py:17`, `trades.py:242`, `trades.py:338`, `pipeline.py:309`.
+
+- [ ] **Step 2: Update the `/` route (dashboard.py)**
 
 ```python
 @router.get("/", response_class=HTMLResponse)
@@ -2012,24 +2091,58 @@ def index(request: Request):
     ohlcv_cache = request.app.state.ohlcv_cache                   # NEW
     executor = request.app.state.price_fetch_executor
     vm = build_dashboard(
-        cfg=cfg, cache=cache, ohlcv_cache=ohlcv_cache,            # NEW kwarg
-        executor=executor,
+        cfg=cfg, cache=cache, executor=executor,
+        ohlcv_cache=ohlcv_cache,                                  # NEW kwarg
     )
     return request.app.state.templates.TemplateResponse(
         request, "dashboard.html.j2", {"vm": vm},
     )
 ```
 
-- [ ] **Step 2: Run full fast suite**
+- [ ] **Step 3: Update the two `build_dashboard` call sites in trades.py**
+
+At each of the two lines (around 242 and 338), change:
+
+```python
+    dashboard_vm = build_dashboard(cfg=cfg, cache=cache, executor=executor)
+```
+
+To:
+
+```python
+    dashboard_vm = build_dashboard(
+        cfg=cfg, cache=cache, executor=executor,
+        ohlcv_cache=request.app.state.ohlcv_cache,                # NEW
+    )
+```
+
+- [ ] **Step 4: Update the `prices_refresh` call site in pipeline.py**
+
+At line ~309 in `swing/web/routes/pipeline.py`, change:
+
+```python
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=executor)
+```
+
+To:
+
+```python
+    vm = build_dashboard(
+        cfg=cfg, cache=cache, executor=executor,
+        ohlcv_cache=request.app.state.ohlcv_cache,                # NEW
+    )
+```
+
+- [ ] **Step 5: Run full fast suite**
 
 Run: `python -m pytest -m "not slow" -q`
-Expected: 476 passed. Dashboard integration tests that enter the app lifespan (`with TestClient(app) as client:`) now get a real `OhlcvCache`; tests that monkeypatched `OhlcvCache.get_many_bundles` still work.
+Expected: 476 passed. Dashboard + trades + prices-refresh integration tests now exercise the full OHLCV plumbing on the real app.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add swing/web/routes/dashboard.py
-git commit -m "feat(web): / route threads ohlcv_cache into build_dashboard"
+git add swing/web/routes/dashboard.py swing/web/routes/trades.py swing/web/routes/pipeline.py
+git commit -m "feat(web): all build_dashboard call sites thread ohlcv_cache"
 ```
 
 ---
@@ -2216,11 +2329,30 @@ Spec §5.4. Integration tests that exercise the full `GET /` path with a monkeyp
 
 - [ ] **Step 1: Write tests**
 
-Append to `tests/web/test_dashboard_integration.py`:
+Append to `tests/web/test_dashboard_integration.py`. Each test uses the same direct-seed helper pattern as Task 12's `_seed_open_trade_direct`. Define a local copy at the top of the appended block (or import from `tests.web.test_view_models.test_dashboard` if already available there):
 
 ```python
+def _seed_open_trade_direct(cfg, *, ticker: str, entry_price: float, shares: int) -> int:
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            trade = Trade(
+                id=None, ticker=ticker, entry_date="2026-04-15",
+                entry_price=entry_price, initial_shares=shares,
+                initial_stop=entry_price * 0.95, current_stop=entry_price * 0.95,
+                status="open", watchlist_entry_target=None,
+                watchlist_initial_stop=None, notes=None,
+            )
+            return insert_trade_with_event(conn, trade, event_ts="2026-04-15T09:30:00")
+    finally:
+        conn.close()
+
+
 def test_get_dashboard_renders_sma_advisories_from_full_bundle(
-    test_cfg, seeded_db, seed_open_trade, monkeypatch,
+    test_cfg, seeded_db, monkeypatch,
 ):
     """Spec §5.4: when OhlcvCache returns a full bundle, SMA50 EXIT rule
     fires and the advisory message appears in the rendered page."""
@@ -2228,7 +2360,8 @@ def test_get_dashboard_renders_sma_advisories_from_full_bundle(
     from swing.web.price_cache import PriceCache, PriceSnapshot
     from datetime import datetime
 
-    seed_open_trade(ticker="AAPL", entry_price=180.0, shares=10)
+    cfg, _ = test_cfg
+    _seed_open_trade_direct(cfg, ticker="AAPL", entry_price=180.0, shares=10)
 
     monkeypatch.setattr(
         OhlcvCache, "get_many_bundles",
@@ -2264,7 +2397,7 @@ def test_get_dashboard_renders_sma_advisories_from_full_bundle(
 
 
 def test_get_dashboard_absent_advisories_on_all_none_bundle(
-    test_cfg, seeded_db, seed_open_trade, monkeypatch,
+    test_cfg, seeded_db, monkeypatch,
 ):
     """Spec §5.4: all-None bundle (deadline miss) → SMA advisories absent,
     but page still renders."""
@@ -2272,7 +2405,8 @@ def test_get_dashboard_absent_advisories_on_all_none_bundle(
     from swing.web.price_cache import PriceCache, PriceSnapshot
     from datetime import datetime
 
-    seed_open_trade(ticker="AAPL", entry_price=180.0, shares=10)
+    cfg, _ = test_cfg
+    _seed_open_trade_direct(cfg, ticker="AAPL", entry_price=180.0, shares=10)
 
     monkeypatch.setattr(
         OhlcvCache, "get_many_bundles",
@@ -2305,7 +2439,7 @@ def test_get_dashboard_absent_advisories_on_all_none_bundle(
 
 
 def test_get_dashboard_partial_bundle_sma10_only_renders_only_10ma_rules(
-    test_cfg, seeded_db, seed_open_trade, monkeypatch,
+    test_cfg, seeded_db, monkeypatch,
 ):
     """Spec §5.4: a partial bundle (SMA10 only, rest None) → only 10MA rules
     fire. SMA20 and SMA50 rules silently no-op."""
@@ -2313,7 +2447,8 @@ def test_get_dashboard_partial_bundle_sma10_only_renders_only_10ma_rules(
     from swing.web.price_cache import PriceCache, PriceSnapshot
     from datetime import datetime
 
-    seed_open_trade(ticker="AAPL", entry_price=180.0, shares=10)
+    cfg, _ = test_cfg
+    _seed_open_trade_direct(cfg, ticker="AAPL", entry_price=180.0, shares=10)
 
     monkeypatch.setattr(
         OhlcvCache, "get_many_bundles",
@@ -2349,7 +2484,7 @@ def test_get_dashboard_partial_bundle_sma10_only_renders_only_10ma_rules(
     assert "50MA" not in r.text
 ```
 
-If the `seed_open_trade` fixture doesn't exist, look at existing tests in this file to see how trades are seeded (likely a local helper or direct DB insert); define the fixture at module level or use the existing pattern.
+(The `_seed_open_trade_direct` helper defined above at the top of the appended block is module-local. If another test-file already provides an equivalent helper you prefer to reuse, import it; otherwise keep the local copy.)
 
 - [ ] **Step 2: Run the new tests**
 
