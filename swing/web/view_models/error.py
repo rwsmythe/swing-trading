@@ -15,3 +15,4 @@ class PageErrorVM:
     price_source_degraded: bool = False   # degraded-cache banner not shown
     status_code: int = 400
     detail: str = "Invalid request"
+    ohlcv_source_degraded: bool = False              # NEW (Phase 3d §3.4)

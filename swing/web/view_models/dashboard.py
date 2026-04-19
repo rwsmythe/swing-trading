@@ -64,6 +64,7 @@ class DashboardVM:
     prices_generated_at: str
     price_source_degraded: bool
     price_source_degraded_until: str | None
+    ohlcv_source_degraded: bool = False              # NEW (Phase 3d §3.4)
     # Additive field — populated by Task 6 refactor. Default preserves backward
     # compat for any caller that constructs DashboardVM without this argument.
     open_trade_rows: Mapping[int, object] = field(default_factory=dict)

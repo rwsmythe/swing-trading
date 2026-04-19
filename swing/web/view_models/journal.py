@@ -29,6 +29,7 @@ class JournalVM:
     stale_banner: str | None = None
     price_source_degraded: bool = False
     price_source_degraded_until: str | None = None
+    ohlcv_source_degraded: bool = False              # NEW (Phase 3d §3.4)
 
 
 def build_journal(*, cfg: Config, period: str = "month") -> JournalVM:

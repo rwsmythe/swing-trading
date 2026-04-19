@@ -26,6 +26,7 @@ class WatchlistVM:
     price_source_degraded: bool
     price_source_degraded_until: str | None
     stale_banner: str | None = None   # placeholder — populated only on the main dashboard
+    ohlcv_source_degraded: bool = False              # NEW (Phase 3d §3.4)
 
 
 @dataclass(frozen=True)
