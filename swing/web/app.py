@@ -86,6 +86,7 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
         OriginGuardMiddleware,
         bound_host=cfg.web.host,
         bound_port=cfg.web.port,
+        strict=True,
     )
     # RequestId added AFTER OriginGuard → Starlette LIFO makes it OUTERMOST,
     # so 403 responses from OriginGuard still get X-Request-ID stamped.

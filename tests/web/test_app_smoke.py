@@ -55,3 +55,23 @@ def test_create_app_origin_guard_blocks_cross_origin_post(test_cfg):
     client = TestClient(app)
     r = client.post("/_test_probe", headers={"Origin": "http://evil.example"})
     assert r.status_code == 403
+
+
+def test_create_app_origin_guard_strict_rejects_referer_only_post(test_cfg):
+    """Under strict mode, POST with only Referer (no HX-Request) → 403.
+    Proves create_app wires strict=True."""
+    from fastapi.testclient import TestClient
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+
+    @app.post("/_strict_probe")
+    def _probe():
+        return {"ok": True}
+
+    client = TestClient(app)
+    r = client.post(
+        "/_strict_probe",
+        headers={"Referer": f"http://{cfg.web.host}:{cfg.web.port}/dashboard"},
+    )
+    assert r.status_code == 403
+    assert "strict" in r.text.lower()
