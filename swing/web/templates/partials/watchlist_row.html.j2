@@ -1,5 +1,6 @@
 {#- Expects: w (WatchlistEntry), price (PriceSnapshot|None), tags (tuple[str]) -#}
-<tr hx-get="/watchlist/{{ w.ticker }}/expand" hx-swap="outerHTML"
+<tr id="watchlist-row-{{ w.ticker }}"
+    hx-get="/watchlist/{{ w.ticker }}/expand" hx-swap="outerHTML"
     hx-headers='{"HX-Request": "true"}'>
   <td>
     {% if price and w.entry_target and price.price >= w.entry_target * 0.99 %}⚡{% endif %}

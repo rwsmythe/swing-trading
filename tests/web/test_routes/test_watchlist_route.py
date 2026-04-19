@@ -61,3 +61,21 @@ def test_watchlist_expand_unknown_ticker_404(seeded_db, monkeypatch):
     with TestClient(app) as client:
         r = client.get("/watchlist/NOPE/expand", headers={"HX-Request": "true"})
     assert r.status_code == 404
+
+
+def test_watchlist_row_has_ticker_id_for_hx_target(seeded_db, monkeypatch):
+    """Spec §3.1: watchlist row `<tr>` gains id='watchlist-row-<ticker>' so HTMX
+    populates HX-Target when the Enter button fires, letting the row-prefix
+    whitelist engage for error responses."""
+    cfg, cfg_path = seeded_db
+    _seed_one_watchlist(cfg)
+    from swing.web.price_cache import PriceCache
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {})
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/watchlist")
+    assert r.status_code == 200
+    assert 'id="watchlist-row-AAPL"' in r.text
