@@ -1,0 +1,6 @@
+No.,Ticker,Sector,Industry,Country,Price,Change,Average Volume,Relative Volume,Average True Range,52-Week High,52-Week Low,Market Cap
+1,AAPL,Technology,Consumer Electronics,USA,180.00,2.50%,200000,1.5,5.00,200.00,150.00,3000000000
+2,MSFT,Technology,Software - Infrastructure,USA,420.00,1.50%,250000,1.2,4.50,440.00,330.00,3500000000
+3,NVDA,Technology,Semiconductors,USA,900.00,3.00%,300000,1.8,25.00,950.00,450.00,2200000000
+4,GOOG,Communication Services,Internet Content,USA,165.00,0.80%,180000,0.9,3.00,180.00,130.00,2000000000
+5,META,Communication Services,Internet Content,USA,520.00,-0.50%,220000,1.1,12.00,540.00,310.00,1300000000

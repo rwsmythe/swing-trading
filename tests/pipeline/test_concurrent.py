@@ -43,6 +43,62 @@ def test_acquire_succeeds_after_release(tmp_path: Path):
     second.release(state="complete")
 
 
+def test_stale_heartbeat_still_blocks_without_force_clear(tmp_path: Path):
+    """Spec §5.1 step 1: when the prior run's heartbeat is older than the
+    block threshold it becomes eligible for admin force-clear — but it does
+    NOT auto-takeover. A concurrent attempt with a stale predecessor still
+    raises ConcurrentRunBlocked (via ux_pipeline_one_running partial unique
+    index) until force_clear moves state out of 'running'. Completes the
+    H3 coverage of the two lease-gate branches (adversarial review Batch 5
+    Round 1 Major 3)."""
+    import sqlite3
+    from datetime import datetime, timedelta
+
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+    # Seed a 'running' row with a stale heartbeat (10 minutes ago > 120s).
+    stale_hb = (datetime.now() - timedelta(seconds=600)).isoformat(timespec="seconds")
+    conn = sqlite3.connect(db)
+    try:
+        from swing.data.repos.pipeline import insert_pipeline_run
+        with conn:
+            insert_pipeline_run(
+                conn, started_ts=stale_hb, trigger="scheduled",
+                data_asof_date="2026-04-15", action_session_date="2026-04-16",
+                lease_heartbeat_ts=stale_hb,
+            )
+    finally:
+        conn.close()
+
+    # A new acquire MUST still block — stale heartbeat skips the explicit
+    # ConcurrentRunBlocked raise, but the partial unique index refuses the
+    # INSERT (state='running' already), surfaced via sqlite3.IntegrityError
+    # → remapped to ConcurrentRunBlocked.
+    with pytest.raises(ConcurrentRunBlocked):
+        acquire_lease(
+            db_path=db, trigger="manual",
+            data_asof_date="2026-04-15", action_session_date="2026-04-16",
+            block_threshold_seconds=120,
+        )
+
+    # After force_clear (state moves to 'force_cleared'), a new acquire
+    # succeeds — the partial unique index only guards against state='running'.
+    from swing.data.repos.pipeline import force_clear, list_recent_runs
+    conn = sqlite3.connect(db)
+    try:
+        runs = list_recent_runs(conn, limit=1)
+        assert runs[0].state == "running"
+        with conn:
+            force_clear(conn, run_id=runs[0].id, error_message="test force-clear")
+    finally:
+        conn.close()
+    new_lease = acquire_lease(
+        db_path=db, trigger="manual",
+        data_asof_date="2026-04-15", action_session_date="2026-04-16",
+    )
+    new_lease.release(state="complete")
+
+
 def test_concurrent_acquire_exactly_one_wins(tmp_path: Path):
     """True-contention test: N threads race acquire_lease against the same DB.
     Each thread HOLDS the lease (doesn't release) so the invariant "exactly one

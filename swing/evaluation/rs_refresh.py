@@ -1,9 +1,18 @@
 """Manual quarterly RS universe refresh (spec §4.1)."""
 from __future__ import annotations
 
+import re
 import shutil
 from datetime import date
 from pathlib import Path
+
+
+_HTTP_TIMEOUT_SECONDS = 30
+# Filename-safe version characters per spec §4.1 (`YYYY-MM-DD-<n>`) plus the
+# Phase 1 scaffold form (`test-v1`). Enforced when deriving the snapshot path
+# so a corrupted/edited header cannot create a path-traversing filename
+# (adversarial review Batch 5 Round 1 Major 2).
+_SAFE_VERSION_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
 
 
 def fetch_source_tickers(source: str) -> list[str]:
@@ -25,18 +34,29 @@ def _fetch_spx_ndx() -> list[str]:
     ndx_url = "https://en.wikipedia.org/wiki/Nasdaq-100"
 
     req = urllib.request.Request(spx_url, headers=headers)
-    with urllib.request.urlopen(req) as r:
+    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_SECONDS) as r:
         spx_html = r.read().decode("utf-8")
     spx_tables = pd.read_html(StringIO(spx_html))
+    if not spx_tables or "Symbol" not in spx_tables[0].columns:
+        raise RuntimeError(
+            "S&P 500 Wikipedia page layout changed — no 'Symbol' column in the "
+            "first table. Refresh rs_refresh._fetch_spx_ndx when this happens."
+        )
     spx = spx_tables[0]["Symbol"].astype(str).str.replace(".", "-").tolist()
 
     req = urllib.request.Request(ndx_url, headers=headers)
-    with urllib.request.urlopen(req) as r:
+    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_SECONDS) as r:
         ndx_html = r.read().decode("utf-8")
     ndx_tables = pd.read_html(StringIO(ndx_html))
-    ndx_table = next(
-        t for t in ndx_tables if "Ticker" in t.columns or "Symbol" in t.columns
-    )
+    try:
+        ndx_table = next(
+            t for t in ndx_tables if "Ticker" in t.columns or "Symbol" in t.columns
+        )
+    except StopIteration as exc:
+        raise RuntimeError(
+            "NASDAQ-100 Wikipedia page layout changed — no table with "
+            "'Ticker' or 'Symbol' column found."
+        ) from exc
     col = "Ticker" if "Ticker" in ndx_table.columns else "Symbol"
     ndx = ndx_table[col].astype(str).str.replace(".", "-").tolist()
 
@@ -69,7 +89,16 @@ def refresh_rs_universe(
         prior_head = dest.read_text(encoding="utf-8").splitlines()[0]
         if prior_head.startswith("# version: "):
             prior_version = prior_head.split(":", 1)[1].strip()
-            snapshot = dest.parent / f"rs-universe-{prior_version}.csv"
+            if not _SAFE_VERSION_RE.match(prior_version):
+                raise ValueError(
+                    f"Prior {dest.name} has an unsafe version string "
+                    f"{prior_version!r}. Expected characters [a-zA-Z0-9._-] "
+                    f"(e.g., '2026-04-17-1' per spec §4.1). Refusing to snapshot "
+                    f"with a filename-unsafe component."
+                )
+            # Derive the snapshot prefix from dest.stem so callers who rename
+            # the universe file keep snapshots alongside (Round 1 Minor 2).
+            snapshot = dest.parent / f"{dest.stem}-{prior_version}.csv"
             shutil.copy2(dest, snapshot)
 
     dest.parent.mkdir(parents=True, exist_ok=True)
