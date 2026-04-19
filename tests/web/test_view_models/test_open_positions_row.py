@@ -138,3 +138,53 @@ def test_build_open_positions_row_reduces_remaining_shares_for_prior_exits(seede
         trade=trade, cfg=cfg, cache=cache, executor=None,
     )
     assert vm.remaining_shares == 7   # 10 - 3
+
+
+def test_build_open_positions_row_plumbs_ohlcv_bundle(
+    test_cfg, seeded_db, monkeypatch,
+):
+    """Spec §3.4: build_open_positions_row receives ohlcv_cache and plumbs
+    sma10/20/50 + previous_close into AdvisoryContext."""
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime
+    from swing.web.view_models.open_positions_row import build_open_positions_row
+    from swing.web.ohlcv_cache import OhlcvBundle, OhlcvCache
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from swing.data.models import Trade
+
+    cfg, _ = test_cfg
+    trade = Trade(
+        id=1, ticker="AAPL", entry_date="2026-04-15", entry_price=180.0,
+        initial_shares=10, initial_stop=170.0, current_stop=170.0,
+        status="open", watchlist_entry_target=None, watchlist_initial_stop=None,
+        notes=None,
+    )
+
+    monkeypatch.setattr(
+        OhlcvCache, "get_many_bundles",
+        lambda self, tickers, *, deadline_seconds, executor: {
+            t: OhlcvBundle(sma10=198.0, sma20=196.0, sma50=195.0,
+                            previous_close=190.0, fetched_at=0.0)
+            for t in tickers
+        },
+    )
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *, deadline_seconds, executor: {
+            t: PriceSnapshot(
+                ticker=t, price=200.0, asof=datetime.now(),
+                is_stale=False, source="live",
+            ) for t in tickers
+        },
+    )
+
+    cache = PriceCache(cfg)
+    ohlcv_cache = OhlcvCache(cfg)
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        vm = build_open_positions_row(
+            trade=trade, cfg=cfg, cache=cache, ohlcv_cache=ohlcv_cache,
+            executor=ex,
+        )
+
+    rules = {a.rule for a in vm.advisories}
+    assert "exit_below_50ma" in rules

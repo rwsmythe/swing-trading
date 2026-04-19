@@ -48,6 +48,7 @@ def _open_positions_row_vm(
 
 def build_open_positions_row(
     *, trade: Trade, cfg: Config, cache: PriceCache, executor,
+    ohlcv_cache=None,
     conn: sqlite3.Connection | None = None,
 ) -> OpenPositionsRowVM:
     """Single-row convenience wrapper for POST-success handlers.
@@ -61,8 +62,10 @@ def build_open_positions_row(
     Does: cache.get_many([trade.ticker], deadline=..., executor=...);
           list_exits_for_trade(conn, trade.id) for remaining-shares;
           get_latest_for_date(conn, action_session, ticker=benchmark) for weather;
-          compute_all_suggestions(trade, AdvisoryContext(sma10=None, sma20=None, ...))
-          — 3a reduced advisory subset; SMA-dependent rules return None until Phase 3c.
+          ohlcv_cache.get_many_bundles([trade.ticker], ...) when ohlcv_cache is
+          provided (None default keeps existing call sites green until T15);
+          compute_all_suggestions(trade, AdvisoryContext(...)) with SMA fields
+          populated from bundle when available.
 
     Opens its own read-snapshot `with conn:` if `conn` is None.
     Callers that have batch context (dashboard.py) should use `_open_positions_row_vm`
@@ -76,6 +79,15 @@ def build_open_positions_row(
         executor=executor,
     )
     snapshot = prices.get(trade.ticker)
+
+    bundle = None
+    if ohlcv_cache is not None:
+        bundles = ohlcv_cache.get_many_bundles(
+            [trade.ticker],
+            deadline_seconds=cfg.web.price_fetch_deadline_seconds,
+            executor=executor,
+        )
+        bundle = bundles.get(trade.ticker)
 
     now = datetime.now()
     action_session = action_session_for_run(now).isoformat()
@@ -100,8 +112,10 @@ def build_open_positions_row(
         ctx = AdvisoryContext(
             as_of_date=action_session,
             current_price=snapshot.price,
-            sma10=None, sma20=None,
-            sma50=None, previous_close=None,
+            sma10=bundle.sma10 if bundle else None,
+            sma20=bundle.sma20 if bundle else None,
+            sma50=bundle.sma50 if bundle else None,
+            previous_close=bundle.previous_close if bundle else None,
             weather_status=weather_status,
             config=cfg.stop_advisory,
         )
