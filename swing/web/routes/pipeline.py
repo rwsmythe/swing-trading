@@ -7,11 +7,11 @@ import sys
 import time
 from datetime import datetime
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from swing.data.db import connect
-from swing.data.repos.pipeline import find_active_run
+from swing.data.repos.pipeline import find_active_run, find_run
 from swing.web.routes.dashboard import _templates
 from swing.web.view_models.pipeline import build_pipeline
 
@@ -131,6 +131,24 @@ def pipeline_run(request: Request):
             },
         )
 
+    return templates.TemplateResponse(
+        request, "partials/pipeline_progress.html.j2",
+        {"run": run, "error_text": None, "poll_interval": poll_interval},
+    )
+
+
+@router.get("/pipeline/status/{run_id}", response_class=HTMLResponse)
+def pipeline_status(request: Request, run_id: int):
+    cfg = request.app.state.cfg
+    templates = _templates(request)
+    conn = connect(cfg.paths.db_path)
+    try:
+        run = find_run(conn, run_id)
+    finally:
+        conn.close()
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"run {run_id} not found")
+    poll_interval = cfg.web.polling_interval_seconds
     return templates.TemplateResponse(
         request, "partials/pipeline_progress.html.j2",
         {"run": run, "error_text": None, "poll_interval": poll_interval},
