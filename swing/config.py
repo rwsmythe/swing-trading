@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 if sys.version_info >= (3, 11):
@@ -127,6 +127,19 @@ class ExportConfig:
 
 
 @dataclass(frozen=True)
+class Web:
+    host: str = "127.0.0.1"
+    port: int = 8080
+    reload: bool = False
+    price_cache_ttl_seconds: int = 120
+    price_fetch_timeout_seconds: int = 3
+    price_fetch_deadline_seconds: int = 6
+    max_concurrent_price_fetches: int = 8
+    circuit_breaker_cooldown_seconds: int = 60
+    polling_interval_seconds: int = 2
+
+
+@dataclass(frozen=True)
 class Config:
     paths: Paths
     account: Account
@@ -142,6 +155,7 @@ class Config:
     sizing: SizingConfig
     pipeline: PipelineConfig
     export: ExportConfig
+    web: Web = field(default_factory=Web)
 
 
 _PROJECT_INTERNAL_PREFIXES = ("data/", "exports/", "reference/")
@@ -216,4 +230,5 @@ def load(config_path: Path) -> Config:
         sizing=SizingConfig(**raw.get("sizing", {})),
         pipeline=PipelineConfig(**raw.get("pipeline", {})),
         export=ExportConfig(**raw.get("export", {})),
+        web=Web(**raw.get("web", {})),
     )
