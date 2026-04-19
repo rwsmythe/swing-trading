@@ -912,6 +912,10 @@ class PriceCache:
             timeout=self._cfg.web.price_fetch_timeout_seconds,
             auto_adjust=False,
             group_by="column",
+            threads=False,   # CRITICAL (R3 Major 1): yfinance's internal
+                             # thread pool would bypass app.state.price_fetch_executor's
+                             # max_workers cap. Concurrency must be controlled
+                             # solely by the app-level executor.
         )
         if df is None or df.empty:
             raise RuntimeError(f"yfinance returned no bars for {ticker}")
@@ -1941,11 +1945,25 @@ def build_dashboard(*, cfg: Config, cache: PriceCache, executor) -> DashboardVM:
     advisories: dict[int, list[AdvisorySuggestionVM]] = {}
     weather_status_str = weather.status if weather else "STALE"
     for t in open_trades:
+        # Persisted open trades always have an id (the DB assigns via
+        # INSERT). A missing id would indicate a data-integrity bug in
+        # list_open_trades — skip such rows rather than coerce to 0,
+        # which would cause distinct trades to collide at key 0 (R3
+        # Major 2). If we ever see this in production, the missing
+        # advisory is a visible symptom; hiding it via `or 0` would be
+        # a silent merge.
+        if t.id is None:
+            log.warning(
+                "dashboard: skipping advisory for open trade with id=None "
+                "(ticker=%s, entry_date=%s). Data-integrity probe.",
+                t.ticker, t.entry_date,
+            )
+            continue
         snap = open_trade_last_prices.get(t.ticker)
         if snap is None:
             continue
         ctx_adv = AdvisoryContext(
-            as_of_date=now.date().isoformat(),
+            as_of_date=action_session,
             current_price=snap.price,
             sma10=None,
             sma20=None,
@@ -1953,7 +1971,7 @@ def build_dashboard(*, cfg: Config, cache: PriceCache, executor) -> DashboardVM:
             config=cfg.stop_advisory,
         )
         raw = compute_all_suggestions(t, ctx_adv)
-        advisories[t.id or 0] = [
+        advisories[t.id] = [
             AdvisorySuggestionVM(rule=s.rule, message=s.message)
             for s in raw
         ]
@@ -3692,22 +3710,29 @@ def test_post_prices_refresh_emits_three_oob_regions(seeded_db, monkeypatch):
 
 def test_post_prices_refresh_bypasses_degraded_mode(seeded_db, monkeypatch):
     """User-clicked Refresh now must force a live-fetch attempt even when
-    the breaker is tripped. This is an intentional operator override: the
-    breaker exists to protect automatic request-driven fetches; a manual
-    refresh is explicit user intent."""
+    the breaker is tripped. This test narrowly asserts that
+    `reset_circuit_breaker` WAS called before `refresh_all` rebuilds the
+    VM — it does NOT assert the breaker stays un-tripped after the route
+    returns, because the rebuild might immediately re-trip on a fresh
+    fetch failure (that is correct behavior and independent of the
+    bypass-on-refresh contract) — R3 Minor 1."""
     cfg, cfg_path = seeded_db
     from swing.web.price_cache import PriceCache
-    # Before: cache is degraded. After reset inside the route, next get_many
-    # executes live (not via the degraded short-circuit).
-    state = {"degraded_probed_after_reset": []}
-    real_is_degraded = PriceCache.is_degraded
 
-    def track_is_degraded(self):
-        is_deg = real_is_degraded(self)
-        state["degraded_probed_after_reset"].append(is_deg)
-        return is_deg
+    call_order: list[str] = []
+    orig_reset = PriceCache.reset_circuit_breaker
+    orig_refresh = PriceCache.refresh_all
 
-    monkeypatch.setattr(PriceCache, "is_degraded", track_is_degraded)
+    def wrapped_reset(self):
+        call_order.append("reset")
+        return orig_reset(self)
+
+    def wrapped_refresh(self, tickers):
+        call_order.append("refresh")
+        return orig_refresh(self, tickers)
+
+    monkeypatch.setattr(PriceCache, "reset_circuit_breaker", wrapped_reset)
+    monkeypatch.setattr(PriceCache, "refresh_all", wrapped_refresh)
     monkeypatch.setattr(PriceCache, "get_many",
         lambda self, tickers, deadline_seconds, *, executor=None: {})
 
@@ -3720,8 +3745,10 @@ def test_post_prices_refresh_bypasses_degraded_mode(seeded_db, monkeypatch):
 
     r = TestClient(app).post("/prices/refresh", headers={"HX-Request": "true"})
     assert r.status_code == 200
-    # After reset, the cache is no longer degraded.
-    assert not app.state.price_cache.is_degraded()
+    # Reset was called BEFORE refresh (operator override before re-populate).
+    assert call_order[:2] == ["reset", "refresh"], (
+        f"expected reset then refresh, got {call_order}"
+    )
 ```
 
 - [ ] **Step 2: Create the container partial**
