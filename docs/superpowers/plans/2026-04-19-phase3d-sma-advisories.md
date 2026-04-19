@@ -77,7 +77,7 @@ tests/
 │                                     #   double for ohlcv_cache.
 ```
 
-**Target test count:** 444 (end of 3c) + ~40 = **~484 fast tests** (spec §10 projected ~465; per-task math cascades to 484 — see §Task 18 summary).
+**Target test count:** 444 (end of 3c) + ~42 = **~486 fast tests** (spec §10 projected ~465; per-task math cascades to 486 — see §Task 18 summary).
 
 ---
 
@@ -1179,7 +1179,10 @@ class OhlcvCache:
         yfinance endpoint. `is_degraded()` auto-clears the window after the
         cooldown expires so recovery can proceed.
         """
-        normalized = [t.upper() for t in tickers]
+        # Normalize + deduplicate (spec §4.1): "aapl" and "AAPL" coalesce
+        # to a single lookup. `dict.fromkeys(...)` preserves insertion order
+        # and removes duplicates so breaker accounting isn't double-counted.
+        normalized = list(dict.fromkeys(t.upper() for t in tickers))
 
         # R2 Major 2: degraded short-circuit BEFORE any executor submission.
         # Reduces load on yfinance during outages. Cooldown auto-clears the
@@ -1880,32 +1883,11 @@ Remove the stale inline comment `"SMA-dependent rules return None until Phase 3c
 Run: `python -m pytest tests/web/test_view_models/test_dashboard.py -k "plumbs_ohlcv_bundle or reflects_ohlcv_degraded" -v`
 Expected: 2 PASS.
 
-- [ ] **Step 5: Run full fast suite (some existing tests may break)**
+- [ ] **Step 5: Run full fast suite**
 
 Run: `python -m pytest -m "not slow" -q`
 
-**Expected regressions:** existing integration tests that call `build_dashboard(cfg=..., cache=..., executor=...)` (no `ohlcv_cache`) will fail with `TypeError`. Those call sites must be updated in the same task — find them and pass a test double (a cache-like object or a `MagicMock` with `get_many_bundles`/`is_degraded`/`degraded_until` stubs).
-
-Run: `grep -rn "build_dashboard(" tests/ | head`
-
-For each hit, update the call to:
-
-```python
-    vm = build_dashboard(cfg=cfg, cache=cache, ohlcv_cache=ohlcv_cache, executor=executor)
-```
-
-If the existing test didn't need an ohlcv_cache, inject a `MagicMock` with the following minimal shape:
-
-```python
-from unittest.mock import MagicMock
-ohlcv_cache = MagicMock()
-ohlcv_cache.get_many_bundles.return_value = {}
-ohlcv_cache.is_degraded.return_value = False
-```
-
-Re-run the full fast suite after updating all fixtures:
-
-Expected: 475 passed (473 + 2 new). No remaining failures.
+Expected: 475 passed (473 + 2 new). Because `ohlcv_cache` is an optional kwarg (default `None`), existing tests that call `build_dashboard(cfg=cfg, cache=cache, executor=executor)` without the new kwarg keep passing — the function skips the OHLCV fetch and returns `ohlcv_source_degraded=False`.
 
 - [ ] **Step 6: Commit**
 
@@ -2045,17 +2027,11 @@ Remove or update the stale docstring line `"compute_all_suggestions(trade, Advis
 Run: `python -m pytest tests/web/test_view_models/test_open_positions_row.py -k "plumbs_ohlcv_bundle" -v`
 Expected: PASS.
 
-- [ ] **Step 5: Run full fast suite (more existing tests may break)**
+- [ ] **Step 5: Run full fast suite**
 
 Run: `python -m pytest -m "not slow" -q`
 
-**Expected regressions:** existing tests that call `build_open_positions_row(...)` without `ohlcv_cache` will fail. Find them:
-
-Run: `grep -rn "build_open_positions_row(" tests/ | head`
-
-Update each call site to pass `ohlcv_cache=MagicMock(...)` (same pattern as Task 12). Re-run:
-
-Expected: 476 passed (475 + 1 new). No remaining failures.
+Expected: 476 passed (475 + 1 new). Because `ohlcv_cache` is an optional kwarg (default `None`), existing tests that call `build_open_positions_row(...)` without the new kwarg keep passing — the function skips the OHLCV fetch and advisory rules get `bundle=None → sma*/previous_close = None → rule no-ops`.
 
 - [ ] **Step 6: Commit**
 
@@ -2299,17 +2275,74 @@ def test_pipeline_banner_absent_when_ohlcv_cache_is_not_degraded(
         r = client.get("/pipeline")
     assert r.status_code == 200
     assert "SMA advisories unavailable" not in r.text
+
+
+def test_dashboard_banner_shown_when_ohlcv_cache_is_degraded(
+    test_cfg, seeded_db, monkeypatch,
+):
+    """Spec §6 end-to-end: when OhlcvCache.is_degraded() is True, the
+    MAIN dashboard page (GET /) renders the SMA-advisories-unavailable
+    banner. Closes the coverage gap Codex R2 Major 2 flagged — banner flows
+    through T12 VM plumbing → T14 route wiring → T9 base-template render."""
+    from swing.web.ohlcv_cache import OhlcvCache
+    from swing.web.price_cache import PriceCache
+    monkeypatch.setattr(OhlcvCache, "is_degraded", lambda self: True)
+    # Short-circuit during degraded → empty bundles (Task 6 behavior).
+    monkeypatch.setattr(
+        OhlcvCache, "get_many_bundles",
+        lambda self, tickers, *, deadline_seconds, executor: {},
+    )
+    # Stub live prices so the dashboard renders without network.
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *, deadline_seconds, executor: {},
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/")
+    assert r.status_code == 200
+    assert "SMA advisories unavailable" in r.text
+
+
+def test_dashboard_banner_absent_when_ohlcv_cache_is_not_degraded(
+    test_cfg, seeded_db, monkeypatch,
+):
+    """Spec §6 symmetric case: healthy cache → banner absent on GET /."""
+    from swing.web.ohlcv_cache import OhlcvCache
+    from swing.web.price_cache import PriceCache
+    monkeypatch.setattr(OhlcvCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(
+        OhlcvCache, "get_many_bundles",
+        lambda self, tickers, *, deadline_seconds, executor: {},
+    )
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *, deadline_seconds, executor: {},
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/")
+    assert r.status_code == 200
+    assert "SMA advisories unavailable" not in r.text
 ```
 
 - [ ] **Step 2: Run the new tests**
 
 Run: `python -m pytest tests/web/test_base_layout_compat.py -v`
-Expected: 5 PASS.
+Expected: 7 PASS (5 base-layout + 2 `GET /` dashboard banner tests).
 
 - [ ] **Step 3: Run full fast suite**
 
 Run: `python -m pytest -m "not slow" -q`
-Expected: 481 passed (476 + 5 new).
+Expected: 483 passed (476 + 7 new).
 
 - [ ] **Step 4: Commit**
 
@@ -2494,7 +2527,7 @@ Expected: 3 PASS.
 - [ ] **Step 3: Run full fast suite**
 
 Run: `python -m pytest -m "not slow" -q`
-Expected: 484 passed (481 + 3 new).
+Expected: 486 passed (483 + 3 new).
 
 - [ ] **Step 4: Commit**
 
@@ -2514,7 +2547,7 @@ Final regression gate before the adversarial Codex pass.
 - [ ] **Step 1: Run full fast suite**
 
 Run: `python -m pytest -m "not slow" -q`
-Expected: **484 passed** (444 baseline + ~40 Phase 3d new; spec projected ~465, so we land ~20 above the projection — fine). No regressions in any Phase 2, 3a, 3b, or 3c test.
+Expected: **486 passed** (444 baseline + 42 Phase 3d new; spec projected ~465, so we land ~21 above the projection — fine). No regressions in any Phase 2, 3a, 3b, or 3c test.
 
 If any pre-existing test now fails, investigate. The only legitimate regression candidates are:
 - Tests that constructed `AdvisoryContext(...)` positionally and didn't receive the new `sma50` / `previous_close` kwargs — fix by adding the missing fields.
@@ -2552,7 +2585,7 @@ Otherwise skip this step.
 
 - **18 tasks**, each ending in a clean commit.
 - **~40 new tests** distributed across pipeline helpers, OHLCV cache, advisory rule tests, base-layout compat, and dashboard integration. (Spec projected ~20-24; actual distribution weighted higher to match the 5 compat tests in §5.5 and the 3 integration tests in §5.4.)
-- **Target test count:** 444 (end of 3c) → **~484 fast tests** (3d). Spec baseline: 413+ at Phase 3c; ~465 at Phase 3d. We land ~20 above the projection due to more granular coverage of the breaker, in-progress bar strip, and the pipeline pass-through.
+- **Target test count:** 444 (end of 3c) → **~486 fast tests** (3d). Spec baseline: 413+ at Phase 3c; ~465 at Phase 3d. We land ~21 above the projection due to more granular coverage of the breaker, in-progress bar strip, the pipeline pass-through, and end-to-end degraded-banner tests on both `/pipeline` and `/` (R2 Major 2 resolution).
 - **Phase 2 change scope:** exactly one function module — `swing/trades/advisory.py` gains `sma50` + `previous_close` fields on `AdvisoryContext`, swaps `suggest_exit_close_below_ma`'s input to `ctx.previous_close`, and adds a 50MA exit call in `compute_all_suggestions` (spec §3.3 / decision #7).
 - **Spec coverage:**
   - §3.1 pure helpers + fetch_daily_bars with session-anchored strip → Tasks 1-2
