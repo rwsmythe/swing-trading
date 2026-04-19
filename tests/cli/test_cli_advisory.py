@@ -8,7 +8,7 @@ from click.testing import CliRunner
 from swing.cli import main
 
 
-def test_trade_advisory_accepts_sma50_and_previous_close(tmp_path: Path, monkeypatch):
+def test_trade_advisory_accepts_sma50_and_previous_close(tmp_path: Path):
     """The command accepts --sma50 and --previous-close and plumbs them
     into AdvisoryContext. Exit code 0; output references 50MA EXIT rule."""
     from tests.cli.test_cli_eval import _minimal_config
