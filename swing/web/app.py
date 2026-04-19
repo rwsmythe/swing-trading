@@ -105,7 +105,7 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
             if request.url.path.startswith("/trades/"):
                 return tpls.TemplateResponse(
                     request, "partials/trade_form_error.html.j2",
-                    {"error_message": exc.detail, "form_body": None},
+                    {"error_message": exc.detail},
                     status_code=exc.status_code,
                 )
             return tpls.TemplateResponse(
@@ -133,8 +133,7 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
             if request.url.path.startswith("/trades/") and request.method == "POST":
                 return tpls.TemplateResponse(
                     request, "partials/trade_form_error.html.j2",
-                    {"error_message": f"Invalid input in {field}: {msg}",
-                     "form_body": None},
+                    {"error_message": f"Invalid input in {field}: {msg}"},
                     status_code=400,
                 )
             return tpls.TemplateResponse(

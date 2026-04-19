@@ -194,7 +194,6 @@ def entry_post(
             vm = build_entry_form_vm(
                 ticker=ticker.upper(), cfg=cfg, cache=cache, executor=executor,
             )
-            form_body = None
             if vm is not None:
                 vm = dc_replace(
                     vm,
@@ -205,12 +204,15 @@ def entry_post(
                     rationale=rationale,
                     notes=notes or "",
                 )
-                form_body = templates.get_template(
-                    "partials/trade_entry_form.html.j2"
-                ).render(request=request, vm=vm)
+                return templates.TemplateResponse(
+                    request, "partials/trade_entry_form.html.j2",
+                    {"vm": vm, "error_message": str(exc)},
+                    status_code=400,
+                )
+            # Fallback (watchlist row gone between GET and POST): use banner-only fragment.
             return templates.TemplateResponse(
                 request, "partials/trade_form_error.html.j2",
-                {"error_message": str(exc), "form_body": form_body},
+                {"error_message": str(exc)},
                 status_code=400,
             )
         except HardCapException as exc:
@@ -218,7 +220,7 @@ def entry_post(
             # until a position is closed (spec §8 "No UI bypass for hard-cap").
             return templates.TemplateResponse(
                 request, "partials/trade_form_error.html.j2",
-                {"error_message": str(exc), "form_body": None},
+                {"error_message": str(exc)},
                 status_code=400,
             )
     finally:
@@ -301,7 +303,7 @@ def exit_post(
     except ValueError:
         return templates.TemplateResponse(
             request, "partials/trade_form_error.html.j2",
-            {"error_message": f"Invalid reason: {reason}", "form_body": None},
+            {"error_message": f"Invalid reason: {reason}"},
             status_code=400,
         )
 
@@ -318,14 +320,16 @@ def exit_post(
         except ValueError as exc:
             # R: spec §5.1 case 2 — re-render form with authoritative remaining shares.
             vm = build_exit_form_vm(trade_id=trade_id, cfg=cfg, cache=cache, executor=executor)
-            form_body = None
             if vm is not None:
-                form_body = templates.get_template(
-                    "partials/trade_exit_form.html.j2"
-                ).render(request=request, vm=vm)
+                return templates.TemplateResponse(
+                    request, "partials/trade_exit_form.html.j2",
+                    {"vm": vm, "error_message": str(exc)},
+                    status_code=400,
+                )
+            # Fallback: trade closed/gone — use banner-only fragment.
             return templates.TemplateResponse(
                 request, "partials/trade_form_error.html.j2",
-                {"error_message": str(exc), "form_body": form_body},
+                {"error_message": str(exc)},
                 status_code=400,
             )
     finally:
@@ -432,17 +436,19 @@ def stop_post(
         except StopRegressionError as exc:
             # R: spec §5.1 case 3 — re-render form with updated current_stop.
             vm = build_stop_form_vm(trade_id=trade_id, cfg=cfg)
-            form_body = None
+            error_message = (
+                f"{exc}. Use CLI `swing trade stop-adjust --trade-id {trade_id} "
+                f"--new-stop {new_stop} --rationale ... --force` if intentional."
+            )
             if vm is not None:
-                form_body = templates.get_template(
-                    "partials/trade_stop_form.html.j2"
-                ).render(request=request, vm=vm)
+                return templates.TemplateResponse(
+                    request, "partials/trade_stop_form.html.j2",
+                    {"vm": vm, "error_message": error_message},
+                    status_code=400,
+                )
             return templates.TemplateResponse(
                 request, "partials/trade_form_error.html.j2",
-                {"error_message": (
-                    f"{exc}. Use CLI `swing trade stop-adjust --trade-id {trade_id} "
-                    f"--new-stop {new_stop} --rationale ... --force` if intentional."
-                ), "form_body": form_body},
+                {"error_message": error_message},
                 status_code=400,
             )
     finally:

@@ -1,9 +1,11 @@
-{#- Trade form error fragment. Banner and optional form are sibling <tr> elements
-    so HTMX outerHTML swap never nests <tr> inside <td>.
-    Expects: error_message (str), form_body (None or pre-rendered trusted HTML <tr>). -#}
+{#- Trade form error fragment — banner-only. Used when form re-render is not
+    applicable (HardCapException, path-aware 404 fallback, trade gone after
+    form-GET). For drift-recovery cases (§5.1 cases 1, 2, 3), routes render
+    the relevant form template directly with an `error_message` context var —
+    the banner appears INLINE inside the form's `<td>`, so the next submit
+    replaces both at once (no orphaned banner row). -#}
 <tr class="trade-form-error">
   <td colspan="8">
     <div class="banner banner-degraded" role="alert">{{ error_message }}</div>
   </td>
 </tr>
-{% if form_body is defined and form_body %}{{ form_body | safe }}{% endif %}

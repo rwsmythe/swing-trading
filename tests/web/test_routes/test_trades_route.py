@@ -848,3 +848,53 @@ def test_post_trades_without_hx_request_403(test_cfg):
     assert r.status_code == 403
     assert "strict" in r.text.lower()
     assert "x-request-id" in {h.lower() for h in r.headers.keys()}
+
+
+def test_post_exit_shares_too_many_is_single_tr_no_orphan(seeded_db, monkeypatch):
+    """After R4 fix: error response is a SINGLE <tr> (banner inlined), not
+    banner <tr> + form <tr> siblings. Prevents orphaned banner on retry."""
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event, list_open_trades
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=5, initial_stop=860.0,
+                current_stop=860.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            "NVDA": PriceSnapshot(ticker="NVDA", price=932.0, asof=datetime.now(),
+                                   is_stale=False, source="live"),
+        })
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{trade.id}/exit", headers={"HX-Request": "true"},
+            data={"exit_date": "2026-04-18", "exit_price": "932.00",
+                  "shares": "10", "reason": "manual",
+                  "rationale": "over-exit"},
+        )
+    assert r.status_code == 400
+    # Exactly one top-level <tr — the form with inline banner.
+    opening_tr_count = r.text.lower().count("<tr")
+    assert opening_tr_count == 1, (
+        f"Expected exactly 1 <tr tag (form+banner inlined), got {opening_tr_count}. "
+        f"Response: {r.text[:500]}"
+    )
+    # Banner is present.
+    assert "banner" in r.text.lower()
+    # Form fields are present.
+    assert 'name="shares"' in r.text

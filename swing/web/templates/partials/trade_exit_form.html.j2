@@ -1,7 +1,8 @@
 {#- Trade exit form — swaps into an open-position row.
-    Expects: vm (TradeExitFormVM) -#}
+    Expects: vm (TradeExitFormVM), error_message (optional str) -#}
 <tr id="exit-form-{{ vm.trade.id }}">
   <td colspan="8">
+    {% if error_message %}<div class="banner banner-degraded" role="alert">{{ error_message }}</div>{% endif %}
     <form hx-post="/trades/{{ vm.trade.id }}/exit"
           hx-target="closest tr" hx-swap="outerHTML"
           hx-headers='{"HX-Request": "true"}'>
