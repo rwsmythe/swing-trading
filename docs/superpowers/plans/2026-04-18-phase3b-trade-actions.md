@@ -35,7 +35,11 @@ swing/web/
 │       ├── trade_form_error.html.j2      # NEW: 400 error banner + preserved form
 │       ├── soft_warn_confirm.html.j2     # NEW: 2-step confirmation
 │       ├── sizing_hint.html.j2           # NEW: dim-guidance OR numbers modes
-│       └── http_error_fragment.html.j2   # NEW: HTMX 4xx body
+│       ├── http_error_fragment.html.j2   # NEW: HTMX 4xx body
+│       └── watchlist_top5_section.html.j2 # NEW: shared watchlist-top5 section (heading + table
+│                                         #      + Show-all link). Consumed by dashboard.html.j2
+│                                         #      AND by the trades POST-success OOB emission so
+│                                         #      the rendered HTML stays identical.
 └── app.py                        # MODIFIED: add_middleware strict=True; HTMX-aware HTTPException handler; include trades router
 ```
 
@@ -420,19 +424,26 @@ Inside `create_app`, AFTER the existing `_register_exception_handlers(app)` call
 
     @app.exception_handler(RequestValidationError)
     async def _handle_validation_error(request: Request, exc: RequestValidationError):
-        """HTMX form-validation errors render as a neutral `http_error_fragment`
-        (a `<div>` banner) at 400 — safe swap target regardless of whether the HTMX
-        element is a `<tr>`, `<div>`, or `<span>`. R2 Minor 2: trade-specific row
-        fragments are rendered only from within the trades route handlers themselves,
-        not from this global handler, to avoid shipping a `<tr>` body where the
-        caller's target is something else. Non-HTMX requests fall through to
-        FastAPI's default 422 JSON (API consumers, curl probes, etc.)."""
+        """HTMX form-validation errors render at 400 with a fragment sized to the
+        HTMX target. R3 Major 1 fix: trade routes use `<tr>` swap targets
+        (`hx-target='closest tr'`), so `/trades/*` POST validation errors MUST
+        render `trade_form_error.html.j2` (a `<tr>`). Other HTMX endpoints get
+        the neutral `http_error_fragment.html.j2` (`<div>`). Non-HTMX requests
+        fall through to FastAPI's default 422 JSON."""
         if request.headers.get("HX-Request", "").lower() == "true":
             errors = exc.errors()
             first = errors[0] if errors else {}
             field = ".".join(str(p) for p in first.get("loc", ()) if p != "body") or "field"
             msg = first.get("msg", "invalid input")
             tpls = Jinja2Templates(directory=str(app.state.templates_dir))
+            # Route-shape-aware selection: trade routes need `<tr>` fragment.
+            if request.url.path.startswith("/trades/") and request.method == "POST":
+                return tpls.TemplateResponse(
+                    request, "partials/trade_form_error.html.j2",
+                    {"error_message": f"Invalid input in {field}: {msg}",
+                     "form_body": None},
+                    status_code=400,
+                )
             return tpls.TemplateResponse(
                 request, "partials/http_error_fragment.html.j2",
                 {"status_code": 400, "detail": f"Invalid input in {field}: {msg}"},
@@ -1867,44 +1878,46 @@ def entry_post(
     dashboard_vm = build_dashboard(cfg=cfg, cache=cache, executor=executor)
 
     # Render response: primary row + #status-strip OOB + #watchlist-top5 OOB.
-    # Single-contract partial: pass only `row` (R1 Major 3 fix).
-    # R2 Major 4: do NOT reuse prices_refresh_container.html.j2 — it already
-    # emits three oob regions; nesting it inside our own oob wrapper duplicates
-    # IDs and leaks extra fragments. Render each fragment explicitly from the
-    # rebuilt DashboardVM.
+    # R3 Major 2 + Minor 1 fix: render the watchlist-top5 region via a shared
+    # partial (watchlist_top5_section.html.j2) so the POST-success OOB fragment
+    # and the dashboard page render identically — heading, table, "Show all"
+    # link, all column headers. Single source of truth eliminates the drift
+    # risk R3 flagged. Status-strip similarly uses its existing 3a partial.
     row_html = templates.get_template("partials/open_positions_row.html.j2").render(
         request=request, row=row_vm,
     )
     status_strip_html = templates.get_template("partials/status_strip.html.j2").render(
         request=request, vm=dashboard_vm,
     )
-    # Build the watchlist-top5 rows inline using the existing watchlist_row partial.
-    watchlist_row_template = templates.get_template("partials/watchlist_row.html.j2")
-    watchlist_rows_html = "".join(
-        watchlist_row_template.render(
-            request=request, w=w,
-            price=dashboard_vm.watchlist_last_prices.get(w.ticker),
-            tags=dashboard_vm.flag_tags.get(w.ticker, ()),
-        )
-        for w in dashboard_vm.watchlist_top5
-    )
+    watchlist_section_html = templates.get_template(
+        "partials/watchlist_top5_section.html.j2"
+    ).render(request=request, vm=dashboard_vm)
 
     return HTMLResponse(Markup(
         f'{row_html}'
         f'<div id="status-strip" hx-swap-oob="true">{status_strip_html}</div>'
         f'<section id="watchlist-top5" hx-swap-oob="true">'
-        f'<table class="watchlist">'
-        f'<thead><tr>'
-        f'<th></th><th>Ticker</th><th>Last</th><th>Pivot</th>'
-        f'<th>% to pivot</th><th>ADR</th><th>Tags</th>'
-        f'</tr></thead>'
-        f'<tbody>{watchlist_rows_html}</tbody>'
-        f'</table>'
+        f'{watchlist_section_html}'
         f'</section>'
     ))
 ```
 
-Note on the response construction: the OOB wrapper divs MUST match the dashboard template's IDs exactly — `#status-strip` and `#watchlist-top5`. If the dashboard template uses a different outer element or ID, adjust to match. Re-read `swing/web/templates/dashboard.html.j2` to verify the IDs. The `<thead>` columns here MUST also match the dashboard's existing watchlist table — if Phase 3a's dashboard has different columns (e.g., after Task 9 adds an Enter-button column), adjust here to match.
+Before this step runs, `partials/watchlist_top5_section.html.j2` must exist. Prepend a sub-step:
+
+- [ ] **Step 4a: Extract `partials/watchlist_top5_section.html.j2` from `dashboard.html.j2`**
+
+Read the current `swing/web/templates/dashboard.html.j2` and find the `<section id="watchlist-top5">...</section>` block. Extract its INNER contents (everything between the outer `<section>` tags, including the `<h2>Watchlist — near trigger</h2>` heading, the `<table>` with its `<thead>` + `<tbody>`, and the conditional `<a href="/watchlist">Show all ...</a>` link) into a new file `swing/web/templates/partials/watchlist_top5_section.html.j2`. Expects: `vm` (DashboardVM — reads `vm.watchlist_top5`, `vm.watchlist_last_prices`, `vm.flag_tags`, `vm.watchlist_remaining_count`).
+
+Then modify `swing/web/templates/dashboard.html.j2`'s `<section id="watchlist-top5">` to include the new partial:
+```html
+<section id="watchlist-top5">
+  {% include "partials/watchlist_top5_section.html.j2" %}
+</section>
+```
+
+The dashboard's rendered HTML is unchanged (the `<section>` wrapper is still there; only its body moved to a partial). Run `tests/web/test_dashboard_integration.py` + `tests/web/test_routes/test_dashboard_route.py` to confirm.
+
+Note: because the trade POST-success handler renders the partial's CONTENTS (not the outer `<section>`), the Python response wraps them in `<section id="watchlist-top5" hx-swap-oob="true">...</section>` at send time. This matches the dashboard's outer element exactly.
 
 - [ ] **Step 5: Run the test**
 
