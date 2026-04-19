@@ -2,18 +2,24 @@
 from __future__ import annotations
 
 import logging
+import os
+import pathlib
+import re
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse
 
 from swing.data.db import connect
 from swing.data.repos.pipeline import find_active_run, find_run, force_clear
 from swing.data.repos.trades import list_open_trades
 from swing.data.repos.watchlist import list_active_watchlist
+from swing.pipeline.finviz_schema import validate_csv
 from swing.pipeline.staleness import is_stale_eligible
 from swing.web.view_models.dashboard import _sort_by_proximity, build_dashboard
 from swing.web.view_models.pipeline import build_pipeline
@@ -279,6 +285,101 @@ def prices_refresh(request: Request):
     return templates.TemplateResponse(
         request, "partials/prices_refresh_container.html.j2",
         {"vm": vm},
+    )
+
+
+_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*\.csv$")
+
+
+def _sanitize_filename(raw: str | None) -> str | None:
+    """Return a safe inbox filename or None if unacceptable.
+
+    Accepts: A-Z, a-z, 0-9, underscore, dot, hyphen. Must start with alphanumeric
+    and end in .csv. Any path separators (`/` or `\\`) or '..' segments in the
+    RAW submitted filename → rejected (rather than silently stripped), so an
+    operator uploading `../evil.csv` gets a visible error, not a silent rename.
+    Spec §4.1 + §9.7.
+    """
+    if not raw:
+        return None
+    if "/" in raw or "\\" in raw or ".." in raw:
+        return None
+    name = raw.strip().lower()
+    if not _FILENAME_RE.match(name):
+        return None
+    return name
+
+
+@router.post("/pipeline/csv-upload", response_class=HTMLResponse)
+async def csv_upload(request: Request, csv: Annotated[UploadFile, File(...)]):
+    """Upload a finviz CSV to the inbox. Validate schema + sanitize filename +
+    atomically replace any existing same-name file. Spec §3.1 / §4.1."""
+    cfg = request.app.state.cfg
+    templates = request.app.state.templates
+    max_bytes = cfg.web.csv_upload_max_bytes
+
+    # Route-level size safety-net (middleware also guards via Content-Length).
+    # UploadFile.size is populated by Starlette after multipart parsing.
+    if csv.size is not None and csv.size > max_bytes:
+        return templates.TemplateResponse(
+            request, "partials/csv_upload_error.html.j2",
+            {"reasons": [f"file too large ({csv.size} bytes > {max_bytes} limit)"]},
+            status_code=413,
+        )
+
+    sanitized = _sanitize_filename(csv.filename)
+    if sanitized is None:
+        return templates.TemplateResponse(
+            request, "partials/csv_upload_error.html.j2",
+            {"reasons": [f"invalid filename: {csv.filename!r}"]},
+            status_code=400,
+        )
+
+    # Temp file MUST live in the inbox directory so os.replace is a same-volume
+    # atomic rename (spec §4.1 — avoids cross-device EXDEV on Windows cloud-sync).
+    inbox = cfg.paths.finviz_inbox_dir
+    inbox.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path_str = tempfile.mkstemp(suffix=".csv", dir=str(inbox))
+    tmp_path = pathlib.Path(tmp_path_str)
+    try:
+        # Write upload bytes to tmp file, enforcing limit along the way.
+        total = 0
+        os_write = os.write
+        while True:
+            chunk = await csv.read(64 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                os.close(fd)
+                tmp_path.unlink(missing_ok=True)
+                return templates.TemplateResponse(
+                    request, "partials/csv_upload_error.html.j2",
+                    {"reasons": [f"file too large (streamed > {max_bytes} bytes)"]},
+                    status_code=413,
+                )
+            os_write(fd, chunk)
+        os.close(fd)
+
+        result = validate_csv(tmp_path)
+        if not result.is_valid:
+            tmp_path.unlink(missing_ok=True)
+            return templates.TemplateResponse(
+                request, "partials/csv_upload_error.html.j2",
+                {"reasons": result.reasons},
+                status_code=400,
+            )
+
+        final_path = inbox / sanitized
+        os.replace(tmp_path, final_path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+    return templates.TemplateResponse(
+        request, "partials/csv_upload_form.html.j2",
+        {"uploaded_banner": {"name": sanitized, "rows": result.row_count}},
+        status_code=200,
     )
 
 

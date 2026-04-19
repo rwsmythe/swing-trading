@@ -425,3 +425,115 @@ def test_post_force_clear_post_write_state_conflict(test_cfg, seeded_db, seed_st
         )
     assert r.status_code == 409
     assert "conflict" in r.text.lower() or "refresh" in r.text.lower()
+
+
+def _valid_finviz_csv_bytes() -> bytes:
+    """Minimal CSV matching the finviz REQUIRED_COLUMNS for validate_csv."""
+    header = (
+        'No.,Ticker,Sector,Industry,Country,Price,Change,Average Volume,'
+        'Relative Volume,Average True Range,52-Week High,52-Week Low,Market Cap\n'
+    )
+    row = "1,AAPL,Tech,Consumer Elec,USA,180.95,+0.5%,50M,1.2,2.3,200.0,100.0,2.5B\n"
+    return (header + row).encode("utf-8")
+
+
+def test_csv_upload_happy_path(test_cfg, seeded_db):
+    """POST /pipeline/csv-upload with a valid CSV → 200 + file in inbox."""
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/pipeline/csv-upload",
+            headers={"HX-Request": "true"},
+            files={"csv": ("finviz19Apr2026.csv", _valid_finviz_csv_bytes(), "text/csv")},
+        )
+    assert r.status_code == 200
+    assert "Uploaded" in r.text
+    assert "finviz19apr2026.csv" in r.text.lower()
+    inbox_files = list(cfg.paths.finviz_inbox_dir.glob("*.csv"))
+    assert any("finviz19apr2026.csv" in f.name for f in inbox_files)
+
+
+def test_csv_upload_invalid_schema_returns_400(test_cfg, seeded_db):
+    """CSV missing required columns → 400 csv_upload_error.html.j2 with reasons."""
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/pipeline/csv-upload",
+            headers={"HX-Request": "true"},
+            files={"csv": ("bad.csv", b"foo,bar\n1,2\n", "text/csv")},
+        )
+    assert r.status_code == 400
+    assert "Upload rejected" in r.text
+    assert "missing columns" in r.text.lower()
+
+
+def test_csv_upload_bad_filename_rejected(test_cfg, seeded_db):
+    """Path-traversal / invalid-character filenames → 400."""
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/pipeline/csv-upload",
+            headers={"HX-Request": "true"},
+            files={"csv": ("../evil.csv", _valid_finviz_csv_bytes(), "text/csv")},
+        )
+    assert r.status_code == 400
+    assert "filename" in r.text.lower() or "invalid" in r.text.lower()
+
+
+def test_csv_upload_replaces_existing_inbox_file(test_cfg, seeded_db):
+    """Uploading the same filename twice overwrites the first copy atomically."""
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        first = client.post(
+            "/pipeline/csv-upload",
+            headers={"HX-Request": "true"},
+            files={"csv": ("finviz19apr2026.csv", _valid_finviz_csv_bytes(), "text/csv")},
+        )
+        assert first.status_code == 200
+        second_bytes = (
+            _valid_finviz_csv_bytes()
+            + b"2,MSFT,Tech,Software,USA,400.0,+1%,20M,1.0,2.0,450.0,200.0,3T\n"
+        )
+        second = client.post(
+            "/pipeline/csv-upload",
+            headers={"HX-Request": "true"},
+            files={"csv": ("finviz19apr2026.csv", second_bytes, "text/csv")},
+        )
+    assert second.status_code == 200
+    inbox_files = [
+        f for f in cfg.paths.finviz_inbox_dir.glob("*.csv")
+        if "finviz19apr2026" in f.name.lower()
+    ]
+    assert len(inbox_files) == 1
+    assert b"MSFT" in inbox_files[0].read_bytes()
+
+
+def test_csv_upload_size_over_limit_returns_413(test_cfg, seeded_db):
+    """Oversized upload → 413 rendering csv_upload_error.html.j2.
+
+    Note: with `TestClient`, the client always sets Content-Length, so in practice
+    the middleware's Content-Length pre-check fires. The route-level `file.size`
+    safety-net is for chunked-transfer requests (no Content-Length) from real
+    HTTP clients; exercising that end-to-end requires a chunked harness beyond
+    TestClient. Both layers share the template, so user-visible response is
+    identical regardless of which layer rejected."""
+    from dataclasses import replace as _replace
+    cfg, cfg_path = test_cfg
+    # Lower the limit for this test so we can trigger it with a small body.
+    small_web = _replace(cfg.web, csv_upload_max_bytes=100)
+    tiny_cfg = _replace(cfg, web=small_web)
+    app = create_app(tiny_cfg, cfg_path)
+    big_body = b"x" * 500
+    with TestClient(app) as client:
+        r = client.post(
+            "/pipeline/csv-upload",
+            headers={"HX-Request": "true"},
+            files={"csv": ("big.csv", big_body, "text/csv")},
+        )
+    assert r.status_code == 413
+    assert 'id="csv-upload-section"' in r.text
+    assert "too large" in r.text.lower()
