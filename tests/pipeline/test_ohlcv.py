@@ -67,3 +67,79 @@ def test_previous_close_returns_none_when_close_column_missing():
     from swing.pipeline.ohlcv import previous_close
     bars = pd.DataFrame({"Open": [100.0, 101.0]})
     assert previous_close(bars) is None
+
+
+def test_fetch_daily_bars_strips_in_progress_bar_via_as_of_date(monkeypatch):
+    """Spec §3.1: the last bar whose date == current exchange session is
+    treated as in-progress and dropped before .tail(n_bars)."""
+    from datetime import date
+    import pandas as pd
+    from swing.pipeline import ohlcv as mod
+
+    idx = pd.date_range("2026-04-15", periods=10, freq="B")  # Wed Apr 15 → Tue Apr 28
+    closes = [100.0 + i for i in range(10)]
+    df = pd.DataFrame({"Close": closes}, index=idx)
+
+    class FakeTicker:
+        def history(self, **kwargs):
+            return df
+
+    monkeypatch.setattr(mod, "yf", type("Y", (), {"Ticker": lambda self=None, t=None: FakeTicker()}))
+    # Treat the last bar's date as the in-progress session.
+    as_of = idx[-1].date()
+    result = mod.fetch_daily_bars("AAPL", n_bars=5, as_of_date=as_of)
+    assert result is not None
+    # Last bar stripped → max 9 remaining, tail(5) → 5 rows.
+    assert len(result) == 5
+    # Last retained bar is idx[-2], not idx[-1].
+    assert result.index[-1].date() == idx[-2].date()
+
+
+def test_fetch_daily_bars_retains_last_bar_when_complete(monkeypatch):
+    """Reverse case: if the last bar's date is strictly BEFORE the session,
+    it is retained (the session has rolled over; the bar is complete)."""
+    from datetime import date, timedelta
+    import pandas as pd
+    from swing.pipeline import ohlcv as mod
+
+    idx = pd.date_range("2026-04-15", periods=10, freq="B")
+    closes = [100.0 + i for i in range(10)]
+    df = pd.DataFrame({"Close": closes}, index=idx)
+
+    class FakeTicker:
+        def history(self, **kwargs):
+            return df
+
+    monkeypatch.setattr(mod, "yf", type("Y", (), {"Ticker": lambda self=None, t=None: FakeTicker()}))
+    # Session is AFTER the last bar — nothing to strip.
+    as_of = idx[-1].date() + timedelta(days=5)
+    result = mod.fetch_daily_bars("AAPL", n_bars=5, as_of_date=as_of)
+    assert result is not None
+    assert len(result) == 5
+    # Last bar retained.
+    assert result.index[-1].date() == idx[-1].date()
+
+
+def test_fetch_daily_bars_returns_none_on_exception(monkeypatch):
+    """yfinance raising → None (graceful degradation)."""
+    from swing.pipeline import ohlcv as mod
+
+    class FakeTicker:
+        def history(self, **kwargs):
+            raise RuntimeError("network down")
+
+    monkeypatch.setattr(mod, "yf", type("Y", (), {"Ticker": lambda self=None, t=None: FakeTicker()}))
+    assert mod.fetch_daily_bars("AAPL") is None
+
+
+def test_fetch_daily_bars_returns_none_on_empty_result(monkeypatch):
+    """yfinance returning empty DataFrame → None."""
+    import pandas as pd
+    from swing.pipeline import ohlcv as mod
+
+    class FakeTicker:
+        def history(self, **kwargs):
+            return pd.DataFrame()
+
+    monkeypatch.setattr(mod, "yf", type("Y", (), {"Ticker": lambda self=None, t=None: FakeTicker()}))
+    assert mod.fetch_daily_bars("AAPL") is None
