@@ -636,3 +636,20 @@ def test_get_trade_cancel_returns_normal_row(seeded_db, monkeypatch):
     # The row has Exit + Adjust stop buttons (normal state).
     assert "Exit" in r.text
     assert "Adjust stop" in r.text
+
+
+def test_post_trades_without_hx_request_403(test_cfg):
+    """Strict OriginGuard: POST /trades/entry without HX-Request → 403 with X-Request-ID."""
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            data={"ticker": "AAPL", "entry_date": "2026-04-18",
+                  "entry_price": "180.0", "shares": "1",
+                  "initial_stop": "170.0", "rationale": "test"},
+            # NO HX-Request header.
+        )
+    assert r.status_code == 403
+    assert "strict" in r.text.lower()
+    assert "x-request-id" in {h.lower() for h in r.headers.keys()}
