@@ -77,7 +77,7 @@ Ten files touched: one Phase 2 carve-out (`swing/trades/advisory.py`), two new m
 
 - **Purity at the boundary.** `swing/pipeline/ohlcv.py::compute_smas` and `::previous_close` are pure: DataFrame in, primitives out. Tests inject canned DataFrames; no yfinance round-trip in the fast suite.
 - **Cache shape mirrors `PriceCache`.** `OhlcvCache.get_many_bundles(tickers, deadline=..., executor=...)` has the same method shape as `PriceCache.get_many(tickers, deadline=..., executor=...)`. Callers handle missing results identically.
-- **Bounded-deadline rendering.** The dashboard's existing deadline pattern (default `cfg.web.price_fetch_deadline_seconds = 6`) applies to the OHLCV fetch too. Both fetches run concurrently — the view-model submits `price_cache.get_many` and `ohlcv_cache.get_many_bundles` as top-level futures on `price_fetch_executor`, then waits on both with a shared deadline. Per-ticker misses still degrade gracefully per §6.
+- **Bounded-deadline rendering.** The dashboard's existing deadline pattern (default `cfg.web.price_fetch_deadline_seconds = 6`) applies to the OHLCV fetch too. The two caches are called **sequentially** on the request thread — `cache.get_many(...)` first, then `ohlcv_cache.get_many_bundles(...)` — each bounded by its own deadline. Each method internally parallelizes per-ticker fetches across `price_fetch_executor`. Worst-case total latency is `2 × deadline_seconds` on a cold cache; steady-state is near-instant (both caches warm). Sequential top-level calls deliberately avoid a nested-futures topology that could deadlock on a small executor pool (see §3.2).
 - **Circuit breaker isolation.** `OhlcvCache` has its own circuit breaker; a failing yfinance OHLCV endpoint does not trip the live-quote breaker or vice versa.
 - **Graceful degradation throughout.** Missing `OhlcvBundle`, or a bundle with any None field, must not raise. SMA rules silently return None.
 
@@ -130,17 +130,31 @@ def fetch_daily_bars(ticker: str, *, n_bars: int = 60, as_of_date: date | None =
 
     Critical session-boundary semantics: yfinance's `history(interval='1d')`
     includes the IN-PROGRESS bar for the current trading day during US market
-    hours. We must exclude that in-progress bar — otherwise `previous_close`
-    and the last rolling-mean row would reflect today's partial close, which
-    turns a "close below MA" exit rule back into a live-intraday rule (what
-    we explicitly chose NOT to do per spec §1.2).
+    hours, and continues to return that bar under "today"'s exchange date
+    until the next session rolls over. We must exclude that in-progress bar —
+    otherwise `previous_close` and the last rolling-mean row would reflect
+    the partial close of the current session, turning a "close below MA" exit
+    rule back into a live-intraday rule (what we explicitly chose NOT to do
+    per spec §1.2).
+
+    Timezone correctness: "today" MUST be resolved against the exchange
+    session, NOT the app-local timezone. On a Hawaii-local dev box, local
+    midnight lags ET by 5 hours; naive `date.today()` would treat an
+    ET-complete bar as in-progress for hours. Use the existing
+    `swing.evaluation.dates.action_session_for_run(datetime.now())` helper —
+    it's already the project's single source of truth for session-date
+    resolution (used by the weather classifier and Phase 3c's PageErrorVM).
+
+    Strip rule: drop the last row iff `last_bar.date() >= action_session` —
+    i.e., the last bar is either today's in-progress session OR (defensively)
+    dated in the future relative to the current session.
 
     Implementation:
       - Request `period='6mo'` (≈126 trading bars — ample for SMA50 plus
         holiday/DST buffer, unambiguously ≥ 60 trading bars).
-      - Drop the last row if its index date equals today (the in-progress bar).
-        "Today" is `as_of_date or date.today()` in the app-local timezone.
-      - Return the tail of up to `n_bars` remaining rows.
+      - Resolve `session = as_of_date or action_session_for_run(datetime.now())`.
+      - Drop the last row if `df.index[-1].date() >= session`.
+      - Return `df.tail(n_bars)`.
 
     Uses `threads=False` per the yfinance rate-limit gotcha documented in
     CLAUDE.md.
@@ -150,9 +164,11 @@ def fetch_daily_bars(ticker: str, *, n_bars: int = 60, as_of_date: date | None =
 The concrete implementation:
 
 ```python
-from datetime import date
+from datetime import date, datetime
 import pandas as pd
 import yfinance as yf
+
+from swing.evaluation.dates import action_session_for_run
 
 
 def fetch_daily_bars(
@@ -169,11 +185,12 @@ def fetch_daily_bars(
         return None
     if df is None or df.empty:
         return None
-    today = as_of_date or date.today()
+    # Exchange-session-anchored "today" (NOT app-local date — HST lags ET by 5h).
+    session = as_of_date or action_session_for_run(datetime.now())
     # yfinance index is timezone-aware Timestamps; compare by .date().
     last_idx = df.index[-1]
     last_date = last_idx.date() if hasattr(last_idx, "date") else last_idx
-    if last_date >= today:
+    if last_date >= session:
         df = df.iloc[:-1]                 # drop in-progress bar
     if df.empty:
         return None
@@ -239,15 +256,19 @@ class OhlcvBundle:
 
 
 class OhlcvCache:
-    """TTL-cached daily-bar bundles keyed by ticker. Shares the existing
-    price_fetch_executor. Circuit breaker mirrors PriceCache."""
+    """TTL-cached daily-bar bundles keyed by uppercase ticker. Shares the
+    existing price_fetch_executor (bounded by its own semaphore; see §3.2
+    starvation guard). Circuit breaker mirrors PriceCache's sliding-window
+    mechanism (see [swing/web/price_cache.py:207-219](../../../swing/web/price_cache.py#L207-L219))."""
 
     def __init__(self, cfg: Config):
         self._cfg = cfg
         self._ttl = cfg.web.ohlcv_cache_ttl_seconds
         self._store: dict[str, tuple[OhlcvBundle, float]] = {}
-        self._failure_count = 0
-        self._circuit_open_until: float = 0.0
+        self._sema = threading.Semaphore(cfg.web.max_concurrent_ohlcv_fetches)
+        self._failure_window: collections.deque[bool] = collections.deque(maxlen=...)  # True=failure
+        self._degraded_until: float | None = None
+        self._lock = threading.Lock()
         # ... implementation details ...
 
     def get_many_bundles(
@@ -322,33 +343,21 @@ def compute_all_suggestions(trade: Trade, ctx: AdvisoryContext) -> list[Advisory
 
 Both change in the same way: after `price_cache.get_many`, add a parallel `ohlcv_cache.get_many_bundles` call. Plumb the per-ticker bundle into the existing `AdvisoryContext` construction. No template changes — the existing `advisories` list in `OpenPositionsRowVM` just has more entries when SMAs are present.
 
-Concretely in `dashboard.py` — submit BOTH fetches concurrently, wait under a single shared deadline:
+Concretely in `dashboard.py` — sequential call on the request thread, each cache's `get_many(...)` internally parallelizes across `price_fetch_executor`:
 
 ```python
-    from concurrent.futures import wait, FIRST_COMPLETED
-
     tickers = [t.ticker for t in open_trades]
     deadline = cfg.web.price_fetch_deadline_seconds
 
-    # Kick off both batch fetches in parallel — each internally submits
-    # per-ticker subtasks to the same executor.
-    prices_fut = executor.submit(
-        cache.get_many, tickers,
-        deadline_seconds=deadline, executor=executor,
+    # Sequential top-level calls. Each method internally parallelizes per-ticker
+    # fetches across `price_fetch_executor`. Sequential (not nested futures) so
+    # a small executor pool cannot deadlock parents-waiting-on-children.
+    prices = cache.get_many(
+        tickers, deadline_seconds=deadline, executor=executor,
     )
-    bundles_fut = executor.submit(
-        app.state.ohlcv_cache.get_many_bundles, tickers,
-        deadline_seconds=deadline, executor=executor,
+    bundles = app.state.ohlcv_cache.get_many_bundles(
+        tickers, deadline_seconds=deadline, executor=executor,
     )
-
-    try:
-        prices = prices_fut.result(timeout=deadline + 1)
-    except Exception:
-        prices = {}
-    try:
-        bundles = bundles_fut.result(timeout=deadline + 1)
-    except Exception:
-        bundles = {}
 
     for t in open_trades:
         snap = prices.get(t.ticker)
@@ -366,9 +375,14 @@ Concretely in `dashboard.py` — submit BOTH fetches concurrently, wait under a 
         raw = compute_all_suggestions(t, ctx_adv) if snap else []
 ```
 
-The top-level `deadline + 1` is a wall-clock safety margin — each cache's own `get_many(...)` already enforces `deadline_seconds` internally via its per-ticker future collection, so the outer `.result(timeout=...)` should never actually fire in normal operation. It exists only to unwind a deadlocked cache without blocking the page.
+Worst-case cold-cache latency is `2 × deadline_seconds` (default 12s). On any warm cache (≥1 prior render within the TTL) the OHLCV call is a dict lookup and effectively free. The 1h OHLCV TTL means steady-state dashboard loads are dominated by the price-cache latency alone.
 
 `build_open_positions_row` receives `ohlcv_cache` the same way it receives `cache` today, mirrored call.
+
+**Template / view-model surface changes in §3.4 scope:**
+
+- `base.html.j2` (or the dashboard template) gains a conditional render for the OHLCV-degraded banner (§6) — driven by a new `vm.ohlcv_source_degraded: bool` field on `DashboardVM` and `PipelineVM` (wherever the base layout dereferences it; see Phase 3c's `PageErrorVM` precedent). The `_build_templates` autoescape guarantee (Phase 3c) still applies.
+- Open-positions row template unchanged — extra advisories just render into the existing `advisories` list.
 
 ### 3.5 `swing/web/app.py` startup
 
@@ -428,6 +442,8 @@ Default 1 hour (`cfg.web.ohlcv_cache_ttl_seconds = 3600`). Rationale: daily bars
 ### 4.3 Deadline semantics
 
 `OhlcvCache.get_many_bundles(tickers, deadline_seconds=..., executor=...)` returns `{ticker: OhlcvBundle}` for every requested ticker. A ticker that didn't complete before the deadline receives `OhlcvBundle.empty(fetched_at=now)` (all None fields). This bundle is **not cached** — it represents a deadline miss, not a confirmed-empty result. The next request re-attempts the fetch.
+
+**Deadline misses count toward the breaker.** A yfinance outage that manifests as *slow* rather than *exception* would never record a failure in a raw try/except model, so the breaker would never trip and the degraded banner (§6) would never appear — operators would see advisories silently disappear without explanation. To close this gap, `OhlcvCache.get_many_bundles` records one sliding-window outcome per requested ticker: `success` if a bundle was produced (cache hit or fresh fetch), `failure` if the ticker hit the deadline OR the underlying `fetch_daily_bars` raised. The breaker's >50% trip condition therefore fires on slow-fetch regimes as well as on error regimes.
 
 ### 4.4 Circuit breaker
 
