@@ -37,12 +37,18 @@ def _fetch_spx_ndx() -> list[str]:
     with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_SECONDS) as r:
         spx_html = r.read().decode("utf-8")
     spx_tables = pd.read_html(StringIO(spx_html))
-    if not spx_tables or "Symbol" not in spx_tables[0].columns:
-        raise RuntimeError(
-            "S&P 500 Wikipedia page layout changed — no 'Symbol' column in the "
-            "first table. Refresh rs_refresh._fetch_spx_ndx when this happens."
+    try:
+        spx_table = next(
+            t for t in spx_tables if "Symbol" in t.columns or "Ticker" in t.columns
         )
-    spx = spx_tables[0]["Symbol"].astype(str).str.replace(".", "-").tolist()
+    except StopIteration as exc:
+        raise RuntimeError(
+            "S&P 500 Wikipedia page layout changed — no table with 'Symbol' "
+            "or 'Ticker' column found. Refresh rs_refresh._fetch_spx_ndx when "
+            "this happens."
+        ) from exc
+    spx_col = "Symbol" if "Symbol" in spx_table.columns else "Ticker"
+    spx = spx_table[spx_col].astype(str).str.replace(".", "-").tolist()
 
     req = urllib.request.Request(ndx_url, headers=headers)
     with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_SECONDS) as r:

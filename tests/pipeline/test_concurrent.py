@@ -83,19 +83,36 @@ def test_stale_heartbeat_still_blocks_without_force_clear(tmp_path: Path):
 
     # After force_clear (state moves to 'force_cleared'), a new acquire
     # succeeds — the partial unique index only guards against state='running'.
-    from swing.data.repos.pipeline import force_clear, list_recent_runs
+    from swing.data.repos.pipeline import find_run, force_clear, list_recent_runs
     conn = sqlite3.connect(db)
     try:
         runs = list_recent_runs(conn, limit=1)
         assert runs[0].state == "running"
+        stale_run_id = runs[0].id
         with conn:
-            force_clear(conn, run_id=runs[0].id, error_message="test force-clear")
+            force_clear(conn, run_id=stale_run_id, error_message="test force-clear")
     finally:
         conn.close()
     new_lease = acquire_lease(
         db_path=db, trigger="manual",
         data_asof_date="2026-04-15", action_session_date="2026-04-16",
     )
+    # Audit assertions (adversarial review Batch 5 Round 2 Minor 2): the
+    # stale row must transition to 'force_cleared' with its error_message
+    # preserved, and the new acquire must create a DISTINCT pipeline_runs
+    # row rather than mutating the old one. This proves force_clear is an
+    # audit event, not an in-place takeover.
+    assert new_lease.run_id != stale_run_id
+    conn = sqlite3.connect(db)
+    try:
+        stale_run = find_run(conn, stale_run_id)
+        new_run = find_run(conn, new_lease.run_id)
+    finally:
+        conn.close()
+    assert stale_run.state == "force_cleared"
+    assert stale_run.error_message == "test force-clear"
+    assert new_run.state == "running"
+    assert new_run.lease_token == new_lease.token
     new_lease.release(state="complete")
 
 
