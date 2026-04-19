@@ -101,6 +101,7 @@ def build_open_positions_row(
             as_of_date=action_session,
             current_price=snapshot.price,
             sma10=None, sma20=None,
+            sma50=None, previous_close=None,
             weather_status=weather_status,
             config=cfg.stop_advisory,
         )

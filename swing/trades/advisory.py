@@ -19,6 +19,8 @@ class AdvisoryContext:
     current_price: float
     sma10: float | None
     sma20: float | None
+    sma50: float | None                  # NEW (spec §3.3)
+    previous_close: float | None         # NEW (drives exit_close_below_ma)
     weather_status: str
     config: StopAdvisoryConfig
 
@@ -59,11 +61,17 @@ def suggest_exit_close_below_ma(
     trade: Trade, ctx: AdvisoryContext, *,
     ma_value: float | None, ma_label: str,
 ) -> AdvisorySuggestion | None:
-    if ma_value is None or ctx.current_price >= ma_value:
+    """Minervini: "Sell on a close below the N-day MA." Fires when
+    YESTERDAY'S DAILY CLOSE is below the MA — not on a live intraday tick.
+    Spec §3.3."""
+    if ma_value is None or ctx.previous_close is None:
+        return None
+    if ctx.previous_close >= ma_value:
         return None
     return AdvisorySuggestion(
         rule=f"exit_below_{ma_label.lower()}",
-        message=f"EXIT \u2014 close ${ctx.current_price:.2f} is below {ma_label} (${ma_value:.2f})",
+        message=f"EXIT \u2014 yesterday's close ${ctx.previous_close:.2f} "
+                f"is below {ma_label} (${ma_value:.2f})",
     )
 
 
@@ -104,6 +112,7 @@ def compute_all_suggestions(trade: Trade, ctx: AdvisoryContext) -> list[Advisory
                                   buffer_pct=ctx.config.trail_20ma_buffer_pct))
     sugs.append(suggest_exit_close_below_ma(trade, ctx, ma_value=ctx.sma10, ma_label="10MA"))
     sugs.append(suggest_exit_close_below_ma(trade, ctx, ma_value=ctx.sma20, ma_label="20MA"))
+    sugs.append(suggest_exit_close_below_ma(trade, ctx, ma_value=ctx.sma50, ma_label="50MA"))  # NEW
     sugs.append(suggest_weather_action(trade, ctx))
     sugs.append(suggest_time_stop(trade, ctx))
     return [s for s in sugs if s is not None]

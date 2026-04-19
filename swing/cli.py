@@ -425,7 +425,9 @@ def trade_advisory_cmd(ctx, trade_id, current_price, sma10, sma20, weather, as_o
     asof = as_of_date or _date.today().isoformat()
     ctx_a = AdvisoryContext(
         as_of_date=asof, current_price=current_price,
-        sma10=sma10, sma20=sma20, weather_status=weather,
+        sma10=sma10, sma20=sma20,
+        sma50=None, previous_close=None,
+        weather_status=weather,
         config=cfg.stop_advisory,
     )
     sugs = compute_all_suggestions(trade, ctx_a)

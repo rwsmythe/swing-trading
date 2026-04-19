@@ -161,6 +161,8 @@ def build_dashboard(*, cfg: Config, cache: PriceCache, executor) -> DashboardVM:
             current_price=snap.price if snap else 0.0,
             sma10=None,
             sma20=None,
+            sma50=None,
+            previous_close=None,
             weather_status=weather_status_str,
             config=cfg.stop_advisory,
         )
