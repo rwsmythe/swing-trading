@@ -8,7 +8,7 @@
 
 **Tech Stack:** FastAPI + HTMX 2.x (existing), Jinja2 (autoescape via `_build_templates` Phase 3c helper), yfinance for OHLCV, pandas for SMA math (already in dependency tree via weather classifier). Python 3.14, Windows 11, gitbash. All commits go to `main`. Conventional commits (`feat(web):`, `fix(data):`, `refactor(...)`, etc.), NO Claude co-author footer, NO `--no-verify`.
 
-**Baseline:** Phase 3c shipped at commit `3e934ef`. Spec committed + Codex-approved at `c3d65df` (5 rounds, NO_NEW_CRITICAL_MAJOR). 444 fast tests green. Target: **~484** fast tests after Phase 3d (spec §10 projected ~465; this plan lands ~20 above because breaker coverage, in-progress-bar strip, and pipeline pass-through got more granular).
+**Baseline:** Phase 3c shipped at commit `3e934ef`. Spec committed + Codex-approved at `c3d65df` (5 rounds, NO_NEW_CRITICAL_MAJOR). 444 fast tests green. Target: **~486** fast tests after Phase 3d (spec §10 projected ~465; this plan lands ~21 above because breaker coverage, in-progress-bar strip, pipeline pass-through, and end-to-end banner tests on both `/pipeline` and `/` got more granular).
 
 ---
 
@@ -68,8 +68,8 @@ tests/
 ├── web/
 │   ├── test_app_smoke.py             # MODIFIED: +1 test — app.state.ohlcv_cache is OhlcvCache.
 │   ├── test_ohlcv_cache.py           # NEW: ~7 tests — cache hit/miss/TTL/deadline/breaker.
-│   ├── test_base_layout_compat.py    # NEW: ~4 tests — /journal, /watchlist, page-error, and
-│   │                                 #   /pipeline with is_degraded() True + False.
+│   ├── test_base_layout_compat.py    # NEW: ~7 tests — /journal, /watchlist, page-error,
+│   │                                 #   /pipeline banner ±, / dashboard banner ±.
 │   ├── test_dashboard_integration.py # MODIFIED: +3 tests — SMA advisories render for full
 │   │                                 #   bundle; absent for all-None bundle; partial bundle.
 │   └── test_view_models/
@@ -2551,7 +2551,7 @@ Expected: **486 passed** (444 baseline + 42 Phase 3d new; spec projected ~465, s
 
 If any pre-existing test now fails, investigate. The only legitimate regression candidates are:
 - Tests that constructed `AdvisoryContext(...)` positionally and didn't receive the new `sma50` / `previous_close` kwargs — fix by adding the missing fields.
-- Tests that called `build_dashboard(...)` or `build_open_positions_row(...)` without `ohlcv_cache` — fix per Task 12/13 instructions.
+- Tests that called `build_dashboard(...)` or `build_open_positions_row(...)` without `ohlcv_cache` should NOT fail because the kwarg is optional (R2 resolution) — if they do, look for a test that explicitly asserts a specific `ohlcv_source_degraded` value or expects SMA advisories; update that assertion to match the optional-kwarg behavior (bundle=None → rules no-op → `ohlcv_source_degraded=False`).
 
 - [ ] **Step 2: Phase 2 isolation spot-check**
 
@@ -2584,7 +2584,7 @@ Otherwise skip this step.
 ## Plan summary
 
 - **18 tasks**, each ending in a clean commit.
-- **~40 new tests** distributed across pipeline helpers, OHLCV cache, advisory rule tests, base-layout compat, and dashboard integration. (Spec projected ~20-24; actual distribution weighted higher to match the 5 compat tests in §5.5 and the 3 integration tests in §5.4.)
+- **~42 new tests** distributed across pipeline helpers, OHLCV cache, advisory rule tests, base-layout compat (7 tests covering /journal + /watchlist + page-error + /pipeline ± banner + / dashboard ± banner), and dashboard integration (3 integration tests in §5.4). Spec projected ~20-24; actual count ran higher to cover the R1/R2 adversarial hardening.
 - **Target test count:** 444 (end of 3c) → **~486 fast tests** (3d). Spec baseline: 413+ at Phase 3c; ~465 at Phase 3d. We land ~21 above the projection due to more granular coverage of the breaker, in-progress bar strip, the pipeline pass-through, and end-to-end degraded-banner tests on both `/pipeline` and `/` (R2 Major 2 resolution).
 - **Phase 2 change scope:** exactly one function module — `swing/trades/advisory.py` gains `sma50` + `previous_close` fields on `AdvisoryContext`, swaps `suggest_exit_close_below_ma`'s input to `ctx.previous_close`, and adds a 50MA exit call in `compute_all_suggestions` (spec §3.3 / decision #7).
 - **Spec coverage:**
