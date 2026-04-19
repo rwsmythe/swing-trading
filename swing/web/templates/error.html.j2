@@ -1,0 +1,14 @@
+{#- swing/web/templates/error.html.j2 -#}
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Dashboard error</title>
+<link rel="stylesheet" href="/static/app.css"></head>
+<body>
+  <h1>Something went wrong</h1>
+  <p class="banner banner-degraded">
+    Request <code>{{ request_id }}</code> failed: {{ error_message }}
+  </p>
+  <p>Check <code>swing-data/logs/web.log</code> and grep for <code>{{ request_id }}</code>.</p>
+  <a href="/">Back to dashboard</a>
+</body>
+</html>
