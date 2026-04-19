@@ -638,6 +638,83 @@ def test_get_trade_cancel_returns_normal_row(seeded_db, monkeypatch):
     assert "Adjust stop" in r.text
 
 
+def test_post_exit_shares_too_many_renders_form_with_updated_max(seeded_db, monkeypatch):
+    """§5.1 case 2 — 400 re-renders exit form with authoritative max= on shares input."""
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event, list_open_trades
+    from swing.web.price_cache import PriceCache
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=5, initial_stop=860.0,
+                current_stop=860.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {})
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{trade.id}/exit", headers={"HX-Request": "true"},
+            data={"exit_date": "2026-04-18", "exit_price": "932.00",
+                  "shares": "10", "reason": "manual",
+                  "rationale": "too many"},
+        )
+    assert r.status_code == 400
+    # Error banner still present.
+    assert "remaining" in r.text.lower() or "exceed" in r.text.lower()
+    # Form re-rendered inside the error fragment.
+    assert 'name="shares"' in r.text
+    # Authoritative max reflects actual remaining shares (5).
+    assert 'max="5"' in r.text
+
+
+def test_post_stop_regression_renders_form_with_updated_current(seeded_db):
+    """§5.1 case 3 — 400 re-renders stop form with authoritative current_stop prefilled."""
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event, list_open_trades
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=5, initial_stop=860.0,
+                current_stop=900.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{trade.id}/stop", headers={"HX-Request": "true"},
+            data={"new_stop": "880.00", "rationale": "attempt lower"},
+        )
+    assert r.status_code == 400
+    # Error message names the actual current_stop.
+    assert "900" in r.text
+    # Form re-rendered inside the error fragment.
+    assert 'name="new_stop"' in r.text
+    # Authoritative current_stop prefilled (not the user's regressed 880).
+    assert 'value="900.00"' in r.text
+
+
 def test_post_trades_without_hx_request_403(test_cfg):
     """Strict OriginGuard: POST /trades/entry without HX-Request → 403 with X-Request-ID."""
     cfg, cfg_path = test_cfg

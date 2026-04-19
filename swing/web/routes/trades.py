@@ -288,10 +288,16 @@ def exit_post(
         try:
             result = record_exit(conn, req)
         except Exception as exc:
-            # record_exit raises on shares > remaining and other validations.
+            # R: spec §5.1 case 2 — re-render form with authoritative remaining shares.
+            vm = build_exit_form_vm(trade_id=trade_id, cfg=cfg, cache=cache, executor=executor)
+            form_body = None
+            if vm is not None:
+                form_body = templates.get_template(
+                    "partials/trade_exit_form.html.j2"
+                ).render(request=request, vm=vm)
             return templates.TemplateResponse(
                 request, "partials/trade_form_error.html.j2",
-                {"error_message": str(exc), "form_body": None},
+                {"error_message": str(exc), "form_body": form_body},
                 status_code=400,
             )
     finally:
@@ -384,12 +390,19 @@ def stop_post(
         try:
             adjust_stop(conn, req)
         except StopRegressionError as exc:
+            # R: spec §5.1 case 3 — re-render form with updated current_stop.
+            vm = build_stop_form_vm(trade_id=trade_id, cfg=cfg)
+            form_body = None
+            if vm is not None:
+                form_body = templates.get_template(
+                    "partials/trade_stop_form.html.j2"
+                ).render(request=request, vm=vm)
             return templates.TemplateResponse(
                 request, "partials/trade_form_error.html.j2",
                 {"error_message": (
                     f"{exc}. Use CLI `swing trade stop-adjust --trade-id {trade_id} "
                     f"--new-stop {new_stop} --rationale ... --force` if intentional."
-                ), "form_body": None},
+                ), "form_body": form_body},
                 status_code=400,
             )
     finally:
