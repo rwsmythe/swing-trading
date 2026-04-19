@@ -126,3 +126,32 @@ def test_web_config_csv_upload_max_bytes_parsed_from_toml(tmp_path: Path):
     )
     cfg = load(cfg_path)
     assert cfg.web.csv_upload_max_bytes == 5242880
+
+
+def test_web_config_has_ohlcv_cache_ttl_seconds_default():
+    """Phase 3d §3.7: Web.ohlcv_cache_ttl_seconds defaults to 3600."""
+    from swing.config import Web
+    w = Web()
+    assert w.ohlcv_cache_ttl_seconds == 3600
+
+
+def test_web_config_has_max_concurrent_ohlcv_fetches_default():
+    """Phase 3d §3.7: Web.max_concurrent_ohlcv_fetches defaults to 8."""
+    from swing.config import Web
+    w = Web()
+    assert w.max_concurrent_ohlcv_fetches == 8
+
+
+def test_web_config_ohlcv_fields_parsed_from_toml(tmp_path: Path):
+    """Phase 3d §3.7: TOML overrides land on the cfg."""
+    project = tmp_path / "project"
+    project.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    cfg_path = _write_cfg(
+        project, home,
+        extra='[web]\nohlcv_cache_ttl_seconds = 1800\nmax_concurrent_ohlcv_fetches = 4\n',
+    )
+    cfg = load(cfg_path)
+    assert cfg.web.ohlcv_cache_ttl_seconds == 1800
+    assert cfg.web.max_concurrent_ohlcv_fetches == 4

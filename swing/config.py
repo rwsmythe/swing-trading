@@ -138,6 +138,8 @@ class Web:
     circuit_breaker_cooldown_seconds: int = 60
     polling_interval_seconds: int = 2
     csv_upload_max_bytes: int = 10 * 1024 * 1024
+    ohlcv_cache_ttl_seconds: int = 3600              # NEW: 1h default (§3.7)
+    max_concurrent_ohlcv_fetches: int = 8            # NEW: full executor (§3.2)
 
 
 @dataclass(frozen=True)
