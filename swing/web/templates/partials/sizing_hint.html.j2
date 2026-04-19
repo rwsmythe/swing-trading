@@ -1,0 +1,14 @@
+{#- Sizing hint fragment, two modes:
+    Mode 1 (numbers): pass `sizing` (SizingResult feasible=True) — shows shares + risk.
+    Mode 2 (dim guidance): pass `guidance` (str) — shows hint text in muted style. -#}
+<span id="sizing-hint" class="sizing-hint">
+  {% if guidance is defined and guidance %}
+    <span class="subtitle">{{ guidance }}</span>
+  {% elif sizing is defined and sizing.feasible %}
+    Suggested max: <strong>{{ sizing.shares }} sh</strong>
+    (~${{ '%.2f' | format(sizing.risk_dollars) }} risk =
+    {{ '%.2f' | format(sizing.risk_pct) }}%)
+  {% else %}
+    <span class="subtitle">Enter a valid entry price and stop (stop &lt; entry) to see sizing</span>
+  {% endif %}
+</span>

@@ -153,11 +153,13 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
         dashboard as dashboard_route,
         journal as journal_route,
         pipeline as pipeline_route,
+        trades as trades_route,
         watchlist as watchlist_route,
     )
     app.include_router(dashboard_route.router)
     app.include_router(watchlist_route.router)
     app.include_router(journal_route.router)
     app.include_router(pipeline_route.router)
+    app.include_router(trades_route.router)
 
     return app
