@@ -1,0 +1,26 @@
+{#- swing/web/templates/pipeline.html.j2 -#}
+{% extends "base.html.j2" %}
+{% block content %}
+  <h1>Pipeline</h1>
+  <button hx-post="/pipeline/run" hx-target="#run-panel" hx-swap="innerHTML"
+          hx-headers='{"HX-Request": "true"}'>Run now</button>
+  <div id="run-panel"></div>
+  <h2>Recent runs</h2>
+  <table>
+    <thead><tr>
+      <th>ID</th><th>State</th><th>Started</th><th>Finished</th><th>Session</th><th>Trigger</th>
+    </tr></thead>
+    <tbody>
+      {% for r in vm.recent_runs %}
+        <tr>
+          <td>{{ r.id }}</td>
+          <td>{{ r.state }}</td>
+          <td>{{ r.started_ts }}</td>
+          <td>{{ r.finished_ts or '—' }}</td>
+          <td>{{ r.action_session_date }}</td>
+          <td>{{ r.trigger }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}

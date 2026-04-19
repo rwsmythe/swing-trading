@@ -1,0 +1,23 @@
+{#- swing/web/templates/partials/pipeline_progress.html.j2 -#}
+{#- Expects: run (PipelineRun or None), error_text (str or None), poll_interval (int) -#}
+{% if error_text %}
+  <div class="banner banner-degraded">{{ error_text }}</div>
+{% elif run and run.state == 'running' %}
+  <div id="pipeline-progress"
+       hx-get="/pipeline/status/{{ run.id }}"
+       hx-trigger="every {{ poll_interval }}s"
+       hx-swap="outerHTML"
+       hx-headers='{"HX-Request": "true"}'>
+    <div class="progress-strip">
+      Step: {{ run.current_step or 'starting…' }}
+      (weather: {{ run.weather_status or '—' }},
+       evaluation: {{ run.evaluation_status or '—' }},
+       watchlist: {{ run.watchlist_status or '—' }})
+    </div>
+  </div>
+{% else %}
+  <div id="pipeline-progress" class="terminal">
+    Run #{{ run.id }} {{ run.state }}.
+    {% if run.error_message %}Error: {{ run.error_message }}.{% endif %}
+  </div>
+{% endif %}
