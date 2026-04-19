@@ -369,6 +369,40 @@ def test_post_force_clear_404_for_non_eligible(test_cfg, seeded_db, seed_stale_r
     assert r.status_code == 404
 
 
+def test_get_pipeline_renders_stale_run_card_when_eligible(test_cfg, seeded_db, seed_stale_run):
+    """Spec §4.2: /pipeline renders stale_run_card.html.j2 inline when an
+    eligible stale run exists."""
+    run_id = seed_stale_run(hb_age=600, step_age=1200)
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/pipeline")
+    assert r.status_code == 200
+    assert f'id="stale-run-{run_id}"' in r.text
+    assert "Force clear" in r.text or "Force-clear" in r.text
+
+
+def test_get_pipeline_no_stale_run_card_when_no_active_run(test_cfg, seeded_db):
+    """No active run at all → no stale-run card on the page."""
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/pipeline")
+    assert r.status_code == 200
+    assert 'id="stale-run-' not in r.text
+
+
+def test_get_pipeline_no_stale_run_card_when_run_is_fresh(test_cfg, seeded_db, seed_stale_run):
+    """Active run but fresh heartbeat + step-progress → no stale-run card."""
+    seed_stale_run(hb_age=30, step_age=30)
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/pipeline")
+    assert r.status_code == 200
+    assert 'id="stale-run-' not in r.text
+
+
 def test_post_force_clear_post_write_state_conflict(test_cfg, seeded_db, seed_stale_run, monkeypatch):
     """If force_clear() is called but the run somehow didn't transition to
     force_cleared (concurrent writer changed state to 'failed' etc.), the

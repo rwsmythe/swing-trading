@@ -2,6 +2,11 @@
 {% extends "base.html.j2" %}
 {% block content %}
   <h1>Pipeline</h1>
+  {% if vm.stale_run %}
+    {% with run = vm.stale_run %}
+      {% include "partials/stale_run_card.html.j2" %}
+    {% endwith %}
+  {% endif %}
   <button hx-post="/pipeline/run" hx-target="#run-panel" hx-swap="innerHTML"
           hx-headers='{"HX-Request": "true"}'>Run now</button>
   <div id="run-panel"></div>
