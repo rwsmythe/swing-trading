@@ -40,7 +40,7 @@ class OhlcvBundle:
     fetched_at: float
 
     @classmethod
-    def empty(cls, fetched_at: float) -> "OhlcvBundle":
+    def empty(cls, fetched_at: float) -> OhlcvBundle:
         return cls(None, None, None, None, fetched_at)
 
 
