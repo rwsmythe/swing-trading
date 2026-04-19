@@ -235,7 +235,8 @@ def entry_post(
         conn.close()
     new_trade = next(t for t in open_trades if t.id == result.trade_id)
     row_vm = build_open_positions_row(
-        trade=new_trade, cfg=cfg, cache=cache, executor=executor,
+        trade=new_trade, cfg=cfg, cache=cache,
+        ohlcv_cache=request.app.state.ohlcv_cache, executor=executor,
     )
 
     # b) Dashboard rebuild — source for OOB fragments.
@@ -356,7 +357,8 @@ def exit_post(
     finally:
         conn2.close()
     row_vm = build_open_positions_row(
-        trade=updated, cfg=cfg, cache=cache, executor=executor,
+        trade=updated, cfg=cfg, cache=cache,
+        ohlcv_cache=request.app.state.ohlcv_cache, executor=executor,
     )
     row_html = templates.get_template("partials/open_positions_row.html.j2").render(
         request=request, row=row_vm,
@@ -396,7 +398,8 @@ def trade_cancel(request: Request, trade_id: int):
         raise HTTPException(status_code=404, detail=f"Trade #{trade_id} not found or not open")
 
     row_vm = build_open_positions_row(
-        trade=trade, cfg=cfg, cache=cache, executor=executor,
+        trade=trade, cfg=cfg, cache=cache,
+        ohlcv_cache=request.app.state.ohlcv_cache, executor=executor,
     )
     # Single-contract partial: pass only `row` (R1 Major 3 fix).
     return templates.TemplateResponse(
@@ -462,7 +465,8 @@ def stop_post(
     finally:
         conn.close()
     row_vm = build_open_positions_row(
-        trade=updated, cfg=cfg, cache=cache, executor=executor,
+        trade=updated, cfg=cfg, cache=cache,
+        ohlcv_cache=request.app.state.ohlcv_cache, executor=executor,
     )
     row_html = templates.get_template("partials/open_positions_row.html.j2").render(
         request=request, row=row_vm,
