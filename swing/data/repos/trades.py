@@ -109,17 +109,21 @@ def update_stop_with_event(
     conn: sqlite3.Connection, *, trade_id: int, new_stop: float,
     event_ts: str, rationale: str | None = None,
 ) -> None:
-    """Update trades.current_stop + write 'stop_adjust' event in same txn."""
+    """Update trades.current_stop + write 'stop_adjust' event in same txn.
+    Phase 3c §4.4: atomic status='open' guard closes the close-then-stop race.
+    Missing or closed trade → ValueError with no event insert."""
     trade = get_trade(conn, trade_id)
     if trade is None:
         raise ValueError(f"trade {trade_id} not found")
     if trade.current_stop == new_stop:
         return  # no-op
     payload = {"old_stop": trade.current_stop, "new_stop": new_stop}
-    conn.execute(
-        "UPDATE trades SET current_stop = ? WHERE id = ?",
+    cur = conn.execute(
+        "UPDATE trades SET current_stop = ? WHERE id = ? AND status = 'open'",
         (new_stop, trade_id),
     )
+    if cur.rowcount == 0:
+        raise ValueError(f"trade {trade_id} is not open or does not exist")
     conn.execute(
         """
         INSERT INTO trade_events (trade_id, ts, event_type, payload_json, rationale)

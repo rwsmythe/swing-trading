@@ -207,3 +207,88 @@ def test_exit_atomicity_rolls_back_on_failure(tmp_path: Path):
         assert [e.event_type for e in events] == ["entry"]
     finally:
         conn.close()
+
+
+def test_update_stop_with_event_rejects_closed_trade():
+    """Spec §4.4: closed trade → ValueError, no row mutation, no event insert."""
+    from swing.data.db import connect, ensure_schema
+    from swing.data.repos.trades import (
+        insert_trade_with_event, update_stop_with_event,
+    )
+    import pytest as _pt
+    import tempfile
+    import pathlib
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = pathlib.Path(tmp) / "test.db"
+        ensure_schema(db_path).close()
+        conn = connect(db_path)
+        try:
+            with conn:
+                tid = insert_trade_with_event(
+                    conn, _trade(), event_ts="2026-04-15T09:30:00",
+                )
+                # Mark the trade closed (simulates post-exit state transition).
+                conn.execute(
+                    "UPDATE trades SET status='closed' WHERE id = ?", (tid,),
+                )
+
+            # Attempt stop-adjust on the closed trade.
+            with _pt.raises(ValueError) as excinfo:
+                with conn:
+                    update_stop_with_event(
+                        conn, trade_id=tid, new_stop=175.0,
+                        event_ts="2026-04-16T10:00:00",
+                        rationale="attempt after close",
+                    )
+            # Accept either wording — the closed-trade path raises with one;
+            # missing-trade path raises with another.
+            msg = str(excinfo.value).lower()
+            assert "not open" in msg or "does not exist" in msg
+
+            # Confirm no stop_adjust event was inserted.
+            rows = conn.execute(
+                "SELECT COUNT(*) FROM trade_events "
+                "WHERE event_type='stop_adjust' AND trade_id = ?",
+                (tid,),
+            ).fetchone()
+            assert rows[0] == 0
+
+            # current_stop must not have mutated.
+            row = conn.execute(
+                "SELECT current_stop FROM trades WHERE id = ?", (tid,),
+            ).fetchone()
+            assert row[0] == _trade().initial_stop  # whatever initial_stop _trade() sets
+        finally:
+            conn.close()
+
+
+def test_update_stop_with_event_rejects_missing_trade():
+    """Spec §4.4: nonexistent trade_id → ValueError, no event insert."""
+    from swing.data.db import connect, ensure_schema
+    from swing.data.repos.trades import update_stop_with_event
+    import pytest as _pt
+    import tempfile
+    import pathlib
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = pathlib.Path(tmp) / "test.db"
+        ensure_schema(db_path).close()
+        conn = connect(db_path)
+        try:
+            with _pt.raises(ValueError) as excinfo:
+                with conn:
+                    update_stop_with_event(
+                        conn, trade_id=99999, new_stop=175.0,
+                        event_ts="2026-04-16T10:00:00",
+                        rationale="missing",
+                    )
+            msg = str(excinfo.value).lower()
+            assert "not found" in msg or "does not exist" in msg
+
+            rows = conn.execute(
+                "SELECT COUNT(*) FROM trade_events WHERE trade_id=99999"
+            ).fetchone()
+            assert rows[0] == 0
+        finally:
+            conn.close()
