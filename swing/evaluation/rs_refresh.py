@@ -9,10 +9,11 @@ from pathlib import Path
 
 _HTTP_TIMEOUT_SECONDS = 30
 # Filename-safe version characters per spec §4.1 (`YYYY-MM-DD-<n>`) plus the
-# Phase 1 scaffold form (`test-v1`). Enforced when deriving the snapshot path
-# so a corrupted/edited header cannot create a path-traversing filename
-# (adversarial review Batch 5 Round 1 Major 2).
-_SAFE_VERSION_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
+# Phase 1 scaffold form (`test-v1`). Requires an alphanumeric first character
+# so standalone `.`, `..`, and leading-dot "hidden-file" names are rejected in
+# addition to characters that contain filesystem separators (adversarial
+# review Batch 5 R1 Major 2 + R3 Minor 1).
+_SAFE_VERSION_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 
 
 def fetch_source_tickers(source: str) -> list[str]:
