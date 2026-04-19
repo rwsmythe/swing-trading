@@ -14,6 +14,7 @@ from swing.data.db import connect
 from swing.data.repos.pipeline import find_active_run, find_run
 from swing.data.repos.trades import list_open_trades
 from swing.data.repos.watchlist import list_active_watchlist
+from swing.pipeline.staleness import is_stale_eligible
 from swing.web.view_models.dashboard import _sort_by_proximity, build_dashboard
 from swing.web.view_models.pipeline import build_pipeline
 
@@ -153,6 +154,27 @@ def pipeline_status(request: Request, run_id: int):
     return templates.TemplateResponse(
         request, "partials/pipeline_progress.html.j2",
         {"run": run, "error_text": None, "poll_interval": poll_interval},
+    )
+
+
+@router.get("/pipeline/stale-run-card/{run_id}", response_class=HTMLResponse)
+def stale_run_card(request: Request, run_id: int):
+    """Render the fresh stale-run card for an eligible run. Used by the Cancel
+    button on the force-clear confirm fragment (reverts the swap)."""
+    cfg = request.app.state.cfg
+    templates = request.app.state.templates
+    conn = connect(cfg.paths.db_path)
+    try:
+        run = find_run(conn, run_id)
+    finally:
+        conn.close()
+    if run is None or not is_stale_eligible(run, cfg):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Run #{run_id} is no longer stale-eligible — refresh the page",
+        )
+    return templates.TemplateResponse(
+        request, "partials/stale_run_card.html.j2", {"run": run},
     )
 
 

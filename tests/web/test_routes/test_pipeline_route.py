@@ -263,3 +263,34 @@ def test_post_prices_refresh_bypasses_degraded_mode(seeded_db, monkeypatch):
     assert call_order[:2] == ["reset", "refresh"], (
         f"expected reset then refresh, got {call_order}"
     )
+
+
+def test_get_stale_run_card_renders_for_eligible_run(test_cfg, seeded_db, seed_stale_run):
+    """Spec §3.1: GET /pipeline/stale-run-card/{run_id} renders the card for
+    an eligible stale run. Used as the Cancel-button target in the confirm UI."""
+    run_id = seed_stale_run(hb_age=600, step_age=1200)
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(
+            f"/pipeline/stale-run-card/{run_id}",
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 200
+    # The card is a <section id="stale-run-{id}"> with a Force-clear button.
+    assert f'id="stale-run-{run_id}"' in r.text
+    assert "Force clear" in r.text or "Force-clear" in r.text
+
+
+def test_get_stale_run_card_404_for_non_eligible(test_cfg, seeded_db, seed_stale_run):
+    """Run that doesn't meet both-signal staleness → 404 fragment."""
+    # Only heartbeat stale, step fresh → NOT eligible.
+    run_id = seed_stale_run(hb_age=600, step_age=30)
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(
+            f"/pipeline/stale-run-card/{run_id}",
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 404

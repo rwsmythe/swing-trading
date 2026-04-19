@@ -1,0 +1,19 @@
+{#- swing/web/templates/partials/stale_run_card.html.j2
+    Expects: run (PipelineRun). Renders the wedged-run summary + Force-clear
+    button. Only rendered on /pipeline when `is_stale_eligible(run, cfg)` is
+    True. Spec §3.1. -#}
+<section id="stale-run-{{ run.id }}" class="stale-run-card">
+  <div class="banner banner-degraded" role="alert">
+    <strong>⚠ Run #{{ run.id }} is wedged.</strong>
+    <p>
+      state=<code>{{ run.state }}</code>,
+      step=<code>{{ run.current_step or '(none)' }}</code>,
+      heartbeat=<code>{{ run.lease_heartbeat_ts or '(none)' }}</code>,
+      step-progress=<code>{{ run.last_step_progress_ts or '(none)' }}</code>
+    </p>
+  </div>
+  <button hx-get="/pipeline/force-clear/{{ run.id }}/confirm"
+          hx-target="closest section[id^='stale-run-']"
+          hx-swap="outerHTML"
+          hx-headers='{"HX-Request": "true"}'>Force clear</button>
+</section>
