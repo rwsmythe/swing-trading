@@ -54,8 +54,7 @@ def fetch_daily_bars(
         return None
     session = as_of_date or action_session_for_run(datetime.now())
     # yfinance index is timezone-aware Timestamps; compare by .date().
-    last_idx = df.index[-1]
-    last_date = last_idx.date() if hasattr(last_idx, "date") else last_idx
+    last_date = df.index[-1].date()
     if last_date >= session:
         df = df.iloc[:-1]
     if df.empty:
