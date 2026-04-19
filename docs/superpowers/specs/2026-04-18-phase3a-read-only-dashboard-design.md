@@ -125,7 +125,10 @@ port = 8080
 reload = false
 price_cache_ttl_seconds = 120
 price_fetch_timeout_seconds = 3
-polling_interval_seconds = 2   # HTMX progress-polling interval
+price_fetch_deadline_seconds = 6      # get_many overall deadline (defensive second cap)
+max_concurrent_price_fetches = 8      # bound on shared price-fetch executor workers
+circuit_breaker_cooldown_seconds = 60 # how long to stay in degraded mode after failure threshold
+polling_interval_seconds = 2          # HTMX progress-polling interval
 ```
 
 Loaded by `swing.config.load()` with dataclass defaults for backward compatibility (same pattern as Phase 2's `[near_trigger]`, `[stop_advisory]`).
@@ -240,7 +243,15 @@ def get_many(self, tickers, deadline_seconds):
 
 The primary bound is thus the **yfinance-level per-ticker timeout**, which the implementation must pass through explicitly (via `yfinance.Ticker(t).fast_info` — internally uses `requests` with a `timeout` kwarg). The `deadline_seconds` passed to `get_many` is a second defensive cap for the case where yfinance ignores or mishandles its own timeout.
 
-Thread-safe: `threading.Lock` guards the dict under concurrent reads. The cache can be accessed from request-handling threads concurrently (multiple browser tabs). No background refresh thread in 3a.
+**Cross-request capacity protection** (Round 3 Major 1). A per-request `ThreadPoolExecutor` stacks threads under sustained upstream outage: 10 page loads × 8 workers during a yfinance timeout regression = 80 blocked threads. The cache therefore uses:
+
+1. **A single shared executor on `app.state.price_fetch_executor`** with `max_workers=cfg.web.max_concurrent_price_fetches` (default 8). `get_many` submits to this executor rather than creating its own. Excess submitted tasks queue (bounded by workers); worst case is slow response, not unbounded thread growth.
+2. **A circuit breaker in `PriceCache`.** A class-level `_failure_window: deque[bool]` tracks the last `N = 20` fetch outcomes. If the fraction of failures in the window exceeds 0.5, the cache enters **degraded mode** for `cfg.web.circuit_breaker_cooldown_seconds` (default 60s): during degraded mode, ALL `get()` / `get_many()` calls skip live fetch entirely and return last-close `PriceSnapshot(is_stale=True, source="last_close")`. Templates render a "degraded" badge alongside the existing stale indicators. On cooldown expiry the next fetch attempt is allowed; on success the window resets. This provides a bounded-noise recovery: when yfinance is out, we cost one failed fetch per 60s instead of 8 per page load.
+3. Template-visible indicator: the `degraded` state surfaces via a dashboard banner ("Live price fetch disabled — upstream outage; showing last close until HH:MM").
+
+Two new `[web]` config fields: `max_concurrent_price_fetches` (default 8), `circuit_breaker_cooldown_seconds` (default 60).
+
+Thread-safe: `threading.Lock` guards the dict AND the circuit-breaker window under concurrent reads. The cache can be accessed from request-handling threads concurrently (multiple browser tabs). No background refresh thread in 3a.
 
 ### 3.3 `swing/web/view_models/<page>.py`
 
@@ -358,12 +369,26 @@ All three regions swap simultaneously in the browser.
 1. Handler checks `find_active_run(conn)`.
    - If an active run exists with fresh heartbeat → return `partials/pipeline_progress.html.j2` immediately with that run's id, so the UI shows the existing run's progress.
    - If active run exists with stale heartbeat → return an error fragment with the actual heartbeat age formatted at render time: `f"A previous run is stuck (run #{id}, state=running, heartbeat age {age_minutes}m). A dashboard force-clear button ships in Phase 3b; until then, run `swing pipeline force-clear {id} --bypass-staleness-check` in a terminal."` The fragment also includes a copy-to-clipboard button for the command to reduce CLI friction.
-2. Otherwise spawns a detached subprocess: `subprocess.Popen([sys.executable, "-m", "swing.cli", "--config", str(app.state.cfg_path), "pipeline", "run", "--manual"], close_fds=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)`.
-   - **Rationale:** a daemon thread dies on uvicorn reload or process exit, orphaning the `pipeline_runs` row with `state='running'` (adversarial review Round 1 Major 4). A subprocess decouples pipeline lifecycle from the web-server lifecycle.
-   - **`cfg_path` provenance** (Round 2 Major 3): `create_app(cfg, cfg_path)` takes BOTH the loaded config and its source file path. `app.state.cfg_path` must be set at app creation time from the CLI's `--config` option (passed through via `ctx.obj["config_path"]` in `swing.cli`). When `cfg_path is None` (e.g. tests calling `create_app(test_cfg)` without a file on disk), `POST /pipeline/run` returns `503 Service Unavailable` with body "Pipeline subprocess launch requires a config-file-backed app startup. Configure via `swing --config <path> web`." Tests that exercise `/pipeline/run` must provide `cfg_path` via a small in-test config file.
-   - **No stdout/stderr capture in the route handler** (Round 2 Minor 3): the child process's logging flows through `swing-data/logs/pipeline.log` (Phase 2's structured log file — `swing.pipeline.runner` uses `logging.getLogger(__name__)` already). Redirecting `Popen`'s stdout/stderr introduces Windows FD-inheritance quirks (parent-opened files can fail with sharing errors); `DEVNULL` is portable and avoids the quirks entirely. Post-hoc inspection is via `swing-data/logs/pipeline.log`, not per-run files.
-   - **No wait/poll for the child**: `Popen` returns immediately; the child writes the `pipeline_runs` row itself via `acquire_lease` inside `run_pipeline`.
-   - Trade-off: ~1s subprocess-startup overhead (Python interpreter boot) is negligible vs pipeline runtime of several minutes.
+2. Otherwise spawn a detached subprocess.
+   - **Signature** (Round 3 Minor 1): `create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI`. `cfg_path` is **optional in the signature** (allowing tests to instantiate the app without a config file) but **required at runtime for `POST /pipeline/run`**. At creation time `app.state.cfg_path = cfg_path`. When the CLI command `swing --config <path> web` starts the server, `cfg_path` is set from `ctx.obj["config_path"]`. When tests call `create_app(test_cfg)` without a file, `app.state.cfg_path is None`, and `POST /pipeline/run` short-circuits to a 503 response (see next bullet). Routes that do not need subprocess launch (all GETs, `POST /prices/refresh`) work regardless of `cfg_path`.
+   - **When `cfg_path is None`**: `POST /pipeline/run` returns `503 Service Unavailable` with body: `"Pipeline subprocess launch requires a config-file-backed app startup. Configure via `swing --config <path> web`."`
+   - **Spawn invocation**:
+     ```python
+     cmd = [sys.executable, "-m", "swing.cli",
+            "--config", str(app.state.cfg_path),
+            "pipeline", "run", "--manual"]
+     log.info("spawning pipeline subprocess: %s", cmd)
+     proc = subprocess.Popen(
+         cmd, close_fds=True,
+         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+         start_new_session=True,
+     )
+     log.info("pipeline subprocess started: pid=%d", proc.pid)
+     ```
+   - **Detect immediate child-exit failures** (Round 3 Minor 2): while tight-looping `find_active_run(conn)` for up to 2s, also call `proc.poll()` on each iteration. If the child exits with non-None return code before the `pipeline_runs` row appears, return an error fragment with the exit code and point to `swing-data/logs/pipeline.log`. This catches early failures (missing dependency, invalid config path, import error) where Phase 2 logging never initialized.
+   - **Rationale for subprocess over thread**: a daemon thread dies on uvicorn reload or process exit, orphaning the `pipeline_runs` row with `state='running'` (Round 1 Major 4). A subprocess decouples pipeline lifecycle from the web-server lifecycle.
+   - **Rationale for `DEVNULL` redirects**: parent-opened file descriptors inherited to children on Windows can fail with sharing-violation errors. Phase 2's `swing.pipeline.runner` already uses `logging.getLogger(__name__)` writing to `swing-data/logs/pipeline.log`, so the child's real logging flows through that path. The cmd+pid log in the parent (above) plus `proc.poll()` detection covers the pre-init window.
+   - Trade-off: ~1s subprocess-startup overhead is negligible vs pipeline runtime of several minutes.
 3. Tight-loop `find_active_run(conn)` (up to 2s, 50ms sleep) to pick up the new row's id after the child acquires its lease. If still missing after 2s → return error fragment ("Pipeline subprocess did not acquire lease within 2s. Check `swing-data/logs/pipeline-run-*.log` and `swing-data/logs/web.log`.").
 4. Return `partials/pipeline_progress.html.j2` with `hx-get="/pipeline/status/{run_id}" hx-trigger="every 2s" hx-swap="outerHTML"`.
 
