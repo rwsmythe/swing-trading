@@ -7,9 +7,9 @@ from fastapi.testclient import TestClient
 from swing.web.middleware.origin_guard import OriginGuardMiddleware
 
 
-def _app_with_test_route(bound_host: str = "127.0.0.1", bound_port: int = 8080) -> FastAPI:
+def _app_with_test_route(bound_host: str = "127.0.0.1", bound_port: int = 8080, *, strict: bool = False) -> FastAPI:
     app = FastAPI()
-    app.add_middleware(OriginGuardMiddleware, bound_host=bound_host, bound_port=bound_port)
+    app.add_middleware(OriginGuardMiddleware, bound_host=bound_host, bound_port=bound_port, strict=strict)
 
     router = APIRouter()
 
@@ -63,56 +63,20 @@ def test_post_no_headers_blocked():
 
 def test_post_strict_requires_hx_request():
     """Under strict=True, POST with only same-Origin (no HX-Request) → 403."""
-    app = FastAPI()
-    app.add_middleware(
-        OriginGuardMiddleware,
-        bound_host="127.0.0.1", bound_port=8080, strict=True,
-    )
-    router = APIRouter()
-
-    @router.post("/action")
-    def action():
-        return {"ok": True}
-
-    app.include_router(router)
-    client = TestClient(app)
+    client = TestClient(_app_with_test_route(strict=True))
     r = client.post("/action", headers={"Origin": "http://127.0.0.1:8080"})
     assert r.status_code == 403
 
 
 def test_post_strict_rejects_referer_only():
     """Under strict=True, POST with only same-Referer (no HX-Request) → 403."""
-    app = FastAPI()
-    app.add_middleware(
-        OriginGuardMiddleware,
-        bound_host="127.0.0.1", bound_port=8080, strict=True,
-    )
-    router = APIRouter()
-
-    @router.post("/action")
-    def action():
-        return {"ok": True}
-
-    app.include_router(router)
-    client = TestClient(app)
+    client = TestClient(_app_with_test_route(strict=True))
     r = client.post("/action", headers={"Referer": "http://127.0.0.1:8080/some/path"})
     assert r.status_code == 403
 
 
 def test_post_strict_accepts_hx_request():
     """Under strict=True, POST with HX-Request: true → 200 (unchanged)."""
-    app = FastAPI()
-    app.add_middleware(
-        OriginGuardMiddleware,
-        bound_host="127.0.0.1", bound_port=8080, strict=True,
-    )
-    router = APIRouter()
-
-    @router.post("/action")
-    def action():
-        return {"ok": True}
-
-    app.include_router(router)
-    client = TestClient(app)
+    client = TestClient(_app_with_test_route(strict=True))
     r = client.post("/action", headers={"HX-Request": "true"})
     assert r.status_code == 200
