@@ -361,15 +361,47 @@ Create `swing/web/templates/partials/http_error_fragment.html.j2`:
 </div>
 ```
 
-- [ ] **Step 4: Register the handler in create_app**
+- [ ] **Step 4: Write a second failing test — RequestValidationError handler (R1 Major 1)**
+
+Spec §5 requires Phase 2 validation errors + Starlette form-parse errors to render a 400 HTMX fragment, not FastAPI's default 422 JSON. Add to `tests/web/test_error_handling.py`:
+
+```python
+def test_htmx_validation_error_renders_fragment_not_json(test_cfg):
+    """RequestValidationError (missing/malformed form field) under HX-Request →
+    trade_form_error fragment at 400, not FastAPI's default 422 JSON."""
+    from fastapi import Form
+    from fastapi.testclient import TestClient
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+
+    @app.post("/_typed_probe")
+    def _probe(x: float = Form(...)):
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        # HX-Request: missing field → fragment with 400.
+        r_hx = client.post(
+            "/_typed_probe", headers={"HX-Request": "true"}, data={},
+        )
+        assert r_hx.status_code == 400
+        assert "banner" in r_hx.text.lower()
+        assert "<!doctype" not in r_hx.text.lower()
+        # Non-HTMX: default 422 JSON still works.
+        r_json = client.post("/_typed_probe", data={})
+        assert r_json.status_code == 422
+        assert r_json.headers["content-type"].startswith("application/json")
+```
+
+- [ ] **Step 5: Register BOTH handlers in create_app**
 
 In `swing/web/app.py`:
 
 Add these imports near the top (merge with existing):
 
 ```python
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from fastapi.exception_handlers import http_exception_handler
 ```
 
 Inside `create_app`, AFTER the existing `_register_exception_handlers(app)` call, add:
@@ -385,28 +417,62 @@ Inside `create_app`, AFTER the existing `_register_exception_handlers(app)` call
                 status_code=exc.status_code,
             )
         return await http_exception_handler(request, exc)
+
+    @app.exception_handler(RequestValidationError)
+    async def _handle_validation_error(request: Request, exc: RequestValidationError):
+        """HTMX form-validation errors render as the trade_form_error fragment at 400
+        (spec §5). Non-HTMX requests fall through to FastAPI's default 422 JSON
+        (API consumers, curl probes, etc.)."""
+        if request.headers.get("HX-Request", "").lower() == "true":
+            # Summarize the first validation error for the banner.
+            errors = exc.errors()
+            first = errors[0] if errors else {}
+            field = ".".join(str(p) for p in first.get("loc", ()) if p != "body") or "field"
+            msg = first.get("msg", "invalid input")
+            tpls = Jinja2Templates(directory=str(app.state.templates_dir))
+            return tpls.TemplateResponse(
+                request, "partials/trade_form_error.html.j2",
+                {"error_message": f"Invalid input in {field}: {msg}", "form_body": None},
+                status_code=400,
+            )
+        return await request_validation_exception_handler(request, exc)
 ```
 
-- [ ] **Step 5: Verify the new test passes**
+Note: `trade_form_error.html.j2` is created in Task 10. For Task 3's RequestValidationError test to have a template to render, create a stub template NOW — Task 10 will replace its body with the full form-preservation markup:
+
+Create `swing/web/templates/partials/trade_form_error.html.j2` with minimal body (gets enhanced in Task 10):
+
+```html
+{#- Trade form error fragment. Full form-preservation markup lands in Task 10.
+    Expects: error_message (str), form_body (None or pre-rendered trusted HTML). -#}
+<tr class="trade-form-error">
+  <td colspan="8">
+    <div class="banner banner-degraded" role="alert">{{ error_message }}</div>
+    {% if form_body %}{{ form_body | safe }}{% endif %}
+  </td>
+</tr>
+```
+
+- [ ] **Step 6: Verify the new tests pass**
 
 Run: `python -m pytest tests/web/test_error_handling.py -v`
-Expected: all error-handling tests pass, including the new one.
+Expected: all error-handling tests pass, including the new 404 fragment and validation-error fragment tests.
 
-- [ ] **Step 6: Verify the 3a `test_pipeline_status_missing_returns_error` still passes**
+- [ ] **Step 7: Verify the 3a `test_pipeline_status_missing_returns_error` still passes**
 
 Run: `python -m pytest tests/web/test_routes/test_pipeline_route.py::test_pipeline_status_missing_returns_error -v`
-Expected: PASS. (That test asserts status_code 404; it uses TestClient without HX-Request, so it hits the JSON-default branch, same as before.)
+Expected: PASS. That test uses TestClient without HX-Request, so it hits the JSON-default branch, unchanged.
 
-- [ ] **Step 7: Full fast suite**
+- [ ] **Step 8: Full fast suite**
 
 Run: `python -m pytest -m "not slow" -q`
-Expected: 356 passed (355 + 1).
+Expected: 357 passed (355 + 2 new error-handling tests).
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add swing/web/app.py swing/web/templates/partials/http_error_fragment.html.j2 tests/web/test_error_handling.py
-git commit -m "feat(web): HTMX-aware HTTPException handler renders fragment for HX-Request 4xx"
+git add swing/web/app.py swing/web/templates/partials/http_error_fragment.html.j2 swing/web/templates/partials/trade_form_error.html.j2 tests/web/test_error_handling.py
+git commit -m "feat(web): HTMX-aware HTTPException + RequestValidationError handlers render fragments"
 ```
 
 ---
@@ -548,109 +614,19 @@ git commit -m "feat(web): OpenPositionsRowVM + pure row-VM assembler"
 
 **Files:**
 - Modify: `swing/web/view_models/open_positions_row.py`
-- Modify: `swing/data/repos/trades.py` (ADD helper `list_exits_for_trade`)
 - Test: `tests/web/test_view_models/test_open_positions_row.py`
 
-The single-row convenience wrapper does the I/O (cache.get_many for one ticker; list exits for remaining shares; compute advisories). Used by POST-success handlers. Also adds the one Phase 2 helper needed: `list_exits_for_trade(conn, trade_id)`.
+**Pre-check correction (R1):** `list_exits_for_trade(conn, trade_id)` already exists in `swing/data/repos/trades.py:200` and returns `list[Exit]`. The `Exit` model (`swing/data/models.py:68`) has fields `(id, trade_id, exit_date, exit_price, shares, reason, realized_pnl, r_multiple, notes)`. The SQL table is `exits` (not `trade_exits`). The plan's initial Task 5 assumed these did not exist — that was wrong. Task 5 is now scoped to ONLY the `build_open_positions_row` convenience wrapper.
 
-- [ ] **Step 1: Verify Phase 2 surface**
+The wrapper does the I/O for a single row: cache.get_many for one ticker; `list_exits_for_trade` for remaining shares; compute advisories.
 
-Check `swing/data/repos/trades.py` for existing helpers. We need a way to get a single trade's exits.
+- [ ] **Step 1: Verify the existing Phase 2 surface**
 
-Run: `grep -n "def list_" swing/data/repos/trades.py`
+Run: `grep -n "def list_exits_for_trade\|class Exit" swing/data/repos/trades.py swing/data/models.py`
 
-Expected output will include `list_open_trades`, `list_closed_trades`, `list_all_exits`. We need `list_exits_for_trade(conn, trade_id)` — likely does not exist.
+Expected: `list_exits_for_trade` at `swing/data/repos/trades.py:200` and `class Exit` at `swing/data/models.py:68`. No Phase 2 change required.
 
-- [ ] **Step 2: Write failing test for list_exits_for_trade**
-
-Append to `tests/web/test_view_models/test_open_positions_row.py`:
-
-```python
-def test_list_exits_for_trade_filters_by_id(seeded_db):
-    """list_exits_for_trade returns only exits for the requested trade_id."""
-    from swing.data.db import connect
-    from swing.data.models import Trade
-    from swing.data.repos.trades import (
-        insert_trade_with_event, insert_exit_with_event, list_exits_for_trade,
-    )
-    from swing.trades.exit import ExitReason
-    cfg, _ = seeded_db
-    conn = connect(cfg.paths.db_path)
-    try:
-        with conn:
-            insert_trade_with_event(conn, Trade(
-                id=None, ticker="AAPL", entry_date="2026-04-15",
-                entry_price=180.0, initial_shares=10, initial_stop=170.0,
-                current_stop=170.0, status="open",
-                watchlist_entry_target=None, watchlist_initial_stop=None,
-                notes=None,
-            ), event_ts="2026-04-15T09:30:00")
-            insert_trade_with_event(conn, Trade(
-                id=None, ticker="NVDA", entry_date="2026-04-16",
-                entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
-                watchlist_entry_target=None, watchlist_initial_stop=None,
-                notes=None,
-            ), event_ts="2026-04-16T09:30:00")
-            insert_exit_with_event(
-                conn, trade_id=1, exit_date="2026-04-17", exit_price=185.0,
-                shares=3, reason=ExitReason.MANUAL, notes=None,
-                rationale="partial", event_ts="2026-04-17T10:00:00",
-            )
-            insert_exit_with_event(
-                conn, trade_id=2, exit_date="2026-04-17", exit_price=910.0,
-                shares=2, reason=ExitReason.MANUAL, notes=None,
-                rationale="partial", event_ts="2026-04-17T10:01:00",
-            )
-        aapl_exits = list_exits_for_trade(conn, 1)
-        nvda_exits = list_exits_for_trade(conn, 2)
-        other_exits = list_exits_for_trade(conn, 999)
-    finally:
-        conn.close()
-    assert len(aapl_exits) == 1 and aapl_exits[0].trade_id == 1
-    assert len(nvda_exits) == 1 and nvda_exits[0].trade_id == 2
-    assert other_exits == []
-```
-
-- [ ] **Step 3: Verify it fails**
-
-Run: `python -m pytest tests/web/test_view_models/test_open_positions_row.py::test_list_exits_for_trade_filters_by_id -v`
-Expected: ImportError — `list_exits_for_trade` not exported.
-
-- [ ] **Step 4: Add list_exits_for_trade to Phase 2 repo**
-
-Read the existing `swing/data/repos/trades.py` to match its style. Append (after `list_all_exits`):
-
-```python
-def list_exits_for_trade(conn, trade_id: int) -> list[TradeExit]:
-    """Return all exits for a specific trade_id, ordered by event_ts ASC.
-    Additive helper for Phase 3b to compute remaining-shares per row
-    without scanning all exits."""
-    rows = conn.execute(
-        """SELECT id, trade_id, exit_date, exit_price, shares, reason,
-                  notes, rationale, event_ts, realized_pnl, r_multiple
-             FROM trade_exits
-            WHERE trade_id = ?
-            ORDER BY event_ts ASC""",
-        (trade_id,),
-    ).fetchall()
-    return [
-        TradeExit(
-            id=r[0], trade_id=r[1], exit_date=r[2], exit_price=r[3],
-            shares=r[4], reason=r[5], notes=r[6], rationale=r[7],
-            event_ts=r[8], realized_pnl=r[9], r_multiple=r[10],
-        ) for r in rows
-    ]
-```
-
-Verify the column ordering against the existing `list_all_exits` in the same file — match it exactly. If the field list differs, adjust.
-
-- [ ] **Step 5: Verify the exits test passes**
-
-Run: `python -m pytest tests/web/test_view_models/test_open_positions_row.py::test_list_exits_for_trade_filters_by_id -v`
-Expected: PASS.
-
-- [ ] **Step 6: Write failing test for build_open_positions_row**
+- [ ] **Step 2: Write failing test for build_open_positions_row**
 
 Append to `tests/web/test_view_models/test_open_positions_row.py`:
 
@@ -661,7 +637,7 @@ def test_build_open_positions_row_single_row(seeded_db, monkeypatch):
     from datetime import datetime
     from swing.data.db import connect
     from swing.data.models import Trade
-    from swing.data.repos.trades import insert_trade_with_event
+    from swing.data.repos.trades import insert_trade_with_event, list_open_trades
     from swing.web.price_cache import PriceCache, PriceSnapshot
     from swing.web.view_models.open_positions_row import build_open_positions_row
 
@@ -676,12 +652,6 @@ def test_build_open_positions_row_single_row(seeded_db, monkeypatch):
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
-    finally:
-        conn.close()
-
-    conn = connect(cfg.paths.db_path)
-    try:
-        from swing.data.repos.trades import list_open_trades
         trade = list_open_trades(conn)[0]
     finally:
         conn.close()
@@ -702,24 +672,72 @@ def test_build_open_positions_row_single_row(seeded_db, monkeypatch):
     assert vm.price_snapshot.price == 182.0
     assert vm.remaining_shares == 10  # no exits seeded
     assert isinstance(vm.advisories, tuple)
+
+
+def test_build_open_positions_row_reduces_remaining_shares_for_prior_exits(seeded_db, monkeypatch):
+    """After a prior partial exit, remaining_shares = initial - sum(exits.shares)."""
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import Exit, Trade
+    from swing.data.repos.trades import (
+        insert_trade_with_event, insert_exit_with_event, list_open_trades,
+    )
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from swing.web.view_models.open_positions_row import build_open_positions_row
+
+    cfg, _ = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="AAPL", entry_date="2026-04-15",
+                entry_price=180.0, initial_shares=10, initial_stop=170.0,
+                current_stop=170.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+            trade = list_open_trades(conn)[0]
+            insert_exit_with_event(
+                conn,
+                Exit(id=None, trade_id=trade.id, exit_date="2026-04-17",
+                     exit_price=185.0, shares=3, reason="partial",
+                     realized_pnl=15.0, r_multiple=1.5, notes=None),
+                event_ts="2026-04-17T10:00:00", rationale="locking in 1.5R partial",
+            )
+            trade = list_open_trades(conn)[0]  # refresh
+    finally:
+        conn.close()
+
+    cache = PriceCache(cfg)
+    monkeypatch.setattr(cache, "get_many",
+        lambda tickers, deadline_seconds, *, executor=None: {
+            "AAPL": PriceSnapshot(
+                ticker="AAPL", price=188.0, asof=datetime.now(),
+                is_stale=False, source="live",
+            ),
+        })
+    vm = build_open_positions_row(
+        trade=trade, cfg=cfg, cache=cache, executor=None,
+    )
+    assert vm.remaining_shares == 7   # 10 - 3
 ```
 
-- [ ] **Step 7: Verify it fails**
+- [ ] **Step 3: Verify it fails**
 
-Run: `python -m pytest tests/web/test_view_models/test_open_positions_row.py::test_build_open_positions_row_single_row -v`
-Expected: ImportError — `build_open_positions_row` not defined.
+Run: `python -m pytest tests/web/test_view_models/test_open_positions_row.py -v`
+Expected: the 2 tests from Task 4 pass, both new tests fail — `build_open_positions_row` not yet implemented.
 
-- [ ] **Step 8: Implement build_open_positions_row**
+- [ ] **Step 4: Implement build_open_positions_row**
 
 Append to `swing/web/view_models/open_positions_row.py`:
 
 ```python
-from datetime import datetime
-from pathlib import Path
 import sqlite3
+from datetime import datetime
 
 from swing.config import Config
 from swing.data.db import connect
+from swing.data.models import Trade
 from swing.data.repos.trades import list_exits_for_trade
 from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
 from swing.web.price_cache import PriceCache
@@ -743,7 +761,6 @@ def build_open_positions_row(
     """
     assert trade.id is not None, f"trade.id=None for {trade.ticker} — data integrity bug"
 
-    # Price snapshot — ask cache for just the one ticker.
     prices = cache.get_many(
         [trade.ticker],
         deadline_seconds=cfg.web.price_fetch_deadline_seconds,
@@ -751,7 +768,6 @@ def build_open_positions_row(
     )
     snapshot = prices.get(trade.ticker)
 
-    # Remaining shares + advisories — DB reads.
     own_conn = conn is None
     if own_conn:
         conn = connect(cfg.paths.db_path)
@@ -763,8 +779,6 @@ def build_open_positions_row(
             conn.close()
     remaining = trade.initial_shares - sum(e.shares for e in exits)
 
-    # Advisories — 3a reduced subset (sma10=sma20=None); MA-rules return None.
-    # Current price required — if snapshot missing, skip advisories (consistent with 3a).
     advisories: tuple[AdvisorySuggestionVM, ...] = ()
     if snapshot is not None:
         ctx = AdvisoryContext(
@@ -787,23 +801,21 @@ def build_open_positions_row(
     )
 ```
 
-Add the missing imports: `from swing.data.models import Trade` (should already be at top; merge).
-
-- [ ] **Step 9: Run tests**
+- [ ] **Step 5: Run tests**
 
 Run: `python -m pytest tests/web/test_view_models/test_open_positions_row.py -v`
-Expected: 4 PASS (2 pure + 1 list_exits_for_trade + 1 build).
+Expected: 4 PASS (2 pure helpers + 2 build).
 
-- [ ] **Step 10: Full suite**
+- [ ] **Step 6: Full suite**
 
 Run: `python -m pytest -m "not slow" -q`
 Expected: 360 passed (358 + 2).
 
-- [ ] **Step 11: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add swing/data/repos/trades.py swing/web/view_models/open_positions_row.py tests/web/test_view_models/test_open_positions_row.py
-git commit -m "feat(web): build_open_positions_row + list_exits_for_trade helper"
+git add swing/web/view_models/open_positions_row.py tests/web/test_view_models/test_open_positions_row.py
+git commit -m "feat(web): build_open_positions_row convenience wrapper"
 ```
 
 ---
@@ -889,108 +901,137 @@ git commit -m "refactor(web): build_dashboard uses _open_positions_row_vm + list
 
 ---
 
-## Task 7: Extract open_positions_row.html.j2 partial + add watchlist Enter button
+## Task 7: Extract open_positions_row.html.j2 partial (row-only VM contract, no buttons yet)
 
 **Files:**
 - Modify: `swing/web/templates/partials/open_positions.html.j2`
 - Create: `swing/web/templates/partials/open_positions_row.html.j2`
-- Modify: `swing/web/templates/partials/watchlist_row.html.j2`
 - Test: run existing dashboard/watchlist route tests
 
-Extract the per-row HTML from `open_positions.html.j2` into a standalone partial so POST-success handlers can render one row with the same template. Add Exit + Adjust stop buttons to the row. Add Enter button to watchlist rows.
+**R1 resolution notes:**
+- **R1 Major 2 fix:** The Enter/Exit/Adjust-stop action buttons are NOT added in this task. They land in the tasks that create the routes those buttons point at: Enter button in Task 9 (entry form GET), Exit button in Task 13 (exit form GET), Adjust stop button in Task 15 (stop form GET). This keeps every intermediate commit a working product — no button ever exists without its backing endpoint.
+- **R1 Major 3 fix:** The row partial has a SINGLE contract — it takes only `row: OpenPositionsRowVM`. No dual `{% if row is defined %}` branch. The dashboard loop constructs a row VM per trade via `_open_positions_row_vm(...)` and passes it as `row`.
+- **R1 Major 5 golden-output note:** This task is a RENDERING CHANGE even though `DashboardVM`'s external dataclass shape is unchanged. The Phase 3a integration tests (`test_dashboard_no_stale_banner_when_run_is_current`, `test_dashboard_shows_stale_banner_when_run_is_old`, `test_dashboard_renders_degraded_banner_when_cache_degraded`) are the de-facto golden-output tests — if they stay green, the HTML is semantically equivalent. If any assert a specific HTML substring that changes (e.g., a tag ordering), the test assertion is updated to match the new output AND the change is called out in the commit message.
+
+3a tests likely to need assertion updates: `tests/web/test_routes/test_dashboard_route.py`, `tests/web/test_routes/test_watchlist_route.py`, `tests/web/test_dashboard_integration.py`, `tests/web/test_routes/test_pipeline_route.py::test_post_prices_refresh_*` (the oob-swap test reads open_positions markup).
 
 - [ ] **Step 1: Read the current open_positions.html.j2**
 
 Understand its structure. Today it iterates `vm.open_trades` and renders a `<tr>` for each using `vm.open_trade_last_prices[t.ticker]` and `vm.open_trade_advisories[t.id]`.
 
-- [ ] **Step 2: Create the new per-row partial**
+- [ ] **Step 2: Create the new per-row partial (row-only contract, no buttons)**
 
 Create `swing/web/templates/partials/open_positions_row.html.j2`:
 
 ```html
 {#- Single open-positions row.
-    Expects EITHER:
-      - row (OpenPositionsRowVM) — when rendered from a POST-success handler
-      - t (Trade) + snap (PriceSnapshot|None) + advisories (list[AdvisorySuggestionVM])
-        — when rendered inside the dashboard loop.
-    We branch on `row is defined` to keep backward compatibility with the
-    dashboard template. -#}
-{% if row is defined %}
-  {% set t = row.trade %}
-  {% set snap = row.price_snapshot %}
-  {% set advisories = row.advisories %}
-  {% set remaining = row.remaining_shares %}
-{% else %}
-  {% set remaining = t.initial_shares %}
-{% endif %}
-<tr id="open-position-{{ t.id }}">
-  <td>{{ t.ticker }}</td>
-  <td>{{ t.entry_date }}</td>
-  <td>${{ '%.2f' | format(t.entry_price) }}</td>
-  <td>{{ remaining }} / {{ t.initial_shares }}</td>
-  <td>${{ '%.2f' | format(t.current_stop) }}</td>
+    SINGLE contract: expects `row: OpenPositionsRowVM` with fields
+      trade (Trade), price_snapshot (PriceSnapshot|None),
+      remaining_shares (int), advisories (tuple[AdvisorySuggestionVM, ...]).
+    No dual-contract / legacy locals branch. All call sites MUST pass `row`.
+    Action buttons (Exit, Adjust stop) are appended in Tasks 13 and 15 as
+    their routes come online — this intermediate partial deliberately has no
+    action-button cell (R1 Major 2). -#}
+<tr id="open-position-{{ row.trade.id }}">
+  <td>{{ row.trade.ticker }}</td>
+  <td>{{ row.trade.entry_date }}</td>
+  <td>${{ '%.2f' | format(row.trade.entry_price) }}</td>
+  <td>{{ row.remaining_shares }} / {{ row.trade.initial_shares }}</td>
+  <td>${{ '%.2f' | format(row.trade.current_stop) }}</td>
   <td>
-    {% if snap %}
-      ${{ '%.2f' | format(snap.price) }}
-      {% if snap.is_stale %}<span class="stale">(stale)</span>{% endif %}
+    {% if row.price_snapshot %}
+      ${{ '%.2f' | format(row.price_snapshot.price) }}
+      {% if row.price_snapshot.is_stale %}<span class="stale">(stale)</span>{% endif %}
     {% else %}—{% endif %}
   </td>
   <td>
-    {% for s in advisories %}
+    {% for s in row.advisories %}
       <div>{{ s.message }}</div>
     {% endfor %}
-  </td>
-  <td>
-    <button hx-get="/trades/{{ t.id }}/exit/form"
-            hx-target="closest tr" hx-swap="outerHTML"
-            hx-headers='{"HX-Request": "true"}'>Exit</button>
-    <button hx-get="/trades/{{ t.id }}/stop/form"
-            hx-target="closest tr" hx-swap="outerHTML"
-            hx-headers='{"HX-Request": "true"}'>Adjust stop</button>
   </td>
 </tr>
 ```
 
 - [ ] **Step 3: Refactor the outer open_positions.html.j2**
 
-Replace the per-row content in `swing/web/templates/partials/open_positions.html.j2` to include the new partial:
+The dashboard loop needs to construct an `OpenPositionsRowVM` on the fly from the existing `DashboardVM` mappings, then pass it to the partial. Read the current `swing/web/templates/partials/open_positions.html.j2`, then replace the per-row content:
 
-Before (conceptually — actual template may differ; read it first):
-```html
-{% for t in vm.open_trades %}
-  <tr>…inline row markup…</tr>
-{% endfor %}
-```
-
-After:
 ```html
 {% for t in vm.open_trades %}
   {% set snap = vm.open_trade_last_prices.get(t.ticker) %}
   {% set advisories = vm.open_trade_advisories.get(t.id, []) %}
+  {% set remaining = vm.open_trade_remaining_shares.get(t.id, t.initial_shares) %}
+  {% set row = _row_vm_factory(t, snap, remaining, advisories) %}
   {% include "partials/open_positions_row.html.j2" %}
 {% endfor %}
 ```
 
-Keep the surrounding `<section>`, `<table>`, `<thead>` unchanged — only the inside of the `<tbody>` loop changes.
+Where `_row_vm_factory` is a Jinja global callable registered on the `Jinja2Templates` environment in `create_app`. Alternative — simpler — approach: have `build_dashboard` compute a `DashboardVM.open_trade_rows: Mapping[int, OpenPositionsRowVM]` as an ADDITIVE field (external shape extended, not broken; existing consumers ignore it), and the template iterates that mapping. Implement THIS alternative (cleaner, no Jinja globals).
 
-- [ ] **Step 4: Modify watchlist_row.html.j2 to add Enter button**
+Modify `swing/web/view_models/dashboard.py` (Task 6's refactor landed already; now add the new field):
 
-Add the Enter button to each watchlist row. Find the existing row template. Add a final `<td>` cell (or extend an existing one):
-
-```html
-  <td>
-    <button hx-get="/trades/entry/form?ticker={{ w.ticker }}"
-            hx-target="closest tr" hx-swap="outerHTML"
-            hx-headers='{"HX-Request": "true"}'>Enter</button>
-  </td>
+```python
+# In DashboardVM, add an additive field:
+open_trade_rows: Mapping[int, "OpenPositionsRowVM"]  # keyed by trade.id; additive to legacy fields
 ```
 
-Place it as the last cell in the row so it doesn't disturb any column-count assertions in existing tests. If existing tests assert a specific cell count, adjust the `<thead>` in the outer watchlist template too.
+And populate it in `build_dashboard` using the same per-row computation Task 6 already does — just collect the `_open_positions_row_vm(...)` results into a dict.
+
+Then the outer template becomes:
+
+```html
+{% for t in vm.open_trades %}
+  {% set row = vm.open_trade_rows[t.id] %}
+  {% include "partials/open_positions_row.html.j2" %}
+{% endfor %}
+```
+
+Single contract, no factory needed, no Jinja globals.
+
+The `DashboardVM.open_trade_last_prices` and `open_trade_advisories` mappings remain for backward compatibility (any consumer that reads them directly keeps working); the dashboard template now prefers the new `open_trade_rows` field.
+
+Keep the surrounding `<section>`, `<table>`, `<thead>` unchanged — only the inside of the `<tbody>` loop changes.
+
+- [ ] **Step 4: Update DashboardVM + build_dashboard to populate open_trade_rows**
+
+In `swing/web/view_models/dashboard.py`:
+
+Add the import:
+```python
+from swing.web.view_models.open_positions_row import OpenPositionsRowVM
+```
+
+Add to `DashboardVM`:
+```python
+open_trade_rows: Mapping[int, OpenPositionsRowVM] = field(default_factory=dict)
+```
+
+(Use `field(default_factory=dict)` for backward compat with any caller that constructs DashboardVM without this field.)
+
+In `build_dashboard`, populate:
+```python
+    open_trade_rows: dict[int, OpenPositionsRowVM] = {}
+    for t in open_trades:
+        assert t.id is not None
+        snap = prices.get(t.ticker)
+        exits = list_exits_for_trade(conn, t.id)
+        remaining = t.initial_shares - sum(e.shares for e in exits)
+        # ... (advisory construction per Task 6) ...
+        open_trade_rows[t.id] = _open_positions_row_vm(
+            trade=t, price_snapshot=snap,
+            remaining_shares=remaining, advisories=advisories_tuple,
+        )
+        # Legacy mappings (kept for backward compat):
+        if snap is not None:
+            open_trade_last_prices[t.ticker] = snap
+        open_trade_advisories[t.id] = list(advisories_tuple)
+    # When building DashboardVM, pass both old and new fields.
+```
 
 - [ ] **Step 5: Run dashboard + watchlist tests**
 
-Run: `python -m pytest tests/web/test_routes/test_dashboard_route.py tests/web/test_routes/test_watchlist_route.py tests/web/test_dashboard_integration.py -v`
-Expected: all pass. If a test asserts a specific HTML string that's now moved/added, either update the assertion or keep backward compatibility.
+Run: `python -m pytest tests/web/test_routes/test_dashboard_route.py tests/web/test_routes/test_watchlist_route.py tests/web/test_dashboard_integration.py tests/web/test_routes/test_pipeline_route.py -v`
+Expected: all pass. If a test asserts a specific HTML string that's now moved/added, update the assertion to match the new output. Any such change must be minimal (e.g., adjusting whitespace or attribute order) and documented in the commit message.
 
 - [ ] **Step 6: Full suite**
 
@@ -1000,8 +1041,8 @@ Expected: 360 passed (unchanged).
 - [ ] **Step 7: Commit**
 
 ```bash
-git add swing/web/templates/partials/open_positions.html.j2 swing/web/templates/partials/open_positions_row.html.j2 swing/web/templates/partials/watchlist_row.html.j2
-git commit -m "refactor(web): extract open_positions_row partial; watchlist_row gets Enter button"
+git add swing/web/templates/partials/open_positions.html.j2 swing/web/templates/partials/open_positions_row.html.j2 swing/web/view_models/dashboard.py
+git commit -m "refactor(web): open_positions_row single-contract partial + DashboardVM.open_trade_rows"
 ```
 
 ---
@@ -1504,6 +1545,22 @@ Create `swing/web/templates/partials/trade_entry_form.html.j2`:
 </tr>
 ```
 
+- [ ] **Step 5b: Add Enter button to watchlist_row.html.j2 (R1 Major 2 fix)**
+
+Now that the entry form route exists (just added in this task), wire up the UI trigger. Read `swing/web/templates/partials/watchlist_row.html.j2`, then add an Enter button as the last cell of the row:
+
+```html
+  <td>
+    <button hx-get="/trades/entry/form?ticker={{ w.ticker }}"
+            hx-target="closest tr" hx-swap="outerHTML"
+            hx-headers='{"HX-Request": "true"}'>Enter</button>
+  </td>
+```
+
+Place it as the last cell so existing column-count assertions aren't disturbed. If a prior test asserts a specific cell count (likely in `tests/web/test_routes/test_watchlist_route.py` or `tests/web/test_dashboard_integration.py`), update the test's assertion OR update the outer `<thead>` accordingly. Minor change; document in the commit message.
+
+Affected 3a tests likely needing assertion tweaks: `tests/web/test_routes/test_dashboard_route.py::test_get_root_renders`, `tests/web/test_routes/test_watchlist_route.py::test_get_watchlist_renders`, `tests/web/test_dashboard_integration.py::test_dashboard_no_stale_banner_when_run_is_current`. Run them after this step.
+
 - [ ] **Step 6: Failing route test**
 
 Append to `tests/web/test_routes/test_trades_route.py`:
@@ -1778,10 +1835,9 @@ def entry_post(
     dashboard_vm = build_dashboard(cfg=cfg, cache=cache, executor=executor)
 
     # Render response: primary row + #status-strip OOB + #watchlist-top5 OOB.
+    # Single-contract partial: pass only `row` (R1 Major 3 fix).
     row_html = templates.get_template("partials/open_positions_row.html.j2").render(
         request=request, row=row_vm,
-        t=row_vm.trade, snap=row_vm.price_snapshot,
-        advisories=row_vm.advisories,
     )
     status_strip_html = templates.get_template("partials/status_strip.html.j2").render(
         request=request, vm=dashboard_vm,
@@ -2274,7 +2330,22 @@ Create `swing/web/templates/partials/trade_exit_form.html.j2`:
 </tr>
 ```
 
-Note: the Cancel button's `hx-get` needs a route that returns the normal open-position row. We'll add that in the next step.
+Note: the Cancel button's `hx-get` needs a route that returns the normal open-position row. We'll add that in Task 16.
+
+- [ ] **Step 5b: Add Exit button to open_positions_row.html.j2 (R1 Major 2 fix)**
+
+Now that the exit form GET route is being added in this task, wire up the UI trigger. Open `swing/web/templates/partials/open_positions_row.html.j2` and append a new `<td>` cell at the end of the row:
+
+```html
+  <td class="row-actions">
+    <button hx-get="/trades/{{ row.trade.id }}/exit/form"
+            hx-target="closest tr" hx-swap="outerHTML"
+            hx-headers='{"HX-Request": "true"}'>Exit</button>
+    {#- Adjust stop button appended in Task 15 as its route comes online -#}
+  </td>
+```
+
+Update any `<thead>` column count in `open_positions.html.j2` to add the matching column header. Affected 3a tests likely needing assertion tweaks: `tests/web/test_routes/test_dashboard_route.py::test_get_root_renders`, `tests/web/test_dashboard_integration.py::test_dashboard_no_stale_banner_when_run_is_current`, `tests/web/test_routes/test_pipeline_route.py::test_post_prices_refresh_emits_three_oob_regions`. Run them after this step and fix assertions minimally.
 
 - [ ] **Step 6: Failing route test**
 
@@ -2741,6 +2812,23 @@ Create `swing/web/templates/partials/trade_stop_form.html.j2`:
 </tr>
 ```
 
+- [ ] **Step 5b: Append Adjust stop button to open_positions_row.html.j2 (R1 Major 2 fix)**
+
+Now that the stop form GET route is being added in this task, wire up the UI trigger. Open `swing/web/templates/partials/open_positions_row.html.j2` and append the button to the row-actions `<td>` that Task 13 created:
+
+```html
+  <td class="row-actions">
+    <button hx-get="/trades/{{ row.trade.id }}/exit/form"
+            hx-target="closest tr" hx-swap="outerHTML"
+            hx-headers='{"HX-Request": "true"}'>Exit</button>
+    <button hx-get="/trades/{{ row.trade.id }}/stop/form"
+            hx-target="closest tr" hx-swap="outerHTML"
+            hx-headers='{"HX-Request": "true"}'>Adjust stop</button>
+  </td>
+```
+
+No new column-count changes (reusing the cell Task 13 added). Run the 3a integration suite to confirm: `python -m pytest tests/web/test_dashboard_integration.py -v`.
+
 - [ ] **Step 6: Failing route tests**
 
 Append to `tests/web/test_routes/test_trades_route.py`:
@@ -3024,11 +3112,9 @@ def trade_cancel(request: Request, trade_id: int):
     row_vm = build_open_positions_row(
         trade=trade, cfg=cfg, cache=cache, executor=executor,
     )
+    # Single-contract partial: pass only `row` (R1 Major 3 fix).
     return templates.TemplateResponse(
-        request, "partials/open_positions_row.html.j2",
-        {"row": row_vm,
-         "t": row_vm.trade, "snap": row_vm.price_snapshot,
-         "advisories": row_vm.advisories},
+        request, "partials/open_positions_row.html.j2", {"row": row_vm},
     )
 ```
 
@@ -3256,17 +3342,54 @@ def test_stop_adjust_end_to_end(seeded_db, monkeypatch):
     assert updated.current_stop == 912.0
 
 
-def test_cold_cache_submit_does_not_hang(seeded_db, monkeypatch):
-    """Cold cache → submit entry → row renders within deadline with last_close fallback."""
+def test_cold_cache_entry_renders_last_close_fallback(seeded_db, monkeypatch):
+    """R1 Major 4 resolution: seed candidates.close so _last_close has data,
+    then make yf.download raise TimeoutError — the real _fallback_snapshot path
+    fires, the row renders with is_stale=True / source='last_close', and the
+    submit completes within a bounded window.
+
+    This test exercises the spec's 'cold-cache renders stale row' contract
+    rather than the previous version which only proved 'does not hang'."""
+    from datetime import datetime
+    import time
+    import yfinance as yf
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+
     cfg, cfg_path = seeded_db
     _seed_watchlist(cfg)
-    # Simulate cold cache: get_many returns empty dict (no fallback).
-    monkeypatch.setattr(PriceCache, "get_many",
-        lambda self, tickers, deadline_seconds, *, executor=None: {})
-    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    # Seed a candidates row with a known last_close so _last_close returns data.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            cur = conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+                    tickers_evaluated, aplus_count, watch_count, skip_count,
+                    excluded_count, error_count, rs_universe_version, rs_universe_hash)
+                   VALUES (?, ?, ?, NULL, 1, 0, 0, 1, 0, 0, 'v1', 'deadbeef')""",
+                ("2026-04-17T21:49:00", "2026-04-17", "2026-04-20"),
+            )
+            eval_id = cur.lastrowid
+            conn.execute(
+                """INSERT INTO candidates (evaluation_run_id, ticker, bucket,
+                                           close, rs_method)
+                   VALUES (?, 'AAPL', 'skip', 178.25, 'universe')""",
+                (eval_id,),
+            )
+    finally:
+        conn.close()
+
+    # Force yf.download to raise, exercising the real _fetch_with_fallback code.
+    def boom(*args, **kwargs):
+        raise TimeoutError("simulated cold-cache timeout")
+    monkeypatch.setattr(yf, "download", boom)
+    # Ensure market_hours returns True so the live-fetch branch is taken.
+    from swing.web.price_cache import PriceCache
+    monkeypatch.setattr(PriceCache, "market_hours_now", lambda self: True)
 
     app = create_app(cfg, cfg_path)
-    import time
     with TestClient(app) as client:
         t0 = time.monotonic()
         r = client.post(
@@ -3277,8 +3400,11 @@ def test_cold_cache_submit_does_not_hang(seeded_db, monkeypatch):
         )
         elapsed = time.monotonic() - t0
     assert r.status_code == 200
-    # Should NOT hit the full deadline — monkeypatched get_many returns {} immediately.
-    assert elapsed < 2.0, f"cold-cache submit took {elapsed}s; expected <2s"
+    # With seeded candidates row, _fallback_snapshot returns a stale snapshot —
+    # the row should render with last_close price and stale marker.
+    assert "stale" in r.text.lower() or "178.25" in r.text
+    # Bounded by price_fetch_deadline_seconds (6s default) + rebuild overhead.
+    assert elapsed < 10.0, f"cold-cache submit took {elapsed}s; expected <10s"
 ```
 
 - [ ] **Step 2: Run the tests**
