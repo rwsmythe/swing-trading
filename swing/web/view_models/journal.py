@@ -7,9 +7,10 @@ from typing import Literal
 
 from swing.config import Config
 from swing.data.db import connect
+from swing.data.models import Trade
 from swing.data.repos.trades import list_all_exits, list_closed_trades, list_open_trades
 from swing.data.repos.weather import list_weather_runs
-from swing.journal.flags import compute_flags
+from swing.journal.flags import BehavioralFlag, compute_flags
 from swing.journal.stats import JournalStats, compute_stats, period_filter
 
 Period = Literal["week", "month", "quarter", "ytd", "all"]
@@ -21,8 +22,8 @@ _ALLOWED_PERIODS: frozenset[str] = frozenset({"week", "month", "quarter", "ytd",
 class JournalVM:
     period: str
     stats: JournalStats
-    flags: list          # list[BehavioralFlag] from Phase 2
-    trades: list         # list[Trade] - filtered to the period
+    flags: list[BehavioralFlag]
+    trades: list[Trade]
     # Fields required by base.html.j2 (uniform banner guards)
     session_date: str = ""
     stale_banner: str | None = None
