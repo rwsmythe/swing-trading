@@ -1,0 +1,16 @@
+{#- swing/web/templates/page_error.html.j2
+    Full-page 400/404 HTML error rendered for non-HTMX GET validation errors
+    (e.g. address-bar typo `/journal?period=fortnight`). Expects PageErrorVM.
+    Spec §3.2. -#}
+{% extends "base.html.j2" %}
+{% block content %}
+  <section class="page-error">
+    <h1>{{ vm.status_code }} — Invalid Request</h1>
+    <div class="banner banner-degraded" role="alert">
+      {{ vm.detail }}
+    </div>
+    <p>
+      <a href="/">Return to dashboard</a>
+    </p>
+  </section>
+{% endblock %}
