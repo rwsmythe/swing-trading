@@ -14,6 +14,7 @@ from swing.data.repos.trades import list_all_exits
 from swing.recommendations.sizing import compute_shares, SizingResult
 from swing.trades.equity import current_equity
 from swing.web.routes.dashboard import _templates
+from swing.web.view_models.trades import build_entry_form_vm
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -91,4 +92,16 @@ def sizing_hint(
     return templates.TemplateResponse(
         request, "partials/sizing_hint.html.j2",
         {"sizing": sizing},
+    )
+
+
+@router.get("/trades/entry/form", response_class=HTMLResponse)
+def entry_form(request: Request, ticker: str):
+    cfg = request.app.state.cfg
+    cache = request.app.state.price_cache
+    executor = request.app.state.price_fetch_executor
+    templates = _templates(request)
+    vm = build_entry_form_vm(ticker=ticker, cfg=cfg, cache=cache, executor=executor)
+    return templates.TemplateResponse(
+        request, "partials/trade_entry_form.html.j2", {"vm": vm},
     )

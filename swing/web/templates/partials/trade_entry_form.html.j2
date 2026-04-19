@@ -1,0 +1,56 @@
+{#- Trade entry form — swaps into a watchlist row.
+    Expects: vm (TradeEntryFormVM) -#}
+<tr id="entry-form-{{ vm.ticker }}">
+  <td colspan="8">
+    <form hx-post="/trades/entry"
+          hx-target="closest tr" hx-swap="outerHTML"
+          hx-headers='{"HX-Request": "true"}'>
+      <input type="hidden" name="ticker" value="{{ vm.ticker }}">
+      <div><label>Ticker</label>
+        <span>{{ vm.ticker }}</span></div>
+      <div><label>Entry date</label>
+        <input type="date" name="entry_date" value="{{ vm.entry_date }}" required></div>
+      <div><label>Entry price</label>
+        <input type="number" step="0.01" min="0" name="entry_price"
+               value="{{ '%.2f' | format(vm.entry_price) }}" required></div>
+      <div><label>Shares</label>
+        <input type="number" step="1" min="1" name="shares"
+               value="{{ vm.suggested_shares }}" required>
+        <span id="sizing-hint"
+              hx-get="/trades/entry/sizing-hint"
+              hx-trigger="change from:input[name=entry_price],input[name=initial_stop] delay:200ms"
+              hx-include="closest form"
+              hx-swap="outerHTML">
+          {% if vm.suggested_shares > 0 %}
+            Suggested max: <strong>{{ vm.suggested_shares }} sh</strong>
+            (~${{ '%.2f' | format(vm.risk_dollars) }} risk =
+            {{ '%.2f' | format(vm.risk_pct) }}%)
+          {% else %}
+            <span class="subtitle">Enter a valid entry price and stop to see sizing</span>
+          {% endif %}
+        </span></div>
+      <div><label>Initial stop</label>
+        <input type="number" step="0.01" min="0" name="initial_stop"
+               value="{{ '%.2f' | format(vm.initial_stop) }}" required></div>
+      {% if vm.watchlist_entry_target is not none %}
+      <div><label>Watchlist target</label>
+        <input type="hidden" name="watchlist_target" value="{{ vm.watchlist_entry_target }}">
+        <span>${{ '%.2f' | format(vm.watchlist_entry_target) }}</span></div>
+      {% endif %}
+      {% if vm.watchlist_initial_stop is not none %}
+        <input type="hidden" name="watchlist_stop" value="{{ vm.watchlist_initial_stop }}">
+      {% endif %}
+      <div><label>Rationale &#9733;</label>
+        <textarea name="rationale" required></textarea></div>
+      <div><label>Notes</label>
+        <textarea name="notes"></textarea></div>
+      <div>
+        <button type="submit">Submit</button>
+        <button type="button"
+                hx-get="/watchlist/{{ vm.ticker }}/expand"
+                hx-target="closest tr" hx-swap="outerHTML"
+                hx-headers='{"HX-Request": "true"}'>Cancel</button>
+      </div>
+    </form>
+  </td>
+</tr>

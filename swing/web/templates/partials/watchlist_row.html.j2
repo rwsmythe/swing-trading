@@ -19,4 +19,9 @@
   </td>
   <td>{{ '%.2f' | format(w.last_adr_pct or 0) }}</td>
   <td>{{ tags | join(' · ') }}</td>
+  <td>
+    <button hx-get="/trades/entry/form?ticker={{ w.ticker }}"
+            hx-target="closest tr" hx-swap="outerHTML"
+            hx-headers='{"HX-Request": "true"}'>Enter</button>
+  </td>
 </tr>
