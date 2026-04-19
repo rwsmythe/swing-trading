@@ -33,6 +33,9 @@
   {% if vm.price_source_degraded %}
     {% include "partials/price_degraded_banner.html.j2" %}
   {% endif %}
+  {% if vm.ohlcv_source_degraded %}
+    {% include "partials/ohlcv_degraded_banner.html.j2" %}
+  {% endif %}
   <main>
     {% block content %}{% endblock %}
   </main>

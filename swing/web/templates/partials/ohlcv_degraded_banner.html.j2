@@ -1,0 +1,9 @@
+{#- swing/web/templates/partials/ohlcv_degraded_banner.html.j2
+    Phase 3d §6. Rendered when vm.ohlcv_source_degraded is True (OhlcvCache
+    circuit breaker tripped). Signals to the operator that trail-MA and
+    close-below-MA rules will not fire until service recovers — critical
+    for distinguishing "no exit condition" from "data unavailable". -#}
+<div class="banner banner-degraded" role="status">
+  ⚠ SMA advisories unavailable — daily-bar fetch is in a cool-down period.
+  Trail-MA and close-below-MA rules will not fire until service recovers.
+</div>
