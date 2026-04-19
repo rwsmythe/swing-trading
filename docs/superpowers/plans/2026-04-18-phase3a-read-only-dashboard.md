@@ -93,7 +93,7 @@ tests/web/
 └── test_dashboard_integration.py # full flow: seeded DB + mocked price fetch, stale-banner scenarios
 ```
 
-**Target test count:** ~40 new (spec target was ~38; a few extras emerged from the adversarial review).
+**Target test count:** ~55 new. Breakdown by task: T1=2, T3=2, T4=6, T5=4, T6=5 (including refresh_all), T7=3, T8=4, T9=1, T11=1, T13=1, T14=3, T15=5, T16=1, T17=4, T18=3, T19=1, T20=4 (including 403-with-request-id), T21=4 (added CLI-without-web-stack coverage), T22=3. The spec target of ~38 was a rough early estimate; adversarial-review fixes added ~15 tests. Combined with Phase 2's 287 fast tests, expected total is **~342 fast tests** (R1 Minor 4 — recounted from the plan).
 
 ---
 
@@ -262,12 +262,14 @@ class Web:
     polling_interval_seconds: int = 2
 ```
 
-Add `web: Web` to the `Config` dataclass (after `export: ExportConfig`):
+Add `web: Web` to the `Config` dataclass (after `export: ExportConfig`). Use `field(default_factory=Web)` so `Config(...)` constructors that omit `web` (existing Phase 2 test utilities or `dataclasses.replace(cfg, ...)` calls) continue to work — the field default is a fresh `Web()` (R1 Minor 2):
 
 ```python
+from dataclasses import field   # already imported in Phase 2 config.py
+
     pipeline: PipelineConfig
     export: ExportConfig
-    web: Web
+    web: Web = field(default_factory=Web)
 ```
 
 In the `load()` function, after the `export=ExportConfig(**raw.get("export", {}))` line, add:
@@ -874,12 +876,31 @@ class PriceCache:
             )
 
     def _fetch_live_price(self, ticker: str) -> float:
-        """Live yfinance call. Raises on timeout/error."""
-        import yfinance
-        t = yfinance.Ticker(ticker)
-        # fast_info honors request-level timeout through yfinance's internal session.
-        price = float(t.fast_info["last_price"])
-        return price
+        """Live yfinance call with an enforced per-ticker timeout.
+
+        `yfinance.Ticker(t).fast_info` does NOT accept a `timeout` kwarg and
+        can hang indefinitely behind a requests-level socket timeout default.
+        `yfinance.download(ticker, period='1d', interval='1m', timeout=N,
+        progress=False)` DOES propagate the timeout through to the underlying
+        requests session and is the supported path for a bounded fetch.
+
+        Timeout is `self._cfg.web.price_fetch_timeout_seconds` (default 3s).
+        A fetch that overruns the timeout raises `requests.ReadTimeout` (or
+        yfinance's wrapped equivalent); callers should catch and fall back.
+        Returns the most recent close in the returned minute-bar DataFrame.
+        """
+        import yfinance as yf
+        df = yf.download(
+            ticker,
+            period="1d",
+            interval="1m",
+            progress=False,
+            timeout=self._cfg.web.price_fetch_timeout_seconds,
+            auto_adjust=False,
+        )
+        if df is None or df.empty:
+            raise RuntimeError(f"yfinance returned no bars for {ticker}")
+        return float(df["Close"].iloc[-1])
 
     def _last_close(self, ticker: str) -> float | None:
         conn = connect(self._cfg.paths.db_path)
@@ -1050,6 +1071,41 @@ def test_circuit_breaker_is_instance_scoped(seeded_db):
     assert a.is_degraded()
     # The second instance must not inherit degraded state.
     assert not b.is_degraded()
+
+
+def test_refresh_all_invalidates_and_next_get_refetches(seeded_db, monkeypatch):
+    """refresh_all is invalidate-only: it pops entries from the cache so the
+    next get/get_many re-fetches. It does NOT itself hit the network (that
+    would duplicate work — POST /prices/refresh rebuilds the VM after calling
+    refresh_all, and the VM build triggers the actual re-fetch via get_many).
+    """
+    from swing.web.price_cache import PriceCache
+
+    cfg, _ = seeded_db
+    _seed_candidate(cfg, "AAPL", 180.0)
+    cache = PriceCache(cfg)
+    monkeypatch.setattr(cache, "market_hours_now", lambda: True)
+
+    fetch_calls = [0]
+    def counting_fetch(ticker):
+        fetch_calls[0] += 1
+        return 181.0
+
+    monkeypatch.setattr(cache, "_fetch_live_price", counting_fetch)
+
+    # Populate cache.
+    s1 = cache.get("AAPL")
+    assert s1.price == 181.0
+    assert fetch_calls[0] == 1
+
+    # Second get hits cache — no new fetch.
+    cache.get("AAPL")
+    assert fetch_calls[0] == 1
+
+    # refresh_all invalidates.
+    cache.refresh_all(["AAPL"])
+    cache.get("AAPL")
+    assert fetch_calls[0] == 2, "refresh_all must invalidate; next get re-fetches"
 ```
 
 - [ ] **Step 2: Verify the new tests fail**
@@ -1320,10 +1376,17 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
         bound_port=cfg.web.port,
     )
 
-    # Static mounts. The charts directory is created lazily by the pipeline;
-    # ensure it exists at startup so StaticFiles doesn't 500 on an unknown dir.
-    cfg.paths.charts_dir.mkdir(parents=True, exist_ok=True)
-    app.mount("/charts", StaticFiles(directory=cfg.paths.charts_dir), name="charts")
+    # Static mounts. charts_dir is written by the pipeline; if no run has
+    # happened yet, the dir may not exist. `check_dir=False` defers the check
+    # to request time — missing chart URL returns 404, and the dashboard's
+    # <img onerror> handler renders a "Chart unavailable" placeholder (spec
+    # §5.7 dashboard authority rule). No startup writes of any kind (R1
+    # Major 6).
+    app.mount(
+        "/charts",
+        StaticFiles(directory=cfg.paths.charts_dir, check_dir=False),
+        name="charts",
+    )
     app.mount("/static", StaticFiles(directory=_static_dir()), name="static")
 
     return app
@@ -1481,7 +1544,9 @@ def run_server(
 
 - [ ] **Step 4: Add `swing web` to `swing/cli.py`**
 
-Find the existing Click group / main function. Add the command (after existing commands, before the `if __name__ == "__main__":` block or module-level `main` invocation):
+Find the existing Click group / main function. Add the command (after existing commands, before the `if __name__ == "__main__":` block or module-level `main` invocation).
+
+**CRITICAL: the `swing.web.cli_cmd` import MUST live INSIDE the command function body**, not at the module top. That keeps the base install (no `[web]` extra) starting the CLI without requiring fastapi/uvicorn/jinja2 — without it, running any `swing <non-web>` subcommand on a base install fails at `swing/cli.py` import time (R1 Major 3).
 
 ```python
 @main.command("web")
@@ -1491,6 +1556,8 @@ Find the existing Click group / main function. Add the command (after existing c
 @click.pass_context
 def web_cmd(ctx, host, port, reload):
     """Run the dashboard on localhost."""
+    # Lazy import: do NOT hoist to module top — keeps base install working
+    # without [web] extra (invariant 12).
     from swing.web.cli_cmd import run_server
     run_server(
         cfg=ctx.obj["config"],
@@ -1688,8 +1755,7 @@ class DecisionVM:
 @dataclass(frozen=True)
 class AdvisorySuggestionVM:
     rule: str
-    proposed_stop: float | None
-    narrative: str
+    message: str   # matches Phase 2 AdvisorySuggestion.message — do not rename
 
 
 @dataclass(frozen=True)
@@ -1774,23 +1840,31 @@ def build_dashboard(*, cfg: Config, cache: PriceCache, executor) -> DashboardVM:
     open_trade_last_prices = {t.ticker: prices[t.ticker] for t in open_trades if t.ticker in prices}
     watchlist_last_prices = {w.ticker: prices[w.ticker] for w in top5 if w.ticker in prices}
 
-    # Advisories.
+    # Advisories. Phase 2's compute_all_suggestions expects an
+    # AdvisoryContext with (as_of_date, current_price, sma10, sma20,
+    # weather_status, config=StopAdvisoryConfig). SMA values come from the
+    # ticker's candidates.criteria rows when present; the advisory rules
+    # handle None gracefully (no-op if MA data missing).
+    from swing.trades.advisory import AdvisoryContext
     advisories: dict[int, list[AdvisorySuggestionVM]] = {}
+    weather_status_str = weather.status if weather else "STALE"
     for t in open_trades:
         snap = open_trade_last_prices.get(t.ticker)
         if snap is None:
             continue
-        # compute_all_suggestions expects an OHLCV summary; the dashboard has
-        # only the latest candidates row's moving averages. Use a simplified
-        # call that treats current price as "close" and omits MA data if absent.
-        raw = compute_all_suggestions(
-            trade=t, current_price=snap.price,
-            ohlcv_summary=None, cfg=cfg,  # see Phase 2 advisory API for signature
+        sma10, sma20 = _extract_smas(candidates_by_ticker.get(t.ticker))
+        ctx_adv = AdvisoryContext(
+            as_of_date=now.date().isoformat(),
+            current_price=snap.price,
+            sma10=sma10,
+            sma20=sma20,
+            weather_status=weather_status_str,
+            config=cfg.stop_advisory,
         )
+        raw = compute_all_suggestions(t, ctx_adv)
         advisories[t.id or 0] = [
-            AdvisorySuggestionVM(
-                rule=s.rule, proposed_stop=s.proposed_stop, narrative=s.narrative,
-            ) for s in raw
+            AdvisorySuggestionVM(rule=s.rule, message=s.message)
+            for s in raw
         ]
 
     flag_tags = _flag_tags(candidates_by_ticker)
@@ -1845,6 +1919,29 @@ def _sort_by_proximity(watchlist: list[WatchlistEntry]) -> list[WatchlistEntry]:
     return sorted(watchlist, key=key)
 
 
+def _extract_smas(candidate: Candidate | None) -> tuple[float | None, float | None]:
+    """Read sma10/sma20 out of a candidate's criteria list for advisory
+    context. Phase 2 stores MA stack results with the raw values in
+    `CandidateCriterion.value` as comma-joined strings — we pull them from
+    there when present. Missing MAs → (None, None); the advisory rules
+    tolerate None inputs (no-op)."""
+    if candidate is None:
+        return (None, None)
+    sma10 = sma20 = None
+    for cr in candidate.criteria:
+        if cr.criterion_name == "ma_short_rising" and cr.value:
+            # value format example: "10MA=152.34, 20MA=150.12, 50MA=148.90"
+            for piece in cr.value.split(","):
+                piece = piece.strip()
+                if piece.startswith("10MA="):
+                    try: sma10 = float(piece.split("=", 1)[1])
+                    except ValueError: pass
+                elif piece.startswith("20MA="):
+                    try: sma20 = float(piece.split("=", 1)[1])
+                    except ValueError: pass
+    return (sma10, sma20)
+
+
 def _flag_tags(candidates_by_ticker: Mapping[str, Candidate]) -> Mapping[str, tuple[str, ...]]:
     tags: dict[str, tuple[str, ...]] = {}
     for ticker, c in candidates_by_ticker.items():
@@ -1868,7 +1965,10 @@ def _flag_tags(candidates_by_ticker: Mapping[str, Candidate]) -> Mapping[str, tu
 Run: `python -m pytest tests/web/test_view_models/test_dashboard.py -v`
 Expected: 1 PASS.
 
-Note: depending on the exact signature of `compute_all_suggestions` in Phase 2 (`swing/trades/advisory.py`), you may need to adapt the call (e.g. swap `ohlcv_summary=None` for the actual keyword used in Phase 2). Check `compute_all_suggestions.__doc__` and match the existing call site in `swing/rendering/briefing.py` which already consumes it. If Phase 2's API requires non-optional OHLCV, pass a minimal synthetic dataframe built from the `candidates` row (close + MAs) the same way `briefing.py` does.
+Signature is locked per Phase 2 `swing/trades/advisory.py`:
+- `AdvisoryContext(as_of_date: str, current_price: float, sma10: float | None, sma20: float | None, weather_status: str, config: StopAdvisoryConfig)` — frozen dataclass.
+- `AdvisorySuggestion(rule: str, message: str)` — exactly these two fields; no `proposed_stop` or `narrative`. The VM mirrors this as `AdvisorySuggestionVM(rule, message)`.
+- `compute_all_suggestions(trade: Trade, ctx: AdvisoryContext) -> list[AdvisorySuggestion]`.
 
 - [ ] **Step 5: Commit**
 
@@ -2063,7 +2163,7 @@ Templates are pure formatting; no business logic. Each partial wraps its HTMX sw
             </td>
             <td>
               {% for s in vm.open_trade_advisories.get(t.id, []) %}
-                <div>{{ s.narrative }}</div>
+                <div>{{ s.message }}</div>
               {% endfor %}
             </td>
           </tr>
@@ -2248,14 +2348,20 @@ git commit -m "feat(web): GET / dashboard route"
 
 Vendoring HTMX avoids a CDN dependency on a localhost tool.
 
-- [ ] **Step 1: Download HTMX 2.x**
+- [ ] **Step 1: Download HTMX 2.x with integrity verification**
+
+HTMX 2.0.3 from unpkg. Verify the SHA-256 after download — the asset is vendored into the repo and must be reproducible across installs (R1 Minor 1).
 
 ```bash
 curl -fsSL https://unpkg.com/htmx.org@2.0.3/dist/htmx.min.js \
   -o swing/web/static/htmx.min.js
+# Record the checksum in the commit message and in a sidecar file.
+sha256sum swing/web/static/htmx.min.js > swing/web/static/htmx.min.js.sha256
 wc -c swing/web/static/htmx.min.js
 ```
-Expected: ~50KB file size.
+Expected: ~50KB. Commit both `htmx.min.js` AND `htmx.min.js.sha256` so a future verifier can reproduce. If unpkg ever serves a different payload for the same version, the commit diff will catch it.
+
+The SHA-256 sidecar is a checked-in manifest; upgrading HTMX means overwriting the JS file AND regenerating the sidecar in the same commit.
 
 - [ ] **Step 2: Write minimal CSS**
 
@@ -2784,8 +2890,11 @@ def _period_start(today: date, period: str) -> date | None:
 {% block content %}
   <h1>Journal</h1>
   <nav class="period-selector">
+    {# Period keys are rolling day-count approximations, not calendar months/quarters.
+       Labels are renamed to avoid the semantic mismatch (R1 Minor 3). #}
+    {% set _labels = {'week': 'Last 7d', 'month': 'Last 30d', 'quarter': 'Last 90d', 'ytd': 'YTD', 'all': 'All'} %}
     {% for p in ('week','month','quarter','ytd','all') %}
-      <a href="/journal?period={{ p }}" class="{{ 'active' if p == vm.period else '' }}">{{ p }}</a>
+      <a href="/journal?period={{ p }}" class="{{ 'active' if p == vm.period else '' }}">{{ _labels[p] }}</a>
     {% endfor %}
   </nav>
   <section class="stats">
@@ -3638,6 +3747,23 @@ def test_htmx_post_error_returns_error_fragment(seeded_db, monkeypatch):
     assert r.status_code == 500
     # HTMX errors swap into the target; body is a small fragment, not a full page.
     assert "<html" not in r.text.lower()
+
+
+def test_403_cross_origin_post_still_carries_request_id(seeded_db):
+    """R1 Major 4: middleware order must be RequestId OUTERMOST so the 403
+    response from OriginGuard still gets X-Request-ID stamped on it. Without
+    this, operators cannot grep the CSRF-defense rejections in web.log."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+
+    @app.post("/_guarded_probe")
+    def _probe():
+        return {"ok": True}
+
+    client = TestClient(app)
+    r = client.post("/_guarded_probe", headers={"Origin": "http://evil.example"})
+    assert r.status_code == 403
+    assert "x-request-id" in (h.lower() for h in r.headers.keys())
 ```
 
 - [ ] **Step 2: Create `error.html.j2`**
@@ -3738,15 +3864,29 @@ def _register_exception_handlers(app: FastAPI) -> None:
         )
 ```
 
-Inside `create_app`, before `return app`:
+Inside `create_app`, BEFORE the existing `app.add_middleware(OriginGuardMiddleware, ...)` line in §2.3's wiring, add RequestId:
 
 ```python
     configure_web_logging(cfg.paths.logs_dir)
     app.add_middleware(RequestIdMiddleware)
+    # NOTE: already-added OriginGuardMiddleware stays where it is.
     _register_exception_handlers(app)
 ```
 
-Middleware is applied in reverse order; put `RequestIdMiddleware` after `OriginGuardMiddleware` so origin-guard runs FIRST (and the 403 short-circuit does not carry a request id, which is fine).
+**Middleware execution order (CRITICAL, R1 Major 4).** Starlette/FastAPI's `add_middleware` stack is LIFO: the LAST `add_middleware` call becomes the OUTERMOST layer and runs FIRST. So with the order `RequestId` added FIRST and `OriginGuard` added SECOND (both calls above happen before `_register_exception_handlers`), OriginGuard runs OUTERMOST → its 403 short-circuit returns before RequestId ever sees the request. We want the OPPOSITE: RequestId MUST wrap OriginGuard so that every response — including a 403 for cross-origin — carries `X-Request-ID` for log correlation.
+
+**Correct sequence** (explicit instruction for the implementer):
+```python
+# In create_app, REPLACE the Task 7 origin-guard add_middleware line with:
+app.add_middleware(
+    OriginGuardMiddleware,
+    bound_host=cfg.web.host, bound_port=cfg.web.port,
+)
+app.add_middleware(RequestIdMiddleware)  # added AFTER → becomes outermost
+configure_web_logging(cfg.paths.logs_dir)
+_register_exception_handlers(app)
+```
+After this edit, execution order for a request is: RequestId (assign id) → OriginGuard (may 403) → route → OriginGuard returns → RequestId stamps `X-Request-ID` on the response → client. A 403 still carries the header.
 
 - [ ] **Step 6: Run tests**
 
@@ -3777,7 +3917,6 @@ Two tests: (a) CLI works without the web extra imports; (b) when the web extra i
 from __future__ import annotations
 
 import importlib
-import pkgutil
 
 import pytest
 
@@ -3824,6 +3963,45 @@ def test_web_extra_install_starts_app(test_cfg):
     app = create_app(cfg, cfg_path)
     assert app is not None
     assert app.state.cfg is cfg
+
+
+def test_cli_import_does_not_pull_in_web_stack(monkeypatch):
+    """Proves `from swing.cli import main` does not transitively import
+    fastapi/uvicorn/jinja2/starlette. Regression guard for R1 Major 3: the
+    base install must continue to run the CLI even without the [web] extra.
+
+    The test works by replacing the web-stack modules with None in
+    sys.modules BEFORE importing swing.cli fresh. If swing.cli (or any
+    module it transitively imports at module-import time) touches one of
+    those names, Python will surface an ImportError during import."""
+    import sys
+    for hidden in ("fastapi", "uvicorn", "jinja2", "starlette"):
+        monkeypatch.setitem(sys.modules, hidden, None)
+    # Drop any cached Phase 2 / CLI modules so the import goes through fresh.
+    for name in list(sys.modules):
+        if name == "swing" or name.startswith("swing."):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+    # Clean import — must succeed regardless of the [web] extra.
+    importlib.import_module("swing.cli")
+
+
+def test_cli_help_lists_all_subcommands_without_web_stack(monkeypatch, capsys):
+    """Even with the web stack hidden, `swing --help` must enumerate every
+    subcommand (including `web`, because the command's backing import is
+    inside its function body, not at module top). Proves the lazy-import
+    contract from T8."""
+    import sys
+    for hidden in ("fastapi", "uvicorn", "jinja2", "starlette"):
+        monkeypatch.setitem(sys.modules, hidden, None)
+    for name in list(sys.modules):
+        if name == "swing" or name.startswith("swing."):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+
+    from click.testing import CliRunner
+    from swing.cli import main
+    r = CliRunner().invoke(main, ["--help"])
+    assert r.exit_code == 0
+    assert "web" in r.output.lower()
 ```
 
 - [ ] **Step 2: Run tests**
@@ -3954,7 +4132,7 @@ Expected: 3 PASS.
 - [ ] **Step 3: Full sweep — regression check**
 
 Run: `python -m pytest -m "not slow" -q`
-Expected: 287 (existing Phase 2) + ~40 new = **~325 PASS**.
+Expected: 287 (existing Phase 2) + ~55 new = **~342 PASS** (R1 Minor 4).
 
 - [ ] **Step 4: Commit**
 
