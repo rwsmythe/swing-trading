@@ -31,6 +31,8 @@ class TradeEntryFormVM:
     hard_cap: int
     open_count: int
     force: bool = False
+    rationale: str = ""       # preserved from prior submit on duplicate/drift
+    notes: str = ""           # preserved from prior submit on duplicate/drift
 
 
 def build_entry_form_vm(

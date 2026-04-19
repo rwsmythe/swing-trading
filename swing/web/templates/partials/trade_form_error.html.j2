@@ -1,8 +1,9 @@
-{#- Trade form error fragment. Full form-preservation markup lands in Task 10.
-    Expects: error_message (str), form_body (None or pre-rendered trusted HTML). -#}
+{#- Trade form error fragment. Banner and optional form are sibling <tr> elements
+    so HTMX outerHTML swap never nests <tr> inside <td>.
+    Expects: error_message (str), form_body (None or pre-rendered trusted HTML <tr>). -#}
 <tr class="trade-form-error">
   <td colspan="8">
     <div class="banner banner-degraded" role="alert">{{ error_message }}</div>
-    {% if form_body %}{{ form_body | safe }}{% endif %}
   </td>
 </tr>
+{% if form_body is defined and form_body %}{{ form_body | safe }}{% endif %}

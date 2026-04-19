@@ -100,6 +100,14 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
     async def _handle_http_exc(request: Request, exc: StarletteHTTPException):
         if request.headers.get("HX-Request", "").lower() == "true":
             tpls = Jinja2Templates(directory=str(app.state.templates_dir))
+            # Path-aware: /trades/* requests use <tr>-shaped swap targets, so
+            # render a row-compatible fragment. Other HTMX endpoints get <div>.
+            if request.url.path.startswith("/trades/"):
+                return tpls.TemplateResponse(
+                    request, "partials/trade_form_error.html.j2",
+                    {"error_message": exc.detail, "form_body": None},
+                    status_code=exc.status_code,
+                )
             return tpls.TemplateResponse(
                 request, "partials/http_error_fragment.html.j2",
                 {"status_code": exc.status_code, "detail": exc.detail},

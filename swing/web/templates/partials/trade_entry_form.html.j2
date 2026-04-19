@@ -41,9 +41,9 @@
         <input type="hidden" name="watchlist_stop" value="{{ vm.watchlist_initial_stop }}">
       {% endif %}
       <div><label>Rationale &#9733;</label>
-        <textarea name="rationale" required></textarea></div>
+        <textarea name="rationale" required>{{ vm.rationale }}</textarea></div>
       <div><label>Notes</label>
-        <textarea name="notes"></textarea></div>
+        <textarea name="notes">{{ vm.notes }}</textarea></div>
       <div>
         <button type="submit">Submit</button>
         <button type="button"

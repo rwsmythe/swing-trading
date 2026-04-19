@@ -188,13 +188,23 @@ def entry_post(
                 {"form_values": form_values},
             )
         except DuplicateOpenPositionException as exc:
-            # Spec §5.1 case 1: re-render form with fields populated so the
-            # user can see the banner without losing their input context.
+            # Spec §5.1 case 1: re-render form with submitted values preserved
+            # so the user sees the conflict without losing typed inputs.
+            from dataclasses import replace as dc_replace
             vm = build_entry_form_vm(
                 ticker=ticker.upper(), cfg=cfg, cache=cache, executor=executor,
             )
             form_body = None
             if vm is not None:
+                vm = dc_replace(
+                    vm,
+                    entry_date=entry_date,
+                    entry_price=entry_price,
+                    initial_stop=initial_stop,
+                    suggested_shares=shares,  # echo user's shares, not fresh sizing
+                    rationale=rationale,
+                    notes=notes or "",
+                )
                 form_body = templates.get_template(
                     "partials/trade_entry_form.html.j2"
                 ).render(request=request, vm=vm)
@@ -405,11 +415,19 @@ def stop_post(
     )
     conn = connect(cfg.paths.db_path)
     try:
+        # Guard: trade must exist and be open before attempting stop adjust.
+        # adjust_stop only raises ValueError for not-found, not for closed.
+        trade_check = get_trade(conn, trade_id)
+        if trade_check is None or trade_check.status != "open":
+            raise HTTPException(
+                status_code=404,
+                detail=f"Trade #{trade_id} not found or not open",
+            )
         try:
             adjust_stop(conn, req)
         except ValueError as exc:
             # Trade not found or already closed — surface as 404 so the
-            # HTMX-aware handler renders http_error_fragment.html.j2 (§5.2).
+            # HTMX-aware handler renders trade_form_error.html.j2 (§5.2).
             raise HTTPException(status_code=404, detail=str(exc))
         except StopRegressionError as exc:
             # R: spec §5.1 case 3 — re-render form with updated current_stop.

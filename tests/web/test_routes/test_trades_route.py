@@ -357,7 +357,12 @@ def test_get_exit_form_renders(seeded_db, monkeypatch):
 
 
 def test_get_exit_form_for_closed_trade_returns_404_fragment(seeded_db):
-    """Missing/closed trade → HTMX-aware 404 fragment (§5.1 case 4 + §5.2)."""
+    """Missing/closed trade → HTMX-aware 404 <tr> fragment (§5.1 case 4 + §5.2).
+
+    Path-aware handler (R2 Major 1): /trades/* routes use <tr> swap targets,
+    so 404s from these paths render trade_form_error.html.j2 (<tr>), not
+    http_error_fragment.html.j2 (<div>).
+    """
     cfg, cfg_path = seeded_db
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
@@ -367,6 +372,8 @@ def test_get_exit_form_for_closed_trade_returns_404_fragment(seeded_db):
     # Not JSON — HTMX-aware fragment.
     assert "banner" in r.text
     assert "not found" in r.text.lower() or "not open" in r.text.lower()
+    # Path-aware handler: /trades/* → <tr>-shaped fragment.
+    assert "<tr" in r.text.lower()
 
 
 def test_post_exit_full_close_removes_row(seeded_db, monkeypatch):
@@ -716,11 +723,12 @@ def test_post_stop_regression_renders_form_with_updated_current(seeded_db):
 
 
 def test_post_stop_for_closed_trade_returns_404_fragment(seeded_db):
-    """POST /trades/{id}/stop for a missing trade → 404 HTMX fragment (Major 2).
+    """POST /trades/{id}/stop for a missing trade → 404 HTMX <tr> fragment (Major 2).
 
     adjust_stop raises ValueError when the trade_id is not found; the route
     must catch that and re-raise as HTTPException(404) so the HTMX-aware
-    handler renders http_error_fragment.html.j2 rather than a generic 500.
+    path-aware handler renders trade_form_error.html.j2 (a <tr>) rather than
+    http_error_fragment.html.j2 (a <div>), since /trades/* uses <tr> targets.
     """
     cfg, cfg_path = seeded_db
     app = create_app(cfg, cfg_path)
@@ -732,6 +740,8 @@ def test_post_stop_for_closed_trade_returns_404_fragment(seeded_db):
     assert r.status_code == 404
     assert "banner" in r.text
     assert "not" in r.text.lower()
+    # Path-aware handler (R2 Major 1): /trades/* → <tr>-shaped fragment, not <div>.
+    assert "<tr" in r.text.lower()
 
 
 def test_post_entry_duplicate_renders_form_preserved(seeded_db, monkeypatch):
@@ -772,6 +782,55 @@ def test_post_entry_duplicate_renders_form_preserved(seeded_db, monkeypatch):
     assert "already" in r.text.lower() or "open trade" in r.text.lower()
     # Form is re-rendered inside the error fragment.
     assert 'name="ticker"' in r.text
+    # Submitted values preserved (R2 Major 2 fix: dataclasses.replace).
+    assert "add-on attempt" in r.text          # rationale textarea content
+    assert 'value="175.00"' in r.text          # initial_stop echoed back
+    assert 'value="182.00"' in r.text          # entry_price echoed back
+
+
+def test_post_stop_for_actually_closed_trade_returns_404_fragment(seeded_db):
+    """Trade that was open then fully closed → 404 <tr> fragment on stop POST (§5.1 case 4).
+
+    Verifies the path-aware 404 handler (R2 Major 1) for a real closed trade,
+    not just a nonexistent id.
+    """
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event, list_open_trades
+    from swing.trades.exit import ExitReason, ExitRequest, record_exit
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=5, initial_stop=860.0,
+                current_stop=860.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+        with conn:
+            record_exit(conn, ExitRequest(
+                trade_id=trade.id, exit_date="2026-04-17",
+                exit_price=910.0, shares=5, reason=ExitReason.MANUAL,
+                notes=None, rationale="full close",
+                event_ts="2026-04-17T10:00:00",
+            ))
+    finally:
+        conn.close()
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{trade.id}/stop", headers={"HX-Request": "true"},
+            data={"new_stop": "900.00", "rationale": "attempt after close"},
+        )
+    assert r.status_code == 404
+    # Path-aware handler (R2 Major 1): /trades/* → <tr>-shaped fragment.
+    assert "<tr" in r.text.lower()
+    assert "banner" in r.text
 
 
 def test_post_trades_without_hx_request_403(test_cfg):
