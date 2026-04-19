@@ -173,3 +173,66 @@ def test_post_entry_success_emits_row_and_oobs(seeded_db, monkeypatch):
     assert "hx-swap-oob" in r.text
     assert 'id="status-strip"' in r.text
     assert 'id="watchlist-top5"' in r.text
+
+
+def test_post_entry_soft_warn_2step(seeded_db, monkeypatch):
+    """First submit at soft cap → confirm fragment; second with force=true → success."""
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import Trade, WatchlistEntry
+    from swing.data.repos.trades import insert_trade_with_event
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    # Seed open trades up to soft_warn_open (default 4).
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            for i, t in enumerate(("MSFT", "NVDA", "GOOG", "META")):
+                insert_trade_with_event(conn, Trade(
+                    id=None, ticker=t, entry_date="2026-04-15",
+                    entry_price=100.0, initial_shares=1, initial_stop=90.0,
+                    current_stop=90.0, status="open",
+                    watchlist_entry_target=None, watchlist_initial_stop=None,
+                    notes=None,
+                ), event_ts=f"2026-04-15T09:{30+i}:00")
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="AAPL", added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: PriceSnapshot(
+                ticker=t, price=180.95, asof=datetime.now(),
+                is_stale=False, source="live",
+            ) for t in tickers
+        })
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    form_data = {
+        "ticker": "AAPL", "entry_date": "2026-04-18",
+        "entry_price": "180.95", "shares": "1", "initial_stop": "170.00",
+        "rationale": "5th trade past soft cap",
+    }
+    with TestClient(app) as client:
+        # First submit — no force. Should get soft_warn_confirm fragment.
+        r1 = client.post("/trades/entry", headers={"HX-Request": "true"}, data=form_data)
+        assert r1.status_code == 200
+        assert "Soft cap reached" in r1.text
+        assert 'name="force" value="true"' in r1.text
+        # Second submit — with force=true. Should succeed.
+        form_data2 = dict(form_data)
+        form_data2["force"] = "true"
+        r2 = client.post("/trades/entry", headers={"HX-Request": "true"}, data=form_data2)
+        assert r2.status_code == 200
+        assert "open-position-" in r2.text

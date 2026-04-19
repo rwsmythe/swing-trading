@@ -157,8 +157,34 @@ def entry_post(
                 force=(force == "true"),
             )
         except SoftWarnException:
-            # Soft-warn 2-step flow — implemented in Task 11.
-            raise
+            # First submit at soft cap — render the 2-step confirm fragment.
+            # Re-serialize the submitted form values so the next submit carries
+            # them + force=true (spec §4.3 step 4).
+            # R2 Minor 1: show the ACTUAL open_count in the banner numerator,
+            # not the threshold — "5/4" when 5 are open with soft_warn=4.
+            conn_count = connect(cfg.paths.db_path)
+            try:
+                actual_open = len(list_open_trades(conn_count))
+            finally:
+                conn_count.close()
+            form_values = {
+                "ticker": req.ticker,
+                "entry_date": req.entry_date,
+                "entry_price": req.entry_price,
+                "shares": req.shares,
+                "initial_stop": req.initial_stop,
+                "rationale": req.rationale,
+                "notes": req.notes or "",
+                "watchlist_target": req.watchlist_entry_target or "",
+                "watchlist_stop": req.watchlist_initial_stop or "",
+                "open_count": actual_open,
+                "soft_warn": cfg.position_limits.soft_warn_open,
+                "hard_cap": cfg.position_limits.hard_cap_open,
+            }
+            return templates.TemplateResponse(
+                request, "partials/soft_warn_confirm.html.j2",
+                {"form_values": form_values},
+            )
         except (HardCapException, DuplicateOpenPositionException) as exc:
             # Error-path rendering — implemented in Task 12. For now re-raise so
             # the happy-path test fails loudly if it hits these.

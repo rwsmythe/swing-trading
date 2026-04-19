@@ -1,0 +1,25 @@
+{#- Soft-warn 2-step confirmation fragment.
+    Expects: form_values (dict of the original form submission fields). -#}
+<tr class="soft-warn-confirm">
+  <td colspan="8">
+    <div class="banner" style="background:#fff3cd;color:#92400e;padding:12px;">
+      <strong>⚠ Soft cap reached ({{ form_values.open_count }}/{{ form_values.soft_warn }}).</strong>
+      <p>Opening this trade exceeds your configured soft-warn threshold.
+         Hard cap is {{ form_values.hard_cap }} (still available).</p>
+      <form hx-post="/trades/entry" hx-target="closest tr" hx-swap="outerHTML"
+            hx-headers='{"HX-Request": "true"}'>
+        {% for key, value in form_values.items() %}
+          {% if key not in ("open_count", "soft_warn", "hard_cap") %}
+            <input type="hidden" name="{{ key }}" value="{{ value }}">
+          {% endif %}
+        {% endfor %}
+        <input type="hidden" name="force" value="true">
+        <button type="submit">Submit anyway</button>
+        <button type="button"
+                hx-get="/watchlist/{{ form_values.ticker }}/expand"
+                hx-target="closest tr" hx-swap="outerHTML"
+                hx-headers='{"HX-Request": "true"}'>Cancel</button>
+      </form>
+    </div>
+  </td>
+</tr>
