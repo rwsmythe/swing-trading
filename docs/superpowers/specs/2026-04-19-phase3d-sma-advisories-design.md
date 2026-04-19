@@ -55,23 +55,29 @@ swing/
 │   │                               #   shares price_fetch_executor.
 │   ├── app.py                      # MODIFIED: app.state.ohlcv_cache built at startup;
 │   │                               #   existing price_fetch_executor reused.
+│   ├── routes/
+│   │   ├── dashboard.py            # MODIFIED: thread ohlcv_cache through to build_dashboard.
+│   │   └── trades.py               # MODIFIED: every call site of build_open_positions_row
+│   │                               #   now passes ohlcv_cache (~6 POST-success handlers).
 │   └── view_models/
 │       ├── dashboard.py            # MODIFIED: fetch OHLCV bundles via ohlcv_cache;
 │       │                           #   plumb sma10/20/50 + previous_close into
 │       │                           #   AdvisoryContext.
-│       └── open_positions_row.py   # MODIFIED: same plumbing for the single-row wrapper.
+│       └── open_positions_row.py   # MODIFIED: same plumbing for the single-row wrapper;
+│                                   #   accepts ohlcv_cache as a new positional/kwarg.
 ├── cli.py                          # MODIFIED: `swing trade advisory` gains --sma50 and
 │                                   #   --previous-close flags (consequential parity).
-└── config.py                       # MODIFIED: Web.ohlcv_cache_ttl_seconds = 3600 default.
+└── config.py                       # MODIFIED: Web.ohlcv_cache_ttl_seconds = 3600 default;
+                                    #   Web.max_concurrent_ohlcv_fetches = 4 (see §3.2).
 ```
 
-Eight files touched. Exactly ONE Phase 2 carve-out (`swing/trades/advisory.py`). Everything else is Phase 3 layer, CLI parity, or new additive modules.
+Ten files touched: one Phase 2 carve-out (`swing/trades/advisory.py`), two new modules (`swing/pipeline/ohlcv.py`, `swing/web/ohlcv_cache.py`), two route updates to thread the new cache, two view-model updates, plus `app.py`, `cli.py`, and `config.py`. Existing integration tests for the dashboard and trade-action POST handlers will need their fixtures updated to pass a test double for `ohlcv_cache`.
 
 ### 2.2 Design invariants
 
 - **Purity at the boundary.** `swing/pipeline/ohlcv.py::compute_smas` and `::previous_close` are pure: DataFrame in, primitives out. Tests inject canned DataFrames; no yfinance round-trip in the fast suite.
 - **Cache shape mirrors `PriceCache`.** `OhlcvCache.get_many_bundles(tickers, deadline=..., executor=...)` has the same method shape as `PriceCache.get_many(tickers, deadline=..., executor=...)`. Callers handle missing results identically.
-- **Bounded-deadline rendering.** The dashboard's existing deadline pattern (default `cfg.web.price_fetch_deadline_seconds = 6`) applies to the OHLCV fetch too; the fetch runs in parallel with the live-quote fetch, not serially.
+- **Bounded-deadline rendering.** The dashboard's existing deadline pattern (default `cfg.web.price_fetch_deadline_seconds = 6`) applies to the OHLCV fetch too. Both fetches run concurrently — the view-model submits `price_cache.get_many` and `ohlcv_cache.get_many_bundles` as top-level futures on `price_fetch_executor`, then waits on both with a shared deadline. Per-ticker misses still degrade gracefully per §6.
 - **Circuit breaker isolation.** `OhlcvCache` has its own circuit breaker; a failing yfinance OHLCV endpoint does not trip the live-quote breaker or vice versa.
 - **Graceful degradation throughout.** Missing `OhlcvBundle`, or a bundle with any None field, must not raise. SMA rules silently return None.
 
@@ -84,9 +90,9 @@ GET /  ──►  build_dashboard(cfg, price_cache, ohlcv_cache, executor)
               ├─► ohlcv_cache.get_many_bundles([tickers], deadline=...) # NEW
               │     │
               │     └─► per ticker (cache-miss): executor.submit →
-              │           fetch_daily_bars(ticker, n_bars=60) →
-              │           compute_smas(bars, [10, 20, 50]) →
-              │           previous_close(bars) →
+              │           fetch_daily_bars(ticker, n_bars=60) →   # drops in-progress bar
+              │           compute_smas(bars, [10, 20, 50]) →      # over completed bars only
+              │           previous_close(bars) →                   # most recent COMPLETED close
               │           OhlcvBundle(sma10, sma20, sma50, previous_close, fetched_at)
               │
               └─► per open trade:
@@ -115,12 +121,46 @@ import pandas as pd
 import yfinance as yf
 
 
-def fetch_daily_bars(ticker: str, *, n_bars: int = 60) -> pd.DataFrame | None:
-    """Fetch the last N daily bars for `ticker`. Returns None on empty result
-    or exception. Uses threads=False per the yfinance rate-limit gotcha."""
+def fetch_daily_bars(ticker: str, *, n_bars: int = 60, as_of_date: date | None = None) -> pd.DataFrame | None:
+    """Fetch completed daily bars for `ticker`.
+
+    Returns at most `n_bars` rows of FULLY-COMPLETED daily bars, ending with
+    the most recent completed session. Returns None on empty result or
+    exception.
+
+    Critical session-boundary semantics: yfinance's `history(interval='1d')`
+    includes the IN-PROGRESS bar for the current trading day during US market
+    hours. We must exclude that in-progress bar — otherwise `previous_close`
+    and the last rolling-mean row would reflect today's partial close, which
+    turns a "close below MA" exit rule back into a live-intraday rule (what
+    we explicitly chose NOT to do per spec §1.2).
+
+    Implementation:
+      - Request `period='6mo'` (≈126 trading bars — ample for SMA50 plus
+        holiday/DST buffer, unambiguously ≥ 60 trading bars).
+      - Drop the last row if its index date equals today (the in-progress bar).
+        "Today" is `as_of_date or date.today()` in the app-local timezone.
+      - Return the tail of up to `n_bars` remaining rows.
+
+    Uses `threads=False` per the yfinance rate-limit gotcha documented in
+    CLAUDE.md.
+    """
+```
+
+The concrete implementation:
+
+```python
+from datetime import date
+import pandas as pd
+import yfinance as yf
+
+
+def fetch_daily_bars(
+    ticker: str, *, n_bars: int = 60, as_of_date: date | None = None,
+) -> pd.DataFrame | None:
     try:
         df = yf.Ticker(ticker).history(
-            period=f"{max(n_bars + 10, 70)}d",   # small buffer for holidays
+            period="6mo",
             interval="1d",
             auto_adjust=False,
             threads=False,
@@ -128,6 +168,14 @@ def fetch_daily_bars(ticker: str, *, n_bars: int = 60) -> pd.DataFrame | None:
     except Exception:
         return None
     if df is None or df.empty:
+        return None
+    today = as_of_date or date.today()
+    # yfinance index is timezone-aware Timestamps; compare by .date().
+    last_idx = df.index[-1]
+    last_date = last_idx.date() if hasattr(last_idx, "date") else last_idx
+    if last_date >= today:
+        df = df.iloc[:-1]                 # drop in-progress bar
+    if df.empty:
         return None
     return df.tail(n_bars)
 
@@ -162,6 +210,8 @@ def previous_close(bars: pd.DataFrame) -> float | None:
 ```
 
 All three functions are unit-testable with canned DataFrames. Only `fetch_daily_bars` does IO.
+
+`as_of_date` is injectable for deterministic testing (same pattern as `is_stale_eligible`'s `now=` seam from Phase 3c). Production callers pass nothing; tests pin a fixed date so the in-progress-bar strip is deterministic.
 
 ### 3.2 `swing/web/ohlcv_cache.py` (new)
 
@@ -214,6 +264,8 @@ class OhlcvCache:
 ```
 
 Storage is in-memory per app instance. TTL from `cfg.web.ohlcv_cache_ttl_seconds` (default 3600s). No persistence across restarts (intentional — yfinance fetch is cheap enough, and memory cache avoids stale-on-disk issues).
+
+**Executor-starvation guard:** `OhlcvCache` bounds its own concurrent submissions to the shared `price_fetch_executor` via an internal `threading.Semaphore(cfg.web.max_concurrent_ohlcv_fetches)` (default 4). Rationale: a first page load with 20 open positions would otherwise queue 20 OHLCV fetches onto an 8-slot executor, starving live-price fetches (existing PriceCache documents executor saturation as an accepted limitation at [swing/web/price_cache.py:236-251](../../../swing/web/price_cache.py#L236-L251); Phase 3d's OHLCV workload is slower and longer-holding, so it would amplify the risk). Capping OHLCV at 4 of 8 slots leaves ≥ 4 slots free for live quotes in the worst case. Steady-state is a non-issue (1h TTL → near-zero fetches); the cap only matters on cold start and hourly refresh.
 
 **Circuit breaker:** mirrors `PriceCache`'s sliding-window mechanism (see [swing/web/price_cache.py:207-219](../../../swing/web/price_cache.py#L207-L219)) — trips when the failure fraction over the recent-calls window exceeds 50%. Cooldown uses `cfg.web.circuit_breaker_cooldown_seconds` (reuses the existing knob — no separate `ohlcv_circuit_breaker_cooldown_seconds` is YAGNI). `reset_circuit_breaker()` exists so a future `/ohlcv/refresh` can force-reset; Phase 3d's `/prices/refresh` is NOT extended to touch the OHLCV breaker (see §4.5).
 
@@ -270,14 +322,34 @@ def compute_all_suggestions(trade: Trade, ctx: AdvisoryContext) -> list[Advisory
 
 Both change in the same way: after `price_cache.get_many`, add a parallel `ohlcv_cache.get_many_bundles` call. Plumb the per-ticker bundle into the existing `AdvisoryContext` construction. No template changes — the existing `advisories` list in `OpenPositionsRowVM` just has more entries when SMAs are present.
 
-Concretely in `dashboard.py`:
+Concretely in `dashboard.py` — submit BOTH fetches concurrently, wait under a single shared deadline:
 
 ```python
-    bundles = app.state.ohlcv_cache.get_many_bundles(
-        [t.ticker for t in open_trades],
-        deadline_seconds=cfg.web.price_fetch_deadline_seconds,
-        executor=executor,
+    from concurrent.futures import wait, FIRST_COMPLETED
+
+    tickers = [t.ticker for t in open_trades]
+    deadline = cfg.web.price_fetch_deadline_seconds
+
+    # Kick off both batch fetches in parallel — each internally submits
+    # per-ticker subtasks to the same executor.
+    prices_fut = executor.submit(
+        cache.get_many, tickers,
+        deadline_seconds=deadline, executor=executor,
     )
+    bundles_fut = executor.submit(
+        app.state.ohlcv_cache.get_many_bundles, tickers,
+        deadline_seconds=deadline, executor=executor,
+    )
+
+    try:
+        prices = prices_fut.result(timeout=deadline + 1)
+    except Exception:
+        prices = {}
+    try:
+        bundles = bundles_fut.result(timeout=deadline + 1)
+    except Exception:
+        bundles = {}
+
     for t in open_trades:
         snap = prices.get(t.ticker)
         bundle = bundles.get(t.ticker)           # may be None or all-None
@@ -293,6 +365,8 @@ Concretely in `dashboard.py`:
         )
         raw = compute_all_suggestions(t, ctx_adv) if snap else []
 ```
+
+The top-level `deadline + 1` is a wall-clock safety margin — each cache's own `get_many(...)` already enforces `deadline_seconds` internally via its per-ticker future collection, so the outer `.result(timeout=...)` should never actually fire in normal operation. It exists only to unwind a deadlocked cache without blocking the page.
 
 `build_open_positions_row` receives `ohlcv_cache` the same way it receives `cache` today, mirrored call.
 
@@ -331,10 +405,11 @@ Pure additive CLI change. Operators invoking the CLI without the new flags see S
 @dataclass(frozen=True)
 class Web:
     # ... existing fields ...
-    ohlcv_cache_ttl_seconds: int = 3600   # NEW: 1h default
+    ohlcv_cache_ttl_seconds: int = 3600          # NEW: 1h default
+    max_concurrent_ohlcv_fetches: int = 4        # NEW: executor-starvation guard (§3.2)
 ```
 
-One new field. No changes to `StopAdvisoryConfig`.
+Two new fields. No changes to `StopAdvisoryConfig`.
 
 ---
 
@@ -342,7 +417,9 @@ One new field. No changes to `StopAdvisoryConfig`.
 
 ### 4.1 Cache keying
 
-`OhlcvCache` is keyed by raw ticker symbol (uppercase). We don't key by `n_bars` because `fetch_daily_bars` always requests 60 bars — a fixed number sufficient for any SMA ≤ 50 with buffer for holidays. If a future advisory needs SMA200, we'd either bump `n_bars` globally (simplest) or introduce a `(ticker, n_bars)` key. YAGNI for now.
+`OhlcvCache` is keyed by the uppercased ticker. Normalization happens at the cache boundary — `get_many_bundles(["aapl","AAPL"])` coalesces to a single `"AAPL"` lookup. Callers in `dashboard.py` and `open_positions_row.py` pass `trade.ticker` through directly; the DB schema already stores tickers uppercase (see [swing/data/models.py](../../../swing/data/models.py)), so normalization is defense-in-depth.
+
+We don't key by `n_bars` because `fetch_daily_bars` always requests a 6-month period — enough for any SMA ≤ 50 with buffer for holidays. If a future advisory needs SMA200, bump the fetch window and the `n_bars` tail; we'd introduce a `(ticker, n_bars)` key only if multiple callers with different window needs emerge. YAGNI for now.
 
 ### 4.2 Cache TTL
 
@@ -354,7 +431,9 @@ Default 1 hour (`cfg.web.ohlcv_cache_ttl_seconds = 3600`). Rationale: daily bars
 
 ### 4.4 Circuit breaker
 
-Mirrors `PriceCache`: increments `_failure_count` on each fetch exception; trips the breaker (stops submitting new fetches) once `_failure_count >= threshold`; auto-resets after `circuit_breaker_cooldown_seconds`. The OHLCV breaker is INDEPENDENT of the price breaker — a yfinance OHLCV outage should not stop live quotes from rendering. `is_degraded()` reports the breaker state for the existing degraded-price banner to optionally consume — but Phase 3d does NOT add a second banner (see §6 decision 8).
+Mirrors `PriceCache`'s sliding-window mechanism (see [swing/web/price_cache.py:207-219](../../../swing/web/price_cache.py#L207-L219)): every fetch records success/failure into a bounded sliding window via `_record_outcome(...)`; `_maybe_trip_breaker(...)` enters degraded mode once the failure fraction in the window exceeds 50%. Cooldown uses `cfg.web.circuit_breaker_cooldown_seconds` (shared knob). `reset_circuit_breaker()` clears the window and the degraded flag.
+
+The OHLCV breaker is INDEPENDENT of the price breaker — a yfinance OHLCV outage does not stop live quotes from rendering, and vice versa. `is_degraded()` reports the breaker state; Phase 3d adds a dedicated page-level banner when it returns True (see §6, decision 8).
 
 ### 4.5 Interaction with `POST /prices/refresh`
 
@@ -364,14 +443,16 @@ The existing `POST /prices/refresh` route resets the live-quote circuit breaker 
 
 ## 5. Testing
 
-### 5.1 `tests/pipeline/test_ohlcv.py` (new, ~6 tests)
+### 5.1 `tests/pipeline/test_ohlcv.py` (new, ~8 tests)
 
 - `compute_smas` with exactly 50 bars returns SMA50 value; fewer returns None for that period.
 - `compute_smas` with 10 bars returns SMA10 float, SMA20/50 None.
 - `compute_smas` with empty DataFrame returns all None.
 - `compute_smas` with all-NaN Close column returns all None.
 - `previous_close` returns last Close; empty frame returns None.
-- `fetch_daily_bars` is exercised via monkeypatching `yf.Ticker` — test the None-on-exception path and the .tail() truncation, not the network.
+- `fetch_daily_bars` with a monkeypatched `yf.Ticker` returning synthetic bars whose LAST index date == `as_of_date` (injected) — verifies the in-progress bar is dropped before `.tail()`. Reverse case: when the last bar's date is strictly before `as_of_date`, it is retained.
+- `fetch_daily_bars` exception-path returns None.
+- `fetch_daily_bars` truncation: synthetic fetch of 126 bars + `n_bars=60` → returned DataFrame has exactly 60 rows AFTER the in-progress-bar strip.
 
 ### 5.2 `tests/web/test_ohlcv_cache.py` (new, ~6 tests)
 
@@ -415,10 +496,16 @@ All OHLCV-dependent tests either (a) use canned pandas DataFrames or (b) monkeyp
 | Executor deadline expires before fetch returns | Bundle defaults to `OhlcvBundle.empty()`; rule no-op. Same pattern as missing `PriceSnapshot`. Not cached (§4.3). |
 | Ticker has fewer than N bars of history (IPO, delisted) | `compute_smas` returns None for periods that can't be computed; partial advisories render (e.g., SMA10 only on a new IPO). |
 | Weekend / market-closed | Previous-close stays "Friday's close" throughout; rule fires once and stays consistent. No special handling. |
-| Corporate action reshaping bars | `yf.Ticker.history(auto_adjust=False)` returns raw bars; SMA drifts briefly after a split until the cache TTL refreshes. Acceptable. |
+| Corporate action reshaping bars | `yf.Ticker.history(auto_adjust=False)` returns raw bars; SMA drifts briefly after a split until the cache TTL refreshes (up to 1h of stale SMA across the split boundary). **Accepted limitation.** Operator awareness: the message strings on exit/trail advisories always print the literal MA value in dollars, so a split-driven drop in a stock's price against an unadjusted SMA (which becomes nonsensically high post-split) is visually flagged as a suspiciously large gap — operator should sanity-check before acting on a same-day post-split advisory. If this becomes a noise source in practice, a future phase can add post-split signal suppression. |
 | Jinja render error from bad SMA value | Cannot happen: SMA fields are float / None; templates render `{{ …}}` through autoescape. |
 
-**Degraded UI:** no separate "SMA advisories unavailable" banner. If `OhlcvCache.is_degraded()`, the SMA advisories silently don't appear. Rationale: (a) keeps UI from getting banner-heavy; (b) operator still has the live-price banner as a degradation signal; (c) SMA advisories are advisory, not critical — absence is safer than a noisy banner.
+**Degraded UI:** when `OhlcvCache.is_degraded()` is True (circuit breaker tripped), the dashboard renders a dedicated banner near the top:
+
+> ⚠ SMA advisories unavailable — daily-bar fetch is in a cool-down period. Trail-MA and close-below-MA rules will not fire until service recovers.
+
+Rationale for surfacing this (reversing the earlier decision to keep it silent): an ABSENT exit advisory must be distinguishable from a signal that was suppressed by an outage. For stop-discipline and exit rules in particular, "no advisory" and "advisory would have fired but we couldn't tell" are operationally different outcomes. A one-line banner below the existing price-source-degraded banner is a cheap disambiguation.
+
+Per-ticker TRANSIENT deadline misses (a single ticker's fetch didn't complete by the deadline but the breaker has not tripped) still silently skip — those are noise, not systemic, and flicker in/out; banner-izing every transient miss would train the operator to ignore the banner. The systemic signal (breaker tripped) is the load-bearing one.
 
 ---
 
@@ -431,7 +518,7 @@ All OHLCV-dependent tests either (a) use canned pandas DataFrames or (b) monkeyp
 5. **SMA set: 10, 20, 50.** Keep existing 10/20; add 50. No SMA21. No SMA200.
 6. **Trail-ma stays 10/20 only.** No trail_50ma (too loose for swing).
 7. **Exactly one Phase 2 carve-out**: `swing/trades/advisory.py` gains `sma50` + `previous_close` fields, swaps exit-rule input, and adds one 50MA exit call. No other Phase 2 file touched.
-8. **No degraded-OHLCV banner.** SMA advisories silently disappear when the OhlcvCache is degraded.
+8. **Dedicated degraded-OHLCV banner** shown when `OhlcvCache.is_degraded()` (breaker tripped). Per-ticker transient deadline misses remain silent (see §6).
 9. **CLI parity**: `swing trade advisory` gains `--sma50` and `--previous-close`.
 10. **No network in fast suite**: all OHLCV tests use canned data or monkeypatching.
 
