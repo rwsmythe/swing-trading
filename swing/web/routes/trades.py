@@ -186,9 +186,11 @@ def entry_post(
                 {"form_values": form_values},
             )
         except (HardCapException, DuplicateOpenPositionException) as exc:
-            # Error-path rendering — implemented in Task 12. For now re-raise so
-            # the happy-path test fails loudly if it hits these.
-            raise
+            return templates.TemplateResponse(
+                request, "partials/trade_form_error.html.j2",
+                {"error_message": str(exc), "form_body": None},
+                status_code=400,
+            )
     finally:
         conn.close()
 

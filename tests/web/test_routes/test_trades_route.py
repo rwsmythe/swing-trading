@@ -236,3 +236,82 @@ def test_post_entry_soft_warn_2step(seeded_db, monkeypatch):
         r2 = client.post("/trades/entry", headers={"HX-Request": "true"}, data=form_data2)
         assert r2.status_code == 200
         assert "open-position-" in r2.text
+
+
+def test_post_entry_hard_cap_error(seeded_db, monkeypatch):
+    """Hard cap reached → 400 trade_form_error fragment, no UI bypass."""
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    # Seed to hard_cap (default 6).
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            for i, t in enumerate(("A", "B", "C", "D", "E", "F")):
+                insert_trade_with_event(conn, Trade(
+                    id=None, ticker=t, entry_date="2026-04-15",
+                    entry_price=100.0, initial_shares=1, initial_stop=90.0,
+                    current_stop=90.0, status="open",
+                    watchlist_entry_target=None, watchlist_initial_stop=None,
+                    notes=None,
+                ), event_ts=f"2026-04-15T09:{30+i}:00")
+    finally:
+        conn.close()
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {})
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry", headers={"HX-Request": "true"},
+            data={
+                "ticker": "AAPL", "entry_date": "2026-04-18",
+                "entry_price": "180.0", "shares": "1",
+                "initial_stop": "170.0", "rationale": "test",
+                "force": "true",   # bypass soft-warn; but hard cap still blocks
+            },
+        )
+    assert r.status_code == 400
+    assert "hard cap" in r.text.lower() or "hard_cap" in r.text.lower()
+
+
+def test_post_entry_duplicate_error(seeded_db, monkeypatch):
+    """Duplicate open position → 400 fragment with drift-recovery wording."""
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+    from swing.web.price_cache import PriceCache
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="AAPL", entry_date="2026-04-15",
+                entry_price=180.0, initial_shares=5, initial_stop=170.0,
+                current_stop=170.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+    finally:
+        conn.close()
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {})
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry", headers={"HX-Request": "true"},
+            data={
+                "ticker": "AAPL", "entry_date": "2026-04-18",
+                "entry_price": "182.0", "shares": "3",
+                "initial_stop": "175.0", "rationale": "add-on",
+            },
+        )
+    assert r.status_code == 400
+    assert "already" in r.text.lower() or "open trade" in r.text.lower()
