@@ -290,6 +290,37 @@ def test_non_htmx_get_with_bad_query_renders_full_page(test_cfg, seeded_db):
     assert "mode" in r.text  # field name appears in detail
 
 
+def test_non_htmx_get_escapes_html_in_validation_detail(test_cfg, seeded_db):
+    """XSS guard: if a future validator raises with HTML in its message, the
+    full-page 400 must escape it, not reflect it as markup."""
+    from typing import Annotated
+    from fastapi import Query as _Query
+    import pydantic
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+
+    def _evil_validator(v: str) -> str:
+        raise ValueError(f'bad value: <script>alert("xss")</script> {v}')
+
+    @app.get("/_xss_probe")
+    def _probe(
+        q: Annotated[str, pydantic.AfterValidator(_evil_validator), _Query()] = "ok",
+    ):
+        return {"q": q}
+
+    with TestClient(app) as client:
+        r = client.get(
+            "/_xss_probe?q=trigger",
+            headers={"Accept": "text/html,application/xhtml+xml,*/*"},
+        )
+    assert r.status_code == 400
+    body = r.text
+    # Escaped markers must appear…
+    assert "&lt;script&gt;" in body or "&lt;/script&gt;" in body
+    # …and raw <script> must NOT be present in the body.
+    assert "<script>alert" not in body
+
+
 def test_non_htmx_get_json_accept_falls_through_to_422(test_cfg, seeded_db):
     """Spec §3.3 precedence rule #3: GET with Accept: application/json (no
     text/html) → FastAPI default 422 JSON, not the HTML page."""

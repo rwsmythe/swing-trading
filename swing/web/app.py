@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import jinja2
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
@@ -46,6 +47,23 @@ def _templates_dir() -> Path:
     return Path(__file__).parent / "templates"
 
 
+def _build_templates(directory: Path) -> Jinja2Templates:
+    """Construct Jinja2Templates with unconditional autoescape.
+
+    Starlette's default environment uses `jinja2.select_autoescape()` which
+    only autoescapes `.html`, `.htm`, `.xml`, `.xhtml` — NOT our `.html.j2`
+    suffix. That left a latent reflected-XSS vector (e.g. a future Pydantic
+    field validator raising `ValueError("bad: <script>…")` would reach the
+    full-page 400 handler as raw markup). Forcing `autoescape=True` on all
+    templates closes the gap; the codebase has no `{{ foo | safe }}` usage.
+    """
+    env = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(str(directory)),
+        autoescape=True,
+    )
+    return Jinja2Templates(env=env)
+
+
 def _register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def _handle_any(request: Request, exc: Exception) -> HTMLResponse:
@@ -55,7 +73,7 @@ def _register_exception_handlers(app: FastAPI) -> None:
             return await http_exception_handler(request, exc)
         rid = getattr(request.state, "request_id", "-")
         log.exception("unhandled error (request_id=%s)", rid)
-        tpls = Jinja2Templates(directory=str(app.state.templates_dir))
+        tpls = _build_templates(app.state.templates_dir)
         is_htmx = request.headers.get("HX-Request", "").lower() == "true"
         template = "partials/error_fragment.html.j2" if is_htmx else "error.html.j2"
         return tpls.TemplateResponse(
@@ -94,7 +112,7 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
     app.state.cfg_path = cfg_path
     app.state.price_cache = PriceCache(cfg)
     app.state.templates_dir = _templates_dir()
-    app.state.templates = Jinja2Templates(directory=str(app.state.templates_dir))
+    app.state.templates = _build_templates(app.state.templates_dir)
 
     # Origin guard for all state-changing requests.
     app.add_middleware(
