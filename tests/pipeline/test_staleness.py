@@ -75,13 +75,23 @@ def test_is_stale_eligible_non_running_state_returns_false():
     assert is_stale_eligible(run, cfg, now=now) is False
 
 
-def test_is_stale_eligible_missing_timestamps_treats_as_stale():
-    """Either timestamp missing → treated as infinitely stale."""
+def test_is_stale_eligible_missing_timestamps_not_eligible():
+    """Either timestamp missing → NOT eligible. Force-clear is destructive;
+    we require positive evidence of staleness rather than treating 'unknown'
+    as 'safe to revoke lease'. Guards against fresh-lease windows where the
+    heartbeat thread hasn't emitted yet."""
     from swing.pipeline.staleness import is_stale_eligible
     now = datetime.now()
-    run = _mk_run(hb_age_seconds=None, step_age_seconds=None, now=now)
     cfg = _mk_cfg()
-    assert is_stale_eligible(run, cfg, now=now) is True
+    # Both missing → not eligible.
+    run_both_missing = _mk_run(hb_age_seconds=None, step_age_seconds=None, now=now)
+    assert is_stale_eligible(run_both_missing, cfg, now=now) is False
+    # Only heartbeat present (and old) but step-progress missing → not eligible.
+    run_step_missing = _mk_run(hb_age_seconds=1200, step_age_seconds=None, now=now)
+    assert is_stale_eligible(run_step_missing, cfg, now=now) is False
+    # Only step-progress present (and old) but heartbeat missing → not eligible.
+    run_hb_missing = _mk_run(hb_age_seconds=None, step_age_seconds=1200, now=now)
+    assert is_stale_eligible(run_hb_missing, cfg, now=now) is False
 
 
 def test_is_stale_eligible_at_exact_threshold_not_stale():

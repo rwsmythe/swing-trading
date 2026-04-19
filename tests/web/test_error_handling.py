@@ -244,6 +244,61 @@ def test_htmx_handler_renders_tr_for_row_target(test_cfg, seeded_db):
     assert "trade #99 not found" in r.text
 
 
+def test_htmx_validation_error_on_get_with_row_target_renders_tr(test_cfg, seeded_db):
+    """Regression: HX-Target drives fragment shape regardless of method.
+    A GET validation error with a row-prefix HX-Target must render a <tr>,
+    not a <div> — otherwise HTMX injects <div> into a <table>. Spec §3.3
+    (Codex adversarial review Major 1)."""
+    from typing import Literal
+    from fastapi import Query as _Query
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+
+    @app.get("/trades/_row_get_probe")
+    def _probe(mode: Literal["a", "b"] = _Query("a")):
+        return {"mode": mode}
+
+    with TestClient(app) as client:
+        r = client.get(
+            "/trades/_row_get_probe?mode=bad",
+            headers={"HX-Request": "true", "HX-Target": "open-position-42"},
+        )
+    assert r.status_code == 400
+    body_lower = r.text.lower()
+    tr_pos = body_lower.find("<tr")
+    div_pos = body_lower.find("<div")
+    assert tr_pos >= 0, "expected <tr> row fragment"
+    # Trade form error template has <tr><td><div class='banner'>…</div></td></tr>,
+    # so <div> is allowed — but the OUTER element must be <tr>, not the neutral
+    # http_error_fragment which starts with <div>.
+    assert tr_pos < div_pos, (
+        f"outer element should be <tr> (row fragment), not <div> "
+        f"(tr_pos={tr_pos}, div_pos={div_pos})"
+    )
+    assert "Invalid input" in r.text
+
+
+def test_htmx_validation_error_on_get_with_non_row_target_renders_div(test_cfg, seeded_db):
+    """Symmetrical: non-row HX-Target on GET still gets the <div> fragment."""
+    from typing import Literal
+    from fastapi import Query as _Query
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+
+    @app.get("/_non_row_get_probe")
+    def _probe(mode: Literal["a", "b"] = _Query("a")):
+        return {"mode": mode}
+
+    with TestClient(app) as client:
+        r = client.get(
+            "/_non_row_get_probe?mode=bad",
+            headers={"HX-Request": "true", "HX-Target": "sizing-hint"},
+        )
+    assert r.status_code == 400
+    assert "<div" in r.text.lower()
+    assert "<tr" not in r.text.lower()
+
+
 def test_htmx_handler_uses_app_state_templates(test_cfg, seeded_db):
     """Spec §3.3: handlers use request.app.state.templates (not a per-call
     Jinja2Templates instance). We can't assert this directly from outside,

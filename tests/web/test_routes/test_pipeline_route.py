@@ -92,18 +92,21 @@ def test_post_pipeline_run_503_when_cfg_path_missing(seeded_db):
 
 
 def test_post_pipeline_run_detects_stale_heartbeat(seeded_db):
+    """Phase 3c §5.6: both heartbeat AND step-progress must be stale for the
+    'wedged run' branch to fire. Seeding both old forces is_stale_eligible True."""
     cfg, cfg_path = seeded_db
-    stale_ts = (datetime.now() - timedelta(seconds=900)).isoformat(timespec="seconds")
+    stale_ts = (datetime.now() - timedelta(seconds=1500)).isoformat(timespec="seconds")
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
             conn.execute(
                 """INSERT INTO pipeline_runs
                    (started_ts, trigger, data_asof_date, action_session_date,
-                    state, lease_token, lease_heartbeat_ts)
+                    state, lease_token, lease_heartbeat_ts,
+                    last_step_progress_ts, current_step)
                    VALUES (?, 'scheduled', '2026-04-17', '2026-04-20',
-                           'running', 'stale-tok', ?)""",
-                (stale_ts, stale_ts),
+                           'running', 'stale-tok', ?, ?, 'evaluate')""",
+                (stale_ts, stale_ts, stale_ts),
             )
     finally:
         conn.close()
@@ -112,7 +115,8 @@ def test_post_pipeline_run_detects_stale_heartbeat(seeded_db):
     with TestClient(app) as client:
         r = client.post("/pipeline/run", headers={"HX-Request": "true"})
     assert r.status_code == 200
-    assert "force-clear" in r.text.lower() or "stuck" in r.text.lower()
+    # Message now directs to the in-page stale-run card (no CLI reference).
+    assert "wedged" in r.text.lower() or "force clear" in r.text.lower()
 
 
 def test_post_pipeline_run_detects_early_child_exit(seeded_db, monkeypatch):

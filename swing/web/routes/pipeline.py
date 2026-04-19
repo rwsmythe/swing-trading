@@ -61,25 +61,27 @@ def pipeline_run(request: Request):
         conn.close()
 
     if active is not None:
-        hb_age = _heartbeat_age_seconds(active.lease_heartbeat_ts)
-        stale_threshold = cfg.pipeline.stale_lease_threshold_seconds
-        if hb_age is not None and hb_age <= stale_threshold:
-            # Fresh heartbeat — show existing progress.
+        # Consistent with the page-level stale-run card (spec §3.1, §5.6):
+        # force-clear eligibility requires BOTH heartbeat and step-progress
+        # signals stale. Heartbeat-only staleness means the run is still
+        # making progress and should be shown, not flagged as stuck.
+        if not is_stale_eligible(active, cfg):
+            # Fresh (or partially-fresh) — show existing progress.
             return templates.TemplateResponse(
                 request, "partials/pipeline_progress.html.j2",
                 {"run": active, "error_text": None, "poll_interval": poll_interval},
             )
-        # Stale heartbeat — explicit manual force-clear required.
-        age_min = int((hb_age or 0) // 60)
+        # Truly stale under the two-signal rule — direct the operator to the
+        # in-page force-clear card (which is already rendered on GET /pipeline
+        # via vm.stale_run).
         return templates.TemplateResponse(
             request, "partials/pipeline_progress.html.j2",
             {
                 "run": None,
                 "error_text": (
-                    f"A previous run is stuck (run #{active.id}, state=running, "
-                    f"heartbeat age {age_min}m). A dashboard force-clear button "
-                    f"ships in Phase 3b; until then, run `swing pipeline "
-                    f"force-clear {active.id} --bypass-staleness-check` in a terminal."
+                    f"A previous run is wedged (run #{active.id}, state=running). "
+                    f"Reload /pipeline and use the Force clear button on the "
+                    f"stale-run card."
                 ),
                 "poll_interval": poll_interval,
             },

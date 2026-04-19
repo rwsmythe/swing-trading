@@ -170,7 +170,11 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
         tpls = request.app.state.templates
 
         if request.headers.get("HX-Request", "").lower() == "true":
-            if _is_row_swap_target(request) and request.method == "POST":
+            # HX-Target drives fragment shape regardless of method. A GET
+            # validation error targeting a row (e.g. bad int path param on a
+            # row-bound exit/stop form) must still render a <tr> fragment,
+            # or HTMX would inject a <div> into a <table>. Spec §3.3.
+            if _is_row_swap_target(request):
                 return tpls.TemplateResponse(
                     request, "partials/trade_form_error.html.j2",
                     {"error_message": f"Invalid input in {field}: {msg}"},
@@ -184,8 +188,10 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
 
         # Non-HTMX GET with Accept: text/html → full-page HTML error.
         # Spec §3.3 precedence rule #2. API clients (Accept without text/html)
-        # continue to the FastAPI default 422 JSON via fallthrough.
-        if request.method == "GET" and "text/html" in request.headers.get("accept", ""):
+        # continue to the FastAPI default 422 JSON via fallthrough. Accept
+        # media types are case-insensitive per RFC 7231.
+        accept_header = request.headers.get("accept", "").lower()
+        if request.method == "GET" and "text/html" in accept_header:
             from swing.web.view_models.error import PageErrorVM
             from swing.evaluation.dates import action_session_for_run
             from datetime import datetime
