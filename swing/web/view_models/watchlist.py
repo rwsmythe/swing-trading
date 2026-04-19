@@ -1,0 +1,100 @@
+"""WatchlistVM + builder."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Mapping
+
+from swing.config import Config
+from swing.data.db import connect
+from swing.data.models import Candidate, WatchlistEntry
+from swing.data.repos.candidates import fetch_candidates_for_run
+from swing.data.repos.watchlist import list_active_watchlist
+from swing.evaluation.dates import action_session_for_run
+from swing.web.price_cache import PriceCache, PriceSnapshot
+from swing.web.view_models.dashboard import _flag_tags, _sort_by_proximity
+
+
+@dataclass(frozen=True)
+class WatchlistVM:
+    session_date: str
+    rows: list[WatchlistEntry]
+    watchlist_last_prices: Mapping[str, PriceSnapshot]
+    flag_tags: Mapping[str, tuple[str, ...]]
+    candidates_by_ticker: Mapping[str, Candidate]
+    prices_generated_at: str
+    price_source_degraded: bool
+    price_source_degraded_until: str | None
+    stale_banner: str | None = None   # placeholder — populated only on the main dashboard
+
+
+@dataclass(frozen=True)
+class WatchlistExpandedVM:
+    ticker: str
+    entry: WatchlistEntry
+    candidate: Candidate | None
+    last_price: PriceSnapshot | None
+    data_asof_date: str | None   # for /charts/<date>/<ticker>.png
+
+
+def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
+    now = datetime.now()
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            rows = _sort_by_proximity(list_active_watchlist(conn))
+            row = conn.execute("SELECT id FROM evaluation_runs ORDER BY run_ts DESC LIMIT 1").fetchone()
+            candidates: list[Candidate] = []
+            if row is not None:
+                candidates = fetch_candidates_for_run(conn, row[0])
+    finally:
+        conn.close()
+    by_ticker = {c.ticker: c for c in candidates}
+    prices = cache.get_many(
+        [r.ticker for r in rows],
+        deadline_seconds=cfg.web.price_fetch_deadline_seconds,
+        executor=executor,
+    )
+    degraded_until = cache.degraded_until()
+    return WatchlistVM(
+        session_date=action_session_for_run(now).isoformat(),
+        rows=list(rows),
+        watchlist_last_prices={r.ticker: prices[r.ticker] for r in rows if r.ticker in prices},
+        flag_tags=_flag_tags(by_ticker),
+        candidates_by_ticker=by_ticker,
+        prices_generated_at=now.isoformat(timespec="seconds"),
+        price_source_degraded=cache.is_degraded(),
+        price_source_degraded_until=(
+            degraded_until.isoformat(timespec="seconds") if degraded_until else None
+        ),
+    )
+
+
+def build_watchlist_expanded(
+    *, cfg: Config, cache: PriceCache, ticker: str,
+) -> WatchlistExpandedVM | None:
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            rows = list_active_watchlist(conn)
+            row = next((r for r in rows if r.ticker == ticker), None)
+            if row is None:
+                return None
+            eval_row = conn.execute(
+                "SELECT id, data_asof_date FROM evaluation_runs ORDER BY run_ts DESC LIMIT 1"
+            ).fetchone()
+            candidate = None
+            data_asof = None
+            if eval_row is not None:
+                data_asof = eval_row[1]
+                for c in fetch_candidates_for_run(conn, eval_row[0]):
+                    if c.ticker == ticker:
+                        candidate = c
+                        break
+    finally:
+        conn.close()
+    snap = cache.get(ticker)
+    return WatchlistExpandedVM(
+        ticker=ticker, entry=row, candidate=candidate,
+        last_price=snap, data_asof_date=data_asof,
+    )

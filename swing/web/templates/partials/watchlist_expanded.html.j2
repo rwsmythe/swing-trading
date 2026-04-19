@@ -1,0 +1,34 @@
+{#- Expects: expanded (WatchlistExpandedVM) -#}
+<tr id="watchlist-row-{{ expanded.ticker }}" class="expanded">
+  <td colspan="7">
+    <h3>{{ expanded.ticker }}</h3>
+    {% if expanded.last_price %}
+      <p>Last: ${{ '%.2f' | format(expanded.last_price.price) }}
+         {% if expanded.last_price.is_stale %}<span class="stale">(stale)</span>{% endif %}
+      </p>
+    {% endif %}
+    {% if expanded.candidate %}
+      <h4>Trend Template</h4>
+      <ul class="tt-grid">
+        {% for cr in expanded.candidate.criteria if cr.layer == 'trend_template' %}
+          <li class="{{ cr.result }}">{{ cr.criterion_name }}: {{ cr.result }}</li>
+        {% endfor %}
+      </ul>
+      <h4>VCP</h4>
+      <ul class="vcp-grid">
+        {% for cr in expanded.candidate.criteria if cr.layer == 'vcp' %}
+          <li class="{{ cr.result }}">{{ cr.criterion_name }}: {{ cr.result }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+    {% if expanded.data_asof_date %}
+      <img src="/charts/{{ expanded.data_asof_date }}/{{ expanded.ticker }}.png"
+           alt="Chart {{ expanded.ticker }}"
+           onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+      <div class="chart-unavailable" style="display:none">Chart unavailable.</div>
+    {% endif %}
+    <div class="actions">
+      <span title="Log entry: `swing trade entry --ticker {{ expanded.ticker }}`">Log entry (CLI — 3b adds button)</span>
+    </div>
+  </td>
+</tr>

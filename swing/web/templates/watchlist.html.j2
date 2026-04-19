@@ -1,0 +1,16 @@
+{% extends "base.html.j2" %}
+{% block content %}
+  <h1>Watchlist</h1>
+  <table class="watchlist">
+    <thead><tr>
+      <th></th><th>Ticker</th><th>Last</th><th>Pivot</th><th>% to pivot</th><th>ADR</th><th>Tags</th>
+    </tr></thead>
+    <tbody>
+      {% for w in vm.rows %}
+        {% set price = vm.watchlist_last_prices.get(w.ticker) %}
+        {% set tags = vm.flag_tags.get(w.ticker, ()) %}
+        {% include "partials/watchlist_row.html.j2" %}
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}
