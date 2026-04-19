@@ -81,6 +81,7 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
     app.state.cfg_path = cfg_path
     app.state.price_cache = PriceCache(cfg)
     app.state.templates_dir = _templates_dir()
+    app.state.templates = Jinja2Templates(directory=str(app.state.templates_dir))
 
     # Origin guard for all state-changing requests.
     app.add_middleware(

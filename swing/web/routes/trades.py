@@ -21,7 +21,6 @@ from swing.trades.entry import (
     SoftWarnException, record_entry,
 )
 from swing.trades.equity import current_equity
-from swing.web.routes.dashboard import _templates
 from swing.web.view_models.dashboard import build_dashboard
 from swing.web.view_models.open_positions_row import build_open_positions_row
 from swing.web.view_models.trades import build_entry_form_vm, build_exit_form_vm, build_stop_form_vm
@@ -54,7 +53,7 @@ def sizing_hint(
       - SizingResult(feasible=False) → dim fragment with the specific reason.
       - Any unexpected exception → caught, logged WARNING, dim fallback fragment.
     """
-    templates = _templates(request)
+    templates = request.app.state.templates
     cfg = request.app.state.cfg
     entry = _parse_optional_float(entry_price)
     stop = _parse_optional_float(initial_stop)
@@ -110,7 +109,7 @@ def entry_form(request: Request, ticker: str):
     cfg = request.app.state.cfg
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
-    templates = _templates(request)
+    templates = request.app.state.templates
     vm = build_entry_form_vm(ticker=ticker, cfg=cfg, cache=cache, executor=executor)
     return templates.TemplateResponse(
         request, "partials/trade_entry_form.html.j2", {"vm": vm},
@@ -134,7 +133,7 @@ def entry_post(
     cfg = request.app.state.cfg
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
-    templates = _templates(request)
+    templates = request.app.state.templates
 
     req = EntryRequest(
         ticker=ticker.upper(),
@@ -272,7 +271,7 @@ def exit_form(request: Request, trade_id: int):
     cfg = request.app.state.cfg
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
-    templates = _templates(request)
+    templates = request.app.state.templates
     vm = build_exit_form_vm(trade_id=trade_id, cfg=cfg, cache=cache, executor=executor)
     if vm is None:
         raise HTTPException(status_code=404, detail=f"Trade #{trade_id} not found or not open")
@@ -295,7 +294,7 @@ def exit_post(
     cfg = request.app.state.cfg
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
-    templates = _templates(request)
+    templates = request.app.state.templates
 
     # Validate reason.
     try:
@@ -369,7 +368,7 @@ def exit_post(
 @router.get("/trades/{trade_id}/stop/form", response_class=HTMLResponse)
 def stop_form(request: Request, trade_id: int):
     cfg = request.app.state.cfg
-    templates = _templates(request)
+    templates = request.app.state.templates
     vm = build_stop_form_vm(trade_id=trade_id, cfg=cfg)
     if vm is None:
         raise HTTPException(status_code=404, detail=f"Trade #{trade_id} not found or not open")
@@ -384,7 +383,7 @@ def trade_cancel(request: Request, trade_id: int):
     cfg = request.app.state.cfg
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
-    templates = _templates(request)
+    templates = request.app.state.templates
 
     conn = connect(cfg.paths.db_path)
     try:
@@ -411,7 +410,7 @@ def stop_post(
     cfg = request.app.state.cfg
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
-    templates = _templates(request)
+    templates = request.app.state.templates
 
     req = StopAdjustRequest(
         trade_id=trade_id, new_stop=new_stop, rationale=rationale,

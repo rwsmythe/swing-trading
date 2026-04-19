@@ -75,3 +75,12 @@ def test_create_app_origin_guard_strict_rejects_referer_only_post(test_cfg):
     )
     assert r.status_code == 403
     assert "strict" in r.text.lower()
+
+
+def test_app_state_templates_is_jinja2templates(test_cfg):
+    """Spec §3.3 / decision #6: Jinja2Templates instance lives on app.state.templates,
+    built once at startup. Routes must read it via request.app.state.templates."""
+    from fastapi.templating import Jinja2Templates
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+    assert isinstance(app.state.templates, Jinja2Templates)

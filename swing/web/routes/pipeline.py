@@ -14,7 +14,6 @@ from swing.data.db import connect
 from swing.data.repos.pipeline import find_active_run, find_run
 from swing.data.repos.trades import list_open_trades
 from swing.data.repos.watchlist import list_active_watchlist
-from swing.web.routes.dashboard import _templates
 from swing.web.view_models.dashboard import _sort_by_proximity, build_dashboard
 from swing.web.view_models.pipeline import build_pipeline
 
@@ -27,7 +26,7 @@ log = logging.getLogger(__name__)
 def pipeline_page(request: Request):
     cfg = request.app.state.cfg
     vm = build_pipeline(cfg=cfg)
-    return _templates(request).TemplateResponse(
+    return request.app.state.templates.TemplateResponse(
         request, "pipeline.html.j2", {"vm": vm},
     )
 
@@ -36,7 +35,7 @@ def pipeline_page(request: Request):
 def pipeline_run(request: Request):
     cfg = request.app.state.cfg
     cfg_path = request.app.state.cfg_path
-    templates = _templates(request)
+    templates = request.app.state.templates
 
     if cfg_path is None:
         return HTMLResponse(
@@ -142,7 +141,7 @@ def pipeline_run(request: Request):
 @router.get("/pipeline/status/{run_id}", response_class=HTMLResponse)
 def pipeline_status(request: Request, run_id: int):
     cfg = request.app.state.cfg
-    templates = _templates(request)
+    templates = request.app.state.templates
     conn = connect(cfg.paths.db_path)
     try:
         run = find_run(conn, run_id)
@@ -162,7 +161,7 @@ def prices_refresh(request: Request):
     cfg = request.app.state.cfg
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
-    templates = _templates(request)
+    templates = request.app.state.templates
 
     # Collect active tickers.
     conn = connect(cfg.paths.db_path)
