@@ -78,7 +78,7 @@ Files touched (full list):
 - **Phase 2 carve-out (1):** `swing/trades/advisory.py`.
 - **New modules (2):** `swing/pipeline/ohlcv.py`, `swing/web/ohlcv_cache.py`.
 - **Phase 3 route updates (3):** `swing/web/routes/dashboard.py`, `swing/web/routes/trades.py`, `swing/web/routes/pipeline.py`.
-- **Phase 3 view-model updates (5):** `swing/web/view_models/dashboard.py` (OHLCV plumb + DashboardVM.ohlcv_source_degraded), `open_positions_row.py` (accepts ohlcv_cache), `pipeline.py` (PipelineVM.ohlcv_source_degraded), `journal.py` (JournalVM.ohlcv_source_degraded=False default), `watchlist.py` (WatchlistVM.ohlcv_source_degraded=False default), plus `error.py` (PageErrorVM.ohlcv_source_degraded=False default).
+- **Phase 3 view-model updates (6):** `swing/web/view_models/dashboard.py` (OHLCV plumb + DashboardVM.ohlcv_source_degraded), `open_positions_row.py` (accepts ohlcv_cache), `pipeline.py` (PipelineVM.ohlcv_source_degraded), `journal.py` (JournalVM.ohlcv_source_degraded=False default), `watchlist.py` (WatchlistVM.ohlcv_source_degraded=False default), `error.py` (PageErrorVM.ohlcv_source_degraded=False default).
 - **Phase 3 template update (1):** `swing/web/templates/base.html.j2` gains the conditional OHLCV-degraded banner.
 - **Wiring (3):** `swing/web/app.py` (app.state.ohlcv_cache), `swing/cli.py` (--sma50, --previous-close), `swing/config.py` (two new Web fields).
 
@@ -520,8 +520,9 @@ Regression-guard the shared base-template surface (R3 Major 2). For each non-das
 - `GET /journal` — `JournalVM.ohlcv_source_degraded` must default to `False`; page renders without `UndefinedError`.
 - `GET /watchlist` — `WatchlistVM` same.
 - Error-page branch: force a `RequestValidationError` that triggers the Phase 3c full-page 400 path — `PageErrorVM.ohlcv_source_degraded` must default to `False`; page renders.
+- `GET /pipeline` with a test-double `OhlcvCache.is_degraded()` → True — assert the degraded banner renders and `PipelineVM.ohlcv_source_degraded == True`. Mirror test with `is_degraded()` → False → banner absent. Directly guards the R4 Major 1 integration seam (route computes flag, passes to `build_pipeline`, VM carries into template).
 
-This closes the class of bug where a base-template addition breaks unrelated routes because a VM didn't gain the new field.
+This closes the class of bug where a base-template addition breaks unrelated routes because a VM didn't gain the new field, AND pins the pipeline-route pass-through contract so future refactors can't silently drop it.
 
 ### 5.6 Target test count
 
