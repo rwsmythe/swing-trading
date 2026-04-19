@@ -71,7 +71,16 @@ swing/
                                     #   Web.max_concurrent_ohlcv_fetches = 4 (see §3.2).
 ```
 
-Ten files touched: one Phase 2 carve-out (`swing/trades/advisory.py`), two new modules (`swing/pipeline/ohlcv.py`, `swing/web/ohlcv_cache.py`), two route updates to thread the new cache, two view-model updates, plus `app.py`, `cli.py`, and `config.py`. Existing integration tests for the dashboard and trade-action POST handlers will need their fixtures updated to pass a test double for `ohlcv_cache`.
+Files touched (full list):
+
+- **Phase 2 carve-out (1):** `swing/trades/advisory.py`.
+- **New modules (2):** `swing/pipeline/ohlcv.py`, `swing/web/ohlcv_cache.py`.
+- **Phase 3 route updates (2):** `swing/web/routes/dashboard.py`, `swing/web/routes/trades.py`.
+- **Phase 3 view-model updates (5):** `swing/web/view_models/dashboard.py` (OHLCV plumb + DashboardVM.ohlcv_source_degraded), `open_positions_row.py` (accepts ohlcv_cache), `pipeline.py` (PipelineVM.ohlcv_source_degraded), `journal.py` (JournalVM.ohlcv_source_degraded=False default), `watchlist.py` (WatchlistVM.ohlcv_source_degraded=False default), plus `error.py` (PageErrorVM.ohlcv_source_degraded=False default).
+- **Phase 3 template update (1):** `swing/web/templates/base.html.j2` gains the conditional OHLCV-degraded banner.
+- **Wiring (3):** `swing/web/app.py` (app.state.ohlcv_cache), `swing/cli.py` (--sma50, --previous-close), `swing/config.py` (two new Web fields).
+
+Total: **15 files** (1 carve-out + 2 new modules + 12 modifications). The earlier "ten files" count under-reported by omitting the shared-base-template VM surface — R3 review correctly flagged this. Existing dashboard and trade-action integration tests will need fixtures updated to pass a test double for `ohlcv_cache`.
 
 ### 2.2 Design invariants
 
@@ -286,7 +295,9 @@ class OhlcvCache:
 
 Storage is in-memory per app instance. TTL from `cfg.web.ohlcv_cache_ttl_seconds` (default 3600s). No persistence across restarts (intentional — yfinance fetch is cheap enough, and memory cache avoids stale-on-disk issues).
 
-**Executor-starvation guard:** `OhlcvCache` bounds its own concurrent submissions to the shared `price_fetch_executor` via an internal `threading.Semaphore(cfg.web.max_concurrent_ohlcv_fetches)` (default 4). Rationale: a first page load with 20 open positions would otherwise queue 20 OHLCV fetches onto an 8-slot executor, starving live-price fetches (existing PriceCache documents executor saturation as an accepted limitation at [swing/web/price_cache.py:236-251](../../../swing/web/price_cache.py#L236-L251); Phase 3d's OHLCV workload is slower and longer-holding, so it would amplify the risk). Capping OHLCV at 4 of 8 slots leaves ≥ 4 slots free for live quotes in the worst case. Steady-state is a non-issue (1h TTL → near-zero fetches); the cap only matters on cold start and hourly refresh.
+**Executor-starvation guard:** `OhlcvCache` bounds its own concurrent submissions via an internal `threading.Semaphore(cfg.web.max_concurrent_ohlcv_fetches)`. The default is `8` — the full executor size — on the theory that the **sequential top-level call pattern** (§2.2) already separates OHLCV and price fetches in time, so there is no live-quote starvation to guard against: by the time `ohlcv_cache.get_many_bundles(...)` runs, `cache.get_many(...)` has already returned and released every slot it held. The semaphore remains in the design as a configurable defensive cap for operators who want a tighter bound (e.g., running a second unrelated workload on the same executor), but the default `8` eliminates the artificial queue backlog that would otherwise inflate deadline misses.
+
+**Queue-multiplier math.** With 8 slots and 20 open positions on a cold cache, per-ticker fetches queue roughly `ceil(20/8) = 3` deep. A healthy-but-slow yfinance taking 2s/fetch completes the last ticker in ~6s — inside the default 6s deadline. For portfolios beyond ~30 open positions, operators should raise `price_fetch_deadline_seconds` or accept that some row's SMA advisories will land on the next render (once the TTL-populated cache is warm). The design does NOT attempt to distinguish "queue-wait deadline miss" from "execution-time deadline miss" in the breaker window — YAGNI; with the cap raised, the queue-wait pathology flagged in R3 review is not reachable in realistic operation.
 
 **Circuit breaker:** mirrors `PriceCache`'s sliding-window mechanism (see [swing/web/price_cache.py:207-219](../../../swing/web/price_cache.py#L207-L219)) — trips when the failure fraction over the recent-calls window exceeds 50%. Cooldown uses `cfg.web.circuit_breaker_cooldown_seconds` (reuses the existing knob — no separate `ohlcv_circuit_breaker_cooldown_seconds` is YAGNI). `reset_circuit_breaker()` exists so a future `/ohlcv/refresh` can force-reset; Phase 3d's `/prices/refresh` is NOT extended to touch the OHLCV breaker (see §4.5).
 
@@ -341,7 +352,7 @@ def compute_all_suggestions(trade: Trade, ctx: AdvisoryContext) -> list[Advisory
 
 ### 3.4 `swing/web/view_models/dashboard.py` + `open_positions_row.py`
 
-Both change in the same way: after `price_cache.get_many`, add a parallel `ohlcv_cache.get_many_bundles` call. Plumb the per-ticker bundle into the existing `AdvisoryContext` construction. No template changes — the existing `advisories` list in `OpenPositionsRowVM` just has more entries when SMAs are present.
+Both change in the same way: after `price_cache.get_many`, add a sequential `ohlcv_cache.get_many_bundles` call (each internally parallelizes per-ticker fetches across the executor; the two top-level calls themselves run back-to-back on the request thread — see §2.2 rationale). Plumb the per-ticker bundle into the existing `AdvisoryContext` construction. Open-positions-row template is unchanged; the new degraded-OHLCV banner lives in the shared base layout — see the "Template / view-model surface changes" subsection below.
 
 Concretely in `dashboard.py` — sequential call on the request thread, each cache's `get_many(...)` internally parallelizes across `price_fetch_executor`:
 
@@ -381,8 +392,15 @@ Worst-case cold-cache latency is `2 × deadline_seconds` (default 12s). On any w
 
 **Template / view-model surface changes in §3.4 scope:**
 
-- `base.html.j2` (or the dashboard template) gains a conditional render for the OHLCV-degraded banner (§6) — driven by a new `vm.ohlcv_source_degraded: bool` field on `DashboardVM` and `PipelineVM` (wherever the base layout dereferences it; see Phase 3c's `PageErrorVM` precedent). The `_build_templates` autoescape guarantee (Phase 3c) still applies.
+- `base.html.j2` gains a conditional render for the OHLCV-degraded banner (§6) — driven by a new `vm.ohlcv_source_degraded: bool` field. Because the base template is shared across **every** page that extends it, EVERY base-layout VM must gain the field (defaulted to `False`) or Jinja will 500 the page with `UndefinedError` on an unrelated route. Per Phase 3c's `PageErrorVM` precedent, we enumerate the full base-layout VM set:
+  - `swing/web/view_models/dashboard.py::DashboardVM` — populates `ohlcv_source_degraded` from `ohlcv_cache.is_degraded()`.
+  - `swing/web/view_models/pipeline.py::PipelineVM` — populates `ohlcv_source_degraded` from `ohlcv_cache.is_degraded()`.
+  - `swing/web/view_models/journal.py::JournalVM` — defaults to `False` (journal route doesn't consult OHLCV).
+  - `swing/web/view_models/watchlist.py::WatchlistVM` — defaults to `False`.
+  - `swing/web/view_models/error.py::PageErrorVM` — defaults to `False` (error pages never show OHLCV banner).
+  Adding a `bool = False` field to each frozen dataclass is mechanically trivial; `build_*` functions stay simple (default is correct for non-dashboard/non-pipeline pages).
 - Open-positions row template unchanged — extra advisories just render into the existing `advisories` list.
+- `_build_templates` autoescape guarantee (Phase 3c) still applies to the new banner markup.
 
 ### 3.5 `swing/web/app.py` startup
 
@@ -420,7 +438,7 @@ Pure additive CLI change. Operators invoking the CLI without the new flags see S
 class Web:
     # ... existing fields ...
     ohlcv_cache_ttl_seconds: int = 3600          # NEW: 1h default
-    max_concurrent_ohlcv_fetches: int = 4        # NEW: executor-starvation guard (§3.2)
+    max_concurrent_ohlcv_fetches: int = 8        # NEW: defensive cap = full executor (§3.2)
 ```
 
 Two new fields. No changes to `StopAdvisoryConfig`.
@@ -493,11 +511,21 @@ Monkeypatch `swing.pipeline.ohlcv.fetch_daily_bars` to return synthetic DataFram
 
 Monkeypatch `OhlcvCache.get_many_bundles` to return canned bundles; assert the SMA advisories render in the open-positions row. Cover: bundle with all three SMAs → EXIT advisories appear; bundle with all None (deadline miss) → advisories absent; partial bundle (SMA10 only) → only 10MA advisories visible.
 
-### 5.5 Target test count
+### 5.5 `tests/web/test_base_layout_compat.py` (new, ~3 tests)
 
-Phase 3c baseline: 444 fast tests. Phase 3d adds ~16-20 new tests → target ~460 fast tests. The existing Phase 3a/3b/3c tests must remain green.
+Regression-guard the shared base-template surface (R3 Major 2). For each non-dashboard page that extends `base.html.j2`, render the page against a test `create_app(...)` and assert status 200 + `<html>` body. Pages to cover explicitly:
 
-### 5.6 No live yfinance in the fast suite
+- `GET /journal` — `JournalVM.ohlcv_source_degraded` must default to `False`; page renders without `UndefinedError`.
+- `GET /watchlist` — `WatchlistVM` same.
+- Error-page branch: force a `RequestValidationError` that triggers the Phase 3c full-page 400 path — `PageErrorVM.ohlcv_source_degraded` must default to `False`; page renders.
+
+This closes the class of bug where a base-template addition breaks unrelated routes because a VM didn't gain the new field.
+
+### 5.6 Target test count
+
+Phase 3c baseline: 444 fast tests. Phase 3d adds ~20-24 new tests (including the §5.5 base-layout compat suite) → target ~465 fast tests. The existing Phase 3a/3b/3c tests must remain green.
+
+### 5.7 No live yfinance in the fast suite
 
 All OHLCV-dependent tests either (a) use canned pandas DataFrames or (b) monkeypatch `fetch_daily_bars` / `OhlcvCache.get_many_bundles`. The `slow` marker exists for any end-to-end yfinance smoke tests; they are not Phase 3d scope.
 
