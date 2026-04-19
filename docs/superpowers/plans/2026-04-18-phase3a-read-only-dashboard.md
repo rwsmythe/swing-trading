@@ -878,6 +878,13 @@ class PriceCache:
     def _fetch_live_price(self, ticker: str) -> float:
         """Live yfinance call with an enforced per-ticker timeout.
 
+        **Call context invariant** (R4 Minor 2): `_fetch_live_price` is
+        ONLY invoked from `_fetch_with_fallback` during market hours (the
+        `if not self.market_hours_now()` branch short-circuits to last-close
+        BEFORE this method runs). Out-of-hours bars from `yf.download` are
+        therefore never returned to the dashboard; the market-hours gate
+        is the authoritative session-boundary check.
+
         `yfinance.Ticker(t).fast_info` does NOT accept a `timeout` kwarg and
         can hang indefinitely. `yfinance.download(...)` DOES propagate
         `timeout=` through to the underlying requests session.
@@ -1236,6 +1243,33 @@ Replace the circuit-breaker placeholder section (`_record_outcome`) with:
         with self._lock:
             self._failure_window.clear()
             self._degraded_until = None
+
+    # ---------- accepted limitation: executor saturation ----------
+    #
+    # Python threads cannot be forcibly killed (R4 Major 1). If yfinance's
+    # own timeout fails to unwind (e.g., socket stuck in kernel-level
+    # SYN-SENT), the corresponding executor worker remains occupied until
+    # the OS socket timeout eventually trips (typically 30–60s). Under a
+    # sustained stall, all `max_concurrent_price_fetches=8` workers can
+    # end up holding stuck tasks simultaneously.
+    #
+    # Mitigations designed in:
+    #   1. Shared executor caps worst-case occupied threads at 8 — prevents
+    #      unbounded growth.
+    #   2. Circuit breaker trips after ~11/20 failures + 60s cooldown
+    #      during which `get_many` short-circuits WITHOUT submitting
+    #      anything to the executor → stuck threads get time to unwind.
+    #   3. `executor.shutdown(wait=False, cancel_futures=True)` in the
+    #      FastAPI lifespan releases queued tasks at shutdown; in-flight
+    #      threads die with the uvicorn process.
+    #
+    # Practical worst case: 8 fetches go stale simultaneously AND the
+    # breaker does not trip (e.g. alternating successes and failures).
+    # Each page load then waits up to `price_fetch_deadline_seconds`=6s
+    # before falling back to last-close. This is accepted — the
+    # alternatives (process-level worker pool, async rewrite) are out
+    # of scope for the localhost single-user Phase 3a tool. Operator
+    # recovery: restart `swing web` → executor is recreated.
 
     # ---------- batch API ----------
 
@@ -1946,19 +1980,18 @@ def build_dashboard(*, cfg: Config, cache: PriceCache, executor) -> DashboardVM:
     weather_status_str = weather.status if weather else "STALE"
     for t in open_trades:
         # Persisted open trades always have an id (the DB assigns via
-        # INSERT). A missing id would indicate a data-integrity bug in
-        # list_open_trades — skip such rows rather than coerce to 0,
-        # which would cause distinct trades to collide at key 0 (R3
-        # Major 2). If we ever see this in production, the missing
-        # advisory is a visible symptom; hiding it via `or 0` would be
-        # a silent merge.
-        if t.id is None:
-            log.warning(
-                "dashboard: skipping advisory for open trade with id=None "
-                "(ticker=%s, entry_date=%s). Data-integrity probe.",
-                t.ticker, t.entry_date,
-            )
-            continue
+        # INSERT). A missing id is a data-integrity bug in
+        # list_open_trades and must NOT be silently masked — the
+        # dashboard would show mismatched advisories or drop entire
+        # rows without explanation. Crash-fast via assertion; the
+        # FastAPI exception handler renders a 500 with a request_id
+        # the operator can grep in web.log (R4 Major 2). Coercion to
+        # 0 (R3 Major 2) and silent skip (also R3 Major 2) are both
+        # inferior to crash-fast for a "should never happen" invariant.
+        assert t.id is not None, (
+            f"open trade {t.ticker} has id=None — data-integrity bug in "
+            f"list_open_trades; dashboard cannot render advisories reliably"
+        )
         snap = open_trade_last_prices.get(t.ticker)
         if snap is None:
             continue
