@@ -74,4 +74,7 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
     )
     app.mount("/static", StaticFiles(directory=_static_dir()), name="static")
 
+    from swing.web.routes import dashboard as dashboard_route
+    app.include_router(dashboard_route.router)
+
     return app
