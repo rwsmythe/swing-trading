@@ -1,0 +1,33 @@
+<section class="open-positions">
+  <h2>Open positions</h2>
+  {% if not vm.open_trades %}
+    <p class="empty">No open positions.</p>
+  {% else %}
+    <table>
+      <thead><tr>
+        <th>Ticker</th><th>Entry</th><th>Current stop</th><th>Last</th><th>Advisory</th>
+      </tr></thead>
+      <tbody>
+        {% for t in vm.open_trades %}
+          {% set snap = vm.open_trade_last_prices.get(t.ticker) %}
+          <tr>
+            <td>{{ t.ticker }}</td>
+            <td>${{ '%.2f' | format(t.entry_price) }}</td>
+            <td>${{ '%.2f' | format(t.current_stop) }}</td>
+            <td>
+              {% if snap %}
+                ${{ '%.2f' | format(snap.price) }}
+                {% if snap.is_stale %}<span class="stale">(stale)</span>{% endif %}
+              {% else %}—{% endif %}
+            </td>
+            <td>
+              {% for s in vm.open_trade_advisories.get(t.id, []) %}
+                <div>{{ s.message }}</div>
+              {% endfor %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</section>

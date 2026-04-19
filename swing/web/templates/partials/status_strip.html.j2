@@ -1,0 +1,26 @@
+{#- status_strip — three tiles + run-now button -#}
+<div class="tile" id="weather-tile">
+  <div class="label">Weather</div>
+  <div class="value">{{ vm.status_strip.weather_status }}</div>
+  <div class="rationale">{{ vm.status_strip.weather_rationale }}</div>
+</div>
+<div class="tile" id="account-tile">
+  <div class="label">Account</div>
+  <div class="value">${{ '%.0f' | format(vm.status_strip.equity) }}</div>
+  <div class="rationale">
+    {{ vm.status_strip.open_count }} / {{ vm.status_strip.soft_warn }}
+    (hard cap {{ vm.status_strip.hard_cap }})
+  </div>
+</div>
+<div class="tile" id="pipeline-tile">
+  <div class="label">Last pipeline</div>
+  <div class="value">{{ vm.status_strip.last_pipeline_ts or "never" }}</div>
+  <div class="rationale">
+    state: {{ vm.status_strip.last_pipeline_state or "—" }}
+    <button hx-post="/pipeline/run" hx-target="#run-panel"
+            hx-swap="innerHTML" hx-headers='{"HX-Request": "true"}'>
+      Run now
+    </button>
+  </div>
+</div>
+<div id="run-panel"></div>

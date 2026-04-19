@@ -1,0 +1,35 @@
+{#- swing/web/templates/dashboard.html.j2 -#}
+{% extends "base.html.j2" %}
+{% block content %}
+  <div id="status-strip">
+    {% include "partials/status_strip.html.j2" %}
+  </div>
+  <div id="today-decisions">
+    {% include "partials/today_decisions.html.j2" %}
+  </div>
+  <div id="open-positions">
+    {% include "partials/open_positions.html.j2" %}
+  </div>
+  <section id="watchlist-top5">
+    <h2>Watchlist — near trigger</h2>
+    <table class="watchlist">
+      <thead><tr>
+        <th></th><th>Ticker</th><th>Last</th><th>Pivot</th><th>% to pivot</th><th>ADR</th><th>Tags</th>
+      </tr></thead>
+      <tbody>
+        {% for w in vm.watchlist_top5 %}
+          {% set price = vm.watchlist_last_prices.get(w.ticker) %}
+          {% set tags = vm.flag_tags.get(w.ticker, ()) %}
+          {% include "partials/watchlist_row.html.j2" %}
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if vm.watchlist_remaining_count > 0 %}
+      <a href="/watchlist">Show all ({{ vm.watchlist_remaining_count + 5 }})</a>
+    {% endif %}
+  </section>
+  <footer class="price-refresh">
+    Prices {{ vm.prices_generated_at }}
+    <button hx-post="/prices/refresh" hx-swap="none" hx-headers='{"HX-Request": "true"}'>Refresh now</button>
+  </footer>
+{% endblock %}

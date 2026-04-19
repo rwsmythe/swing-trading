@@ -1,0 +1,6 @@
+<div class="banner banner-degraded">
+  Live price fetch disabled — upstream outage; showing last close
+  {% if vm.price_source_degraded_until %}
+    until {{ vm.price_source_degraded_until }}
+  {% endif %}
+</div>

@@ -1,0 +1,22 @@
+{#- Expects: w (WatchlistEntry), price (PriceSnapshot|None), tags (tuple[str]) -#}
+<tr hx-get="/watchlist/{{ w.ticker }}/expand" hx-swap="outerHTML"
+    hx-headers='{"HX-Request": "true"}'>
+  <td>
+    {% if price and w.entry_target and price.price >= w.entry_target * 0.99 %}⚡{% endif %}
+  </td>
+  <td>{{ w.ticker }}</td>
+  <td>
+    {% if price %}
+      ${{ '%.2f' | format(price.price) }}
+      {% if price.is_stale %}<span class="stale">(stale)</span>{% endif %}
+    {% else %}—{% endif %}
+  </td>
+  <td>${{ '%.2f' | format(w.entry_target or 0) }}</td>
+  <td>
+    {% if price and w.entry_target %}
+      {{ '%.1f' | format(((price.price - w.entry_target) / w.entry_target) * 100) }}%
+    {% else %}—{% endif %}
+  </td>
+  <td>{{ '%.2f' | format(w.last_adr_pct or 0) }}</td>
+  <td>{{ tags | join(' · ') }}</td>
+</tr>

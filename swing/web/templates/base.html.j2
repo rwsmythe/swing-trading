@@ -1,0 +1,28 @@
+{#- swing/web/templates/base.html.j2 -#}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Swing Trading Dashboard</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js"></script>
+</head>
+<body>
+  <nav class="topbar">
+    <span class="date">{{ vm.session_date }}</span>
+    <a href="/">Dashboard</a>
+    <a href="/watchlist">Watchlist</a>
+    <a href="/journal">Journal</a>
+    <a href="/pipeline">Pipeline</a>
+  </nav>
+  {% if vm.stale_banner %}
+    {% include "partials/stale_banner.html.j2" %}
+  {% endif %}
+  {% if vm.price_source_degraded %}
+    {% include "partials/price_degraded_banner.html.j2" %}
+  {% endif %}
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>
