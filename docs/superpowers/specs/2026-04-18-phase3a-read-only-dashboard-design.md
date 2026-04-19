@@ -30,9 +30,11 @@ All new code under `swing/web/`. The Phase 2 foundation — `swing.data.*`, `swi
 
 ```
 swing/web/
-├── app.py                  # FastAPI factory, static mount, router includes
+├── app.py                  # FastAPI factory, static mount, router includes, lifespan hooks
 ├── cli_cmd.py              # invoked by `swing web` CLI subcommand
-├── price_cache.py          # in-memory TTL cache + market-hours gate + 3s per-ticker timeout
+├── price_cache.py          # TTL cache + market-hours gate + shared executor + circuit breaker
+├── middleware/
+│   └── origin_guard.py     # HX-Request / Origin / Referer accepted-header matrix
 ├── routes/
 │   ├── __init__.py
 │   ├── dashboard.py        # GET /
@@ -60,6 +62,7 @@ swing/web/
 │       ├── watchlist_expanded.html.j2
 │       ├── pipeline_progress.html.j2
 │       ├── prices_refresh_container.html.j2
+│       ├── price_degraded_banner.html.j2   # circuit-breaker visibility
 │       └── error_fragment.html.j2
 └── static/
     ├── htmx.min.js         # vendored; HTMX 2.x
@@ -245,13 +248,12 @@ The primary bound is thus the **yfinance-level per-ticker timeout**, which the i
 
 **Cross-request capacity protection** (Round 3 Major 1). A per-request `ThreadPoolExecutor` stacks threads under sustained upstream outage: 10 page loads × 8 workers during a yfinance timeout regression = 80 blocked threads. The cache therefore uses:
 
-1. **A single shared executor on `app.state.price_fetch_executor`** with `max_workers=cfg.web.max_concurrent_price_fetches` (default 8). `get_many` submits to this executor rather than creating its own. Excess submitted tasks queue (bounded by workers); worst case is slow response, not unbounded thread growth.
-2. **A circuit breaker in `PriceCache`.** A class-level `_failure_window: deque[bool]` tracks the last `N = 20` fetch outcomes. If the fraction of failures in the window exceeds 0.5, the cache enters **degraded mode** for `cfg.web.circuit_breaker_cooldown_seconds` (default 60s): during degraded mode, ALL `get()` / `get_many()` calls skip live fetch entirely and return last-close `PriceSnapshot(is_stale=True, source="last_close")`. Templates render a "degraded" badge alongside the existing stale indicators. On cooldown expiry the next fetch attempt is allowed; on success the window resets. This provides a bounded-noise recovery: when yfinance is out, we cost one failed fetch per 60s instead of 8 per page load.
-3. Template-visible indicator: the `degraded` state surfaces via a dashboard banner ("Live price fetch disabled — upstream outage; showing last close until HH:MM").
+1. **A single shared executor** stored on `app.state.price_fetch_executor` with `max_workers=cfg.web.max_concurrent_price_fetches` (default 8). Lifecycle: created in `create_app`, shut down with `wait=False, cancel_futures=True` in the FastAPI lifespan shutdown hook — avoids leaked worker threads in tests or uvicorn reload cycles. `get_many` submits to this executor rather than creating its own. Excess submissions queue (bounded by workers); worst case is slow response, not unbounded thread growth.
+2. **A circuit breaker — instance-scoped on `PriceCache`** (Round 4 Minor 2; NOT class-level, so multiple app instances in the same process — e.g. test matrix — are isolated). Instance attributes `self._failure_window: deque[bool]` (maxlen=20), `self._degraded_until: float | None` (monotonic timestamp). If failure fraction > 0.5 over the last 20 outcomes, `_degraded_until = monotonic() + cooldown`: all `get()` / `get_many()` calls skip live fetch entirely and return last-close `PriceSnapshot(is_stale=True, source="last_close")` until the cooldown expires. Success during cooldown expiry resets the window.
+3. **Thread safety for breaker state** (Round 4 Minor 1): the SAME `self._lock` that guards `_cache` also guards `_failure_window` and `_degraded_until` — executor worker threads record outcomes and request threads read the degraded flag under the same lock. No separate synchronization primitive needed.
+4. **Degraded-mode VM field** (Round 4 Minor 3): `DashboardVM` (and `WatchlistVM`) gain `price_source_degraded: bool` and `price_source_degraded_until: str | None` (ISO timestamp for display). Templates render a dedicated degraded-banner partial (`partials/price_degraded_banner.html.j2`) separately from the pipeline stale-banner (`stale_banner`). The two states are orthogonal and must not be conflated.
 
 Two new `[web]` config fields: `max_concurrent_price_fetches` (default 8), `circuit_breaker_cooldown_seconds` (default 60).
-
-Thread-safe: `threading.Lock` guards the dict AND the circuit-breaker window under concurrent reads. The cache can be accessed from request-handling threads concurrently (multiple browser tabs). No background refresh thread in 3a.
 
 ### 3.3 `swing/web/view_models/<page>.py`
 
@@ -283,6 +285,8 @@ class DashboardVM:
                                             # watchlist ticker → latest candidates.criteria results.
     candidates_by_ticker: Mapping[str, Candidate]
     prices_generated_at: str                # for "refreshed 45s ago" badge
+    price_source_degraded: bool             # True during circuit-breaker cooldown
+    price_source_degraded_until: str | None # ISO timestamp when degraded mode ends
 ```
 
 `WatchlistVM` mirrors the same `watchlist_last_prices` + `flag_tags` naming. `JournalVM` and `PipelineVM` do not need live-price fields.
@@ -316,6 +320,7 @@ Partial filenames:
 - `pipeline_progress.html.j2` — swap-polled progress panel.
 - `prices_refresh_container.html.j2` — contains `<div hx-swap-oob="true">` elements for each swap target.
 - `error_fragment.html.j2` — inline error block for HTMX response bodies.
+- `price_degraded_banner.html.j2` — surfaces circuit-breaker degraded mode; rendered separately from the pipeline-stale banner. The two states are orthogonal.
 
 ---
 
