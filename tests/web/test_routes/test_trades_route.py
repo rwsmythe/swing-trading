@@ -116,3 +116,60 @@ def test_get_entry_form_renders(seeded_db, monkeypatch):
     assert "180.95" in r.text
     # Initial stop prefilled from watchlist.
     assert "170.00" in r.text
+
+
+def test_post_entry_success_emits_row_and_oobs(seeded_db, monkeypatch):
+    """POST /trades/entry success → primary row + #status-strip OOB + #watchlist-top5 OOB."""
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="AAPL", added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: PriceSnapshot(
+                ticker=t, price=180.95, asof=datetime.now(),
+                is_stale=False, source="live",
+            ) for t in tickers
+        })
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data={
+                "ticker": "AAPL",
+                "entry_date": "2026-04-18",
+                "entry_price": "180.95",
+                "shares": "5",
+                "initial_stop": "170.00",
+                "rationale": "A+ entry",
+            },
+        )
+    assert r.status_code == 200
+    # Primary target: a new open-position row with id.
+    assert "open-position-" in r.text
+    assert "AAPL" in r.text
+    # OOB fragments present.
+    assert "hx-swap-oob" in r.text
+    assert 'id="status-strip"' in r.text
+    assert 'id="watchlist-top5"' in r.text
