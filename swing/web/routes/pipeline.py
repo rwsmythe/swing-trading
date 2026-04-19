@@ -32,7 +32,8 @@ log = logging.getLogger(__name__)
 @router.get("/pipeline", response_class=HTMLResponse)
 def pipeline_page(request: Request):
     cfg = request.app.state.cfg
-    vm = build_pipeline(cfg=cfg)
+    ohlcv_degraded = request.app.state.ohlcv_cache.is_degraded()      # NEW
+    vm = build_pipeline(cfg=cfg, ohlcv_degraded=ohlcv_degraded)       # NEW kwarg
     return request.app.state.templates.TemplateResponse(
         request, "pipeline.html.j2", {"vm": vm},
     )
