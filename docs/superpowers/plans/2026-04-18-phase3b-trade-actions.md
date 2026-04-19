@@ -27,8 +27,11 @@ swing/web/
 ├── templates/
 │   └── partials/
 │       ├── open_positions.html.j2        # MODIFIED: delegates to open_positions_row.html.j2
-│       ├── open_positions_row.html.j2    # NEW: single <tr>; adds Exit + Adjust stop buttons
-│       ├── watchlist_row.html.j2         # MODIFIED: adds Enter button
+│       ├── open_positions_row.html.j2    # NEW (Task 7): single <tr>, row-only contract. Exit
+│       │                                 #               button appended in T13; Adjust-stop
+│       │                                 #               button appended in T15.
+│       ├── watchlist_row.html.j2         # MODIFIED: Enter button appended in T9 after the
+│       │                                 #           entry-form GET route lands
 │       ├── trade_entry_form.html.j2      # NEW
 │       ├── trade_exit_form.html.j2       # NEW
 │       ├── trade_stop_form.html.j2       # NEW
@@ -53,7 +56,9 @@ tests/web/
 │   └── test_trades.py                         # NEW
 ├── test_routes/
 │   └── test_trades_route.py                   # NEW: ~24 tests
-├── test_error_handling.py                     # MODIFIED: 1 new test for HTMX-aware 4xx handler
+├── test_error_handling.py                     # MODIFIED: 3 new tests — HTMX-aware 4xx handler
+│                                               #           + non-/trades validation branch
+│                                               #           + /trades validation branch
 └── test_trades_integration.py                 # NEW: 4 end-to-end tests
 ```
 
