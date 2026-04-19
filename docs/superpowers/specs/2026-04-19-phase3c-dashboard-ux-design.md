@@ -14,6 +14,13 @@
 
 Phase 3a shipped a read-only dashboard. Phase 3b shipped inline HTMX row-swap trade-action forms. Phase 3c wraps up the previously-deferred dashboard UX items plus the two cleanup findings that surfaced during Phase 3b's adversarial Codex review (R3 Major atomicity race, R3 Minor path-aware breadth). Phase 3d will handle the only larger standalone subsystem deferred by 3b: SMA-aware advisories (`trail_ma`, `exit_close_below_ma`) that need on-demand OHLCV→SMA computation.
 
+### 1.3 Scope notes against the original request
+
+The original Phase 3c brainstorm request enumerated seven items, including "CSV upload … validate + trigger pipeline" and "SMA-aware advisories." Two deliberate decompositions happened during the brainstorm Q&A:
+
+- **CSV upload is upload-only** (decision #1, locked below). The user was explicitly presented with A (upload-only), B (upload + auto-run), and C (upload + dropdown); option A was chosen because it preserves the Phase 2 `select_csv` inbox convention and avoids conflating an upload HTTP endpoint with a pipeline-subprocess lifecycle. The "trigger pipeline" half of the original request is already satisfied by the existing `POST /pipeline/run` button (Phase 3a); the user continues to click that button separately after upload.
+- **SMA-aware advisories are deferred to Phase 3d** as a standalone spec cycle. The user explicitly approved the 3c={force-clear, CSV upload, query-param, stop-adjust guard, path-heuristic, _templates} / 3d={SMA advisories} decomposition at the start of this brainstorm. SMA requires its own design pass for OHLCV source, caching strategy, fetch timing, and per-render cost budget — questions that should not share a spec with a force-clear button.
+
 ### 1.1 Threat model inheritance
 
 Phase 3b's §1.1 threat model carries forward unchanged: loopback-only binding, single-operator assumption, HX-Request-required on unsafe methods as defense-in-depth (not cryptographic CSRF). The new POST endpoints in 3c (`/pipeline/csv-upload`, `/pipeline/force-clear/{run_id}`) inherit strict OriginGuard enforcement. No new security boundary is introduced.
@@ -41,7 +48,11 @@ Phase 3b's spec §9.6 locked "Business logic stays in Phase 2; 3b is purely a fo
 
 ```
 swing/web/
-├── app.py                         # MODIFIED: app.state.templates; HX-Target path-aware handlers; full-page 400 branch
+├── app.py                         # MODIFIED: app.state.templates; HX-Target path-aware handlers; full-page 400 branch; MaxBodySizeMiddleware wiring
+├── middleware/
+│   └── body_size.py               # NEW: MaxBodySizeMiddleware — Content-Length pre-read guard for /pipeline/csv-upload
+├── view_models/
+│   └── error.py                   # NEW: PageErrorVM dataclass (base-layout-compatible context for page_error.html.j2)
 ├── routes/
 │   ├── dashboard.py               # MODIFIED: remove _templates helper; use app.state.templates
 │   ├── journal.py                 # MODIFIED: period: Literal[...]; use app.state.templates
@@ -49,6 +60,7 @@ swing/web/
 │   ├── trades.py                  # MODIFIED: use app.state.templates at all call sites
 │   └── watchlist.py               # MODIFIED: use app.state.templates at all call sites
 ├── templates/
+│   ├── base.html.j2               # MODIFIED: add htmx.config override for 4xx response swapping
 │   ├── pipeline.html.j2           # MODIFIED: adds #csv-upload-section and #stale-run-{run_id} regions
 │   ├── page_error.html.j2         # NEW: full-page 400 for non-HTMX GET query-param errors
 │   └── partials/
@@ -81,10 +93,15 @@ swing/config.py                    # MODIFIED: cfg.web.csv_upload_max_bytes (def
 ### 3.1 Routes (new)
 
 **`POST /pipeline/csv-upload`** (multipart/form-data, field `csv`)
-- Safety: strict OriginGuard (HX-Request required), 10MB body limit via config.
-- Save upload to temp file → `validate_csv(path)` → on valid, move to `cfg.paths.finviz_inbox_dir / <sanitized-name>` (overwrite existing same-name file); on invalid, render `csv_upload_error.html.j2` with reasons.
+- Safety: strict OriginGuard (HX-Request required).
+- **Size enforcement:** middleware-based pre-read + route-level safety net.
+  - **Middleware:** new `MaxBodySizeMiddleware` in `swing/web/middleware/body_size.py`, wired in `create_app` alongside `OriginGuardMiddleware`. Applies only to `/pipeline/csv-upload` POSTs (path check). Inspects `Content-Length` header via Starlette's ASGI scope **before** FastAPI's multipart parameter binding runs. If declared size exceeds `cfg.web.csv_upload_max_bytes` (default 10MB), responds 413 with `csv_upload_error.html.j2` and short-circuits. For chunked-transfer requests (no Content-Length), middleware lets them through to the route — a second guard fires there.
+  - **Route-level safety net:** after FastAPI multipart binding populates the `UploadFile`, the route checks `file.size` (Starlette attribute set post-parse). If > limit, responds 413. This catches chunked-transfer uploads that slipped past the header check, at the cost of having already buffered the body to disk (SpooledTemporaryFile spills past ~1MB).
+  - **Rationale for two-layer design:** the threat model (Phase 3b §1.1, inherited) is loopback single-operator — DoS/resource-exhaustion isn't in scope. The middleware is the correct layer for "reject before body-read"; the route-level check is defense-in-depth for edge cases. Trying to bypass FastAPI's multipart parser by reading `request.stream()` in the route would require reimplementing multipart parsing and is rejected as over-engineering.
+- Save upload chunks to a `tempfile.NamedTemporaryFile` → `validate_csv(path)` → on valid, atomically replace `cfg.paths.finviz_inbox_dir / <sanitized-name>`; on invalid, render `csv_upload_error.html.j2` with reasons.
 - Response (200 success): re-rendered `csv_upload_form.html.j2` with inline success banner `"Uploaded: <name> (<N> rows). Run the pipeline when ready."`
-- Response (400 invalid schema or size): `csv_upload_error.html.j2`.
+- Response (400 invalid schema, bad filename): `csv_upload_error.html.j2`.
+- Response (413 oversized): `csv_upload_error.html.j2` with a "file too large" reason.
 - Target swap: `#csv-upload-section` `outerHTML`.
 
 **`GET /pipeline/force-clear/{run_id}/confirm`**
@@ -93,10 +110,10 @@ swing/config.py                    # MODIFIED: cfg.web.csv_upload_max_bytes (def
 - Target swap: `closest section[id^='stale-run-']` `outerHTML`.
 
 **`POST /pipeline/force-clear/{run_id}`**
-- Re-verifies stale-eligibility (guards against race between GET confirm and POST).
-- Calls `force_clear(conn, run_id=run_id, reason="dashboard force clear", bypass_staleness_check=False)`.
-- On success: response replaces the stale-run card with a transient success banner + Run-pipeline button fragment.
-- On `LeaseConflict` or not-stale: 400 fragment.
+- Re-verifies stale-eligibility (guards against TOCTOU between GET confirm and POST). If no longer stale-eligible → 404 HX-Target-aware fragment.
+- Actual Phase 2 signature: `force_clear(conn, *, run_id: int, error_message: str) -> None`. The repo function is a silent UPDATE with `WHERE id = ? AND state = 'running'` — no `reason` kwarg, no `bypass_staleness_check` kwarg, no exception raised if the row is already non-running. **The route owns staleness enforcement**; the repo just performs the state transition.
+- Route behavior: construct `error_message=f"dashboard force clear at {iso_ts}"`, call `force_clear(conn, run_id=run_id, error_message=error_message)`, then re-read the run via `find_run(conn, run_id)` to confirm `state == 'force_cleared'`. If the post-write state is still `'running'` (extreme race — another process wrote between our pre-check and UPDATE with a different state value) → render a 409-style fragment explaining the conflict and advising refresh.
+- On post-write state `'force_cleared'`: response replaces the stale-run card with a transient success banner + Run-pipeline button fragment.
 
 **`GET /pipeline/stale-run-card/{run_id}`**
 - Returns the original `stale_run_card.html.j2` for the run (used by the Cancel button in the confirm fragment). 404 if no longer stale-eligible.
@@ -113,7 +130,45 @@ swing/config.py                    # MODIFIED: cfg.web.csv_upload_max_bytes (def
 
 **`force_clear_confirm.html.j2`** — banner-degraded `<section id="stale-run-{run.id}">` with "Confirm force-clear" warning copy (spec §5.6) + submit form to `POST /pipeline/force-clear/{run.id}` + Cancel button to `GET /pipeline/stale-run-card/{run.id}`.
 
-**`page_error.html.j2`** — full-page HTML error (extends 3a base layout). Expects `status_code`, `detail`. Used for non-HTMX GET validation errors.
+**`page_error.html.j2`** — full-page HTML error (extends 3a base layout). Renders navigation + error banner + `{{ detail }}` message.
+
+**Context compatibility:** the 3a base layout (`base.html.j2`) dereferences `vm.session_date`, `vm.stale_banner`, and `vm.price_source_degraded` on every render. `page_error.html.j2` must be called with a compatible `vm` object or template rendering will raise `UndefinedError` — turning one validation error into a 500. Phase 3c introduces `PageErrorVM` (new frozen dataclass in `swing/web/view_models/error.py`):
+
+```python
+@dataclass(frozen=True)
+class PageErrorVM:
+    session_date: str              # today's action_session_for_run() value, or "n/a"
+    stale_banner: None = None      # never stale in an error page
+    price_source_degraded: bool = False
+    status_code: int = 400
+    detail: str = "Invalid request"
+```
+
+`_handle_validation_error`'s non-HTMX GET branch builds this VM (best-effort — if `action_session_for_run` itself raises, fall back to `session_date="n/a"`) and renders `page_error.html.j2` with `{"vm": vm}` context. This keeps the error page inside the normal chrome (nav bar, styling) without blowing up on missing fields.
+
+### 3.2a HTMX 4xx-swap client-side config (prerequisite for ALL 4xx fragments)
+
+HTMX 2.x defaults to **not swapping** 4xx responses into the DOM — it fires an error event instead. Phase 3b's `trade_form_error.html.j2` fragments (400/404) and Phase 3c's new fragments (400/404/409/413) are all unreachable in the browser under default config, even though the tests (TestClient-based) don't catch this because they assert response body directly rather than DOM state.
+
+**3c adds** a config override to `swing/web/templates/base.html.j2` immediately after the htmx script tag:
+
+```html
+<script src="/static/htmx.min.js"></script>
+<script>
+  // Enable inline rendering of 4xx error fragments. Phase 3b+ relies on this;
+  // without the override, 400/404/409/413 responses fire an htmx error event
+  // and do NOT swap into the target.
+  htmx.config.responseHandling = [
+    {code: "204", swap: false},
+    {code: "[12]..", swap: true},
+    {code: "[45]..", swap: true, error: true},
+  ];
+</script>
+```
+
+**Retroactive coverage:** this is effectively a Phase 3b bug fix (the 4xx fragment machinery was untested end-to-end in-browser). Phase 3c's test suite adds a stronger-than-substring test:
+- Renders the full `/` (dashboard) page and asserts that (a) `/static/htmx.min.js` appears first, (b) the `htmx.config.responseHandling` override script appears AFTER the htmx.min.js script tag in source order, (c) the override string contains both `"[45].."` and `swap: true` tokens. This catches the ordering mistake Codex flagged as a weakness of a pure substring check: a malformed or mis-ordered override fails the test.
+- True end-to-end browser verification (launching headless Chrome and asserting the effective `htmx.config.responseHandling` value) is deliberately out of scope — the ordered-source-check is a practical middle ground.
 
 ### 3.3 `app.state.templates` + handler changes
 
@@ -139,11 +194,20 @@ def _is_row_swap_target(request) -> bool:
     return request.headers.get("HX-Target", "").startswith(_ROW_TARGET_PREFIXES)
 ```
 
-`_handle_validation_error` gains a third branch for non-HTMX GETs:
+`_handle_validation_error` gains a third branch for non-HTMX GETs that accept HTML. **Precedence order (exact):**
+
+1. `HX-Request: true` → HTMX handler path (row-target or div, per §3.3 whitelist). Accept header is ignored once HX-Request is truthy.
+2. Else, method is `GET` AND `request.headers.get("accept", "")` contains `"text/html"` (substring match, handles `text/html,application/xhtml+xml,*/*` browser headers) → full-page `page_error.html.j2`.
+3. Else (non-HTMX POST, or GET with JSON-only Accept like `application/json` or `*/*` without `text/html`) → FastAPI default 422 JSON.
+
+This gating is heuristic — a non-browser client sending `*/*` gets JSON (intended); a non-browser client sending `text/html` gets the error page (acceptable). The spec treats "HTMX vs browser vs API" as the three-way decision; no attempt is made to further distinguish "browser" from "non-browser HTML-accepting client" since both want a readable HTML response.
+
+Implementation:
+
 ```python
 if request.headers.get("HX-Request","").lower() == "true":
     # ...existing HTMX path-aware logic using _is_row_swap_target...
-elif request.method == "GET":
+elif request.method == "GET" and "text/html" in request.headers.get("accept", ""):
     return templates.TemplateResponse(
         request, "page_error.html.j2",
         {"status_code": 400, "detail": f"Invalid input in {field}: {msg}"},
@@ -152,6 +216,8 @@ elif request.method == "GET":
 else:
     return await request_validation_exception_handler(request, exc)  # 422 JSON
 ```
+
+**Also applied to `_handle_http_exc`:** the existing handlers currently instantiate fresh `Jinja2Templates(directory=str(app.state.templates_dir))` per call inside the handler body. Phase 3c migrates these to `request.app.state.templates` alongside the route-level refactor — one startup-built instance, zero per-request directory scans. This is part of the "single source of truth" goal, not separate.
 
 ### 3.4 `/journal?period=...` — `Literal` type annotation
 
@@ -174,9 +240,9 @@ FastAPI auto-generates `RequestValidationError` for out-of-set values. No route-
 
 1. User clicks `<input type="file">` on `/pipeline`; picks `finviz19Apr2026.csv`.
 2. HTMX submits `POST /pipeline/csv-upload` (multipart, `HX-Request: true`, OriginGuard passes).
-3. Route writes upload to a `tempfile.NamedTemporaryFile` under `cfg.paths.tmp_dir` (or OS default).
+3. Route writes upload to a `tempfile.NamedTemporaryFile(dir=cfg.paths.finviz_inbox_dir, suffix=".csv", delete=False)`. **Same-filesystem requirement:** temp file MUST live in the same directory as the final destination so the subsequent `os.replace` is an atomic rename (not a cross-device copy). On Windows with user drives and cloud-sync paths, temp files in `$TMP` can end up on a different volume from the inbox; creating the temp file in the inbox directory itself avoids `OSError: [Errno 18] Invalid cross-device link`.
 4. Route calls `validate_csv(tmp_path)` → `ValidationResult(ok, rows, reasons)`.
-5. On ok: `shutil.move(tmp_path, cfg.paths.finviz_inbox_dir / sanitize(filename))`. If a file exists at the destination, it's overwritten. Response: 200 `csv_upload_form.html.j2` with `uploaded_banner={name, rows}` context.
+5. On ok: `os.replace(tmp_path, cfg.paths.finviz_inbox_dir / sanitize(filename))`. `os.replace` is atomic and cross-platform — unlike `shutil.move`, it reliably overwrites an existing destination file on Windows. Response: 200 `csv_upload_form.html.j2` with `uploaded_banner={name, rows}` context.
 6. On invalid: tmp file unlinked. Response: 400 `csv_upload_error.html.j2` with `reasons=validation.reasons`.
 
 **Filename sanitization:** strip path separators, strip `..`, enforce `.csv` extension, normalize to lowercase. Reject if the sanitized name is empty or not matching `[A-Za-z0-9][A-Za-z0-9_.-]*\.csv`. Reject filename renders as 400 fragment.
@@ -228,6 +294,8 @@ The web route's existing `except ValueError → HTTPException(404)` branch catch
 
 **No change** to `swing/trades/stop_adjust.py::adjust_stop`. The service's own `ValueError` raise path for missing trades continues to work; this change simply adds the closed-trade case to the repo-layer guarantee.
 
+**Scope limit of this fix:** the `AND status = 'open'` guard closes the specific close-then-stop-adjust race. **Concurrent stop-adjust-vs-stop-adjust** remains out of scope: two parallel requests that both read `current_stop = X` then both call `update_stop_with_event` will commit sequentially with SQLite's write lock, but the second write's event row will claim it adjusted from X → Y' while actually adjusting from Y → Y' (lost-update on the intermediate value). A proper fix requires either an optimistic-concurrency version column or serialized transactional read-modify-write, both outside 3c's scope. For a single-operator desktop app with UI-mediated two-step clicks, this race is vanishingly rare; a future phase can address it if the usage pattern changes.
+
 ### 4.5 HX-Target handler heuristic
 
 All endpoints that participate in the `<tr>` vs `<div>` decision:
@@ -245,7 +313,7 @@ All endpoints that participate in the `<tr>` vs `<div>` decision:
 | `GET/POST /pipeline/force-clear/*` | `stale-run-<id>` | `<div>` |
 | Browser address-bar GET | (none — no HX-Request) | full page |
 
-Row-prefix whitelist: `("open-position-", "entry-form-", "exit-form-", "stop-form-")`. Anything else with HX-Request gets `<div>`. Anything without HX-Request on GET gets the full page.
+Row-prefix whitelist: `("open-position-", "entry-form-", "exit-form-", "stop-form-", "watchlist-row-")`. Anything else with HX-Request gets `<div>`. Anything without HX-Request on GET that accepts HTML gets the full page; GETs that don't accept HTML (API clients) fall through to FastAPI's default 422 JSON.
 
 ## 5. Error handling
 
@@ -254,7 +322,9 @@ Row-prefix whitelist: `("open-position-", "entry-form-", "exit-form-", "stop-for
 | CSV validation failure (schema, size) | `validate_csv` + route | 400 | `csv_upload_error.html.j2` |
 | Invalid filename (path traversal, bad extension) | route | 400 | `csv_upload_error.html.j2` |
 | Force-clear on non-stale run | route re-check | 404 | HX-Target-aware fragment or page |
-| Force-clear `LeaseConflict` | Phase 2 `force_clear` | 400 | HX-Target-aware fragment |
+| Force-clear post-write state still `running` | route post-check | 409 | HX-Target-aware fragment ("state conflict — refresh") |
+| CSV upload oversized (Content-Length > limit) | MaxBodySizeMiddleware | 413 | `csv_upload_error.html.j2` |
+| CSV upload oversized (chunked-transfer, detected post-parse) | route safety-net | 413 | `csv_upload_error.html.j2` |
 | `period` not in `Literal[...]` | FastAPI validation | 400 | Path per §3.3 dispatch table |
 | `update_stop_with_event` rowcount=0 | Phase 2 repo | ValueError → 404 | Existing stop-adjust route `except ValueError` → HTTPException(404) (HX-Target-aware) |
 | Unhandled | Anywhere | 500 | 3a's `error_fragment.html.j2` / `error.html.j2` (no change) |
