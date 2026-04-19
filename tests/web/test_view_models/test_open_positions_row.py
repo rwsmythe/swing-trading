@@ -47,3 +47,94 @@ def test_vm_pure_assembly_with_no_snapshot_and_no_advisories():
     assert vm.price_snapshot is None
     assert vm.advisories == ()
     assert vm.remaining_shares == 3
+
+
+def test_build_open_positions_row_single_row(seeded_db, monkeypatch):
+    """build_open_positions_row does one get_many + one list_exits_for_trade
+    + one advisories compute; returns OpenPositionsRowVM."""
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event, list_open_trades
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from swing.web.view_models.open_positions_row import build_open_positions_row
+
+    cfg, _ = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="AAPL", entry_date="2026-04-15",
+                entry_price=180.0, initial_shares=10, initial_stop=170.0,
+                current_stop=170.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+
+    cache = PriceCache(cfg)
+    monkeypatch.setattr(cache, "get_many",
+        lambda tickers, deadline_seconds, *, executor=None: {
+            "AAPL": PriceSnapshot(
+                ticker="AAPL", price=182.0, asof=datetime.now(),
+                is_stale=False, source="live",
+            ),
+        })
+    vm = build_open_positions_row(
+        trade=trade, cfg=cfg, cache=cache, executor=None,
+    )
+    assert vm.trade.ticker == "AAPL"
+    assert vm.price_snapshot is not None
+    assert vm.price_snapshot.price == 182.0
+    assert vm.remaining_shares == 10  # no exits seeded
+    assert isinstance(vm.advisories, tuple)
+
+
+def test_build_open_positions_row_reduces_remaining_shares_for_prior_exits(seeded_db, monkeypatch):
+    """After a prior partial exit, remaining_shares = initial - sum(exits.shares)."""
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import Exit, Trade
+    from swing.data.repos.trades import (
+        insert_trade_with_event, insert_exit_with_event, list_open_trades,
+    )
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from swing.web.view_models.open_positions_row import build_open_positions_row
+
+    cfg, _ = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="AAPL", entry_date="2026-04-15",
+                entry_price=180.0, initial_shares=10, initial_stop=170.0,
+                current_stop=170.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+            trade = list_open_trades(conn)[0]
+            insert_exit_with_event(
+                conn,
+                Exit(id=None, trade_id=trade.id, exit_date="2026-04-17",
+                     exit_price=185.0, shares=3, reason="partial",
+                     realized_pnl=15.0, r_multiple=1.5, notes=None),
+                event_ts="2026-04-17T10:00:00", rationale="locking in 1.5R partial",
+            )
+            trade = list_open_trades(conn)[0]  # refresh
+    finally:
+        conn.close()
+
+    cache = PriceCache(cfg)
+    monkeypatch.setattr(cache, "get_many",
+        lambda tickers, deadline_seconds, *, executor=None: {
+            "AAPL": PriceSnapshot(
+                ticker="AAPL", price=188.0, asof=datetime.now(),
+                is_stale=False, source="live",
+            ),
+        })
+    vm = build_open_positions_row(
+        trade=trade, cfg=cfg, cache=cache, executor=None,
+    )
+    assert vm.remaining_shares == 7   # 10 - 3
