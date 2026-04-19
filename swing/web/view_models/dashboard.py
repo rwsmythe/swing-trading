@@ -75,39 +75,40 @@ def build_dashboard(*, cfg: Config, cache: PriceCache, executor) -> DashboardVM:
 
     conn = connect(cfg.paths.db_path)
     try:
-        open_trades = list_open_trades(conn)
-        recs = list_for_session(conn, action_session)
-        watchlist = list_active_watchlist(conn)
-        weather = get_latest_for_date(conn, action_session, ticker=cfg.rs.benchmark_ticker)
-        # Equity for status strip.
-        equity = current_equity(
-            starting_equity=cfg.account.starting_equity,
-            exits=list_all_exits(conn),
-            cash_movements=list_cash(conn),
-        )
-        # Latest pipeline run.
-        row = conn.execute(
-            """SELECT finished_ts, state FROM pipeline_runs
-               ORDER BY started_ts DESC LIMIT 1"""
-        ).fetchone()
-        last_pipeline_ts, last_pipeline_state = (row[0], row[1]) if row else (None, None)
-        # Stale banner: most recent complete run's action_session < today's action_session.
-        row = conn.execute(
-            """SELECT action_session_date FROM pipeline_runs
-               WHERE state='complete'
-               ORDER BY finished_ts DESC LIMIT 1"""
-        ).fetchone()
-        stale_banner = None
-        if row is not None and row[0] < action_session:
-            stale_banner = (
-                f"Last pipeline session: {row[0]} — decisions below are for session "
-                f"{action_session}. Run pipeline for the current session."
+        with conn:  # atomic read snapshot across all queries
+            open_trades = list_open_trades(conn)
+            recs = list_for_session(conn, action_session)
+            watchlist = list_active_watchlist(conn)
+            weather = get_latest_for_date(conn, action_session, ticker=cfg.rs.benchmark_ticker)
+            # Equity for status strip.
+            equity = current_equity(
+                starting_equity=cfg.account.starting_equity,
+                exits=list_all_exits(conn),
+                cash_movements=list_cash(conn),
             )
-        # Latest candidates for flag_tags + narrative.
-        row = conn.execute("SELECT id FROM evaluation_runs ORDER BY run_ts DESC LIMIT 1").fetchone()
-        candidates: list[Candidate] = []
-        if row is not None:
-            candidates = fetch_candidates_for_run(conn, row[0])
+            # Latest pipeline run.
+            row = conn.execute(
+                """SELECT finished_ts, state FROM pipeline_runs
+                   ORDER BY started_ts DESC LIMIT 1"""
+            ).fetchone()
+            last_pipeline_ts, last_pipeline_state = (row[0], row[1]) if row else (None, None)
+            # Stale banner: most recent complete run's action_session < today's action_session.
+            row = conn.execute(
+                """SELECT action_session_date FROM pipeline_runs
+                   WHERE state='complete'
+                   ORDER BY finished_ts DESC LIMIT 1"""
+            ).fetchone()
+            stale_banner = None
+            if row is not None and row[0] < action_session:
+                stale_banner = (
+                    f"Last pipeline session: {row[0]} — decisions below are for session "
+                    f"{action_session}. Run pipeline for the current session."
+                )
+            # Latest candidates for flag_tags + narrative.
+            row = conn.execute("SELECT id FROM evaluation_runs ORDER BY run_ts DESC LIMIT 1").fetchone()
+            candidates: list[Candidate] = []
+            if row is not None:
+                candidates = fetch_candidates_for_run(conn, row[0])
     finally:
         conn.close()
 
@@ -154,10 +155,11 @@ def build_dashboard(*, cfg: Config, cache: PriceCache, executor) -> DashboardVM:
         # the operator can grep in web.log (R4 Major 2). Coercion to
         # 0 (R3 Major 2) and silent skip (also R3 Major 2) are both
         # inferior to crash-fast for a "should never happen" invariant.
-        assert t.id is not None, (
-            f"open trade {t.ticker} has id=None — data-integrity bug in "
-            f"list_open_trades; dashboard cannot render advisories reliably"
-        )
+        if t.id is None:
+            raise RuntimeError(
+                f"open trade {t.ticker} has id=None — data-integrity bug in "
+                f"list_open_trades; dashboard cannot render advisories reliably"
+            )
         snap = open_trade_last_prices.get(t.ticker)
         if snap is None:
             continue
