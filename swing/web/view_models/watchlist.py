@@ -71,7 +71,7 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
 
 
 def build_watchlist_expanded(
-    *, cfg: Config, cache: PriceCache, ticker: str,
+    *, cfg: Config, cache: PriceCache, ticker: str, executor,
 ) -> WatchlistExpandedVM | None:
     conn = connect(cfg.paths.db_path)
     try:
@@ -93,7 +93,12 @@ def build_watchlist_expanded(
                         break
     finally:
         conn.close()
-    snap = cache.get(ticker)
+    snaps = cache.get_many(
+        [ticker],
+        deadline_seconds=cfg.web.price_fetch_deadline_seconds,
+        executor=executor,
+    )
+    snap = snaps.get(ticker)
     return WatchlistExpandedVM(
         ticker=ticker, entry=row, candidate=candidate,
         last_price=snap, data_asof_date=data_asof,

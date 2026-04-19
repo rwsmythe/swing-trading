@@ -32,7 +32,9 @@ def test_refuses_non_loopback_from_config(test_cfg, capsys, tmp_path):
 
 
 def test_cli_overrides_config(test_cfg, monkeypatch):
+    from swing.data.db import ensure_schema
     cfg, cfg_path = test_cfg
+    ensure_schema(cfg.paths.db_path).close()
     captured = {}
 
     def fake_run(app, *, host, port, reload, **_):
@@ -45,6 +47,23 @@ def test_cli_overrides_config(test_cfg, monkeypatch):
     assert captured["port"] == 9191
     assert captured["reload"] is True
     assert captured["host"] == "127.0.0.1"
+
+
+def test_run_server_fails_fast_on_schema_mismatch(test_cfg, monkeypatch, capsys):
+    from swing.data.db import SchemaVersionMismatch
+    cfg, cfg_path = test_cfg
+
+    def boom(*args, **kwargs):
+        raise SchemaVersionMismatch("schema version 0 < expected 3")
+
+    monkeypatch.setattr("swing.web.cli_cmd.connect", boom)
+
+    with pytest.raises(SystemExit) as exc:
+        run_server(cfg=cfg, cfg_path=cfg_path, host=None, port=None, reload=None)
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "schema version" in err.lower()
+    assert "db-migrate" in err
 
 
 def test_swing_web_cli_registered():

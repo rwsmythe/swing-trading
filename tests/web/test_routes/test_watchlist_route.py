@@ -45,7 +45,8 @@ def test_watchlist_expand_htmx(seeded_db, monkeypatch):
     cfg, cfg_path = seeded_db
     _seed_one_watchlist(cfg)
     from swing.web.price_cache import PriceCache
-    monkeypatch.setattr(PriceCache, "get", lambda self, t: None)
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {})
 
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:

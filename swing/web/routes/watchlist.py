@@ -25,7 +25,10 @@ def watchlist_page(request: Request):
 def watchlist_expand(request: Request, ticker: str):
     cfg = request.app.state.cfg
     cache = request.app.state.price_cache
-    expanded = build_watchlist_expanded(cfg=cfg, cache=cache, ticker=ticker.upper())
+    executor = request.app.state.price_fetch_executor
+    expanded = build_watchlist_expanded(
+        cfg=cfg, cache=cache, ticker=ticker.upper(), executor=executor,
+    )
     if expanded is None:
         raise HTTPException(status_code=404, detail=f"ticker {ticker} not on watchlist")
     return _templates(request).TemplateResponse(

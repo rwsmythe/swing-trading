@@ -8,6 +8,7 @@ from pathlib import Path
 import click
 
 from swing.config import Config
+from swing.data.db import SchemaVersionMismatch, connect
 from swing.web.app import create_app
 
 log = logging.getLogger(__name__)
@@ -38,6 +39,25 @@ def run_server(
         )
         sys.exit(1)
 
+    # Spec §4.1 / §5: verify DB schema version before starting the server.
+    # Fail fast with a clear remediation hint rather than surfacing the error
+    # lazily on the first request.
+    try:
+        connect(cfg.paths.db_path).close()
+    except SchemaVersionMismatch as exc:
+        click.echo(
+            f"ERROR: {exc}\n"
+            f"Run: swing --config {cfg_path or 'swing.config.toml'} db-migrate",
+            err=True,
+        )
+        sys.exit(1)
+    except Exception as exc:  # Unhappy IO path, not a schema issue.
+        click.echo(
+            f"ERROR: cannot open database at {cfg.paths.db_path}: {exc}",
+            err=True,
+        )
+        sys.exit(1)
+
     app = create_app(cfg, cfg_path)
 
     import uvicorn
@@ -45,6 +65,7 @@ def run_server(
         uvicorn.run(
             app, host=effective_host, port=effective_port,
             reload=effective_reload, log_level="info",
+            access_log=False,  # Disabled — replaced by RequestIdMiddleware (spec §5.2)
         )
     except OSError as exc:
         click.echo(

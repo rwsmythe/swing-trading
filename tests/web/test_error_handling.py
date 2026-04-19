@@ -76,6 +76,26 @@ def test_configure_web_logging_is_idempotent(tmp_path):
     )
 
 
+def test_request_log_line_emitted_per_request(seeded_db, caplog):
+    """Verify the spec §5.2 contract: method/path/status/duration/request_id."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with caplog.at_level("INFO", logger="swing.web.access"):
+        with TestClient(app) as client:
+            r = client.get("/", headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    # At least one access log line captured matching the expected format.
+    access_messages = [rec.message for rec in caplog.records if rec.name == "swing.web.access"]
+    assert access_messages, "expected an access log entry"
+    line = access_messages[-1]
+    assert "GET" in line
+    assert "/ " in line or line.startswith("GET /")
+    assert "200" in line
+    assert "ms" in line
+    # Request id present (uuid hex chars)
+    assert len(line.split()[-1]) >= 32
+
+
 def test_403_cross_origin_post_still_carries_request_id(seeded_db):
     """R1 Major 4: middleware order must be RequestId OUTERMOST so the 403
     response from OriginGuard still gets X-Request-ID stamped on it. Without

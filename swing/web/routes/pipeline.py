@@ -22,8 +22,6 @@ router = APIRouter()
 
 log = logging.getLogger(__name__)
 
-_STALE_HEARTBEAT_SECONDS = 300   # mirrors spec §5.6 default
-
 
 @router.get("/pipeline", response_class=HTMLResponse)
 def pipeline_page(request: Request):
@@ -58,7 +56,8 @@ def pipeline_run(request: Request):
 
     if active is not None:
         hb_age = _heartbeat_age_seconds(active.lease_heartbeat_ts)
-        if hb_age is not None and hb_age <= _STALE_HEARTBEAT_SECONDS:
+        stale_threshold = cfg.pipeline.stale_lease_threshold_seconds
+        if hb_age is not None and hb_age <= stale_threshold:
             # Fresh heartbeat — show existing progress.
             return templates.TemplateResponse(
                 request, "partials/pipeline_progress.html.j2",
