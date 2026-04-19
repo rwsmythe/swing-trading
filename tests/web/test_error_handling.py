@@ -111,3 +111,88 @@ def test_403_cross_origin_post_still_carries_request_id(seeded_db):
     r = client.post("/_guarded_probe", headers={"Origin": "http://evil.example"})
     assert r.status_code == 403
     assert "x-request-id" in (h.lower() for h in r.headers.keys())
+
+
+def test_htmx_404_renders_fragment_not_json(test_cfg):
+    """HTMX-aware HTTPException handler: HX-Request 404 → HTML fragment body,
+    not FastAPI's default JSON body."""
+    from fastapi import HTTPException
+    from fastapi.testclient import TestClient
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+
+    @app.get("/_missing")
+    def _missing():
+        raise HTTPException(status_code=404, detail="nothing here")
+
+    with TestClient(app) as client:
+        # HTMX client: expect fragment
+        r_hx = client.get("/_missing", headers={"HX-Request": "true"})
+        assert r_hx.status_code == 404
+        assert "<!doctype" not in r_hx.text.lower()  # no full page
+        assert "nothing here" in r_hx.text
+        # Non-HTMX client: expect FastAPI default JSON
+        r_json = client.get("/_missing")
+        assert r_json.status_code == 404
+        assert r_json.headers["content-type"].startswith("application/json")
+        assert r_json.json() == {"detail": "nothing here"}
+
+
+def test_htmx_validation_error_non_trade_path_renders_div_fragment(test_cfg):
+    """RequestValidationError (missing field) on a NON-/trades/ HTMX POST →
+    http_error_fragment (a <div>) at 400. Proves the 'else' branch of the
+    path-aware handler (R3 Major 1 split)."""
+    from fastapi import Form
+    from fastapi.testclient import TestClient
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+
+    @app.post("/_typed_probe")
+    def _probe(x: float = Form(...)):
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        r_hx = client.post(
+            "/_typed_probe", headers={"HX-Request": "true"}, data={},
+        )
+        assert r_hx.status_code == 400
+        # http_error_fragment.html.j2 is the neutral <div> banner.
+        assert "<div" in r_hx.text.lower()
+        assert "<tr" not in r_hx.text.lower()
+        assert "<!doctype" not in r_hx.text.lower()
+        # Non-HTMX: OriginGuard (strict=True) blocks non-HX-Request POSTs at
+        # the middleware layer before validation fires; 403 is the framework
+        # default for this app, confirming the validation handler is NOT
+        # intercepting non-HTMX requests.
+        r_non_hx = client.post("/_typed_probe", data={})
+        assert r_non_hx.status_code == 403
+
+
+def test_htmx_validation_error_trade_path_renders_tr_fragment(test_cfg):
+    """RequestValidationError on a /trades/* HTMX POST → trade_form_error
+    (a <tr>) at 400. Proves the path-aware branch of the handler renders a
+    row-compatible fragment for HTMX targets using `hx-target='closest tr'`."""
+    from fastapi import Form
+    from fastapi.testclient import TestClient
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+
+    # Register a probe under /trades/ so the path-prefix check fires.
+    @app.post("/trades/_typed_probe")
+    def _probe(x: float = Form(...)):
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        r_hx = client.post(
+            "/trades/_typed_probe", headers={"HX-Request": "true"}, data={},
+        )
+        assert r_hx.status_code == 400
+        # trade_form_error.html.j2 emits a <tr>.
+        assert "<tr" in r_hx.text.lower()
+        assert "trade-form-error" in r_hx.text
+        # Non-HTMX: OriginGuard (strict=True) blocks non-HX-Request POSTs at
+        # the middleware layer before validation fires; 403 is the framework
+        # default for this app, confirming the validation handler is NOT
+        # intercepting non-HTMX requests.
+        r_non_hx = client.post("/trades/_typed_probe", data={})
+        assert r_non_hx.status_code == 403

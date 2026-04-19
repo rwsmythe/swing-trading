@@ -1,0 +1,5 @@
+{#- swing/web/templates/partials/http_error_fragment.html.j2
+    Expects: status_code (int), detail (str). Rendered for HX-Request 4xx/5xx. -#}
+<div class="banner banner-degraded" data-status="{{ status_code }}" role="alert">
+  {{ detail }}
+</div>

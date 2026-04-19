@@ -7,7 +7,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.exception_handlers import http_exception_handler
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -94,6 +95,46 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
 
     configure_web_logging(cfg.paths.logs_dir)
     _register_exception_handlers(app)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _handle_http_exc(request: Request, exc: StarletteHTTPException):
+        if request.headers.get("HX-Request", "").lower() == "true":
+            tpls = Jinja2Templates(directory=str(app.state.templates_dir))
+            return tpls.TemplateResponse(
+                request, "partials/http_error_fragment.html.j2",
+                {"status_code": exc.status_code, "detail": exc.detail},
+                status_code=exc.status_code,
+            )
+        return await http_exception_handler(request, exc)
+
+    @app.exception_handler(RequestValidationError)
+    async def _handle_validation_error(request: Request, exc: RequestValidationError):
+        """HTMX form-validation errors render at 400 with a fragment sized to the
+        HTMX target. R3 Major 1 fix: trade routes use `<tr>` swap targets
+        (`hx-target='closest tr'`), so `/trades/*` POST validation errors MUST
+        render `trade_form_error.html.j2` (a `<tr>`). Other HTMX endpoints get
+        the neutral `http_error_fragment.html.j2` (`<div>`). Non-HTMX requests
+        fall through to FastAPI's default 422 JSON."""
+        if request.headers.get("HX-Request", "").lower() == "true":
+            errors = exc.errors()
+            first = errors[0] if errors else {}
+            field = ".".join(str(p) for p in first.get("loc", ()) if p != "body") or "field"
+            msg = first.get("msg", "invalid input")
+            tpls = Jinja2Templates(directory=str(app.state.templates_dir))
+            # Route-shape-aware selection: trade routes need `<tr>` fragment.
+            if request.url.path.startswith("/trades/") and request.method == "POST":
+                return tpls.TemplateResponse(
+                    request, "partials/trade_form_error.html.j2",
+                    {"error_message": f"Invalid input in {field}: {msg}",
+                     "form_body": None},
+                    status_code=400,
+                )
+            return tpls.TemplateResponse(
+                request, "partials/http_error_fragment.html.j2",
+                {"status_code": 400, "detail": f"Invalid input in {field}: {msg}"},
+                status_code=400,
+            )
+        return await request_validation_exception_handler(request, exc)
 
     # Static mounts. charts_dir is written by the pipeline; if no run has
     # happened yet, the dir may not exist. `check_dir=False` defers the check

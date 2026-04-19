@@ -1,0 +1,8 @@
+{#- Trade form error fragment. Full form-preservation markup lands in Task 10.
+    Expects: error_message (str), form_body (None or pre-rendered trusted HTML). -#}
+<tr class="trade-form-error">
+  <td colspan="8">
+    <div class="banner banner-degraded" role="alert">{{ error_message }}</div>
+    {% if form_body %}{{ form_body | safe }}{% endif %}
+  </td>
+</tr>
