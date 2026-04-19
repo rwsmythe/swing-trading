@@ -60,3 +60,22 @@ def get_latest_for_date(
         close=row[5], sma10=row[6], sma20=row[7], sma50=row[8],
         slope20_5bar=row[9], slope10_5bar=row[10], rationale=row[11],
     )
+
+
+def list_weather_runs(conn: sqlite3.Connection) -> list[WeatherRun]:
+    """Return all weather runs ordered by run_ts ascending (for flag scanning)."""
+    rows = conn.execute(
+        """
+        SELECT id, run_ts, asof_date, ticker, status, close, sma10, sma20, sma50,
+               slope20_5bar, slope10_5bar, rationale
+        FROM weather_runs ORDER BY run_ts ASC
+        """,
+    ).fetchall()
+    return [
+        WeatherRun(
+            id=r[0], run_ts=r[1], asof_date=r[2], ticker=r[3], status=r[4],
+            close=r[5], sma10=r[6], sma20=r[7], sma50=r[8],
+            slope20_5bar=r[9], slope10_5bar=r[10], rationale=r[11],
+        )
+        for r in rows
+    ]

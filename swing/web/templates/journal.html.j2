@@ -1,0 +1,38 @@
+{% extends "base.html.j2" %}
+{% block content %}
+  <h1>Journal</h1>
+  <nav class="period-selector">
+    {# Period keys are rolling day-count approximations, not calendar months/quarters.
+       Labels are renamed to avoid the semantic mismatch. #}
+    {% set _labels = {'week': 'Last 7d', 'month': 'Last 30d', 'quarter': 'Last 90d', 'ytd': 'YTD', 'all': 'All'} %}
+    {% for p in ('week','month','quarter','ytd','all') %}
+      <a href="/journal?period={{ p }}" class="{{ 'active' if p == vm.period else '' }}">{{ _labels[p] }}</a>
+    {% endfor %}
+  </nav>
+  <section class="stats">
+    <div>Trades: {{ vm.stats.n_trades }}</div>
+    <div>Win rate: {{ '%.1f' | format(vm.stats.win_rate * 100) }}%</div>
+    <div>Expectancy: {{ '%.2f' | format(vm.stats.expectancy_r) }}R</div>
+    <div>Total R: {{ '%.2f' | format(vm.stats.total_r) }}</div>
+    <div>Streak: {{ vm.stats.current_streak }} {{ vm.stats.current_streak_kind }}</div>
+  </section>
+  <section class="flags">
+    <h2>Behavioral flags</h2>
+    {% for f in vm.flags %}
+      <div><strong>{{ f.title }}</strong> &mdash; {{ f.detail }}</div>
+    {% else %}
+      <p>No flags.</p>
+    {% endfor %}
+  </section>
+  <section class="trades">
+    <h2>Trades ({{ vm.trades | length }})</h2>
+    <table>
+      <thead><tr><th>Ticker</th><th>Entry</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for t in vm.trades %}
+          <tr><td>{{ t.ticker }}</td><td>{{ t.entry_date }}</td><td>{{ t.status }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

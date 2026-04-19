@@ -1,0 +1,19 @@
+"""Journal route."""
+from __future__ import annotations
+
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import HTMLResponse
+
+from swing.web.routes.dashboard import _templates
+from swing.web.view_models.journal import build_journal
+
+router = APIRouter()
+
+
+@router.get("/journal", response_class=HTMLResponse)
+def journal_page(request: Request, period: str = Query("month")):
+    cfg = request.app.state.cfg
+    vm = build_journal(cfg=cfg, period=period)
+    return _templates(request).TemplateResponse(
+        request, "journal.html.j2", {"vm": vm},
+    )
