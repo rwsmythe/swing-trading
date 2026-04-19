@@ -64,17 +64,20 @@ tests/web/
 ## Task Ordering Rationale
 
 1. **OriginGuard strict flag first** (T1–T2) — smallest leaf change; must land before other POST routes (which rely on strict behavior) so Phase 3a tests prove the flip is safe.
-2. **HTMX-aware HTTPException handler** (T3) — needed by the Form-GET 404 path; land it now so all subsequent form-GET tests can assert HTMX fragment responses.
-3. **Row VM infrastructure** (T4–T6) — shared by dashboard (refactor) and POST-success handlers. Refactor dashboard internally first; external `DashboardVM` shape unchanged so 3a tests stay green.
-4. **Watchlist Enter button** (T7) — small template tweak; prepares dashboard for the entry-form trigger.
-5. **Sizing hint endpoint** (T8) — isolated leaf endpoint with a tolerant contract; land it before the entry form so T9's form template can point at it.
-6. **Entry flow** (T9–T11) — VM, form-GET, POST happy path, soft-warn, error paths.
-7. **Exit flow** (T12–T13) — VM + form-GET + POST (full/partial/drift).
-8. **Stop-adjust flow** (T14–T15) — VM + form-GET + POST happy + regression-drift.
-9. **Integration tests** (T16) — 4 end-to-end scenarios.
-10. **Acceptance sweep** (T17) — full fast suite, regression verification, hand-off to adversarial review.
+2. **HTMX-aware HTTPException + RequestValidationError handlers** (T3) — needed by the Form-GET 404 path and by typed-Form validation in later POST routes; land it now so subsequent form-GET tests can assert HTMX fragment responses and POST validation renders 400 fragments (spec §5).
+3. **Row VM infrastructure** (T4–T5) — shared by dashboard (refactor) and POST-success handlers. `OpenPositionsRowVM` + pure assembler + single-row convenience wrapper.
+4. **Dashboard refactor to batched row VMs** (T6) — `build_dashboard` calls `_open_positions_row_vm` inside its batched loop. External `DashboardVM` shape gains additive `open_trade_rows` field; legacy mappings preserved.
+5. **Extract `open_positions_row.html.j2` partial** (T7) — row-only contract; no action buttons (those come in the tasks that create their backing routes, per R1 Major 2).
+6. **Sizing hint endpoint** (T8) — isolated leaf endpoint with a tolerant contract; land before the entry form so T9's form template can point at it.
+7. **Entry flow** (T9–T12) — VM + form-GET + watchlist Enter button + POST happy path + soft-warn + error paths.
+8. **Exit flow** (T13–T14) — VM + form-GET + Exit button on open-positions row + POST (full/partial/drift).
+9. **Stop-adjust flow** (T15) — VM + form-GET + Adjust-stop button + POST happy + regression-drift.
+10. **Cancel endpoint** (T16) — returns normal open-positions row for Cancel button.
+11. **Strict-mode route-level test** (T17) — confirms /trades POST rejects missing HX-Request.
+12. **Integration tests** (T18) — 4 end-to-end scenarios (entry, soft-warn loop, stop-adjust, cold-cache fallback).
+13. **Acceptance sweep** (T19) — full fast suite, regression verification, hand-off to adversarial review.
 
-Each task ends with a commit. No task leaves the codebase in a broken state.
+Each task ends with a commit. No task leaves the codebase in a broken state. Action-button additions (Enter/Exit/Adjust-stop) are deliberately deferred to the tasks that create their backing routes.
 
 ---
 
@@ -365,14 +368,17 @@ Create `swing/web/templates/partials/http_error_fragment.html.j2`:
 </div>
 ```
 
-- [ ] **Step 4: Write a second failing test — RequestValidationError handler (R1 Major 1)**
+- [ ] **Step 4: Write two failing tests — RequestValidationError handler branches**
 
-Spec §5 requires Phase 2 validation errors + Starlette form-parse errors to render a 400 HTMX fragment, not FastAPI's default 422 JSON. Add to `tests/web/test_error_handling.py`:
+Spec §5 requires Phase 2 validation errors + Starlette form-parse errors to render a 400 HTMX fragment, not FastAPI's default 422 JSON. Task 3's handler is path-aware (R3 Major 1): `/trades/*` POST returns a `<tr>` trade_form_error; other HTMX endpoints return a neutral `<div>` http_error_fragment. BOTH branches need explicit test coverage (R4 Major 1).
+
+Add to `tests/web/test_error_handling.py`:
 
 ```python
-def test_htmx_validation_error_renders_fragment_not_json(test_cfg):
-    """RequestValidationError (missing/malformed form field) under HX-Request →
-    trade_form_error fragment at 400, not FastAPI's default 422 JSON."""
+def test_htmx_validation_error_non_trade_path_renders_div_fragment(test_cfg):
+    """RequestValidationError (missing field) on a NON-/trades/ HTMX POST →
+    http_error_fragment (a <div>) at 400. Proves the 'else' branch of the
+    path-aware handler (R3 Major 1 split)."""
     from fastapi import Form
     from fastapi.testclient import TestClient
     cfg, cfg_path = test_cfg
@@ -383,17 +389,45 @@ def test_htmx_validation_error_renders_fragment_not_json(test_cfg):
         return {"ok": True}
 
     with TestClient(app) as client:
-        # HX-Request: missing field → fragment with 400.
         r_hx = client.post(
             "/_typed_probe", headers={"HX-Request": "true"}, data={},
         )
         assert r_hx.status_code == 400
-        assert "banner" in r_hx.text.lower()
+        # http_error_fragment.html.j2 is the neutral <div> banner.
+        assert "<div" in r_hx.text.lower()
+        assert "<tr" not in r_hx.text.lower()
         assert "<!doctype" not in r_hx.text.lower()
         # Non-HTMX: default 422 JSON still works.
         r_json = client.post("/_typed_probe", data={})
         assert r_json.status_code == 422
         assert r_json.headers["content-type"].startswith("application/json")
+
+
+def test_htmx_validation_error_trade_path_renders_tr_fragment(test_cfg):
+    """RequestValidationError on a /trades/* HTMX POST → trade_form_error
+    (a <tr>) at 400. Proves the path-aware branch of the handler renders a
+    row-compatible fragment for HTMX targets using `hx-target='closest tr'`."""
+    from fastapi import Form
+    from fastapi.testclient import TestClient
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+
+    # Register a probe under /trades/ so the path-prefix check fires.
+    @app.post("/trades/_typed_probe")
+    def _probe(x: float = Form(...)):
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        r_hx = client.post(
+            "/trades/_typed_probe", headers={"HX-Request": "true"}, data={},
+        )
+        assert r_hx.status_code == 400
+        # trade_form_error.html.j2 emits a <tr>.
+        assert "<tr" in r_hx.text.lower()
+        assert "trade-form-error" in r_hx.text
+        # Non-HTMX falls through to default 422.
+        r_json = client.post("/trades/_typed_probe", data={})
+        assert r_json.status_code == 422
 ```
 
 - [ ] **Step 5: Register BOTH handlers in create_app**
@@ -480,7 +514,7 @@ Expected: PASS. That test uses TestClient without HX-Request, so it hits the JSO
 - [ ] **Step 8: Full fast suite**
 
 Run: `python -m pytest -m "not slow" -q`
-Expected: 357 passed (355 + 2 new error-handling tests).
+Expected: 358 passed (355 + 3 new error-handling tests: 404-fragment, non-trade validation, trade validation).
 
 - [ ] **Step 9: Commit**
 
