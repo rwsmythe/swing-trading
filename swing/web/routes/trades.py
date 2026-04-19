@@ -187,7 +187,25 @@ def entry_post(
                 request, "partials/soft_warn_confirm.html.j2",
                 {"form_values": form_values},
             )
-        except (HardCapException, DuplicateOpenPositionException) as exc:
+        except DuplicateOpenPositionException as exc:
+            # Spec §5.1 case 1: re-render form with fields populated so the
+            # user can see the banner without losing their input context.
+            vm = build_entry_form_vm(
+                ticker=ticker.upper(), cfg=cfg, cache=cache, executor=executor,
+            )
+            form_body = None
+            if vm is not None:
+                form_body = templates.get_template(
+                    "partials/trade_entry_form.html.j2"
+                ).render(request=request, vm=vm)
+            return templates.TemplateResponse(
+                request, "partials/trade_form_error.html.j2",
+                {"error_message": str(exc), "form_body": form_body},
+                status_code=400,
+            )
+        except HardCapException as exc:
+            # Hard cap: do NOT re-render the form — re-submitting won't succeed
+            # until a position is closed (spec §8 "No UI bypass for hard-cap").
             return templates.TemplateResponse(
                 request, "partials/trade_form_error.html.j2",
                 {"error_message": str(exc), "form_body": None},
@@ -287,7 +305,7 @@ def exit_post(
     try:
         try:
             result = record_exit(conn, req)
-        except Exception as exc:
+        except ValueError as exc:
             # R: spec §5.1 case 2 — re-render form with authoritative remaining shares.
             vm = build_exit_form_vm(trade_id=trade_id, cfg=cfg, cache=cache, executor=executor)
             form_body = None
@@ -389,6 +407,10 @@ def stop_post(
     try:
         try:
             adjust_stop(conn, req)
+        except ValueError as exc:
+            # Trade not found or already closed — surface as 404 so the
+            # HTMX-aware handler renders http_error_fragment.html.j2 (§5.2).
+            raise HTTPException(status_code=404, detail=str(exc))
         except StopRegressionError as exc:
             # R: spec §5.1 case 3 — re-render form with updated current_stop.
             vm = build_stop_form_vm(trade_id=trade_id, cfg=cfg)

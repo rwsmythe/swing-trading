@@ -715,6 +715,65 @@ def test_post_stop_regression_renders_form_with_updated_current(seeded_db):
     assert 'value="900.00"' in r.text
 
 
+def test_post_stop_for_closed_trade_returns_404_fragment(seeded_db):
+    """POST /trades/{id}/stop for a missing trade → 404 HTMX fragment (Major 2).
+
+    adjust_stop raises ValueError when the trade_id is not found; the route
+    must catch that and re-raise as HTTPException(404) so the HTMX-aware
+    handler renders http_error_fragment.html.j2 rather than a generic 500.
+    """
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/99999/stop", headers={"HX-Request": "true"},
+            data={"new_stop": "880.00", "rationale": "stale stop"},
+        )
+    assert r.status_code == 404
+    assert "banner" in r.text
+    assert "not" in r.text.lower()
+
+
+def test_post_entry_duplicate_renders_form_preserved(seeded_db, monkeypatch):
+    """Duplicate open position → 400 with error banner AND form re-rendered (Major 1)."""
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+    from swing.web.price_cache import PriceCache
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="AAPL", entry_date="2026-04-15",
+                entry_price=180.0, initial_shares=5, initial_stop=170.0,
+                current_stop=170.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+    finally:
+        conn.close()
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {})
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry", headers={"HX-Request": "true"},
+            data={
+                "ticker": "AAPL", "entry_date": "2026-04-18",
+                "entry_price": "182.0", "shares": "3",
+                "initial_stop": "175.0", "rationale": "add-on attempt",
+            },
+        )
+    assert r.status_code == 400
+    # Banner mentions the duplicate.
+    assert "already" in r.text.lower() or "open trade" in r.text.lower()
+    # Form is re-rendered inside the error fragment.
+    assert 'name="ticker"' in r.text
+
+
 def test_post_trades_without_hx_request_403(test_cfg):
     """Strict OriginGuard: POST /trades/entry without HX-Request → 403 with X-Request-ID."""
     cfg, cfg_path = test_cfg
