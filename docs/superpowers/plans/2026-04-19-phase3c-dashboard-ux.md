@@ -877,6 +877,8 @@ Expected: both bad-period tests FAIL — current route returns 500 (ValueError p
 
 - [ ] **Step 3: Add `Literal` type annotation**
 
+The existing `_ALLOWED_PERIODS` set in `swing/web/view_models/journal.py:18` is `frozenset({"week", "month", "quarter", "ytd", "all"})` — the `Literal[...]` values MUST match exactly. The existing `tests/web/test_routes/test_journal_route.py:17` already exercises `?period=week`, so missing `week` or adding a bogus `year` would regress a passing test.
+
 Replace the route in `swing/web/routes/journal.py`:
 
 ```python
@@ -896,7 +898,7 @@ router = APIRouter()
 @router.get("/journal", response_class=HTMLResponse)
 def journal_page(
     request: Request,
-    period: Literal["month", "quarter", "year", "all"] = Query("month"),
+    period: Literal["week", "month", "quarter", "ytd", "all"] = Query("month"),
 ):
     cfg = request.app.state.cfg
     vm = build_journal(cfg=cfg, period=period)
@@ -905,11 +907,7 @@ def journal_page(
     )
 ```
 
-Note: the `Literal[...]` values must match the existing `_ALLOWED_PERIODS` set in `swing/web/view_models/journal.py`. Verify with:
-
-Run: `grep -n "_ALLOWED_PERIODS" swing/web/view_models/journal.py`
-
-If the allowed set is different (e.g., includes `"week"`), adjust the `Literal` tuple to match.
+(Verify `_ALLOWED_PERIODS` is unchanged before editing: `grep -n "_ALLOWED_PERIODS" swing/web/view_models/journal.py`.)
 
 - [ ] **Step 4: Run the new tests**
 
@@ -940,68 +938,76 @@ Spec §4.4 / decision #4. The one scoped Phase 2 change. Closes the close-then-s
 
 - [ ] **Step 1: Write failing tests**
 
+First, read the existing test helpers in `tests/data/test_repos_trades.py` — there is a `_trade()` factory (~line 33) and an `ensure_schema`+`connect` pattern that all existing tests in this file use. `insert_trade_with_event(conn, trade: Trade, *, event_ts, ...)` takes a `Trade` dataclass, NOT kwargs. Follow that exact pattern for the new tests below.
+
 Append to `tests/data/test_repos_trades.py`:
 
 ```python
 def test_update_stop_with_event_rejects_closed_trade():
     """Spec §4.4: closed trade → ValueError, no row mutation, no event insert."""
-    from swing.data.db import connect
+    from swing.data.db import connect, ensure_schema
     from swing.data.repos.trades import (
-        insert_trade_with_event, list_exits_for_trade,
-        update_stop_with_event,
+        insert_trade_with_event, update_stop_with_event,
     )
-    import tempfile, pathlib
+    import pytest as _pt
+    import tempfile
+    import pathlib
 
     with tempfile.TemporaryDirectory() as tmp:
         db_path = pathlib.Path(tmp) / "test.db"
+        ensure_schema(db_path).close()
         conn = connect(db_path)
         try:
-            # Seed a trade + close it manually so status='closed'.
-            insert_trade_with_event(
-                conn,
-                ticker="AAPL", entry_date="2026-04-15", entry_price=180.0,
-                initial_shares=5, initial_stop=170.0,
-                event_ts="2026-04-15T09:30:00",
-                rationale="test",
-            )
-            conn.execute("UPDATE trades SET status='closed' WHERE ticker='AAPL'")
-            conn.commit()
+            with conn:
+                tid = insert_trade_with_event(
+                    conn, _trade(), event_ts="2026-04-15T09:30:00",
+                )
+                # Mark the trade closed (simulates post-exit state transition).
+                conn.execute(
+                    "UPDATE trades SET status='closed' WHERE id = ?", (tid,),
+                )
 
             # Attempt stop-adjust on the closed trade.
-            import pytest as _pt
             with _pt.raises(ValueError) as excinfo:
                 with conn:
                     update_stop_with_event(
-                        conn, trade_id=1, new_stop=175.0,
+                        conn, trade_id=tid, new_stop=175.0,
                         event_ts="2026-04-16T10:00:00",
                         rationale="attempt after close",
                     )
-            assert "not open" in str(excinfo.value).lower() or "does not exist" in str(excinfo.value).lower()
+            # Accept either wording — the closed-trade path raises with one;
+            # missing-trade path raises with another.
+            msg = str(excinfo.value).lower()
+            assert "not open" in msg or "does not exist" in msg
 
             # Confirm no stop_adjust event was inserted.
             rows = conn.execute(
-                "SELECT COUNT(*) FROM trade_events WHERE event_type='stop_adjust' AND trade_id=1"
+                "SELECT COUNT(*) FROM trade_events "
+                "WHERE event_type='stop_adjust' AND trade_id = ?",
+                (tid,),
             ).fetchone()
-            assert rows[0] == 0, "closed-trade update must not insert a stop_adjust event"
+            assert rows[0] == 0
 
             # current_stop must not have mutated.
             row = conn.execute(
-                "SELECT current_stop FROM trades WHERE id=1"
+                "SELECT current_stop FROM trades WHERE id = ?", (tid,),
             ).fetchone()
-            assert row[0] == 170.0
+            assert row[0] == _trade().initial_stop  # whatever initial_stop _trade() sets
         finally:
             conn.close()
 
 
 def test_update_stop_with_event_rejects_missing_trade():
     """Spec §4.4: nonexistent trade_id → ValueError, no event insert."""
-    from swing.data.db import connect
+    from swing.data.db import connect, ensure_schema
     from swing.data.repos.trades import update_stop_with_event
-    import tempfile, pathlib
     import pytest as _pt
+    import tempfile
+    import pathlib
 
     with tempfile.TemporaryDirectory() as tmp:
         db_path = pathlib.Path(tmp) / "test.db"
+        ensure_schema(db_path).close()
         conn = connect(db_path)
         try:
             with _pt.raises(ValueError) as excinfo:
@@ -1011,8 +1017,8 @@ def test_update_stop_with_event_rejects_missing_trade():
                         event_ts="2026-04-16T10:00:00",
                         rationale="missing",
                     )
-            # Existing pre-check in get_trade path still fires for missing trades.
-            assert "not found" in str(excinfo.value).lower() or "does not exist" in str(excinfo.value).lower()
+            msg = str(excinfo.value).lower()
+            assert "not found" in msg or "does not exist" in msg
 
             rows = conn.execute(
                 "SELECT COUNT(*) FROM trade_events WHERE trade_id=99999"
@@ -1022,7 +1028,7 @@ def test_update_stop_with_event_rejects_missing_trade():
             conn.close()
 ```
 
-(The `insert_trade_with_event` kwargs are a shape-guess — verify against the actual Phase 2 signature with `grep -n "def insert_trade_with_event" swing/data/repos/trades.py` and adjust the test's kwargs to match what the existing adjacent tests use. The key assertions on the `update_stop_with_event` behavior do not depend on that signature.)
+**Critical:** the `_trade()` factory is defined at the top of the existing `tests/data/test_repos_trades.py` — it returns a valid `Trade` dataclass with a sensible initial_stop (likely 170.0 or similar). Read that factory before copying this test in, and adjust the final `assert row[0] == _trade().initial_stop` comparison to reference whatever the factory actually sets (or use a literal value that matches).
 
 - [ ] **Step 2: Verify the closed-trade test fails**
 
@@ -1230,26 +1236,24 @@ Expected: 5 PASS.
 
 - [ ] **Step 5: Refactor the CLI to use the new helper**
 
-In `swing/cli.py`, find `pipeline_force_clear_cmd` (around line 629). Replace the inline staleness-computation block (lines 651-660 — the `now = _dt.now()` through `is_stale = hb_stale and step_stale` block) with a single call:
+In `swing/cli.py`, find `pipeline_force_clear_cmd` (around line 629). The existing code computes `heartbeat_age` and `step_age` at the top of the function — `click.confirm(...)` below uses them in its message. Keep that top-of-function age computation; replace only the `hb_stale`/`step_stale`/`is_stale` derivation with a call to the new helper. This preserves the age values for the confirm message and avoids a `NameError` on the success path.
 
 ```python
         from swing.pipeline.staleness import is_stale_eligible
-        is_stale = is_stale_eligible(run, cfg)
-```
 
-Keep the surrounding logic (the `if not is_stale and not bypass_staleness_check:` branch and its error message) unchanged. The error-message block still computes `heartbeat_age` and `step_age` values for the message text; those can either be re-derived inline in the error-branch only OR the helper can be refactored to return a diagnostic tuple. For minimal change, re-compute ages inside the error branch:
-
-```python
-        from swing.pipeline.staleness import is_stale_eligible
+        now = _dt.now()
+        heartbeat_age = float("inf")
+        step_age = float("inf")
+        if run.lease_heartbeat_ts:
+            heartbeat_age = (now - _dt.fromisoformat(run.lease_heartbeat_ts)).total_seconds()
+        if run.last_step_progress_ts:
+            step_age = (now - _dt.fromisoformat(run.last_step_progress_ts)).total_seconds()
         is_stale = is_stale_eligible(run, cfg)
 
         if not is_stale and not bypass_staleness_check:
-            now = _dt.now()
-            hb_age = (now - _dt.fromisoformat(run.lease_heartbeat_ts)).total_seconds() if run.lease_heartbeat_ts else float("inf")
-            step_age = (now - _dt.fromisoformat(run.last_step_progress_ts)).total_seconds() if run.last_step_progress_ts else float("inf")
             raise click.ClickException(
                 f"Run {run_id} does not meet staleness threshold "
-                f"(heartbeat age {hb_age:.0f}s vs "
+                f"(heartbeat age {heartbeat_age:.0f}s vs "
                 f"{cfg.pipeline.stale_lease_threshold_seconds}s; "
                 f"step-progress age {step_age:.0f}s vs "
                 f"{cfg.pipeline.stale_step_threshold_seconds}s). "
@@ -1258,11 +1262,11 @@ Keep the surrounding logic (the `if not is_stale and not bypass_staleness_check:
             )
 ```
 
-The `click.confirm(...)` and `force_clear(...)` calls below stay unchanged.
+The existing `click.confirm(...)` below this block still reads `heartbeat_age` and `step_age` for its message; keep it as-is. `force_clear(...)` call below also unchanged.
 
 - [ ] **Step 6: Run the CLI tests + full suite**
 
-Run: `python -m pytest tests/web/test_cli_cmd.py -v` (or wherever the CLI force-clear tests live — grep `pipeline_force_clear_cmd` under tests/)
+Run: `python -m pytest tests/cli/test_cli_pipeline.py -v` — this is the existing suite covering `swing pipeline force-clear`. It must stay green after the refactor (the `click.confirm` message string is asserted in some tests; age-computation behavior must be byte-identical).
 
 Run: `python -m pytest -m "not slow" -q`
 Expected: 418 passed (413 + 5). No regressions.
@@ -1910,7 +1914,39 @@ git commit -m "feat(web): /pipeline renders stale-run card when active run is fo
 
 Spec §3.1, §3.2. Foundation templates + config field for the upload feature.
 
-- [ ] **Step 1: Add the config field**
+- [ ] **Step 1: Write failing config tests**
+
+Read `tests/web/test_config_web.py` first to see its existing helpers (there's a `_write_cfg` helper pattern and a `load()`-based parser pattern). Append two tests — one checking the dataclass default, one checking TOML parsing:
+
+```python
+def test_web_config_has_csv_upload_max_bytes_default():
+    """Phase 3c §3.1: Web.csv_upload_max_bytes defaults to 10 MB."""
+    from swing.config import Web
+    w = Web()
+    assert w.csv_upload_max_bytes == 10 * 1024 * 1024
+
+
+def test_web_config_csv_upload_max_bytes_parsed_from_toml(tmp_path: Path):
+    """Phase 3c §3.1: [web] csv_upload_max_bytes = N in TOML → cfg.web.csv_upload_max_bytes == N.
+    Follows the same two-dir pattern as existing partial-override tests in this file."""
+    project = tmp_path / "project"
+    project.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    cfg_path = _write_cfg(
+        project, home,
+        extra='[web]\ncsv_upload_max_bytes = 5242880\n',
+    )
+    cfg = load(cfg_path)
+    assert cfg.web.csv_upload_max_bytes == 5242880
+```
+
+The `_write_cfg` helper at `tests/web/test_config_web.py:9` is `_write_cfg(project_dir, home_dir, *, extra="")` — it needs both a project dir (where the TOML + reference/ live) and a home dir (where finviz-inbox + DB resolve to). Existing parser tests in this file use the `project / "project"` and `project / "home"` subdir pattern (e.g. `tests/web/test_config_web.py:80-81`); match that exact pattern.
+
+Run: `python -m pytest tests/web/test_config_web.py -k "csv_upload_max_bytes" -v`
+Expected: both FAIL — attribute doesn't exist yet.
+
+- [ ] **Step 2: Add the config field**
 
 In `swing/config.py`, add `csv_upload_max_bytes` to the `Web` dataclass (around line 131):
 
@@ -1929,7 +1965,7 @@ class Web:
     csv_upload_max_bytes: int = 10 * 1024 * 1024     # NEW: 10 MB (spec §3.1)
 ```
 
-- [ ] **Step 2: Create the upload form template**
+- [ ] **Step 3: Create the upload form template**
 
 Create `swing/web/templates/partials/csv_upload_form.html.j2`:
 
@@ -1956,7 +1992,7 @@ Create `swing/web/templates/partials/csv_upload_form.html.j2`:
 </section>
 ```
 
-- [ ] **Step 3: Create the error fragment template**
+- [ ] **Step 4: Create the error fragment template**
 
 Create `swing/web/templates/partials/csv_upload_error.html.j2`:
 
@@ -1985,15 +2021,20 @@ Create `swing/web/templates/partials/csv_upload_error.html.j2`:
 </section>
 ```
 
-- [ ] **Step 4: Run full fast suite (no new tests in this task)**
+- [ ] **Step 5: Run config tests**
+
+Run: `python -m pytest tests/web/test_config_web.py -k "csv_upload_max_bytes" -v`
+Expected: 2 PASS.
+
+- [ ] **Step 6: Run full fast suite**
 
 Run: `python -m pytest -m "not slow" -q`
-Expected: 428 passed (unchanged). No regressions from the config addition (dataclass field with a default).
+Expected: 430 passed (428 + 2 new config tests).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add swing/config.py swing/web/templates/partials/csv_upload_form.html.j2 swing/web/templates/partials/csv_upload_error.html.j2
+git add swing/config.py swing/web/templates/partials/csv_upload_form.html.j2 swing/web/templates/partials/csv_upload_error.html.j2 tests/web/test_config_web.py
 git commit -m "feat(web): CSV upload form + error templates + csv_upload_max_bytes config"
 ```
 
@@ -2021,7 +2062,9 @@ from fastapi.testclient import TestClient
 
 
 def test_middleware_rejects_oversized_content_length(test_cfg, seeded_db):
-    """Content-Length header exceeds limit → 413 without reading body."""
+    """Content-Length header exceeds limit → 413 rendering csv_upload_error.html.j2.
+    The middleware uses the same template the route uses for other rejections,
+    so HTMX can swap it into #csv-upload-section without visual regression."""
     from swing.web.app import create_app
     cfg, cfg_path = test_cfg
     app = create_app(cfg, cfg_path)
@@ -2038,6 +2081,9 @@ def test_middleware_rejects_oversized_content_length(test_cfg, seeded_db):
             content=b"irrelevant",  # body content unused; middleware acts on header
         )
     assert r.status_code == 413
+    # Swap-compatible fragment, not plain text.
+    assert 'id="csv-upload-section"' in r.text
+    assert "too large" in r.text.lower()
 
 
 def test_middleware_passes_through_within_limit(test_cfg, seeded_db):
@@ -2094,32 +2140,43 @@ Spec §3.1 (Phase 3c CSV-upload layer 1 defense).
 
 For chunked-transfer requests (no Content-Length header), the middleware lets
 the request through — a route-level `file.size` safety net catches those.
+
+Renders the same `csv_upload_error.html.j2` fragment the route uses for
+schema-invalid rejections, so the HTMX swap target (#csv-upload-section) sees
+a consistent UI whether rejection came from the middleware or the route.
 """
 from __future__ import annotations
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response
 
 
 class MaxBodySizeMiddleware(BaseHTTPMiddleware):
     """Reject POSTs to `path_prefix` whose Content-Length > `max_bytes`.
 
     Arguments (keyword-only):
-        path_prefix: e.g. "/pipeline/csv-upload". Only POSTs to paths matching
-            this prefix are inspected. Other requests pass through unchanged.
-        max_bytes: inclusive upper bound. Content-Length > max_bytes → 413.
+        path_prefix: exact path match, e.g. "/pipeline/csv-upload". Only POSTs
+            to paths EQUAL to this value are inspected. Other requests (including
+            sub-paths like `/pipeline/csv-upload/foo` if such routes are added
+            later) pass through unchanged.
+        max_bytes: inclusive upper bound. Content-Length > max_bytes → 413
+            rendering `csv_upload_error.html.j2`.
     """
 
     def __init__(self, app, *, path_prefix: str, max_bytes: int):
         super().__init__(app)
+        # Name kept as `path_prefix` for backward-compat of the kwarg; actual
+        # comparison is exact equality. Rename if the comparison ever needs
+        # to be prefix-based.
         self._path_prefix = path_prefix
         self._max_bytes = max_bytes
 
     async def dispatch(self, request: Request, call_next):
+        # Exact-path match (not startswith) — a future `/pipeline/csv-upload/foo`
+        # route would be unrelated and shouldn't silently inherit this guard.
         if (
             request.method == "POST"
-            and request.url.path.startswith(self._path_prefix)
+            and request.url.path == self._path_prefix
         ):
             cl_header = request.headers.get("content-length")
             if cl_header is not None:
@@ -2128,13 +2185,16 @@ class MaxBodySizeMiddleware(BaseHTTPMiddleware):
                 except ValueError:
                     declared = -1
                 if declared > self._max_bytes:
-                    return Response(
+                    # Same template the route renders — swaps cleanly into
+                    # #csv-upload-section, not raw text into the DOM.
+                    tpls = request.app.state.templates
+                    return tpls.TemplateResponse(
+                        request, "partials/csv_upload_error.html.j2",
+                        {"reasons": [
+                            f"file too large "
+                            f"(Content-Length: {declared} > {self._max_bytes} bytes)"
+                        ]},
                         status_code=413,
-                        content=(
-                            f"Upload exceeds configured limit of "
-                            f"{self._max_bytes} bytes (declared: {declared})."
-                        ),
-                        media_type="text/plain",
                     )
         return await call_next(request)
 ```
@@ -2170,21 +2230,30 @@ In `create_app`, add the middleware **before** `OriginGuardMiddleware` (Starlett
     app.add_middleware(RequestIdMiddleware)
 ```
 
-Wait — re-read the Starlette middleware ordering carefully. In Starlette/FastAPI, `app.add_middleware(M)` wraps the app so that M runs **outermost** (its `dispatch` is called first on the way in). Each subsequent `add_middleware` wraps that, becoming the new outermost. So the order you see is reverse of execution order: later `add_middleware` calls run **before** earlier ones.
+Starlette middleware stack is LIFO: `app.add_middleware(M)` wraps the app so M runs **outermost**. Each subsequent `add_middleware` wraps what came before, becoming the new outermost. Execution order on the request path is the reverse of the `add_middleware` call order.
 
-Current order in `create_app`:
-1. `add_middleware(OriginGuardMiddleware, ...)` — runs 2nd (inner)
-2. `add_middleware(RequestIdMiddleware)` — runs 1st (outer), stamps X-Request-ID on all responses
+**Security contract:** under strict OriginGuard (Phase 3b decision), a POST without `HX-Request: true` MUST return 403 — regardless of what else is wrong with the request. If `MaxBodySizeMiddleware` runs BEFORE `OriginGuardMiddleware` on the request path, an oversized POST without HX-Request gets a 413 instead of a 403, silently weakening the strict-mode contract. OriginGuard inspects only headers (no body read), so running it first is safe and preserves the "403 first, everything else after" rule.
 
-We want `MaxBodySizeMiddleware` to run BEFORE OriginGuard (reject oversized before doing origin check) but AFTER RequestIdMiddleware (so 413 gets X-Request-ID). So the order of `add_middleware` calls should be:
+Desired execution order (outermost → innermost): `RequestIdMiddleware` (stamps X-Request-ID on every response) → `OriginGuardMiddleware` (403 if no HX-Request) → `MaxBodySizeMiddleware` (413 if Content-Length too big) → route (schema validation, 400 on bad filename/schema, 200 on success).
 
-1. `add_middleware(OriginGuardMiddleware, ...)` — innermost of the three
-2. `add_middleware(MaxBodySizeMiddleware, ...)` — middle
-3. `add_middleware(RequestIdMiddleware)` — outermost
+To achieve that with LIFO `add_middleware` calls, the add order must be (innermost first, outermost last):
 
-Adjust the code accordingly:
+1. `app.add_middleware(MaxBodySizeMiddleware, ...)` — added FIRST → innermost on request path
+2. `app.add_middleware(OriginGuardMiddleware, ...)` — added SECOND → middle
+3. `app.add_middleware(RequestIdMiddleware)` — added LAST → outermost
+
+Since the existing `create_app` already has `add_middleware(OriginGuardMiddleware)` THEN `add_middleware(RequestIdMiddleware)`, Phase 3c inserts the `MaxBodySizeMiddleware` call **before** the OriginGuard call:
 
 ```python
+    # Body-size guard FIRST (innermost) — runs AFTER OriginGuard on the
+    # request path. Only fires on /pipeline/csv-upload POSTs that already
+    # passed OriginGuard (i.e., they have HX-Request: true). Oversized POSTs
+    # without HX-Request get 403 from OriginGuard before ever hitting this.
+    app.add_middleware(
+        MaxBodySizeMiddleware,
+        path_prefix="/pipeline/csv-upload",
+        max_bytes=cfg.web.csv_upload_max_bytes,
+    )
     # Origin guard for all state-changing requests.
     app.add_middleware(
         OriginGuardMiddleware,
@@ -2192,16 +2261,8 @@ Adjust the code accordingly:
         bound_port=cfg.web.port,
         strict=True,
     )
-    # Body-size guard. Added AFTER OriginGuard → wraps OriginGuard → runs
-    # BEFORE OriginGuard on the way in (rejects oversized uploads at the edge
-    # without reading the body).
-    app.add_middleware(
-        MaxBodySizeMiddleware,
-        path_prefix="/pipeline/csv-upload",
-        max_bytes=cfg.web.csv_upload_max_bytes,
-    )
-    # RequestId added LAST → outermost → runs first → 413 + 403 responses
-    # both get X-Request-ID stamped.
+    # RequestId added LAST → outermost → runs first → all responses (403, 413,
+    # 200) get X-Request-ID stamped.
     app.add_middleware(RequestIdMiddleware)
 ```
 
@@ -2320,13 +2381,18 @@ def test_csv_upload_replaces_existing_inbox_file(test_cfg, seeded_db):
     assert b"MSFT" in inbox_files[0].read_bytes()
 
 
-def test_csv_upload_size_over_limit_via_safety_net(test_cfg, seeded_db, monkeypatch):
-    """Route-level safety-net: post-parse `file.size > limit` → 413, even
-    when middleware didn't catch the request (simulated by dropping the
-    Content-Length header at the client)."""
+def test_csv_upload_size_over_limit_returns_413(test_cfg, seeded_db):
+    """Oversized upload → 413 rendering csv_upload_error.html.j2.
+
+    Note: with `TestClient`, the client always sets Content-Length, so in practice
+    the middleware's Content-Length pre-check is what fires here. The route-level
+    `file.size` safety-net exists for chunked-transfer requests (no Content-Length)
+    that may arrive from real HTTP clients; exercising that code path end-to-end
+    would require a chunked-transfer test harness beyond TestClient. The two
+    layers share the same template, so the user-visible response is identical
+    regardless of which layer rejected."""
     cfg, cfg_path = test_cfg
     # Lower the limit for this test so we can trigger it with a small body.
-    # Simulate by monkeypatching the attribute on the already-loaded cfg.
     from dataclasses import replace as _replace
     small_web = _replace(cfg.web, csv_upload_max_bytes=100)
     tiny_cfg = _replace(cfg, web=small_web)
@@ -2339,9 +2405,9 @@ def test_csv_upload_size_over_limit_via_safety_net(test_cfg, seeded_db, monkeypa
             headers={"HX-Request": "true"},
             files={"csv": ("big.csv", big_body, "text/csv")},
         )
-    # Middleware would reject based on Content-Length (TestClient sets it),
-    # OR the route's file.size safety-net rejects. Either way: 413.
     assert r.status_code == 413
+    assert 'id="csv-upload-section"' in r.text
+    assert "too large" in r.text.lower()
 ```
 
 - [ ] **Step 2: Verify they fail**
