@@ -261,3 +261,53 @@ def test_htmx_handler_uses_app_state_templates(test_cfg, seeded_db):
         r = client.get("/_smoke_404", headers={"HX-Request": "true"})
     assert r.status_code == 404
     assert "smoke" in r.text
+
+
+def test_non_htmx_get_with_bad_query_renders_full_page(test_cfg, seeded_db):
+    """Spec §3.3 / §4.3: address-bar typo on /journal?period=<bad> with
+    Accept: text/html → full-page page_error.html.j2, not 422 JSON."""
+    from typing import Literal
+    from fastapi import Query as _Query
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+
+    # Register a synthetic GET endpoint that uses a Literal param (similar to
+    # /journal's eventual shape) so RequestValidationError fires on invalid values.
+    @app.get("/_typed_query_probe")
+    def _probe(mode: Literal["a", "b"] = _Query("a")):
+        return {"mode": mode}
+
+    with TestClient(app) as client:
+        r = client.get(
+            "/_typed_query_probe?mode=nope",
+            headers={"Accept": "text/html,application/xhtml+xml,*/*"},
+        )
+    assert r.status_code == 400
+    assert "text/html" in r.headers.get("content-type", "")
+    # Full-page error — contains base layout chrome (nav) + the detail.
+    assert "<html" in r.text.lower()
+    assert "Return to dashboard" in r.text
+    assert "mode" in r.text  # field name appears in detail
+
+
+def test_non_htmx_get_json_accept_falls_through_to_422(test_cfg, seeded_db):
+    """Spec §3.3 precedence rule #3: GET with Accept: application/json (no
+    text/html) → FastAPI default 422 JSON, not the HTML page."""
+    from typing import Literal
+    from fastapi import Query as _Query
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+
+    @app.get("/_typed_query_probe2")
+    def _probe(mode: Literal["a", "b"] = _Query("a")):
+        return {"mode": mode}
+
+    with TestClient(app) as client:
+        r = client.get(
+            "/_typed_query_probe2?mode=nope",
+            headers={"Accept": "application/json"},
+        )
+    assert r.status_code == 422
+    assert "application/json" in r.headers.get("content-type", "")
+    body = r.json()
+    assert "detail" in body

@@ -153,7 +153,29 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
                 {"status_code": 400, "detail": f"Invalid input in {field}: {msg}"},
                 status_code=400,
             )
-        # Task 5 inserts the non-HTMX GET HTML branch before this fallthrough.
+
+        # Non-HTMX GET with Accept: text/html → full-page HTML error.
+        # Spec §3.3 precedence rule #2. API clients (Accept without text/html)
+        # continue to the FastAPI default 422 JSON via fallthrough.
+        if request.method == "GET" and "text/html" in request.headers.get("accept", ""):
+            from swing.web.view_models.error import PageErrorVM
+            from swing.evaluation.dates import action_session_for_run
+            from datetime import datetime
+            try:
+                session_date = action_session_for_run(datetime.now()).isoformat()
+            except Exception:
+                session_date = "n/a"
+            vm = PageErrorVM(
+                session_date=session_date,
+                status_code=400,
+                detail=f"Invalid input in {field}: {msg}",
+            )
+            return tpls.TemplateResponse(
+                request, "page_error.html.j2",
+                {"vm": vm},
+                status_code=400,
+            )
+
         return await request_validation_exception_handler(request, exc)
 
     # Static mounts. charts_dir is written by the pipeline; if no run has
