@@ -57,8 +57,10 @@ swing/
 │   │                               #   existing price_fetch_executor reused.
 │   ├── routes/
 │   │   ├── dashboard.py            # MODIFIED: thread ohlcv_cache through to build_dashboard.
-│   │   └── trades.py               # MODIFIED: every call site of build_open_positions_row
-│   │                               #   now passes ohlcv_cache (~6 POST-success handlers).
+│   │   ├── trades.py               # MODIFIED: every call site of build_open_positions_row
+│   │   │                           #   now passes ohlcv_cache (~6 POST-success handlers).
+│   │   └── pipeline.py             # MODIFIED: compute ohlcv_degraded = ohlcv_cache.is_degraded()
+│   │                               #   and pass to build_pipeline for the banner field.
 │   └── view_models/
 │       ├── dashboard.py            # MODIFIED: fetch OHLCV bundles via ohlcv_cache;
 │       │                           #   plumb sma10/20/50 + previous_close into
@@ -68,19 +70,19 @@ swing/
 ├── cli.py                          # MODIFIED: `swing trade advisory` gains --sma50 and
 │                                   #   --previous-close flags (consequential parity).
 └── config.py                       # MODIFIED: Web.ohlcv_cache_ttl_seconds = 3600 default;
-                                    #   Web.max_concurrent_ohlcv_fetches = 4 (see §3.2).
+                                    #   Web.max_concurrent_ohlcv_fetches = 8 (see §3.2).
 ```
 
 Files touched (full list):
 
 - **Phase 2 carve-out (1):** `swing/trades/advisory.py`.
 - **New modules (2):** `swing/pipeline/ohlcv.py`, `swing/web/ohlcv_cache.py`.
-- **Phase 3 route updates (2):** `swing/web/routes/dashboard.py`, `swing/web/routes/trades.py`.
+- **Phase 3 route updates (3):** `swing/web/routes/dashboard.py`, `swing/web/routes/trades.py`, `swing/web/routes/pipeline.py`.
 - **Phase 3 view-model updates (5):** `swing/web/view_models/dashboard.py` (OHLCV plumb + DashboardVM.ohlcv_source_degraded), `open_positions_row.py` (accepts ohlcv_cache), `pipeline.py` (PipelineVM.ohlcv_source_degraded), `journal.py` (JournalVM.ohlcv_source_degraded=False default), `watchlist.py` (WatchlistVM.ohlcv_source_degraded=False default), plus `error.py` (PageErrorVM.ohlcv_source_degraded=False default).
 - **Phase 3 template update (1):** `swing/web/templates/base.html.j2` gains the conditional OHLCV-degraded banner.
 - **Wiring (3):** `swing/web/app.py` (app.state.ohlcv_cache), `swing/cli.py` (--sma50, --previous-close), `swing/config.py` (two new Web fields).
 
-Total: **15 files** (1 carve-out + 2 new modules + 12 modifications). The earlier "ten files" count under-reported by omitting the shared-base-template VM surface — R3 review correctly flagged this. Existing dashboard and trade-action integration tests will need fixtures updated to pass a test double for `ohlcv_cache`.
+Total: **16 files** (1 carve-out + 2 new modules + 13 modifications). Earlier counts (10 → 15 → 16) grew as review rounds surfaced the shared-base-template VM set (R3) and the pipeline-route `is_degraded` pass-through (R4). Existing dashboard, pipeline, and trade-action integration tests will need fixtures updated to pass a test double for `ohlcv_cache`.
 
 ### 2.2 Design invariants
 
@@ -394,7 +396,7 @@ Worst-case cold-cache latency is `2 × deadline_seconds` (default 12s). On any w
 
 - `base.html.j2` gains a conditional render for the OHLCV-degraded banner (§6) — driven by a new `vm.ohlcv_source_degraded: bool` field. Because the base template is shared across **every** page that extends it, EVERY base-layout VM must gain the field (defaulted to `False`) or Jinja will 500 the page with `UndefinedError` on an unrelated route. Per Phase 3c's `PageErrorVM` precedent, we enumerate the full base-layout VM set:
   - `swing/web/view_models/dashboard.py::DashboardVM` — populates `ohlcv_source_degraded` from `ohlcv_cache.is_degraded()`.
-  - `swing/web/view_models/pipeline.py::PipelineVM` — populates `ohlcv_source_degraded` from `ohlcv_cache.is_degraded()`.
+  - `swing/web/view_models/pipeline.py::PipelineVM` — gains `ohlcv_source_degraded: bool = False`. The `build_pipeline(*, cfg, ...)` signature is extended with `ohlcv_degraded: bool = False` so existing call sites don't break; the pipeline ROUTE (`swing/web/routes/pipeline.py`) computes `ohlcv_degraded = request.app.state.ohlcv_cache.is_degraded()` and passes it explicitly. This keeps the VM builder free of `app.state` coupling.
   - `swing/web/view_models/journal.py::JournalVM` — defaults to `False` (journal route doesn't consult OHLCV).
   - `swing/web/view_models/watchlist.py::WatchlistVM` — defaults to `False`.
   - `swing/web/view_models/error.py::PageErrorVM` — defaults to `False` (error pages never show OHLCV banner).
@@ -597,5 +599,5 @@ Per-ticker TRANSIENT deadline misses (a single ticker's fetch didn't complete by
 ## 10. Expected test count
 
 - Phase 3c baseline: 444 fast tests.
-- Phase 3d target: ~460 fast tests (+16 new; +/- a few as tests are added or adjusted).
+- Phase 3d target: ~465 fast tests (+~20-24 new including the §5.5 base-layout compat suite; +/- a few as tests are added or adjusted).
 - Phase 2 regression: all existing `tests/trades/test_advisory.py` tests continue to pass after the minor context-construction updates.
