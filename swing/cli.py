@@ -636,6 +636,7 @@ def pipeline_force_clear_cmd(ctx, run_id, reason, bypass_staleness_check):
     """
     from datetime import datetime as _dt
     from swing.data.repos.pipeline import find_run, force_clear
+    from swing.pipeline.staleness import is_stale_eligible
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
@@ -655,9 +656,7 @@ def pipeline_force_clear_cmd(ctx, run_id, reason, bypass_staleness_check):
             heartbeat_age = (now - _dt.fromisoformat(run.lease_heartbeat_ts)).total_seconds()
         if run.last_step_progress_ts:
             step_age = (now - _dt.fromisoformat(run.last_step_progress_ts)).total_seconds()
-        hb_stale = heartbeat_age > cfg.pipeline.stale_lease_threshold_seconds
-        step_stale = step_age > cfg.pipeline.stale_step_threshold_seconds
-        is_stale = hb_stale and step_stale
+        is_stale = is_stale_eligible(run, cfg)
 
         if not is_stale and not bypass_staleness_check:
             raise click.ClickException(
