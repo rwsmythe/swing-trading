@@ -104,7 +104,16 @@ def web_cmd(ctx, host, port, reload):
 
 - Bind **127.0.0.1 only**. Binding to `0.0.0.0` or any non-loopback address is refused with a clear error at startup — the user can set `[web].host` in config, but any non-loopback value is rejected.
 - **No authentication.** No CSRF tokens.
-- **Origin check as CSRF defense-in-depth.** A cross-site `<form action="http://127.0.0.1:8080/pipeline/run" method="POST">` on a malicious page the user happens to be visiting CAN be submitted even without JS — the browser will POST to localhost from any origin. To mitigate, every state-changing POST endpoint (`/pipeline/run`, `/prices/refresh`) requires either (a) the HTMX header `HX-Request: true` (which browsers do not send on cross-origin form POSTs without preflight, and the HTMX library sets automatically), OR (b) an `Origin` header equal to `http://<bound host>:<port>`. Requests failing both checks return `403 Forbidden`. Middleware: `swing/web/middleware/origin_guard.py`. This is cheap, matches localhost's threat model, and does not require session state.
+- **Origin check as CSRF defense-in-depth.** A cross-site `<form action="http://127.0.0.1:8080/pipeline/run" method="POST">` on a malicious page the user happens to be visiting CAN be submitted even without JS — the browser will POST to localhost from any origin. Middleware `swing/web/middleware/origin_guard.py` blocks state-changing requests that lack an acceptable same-origin indicator.
+
+- **Accepted-header matrix (3a).** Every state-changing POST in 3a is dispatched by HTMX from the dashboard itself — no plain-HTML-form POSTs. The middleware accepts a request when ANY of the following is true:
+  | Request signal | Accepted when | Why |
+  |---|---|---|
+  | `HX-Request: true` | always | HTMX sets this automatically; cross-origin form POSTs without JS do NOT (it is a custom header → triggers CORS preflight → preflight is refused by the server). |
+  | `Origin: http://<bound host>:<port>` | header is present | Modern browsers always send `Origin` on cross-origin POSTs; absence-or-match is the valid same-origin case. |
+  | `Referer` starts with `http://<bound host>:<port>/` | Origin is absent AND no HX-Request | Fallback for older user-agents — rare on localhost but cheap to check. |
+  State-changing routes receiving a request that satisfies NONE of the above return `403 Forbidden`. This matrix is enforced for `POST /pipeline/run`, `POST /prices/refresh`, and `GET /pipeline/status/{id}` when called from HTMX (GET polling carries `HX-Request`; same-origin direct GETs from the address bar are allowed unconditionally for `GET` requests).
+- **Plain HTML form POSTs are NOT supported in 3a.** 3b will extend `origin_guard` with CSRF token validation for the trade-action forms it introduces; 3a deliberately has no submit-form surface.
 - Spec §2.4 invariant — DB outside Drive folder, code inside — is honored by reading `cfg.paths.db_path` and `cfg.paths.charts_dir`, which Phase 1 already resolved to `%USERPROFILE%/swing-data/`.
 
 ### 2.5 New config section
@@ -221,7 +230,15 @@ def get_many(self, tickers, deadline_seconds):
     return results
 ```
 
-**Why parallel with global deadline**: a serial loop of `get(ticker)` with a 3s per-ticker timeout degrades `GET /` latency to `O(N × 3s)` when yfinance is slow or timing out. With 8–12 tickers that is a 24–36 second page load. `get_many` with an overall deadline (default `cfg.web.price_fetch_timeout_seconds * 2` → 6s cap across all tickers, regardless of count) caps total page-render latency. Tickers that don't complete before the deadline fall back to last close marked `is_stale=True`.
+**Why parallel rather than serial**: a serial loop of `get(ticker)` with a 3s per-ticker timeout degrades `GET /` latency to `O(N × 3s)` when yfinance is slow or timing out. With 8–12 tickers that is a 24–36 second page load. `get_many` dispatches all misses in parallel, so expected latency is `~max(per-ticker timeout) ≈ 3s`, not `N × 3s`.
+
+**On the "deadline" — honest statement of the guarantee** (adversarial review Round 2 Major 2): Python's `ThreadPoolExecutor` cannot forcibly terminate in-progress threads. The `as_completed(..., timeout=deadline_seconds)` call only stops the *iterator*; submitted tasks whose calls are blocked inside yfinance / `requests.get()` continue to run until those libraries themselves return or raise. The pool's context-manager exit will wait for them. To prevent the request handler from blocking past the deadline, `get_many` must:
+1. Use `executor = ThreadPoolExecutor(...)` WITHOUT a `with` block.
+2. After `as_completed` timeout fires, mark missing tickers as `_fallback_snapshot(ticker)`.
+3. Call `executor.shutdown(wait=False, cancel_futures=True)` (Python 3.9+) — cancels *queued* futures; in-flight futures are abandoned. They complete in the background and their results are garbage-collected.
+4. **Leaked threads are tolerated in 3a.** Each is waiting on an HTTP socket with its own yfinance-level timeout; they terminate within at most that timeout even if abandoned. In a localhost single-user app, the worst case is a handful of zombie threads for the remainder of a 3-second window — negligible memory, no correctness impact.
+
+The primary bound is thus the **yfinance-level per-ticker timeout**, which the implementation must pass through explicitly (via `yfinance.Ticker(t).fast_info` — internally uses `requests` with a `timeout` kwarg). The `deadline_seconds` passed to `get_many` is a second defensive cap for the case where yfinance ignores or mishandles its own timeout.
 
 Thread-safe: `threading.Lock` guards the dict under concurrent reads. The cache can be accessed from request-handling threads concurrently (multiple browser tabs). No background refresh thread in 3a.
 
@@ -230,6 +247,8 @@ Thread-safe: `threading.Lock` guards the dict under concurrent reads. The cache 
 Each page has a `build(cfg, cache, **params) -> <Page>VM` function. It opens a DB connection, reads repos, calls the price cache for the active tickers, and returns a frozen dataclass. The template receives only the VM — no raw connection, no live objects.
 
 **DashboardVM fields** — field names align with Phase 2's `BriefingInputs` (`swing/rendering/briefing.py`) so the dashboard and the static briefing share vocabulary. The original Phase 3 request called out `open_trade_advisories`, `watchlist_last_prices`, and `flag_tags` as the concrete fields to fill; the dashboard populates them at render time (the static briefing model stays empty per Phase 2 Appendix C — the briefing.html artifact is not regenerated by the dashboard).
+
+**Type upgrade on the price maps** (vs BriefingInputs, Round 2 Minor 2): `BriefingInputs` types the price maps as `Mapping[str, float]` because the static briefing has no concept of staleness. The dashboard needs staleness for badge rendering, so its VM types them as `Mapping[str, PriceSnapshot]` — same field name, richer value type. Templates render `.price` for display and branch on `.is_stale` / `.source` for the "(stale)" badge.
 
 ```python
 @dataclass(frozen=True)
@@ -242,12 +261,12 @@ class DashboardVM:
     open_trades: list[Trade]                # from Phase 2 repo dataclass, unchanged
     open_trade_advisories: Mapping[int, list[AdvisorySuggestionVM]]
                                             # keyed by trade_id; from compute_all_suggestions(trade, current_price, …)
-    open_trade_last_prices: Mapping[str, float]
-                                            # keyed by ticker; current or last-close per price cache
+    open_trade_last_prices: Mapping[str, PriceSnapshot]
+                                            # keyed by ticker; carries is_stale + source for badge rendering
     watchlist_top5: list[WatchlistEntry]    # from Phase 2 repo dataclass
     watchlist_remaining_count: int
-    watchlist_last_prices: Mapping[str, float]
-                                            # keyed by ticker; current or last-close per price cache
+    watchlist_last_prices: Mapping[str, PriceSnapshot]
+                                            # keyed by ticker; carries is_stale + source for badge rendering
     flag_tags: Mapping[str, tuple[str, ...]]
                                             # keyed by ticker; e.g. ("TT✓","VCP✓","A+"). Computed by joining
                                             # watchlist ticker → latest candidates.criteria results.
@@ -339,8 +358,10 @@ All three regions swap simultaneously in the browser.
 1. Handler checks `find_active_run(conn)`.
    - If an active run exists with fresh heartbeat → return `partials/pipeline_progress.html.j2` immediately with that run's id, so the UI shows the existing run's progress.
    - If active run exists with stale heartbeat → return an error fragment with the actual heartbeat age formatted at render time: `f"A previous run is stuck (run #{id}, state=running, heartbeat age {age_minutes}m). A dashboard force-clear button ships in Phase 3b; until then, run `swing pipeline force-clear {id} --bypass-staleness-check` in a terminal."` The fragment also includes a copy-to-clipboard button for the command to reduce CLI friction.
-2. Otherwise spawns a detached subprocess: `subprocess.Popen([sys.executable, "-m", "swing.cli", "--config", str(cfg_path), "pipeline", "run", "--manual"], close_fds=True, stdout=log_fd, stderr=subprocess.STDOUT, start_new_session=True)`.
-   - **Rationale:** a daemon thread dies on uvicorn reload or process exit, orphaning the `pipeline_runs` row with `state='running'` (adversarial review Round 1 Major 4). A subprocess decouples pipeline lifecycle from the web-server lifecycle. Subprocess stdout/stderr redirect to `swing-data/logs/pipeline-run-<run_id>.log` for post-hoc inspection.
+2. Otherwise spawns a detached subprocess: `subprocess.Popen([sys.executable, "-m", "swing.cli", "--config", str(app.state.cfg_path), "pipeline", "run", "--manual"], close_fds=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)`.
+   - **Rationale:** a daemon thread dies on uvicorn reload or process exit, orphaning the `pipeline_runs` row with `state='running'` (adversarial review Round 1 Major 4). A subprocess decouples pipeline lifecycle from the web-server lifecycle.
+   - **`cfg_path` provenance** (Round 2 Major 3): `create_app(cfg, cfg_path)` takes BOTH the loaded config and its source file path. `app.state.cfg_path` must be set at app creation time from the CLI's `--config` option (passed through via `ctx.obj["config_path"]` in `swing.cli`). When `cfg_path is None` (e.g. tests calling `create_app(test_cfg)` without a file on disk), `POST /pipeline/run` returns `503 Service Unavailable` with body "Pipeline subprocess launch requires a config-file-backed app startup. Configure via `swing --config <path> web`." Tests that exercise `/pipeline/run` must provide `cfg_path` via a small in-test config file.
+   - **No stdout/stderr capture in the route handler** (Round 2 Minor 3): the child process's logging flows through `swing-data/logs/pipeline.log` (Phase 2's structured log file — `swing.pipeline.runner` uses `logging.getLogger(__name__)` already). Redirecting `Popen`'s stdout/stderr introduces Windows FD-inheritance quirks (parent-opened files can fail with sharing errors); `DEVNULL` is portable and avoids the quirks entirely. Post-hoc inspection is via `swing-data/logs/pipeline.log`, not per-run files.
    - **No wait/poll for the child**: `Popen` returns immediately; the child writes the `pipeline_runs` row itself via `acquire_lease` inside `run_pipeline`.
    - Trade-off: ~1s subprocess-startup overhead (Python interpreter boot) is negligible vs pipeline runtime of several minutes.
 3. Tight-loop `find_active_run(conn)` (up to 2s, 50ms sleep) to pick up the new row's id after the child acquires its lease. If still missing after 2s → return error fragment ("Pipeline subprocess did not acquire lease within 2s. Check `swing-data/logs/pipeline-run-*.log` and `swing-data/logs/web.log`.").
