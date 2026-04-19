@@ -30,10 +30,14 @@ def test_get_journal_invalid_period(seeded_db):
     app = create_app(cfg, cfg_path)
     # Post-Task-7: `period: Literal[...]` produces a RequestValidationError.
     # A bare client (no HX-Request, no Accept: text/html) falls through to
-    # FastAPI's default 422 JSON response per spec §3.3 precedence rule.
-    with TestClient(app, raise_server_exceptions=False) as client:
+    # FastAPI's default 422 JSON response per spec §3.3 precedence rule #3.
+    # Pinning 422 (not a loose 4xx range) guards against regressions where
+    # either the HTMX branch or the HTML branch accidentally intercepts
+    # bare JSON clients, or the exception handler gets unwired.
+    with TestClient(app) as client:
         r = client.get("/journal?period=fortnight")
-    assert r.status_code in (400, 422, 500)
+    assert r.status_code == 422
+    assert "application/json" in r.headers.get("content-type", "")
 
 
 def test_journal_bad_period_htmx_returns_div_fragment(test_cfg, seeded_db):
