@@ -239,7 +239,8 @@ def entry_post(
     )
 
     # b) Dashboard rebuild — source for OOB fragments.
-    dashboard_vm = build_dashboard(cfg=cfg, cache=cache, executor=executor)
+    dashboard_vm = build_dashboard(cfg=cfg, cache=cache, executor=executor,
+                                   ohlcv_cache=request.app.state.ohlcv_cache)
 
     # Render response: primary row + #status-strip OOB + #watchlist-top5 OOB.
     # R3 Major 2 + Minor 1 fix: render the watchlist-top5 region via a shared
@@ -335,7 +336,8 @@ def exit_post(
         conn.close()
 
     # Two-call rebuild.
-    dashboard_vm = build_dashboard(cfg=cfg, cache=cache, executor=executor)
+    dashboard_vm = build_dashboard(cfg=cfg, cache=cache, executor=executor,
+                                   ohlcv_cache=request.app.state.ohlcv_cache)
     status_strip_html = templates.get_template("partials/status_strip.html.j2").render(
         request=request, vm=dashboard_vm,
     )

@@ -307,7 +307,8 @@ def prices_refresh(request: Request):
     cache.reset_circuit_breaker()
     cache.refresh_all(active)
 
-    vm = build_dashboard(cfg=cfg, cache=cache, executor=executor)
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=executor,
+                         ohlcv_cache=request.app.state.ohlcv_cache)
     return templates.TemplateResponse(
         request, "partials/prices_refresh_container.html.j2",
         {"vm": vm},

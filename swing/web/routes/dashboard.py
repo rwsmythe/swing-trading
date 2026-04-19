@@ -13,8 +13,10 @@ router = APIRouter()
 def index(request: Request):
     cfg = request.app.state.cfg
     cache = request.app.state.price_cache
+    ohlcv_cache = request.app.state.ohlcv_cache
     executor = request.app.state.price_fetch_executor
-    vm = build_dashboard(cfg=cfg, cache=cache, executor=executor)
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=executor,
+                         ohlcv_cache=ohlcv_cache)
     return request.app.state.templates.TemplateResponse(
         request, "dashboard.html.j2", {"vm": vm},
     )
