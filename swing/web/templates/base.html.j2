@@ -6,6 +6,18 @@
   <title>Swing Trading Dashboard</title>
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/htmx.min.js"></script>
+  <script>
+    // Spec 3c §3.2a: HTMX 2.x defaults 4xx responses to swap:false+error:true.
+    // Phase 3b+ fragments (trade_form_error, http_error_fragment, csv_upload_error,
+    // force_clear_*, stale_run_card) return 400/404/409/413 and MUST swap into
+    // the target or the UI silently drops them. Override enables 4xx swapping
+    // while keeping the error event for client-side logging.
+    htmx.config.responseHandling = [
+      {code: "204", swap: false},
+      {code: "[12]..", swap: true},
+      {code: "[45]..", swap: true, error: true},
+    ];
+  </script>
 </head>
 <body>
   <nav class="topbar">
