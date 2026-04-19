@@ -93,7 +93,7 @@ tests/web/
 └── test_dashboard_integration.py # full flow: seeded DB + mocked price fetch, stale-banner scenarios
 ```
 
-**Target test count:** ~55 new. Breakdown by task: T1=2, T3=2, T4=6, T5=4, T6=5 (including refresh_all), T7=3, T8=4, T9=1, T11=1, T13=1, T14=3, T15=5, T16=1, T17=4, T18=3, T19=1, T20=4 (including 403-with-request-id), T21=4 (added CLI-without-web-stack coverage), T22=3. The spec target of ~38 was a rough early estimate; adversarial-review fixes added ~15 tests. Combined with Phase 2's 287 fast tests, expected total is **~342 fast tests** (R1 Minor 4 — recounted from the plan).
+**Target test count:** ~61 new. Breakdown: T1=2, T3=2, T4=6, T5=4, T6=8 (adds 3 R2 tests — empty frame, trailing NaN, all-NaN close — and refresh_all test), T7=3, T8=4, T9=1, T11=1, T13=1, T14=3, T15=5, T16=1, T17=4, T18=3, T19=2 (adds bypass-degraded-mode test), T20=5 (adds log-handler-idempotency + 403-with-request-id), T21=4, T22=3. Combined with Phase 2's 287 fast tests, expected total is **~348 fast tests**.
 
 ---
 
@@ -879,16 +879,30 @@ class PriceCache:
         """Live yfinance call with an enforced per-ticker timeout.
 
         `yfinance.Ticker(t).fast_info` does NOT accept a `timeout` kwarg and
-        can hang indefinitely behind a requests-level socket timeout default.
-        `yfinance.download(ticker, period='1d', interval='1m', timeout=N,
-        progress=False)` DOES propagate the timeout through to the underlying
-        requests session and is the supported path for a bounded fetch.
+        can hang indefinitely. `yfinance.download(...)` DOES propagate
+        `timeout=` through to the underlying requests session.
 
-        Timeout is `self._cfg.web.price_fetch_timeout_seconds` (default 3s).
-        A fetch that overruns the timeout raises `requests.ReadTimeout` (or
-        yfinance's wrapped equivalent); callers should catch and fall back.
-        Returns the most recent close in the returned minute-bar DataFrame.
+        Extraction contract (R2 Minor 1):
+        - Call: `yf.download(ticker, period="1d", interval="1m",
+          progress=False, timeout=<cfg>, auto_adjust=False,
+          group_by="column")`. `group_by="column"` keeps a single-level
+          column index regardless of ticker count so `df["Close"]` always
+          returns a Series.
+        - Empty frame → raise `RuntimeError("no bars")`. Minute-bar data
+          can legitimately be empty pre-market-open even during what the
+          NYSE calendar calls "market hours" (the calendar treats the
+          regular session as 09:30–16:00 but yfinance's 1m data may not
+          backfill that precisely at 09:29:59).
+        - Walk the `Close` series backwards, returning the first non-NaN
+          value — the last bar can carry NaN when yfinance streams a new
+          minute whose close hasn't finalized.
+        - If every `Close` value is NaN → raise `RuntimeError("all close NaN")`.
+
+        Timeout default is `self._cfg.web.price_fetch_timeout_seconds` (3s).
+        Caller (`_fetch_with_fallback`) catches any exception and falls back
+        to last-close with `is_stale=True, source="last_close"`.
         """
+        import pandas as pd
         import yfinance as yf
         df = yf.download(
             ticker,
@@ -897,10 +911,14 @@ class PriceCache:
             progress=False,
             timeout=self._cfg.web.price_fetch_timeout_seconds,
             auto_adjust=False,
+            group_by="column",
         )
         if df is None or df.empty:
             raise RuntimeError(f"yfinance returned no bars for {ticker}")
-        return float(df["Close"].iloc[-1])
+        close_series = df["Close"].dropna()
+        if close_series.empty:
+            raise RuntimeError(f"all Close values are NaN for {ticker}")
+        return float(close_series.iloc[-1])
 
     def _last_close(self, ticker: str) -> float | None:
         conn = connect(self._cfg.paths.db_path)
@@ -1073,6 +1091,61 @@ def test_circuit_breaker_is_instance_scoped(seeded_db):
     assert not b.is_degraded()
 
 
+def test_fetch_live_price_skips_trailing_nan_close(seeded_db, monkeypatch):
+    """Last minute bar can be NaN while yfinance streams a fresh minute
+    whose close hasn't finalized — R2 Minor 1. The cache must return the
+    most recent NON-NaN Close rather than raise."""
+    import numpy as np
+    import pandas as pd
+    from swing.web.price_cache import PriceCache
+
+    cfg, _ = seeded_db
+    cache = PriceCache(cfg)
+
+    closes = [181.25, 181.30, 181.28, np.nan]  # last bar NaN
+    df = pd.DataFrame(
+        {"Close": closes, "Open": closes, "High": closes, "Low": closes, "Volume": [0] * 4},
+        index=pd.date_range(end="2026-04-17 15:59", periods=4, freq="T"),
+    )
+    monkeypatch.setattr("yfinance.download", lambda *a, **kw: df)
+
+    price = cache._fetch_live_price("AAPL")
+    assert price == 181.28   # last NON-NaN close
+
+
+def test_fetch_live_price_raises_when_all_close_nan(seeded_db, monkeypatch):
+    import numpy as np
+    import pandas as pd
+    import pytest
+    from swing.web.price_cache import PriceCache
+
+    cfg, _ = seeded_db
+    cache = PriceCache(cfg)
+
+    df = pd.DataFrame(
+        {"Close": [np.nan, np.nan], "Open": [1.0, 1.0], "High": [1.0, 1.0],
+         "Low": [1.0, 1.0], "Volume": [0, 0]},
+        index=pd.date_range(end="2026-04-17 15:59", periods=2, freq="T"),
+    )
+    monkeypatch.setattr("yfinance.download", lambda *a, **kw: df)
+
+    with pytest.raises(RuntimeError, match="all Close"):
+        cache._fetch_live_price("AAPL")
+
+
+def test_fetch_live_price_raises_on_empty_frame(seeded_db, monkeypatch):
+    import pandas as pd
+    import pytest
+    from swing.web.price_cache import PriceCache
+
+    cfg, _ = seeded_db
+    cache = PriceCache(cfg)
+    monkeypatch.setattr("yfinance.download", lambda *a, **kw: pd.DataFrame())
+
+    with pytest.raises(RuntimeError, match="no bars"):
+        cache._fetch_live_price("AAPL")
+
+
 def test_refresh_all_invalidates_and_next_get_refetches(seeded_db, monkeypatch):
     """refresh_all is invalidate-only: it pops entries from the cache so the
     next get/get_many re-fetches. It does NOT itself hit the network (that
@@ -1150,6 +1223,15 @@ Replace the circuit-breaker placeholder section (`_record_outcome`) with:
                     "price cache entered degraded mode for %ss (failures=%d/%d)",
                     cooldown, failures, len(self._failure_window),
                 )
+
+    def reset_circuit_breaker(self) -> None:
+        """Clear degraded state + failure window. Called by the user-
+        initiated POST /prices/refresh flow so an operator can force-try
+        a live fetch even while the breaker is tripped (R2 Major 2). If
+        the refetch fails, the breaker will trip again on its own."""
+        with self._lock:
+            self._failure_window.clear()
+            self._degraded_until = None
 
     # ---------- batch API ----------
 
@@ -1842,9 +1924,19 @@ def build_dashboard(*, cfg: Config, cache: PriceCache, executor) -> DashboardVM:
 
     # Advisories. Phase 2's compute_all_suggestions expects an
     # AdvisoryContext with (as_of_date, current_price, sma10, sma20,
-    # weather_status, config=StopAdvisoryConfig). SMA values come from the
-    # ticker's candidates.criteria rows when present; the advisory rules
-    # handle None gracefully (no-op if MA data missing).
+    # weather_status, config=StopAdvisoryConfig).
+    #
+    # **3a limitation (R2 Major 1)**: sma10 and sma20 are always passed as
+    # None. The 7 advisory rules that depend on MA data (suggest_trail_ma
+    # for 10MA/20MA, suggest_exit_close_below_ma for 10MA/20MA) gracefully
+    # return None when their ma_value is None — so the advisory list is
+    # never wrong, just shorter than the fully-informed version. The
+    # remaining rules (breakeven, weather_action, time_stop) fire unchanged
+    # with current_price + weather + config alone.
+    #
+    # SMA-aware advisories require on-demand OHLCV → SMA computation per
+    # render, which is Phase 3a.1 or 3b scope. The Phase 2 criterion
+    # payloads are NOT a stable data contract we are willing to parse.
     from swing.trades.advisory import AdvisoryContext
     advisories: dict[int, list[AdvisorySuggestionVM]] = {}
     weather_status_str = weather.status if weather else "STALE"
@@ -1852,12 +1944,11 @@ def build_dashboard(*, cfg: Config, cache: PriceCache, executor) -> DashboardVM:
         snap = open_trade_last_prices.get(t.ticker)
         if snap is None:
             continue
-        sma10, sma20 = _extract_smas(candidates_by_ticker.get(t.ticker))
         ctx_adv = AdvisoryContext(
             as_of_date=now.date().isoformat(),
             current_price=snap.price,
-            sma10=sma10,
-            sma20=sma20,
+            sma10=None,
+            sma20=None,
             weather_status=weather_status_str,
             config=cfg.stop_advisory,
         )
@@ -1917,29 +2008,6 @@ def _sort_by_proximity(watchlist: list[WatchlistEntry]) -> list[WatchlistEntry]:
             return float("inf")
         return abs(w.last_close - w.entry_target) / max(w.entry_target, 1e-6)
     return sorted(watchlist, key=key)
-
-
-def _extract_smas(candidate: Candidate | None) -> tuple[float | None, float | None]:
-    """Read sma10/sma20 out of a candidate's criteria list for advisory
-    context. Phase 2 stores MA stack results with the raw values in
-    `CandidateCriterion.value` as comma-joined strings — we pull them from
-    there when present. Missing MAs → (None, None); the advisory rules
-    tolerate None inputs (no-op)."""
-    if candidate is None:
-        return (None, None)
-    sma10 = sma20 = None
-    for cr in candidate.criteria:
-        if cr.criterion_name == "ma_short_rising" and cr.value:
-            # value format example: "10MA=152.34, 20MA=150.12, 50MA=148.90"
-            for piece in cr.value.split(","):
-                piece = piece.strip()
-                if piece.startswith("10MA="):
-                    try: sma10 = float(piece.split("=", 1)[1])
-                    except ValueError: pass
-                elif piece.startswith("20MA="):
-                    try: sma20 = float(piece.split("=", 1)[1])
-                    except ValueError: pass
-    return (sma10, sma20)
 
 
 def _flag_tags(candidates_by_ticker: Mapping[str, Candidate]) -> Mapping[str, tuple[str, ...]]:
@@ -3595,12 +3663,17 @@ Invalidates the cache for active tickers, rebuilds the dashboard VM, and respond
 def test_post_prices_refresh_emits_three_oob_regions(seeded_db, monkeypatch):
     cfg, cfg_path = seeded_db
     from swing.web.price_cache import PriceCache
-    calls = {"refresh": 0}
+    calls = {"refresh": 0, "reset": 0}
     orig_refresh = PriceCache.refresh_all
+    orig_reset = PriceCache.reset_circuit_breaker
     def wrapped_refresh(self, tickers):
         calls["refresh"] += 1
         return orig_refresh(self, tickers)
+    def wrapped_reset(self):
+        calls["reset"] += 1
+        return orig_reset(self)
     monkeypatch.setattr(PriceCache, "refresh_all", wrapped_refresh)
+    monkeypatch.setattr(PriceCache, "reset_circuit_breaker", wrapped_reset)
     monkeypatch.setattr(PriceCache, "get_many",
         lambda self, tickers, deadline_seconds, *, executor=None: {})
     monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
@@ -3613,6 +3686,42 @@ def test_post_prices_refresh_emits_three_oob_regions(seeded_db, monkeypatch):
         assert f'id="{marker}"' in r.text
     assert "hx-swap-oob" in r.text
     assert calls["refresh"] == 1
+    # Manual refresh resets the breaker (R2 Major 2).
+    assert calls["reset"] == 1
+
+
+def test_post_prices_refresh_bypasses_degraded_mode(seeded_db, monkeypatch):
+    """User-clicked Refresh now must force a live-fetch attempt even when
+    the breaker is tripped. This is an intentional operator override: the
+    breaker exists to protect automatic request-driven fetches; a manual
+    refresh is explicit user intent."""
+    cfg, cfg_path = seeded_db
+    from swing.web.price_cache import PriceCache
+    # Before: cache is degraded. After reset inside the route, next get_many
+    # executes live (not via the degraded short-circuit).
+    state = {"degraded_probed_after_reset": []}
+    real_is_degraded = PriceCache.is_degraded
+
+    def track_is_degraded(self):
+        is_deg = real_is_degraded(self)
+        state["degraded_probed_after_reset"].append(is_deg)
+        return is_deg
+
+    monkeypatch.setattr(PriceCache, "is_degraded", track_is_degraded)
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {})
+
+    app = create_app(cfg, cfg_path)
+    # Trip the breaker on the app's cache.
+    for _ in range(20):
+        app.state.price_cache._record_outcome(success=False)
+    app.state.price_cache._maybe_trip_breaker()
+    assert app.state.price_cache.is_degraded()
+
+    r = TestClient(app).post("/prices/refresh", headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    # After reset, the cache is no longer degraded.
+    assert not app.state.price_cache.is_degraded()
 ```
 
 - [ ] **Step 2: Create the container partial**
@@ -3666,6 +3775,13 @@ def prices_refresh(request: Request):
     finally:
         conn.close()
     active = sorted(open_trade_tickers | top5_tickers | {cfg.rs.benchmark_ticker})
+
+    # Manual refresh resets the circuit breaker (R2 Major 2). A user-clicked
+    # Refresh button is an INTENTIONAL override of the automatic degraded
+    # short-circuit — the breaker exists to protect request-driven fetches
+    # from cascading failure, not to block operator intervention. If the
+    # refetch attempt fails, the breaker will simply trip again on its own.
+    cache.reset_circuit_breaker()
     cache.refresh_all(active)
 
     vm = build_dashboard(cfg=cfg, cache=cache, executor=executor)
@@ -3747,6 +3863,38 @@ def test_htmx_post_error_returns_error_fragment(seeded_db, monkeypatch):
     assert r.status_code == 500
     # HTMX errors swap into the target; body is a small fragment, not a full page.
     assert "<html" not in r.text.lower()
+
+
+def test_configure_web_logging_is_idempotent(tmp_path):
+    """Calling create_app (or configure_web_logging directly) multiple times
+    against the SAME log directory must NOT accumulate duplicate handlers
+    on the root logger. pytest runs thousands of tests through pytest's
+    fixtures; handler leakage causes every log line in later tests to be
+    duplicated N times (R2 Minor 2)."""
+    import logging
+    from logging.handlers import TimedRotatingFileHandler
+
+    from swing.web.middleware.request_id import configure_web_logging
+
+    logs = tmp_path / "logs"
+    # Snapshot baseline handler count.
+    root = logging.getLogger()
+    baseline = sum(
+        1 for h in root.handlers
+        if isinstance(h, TimedRotatingFileHandler)
+        and h.baseFilename == str(logs / "web.log")
+    )
+    configure_web_logging(logs)
+    configure_web_logging(logs)
+    configure_web_logging(logs)
+    after = sum(
+        1 for h in root.handlers
+        if isinstance(h, TimedRotatingFileHandler)
+        and h.baseFilename == str(logs / "web.log")
+    )
+    assert after - baseline == 1, (
+        f"handler count grew by {after - baseline}; expected idempotent = 1"
+    )
 
 
 def test_403_cross_origin_post_still_carries_request_id(seeded_db):
@@ -4132,7 +4280,7 @@ Expected: 3 PASS.
 - [ ] **Step 3: Full sweep — regression check**
 
 Run: `python -m pytest -m "not slow" -q`
-Expected: 287 (existing Phase 2) + ~55 new = **~342 PASS** (R1 Minor 4).
+Expected: 287 (existing Phase 2) + ~61 new = **~348 PASS**.
 
 - [ ] **Step 4: Commit**
 
