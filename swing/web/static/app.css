@@ -1,0 +1,17 @@
+/* swing/web/static/app.css */
+* { box-sizing: border-box; }
+body { font-family: system-ui, sans-serif; margin: 1rem; }
+.topbar { display: flex; gap: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ccc; }
+.topbar a { text-decoration: none; color: #333; }
+.banner { padding: 0.5rem 1rem; margin: 0.5rem 0; border-radius: 4px; }
+.banner-stale { background: #fff3cd; border: 1px solid #ffeaa7; }
+.banner-degraded { background: #f8d7da; border: 1px solid #f5c6cb; }
+#status-strip { display: flex; gap: 1rem; margin: 1rem 0; }
+.tile { flex: 1; padding: 0.75rem; border: 1px solid #ddd; border-radius: 4px; }
+.tile .label { font-size: 0.75rem; text-transform: uppercase; color: #666; }
+.tile .value { font-size: 1.25rem; font-weight: bold; }
+.tile .rationale { font-size: 0.85rem; color: #555; }
+.decisions { background: #fff8e1; padding: 1rem; border-radius: 4px; margin: 1rem 0; }
+.stale { color: #b00; font-size: 0.75rem; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 0.25rem 0.5rem; border-bottom: 1px solid #eee; }
