@@ -119,6 +119,36 @@ def test_post_pipeline_run_detects_stale_heartbeat(seeded_db):
     assert "wedged" in r.text.lower() or "force clear" in r.text.lower()
 
 
+def test_post_pipeline_run_incomplete_liveness_directs_to_cli(seeded_db):
+    """Codex R2: active run with missing step-progress timestamp is not
+    stale-eligible (conservative) but also not normal progress. The POST must
+    surface an explicit 'use CLI --bypass-staleness-check' message rather
+    than silently pretending the run is fine."""
+    cfg, cfg_path = seeded_db
+    hb_ts = (datetime.now() - timedelta(seconds=30)).isoformat(timespec="seconds")
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO pipeline_runs
+                   (started_ts, trigger, data_asof_date, action_session_date,
+                    state, lease_token, lease_heartbeat_ts,
+                    last_step_progress_ts, current_step)
+                   VALUES (?, 'scheduled', '2026-04-17', '2026-04-20',
+                           'running', 'tok', ?, NULL, 'evaluate')""",
+                (hb_ts, hb_ts),
+            )
+    finally:
+        conn.close()
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/pipeline/run", headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert "incomplete liveness" in r.text.lower()
+    assert "--bypass-staleness-check" in r.text
+
+
 def test_post_pipeline_run_detects_early_child_exit(seeded_db, monkeypatch):
     cfg, cfg_path = seeded_db
 

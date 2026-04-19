@@ -650,28 +650,31 @@ def pipeline_force_clear_cmd(ctx, run_id, reason, bypass_staleness_check):
             )
 
         now = _dt.now()
-        heartbeat_age = float("inf")
-        step_age = float("inf")
+        heartbeat_age: float | None = None
+        step_age: float | None = None
         if run.lease_heartbeat_ts:
             heartbeat_age = (now - _dt.fromisoformat(run.lease_heartbeat_ts)).total_seconds()
         if run.last_step_progress_ts:
             step_age = (now - _dt.fromisoformat(run.last_step_progress_ts)).total_seconds()
         is_stale = is_stale_eligible(run, cfg)
 
+        def _fmt_age(age: float | None) -> str:
+            return f"{age:.0f}s" if age is not None else "missing"
+
         if not is_stale and not bypass_staleness_check:
             raise click.ClickException(
                 f"Run {run_id} does not meet staleness threshold "
-                f"(heartbeat age {heartbeat_age:.0f}s vs "
+                f"(heartbeat age {_fmt_age(heartbeat_age)} vs "
                 f"{cfg.pipeline.stale_lease_threshold_seconds}s; "
-                f"step-progress age {step_age:.0f}s vs "
+                f"step-progress age {_fmt_age(step_age)} vs "
                 f"{cfg.pipeline.stale_step_threshold_seconds}s). "
-                "Spec §5.6 requires BOTH signals to be stale. "
+                "Spec §5.6 requires BOTH signals present and stale. "
                 "Use --bypass-staleness-check to override."
             )
 
         click.confirm(
             f"Force-clear run {run_id} (state={run.state}, "
-            f"heartbeat_age={heartbeat_age:.0f}s, step_age={step_age:.0f}s)? "
+            f"heartbeat_age={_fmt_age(heartbeat_age)}, step_age={_fmt_age(step_age)})? "
             "Any still-live worker loses its lease and cannot commit further writes.",
             abort=True,
         )

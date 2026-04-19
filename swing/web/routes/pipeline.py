@@ -61,12 +61,35 @@ def pipeline_run(request: Request):
         conn.close()
 
     if active is not None:
-        # Consistent with the page-level stale-run card (spec §3.1, §5.6):
-        # force-clear eligibility requires BOTH heartbeat and step-progress
-        # signals stale. Heartbeat-only staleness means the run is still
-        # making progress and should be shown, not flagged as stuck.
+        # Three cases for an existing active run (spec §3.1, §5.6):
+        #   (a) malformed — missing heartbeat or step-progress timestamp →
+        #       not stale-eligible AND not showable as normal progress; direct
+        #       operator to CLI `--bypass-staleness-check` escape hatch.
+        #   (b) truly stale (both signals stale) → direct to the in-page
+        #       stale-run card (which GET /pipeline already renders).
+        #   (c) fresh or partially-fresh → show existing progress.
+        has_incomplete_liveness = (
+            not active.lease_heartbeat_ts or not active.last_step_progress_ts
+        )
+        if has_incomplete_liveness:
+            return templates.TemplateResponse(
+                request, "partials/pipeline_progress.html.j2",
+                {
+                    "run": None,
+                    "error_text": (
+                        f"Active run #{active.id} has incomplete liveness data "
+                        f"(missing heartbeat or step-progress timestamp). The "
+                        f"dashboard Force-clear button is gated on positive "
+                        f"two-signal evidence per spec §5.6. Use CLI: "
+                        f"`swing pipeline force-clear {active.id} "
+                        f"--bypass-staleness-check`."
+                    ),
+                    "poll_interval": poll_interval,
+                },
+            )
         if not is_stale_eligible(active, cfg):
-            # Fresh (or partially-fresh) — show existing progress.
+            # Fresh (or partially-fresh by age, both timestamps present) — show
+            # existing progress.
             return templates.TemplateResponse(
                 request, "partials/pipeline_progress.html.j2",
                 {"run": active, "error_text": None, "poll_interval": poll_interval},
