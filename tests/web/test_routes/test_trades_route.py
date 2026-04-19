@@ -494,3 +494,106 @@ def test_post_exit_shares_too_many_400(seeded_db, monkeypatch):
         )
     assert r.status_code == 400
     assert "remaining" in r.text.lower() or "exceed" in r.text.lower()
+
+
+def test_get_stop_form_renders(seeded_db):
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event, list_open_trades
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=5, initial_stop=860.0,
+                current_stop=860.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{trade.id}/stop/form",
+                       headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert "NVDA" in r.text
+    assert "860.00" in r.text
+
+
+def test_post_stop_adjust_success(seeded_db, monkeypatch):
+    """Stop-adjust success → row re-render; no OOB."""
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event, list_open_trades
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=5, initial_stop=860.0,
+                current_stop=860.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            "NVDA": PriceSnapshot(ticker="NVDA", price=932.0, asof=datetime.now(),
+                                   is_stale=False, source="live"),
+        })
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{trade.id}/stop", headers={"HX-Request": "true"},
+            data={"new_stop": "912.00", "rationale": "trail to 10MA"},
+        )
+    assert r.status_code == 200
+    assert f"open-position-{trade.id}" in r.text
+    assert "912.00" in r.text
+    # Stop-adjust emits NO OOB.
+    assert 'id="status-strip"' not in r.text
+
+
+def test_post_stop_regression_400_with_updated_current(seeded_db):
+    """Lowering stop → 400 fragment with updated current_stop prefilled (§5.1 case 3)."""
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event, list_open_trades
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=5, initial_stop=860.0,
+                current_stop=900.0, status="open",  # someone already trailed to BE
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{trade.id}/stop", headers={"HX-Request": "true"},
+            data={"new_stop": "880.00", "rationale": "attempt lower"},
+        )
+    assert r.status_code == 400
+    # Error message names the actual current_stop.
+    assert "900" in r.text
+    assert "force" in r.text.lower()  # CLI hint

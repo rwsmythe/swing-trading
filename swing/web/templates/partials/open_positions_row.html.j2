@@ -25,6 +25,8 @@
     <button hx-get="/trades/{{ row.trade.id }}/exit/form"
             hx-target="closest tr" hx-swap="outerHTML"
             hx-headers='{"HX-Request": "true"}'>Exit</button>
-    {#- Adjust stop button appended in Task 15 as its route comes online -#}
+    <button hx-get="/trades/{{ row.trade.id }}/stop/form"
+            hx-target="closest tr" hx-swap="outerHTML"
+            hx-headers='{"HX-Request": "true"}'>Adjust stop</button>
   </td>
 </tr>

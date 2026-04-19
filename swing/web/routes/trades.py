@@ -14,6 +14,7 @@ from swing.data.db import connect
 from swing.data.repos.cash import list_cash
 from swing.data.repos.trades import get_trade, list_all_exits, list_open_trades
 from swing.trades.exit import ExitReason, ExitRequest, record_exit
+from swing.trades.stop_adjust import StopAdjustRequest, StopRegressionError, adjust_stop
 from swing.recommendations.sizing import compute_shares, SizingResult
 from swing.trades.entry import (
     EntryRequest, HardCapException, DuplicateOpenPositionException,
@@ -23,7 +24,7 @@ from swing.trades.equity import current_equity
 from swing.web.routes.dashboard import _templates
 from swing.web.view_models.dashboard import build_dashboard
 from swing.web.view_models.open_positions_row import build_open_positions_row
-from swing.web.view_models.trades import build_entry_form_vm, build_exit_form_vm
+from swing.web.view_models.trades import build_entry_form_vm, build_exit_form_vm, build_stop_form_vm
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -325,3 +326,60 @@ def exit_post(
         f'{row_html}'
         f'<div id="status-strip" hx-swap-oob="true">{status_strip_html}</div>'
     ))
+
+
+@router.get("/trades/{trade_id}/stop/form", response_class=HTMLResponse)
+def stop_form(request: Request, trade_id: int):
+    cfg = request.app.state.cfg
+    templates = _templates(request)
+    vm = build_stop_form_vm(trade_id=trade_id, cfg=cfg)
+    if vm is None:
+        raise HTTPException(status_code=404, detail=f"Trade #{trade_id} not found or not open")
+    return templates.TemplateResponse(
+        request, "partials/trade_stop_form.html.j2", {"vm": vm},
+    )
+
+
+@router.post("/trades/{trade_id}/stop", response_class=HTMLResponse)
+def stop_post(
+    request: Request, trade_id: int,
+    new_stop: float = Form(...), rationale: str = Form(...),
+):
+    cfg = request.app.state.cfg
+    cache = request.app.state.price_cache
+    executor = request.app.state.price_fetch_executor
+    templates = _templates(request)
+
+    req = StopAdjustRequest(
+        trade_id=trade_id, new_stop=new_stop, rationale=rationale,
+        event_ts=datetime.now().isoformat(timespec="seconds"), force=False,
+    )
+    conn = connect(cfg.paths.db_path)
+    try:
+        try:
+            adjust_stop(conn, req)
+        except StopRegressionError as exc:
+            return templates.TemplateResponse(
+                request, "partials/trade_form_error.html.j2",
+                {"error_message": (
+                    f"{exc}. Use CLI `swing trade stop-adjust --trade-id {trade_id} "
+                    f"--new-stop {new_stop} --rationale ... --force` if intentional."
+                ), "form_body": None},
+                status_code=400,
+            )
+    finally:
+        conn.close()
+
+    # Row-only render (no OOB).
+    conn = connect(cfg.paths.db_path)
+    try:
+        updated = get_trade(conn, trade_id)
+    finally:
+        conn.close()
+    row_vm = build_open_positions_row(
+        trade=updated, cfg=cfg, cache=cache, executor=executor,
+    )
+    row_html = templates.get_template("partials/open_positions_row.html.j2").render(
+        request=request, row=row_vm,
+    )
+    return HTMLResponse(Markup(row_html))

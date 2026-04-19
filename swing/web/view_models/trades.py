@@ -136,3 +136,24 @@ def build_exit_form_vm(
         remaining_shares=remaining,
         reasons=tuple(r.value for r in ExitReason),
     )
+
+
+@dataclass(frozen=True)
+class TradeStopFormVM:
+    trade: Trade
+    current_stop: float
+    suggested_stops: tuple[tuple[str, float], ...]  # empty in 3b; 3c populates
+
+
+def build_stop_form_vm(*, trade_id: int, cfg: Config) -> TradeStopFormVM | None:
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            trade = get_trade(conn, trade_id)
+            if trade is None or trade.status != "open":
+                return None
+    finally:
+        conn.close()
+    return TradeStopFormVM(
+        trade=trade, current_stop=trade.current_stop, suggested_stops=(),
+    )

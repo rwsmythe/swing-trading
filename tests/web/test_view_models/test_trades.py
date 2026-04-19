@@ -94,3 +94,31 @@ def test_build_exit_form_vm_shape(seeded_db, monkeypatch):
     assert vm.remaining_shares == 5  # no exits yet
     assert "stop-hit" in vm.reasons
     assert "manual" in vm.reasons
+
+
+def test_build_stop_form_vm_shape(seeded_db):
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event, list_open_trades
+    from swing.web.view_models.trades import build_stop_form_vm, TradeStopFormVM
+
+    cfg, _ = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=5, initial_stop=860.0,
+                current_stop=860.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+
+    vm = build_stop_form_vm(trade_id=trade.id, cfg=cfg)
+    assert isinstance(vm, TradeStopFormVM)
+    assert vm.trade.ticker == "NVDA"
+    assert vm.current_stop == 860.0
+    assert vm.suggested_stops == ()  # 3b leaves this empty; 3c populates

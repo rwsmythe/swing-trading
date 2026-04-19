@@ -1,0 +1,25 @@
+{#- Trade stop-adjust form — swaps into an open-position row.
+    Expects: vm (TradeStopFormVM) -#}
+<tr id="stop-form-{{ vm.trade.id }}">
+  <td colspan="8">
+    <form hx-post="/trades/{{ vm.trade.id }}/stop"
+          hx-target="closest tr" hx-swap="outerHTML"
+          hx-headers='{"HX-Request": "true"}'>
+      <div><label>Trade</label>
+        <span>#{{ vm.trade.id }} {{ vm.trade.ticker }} —
+              current stop ${{ '%.2f' | format(vm.current_stop) }}</span></div>
+      <div><label>New stop</label>
+        <input type="number" step="0.01" min="0" name="new_stop"
+               value="{{ '%.2f' | format(vm.current_stop) }}" required></div>
+      <div><label>Rationale ★</label>
+        <textarea name="rationale" required></textarea></div>
+      <div>
+        <button type="submit">Submit</button>
+        <button type="button"
+                hx-get="/trades/{{ vm.trade.id }}/cancel"
+                hx-target="closest tr" hx-swap="outerHTML"
+                hx-headers='{"HX-Request": "true"}'>Cancel</button>
+      </div>
+    </form>
+  </td>
+</tr>
