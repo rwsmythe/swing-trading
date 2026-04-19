@@ -200,7 +200,7 @@ def entry_post(
                     entry_date=entry_date,
                     entry_price=entry_price,
                     initial_stop=initial_stop,
-                    suggested_shares=shares,  # echo user's shares, not fresh sizing
+                    input_shares=shares,      # user's submitted value; suggested_shares stays as server computed
                     rationale=rationale,
                     notes=notes or "",
                 )

@@ -33,6 +33,7 @@ class TradeEntryFormVM:
     force: bool = False
     rationale: str = ""       # preserved from prior submit on duplicate/drift
     notes: str = ""           # preserved from prior submit on duplicate/drift
+    input_shares: int = 0     # user's submitted shares on drift-retry; 0 = no override
 
 
 def build_entry_form_vm(

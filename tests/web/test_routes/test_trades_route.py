@@ -786,6 +786,69 @@ def test_post_entry_duplicate_renders_form_preserved(seeded_db, monkeypatch):
     assert "add-on attempt" in r.text          # rationale textarea content
     assert 'value="175.00"' in r.text          # initial_stop echoed back
     assert 'value="182.00"' in r.text          # entry_price echoed back
+    # R5 fix: input value reflects user's submitted shares (shares=3 was submitted).
+    assert 'name="shares"' in r.text
+    assert 'value="3"' in r.text
+
+
+def test_post_entry_duplicate_sizing_hint_not_lying(seeded_db, monkeypatch):
+    """R5 regression: on drift-recovery, the sizing hint must NOT claim the user's
+    entered shares is the server's recommendation. The 'Suggested max' text
+    reflects the server's actual compute_shares output."""
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import Trade, WatchlistEntry
+    from swing.data.repos.trades import insert_trade_with_event
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            # Seed watchlist row so build_entry_form_vm can compute a server sizing.
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="AAPL", added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+            # Seed an existing open AAPL trade to trigger duplicate error.
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="AAPL", entry_date="2026-04-15",
+                entry_price=180.0, initial_shares=5, initial_stop=170.0,
+                current_stop=170.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+    finally:
+        conn.close()
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            "AAPL": PriceSnapshot(ticker="AAPL", price=180.95,
+                                   asof=datetime.now(),
+                                   is_stale=False, source="live"),
+        })
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        # User enters an absurdly high share count that server would never suggest.
+        r = client.post(
+            "/trades/entry", headers={"HX-Request": "true"},
+            data={"ticker": "AAPL", "entry_date": "2026-04-18",
+                  "entry_price": "182.00", "shares": "9999",
+                  "initial_stop": "175.00", "rationale": "drift"},
+        )
+    assert r.status_code == 400
+    # Input value reflects user's attempted entry.
+    assert 'value="9999"' in r.text
+    # Sizing hint text must NOT claim "Suggested max: 9999 sh" — that would
+    # be the server echoing the user's own number as a recommendation.
+    assert "Suggested max: <strong>9999 sh</strong>" not in r.text
+    assert "Suggested max: 9999" not in r.text
 
 
 def test_post_stop_for_actually_closed_trade_returns_404_fragment(seeded_db):
