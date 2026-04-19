@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-18
 **Status:** Draft for review
-**Scope:** Build a localhost FastAPI + HTMX dashboard over the Phase 2 foundation. Read-only views (`/`, `/watchlist`, `/journal`, `/pipeline`) plus a single interactive action: a "Run now" button that triggers `run_pipeline` in a background thread and polls progress. All other interactive actions (trade forms, force-clear button, settings editor) are deferred to Phase 3b.
+**Scope (explicitly bounded — this is NOT the full Phase 3):** Build a localhost FastAPI + HTMX dashboard over the Phase 2 foundation. Read-only views (`/`, `/watchlist`, `/journal`, `/pipeline`) plus a single interactive action: a "Run now" button that triggers `run_pipeline` in a separate subprocess and polls progress. `/trades`, `/settings`, the dashboard force-clear button, CSV-upload form, and trade-action forms are explicitly DEFERRED to Phase 3b — they are named in the original Phase 3 request and their absence here is intentional, agreed during brainstorming. If you are reviewing this spec against the original Phase 3 request and see those items missing, that is by design: Phase 3 was split into 3a (ship the dashboard) and 3b (layer actions on top).
 
 ---
 
@@ -102,9 +102,10 @@ def web_cmd(ctx, host, port, reload):
 
 ### 2.4 Binding + authentication
 
-- Bind **127.0.0.1 only**. Binding to `0.0.0.0` or any non-loopback address is refused with a clear error (defense-in-depth — the user might override in config but we refuse at startup).
-- **No authentication.** No CSRF tokens (single-user, single-origin, no third-party JS; every POST originates from the same-session dashboard). This matches spec §2.4 invariant: "localhost only, single user."
-- Spec §2.4 explicitly states Google-Drive-synced code directory is safe for outputs but the DB must live outside. The dashboard honors this by reading `cfg.paths.db_path` and `cfg.paths.charts_dir` which Phase 1 already resolved to `%USERPROFILE%/swing-data/`.
+- Bind **127.0.0.1 only**. Binding to `0.0.0.0` or any non-loopback address is refused with a clear error at startup — the user can set `[web].host` in config, but any non-loopback value is rejected.
+- **No authentication.** No CSRF tokens.
+- **Origin check as CSRF defense-in-depth.** A cross-site `<form action="http://127.0.0.1:8080/pipeline/run" method="POST">` on a malicious page the user happens to be visiting CAN be submitted even without JS — the browser will POST to localhost from any origin. To mitigate, every state-changing POST endpoint (`/pipeline/run`, `/prices/refresh`) requires either (a) the HTMX header `HX-Request: true` (which browsers do not send on cross-origin form POSTs without preflight, and the HTMX library sets automatically), OR (b) an `Origin` header equal to `http://<bound host>:<port>`. Requests failing both checks return `403 Forbidden`. Middleware: `swing/web/middleware/origin_guard.py`. This is cheap, matches localhost's threat model, and does not require session state.
+- Spec §2.4 invariant — DB outside Drive folder, code inside — is honored by reading `cfg.paths.db_path` and `cfg.paths.charts_dir`, which Phase 1 already resolved to `%USERPROFILE%/swing-data/`.
 
 ### 2.5 New config section
 
@@ -133,7 +134,9 @@ web = [
 ]
 ```
 
-Base install (no extras) stays CLI-only. `pip install -e ".[web]"` enables the dashboard.
+The `web` extra only adds the three web-stack packages. `yfinance` and `exchange_calendars` (required by `swing/web/price_cache.py`) are **already base dependencies** from Phase 1 — `yfinance` via `swing.prices.PriceFetcher`, `exchange_calendars` via `swing.evaluation.dates`. The web extra does not need to re-declare them. Base install (no extras) stays CLI-only.
+
+Acceptance: `tests/web/test_phase2_regression.py::test_web_extra_is_truly_optional` verifies the base install works without `fastapi`/`uvicorn`/`jinja2`; a separate test `test_web_extra_install_starts_app` verifies the full `[web]` extra actually boots `create_app(cfg)` without additional missing imports.
 
 ---
 
@@ -178,40 +181,81 @@ class PriceCache:
         self._cache: dict[str, tuple[PriceSnapshot, float]] = {}  # ticker -> (snap, monotonic_fetched_at)
 
     def get(self, ticker: str) -> PriceSnapshot: ...
+    def get_many(self, tickers: Sequence[str], deadline_seconds: float) -> dict[str, PriceSnapshot]: ...
     def refresh_all(self, tickers: Iterable[str]) -> None: ...
     def clear(self) -> None: ...
     def market_hours_now(self) -> bool: ...     # NYSE calendar via exchange_calendars
 ```
 
-`get(ticker)` logic:
+`get(ticker)` logic (cache hit path is fast; miss path does network):
 1. If cache hit within `ttl_seconds`, return cached snapshot.
 2. If `market_hours_now()` is False, return `PriceSnapshot(source="last_close_market_closed", is_stale=True, price=<latest candidates.close>)` and cache it for the remaining-to-open window (effectively until next market open).
-3. Else try `yfinance.Ticker(ticker).fast_info['last_price']` with `timeout=cfg.web.price_fetch_timeout_seconds`. On success → cache + return `is_stale=False`.
+3. Else try `yfinance.Ticker(ticker).fast_info['last_price']` with per-ticker `timeout=cfg.web.price_fetch_timeout_seconds`. On success → cache + return `is_stale=False`.
 4. On timeout / exception → fall back to latest `candidates.close` from the most recent `evaluation_runs` row for this ticker. Return `is_stale=True, source="last_close"`. Log at WARNING.
 
-Thread-safe: `threading.Lock` guards the dict. The cache can be accessed both from request-handling threads and (in 3b) from a background refresh thread if we ever add one — current 3a design is request-driven only.
+**`get_many(tickers, deadline_seconds)` — batch fetch with total-time bound** (adversarial review Round 1 Major 3). View-model builders use this, not `get()` in a loop:
+
+```python
+def get_many(self, tickers, deadline_seconds):
+    # 1. Serve cache hits synchronously (no network).
+    results, misses = self._split_cache_hits(tickers)
+    if not misses:
+        return results
+    # 2. Dispatch misses in parallel, bounded by an OVERALL deadline.
+    with ThreadPoolExecutor(max_workers=min(len(misses), 8)) as pool:
+        futures = {pool.submit(self._fetch_one, t): t for t in misses}
+        try:
+            for future in as_completed(futures, timeout=deadline_seconds):
+                ticker = futures[future]
+                try:
+                    results[ticker] = future.result(timeout=0)
+                except Exception:
+                    results[ticker] = self._fallback_snapshot(ticker)
+        except TimeoutError:
+            pass  # deadline hit
+    # 3. Any ticker whose future did not complete → fallback.
+    for ticker, future in futures.items():
+        if ticker not in results:
+            future.cancel()
+            results[ticker] = self._fallback_snapshot(ticker)
+    return results
+```
+
+**Why parallel with global deadline**: a serial loop of `get(ticker)` with a 3s per-ticker timeout degrades `GET /` latency to `O(N × 3s)` when yfinance is slow or timing out. With 8–12 tickers that is a 24–36 second page load. `get_many` with an overall deadline (default `cfg.web.price_fetch_timeout_seconds * 2` → 6s cap across all tickers, regardless of count) caps total page-render latency. Tickers that don't complete before the deadline fall back to last close marked `is_stale=True`.
+
+Thread-safe: `threading.Lock` guards the dict under concurrent reads. The cache can be accessed from request-handling threads concurrently (multiple browser tabs). No background refresh thread in 3a.
 
 ### 3.3 `swing/web/view_models/<page>.py`
 
 Each page has a `build(cfg, cache, **params) -> <Page>VM` function. It opens a DB connection, reads repos, calls the price cache for the active tickers, and returns a frozen dataclass. The template receives only the VM — no raw connection, no live objects.
 
-**DashboardVM fields** (non-exhaustive, representative):
+**DashboardVM fields** — field names align with Phase 2's `BriefingInputs` (`swing/rendering/briefing.py`) so the dashboard and the static briefing share vocabulary. The original Phase 3 request called out `open_trade_advisories`, `watchlist_last_prices`, and `flag_tags` as the concrete fields to fill; the dashboard populates them at render time (the static briefing model stays empty per Phase 2 Appendix C — the briefing.html artifact is not regenerated by the dashboard).
 
 ```python
 @dataclass(frozen=True)
 class DashboardVM:
     generated_at: str
-    session_date: str             # action_session_for_run(now).isoformat()
-    stale_banner: str | None      # non-None when last complete run is older than current session
-    status_strip: StatusStripVM   # weather + account + last_pipeline tiles
+    session_date: str                       # action_session_for_run(now).isoformat()
+    stale_banner: str | None                # non-None when last complete run is older than current session
+    status_strip: StatusStripVM             # weather + account + last_pipeline tiles
     today_decisions: list[DecisionVM]
-    open_positions: list[OpenPositionVM]   # includes advisory_text from compute_all_suggestions
-    watchlist_top5: list[WatchlistRowVM]   # sorted by |last_close - entry_target| / entry_target
+    open_trades: list[Trade]                # from Phase 2 repo dataclass, unchanged
+    open_trade_advisories: Mapping[int, list[AdvisorySuggestionVM]]
+                                            # keyed by trade_id; from compute_all_suggestions(trade, current_price, …)
+    open_trade_last_prices: Mapping[str, float]
+                                            # keyed by ticker; current or last-close per price cache
+    watchlist_top5: list[WatchlistEntry]    # from Phase 2 repo dataclass
     watchlist_remaining_count: int
-    prices_generated_at: str      # for "refreshed 45s ago" badge
+    watchlist_last_prices: Mapping[str, float]
+                                            # keyed by ticker; current or last-close per price cache
+    flag_tags: Mapping[str, tuple[str, ...]]
+                                            # keyed by ticker; e.g. ("TT✓","VCP✓","A+"). Computed by joining
+                                            # watchlist ticker → latest candidates.criteria results.
+    candidates_by_ticker: Mapping[str, Candidate]
+    prices_generated_at: str                # for "refreshed 45s ago" badge
 ```
 
-Similar for `WatchlistVM`, `JournalVM`, `PipelineVM`.
+`WatchlistVM` mirrors the same `watchlist_last_prices` + `flag_tags` naming. `JournalVM` and `PipelineVM` do not need live-price fields.
 
 ### 3.4 `swing/web/routes/*`
 
@@ -290,13 +334,16 @@ All three regions swap simultaneously in the browser.
 
 ### 4.4 "Run now" trigger flow
 
-**`POST /pipeline/run`**:
+**`POST /pipeline/run`** — spawns a **subprocess**, not a daemon thread:
 
 1. Handler checks `find_active_run(conn)`.
    - If an active run exists with fresh heartbeat → return `partials/pipeline_progress.html.j2` immediately with that run's id, so the UI shows the existing run's progress.
-   - If active run exists with stale heartbeat → return an error fragment whose body is formatted at render time with the actual heartbeat age: `f"A previous run is stuck (run #{id}, state=running, heartbeat age {age_minutes}m). Use `swing pipeline force-clear {id} --bypass-staleness-check`."` (Dashboard force-clear button ships in 3b.)
-2. Otherwise spawns `threading.Thread(target=run_pipeline, kwargs={"cfg": cfg, "trigger": "manual"}, daemon=True).start()`.
-3. Tight-loop `find_active_run(conn)` (up to 1s, 50ms sleep) to pick up the new row's id. If still missing after 1s → return error fragment ("Pipeline thread did not initialize. Check `swing-data/logs/web.log`.").
+   - If active run exists with stale heartbeat → return an error fragment with the actual heartbeat age formatted at render time: `f"A previous run is stuck (run #{id}, state=running, heartbeat age {age_minutes}m). A dashboard force-clear button ships in Phase 3b; until then, run `swing pipeline force-clear {id} --bypass-staleness-check` in a terminal."` The fragment also includes a copy-to-clipboard button for the command to reduce CLI friction.
+2. Otherwise spawns a detached subprocess: `subprocess.Popen([sys.executable, "-m", "swing.cli", "--config", str(cfg_path), "pipeline", "run", "--manual"], close_fds=True, stdout=log_fd, stderr=subprocess.STDOUT, start_new_session=True)`.
+   - **Rationale:** a daemon thread dies on uvicorn reload or process exit, orphaning the `pipeline_runs` row with `state='running'` (adversarial review Round 1 Major 4). A subprocess decouples pipeline lifecycle from the web-server lifecycle. Subprocess stdout/stderr redirect to `swing-data/logs/pipeline-run-<run_id>.log` for post-hoc inspection.
+   - **No wait/poll for the child**: `Popen` returns immediately; the child writes the `pipeline_runs` row itself via `acquire_lease` inside `run_pipeline`.
+   - Trade-off: ~1s subprocess-startup overhead (Python interpreter boot) is negligible vs pipeline runtime of several minutes.
+3. Tight-loop `find_active_run(conn)` (up to 2s, 50ms sleep) to pick up the new row's id after the child acquires its lease. If still missing after 2s → return error fragment ("Pipeline subprocess did not acquire lease within 2s. Check `swing-data/logs/pipeline-run-*.log` and `swing-data/logs/web.log`.").
 4. Return `partials/pipeline_progress.html.j2` with `hx-get="/pipeline/status/{run_id}" hx-trigger="every 2s" hx-swap="outerHTML"`.
 
 **`GET /pipeline/status/{run_id}`**:
@@ -348,11 +395,21 @@ Dashboard's status strip renders a top-of-page amber banner when the most recent
 
 The banner's "Run now" button is the same `POST /pipeline/run` flow described in §4.4.
 
-### 5.4 What 3a explicitly does NOT handle
+### 5.4 Concurrent browser tabs (explicitly supported)
+
+Multiple tabs of the dashboard open against the same server is a normal case, not a limitation:
+- **Reads** — all GET routes are read-only against SQLite (Phase 2's WAL-mode reader-writer isolation) plus the in-process `PriceCache` (guarded by `threading.Lock`). N concurrent GETs from N tabs work correctly.
+- **`POST /prices/refresh`** — `cache.refresh_all(...)` + subsequent `get_many` is idempotent; concurrent calls may each refresh, but the result is the same.
+- **`POST /pipeline/run`** — the check-then-spawn race is already mitigated by `acquire_lease`'s `ConcurrentRunBlocked` (Phase 2's partial unique index `ux_pipeline_one_running` is the DB-level authoritative gate). The loser tab sees "Pipeline already running" and polls the existing run's progress.
+
+### 5.5 NYSE-only assumption (documented)
+
+`price_cache.market_hours_now()` uses the NYSE calendar from `exchange_calendars`. This is correct for the current universe (S&P 500 + NASDAQ-100 — all NYSE/NASDAQ listed; NASDAQ follows NYSE-equivalent regular session windows). If the tool is ever extended to international tickers, ETFs with half-day schedules, or futures, the "stale / live" badge will be wrong outside those instruments' hours. Non-US expansion is not in any phase of the current plan.
+
+### 5.6 What 3a explicitly does NOT handle
 
 - **Authentication failures** — no auth exists.
-- **CSRF protection** — no state-changing POSTs require it because the only POSTs are same-origin HTMX from the dashboard itself. 3b will add CSRF when trade-action forms land.
-- **Concurrent dashboard sessions** from multiple browser tabs — the price cache lock is correct under concurrent reads; the "Run now" button's check-then-spawn race is already mitigated by `acquire_lease`'s `ConcurrentRunBlocked`.
+- **CSRF tokens** — not used; the Origin/HX-Request header check (§2.4) is the defense-in-depth layer.
 - **Cross-site resource loading** — all JS/CSS/charts are same-origin.
 
 ---
@@ -397,14 +454,21 @@ tests/web/
 - `seeded_db(test_cfg)` — applies schema, seeds one completed `pipeline_runs`, one `evaluation_runs` with ~5 candidates across buckets, one watchlist row, one open `trades` row, one `weather_runs`.
 - `client(test_cfg, seeded_db)` — returns `TestClient(create_app(test_cfg))`.
 
-### 6.4 Explicitly out of scope
+### 6.4 Security-posture tests
+
+- `test_cli_cmd.py::test_refuses_non_loopback_host` — asserts `run_server(cfg=..., host="0.0.0.0", ...)` exits with a clear error and never calls `uvicorn.run`.
+- `test_origin_guard.py::test_cross_origin_post_blocked` — `TestClient` POSTs to `/pipeline/run` with an `Origin: http://evil.example` header and no `HX-Request`; asserts 403.
+- `test_origin_guard.py::test_htmx_post_allowed` — same POST with `HX-Request: true`; asserts spawn succeeds (monkeypatched).
+- `test_origin_guard.py::test_same_origin_form_post_allowed` — `Origin: http://127.0.0.1:8080`; asserts 200.
+
+### 6.5 Explicitly out of scope
 
 - Browser end-to-end tests (Playwright/Selenium) — spec §7.4 scoped out for Phase 2; same applies to 3a.
 - Visual regression / pixel-perfect template checks — verify HTML structure, not appearance.
 - Real yfinance network calls — every test monkeypatches.
 - UI accessibility audits — manual-review scope.
 
-### 6.5 Performance expectations (documented, not asserted)
+### 6.6 Performance expectations (documented, not asserted)
 
 - `GET /` with warm price cache should render in <200ms on the user's machine. If it doesn't, the view-model builder is the suspect — usually `compute_all_suggestions` doing redundant work or a cache miss cascade.
 - Pipeline-progress polling adds 1 request / 2s while a run is active. Outside polling, zero background network.
