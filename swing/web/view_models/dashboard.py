@@ -1,6 +1,7 @@
 """DashboardVM + builder."""
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Mapping
@@ -63,6 +64,9 @@ class DashboardVM:
     prices_generated_at: str
     price_source_degraded: bool
     price_source_degraded_until: str | None
+    # Additive field — populated by Task 6 refactor. Default preserves backward
+    # compat for any caller that constructs DashboardVM without this argument.
+    open_trade_rows: Mapping[int, object] = field(default_factory=dict)
 
 
 def build_dashboard(*, cfg: Config, cache: PriceCache, executor) -> DashboardVM:
@@ -70,6 +74,11 @@ def build_dashboard(*, cfg: Config, cache: PriceCache, executor) -> DashboardVM:
     tests (the cache will fall back to serial `get()` behavior via the
     monkeypatched `get_many`).
     """
+    from swing.web.view_models.open_positions_row import (
+        OpenPositionsRowVM,
+        _open_positions_row_vm,
+    )
+
     now = datetime.now()
     action_session = action_session_for_run(now).isoformat()
 
@@ -80,12 +89,18 @@ def build_dashboard(*, cfg: Config, cache: PriceCache, executor) -> DashboardVM:
             recs = list_for_session(conn, action_session)
             watchlist = list_active_watchlist(conn)
             weather = get_latest_for_date(conn, action_session, ticker=cfg.rs.benchmark_ticker)
-            # Equity for status strip.
+            # Equity for status strip — fetch all exits once; also used for
+            # per-trade remaining-shares grouping below (no N+1 queries).
+            all_exits = list_all_exits(conn)
             equity = current_equity(
                 starting_equity=cfg.account.starting_equity,
-                exits=list_all_exits(conn),
+                exits=all_exits,
                 cash_movements=list_cash(conn),
             )
+            # Group exits by trade_id in Python — avoids per-row DB queries.
+            exits_by_trade: dict[int, list] = defaultdict(list)
+            for e in all_exits:
+                exits_by_trade[e.trade_id].append(e)
             # Latest pipeline run.
             row = conn.execute(
                 """SELECT finished_ts, state FROM pipeline_runs
@@ -125,57 +140,45 @@ def build_dashboard(*, cfg: Config, cache: PriceCache, executor) -> DashboardVM:
         executor=executor,
     )
 
-    open_trade_last_prices = {t.ticker: prices[t.ticker] for t in open_trades if t.ticker in prices}
     watchlist_last_prices = {w.ticker: prices[w.ticker] for w in top5 if w.ticker in prices}
 
-    # Advisories. Phase 2's compute_all_suggestions expects an
-    # AdvisoryContext with (as_of_date, current_price, sma10, sma20,
-    # weather_status, config=StopAdvisoryConfig).
-    #
-    # **3a limitation (R2 Major 1)**: sma10 and sma20 are always passed as
-    # None. The 7 advisory rules that depend on MA data (suggest_trail_ma
-    # for 10MA/20MA, suggest_exit_close_below_ma for 10MA/20MA) gracefully
-    # return None when their ma_value is None — so the advisory list is
-    # never wrong, just shorter than the fully-informed version. The
-    # remaining rules (breakeven, weather_action, time_stop) fire unchanged
-    # with current_price + weather + config alone.
-    #
-    # SMA-aware advisories require on-demand OHLCV → SMA computation per
-    # render, which is Phase 3a.1 or 3b scope. The Phase 2 criterion
-    # payloads are NOT a stable data contract we are willing to parse.
-    advisories: dict[int, list[AdvisorySuggestionVM]] = {}
+    # Build per-row VMs via the pure assembler. No I/O here — all I/O already
+    # happened under the `with conn:` snapshot above. Matches spec §3.4.
     weather_status_str = weather.status if weather else "STALE"
+
+    open_trade_last_prices: dict[str, PriceSnapshot] = {}
+    open_trade_advisories: dict[int, list[AdvisorySuggestionVM]] = {}
+    open_trade_rows: dict[int, OpenPositionsRowVM] = {}
     for t in open_trades:
-        # Persisted open trades always have an id (the DB assigns via
-        # INSERT). A missing id is a data-integrity bug in
-        # list_open_trades and must NOT be silently masked — the
-        # dashboard would show mismatched advisories or drop entire
-        # rows without explanation. Crash-fast via assertion; the
-        # FastAPI exception handler renders a 500 with a request_id
-        # the operator can grep in web.log (R4 Major 2). Coercion to
-        # 0 (R3 Major 2) and silent skip (also R3 Major 2) are both
-        # inferior to crash-fast for a "should never happen" invariant.
-        if t.id is None:
-            raise RuntimeError(
-                f"open trade {t.ticker} has id=None — data-integrity bug in "
-                f"list_open_trades; dashboard cannot render advisories reliably"
-            )
-        snap = open_trade_last_prices.get(t.ticker)
-        if snap is None:
-            continue
+        assert t.id is not None, (
+            f"open trade {t.ticker} has id=None — data-integrity bug in "
+            f"list_open_trades; dashboard cannot render advisories reliably"
+        )
+        snap = prices.get(t.ticker)
+        remaining = t.initial_shares - sum(e.shares for e in exits_by_trade.get(t.id, []))
         ctx_adv = AdvisoryContext(
             as_of_date=action_session,
-            current_price=snap.price,
+            current_price=snap.price if snap else 0.0,
             sma10=None,
             sma20=None,
             weather_status=weather_status_str,
             config=cfg.stop_advisory,
         )
-        raw = compute_all_suggestions(t, ctx_adv)
-        advisories[t.id] = [
-            AdvisorySuggestionVM(rule=s.rule, message=s.message)
-            for s in raw
-        ]
+        raw = compute_all_suggestions(t, ctx_adv) if snap else []
+        advisories_tuple = tuple(
+            AdvisorySuggestionVM(rule=s.rule, message=s.message) for s in raw
+        )
+        row_vm = _open_positions_row_vm(
+            trade=t,
+            price_snapshot=snap,
+            remaining_shares=remaining,
+            advisories=advisories_tuple,
+        )
+        open_trade_rows[t.id] = row_vm
+        # Legacy mappings — kept for backward compat with any external consumer.
+        if snap is not None:
+            open_trade_last_prices[t.ticker] = snap
+        open_trade_advisories[t.id] = list(advisories_tuple)
 
     flag_tags = _flag_tags(candidates_by_ticker)
 
@@ -206,7 +209,7 @@ def build_dashboard(*, cfg: Config, cache: PriceCache, executor) -> DashboardVM:
         status_strip=status_strip,
         today_decisions=today_decisions,
         open_trades=list(open_trades),
-        open_trade_advisories=advisories,
+        open_trade_advisories=open_trade_advisories,
         open_trade_last_prices=open_trade_last_prices,
         watchlist_top5=list(top5),
         watchlist_remaining_count=max(0, len(watchlist) - 5),
@@ -218,6 +221,7 @@ def build_dashboard(*, cfg: Config, cache: PriceCache, executor) -> DashboardVM:
         price_source_degraded_until=(
             degraded_until.isoformat(timespec="seconds") if degraded_until else None
         ),
+        open_trade_rows=open_trade_rows,
     )
 
 
