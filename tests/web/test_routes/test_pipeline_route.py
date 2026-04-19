@@ -512,6 +512,18 @@ def test_csv_upload_replaces_existing_inbox_file(test_cfg, seeded_db):
     assert b"MSFT" in inbox_files[0].read_bytes()
 
 
+def test_get_pipeline_includes_csv_upload_section(test_cfg, seeded_db):
+    """Spec §3.1: /pipeline renders the #csv-upload-section inline."""
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/pipeline")
+    assert r.status_code == 200
+    assert 'id="csv-upload-section"' in r.text
+    assert 'hx-post="/pipeline/csv-upload"' in r.text
+    assert 'type="file"' in r.text
+
+
 def test_csv_upload_size_over_limit_returns_413(test_cfg, seeded_db):
     """Oversized upload → 413 rendering csv_upload_error.html.j2.
 

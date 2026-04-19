@@ -7,6 +7,7 @@
       {% include "partials/stale_run_card.html.j2" %}
     {% endwith %}
   {% endif %}
+  {% include "partials/csv_upload_form.html.j2" %}
   <button hx-post="/pipeline/run" hx-target="#run-panel" hx-swap="innerHTML"
           hx-headers='{"HX-Request": "true"}'>Run now</button>
   <div id="run-panel"></div>
