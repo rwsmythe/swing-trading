@@ -12,7 +12,8 @@ from markupsafe import Markup
 
 from swing.data.db import connect
 from swing.data.repos.cash import list_cash
-from swing.data.repos.trades import list_all_exits, list_open_trades
+from swing.data.repos.trades import get_trade, list_all_exits, list_open_trades
+from swing.trades.exit import ExitReason, ExitRequest, record_exit
 from swing.recommendations.sizing import compute_shares, SizingResult
 from swing.trades.entry import (
     EntryRequest, HardCapException, DuplicateOpenPositionException,
@@ -247,3 +248,80 @@ def exit_form(request: Request, trade_id: int):
     return templates.TemplateResponse(
         request, "partials/trade_exit_form.html.j2", {"vm": vm},
     )
+
+
+@router.post("/trades/{trade_id}/exit", response_class=HTMLResponse)
+def exit_post(
+    request: Request,
+    trade_id: int,
+    exit_date: str = Form(...),
+    exit_price: float = Form(...),
+    shares: int = Form(...),
+    reason: str = Form(...),
+    rationale: str = Form(...),
+    notes: str | None = Form(None),
+):
+    cfg = request.app.state.cfg
+    cache = request.app.state.price_cache
+    executor = request.app.state.price_fetch_executor
+    templates = _templates(request)
+
+    # Validate reason.
+    try:
+        reason_enum = ExitReason(reason)
+    except ValueError:
+        return templates.TemplateResponse(
+            request, "partials/trade_form_error.html.j2",
+            {"error_message": f"Invalid reason: {reason}", "form_body": None},
+            status_code=400,
+        )
+
+    req = ExitRequest(
+        trade_id=trade_id, exit_date=exit_date, exit_price=exit_price,
+        shares=shares, reason=reason_enum, notes=notes, rationale=rationale,
+        event_ts=datetime.now().isoformat(timespec="seconds"),
+    )
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        try:
+            result = record_exit(conn, req)
+        except Exception as exc:
+            # record_exit raises on shares > remaining and other validations.
+            return templates.TemplateResponse(
+                request, "partials/trade_form_error.html.j2",
+                {"error_message": str(exc), "form_body": None},
+                status_code=400,
+            )
+    finally:
+        conn.close()
+
+    # Two-call rebuild.
+    dashboard_vm = build_dashboard(cfg=cfg, cache=cache, executor=executor)
+    status_strip_html = templates.get_template("partials/status_strip.html.j2").render(
+        request=request, vm=dashboard_vm,
+    )
+
+    if result.fully_closed:
+        # Primary target: empty/hidden stub so the row disappears.
+        return HTMLResponse(Markup(
+            f'<tr id="open-position-{trade_id}" style="display:none"></tr>'
+            f'<div id="status-strip" hx-swap-oob="true">{status_strip_html}</div>'
+        ))
+
+    # Partial: re-render the row.
+    conn2 = connect(cfg.paths.db_path)
+    try:
+        updated = get_trade(conn2, trade_id)
+    finally:
+        conn2.close()
+    row_vm = build_open_positions_row(
+        trade=updated, cfg=cfg, cache=cache, executor=executor,
+    )
+    row_html = templates.get_template("partials/open_positions_row.html.j2").render(
+        request=request, row=row_vm,
+    )
+    return HTMLResponse(Markup(
+        f'{row_html}'
+        f'<div id="status-strip" hx-swap-oob="true">{status_strip_html}</div>'
+    ))

@@ -367,3 +367,130 @@ def test_get_exit_form_for_closed_trade_returns_404_fragment(seeded_db):
     # Not JSON — HTMX-aware fragment.
     assert "banner" in r.text
     assert "not found" in r.text.lower() or "not open" in r.text.lower()
+
+
+def test_post_exit_full_close_removes_row(seeded_db, monkeypatch):
+    """Full close → row disappears; #status-strip OOB only (no watchlist OOB)."""
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event, list_open_trades
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=5, initial_stop=860.0,
+                current_stop=860.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: PriceSnapshot(ticker=t, price=932.0, asof=datetime.now(),
+                             is_stale=False, source="live")
+            for t in tickers
+        })
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{trade.id}/exit", headers={"HX-Request": "true"},
+            data={"exit_date": "2026-04-18", "exit_price": "932.00",
+                  "shares": "5", "reason": "manual", "rationale": "full close"},
+        )
+    assert r.status_code == 200
+    # Full close: no <tr> for the now-closed position; empty/hidden stub OK.
+    assert f"open-position-{trade.id}" not in r.text or 'display:none' in r.text.lower()
+    # Status-strip OOB present.
+    assert 'id="status-strip"' in r.text
+    assert "hx-swap-oob" in r.text
+    # Watchlist OOB NOT emitted on exit.
+    assert 'id="watchlist-top5"' not in r.text
+
+
+def test_post_exit_partial_updates_row(seeded_db, monkeypatch):
+    """Partial close → row re-rendered with reduced remaining_shares."""
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event, list_open_trades
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=10, initial_stop=860.0,
+                current_stop=860.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: PriceSnapshot(ticker=t, price=932.0, asof=datetime.now(),
+                             is_stale=False, source="live")
+            for t in tickers
+        })
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{trade.id}/exit", headers={"HX-Request": "true"},
+            data={"exit_date": "2026-04-18", "exit_price": "932.00",
+                  "shares": "3", "reason": "partial", "rationale": "lock in partial gain"},
+        )
+    assert r.status_code == 200
+    assert f"open-position-{trade.id}" in r.text
+    # Remaining shares: 10 - 3 = 7.
+    assert "7 / 10" in r.text or ">7<" in r.text
+
+
+def test_post_exit_shares_too_many_400(seeded_db, monkeypatch):
+    """Shares > remaining → 400 error fragment (§5.1 case 2)."""
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event, list_open_trades
+    from swing.web.price_cache import PriceCache
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=5, initial_stop=860.0,
+                current_stop=860.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {})
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{trade.id}/exit", headers={"HX-Request": "true"},
+            data={"exit_date": "2026-04-18", "exit_price": "932.00",
+                  "shares": "10", "reason": "manual",  # over-exit
+                  "rationale": "too many"},
+        )
+    assert r.status_code == 400
+    assert "remaining" in r.text.lower() or "exceed" in r.text.lower()
