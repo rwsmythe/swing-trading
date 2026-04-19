@@ -359,20 +359,23 @@ def test_get_exit_form_renders(seeded_db, monkeypatch):
 def test_get_exit_form_for_closed_trade_returns_404_fragment(seeded_db):
     """Missing/closed trade → HTMX-aware 404 <tr> fragment (§5.1 case 4 + §5.2).
 
-    Path-aware handler (R2 Major 1): /trades/* routes use <tr> swap targets,
-    so 404s from these paths render trade_form_error.html.j2 (<tr>), not
-    http_error_fragment.html.j2 (<div>).
+    HX-Target-aware handler (spec §3.3): row-prefix targets (`open-position-*`,
+    etc.) render trade_form_error.html.j2 (<tr>). Production HTMX resolves
+    `hx-target="closest tr"` to the open-position row id, so the header value
+    is `open-position-{id}`.
     """
     cfg, cfg_path = seeded_db
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
-        r = client.get("/trades/99999/exit/form",
-                       headers={"HX-Request": "true"})
+        r = client.get(
+            "/trades/99999/exit/form",
+            headers={"HX-Request": "true", "HX-Target": "open-position-99999"},
+        )
     assert r.status_code == 404
     # Not JSON — HTMX-aware fragment.
     assert "banner" in r.text
     assert "not found" in r.text.lower() or "not open" in r.text.lower()
-    # Path-aware handler: /trades/* → <tr>-shaped fragment.
+    # HX-Target-aware handler: row-prefix → <tr>-shaped fragment.
     assert "<tr" in r.text.lower()
 
 
@@ -727,20 +730,22 @@ def test_post_stop_for_closed_trade_returns_404_fragment(seeded_db):
 
     adjust_stop raises ValueError when the trade_id is not found; the route
     must catch that and re-raise as HTTPException(404) so the HTMX-aware
-    path-aware handler renders trade_form_error.html.j2 (a <tr>) rather than
-    http_error_fragment.html.j2 (a <div>), since /trades/* uses <tr> targets.
+    HX-Target-aware handler renders trade_form_error.html.j2 (a <tr>) rather
+    than http_error_fragment.html.j2 (a <div>), since the adjust-stop form's
+    `hx-target='closest tr'` resolves to `open-position-{id}` (row prefix).
     """
     cfg, cfg_path = seeded_db
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
         r = client.post(
-            "/trades/99999/stop", headers={"HX-Request": "true"},
+            "/trades/99999/stop",
+            headers={"HX-Request": "true", "HX-Target": "open-position-99999"},
             data={"new_stop": "880.00", "rationale": "stale stop"},
         )
     assert r.status_code == 404
     assert "banner" in r.text
     assert "not" in r.text.lower()
-    # Path-aware handler (R2 Major 1): /trades/* → <tr>-shaped fragment, not <div>.
+    # HX-Target-aware handler (spec §3.3): row-prefix → <tr>-shaped fragment.
     assert "<tr" in r.text.lower()
 
 
@@ -887,11 +892,12 @@ def test_post_stop_for_actually_closed_trade_returns_404_fragment(seeded_db):
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
         r = client.post(
-            f"/trades/{trade.id}/stop", headers={"HX-Request": "true"},
+            f"/trades/{trade.id}/stop",
+            headers={"HX-Request": "true", "HX-Target": f"open-position-{trade.id}"},
             data={"new_stop": "900.00", "rationale": "attempt after close"},
         )
     assert r.status_code == 404
-    # Path-aware handler (R2 Major 1): /trades/* → <tr>-shaped fragment.
+    # HX-Target-aware handler (spec §3.3): row-prefix → <tr>-shaped fragment.
     assert "<tr" in r.text.lower()
     assert "banner" in r.text
 

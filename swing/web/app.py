@@ -25,6 +25,19 @@ from swing.web.price_cache import PriceCache
 log = logging.getLogger(__name__)
 
 
+_ROW_TARGET_PREFIXES = (
+    "open-position-",     # open-positions row
+    "entry-form-",        # entry form (replaces watchlist row)
+    "exit-form-",         # exit form (replaces open-position row)
+    "stop-form-",         # stop-adjust form (replaces open-position row)
+    "watchlist-row-",     # watchlist row (Enter-button target; id added in Phase 3c)
+)
+
+
+def _is_row_swap_target(request: Request) -> bool:
+    return request.headers.get("HX-Target", "").startswith(_ROW_TARGET_PREFIXES)
+
+
 def _static_dir() -> Path:
     return Path(__file__).parent / "static"
 
@@ -100,10 +113,10 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
     @app.exception_handler(StarletteHTTPException)
     async def _handle_http_exc(request: Request, exc: StarletteHTTPException):
         if request.headers.get("HX-Request", "").lower() == "true":
-            tpls = Jinja2Templates(directory=str(app.state.templates_dir))
-            # Path-aware: /trades/* requests use <tr>-shaped swap targets, so
-            # render a row-compatible fragment. Other HTMX endpoints get <div>.
-            if request.url.path.startswith("/trades/"):
+            tpls = request.app.state.templates
+            # HX-Target-aware: row-prefix targets get <tr>, all other HTMX
+            # targets get <div>. Spec §3.3.
+            if _is_row_swap_target(request):
                 return tpls.TemplateResponse(
                     request, "partials/trade_form_error.html.j2",
                     {"error_message": exc.detail},
@@ -118,20 +131,18 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def _handle_validation_error(request: Request, exc: RequestValidationError):
-        """HTMX form-validation errors render at 400 with a fragment sized to the
-        HTMX target. R3 Major 1 fix: trade routes use `<tr>` swap targets
-        (`hx-target='closest tr'`), so `/trades/*` POST validation errors MUST
-        render `trade_form_error.html.j2` (a `<tr>`). Other HTMX endpoints get
-        the neutral `http_error_fragment.html.j2` (`<div>`). Non-HTMX requests
-        fall through to FastAPI's default 422 JSON."""
+        """HTMX validation errors render fragments sized to the HX-Target.
+        Non-HTMX GETs that accept HTML get a full-page 400 (Task 5 adds that
+        branch). Non-HTMX POSTs or JSON-only GETs fall through to FastAPI
+        default 422 JSON. Spec §3.3."""
+        errors = exc.errors()
+        first = errors[0] if errors else {}
+        field = ".".join(str(p) for p in first.get("loc", ()) if p != "body") or "field"
+        msg = first.get("msg", "invalid input")
+        tpls = request.app.state.templates
+
         if request.headers.get("HX-Request", "").lower() == "true":
-            errors = exc.errors()
-            first = errors[0] if errors else {}
-            field = ".".join(str(p) for p in first.get("loc", ()) if p != "body") or "field"
-            msg = first.get("msg", "invalid input")
-            tpls = Jinja2Templates(directory=str(app.state.templates_dir))
-            # Route-shape-aware selection: trade routes need `<tr>` fragment.
-            if request.url.path.startswith("/trades/") and request.method == "POST":
+            if _is_row_swap_target(request) and request.method == "POST":
                 return tpls.TemplateResponse(
                     request, "partials/trade_form_error.html.j2",
                     {"error_message": f"Invalid input in {field}: {msg}"},
@@ -142,6 +153,7 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
                 {"status_code": 400, "detail": f"Invalid input in {field}: {msg}"},
                 status_code=400,
             )
+        # Task 5 inserts the non-HTMX GET HTML branch before this fallthrough.
         return await request_validation_exception_handler(request, exc)
 
     # Static mounts. charts_dir is written by the pipeline; if no run has
