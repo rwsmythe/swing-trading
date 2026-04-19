@@ -420,19 +420,22 @@ Inside `create_app`, AFTER the existing `_register_exception_handlers(app)` call
 
     @app.exception_handler(RequestValidationError)
     async def _handle_validation_error(request: Request, exc: RequestValidationError):
-        """HTMX form-validation errors render as the trade_form_error fragment at 400
-        (spec §5). Non-HTMX requests fall through to FastAPI's default 422 JSON
-        (API consumers, curl probes, etc.)."""
+        """HTMX form-validation errors render as a neutral `http_error_fragment`
+        (a `<div>` banner) at 400 — safe swap target regardless of whether the HTMX
+        element is a `<tr>`, `<div>`, or `<span>`. R2 Minor 2: trade-specific row
+        fragments are rendered only from within the trades route handlers themselves,
+        not from this global handler, to avoid shipping a `<tr>` body where the
+        caller's target is something else. Non-HTMX requests fall through to
+        FastAPI's default 422 JSON (API consumers, curl probes, etc.)."""
         if request.headers.get("HX-Request", "").lower() == "true":
-            # Summarize the first validation error for the banner.
             errors = exc.errors()
             first = errors[0] if errors else {}
             field = ".".join(str(p) for p in first.get("loc", ()) if p != "body") or "field"
             msg = first.get("msg", "invalid input")
             tpls = Jinja2Templates(directory=str(app.state.templates_dir))
             return tpls.TemplateResponse(
-                request, "partials/trade_form_error.html.j2",
-                {"error_message": f"Invalid input in {field}: {msg}", "form_body": None},
+                request, "partials/http_error_fragment.html.j2",
+                {"status_code": 400, "detail": f"Invalid input in {field}: {msg}"},
                 status_code=400,
             )
         return await request_validation_exception_handler(request, exc)
@@ -739,6 +742,8 @@ from swing.config import Config
 from swing.data.db import connect
 from swing.data.models import Trade
 from swing.data.repos.trades import list_exits_for_trade
+from swing.data.repos.weather import get_latest_for_date
+from swing.evaluation.dates import action_session_for_run
 from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
 from swing.web.price_cache import PriceCache
 from swing.web.view_models.dashboard import AdvisorySuggestionVM
@@ -750,8 +755,15 @@ def build_open_positions_row(
 ) -> OpenPositionsRowVM:
     """Single-row convenience wrapper for POST-success handlers.
 
+    Shares advisory inputs with build_dashboard (R2 Major 3 fix): fetches the
+    same `action_session_for_run(now)` date and the same latest-weather row
+    the dashboard loop uses, so POST-success rows render the SAME advisory
+    set the dashboard would for bullish/caution/bearish or session-boundary
+    days.
+
     Does: cache.get_many([trade.ticker], deadline=..., executor=...);
           list_exits_for_trade(conn, trade.id) for remaining-shares;
+          get_latest_for_date(conn, action_session, ticker=benchmark) for weather;
           compute_all_suggestions(trade, AdvisoryContext(sma10=None, sma20=None, ...))
           — 3a reduced advisory subset; SMA-dependent rules return None until Phase 3c.
 
@@ -768,24 +780,31 @@ def build_open_positions_row(
     )
     snapshot = prices.get(trade.ticker)
 
+    now = datetime.now()
+    action_session = action_session_for_run(now).isoformat()
+
     own_conn = conn is None
     if own_conn:
         conn = connect(cfg.paths.db_path)
     try:
         with conn:
             exits = list_exits_for_trade(conn, trade.id)
+            weather = get_latest_for_date(
+                conn, action_session, ticker=cfg.rs.benchmark_ticker,
+            )
     finally:
         if own_conn:
             conn.close()
     remaining = trade.initial_shares - sum(e.shares for e in exits)
+    weather_status = weather.status if weather else "STALE"
 
     advisories: tuple[AdvisorySuggestionVM, ...] = ()
     if snapshot is not None:
         ctx = AdvisoryContext(
-            as_of_date=datetime.now().date().isoformat(),
+            as_of_date=action_session,
             current_price=snapshot.price,
             sma10=None, sma20=None,
-            weather_status="Bullish",  # conservative default when weather unknown
+            weather_status=weather_status,
             config=cfg.stop_advisory,
         )
         raw = compute_all_suggestions(trade, ctx)
@@ -832,25 +851,38 @@ Internally restructure: `build_dashboard` keeps its batched `cache.get_many(all_
 
 Read `swing/web/view_models/dashboard.py` carefully — understand where `open_trade_last_prices` and `open_trade_advisories` are assembled. Note the existing pattern (probably a single loop already).
 
-- [ ] **Step 2: Refactor internally**
+- [ ] **Step 2: Refactor internally (batched — no per-row I/O)**
 
-Modify the open-trade loop in `build_dashboard` to:
+R2 Majors 1+2 fix: exits are fetched once via `list_all_exits(conn)` and grouped in Python, NOT queried per-row. This preserves the spec §3.4 "no I/O per row" contract AND keeps all I/O inside the existing `with conn:` block (no post-close usage).
+
+Read the existing `build_dashboard` to locate the spot where `open_trades`, `exits` (via `list_all_exits(conn)`), and `weather` are read INSIDE the `with conn:` block. After the R1 snapshot-reads fix landed in 3a, everything needed is already read under one transaction. The refactor adds:
 
 ```python
-    # Build per-row VMs via the pure assembler (no I/O here — all I/O happened above).
-    from swing.web.view_models.open_positions_row import _open_positions_row_vm
-    from swing.data.repos.trades import list_exits_for_trade
+    # Inside the existing `with conn:` block, AFTER existing list_all_exits(conn)
+    # call (rename the receiver if needed). Group by trade_id once.
+    from collections import defaultdict
+    exits_by_trade: dict[int, list[Exit]] = defaultdict(list)
+    for e in exits:
+        exits_by_trade[e.trade_id].append(e)
+    # (Still inside `with conn:`.)
+```
+
+Then modify the open-trade loop (which runs AFTER the `with conn:` finishes, using ONLY precomputed data — zero per-row I/O):
+
+```python
+    # Build per-row VMs via the pure assembler. No I/O here — all I/O already
+    # happened under the `with conn:` snapshot above. Matches spec §3.4.
+    from swing.web.view_models.open_positions_row import (
+        _open_positions_row_vm, OpenPositionsRowVM,
+    )
 
     open_trade_last_prices: dict[str, PriceSnapshot] = {}
     open_trade_advisories: dict[int, list[AdvisorySuggestionVM]] = {}
+    open_trade_rows: dict[int, OpenPositionsRowVM] = {}
     for t in open_trades:
         assert t.id is not None, f"open trade {t.ticker} has id=None — data-integrity bug"
         snap = prices.get(t.ticker)
-        exits = list_exits_for_trade(conn, t.id)
-        remaining = t.initial_shares - sum(e.shares for e in exits)
-        # compute_all_suggestions call — keep the existing weather/SMA setup that
-        # already happens once above this loop (reuse weather_status_str and pass
-        # sma10=None, sma20=None as today).
+        remaining = t.initial_shares - sum(e.shares for e in exits_by_trade.get(t.id, []))
         ctx_adv = AdvisoryContext(
             as_of_date=action_session,
             current_price=snap.price if snap else 0.0,
@@ -862,20 +894,20 @@ Modify the open-trade loop in `build_dashboard` to:
         advisories_tuple = tuple(
             AdvisorySuggestionVM(rule=s.rule, message=s.message) for s in raw
         )
-        # Pure assembly (no I/O).
-        _open_positions_row_vm(
+        row_vm = _open_positions_row_vm(
             trade=t, price_snapshot=snap,
             remaining_shares=remaining, advisories=advisories_tuple,
         )
-        # Attach to the existing DashboardVM fields (external shape unchanged).
+        open_trade_rows[t.id] = row_vm
+        # Legacy mappings — kept for backward compat with any external consumer.
         if snap is not None:
             open_trade_last_prices[t.ticker] = snap
         open_trade_advisories[t.id] = list(advisories_tuple)
 ```
 
-Important: the existing `DashboardVM.open_trade_last_prices` and `open_trade_advisories` fields stay exactly as they are — the per-row VMs are computed as a side benefit but not attached to `DashboardVM`. This preserves the external contract.
+When constructing `DashboardVM`, pass both the existing fields AND the new `open_trade_rows` mapping (additive).
 
-Note: `list_exits_for_trade(conn, t.id)` is called once per trade. The dashboard typically has ≤6 open trades (hard cap). N+1 is bounded in practice; the cost is a few indexed SELECT queries.
+Important: `list_exits_for_trade(conn, t.id)` is NOT called from `build_dashboard` — the batched `list_all_exits(conn)` + Python grouping replaces it. `list_exits_for_trade` is only used by `build_open_positions_row` (single-row path in POST handlers). This is the spec §3.4 split.
 
 - [ ] **Step 3: Run the existing dashboard test**
 
@@ -1836,26 +1868,43 @@ def entry_post(
 
     # Render response: primary row + #status-strip OOB + #watchlist-top5 OOB.
     # Single-contract partial: pass only `row` (R1 Major 3 fix).
+    # R2 Major 4: do NOT reuse prices_refresh_container.html.j2 — it already
+    # emits three oob regions; nesting it inside our own oob wrapper duplicates
+    # IDs and leaks extra fragments. Render each fragment explicitly from the
+    # rebuilt DashboardVM.
     row_html = templates.get_template("partials/open_positions_row.html.j2").render(
         request=request, row=row_vm,
     )
     status_strip_html = templates.get_template("partials/status_strip.html.j2").render(
         request=request, vm=dashboard_vm,
     )
-    watchlist_html = templates.get_template(
-        "partials/prices_refresh_container.html.j2"
-    ).render(request=request, vm=dashboard_vm)
-    # prices_refresh_container already emits status-strip + open-positions + watchlist
-    # as OOB — but we only need status-strip + watchlist. Extract via string surgery
-    # would be brittle; instead, emit the fragments we need explicitly.
+    # Build the watchlist-top5 rows inline using the existing watchlist_row partial.
+    watchlist_row_template = templates.get_template("partials/watchlist_row.html.j2")
+    watchlist_rows_html = "".join(
+        watchlist_row_template.render(
+            request=request, w=w,
+            price=dashboard_vm.watchlist_last_prices.get(w.ticker),
+            tags=dashboard_vm.flag_tags.get(w.ticker, ()),
+        )
+        for w in dashboard_vm.watchlist_top5
+    )
+
     return HTMLResponse(Markup(
         f'{row_html}'
         f'<div id="status-strip" hx-swap-oob="true">{status_strip_html}</div>'
-        f'<section id="watchlist-top5" hx-swap-oob="true">{watchlist_html}</section>'
+        f'<section id="watchlist-top5" hx-swap-oob="true">'
+        f'<table class="watchlist">'
+        f'<thead><tr>'
+        f'<th></th><th>Ticker</th><th>Last</th><th>Pivot</th>'
+        f'<th>% to pivot</th><th>ADR</th><th>Tags</th>'
+        f'</tr></thead>'
+        f'<tbody>{watchlist_rows_html}</tbody>'
+        f'</table>'
+        f'</section>'
     ))
 ```
 
-Note on the response construction: the OOB wrapper divs MUST match the dashboard template's IDs exactly — `#status-strip` and `#watchlist-top5`. If the dashboard template uses a different outer element or ID, adjust to match. Re-read `swing/web/templates/dashboard.html.j2` to verify the IDs.
+Note on the response construction: the OOB wrapper divs MUST match the dashboard template's IDs exactly — `#status-strip` and `#watchlist-top5`. If the dashboard template uses a different outer element or ID, adjust to match. Re-read `swing/web/templates/dashboard.html.j2` to verify the IDs. The `<thead>` columns here MUST also match the dashboard's existing watchlist table — if Phase 3a's dashboard has different columns (e.g., after Task 9 adds an Enter-button column), adjust here to match.
 
 - [ ] **Step 5: Run the test**
 
@@ -1999,6 +2048,13 @@ Replace the `except SoftWarnException: raise` block in `swing/web/routes/trades.
             # First submit at soft cap — render the 2-step confirm fragment.
             # Re-serialize the submitted form values so the next submit carries
             # them + force=true (spec §4.3 step 4).
+            # R2 Minor 1: show the ACTUAL open_count in the banner numerator,
+            # not the threshold — "5/4" when 5 are open with soft_warn=4.
+            conn_count = connect(cfg.paths.db_path)
+            try:
+                actual_open = len(list_open_trades(conn_count))
+            finally:
+                conn_count.close()
             form_values = {
                 "ticker": req.ticker,
                 "entry_date": req.entry_date,
@@ -2009,7 +2065,7 @@ Replace the `except SoftWarnException: raise` block in `swing/web/routes/trades.
                 "notes": req.notes or "",
                 "watchlist_target": req.watchlist_entry_target or "",
                 "watchlist_stop": req.watchlist_initial_stop or "",
-                "open_count": cfg.position_limits.soft_warn_open,   # shown in banner
+                "open_count": actual_open,                          # real count shown in banner
                 "soft_warn": cfg.position_limits.soft_warn_open,
                 "hard_cap": cfg.position_limits.hard_cap_open,
             }
