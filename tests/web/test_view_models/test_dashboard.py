@@ -97,6 +97,109 @@ def test_build_dashboard_shape(seeded_db, monkeypatch):
     assert vm.price_source_degraded is False
 
 
+def test_build_dashboard_skips_ohlcv_fetch_when_no_open_trades(
+    seeded_db, monkeypatch,
+):
+    """OHLCV advisories only apply to open trades. When there are zero open
+    trades, the dashboard MUST NOT call `ohlcv_cache.get_many_bundles` —
+    otherwise yfinance is burned on watchlist tickers that never consume the
+    SMA data, and the breaker trips on first load."""
+    from swing.web.view_models.dashboard import build_dashboard
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from swing.web.ohlcv_cache import OhlcvCache
+    from datetime import datetime
+
+    cfg, _ = seeded_db
+    # Don't seed open trades — just weather + watchlist so the dashboard
+    # has something to render.
+    from swing.data.db import connect
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO weather_runs (run_ts, asof_date, ticker, status, close, rationale)
+                   VALUES (?, ?, 'SPY', 'Bullish', 450.0, 'ok')""",
+                ("2026-04-17T21:49:00", "2026-04-17"),
+            )
+    finally:
+        conn.close()
+
+    cache = PriceCache(cfg)
+    monkeypatch.setattr(cache, "get_many",
+        lambda tickers, deadline_seconds, *, executor=None: {})
+    monkeypatch.setattr(cache, "is_degraded", lambda: False)
+
+    call_count = {"n": 0}
+    def tracking(self, tickers, *, deadline_seconds, executor):
+        call_count["n"] += 1
+        return {}
+    monkeypatch.setattr(OhlcvCache, "get_many_bundles", tracking)
+    monkeypatch.setattr(OhlcvCache, "is_degraded", lambda self: False)
+
+    ohlcv_cache = OhlcvCache(cfg)
+    build_dashboard(cfg=cfg, cache=cache, executor=None, ohlcv_cache=ohlcv_cache)
+
+    assert call_count["n"] == 0, (
+        "OHLCV fetch should be skipped when there are no open trades"
+    )
+
+
+def test_build_dashboard_ohlcv_fetch_scoped_to_open_trades_only(
+    seeded_db, monkeypatch,
+):
+    """With open trades AND watchlist rows, the OHLCV fetch must include
+    ONLY the open-trade tickers. Watchlist tickers don't consume SMA data."""
+    from swing.web.view_models.dashboard import build_dashboard
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from swing.web.ohlcv_cache import OhlcvCache
+    from datetime import datetime
+    from swing.data.db import connect
+
+    cfg, _ = seeded_db
+    _seed_for_dashboard(cfg)  # AAPL open trade + weather + evaluation
+
+    # Add watchlist rows for two OTHER tickers.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            for ticker in ("MSFT", "GOOG"):
+                conn.execute(
+                    """INSERT INTO watchlist
+                       (ticker, added_date, last_qualified_date, status,
+                        qualification_count, not_qualified_streak,
+                        last_data_asof_date)
+                       VALUES (?, '2026-04-15', '2026-04-17', 'watch', 1, 0,
+                               '2026-04-17')""",
+                    (ticker,),
+                )
+    finally:
+        conn.close()
+
+    cache = PriceCache(cfg)
+    fake_snap = PriceSnapshot(
+        ticker="AAPL", price=182.0, asof=datetime.now(),
+        is_stale=False, source="live",
+    )
+    monkeypatch.setattr(cache, "get_many",
+        lambda tickers, deadline_seconds, *, executor=None: {t: fake_snap for t in tickers})
+    monkeypatch.setattr(cache, "is_degraded", lambda: False)
+
+    fetched_tickers: list[str] = []
+    def tracking(self, tickers, *, deadline_seconds, executor):
+        fetched_tickers.extend(tickers)
+        return {}
+    monkeypatch.setattr(OhlcvCache, "get_many_bundles", tracking)
+    monkeypatch.setattr(OhlcvCache, "is_degraded", lambda self: False)
+
+    ohlcv_cache = OhlcvCache(cfg)
+    build_dashboard(cfg=cfg, cache=cache, executor=None, ohlcv_cache=ohlcv_cache)
+
+    assert set(fetched_tickers) == {"AAPL"}, (
+        f"OHLCV fetch should be scoped to open trades only; "
+        f"got {fetched_tickers}"
+    )
+
+
 def test_build_dashboard_shows_weather_when_asof_precedes_action_session(
     seeded_db, monkeypatch,
 ):

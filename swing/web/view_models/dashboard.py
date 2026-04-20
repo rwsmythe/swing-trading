@@ -150,10 +150,15 @@ def build_dashboard(
         executor=executor,
     )
 
+    # OHLCV fetch scope: OPEN TRADES ONLY. Advisories (trail-MA, exit-below-MA)
+    # only fire for open positions; watchlist rows never consume SMA data.
+    # Fetching OHLCV for watchlist tickers burns yfinance quota and trips the
+    # breaker on first load (0 open trades → 0 fetches). Spec §3.4 Major 3.
     bundles: dict = {}
-    if ohlcv_cache is not None:
+    ohlcv_tickers = sorted({t.ticker for t in open_trades})
+    if ohlcv_cache is not None and ohlcv_tickers:
         bundles = ohlcv_cache.get_many_bundles(
-            sorted(active_tickers),
+            ohlcv_tickers,
             deadline_seconds=cfg.web.price_fetch_deadline_seconds,
             executor=executor,
         )
