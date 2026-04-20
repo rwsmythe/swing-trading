@@ -14,7 +14,7 @@ from swing.data.repos.candidates import fetch_candidates_for_run
 from swing.data.repos.recommendations import list_for_session
 from swing.data.repos.trades import list_all_exits, list_open_trades
 from swing.data.repos.watchlist import list_active_watchlist
-from swing.data.repos.weather import get_latest_for_date
+from swing.data.repos.weather import get_latest
 from swing.evaluation.dates import action_session_for_run
 from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
 from swing.trades.equity import current_equity
@@ -93,7 +93,12 @@ def build_dashboard(
             open_trades = list_open_trades(conn)
             recs = list_for_session(conn, action_session)
             watchlist = list_active_watchlist(conn)
-            weather = get_latest_for_date(conn, action_session, ticker=cfg.rs.benchmark_ticker)
+            # Weather is keyed by data_asof_date (last completed session);
+            # action_session is forward-looking (next session). Query by
+            # ticker only — the latest classification for that ticker is the
+            # right answer, regardless of its asof date. Prevents weekend/
+            # holiday gaps from silently rendering STALE.
+            weather = get_latest(conn, ticker=cfg.rs.benchmark_ticker)
             # Equity for status strip — fetch all exits once; also used for
             # per-trade remaining-shares grouping below (no N+1 queries).
             all_exits = list_all_exits(conn)

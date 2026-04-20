@@ -62,6 +62,36 @@ def get_latest_for_date(
     )
 
 
+def get_latest(
+    conn: sqlite3.Connection, *, ticker: str = "QQQ"
+) -> WeatherRun | None:
+    """Return the most recent weather_run for `ticker`, ordered by run_ts.
+
+    Prefer this over `get_latest_for_date` in read-only UIs. The pipeline
+    writes weather keyed by `data_asof_date` (last completed session);
+    callers that want "current" weather should not second-guess that date
+    mapping — weekend/holiday gaps between the data date and the operator's
+    action-session date would otherwise cause silent STALE fallback.
+    """
+    row = conn.execute(
+        """
+        SELECT id, run_ts, asof_date, ticker, status, close, sma10, sma20, sma50,
+               slope20_5bar, slope10_5bar, rationale
+        FROM weather_runs
+        WHERE ticker = ?
+        ORDER BY run_ts DESC LIMIT 1
+        """,
+        (ticker,),
+    ).fetchone()
+    if row is None:
+        return None
+    return WeatherRun(
+        id=row[0], run_ts=row[1], asof_date=row[2], ticker=row[3], status=row[4],
+        close=row[5], sma10=row[6], sma20=row[7], sma50=row[8],
+        slope20_5bar=row[9], slope10_5bar=row[10], rationale=row[11],
+    )
+
+
 def list_weather_runs(conn: sqlite3.Connection) -> list[WeatherRun]:
     """Return all weather runs ordered by run_ts ascending (for flag scanning)."""
     rows = conn.execute(

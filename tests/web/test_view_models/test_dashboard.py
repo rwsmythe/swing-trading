@@ -97,6 +97,42 @@ def test_build_dashboard_shape(seeded_db, monkeypatch):
     assert vm.price_source_degraded is False
 
 
+def test_build_dashboard_shows_weather_when_asof_precedes_action_session(
+    seeded_db, monkeypatch,
+):
+    """Regression: weather is stored keyed by data_asof_date (e.g. Fri 4/17)
+    but dashboard prepares the action_session (e.g. Mon 4/20). The prior
+    implementation queried weather by action_session, silently failed, and
+    rendered STALE. The fix is to query the latest weather for the ticker
+    regardless of asof date (the pipeline is the source of truth for what's
+    latest — we don't need to second-guess the date mapping here).
+    """
+    from swing.web.view_models.dashboard import build_dashboard
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from datetime import datetime
+
+    cfg, _ = seeded_db
+    _seed_for_dashboard(cfg)   # seeds weather asof='2026-04-17' status='Bullish'
+
+    cache = PriceCache(cfg)
+    fake_snap = PriceSnapshot(
+        ticker="AAPL", price=182.0, asof=datetime.now(),
+        is_stale=False, source="live",
+    )
+    monkeypatch.setattr(cache, "get_many",
+        lambda tickers, deadline_seconds, *, executor=None: {t: fake_snap for t in tickers})
+    monkeypatch.setattr(cache, "is_degraded", lambda: False)
+
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=None)
+    # Dashboard's action_session is today-forward; seeded weather asof_date
+    # is 2026-04-17. Weather status MUST be "Bullish" from the seeded row,
+    # NOT "STALE".
+    assert vm.status_strip.weather_status == "Bullish", (
+        f"weather regressed to STALE — dashboard failed to find the latest "
+        f"weather record. got {vm.status_strip.weather_status!r}"
+    )
+
+
 def _seed_open_trade_direct(cfg, *, ticker: str, entry_price: float, shares: int) -> int:
     """Helper: insert an open trade via the repo, returning its id. Avoids
     coupling this test to any specific CLI command name."""

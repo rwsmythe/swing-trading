@@ -15,7 +15,7 @@ from swing.config import Config
 from swing.data.db import connect
 from swing.data.models import Trade
 from swing.data.repos.trades import list_exits_for_trade
-from swing.data.repos.weather import get_latest_for_date
+from swing.data.repos.weather import get_latest
 from swing.evaluation.dates import action_session_for_run
 from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
 from swing.web.price_cache import PriceCache, PriceSnapshot
@@ -98,9 +98,11 @@ def build_open_positions_row(
     try:
         with conn:
             exits = list_exits_for_trade(conn, trade.id)
-            weather = get_latest_for_date(
-                conn, action_session, ticker=cfg.rs.benchmark_ticker,
-            )
+            # Latest classification for this ticker — weather is keyed by
+            # data_asof_date (last completed session), but `action_session`
+            # is forward-looking; querying by action_session silently fails
+            # on weekend/holiday gaps.
+            weather = get_latest(conn, ticker=cfg.rs.benchmark_ticker)
     finally:
         if own_conn:
             conn.close()
