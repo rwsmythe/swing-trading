@@ -216,6 +216,68 @@ def test_pipeline_status_complete_drops_trigger(seeded_db):
     assert "complete" in r.text.lower()
 
 
+def test_pipeline_status_terminal_triggers_page_reload(seeded_db):
+    """After a web-triggered pipeline run completes, the progress partial
+    should auto-reload the page so the dashboard status strip (LAST PIPELINE
+    card, Account, etc.) picks up the new DB state without requiring the
+    operator to Ctrl+F5 manually."""
+    cfg, cfg_path = seeded_db
+    from swing.data.db import connect
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            for run_id, state in ((200, "complete"), (201, "failed"), (202, "force_cleared")):
+                conn.execute(
+                    """INSERT INTO pipeline_runs
+                       (id, started_ts, finished_ts, trigger, data_asof_date,
+                        action_session_date, state, lease_token)
+                       VALUES (?, '2026-04-17T21:49:00', '2026-04-17T21:55:00',
+                               'manual', '2026-04-17', '2026-04-20', ?, ?)""",
+                    (run_id, state, f"tok-{run_id}"),
+                )
+    finally:
+        conn.close()
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        for run_id in (200, 201, 202):
+            r = client.get(f"/pipeline/status/{run_id}", headers={"HX-Request": "true"})
+            assert r.status_code == 200
+            # Terminal state must include a page-reload trigger so the
+            # dashboard status strip + Recent runs table refresh automatically.
+            assert "location.reload" in r.text, (
+                f"terminal state (run {run_id}) missing page-reload trigger. "
+                f"body: {r.text[:300]!r}"
+            )
+
+
+def test_pipeline_status_running_does_not_trigger_page_reload(seeded_db):
+    """Sanity: the running-state partial must NOT reload (would cancel the
+    very HTMX poll that drives progress updates)."""
+    cfg, cfg_path = seeded_db
+    from swing.data.db import connect
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO pipeline_runs
+                   (id, started_ts, trigger, data_asof_date,
+                    action_session_date, state, lease_token,
+                    lease_heartbeat_ts, last_step_progress_ts, current_step)
+                   VALUES (203, '2026-04-17T21:49:00', 'manual',
+                           '2026-04-17', '2026-04-20', 'running', 'tok-203',
+                           '2026-04-17T21:49:30', '2026-04-17T21:49:30', 'evaluate')""",
+            )
+    finally:
+        conn.close()
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/pipeline/status/203", headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert "location.reload" not in r.text
+
+
 def test_pipeline_status_missing_returns_error(seeded_db):
     cfg, cfg_path = seeded_db
     app = create_app(cfg, cfg_path)

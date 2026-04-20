@@ -20,4 +20,9 @@
     Run #{{ run.id }} {{ run.state }}.
     {% if run.error_message %}Error: {{ run.error_message }}.{% endif %}
   </div>
+  {#- Terminal state — reload so the dashboard status strip (LAST PIPELINE
+      card, Account, weather) and the /pipeline Recent-runs table pick up
+      the new DB state. Delay gives the operator a moment to read the
+      terminal message before it's replaced. -#}
+  <script>setTimeout(function () { window.location.reload(); }, 1500);</script>
 {% endif %}
