@@ -1,6 +1,6 @@
 # Swing Trading — Claude Code Context
 
-Personal swing-trading tool (Disciplined Swing Trader + Minervini SEPA). Active ground-up refactor. Phase 3c shipped (commit `3e934ef`, 444 fast tests). Phase 3d (SMA-aware advisories) plan approved via 8 Codex adversarial rounds (spec `c3d65df` + plan `2706c8f`); awaiting execution.
+Personal swing-trading tool (Disciplined Swing Trader + Minervini SEPA). Active ground-up refactor. Phase 3d shipped (SMA-aware advisories; HEAD `77b1c9f` out of adversarial review). End-to-end walkthrough validated the full operator loop; 6 small post-walkthrough fixes landed on `main`. **499 fast tests green.** Phase 3e backlog in `docs/phase3e-todo.md`. Daily routine in `docs/cycle-checklist.md`.
 
 ## Quick Start
 
@@ -8,10 +8,14 @@ Personal swing-trading tool (Disciplined Swing Trader + Minervini SEPA). Active 
 pip install -e ".[dev,web]"
 swing --help                         # CLI: trade, journal, pipeline, web, finviz, etc.
 swing web                            # FastAPI + HTMX dashboard on 127.0.0.1:8080
-python -m pytest -m "not slow" -q    # fast suite (~444 tests, ~15s)
+python -m pytest -m "not slow" -q    # fast suite (499 tests, ~15s)
 python -m pytest -m slow             # pipeline/yfinance e2e (minutes, needs network)
 ruff check swing/
 ```
+
+**Windows PATH for `swing` CLI:** `pip install -e` places the `swing.exe` entry point in `%APPDATA%\Python\Python314\Scripts\` (user install, not `C:\Python314\Scripts`). Add that dir to the user PATH permanently via System Properties, or per-session: `$env:PATH = "$env:APPDATA\Python\Python314\Scripts;$env:PATH"`.
+
+**Finviz inbox:** `data/finviz-inbox/` (configured in `swing.config.toml`). Save exports as `finvizDDMmmYYYY.csv`. Validator requires 13 columns: `No., Ticker, Sector, Industry, Country, Price, Change, Average Volume, Relative Volume, Average True Range, 52-Week High, 52-Week Low, Market Cap`. Missing columns → CSV moved to `data/finviz-inbox/rejected/` with a sidecar `.rejected-reasons.json`. Pipeline outputs go to `exports/<action_session_date>/` (briefing.md + briefing.html + charts/).
 
 ## Architecture
 
@@ -30,7 +34,7 @@ ruff check swing/
 
 - **DB location:** `%USERPROFILE%/swing-data/swing.db` — **outside** the Drive dir (hard invariant; Drive syncing corrupts SQLite).
 - **Phase isolation:** during Phase 3 work, `swing/trades/` and `swing/data/` are consumed read-only unless the current-phase spec explicitly scopes a Phase 2 carve-out (3c touched `update_stop_with_event`; 3d will touch `advisory.py`).
-- **Current baseline:** 444 fast tests green (end of Phase 3c) must stay green through 3d changes.
+- **Current baseline:** 499 fast tests green on `main`.
 
 ## Conventions
 
@@ -59,3 +63,5 @@ ruff check swing/
 - **yfinance `history(interval="1d")` includes the in-progress bar during market hours.** The last row is today's PARTIAL session until the next session rolls over. If you compute a rolling-mean SMA or a "previous close" directly off `df.tail()`, you're sampling a partial intraday close — a "close below MA" rule turns back into an intraday rule. Strip it: `if df.index[-1].date() >= session: df = df.iloc[:-1]` where `session = action_session_for_run(datetime.now())`. Use the exchange-session helper, NOT `date.today()` — HST lags ET by 5h, so local midnight would incorrectly preserve today's partial bar for hours.
 - **`base.html.j2` is shared — new `vm.foo` field requires adding to EVERY base-layout VM.** Every page that `{% extends "base.html.j2" %}` has a VM rendered as `vm` in the template context. If the base layout starts dereferencing a new field (banner flag, session date, etc.), EVERY base-layout VM must gain that field (with a safe default) or Jinja 500s unrelated routes with `UndefinedError`. Current set: `DashboardVM`, `PipelineVM`, `JournalVM`, `WatchlistVM`, `PageErrorVM`. Phase 3c hit this with `price_source_degraded` initially and caught it during adversarial review; Phase 3d hits it again with `ohlcv_source_degraded`. Same fix pattern each time.
 - **Cache + executor race: workers must not write to shared state when the request thread cancels on deadline miss.** `Future.cancel()` is a no-op on a running worker. If the worker writes to `cache._store` from inside itself, a late-completing worker will poison the cache with a bundle the request thread already gave up on. Pattern: worker returns a pure value; request thread writes to `_store` ONLY for futures that completed in-deadline (`wait(..., timeout=deadline)` → iterate `done`, not `pending`). `OhlcvCache` follows this; future caches should too.
+- **Weather lookup in read-only UIs must NOT query by `action_session`.** Weather is stored keyed by `data_asof_date` (last completed NYSE session); `action_session` is forward-looking (next session). On Sunday-evening → Monday-prep workflow (or any weekend/holiday gap) the query silently returns `None` → UI renders STALE despite a fresh weather row existing. Use `swing.data.repos.weather.get_latest(conn, ticker=...)` which returns the most recent record by `run_ts` regardless of date. The pipeline's own briefing generator uses `data_asof`; read-only UIs should use `get_latest`.
+- **OHLCV fetch scope = open-trade tickers ONLY.** Advisories (trail-MA, exit-below-MA) only fire on open positions; watchlist rows never consume SMA data. Fetching OHLCV for watchlist tickers burns yfinance quota on every render and trips the `OhlcvCache` sliding-window breaker under normal load. `build_dashboard` computes `ohlcv_tickers = sorted({t.ticker for t in open_trades})` — do NOT union with watchlist or `active_tickers`. With zero open trades, skip the fetch entirely (guarded by `if ohlcv_cache is not None and ohlcv_tickers`).
