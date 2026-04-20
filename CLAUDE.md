@@ -50,7 +50,7 @@ ruff check swing/
 
 ## Gotchas
 
-- **yfinance rate-limits.** Use `threads=False` in library calls; the app-level executor cap + `PriceCache` circuit breaker (`swing/web/price_cache.py`) are the real backpressure mechanisms.
+- **yfinance rate-limits.** Use `threads=False` on `yf.download()` ONLY. `yf.Ticker(t).history()` does NOT accept `threads=` and raises `TypeError: got an unexpected keyword argument 'threads'` on yfinance >= 1.2. Concurrency for `Ticker.history()` is bounded by the app-level executor; `PriceCache` + `OhlcvCache` sliding-window breakers are the real backpressure.
 - **Test-count drift in plan docs.** Plans show stale expected counts — trust `pytest` output.
 - **The auto-memory at `~/.claude/projects/c--.../memory/`** can go stale. Verify `project_refactor_intent.md` against current git log before assuming refactor is out-of-scope.
 - **HTMX 4xx fragments need an explicit config override.** HTMX 2.x default is `{code:"[45]..",swap:false,error:true}` — 4xx responses fire the error event but don't swap. `base.html.j2` contains a `htmx.config.responseHandling` override that enables 4xx swapping; preserve it if you touch the base layout. TestClient-based tests won't catch a regression (they assert response body, not DOM state).
