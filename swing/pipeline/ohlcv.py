@@ -42,13 +42,13 @@ def fetch_daily_bars(
     Implementation notes:
       - `period='6mo'` (~126 trading bars) is ample for SMA50 with holiday buffer.
       - `auto_adjust=False` returns raw bars (see spec §6 for split handling).
-      - `threads=False` per the yfinance rate-limit gotcha (CLAUDE.md).
+      - `Ticker.history()` does NOT accept `threads=` (that arg is only on
+        `yf.download()`). Concurrency is bounded by app.state.price_fetch_executor.
     """
     df = yf.Ticker(ticker).history(
         period="6mo",
         interval="1d",
         auto_adjust=False,
-        threads=False,
     )
     if df is None or df.empty:
         return None

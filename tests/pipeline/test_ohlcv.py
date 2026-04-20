@@ -69,6 +69,34 @@ def test_previous_close_returns_none_when_close_column_missing():
     assert previous_close(bars) is None
 
 
+def test_fetch_daily_bars_does_not_pass_threads_kwarg(monkeypatch):
+    """Regression: `Ticker.history()` does NOT accept `threads=` (that arg
+    is only on `yf.download()`). Passing it raises TypeError on yfinance
+    >= ~1.2.x, which the cache treats as source-unhealthy and trips the
+    breaker. Guard against re-adding that kwarg."""
+    import pandas as pd
+    from swing.pipeline import ohlcv as mod
+
+    recorded_kwargs: dict = {}
+
+    class StrictTicker:
+        def history(self, **kwargs):
+            recorded_kwargs.update(kwargs)
+            # Match real yfinance: reject 'threads'.
+            if "threads" in kwargs:
+                raise TypeError(
+                    "PriceHistory.history() got an unexpected keyword argument 'threads'"
+                )
+            return pd.DataFrame({"Close": [100.0]}, index=pd.date_range("2026-04-15", periods=1, freq="B"))
+
+    monkeypatch.setattr(mod, "yf", type("Y", (), {"Ticker": lambda self=None, t=None: StrictTicker()}))
+    # Must succeed without raising. The assertion is implicit: no TypeError.
+    mod.fetch_daily_bars("AAPL", as_of_date=pd.Timestamp("2026-04-20").date())
+    assert "threads" not in recorded_kwargs, (
+        f"fetch_daily_bars passed threads= to Ticker.history(); got kwargs={recorded_kwargs}"
+    )
+
+
 def test_fetch_daily_bars_strips_in_progress_bar_via_as_of_date(monkeypatch):
     """Spec §3.1: the last bar whose date == current exchange session is
     treated as in-progress and dropped before .tail(n_bars)."""
