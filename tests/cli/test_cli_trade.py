@@ -34,6 +34,40 @@ def test_trade_entry_then_list(tmp_path: Path):
     assert "AAPL" in result2.output
 
 
+def test_trade_list_shows_remaining_shares_after_partial_exit(tmp_path: Path):
+    """Regression: `trade list` displayed `initial_shares` instead of
+    remaining shares after partial exits. The web dashboard correctly
+    computed remaining; the CLI did not. Both surfaces must agree."""
+    runner, cfg = _setup(tmp_path)
+    runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "VIR", "--entry-date", "2026-04-20",
+        "--entry-price", "10.76", "--shares", "2",
+        "--initial-stop", "8.26", "--rationale", "near-pivot",
+    ])
+    runner.invoke(main, [
+        "--config", str(cfg), "trade", "exit",
+        "--trade-id", "1", "--exit-date", "2026-04-20",
+        "--exit-price", "11.50", "--shares", "1",
+        "--reason", "partial", "--rationale", "take half",
+    ])
+    result = runner.invoke(main, ["--config", str(cfg), "trade", "list"])
+    assert result.exit_code == 0, result.output
+    # Output row should show 1 share remaining (2 initial - 1 exited),
+    # not 2. Column is space-padded; grep for the VIR row and assert the
+    # shares column.
+    vir_lines = [ln for ln in result.output.splitlines() if "VIR" in ln]
+    assert len(vir_lines) == 1, f"expected 1 VIR row, got {vir_lines}"
+    row = vir_lines[0]
+    # The shares column is the token immediately before "open".
+    parts = row.split()
+    sh_idx = parts.index("open") - 1
+    assert parts[sh_idx] == "1", (
+        f"trade list showed {parts[sh_idx]} shares after partial exit; "
+        f"expected 1. full row: {row!r}"
+    )
+
+
 def test_trade_exit(tmp_path: Path):
     runner, cfg = _setup(tmp_path)
     runner.invoke(main, [

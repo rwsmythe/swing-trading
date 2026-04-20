@@ -350,8 +350,11 @@ def trade_exit_cmd(ctx, trade_id, exit_date, exit_price, shares, reason, notes, 
 @click.pass_context
 def trade_list_cmd(ctx, show_all):
     """List open (or all) trades."""
+    from collections import defaultdict
     from swing.data.db import connect
-    from swing.data.repos.trades import list_open_trades, list_closed_trades
+    from swing.data.repos.trades import (
+        list_open_trades, list_closed_trades, list_all_exits,
+    )
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
@@ -359,6 +362,12 @@ def trade_list_cmd(ctx, show_all):
         trades = list_open_trades(conn)
         if show_all:
             trades = trades + list_closed_trades(conn)
+        # Group exits by trade to compute remaining shares — matches the
+        # web dashboard's `remaining = initial_shares - sum(exits.shares)`
+        # pattern so both surfaces agree.
+        exits_by_trade: dict[int, list] = defaultdict(list)
+        for e in list_all_exits(conn):
+            exits_by_trade[e.trade_id].append(e)
     finally:
         conn.close()
     if not trades:
@@ -366,9 +375,12 @@ def trade_list_cmd(ctx, show_all):
         return
     click.echo(f"{'ID':>4} {'Ticker':<6} {'Date':<10} {'Entry':>8} {'Stop':>8} {'Sh':>4} {'Status':<8}")
     for t in trades:
+        remaining = t.initial_shares - sum(
+            e.shares for e in exits_by_trade.get(t.id or 0, [])
+        )
         click.echo(
             f"{t.id or 0:>4} {t.ticker:<6} {t.entry_date:<10} "
-            f"${t.entry_price:>6.2f} ${t.current_stop:>6.2f} {t.initial_shares:>4} {t.status:<8}"
+            f"${t.entry_price:>6.2f} ${t.current_stop:>6.2f} {remaining:>4} {t.status:<8}"
         )
 
 
