@@ -129,25 +129,27 @@ class OhlcvCache:
         for fut in done:
             t = futures[fut]
             try:
-                bundle = fut.result(timeout=0)
+                bundle, healthy = fut.result(timeout=0)
             except Exception as exc:
-                log.warning("ohlcv fetch raised for %s: %s", t, exc)
+                # Should be rare — worker catches internally. This catches
+                # worker framework issues (e.g. semaphore, MemoryError).
+                log.warning("ohlcv worker raised for %s: %s", t, exc)
                 bundle = OhlcvBundle.empty(fetched_at=time.monotonic())
                 out[t] = bundle
                 self._record_outcome(success=False)
                 continue
             out[t] = bundle
-            success = any(
+            # Source-health drives breaker. Per-ticker data absence
+            # (empty bundle after healthy fetch) is NOT a breaker signal.
+            self._record_outcome(success=healthy)
+            # Cache only successful bundles with data (still only from
+            # request thread — R1 Critical 1).
+            bundle_has_data = any(
                 v is not None for v in (
                     bundle.sma10, bundle.sma20, bundle.sma50, bundle.previous_close,
                 )
             )
-            self._record_outcome(success=success)
-            # Cache only successful bundles, and ONLY from the request thread
-            # (for futures that completed in time). Late workers' results are
-            # discarded — their bundle is never visible to the caller OR the
-            # cache.
-            if success:
+            if healthy and bundle_has_data:
                 fetched = bundle.fetched_at
                 with self._lock:
                     self._store[t] = (bundle, fetched)
@@ -183,15 +185,27 @@ class OhlcvCache:
 
     # ---------- internals ----------
 
-    def _fetch_bundle_worker(self, ticker: str) -> OhlcvBundle:
-        """Worker: acquire semaphore, fetch bars, build bundle. Pure return —
-        does NOT touch self._store (cache writes happen on the request thread
-        in get_many_bundles; see R1 Critical 1)."""
+    def _fetch_bundle_worker(self, ticker: str) -> tuple[OhlcvBundle, bool]:
+        """Worker: acquire semaphore, fetch bars, build bundle. Returns
+        (bundle, is_source_healthy).
+
+        `is_source_healthy=False` ONLY when the fetch raised (source-level
+        failure, e.g. yfinance down, network error). `True` means the fetch
+        completed successfully — an empty result is per-ticker data absence
+        (delisted symbol, bad ticker, no history) which is an operator issue,
+        not a source issue, and MUST NOT trip the global breaker.
+
+        Pure return — does NOT touch self._store (R1 Critical 1)."""
         with self._sema:
-            bars = ohlcv_mod.fetch_daily_bars(ticker, n_bars=60)
+            try:
+                bars = ohlcv_mod.fetch_daily_bars(ticker, n_bars=60)
+            except Exception as exc:
+                log.warning("ohlcv fetch raised for %s: %s", ticker, exc)
+                return OhlcvBundle.empty(fetched_at=time.monotonic()), False
             now = time.monotonic()
             if bars is None:
-                return OhlcvBundle.empty(fetched_at=now)
+                # Empty result (ticker has no data) — healthy from cache's view.
+                return OhlcvBundle.empty(fetched_at=now), True
             smas = ohlcv_mod.compute_smas(bars, [10, 20, 50])
             prev = ohlcv_mod.previous_close(bars)
             return OhlcvBundle(
@@ -200,7 +214,7 @@ class OhlcvCache:
                 sma50=smas.get(50),
                 previous_close=prev,
                 fetched_at=now,
-            )
+            ), True
 
     def _record_outcome(self, *, success: bool) -> None:
         with self._lock:

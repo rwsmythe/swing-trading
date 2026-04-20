@@ -120,8 +120,10 @@ def test_fetch_daily_bars_retains_last_bar_when_complete(monkeypatch):
     assert result.index[-1].date() == idx[-1].date()
 
 
-def test_fetch_daily_bars_returns_none_on_exception(monkeypatch):
-    """yfinance raising → None (graceful degradation)."""
+def test_fetch_daily_bars_propagates_exception(monkeypatch):
+    """yfinance raising → exception propagates to caller. The cache layer
+    catches this to distinguish source failure from per-ticker data absence."""
+    import pytest
     from swing.pipeline import ohlcv as mod
 
     class FakeTicker:
@@ -129,7 +131,8 @@ def test_fetch_daily_bars_returns_none_on_exception(monkeypatch):
             raise RuntimeError("network down")
 
     monkeypatch.setattr(mod, "yf", type("Y", (), {"Ticker": lambda self=None, t=None: FakeTicker()}))
-    assert mod.fetch_daily_bars("AAPL") is None
+    with pytest.raises(RuntimeError, match="network down"):
+        mod.fetch_daily_bars("AAPL")
 
 
 def test_fetch_daily_bars_returns_none_on_empty_result(monkeypatch):

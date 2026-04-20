@@ -168,3 +168,22 @@ def test_reset_circuit_breaker_clears_degraded(cfg, monkeypatch):
     assert cache.is_degraded() is True
     cache.reset_circuit_breaker()
     assert cache.is_degraded() is False
+
+
+def test_empty_bundle_from_bad_ticker_does_not_trip_breaker(cfg, monkeypatch):
+    """A ticker that yfinance serves with no data (empty DataFrame)
+    returns an empty bundle but MUST NOT increment the breaker — that's
+    a per-ticker data issue, not a source failure."""
+    from swing.web.ohlcv_cache import OhlcvCache
+    from swing.pipeline import ohlcv as ohlcv_mod
+
+    def no_data_fetch(ticker, *, n_bars=60, as_of_date=None):
+        return None  # fetch returned empty result, no exception
+
+    monkeypatch.setattr(ohlcv_mod, "fetch_daily_bars", no_data_fetch)
+    cache = OhlcvCache(cfg)
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        for _ in range(20):
+            cache.get_many_bundles(["DEAD"], deadline_seconds=5.0, executor=ex)
+    # Even 20 empty-result fetches should NOT trip the breaker.
+    assert cache.is_degraded() is False

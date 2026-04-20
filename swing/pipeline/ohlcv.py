@@ -21,8 +21,11 @@ def fetch_daily_bars(
     """Fetch completed daily bars for `ticker` (spec §3.1).
 
     Returns up to `n_bars` rows of FULLY-COMPLETED daily bars, ending with
-    the most recent completed session. Returns None on empty result or
-    exception.
+    the most recent completed session. Returns None on empty result (ticker
+    has no data / delisted). Exceptions propagate to the caller so the
+    cache layer can distinguish source-level failure (breaker-relevant,
+    e.g. yfinance down or network error) from per-ticker data absence
+    (not breaker-relevant).
 
     Session-boundary semantics: yfinance's `history(interval='1d')` includes
     the IN-PROGRESS bar during market hours. We strip it — otherwise
@@ -41,15 +44,12 @@ def fetch_daily_bars(
       - `auto_adjust=False` returns raw bars (see spec §6 for split handling).
       - `threads=False` per the yfinance rate-limit gotcha (CLAUDE.md).
     """
-    try:
-        df = yf.Ticker(ticker).history(
-            period="6mo",
-            interval="1d",
-            auto_adjust=False,
-            threads=False,
-        )
-    except Exception:
-        return None
+    df = yf.Ticker(ticker).history(
+        period="6mo",
+        interval="1d",
+        auto_adjust=False,
+        threads=False,
+    )
     if df is None or df.empty:
         return None
     session = as_of_date or action_session_for_run(datetime.now())
