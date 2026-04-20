@@ -18,3 +18,26 @@ Thumbs.db
 
 # Legacy — archived for reference but not tracked
 reference/archive/
+legacy/
+
+# Reference materials (binaries not suited for git history)
+reference/*.pdf
+reference/*.docx
+reference/*.xlsx
+reference/*.gdoc
+reference/images/
+
+# Copowers session state (local to working checkout)
+.copowers-session-*.json
+
+# Claude Code session artifacts
+.claude/
+
+# Pipeline outputs (regenerated each run; not tracked)
+exports/
+
+# Broker statements (personal financial data)
+thinkorswim/
+
+# Finviz evaluator A/B-test artifacts (diagnostic; regenerated on demand)
+tests/fixtures/finviz/suggested-diffs-*.yaml
