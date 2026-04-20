@@ -162,7 +162,15 @@ class PriceCache:
         )
         if df is None or df.empty:
             raise RuntimeError(f"yfinance returned no bars for {ticker}")
-        close_series = df["Close"].dropna()
+        # yfinance >= ~0.2.4x returns a MultiIndex column (Price × Ticker)
+        # even for single-ticker `group_by='column'` calls. `df["Close"]` is
+        # then a DataFrame (one column per ticker), not a Series — so the
+        # downstream `float(iloc[-1])` explodes with "float() argument must
+        # be a string or a real number, not 'Series'". Squeeze to Series.
+        close = df["Close"]
+        if hasattr(close, "ndim") and close.ndim == 2:
+            close = close.iloc[:, 0]
+        close_series = close.dropna()
         if close_series.empty:
             raise RuntimeError(f"all Close values are NaN for {ticker}")
         return float(close_series.iloc[-1])
@@ -339,10 +347,15 @@ class PriceCache:
 
         Uses `exchange_calendars` (already a Phase 1 base dep via
         `swing.evaluation.dates`).
+
+        NOTE: `is_open_at_time` requires a `pd.Timestamp`, not a plain
+        `datetime.datetime`, on exchange_calendars >= 4.x — it raises
+        `TypeError` otherwise. Wrap accordingly before calling.
         """
         import exchange_calendars as xcals
+        import pandas as pd
         nyse = xcals.get_calendar("XNYS")
-        utc_now = datetime.now(timezone.utc)
+        utc_now = pd.Timestamp(datetime.now(timezone.utc))
         try:
             return bool(nyse.is_open_at_time(utc_now, ignore_breaks=True))
         except Exception:

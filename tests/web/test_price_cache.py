@@ -203,6 +203,76 @@ def test_circuit_breaker_is_instance_scoped(seeded_db):
     assert not b.is_degraded()
 
 
+def test_fetch_live_price_handles_multiindex_column_frame(seeded_db, monkeypatch):
+    """Regression: yfinance >= ~0.2.4x returns a MultiIndex column DataFrame
+    (Price × Ticker) even for single-ticker `group_by='column'` calls. That
+    makes `df["Close"]` a DataFrame (one column per ticker), not a Series,
+    and `float(df["Close"].iloc[-1])` fails with `float() argument must be
+    a string or a real number, not 'Series'`. The fetch must accept both
+    shapes so the cache continues to serve live prices after yfinance
+    updates."""
+    import pandas as pd
+    from swing.web.price_cache import PriceCache
+
+    cfg, _ = seeded_db
+    cache = PriceCache(cfg)
+
+    # Synthesize the shape current yfinance returns for a single ticker:
+    # columns = MultiIndex with levels ["Price", "Ticker"], one sub-column
+    # per field per ticker. df["Close"] → DataFrame with one column (ticker).
+    cols = pd.MultiIndex.from_tuples(
+        [("Close", "SPY"), ("Open", "SPY"), ("High", "SPY"),
+         ("Low", "SPY"), ("Volume", "SPY")],
+        names=["Price", "Ticker"],
+    )
+    data = [[181.25, 181.20, 181.30, 181.20, 1000],
+            [181.28, 181.25, 181.35, 181.25, 2000]]
+    df = pd.DataFrame(
+        data, columns=cols,
+        index=pd.date_range(end="2026-04-20 15:59", periods=2, freq="min"),
+    )
+    monkeypatch.setattr("yfinance.download", lambda *a, **kw: df)
+
+    price = cache._fetch_live_price("SPY")
+    assert price == 181.28
+
+
+def test_market_hours_now_passes_timestamp_not_datetime(seeded_db, monkeypatch):
+    """Regression: `exchange_calendars.is_open_at_time` now raises TypeError
+    when given a `datetime.datetime` (expects `pd.Timestamp`). The prior
+    implementation passed `datetime.now(timezone.utc)` and caught the
+    resulting TypeError silently, permanently returning False. That made
+    the PriceCache always fall back to last-close, even during live
+    trading hours. Assert the calendar receives a pd.Timestamp."""
+    import pandas as pd
+    from swing.web.price_cache import PriceCache
+
+    cfg, _ = seeded_db
+    cache = PriceCache(cfg)
+
+    received_args: dict = {}
+
+    class FakeCal:
+        def is_open_at_time(self, ts, *, ignore_breaks=True):
+            received_args["ts_type"] = type(ts).__name__
+            received_args["ts"] = ts
+            return True  # pretend market is open
+
+    monkeypatch.setattr(
+        "exchange_calendars.get_calendar", lambda name: FakeCal(),
+    )
+
+    result = cache.market_hours_now()
+    assert result is True, (
+        f"market_hours_now returned {result}; likely silently caught TypeError. "
+        f"got={received_args}"
+    )
+    assert received_args.get("ts_type") == "Timestamp", (
+        f"is_open_at_time received {received_args.get('ts_type')}, "
+        f"expected pandas Timestamp"
+    )
+
+
 def test_fetch_live_price_skips_trailing_nan_close(seeded_db, monkeypatch):
     """Last minute bar can be NaN while yfinance streams a fresh minute
     whose close hasn't finalized — R2 Minor 1. The cache must return the
