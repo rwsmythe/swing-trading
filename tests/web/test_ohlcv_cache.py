@@ -262,3 +262,57 @@ def test_sentinel_hits_do_not_mask_real_failure(cfg, monkeypatch):
 
     # DEAD's sentinel hits must not dilute GOOD's failures. Breaker should trip.
     assert cache.is_degraded() is True
+
+
+def test_degraded_mode_serves_warm_cache(cfg, monkeypatch):
+    """R4 Major 1 regression: when the breaker is tripped, already-cached
+    bundles within TTL must still be served (not replaced with empty bundles).
+    Only misses are short-circuited during cooldown."""
+    from swing.web.ohlcv_cache import OhlcvCache, OhlcvBundle
+    from swing.pipeline import ohlcv as ohlcv_mod
+
+    def good_fetch(ticker, *, n_bars=60, as_of_date=None):
+        return _bars([100.0 + i for i in range(50)])
+
+    monkeypatch.setattr(ohlcv_mod, "fetch_daily_bars", good_fetch)
+    cache = OhlcvCache(cfg)
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        # Prime the cache for AAPL.
+        r1 = cache.get_many_bundles(["AAPL"], deadline_seconds=5.0, executor=ex)
+        assert r1["AAPL"].sma10 is not None
+        # Force the breaker tripped by directly setting degraded_until.
+        with cache._lock:
+            cache._degraded_until = time.monotonic() + 60.0
+        assert cache.is_degraded() is True
+        # Cache hit should still return the warm bundle, NOT an empty one.
+        r2 = cache.get_many_bundles(["AAPL"], deadline_seconds=5.0, executor=ex)
+    assert r2["AAPL"].sma10 is not None, "warm cache must be served during degraded mode"
+
+
+def test_degraded_mode_short_circuits_only_misses(cfg, monkeypatch):
+    """R4 Major 1 symmetric case: with warm cache for one ticker and a miss
+    for another during degraded mode, the warm ticker is served and the
+    miss returns empty — without a fetch attempt."""
+    from swing.web.ohlcv_cache import OhlcvCache
+    from swing.pipeline import ohlcv as ohlcv_mod
+
+    fetch_tickers: list[str] = []
+
+    def tracking_fetch(ticker, *, n_bars=60, as_of_date=None):
+        fetch_tickers.append(ticker)
+        return _bars([100.0 + i for i in range(50)])
+
+    monkeypatch.setattr(ohlcv_mod, "fetch_daily_bars", tracking_fetch)
+    cache = OhlcvCache(cfg)
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        # Prime AAPL only.
+        cache.get_many_bundles(["AAPL"], deadline_seconds=5.0, executor=ex)
+        fetch_tickers.clear()
+        # Force degraded.
+        with cache._lock:
+            cache._degraded_until = time.monotonic() + 60.0
+        # Request both: AAPL hits cache (warm), MSFT misses and should NOT fetch.
+        r = cache.get_many_bundles(["AAPL", "MSFT"], deadline_seconds=5.0, executor=ex)
+    assert r["AAPL"].sma10 is not None, "warm AAPL served from cache"
+    assert r["MSFT"].sma10 is None, "MSFT miss short-circuited during degraded mode"
+    assert fetch_tickers == [], "no fetch should have been attempted during degraded mode"

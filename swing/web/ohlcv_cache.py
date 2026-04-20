@@ -72,23 +72,15 @@ class OhlcvCache:
         Spec §4.3: each ticker's outcome (success if bundle produced, failure
         if deadline miss OR fetch raised) is recorded in the sliding window.
 
-        Degraded short-circuit (R2 Major 2 resolution): when the breaker is
-        tripped, skip executor submission entirely — every ticker gets
-        `OhlcvBundle.empty()` without a fetch, reducing load on the failing
-        yfinance endpoint. `is_degraded()` auto-clears the window after the
-        cooldown expires so recovery can proceed.
+        Degraded short-circuit (R2 Major 2 resolution, scoped by R4 Major 1):
+        when the breaker is tripped, skip executor submission for MISSES only —
+        warm cache hits are still served normally. This preserves the 1-hour
+        TTL value: a transient yfinance outage does not blank already-cached
+        SMA advisories during cooldown. `is_degraded()` auto-clears the window
+        after the cooldown expires so recovery can proceed.
         """
-        # Normalize + deduplicate (spec §4.1): "aapl" and "AAPL" coalesce
-        # to a single lookup. `dict.fromkeys(...)` preserves insertion order
-        # and removes duplicates so breaker accounting isn't double-counted.
+        # Normalize + deduplicate (spec §4.1).
         normalized = list(dict.fromkeys(t.upper() for t in tickers))
-
-        # R2 Major 2: degraded short-circuit BEFORE any executor submission.
-        # Reduces load on yfinance during outages. Cooldown auto-clears the
-        # window via is_degraded(), so recovery happens naturally once the
-        # cooldown expires and fresh fetches start flowing.
-        if self.is_degraded():
-            return {t: OhlcvBundle.empty(fetched_at=time.monotonic()) for t in normalized}
 
         now = time.monotonic()
         out: dict[str, OhlcvBundle] = {}
@@ -96,16 +88,13 @@ class OhlcvCache:
         hits_with_data = 0
         hits_empty_sentinel = 0
 
-        # Cache scan.
+        # Cache scan — serve warm hits regardless of breaker state (R4 Major 1
+        # resolution: valid cached bundles stay valid during cooldown).
         with self._lock:
             for t in normalized:
                 hit = self._store.get(t)
                 if hit is not None and (now - hit[1]) <= self._ttl:
                     out[t] = hit[0]
-                    # Distinguish data-hit (success) from empty-sentinel-hit
-                    # (neutral — R3 Major 1 fix). Empty sentinels represent
-                    # cached per-ticker data absence, not positive evidence
-                    # of source health.
                     bundle = hit[0]
                     has_data = any(
                         v is not None for v in (
@@ -129,6 +118,16 @@ class OhlcvCache:
 
         if not to_fetch:
             self._maybe_trip_breaker()
+            return out
+
+        # Degraded short-circuit — applies ONLY to misses (R4 Major 1 fix):
+        # warm cache already served above, so during cooldown we just skip
+        # fresh fetches for the remaining misses. These skips are NEUTRAL —
+        # they don't pad the breaker window, same as sentinel hits.
+        if self.is_degraded():
+            for t in to_fetch:
+                out[t] = OhlcvBundle.empty(fetched_at=time.monotonic())
+                self._record_neutral()
             return out
 
         # Dispatch misses.
