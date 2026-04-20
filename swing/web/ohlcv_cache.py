@@ -93,6 +93,8 @@ class OhlcvCache:
         now = time.monotonic()
         out: dict[str, OhlcvBundle] = {}
         to_fetch: list[str] = []
+        hits_with_data = 0
+        hits_empty_sentinel = 0
 
         # Cache scan.
         with self._lock:
@@ -100,13 +102,30 @@ class OhlcvCache:
                 hit = self._store.get(t)
                 if hit is not None and (now - hit[1]) <= self._ttl:
                     out[t] = hit[0]
+                    # Distinguish data-hit (success) from empty-sentinel-hit
+                    # (neutral — R3 Major 1 fix). Empty sentinels represent
+                    # cached per-ticker data absence, not positive evidence
+                    # of source health.
+                    bundle = hit[0]
+                    has_data = any(
+                        v is not None for v in (
+                            bundle.sma10, bundle.sma20, bundle.sma50, bundle.previous_close,
+                        )
+                    )
+                    if has_data:
+                        hits_with_data += 1
+                    else:
+                        hits_empty_sentinel += 1
                 else:
                     to_fetch.append(t)
 
-        # Record one "success" outcome per cache hit (cache hits count as
-        # successful data acquisition for breaker accounting).
-        for _ in range(len(normalized) - len(to_fetch)):
+        # Ternary breaker accounting for cache hits:
+        # - Data-hit: success (counts in window).
+        # - Empty-sentinel hit: neutral (skips window) — R3 Major 1 fix.
+        for _ in range(hits_with_data):
             self._record_outcome(success=True)
+        for _ in range(hits_empty_sentinel):
+            self._record_neutral()
 
         if not to_fetch:
             self._maybe_trip_breaker()

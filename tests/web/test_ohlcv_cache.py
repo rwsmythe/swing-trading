@@ -238,3 +238,27 @@ def test_empty_bundle_cached_as_sentinel(cfg, monkeypatch):
         cache.get_many_bundles(["DEAD"], deadline_seconds=5.0, executor=ex)
     # First call fetches; next two hit the empty-sentinel cache.
     assert calls["n"] == 1
+
+
+def test_sentinel_hits_do_not_mask_real_failure(cfg, monkeypatch):
+    """R3 Major 1 regression: after an empty sentinel is cached, subsequent
+    cache hits for that bad ticker must be accounted NEUTRAL, not success.
+    Otherwise they'd pad the breaker window and mask real failures elsewhere."""
+    from swing.web.ohlcv_cache import OhlcvCache
+    from swing.pipeline import ohlcv as ohlcv_mod
+
+    def mixed_fetch(ticker, *, n_bars=60, as_of_date=None):
+        if ticker == "DEAD":
+            return None  # healthy-but-empty — caches as sentinel on first call
+        raise RuntimeError("source down")  # unhealthy
+
+    monkeypatch.setattr(ohlcv_mod, "fetch_daily_bars", mixed_fetch)
+    cache = OhlcvCache(cfg)
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        # First round: DEAD fetches + caches empty sentinel; GOOD raises.
+        # Subsequent rounds: DEAD hits sentinel (should be NEUTRAL); GOOD keeps raising.
+        for _ in range(15):
+            cache.get_many_bundles(["DEAD", "GOOD"], deadline_seconds=5.0, executor=ex)
+
+    # DEAD's sentinel hits must not dilute GOOD's failures. Breaker should trip.
+    assert cache.is_degraded() is True
