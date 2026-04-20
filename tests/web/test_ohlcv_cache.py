@@ -187,3 +187,54 @@ def test_empty_bundle_from_bad_ticker_does_not_trip_breaker(cfg, monkeypatch):
             cache.get_many_bundles(["DEAD"], deadline_seconds=5.0, executor=ex)
     # Even 20 empty-result fetches should NOT trip the breaker.
     assert cache.is_degraded() is False
+
+
+def test_mixed_window_empty_does_not_mask_real_failure(cfg, monkeypatch):
+    """R2 Major 1 regression: if empty-result for one ticker dilutes actual
+    fetch failures for another ticker, the breaker could fail to trip.
+    Ternary accounting (empty = neutral) prevents this dilution."""
+    from swing.web.ohlcv_cache import OhlcvCache
+    from swing.pipeline import ohlcv as ohlcv_mod
+
+    calls = {"DEAD": 0, "GOOD": 0}
+
+    def mixed_fetch(ticker, *, n_bars=60, as_of_date=None):
+        calls[ticker] = calls.get(ticker, 0) + 1
+        if ticker == "DEAD":
+            return None  # healthy-but-empty (no exception)
+        raise RuntimeError("source down")  # unhealthy for GOOD
+
+    monkeypatch.setattr(ohlcv_mod, "fetch_daily_bars", mixed_fetch)
+    cache = OhlcvCache(cfg)
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        # Alternate DEAD + GOOD. Without ternary accounting, DEAD's
+        # "successes" would dilute GOOD's failures below 50%.
+        for _ in range(10):
+            cache.get_many_bundles(["DEAD", "GOOD"], deadline_seconds=5.0, executor=ex)
+
+    # Breaker SHOULD trip because all real source signals (GOOD's failures)
+    # are failures; DEAD's empty-results are neutral and don't pad the window.
+    assert cache.is_degraded() is True
+
+
+def test_empty_bundle_cached_as_sentinel(cfg, monkeypatch):
+    """R2 Major 2 regression: a ticker that returns empty repeatedly should
+    hit the cache (sentinel) on subsequent requests within TTL — not
+    refetch every page render."""
+    from swing.web.ohlcv_cache import OhlcvCache
+    from swing.pipeline import ohlcv as ohlcv_mod
+
+    calls = {"n": 0}
+
+    def no_data_fetch(ticker, *, n_bars=60, as_of_date=None):
+        calls["n"] += 1
+        return None
+
+    monkeypatch.setattr(ohlcv_mod, "fetch_daily_bars", no_data_fetch)
+    cache = OhlcvCache(cfg)
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        cache.get_many_bundles(["DEAD"], deadline_seconds=5.0, executor=ex)
+        cache.get_many_bundles(["DEAD"], deadline_seconds=5.0, executor=ex)
+        cache.get_many_bundles(["DEAD"], deadline_seconds=5.0, executor=ex)
+    # First call fetches; next two hit the empty-sentinel cache.
+    assert calls["n"] == 1

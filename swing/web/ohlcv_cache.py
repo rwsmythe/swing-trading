@@ -139,17 +139,28 @@ class OhlcvCache:
                 self._record_outcome(success=False)
                 continue
             out[t] = bundle
-            # Source-health drives breaker. Per-ticker data absence
-            # (empty bundle after healthy fetch) is NOT a breaker signal.
-            self._record_outcome(success=healthy)
-            # Cache only successful bundles with data (still only from
-            # request thread — R1 Critical 1).
             bundle_has_data = any(
                 v is not None for v in (
                     bundle.sma10, bundle.sma20, bundle.sma50, bundle.previous_close,
                 )
             )
-            if healthy and bundle_has_data:
+            # Ternary breaker accounting:
+            # - Unhealthy (fetch raised): failure. Counts in window.
+            # - Healthy + has data: success. Counts in window.
+            # - Healthy + empty (per-ticker data absence): NEUTRAL. Skip window.
+            #   Prevents empty-result ticker from padding window with successes
+            #   that would mask real source degradation (R2 Major 1).
+            if not healthy:
+                self._record_outcome(success=False)
+            elif bundle_has_data:
+                self._record_outcome(success=True)
+            else:
+                self._record_neutral()
+            # Cache bundles with data (still from request thread — R1 Critical 1).
+            # Also cache empty healthy bundles as a SENTINEL to avoid refetching
+            # permanently bad tickers every render (R2 Major 2). Unhealthy
+            # (raised) bundles are NOT cached — we want the next request to retry.
+            if healthy:
                 fetched = bundle.fetched_at
                 with self._lock:
                     self._store[t] = (bundle, fetched)
@@ -217,8 +228,20 @@ class OhlcvCache:
             ), True
 
     def _record_outcome(self, *, success: bool) -> None:
+        """Record one sliding-window outcome. True-failure appends True;
+        success appends False. To skip the window (neutral outcome, e.g.
+        per-ticker empty result that is not source-relevant) call
+        `_record_neutral()` instead — never call this with a synthetic bool."""
         with self._lock:
             self._failure_window.append(not success)
+
+    def _record_neutral(self) -> None:
+        """Neutral outcome — per-ticker data absence after a healthy fetch.
+        Does NOT touch the breaker window. Kept as an explicit method so
+        callers document their intent vs. just omitting the call."""
+        # Intentionally empty — the window is updated elsewhere. This method
+        # exists for call-site clarity.
+        pass
 
     def _maybe_trip_breaker(self) -> None:
         """Trip the breaker when failure fraction in the sliding window
