@@ -149,6 +149,68 @@ def test_post_pipeline_run_incomplete_liveness_directs_to_cli(seeded_db):
     assert "--bypass-staleness-check" in r.text
 
 
+def test_post_pipeline_run_lease_wait_honors_configured_deadline(
+    seeded_db, monkeypatch,
+):
+    """POST /pipeline/run waits `cfg.web.pipeline_lease_wait_seconds` for the
+    child to acquire its lease. Python 3.14 + heavy imports on Windows cross
+    the prior 2s hardcode routinely, surfacing a bogus "did not acquire" error
+    while the subprocess had actually succeeded. Regression: the wait deadline
+    must read from cfg, not a hardcoded constant.
+    """
+    import threading
+    cfg, cfg_path = seeded_db
+    # Force a very short deadline so this test is fast. With 0.3s deadline,
+    # a subprocess that inserts the row at 0.8s WOULD time out.
+    object.__setattr__(cfg.web, "pipeline_lease_wait_seconds", 0.3)
+
+    inserted = threading.Event()
+
+    class FakeProc:
+        pid = 4343
+        returncode = None
+        def poll(self):
+            return None
+
+    def fake_popen(cmd, **kwargs):
+        # Simulate the child taking 0.8s to acquire its lease — well past the
+        # 0.3s configured deadline, so the route must surface the error.
+        def delayed_insert():
+            import time as _t
+            _t.sleep(0.8)
+            conn = connect(cfg.paths.db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        """INSERT INTO pipeline_runs
+                           (started_ts, trigger, data_asof_date,
+                            action_session_date, state, lease_token,
+                            lease_heartbeat_ts)
+                           VALUES (?, 'manual', '2026-04-17', '2026-04-20',
+                                   'running', 'late-tok', ?)""",
+                        (datetime.now().isoformat(timespec='seconds'),
+                         datetime.now().isoformat(timespec='seconds')),
+                    )
+            finally:
+                conn.close()
+            inserted.set()
+        threading.Thread(target=delayed_insert, daemon=True).start()
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/pipeline/run", headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert "did not acquire lease" in r.text.lower(), (
+        f"expected the 'did not acquire lease' fragment when insert is slower "
+        f"than configured deadline; got: {r.text[:200]}"
+    )
+    # Wait for the background insert so we don't leak a thread across tests.
+    inserted.wait(timeout=5)
+
+
 def test_post_pipeline_run_detects_early_child_exit(seeded_db, monkeypatch):
     cfg, cfg_path = seeded_db
 

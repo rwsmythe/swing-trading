@@ -125,8 +125,10 @@ def pipeline_run(request: Request):
     )
     log.info("pipeline subprocess started: pid=%d", proc.pid)
 
-    # Wait for the child to acquire its lease (up to 2s).
-    deadline = time.monotonic() + 2.0
+    # Wait for the child to acquire its lease. Configurable because Python 3.14
+    # + heavy imports on Windows regularly exceed a 2s cold-start — 5s default
+    # gives headroom without making legitimate failures feel slow.
+    deadline = time.monotonic() + cfg.web.pipeline_lease_wait_seconds
     run = None
     while time.monotonic() < deadline:
         rc = proc.poll()
@@ -157,9 +159,10 @@ def pipeline_run(request: Request):
             {
                 "run": None,
                 "error_text": (
-                    "Pipeline subprocess did not acquire lease within 2s. "
-                    "Check `swing-data/logs/pipeline.log` and "
-                    "`swing-data/logs/web.log`."
+                    f"Pipeline subprocess did not acquire lease within "
+                    f"{cfg.web.pipeline_lease_wait_seconds:g}s. "
+                    f"Check `swing-data/logs/pipeline.log` and "
+                    f"`swing-data/logs/web.log`."
                 ),
                 "poll_interval": poll_interval,
             },

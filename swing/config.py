@@ -140,6 +140,10 @@ class Web:
     csv_upload_max_bytes: int = 10 * 1024 * 1024
     ohlcv_cache_ttl_seconds: int = 3600              # NEW: 1h default (§3.7)
     max_concurrent_ohlcv_fetches: int = 8            # NEW: full executor (§3.2)
+    # How long POST /pipeline/run waits for the spawned subprocess to insert
+    # its pipeline_runs row (acquire its lease). Python 3.14 + heavy imports
+    # on Windows regularly exceed 2s cold-start; 5s gives comfortable headroom.
+    pipeline_lease_wait_seconds: float = 5.0
 
 
 @dataclass(frozen=True)
