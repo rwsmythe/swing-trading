@@ -1,6 +1,6 @@
 # Swing Trading — Claude Code Context
 
-Personal swing-trading tool (Disciplined Swing Trader + Minervini SEPA). Active ground-up refactor. Phase 3d shipped (SMA-aware advisories; HEAD `77b1c9f` out of adversarial review). End-to-end walkthrough validated the full operator loop; 6 small post-walkthrough fixes landed on `main`. **499 fast tests green.** Phase 3e backlog in `docs/phase3e-todo.md`. Daily routine in `docs/cycle-checklist.md`.
+Personal swing-trading tool (Disciplined Swing Trader + Minervini SEPA). Active ground-up refactor. Phase 3d shipped (SMA-aware advisories). End-to-end walkthrough validated the full operator loop; 9+ post-walkthrough fixes landed on `main` (library-API regressions, dashboard/pipeline UX). **504 fast tests green.** Phase 3e backlog in `docs/phase3e-todo.md`. Daily routine in `docs/cycle-checklist.md`.
 
 ## Quick Start
 
@@ -16,6 +16,8 @@ ruff check swing/
 **Windows PATH for `swing` CLI:** `pip install -e` places the `swing.exe` entry point in `%APPDATA%\Python\Python314\Scripts\` (user install, not `C:\Python314\Scripts`). Add that dir to the user PATH permanently via System Properties, or per-session: `$env:PATH = "$env:APPDATA\Python\Python314\Scripts;$env:PATH"`.
 
 **Finviz inbox:** `data/finviz-inbox/` (configured in `swing.config.toml`). Save exports as `finvizDDMmmYYYY.csv`. Validator requires 13 columns: `No., Ticker, Sector, Industry, Country, Price, Change, Average Volume, Relative Volume, Average True Range, 52-Week High, 52-Week Low, Market Cap`. Missing columns → CSV moved to `data/finviz-inbox/rejected/` with a sidecar `.rejected-reasons.json`. Pipeline outputs go to `exports/<action_session_date>/` (briefing.md + briefing.html + charts/).
+
+**Pipeline lease-acquisition wait** (`web.pipeline_lease_wait_seconds`, default 5s): how long POST `/pipeline/run` waits for the spawned subprocess to insert its `pipeline_runs` row. Python 3.14 cold-start + heavy imports on Windows regularly cross 2s; bump if you see false "did not acquire lease" errors on a slow box.
 
 ## Architecture
 
@@ -33,8 +35,8 @@ ruff check swing/
 ## Invariants
 
 - **DB location:** `%USERPROFILE%/swing-data/swing.db` — **outside** the Drive dir (hard invariant; Drive syncing corrupts SQLite).
-- **Phase isolation:** during Phase 3 work, `swing/trades/` and `swing/data/` are consumed read-only unless the current-phase spec explicitly scopes a Phase 2 carve-out (3c touched `update_stop_with_event`; 3d will touch `advisory.py`).
-- **Current baseline:** 499 fast tests green on `main`.
+- **Phase isolation:** during Phase 3 work, `swing/trades/` and `swing/data/` are consumed read-only unless the current-phase spec explicitly scopes a Phase 2 carve-out (3c touched `update_stop_with_event`; 3d touched `advisory.py`).
+- **Current baseline:** 504 fast tests green on `main`.
 
 ## Conventions
 
@@ -67,3 +69,5 @@ ruff check swing/
 - **OHLCV fetch scope = open-trade tickers ONLY.** Advisories (trail-MA, exit-below-MA) only fire on open positions; watchlist rows never consume SMA data. Fetching OHLCV for watchlist tickers burns yfinance quota on every render and trips the `OhlcvCache` sliding-window breaker under normal load. `build_dashboard` computes `ohlcv_tickers = sorted({t.ticker for t in open_trades})` — do NOT union with watchlist or `active_tickers`. With zero open trades, skip the fetch entirely (guarded by `if ohlcv_cache is not None and ohlcv_tickers`).
 - **yfinance `group_by='column'` now returns a MultiIndex column** (`Price × Ticker`) even for single-ticker calls. `df["Close"]` is a DataFrame, not a Series — `float(iloc[-1])` raises `TypeError: float() argument must be a string or a real number, not 'Series'`. Squeeze defensively: `close = df["Close"]; if hasattr(close, "ndim") and close.ndim == 2: close = close.iloc[:, 0]`. This and the `Ticker.history()` `threads` regression are examples of the same failure mode: pip-installed dependency updates silently break integration points that were working last quarter.
 - **`exchange_calendars.is_open_at_time` requires `pd.Timestamp`**, not `datetime.datetime`. Passing a plain datetime raises `TypeError: \`timestamp\` expected to receive type pd.Timestamp`. The prior `market_hours_now()` caught all exceptions silently and returned `False`, permanently routing PriceCache to the last-close fallback during live trading hours. Wrap: `pd.Timestamp(datetime.now(timezone.utc))`. Same failure class as the yfinance API regressions above — when you catch broad exceptions around a dependency call, log them instead of silently returning a degraded default.
+- **`PriceCache._last_close` only sees tickers in today's `candidates` table.** Open-trade tickers that rotate OUT of the finviz CSV get no fresh candidate row, so the after-hours fallback returns the close from whenever they were last in finviz (potentially days old). `_step_evaluate` unions `list_open_trades` into its fetch loop and writes them as `bucket='excluded'` with `notes='open position'` so the close stays fresh every run. If you add a new "priced" UI surface, verify its tickers actually appear in `candidates` — otherwise the fallback lies silently.
+- **Queries ordered by `started_ts DESC` on `pipeline_runs` mask prior completes mid-run.** A new run with `finished_ts IS NULL` wins the ORDER BY and surfaces NULL where callers expect the last-known-good timestamp (dashboard "Last pipeline" rendered "never" the entire time a run was in flight). Two-read pattern: most-recent COMPLETED row's `finished_ts` for "when did we last have good data?", separately most-recent-started row's `state` for "what's happening right now?"
