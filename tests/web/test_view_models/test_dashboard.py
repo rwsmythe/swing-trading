@@ -335,3 +335,58 @@ def test_build_dashboard_reflects_ohlcv_degraded_flag(test_cfg, seeded_db, monke
             cfg=cfg, cache=cache, ohlcv_cache=ohlcv_cache, executor=ex,
         )
     assert vm.ohlcv_source_degraded is True
+
+
+def test_last_pipeline_ts_not_masked_by_inflight_run(seeded_db, monkeypatch):
+    """Regression: when a new pipeline run is mid-flight (state='running',
+    finished_ts IS NULL), the Status-strip "Last pipeline" tile must continue
+    to show the most recent COMPLETED run's finished_ts — not "never".
+
+    Previous implementation ordered by started_ts DESC LIMIT 1, which picked
+    up the in-flight row and surfaced its NULL finished_ts, masking the last
+    known-good completion and rendering "never" on the dashboard while a new
+    run executed.
+    """
+    from swing.web.view_models.dashboard import build_dashboard
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from datetime import datetime
+
+    cfg, _ = seeded_db
+    _seed_for_dashboard(cfg)  # seeds one complete run finished at 21:55
+
+    # Insert an in-flight run with a LATER started_ts than the complete one.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO pipeline_runs
+                   (started_ts, finished_ts, trigger, data_asof_date,
+                    action_session_date, state, lease_token,
+                    lease_heartbeat_ts, last_step_progress_ts, current_step)
+                   VALUES ('2026-04-17T22:00:00', NULL, 'manual',
+                           '2026-04-17', '2026-04-20', 'running', 'inflight-tok',
+                           '2026-04-17T22:00:05', '2026-04-17T22:00:05', 'evaluate')"""
+            )
+    finally:
+        conn.close()
+
+    cache = PriceCache(cfg)
+    fake_snap = PriceSnapshot(
+        ticker="AAPL", price=182.0, asof=datetime.now(),
+        is_stale=False, source="live",
+    )
+    monkeypatch.setattr(cache, "get_many",
+        lambda tickers, deadline_seconds, *, executor=None: {t: fake_snap for t in tickers})
+    monkeypatch.setattr(cache, "is_degraded", lambda: False)
+
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=None)
+
+    assert vm.status_strip.last_pipeline_ts == "2026-04-17T21:55:00", (
+        f"last_pipeline_ts regressed to {vm.status_strip.last_pipeline_ts!r} "
+        f"— the in-flight run's NULL finished_ts masked the prior complete run"
+    )
+    assert vm.status_strip.last_pipeline_state == "running", (
+        f"last_pipeline_state should reflect the most-recent-started run's "
+        f"state (so operators can see a run is in progress); got "
+        f"{vm.status_strip.last_pipeline_state!r}"
+    )

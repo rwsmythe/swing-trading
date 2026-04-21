@@ -111,12 +111,23 @@ def build_dashboard(
             exits_by_trade: dict[int, list] = defaultdict(list)
             for e in all_exits:
                 exits_by_trade[e.trade_id].append(e)
-            # Latest pipeline run.
-            row = conn.execute(
-                """SELECT finished_ts, state FROM pipeline_runs
+            # Latest pipeline run — two independent reads so an in-flight run
+            # (finished_ts IS NULL) doesn't mask the last-known-good completion.
+            # `last_pipeline_ts` = most-recent COMPLETED run's finished_ts
+            #                      (when we last had a successful data refresh).
+            # `last_pipeline_state` = state of the most-recent-started row
+            #                      (so operators see 'running'/'failed' live).
+            ts_row = conn.execute(
+                """SELECT finished_ts FROM pipeline_runs
+                   WHERE state = 'complete'
+                   ORDER BY finished_ts DESC LIMIT 1"""
+            ).fetchone()
+            last_pipeline_ts = ts_row[0] if ts_row else None
+            state_row = conn.execute(
+                """SELECT state FROM pipeline_runs
                    ORDER BY started_ts DESC LIMIT 1"""
             ).fetchone()
-            last_pipeline_ts, last_pipeline_state = (row[0], row[1]) if row else (None, None)
+            last_pipeline_state = state_row[0] if state_row else None
             # Stale banner: most recent complete run's action_session < today's action_session.
             row = conn.execute(
                 """SELECT action_session_date FROM pipeline_runs
