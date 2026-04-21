@@ -288,6 +288,24 @@ def _step_evaluate(
         raise ValueError(f"finviz CSV missing 'Ticker' column: {list(finviz_df.columns)}")
     tickers = finviz_df["Ticker"].dropna().astype(str).str.upper().tolist()
 
+    # Include open-trade tickers in the OHLCV fetch so their fresh close lands
+    # in candidates.close. PriceCache._last_close reads that table; without
+    # this, an open position whose ticker has rotated out of the finviz
+    # screener keeps showing whatever close was captured the last time it
+    # appeared in finviz (potentially days stale on the dashboard).
+    open_conn = connect(cfg.paths.db_path)
+    try:
+        held_tickers: list[str] = sorted({
+            t.ticker.upper() for t in list_open_trades(open_conn)
+        })
+    finally:
+        open_conn.close()
+    seen = set(tickers)
+    for t in held_tickers:
+        if t not in seen:
+            tickers.append(t)
+            seen.add(t)
+
     spy_return = 0.0
     spy_df = fetcher.get(cfg.rs.benchmark_ticker, lookback_days=365, as_of_date=None)
     spy_closes = spy_df["Close"]
@@ -347,7 +365,11 @@ def _step_evaluate(
     finally:
         eq_conn.close()
 
-    excluded = set(cfg.etf_exclusion.manual_block)
+    # Held positions are locally-excluded from evaluation (they're already in
+    # our portfolio — no buy/watch decision needed) but we still want their
+    # fresh close in candidates.close for the dashboard price fallback.
+    held_set = set(held_tickers)
+    excluded = set(cfg.etf_exclusion.manual_block) | held_set
     excluded_tickers: list[str] = []
     contexts: list[CandidateContext] = []
     for t in tickers:
@@ -364,12 +386,21 @@ def _step_evaluate(
 
     candidates = evaluate_batch(contexts)
     for t in excluded_tickers:
+        # Preserve the ticker's close so PriceCache._last_close returns a
+        # fresh value. ETF blocklist rows intentionally have no OHLCV fetch,
+        # so they'll still carry close=None.
+        close = None
+        if t in ohlcv_by_ticker:
+            df = ohlcv_by_ticker[t]
+            if not df.empty:
+                close = float(df["Close"].iloc[-1])
+        notes = "open position" if t in held_set else "ETF/fund blocklist"
         candidates.append(Candidate(
             ticker=t, bucket="excluded",
-            close=None, pivot=None, initial_stop=None,
+            close=close, pivot=None, initial_stop=None,
             adr_pct=None, tight_streak=None, pullback_pct=None, prior_trend_pct=None,
             rs_rank=None, rs_return_12w_vs_spy=None, rs_method="unavailable",
-            pattern_tag=None, notes="ETF/fund blocklist", criteria=(),
+            pattern_tag=None, notes=notes, criteria=(),
         ))
     for t in error_tickers:
         candidates.append(Candidate(

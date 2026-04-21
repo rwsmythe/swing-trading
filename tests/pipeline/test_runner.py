@@ -127,6 +127,96 @@ def test_runner_detects_mid_run_lease_revocation(tmp_path: Path, monkeypatch):
         conn.close()
 
 
+def test_runner_refreshes_close_for_open_trade_not_in_finviz(
+    tmp_path: Path, monkeypatch,
+):
+    """Regression: open-trade tickers that don't appear in today's finviz CSV
+    previously got no candidate row — so PriceCache._last_close() fell back to
+    whatever stale row was last written (potentially days old). The dashboard
+    "Last price" for held positions would silently lag reality.
+
+    After the fix, every pipeline run writes a candidates row for each open
+    trade with the ticker's fresh close (bucket='excluded', notes='open
+    position') so the price-cache fallback picks up today's value.
+    """
+    from tests.cli.test_cli_eval import _minimal_config
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+
+    project = tmp_path / "project"; project.mkdir()
+    home = tmp_path / "home"; home.mkdir()
+    cfg_path = _minimal_config(project, home)
+    from swing.config import load
+    cfg = load(cfg_path)
+    ensure_schema(cfg.paths.db_path).close()
+
+    # Seed an open trade for VIR (NOT in finviz CSV below).
+    import sqlite3
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(
+                conn, Trade(
+                    id=None, ticker="VIR", entry_date="2026-04-15",
+                    entry_price=10.5, initial_shares=100, initial_stop=9.5,
+                    current_stop=9.5, status="open",
+                    watchlist_entry_target=None, watchlist_initial_stop=None,
+                    notes=None,
+                ), event_ts="2026-04-15T09:30:00",
+            )
+    finally:
+        conn.close()
+
+    csv = cfg.paths.finviz_inbox_dir / "finviz15Apr2026.csv"
+    csv.parent.mkdir(parents=True, exist_ok=True)
+    cols = "No.,Ticker,Sector,Industry,Country,Price,Change,Average Volume,Relative Volume,Average True Range,52-Week High,52-Week Low,Market Cap"
+    # Finviz CSV contains AAPL — NOT VIR.
+    csv.write_text(
+        cols + "\n1,AAPL,T,H,USA,180.0,2.5%,200000,1.5,5.0,200.0,150.0,3e9\n",
+        encoding="utf-8",
+    )
+
+    # Fetcher returns a distinctive close per ticker so we can verify the row
+    # for VIR carries its own close, not AAPL's.
+    vir_closes = [11.0 + i * 0.01 for i in range(260)]  # last close = 13.59
+    aapl_closes = [180.0 + i * 0.5 for i in range(260)]
+
+    def fake_get(self, ticker, lookback_days, *, as_of_date=None):
+        if ticker == "VIR":
+            return _ohlcv(closes=vir_closes)
+        return _ohlcv(closes=aapl_closes)
+
+    monkeypatch.setattr("swing.prices.PriceFetcher.get", fake_get)
+
+    result = run_pipeline_internal(cfg=cfg, trigger="manual")
+    assert result.state == "complete"
+
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            """SELECT c.close, c.bucket FROM candidates c
+               JOIN evaluation_runs e ON e.id = c.evaluation_run_id
+               WHERE c.ticker = 'VIR'
+               ORDER BY e.run_ts DESC LIMIT 1"""
+        ).fetchone()
+        assert row is not None, (
+            "pipeline must write a candidates row for open-trade tickers "
+            "that aren't in the finviz CSV, so PriceCache._last_close sees "
+            "a fresh close"
+        )
+        close, bucket = row
+        assert close is not None, (
+            "the candidates.close for the open-trade ticker must carry the "
+            "ticker's own close, not NULL"
+        )
+        assert abs(close - vir_closes[-1]) < 1e-6, (
+            f"candidates.close for VIR should equal the ticker's last fetched "
+            f"close ({vir_closes[-1]}); got {close}"
+        )
+    finally:
+        conn.close()
+
+
 def test_runner_aborts_on_evaluation_fail(tmp_path: Path, monkeypatch):
     """Spec §5.3: evaluation failure => abort. Watchlist/recommendations/charts/export skipped."""
     from tests.cli.test_cli_eval import _minimal_config
