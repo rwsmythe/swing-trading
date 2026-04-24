@@ -1,0 +1,7 @@
+Bugs:
+1. In Dashboard.  When I click the "refresh now" button at the bottom of the page, the "Watchlist - near trigger" label disappears and the watchlist table butts up against the bottom of the "Open Positions" table.  Hard refresh on the page restores the layout.
+2. I adjusted a stop value in accordance with an advisory.  The advisory remains after page refresh. It should go away when the conditions are met.
+3. The "Rationale" boxes in adjust stop and Enter buttons should be drop downs with defined statements.  I believe this is in accordance with the CLI.  Additionally, Adjust Stop should have a notes box as well for free-form text as needed.
+4. When expanding watchlist entries, if the chart is unavailable then there should be a reason stated (not enough data, etc...)
+5. A+ entry says 'Stop Limit' but only provides the stop value, not the limit value.
+6. Is total risk exposure displayed anywhere?
