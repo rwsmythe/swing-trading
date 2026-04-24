@@ -7,12 +7,9 @@ the absent-earnings-data contract (→ empty list, not None), and the
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
-import numpy as np
 import pandas as pd
-import pytest
-
 
 # ----------------------------------------------------------------------------
 # Helpers
@@ -275,7 +272,7 @@ def test_load_earnings_cache_hit_fresh_skips_fetch(tmp_path, monkeypatch):
         json.dumps(
             {
                 "ticker": "AAPL",
-                "fetched_ts": datetime.now(timezone.utc).isoformat(),
+                "fetched_ts": datetime.now(UTC).isoformat(),
                 "earnings_dates": ["2026-01-28", "2026-04-30"],
             }
         )
@@ -295,7 +292,7 @@ def test_load_earnings_cache_stale_refetches(tmp_path, monkeypatch):
     from research.harness.earnings_proximity import fetchers as mod
 
     (tmp_path / "earnings").mkdir()
-    stale_ts = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+    stale_ts = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
     (tmp_path / "earnings" / "AAPL.json").write_text(
         json.dumps(
             {
