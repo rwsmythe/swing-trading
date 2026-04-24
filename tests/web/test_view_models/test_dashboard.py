@@ -42,7 +42,7 @@ def _seed_for_dashboard(cfg) -> None:
                    (evaluation_run_id, data_asof_date, action_session_date,
                     ticker, recommendation, action_text)
                    VALUES (?, '2026-04-17', '2026-04-20', 'AAPL', 'today_decision',
-                           'Buy-stop limit $181.00 · 5 sh · $55 risk')""",
+                           'Buy-stop $181.00 · 5 sh · $55 risk')""",
                 (eval_id,),
             )
             # Open trade

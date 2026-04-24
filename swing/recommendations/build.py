@@ -29,7 +29,7 @@ class BuildContext:
 def _format_action(shares: int, entry: float, risk_dollars: float, infeasible: bool) -> str:
     if infeasible:
         return "Risk infeasible at current sizing — skip or wait for tighter setup"
-    return f"Buy-stop limit ${entry:.2f} \u00b7 {shares} sh \u00b7 ${risk_dollars:.0f} risk"
+    return f"Buy-stop ${entry:.2f} \u00b7 {shares} sh \u00b7 ${risk_dollars:.0f} risk"
 
 
 def build_recommendations(
