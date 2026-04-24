@@ -96,7 +96,7 @@ def test_trade_stop_adjust_blocked_when_lowering(tmp_path: Path):
     ])
     result = runner.invoke(main, [
         "--config", str(cfg), "trade", "stop-adjust",
-        "--trade-id", "1", "--new-stop", "165.0", "--rationale", "loosen",
+        "--trade-id", "1", "--new-stop", "165.0", "--rationale", "manual-trail",
     ])
     assert result.exit_code != 0
     assert "regression" in result.output.lower() or "force" in result.output.lower()
@@ -115,7 +115,7 @@ def test_trade_stop_adjust_persists_notes(tmp_path: Path):
     result = runner.invoke(main, [
         "--config", str(cfg), "trade", "stop-adjust",
         "--trade-id", "1", "--new-stop", "175.0",
-        "--rationale", "trail-10MA",
+        "--rationale", "trail-10ma",
         "--notes", "low-volume up-day",
     ])
     assert result.exit_code == 0, result.output
@@ -132,7 +132,7 @@ def test_trade_stop_adjust_persists_notes(tmp_path: Path):
         )
     finally:
         conn.close()
-    assert adj.rationale == "trail-10MA"
+    assert adj.rationale == "trail-10ma"
     assert adj.notes == "low-volume up-day"
 
 
@@ -176,5 +176,54 @@ def test_trade_entry_cli_other_requires_notes(tmp_path: Path):
         "--entry-price", "180.0", "--shares", "5",
         "--initial-stop", "170.0", "--rationale", "other",
         "--notes", "unclassified — spec-break test",
+    ])
+    assert good.exit_code == 0, good.output
+
+
+# ---------------------------------------------------------------------------
+# Tranche B-ops T5 — CLI side: --rationale closed taxonomy for stop-adjust
+# ---------------------------------------------------------------------------
+
+def test_trade_stop_adjust_cli_rejects_invalid_rationale(tmp_path: Path):
+    """T5: `swing trade stop-adjust --rationale trail-10MA` (wrong case) →
+    non-zero exit. Pre-T5 free text was accepted."""
+    runner, cfg = _setup(tmp_path)
+    runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "AAPL", "--entry-date", "2026-04-15",
+        "--entry-price", "180.0", "--shares", "5",
+        "--initial-stop", "170.0", "--rationale", "aplus-setup",
+    ])
+    result = runner.invoke(main, [
+        "--config", str(cfg), "trade", "stop-adjust",
+        "--trade-id", "1", "--new-stop", "175.0",
+        "--rationale", "trail-10MA",  # wrong case — lowercase only
+    ])
+    assert result.exit_code != 0, result.output
+    assert "invalid" in result.output.lower() or "choice" in result.output.lower()
+    assert "trail-10ma" in result.output
+
+
+def test_trade_stop_adjust_cli_other_requires_notes(tmp_path: Path):
+    """T5: `--rationale other` without `--notes` → ClickException.
+    With `--notes` the adjust succeeds."""
+    runner, cfg = _setup(tmp_path)
+    runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "AAPL", "--entry-date", "2026-04-15",
+        "--entry-price", "180.0", "--shares", "5",
+        "--initial-stop", "170.0", "--rationale", "aplus-setup",
+    ])
+    bad = runner.invoke(main, [
+        "--config", str(cfg), "trade", "stop-adjust",
+        "--trade-id", "1", "--new-stop", "175.0", "--rationale", "other",
+    ])
+    assert bad.exit_code != 0
+    assert "notes" in bad.output.lower()
+
+    good = runner.invoke(main, [
+        "--config", str(cfg), "trade", "stop-adjust",
+        "--trade-id", "1", "--new-stop", "175.0", "--rationale", "other",
+        "--notes", "unenumerated case",
     ])
     assert good.exit_code == 0, good.output

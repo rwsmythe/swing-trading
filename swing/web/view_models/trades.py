@@ -14,6 +14,7 @@ from swing.recommendations.sizing import compute_shares
 from swing.trades.entry import entry_rationale_options
 from swing.trades.equity import current_equity
 from swing.trades.exit import ExitReason
+from swing.trades.stop_adjust import stop_adjust_rationale_options
 from swing.web.price_cache import PriceCache
 
 
@@ -150,6 +151,8 @@ class TradeStopFormVM:
     trade: Trade
     current_stop: float
     suggested_stops: tuple[tuple[str, float], ...]  # empty in 3b; 3c populates
+    # Closed-taxonomy rationale options (value, display_label) pairs — T5.
+    rationale_options: tuple[tuple[str, str], ...] = ()
 
 
 def build_stop_form_vm(*, trade_id: int, cfg: Config) -> TradeStopFormVM | None:
@@ -163,4 +166,5 @@ def build_stop_form_vm(*, trade_id: int, cfg: Config) -> TradeStopFormVM | None:
         conn.close()
     return TradeStopFormVM(
         trade=trade, current_stop=trade.current_stop, suggested_stops=(),
+        rationale_options=stop_adjust_rationale_options(),
     )

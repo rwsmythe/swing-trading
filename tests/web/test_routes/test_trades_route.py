@@ -567,7 +567,7 @@ def test_post_stop_adjust_success(seeded_db, monkeypatch):
     with TestClient(app) as client:
         r = client.post(
             f"/trades/{trade.id}/stop", headers={"HX-Request": "true"},
-            data={"new_stop": "912.00", "rationale": "trail to 10MA"},
+            data={"new_stop": "912.00", "rationale": "trail-10ma"},
         )
     assert r.status_code == 200
     assert f"open-position-{trade.id}" in r.text
@@ -613,7 +613,7 @@ def test_post_stop_persists_notes_field(seeded_db, monkeypatch):
             f"/trades/{trade.id}/stop", headers={"HX-Request": "true"},
             data={
                 "new_stop": "912.00",
-                "rationale": "trail to 10MA",
+                "rationale": "trail-10ma",
                 "notes": "low-volume up-day",
             },
         )
@@ -626,7 +626,7 @@ def test_post_stop_persists_notes_field(seeded_db, monkeypatch):
         )
     finally:
         conn.close()
-    assert adj.rationale == "trail to 10MA"
+    assert adj.rationale == "trail-10ma"
     assert adj.notes == "low-volume up-day"
 
 
@@ -685,7 +685,7 @@ def test_post_stop_regression_400_with_updated_current(seeded_db):
     with TestClient(app) as client:
         r = client.post(
             f"/trades/{trade.id}/stop", headers={"HX-Request": "true"},
-            data={"new_stop": "880.00", "rationale": "attempt lower"},
+            data={"new_stop": "880.00", "rationale": "manual-trail"},
         )
     assert r.status_code == 400
     # Error message names the actual current_stop.
@@ -798,7 +798,7 @@ def test_post_stop_regression_renders_form_with_updated_current(seeded_db):
     with TestClient(app) as client:
         r = client.post(
             f"/trades/{trade.id}/stop", headers={"HX-Request": "true"},
-            data={"new_stop": "880.00", "rationale": "attempt lower"},
+            data={"new_stop": "880.00", "rationale": "manual-trail"},
         )
     assert r.status_code == 400
     # Error message names the actual current_stop.
@@ -824,7 +824,7 @@ def test_post_stop_for_closed_trade_returns_404_fragment(seeded_db):
         r = client.post(
             "/trades/99999/stop",
             headers={"HX-Request": "true", "HX-Target": "open-position-99999"},
-            data={"new_stop": "880.00", "rationale": "stale stop"},
+            data={"new_stop": "880.00", "rationale": "manual-trail"},
         )
     assert r.status_code == 404
     assert "banner" in r.text
@@ -980,7 +980,7 @@ def test_post_stop_for_actually_closed_trade_returns_404_fragment(seeded_db):
         r = client.post(
             f"/trades/{trade.id}/stop",
             headers={"HX-Request": "true", "HX-Target": f"open-position-{trade.id}"},
-            data={"new_stop": "900.00", "rationale": "attempt after close"},
+            data={"new_stop": "900.00", "rationale": "manual-trail"},
         )
     assert r.status_code == 404
     # HX-Target-aware handler (spec §3.3): row-prefix → <tr>-shaped fragment.
@@ -1289,3 +1289,122 @@ def test_post_entry_other_with_notes_succeeds(seeded_db, monkeypatch):
         assert entry_ev.rationale == "other"
     finally:
         conn2.close()
+
+
+# ---------------------------------------------------------------------------
+# Tranche B-ops T5 — StopAdjustRationale closed taxonomy
+# ---------------------------------------------------------------------------
+
+def test_get_stop_form_renders_rationale_select_with_seven_options(seeded_db):
+    """T5: the stop-adjust form must render rationale as a <select> (not a
+    textarea) with all seven options in spec §3 order. Pre-T5 the template
+    used <textarea name="rationale">."""
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event, list_open_trades
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=5, initial_stop=860.0,
+                current_stop=860.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{trade.id}/stop/form")
+    assert r.status_code == 200
+    assert '<select name="rationale"' in r.text
+    expected = [
+        "breakeven", "trail-10ma", "trail-20ma", "weather-tighten",
+        "manual-trail", "news", "other",
+    ]
+    positions = [r.text.find(f'value="{v}"') for v in expected]
+    assert all(p >= 0 for p in positions), positions
+    assert positions == sorted(positions), (
+        f"<option> order does not match spec: {list(zip(expected, positions))}"
+    )
+    assert "Move to breakeven (system advisory)" in r.text
+
+
+def test_post_stop_unknown_rationale_rejected(seeded_db, monkeypatch):
+    """T5: POST /trades/{id}/stop with a non-enum rationale → 400 with error
+    banner. Pre-T5 this would write the free text to trade_events."""
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event, list_events_for_trade, list_open_trades
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=5, initial_stop=860.0,
+                current_stop=860.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{trade.id}/stop", headers={"HX-Request": "true"},
+            data={"new_stop": "910.00", "rationale": "freeform gut feel"},
+        )
+    assert r.status_code == 400
+    assert "invalid rationale" in r.text.lower()
+    # Form re-rendered, not the full-page error banner.
+    assert '<select name="rationale"' in r.text
+    # Stop NOT updated.
+    conn2 = connect(cfg.paths.db_path)
+    try:
+        t = next(t for t in list_open_trades(conn2) if t.id == trade.id)
+        assert t.current_stop == 860.0
+        # No stop_adjust event written.
+        events = list_events_for_trade(conn2, trade.id)
+        assert not any(e.event_type == "stop_adjust" for e in events)
+    finally:
+        conn2.close()
+
+
+def test_post_stop_other_without_notes_rejected(seeded_db):
+    """T5: rationale=other without notes → 400 with 'notes required' banner."""
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event, list_open_trades
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=5, initial_stop=860.0,
+                current_stop=860.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{trade.id}/stop", headers={"HX-Request": "true"},
+            data={"new_stop": "910.00", "rationale": "other"},
+        )
+    assert r.status_code == 400
+    assert "notes are required" in r.text.lower()

@@ -8,7 +8,34 @@ import pytest
 from swing.data.db import ensure_schema
 from swing.data.repos.trades import get_trade, list_events_for_trade
 from swing.trades.entry import EntryRequest, record_entry
-from swing.trades.stop_adjust import StopAdjustRequest, adjust_stop, StopRegressionError
+from swing.trades.stop_adjust import (
+    StopAdjustRationale, StopAdjustRequest, adjust_stop,
+    stop_adjust_rationale_options, StopRegressionError,
+)
+
+
+def test_stop_adjust_rationale_enum_values_match_spec_order():
+    """Tranche B-ops T5: StopAdjustRationale enum is the closed taxonomy per
+    spec §3 table, in the spec-declared order."""
+    assert [r.value for r in StopAdjustRationale] == [
+        "breakeven",
+        "trail-10ma",
+        "trail-20ma",
+        "weather-tighten",
+        "manual-trail",
+        "news",
+        "other",
+    ]
+
+
+def test_stop_adjust_rationale_options_pair_value_with_display_label():
+    """stop_adjust_rationale_options() returns (value, label) pairs in enum
+    order. Template consumes this to render the <select>."""
+    opts = stop_adjust_rationale_options()
+    assert len(opts) == 7
+    assert opts[0] == ("breakeven", "Move to breakeven (system advisory)")
+    assert opts[-1] == ("other", "Other (see notes)")
+    assert {v for v, _ in opts} == {r.value for r in StopAdjustRationale}
 
 
 def _seed(conn) -> int:

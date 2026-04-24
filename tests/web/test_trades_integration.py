@@ -216,7 +216,7 @@ def test_stop_adjust_end_to_end(seeded_db, monkeypatch):
         r = client.post(
             f"/trades/{trade.id}/stop",
             headers={"HX-Request": "true"},
-            data={"new_stop": "912.00", "rationale": "trail to 10MA"},
+            data={"new_stop": "912.00", "rationale": "trail-10ma"},
         )
     assert r.status_code == 200
     assert f"open-position-{trade.id}" in r.text

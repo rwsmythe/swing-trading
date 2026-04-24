@@ -14,7 +14,9 @@ from swing.data.db import connect
 from swing.data.repos.cash import list_cash
 from swing.data.repos.trades import get_trade, list_all_exits, list_open_trades
 from swing.trades.exit import ExitReason, ExitRequest, record_exit
-from swing.trades.stop_adjust import StopAdjustRequest, StopRegressionError, adjust_stop
+from swing.trades.stop_adjust import (
+    StopAdjustRationale, StopAdjustRequest, StopRegressionError, adjust_stop,
+)
 from swing.recommendations.sizing import compute_shares, SizingResult
 from swing.trades.entry import (
     EntryRationale, EntryRequest, HardCapException, DuplicateOpenPositionException,
@@ -493,6 +495,25 @@ def stop_post(
     # convention — `trades.notes`/`exits.notes` store NULL, not "", when the
     # operator leaves the box empty).
     notes_value = notes.strip() if notes and notes.strip() else None
+
+    # Tranche B-ops T5: enum-validate the rationale before constructing the
+    # service request. On failure, re-render the stop form with an error
+    # banner at HTTP 400. Field preservation across the error re-render is
+    # T7's scope; T5 ships the enforcement only.
+    rationale_error = _validate_rationale(rationale, notes, StopAdjustRationale)
+    if rationale_error is not None:
+        vm = build_stop_form_vm(trade_id=trade_id, cfg=cfg)
+        if vm is not None:
+            return templates.TemplateResponse(
+                request, "partials/trade_stop_form.html.j2",
+                {"vm": vm, "error_message": rationale_error},
+                status_code=400,
+            )
+        return templates.TemplateResponse(
+            request, "partials/trade_form_error.html.j2",
+            {"error_message": rationale_error},
+            status_code=400,
+        )
 
     req = StopAdjustRequest(
         trade_id=trade_id, new_stop=new_stop, rationale=rationale,

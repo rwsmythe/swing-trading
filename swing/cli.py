@@ -398,7 +398,13 @@ def trade_list_cmd(ctx, show_all):
 @trade_group.command("stop-adjust")
 @click.option("--trade-id", type=int, required=True)
 @click.option("--new-stop", type=float, required=True)
-@click.option("--rationale", required=True)
+@click.option("--rationale", required=True,
+              type=click.Choice([
+                  "breakeven", "trail-10ma", "trail-20ma", "weather-tighten",
+                  "manual-trail", "news", "other",
+              ]),
+              help="Stop-adjust rationale (closed taxonomy, Tranche B-ops T5). "
+                   "'other' requires --notes.")
 @click.option("--notes", default=None)
 @click.option("--force", is_flag=True, help="Allow lowering the stop")
 @click.pass_context
@@ -407,6 +413,10 @@ def trade_stop_adjust_cmd(ctx, trade_id, new_stop, rationale, notes, force):
     from datetime import datetime as _dt
     from swing.data.db import connect
     from swing.trades.stop_adjust import StopAdjustRequest, adjust_stop, StopRegressionError
+
+    # T5: --notes required when --rationale=other (parity with web form).
+    if rationale == "other" and not (notes and notes.strip()):
+        raise click.ClickException("--notes required when --rationale=other")
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
