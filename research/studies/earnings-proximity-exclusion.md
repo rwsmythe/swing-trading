@@ -35,7 +35,7 @@ Four treatment variants: `blackout_trading_days ∈ {3, 5, 7, 10}`. Optionally, 
 
 ## Decision surface
 
-One of: `reject` / `shadow` / `promote`. If `promote`, name the chosen `blackout_trading_days` value.
+One of: `reject` / `shadow` / `promote` / `defer`. If `promote`, name the chosen `blackout_trading_days` value. Tier assignment is governed by the survivorship-bias interpretation protocol below (added 2026-04-24), which maps observed-data signal strength to decision tier and adds `defer` as a fourth outcome for weak/null signals that survivorship bias renders ambiguous.
 
 ## Parity standard (per V2.1 §VII.B)
 
@@ -53,3 +53,54 @@ One of: `reject` / `shadow` / `promote`. If `promote`, name the chosen `blackout
 - Intraday earnings-timing precision. EOD workflow does not require it.
 - Optimizing X beyond the four candidate values. The grid is deliberately sparse — finer sensitivity analysis is a later-phase refinement, not this first study.
 - Post-earnings gap-capture strategy. Out of scope; if interesting, it becomes its own method record later.
+
+## Survivorship-bias interpretation protocol
+
+*Added 2026-04-24; see Amendments.*
+
+The replay uses the current RS universe against historical OHLCV (fixed-universe concession, per `../notes/historical-candidate-source-decision.md` §"Flagged but not resolved"). This is minimum-viable per V2.1 §V.E bootstrap-first but introduces survivorship bias with a shape specific to this study that requires interpretation discipline beyond the generic "common-mode cancels cross-variant" argument.
+
+### Why survivorship bias is sharper here than for generic backtests
+
+The primary metric is gap-through rate and magnitude. Gap-throughs are disproportionately concentrated in the population of tickers most likely to be ABSENT from a current-universe replay:
+
+- Biotech Phase-3 failures clustering around PDUFA/earnings dates.
+- Small-cap earnings-fraud revelations that trigger margin-call spirals.
+- Guide-down catastrophes severe enough to cause eventual delisting.
+- Failed SPACs, microcap accounting restatements, reverse-mergers that fell apart.
+
+These are precisely the population the earnings-proximity exclusion is designed to protect against. Replaying only on survivors systematically understates the measured absolute gap-through rate in the exact direction that matters for the decision.
+
+### Metric treatment
+
+- **Absolute metrics** (gap-through rate, gap-through magnitude, expectancy at baseline X=0): treat as **lower-bound estimates of true historical effect**. Report with a "survivorship-biased lower bound" caveat in Session 2c's evidence summary.
+- **Relative metrics** (variant-vs-baseline deltas in expectancy, gap-through rate, gap-through magnitude): treat as **direction-trustworthy but magnitude-uncertain**. Most of the universe bias is common-mode across variants and cancels in cross-variant comparisons; the absolute magnitude of the benefit remains understated. Report without the absolute-number caveat but with a "magnitude likely understated" interpretation note.
+- **Sample-size-driven significance** (p-values, confidence intervals): compute normally on the observed data. Survivorship bias does not invalidate statistical inference ON THE OBSERVED DATA; it limits the GENERALIZATION to the true historical population.
+
+### Decision tiers
+
+Session 2c's analyst chooses one of four tiers based on the observed data. Numerical thresholds for each tier (effect size + significance) must be **pre-registered** in `research/studies/earnings-proximity-exclusion-results.md` (the evidence summary document Session 2c will create) BEFORE the variant comparison is run, to prevent post-hoc rationalization.
+
+- **Strong signal — `promote`.** Relative gap-through reduction at some X is both meaningfully large AND statistically significant at the pre-registered threshold. True effect is likely AT LEAST as large as observed (survivorship bias understates); acting on the observed conclusion is conservative. Name the chosen X.
+- **Moderate signal — `shadow`.** Relative reduction is positive and plausibly meaningful but below strong-signal threshold, OR strong-signal effect is present but only in a narrow subset of variants (e.g., only at X=10). Deploy as operator-UI warning badge (non-exclusionary per promotion-payload spec); gather forward operational evidence before hard-promoting.
+- **Weak or null signal — `defer`.** No meaningful reduction observed, OR observed reduction is within the noise band for the sample size. Do NOT reject outright — survivorship bias makes this outcome ambiguous (we cannot distinguish "rule doesn't help" from "rule helps but survivors underrepresent the helpable cases"). Queue a survivorship-aware second study (V2.1 §V.E-compliant paid data or time-boxed manually compiled delistings list) before final decision.
+- **Negative signal — `reject`.** The rule materially harms expectancy (e.g., reduces signal volume without reducing gap-through, producing worse per-signal expectancy or worse risk-adjusted returns). Reject regardless of survivorship concerns — if the rule hurts on survivor-biased data, it is extremely unlikely to help on true data.
+
+### What Session 2c's evidence summary MUST include
+
+- A named "Survivorship bias" section citing this protocol.
+- Absolute-metric reporting with explicit "survivorship-biased lower bound" caveats.
+- Relative-metric reporting with "magnitude understated" interpretation notes.
+- Pre-registered tier thresholds (recorded before the variant comparison runs) AND the observed values AND the resulting tier assignment.
+- The final decision (reject / shadow / promote / defer) with explicit citation back to the tier it maps to.
+
+### What Session 2c MUST NOT do
+
+- Report absolute gap-through rate or expectancy without the caveat.
+- Dismiss the fixed-universe concession with a generic "common-mode cancels, disregard" argument — that argument is weaker for this specific study's primary metric.
+- Interpret a weak/null signal as evidence that earnings proximity doesn't matter. The correct interpretation of weak/null is "survivorship bias prevents distinguishing weak-effect from no-effect" — map to `defer`, not `reject`.
+- Promote based on strong signal at ONLY one variant (e.g., X=10) without sensitivity checks on adjacent values (X=7, X=14 if computable) — overfitting risk.
+
+## Amendments
+
+- **2026-04-24 — Added Survivorship-bias interpretation protocol.** Session 2a decision memo flagged survivorship bias as a potential escalation if "materially affecting expectancy estimates." Mid-Session-2b discussion with orchestrator identified that for THIS study specifically (gap-through metric concentrated in delisted tickers), survivorship bias has a sharper shape than the generic case. Protocol is pre-registered to prevent post-hoc rationalization during Session 2c analysis. Also amended the Decision surface section to add `defer` as a fourth outcome tier and to cross-reference the protocol.

@@ -97,18 +97,23 @@ The working tree currently has untracked / uncommitted drift from the orchestrat
 
 - `docs/Bugs.txt` — modified (Bug 7 added by orchestrator; uncommitted).
 - `docs/tranche-b-research-session-2b-brief.md` — untracked (this brief).
+- `research/studies/earnings-proximity-exclusion.md` — modified (orchestrator added a Survivorship-bias interpretation protocol section + an Amendments entry + cross-referenced the protocol from the Decision surface section; uncommitted). This amendment is study-design-level and binding for Session 2c's evidence summary, but does NOT change Session 2b's harness scope — the harness is universe-agnostic regardless of interpretation protocol.
 
-Stage both in D0 alongside any other untracked files relevant to recent sessions. Do NOT modify `docs/Bugs.txt`'s content — it was edited by the orchestrator and should be tracked as-is.
+Stage all three in D0. Do NOT modify any of these files' content — all three were edited by the orchestrator and should be tracked as-is.
 
 ```bash
 git status
-git add docs/Bugs.txt docs/tranche-b-research-session-2b-brief.md
+git add docs/Bugs.txt docs/tranche-b-research-session-2b-brief.md research/studies/earnings-proximity-exclusion.md
 # add any other untracked-but-session-relevant files
-git commit -m "docs: track session-2b dispatch brief and bug 7 addition
+git commit -m "docs: track session-2b dispatch brief, bug 7, and survivorship-bias protocol amendment
 
 - Track docs/tranche-b-research-session-2b-brief.md (dispatches this session).
 - Track orchestrator-added Bug 7 in docs/Bugs.txt (dashboard Today's-Decisions
   vs chart-scope A+ disagreement; queued for pipeline-linkage bundle session).
+- Track orchestrator amendment to research/studies/earnings-proximity-exclusion.md
+  adding a Survivorship-bias interpretation protocol and a fourth 'defer'
+  decision tier; binding pre-registration for Session 2c's evidence summary.
+  No impact on Session 2b harness scope.
 "
 ```
 
