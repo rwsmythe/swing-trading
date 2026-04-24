@@ -19,6 +19,17 @@ ruff check swing/
 
 **Pipeline lease-acquisition wait** (`web.pipeline_lease_wait_seconds`, default 5s): how long POST `/pipeline/run` waits for the spawned subprocess to insert its `pipeline_runs` row. Python 3.14 cold-start + heavy imports on Windows regularly cross 2s; bump if you see false "did not acquire lease" errors on a slow box.
 
+## Strategy
+
+The project follows a bifurcated architecture (research branch + operational trader-facing branch) per:
+
+- `reference/Future Work/2026-04-23-bifurcated-strategic-implementation-proposal-v2.1.md` — governing strategy.
+- `reference/Future Work/2026-04-23-rebuttal-response-for-implementors.md` — binding clarifications (minimum viable governance, toleranced parity, bootstrap-first data).
+
+Source-of-truth methodology references live in `reference/methodology/`. These are reference-only; any production change driven by a methodology reference must route through the source-of-truth correction protocol (V2.1 §VII.F), not a direct patch.
+
+Older strategy documents are archived at `reference/Future Work/archive/`.
+
 ## Architecture
 
 `swing/` — application package:
