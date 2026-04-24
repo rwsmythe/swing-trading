@@ -61,7 +61,7 @@ def _validate_rationale(
 
 def _rerender_stop_form_with_error(
     *, request: Request, templates, cfg, trade_id: int,
-    new_stop: float, rationale: str, notes: str | None, force: bool,
+    new_stop: float, rationale: str, notes: str | None,
     error_message: str,
 ) -> HTMLResponse:
     """T7: re-render trade_stop_form with preservation fields + banner at 400.
@@ -69,9 +69,10 @@ def _rerender_stop_form_with_error(
     Preservation mirrors TradeEntryFormVM's duplicate-re-render pattern:
     typed ``new_stop`` echoes back via ``new_stop_input``; submitted
     ``rationale`` and ``notes`` pre-select/populate their inputs on the
-    re-render. ``force`` is preserved as-submitted (spec §5: the re-render
-    never auto-ticks Force — the operator must explicitly tick it to
-    submit a regression-intentional stop).
+    re-render. ``force`` is deliberately NOT preserved — spec §5 requires
+    the operator to tick the Force checkbox each time they want to submit
+    a regression-intentional stop, so the rerender path discards the
+    submitted force value.
     """
     from dataclasses import replace as dc_replace
     vm = build_stop_form_vm(trade_id=trade_id, cfg=cfg)
@@ -81,7 +82,6 @@ def _rerender_stop_form_with_error(
             new_stop_input=new_stop,
             rationale=rationale,
             notes=notes or "",
-            force=force,
         )
         return templates.TemplateResponse(
             request, "partials/trade_stop_form.html.j2",
@@ -550,7 +550,7 @@ def stop_post(
         return _rerender_stop_form_with_error(
             request=request, templates=templates, cfg=cfg,
             trade_id=trade_id, new_stop=new_stop, rationale=rationale,
-            notes=notes, force=force_flag,
+            notes=notes,
             error_message=rationale_error,
         )
 
@@ -579,14 +579,14 @@ def stop_post(
         except StopRegressionError as exc:
             # R: spec §5.1 case 3 — re-render form with updated current_stop.
             # T7: preservation fields populated from the submitted form
-            # (except force, which must never be auto-ticked per spec §5).
+            # (force is intentionally NOT preserved — spec §5).
             error_message = (
                 f"{exc}. Tick Force to submit intentionally, or adjust new_stop."
             )
             return _rerender_stop_form_with_error(
                 request=request, templates=templates, cfg=cfg,
                 trade_id=trade_id, new_stop=new_stop, rationale=rationale,
-                notes=notes, force=force_flag,
+                notes=notes,
                 error_message=error_message,
             )
     finally:

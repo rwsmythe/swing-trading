@@ -414,7 +414,7 @@ def test_post_exit_full_close_removes_row(seeded_db, monkeypatch):
         r = client.post(
             f"/trades/{trade.id}/exit", headers={"HX-Request": "true"},
             data={"exit_date": "2026-04-18", "exit_price": "932.00",
-                  "shares": "5", "reason": "manual", "rationale": "full close"},
+                  "shares": "5", "reason": "manual"},
         )
     assert r.status_code == 200
     # Full close: no <tr> for the now-closed position; empty/hidden stub OK.
@@ -461,7 +461,7 @@ def test_post_exit_partial_updates_row(seeded_db, monkeypatch):
         r = client.post(
             f"/trades/{trade.id}/exit", headers={"HX-Request": "true"},
             data={"exit_date": "2026-04-18", "exit_price": "932.00",
-                  "shares": "3", "reason": "partial", "rationale": "lock in partial gain"},
+                  "shares": "3", "reason": "partial"},
         )
     assert r.status_code == 200
     assert f"open-position-{trade.id}" in r.text
@@ -499,8 +499,7 @@ def test_post_exit_shares_too_many_400(seeded_db, monkeypatch):
         r = client.post(
             f"/trades/{trade.id}/exit", headers={"HX-Request": "true"},
             data={"exit_date": "2026-04-18", "exit_price": "932.00",
-                  "shares": "10", "reason": "manual",  # over-exit
-                  "rationale": "too many"},
+                  "shares": "10", "reason": "manual"},  # over-exit
         )
     assert r.status_code == 400
     assert "remaining" in r.text.lower() or "exceed" in r.text.lower()
@@ -761,8 +760,7 @@ def test_post_exit_shares_too_many_renders_form_with_updated_max(seeded_db, monk
         r = client.post(
             f"/trades/{trade.id}/exit", headers={"HX-Request": "true"},
             data={"exit_date": "2026-04-18", "exit_price": "932.00",
-                  "shares": "10", "reason": "manual",
-                  "rationale": "too many"},
+                  "shares": "10", "reason": "manual"},
         )
     assert r.status_code == 400
     # Error banner still present.
@@ -1000,7 +998,7 @@ def test_post_trades_without_hx_request_403(test_cfg):
             "/trades/entry",
             data={"ticker": "AAPL", "entry_date": "2026-04-18",
                   "entry_price": "180.0", "shares": "1",
-                  "initial_stop": "170.0", "rationale": "test"},
+                  "initial_stop": "170.0", "rationale": "aplus-setup"},
             # NO HX-Request header.
         )
     assert r.status_code == 403
@@ -1042,8 +1040,7 @@ def test_post_exit_shares_too_many_is_single_tr_no_orphan(seeded_db, monkeypatch
         r = client.post(
             f"/trades/{trade.id}/exit", headers={"HX-Request": "true"},
             data={"exit_date": "2026-04-18", "exit_price": "932.00",
-                  "shares": "10", "reason": "manual",
-                  "rationale": "over-exit"},
+                  "shares": "10", "reason": "manual"},
         )
     assert r.status_code == 400
     # Exactly one top-level <tr — the form with inline banner.

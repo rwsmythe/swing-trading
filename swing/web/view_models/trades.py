@@ -158,10 +158,17 @@ class TradeStopFormVM:
     # Mirrors TradeEntryFormVM's preservation pattern at N=2; no shared base
     # class per spec §5 rationale (field sets differ enough that an
     # abstraction would impose more than it saves).
+    #
+    # NOTE: `force` is intentionally NOT carried on the VM. Spec §5 is
+    # explicit that the Force checkbox must never be auto-ticked on error
+    # re-render — the operator has to tick it each time. Giving the VM a
+    # `force` field would invite a future "preserve it too" change that
+    # silently violates the spec. The POST route reads `force` from the
+    # submitted form directly and uses it only to build StopAdjustRequest;
+    # the rerender path deliberately drops it.
     new_stop_input: float | None = None
     rationale: str = ""
     notes: str = ""
-    force: bool = False
 
 
 def build_stop_form_vm(*, trade_id: int, cfg: Config) -> TradeStopFormVM | None:
