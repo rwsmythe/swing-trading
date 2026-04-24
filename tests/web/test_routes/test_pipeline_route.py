@@ -379,6 +379,32 @@ def test_post_prices_refresh_emits_three_oob_regions(seeded_db, monkeypatch):
     assert calls["reset"] == 1
 
 
+def test_post_prices_refresh_preserves_watchlist_section_heading(seeded_db, monkeypatch):
+    """Bug 1 regression: the refresh-now OOB swap must preserve the
+    "Watchlist — near trigger" section heading (rendered by
+    partials/watchlist_top5_section.html.j2). Previously the refresh
+    partial hand-duplicated the bare <table> without the <h2>, so the
+    label vanished after clicking Refresh now until the next hard reload.
+    """
+    cfg, cfg_path = seeded_db
+    from swing.web.price_cache import PriceCache
+
+    monkeypatch.setattr(PriceCache, "refresh_all", lambda self, tickers: None)
+    monkeypatch.setattr(PriceCache, "reset_circuit_breaker", lambda self: None)
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {})
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/prices/refresh", headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert "Watchlist — near trigger" in r.text, (
+        "refresh-now must re-render the watchlist section heading "
+        "(<h2>Watchlist — near trigger</h2>), not just the bare table"
+    )
+
+
 def test_post_prices_refresh_bypasses_degraded_mode(seeded_db, monkeypatch):
     """User-clicked Refresh now must force a live-fetch attempt even when
     the breaker is tripped. This test narrowly asserts that
