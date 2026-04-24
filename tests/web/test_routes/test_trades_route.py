@@ -1379,6 +1379,98 @@ def test_post_stop_unknown_rationale_rejected(seeded_db, monkeypatch):
         conn2.close()
 
 
+def test_exit_form_has_no_rationale_input(seeded_db, monkeypatch):
+    """T6: GET /trades/{id}/exit/form no longer renders a rationale input.
+    Pre-T6 the template had <textarea name="rationale" required>."""
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event, list_open_trades
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=5, initial_stop=860.0,
+                current_stop=860.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            "NVDA": PriceSnapshot(ticker="NVDA", price=930.0,
+                                   asof=datetime.now(), is_stale=False, source="live"),
+        })
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{trade.id}/exit/form")
+    assert r.status_code == 200
+    assert 'name="rationale"' not in r.text
+    # Reason <select> is still present.
+    assert 'name="reason"' in r.text
+
+
+def test_post_exit_writes_reason_value_as_rationale(seeded_db, monkeypatch):
+    """T6: POST /trades/{id}/exit writes req.reason.value into
+    trade_events.rationale automatically; the request body no longer carries
+    a rationale field. Pre-T6 rationale was free text from the form."""
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event, list_events_for_trade, list_open_trades
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=5, initial_stop=860.0,
+                current_stop=860.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            "NVDA": PriceSnapshot(ticker="NVDA", price=930.0,
+                                   asof=datetime.now(), is_stale=False, source="live"),
+        })
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{trade.id}/exit", headers={"HX-Request": "true"},
+            data={
+                "exit_date": "2026-04-17", "exit_price": "930.00",
+                "shares": "5", "reason": "stop-hit",
+                # NO rationale field — T6 drops it from the form.
+                "notes": "hit stop at close",
+            },
+        )
+    assert r.status_code == 200
+    conn2 = connect(cfg.paths.db_path)
+    try:
+        exit_ev = next(
+            e for e in list_events_for_trade(conn2, trade.id)
+            if e.event_type == "exit"
+        )
+    finally:
+        conn2.close()
+    # rationale synthesized from reason.value — NOT from any form input.
+    assert exit_ev.rationale == "stop-hit"
+
+
 def test_post_stop_other_without_notes_rejected(seeded_db):
     """T5: rationale=other without notes → 400 with 'notes required' banner."""
     from swing.data.db import connect

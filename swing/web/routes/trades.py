@@ -363,7 +363,6 @@ def exit_post(
     exit_price: float = Form(...),
     shares: int = Form(...),
     reason: str = Form(...),
-    rationale: str = Form(...),
     notes: str | None = Form(None),
 ):
     cfg = request.app.state.cfg
@@ -381,9 +380,15 @@ def exit_post(
             status_code=400,
         )
 
+    # Tranche B-ops T6: rationale is no longer a separate form input.
+    # The service still persists trade_events.rationale; derive it from
+    # reason_enum.value per spec §3 "Decision — exit rationale: reuse
+    # ExitReason." Accepted semantic cost: values like 'partial' and
+    # 'manual' appear as rationale rows (spec §3 "Known limitation").
     req = ExitRequest(
         trade_id=trade_id, exit_date=exit_date, exit_price=exit_price,
-        shares=shares, reason=reason_enum, notes=notes, rationale=rationale,
+        shares=shares, reason=reason_enum, notes=notes,
+        rationale=reason_enum.value,
         event_ts=datetime.now().isoformat(timespec="seconds"),
     )
 

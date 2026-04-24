@@ -23,8 +23,8 @@
             <option value="{{ reason }}">{{ reason }}</option>
           {% endfor %}
         </select></div>
-      <div><label>Rationale &#9733;</label>
-        <textarea name="rationale" required></textarea></div>
+      {#- Tranche B-ops T6: rationale input removed — trade_events.rationale
+          is derived server-side from the Reason selection per spec §3. -#}
       <div><label>Notes</label><textarea name="notes"></textarea></div>
       <div>
         <button type="submit">Submit</button>

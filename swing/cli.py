@@ -332,10 +332,14 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
     ["stop-hit", "target", "manual", "time-stop", "weather", "partial", "other"]
 ), required=True)
 @click.option("--notes", default=None)
-@click.option("--rationale", required=True)
 @click.pass_context
-def trade_exit_cmd(ctx, trade_id, exit_date, exit_price, shares, reason, notes, rationale):
-    """Record a trade exit (full or partial)."""
+def trade_exit_cmd(ctx, trade_id, exit_date, exit_price, shares, reason, notes):
+    """Record a trade exit (full or partial).
+
+    Tranche B-ops T6: ``--rationale`` was dropped; trade_events.rationale is
+    derived server-side from ``--reason``. Use ``--notes`` for free-form
+    context.
+    """
     from datetime import datetime as _dt
     from swing.data.db import connect
     from swing.trades.exit import ExitReason, ExitRequest, record_exit
@@ -343,10 +347,11 @@ def trade_exit_cmd(ctx, trade_id, exit_date, exit_price, shares, reason, notes, 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
     try:
+        reason_enum = ExitReason(reason)
         req = ExitRequest(
             trade_id=trade_id, exit_date=exit_date, exit_price=exit_price,
-            shares=shares, reason=ExitReason(reason),
-            notes=notes, rationale=rationale,
+            shares=shares, reason=reason_enum,
+            notes=notes, rationale=reason_enum.value,
             event_ts=_dt.now().isoformat(timespec="seconds"),
         )
         result = record_exit(conn, req)

@@ -49,7 +49,7 @@ def test_trade_list_shows_remaining_shares_after_partial_exit(tmp_path: Path):
         "--config", str(cfg), "trade", "exit",
         "--trade-id", "1", "--exit-date", "2026-04-20",
         "--exit-price", "11.50", "--shares", "1",
-        "--reason", "partial", "--rationale", "take half",
+        "--reason", "partial",
     ])
     result = runner.invoke(main, ["--config", str(cfg), "trade", "list"])
     assert result.exit_code == 0, result.output
@@ -80,7 +80,7 @@ def test_trade_exit(tmp_path: Path):
         "--config", str(cfg), "trade", "exit",
         "--trade-id", "1", "--exit-date", "2026-04-22",
         "--exit-price", "200.0", "--shares", "5",
-        "--reason", "target", "--rationale", "hit",
+        "--reason", "target",
     ])
     assert result.exit_code == 0, result.output
     assert "R" in result.output
@@ -227,3 +227,59 @@ def test_trade_stop_adjust_cli_other_requires_notes(tmp_path: Path):
         "--notes", "unenumerated case",
     ])
     assert good.exit_code == 0, good.output
+
+
+# ---------------------------------------------------------------------------
+# Tranche B-ops T6 — exit rationale dropped; synthesized from --reason
+# ---------------------------------------------------------------------------
+
+def test_trade_exit_cli_rejects_rationale_option(tmp_path: Path):
+    """T6: `swing trade exit --rationale ...` now errors with 'no such option'.
+    Pre-T6 --rationale was required."""
+    runner, cfg = _setup(tmp_path)
+    runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "AAPL", "--entry-date", "2026-04-15",
+        "--entry-price", "180.0", "--shares", "5",
+        "--initial-stop", "170.0", "--rationale", "aplus-setup",
+    ])
+    result = runner.invoke(main, [
+        "--config", str(cfg), "trade", "exit",
+        "--trade-id", "1", "--exit-date", "2026-04-22",
+        "--exit-price", "200.0", "--shares", "5",
+        "--reason", "target", "--rationale", "hit target",
+    ])
+    assert result.exit_code != 0, result.output
+    assert "no such option" in result.output.lower()
+    assert "--rationale" in result.output
+
+
+def test_trade_exit_cli_persists_reason_as_rationale(tmp_path: Path):
+    """T6: trade_events.rationale after a successful exit equals the reason
+    value. Pre-T6 rationale was independent free text from --rationale."""
+    runner, cfg = _setup(tmp_path)
+    runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "AAPL", "--entry-date", "2026-04-15",
+        "--entry-price", "180.0", "--shares", "5",
+        "--initial-stop", "170.0", "--rationale", "aplus-setup",
+    ])
+    result = runner.invoke(main, [
+        "--config", str(cfg), "trade", "exit",
+        "--trade-id", "1", "--exit-date", "2026-04-22",
+        "--exit-price", "200.0", "--shares", "5",
+        "--reason", "target",
+    ])
+    assert result.exit_code == 0, result.output
+
+    from swing.config import load as load_cfg
+    from swing.data.db import connect
+    from swing.data.repos.trades import list_events_for_trade
+    conn = connect(load_cfg(cfg).paths.db_path)
+    try:
+        exit_ev = next(
+            e for e in list_events_for_trade(conn, 1) if e.event_type == "exit"
+        )
+    finally:
+        conn.close()
+    assert exit_ev.rationale == "target"
