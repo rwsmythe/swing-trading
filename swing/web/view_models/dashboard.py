@@ -225,10 +225,15 @@ def build_dashboard(
 
     flag_tags = _flag_tags(candidates_by_ticker)
 
-    # Open-risk (spec §2). Dollars + contributing-count + all-above-breakeven
-    # from the pure helper; pct computed here because the helper has no equity
-    # in scope. Pct is None ONLY when equity ≤ 0 (template renders "—").
-    open_risk_dollars, open_risk_count, open_risk_all_above_be = total_current_risk(
+    # Open-risk (spec §2). Helper returns dollars + contributing-count +
+    # all-above-breakeven; pct computed here because the helper has no
+    # equity in scope. Pct is None ONLY when equity ≤ 0 (template renders
+    # "—"). The tile's displayed position count is len(open_trades) — the
+    # TOTAL open positions — not the helper's contributing-count; the spec's
+    # "N positions (all above breakeven)" edge case requires N to be the
+    # full count so the rationale doesn't collapse to "0 positions" when
+    # every stop has trailed past entry.
+    open_risk_dollars, _contributing_count, open_risk_all_above_be = total_current_risk(
         open_trades, all_exits,
     )
     open_risk_pct: float | None = (
@@ -247,7 +252,7 @@ def build_dashboard(
         last_pipeline_state=last_pipeline_state,
         open_risk_dollars=open_risk_dollars,
         open_risk_pct=open_risk_pct,
-        open_risk_position_count=open_risk_count,
+        open_risk_position_count=len(open_trades),
         open_risk_all_above_breakeven=open_risk_all_above_be,
     )
 

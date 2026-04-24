@@ -15,6 +15,21 @@ available). Mirrors `swing.pipeline.runner._step_charts` scope logic:
   churn and price movement between pipeline-run time (T1) and render
   time (T2) can shift the top-N boundary; spec §4 "Drift acknowledgment"
   enumerates the bounded failure modes.
+
+**Session-gating semantics (adversarial-review Round 1 Major 2).** The resolver
+binds to the most-recent completed `pipeline_runs` row by `finished_ts DESC`,
+regardless of whether that run's `action_session_date` matches today. This
+matches the project's broader "latest completed artifact" convention (see
+`swing.data.repos.weather.get_latest`, which returns the latest weather run
+regardless of asof date — CLAUDE.md explicitly warns against gating read-only
+UIs on `action_session_date`). Consequence: on a pre-pipeline Monday morning
+the operator may see Friday's chart without a `no-run` banner on this page.
+Staleness for the dashboard-decisions view is handled separately by
+`DashboardVM.stale_banner`; propagating that banner to the watchlist/expand
+surface is flagged as a cross-UI follow-up, not scope for Tranche B-ops
+session 2. The `no-run` state still fires correctly for fresh installs (no
+completed runs at all) and the `data_asof_date` chart-URL binding is already
+a strict improvement over the pre-change eval-sourced binding.
 """
 from __future__ import annotations
 

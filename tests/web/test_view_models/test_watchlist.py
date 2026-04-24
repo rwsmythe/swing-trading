@@ -195,6 +195,130 @@ def test_watchlist_expanded_template_renders_reason_message(seeded_db, monkeypat
     assert '<img src="/charts/' not in body
 
 
+def test_build_watchlist_expanded_criteria_not_bound_to_unrelated_eval(
+    seeded_db, monkeypatch,
+):
+    """Adversarial-review Round 4: when a pipeline exists but the
+    eval-linkage heuristic (data_asof_date + run_ts <= finished_ts) misses,
+    the criteria panel must NOT silently fall back to the latest eval — that
+    would recreate the mixed-anchor bug where a post-pipeline standalone
+    `swing eval` seeds the criteria with data the pipeline did not chart.
+
+    Setup: pipeline ran for data_asof=2026-04-16 with no eval matching that
+    date + finish time. A later standalone eval for 2026-04-17 exists.
+    Expected: `candidate` is None (NOT populated from the 04-17 eval).
+    """
+    from swing.web.view_models.watchlist import build_watchlist_expanded
+    from swing.web.price_cache import PriceCache
+
+    cfg, _ = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="AAPL", added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+            # Completed pipeline with data_asof=2026-04-16, finished 16:00.
+            conn.execute(
+                """INSERT INTO pipeline_runs
+                   (started_ts, finished_ts, trigger, data_asof_date,
+                    action_session_date, state, lease_token, charts_status)
+                   VALUES ('2026-04-16T15:00:00', '2026-04-16T16:00:00',
+                           'manual', '2026-04-16', '2026-04-17',
+                           'complete', 'tok1', 'ok')""",
+            )
+            # A later standalone eval for a DIFFERENT data_asof_date — the
+            # linkage heuristic should NOT match (data_asof != pipeline's).
+            cur = conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+                    tickers_evaluated, aplus_count, watch_count, skip_count,
+                    excluded_count, error_count,
+                    rs_universe_version, rs_universe_hash)
+                   VALUES ('2026-04-17T10:00:00', '2026-04-17', '2026-04-20',
+                           NULL, 1, 1, 0, 0, 0, 0, 'v1', 'hash')""",
+            )
+            standalone_eval_id = cur.lastrowid
+            conn.execute(
+                """INSERT INTO candidates
+                   (evaluation_run_id, ticker, bucket, close, pivot, initial_stop,
+                    rs_method)
+                   VALUES (?, 'AAPL', 'aplus', 180.0, 181.0, 170.0, 'universe')""",
+                (standalone_eval_id,),
+            )
+    finally:
+        conn.close()
+
+    cache = PriceCache(cfg)
+    monkeypatch.setattr(cache, "get_many",
+        lambda tickers, deadline_seconds, *, executor=None: {})
+
+    expanded = build_watchlist_expanded(
+        cfg=cfg, cache=cache, ticker="AAPL", executor=None,
+    )
+    assert expanded is not None
+    assert expanded.candidate is None, (
+        "criteria panel must NOT bind to the standalone 04-17 eval when the "
+        "pipeline ran for 04-16 — that's the mixed-anchor regression"
+    )
+    # Chart binds to the pipeline's own data_asof_date.
+    assert expanded.data_asof_date == "2026-04-16"
+
+
+def test_watchlist_expanded_template_renders_pipeline_failed_reason(
+    seeded_db, monkeypatch,
+):
+    """Adversarial-review Round 1 Minor 2: template-level coverage was only
+    exercising no-run + available. This verifies a distinct non-no-run
+    unavailable state (`pipeline-failed`) survives VM plumbing and renders
+    the correct placeholder branch with the right message + data attribute.
+    """
+    from fastapi.testclient import TestClient
+    from swing.web.app import create_app
+    from swing.web.price_cache import PriceCache
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="AAPL", added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+    # Completed pipeline run with charts_status='failed'.
+    _seed_completed_pipeline_run(cfg, data_asof="2026-04-17", charts_status="failed")
+
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *, deadline_seconds, executor: {},
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/watchlist/AAPL/expand")
+    assert r.status_code == 200
+    body = r.text
+    assert 'data-chart-reason="pipeline-failed"' in body
+    assert "chart step failed" in body.lower()
+    assert '<img src="/charts/' not in body
+    assert "onerror=" not in body
+
+
 def test_watchlist_expanded_template_shows_img_when_chart_available(
     seeded_db, monkeypatch, tmp_path,
 ):

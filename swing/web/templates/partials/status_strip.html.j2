@@ -23,7 +23,8 @@
     {%- endif %}
   </div>
   <div class="rationale">
-    {{ vm.status_strip.open_risk_position_count }} positions
+    {{ vm.status_strip.open_risk_position_count }}
+    {%- if vm.status_strip.open_risk_position_count == 1 %} position{%- else %} positions{%- endif %}
     {%- if vm.status_strip.open_risk_all_above_breakeven %} (all above breakeven){%- endif %}
   </div>
 </div>

@@ -541,13 +541,128 @@ def test_status_strip_template_renders_open_risk_tile(seeded_db, monkeypatch):
     # Dollar value ($50) and percent (0.04167 → 4.17%) both rendered.
     assert "$50" in body
     assert "4.17%" in body
-    assert "1 positions" in body or "1 position" in body
+    assert "1 position" in body   # singular grammar for count=1
     # Tile order: Account before Open-risk before Last pipeline.
     idx_account = body.index('id="account-tile"')
     idx_open_risk = body.index('id="open-risk-tile"')
     idx_pipeline = body.index('id="pipeline-tile"')
     assert idx_account < idx_open_risk < idx_pipeline, (
         "tile order must be Account → Open risk → Last pipeline"
+    )
+
+
+def test_status_strip_template_all_above_breakeven_shows_position_count(
+    seeded_db, monkeypatch,
+):
+    """Adversarial-review Round 2 Minor 1: end-to-end rendering assertion for
+    the all-above-breakeven path. Closes the gap where the VM-level fix was
+    tested but the rendered HTML wasn't — a future template regression that
+    dropped the position count or the 'all above breakeven' annotation would
+    slip through the VM-only test."""
+    from fastapi.testclient import TestClient
+    from swing.web.app import create_app
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from swing.web.ohlcv_cache import OhlcvCache
+    from datetime import datetime
+    from swing.data.db import connect
+
+    cfg, cfg_path = seeded_db
+    _seed_for_dashboard(cfg)
+    # Trail the seeded stop above entry so the trade contributes $0.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE trades SET current_stop = 185.0 WHERE ticker = 'AAPL'",
+            )
+    finally:
+        conn.close()
+
+    fake_snap = PriceSnapshot(
+        ticker="AAPL", price=186.0, asof=datetime.now(),
+        is_stale=False, source="live",
+    )
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *, deadline_seconds, executor: {
+            t: fake_snap for t in tickers
+        },
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+    monkeypatch.setattr(
+        OhlcvCache, "get_many_bundles",
+        lambda self, tickers, *, deadline_seconds, executor: {},
+    )
+    monkeypatch.setattr(OhlcvCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/")
+    assert r.status_code == 200
+    body = r.text
+    # Scope assertions to the tile HTML to avoid false positives from other
+    # areas of the page.
+    slice_start = body.index('id="open-risk-tile"')
+    slice_end = body.index('id="pipeline-tile"')
+    tile_html = body[slice_start:slice_end]
+    # $0 at risk, 1 total position, all above breakeven.
+    assert "$0" in tile_html
+    assert "0.00%" in tile_html
+    assert "1 position" in tile_html, (
+        f"tile must render the TOTAL open-position count (1), not the "
+        f"contributing-count (0). tile html:\n{tile_html}"
+    )
+    assert "all above breakeven" in tile_html
+
+
+def test_status_strip_open_risk_count_equals_total_open_positions_when_all_above_be(
+    seeded_db, monkeypatch,
+):
+    """Adversarial-review regression (Round 1 Major 1): spec §2 edge case
+    reads "N positions (all above breakeven)" where N is the total open
+    position count, NOT the helper's contributing-count. Prior wiring fed
+    contributing-count into the VM, which collapsed to 0 when every stop had
+    trailed past entry — rendering "0 positions (all above breakeven)" and
+    losing the N the operator actually needed to see."""
+    from swing.web.view_models.dashboard import build_dashboard
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from datetime import datetime
+
+    cfg, _ = seeded_db
+    # Seed weather + one open trade whose stop has trailed ABOVE entry.
+    _seed_for_dashboard(cfg)
+    from swing.data.db import connect
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            # Raise current_stop on the seeded AAPL trade to above entry
+            # (entry 180 → new stop 185). Now the trade contributes $0 to risk.
+            conn.execute(
+                "UPDATE trades SET current_stop = 185.0 WHERE ticker = 'AAPL'",
+            )
+    finally:
+        conn.close()
+
+    cache = PriceCache(cfg)
+    fake_snap = PriceSnapshot(
+        ticker="AAPL", price=182.0, asof=datetime.now(),
+        is_stale=False, source="live",
+    )
+    monkeypatch.setattr(cache, "get_many",
+        lambda tickers, deadline_seconds, *, executor=None: {t: fake_snap for t in tickers})
+    monkeypatch.setattr(cache, "is_degraded", lambda: False)
+
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=None)
+
+    assert vm.status_strip.open_risk_dollars == 0.0
+    assert vm.status_strip.open_risk_all_above_breakeven is True
+    # N must be the full open-position count (1 here), NOT the helper's
+    # contributing-count (which would be 0).
+    assert vm.status_strip.open_risk_position_count == 1, (
+        f"expected N=1 total open position; got "
+        f"{vm.status_strip.open_risk_position_count} — likely wired to "
+        f"contributing-count, which collapses under all-above-breakeven"
     )
 
 
