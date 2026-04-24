@@ -41,3 +41,6 @@ thinkorswim/
 
 # Finviz evaluator A/B-test artifacts (diagnostic; regenerated on demand)
 tests/fixtures/finviz/suggested-diffs-*.yaml
+
+# Research harness smoke-test output (regenerated; not tracked)
+research/harness/*/smoke-out/
