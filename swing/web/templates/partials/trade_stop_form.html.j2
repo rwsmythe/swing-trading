@@ -1,5 +1,10 @@
 {#- Trade stop-adjust form — swaps into an open-position row.
-    Expects: vm (TradeStopFormVM), error_message (optional str) -#}
+    Expects: vm (TradeStopFormVM), error_message (optional str)
+
+    Tranche B-ops T7: preservation fields (new_stop_input, rationale, notes,
+    force) retain user input across StopRegressionError re-render. Force is
+    NEVER auto-ticked by the re-render — the operator must explicitly tick
+    it to submit a regression-intentional stop (spec §5). -#}
 <tr id="stop-form-{{ vm.trade.id }}">
   <td colspan="8">
     {% if error_message %}<div class="banner banner-degraded" role="alert">{{ error_message }}</div>{% endif %}
@@ -11,21 +16,28 @@
               current stop ${{ '%.2f' | format(vm.current_stop) }}</span></div>
       <div><label>New stop</label>
         <input type="number" step="0.01" min="0" name="new_stop"
-               value="{{ '%.2f' | format(vm.current_stop) }}" required></div>
+               value="{{ '%.2f' | format(vm.new_stop_input if vm.new_stop_input is not none else vm.current_stop) }}" required></div>
       <div><label>Rationale &#9733;</label>
         <select name="rationale" required
                 onchange="var h=this.form.querySelector('.rationale-other-hint'); if(h){h.style.display=(this.value==='other')?'inline':'none';}">
           <option value="">(select one)</option>
           {% for value, label in vm.rationale_options %}
-            <option value="{{ value }}">{{ label }}</option>
+            <option value="{{ value }}"{% if value == vm.rationale %} selected{% endif %}>{{ label }}</option>
           {% endfor %}
         </select></div>
       <div><label>Notes
-          <span class="rationale-other-hint subtitle" style="display:none">
+          <span class="rationale-other-hint subtitle"
+                style="display:{% if vm.rationale == 'other' %}inline{% else %}none{% endif %}">
             &#9733; required when Rationale = Other
           </span>
         </label>
-        <textarea name="notes"></textarea></div>
+        <textarea name="notes">{{ vm.notes }}</textarea></div>
+      <div><label>
+          <input type="checkbox" name="force" value="true">
+          Force (override regression check)
+        </label>
+        <span class="subtitle">Tick only to submit a stop that lowers the current stop.</span>
+      </div>
       <div>
         <button type="submit">Submit</button>
         <button type="button"

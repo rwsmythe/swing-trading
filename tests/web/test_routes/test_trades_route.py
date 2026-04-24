@@ -805,8 +805,11 @@ def test_post_stop_regression_renders_form_with_updated_current(seeded_db):
     assert "900" in r.text
     # Form re-rendered inside the error fragment.
     assert 'name="new_stop"' in r.text
-    # Authoritative current_stop prefilled (not the user's regressed 880).
-    assert 'value="900.00"' in r.text
+    # T7: the user's typed new_stop (880) is preserved on error re-render,
+    # not reset to the authoritative 900. The operator can now either tick
+    # Force or adjust the value — losing their input on every mistake is
+    # hostile UX.
+    assert 'value="880.00"' in r.text
 
 
 def test_post_stop_for_closed_trade_returns_404_fragment(seeded_db):
@@ -1469,6 +1472,135 @@ def test_post_exit_writes_reason_value_as_rationale(seeded_db, monkeypatch):
         conn2.close()
     # rationale synthesized from reason.value — NOT from any form input.
     assert exit_ev.rationale == "stop-hit"
+
+
+def test_get_stop_form_renders_force_checkbox_unchecked(seeded_db):
+    """T7: GET /trades/{id}/stop/form renders a Force checkbox, NOT ticked
+    by default. Pre-T7 the stop form had no Force control (operators had to
+    drop to CLI)."""
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event, list_open_trades
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=5, initial_stop=860.0,
+                current_stop=860.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{trade.id}/stop/form")
+    assert r.status_code == 200
+    assert 'type="checkbox" name="force" value="true"' in r.text
+    # Default: unchecked. 'checked' attribute must NOT appear on the force
+    # input. (A broader "no 'checked'" assertion would be brittle if a
+    # future date/select added checked state elsewhere.)
+    force_idx = r.text.find('name="force"')
+    assert force_idx > 0
+    # Examine the substring from the input's tag-open to the tag-close.
+    tag_close = r.text.find(">", force_idx)
+    force_tag = r.text[force_idx:tag_close]
+    assert "checked" not in force_tag
+
+
+def test_post_stop_regression_preserves_typed_fields(seeded_db):
+    """T7 preservation: on StopRegressionError, typed new_stop, rationale,
+    and notes are retained on the re-render. Force checkbox is NOT
+    auto-ticked (spec §5)."""
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event, list_open_trades
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=5, initial_stop=860.0,
+                current_stop=890.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{trade.id}/stop", headers={"HX-Request": "true"},
+            data={
+                "new_stop": "870.00",             # lower than 890 → regression
+                "rationale": "manual-trail",
+                "notes": "fixing an over-tight initial stop from entry",
+                # NOT submitting force=true — default path.
+            },
+        )
+    assert r.status_code == 400
+    # Typed values preserved.
+    assert 'value="870.00"' in r.text
+    assert 'value="manual-trail" selected' in r.text
+    assert "fixing an over-tight initial stop from entry" in r.text
+    # Force is present as an input, but NOT checked on the re-render.
+    force_idx = r.text.find('name="force"')
+    assert force_idx > 0
+    tag_close = r.text.find(">", force_idx)
+    force_tag = r.text[force_idx:tag_close]
+    assert "checked" not in force_tag
+
+
+def test_post_stop_with_force_checkbox_regression_succeeds(seeded_db):
+    """T7: ticking the Force checkbox sends `force=true`, the route builds
+    StopAdjustRequest(force=True), adjust_stop no longer raises, and the
+    stop is lowered. This closes the prior CLI-only workaround."""
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import get_trade, insert_trade_with_event, list_open_trades
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=5, initial_stop=860.0,
+                current_stop=890.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{trade.id}/stop", headers={"HX-Request": "true"},
+            data={
+                "new_stop": "870.00",
+                "rationale": "manual-trail",
+                "notes": "operator override",
+                "force": "true",
+            },
+        )
+    assert r.status_code == 200
+    conn2 = connect(cfg.paths.db_path)
+    try:
+        updated = get_trade(conn2, trade.id)
+    finally:
+        conn2.close()
+    assert updated.current_stop == 870.0
 
 
 def test_post_stop_other_without_notes_rejected(seeded_db):

@@ -59,6 +59,42 @@ def _validate_rationale(
     return None
 
 
+def _rerender_stop_form_with_error(
+    *, request: Request, templates, cfg, trade_id: int,
+    new_stop: float, rationale: str, notes: str | None, force: bool,
+    error_message: str,
+) -> HTMLResponse:
+    """T7: re-render trade_stop_form with preservation fields + banner at 400.
+
+    Preservation mirrors TradeEntryFormVM's duplicate-re-render pattern:
+    typed ``new_stop`` echoes back via ``new_stop_input``; submitted
+    ``rationale`` and ``notes`` pre-select/populate their inputs on the
+    re-render. ``force`` is preserved as-submitted (spec §5: the re-render
+    never auto-ticks Force — the operator must explicitly tick it to
+    submit a regression-intentional stop).
+    """
+    from dataclasses import replace as dc_replace
+    vm = build_stop_form_vm(trade_id=trade_id, cfg=cfg)
+    if vm is not None:
+        vm = dc_replace(
+            vm,
+            new_stop_input=new_stop,
+            rationale=rationale,
+            notes=notes or "",
+            force=force,
+        )
+        return templates.TemplateResponse(
+            request, "partials/trade_stop_form.html.j2",
+            {"vm": vm, "error_message": error_message},
+            status_code=400,
+        )
+    return templates.TemplateResponse(
+        request, "partials/trade_form_error.html.j2",
+        {"error_message": error_message},
+        status_code=400,
+    )
+
+
 def _rerender_entry_form_with_error(
     *, request: Request, templates, cfg, cache, executor,
     ticker: str, entry_date: str, entry_price: float, shares: int,
@@ -490,6 +526,7 @@ def stop_post(
     request: Request, trade_id: int,
     new_stop: float = Form(...), rationale: str = Form(...),
     notes: str | None = Form(None),
+    force: str | None = Form(None),
 ):
     cfg = request.app.state.cfg
     cache = request.app.state.price_cache
@@ -500,30 +537,28 @@ def stop_post(
     # convention — `trades.notes`/`exits.notes` store NULL, not "", when the
     # operator leaves the box empty).
     notes_value = notes.strip() if notes and notes.strip() else None
+    # Tranche B-ops T7: Force is an opt-in checkbox; the HTML submits
+    # "true" only when ticked. Everything else (absent, empty, anything
+    # unexpected) is False by construction.
+    force_flag = force == "true"
 
     # Tranche B-ops T5: enum-validate the rationale before constructing the
     # service request. On failure, re-render the stop form with an error
-    # banner at HTTP 400. Field preservation across the error re-render is
-    # T7's scope; T5 ships the enforcement only.
+    # banner at HTTP 400. T7 layers field preservation across this re-render.
     rationale_error = _validate_rationale(rationale, notes, StopAdjustRationale)
     if rationale_error is not None:
-        vm = build_stop_form_vm(trade_id=trade_id, cfg=cfg)
-        if vm is not None:
-            return templates.TemplateResponse(
-                request, "partials/trade_stop_form.html.j2",
-                {"vm": vm, "error_message": rationale_error},
-                status_code=400,
-            )
-        return templates.TemplateResponse(
-            request, "partials/trade_form_error.html.j2",
-            {"error_message": rationale_error},
-            status_code=400,
+        return _rerender_stop_form_with_error(
+            request=request, templates=templates, cfg=cfg,
+            trade_id=trade_id, new_stop=new_stop, rationale=rationale,
+            notes=notes, force=force_flag,
+            error_message=rationale_error,
         )
 
     req = StopAdjustRequest(
         trade_id=trade_id, new_stop=new_stop, rationale=rationale,
         notes=notes_value,
-        event_ts=datetime.now().isoformat(timespec="seconds"), force=False,
+        event_ts=datetime.now().isoformat(timespec="seconds"),
+        force=force_flag,
     )
     conn = connect(cfg.paths.db_path)
     try:
@@ -543,21 +578,16 @@ def stop_post(
             raise HTTPException(status_code=404, detail=str(exc))
         except StopRegressionError as exc:
             # R: spec §5.1 case 3 — re-render form with updated current_stop.
-            vm = build_stop_form_vm(trade_id=trade_id, cfg=cfg)
+            # T7: preservation fields populated from the submitted form
+            # (except force, which must never be auto-ticked per spec §5).
             error_message = (
-                f"{exc}. Use CLI `swing trade stop-adjust --trade-id {trade_id} "
-                f"--new-stop {new_stop} --rationale ... --force` if intentional."
+                f"{exc}. Tick Force to submit intentionally, or adjust new_stop."
             )
-            if vm is not None:
-                return templates.TemplateResponse(
-                    request, "partials/trade_stop_form.html.j2",
-                    {"vm": vm, "error_message": error_message},
-                    status_code=400,
-                )
-            return templates.TemplateResponse(
-                request, "partials/trade_form_error.html.j2",
-                {"error_message": error_message},
-                status_code=400,
+            return _rerender_stop_form_with_error(
+                request=request, templates=templates, cfg=cfg,
+                trade_id=trade_id, new_stop=new_stop, rationale=rationale,
+                notes=notes, force=force_flag,
+                error_message=error_message,
             )
     finally:
         conn.close()

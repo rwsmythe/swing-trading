@@ -153,6 +153,15 @@ class TradeStopFormVM:
     suggested_stops: tuple[tuple[str, float], ...]  # empty in 3b; 3c populates
     # Closed-taxonomy rationale options (value, display_label) pairs — T5.
     rationale_options: tuple[tuple[str, str], ...] = ()
+    # Tranche B-ops T7: preservation fields — populated from the submitted
+    # form on error re-render. Defaults represent the "clean form" case.
+    # Mirrors TradeEntryFormVM's preservation pattern at N=2; no shared base
+    # class per spec §5 rationale (field sets differ enough that an
+    # abstraction would impose more than it saves).
+    new_stop_input: float | None = None
+    rationale: str = ""
+    notes: str = ""
+    force: bool = False
 
 
 def build_stop_form_vm(*, trade_id: int, cfg: Config) -> TradeStopFormVM | None:
