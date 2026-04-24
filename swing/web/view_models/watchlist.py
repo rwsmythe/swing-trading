@@ -11,6 +11,7 @@ from swing.data.models import Candidate, WatchlistEntry
 from swing.data.repos.candidates import fetch_candidates_for_run
 from swing.data.repos.watchlist import list_active_watchlist
 from swing.evaluation.dates import action_session_for_run
+from swing.web.chart_scope import resolve_chart_scope
 from swing.web.price_cache import PriceCache, PriceSnapshot
 from swing.web.view_models.dashboard import _flag_tags, _sort_by_proximity
 
@@ -36,6 +37,8 @@ class WatchlistExpandedVM:
     candidate: Candidate | None
     last_price: PriceSnapshot | None
     data_asof_date: str | None   # for /charts/<date>/<ticker>.png
+    chart_reason: str | None = None         # None when chart is available
+    chart_reason_message: str | None = None
 
 
 def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
@@ -81,17 +84,32 @@ def build_watchlist_expanded(
             row = next((r for r in rows if r.ticker == ticker), None)
             if row is None:
                 return None
+            # Candidate (for trend-template / VCP criteria panel) comes from
+            # the latest eval run; this is independent of the chart-source
+            # binding below.
             eval_row = conn.execute(
-                "SELECT id, data_asof_date FROM evaluation_runs ORDER BY run_ts DESC LIMIT 1"
+                "SELECT id FROM evaluation_runs ORDER BY run_ts DESC LIMIT 1"
             ).fetchone()
             candidate = None
-            data_asof = None
             if eval_row is not None:
-                data_asof = eval_row[1]
                 for c in fetch_candidates_for_run(conn, eval_row[0]):
                     if c.ticker == ticker:
                         candidate = c
                         break
+            # Chart URL binds to the LATEST COMPLETED PIPELINE RUN's
+            # data_asof_date (per spec §4) — using the latest eval's asof
+            # would pick up post-pipeline standalone eval rows and point the
+            # <img> at a date the pipeline never charted.
+            pipe_row = conn.execute(
+                """SELECT data_asof_date FROM pipeline_runs
+                   WHERE state = 'complete'
+                   ORDER BY finished_ts DESC LIMIT 1""",
+            ).fetchone()
+            data_asof = pipe_row[0] if pipe_row else None
+            chart_reason, chart_reason_message = resolve_chart_scope(
+                conn, ticker=ticker, charts_dir=cfg.paths.charts_dir,
+                chart_top_n_watch=cfg.pipeline.chart_top_n_watch,
+            )
     finally:
         conn.close()
     snaps = cache.get_many(
@@ -103,4 +121,5 @@ def build_watchlist_expanded(
     return WatchlistExpandedVM(
         ticker=ticker, entry=row, candidate=candidate,
         last_price=snap, data_asof_date=data_asof,
+        chart_reason=chart_reason, chart_reason_message=chart_reason_message,
     )

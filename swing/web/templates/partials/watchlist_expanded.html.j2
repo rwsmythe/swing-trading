@@ -21,11 +21,13 @@
         {% endfor %}
       </ul>
     {% endif %}
-    {% if expanded.data_asof_date %}
+    {% if expanded.chart_reason is none and expanded.data_asof_date %}
       <img src="/charts/{{ expanded.data_asof_date }}/{{ expanded.ticker }}.png"
-           alt="Chart {{ expanded.ticker }}"
-           onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
-      <div class="chart-unavailable" style="display:none">Chart unavailable.</div>
+           alt="Chart {{ expanded.ticker }}">
+    {% elif expanded.chart_reason_message %}
+      <div class="chart-unavailable" data-chart-reason="{{ expanded.chart_reason }}">
+        {{ expanded.chart_reason_message }}
+      </div>
     {% endif %}
     <div class="actions">
       <span title="Log entry: `swing trade entry --ticker {{ expanded.ticker }}`">Log entry (CLI — 3b adds button)</span>
