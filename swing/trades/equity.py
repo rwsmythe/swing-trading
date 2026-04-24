@@ -48,3 +48,27 @@ def r_so_far(trade: Trade, current_price: float) -> float:
     if rps <= 0:
         return 0.0
     return (current_price - trade.entry_price) / rps
+
+
+def total_current_risk(
+    trades: Iterable[Trade], exits: Iterable[Exit],
+) -> tuple[float, int, bool]:
+    """Σ max(0, shares_remaining × (entry_price − current_stop)) across trades.
+
+    Returns (dollars_at_risk, contributing_count, all_above_breakeven).
+    Positions whose stop ≥ entry contribute $0 (locked-in non-loss). Partial
+    exits reduce `shares_remaining`. See Tranche B-ops session-1 spec §2.
+    """
+    trade_list = list(trades)
+    exit_list = list(exits)
+    dollars = 0.0
+    contributing = 0
+    for t in trade_list:
+        remaining = shares_remaining(t, exit_list)
+        risk_per_share_left = t.entry_price - t.current_stop
+        if risk_per_share_left <= 0 or remaining <= 0:
+            continue
+        dollars += remaining * risk_per_share_left
+        contributing += 1
+    all_above_be = bool(trade_list) and contributing == 0
+    return dollars, contributing, all_above_be

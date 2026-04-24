@@ -12,6 +12,21 @@
     (hard cap {{ vm.status_strip.hard_cap }})
   </div>
 </div>
+<div class="tile" id="open-risk-tile">
+  <div class="label">Open risk</div>
+  <div class="value">
+    ${{ '%.0f' | format(vm.status_strip.open_risk_dollars) }}
+    {%- if vm.status_strip.open_risk_pct is none %}
+      (—)
+    {%- else %}
+      ({{ '%.2f' | format(vm.status_strip.open_risk_pct * 100) }}%)
+    {%- endif %}
+  </div>
+  <div class="rationale">
+    {{ vm.status_strip.open_risk_position_count }} positions
+    {%- if vm.status_strip.open_risk_all_above_breakeven %} (all above breakeven){%- endif %}
+  </div>
+</div>
 <div class="tile" id="pipeline-tile">
   <div class="label">Last pipeline</div>
   <div class="value">{{ vm.status_strip.last_pipeline_ts or "never" }}</div>

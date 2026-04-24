@@ -7,6 +7,7 @@ from swing.data.models import CashMovement, Exit, Trade
 from swing.trades.equity import (
     current_equity, sizing_equity, shares_remaining,
     risk_per_share, r_so_far, net_cash_movements,
+    total_current_risk,
 )
 
 
@@ -95,3 +96,95 @@ def test_net_cash_movements_unknown_kind_ignored():
         CashMovement(id=2, date="2026-04-02", kind="weird", amount=50.0, ref=None, note=None),
     ]
     assert net_cash_movements(cm) == 100.0
+
+
+# -----------------------------------------------------------------------------
+# total_current_risk — Tranche B-ops spec §2 (Bug 6 open-risk tile).
+# -----------------------------------------------------------------------------
+
+def _open_trade(
+    trade_id: int, ticker: str, *, entry: float, stop: float,
+    initial_shares: int = 10,
+) -> Trade:
+    return Trade(
+        id=trade_id, ticker=ticker, entry_date="2026-04-15",
+        entry_price=entry, initial_shares=initial_shares, initial_stop=stop,
+        current_stop=stop, status="open",
+        watchlist_entry_target=None, watchlist_initial_stop=None, notes=None,
+    )
+
+
+def test_total_current_risk_empty_book():
+    dollars, contributing, all_above_be = total_current_risk([], [])
+    assert dollars == 0.0
+    assert contributing == 0
+    assert all_above_be is False
+
+
+def test_total_current_risk_single_position_below_entry():
+    # entry 100, stop 95, 10 sh → $50 at risk.
+    trade = _open_trade(1, "AAPL", entry=100.0, stop=95.0, initial_shares=10)
+    dollars, contributing, all_above_be = total_current_risk([trade], [])
+    assert dollars == pytest.approx(50.0)
+    assert contributing == 1
+    assert all_above_be is False
+
+
+def test_total_current_risk_stop_at_entry_contributes_zero():
+    # Stop exactly at entry → locked-in flat → $0 (not negative).
+    trade = _open_trade(1, "AAPL", entry=100.0, stop=100.0, initial_shares=10)
+    dollars, contributing, all_above_be = total_current_risk([trade], [])
+    assert dollars == 0.0
+    assert contributing == 0
+    assert all_above_be is True
+
+
+def test_total_current_risk_stop_above_entry_contributes_zero():
+    # Trailed past breakeven → locked-in profit → $0, not negative.
+    trade = _open_trade(1, "AAPL", entry=100.0, stop=110.0, initial_shares=10)
+    dollars, contributing, all_above_be = total_current_risk([trade], [])
+    assert dollars == 0.0
+    assert contributing == 0
+    assert all_above_be is True
+
+
+def test_total_current_risk_respects_partial_exits():
+    # entry 100, stop 90, 10 sh originally, partial exit of 6 → 4 sh remaining × $10 = $40.
+    trade = _open_trade(1, "AAPL", entry=100.0, stop=90.0, initial_shares=10)
+    exits = [
+        Exit(
+            id=1, trade_id=1, exit_date="2026-04-20", exit_price=108.0,
+            shares=6, reason="partial", realized_pnl=48.0, r_multiple=0.8, notes=None,
+        )
+    ]
+    dollars, contributing, all_above_be = total_current_risk([trade], exits)
+    assert dollars == pytest.approx(40.0)
+    assert contributing == 1
+    assert all_above_be is False
+
+
+def test_total_current_risk_sums_multiple_positions():
+    # A: entry 100, stop 95, 10 sh → $50 at risk.
+    # B: entry 50, stop 48, 20 sh → $40 at risk.
+    # C: entry 200, stop 210 (above entry) → $0.
+    trades = [
+        _open_trade(1, "AAA", entry=100.0, stop=95.0, initial_shares=10),
+        _open_trade(2, "BBB", entry=50.0, stop=48.0, initial_shares=20),
+        _open_trade(3, "CCC", entry=200.0, stop=210.0, initial_shares=5),
+    ]
+    dollars, contributing, all_above_be = total_current_risk(trades, [])
+    assert dollars == pytest.approx(90.0)
+    assert contributing == 2
+    assert all_above_be is False
+
+
+def test_total_current_risk_all_above_breakeven_flag_set_only_when_nonempty():
+    # Two trades, both stops trailed past entry → $0 total, all_above_be True.
+    trades = [
+        _open_trade(1, "AAA", entry=100.0, stop=102.0, initial_shares=10),
+        _open_trade(2, "BBB", entry=50.0, stop=55.0, initial_shares=20),
+    ]
+    dollars, contributing, all_above_be = total_current_risk(trades, [])
+    assert dollars == 0.0
+    assert contributing == 0
+    assert all_above_be is True

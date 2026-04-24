@@ -4,6 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from swing.data.db import connect
 from swing.data.repos.trades import insert_trade_with_event
 from swing.data.models import Trade
@@ -390,3 +392,216 @@ def test_last_pipeline_ts_not_masked_by_inflight_run(seeded_db, monkeypatch):
         f"state (so operators can see a run is in progress); got "
         f"{vm.status_strip.last_pipeline_state!r}"
     )
+
+
+# -----------------------------------------------------------------------------
+# Open-risk tile — Tranche B-ops spec §2 (Bug 6).
+# -----------------------------------------------------------------------------
+
+def test_build_dashboard_status_strip_has_open_risk_fields(seeded_db, monkeypatch):
+    """Seeded AAPL open position: entry 180, stop 170, 5 shares → $50 at risk.
+    Equity = starting_equity 1200 + 0 realized + 0 cash = $1200.
+    open_risk_pct = 50/1200 ≈ 0.04167."""
+    from swing.web.view_models.dashboard import build_dashboard
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from datetime import datetime
+
+    cfg, _ = seeded_db
+    _seed_for_dashboard(cfg)
+
+    cache = PriceCache(cfg)
+    fake_snap = PriceSnapshot(
+        ticker="AAPL", price=182.0, asof=datetime.now(),
+        is_stale=False, source="live",
+    )
+    monkeypatch.setattr(cache, "get_many",
+        lambda tickers, deadline_seconds, *, executor=None: {t: fake_snap for t in tickers})
+    monkeypatch.setattr(cache, "is_degraded", lambda: False)
+
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=None)
+
+    assert vm.status_strip.open_risk_dollars == pytest.approx(50.0)
+    assert vm.status_strip.open_risk_pct == pytest.approx(50.0 / 1200.0, rel=1e-6)
+    assert vm.status_strip.open_risk_position_count == 1
+    assert vm.status_strip.open_risk_all_above_breakeven is False
+
+
+def test_build_dashboard_status_strip_open_risk_empty_book(seeded_db, monkeypatch):
+    """No open trades → $0 / None pct / 0 positions / all_above_be False."""
+    from swing.web.view_models.dashboard import build_dashboard
+    from swing.web.price_cache import PriceCache
+
+    cfg, _ = seeded_db
+    # Seed weather only; no open trades.
+    from swing.data.db import connect
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO weather_runs (run_ts, asof_date, ticker, status, close, rationale)
+                   VALUES (?, ?, 'SPY', 'Bullish', 450.0, 'ok')""",
+                ("2026-04-17T21:49:00", "2026-04-17"),
+            )
+    finally:
+        conn.close()
+
+    cache = PriceCache(cfg)
+    monkeypatch.setattr(cache, "get_many",
+        lambda tickers, deadline_seconds, *, executor=None: {})
+    monkeypatch.setattr(cache, "is_degraded", lambda: False)
+
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=None)
+
+    assert vm.status_strip.open_risk_dollars == 0.0
+    # Equity > 0 → pct == 0.0 (not None). None is reserved for equity <= 0.
+    assert vm.status_strip.open_risk_pct == 0.0
+    assert vm.status_strip.open_risk_position_count == 0
+    assert vm.status_strip.open_risk_all_above_breakeven is False
+
+
+def test_build_dashboard_status_strip_open_risk_pct_none_when_equity_nonpositive(
+    seeded_db, monkeypatch,
+):
+    """Equity ≤ 0 (large drawdown) → percent reads as None so template shows '—'."""
+    from swing.web.view_models.dashboard import build_dashboard
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from datetime import datetime
+
+    cfg, _ = seeded_db
+    _seed_for_dashboard(cfg)
+
+    # Withdraw more than starting_equity so current_equity goes ≤ 0.
+    from swing.data.db import connect
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO cash_movements (date, kind, amount)
+                   VALUES ('2026-04-16', 'withdraw', 1500.0)""",
+            )
+    finally:
+        conn.close()
+
+    cache = PriceCache(cfg)
+    fake_snap = PriceSnapshot(
+        ticker="AAPL", price=182.0, asof=datetime.now(),
+        is_stale=False, source="live",
+    )
+    monkeypatch.setattr(cache, "get_many",
+        lambda tickers, deadline_seconds, *, executor=None: {t: fake_snap for t in tickers})
+    monkeypatch.setattr(cache, "is_degraded", lambda: False)
+
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=None)
+
+    assert vm.status_strip.open_risk_pct is None
+    # Dollars still computed — operator still sees the absolute exposure.
+    assert vm.status_strip.open_risk_dollars == pytest.approx(50.0)
+    assert vm.status_strip.open_risk_position_count == 1
+
+
+def test_status_strip_template_renders_open_risk_tile(seeded_db, monkeypatch):
+    """End-to-end: GET / renders an Open-risk tile between Account and
+    Last-pipeline tiles. Asserts the rendered HTML carries both the dollar
+    value and percent, and the tile order matches spec §2."""
+    from fastapi.testclient import TestClient
+    from swing.web.app import create_app
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from swing.web.ohlcv_cache import OhlcvCache
+    from datetime import datetime
+
+    cfg, cfg_path = seeded_db
+    _seed_for_dashboard(cfg)
+
+    fake_snap = PriceSnapshot(
+        ticker="AAPL", price=182.0, asof=datetime.now(),
+        is_stale=False, source="live",
+    )
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *, deadline_seconds, executor: {
+            t: fake_snap for t in tickers
+        },
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+    monkeypatch.setattr(
+        OhlcvCache, "get_many_bundles",
+        lambda self, tickers, *, deadline_seconds, executor: {},
+    )
+    monkeypatch.setattr(OhlcvCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/")
+    assert r.status_code == 200
+    body = r.text
+    # Tile is present with label and count rationale.
+    assert 'id="open-risk-tile"' in body
+    assert "Open risk" in body
+    # Dollar value ($50) and percent (0.04167 → 4.17%) both rendered.
+    assert "$50" in body
+    assert "4.17%" in body
+    assert "1 positions" in body or "1 position" in body
+    # Tile order: Account before Open-risk before Last pipeline.
+    idx_account = body.index('id="account-tile"')
+    idx_open_risk = body.index('id="open-risk-tile"')
+    idx_pipeline = body.index('id="pipeline-tile"')
+    assert idx_account < idx_open_risk < idx_pipeline, (
+        "tile order must be Account → Open risk → Last pipeline"
+    )
+
+
+def test_status_strip_template_shows_dash_when_open_risk_pct_none(
+    seeded_db, monkeypatch,
+):
+    """Template shows '—' in the percent slot when open_risk_pct is None."""
+    from fastapi.testclient import TestClient
+    from swing.web.app import create_app
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from swing.web.ohlcv_cache import OhlcvCache
+    from datetime import datetime
+
+    cfg, cfg_path = seeded_db
+    _seed_for_dashboard(cfg)
+    # Push equity negative.
+    from swing.data.db import connect
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO cash_movements (date, kind, amount)
+                   VALUES ('2026-04-16', 'withdraw', 1500.0)""",
+            )
+    finally:
+        conn.close()
+
+    fake_snap = PriceSnapshot(
+        ticker="AAPL", price=182.0, asof=datetime.now(),
+        is_stale=False, source="live",
+    )
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *, deadline_seconds, executor: {
+            t: fake_snap for t in tickers
+        },
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+    monkeypatch.setattr(
+        OhlcvCache, "get_many_bundles",
+        lambda self, tickers, *, deadline_seconds, executor: {},
+    )
+    monkeypatch.setattr(OhlcvCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/")
+    assert r.status_code == 200
+    body = r.text
+    assert 'id="open-risk-tile"' in body
+    # Scope the percent-slot dash check to near the Open-risk tile.
+    slice_start = body.index('id="open-risk-tile"')
+    slice_end = body.index('id="pipeline-tile"')
+    tile_html = body[slice_start:slice_end]
+    # Percent rendered as '—' because equity ≤ 0.
+    assert "—" in tile_html

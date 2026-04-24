@@ -17,7 +17,7 @@ from swing.data.repos.watchlist import list_active_watchlist
 from swing.data.repos.weather import get_latest
 from swing.evaluation.dates import action_session_for_run
 from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
-from swing.trades.equity import current_equity
+from swing.trades.equity import current_equity, total_current_risk
 from swing.web.price_cache import PriceCache, PriceSnapshot
 
 
@@ -31,6 +31,12 @@ class StatusStripVM:
     hard_cap: int
     last_pipeline_ts: str | None
     last_pipeline_state: str | None
+    # Open-risk tile (Tranche B-ops spec §2). Denominator is realized equity
+    # (matches entry-form sizing-hint convention); None when equity ≤ 0.
+    open_risk_dollars: float = 0.0
+    open_risk_pct: float | None = 0.0
+    open_risk_position_count: int = 0
+    open_risk_all_above_breakeven: bool = False
 
 
 @dataclass(frozen=True)
@@ -219,6 +225,16 @@ def build_dashboard(
 
     flag_tags = _flag_tags(candidates_by_ticker)
 
+    # Open-risk (spec §2). Dollars + contributing-count + all-above-breakeven
+    # from the pure helper; pct computed here because the helper has no equity
+    # in scope. Pct is None ONLY when equity ≤ 0 (template renders "—").
+    open_risk_dollars, open_risk_count, open_risk_all_above_be = total_current_risk(
+        open_trades, all_exits,
+    )
+    open_risk_pct: float | None = (
+        open_risk_dollars / equity if equity > 0 else None
+    )
+
     # Status strip.
     status_strip = StatusStripVM(
         weather_status=(weather.status if weather else "STALE"),
@@ -229,6 +245,10 @@ def build_dashboard(
         hard_cap=cfg.position_limits.hard_cap_open,
         last_pipeline_ts=last_pipeline_ts,
         last_pipeline_state=last_pipeline_state,
+        open_risk_dollars=open_risk_dollars,
+        open_risk_pct=open_risk_pct,
+        open_risk_position_count=open_risk_count,
+        open_risk_all_above_breakeven=open_risk_all_above_be,
     )
 
     today_decisions = [
