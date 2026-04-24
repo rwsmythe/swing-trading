@@ -199,6 +199,7 @@ swing rs-universe --help
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
+| Dashboard or other template crashes with `UndefinedError: 'X object has no attribute Y'` | Web server process predates latest code; Python dataclass definitions stale while Jinja templates reloaded | Restart `swing web` (Ctrl-C the running process, re-run `swing web`) |
 | "command not found: swing" | PATH not set | Add `%APPDATA%\Python\Python314\Scripts` to user PATH (permanent) |
 | Pipeline run hangs at `evaluate` | yfinance slow or 69+ tickers | Wait 5 min; Ctrl-C + force-clear if truly stuck |
 | "SMA advisories unavailable" banner | yfinance rate-limit tripped OhlcvCache | Wait 60s, hard-refresh |

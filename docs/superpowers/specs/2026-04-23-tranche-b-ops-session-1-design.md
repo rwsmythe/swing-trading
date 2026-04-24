@@ -330,7 +330,7 @@ class TradeStopFormVM:
 | `StatusStripVM` | +`open_risk_dollars`, `open_risk_pct`, `open_risk_position_count`, `open_risk_all_above_breakeven` | T2 |
 | `WatchlistExpandedVM` | +`chart_reason`, `chart_reason_message` | T3 |
 | `TradeEntryFormVM` | +`rationale_options: tuple[tuple[str, str], ...]` (enum value + display label pairs) | T4 |
-| `TradeStopFormVM` | +`rationale_options`, `new_stop_input`, `rationale`, `notes`, `force` | T5 + T7 |
+| `TradeStopFormVM` | +`rationale_options`, `new_stop_input`, `rationale`, `notes` | T5 + T7 |
 | `TradeExitFormVM` | Existing field removal documented in T6 (no field removal from the dataclass itself — the rationale was never a dataclass field; only the form input is dropped) | T6 |
 
 ### CLI impacts
@@ -346,6 +346,10 @@ class TradeStopFormVM:
 
 - `EntryRequest.rationale: str`, `StopAdjustRequest.rationale: str` stay typed as `str` (the enum's `.value`). A route/CLI-layer validator converts the input to an enum and back to `str` — the service sees clean strings. Avoids importing enum types into the dataclass.
 - `record_exit`: when writing `trade_events.rationale`, replace the caller-supplied `rationale` with `req.reason.value`. This is a route-layer concern; it doesn't change `record_exit`'s signature.
+
+### Amendments
+
+- **2026-04-24 — Strike `force` from `TradeStopFormVM` field list.** Session 3 adversarial review (Round 1 Minor 2) found the field dead: §5's "Force is not auto-ticked by the re-render" decision means the template never reads `vm.force`, so preserving it on the VM had no consumer. Field removed in Session 3 C5 (commit `90e730a`). Convention for future sessions: when §3 / §5 "Decision" subsections disagree with §6 "Impact summary" content, Decision wins and §6 is amended.
 
 ---
 
