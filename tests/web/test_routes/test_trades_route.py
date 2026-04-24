@@ -576,6 +576,90 @@ def test_post_stop_adjust_success(seeded_db, monkeypatch):
     assert 'id="status-strip"' not in r.text
 
 
+def test_post_stop_persists_notes_field(seeded_db, monkeypatch):
+    """Bug 3b: POST /trades/{id}/stop with a `notes` form field writes
+    trade_events.notes alongside rationale."""
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import (
+        insert_trade_with_event, list_open_trades, list_events_for_trade,
+    )
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=5, initial_stop=860.0,
+                current_stop=860.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            "NVDA": PriceSnapshot(ticker="NVDA", price=932.0, asof=datetime.now(),
+                                   is_stale=False, source="live"),
+        })
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{trade.id}/stop", headers={"HX-Request": "true"},
+            data={
+                "new_stop": "912.00",
+                "rationale": "trail to 10MA",
+                "notes": "low-volume up-day",
+            },
+        )
+    assert r.status_code == 200
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        adj = next(
+            e for e in list_events_for_trade(conn, trade.id) if e.event_type == "stop_adjust"
+        )
+    finally:
+        conn.close()
+    assert adj.rationale == "trail to 10MA"
+    assert adj.notes == "low-volume up-day"
+
+
+def test_get_stop_form_includes_notes_textarea(seeded_db):
+    """Bug 3b: GET /trades/{id}/stop/form renders a <textarea name='notes'>
+    so the operator can attach free-form context at submit time."""
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event, list_open_trades
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="NVDA", entry_date="2026-04-15",
+                entry_price=900.0, initial_shares=5, initial_stop=860.0,
+                current_stop=860.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+        trade = list_open_trades(conn)[0]
+    finally:
+        conn.close()
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{trade.id}/stop/form",
+                       headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert 'name="notes"' in r.text
+
+
 def test_post_stop_regression_400_with_updated_current(seeded_db):
     """Lowering stop → 400 fragment with updated current_stop prefilled (§5.1 case 3)."""
     from swing.data.db import connect

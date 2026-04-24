@@ -18,6 +18,7 @@ class StopAdjustRequest:
     rationale: str
     event_ts: str
     force: bool = False
+    notes: str | None = None
 
 
 def adjust_stop(conn: sqlite3.Connection, req: StopAdjustRequest) -> None:
@@ -34,4 +35,5 @@ def adjust_stop(conn: sqlite3.Connection, req: StopAdjustRequest) -> None:
         update_stop_with_event(
             conn, trade_id=req.trade_id, new_stop=req.new_stop,
             event_ts=req.event_ts, rationale=req.rationale,
+            notes=req.notes,
         )

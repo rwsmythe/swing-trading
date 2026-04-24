@@ -75,3 +75,40 @@ def test_no_op_same_stop(tmp_path: Path):
         assert sum(1 for e in events if e.event_type == "stop_adjust") == 0
     finally:
         conn.close()
+
+
+def test_adjust_stop_carries_notes_through_to_trade_events(tmp_path: Path):
+    """Bug 3b: StopAdjustRequest.notes round-trips through the service to
+    trade_events.notes. Rationale is independent and preserved."""
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        tid = _seed(conn)
+        adjust_stop(conn, StopAdjustRequest(
+            trade_id=tid, new_stop=175.0, rationale="trail-10MA",
+            notes="low-volume up-day, tightened per plan",
+            event_ts="2026-04-17T15:00:00", force=False,
+        ))
+        adj = next(
+            e for e in list_events_for_trade(conn, tid) if e.event_type == "stop_adjust"
+        )
+        assert adj.rationale == "trail-10MA"
+        assert adj.notes == "low-volume up-day, tightened per plan"
+    finally:
+        conn.close()
+
+
+def test_adjust_stop_default_notes_is_none(tmp_path: Path):
+    """StopAdjustRequest without notes still works and persists NULL notes."""
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        tid = _seed(conn)
+        adjust_stop(conn, StopAdjustRequest(
+            trade_id=tid, new_stop=175.0, rationale="trail",
+            event_ts="2026-04-17T15:00:00", force=False,
+        ))
+        adj = next(
+            e for e in list_events_for_trade(conn, tid) if e.event_type == "stop_adjust"
+        )
+        assert adj.notes is None
+    finally:
+        conn.close()

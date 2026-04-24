@@ -95,6 +95,7 @@ class TradeEvent:
     event_type: str  # 'entry' | 'stop_adjust' | 'note' | 'exit' | 'flag'
     payload_json: str
     rationale: str | None
+    notes: str | None = None
 
 
 @dataclass(frozen=True)

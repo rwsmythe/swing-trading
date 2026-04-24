@@ -388,9 +388,10 @@ def trade_list_cmd(ctx, show_all):
 @click.option("--trade-id", type=int, required=True)
 @click.option("--new-stop", type=float, required=True)
 @click.option("--rationale", required=True)
+@click.option("--notes", default=None)
 @click.option("--force", is_flag=True, help="Allow lowering the stop")
 @click.pass_context
-def trade_stop_adjust_cmd(ctx, trade_id, new_stop, rationale, force):
+def trade_stop_adjust_cmd(ctx, trade_id, new_stop, rationale, notes, force):
     """Adjust the stop on an open trade. Refuses to lower without --force."""
     from datetime import datetime as _dt
     from swing.data.db import connect
@@ -402,6 +403,7 @@ def trade_stop_adjust_cmd(ctx, trade_id, new_stop, rationale, force):
         try:
             adjust_stop(conn, StopAdjustRequest(
                 trade_id=trade_id, new_stop=new_stop, rationale=rationale,
+                notes=notes,
                 event_ts=_dt.now().isoformat(timespec="seconds"), force=force,
             ))
         except StopRegressionError as exc:

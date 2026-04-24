@@ -108,6 +108,7 @@ def insert_exit_with_event(
 def update_stop_with_event(
     conn: sqlite3.Connection, *, trade_id: int, new_stop: float,
     event_ts: str, rationale: str | None = None,
+    notes: str | None = None,
 ) -> None:
     """Update trades.current_stop + write 'stop_adjust' event in same txn.
     Phase 3c §4.4: atomic status='open' guard closes the close-then-stop race.
@@ -126,10 +127,10 @@ def update_stop_with_event(
         raise ValueError(f"trade {trade_id} is not open or does not exist")
     conn.execute(
         """
-        INSERT INTO trade_events (trade_id, ts, event_type, payload_json, rationale)
-        VALUES (?, ?, 'stop_adjust', ?, ?)
+        INSERT INTO trade_events (trade_id, ts, event_type, payload_json, rationale, notes)
+        VALUES (?, ?, 'stop_adjust', ?, ?, ?)
         """,
-        (trade_id, event_ts, json.dumps(payload, sort_keys=True), rationale),
+        (trade_id, event_ts, json.dumps(payload, sort_keys=True), rationale, notes),
     )
 
 
@@ -235,14 +236,14 @@ def list_all_exits(conn: sqlite3.Connection) -> list[Exit]:
 def list_events_for_trade(conn: sqlite3.Connection, trade_id: int) -> list[TradeEvent]:
     rows = conn.execute(
         """
-        SELECT id, trade_id, ts, event_type, payload_json, rationale
+        SELECT id, trade_id, ts, event_type, payload_json, rationale, notes
         FROM trade_events WHERE trade_id = ? ORDER BY ts, id
         """,
         (trade_id,),
     ).fetchall()
     return [
         TradeEvent(id=r[0], trade_id=r[1], ts=r[2], event_type=r[3],
-                   payload_json=r[4], rationale=r[5])
+                   payload_json=r[4], rationale=r[5], notes=r[6])
         for r in rows
     ]
 

@@ -100,3 +100,37 @@ def test_trade_stop_adjust_blocked_when_lowering(tmp_path: Path):
     ])
     assert result.exit_code != 0
     assert "regression" in result.output.lower() or "force" in result.output.lower()
+
+
+def test_trade_stop_adjust_persists_notes(tmp_path: Path):
+    """Bug 3b: `swing trade stop-adjust --notes ...` writes notes to
+    trade_events.notes (distinct from rationale)."""
+    runner, cfg = _setup(tmp_path)
+    runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "AAPL", "--entry-date", "2026-04-15",
+        "--entry-price", "180.0", "--shares", "5",
+        "--initial-stop", "170.0", "--rationale", "x",
+    ])
+    result = runner.invoke(main, [
+        "--config", str(cfg), "trade", "stop-adjust",
+        "--trade-id", "1", "--new-stop", "175.0",
+        "--rationale", "trail-10MA",
+        "--notes", "low-volume up-day",
+    ])
+    assert result.exit_code == 0, result.output
+
+    # Verify persisted notes via the repo, mirroring the service-level test
+    # pattern (matches how other CLI tests read-back results).
+    from swing.config import load as load_cfg
+    from swing.data.db import connect
+    from swing.data.repos.trades import list_events_for_trade
+    conn = connect(load_cfg(cfg).paths.db_path)
+    try:
+        adj = next(
+            e for e in list_events_for_trade(conn, 1) if e.event_type == "stop_adjust"
+        )
+    finally:
+        conn.close()
+    assert adj.rationale == "trail-10MA"
+    assert adj.notes == "low-volume up-day"

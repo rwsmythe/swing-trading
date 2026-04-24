@@ -116,6 +116,48 @@ def test_update_stop_writes_event_with_old_and_new(tmp_path: Path):
         conn.close()
 
 
+def test_update_stop_persists_notes_alongside_rationale(tmp_path: Path):
+    """Bug 3b: trade_events.notes round-trips through update_stop_with_event."""
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        with conn:
+            tid = insert_trade_with_event(conn, _trade(), event_ts="2026-04-15T09:30:00")
+        with conn:
+            update_stop_with_event(
+                conn, trade_id=tid, new_stop=175.0,
+                event_ts="2026-04-17T15:00:00",
+                rationale="trail to breakeven+",
+                notes="acted on trail-10MA advisory; low-volume up-day",
+            )
+        adj = next(
+            e for e in list_events_for_trade(conn, tid) if e.event_type == "stop_adjust"
+        )
+        assert adj.rationale == "trail to breakeven+"
+        assert adj.notes == "acted on trail-10MA advisory; low-volume up-day"
+    finally:
+        conn.close()
+
+
+def test_update_stop_notes_default_none_preserves_backcompat(tmp_path: Path):
+    """Callers that don't pass notes still succeed and persist NULL notes."""
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        with conn:
+            tid = insert_trade_with_event(conn, _trade(), event_ts="2026-04-15T09:30:00")
+        with conn:
+            update_stop_with_event(
+                conn, trade_id=tid, new_stop=175.0,
+                event_ts="2026-04-17T15:00:00",
+                rationale="trail",
+            )
+        adj = next(
+            e for e in list_events_for_trade(conn, tid) if e.event_type == "stop_adjust"
+        )
+        assert adj.notes is None
+    finally:
+        conn.close()
+
+
 def test_overfill_exit_raises(tmp_path: Path):
     """Trying to exit more shares than remain raises before any write."""
     conn = ensure_schema(tmp_path / "swing.db")

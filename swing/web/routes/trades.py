@@ -411,14 +411,21 @@ def trade_cancel(request: Request, trade_id: int):
 def stop_post(
     request: Request, trade_id: int,
     new_stop: float = Form(...), rationale: str = Form(...),
+    notes: str | None = Form(None),
 ):
     cfg = request.app.state.cfg
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
     templates = request.app.state.templates
 
+    # Collapse blank textarea submissions to NULL (matches entry/exit form
+    # convention — `trades.notes`/`exits.notes` store NULL, not "", when the
+    # operator leaves the box empty).
+    notes_value = notes.strip() if notes and notes.strip() else None
+
     req = StopAdjustRequest(
         trade_id=trade_id, new_stop=new_stop, rationale=rationale,
+        notes=notes_value,
         event_ts=datetime.now().isoformat(timespec="seconds"), force=False,
     )
     conn = connect(cfg.paths.db_path)
