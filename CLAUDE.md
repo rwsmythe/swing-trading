@@ -28,6 +28,8 @@ The project follows a bifurcated architecture (research branch + operational tra
 
 Source-of-truth methodology references live in `reference/methodology/`. These are reference-only; any production change driven by a methodology reference must route through the source-of-truth correction protocol (V2.1 §VII.F), not a direct patch.
 
+The research branch lives at `research/` (created Tranche B-research, 2026-04-23). Method records in `research/method-records/` follow the V2.1 §IV.B minimum viable field list; studies in `research/studies/` follow the format established by `earnings-proximity-exclusion.md`. Phase 0 tasks in `research/phase-0-tasks.md`. No runtime code is under `research/` as of this writing — it is pure documentation and study artifacts.
+
 Older strategy documents are archived at `reference/Future Work/archive/`.
 
 ## Architecture
