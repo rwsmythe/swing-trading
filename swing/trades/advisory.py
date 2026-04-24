@@ -5,6 +5,7 @@ Aggregator returns the non-None list, ordered for display.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import date
 
@@ -48,7 +49,11 @@ def suggest_trail_ma(
 ) -> AdvisorySuggestion | None:
     if ma_value is None or ctx.current_price < ma_value:
         return None
-    proposed = ma_value * (1 - buffer_pct / 100)
+    # Ceiling-round to the cent so the .2f-displayed target equals the actual
+    # extinction threshold. Without this, displayed "$X.YZ" can represent a
+    # threshold slightly above X.YZ and a user who sets their stop to the
+    # displayed value sees the advisory persist (Bug 2).
+    proposed = math.ceil(ma_value * (1 - buffer_pct / 100) * 100) / 100
     if proposed <= trade.current_stop:
         return None
     return AdvisorySuggestion(

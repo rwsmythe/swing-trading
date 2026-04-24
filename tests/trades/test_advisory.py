@@ -166,3 +166,53 @@ def test_compute_all_suggestions_includes_50ma_exit():
     sugs = compute_all_suggestions(_trade(), ctx)
     rules = {s.rule for s in sugs}
     assert "exit_below_50ma" in rules
+
+
+def test_trail_ma_extinguishes_when_stop_meets_displayed_target():
+    """Bug 2 regression: displayed target must equal actual extinction threshold.
+
+    Round-trip: fire the advisory, parse the displayed "Trail stop up to $X.YZ"
+    value from the message, set current_stop to exactly that value, re-fire, and
+    assert the advisory clears. Pre-fix, raw proposed = 10.334 * 0.997 = 10.302998
+    displays as "$10.30" but the extinction threshold is 10.302998, so a stop set
+    to the displayed value does NOT extinguish — this test fails. Post-fix, the
+    ceiling rounds proposed to 10.31 so the display matches the threshold and the
+    round trip extinguishes.
+    """
+    import re
+    ctx = _ctx(close=11.00, ma10=10.334)
+    first = suggest_trail_ma(
+        _trade(current_stop=9.00, entry=9.50),
+        ctx, ma_value=ctx.sma10, ma_label="10MA", buffer_pct=0.3,
+    )
+    assert first is not None, "precondition: advisory fires for a low stop"
+    match = re.search(r"Trail stop up to \$(\d+\.\d{2})", first.message)
+    assert match, f"could not parse displayed target from {first.message!r}"
+    displayed_target = float(match.group(1))
+
+    # User acts on the advisory by setting current_stop to the displayed value.
+    second = suggest_trail_ma(
+        _trade(current_stop=displayed_target, entry=9.50),
+        ctx, ma_value=ctx.sma10, ma_label="10MA", buffer_pct=0.3,
+    )
+    assert second is None, (
+        f"advisory should extinguish when stop is set to the displayed target "
+        f"${displayed_target:.2f}, but it persists"
+    )
+
+
+def test_trail_ma_fires_when_stop_one_cent_below_ceiling_target():
+    """Companion to the extinction test: confirms the new ceiling threshold
+    correctly still fires when the stop is one cent below the displayed target.
+    Also documents that the displayed target is the ceiling ($10.31), not the
+    truncation ($10.30) — this is the user-visible behavior change.
+    """
+    trade = _trade(current_stop=10.30, entry=9.50)
+    ctx = _ctx(close=11.00, ma10=10.334)
+    result = suggest_trail_ma(
+        trade, ctx, ma_value=ctx.sma10, ma_label="10MA", buffer_pct=0.3,
+    )
+    assert result is not None
+    assert "10.31" in result.message, (
+        "displayed target must be the ceiling-rounded cent, not the truncation"
+    )
