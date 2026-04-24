@@ -70,7 +70,7 @@ def test_entry_end_to_end(seeded_db, monkeypatch):
                 "entry_price": "180.95",
                 "shares": "5",
                 "initial_stop": "170.00",
-                "rationale": "A+ integration test",
+                "rationale": "aplus-setup",
             },
         )
     assert r_post.status_code == 200
@@ -148,7 +148,7 @@ def test_soft_warn_loop_end_to_end(seeded_db, monkeypatch):
         "entry_price": "180.95",
         "shares": "1",
         "initial_stop": "170.00",
-        "rationale": "5th trade past soft cap",
+        "rationale": "aplus-setup",
     }
     with TestClient(app) as client:
         # First submit — no force; should receive soft-warn confirm fragment.

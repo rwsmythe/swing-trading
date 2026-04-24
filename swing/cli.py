@@ -268,7 +268,14 @@ def trade_group() -> None:
 @click.option("--initial-stop", type=float, required=True)
 @click.option("--watchlist-target", type=float, default=None)
 @click.option("--watchlist-stop", type=float, default=None)
-@click.option("--rationale", required=True)
+@click.option("--rationale", required=True,
+              type=click.Choice([
+                  "aplus-setup", "near-trigger-breakout", "vcp-breakout",
+                  "pivot-breakout", "post-earnings-continuation",
+                  "relative-strength", "other",
+              ]),
+              help="Entry rationale (closed taxonomy, Tranche B-ops T4). "
+                   "'other' requires --notes.")
 @click.option("--notes", default=None)
 @click.option("--force", is_flag=True, help="Bypass soft-warn cap (still subject to hard cap)")
 @click.pass_context
@@ -281,6 +288,10 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
         EntryRequest, record_entry,
         SoftWarnException, HardCapException, DuplicateOpenPositionException,
     )
+
+    # T4: --notes required when --rationale=other (parity with web form).
+    if rationale == "other" and not (notes and notes.strip()):
+        raise click.ClickException("--notes required when --rationale=other")
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)

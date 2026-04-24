@@ -17,7 +17,7 @@ from swing.trades.exit import ExitReason, ExitRequest, record_exit
 from swing.trades.stop_adjust import StopAdjustRequest, StopRegressionError, adjust_stop
 from swing.recommendations.sizing import compute_shares, SizingResult
 from swing.trades.entry import (
-    EntryRequest, HardCapException, DuplicateOpenPositionException,
+    EntryRationale, EntryRequest, HardCapException, DuplicateOpenPositionException,
     SoftWarnException, record_entry,
 )
 from swing.trades.equity import current_equity
@@ -36,6 +36,62 @@ def _parse_optional_float(raw: str | None) -> float | None:
         return float(raw)
     except ValueError:
         return None
+
+
+def _validate_rationale(
+    rationale: str, notes: str | None, rationale_enum,
+) -> str | None:
+    """Tranche B-ops T4/T5: shared rationale validator.
+
+    Returns an error message when invalid, or ``None`` when valid. Used by
+    the entry and stop-adjust POST routes to enforce closed-taxonomy
+    rationale values and the ``other`` → ``notes`` required coupling.
+    """
+    try:
+        value = rationale_enum(rationale)
+    except ValueError:
+        valid = ", ".join(r.value for r in rationale_enum)
+        return f"Invalid rationale: {rationale!r}. Choose one of: {valid}."
+    if value.value == "other" and not (notes and notes.strip()):
+        return "Notes are required when rationale = Other."
+    return None
+
+
+def _rerender_entry_form_with_error(
+    *, request: Request, templates, cfg, cache, executor,
+    ticker: str, entry_date: str, entry_price: float, shares: int,
+    initial_stop: float, rationale: str, notes: str | None,
+    error_message: str,
+) -> HTMLResponse:
+    """T4: re-render trade_entry_form with preserved values + banner at 400.
+
+    Mirrors the duplicate-error re-render path but called from rationale
+    validation failures before record_entry is invoked.
+    """
+    from dataclasses import replace as dc_replace
+    vm = build_entry_form_vm(
+        ticker=ticker.upper(), cfg=cfg, cache=cache, executor=executor,
+    )
+    if vm is not None:
+        vm = dc_replace(
+            vm,
+            entry_date=entry_date,
+            entry_price=entry_price,
+            initial_stop=initial_stop,
+            input_shares=shares,
+            rationale=rationale,
+            notes=notes or "",
+        )
+        return templates.TemplateResponse(
+            request, "partials/trade_entry_form.html.j2",
+            {"vm": vm, "error_message": error_message},
+            status_code=400,
+        )
+    return templates.TemplateResponse(
+        request, "partials/trade_form_error.html.j2",
+        {"error_message": error_message},
+        status_code=400,
+    )
 
 
 @router.get("/trades/entry/sizing-hint", response_class=HTMLResponse)
@@ -134,6 +190,21 @@ def entry_post(
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
     templates = request.app.state.templates
+
+    # Tranche B-ops T4: enum-validate the rationale *before* constructing
+    # EntryRequest. On failure, re-render the form (preserving user inputs)
+    # with an error banner and HTTP 400. Service-layer EntryRequest.rationale
+    # stays typed as str per spec §6; validation happens here, not in the
+    # dataclass, so CLI callers that already enforce click.Choice aren't
+    # double-validated.
+    rationale_error = _validate_rationale(rationale, notes, EntryRationale)
+    if rationale_error is not None:
+        return _rerender_entry_form_with_error(
+            request=request, templates=templates, cfg=cfg, cache=cache,
+            executor=executor, ticker=ticker, entry_date=entry_date,
+            entry_price=entry_price, shares=shares, initial_stop=initial_stop,
+            rationale=rationale, notes=notes, error_message=rationale_error,
+        )
 
     req = EntryRequest(
         ticker=ticker.upper(),

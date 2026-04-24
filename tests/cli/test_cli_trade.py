@@ -24,7 +24,7 @@ def test_trade_entry_then_list(tmp_path: Path):
         "--config", str(cfg), "trade", "entry",
         "--ticker", "AAPL", "--entry-date", "2026-04-15",
         "--entry-price", "180.0", "--shares", "5",
-        "--initial-stop", "170.0", "--rationale", "VCP",
+        "--initial-stop", "170.0", "--rationale", "vcp-breakout",
     ])
     assert result.exit_code == 0, result.output
     assert "trade id" in result.output.lower() or "entered" in result.output.lower()
@@ -43,7 +43,7 @@ def test_trade_list_shows_remaining_shares_after_partial_exit(tmp_path: Path):
         "--config", str(cfg), "trade", "entry",
         "--ticker", "VIR", "--entry-date", "2026-04-20",
         "--entry-price", "10.76", "--shares", "2",
-        "--initial-stop", "8.26", "--rationale", "near-pivot",
+        "--initial-stop", "8.26", "--rationale", "near-trigger-breakout",
     ])
     runner.invoke(main, [
         "--config", str(cfg), "trade", "exit",
@@ -74,7 +74,7 @@ def test_trade_exit(tmp_path: Path):
         "--config", str(cfg), "trade", "entry",
         "--ticker", "AAPL", "--entry-date", "2026-04-15",
         "--entry-price", "180.0", "--shares", "5",
-        "--initial-stop", "170.0", "--rationale", "x",
+        "--initial-stop", "170.0", "--rationale", "aplus-setup",
     ])
     result = runner.invoke(main, [
         "--config", str(cfg), "trade", "exit",
@@ -92,7 +92,7 @@ def test_trade_stop_adjust_blocked_when_lowering(tmp_path: Path):
         "--config", str(cfg), "trade", "entry",
         "--ticker", "AAPL", "--entry-date", "2026-04-15",
         "--entry-price", "180.0", "--shares", "5",
-        "--initial-stop", "170.0", "--rationale", "x",
+        "--initial-stop", "170.0", "--rationale", "aplus-setup",
     ])
     result = runner.invoke(main, [
         "--config", str(cfg), "trade", "stop-adjust",
@@ -110,7 +110,7 @@ def test_trade_stop_adjust_persists_notes(tmp_path: Path):
         "--config", str(cfg), "trade", "entry",
         "--ticker", "AAPL", "--entry-date", "2026-04-15",
         "--entry-price", "180.0", "--shares", "5",
-        "--initial-stop", "170.0", "--rationale", "x",
+        "--initial-stop", "170.0", "--rationale", "aplus-setup",
     ])
     result = runner.invoke(main, [
         "--config", str(cfg), "trade", "stop-adjust",
@@ -134,3 +134,47 @@ def test_trade_stop_adjust_persists_notes(tmp_path: Path):
         conn.close()
     assert adj.rationale == "trail-10MA"
     assert adj.notes == "low-volume up-day"
+
+
+# ---------------------------------------------------------------------------
+# Tranche B-ops T4 — CLI side: --rationale closed taxonomy
+# ---------------------------------------------------------------------------
+
+def test_trade_entry_cli_rejects_invalid_rationale(tmp_path: Path):
+    """T4: `swing trade entry --rationale foo` where foo is not an enum value
+    exits non-zero. Pre-T4 any free-text string was accepted."""
+    runner, cfg = _setup(tmp_path)
+    result = runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "AAPL", "--entry-date", "2026-04-15",
+        "--entry-price", "180.0", "--shares", "5",
+        "--initial-stop", "170.0",
+        "--rationale", "my-favourite-setup",
+    ])
+    assert result.exit_code != 0, result.output
+    # click.Choice surfaces the valid options in its error output.
+    assert "invalid" in result.output.lower() or "choice" in result.output.lower()
+    assert "aplus-setup" in result.output
+
+
+def test_trade_entry_cli_other_requires_notes(tmp_path: Path):
+    """T4: `--rationale other` without `--notes` → ClickException.
+    With `--notes` the entry succeeds."""
+    runner, cfg = _setup(tmp_path)
+    bad = runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "AAPL", "--entry-date", "2026-04-15",
+        "--entry-price", "180.0", "--shares", "5",
+        "--initial-stop", "170.0", "--rationale", "other",
+    ])
+    assert bad.exit_code != 0
+    assert "notes" in bad.output.lower()
+
+    good = runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "AAPL", "--entry-date", "2026-04-15",
+        "--entry-price", "180.0", "--shares", "5",
+        "--initial-stop", "170.0", "--rationale", "other",
+        "--notes", "unclassified — spec-break test",
+    ])
+    assert good.exit_code == 0, good.output

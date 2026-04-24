@@ -162,7 +162,7 @@ def test_post_entry_success_emits_row_and_oobs(seeded_db, monkeypatch):
                 "entry_price": "180.95",
                 "shares": "5",
                 "initial_stop": "170.00",
-                "rationale": "A+ entry",
+                "rationale": "aplus-setup",
             },
         )
     assert r.status_code == 200
@@ -222,7 +222,7 @@ def test_post_entry_soft_warn_2step(seeded_db, monkeypatch):
     form_data = {
         "ticker": "AAPL", "entry_date": "2026-04-18",
         "entry_price": "180.95", "shares": "1", "initial_stop": "170.00",
-        "rationale": "5th trade past soft cap",
+        "rationale": "aplus-setup",
     }
     with TestClient(app) as client:
         # First submit — no force. Should get soft_warn_confirm fragment.
@@ -271,7 +271,7 @@ def test_post_entry_hard_cap_error(seeded_db, monkeypatch):
             data={
                 "ticker": "AAPL", "entry_date": "2026-04-18",
                 "entry_price": "180.0", "shares": "1",
-                "initial_stop": "170.0", "rationale": "test",
+                "initial_stop": "170.0", "rationale": "aplus-setup",
                 "force": "true",   # bypass soft-warn; but hard cap still blocks
             },
         )
@@ -310,7 +310,7 @@ def test_post_entry_duplicate_error(seeded_db, monkeypatch):
             data={
                 "ticker": "AAPL", "entry_date": "2026-04-18",
                 "entry_price": "182.0", "shares": "3",
-                "initial_stop": "175.0", "rationale": "add-on",
+                "initial_stop": "175.0", "rationale": "aplus-setup",
             },
         )
     assert r.status_code == 400
@@ -863,7 +863,7 @@ def test_post_entry_duplicate_renders_form_preserved(seeded_db, monkeypatch):
             data={
                 "ticker": "AAPL", "entry_date": "2026-04-18",
                 "entry_price": "182.0", "shares": "3",
-                "initial_stop": "175.0", "rationale": "add-on attempt",
+                "initial_stop": "175.0", "rationale": "aplus-setup",
             },
         )
     assert r.status_code == 400
@@ -872,7 +872,9 @@ def test_post_entry_duplicate_renders_form_preserved(seeded_db, monkeypatch):
     # Form is re-rendered inside the error fragment.
     assert 'name="ticker"' in r.text
     # Submitted values preserved (R2 Major 2 fix: dataclasses.replace).
-    assert "add-on attempt" in r.text          # rationale textarea content
+    # T4: rationale is now a <select>; the submitted enum value becomes the
+    # selected option on re-render.
+    assert 'value="aplus-setup" selected' in r.text
     assert 'value="175.00"' in r.text          # initial_stop echoed back
     assert 'value="182.00"' in r.text          # entry_price echoed back
     # R5 fix: input value reflects user's submitted shares (shares=3 was submitted).
@@ -929,7 +931,7 @@ def test_post_entry_duplicate_sizing_hint_not_lying(seeded_db, monkeypatch):
             "/trades/entry", headers={"HX-Request": "true"},
             data={"ticker": "AAPL", "entry_date": "2026-04-18",
                   "entry_price": "182.00", "shares": "9999",
-                  "initial_stop": "175.00", "rationale": "drift"},
+                  "initial_stop": "175.00", "rationale": "aplus-setup"},
         )
     assert r.status_code == 400
     # Input value reflects user's attempted entry.
@@ -1051,3 +1053,239 @@ def test_post_exit_shares_too_many_is_single_tr_no_orphan(seeded_db, monkeypatch
     assert "banner" in r.text.lower()
     # Form fields are present.
     assert 'name="shares"' in r.text
+
+
+# ---------------------------------------------------------------------------
+# Tranche B-ops T4 — EntryRationale closed taxonomy
+# ---------------------------------------------------------------------------
+
+def test_get_entry_form_renders_rationale_select_with_seven_options(
+    seeded_db, monkeypatch,
+):
+    """T4: the entry form must render rationale as a <select> (not a textarea)
+    with all seven options in spec §3 declared order. Pre-T4 the template used
+    <textarea name="rationale">."""
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="AAPL", added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            "AAPL": PriceSnapshot(ticker="AAPL", price=180.95,
+                                   asof=datetime.now(),
+                                   is_stale=False, source="live"),
+        })
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=AAPL")
+    assert r.status_code == 200
+    assert '<select name="rationale"' in r.text
+    # All seven values appear in spec order.
+    expected = [
+        "aplus-setup", "near-trigger-breakout", "vcp-breakout",
+        "pivot-breakout", "post-earnings-continuation",
+        "relative-strength", "other",
+    ]
+    positions = [r.text.find(f'value="{v}"') for v in expected]
+    assert all(p >= 0 for p in positions), positions
+    assert positions == sorted(positions), (
+        f"<option> order does not match spec-declared order: {list(zip(expected, positions))}"
+    )
+    # Human-readable label for the first option (apostrophe survives Jinja
+    # auto-escaping as &#39;).
+    assert ("A+ setup (today's decision)" in r.text
+            or "A+ setup (today&#39;s decision)" in r.text)
+
+
+def test_post_entry_unknown_rationale_rejected_with_preserved_fields(
+    seeded_db, monkeypatch,
+):
+    """T4: POST /trades/entry with a free-text rationale outside the closed
+    taxonomy → 400 + form re-rendered with the submitted values preserved.
+    Pre-T4 this succeeded (wrote free text to trade_events.rationale)."""
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.trades import list_open_trades
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="AAPL", added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            "AAPL": PriceSnapshot(ticker="AAPL", price=180.95,
+                                   asof=datetime.now(),
+                                   is_stale=False, source="live"),
+        })
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry", headers={"HX-Request": "true"},
+            data={
+                "ticker": "AAPL", "entry_date": "2026-04-18",
+                "entry_price": "180.95", "shares": "5",
+                "initial_stop": "170.00",
+                "rationale": "VCP entry",       # pre-T4 free-text phrasing
+                "notes": "Keep this on re-render",
+            },
+        )
+    assert r.status_code == 400
+    assert "invalid rationale" in r.text.lower()
+    # Form re-rendered with preserved values.
+    assert '<select name="rationale"' in r.text
+    assert "Keep this on re-render" in r.text
+    # No trade inserted.
+    conn2 = connect(cfg.paths.db_path)
+    try:
+        assert list_open_trades(conn2) == []
+    finally:
+        conn2.close()
+
+
+def test_post_entry_other_without_notes_rejected(seeded_db, monkeypatch):
+    """T4: rationale=other without non-empty notes → 400 with
+    'notes required' message. Pre-T4 free-text would have accepted it."""
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.trades import list_open_trades
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="AAPL", added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            "AAPL": PriceSnapshot(ticker="AAPL", price=180.95,
+                                   asof=datetime.now(),
+                                   is_stale=False, source="live"),
+        })
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry", headers={"HX-Request": "true"},
+            data={
+                "ticker": "AAPL", "entry_date": "2026-04-18",
+                "entry_price": "180.95", "shares": "5",
+                "initial_stop": "170.00",
+                "rationale": "other",
+                # no notes
+            },
+        )
+    assert r.status_code == 400
+    assert "notes are required" in r.text.lower()
+    # Rationale=other selected state is preserved on re-render.
+    assert 'value="other" selected' in r.text
+    # No trade inserted.
+    conn2 = connect(cfg.paths.db_path)
+    try:
+        assert list_open_trades(conn2) == []
+    finally:
+        conn2.close()
+
+
+def test_post_entry_other_with_notes_succeeds(seeded_db, monkeypatch):
+    """T4: rationale=other with non-empty notes → trade recorded normally
+    with rationale='other' written to trade_events.rationale."""
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.trades import list_open_trades
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="AAPL", added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: PriceSnapshot(ticker=t, price=180.95, asof=datetime.now(),
+                             is_stale=False, source="live") for t in tickers
+        })
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry", headers={"HX-Request": "true"},
+            data={
+                "ticker": "AAPL", "entry_date": "2026-04-18",
+                "entry_price": "180.95", "shares": "5",
+                "initial_stop": "170.00",
+                "rationale": "other",
+                "notes": "post-earnings gap with high ADR",
+            },
+        )
+    assert r.status_code == 200
+    assert "open-position-" in r.text
+    # Verify persistence.
+    from swing.data.repos.trades import list_events_for_trade
+    conn2 = connect(cfg.paths.db_path)
+    try:
+        trades = list_open_trades(conn2)
+        assert len(trades) == 1
+        events = list_events_for_trade(conn2, trades[0].id)
+        entry_ev = next(e for e in events if e.event_type == "entry")
+        assert entry_ev.rationale == "other"
+    finally:
+        conn2.close()

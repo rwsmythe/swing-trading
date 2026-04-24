@@ -3,12 +3,65 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from enum import Enum
 
 from swing.data.models import Trade, WatchlistArchiveEntry
 from swing.data.repos.trades import insert_trade_with_event, list_open_trades
 from swing.data.repos.watchlist import (
     archive_watchlist_entry, get_watchlist_entry,
 )
+
+
+class EntryRationale(str, Enum):  # noqa: UP042  (match ExitReason's (str, Enum) pattern)
+    """Closed taxonomy for trade-entry rationale (Tranche B-ops Bug 3a, spec §3).
+
+    Values are persisted as plain strings in ``trade_events.rationale``;
+    ``EntryRequest.rationale`` stays typed as ``str`` and route/CLI layers
+    convert via ``EntryRationale(value)`` before constructing the request.
+
+    Provenance — each value maps either to a concrete repo string or to a
+    deliberate operator-vocabulary expansion (spec §3 table):
+
+    * ``aplus-setup`` — repo: ``candidate.bucket == 'aplus'`` +
+      ``recommendation == 'today_decision'``.
+    * ``near-trigger-breakout`` — repo: ``recommendation == 'near_trigger'``
+      combined with a breakout verb.
+    * ``vcp-breakout`` — repo: ``candidate.criteria`` contains layer ``'vcp'``.
+    * ``pivot-breakout`` — DELIBERATE EXPANSION. Minervini/operator
+      base-breakout concept not currently a repo string.
+    * ``post-earnings-continuation`` — DELIBERATE EXPANSION.
+      Operator-vocabulary gap-up-on-earnings, not a repo string.
+    * ``relative-strength`` — DELIBERATE EXPANSION. Minervini/IBD RS-rank
+      concept, documented in ``reference/methodology/`` but not a repo string.
+    * ``other`` — standard escape hatch; route/CLI require ``notes`` when selected.
+    """
+
+    APLUS_SETUP = "aplus-setup"
+    NEAR_TRIGGER_BREAKOUT = "near-trigger-breakout"
+    VCP_BREAKOUT = "vcp-breakout"
+    PIVOT_BREAKOUT = "pivot-breakout"
+    POST_EARNINGS_CONTINUATION = "post-earnings-continuation"
+    RELATIVE_STRENGTH = "relative-strength"
+    OTHER = "other"
+
+
+_ENTRY_RATIONALE_LABELS: dict[EntryRationale, str] = {
+    EntryRationale.APLUS_SETUP: "A+ setup (today's decision)",
+    EntryRationale.NEAR_TRIGGER_BREAKOUT: "Near-trigger breakout",
+    EntryRationale.VCP_BREAKOUT: "VCP breakout",
+    EntryRationale.PIVOT_BREAKOUT: "Pivot breakout (non-VCP)",
+    EntryRationale.POST_EARNINGS_CONTINUATION: "Post-earnings gap continuation",
+    EntryRationale.RELATIVE_STRENGTH: "Relative strength leadership",
+    EntryRationale.OTHER: "Other (see notes)",
+}
+
+
+def entry_rationale_options() -> tuple[tuple[str, str], ...]:
+    """Return ``(value, display_label)`` pairs in spec-declared order.
+
+    Template layer consumes this to render the ``<select>`` options.
+    """
+    return tuple((r.value, _ENTRY_RATIONALE_LABELS[r]) for r in EntryRationale)
 
 
 class SoftWarnException(Exception):

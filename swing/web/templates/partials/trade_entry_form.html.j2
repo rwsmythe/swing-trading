@@ -42,8 +42,19 @@
         <input type="hidden" name="watchlist_stop" value="{{ vm.watchlist_initial_stop }}">
       {% endif %}
       <div><label>Rationale &#9733;</label>
-        <textarea name="rationale" required>{{ vm.rationale }}</textarea></div>
-      <div><label>Notes</label>
+        <select name="rationale" required
+                onchange="var h=this.form.querySelector('.rationale-other-hint'); if(h){h.style.display=(this.value==='other')?'inline':'none';}">
+          <option value="">(select one)</option>
+          {% for value, label in vm.rationale_options %}
+            <option value="{{ value }}"{% if value == vm.rationale %} selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select></div>
+      <div><label>Notes
+          <span class="rationale-other-hint subtitle"
+                style="display:{% if vm.rationale == 'other' %}inline{% else %}none{% endif %}">
+            &#9733; required when Rationale = Other
+          </span>
+        </label>
         <textarea name="notes">{{ vm.notes }}</textarea></div>
       <div>
         <button type="submit">Submit</button>

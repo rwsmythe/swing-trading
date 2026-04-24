@@ -10,7 +10,8 @@ from swing.data.models import Trade, WatchlistEntry
 from swing.data.repos.trades import get_trade, list_open_trades
 from swing.data.repos.watchlist import get_watchlist_entry, upsert_watchlist_entry
 from swing.trades.entry import (
-    EntryRequest, EntryResult, record_entry,
+    EntryRationale, EntryRequest, EntryResult, entry_rationale_options,
+    record_entry,
     SoftWarnException, HardCapException, DuplicateOpenPositionException,
 )
 
@@ -20,8 +21,34 @@ def _req(ticker: str = "AAPL") -> EntryRequest:
         ticker=ticker, entry_date="2026-04-15", entry_price=180.0,
         shares=5, initial_stop=170.0, watchlist_entry_target=None,
         watchlist_initial_stop=None, notes=None,
-        rationale="VCP entry", event_ts="2026-04-15T09:30:00",
+        rationale=EntryRationale.VCP_BREAKOUT.value,
+        event_ts="2026-04-15T09:30:00",
     )
+
+
+def test_entry_rationale_enum_values_match_spec_order():
+    """Tranche B-ops T4: EntryRationale enum is the closed taxonomy per
+    spec §3 table, in the spec-declared order."""
+    assert [r.value for r in EntryRationale] == [
+        "aplus-setup",
+        "near-trigger-breakout",
+        "vcp-breakout",
+        "pivot-breakout",
+        "post-earnings-continuation",
+        "relative-strength",
+        "other",
+    ]
+
+
+def test_entry_rationale_options_pair_value_with_display_label():
+    """entry_rationale_options() returns (value, label) pairs in enum order.
+    Template consumes this to render the <select>."""
+    opts = entry_rationale_options()
+    assert len(opts) == 7
+    assert opts[0] == ("aplus-setup", "A+ setup (today's decision)")
+    assert opts[-1] == ("other", "Other (see notes)")
+    # Every enum value is represented exactly once.
+    assert {v for v, _ in opts} == {r.value for r in EntryRationale}
 
 
 def test_basic_entry(tmp_path: Path):

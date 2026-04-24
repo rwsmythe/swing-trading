@@ -11,6 +11,7 @@ from swing.data.repos.cash import list_cash
 from swing.data.repos.trades import get_trade, list_all_exits, list_exits_for_trade, list_open_trades
 from swing.data.repos.watchlist import list_active_watchlist
 from swing.recommendations.sizing import compute_shares
+from swing.trades.entry import entry_rationale_options
 from swing.trades.equity import current_equity
 from swing.trades.exit import ExitReason
 from swing.web.price_cache import PriceCache
@@ -34,6 +35,8 @@ class TradeEntryFormVM:
     rationale: str = ""       # preserved from prior submit on duplicate/drift
     notes: str = ""           # preserved from prior submit on duplicate/drift
     input_shares: int = 0     # user's submitted shares on drift-retry; 0 = no override
+    # Closed-taxonomy rationale options (value, display_label) pairs — T4.
+    rationale_options: tuple[tuple[str, str], ...] = ()
 
 
 def build_entry_form_vm(
@@ -98,6 +101,7 @@ def build_entry_form_vm(
         soft_warn_threshold=cfg.position_limits.soft_warn_open,
         hard_cap=cfg.position_limits.hard_cap_open,
         open_count=len(open_trades),
+        rationale_options=entry_rationale_options(),
     )
 
 
