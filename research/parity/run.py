@@ -26,6 +26,7 @@ import logging
 import os
 import sqlite3
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -157,6 +158,31 @@ def _resolve_git_sha() -> str:
         return out.decode("ascii").strip()
     except Exception:
         return "unknown"
+
+
+class _CountingPriceFetcher:
+    """Wraps :class:`swing.prices.PriceFetcher` to expose ``hits``/``misses``
+    counters the manifest reports. The underlying ``PriceFetcher.get`` only
+    distinguishes hit/miss internally by checking ``cache_path.exists()``;
+    this wrapper checks the same predicate AROUND the call without touching
+    swing/. Phase isolation preserved.
+    """
+    def __init__(self, inner) -> None:
+        self.inner = inner
+        self.hits = 0
+        self.misses = 0
+
+    def get(self, ticker: str, lookback_days: int, *, as_of_date=None):
+        from swing.prices import _resolve_asof
+        effective = _resolve_asof(as_of_date)
+        cache_path = self.inner._cache_path(ticker, lookback_days, effective)
+        existed = cache_path.exists()
+        df = self.inner.get(ticker, lookback_days, as_of_date=as_of_date)
+        if existed:
+            self.hits += 1
+        else:
+            self.misses += 1
+        return df
 
 
 def run_parity(
@@ -302,19 +328,20 @@ def main(argv: list[str] | None = None) -> int:
 
     from swing.prices import PriceFetcher
     cache_dir = args.cache_dir if args.cache_dir is not None else cfg.paths.prices_cache_dir
-    fetcher = PriceFetcher(cache_dir=cache_dir)
+    fetcher = _CountingPriceFetcher(PriceFetcher(cache_dir=cache_dir))
 
     summary = run_parity(
         cfg=cfg, evaluation_run_id=run_id, fetcher=fetcher,
         finviz_tickers=finviz_tickers, output_dir=args.output_dir,
         harness_git_sha=_resolve_git_sha(), db_path=db_path,
     )
-    print(
+    msg = (
         f"evaluation_run_id={run_id} bucket={summary.bucket_matches}/"
         f"{summary.bucket_total}={summary.bucket_agreement_rate:.4%} "
         f"criterion={summary.criterion_matches}/{summary.criterion_total}="
-        f"{summary.criterion_agreement_rate:.4%} → Tier {summary.tier}"
+        f"{summary.criterion_agreement_rate:.4%} -> Tier {summary.tier}"
     )
+    sys.stdout.buffer.write(msg.encode("utf-8") + b"\n")
     return 0
 
 
