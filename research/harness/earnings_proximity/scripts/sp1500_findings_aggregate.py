@@ -5,8 +5,13 @@ against ``--universe sp_1500`` and computes the descriptive statistics
 the D4 findings writeup requires beyond the generic diagnostic outputs:
 
 - **Sector breakdown** of A+ signals (using the iShares-reported Sector
-  column at fetch date; cached as a sidecar JSON via
-  :func:`research.harness.earnings_proximity.universe_variants.load_sp_1500_sector_map`).
+  column at fetch date; persisted as the sidecar JSON
+  ``sp_1500_<YYYY-MM-DD>_sectors.json`` next to the universe snapshot).
+  The aggregator binds the sector-map filename to the run manifest's
+  ``universe_fetched_date``, AND verifies the loaded universe snapshot's
+  SHA-256 against the manifest's ``universe_hash`` (D5 R2 fix), so a
+  same-day overwrite or manual cache edit cannot silently substitute a
+  different universe / sector composition under the same filename.
 - **Liquidity distribution** of A+ signals (avg daily $ volume over the
   prior 20 sessions of each A+ date, computed from cached OHLCV).
 - **Data-quality summary** (absent_earnings_data fraction; tickers in
@@ -24,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import sys
 from collections import Counter
@@ -31,8 +37,6 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
-
-from research.harness.earnings_proximity.universe_variants import load_sp_1500_sector_map
 
 
 _BENCHMARK_TICKER = "SPY"
@@ -239,6 +243,36 @@ def _resolve_pinned_sector_map_path(cache_dir: Path, fetched_date: str) -> Path:
     return cache_dir / "universe-snapshots" / f"sp_1500_{fetched_date}_sectors.json"
 
 
+def _verify_universe_hash(manifest: dict, universe_tickers: list[str]) -> None:
+    """Verify the loaded snapshot's tickers reproduce the manifest's universe_hash.
+
+    The hash recorded by :mod:`diagnostic_run.run_diagnostic` is the
+    SHA-256 of ``"\\n".join(universe_variant.tickers)`` where
+    ``universe_variant.tickers`` is ``tuple(sorted({...}))`` — sorted
+    unique tickers. We canonicalize the snapshot's tickers the same
+    way (sort + dedupe) before hashing. Defends against a same-date
+    snapshot overwrite or cache edit silently substituting a different
+    universe under the same filename.
+    """
+    expected = manifest.get("universe_hash")
+    if not expected:
+        raise ValueError(
+            "run_manifest.json missing universe_hash; cannot verify "
+            "snapshot integrity"
+        )
+    canonical_tickers = sorted(set(universe_tickers))
+    canonical = "\n".join(canonical_tickers).encode("utf-8")
+    actual = hashlib.sha256(canonical).hexdigest()
+    if actual != expected:
+        raise ValueError(
+            f"Universe snapshot hash mismatch: manifest expects {expected[:12]}…, "
+            f"snapshot reproduces {actual[:12]}…. The cached snapshot at "
+            "the manifest's universe_fetched_date does not match the run's "
+            "recorded universe — refusing to aggregate against a substituted "
+            "snapshot."
+        )
+
+
 def aggregate_findings(
     run_dir: Path,
     *,
@@ -249,16 +283,18 @@ def aggregate_findings(
     aplus_rows = _load_aplus_signals(run_dir)
     manifest = _load_manifest(run_dir)
 
-    # Pin the sector map to the run's universe_fetched_date when not
-    # supplied directly. This prevents a later D4 re-aggregation from
-    # silently using a fresher iShares sector snapshot than the one
-    # corresponding to run_manifest.json's universe_version.
+    # Pin the sector map AND the universe ticker list to the run's
+    # universe_fetched_date + universe_hash. This prevents a later D4
+    # re-aggregation from silently using a fresher iShares snapshot or
+    # a same-date cache overwrite than the one the manifest records.
+    fetched_date = manifest.get("universe_fetched_date")
+    if fetched_date is None:
+        raise ValueError(
+            "run_manifest.json missing universe_fetched_date; cannot pin "
+            "sector map / universe snapshot"
+        )
+
     if sector_map is None:
-        fetched_date = manifest.get("universe_fetched_date")
-        if fetched_date is None:
-            raise ValueError(
-                "run_manifest.json missing universe_fetched_date; cannot pin sector map"
-            )
         pinned_path = _resolve_pinned_sector_map_path(cache_dir, fetched_date)
         if not pinned_path.exists():
             raise FileNotFoundError(
@@ -270,12 +306,19 @@ def aggregate_findings(
         sector_map = json.loads(pinned_path.read_text(encoding="utf-8"))
 
     if universe_tickers is None:
-        fetched_date = manifest.get("universe_fetched_date")
         snapshot_path = (
             cache_dir / "universe-snapshots" / f"sp_1500_{fetched_date}.csv"
         )
-        if snapshot_path.exists():
-            universe_tickers = _load_universe_tickers_from_snapshot(snapshot_path)
+        if not snapshot_path.exists():
+            raise FileNotFoundError(
+                f"Pinned universe snapshot not found at {snapshot_path}. "
+                "The aggregator requires the snapshot for sector-baseline "
+                "computation; refusing to silently omit the universe-baseline "
+                "metrics. Re-fetch with load_universe_variant('sp_1500') at "
+                "the matching fetch date."
+            )
+        universe_tickers = _load_universe_tickers_from_snapshot(snapshot_path)
+        _verify_universe_hash(manifest, universe_tickers)
 
     sector = compute_sector_breakdown(
         aplus_rows, sector_map, universe_tickers=universe_tickers

@@ -185,10 +185,13 @@ def test_aggregate_findings_writes_full_report(tmp_path: Path):
     _write_ohlcv_parquet(cache_dir, "AAA", end=aplus_date, n_bars=25)
     _write_ohlcv_parquet(cache_dir, "BBB", end=aplus_date, n_bars=25)
 
+    # Caller passes sector_map AND universe_tickers explicitly to bypass
+    # the cache-binding paths; the aggregator should use these directly.
     findings = agg.aggregate_findings(
         run_dir,
         cache_dir=cache_dir,
         sector_map={"AAA": "Information Technology", "BBB": "Financials"},
+        universe_tickers=["AAA", "BBB"],
     )
     assert findings["aplus_total"] == 2
     assert findings["universe_size_post_dedupe"] == 1500
@@ -200,6 +203,98 @@ def test_aggregate_findings_writes_full_report(tmp_path: Path):
     assert findings["data_quality"]["aplus_absent_earnings_fraction"] == 0.5
     assert findings["sector_breakdown"]["total_aplus"] == 2
     assert findings["liquidity"]["priced_count"] == 2
+
+
+def _write_universe_snapshot(snaps_dir: Path, fetched_date: str, tickers: list[str]) -> None:
+    snaps_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = snaps_dir / f"sp_1500_{fetched_date}.csv"
+    lines = [f"# fetched: {fetched_date}", "ticker,source_url"]
+    for t in tickers:
+        lines.append(f"{t},http://example/{t}")
+    csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _hash_universe(tickers: list[str]) -> str:
+    import hashlib
+    return hashlib.sha256("\n".join(tickers).encode("utf-8")).hexdigest()
+
+
+def test_aggregate_findings_requires_pinned_snapshot_for_universe_baseline(tmp_path: Path):
+    """When the snapshot CSV is missing the aggregator must fail loudly, not silently
+    omit the sector-baseline metrics."""
+    run_dir = tmp_path / "run"
+    cache_dir = tmp_path / "cache"
+    aplus_date = date(2025, 6, 2)
+    _write_aplus_csv(
+        run_dir / "aplus_signals.csv",
+        [
+            {"ticker": "AAA", "date": aplus_date.isoformat(), "entry_target": "100", "initial_stop": "90",
+             "next_earnings_date": "", "absent_earnings_data": "0"},
+        ],
+    )
+    _write_manifest(
+        run_dir / "run_manifest.json",
+        {
+            "git_sha": "deadbeef",
+            "universe_size": 1,
+            "universe_fetched_date": "2026-04-25",
+            "universe_hash": _hash_universe(["AAA"]),
+            "trading_days": 1,
+            "evaluations_total": 1,
+            "ticker_days_total": 1,
+            "ohlcv_hits": 1, "ohlcv_misses": 0,
+            "earnings_hits": 1, "earnings_misses": 0,
+        },
+    )
+    _write_ohlcv_parquet(cache_dir, "AAA", end=aplus_date, n_bars=25)
+    snaps = cache_dir / "universe-snapshots"
+    snaps.mkdir(parents=True, exist_ok=True)
+    (snaps / "sp_1500_2026-04-25_sectors.json").write_text(
+        json.dumps({"AAA": "Information Technology"}), encoding="utf-8"
+    )
+    # Snapshot CSV intentionally missing.
+    with pytest.raises(FileNotFoundError, match="Pinned universe snapshot not found"):
+        agg.aggregate_findings(run_dir, cache_dir=cache_dir)
+
+
+def test_aggregate_findings_rejects_universe_hash_mismatch(tmp_path: Path):
+    """If the snapshot CSV's tickers don't reproduce the manifest's universe_hash,
+    the aggregator must raise. Defends against a same-date snapshot substitution."""
+    run_dir = tmp_path / "run"
+    cache_dir = tmp_path / "cache"
+    aplus_date = date(2025, 6, 2)
+    _write_aplus_csv(
+        run_dir / "aplus_signals.csv",
+        [
+            {"ticker": "AAA", "date": aplus_date.isoformat(), "entry_target": "100", "initial_stop": "90",
+             "next_earnings_date": "", "absent_earnings_data": "0"},
+        ],
+    )
+    expected_tickers = ["AAA"]
+    _write_manifest(
+        run_dir / "run_manifest.json",
+        {
+            "git_sha": "deadbeef",
+            "universe_size": 1,
+            "universe_fetched_date": "2026-04-25",
+            "universe_hash": _hash_universe(expected_tickers),
+            "trading_days": 1,
+            "evaluations_total": 1,
+            "ticker_days_total": 1,
+            "ohlcv_hits": 1, "ohlcv_misses": 0,
+            "earnings_hits": 1, "earnings_misses": 0,
+        },
+    )
+    _write_ohlcv_parquet(cache_dir, "AAA", end=aplus_date, n_bars=25)
+    snaps = cache_dir / "universe-snapshots"
+    # Same date filename; DIFFERENT membership — hash mismatch path.
+    _write_universe_snapshot(snaps, "2026-04-25", ["AAA", "BBB"])  # extra ticker not in manifest
+    (snaps / "sp_1500_2026-04-25_sectors.json").write_text(
+        json.dumps({"AAA": "Information Technology", "BBB": "Industrials"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="hash mismatch"):
+        agg.aggregate_findings(run_dir, cache_dir=cache_dir)
 
 
 def test_aggregate_findings_pins_sector_map_to_manifest_fetch_date(tmp_path: Path):
@@ -225,6 +320,7 @@ def test_aggregate_findings_pins_sector_map_to_manifest_fetch_date(tmp_path: Pat
             "git_sha": "deadbeef",
             "universe_size": 1,
             "universe_fetched_date": "2026-04-25",
+            "universe_hash": _hash_universe(["AAA"]),
             "trading_days": 1,
             "evaluations_total": 1,
             "ticker_days_total": 1,
@@ -250,11 +346,8 @@ def test_aggregate_findings_pins_sector_map_to_manifest_fetch_date(tmp_path: Pat
     (snaps / "sp_1500_2026-04-25_sectors.json").write_text(
         json.dumps({"AAA": "Information Technology"}), encoding="utf-8"
     )
-    # Also write a same-dated snapshot CSV so universe_tickers loads.
-    (snaps / "sp_1500_2026-04-25.csv").write_text(
-        "# fetched: 2026-04-25\nticker,source_url\nAAA,http://example\n",
-        encoding="utf-8",
-    )
+    # Same-dated snapshot CSV with the matching universe_hash.
+    _write_universe_snapshot(snaps, "2026-04-25", ["AAA"])
     findings = agg.aggregate_findings(run_dir, cache_dir=cache_dir)
     sectors = {b["sector"]: b for b in findings["sector_breakdown"]["by_sector"]}
     assert "Information Technology" in sectors
