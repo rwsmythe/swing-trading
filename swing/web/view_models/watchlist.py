@@ -47,10 +47,32 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
     try:
         with conn:
             rows = _sort_by_proximity(list_active_watchlist(conn))
-            row = conn.execute("SELECT id FROM evaluation_runs ORDER BY run_ts DESC LIMIT 1").fetchone()
+            # Mixed-anchor fix (closes the last surface from the Bug 7 family):
+            # bind candidates_by_ticker (and the flag_tags it feeds) to the
+            # pipeline's OWN eval via pipeline_runs.evaluation_run_id when
+            # populated. Otherwise a post-pipeline standalone `swing eval`
+            # could silently win the MAX(run_ts) race and seed flag tags
+            # from an eval the pipeline did not chart — the same anchor
+            # inconsistency the dashboard fix (commit 1cfc117 Major 2) and
+            # build_watchlist_expanded (commit 4678398) already closed. Falls
+            # back to latest eval only for legacy NULL-FK rows or fresh installs.
+            pipeline_eval_row = conn.execute(
+                """SELECT evaluation_run_id FROM pipeline_runs
+                   WHERE state = 'complete'
+                   ORDER BY finished_ts DESC LIMIT 1"""
+            ).fetchone()
+            pipeline_eval_id = (
+                pipeline_eval_row[0] if pipeline_eval_row else None
+            )
             candidates: list[Candidate] = []
-            if row is not None:
-                candidates = fetch_candidates_for_run(conn, row[0])
+            if pipeline_eval_id is not None:
+                candidates = fetch_candidates_for_run(conn, pipeline_eval_id)
+            else:
+                row = conn.execute(
+                    "SELECT id FROM evaluation_runs ORDER BY run_ts DESC LIMIT 1"
+                ).fetchone()
+                if row is not None:
+                    candidates = fetch_candidates_for_run(conn, row[0])
     finally:
         conn.close()
     by_ticker = {c.ticker: c for c in candidates}
