@@ -85,8 +85,8 @@ The D3 run manifest will record:
 
 ## Run details (D3)
 
-- **Production DB read:** `~/swing-data/swing.db` (ro, URI mode), 2026-04-25 ~20:45 UTC.
-- **Harness git SHA at run time:** `bcc3bc43e96ed3ed5464394febe23aa8e0d14cfc` (D2 head).
+- **Production DB read:** `~/swing-data/swing.db` (ro, URI mode), `run_timestamp_utc` 2026-04-25T20:56:00+00:00 (regenerated under D5 R1; the original D3 commit's run was 2026-04-25T20:45:02+00:00 at SHA `bcc3bc43`, superseded).
+- **Harness git SHA at run time:** `69dcba7d22bf7eb93e99f338966f33b0b9627ae8` (post-D5-R1 head; the regenerated artifacts in `out/run_20260425/` are the canonical D3 outputs).
 - **Qualifying evaluation_runs:** 14 (`run_id ∈ {2..15}`).
 - **Skipped evaluation_runs:** 1 (`run_id=1`, `finviz_csv_basename=finviz16Apr2026.csv`, reason=`csv_missing` — the file was rejected on 2026-04-19 and renamed with a timestamp suffix; literal-basename resolution does not find it).
 - **action_session_date range:** 2026-04-20 → 2026-04-27.
@@ -246,7 +246,7 @@ These are open questions the findings might prompt; the study does not answer th
 | File | Contents | Committed |
 |---|---|---|
 | `out/run_20260425/run_manifest.json` | Provenance: harness git SHA, DB path + read timestamp, qualifying/skipped run lists, action_session_date range, total evaluations, bucket/blocker counts, doctrine-defensible miss set membership, path-resolution rule, consistency warnings | yes |
-| `out/run_20260425/per_criterion_blockers.csv` | Production-gated blocker counts per criterion + `<aplus>` sentinel + `<error>` row | yes |
+| `out/run_20260425/per_criterion_blockers.csv` | Production-gated blocker counts per criterion + `<aplus>` sentinel + `<error>` (operational failure) sentinel + `<excluded>` (intentional exclusion) sentinel | yes |
 | `out/run_20260425/bucket_distribution.csv` | Per-bucket counts + watch:A+ ratio | yes |
 | `out/run_20260425/per_run_summary.csv` | Per-run watch:A+ ratio (undefined for zero-A+ runs) | yes |
 | `out/run_20260425/near_aplus_defensible_sample.csv` | All 15 defensible rows | yes |
