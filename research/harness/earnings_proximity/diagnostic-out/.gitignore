@@ -1,0 +1,6 @@
+# Per-(ticker, date) evaluation logs are large (32-154 MB each).
+# binding_constraints.csv is the aggregated counts read by the diagnostic
+# report; evaluations.csv is intermediate raw data, regenerable by re-running
+# `python -m research.harness.earnings_proximity.scripts.diagnostic_run` with
+# the same flags as the matching run_manifest.json.
+evaluations.csv
