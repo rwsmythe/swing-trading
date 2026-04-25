@@ -92,4 +92,97 @@ These are confounds the parity check inherits and cannot eliminate. They are doc
 
 ---
 
-*The sections below — Run details, Results, Tier classification, Disagreement characterization, Findings, What this study does NOT say, Caveats and limitations, Open questions for the operator — are intentionally absent from this D1 commit. They will be appended only after D3's outputs are observed, per the run procedure.*
+## Run details (D4 — appended post-D3)
+
+- **Production evaluation_run_id:** 15
+- **Production run_ts:** 2026-04-24T21:07:41
+- **action_session_date:** 2026-04-25
+- **data_asof_date:** 2026-04-24
+- **Finviz CSV:** `data/finviz-inbox/finviz24Apr2026.csv` — SHA-256 `4969115f919e3528323c93d3aaf80fdd3315c82466ebcd818339b90354e192a4`
+- **Harness git SHA at D3 run:** `59a86c6e16d16cb7437584bf1b6811501fbf4915` (D2 commit)
+- **D3 run timestamp:** 2026-04-25T06:05:00 (≈ 9 hours after the production run)
+- **rs-universe:** version `2026-04-24-1`, hash `bb7b38792ce6170627cfad6299d26efb4514de2ad375cad70617502d3a9d977c`, 516 tickers — **identical** to the values recorded on the production eval row (`universe_match_with_production: true`).
+- **`current_equity`:** $7,500. Derivation: `sizing_equity(real_equity=current_equity(starting=$1,200, exits, cash_movements), floor=$7,500) → real=$1,298 sized=$7,500`. Real equity is below the risk floor, so sizing equity = floor. Production-time real-equity is unobserved; any small change in real-equity that does not cross the $7,500 floor is invisible to `risk_feasibility` because sizing equity is clamped above by the floor in both states.
+- **OHLCV fetches:** 595 cache hits, 0 cache misses. All bars served from production's parquet cache (`~/swing-data/prices-cache/`) at `as_of_date=2026-04-24`. Production populated this cache at production-run time; the parity reconstruction therefore reads the **same byte content** production read at evaluation time. yfinance was not contacted during the D3 run.
+- **Tickers compared:** 80. Production candidate set: 81 rows (1 excluded `UCO` ETF/fund-blocklist row, 80 `aplus|watch|skip`). Comparison set excludes the 1 `UCO` excluded-bucket row per D1 §"Comparison primitive."
+- **Bucket distribution:** 19 production-`watch` and 61 production-`skip`. Zero production-`aplus` and zero production-`error`.
+- **Tickers skipped from comparison at D3 time:** 0.
+
+## Results
+
+| Metric | Numerator | Denominator | Rate |
+|---|---:|---:|---:|
+| Bucket agreement | 80 | 80 | **100.0000 %** |
+| Per-criterion agreement | 1,440 | 1,440 | **100.0000 %** |
+
+Per-bucket transition table:
+
+| Production bucket | Harness bucket | Count |
+|---|---|---:|
+| watch | watch | 19 |
+| skip | skip | 61 |
+| (any other transition) | — | 0 |
+
+## Tier classification
+
+Applying D1's frozen thresholds (§"Decision tiers"): bucket agreement 100 % ≥ 99 % AND per-criterion agreement 100 % ≥ 99 % → **Tier 1 — Parity holds.**
+
+The anti-rationalization clause is not load-bearing here: both rates exceed the Tier 1 threshold by the maximum possible margin. There are no near-boundary cases to discuss.
+
+## Disagreement characterization
+
+None. There were zero bucket-level disagreements and zero per-(ticker, criterion) disagreements.
+
+For completeness: across all 18 production criteria (TT1–TT8 in `trend_template`; `prior_trend`, `ma_stack_10_20_50`, `ma_short_rising`, `proximity_20ma`, `adr`, `pullback`, `tightness`, `vcp_volume_contraction`, `orderliness` in `vcp`; `risk_feasibility` in `risk`) for each of 80 tickers, both sides emitted matching `pass`/`fail`/`na` results. Every cell of the 80×18 result matrix matches.
+
+## Findings (descriptive, not prescriptive)
+
+1. **For production evaluation_run 15 with identical reconstructed inputs, harness and production are observationally equivalent classifiers.** Bucket assignment matched on 80 of 80 tickers (100 %); per-(ticker, criterion) `pass`/`fail`/`na` results matched on 1,440 of 1,440 pairs (100 %). The Tier 1 classification meets D1's frozen 99/99 threshold by the maximum possible margin.
+
+2. **The harness's BatchContext universe and `current_equity` derivation, when re-run via the parity reconstruction, are byte-faithful to the production run's recorded provenance.** rs-universe version (`2026-04-24-1`) and SHA-256 hash (`bb7b…977c`) on the eval row match the current `reference/rs-universe.csv`; sizing equity ($7,500) equals the production formula evaluated against the present account state. There is no observable parity drift on the universe-shape axis or the `current_equity` axis on this run.
+
+3. **OHLCV freshness was not a residual confound for this run.** All 595 PriceFetcher requests served from the on-disk parquet cache at `as_of_date=2026-04-24`; zero cache misses, zero yfinance contacts. The harness consumed the same byte content production consumed. Any per-criterion disagreement that could plausibly arise from yfinance recent-bar revisions or dividend/split adjustments did not have an opportunity to manifest on this run.
+
+4. **The candidate-sparsity diagnostic's residual ~50× rate gap is not explained by harness-vs-production parity drift on this single-run sample.** The diagnostic measured Russell-3000-5× at 0.00977 % per ticker-day vs the Session 2a anchor of ~0.500 %. With Tier 1 parity on this run, candidates 1 (Finviz pre-screening), 2 (time-period regime), and the Session 2a anchor's broad Wilson CI (consistent with true rates as low as 0.05 %) remain the named explanations for the residual gap. **This finding does not establish that parity holds globally** — see §"What this study does NOT say."
+
+5. **The parity reconstruction's faithfulness to `_step_evaluate` is itself audited by the 100 % agreement on this run.** A divergence in `BatchContext` shape, `current_equity` derivation, or OHLCV slicing would generically show up as systematic per-criterion disagreement (especially on `TT8_rs_rank` for universe drift, on `risk_feasibility` for equity drift, and on TT1–TT7 for OHLCV drift). The empirical 0/1,440 disagreement rate is consistent with the reconstruction being faithful for this input set; it is not a proof of faithfulness for inputs not exercised by this run.
+
+6. **Eval 15 is a "no-A+" run.** Production produced 0 A+ signals on 2026-04-24. The surfaces explicitly NOT compared (entry_target / initial_stop / pivot rounding) therefore did not bind on this run. A future run with one or more A+ candidates would exercise that comparison surface; this run does not.
+
+## What this study does NOT say
+
+- This study does **NOT** establish parity globally. n = 1 production run, 80 tickers, 1,440 per-criterion pairs. The Tier 1 classification on this sample is descriptive of THIS run's inputs only. The named follow-on for tighter inference is multi-run characterization across a broader window of production runs (e.g., the 8 most-recent runs in `evaluation_runs`); that follow-on is out-of-scope here.
+- This study does **NOT** test alternative explanations for the candidate-sparsity diagnostic's residual ~50× rate gap. Hypotheses 4 (time-period regime), 6 (Finviz universe reconstruction), and Session 2a anchor noise are still on the table after this study.
+- This study does **NOT** recommend any production-code change. Tier 1 means "parity holds on this run"; it is not an endorsement of any specific production code path. Conversely, it is not a verdict that the harness is correct in any deeper sense — only that harness and production agree on this run.
+- This study does **NOT** test the harness's behavior on tickers that production's `_step_evaluate` placed in `bucket = excluded` or `bucket = error`. By the D1 §"Comparison primitive," those rows are out of comparison scope.
+- This study does **NOT** verify that the parity reconstruction would faithfully mirror production under conditions that were not exercised on this run — e.g., a run where the Finviz CSV contains tickers absent from `rs-universe.csv` (would route through `compute_rs`'s `fallback_spy` branch); a run with a held-position ticker that would otherwise be excluded; a run where `as_of_date` resolves to a different session than `data_asof_date`. These untested branches are listed as caveats, not as known-broken paths.
+- This study does **NOT** test parity at the granularity of `Candidate.pivot`, `Candidate.initial_stop`, `Candidate.adr_pct`, `Candidate.rs_rank` numerics. The D1 §"Surfaces explicitly NOT compared" excludes these by design (production rounds; harness retains floats).
+
+## Caveats and limitations
+
+- **Single-run sample size.** As named in D1 §"Sample-size limitation," 80 tickers × 18 criteria = 1,440 per-criterion pairs is at the upper end of the brief's anticipated 420–700 range, but is small in absolute terms. The classification rests on this single sample.
+- **No A+ candidates on the run.** Eval 15 had zero A+ outcomes. The A+-only fields (`pivot`, `initial_stop`, `next_earnings`) and any production-vs-harness rounding semantics on those fields were not exercised. A follow-on run on a date with A+ activity would tighten this caveat.
+- **OHLCV freshness residual is dormant on this run, not eliminated as a class.** Production's parquet cache for `as_of_date=2026-04-24` was already populated at production-run time and the parity reconstruction read it cold. A run where some tickers are NOT cache-hit (e.g., a finviz CSV that introduces a brand-new ticker post-production) would re-fetch via yfinance and could exhibit recent-bar drift. The 0-cache-miss outcome here is an empirical observation, not a structural invariant.
+- **`current_equity` reconstruction approximation.** The D1-acknowledged confound did not bite on this run because real equity ($1,298) is below the risk floor ($7,500), so sizing equity is floor-clamped to $7,500 in both production-time and reconstruction-time states. A future run where real equity has moved above the floor would expose any production-vs-reconstruction-time real-equity drift to the comparison.
+- **Held-positions reconstruction.** No held-position ticker is in eval 15's `aplus|watch|skip` comparison set (the only excluded ticker, `UCO`, is the configured ETF/fund block, not a held position). Held-position-driven OHLCV-fetch confounds are dormant on this run.
+- **Survivorship-bias inheritance.** The harness universe is current-roster `rs-universe.csv`; the parity check inherits the same survivorship profile as the underlying production run. Since the universe matches with full byte-fidelity, no additional survivorship drift was introduced relative to production.
+- **Eval 15 is a single date in a single market regime (mid-April 2026, post-Tranche-C-housekeeping).** Findings would not necessarily generalize to other regimes; broader-time-period parity is not within scope.
+- **The parity reconstruction itself is new code (`research/parity/` landed in D2 commit `59a86c6`); its faithfulness to `_step_evaluate` is exercised by 31 unit tests on synthetic fixtures plus the empirical 100 % agreement on this run.** Tests covering inputs not exercised here (Finviz tickers absent from rs-universe, held-position ticker overlap, A+ outcomes, NULL `rs_universe_hash` rows, multi-CSV inboxes, etc.) are present in `tests/research/parity/` but the empirical validation surface is necessarily a strict subset of all branches.
+
+## Open questions for the operator
+
+These are open questions the findings might prompt; the study does not answer them. Each is phrased as a question, with no embedded study-design prescription — choice of how (or whether) to follow up is the operator's.
+
+- Does the Tier 1 result on n = 1 run cross the operator's threshold for declaring the harness-vs-production parity-drift hypothesis (hypothesis 5 from the candidate-sparsity diagnostic) NOT to be the dominant residual-gap explanation, or is multi-run characterization (e.g., the 8 most-recent eval rows in the production DB) needed before drawing that inference?
+- Given Tier 1 parity, does the operator want to scope hypothesis 6 (Finviz universe reconstruction) next, or hypothesis 4 (time-period regime), or accept Session 2a anchor noise as the residual-gap explanation without further investigation?
+- Is a parity run on a date with one or more production A+ candidates worth scheduling, specifically to exercise the `pivot` / `initial_stop` / A+-fields-rounding surface that this run did not exercise?
+- Should the parity comparator be added to a periodic maintenance check (e.g., a daily or weekly post-pipeline regression run) so that future drift would be detected automatically, or is the single-run-on-demand posture sufficient?
+
+## Run artifacts
+
+| File | Contents | Committed |
+|---|---|---|
+| `research/parity/out/run_20260425_eval_15/run_manifest.json` | Provenance: harness git SHA, eval_run_id, finviz hash, universe match, equity derivation, cache stats, summary counts, tier | yes |
+| `research/parity/out/run_20260425_eval_15/parity_table.csv` | One row per ticker (80 rows): prod_bucket, harness_bucket, bucket_match, criterion_total/match_count, per-criterion disagreement summary | yes |
+| `research/parity/out/run_20260425_eval_15/summary.csv` | Single-row aggregate + tier | yes |
+
