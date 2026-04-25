@@ -241,8 +241,11 @@ def run_replay(
     # Validate smoke ticker subset is fully in the universe. Tickers outside
     # the universe are silently ignored downstream (replay iterates the
     # universe, not the smoke set), which would be a confusing UX bug.
+    # Round 3 review minor: ALSO drop out-of-universe tickers from the fetch
+    # list — they would burn yfinance quota for nothing.
     universe_set = set(universe_tickers_full)
     out_of_universe = sorted(t for t in smoke_tickers if t not in universe_set)
+    in_universe_smoke = [t for t in smoke_tickers if t in universe_set]
     if out_of_universe:
         warnings.warn(
             f"Smoke ticker(s) not in RS universe: {out_of_universe}. "
@@ -251,7 +254,7 @@ def run_replay(
             stacklevel=2,
         )
 
-    fetch_tickers = sorted({*smoke_tickers, _BENCHMARK_TICKER})
+    fetch_tickers = sorted({*in_universe_smoke, _BENCHMARK_TICKER})
 
     # --- Fetch OHLCV + earnings (cached). Real per-ticker hit/miss telemetry. ---
     ohlcv, ohlcv_stats = fetchers.load_ohlcv_with_stats(
@@ -325,7 +328,10 @@ def run_replay(
     notes = [
         "Smoke run — shape check only; not the full study.",
         f"Signal total before variant filtering: {len(signals)}",
-        f"Smoke ticker filter: {','.join(smoke_tickers)} (subset of universe).",
+        (
+            f"Requested smoke tickers: {','.join(smoke_tickers)}; "
+            f"evaluated subset of universe: {','.join(in_universe_smoke)}."
+        ),
     ]
     if len(smoke_tickers) < len(universe_tickers_full):
         notes.append(
