@@ -1,5 +1,13 @@
 """OHLCV + earnings fetchers with disk caching for the replay harness.
 
+Scope
+-----
+US-equities only. The coverage predicate :func:`_covers` clamps to the
+NYSE calendar (``XNYS``) — passing tickers with a non-NYSE-aligned
+trading calendar (LSE, TSX, etc.) would produce wrong coverage decisions.
+The harness's broader research scope (RS universe = SPX + NDX) makes
+this assumption load-bearing rather than incidental.
+
 Caching strategy
 ----------------
 - **OHLCV** — per-ticker Parquet file under ``<cache_dir>/ohlcv/<TICKER>.parquet``.
@@ -193,6 +201,23 @@ def _covers(cached: pd.DataFrame, start: date, end: date) -> bool:
        report "not covered" because Sunday is not a session and so the
        cache's Friday bar fails the literal ``end - 1 day = Sunday``
        comparison.
+
+    Trade-off (accepted, not fixed)
+    -------------------------------
+    For ``end > today``, the implementation requires the cache to cover
+    up through the most recent session at-or-before ``today - 1 day`` —
+    i.e., yesterday's session, not today's. A stricter predicate would
+    require today's session and refetch on every run between market
+    close and the next morning's run, BUT during market hours yfinance
+    has only an in-progress today bar (or none yet), so the strict
+    predicate would either (a) trigger a wasted refetch every call, or
+    (b) cache today's partial bar and serve stale data thereafter. The
+    research-replay use case (windows ending weeks-to-months in the
+    past) is insensitive to a one-session lag at the rightmost edge of
+    the cache; the wasted-refetch failure mode this predicate was built
+    to fix (Session 2c Open Issue #3) was the explicit prior cost. If a
+    future use case becomes lag-sensitive, revisit with a market-hours-
+    aware clamp rather than restoring the strict-but-wasteful semantics.
     """
     if cached.empty:
         return False
