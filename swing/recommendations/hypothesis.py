@@ -68,6 +68,34 @@ class HypothesisMatch:
     candidate_ticker: str = ""
 
 
+@dataclass(frozen=True)
+class HypothesisProgressSummary:
+    """Slim view of one hypothesis's current sample-progress + tripwire
+    status, passed into `prioritize_recommendations` so the function stays
+    pure (no DB access). Compute via `compute_hypothesis_progress_breakdown`
+    or the lighter `compute_hypothesis_progress` repo helper."""
+    hypothesis_id: int
+    hypothesis_name: str
+    current_sample: int
+    target_sample: int
+    any_tripwire_fired: bool
+
+
+@dataclass(frozen=True)
+class CandidateRecommendation:
+    """One row in the operator-facing prioritized recommendation list.
+    Carries enough context that a downstream UI/CLI can pre-fill a
+    `swing trade entry --hypothesis "<label>"` command without re-
+    invoking the matcher."""
+    candidate_ticker: str
+    hypothesis_id: int
+    hypothesis_name: str
+    suggested_label_descriptive: str
+    priority_hint: float
+    distance_to_target: int
+    tripwire_fired: bool
+
+
 def _non_pass_criterion_names(candidate: Candidate) -> set[str]:
     """Return the set of criterion names whose result is NOT 'pass'.
 
@@ -188,3 +216,62 @@ def match_candidate_to_hypotheses(
             candidate_ticker=candidate.ticker,
         ))
     return matches
+
+
+def prioritize_recommendations(
+    matches: Iterable[HypothesisMatch],
+    *,
+    registry: Iterable[HypothesisRegistryEntry],
+    progress: Iterable[HypothesisProgressSummary],
+) -> list[CandidateRecommendation]:
+    """Rank matches by hypothesis-investigation value.
+
+    Sort key (lower → higher priority):
+      1. tripwire_fired (False before True; tripwire-fired hypotheses
+         drop to bottom — operator should evaluate before more samples).
+      2. -distance_to_target (greater distance → higher priority; we
+         negate so smaller key = better).
+      3. priority_hint (lower = closer-to-pivot or other within-hypothesis
+         signal).
+      4. candidate_ticker (alpha, deterministic tie-breaker).
+
+    Matches against non-active hypotheses (paused, closed-*) are dropped
+    even if the matcher returned them — defense-in-depth so a stale
+    in-memory registry can't surface a closed hypothesis to the operator.
+    Each surviving match becomes one `CandidateRecommendation`; multi-
+    match candidates appear once per matched hypothesis (the caller
+    decides whether to dedupe by ticker).
+    """
+    registry_list = list(registry)
+    active_by_id = {h.id: h for h in registry_list if h.status == "active"}
+    progress_by_id = {p.hypothesis_id: p for p in progress}
+
+    recs: list[CandidateRecommendation] = []
+    for m in matches:
+        h = active_by_id.get(m.hypothesis_id)
+        if h is None:
+            continue
+        prog = progress_by_id.get(m.hypothesis_id)
+        # If progress wasn't supplied for this hypothesis, treat as 0 of
+        # target (worst-case "needs samples" — a missing progress entry
+        # should never silently demote priority).
+        current = prog.current_sample if prog else 0
+        tripwire = prog.any_tripwire_fired if prog else False
+        distance = max(0, h.target_sample_size - current)
+        recs.append(CandidateRecommendation(
+            candidate_ticker=m.candidate_ticker,
+            hypothesis_id=m.hypothesis_id,
+            hypothesis_name=m.hypothesis_name,
+            suggested_label_descriptive=m.suggested_label_descriptive,
+            priority_hint=m.priority_hint,
+            distance_to_target=distance,
+            tripwire_fired=tripwire,
+        ))
+
+    recs.sort(key=lambda r: (
+        r.tripwire_fired,
+        -r.distance_to_target,
+        r.priority_hint,
+        r.candidate_ticker,
+    ))
+    return recs
