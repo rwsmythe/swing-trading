@@ -1,6 +1,7 @@
 {
-  "harness_git_sha": "bcc3bc43e96ed3ed5464394febe23aa8e0d14cfc",
-  "run_timestamp_utc": "2026-04-25T20:45:02+00:00",
+  "harness_git_sha": "69dcba7d22bf7eb93e99f338966f33b0b9627ae8",
+  "harness_git_dirty": false,
+  "run_timestamp_utc": "2026-04-25T20:56:00+00:00",
   "production_db_path": "C:\\Users\\rwsmy\\swing-data\\swing.db",
   "finviz_inbox_dir": "data\\finviz-inbox",
   "qualifying_run_count": 14,
@@ -119,6 +120,7 @@
     "end": "2026-04-27"
   },
   "total_evaluations": 1209,
+  "candidate_criteria_row_count": 20700,
   "bucket_counts": {
     "skip": 898,
     "watch": 249,
@@ -137,7 +139,8 @@
     "TT1_above_150_200": 12,
     "TT4_50_above_150_200": 17,
     "prior_trend": 13,
-    "<error>": 59,
+    "<error>": 45,
+    "<excluded>": 14,
     "TT3_200_rising": 6,
     "<aplus>": 3
   },
