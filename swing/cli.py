@@ -61,6 +61,39 @@ def db_migrate(ctx: click.Context) -> None:
     click.echo(f"DB at {db_path} - schema version {version}")
 
 
+@main.command("db-backup")
+@click.option("--force", is_flag=True, default=False,
+              help="Bypass the once-per-ISO-week check and back up unconditionally.")
+@click.pass_context
+def db_backup(ctx: click.Context, force: bool) -> None:
+    """Snapshot the production DB to <backups_dir>/swing-YYYYWW.db.
+
+    Default behavior: only back up if the current ISO week's file does not
+    already exist. `--force` skips the check. After a successful backup,
+    older weekly snapshots are pruned to the 12 most-recent (~3 months).
+    """
+    from swing.data.backup import (
+        compute_backup_destination, do_backup, prune_old_backups, should_backup,
+    )
+
+    cfg = ctx.obj["config"]
+    db_path = cfg.paths.db_path
+    if not db_path.exists():
+        raise click.ClickException(f"DB not found at {db_path} — run `swing db-migrate` first.")
+
+    now = datetime.now()
+    if not force and not should_backup(cfg.paths.backups_dir, now):
+        target = compute_backup_destination(now, cfg.paths.backups_dir)
+        click.echo(f"no backup needed for current week ({target.name} already exists)")
+        return
+
+    path = do_backup(db_path, cfg.paths.backups_dir, now=now)
+    click.echo(f"backup written: {path}")
+    deleted = prune_old_backups(cfg.paths.backups_dir, keep=12)
+    if deleted:
+        click.echo(f"pruned {len(deleted)} old weekly backup(s)")
+
+
 @main.command("eval")
 @click.option("--csv", "csv_path", required=True, type=click.Path(exists=True, dir_okay=False))
 @click.option("--as-of-date", "as_of_date_str", default=None,
@@ -487,6 +520,183 @@ def trade_advisory_cmd(ctx, trade_id, current_price, sma10, sma20, sma50,
         return
     for s in sugs:
         click.echo(f"  [{s.rule}] {s.message}")
+
+
+@trade_group.command("analyze")
+@click.argument("trade_id", type=int)
+@click.pass_context
+def trade_analyze_cmd(ctx, trade_id):
+    """Per-trade retrospective: recommendation context + criteria + deviations.
+
+    Reads only — composes from production tables (trades, exits, candidates,
+    candidate_criteria, evaluation_runs). Manually-sourced trades render with
+    a sentinel and skip the deviations section. See
+    `docs/trade-analyze-cli-brief.md` for the schema joins this command
+    automates.
+    """
+    from swing.data.db import connect
+    from swing.journal.analyze import analyze_trade
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        try:
+            a = analyze_trade(conn, trade_id)
+        except ValueError as exc:
+            raise click.ClickException(str(exc))
+    finally:
+        conn.close()
+
+    for line in _render_trade_analysis(a):
+        click.echo(line)
+
+
+def _fmt_optional_money(value: float | None) -> str:
+    return f"${value:.2f}" if value is not None else "n/a"
+
+
+def _fmt_optional_pct(value: float | None) -> str:
+    return f"{value * 100:.1f}%" if value is not None else "n/a"
+
+
+def _render_trade_analysis(a) -> list[str]:
+    """Render `TradeAnalysis` as scannable text. Returns lines (no trailing
+    newlines); CLI emits each via `click.echo`. Pure function — easy to test
+    independently of click."""
+    from swing.journal.analyze import TradeAnalysis  # local for cycle-free imports
+    assert isinstance(a, TradeAnalysis)
+
+    lines: list[str] = []
+    header = f"TRADE #{a.trade_id} — {a.ticker}"
+    lines.append(header)
+    lines.append("=" * len(header))
+    lines.append(f"Status: {a.status}")
+    lines.append(
+        f"Entry: {a.entry_date} @ ${a.entry_price:.2f} × "
+        f"{a.initial_shares} sh"
+    )
+    lines.append(
+        f"Initial stop: ${a.initial_stop:.2f}     "
+        f"Current stop: ${a.current_stop:.2f}"
+    )
+    lines.append(f"Hypothesis: {a.hypothesis_label or '(none)'}")
+    lines.append(f"Notes: {a.notes or '(none)'}")
+    lines.append("")
+
+    # Recommendations section
+    if a.recommendations:
+        lines.append(f"RECOMMENDATIONS ({len(a.recommendations)})")
+        lines.append("-" * 21)
+        for rec in a.recommendations:
+            lines.append(
+                f"[{rec.eval_run_id}] {rec.eval_run_action_session_date} — "
+                f"bucket={rec.bucket}"
+            )
+            lines.append(
+                f"  pivot={_fmt_optional_money(rec.pivot)}  "
+                f"rec_stop={_fmt_optional_money(rec.initial_stop)}  "
+                f"close={_fmt_optional_money(rec.close_at_eval)}"
+            )
+            rs_rank_disp = rec.rs_rank if rec.rs_rank is not None else "n/a"
+            rs_excess_disp = (
+                _fmt_optional_pct(rec.rs_return_12w_vs_spy)
+                if rec.rs_return_12w_vs_spy is not None else "n/a"
+            )
+            lines.append(
+                f"  rs_rank={rs_rank_disp}  rs_vs_spy={rs_excess_disp}"
+            )
+            failed = [c for c in rec.criteria if c.result == "fail"]
+            passed = [c for c in rec.criteria if c.result == "pass"]
+            if failed:
+                lines.append(f"  Failed criteria ({len(failed)}):")
+                for c in failed:
+                    val = c.value if c.value is not None else ""
+                    rule = f"  ({c.rule})" if c.rule else ""
+                    lines.append(
+                        f"    {c.layer}/{c.criterion_name}: {val}{rule}"
+                    )
+            if passed:
+                # Group counts by layer for the all-passed summary
+                from collections import Counter
+                layer_counts = Counter(c.layer for c in passed)
+                summary = "; ".join(
+                    f"{layer}: {count}"
+                    for layer, count in sorted(layer_counts.items())
+                )
+                lines.append(f"  All passed by layer — {summary}")
+        lines.append("")
+    else:
+        lines.append("RECOMMENDATIONS (0)")
+        lines.append("-" * 21)
+        lines.append(
+            "  MANUALLY-SOURCED — no production recommendation in DB before "
+            "entry_date"
+        )
+        lines.append("")
+
+    # Exits section
+    if a.exits:
+        lines.append(f"EXITS ({len(a.exits)})")
+        lines.append("-" * 8)
+        for ex in a.exits:
+            lines.append(
+                f"  {ex.exit_date}: {ex.shares} sh @ ${ex.exit_price:.2f}  "
+                f"reason={ex.reason}  "
+                f"pnl=${ex.realized_pnl:+.2f}  R={ex.r_multiple:+.2f}"
+            )
+        lines.append("")
+    else:
+        lines.append("EXITS (0)")
+        lines.append("-" * 8)
+        lines.append("  (no exits yet — trade still open)")
+        lines.append("")
+
+    # Deviations section — only when at least one usable rec exists
+    if a.recommendations:
+        lines.append("DEVIATIONS (vs latest pre-entry recommendation)")
+        lines.append("-" * 47)
+        days = a.days_rec_to_entry
+        lines.append(
+            f"  Days from rec to entry: {days if days is not None else 'n/a'}"
+        )
+        lines.append(
+            f"  Entry % above pivot: {_fmt_optional_pct(a.pct_above_pivot)}"
+        )
+        lines.append(
+            f"  Stop deviation vs recommended: "
+            f"{_fmt_optional_pct(a.stop_dev_pct)}"
+        )
+        lines.append("")
+
+    # Outcomes section
+    lines.append("OUTCOMES")
+    lines.append("-" * 8)
+    lines.append(f"  Realized P&L total: ${a.realized_pnl_total:+.2f}")
+    if a.r_multiple_avg is not None:
+        lines.append(
+            f"  R-multiple (shares-weighted): {a.r_multiple_avg:+.2f}"
+        )
+    else:
+        lines.append("  R-multiple (shares-weighted): n/a (no exits)")
+    # Hold duration: entry → last exit (only meaningful when there's at least
+    # one exit; otherwise the trade is still open and "hold duration" is
+    # undefined for retrospective purposes).
+    if a.exits:
+        from datetime import date as _date
+        try:
+            entry_d = _date.fromisoformat(a.entry_date)
+            last_exit_d = max(
+                _date.fromisoformat(e.exit_date) for e in a.exits
+            )
+            hold_days = (last_exit_d - entry_d).days
+            lines.append(
+                f"  Hold duration: {hold_days} days (entry to last exit)"
+            )
+        except ValueError:
+            lines.append("  Hold duration: n/a (date parse error)")
+    else:
+        lines.append("  Hold duration: n/a (trade still open)")
+    return lines
 
 
 @main.group("journal")
