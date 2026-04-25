@@ -34,18 +34,42 @@ def upsert_recommendation(conn: sqlite3.Connection, r: DailyRecommendation) -> i
 
 
 def list_for_session(
-    conn: sqlite3.Connection, action_session_date: str
+    conn: sqlite3.Connection, action_session_date: str,
+    *, evaluation_run_id: int | None = None,
 ) -> list[DailyRecommendation]:
-    rows = conn.execute(
-        """
-        SELECT id, evaluation_run_id, data_asof_date, action_session_date, ticker,
-               recommendation, action_text, entry_target, stop_target, shares,
-               risk_dollars, risk_pct, rationale
-        FROM daily_recommendations WHERE action_session_date = ?
-        ORDER BY recommendation, ticker
-        """,
-        (action_session_date,),
-    ).fetchall()
+    """Recommendations for the session.
+
+    When `evaluation_run_id` is provided, the result is additionally scoped
+    to that eval — the dashboard passes `pipeline_runs.evaluation_run_id`
+    here so today_decisions binds to the same eval the chart-scope resolver
+    uses (Tranche C T4, fixes Bug 7's mixed-anchor inconsistency between
+    today_decisions and chart-scope's A+ set). When the FK is None (legacy
+    pipeline_runs row pre-migration-0006), callers omit this argument and
+    fall back to the pre-T4 date-only behavior.
+    """
+    if evaluation_run_id is not None:
+        rows = conn.execute(
+            """
+            SELECT id, evaluation_run_id, data_asof_date, action_session_date,
+                   ticker, recommendation, action_text, entry_target,
+                   stop_target, shares, risk_dollars, risk_pct, rationale
+            FROM daily_recommendations
+            WHERE action_session_date = ? AND evaluation_run_id = ?
+            ORDER BY recommendation, ticker
+            """,
+            (action_session_date, evaluation_run_id),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT id, evaluation_run_id, data_asof_date, action_session_date,
+                   ticker, recommendation, action_text, entry_target,
+                   stop_target, shares, risk_dollars, risk_pct, rationale
+            FROM daily_recommendations WHERE action_session_date = ?
+            ORDER BY recommendation, ticker
+            """,
+            (action_session_date,),
+        ).fetchall()
     return [_row(r) for r in rows]
 
 

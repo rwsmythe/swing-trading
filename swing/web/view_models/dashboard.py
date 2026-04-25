@@ -97,7 +97,24 @@ def build_dashboard(
     try:
         with conn:  # atomic read snapshot across all queries
             open_trades = list_open_trades(conn)
-            recs = list_for_session(conn, action_session)
+            # Tranche C T4 (Bug 7): bind today_decisions to the pipeline's
+            # OWN eval via pipeline_runs.evaluation_run_id when populated.
+            # Eliminates the mixed-anchor inconsistency where today_decisions
+            # could show a ticker that the chart-scope resolver reported as
+            # out-of-scope (because chart-scope already binds via the FK).
+            # Legacy NULL-FK rows fall back to the pre-T4 date-only filter
+            # so older runs still render today_decisions.
+            pipeline_eval_row = conn.execute(
+                """SELECT evaluation_run_id FROM pipeline_runs
+                   WHERE state = 'complete'
+                   ORDER BY finished_ts DESC LIMIT 1"""
+            ).fetchone()
+            pipeline_eval_id = (
+                pipeline_eval_row[0] if pipeline_eval_row else None
+            )
+            recs = list_for_session(
+                conn, action_session, evaluation_run_id=pipeline_eval_id,
+            )
             watchlist = list_active_watchlist(conn)
             # Weather is keyed by data_asof_date (last completed session);
             # action_session is forward-looking (next session). Query by
