@@ -449,6 +449,147 @@ def test_load_earnings_with_stats_reports_per_ticker_hit_miss(tmp_path, monkeypa
     assert stats.misses == ("NEWCO",)
 
 
+def test_load_ohlcv_drops_pre_ipo_nan_rows(tmp_path, monkeypatch):
+    """yf.download(group_by='ticker') pads pre-IPO dates with NaN rows back
+    to the requested window start. Session 2c hit this on 8 SPX/NDX tickers
+    and crashed swing.evaluation.criteria.risk_feasibility downstream
+    (int(budget // NaN) raises). The fetcher must strip rows where any of
+    Open/High/Low/Close is NaN BEFORE caching, so all callers inherit the
+    fix without needing a per-driver dropna preprocess.
+    """
+    from research.harness.earnings_proximity import fetchers as mod
+
+    valid_dates = [date(2026, 4, 20), date(2026, 4, 21), date(2026, 4, 22)]
+    pre_ipo_dates = [date(2026, 4, 17), date(2026, 4, 18), date(2026, 4, 19)]
+
+    def fake_download(*, tickers, start, end, **kwargs):
+        # NaN-padded pre-IPO rows + valid trailing rows. Mirrors yfinance's
+        # group_by='ticker' batch behavior for tickers that didn't exist at
+        # the requested start.
+        all_dates = pre_ipo_dates + valid_dates
+        idx = pd.DatetimeIndex([pd.Timestamp(d) for d in all_dates])
+        ticker = list(tickers)[0]
+        cols = pd.MultiIndex.from_tuples(
+            [
+                (ticker, "Open"),
+                (ticker, "High"),
+                (ticker, "Low"),
+                (ticker, "Close"),
+                (ticker, "Volume"),
+            ],
+            names=["Ticker", "Price"],
+        )
+        nan = float("nan")
+        rows = []
+        for _ in pre_ipo_dates:
+            rows.append([nan, nan, nan, nan, nan])
+        for j in range(len(valid_dates)):
+            rows.append([100.0 + j, 100.5 + j, 99.5 + j, 100.1 + j, 1_000_000])
+        return pd.DataFrame(rows, index=idx, columns=cols)
+
+    monkeypatch.setattr(mod.yf, "download", fake_download)
+
+    out = mod.load_ohlcv(
+        ["NEWIPO"],
+        start=date(2026, 4, 17),
+        end=date(2026, 4, 23),
+        cache_dir=tmp_path,
+    )
+
+    df = out["NEWIPO"]
+    assert len(df) == len(valid_dates), (
+        f"pre-IPO NaN rows must be dropped; got {len(df)} rows, expected "
+        f"{len(valid_dates)} (the valid trailing rows only)."
+    )
+    # No NaNs in OHLC columns.
+    for col in ("Open", "High", "Low", "Close"):
+        assert not df[col].isna().any(), f"{col} should have no NaN after dropna"
+    # And the cached parquet should match the dropped frame, so a subsequent
+    # load_ohlcv hit returns the cleaned frame (not the polluted raw one).
+    cached = pd.read_parquet(tmp_path / "ohlcv" / "NEWIPO.parquet")
+    assert len(cached) == len(valid_dates)
+
+
+def test_load_ohlcv_keeps_volume_nan_rows_with_valid_ohlc(tmp_path, monkeypatch):
+    """Holiday/halt sessions can have Volume=NaN but valid OHLC (e.g., zero
+    trading on a partial-session day). Those rows are real bars and must be
+    kept — the dropna must subset on OHLC only, not on Volume.
+    """
+    from research.harness.earnings_proximity import fetchers as mod
+
+    dates = [date(2026, 4, 20), date(2026, 4, 21), date(2026, 4, 22)]
+
+    def fake_download(*, tickers, start, end, **kwargs):
+        idx = pd.DatetimeIndex([pd.Timestamp(d) for d in dates])
+        ticker = list(tickers)[0]
+        cols = pd.MultiIndex.from_tuples(
+            [
+                (ticker, "Open"),
+                (ticker, "High"),
+                (ticker, "Low"),
+                (ticker, "Close"),
+                (ticker, "Volume"),
+            ],
+            names=["Ticker", "Price"],
+        )
+        rows = [
+            [100.0, 100.5, 99.5, 100.1, 1_000_000],
+            [101.0, 101.5, 100.5, 101.1, float("nan")],  # Volume NaN, OHLC valid.
+            [102.0, 102.5, 101.5, 102.1, 1_500_000],
+        ]
+        return pd.DataFrame(rows, index=idx, columns=cols)
+
+    monkeypatch.setattr(mod.yf, "download", fake_download)
+
+    out = mod.load_ohlcv(
+        ["AAPL"],
+        start=date(2026, 4, 20),
+        end=date(2026, 4, 23),
+        cache_dir=tmp_path,
+    )
+    df = out["AAPL"]
+    assert len(df) == 3, "Volume-NaN rows with valid OHLC must NOT be dropped."
+
+
+def test_load_ohlcv_handles_all_nan_frame_gracefully(tmp_path, monkeypatch):
+    """Ticker with no valid data in the window (entirely NaN-padded — e.g.,
+    every requested date is pre-IPO) must not crash; result is an empty
+    frame and stats reflect a miss without a stale partial cache write.
+    """
+    from research.harness.earnings_proximity import fetchers as mod
+
+    dates = [date(2026, 4, 20), date(2026, 4, 21), date(2026, 4, 22)]
+
+    def fake_download(*, tickers, start, end, **kwargs):
+        idx = pd.DatetimeIndex([pd.Timestamp(d) for d in dates])
+        ticker = list(tickers)[0]
+        cols = pd.MultiIndex.from_tuples(
+            [
+                (ticker, "Open"),
+                (ticker, "High"),
+                (ticker, "Low"),
+                (ticker, "Close"),
+                (ticker, "Volume"),
+            ],
+            names=["Ticker", "Price"],
+        )
+        nan = float("nan")
+        rows = [[nan, nan, nan, nan, nan] for _ in dates]
+        return pd.DataFrame(rows, index=idx, columns=cols)
+
+    monkeypatch.setattr(mod.yf, "download", fake_download)
+
+    data, stats = mod.load_ohlcv_with_stats(
+        ["EMPTY"],
+        start=date(2026, 4, 20),
+        end=date(2026, 4, 23),
+        cache_dir=tmp_path,
+    )
+    assert "EMPTY" in data
+    assert data["EMPTY"].empty, "All-NaN OHLCV must collapse to empty after dropna."
+    assert stats.misses == ("EMPTY",)
+
+
 def test_load_earnings_dates_sorted_ascending(tmp_path, monkeypatch):
     from research.harness.earnings_proximity import fetchers as mod
 

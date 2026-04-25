@@ -39,6 +39,10 @@ import pandas as pd
 import yfinance as yf
 
 _OHLCV_COLS = ("Open", "High", "Low", "Close", "Volume")
+# Subset for the pre-IPO-NaN-row drop: bars without OHLC are not real
+# trading days. Volume can legitimately be NaN on certain holidays / halts
+# while OHLC are present, so it is excluded from this subset.
+_OHLC_ONLY_COLS = ("Open", "High", "Low", "Close")
 
 
 @dataclass(frozen=True)
@@ -105,6 +109,16 @@ def _extract_ticker_frame(raw: pd.DataFrame, ticker: str) -> pd.DataFrame:
     # Keep only the OHLCV columns that are present.
     keep = [c for c in _OHLCV_COLS if c in df_t.columns]
     df_t = df_t[keep]
+    # Strip pre-IPO NaN rows — yf.download(group_by='ticker') pads tickers
+    # that didn't exist at the requested window start with NaN rows back to
+    # the start. Those rows survive replay's bar-count gates (length, not
+    # non-NaN-count) and crash downstream consumers (e.g.,
+    # swing.evaluation.criteria.risk_feasibility's `int(budget // NaN)`).
+    # Drop on OHLC only — Volume can legitimately be NaN on holiday/halt
+    # bars while OHLC are present.
+    ohlc_present = [c for c in _OHLC_ONLY_COLS if c in df_t.columns]
+    if ohlc_present:
+        df_t = df_t.dropna(subset=ohlc_present)
     return df_t
 
 
