@@ -2,19 +2,36 @@
 
 Classifies why a chart is not available for a given watchlist ticker-session
 pair, returning one of six states (five "unavailable" reasons + None for
-available). Mirrors `swing.pipeline.runner._step_charts` scope logic:
+available).
 
-- **A+ set**: from persisted `candidates` rows filtered by `bucket='aplus'`,
-  linked to the *pipeline's own* evaluation run via a
-  `data_asof_date + run_ts <= finished_ts` heuristic (best-effort —
-  races against mid-pipeline standalone `swing eval` calls are documented in
-  spec §4; §8 tracks the pipeline-linkage fix as deferred).
-- **Top-N near-by-proximity set**: reconstructed from the *live*
-  `watchlist` table sorted by `abs((last_close - entry_target) / entry_target)`
-  and truncated to `chart_top_n_watch`. This is approximate — watchlist
-  churn and price movement between pipeline-run time (T1) and render
-  time (T2) can shift the top-N boundary; spec §4 "Drift acknowledgment"
-  enumerates the bounded failure modes.
+**FK-backed path (Tranche C T3, current).** When the latest completed
+`pipeline_runs` row has a non-NULL `evaluation_run_id` (set by `_step_evaluate`
+post-migration-0006), the resolver reads scope directly from
+`pipeline_chart_targets` — the per-pipeline-run record of what was actually
+charted. This eliminates the two drift modes documented in spec §4:
+
+- **Drift mode A** (eval-linkage race against mid-pipeline standalone
+  `swing eval`): the FK is the structural source of truth for which eval the
+  pipeline used; no race window remains.
+- **Drift mode B** (top-N near-by-proximity recomputed at render time): the
+  resolver no longer recomputes proximity — it reads the persisted target
+  set, so churn between T1 (pipeline) and T2 (render) cannot flip the
+  in-/out-of-scope answer.
+
+**Heuristic fallback (legacy path, retained).** When the latest completed
+`pipeline_runs` row has `evaluation_run_id IS NULL` (rows from before
+migration 0006), the resolver falls back to the original best-effort
+heuristic:
+
+- A+ set from persisted `candidates` rows linked via
+  `data_asof_date + run_ts <= finished_ts ORDER BY run_ts DESC LIMIT 1`.
+- Top-N near-by-proximity from the live `watchlist` sorted by
+  `abs((last_close - entry_target) / entry_target)`, truncated to
+  `chart_top_n_watch`.
+
+The heuristic carries the spec §4 documented drift modes — accepted-with-
+rationale for legacy rows because backfilling `evaluation_run_id` for
+historical pipeline_runs is out of scope (spec §8 deferred).
 
 **Session-gating semantics (adversarial-review Round 1 Major 2).** The resolver
 binds to the most-recent completed `pipeline_runs` row by `finished_ts DESC`,
@@ -67,19 +84,19 @@ def resolve_chart_scope(
 ) -> tuple[str | None, str | None]:
     """Return (chart_reason, chart_reason_message).
 
-    Both are None when the chart is available (PNG on disk + charts_status=ok
-    + ticker in scope). Otherwise the reason is one of:
+    Both are None when the chart is available. Otherwise the reason is one of:
       no-run | engine-missing | pipeline-failed | out-of-scope | insufficient-data
     """
     latest = conn.execute(
-        """SELECT id, finished_ts, data_asof_date, charts_status
+        """SELECT id, finished_ts, data_asof_date, charts_status,
+                  evaluation_run_id
            FROM pipeline_runs
            WHERE state = 'complete'
            ORDER BY finished_ts DESC LIMIT 1""",
     ).fetchone()
     if latest is None:
         return "no-run", CHART_REASON_MESSAGES["no-run"]
-    _run_id, finished_ts, data_asof_date, charts_status = latest
+    run_id, finished_ts, data_asof_date, charts_status, evaluation_run_id = latest
 
     if charts_status == "skipped":
         return "engine-missing", CHART_REASON_MESSAGES["engine-missing"]
@@ -91,7 +108,59 @@ def resolve_chart_scope(
         # operator is told to re-run, not that this specific ticker was thin.
         return "pipeline-failed", CHART_REASON_MESSAGES["pipeline-failed"]
 
-    # charts_status == 'ok'. Resolve scope: A+ ∪ top-N near-by-proximity.
+    # charts_status == 'ok'.
+    if evaluation_run_id is not None:
+        # FK-backed path (Tranche C T3): scope is the persisted chart_targets
+        # row set; no recomputation, no eval-linkage heuristic.
+        return _resolve_via_chart_targets(
+            conn, ticker=ticker, pipeline_run_id=run_id,
+            data_asof_date=data_asof_date, charts_dir=charts_dir,
+        )
+
+    # Legacy fallback (pre-migration-0006 rows): heuristic eval-linkage +
+    # live-watchlist proximity. Spec §4 accepted-with-rationale drift.
+    return _resolve_via_heuristic(
+        conn, ticker=ticker, finished_ts=finished_ts,
+        data_asof_date=data_asof_date, charts_dir=charts_dir,
+        chart_top_n_watch=chart_top_n_watch,
+    )
+
+
+def _resolve_via_chart_targets(
+    conn: sqlite3.Connection, *, ticker: str, pipeline_run_id: int,
+    data_asof_date: str, charts_dir: Path,
+) -> tuple[str | None, str | None]:
+    """Tranche C T3: read scope directly from pipeline_chart_targets."""
+    row = conn.execute(
+        """SELECT chart_status FROM pipeline_chart_targets
+           WHERE pipeline_run_id = ? AND ticker = ?""",
+        (pipeline_run_id, ticker),
+    ).fetchone()
+    if row is None:
+        # Pipeline did not chart this ticker.
+        return "out-of-scope", CHART_REASON_MESSAGES["out-of-scope"]
+    chart_status = row[0]
+    if chart_status == "ok":
+        png_path = charts_dir / data_asof_date / f"{ticker}.png"
+        if not png_path.exists():
+            # Persisted status says ok but the PNG vanished from disk.
+            # Surface as data-quality bucket rather than claim availability.
+            return "insufficient-data", CHART_REASON_MESSAGES["insufficient-data"]
+        return None, None
+    # 'pending', 'fetcher_failed', 'too_few_bars' — pre-T5 collapse all of
+    # these to 'insufficient-data'. T5 splits fetcher_failed and too_few_bars
+    # into dedicated states; this branch is the spec §8 starting point.
+    return "insufficient-data", CHART_REASON_MESSAGES["insufficient-data"]
+
+
+def _resolve_via_heuristic(
+    conn: sqlite3.Connection, *, ticker: str, finished_ts: str,
+    data_asof_date: str, charts_dir: Path, chart_top_n_watch: int,
+) -> tuple[str | None, str | None]:
+    """Pre-Tranche-C heuristic. Used for legacy pipeline_runs rows that
+    pre-date migration 0006 (NULL evaluation_run_id). Carries the spec §4
+    drift modes as documented; new pipeline runs use _resolve_via_chart_targets.
+    """
     eval_row = conn.execute(
         """SELECT id FROM evaluation_runs
            WHERE data_asof_date = ? AND run_ts <= ?
@@ -99,9 +168,7 @@ def resolve_chart_scope(
         (data_asof_date, finished_ts),
     ).fetchone()
     if eval_row is None:
-        # Pipeline-linkage heuristic missed — spec §4 "If the heuristic query
-        # returns no row, resolver falls back to insufficient-data." Cannot
-        # distinguish scope here, so fail safe toward data-quality bucket.
+        # Heuristic missed; collapse to data-quality bucket.
         return "insufficient-data", CHART_REASON_MESSAGES["insufficient-data"]
     eval_run_id = eval_row[0]
 
