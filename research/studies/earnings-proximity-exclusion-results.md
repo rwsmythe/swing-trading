@@ -118,30 +118,36 @@ To be confirmed or deviated-from in D4:
 
 ### Per-variant metrics table
 
-All five variants returned IDENTICAL aggregated metrics because the variant filter `apply_variant(signals, X, calendar)` was a structural no-op: not a single one of the 11 A+ signals had a `next_earnings_date` within 10 trading days of its `signal_date` (the largest pre-registered X). Every signal therefore survived every variant's filter.
+All five variants returned IDENTICAL aggregated metrics because the variant filter `apply_variant(signals, X, calendar)` was a structural no-op: not a single one of the 11 A+ signals had a `next_earnings_date` within 10 trading days of its `signal_date` (the largest pre-registered X). Every signal therefore survived every variant's filter, with bit-identical `outcome_id` membership across X ∈ {0, 3, 5, 7, 10}.
 
-| X | Signal count | Trigger rate | Stopped trades | Expectancy R (95 % CI bootstrap) | Gap-through rate (95 % Wilson CI) | Gap-through mag mean R (95 % CI) | Signal-volume delta vs X=0 |
+**Note on uncomputable metrics.** With **0 stopped trades** in the sample (all 5 triggered trades hit the simulator's 10-bar time cap before reaching their initial stop), the gap-through-rate and gap-through-magnitude metrics are **not estimable** — the denominator (stopped-trade count) is zero, so the proportion and the magnitude mean are mathematically undefined, NOT exactly zero. The harness's `aggregate()` function returns `0.0` as a placeholder when the denominator is zero (per `metrics.py` docstring), but for evidence-summary purposes those entries below are reported as **`n/e`** (not estimable). Wilson and Newcombe CIs likewise do not apply when n=0; the column headers below avoid implying a CI framework where none exists for this run.
+
+| X | Signal count | Trigger rate | Stopped trades | Expectancy R (n=5 raw trades — see note below; **survivorship-biased lower bound**) | Gap-through rate (if estimable; **survivorship-biased lower bound**) | Gap-through mag mean R (if estimable; **survivorship-biased lower bound**) | Signal-volume delta vs X=0 |
 |---|---|---|---|---|---|---|---|
-| 0 | 11 | 5 / 11 = 45.5 % | 0 | **+0.2160** [-0.292, +0.740] | **0.000** [0.0, 0.0] (n=0) | **0.000** (n=0) | — |
-| 3 | 11 | 5 / 11 = 45.5 % | 0 | +0.2160 [-0.292, +0.740] | 0.000 [0.0, 0.0] (n=0) | 0.000 (n=0) | 0.0 % |
-| 5 | 11 | 5 / 11 = 45.5 % | 0 | +0.2160 [-0.292, +0.740] | 0.000 [0.0, 0.0] (n=0) | 0.000 (n=0) | 0.0 % |
-| 7 | 11 | 5 / 11 = 45.5 % | 0 | +0.2160 [-0.292, +0.740] | 0.000 [0.0, 0.0] (n=0) | 0.000 (n=0) | 0.0 % |
-| 10 | 11 | 5 / 11 = 45.5 % | 0 | +0.2160 [-0.292, +0.740] | 0.000 [0.0, 0.0] (n=0) | 0.000 (n=0) | 0.0 % |
+| 0 | 11 | 5 / 11 = 45.5 % | 0 | (descriptive only — see note) mean +0.2160 R from {−0.497, +0.604, +0.286, −0.417, +1.104} | **n/e** (n=0 stopped trades — denominator zero) | **n/e** (n=0 gap-through events) | — |
+| 3 | 11 | 5 / 11 = 45.5 % | 0 | (descriptive only) same five trades — variant filter no-op | n/e | n/e | 0.0 % |
+| 5 | 11 | 5 / 11 = 45.5 % | 0 | (descriptive only) same five trades | n/e | n/e | 0.0 % |
+| 7 | 11 | 5 / 11 = 45.5 % | 0 | (descriptive only) same five trades | n/e | n/e | 0.0 % |
+| 10 | 11 | 5 / 11 = 45.5 % | 0 | (descriptive only) same five trades | n/e | n/e | 0.0 % |
 
-CIs computed via `_compute_cis_session2c.py` (deterministic seed 20260424; 10,000 bootstrap resamples). Source: `analysis_summary.json`.
+**Note on the n=5 expectancy.** The five-trade expectancy of **+0.2160 R** is the simple arithmetic mean of {−0.497, +0.604, +0.286, −0.417, +1.104}. A 95 % bootstrap CI of [−0.292, +0.740] was reported in `analysis_summary.json` for completeness, but **with n=5 that interval is descriptive at best** — bootstrap intervals on n=5 are highly discrete (only 252 distinct resample multisets) and dominated by resampling mechanics rather than real population structure. The interval is presented in `analysis_summary.json` per the pre-registered framework but is NOT load-bearing in this evidence summary; readers should treat the +0.216 mean as a five-trade-snapshot rather than a population estimate, and treat any uncertainty interval on it as too unstable to support inference. The five raw R-values are listed inline above to make this transparent.
 
-**Survivorship-bias caveat on absolute numbers (per protocol).** The X=0 expectancy of **+0.216 R/trade** and the gap-through rate of **0.000** are **survivorship-biased lower bounds** on the true historical effect. The replay universe is 100 % current-roster (no delisted tickers); the population most likely to have produced gap-through losses (biotech PDUFA failures, accounting-fraud blow-ups, eventually-delisted small-caps) is structurally absent. The true historical gap-through rate at X=0 is almost certainly higher than 0.000; the true expectancy is plausibly lower than +0.216 because the absent-population's wipeout trades are excluded from this sample.
+CIs computed via `_compute_cis_session2c.py` (deterministic seed 20260424; 10,000 bootstrap resamples). Source: `analysis_summary.json`. The harness's `metrics.csv` shows literal 0.0 entries for the gap fields per its placeholder convention; readers should consult this row's `n/e` annotation rather than the literal CSV value.
+
+**Headline survivorship caveat (in-line per protocol).** Each absolute headline number above is annotated as a "survivorship-biased lower bound." The X=0 expectancy of +0.216 R/trade is "≥ +0.216 R; true expectancy plausibly lower once delisted-ticker wipeout trades are restored." The gap-through rate is unobserved here (n/e), but the protocol's lower-bound rule would apply identically if it had been observable: any non-zero observed value would understate the true historical population's rate. The replay universe is 100 % current-roster (no delisted tickers); the population most likely to have produced gap-through losses (biotech PDUFA failures, accounting-fraud blow-ups, eventually-delisted small-caps) is structurally absent.
 
 ### Per-variant deltas vs X=0
 
-| X | Expectancy Δ R (95 % CI bootstrap) | Gap-through rate Δ pp (95 % CI Newcombe) | Gap-through mag Δ R (95 % CI) | Signal-volume loss % |
-|---|---|---|---|---|
-| 3 | **0.000** [-0.745, +0.740] | **0.0 pp** [0.0, 0.0] | **0.000** [0.0, 0.0] | **0.0 %** |
-| 5 | 0.000 [-0.745, +0.740] | 0.0 pp [0.0, 0.0] | 0.000 [0.0, 0.0] | 0.0 % |
-| 7 | 0.000 [-0.745, +0.740] | 0.0 pp [0.0, 0.0] | 0.000 [0.0, 0.0] | 0.0 % |
-| 10 | 0.000 [-0.745, +0.740] | 0.0 pp [0.0, 0.0] | 0.000 [0.0, 0.0] | 0.0 % |
+Because all four X variants share **bit-identical outcome membership** with X=0 (every signal survived every filter; same `outcome_id` set), the per-variant deltas are **deterministically exactly zero** as a matter of identity, not as an estimate. Confidence intervals on those deltas are vacuous — the bootstrap procedure in `_compute_cis_session2c.py` resampled each arm independently, which on identical samples produces artificial spread that does NOT reflect any sampling variability in the actual estimand. The "[-0.745, +0.740]" intervals in `analysis_summary.json` are therefore reported here as **`vacuous`** rather than as legitimate uncertainty bounds.
 
-**Magnitude-likely-understated note (per protocol).** Even though the cross-variant deltas are precisely zero on this sample, the protocol's "relative metrics direction-trustworthy but magnitude-uncertain" rule still applies: the absence of any observable relative effect on the survivor population does NOT entail the absence of a true historical effect. The replay simply contains zero variant-distinguishable cases — there is nothing for the rule to operate on, because the input A+ population already excludes pre-earnings tickers via correlated upstream filters (see Discussion §"Why the rule did not activate").
+| X | Expectancy Δ R | Gap-through rate Δ pp | Gap-through mag Δ R | Signal-volume loss % |
+|---|---|---|---|---|
+| 3 | **0.000** (deterministic; identical membership) | **n/e** (both arms n=0 stopped) | **n/e** | **0.0 %** |
+| 5 | 0.000 (deterministic) | n/e | n/e | 0.0 % |
+| 7 | 0.000 (deterministic) | n/e | n/e | 0.0 % |
+| 10 | 0.000 (deterministic) | n/e | n/e | 0.0 % |
+
+**Magnitude-likely-understated note (per protocol).** Even though the cross-variant deltas are deterministically zero on this sample, the protocol's "relative metrics direction-trustworthy but magnitude-uncertain" rule still applies in interpretation: the absence of any observable relative effect on the survivor population does NOT entail the absence of a true historical effect. The replay simply contained zero variant-distinguishable cases — there was nothing for the rule to operate on (see Discussion §"Why the rule did not activate"). The fact that the deltas are exact zeros is a structural property of the sample (no signal fell within any X window), not evidence about the rule's true effect.
 
 ### Absent-data audit
 
@@ -200,12 +206,12 @@ The signal-volume metric's "Strong" band reflects the ABSENCE of cost rather tha
 
 **Not applicable.** No variant is a Promote candidate; sensitivity checks do not apply. For completeness:
 
-- Adjacent-X monotonicity: trivially passes (all deltas equal).
-- Temporal-subset consistency: per `analysis_summary.json` `temporal_subset_first_half` / `_second_half`, the first half of the window has 4 signals (1 traded, 1 losing time-capped trade at FIX, expectancy −0.497 R) and the second half has 7 signals (4 traded, expectancy +0.394 R). All four variants are identical within each half (same no-op behavior). No promote → no sign-flip check needed.
-- Absent-data robustness: 0 / 11 = 0.0 % < 10 % threshold. Trivially passes.
-- Gap-through-event sample size: 0 events vs ≥ 20 threshold. **Fails.** Would route any candidate Promote variant to Shadow per the pre-registered rule — moot here since no variant reached Promote.
+- **Adjacent-X monotonicity:** trivially passes (all deltas equal at zero by construction — identical variant membership).
+- **Temporal-subset consistency:** per `analysis_summary.json` `temporal_subset_first_half` / `_second_half` (split midpoint 2025-12-24): first half has **4 signals (1 traded — single time-capped loss FIX at −0.497 R)**, second half has **7 signals (4 traded — mixed)**. All four variants identical within each half. **These per-half values are descriptive only; n=1 in the first half is far too small for any uncertainty interval (a CI on a single observation is the observation itself).** No promote → no sign-flip check meaningful.
+- **Absent-data robustness:** 0 / 11 = 0.0 % < 10 % threshold. Trivially passes.
+- **Gap-through-event sample size:** 0 events vs ≥ 20 threshold. **Fails.** Would route any candidate Promote variant to Shadow per the pre-registered rule — moot here since no variant reached Promote.
 
-The temporal-subset metrics, while not decision-relevant under `defer`, do hint at the regime-mix issue noted in §"Discussion": the second half of the window appears to support stronger setups than the first.
+The temporal-subset numbers should NOT be read as evidence of regime-mix; they are sample-size-starved descriptive splits with a single trade in the first half and four in the second. Any narrative built from them would be over-fitting.
 
 ---
 
@@ -213,31 +219,62 @@ The temporal-subset metrics, while not decision-relevant under `defer`, do hint 
 
 **`defer`**
 
-Citation: §"Tier assignment" above; pre-registered thresholds in §"Pre-registration" (commit `0e04079`); observed values from `metrics.csv` and `analysis_summary.json` (commit `e5510a8`); Survivorship-bias interpretation protocol in `./earnings-proximity-exclusion.md`; anti-rationalization clause: "If observed results fall in the weak/null band per the pre-registered thresholds, the decision is `defer`, not `reject`."
+### Pre-registered basis (the decision rule that fires)
 
-This is **NOT** "reject because the rule did nothing." Per the protocol, a weak/null observed signal under survivorship-biased data cannot distinguish "the rule is unhelpful" from "the rule is helpful but the survivor population under-represents the helpable cases." Two compounding factors push the same way:
+The combined tier-assignment rule (§Pre-registration) reaches `defer` via its **default branch** because none of Promote, Shadow, or Reject can trigger on the observed data:
 
-1. The survivorship-bias direction (delisted-ticker exclusion) under-samples the population the rule was designed to protect against.
-2. The empirical observation that **A+ signals on this universe systematically avoided earnings windows even before any variant filter applied** — minimum signal-to-earnings gap was 16 trading days, 60 % outside the largest pre-registered blackout. This means the upstream filter stack (trend-template + VCP + RS-rank, requiring orderly base-on-base structure) is *correlated with* earnings avoidance: tickers heading into earnings tend to break VCP tightness or trend-template requirements first.
+- **Promote does not fire.** Promote requires `expectancy delta ≥ +0.10 R AND gap-through rate reduction ≥ 5 pp AND signal-volume cost ≤ 15 % AND Wilson 95 % CI lower bound on gap-rate reduction > 0 pp`. Observed expectancy delta is 0.000 (does not meet ≥ +0.10); observed gap-rate reduction is **n/e** because both arms have zero stopped trades (the rate is mathematically undefined, not a value that meets ≥ 5 pp). Promote cannot fire.
+- **Shadow does not fire.** Shadow requires at least one Strong-band metric on the delta-vs-baseline dimension AND others ≥ Moderate AND signal-volume cost ≤ 30 %. No metric is at Strong: expectancy delta is at Weak/null (0.000 ∈ [−0.03, +0.03]); gap-rate and gap-magnitude deltas are non-estimable; signal-volume's Strong band reflects absence of cost, not presence of benefit, and does not satisfy "≥ 1 Strong metric on the delta dimension." Shadow cannot fire.
+- **Reject does not fire.** Reject requires signal-volume cost > 50 % (observed 0.0 %; not met) **OR** expectancy delta < −0.03 R with no compensating gap improvement (observed 0.000; not met). Reject cannot fire.
+- **Default branch → Defer.** The pre-registered combined rule routes "all other outcomes" to `defer`. This includes the case where the gap-side metrics are non-estimable and therefore cannot affirmatively place the variant in any tier above default.
 
-Both factors render the data underpowered to evaluate the rule in either direction. Per the pre-registered combined tier rule and the anti-rationalization clause, the only honest decision is `defer`.
+The pre-registered **anti-rationalization clause** ("weak/null observed → defer, NEVER reject") is independently relevant for the *interpretation* of the non-estimable gap metrics: a reasonable reading of "rule could not be evaluated on this dataset because the rule's target population was absent" is not a license to call the result `reject`. But the formal trigger of `defer` rests on the default-branch routing of the combined rule, not on the anti-rationalization clause being dispositive on its own — observed expectancy is in the weak/null band, but the gap metrics are *outside* the band system entirely (non-estimable), and that distinction is preserved here.
+
+This is the formal trigger and is not subject to analyst judgment.
+
+**Citations:** §"Tier assignment" above (mechanically applies pre-registered thresholds → defer via default branch); pre-registered thresholds in §"Pre-registration" (commit `0e04079`); observed values from `metrics.csv` and `analysis_summary.json` (commit `e5510a8`); Survivorship-bias interpretation protocol in `./earnings-proximity-exclusion.md`.
+
+### Post-hoc study-quality assessment (interpretation, NOT a decision rule)
+
+The pre-registered rule is the trigger, but a reader interpreting `defer` operationally should know the following limitations of the underlying data. These are post-hoc observations about study quality — they did NOT pre-exist as decision criteria, and they do NOT change the tier assignment above. They DO inform what kind of follow-on study (if any) is warranted.
+
+The study suffered from **three distinct failure modes**, each with a different fix:
+
+1. **Zero rule-activation in the tested X-range.** Minimum observed signal-to-earnings gap = 16 trading days; largest pre-registered X = 10. The variant filter was a structural no-op on every signal. *Fix candidates: a different filter stack, a broader X grid, or a deliberately broadened universe where setups can crystallize closer to earnings.*
+
+2. **Zero stopped trades.** All 5 triggered trades hit the simulator's 10-bar time cap before reaching their initial stop. The risk-side metrics (gap-through rate and magnitude) — the study's headline-motivating quantities — are mathematically undefined on this sample. *Fix candidates: a longer time cap, a tighter stop convention, a much larger sample, or a different setup type with quicker resolution.*
+
+3. **Signal-volume undershoot vs anchor.** Observed 11 signals vs the pre-registered plausible-low of 290 — a 96.2 % undershoot. The anchor model (Session 2a) was Finviz-prefiltered; the replay was not. *Fix candidates: re-derive the anchor on an unfiltered SPX+NDX subset, or run the harness on the production daily-Finviz universe instead of the static RS roster.*
+
+Each of (1)–(3) is a separate methodological failure that a redesigned study could address independently of the others.
+
+### Why this is NOT `reject`
+
+Three compounding factors push toward `defer` rather than `reject` once one steps past the formal pre-registered trigger:
+
+1. **Survivorship-bias direction** — delisted-ticker exclusion under-samples the population the rule was designed to protect against; absolute and relative metrics on the survivor population are interpretation-limited per protocol.
+2. **Non-identifiability for activation** — failure mode (1) above. The rule had no signals within any X window to filter; the data contains zero variant-distinguishable cases. This is a property of the SAMPLE, not evidence about the RULE.
+3. **Implicit-exclusion hypothesis (speculative — NOT evidence).** A plausible mechanism for failure mode (1) — that the upstream trend-template + VCP filters already exclude pre-earnings tickers via correlated structural requirements — is offered in §Discussion as hypothesis-generation only. It is NOT pre-registered, NOT tested by the present analysis, and is NOT load-bearing for the decision; it is recorded so future sessions can design tests of it (e.g., compare A+ rate within vs outside earnings windows on a broader/looser-VCP universe). Treating this hypothesis as evidentiary support for `defer` would be HARK-ing.
+
+The pre-registered combined tier rule and the anti-rationalization clause reach `defer` directly. The post-hoc study-quality assessment, items 1 and 2 of the "not reject" reasoning, and the implicit-exclusion hypothesis only explain *why* the data was uninformative; they do NOT change the formal decision.
 
 ---
 
 ## Discussion
 
-### Why the rule did not activate
+### Why the rule did not activate — speculative hypothesis-generation only
 
-A first-order observation, recorded for orchestrator and future-session consumption:
+The empirical fact: **the smallest signal-to-earnings gap among 11 A+ signals was ~16 trading days** (KLAC, with earnings 22 days out), comfortably outside the largest pre-registered blackout (X = 10 trading days). The earnings-proximity exclusion therefore had nothing to act on. This is a property of the realized sample, observed directly in the data.
 
-The earnings-proximity exclusion rule is logically downstream of the trend-template and VCP filters. Both upstream filters require some form of orderly recent price structure — sustained MA stack, controlled drift toward pivot, low range-CV, etc. Tickers approaching scheduled earnings tend to have *elevated implied volatility and price-action distortion* during the run-up window, which often violates VCP tightness or trend-template's rising-MA requirement.
+A **plausible mechanistic hypothesis** (NOT pre-registered, NOT tested by the present analysis): the earnings-proximity exclusion rule is logically downstream of the trend-template and VCP filters. Both upstream filters require some form of orderly recent price structure — sustained MA stack, controlled drift toward pivot, low range-CV. Tickers approaching scheduled earnings tend to have elevated implied volatility and price-action distortion during the run-up window, which would often violate VCP tightness or trend-template's rising-MA requirement. If true, this would mean the upstream stack implicitly enforces earnings-proximity exclusion via correlated structural requirements.
 
-The empirical consequence on this dataset: **the smallest signal-to-earnings gap among 11 A+ signals was ~16 trading days** (KLAC, with earnings 22 days out), comfortably outside the largest pre-registered blackout (X = 10 trading days). The earnings-proximity exclusion therefore had nothing to act on.
+**This is hypothesis-generation, not evidence.** The present study does NOT include the comparison that would test it (e.g., A+ rate within vs outside earnings windows on a relaxed-VCP universe; or a paired test with VCP-tightness ablated). A skeptical reviewer would correctly note that one observed n=11 sample where no signal happened to fall near earnings is also consistent with simple base-rate / sample-size starvation, with no implicit-exclusion mechanism at all.
 
-This is a *real finding* — not a methodology artefact. It implies that:
+Because this hypothesis is plausible AND testable AND would, if true, change the operational interpretation of the `defer` decision (the rule would be redundant with VCP rather than truly untested), it is recorded here for orchestrator awareness and as a candidate for a follow-on study. It is NOT used as load-bearing rationale for the present `defer` decision.
 
-- On the SPX+NDX universe, with this filter stack, the earnings-proximity exclusion is **not load-bearing** at the X ∈ {3, 5, 7, 10} range; the upstream filters already accomplish the same exclusion implicitly.
-- The rule MIGHT still be load-bearing on a different universe (broader micro-cap inclusion, biotech-heavy filter, looser VCP) where setups can crystallize closer to earnings.
+What the data DOES support:
+- On THIS replay sample, the variant filter was a structural no-op.
+- The rule MIGHT still be useful on a different universe (broader micro-cap inclusion, biotech-heavy filter, looser VCP) where setups can crystallize closer to earnings — but THIS study cannot say.
 - Operator-UX value (a "X days to earnings" badge on candidates) is unaffected by this study and remains independently evaluable.
 
 ### Survivorship bias
