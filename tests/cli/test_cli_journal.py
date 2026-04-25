@@ -120,6 +120,56 @@ def test_journal_review_groups_by_label_with_win_rate_at_three(tmp_path: Path):
     assert "%" not in beta_line
 
 
+def test_journal_review_display_escapes_embedded_quotes(tmp_path: Path):
+    """Adversarial M2 (round 1): a label containing a literal double-quote
+    must render unambiguously in the operator-facing breakdown — e.g. the
+    operator should be able to tell `foo"bar` from `foo` and `bar` separately.
+    JSON-string display escapes the inner quote so the row is unambiguous."""
+    runner, cfg = _setup(tmp_path)
+    _record_closed_trade(cfg, ticker="QQQQ", hypothesis='foo"bar', exit_price=110.0)
+
+    r = runner.invoke(main, ["--config", str(cfg), "journal", "review"])
+    assert r.exit_code == 0, r.output
+    section = r.output[r.output.index("Hypothesis breakdown"):]
+    qline = next(ln for ln in section.splitlines() if "foo" in ln and "bar" in ln)
+    # Inner quote escaped, outer wrapping unambiguous.
+    assert 'foo\\"bar' in qline
+
+
+def test_journal_review_section_header_documents_win_rate_definition(tmp_path: Path):
+    """Adversarial m1 (round 1): operator-facing definition of win rate. When
+    the breakdown actually displays a percentage, the header line cites the
+    rule (P&L > 0) so the operator doesn't have to guess whether zero-P&L
+    trades count."""
+    runner, cfg = _setup(tmp_path)
+    for i in range(3):
+        _record_closed_trade(
+            cfg, ticker=f"WR{i}", hypothesis="alpha", exit_price=110.0,
+        )
+    r = runner.invoke(main, ["--config", str(cfg), "journal", "review"])
+    assert r.exit_code == 0, r.output
+    section = r.output[r.output.index("Hypothesis breakdown"):]
+    # Header note explains the win-rate definition once, not per row.
+    assert "P&L > 0" in section
+
+
+def test_journal_review_canonical_form_groups_pre_and_post_normalized_labels(tmp_path: Path):
+    """Adversarial M2/M3 (round 1): two operator inputs that differ only in
+    whitespace must collapse into a single bucket after the service's
+    canonicalization, not render as two phantom buckets."""
+    runner, cfg = _setup(tmp_path)
+    _record_closed_trade(cfg, ticker="P1", hypothesis="alpha bucket", exit_price=110.0)
+    _record_closed_trade(cfg, ticker="P2", hypothesis="alpha   bucket  ", exit_price=110.0)
+    r = runner.invoke(main, ["--config", str(cfg), "journal", "review"])
+    assert r.exit_code == 0, r.output
+    section = r.output[r.output.index("Hypothesis breakdown"):]
+    alpha_lines = [ln for ln in section.splitlines() if "alpha bucket" in ln]
+    assert len(alpha_lines) == 1, (
+        f"expected one 'alpha bucket' bucket after canonicalization; got {alpha_lines!r}"
+    )
+    assert "2 trades" in alpha_lines[0]
+
+
 def test_journal_review_label_with_special_chars_does_not_break_formatting(tmp_path: Path):
     """Free-text safety (brief §5): newlines/quotes in labels must not break
     the table layout — each bucket renders as exactly one output line."""

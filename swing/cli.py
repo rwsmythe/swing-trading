@@ -307,7 +307,10 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
             watchlist_initial_stop=watchlist_stop,
             notes=notes, rationale=rationale,
             event_ts=_dt.now().isoformat(timespec="seconds"),
-            hypothesis_label=(hypothesis.strip() if hypothesis and hypothesis.strip() else None),
+            # Canonicalization happens in `record_entry` so non-CLI callers
+            # (web routes, scripts) get the same normalization. CLI passes
+            # raw user input through unchanged.
+            hypothesis_label=hypothesis,
         )
         try:
             result = record_entry(
@@ -544,23 +547,27 @@ def journal_review_cmd(ctx, period, today):
     # quiet.
     # Win-rate definition lives in `compute_hypothesis_breakdown.__doc__`
     # (brief §5 watch item: definition stated in docstring is acceptable).
+    # Adversarial review round 1: M2 (display escaping) + m1 (definition note).
+    import json as _json
     breakdown = compute_hypothesis_breakdown(trades=filtered, exits=all_exits)
     if breakdown:
-        click.echo("\nHypothesis breakdown:")
+        any_win_rate = any(b.win_rate is not None for b in breakdown)
+        header = "\nHypothesis breakdown:"
+        if any_win_rate:
+            header += "  (win rate = fraction of trades with realized P&L > 0; shown when N>=3)"
+        click.echo(header)
         for b in breakdown:
-            label_display = "(no label)" if b.label is None else f'"{_sanitize_label(b.label)}"'
+            # json.dumps escapes embedded quotes and any residual control bytes
+            # — defense-in-depth on top of the service canonicalization (M2).
+            label_display = (
+                "(no label)" if b.label is None
+                else _json.dumps(b.label, ensure_ascii=False)
+            )
             n_word = "trade" if b.n_trades == 1 else "trades"
             line = f"  - {label_display}: {b.n_trades} {n_word}, ${b.total_pnl:.2f} total"
             if b.win_rate is not None:
                 line += f", win rate {b.win_rate * 100:.1f}%"
             click.echo(line)
-
-
-def _sanitize_label(label: str) -> str:
-    """Collapse any whitespace (including embedded newlines/tabs) into single
-    spaces so a free-text hypothesis can never break the breakdown's one-line-
-    per-bucket layout. Brief \u00a75 watch item: free-text safety in review output."""
-    return " ".join(label.split())
 
 
 @journal_group.command("cash")

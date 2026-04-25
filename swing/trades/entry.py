@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+import unicodedata
 from dataclasses import dataclass
 from enum import Enum
 
@@ -100,6 +101,60 @@ class EntryResult:
     watchlist_archived: bool
 
 
+def _canonicalize_hypothesis_label(raw: str | None) -> str | None:
+    """Canonicalize the operator-frozen hypothesis label at the persistence
+    boundary so journal-review grouping is invariant to input whitespace and
+    embedded control bytes (adversarial review round 1, M2/M3).
+
+    Steps:
+      1. Replace any control character (Unicode category Cc) with a single
+         space — this neutralizes embedded `\\n`, `\\r`, `\\t`, NUL, etc.
+      2. Collapse all runs of whitespace into a single space.
+      3. Strip leading/trailing whitespace.
+      4. Empty result → None (so an all-whitespace input persists as NULL,
+         not as an unnamed labeled bucket).
+
+    Operator-typed semantic spacing inside a label is preserved (single
+    spaces between words); only artifacts that would split otherwise-
+    identical labels into distinct grouping keys are removed.
+    """
+    if raw is None:
+        return None
+    cleaned_chars = [
+        " " if unicodedata.category(c) == "Cc" else c
+        for c in raw
+    ]
+    canonical = " ".join("".join(cleaned_chars).split())
+    return canonical or None
+
+
+def canonicalize_hypothesis_label(raw: str | None) -> str | None:
+    """Canonicalize the operator-frozen hypothesis label at the persistence
+    boundary so journal-review grouping is invariant to input whitespace and
+    embedded control bytes (adversarial review round 1, M2/M3).
+
+    Steps:
+      1. Replace any control character (Unicode category Cc) with a single
+         space — this neutralizes embedded ``\\n``, ``\\r``, ``\\t``, NUL, etc.
+      2. Collapse all runs of whitespace into a single space.
+      3. Strip leading/trailing whitespace.
+      4. Empty result → None (so an all-whitespace input persists as NULL,
+         not as an unnamed labeled bucket).
+
+    Operator-typed semantic spacing inside a label is preserved (single
+    spaces between words); only artifacts that would split otherwise-
+    identical labels into distinct grouping keys are removed.
+    """
+    if raw is None:
+        return None
+    cleaned = "".join(
+        " " if unicodedata.category(c) == "Cc" else c
+        for c in raw
+    )
+    canonical = " ".join(cleaned.split())
+    return canonical or None
+
+
 def record_entry(
     conn: sqlite3.Connection, req: EntryRequest, *,
     soft_warn: int, hard_cap: int, force: bool,
@@ -136,7 +191,7 @@ def record_entry(
         watchlist_entry_target=req.watchlist_entry_target,
         watchlist_initial_stop=req.watchlist_initial_stop,
         notes=req.notes,
-        hypothesis_label=req.hypothesis_label,
+        hypothesis_label=canonicalize_hypothesis_label(req.hypothesis_label),
     )
 
     archived = False

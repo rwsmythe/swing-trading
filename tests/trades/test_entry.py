@@ -95,6 +95,55 @@ def test_entry_default_hypothesis_label_is_null(tmp_path: Path):
         conn.close()
 
 
+def test_entry_canonicalizes_hypothesis_label_at_service_boundary(tmp_path: Path):
+    """Adversarial M2/M3 (round 1): non-CLI callers could otherwise persist raw
+    whitespace/control-char variants and create phantom buckets in the journal
+    breakdown. The service normalizes at persistence so grouping always sees
+    the canonical form."""
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        for i, (ticker, raw) in enumerate([
+            ("AAA", "  alpha  bucket  "),    # leading/trailing + double space
+            ("BBB", "alpha\tbucket"),         # tab separator
+            ("CCC", "alpha\x00bucket"),       # NUL byte (control)
+        ]):
+            req = EntryRequest(
+                ticker=ticker, entry_date="2026-04-25", entry_price=10.0,
+                shares=1, initial_stop=9.0, watchlist_entry_target=None,
+                watchlist_initial_stop=None, notes=None,
+                rationale=EntryRationale.OTHER.value,
+                event_ts=f"2026-04-25T09:{i:02d}:00",
+                hypothesis_label=raw,
+            )
+            result = record_entry(conn, req, soft_warn=10, hard_cap=10, force=False)
+            t = get_trade(conn, result.trade_id)
+            assert t.hypothesis_label == "alpha bucket", (
+                f"row {i}: got {t.hypothesis_label!r}"
+            )
+    finally:
+        conn.close()
+
+
+def test_entry_blank_hypothesis_label_becomes_null(tmp_path: Path):
+    """Whitespace-only labels (any caller, not just the CLI) collapse to None
+    so the operator never accidentally creates an unnamed labeled bucket."""
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        req = EntryRequest(
+            ticker="WSP", entry_date="2026-04-25", entry_price=10.0,
+            shares=1, initial_stop=9.0, watchlist_entry_target=None,
+            watchlist_initial_stop=None, notes=None,
+            rationale=EntryRationale.OTHER.value,
+            event_ts="2026-04-25T09:30:00",
+            hypothesis_label="   \t\n  ",
+        )
+        result = record_entry(conn, req, soft_warn=4, hard_cap=6, force=False)
+        t = get_trade(conn, result.trade_id)
+        assert t.hypothesis_label is None
+    finally:
+        conn.close()
+
+
 def test_soft_warn_returns_warning_but_succeeds(tmp_path: Path):
     conn = ensure_schema(tmp_path / "swing.db")
     try:
