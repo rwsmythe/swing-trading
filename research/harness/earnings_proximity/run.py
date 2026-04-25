@@ -19,6 +19,7 @@ import csv
 import dataclasses
 import hashlib
 import sys
+import warnings
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -207,18 +208,19 @@ def run_replay(
     universe_csv_path = (
         universe_csv if universe_csv is not None else repo_root / _DEFAULT_UNIVERSE_CSV
     )
-    if universe_csv_path.exists():
-        universe = load_universe(universe_csv_path)
-        universe_tickers_full = universe.tickers
-        universe_version = universe.version
-        universe_hash_value = universe_version_hash(universe_csv_path)
-    else:
-        # Fallback for tests / harness invocations without the operator's CSV
-        # checked out. Honest: the manifest hash reflects the smoke-ticker set,
-        # not the (missing) RS universe. Documented in notes.
-        universe_tickers_full = tuple(sorted(t.upper() for t in tickers))
-        universe_version = "harness-smoke-fallback"
-        universe_hash_value = _ticker_set_hash(universe_tickers_full)
+    if not universe_csv_path.exists():
+        # Strict — silent subset-fallback would reintroduce the original
+        # adversarial-review issue (Round 1 #1) in a quieter form. Force
+        # the operator to be explicit about the universe.
+        raise FileNotFoundError(
+            f"RS universe CSV not found: {universe_csv_path}. "
+            f"Pass --universe-csv explicitly, or ensure the default "
+            f"({_DEFAULT_UNIVERSE_CSV}) exists relative to the repo root."
+        )
+    universe = load_universe(universe_csv_path)
+    universe_tickers_full = universe.tickers
+    universe_version = universe.version
+    universe_hash_value = universe_version_hash(universe_csv_path)
 
     if end_date is None:
         today = datetime.now().date()
@@ -235,6 +237,20 @@ def run_replay(
 
     fetch_start, fetch_end = _fetch_window(trading_days, calendar)
     smoke_tickers = sorted({t.upper() for t in tickers})
+
+    # Validate smoke ticker subset is fully in the universe. Tickers outside
+    # the universe are silently ignored downstream (replay iterates the
+    # universe, not the smoke set), which would be a confusing UX bug.
+    universe_set = set(universe_tickers_full)
+    out_of_universe = sorted(t for t in smoke_tickers if t not in universe_set)
+    if out_of_universe:
+        warnings.warn(
+            f"Smoke ticker(s) not in RS universe: {out_of_universe}. "
+            f"They will not be evaluated (replay iterates the universe). "
+            f"Add them to the universe CSV or remove from --tickers.",
+            stacklevel=2,
+        )
+
     fetch_tickers = sorted({*smoke_tickers, _BENCHMARK_TICKER})
 
     # --- Fetch OHLCV + earnings (cached). Real per-ticker hit/miss telemetry. ---
@@ -299,6 +315,27 @@ def run_replay(
     output_dir.mkdir(parents=True, exist_ok=True)
     _write_metrics_csv(rows, output_dir / "metrics.csv")
 
+    # Disclose subset-driven RS for the smoke (faithful note for Session 2c).
+    # When the smoke evaluates only a few tickers of the larger universe,
+    # cross-sectional RS ranking inside compute_rs effectively collapses to
+    # the fetched-OHLCV subset (it skips universe tickers without a return
+    # in returns_12w_by_ticker). The manifest's universe_version_hash
+    # reflects the FULL universe, so provenance is faithful, but readers
+    # need to know the RS math is subset-driven on smoke runs.
+    notes = [
+        "Smoke run — shape check only; not the full study.",
+        f"Signal total before variant filtering: {len(signals)}",
+        f"Smoke ticker filter: {','.join(smoke_tickers)} (subset of universe).",
+    ]
+    if len(smoke_tickers) < len(universe_tickers_full):
+        notes.append(
+            "RS ranking is subset-driven on smoke runs — only universe tickers "
+            "with fetched OHLCV participate in the rank denominator. "
+            "Session 2c's full study fetches OHLCV for the full universe."
+        )
+    if out_of_universe:
+        notes.append(f"Excluded out-of-universe smoke tickers: {','.join(out_of_universe)}.")
+
     manifest = build_manifest(
         repo_root=repo_root,
         universe_version_hash=universe_hash_value,
@@ -310,11 +347,7 @@ def run_replay(
         cache_stats=cache_stats,
         absent_data_count=absent_total,
         dropped_signal_count=dropped_total,
-        notes=(
-            "Smoke run — shape check only; not the full study.",
-            f"Signal total before variant filtering: {len(signals)}",
-            f"Smoke ticker filter: {','.join(smoke_tickers)} (subset of universe).",
-        ),
+        notes=tuple(notes),
     )
     write_manifest(manifest, output_dir / "run_manifest.json")
 

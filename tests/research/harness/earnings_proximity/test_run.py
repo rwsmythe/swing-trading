@@ -13,6 +13,7 @@ import json
 from datetime import date
 
 import pandas as pd
+import pytest
 
 
 def _synth_ohlcv(start: str = "2024-01-02", periods: int = 400) -> pd.DataFrame:
@@ -164,6 +165,73 @@ def test_run_replay_end_to_end_produces_metrics_and_manifest(tmp_path, monkeypat
     # were still present.
     signals_total = int(manifest["notes"][1].split(": ")[-1])
     assert manifest["dropped_signal_count"] <= signals_total
+
+
+def test_run_replay_raises_when_universe_csv_missing(tmp_path, monkeypatch):
+    """Fix for adversarial-review Round 2 issue 2: a missing universe CSV
+    must NOT silently fall back to smoke-tickers-as-universe. Operator must
+    pass --universe-csv explicitly or fix the default path."""
+    from research.harness.earnings_proximity import run
+
+    nonexistent = tmp_path / "does-not-exist.csv"
+
+    with pytest.raises(FileNotFoundError, match="RS universe CSV not found"):
+        run.run_replay(
+            tickers=["AAPL"],
+            window_days=5,
+            variant_list=[0],
+            output_dir=tmp_path / "out",
+            cache_dir=tmp_path / "cache",
+            end_date=date(2026, 4, 3),
+            universe_csv=nonexistent,
+        )
+
+
+def test_run_replay_warns_on_smoke_ticker_outside_universe(tmp_path, monkeypatch):
+    """Fix for adversarial-review Round 2 minor 1: a --tickers value not in
+    the universe is silently ignored by replay (which iterates universe).
+    Soft-warn the operator and record in manifest notes."""
+    import warnings as warnings_mod
+
+    from research.harness.earnings_proximity import replay, run
+    from research.harness.earnings_proximity.fetchers import FetchStats
+
+    universe_csv = tmp_path / "small-universe.csv"
+    universe_csv.write_text("# version: tiny-v1\nticker\nAAPL\nSPY\n")  # NO MSFT
+
+    frames = {t: _synth_ohlcv() for t in ("AAPL", "MSFT", "SPY")}
+
+    def fake_load_ohlcv_with_stats(tickers, *, start, end, cache_dir):
+        data = {t: frames[t] for t in tickers if t in frames}
+        return data, FetchStats(hits=tuple(data.keys()), misses=())
+
+    def fake_load_earnings_with_stats(tickers, *, cache_dir, cache_max_age_hours: int = 24):
+        data = {t: [] for t in tickers}
+        return data, FetchStats(hits=tuple(data.keys()), misses=())
+
+    monkeypatch.setattr(run.fetchers, "load_ohlcv_with_stats", fake_load_ohlcv_with_stats)
+    monkeypatch.setattr(run.fetchers, "load_earnings_with_stats", fake_load_earnings_with_stats)
+    monkeypatch.setattr(replay, "evaluate_one", lambda ctx: _aplus_candidate(ctx.ticker))
+
+    with warnings_mod.catch_warnings(record=True) as captured:
+        warnings_mod.simplefilter("always")
+        run.run_replay(
+            tickers=["AAPL", "MSFT"],  # MSFT not in the small universe
+            window_days=5,
+            variant_list=[0],
+            output_dir=tmp_path / "out",
+            cache_dir=tmp_path / "cache",
+            end_date=date(2026, 4, 3),
+            universe_csv=universe_csv,
+        )
+
+    msgs = [str(w.message) for w in captured]
+    assert any("MSFT" in m and "not in RS universe" in m for m in msgs), (
+        f"expected out-of-universe warning, got: {msgs}"
+    )
+
+    manifest = json.loads((tmp_path / "out" / "run_manifest.json").read_text())
+    assert any("MSFT" in n for n in manifest["notes"])
 
 
 def test_parse_args_accepts_smoke_invocation():
