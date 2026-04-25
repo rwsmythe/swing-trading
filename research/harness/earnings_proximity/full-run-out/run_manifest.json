@@ -1,0 +1,36 @@
+{
+  "git_sha": "0e04079b4798050ae477b42d14ea4d3d35154ce0",
+  "git_dirty": true,
+  "run_ts": "2026-04-25T03:23:53.489653+00:00",
+  "yfinance_version": "1.2.2",
+  "universe_version_hash": "bb7b38792ce6170627cfad6299d26efb4514de2ad375cad70617502d3a9d977c",
+  "window_start": "2024-04-19",
+  "window_end": "2026-04-23",
+  "trading_days": 504,
+  "tickers": 516,
+  "variants": [
+    0,
+    3,
+    5,
+    7,
+    10
+  ],
+  "cache_stats": {
+    "ohlcv_hits": 0,
+    "ohlcv_misses": 517,
+    "earnings_hits": 516,
+    "earnings_misses": 0
+  },
+  "absent_data_count": 0,
+  "dropped_signal_count": 6,
+  "study_design_commit": "6d5e8ed6a2f667ad561a7c4105e3454f52432021",
+  "notes": [
+    "Full-study run: 516 tickers x 504 trading days x 5 variants.",
+    "Signal total before variant filtering: 11",
+    "Absent-earnings-data signals: 0",
+    "Outcomes simulated (of signals with OHLCV): 11",
+    "Dropped (never triggered) signals: 6",
+    "Universe drawn from reference/rs-universe.csv v2026-04-24-1 (SPX + NDX; no Finviz pre-filter).",
+    "Absent-data rule: signals with no earnings history are KEPT by all variant filters (method-record mandate)."
+  ]
+}

@@ -1,0 +1,460 @@
+{
+  "per_variant": {
+    "X=0": {
+      "signal_count": 11,
+      "traded_count": 5,
+      "dropped_count": 6,
+      "absent_data_count": 0,
+      "stopped_count": 0,
+      "gapped_count": 0,
+      "expectancy_r": 0.2160450989651329,
+      "expectancy_ci95": [
+        -0.29218260227237736,
+        0.7403504742169282
+      ],
+      "gap_through_rate": 0.0,
+      "gap_through_rate_wilson_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_mean_r": 0.0,
+      "gap_magnitude_mean_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_max_r": 0.0
+    },
+    "X=3": {
+      "signal_count": 11,
+      "traded_count": 5,
+      "dropped_count": 6,
+      "absent_data_count": 0,
+      "stopped_count": 0,
+      "gapped_count": 0,
+      "expectancy_r": 0.2160450989651329,
+      "expectancy_ci95": [
+        -0.29218260227237736,
+        0.7403504742169282
+      ],
+      "gap_through_rate": 0.0,
+      "gap_through_rate_wilson_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_mean_r": 0.0,
+      "gap_magnitude_mean_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_max_r": 0.0
+    },
+    "X=5": {
+      "signal_count": 11,
+      "traded_count": 5,
+      "dropped_count": 6,
+      "absent_data_count": 0,
+      "stopped_count": 0,
+      "gapped_count": 0,
+      "expectancy_r": 0.2160450989651329,
+      "expectancy_ci95": [
+        -0.29218260227237736,
+        0.7403504742169282
+      ],
+      "gap_through_rate": 0.0,
+      "gap_through_rate_wilson_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_mean_r": 0.0,
+      "gap_magnitude_mean_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_max_r": 0.0
+    },
+    "X=7": {
+      "signal_count": 11,
+      "traded_count": 5,
+      "dropped_count": 6,
+      "absent_data_count": 0,
+      "stopped_count": 0,
+      "gapped_count": 0,
+      "expectancy_r": 0.2160450989651329,
+      "expectancy_ci95": [
+        -0.29218260227237736,
+        0.7403504742169282
+      ],
+      "gap_through_rate": 0.0,
+      "gap_through_rate_wilson_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_mean_r": 0.0,
+      "gap_magnitude_mean_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_max_r": 0.0
+    },
+    "X=10": {
+      "signal_count": 11,
+      "traded_count": 5,
+      "dropped_count": 6,
+      "absent_data_count": 0,
+      "stopped_count": 0,
+      "gapped_count": 0,
+      "expectancy_r": 0.2160450989651329,
+      "expectancy_ci95": [
+        -0.29218260227237736,
+        0.7403504742169282
+      ],
+      "gap_through_rate": 0.0,
+      "gap_through_rate_wilson_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_mean_r": 0.0,
+      "gap_magnitude_mean_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_max_r": 0.0
+    }
+  },
+  "deltas_vs_X0": {
+    "X=3": {
+      "expectancy_delta_r": 0.0,
+      "expectancy_delta_ci95": [
+        -0.744546087244855,
+        0.7401862998260025
+      ],
+      "gap_rate_delta_pp": 0.0,
+      "gap_rate_reduction_pp": -0.0,
+      "gap_rate_diff_newcombe_ci95_pp": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_delta_r": 0.0,
+      "gap_magnitude_reduction_r": -0.0,
+      "gap_magnitude_delta_ci95": [
+        0.0,
+        0.0
+      ],
+      "signal_volume_loss_pct": 0.0
+    },
+    "X=5": {
+      "expectancy_delta_r": 0.0,
+      "expectancy_delta_ci95": [
+        -0.744546087244855,
+        0.7401862998260025
+      ],
+      "gap_rate_delta_pp": 0.0,
+      "gap_rate_reduction_pp": -0.0,
+      "gap_rate_diff_newcombe_ci95_pp": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_delta_r": 0.0,
+      "gap_magnitude_reduction_r": -0.0,
+      "gap_magnitude_delta_ci95": [
+        0.0,
+        0.0
+      ],
+      "signal_volume_loss_pct": 0.0
+    },
+    "X=7": {
+      "expectancy_delta_r": 0.0,
+      "expectancy_delta_ci95": [
+        -0.744546087244855,
+        0.7401862998260025
+      ],
+      "gap_rate_delta_pp": 0.0,
+      "gap_rate_reduction_pp": -0.0,
+      "gap_rate_diff_newcombe_ci95_pp": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_delta_r": 0.0,
+      "gap_magnitude_reduction_r": -0.0,
+      "gap_magnitude_delta_ci95": [
+        0.0,
+        0.0
+      ],
+      "signal_volume_loss_pct": 0.0
+    },
+    "X=10": {
+      "expectancy_delta_r": 0.0,
+      "expectancy_delta_ci95": [
+        -0.744546087244855,
+        0.7401862998260025
+      ],
+      "gap_rate_delta_pp": 0.0,
+      "gap_rate_reduction_pp": -0.0,
+      "gap_rate_diff_newcombe_ci95_pp": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_delta_r": 0.0,
+      "gap_magnitude_reduction_r": -0.0,
+      "gap_magnitude_delta_ci95": [
+        0.0,
+        0.0
+      ],
+      "signal_volume_loss_pct": 0.0
+    }
+  },
+  "window_split_midpoint": "2025-12-24",
+  "temporal_subset_first_half": {
+    "X=0": {
+      "signal_count": 4,
+      "traded_count": 1,
+      "dropped_count": 3,
+      "absent_data_count": 0,
+      "stopped_count": 0,
+      "gapped_count": 0,
+      "expectancy_r": -0.4969225285755621,
+      "expectancy_ci95": [
+        -0.4969225285755621,
+        -0.4969225285755621
+      ],
+      "gap_through_rate": 0.0,
+      "gap_through_rate_wilson_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_mean_r": 0.0,
+      "gap_magnitude_mean_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_max_r": 0.0
+    },
+    "X=3": {
+      "signal_count": 4,
+      "traded_count": 1,
+      "dropped_count": 3,
+      "absent_data_count": 0,
+      "stopped_count": 0,
+      "gapped_count": 0,
+      "expectancy_r": -0.4969225285755621,
+      "expectancy_ci95": [
+        -0.4969225285755621,
+        -0.4969225285755621
+      ],
+      "gap_through_rate": 0.0,
+      "gap_through_rate_wilson_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_mean_r": 0.0,
+      "gap_magnitude_mean_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_max_r": 0.0
+    },
+    "X=5": {
+      "signal_count": 4,
+      "traded_count": 1,
+      "dropped_count": 3,
+      "absent_data_count": 0,
+      "stopped_count": 0,
+      "gapped_count": 0,
+      "expectancy_r": -0.4969225285755621,
+      "expectancy_ci95": [
+        -0.4969225285755621,
+        -0.4969225285755621
+      ],
+      "gap_through_rate": 0.0,
+      "gap_through_rate_wilson_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_mean_r": 0.0,
+      "gap_magnitude_mean_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_max_r": 0.0
+    },
+    "X=7": {
+      "signal_count": 4,
+      "traded_count": 1,
+      "dropped_count": 3,
+      "absent_data_count": 0,
+      "stopped_count": 0,
+      "gapped_count": 0,
+      "expectancy_r": -0.4969225285755621,
+      "expectancy_ci95": [
+        -0.4969225285755621,
+        -0.4969225285755621
+      ],
+      "gap_through_rate": 0.0,
+      "gap_through_rate_wilson_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_mean_r": 0.0,
+      "gap_magnitude_mean_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_max_r": 0.0
+    },
+    "X=10": {
+      "signal_count": 4,
+      "traded_count": 1,
+      "dropped_count": 3,
+      "absent_data_count": 0,
+      "stopped_count": 0,
+      "gapped_count": 0,
+      "expectancy_r": -0.4969225285755621,
+      "expectancy_ci95": [
+        -0.4969225285755621,
+        -0.4969225285755621
+      ],
+      "gap_through_rate": 0.0,
+      "gap_through_rate_wilson_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_mean_r": 0.0,
+      "gap_magnitude_mean_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_max_r": 0.0
+    }
+  },
+  "temporal_subset_second_half": {
+    "X=0": {
+      "signal_count": 7,
+      "traded_count": 4,
+      "dropped_count": 3,
+      "absent_data_count": 0,
+      "stopped_count": 0,
+      "gapped_count": 0,
+      "expectancy_r": 0.3942870058503067,
+      "expectancy_ci95": [
+        -0.1613303610306686,
+        0.8992448665236776
+      ],
+      "gap_through_rate": 0.0,
+      "gap_through_rate_wilson_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_mean_r": 0.0,
+      "gap_magnitude_mean_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_max_r": 0.0
+    },
+    "X=3": {
+      "signal_count": 7,
+      "traded_count": 4,
+      "dropped_count": 3,
+      "absent_data_count": 0,
+      "stopped_count": 0,
+      "gapped_count": 0,
+      "expectancy_r": 0.3942870058503067,
+      "expectancy_ci95": [
+        -0.1613303610306686,
+        0.8992448665236776
+      ],
+      "gap_through_rate": 0.0,
+      "gap_through_rate_wilson_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_mean_r": 0.0,
+      "gap_magnitude_mean_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_max_r": 0.0
+    },
+    "X=5": {
+      "signal_count": 7,
+      "traded_count": 4,
+      "dropped_count": 3,
+      "absent_data_count": 0,
+      "stopped_count": 0,
+      "gapped_count": 0,
+      "expectancy_r": 0.3942870058503067,
+      "expectancy_ci95": [
+        -0.1613303610306686,
+        0.8992448665236776
+      ],
+      "gap_through_rate": 0.0,
+      "gap_through_rate_wilson_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_mean_r": 0.0,
+      "gap_magnitude_mean_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_max_r": 0.0
+    },
+    "X=7": {
+      "signal_count": 7,
+      "traded_count": 4,
+      "dropped_count": 3,
+      "absent_data_count": 0,
+      "stopped_count": 0,
+      "gapped_count": 0,
+      "expectancy_r": 0.3942870058503067,
+      "expectancy_ci95": [
+        -0.1613303610306686,
+        0.8992448665236776
+      ],
+      "gap_through_rate": 0.0,
+      "gap_through_rate_wilson_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_mean_r": 0.0,
+      "gap_magnitude_mean_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_max_r": 0.0
+    },
+    "X=10": {
+      "signal_count": 7,
+      "traded_count": 4,
+      "dropped_count": 3,
+      "absent_data_count": 0,
+      "stopped_count": 0,
+      "gapped_count": 0,
+      "expectancy_r": 0.3942870058503067,
+      "expectancy_ci95": [
+        -0.1613303610306686,
+        0.8992448665236776
+      ],
+      "gap_through_rate": 0.0,
+      "gap_through_rate_wilson_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_mean_r": 0.0,
+      "gap_magnitude_mean_ci95": [
+        0.0,
+        0.0
+      ],
+      "gap_magnitude_max_r": 0.0
+    }
+  },
+  "absent_data_audit": {
+    "overall_signals_with_earnings_data": 11,
+    "overall_absent_data_signals": 0,
+    "overall_total_signals": 11
+  },
+  "bootstrap_config": {
+    "n_resamples": 10000,
+    "seed": 20260424
+  }
+}

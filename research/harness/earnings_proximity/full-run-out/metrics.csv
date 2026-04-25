@@ -1,0 +1,6 @@
+variant_name,blackout_trading_days,signal_count,traded_count,dropped_count,absent_data_count,expectancy_r,gap_through_rate,gap_magnitude_mean_r,gap_magnitude_max_r
+X=0,0,11,5,6,0,0.21604509896513294,0.0,0.0,0.0
+X=3,3,11,5,6,0,0.21604509896513294,0.0,0.0,0.0
+X=5,5,11,5,6,0,0.21604509896513294,0.0,0.0,0.0
+X=7,7,11,5,6,0,0.21604509896513294,0.0,0.0,0.0
+X=10,10,11,5,6,0,0.21604509896513294,0.0,0.0,0.0
