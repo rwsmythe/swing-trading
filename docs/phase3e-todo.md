@@ -215,3 +215,47 @@ Items surfaced during the parallel `build_watchlist` mixed-anchor fix (commit `7
 - **`PriceFetcher` cache-stat introspection.** Production's `swing.prices.PriceFetcher` does not expose hit/miss counts; the parity comparator wrapped it in `_CountingPriceFetcher` (in `research/parity/run.py`) to report cache stats in the D3 manifest. Minor architectural gap; backlog item for if cache observability becomes operationally valuable elsewhere in the production layer.
 
 ---
+
+## 2026-04-25 S&P 1500 study follow-ups
+
+Items surfaced during the S&P 1500 universe expansion study (commits `a921e4b..4a372da`) that were deliberately deferred per scope discipline.
+
+- **Newcombe interval on (S&P 1500 1× rate − SPX+NDX 1× rate).** Tier classification used point-estimate uplift per pre-registration; the per-rate Wilson CIs overlap, so a formal difference-of-proportions inference is open. The Newcombe interval would be the proper instrument. Nice-to-have refinement for tighter inference; not load-bearing for the descriptive Tier 2 finding.
+- **Multi-window characterization on S&P 1500.** The Tier 2 result is a single-window observation. Rolling-window characterization (e.g., overlapping 6-month windows) would test rate stability across regimes within the broader 2024-04 → 2026-04 period. Operator-decision gated.
+- **5× capital cell on S&P 1500.** Pre-registration scoped the study to 1× only (operator's actual capital). A 5× cell would complete a 4-cell matrix analogous to the candidate-sparsity diagnostic. Deferred per capital-sensitivity disposition (capital is informational, not workflow-changing).
+- **Capital-binding-on-mid-caps interpretive finding (informational, not a follow-up task).** Production-gated risk_feasibility on S&P 1500 1× was 9.65% (vs SPX+NDX 18.62%, Russell 6.91%). At the operator's $7,500 capital, mid-cap universes fit the sizing budget BETTER than large-cap universes. Worth surfacing in any future operator-facing universe-decision conversation.
+- **Byte-identical re-run with patched diagnostic_run for clean-checkout artifact proof.** D5 patch added `git_dirty` field to manifest for FUTURE runs; THIS D3 run's clean-checkout assertion remains procedural. Adversarial review accepted; orchestrator can request stronger artifact-level proof if needed. Low priority.
+
+---
+
+## 2026-04-25 — Proposed next study (SHIPPED 2026-04-25)
+
+- ~~**Per-criterion binding-constraint analysis on operator's actual Finviz pool.**~~ SHIPPED. See `research/studies/finviz-pool-binding-constraints.md` for findings.
+
+---
+
+## 2026-04-25 Finviz-pool study + hypothesis-label follow-ups
+
+Items surfaced during the Finviz-pool per-criterion analysis (commits `618cb9c..6ca6a40`) and trade hypothesis label Phase 3e change (commits `1cec5df..123f83c`).
+
+### From Finviz-pool study:
+
+- **Watch-staging UI surface for near-A+ defensible candidates.** Phase 3e candidate. Show tickers in the near-A+ defensible subset (currently SLDB, UCTT — those failing only `proximity_20ma`) in a separate dashboard section flagged "near-A+, awaiting pullback." Operator can monitor for pullback to 20MA, then re-evaluate for trade entry. Modest scope: ~1 VM extension + ~1 template + ~1 query helper. Genuine operational value once identification volume + capital cycling is in motion.
+- **Longer-window Finviz-pool re-run after 30-60 days more data accumulates.** Same study module (`research/finviz_pool_analysis/`); just re-execute. The 8-day single-ticker SLDB-population caveat resolves naturally as more daily Finviz CSVs accumulate. Estimated 30 minutes once enough data exists; useful for operator to confirm or revise the descriptive findings.
+- **Path-resolution policy for renamed-rejected CSVs.** Implementer flagged: 1 evaluation_run skipped because its CSV was renamed to `data/finviz-inbox/rejected/finviz16Apr2026.rejected-20260419T064456.csv`. Strict literal-basename match was implemented; stem-prefix match could include rejected runs. **Defer indefinitely.** 1 run affected; semantics could go either way; not load-bearing.
+- **Single-ticker A+ population caveat.** All 3 A+ rows in the 8-day snapshot were SLDB on 2 dates. Inherent limitation of a small window; resolves with longer-window re-run above. Not a follow-up task; documented limitation.
+
+### From hypothesis-label Phase 3e change:
+
+- **Backfill of historical trades (VIS).** Existing trades (specifically VIS, the n=1 closed trade as of 2026-04-25) have NULL `hypothesis_label`. If the operator wants to retro-label, it's a one-off SQL `UPDATE trades SET hypothesis_label = '...' WHERE id = ?;`. Trivial; operator-driven; not a follow-up commit.
+- **Future formalization to controlled vocabulary.** Free-text initially per operator confirmation; once 5+ labeled trades reveal natural categories, formalization to enum + validation is a follow-on. Not urgent.
+
+### Cross-cutting: Post-hoc trade analysis CLI tool
+
+- **`swing trade analyze <trade_id>` retrospective tool.** All data exists in the production DB to produce a structured per-trade retrospective: candidate row + criteria from the recommendation evaluation_run, entry/exit data, recommendation-bucket, criteria-failed-at-recommendation, time-from-recommendation-to-entry, entry-vs-pivot deviation, exit-vs-stop deviation, P&L, hold duration. With hypothesis_label now persisted, the tool can also surface the operator's pre-trade hypothesis alongside outcome. **Higher operational value than I initially framed** — surfaces the case-study analysis the operator asked about for VIS. Modest scope (~1 session, single CLI command, SQL joins on existing tables). Phase 3e candidate; would compose with the hypothesis-label aggregation work.
+
+### Chart-pattern algorithm framing note (cross-reference)
+
+Per `docs/orchestrator-context.md` 2026-04-25 binding-constraint analysis: chart-pattern algorithm (Phase 3e §3e.6) is for **encoding qualitative chart-pattern input into structured feedback-loop data**, NOT for throughput acceleration (operator can manually assess at saturation rate). Important addition; not urgent. Multi-session copowers cycle when ready. Hypothesis-label free-text absorbs qualitative chart-pattern input as interim solution.
+
+---

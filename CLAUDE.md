@@ -1,6 +1,6 @@
 # Swing Trading — Claude Code Context
 
-Personal swing-trading tool (Disciplined Swing Trader + Minervini SEPA). Active ground-up refactor. Phase 3d shipped (SMA-aware advisories). End-to-end walkthrough validated the full operator loop; 9+ post-walkthrough fixes landed on `main` (library-API regressions, dashboard/pipeline UX). **504 fast tests green.** Phase 3e backlog in `docs/phase3e-todo.md`. Daily routine in `docs/cycle-checklist.md`.
+Personal swing-trading tool (Disciplined Swing Trader + Minervini SEPA). Active ground-up refactor. Phase 3d shipped (SMA-aware advisories). End-to-end walkthrough validated the full operator loop; numerous post-walkthrough fixes landed on `main` (library-API regressions, dashboard/pipeline UX, mixed-anchor bug 7 family). **822 fast tests green** (as of 2026-04-25 post-Finviz-pool + hypothesis-label work). Phase 3e backlog in `docs/phase3e-todo.md`. Daily routine in `docs/cycle-checklist.md`. Orchestrator-role context for fresh sessions in `docs/orchestrator-context.md`.
 
 ## Quick Start
 
@@ -8,7 +8,7 @@ Personal swing-trading tool (Disciplined Swing Trader + Minervini SEPA). Active 
 pip install -e ".[dev,web]"
 swing --help                         # CLI: trade, journal, pipeline, web, finviz, etc.
 swing web                            # FastAPI + HTMX dashboard on 127.0.0.1:8080
-python -m pytest -m "not slow" -q    # fast suite (499 tests, ~15s)
+python -m pytest -m "not slow" -q    # fast suite (822 tests as of 2026-04-25, ~30-40s)
 python -m pytest -m slow             # pipeline/yfinance e2e (minutes, needs network)
 ruff check swing/
 ```
