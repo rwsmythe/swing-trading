@@ -247,12 +247,16 @@ Items surfaced during the Finviz-pool per-criterion analysis (commits `618cb9c..
 
 ### From hypothesis-label Phase 3e change:
 
-- **Backfill of historical trades (VIS).** Existing trades (specifically VIS, the n=1 closed trade as of 2026-04-25) have NULL `hypothesis_label`. If the operator wants to retro-label, it's a one-off SQL `UPDATE trades SET hypothesis_label = '...' WHERE id = ?;`. Trivial; operator-driven; not a follow-up commit.
+- ~~**Backfill of historical trades (VIR).**~~ DONE 2026-04-25. After `swing db-migrate` applied schema 7, ran `UPDATE trades SET hypothesis_label = 'sub-A+ VCP-not-formed test (proximity_20ma + tightness fails); inaugural trade test' WHERE id = 1;` against production DB. n=1 historical trade now labeled.
 - **Future formalization to controlled vocabulary.** Free-text initially per operator confirmation; once 5+ labeled trades reveal natural categories, formalization to enum + validation is a follow-on. Not urgent.
 
 ### Cross-cutting: Post-hoc trade analysis CLI tool
 
-- **`swing trade analyze <trade_id>` retrospective tool.** All data exists in the production DB to produce a structured per-trade retrospective: candidate row + criteria from the recommendation evaluation_run, entry/exit data, recommendation-bucket, criteria-failed-at-recommendation, time-from-recommendation-to-entry, entry-vs-pivot deviation, exit-vs-stop deviation, P&L, hold duration. With hypothesis_label now persisted, the tool can also surface the operator's pre-trade hypothesis alongside outcome. **Higher operational value than I initially framed** — surfaces the case-study analysis the operator asked about for VIS. Modest scope (~1 session, single CLI command, SQL joins on existing tables). Phase 3e candidate; would compose with the hypothesis-label aggregation work.
+- **`swing trade analyze <trade_id>` retrospective tool.** All data exists in the production DB to produce a structured per-trade retrospective: candidate row + criteria from the recommendation evaluation_run, entry/exit data, recommendation-bucket, criteria-failed-at-recommendation, time-from-recommendation-to-entry, entry-vs-pivot deviation, exit-vs-stop deviation, P&L, hold duration. With hypothesis_label now persisted, the tool can also surface the operator's pre-trade hypothesis alongside outcome. **Higher operational value than I initially framed** — surfaces the case-study analysis the operator asked about for VIR. Modest scope (~1 session, single CLI command, SQL joins on existing tables). Phase 3e candidate; would compose with the hypothesis-label aggregation work.
+
+### Operational hygiene
+
+- **Weekly DB backups during the first pipeline run of the calendar week.** Add backup logic to the pipeline runner: on the first pipeline run of each ISO calendar week, copy `~/swing-data/swing.db` to `~/swing-data/backups/swing-YYYYWW.db` (or similar dating scheme) before any DB writes. Track most-recent-backup-week to detect "first run of week"; consider rolling retention (e.g., keep 12 most-recent weekly backups, ~3 months coverage). Modest scope (~1 session): pipeline runner change + a small `swing/data/backup.py` helper + tests + a CLI hook (`swing db-backup --force` for manual triggering). Operationally important — production DB is the source-of-truth for trade outcomes + per-criterion data + hypothesis labels; loss would be unrecoverable.
 
 ### Chart-pattern algorithm framing note (cross-reference)
 
