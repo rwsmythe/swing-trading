@@ -124,6 +124,62 @@ def test_entry_canonicalizes_hypothesis_label_at_service_boundary(tmp_path: Path
         conn.close()
 
 
+def test_entry_canonicalization_strips_format_characters(tmp_path: Path):
+    """Adversarial R2 M1: Unicode-Cf (format) characters — zero-width spaces,
+    zero-width joiners, bidi overrides — would survive a Cc-only filter and
+    let two visually-identical labels group separately. Service must strip
+    Cf as well so grouping stays robust to invisible-character spoofing."""
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        # U+200B = ZERO WIDTH SPACE (Cf), U+200D = ZERO WIDTH JOINER (Cf),
+        # U+202E = RIGHT-TO-LEFT OVERRIDE (Cf).
+        for i, (ticker, raw) in enumerate([
+            ("ZW1", "alpha​bucket"),
+            ("ZW2", "alpha‍bucket"),
+            ("ZW3", "alpha‮bucket"),
+        ]):
+            req = EntryRequest(
+                ticker=ticker, entry_date="2026-04-25", entry_price=10.0,
+                shares=1, initial_stop=9.0, watchlist_entry_target=None,
+                watchlist_initial_stop=None, notes=None,
+                rationale=EntryRationale.OTHER.value,
+                event_ts=f"2026-04-25T10:{i:02d}:00",
+                hypothesis_label=raw,
+            )
+            result = record_entry(conn, req, soft_warn=10, hard_cap=10, force=False)
+            t = get_trade(conn, result.trade_id)
+            assert t.hypothesis_label == "alphabucket", (
+                f"row {i}: got {t.hypothesis_label!r} (expected Cf to be stripped)"
+            )
+    finally:
+        conn.close()
+
+
+def test_entry_canonicalization_normalizes_unicode_to_nfc(tmp_path: Path):
+    """Adversarial R2 m2: NFC vs NFD decomposition. The string "café" can be
+    encoded as composed (U+00E9) or decomposed (U+0065 U+0301). Without NFC
+    normalization the same visible label groups into separate buckets."""
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        composed = "café"          # NFC: é as single codepoint
+        decomposed = "café"        # NFD: e + combining acute
+        for i, (ticker, raw) in enumerate([("NFC1", composed), ("NFC2", decomposed)]):
+            req = EntryRequest(
+                ticker=ticker, entry_date="2026-04-25", entry_price=10.0,
+                shares=1, initial_stop=9.0, watchlist_entry_target=None,
+                watchlist_initial_stop=None, notes=None,
+                rationale=EntryRationale.OTHER.value,
+                event_ts=f"2026-04-25T11:{i:02d}:00",
+                hypothesis_label=raw,
+            )
+            result = record_entry(conn, req, soft_warn=10, hard_cap=10, force=False)
+            t = get_trade(conn, result.trade_id)
+            # Both should round-trip to the NFC composed form.
+            assert t.hypothesis_label == composed
+    finally:
+        conn.close()
+
+
 def test_entry_blank_hypothesis_label_becomes_null(tmp_path: Path):
     """Whitespace-only labels (any caller, not just the CLI) collapse to None
     so the operator never accidentally creates an unnamed labeled bucket."""

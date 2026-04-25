@@ -101,45 +101,25 @@ class EntryResult:
     watchlist_archived: bool
 
 
-def _canonicalize_hypothesis_label(raw: str | None) -> str | None:
-    """Canonicalize the operator-frozen hypothesis label at the persistence
-    boundary so journal-review grouping is invariant to input whitespace and
-    embedded control bytes (adversarial review round 1, M2/M3).
-
-    Steps:
-      1. Replace any control character (Unicode category Cc) with a single
-         space — this neutralizes embedded `\\n`, `\\r`, `\\t`, NUL, etc.
-      2. Collapse all runs of whitespace into a single space.
-      3. Strip leading/trailing whitespace.
-      4. Empty result → None (so an all-whitespace input persists as NULL,
-         not as an unnamed labeled bucket).
-
-    Operator-typed semantic spacing inside a label is preserved (single
-    spaces between words); only artifacts that would split otherwise-
-    identical labels into distinct grouping keys are removed.
-    """
-    if raw is None:
-        return None
-    cleaned_chars = [
-        " " if unicodedata.category(c) == "Cc" else c
-        for c in raw
-    ]
-    canonical = " ".join("".join(cleaned_chars).split())
-    return canonical or None
-
-
 def canonicalize_hypothesis_label(raw: str | None) -> str | None:
     """Canonicalize the operator-frozen hypothesis label at the persistence
-    boundary so journal-review grouping is invariant to input whitespace and
-    embedded control bytes (adversarial review round 1, M2/M3).
+    boundary so journal-review grouping is invariant to input whitespace,
+    embedded control bytes, invisible Unicode format characters, and
+    NFC/NFD encoding differences (adversarial review rounds 1 + 2).
 
     Steps:
-      1. Replace any control character (Unicode category Cc) with a single
-         space — this neutralizes embedded ``\\n``, ``\\r``, ``\\t``, NUL, etc.
-      2. Collapse all runs of whitespace into a single space.
-      3. Strip leading/trailing whitespace.
-      4. Empty result → None (so an all-whitespace input persists as NULL,
-         not as an unnamed labeled bucket).
+      1. Apply Unicode NFC normalization so canonically-equivalent text
+         (composed `é` vs decomposed `e + ̀`) yields one stored form.
+      2. Drop any character in Unicode category ``Cf`` (format) — zero-width
+         space U+200B, ZWJ U+200D, bidi overrides U+202E/U+2066+, etc. —
+         which would otherwise let two visually-identical labels group as
+         distinct buckets (R2 M1 spoofing concern).
+      3. Replace any character in Unicode category ``Cc`` (control: `\\n`,
+         `\\r`, `\\t`, NUL, …) with a single space.
+      4. Collapse all whitespace runs to a single space.
+      5. Strip leading/trailing whitespace.
+      6. Empty result → ``None`` (so an all-whitespace input persists as
+         NULL, not as an unnamed labeled bucket).
 
     Operator-typed semantic spacing inside a label is preserved (single
     spaces between words); only artifacts that would split otherwise-
@@ -147,11 +127,17 @@ def canonicalize_hypothesis_label(raw: str | None) -> str | None:
     """
     if raw is None:
         return None
-    cleaned = "".join(
-        " " if unicodedata.category(c) == "Cc" else c
-        for c in raw
-    )
-    canonical = " ".join(cleaned.split())
+    nfc = unicodedata.normalize("NFC", raw)
+    cleaned_chars = []
+    for c in nfc:
+        cat = unicodedata.category(c)
+        if cat == "Cf":
+            continue  # invisible format chars: drop entirely
+        if cat == "Cc":
+            cleaned_chars.append(" ")  # control bytes: replace with space
+        else:
+            cleaned_chars.append(c)
+    canonical = " ".join("".join(cleaned_chars).split())
     return canonical or None
 
 
