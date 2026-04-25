@@ -321,12 +321,10 @@ def test_aggregate_consistency_warning_on_aplus_bucket_with_blocker():
     assert any("re-aggregation drift" in w for w in result.consistency_warnings)
 
 
-def test_aggregate_handles_error_bucket_with_empty_criteria():
-    """Error bucket may have empty criteria; the blocker column gets <error>
-    so totals still reconcile."""
-    err_cand = Candidate(
-        ticker="X",
-        bucket="error",
+def _empty_criteria_candidate(*, ticker: str, bucket: str) -> Candidate:
+    return Candidate(
+        ticker=ticker,
+        bucket=bucket,
         close=None,
         pivot=None,
         initial_stop=None,
@@ -341,9 +339,29 @@ def test_aggregate_handles_error_bucket_with_empty_criteria():
         notes=None,
         criteria=(),
     )
+
+
+def test_aggregate_error_bucket_uses_error_sentinel():
+    err_cand = _empty_criteria_candidate(ticker="X", bucket="error")
     runs = [(1, "2026-04-20", [err_cand])]
     result = aggregate_runs(runs)
     assert result.bucket_counts["error"] == 1
+    assert result.blocker_counts["<error>"] == 1
+    # Sum of blocker counts equals total evaluations (denominator integrity).
+    assert sum(result.blocker_counts.values()) == result.total_evaluations
+
+
+def test_aggregate_excluded_bucket_uses_excluded_sentinel_not_error():
+    """Excluded rows must not be conflated with error rows — they are
+    intentional exclusions, not operational failures. The blocker column
+    distinguishes the two."""
+    exc_cand = _empty_criteria_candidate(ticker="Y", bucket="excluded")
+    err_cand = _empty_criteria_candidate(ticker="Z", bucket="error")
+    runs = [(1, "2026-04-20", [exc_cand, err_cand])]
+    result = aggregate_runs(runs)
+    assert result.bucket_counts["excluded"] == 1
+    assert result.bucket_counts["error"] == 1
+    assert result.blocker_counts["<excluded>"] == 1
     assert result.blocker_counts["<error>"] == 1
     # Sum of blocker counts equals total evaluations (denominator integrity).
     assert sum(result.blocker_counts.values()) == result.total_evaluations

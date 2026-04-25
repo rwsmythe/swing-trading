@@ -207,6 +207,10 @@ def test_run_emits_all_required_outputs(populated_db, tmp_path):
     assert manifest["qualifying_run_count"] == 2
     assert manifest["skipped_run_count"] == 1
     assert manifest["total_evaluations"] == 4
+    # Each candidate has a full criteria tuple (8 TT + 9 VCP + 1 risk = 18).
+    assert manifest["candidate_criteria_row_count"] == 4 * 18
+    # harness_git_dirty is a bool (manifest-integrity field).
+    assert isinstance(manifest["harness_git_dirty"], bool)
     assert manifest["near_aplus_defensible_count"] == 2  # B + D
     assert manifest["near_aplus_incompatible_count"] == 1  # C
     assert manifest["doctrine_defensible_miss_set"] == sorted(

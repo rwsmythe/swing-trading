@@ -61,6 +61,28 @@ def _git_sha(repo_root: Path) -> str:
         return "unknown"
 
 
+def _git_dirty(repo_root: Path) -> bool:
+    """Return True iff the worktree has uncommitted changes at run time.
+
+    Checks both staged and unstaged changes via ``git status --porcelain``;
+    any non-empty output flags the tree as dirty. The brief's manifest-
+    integrity watch item requires the manifest to distinguish "run from a
+    clean commit" from "run from a dirty tree" so subsequent reproductions
+    are not silently misled by stale `harness_git_sha`.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return bool(result.stdout.strip())
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
 def _write_blockers_csv(result: AggregateResult, path: Path) -> None:
     items = sorted(
         result.blocker_counts.items(),
@@ -148,6 +170,7 @@ def _write_manifest(
     skipped: list[SkippedRun],
     result: AggregateResult,
     finviz_inbox_dir: Path,
+    candidate_criteria_row_count: int,
 ) -> None:
     if qualifying:
         action_dates = sorted(r.action_session_date for r in qualifying)
@@ -156,6 +179,7 @@ def _write_manifest(
         date_range = {"start": None, "end": None}
     manifest = {
         "harness_git_sha": _git_sha(repo_root),
+        "harness_git_dirty": _git_dirty(repo_root),
         "run_timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "production_db_path": str(db_path),
         "finviz_inbox_dir": str(finviz_inbox_dir),
@@ -183,6 +207,7 @@ def _write_manifest(
         ],
         "action_session_date_range": date_range,
         "total_evaluations": result.total_evaluations,
+        "candidate_criteria_row_count": candidate_criteria_row_count,
         "bucket_counts": dict(result.bucket_counts),
         "blocker_counts": dict(result.blocker_counts),
         "watch_aplus_ratio_overall": result.watch_aplus_ratio,
@@ -223,9 +248,12 @@ def run_finviz_pool_aggregation(
     try:
         qualifying, skipped = list_qualifying_evaluation_runs(conn, finviz_inbox_dir)
         runs_input: list[tuple[int, str, list]] = []
+        candidate_criteria_row_count = 0
         for q in qualifying:
             cands = fetch_run_candidates_with_criteria(conn, q.run_id)
             runs_input.append((q.run_id, q.action_session_date, cands))
+            for c in cands:
+                candidate_criteria_row_count += len(c.criteria)
     finally:
         conn.close()
 
@@ -248,6 +276,7 @@ def run_finviz_pool_aggregation(
         skipped=skipped,
         result=result,
         finviz_inbox_dir=finviz_inbox_dir,
+        candidate_criteria_row_count=candidate_criteria_row_count,
     )
     return result
 

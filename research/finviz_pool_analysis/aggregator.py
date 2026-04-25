@@ -160,11 +160,16 @@ def aggregate_runs(
                 per_run_watch += 1
 
             # Production-gated blocker — defined on every candidate whose
-            # criteria are fully populated. 'error' bucket may have empty
-            # criteria; we record the blocker as "<error>" so the column
-            # sums to total_evaluations.
+            # criteria are fully populated. 'error' and 'excluded' buckets
+            # have empty criteria (production short-circuits before
+            # evaluation); we record the blocker as "<error>" or
+            # "<excluded>" respectively so the column sums to
+            # total_evaluations AND the sentinel rows do not conflate
+            # operational errors with intentional exclusions.
             if cand.criteria:
                 blocker = production_gated_blocker(cand)
+            elif cand.bucket == "excluded":
+                blocker = "<excluded>"
             else:
                 blocker = "<error>"
             blocker_counts[blocker] += 1
