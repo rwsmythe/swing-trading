@@ -64,6 +64,37 @@ def test_basic_entry(tmp_path: Path):
         conn.close()
 
 
+def test_entry_persists_hypothesis_label(tmp_path: Path):
+    """Brief §4.3: EntryRequest.hypothesis_label flows to trades.hypothesis_label."""
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        req = EntryRequest(
+            ticker="HYP", entry_date="2026-04-25", entry_price=20.0,
+            shares=3, initial_stop=18.0, watchlist_entry_target=None,
+            watchlist_initial_stop=None, notes=None,
+            rationale=EntryRationale.OTHER.value,
+            event_ts="2026-04-25T09:30:00",
+            hypothesis_label="Sub-A+ candidate meeting TT + price threshold",
+        )
+        result = record_entry(conn, req, soft_warn=4, hard_cap=6, force=False)
+        t = get_trade(conn, result.trade_id)
+        assert t.hypothesis_label == "Sub-A+ candidate meeting TT + price threshold"
+    finally:
+        conn.close()
+
+
+def test_entry_default_hypothesis_label_is_null(tmp_path: Path):
+    """Existing-call-site preservation: EntryRequest without hypothesis_label
+    defaults to None and persists NULL."""
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        result = record_entry(conn, _req(), soft_warn=4, hard_cap=6, force=False)
+        t = get_trade(conn, result.trade_id)
+        assert t.hypothesis_label is None
+    finally:
+        conn.close()
+
+
 def test_soft_warn_returns_warning_but_succeeds(tmp_path: Path):
     conn = ensure_schema(tmp_path / "swing.db")
     try:

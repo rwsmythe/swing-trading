@@ -24,12 +24,13 @@ def insert_trade_with_event(
         INSERT INTO trades
             (ticker, entry_date, entry_price, initial_shares, initial_stop,
              current_stop, status, watchlist_entry_target,
-             watchlist_initial_stop, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             watchlist_initial_stop, notes, hypothesis_label)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (trade.ticker, trade.entry_date, trade.entry_price, trade.initial_shares,
          trade.initial_stop, trade.current_stop, trade.status,
-         trade.watchlist_entry_target, trade.watchlist_initial_stop, trade.notes),
+         trade.watchlist_entry_target, trade.watchlist_initial_stop, trade.notes,
+         trade.hypothesis_label),
     )
     trade_id = int(cur.lastrowid)
     payload = {
@@ -154,7 +155,7 @@ def get_trade(conn: sqlite3.Connection, trade_id: int) -> Trade | None:
         """
         SELECT id, ticker, entry_date, entry_price, initial_shares, initial_stop,
                current_stop, status, watchlist_entry_target,
-               watchlist_initial_stop, notes
+               watchlist_initial_stop, notes, hypothesis_label
         FROM trades WHERE id = ?
         """,
         (trade_id,),
@@ -167,7 +168,7 @@ def list_open_trades(conn: sqlite3.Connection) -> list[Trade]:
         """
         SELECT id, ticker, entry_date, entry_price, initial_shares, initial_stop,
                current_stop, status, watchlist_entry_target,
-               watchlist_initial_stop, notes
+               watchlist_initial_stop, notes, hypothesis_label
         FROM trades WHERE status='open' ORDER BY entry_date, ticker
         """,
     ).fetchall()
@@ -182,7 +183,7 @@ def list_closed_trades(
             """
             SELECT t.id, t.ticker, t.entry_date, t.entry_price, t.initial_shares,
                    t.initial_stop, t.current_stop, t.status, t.watchlist_entry_target,
-                   t.watchlist_initial_stop, t.notes
+                   t.watchlist_initial_stop, t.notes, t.hypothesis_label
             FROM trades t
             WHERE t.status='closed'
               AND EXISTS (SELECT 1 FROM exits e WHERE e.trade_id=t.id AND e.exit_date >= ?)
@@ -195,7 +196,7 @@ def list_closed_trades(
             """
             SELECT id, ticker, entry_date, entry_price, initial_shares, initial_stop,
                    current_stop, status, watchlist_entry_target,
-                   watchlist_initial_stop, notes
+                   watchlist_initial_stop, notes, hypothesis_label
             FROM trades WHERE status='closed' ORDER BY entry_date DESC, ticker
             """,
         ).fetchall()
@@ -268,7 +269,7 @@ def find_any_open_trade(
         """
         SELECT id, ticker, entry_date, entry_price, initial_shares, initial_stop,
                current_stop, status, watchlist_entry_target,
-               watchlist_initial_stop, notes
+               watchlist_initial_stop, notes, hypothesis_label
         FROM trades WHERE ticker=? AND status='open'
         ORDER BY entry_date ASC LIMIT 1
         """,
@@ -287,7 +288,7 @@ def find_open_trade_by_match(
             """
             SELECT id, ticker, entry_date, entry_price, initial_shares, initial_stop,
                    current_stop, status, watchlist_entry_target,
-                   watchlist_initial_stop, notes
+                   watchlist_initial_stop, notes, hypothesis_label
             FROM trades WHERE ticker=? AND entry_date=? AND initial_shares=? AND status='open'
             LIMIT 1
             """,
@@ -298,7 +299,7 @@ def find_open_trade_by_match(
             """
             SELECT id, ticker, entry_date, entry_price, initial_shares, initial_stop,
                    current_stop, status, watchlist_entry_target,
-                   watchlist_initial_stop, notes
+                   watchlist_initial_stop, notes, hypothesis_label
             FROM trades WHERE ticker=? AND entry_date=? AND status='open'
             LIMIT 1
             """,
@@ -313,4 +314,5 @@ def _row_to_trade(row: tuple) -> Trade:
         initial_shares=row[4], initial_stop=row[5], current_stop=row[6],
         status=row[7], watchlist_entry_target=row[8],
         watchlist_initial_stop=row[9], notes=row[10],
+        hypothesis_label=row[11],
     )

@@ -88,6 +88,9 @@ class EntryRequest:
     notes: str | None
     rationale: str
     event_ts: str
+    # Operator-frozen pre-trade hypothesis (free-text, optional). Default None
+    # preserves existing call sites and persists NULL on the trades row.
+    hypothesis_label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -133,6 +136,7 @@ def record_entry(
         watchlist_entry_target=req.watchlist_entry_target,
         watchlist_initial_stop=req.watchlist_initial_stop,
         notes=req.notes,
+        hypothesis_label=req.hypothesis_label,
     )
 
     archived = False

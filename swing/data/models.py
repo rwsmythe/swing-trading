@@ -62,6 +62,11 @@ class Trade:
     watchlist_entry_target: float | None
     watchlist_initial_stop: float | None
     notes: str | None
+    # Operator-frozen pre-trade hypothesis (free-text, optional). Captured at
+    # entry time and never mutated — same anti-rationalization discipline as
+    # research-study pre-registration. Default None preserves existing call
+    # sites that construct Trade(...) without the new field. Migration 0007.
+    hypothesis_label: str | None = None
 
 
 @dataclass(frozen=True)

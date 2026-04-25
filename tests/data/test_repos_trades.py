@@ -96,6 +96,40 @@ def test_insert_exit_writes_event_and_flips_status_when_full(tmp_path: Path):
         conn.close()
 
 
+def test_insert_trade_persists_hypothesis_label(tmp_path: Path):
+    """Brief §4.3: hypothesis_label round-trips through insert + get_trade."""
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        labeled = Trade(
+            id=None, ticker="HYPO", entry_date="2026-04-25", entry_price=50.0,
+            initial_shares=4, initial_stop=45.0, current_stop=45.0,
+            status="open", watchlist_entry_target=None,
+            watchlist_initial_stop=None, notes=None,
+            hypothesis_label="A+ except risk_feasibility, smaller position",
+        )
+        with conn:
+            tid = insert_trade_with_event(conn, labeled, event_ts="2026-04-25T09:30:00")
+        got = get_trade(conn, tid)
+        assert got is not None
+        assert got.hypothesis_label == "A+ except risk_feasibility, smaller position"
+    finally:
+        conn.close()
+
+
+def test_insert_trade_without_hypothesis_label_persists_null(tmp_path: Path):
+    """Existing-call-site preservation: legacy Trade(...) without hypothesis_label
+    constructs with default None and persists NULL."""
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        with conn:
+            tid = insert_trade_with_event(conn, _trade(), event_ts="2026-04-15T09:30:00")
+        got = get_trade(conn, tid)
+        assert got is not None
+        assert got.hypothesis_label is None
+    finally:
+        conn.close()
+
+
 def test_update_stop_writes_event_with_old_and_new(tmp_path: Path):
     conn = ensure_schema(tmp_path / "swing.db")
     try:
