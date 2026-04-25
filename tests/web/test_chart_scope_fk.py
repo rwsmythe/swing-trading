@@ -244,12 +244,13 @@ def test_resolver_fk_path_eliminates_drift_mode_b(db_conn, tmp_path):
     )
 
 
-def test_resolver_fk_path_chart_status_too_few_bars_yields_insufficient_data(
+def test_resolver_fk_path_chart_status_too_few_bars_and_fetcher_failed(
     db_conn, tmp_path,
 ):
-    """Until T5 ships, persisted chart_status='too_few_bars' or 'fetcher_failed'
-    on a chart_targets row must collapse to the existing 'insufficient-data'
-    state for backward compatibility. T5 splits this into two new states."""
+    """Tranche C T5 split: persisted chart_status='too_few_bars' surfaces as
+    its own reason; same for 'fetcher_failed'. Pre-T5 both collapsed to
+    'insufficient-data'; that catch-all now only fires for legacy heuristic
+    runs and the 'pending' chart_status."""
     from swing.web.chart_scope import resolve_chart_scope
 
     cfg, conn = db_conn
@@ -271,16 +272,15 @@ def test_resolver_fk_path_chart_status_too_few_bars_yields_insufficient_data(
             conn, pipeline_run_id=run_id, ticker="MSFT",
             source="aplus", chart_status="fetcher_failed",
         )
-    # No PNG written for either.
 
-    for ticker in ("AAPL", "MSFT"):
-        reason, msg = resolve_chart_scope(
-            conn, ticker=ticker, charts_dir=tmp_path, chart_top_n_watch=5,
-        )
-        assert reason == "insufficient-data", (
-            f"{ticker}: pre-T5 collapse, expected insufficient-data, got {reason}"
-        )
-        assert "data too thin" in msg.lower()
+    aapl_reason, _ = resolve_chart_scope(
+        conn, ticker="AAPL", charts_dir=tmp_path, chart_top_n_watch=5,
+    )
+    msft_reason, _ = resolve_chart_scope(
+        conn, ticker="MSFT", charts_dir=tmp_path, chart_top_n_watch=5,
+    )
+    assert aapl_reason == "too_few_bars"
+    assert msft_reason == "fetcher_failed"
 
 
 def test_resolver_fk_path_pending_yields_insufficient_data(db_conn, tmp_path):

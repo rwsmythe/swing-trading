@@ -72,6 +72,18 @@ CHART_REASON_MESSAGES: dict[str, str] = {
         "Chart unavailable — data too thin or fetch error for this ticker at "
         "last pipeline run."
     ),
+    # Tranche C T5 (spec §8 deferred item, now closed): the FK-backed code
+    # path can distinguish these two from each other and from the catch-all
+    # 'insufficient-data' (which still fires on the heuristic legacy path
+    # and on 'pending' chart_status).
+    "fetcher_failed": (
+        "Chart unavailable — yfinance fetch failed for this ticker at last "
+        "pipeline run."
+    ),
+    "too_few_bars": (
+        "Chart unavailable — insufficient historical bars for this ticker at "
+        "last pipeline run."
+    ),
 }
 
 
@@ -147,9 +159,12 @@ def _resolve_via_chart_targets(
             # Surface as data-quality bucket rather than claim availability.
             return "insufficient-data", CHART_REASON_MESSAGES["insufficient-data"]
         return None, None
-    # 'pending', 'fetcher_failed', 'too_few_bars' — pre-T5 collapse all of
-    # these to 'insufficient-data'. T5 splits fetcher_failed and too_few_bars
-    # into dedicated states; this branch is the spec §8 starting point.
+    # Tranche C T5: split fetcher_failed and too_few_bars into dedicated
+    # states (closes spec §8 deferred item). 'pending' (the chart step never
+    # finalized — usually a crash mid-step) collapses to the insufficient-
+    # data catch-all because it does not describe a known cause.
+    if chart_status in ("fetcher_failed", "too_few_bars"):
+        return chart_status, CHART_REASON_MESSAGES[chart_status]
     return "insufficient-data", CHART_REASON_MESSAGES["insufficient-data"]
 
 
