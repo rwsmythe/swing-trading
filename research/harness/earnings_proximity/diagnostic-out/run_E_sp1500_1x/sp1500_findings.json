@@ -1,0 +1,90 @@
+{
+  "aplus_total": 35,
+  "data_quality": {
+    "aplus_absent_earnings_fraction": 0.4857142857142857,
+    "aplus_total": 35,
+    "aplus_with_absent_earnings": 17,
+    "earnings_hits": 1497,
+    "earnings_misses": 9,
+    "evaluations_total": 750440,
+    "ohlcv_hits": 1499,
+    "ohlcv_misses": 8,
+    "ticker_days_total": 759024
+  },
+  "evaluations_total": 750440,
+  "harness_git_sha": "56e0677737da504b2e3559998ca352bb374434de",
+  "liquidity": {
+    "fraction_below_1m": 0.0,
+    "fraction_below_500k": 0.0,
+    "max": 705111995.836029,
+    "median": 84709975.61676979,
+    "min": 15732159.85458374,
+    "p25": 54798848.8555336,
+    "p75": 144212370.2327156,
+    "priced_count": 35,
+    "unpriced_count": 0,
+    "unpriced_examples": []
+  },
+  "rate_per_ticker_day": 4.611184890069352e-05,
+  "rate_per_ticker_day_pct": 0.004611184890069352,
+  "rate_uplift_vs_spx_ndx_1x": 2.389214968947851,
+  "run_dir": "research\\harness\\earnings_proximity\\diagnostic-out\\run_E_sp1500_1x",
+  "sector_breakdown": {
+    "by_sector": [
+      {
+        "count": 7,
+        "fraction": 0.2,
+        "sector": "Information Technology"
+      },
+      {
+        "count": 6,
+        "fraction": 0.17142857142857143,
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "count": 6,
+        "fraction": 0.17142857142857143,
+        "sector": "Health Care"
+      },
+      {
+        "count": 5,
+        "fraction": 0.14285714285714285,
+        "sector": "Industrials"
+      },
+      {
+        "count": 4,
+        "fraction": 0.11428571428571428,
+        "sector": "Materials"
+      },
+      {
+        "count": 2,
+        "fraction": 0.05714285714285714,
+        "sector": "Energy"
+      },
+      {
+        "count": 2,
+        "fraction": 0.05714285714285714,
+        "sector": "Financials"
+      },
+      {
+        "count": 2,
+        "fraction": 0.05714285714285714,
+        "sector": "Real Estate"
+      },
+      {
+        "count": 1,
+        "fraction": 0.02857142857142857,
+        "sector": "Communication"
+      }
+    ],
+    "largest_sector": "Information Technology",
+    "largest_sector_fraction": 0.2,
+    "total_aplus": 35
+  },
+  "spx_ndx_1x_baseline_pct": 0.00193,
+  "ticker_days_total": 759024,
+  "trading_days": 504,
+  "universe_size_post_dedupe": 1506,
+  "wilson_95ci_high_pct": 0.0064126467411179415,
+  "wilson_95ci_low_pct": 0.0033157788563902926
+}

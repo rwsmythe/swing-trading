@@ -1,0 +1,26 @@
+{
+  "fetched_date": "2026-04-25",
+  "notes": "The diagnostic_run manifest emits universe_source_url=null for multi-URL universes (loader contract: only single-URL universes carry a single source_url). This sidecar records the three iShares CDN URLs unioned into the sp_1500 variant. Per-URL fetch timestamps are not tracked at the loader level; all three URLs were fetched within seconds of each other in a single run of research.harness.earnings_proximity.universe_variants._load_or_fetch_ishares at 2026-04-25T07:34Z. The snapshot CSV preserves the per-row source_url so each ticker is traceable to its sub-ETF.",
+  "sector_map_path": "C:\\Users\\rwsmy\\swing-data\\research-cache\\universe-snapshots\\sp_1500_2026-04-25_sectors.json",
+  "sector_map_present": true,
+  "snapshot_csv_path": "C:\\Users\\rwsmy\\swing-data\\research-cache\\universe-snapshots\\sp_1500_2026-04-25.csv",
+  "snapshot_csv_sha256": "3ebb5da7b3b9fa0b7d92b5f3c37de292f119bd46c8e836a5783f9b573ecdc5a2",
+  "source_urls": [
+    {
+      "description": "iShares Core S&P 500",
+      "sub_etf": "IVV",
+      "url": "https://www.ishares.com/us/products/239726/ishares-core-sp-500-etf/1467271812596.ajax?fileType=csv&fileName=IVV_holdings&dataType=fund"
+    },
+    {
+      "description": "iShares Core S&P MidCap 400",
+      "sub_etf": "IJH",
+      "url": "https://www.ishares.com/us/products/239763/ishares-coresp-midcap-etf/1467271812596.ajax?fileType=csv&fileName=IJH_holdings&dataType=fund"
+    },
+    {
+      "description": "iShares Core S&P SmallCap 600",
+      "sub_etf": "IJR",
+      "url": "https://www.ishares.com/us/products/239774/ishares-core-sp-smallcap-etf/1467271812596.ajax?fileType=csv&fileName=IJR_holdings&dataType=fund"
+    }
+  ],
+  "universe_name": "sp_1500"
+}
