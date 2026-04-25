@@ -593,6 +593,135 @@ def test_load_ohlcv_with_stats_skips_refetch_when_cache_covers_through_today(
     assert stats.misses == ()
 
 
+def test_covers_handles_weekend_today_with_friday_cache(monkeypatch):
+    """Adversarial-review Major #2: on a weekend (Sat/Sun) or on Monday
+    pre-market, the cache's most recent bar is Friday. The literal
+    ``end - 1 day`` clamp would compare against Sunday (not a session)
+    and report False, triggering an unnecessary refetch. The session-aware
+    clamp must walk back to Friday."""
+    from research.harness.earnings_proximity import fetchers as mod
+
+    # Monday 2026-04-27. Cache last bar = Friday 2026-04-24.
+    monday = date(2026, 4, 27)
+    monkeypatch.setattr(mod, "_today", lambda: monday)
+
+    friday_close = date(2026, 4, 24)
+    idx = pd.DatetimeIndex(
+        [pd.Timestamp("2024-04-19"), pd.Timestamp(friday_close)]
+    )
+    cached = pd.DataFrame(
+        {
+            "Open": [100.0, 100.0],
+            "High": [101.0, 101.0],
+            "Low": [99.0, 99.0],
+            "Close": [100.5, 100.5],
+            "Volume": [1_000_000, 1_000_000],
+        },
+        index=idx,
+    )
+    assert mod._covers(cached, date(2024, 4, 19), date(2026, 6, 5)), (
+        "_covers must clamp 'today - 1 day = Sunday' to most recent NYSE "
+        "session (Friday) so a Friday-close cache passes on Monday "
+        "pre-market without a wasted refetch."
+    )
+
+
+def test_covers_handles_post_holiday_today_with_pre_holiday_cache(monkeypatch):
+    """Same class as the weekend case: July 4 2025 was an NYSE holiday
+    (Friday). On Monday 2025-07-07, ``today - 1 day`` is Sunday 2025-07-06
+    (non-session). The most recent session at-or-before 2025-07-06 is
+    Thursday 2025-07-03 (NYSE was closed Friday for Independence Day)."""
+    from research.harness.earnings_proximity import fetchers as mod
+
+    monday_after_holiday = date(2025, 7, 7)
+    monkeypatch.setattr(mod, "_today", lambda: monday_after_holiday)
+
+    pre_holiday_thursday = date(2025, 7, 3)
+    idx = pd.DatetimeIndex(
+        [pd.Timestamp("2024-07-03"), pd.Timestamp(pre_holiday_thursday)]
+    )
+    cached = pd.DataFrame(
+        {
+            "Open": [100.0, 100.0],
+            "High": [101.0, 101.0],
+            "Low": [99.0, 99.0],
+            "Close": [100.5, 100.5],
+            "Volume": [1_000_000, 1_000_000],
+        },
+        index=idx,
+    )
+    assert mod._covers(cached, date(2024, 7, 3), date(2025, 9, 1))
+
+
+def test_load_ohlcv_remediates_poisoned_pre_existing_cache(tmp_path, monkeypatch):
+    """Adversarial-review Major #1: parquets written by Session 2c (or any
+    pre-C3 run) contain pre-IPO NaN-padded rows. A warm-cache run on the
+    post-fix harness reads those parquets directly; the dropna must
+    remediate them at consumer-return time so the caller never sees NaN
+    OHLC. The on-disk parquet is intentionally left aligned with
+    yfinance's raw output (NaN rows preserved) so :func:`_covers` keeps
+    reporting True on subsequent runs and the cache does not enter an
+    infinite refetch loop on mid-window-IPO tickers — see
+    :func:`_drop_ohlc_nan_rows`.
+    """
+    from research.harness.earnings_proximity import fetchers as mod
+
+    # Pre-seed a poisoned cache: 3 NaN rows + 3 valid rows.
+    valid_dates = [date(2026, 4, 20), date(2026, 4, 21), date(2026, 4, 22)]
+    pre_ipo_dates = [date(2026, 4, 17), date(2026, 4, 18), date(2026, 4, 19)]
+    all_dates = pre_ipo_dates + valid_dates
+    nan = float("nan")
+    cache_path = tmp_path / "ohlcv" / "POISONED.parquet"
+    cache_path.parent.mkdir()
+    poisoned = pd.DataFrame(
+        {
+            "Open": [nan, nan, nan, 100.0, 101.0, 102.0],
+            "High": [nan, nan, nan, 100.5, 101.5, 102.5],
+            "Low": [nan, nan, nan, 99.5, 100.5, 101.5],
+            "Close": [nan, nan, nan, 100.1, 101.1, 102.1],
+            "Volume": [nan, nan, nan, 1_000_000, 1_000_000, 1_000_000],
+        },
+        index=pd.DatetimeIndex([pd.Timestamp(d) for d in all_dates]),
+    )
+    poisoned.to_parquet(cache_path)
+
+    # Pin _today to 2026-04-23 so _covers's session clamp resolves to
+    # Wed 2026-04-22 (cache's last bar).
+    monkeypatch.setattr(mod, "_today", lambda: date(2026, 4, 23))
+
+    def fake_download(**kwargs):  # pragma: no cover — must not be called
+        raise AssertionError(
+            f"yf.download must not run on cache that covers the window; kwargs={kwargs}"
+        )
+
+    monkeypatch.setattr(mod.yf, "download", fake_download)
+
+    out = mod.load_ohlcv(
+        ["POISONED"],
+        start=date(2026, 4, 17),
+        end=date(2026, 4, 23),
+        cache_dir=tmp_path,
+    )
+
+    df = out["POISONED"]
+    assert len(df) == len(valid_dates), (
+        "Poisoned cache must be remediated at consumer-return time; got "
+        f"{len(df)} rows, expected {len(valid_dates)}."
+    )
+    for col in ("Open", "High", "Low", "Close"):
+        assert not df[col].isna().any()
+
+    # On-disk parquet is intentionally NOT rewritten — keeping it aligned
+    # with yfinance's raw output is what lets _covers stay True next run
+    # for mid-window-IPO tickers (the dropna is applied at every read).
+    re_read = pd.read_parquet(cache_path)
+    assert len(re_read) == len(all_dates), (
+        "Cache file must remain aligned with raw yfinance output "
+        "(idx_min == window start) to avoid infinite refetch loops on "
+        "mid-window-IPO tickers."
+    )
+
+
 def test_load_ohlcv_drops_pre_ipo_nan_rows(tmp_path, monkeypatch):
     """yf.download(group_by='ticker') pads pre-IPO dates with NaN rows back
     to the requested window start. Session 2c hit this on 8 SPX/NDX tickers
@@ -642,16 +771,20 @@ def test_load_ohlcv_drops_pre_ipo_nan_rows(tmp_path, monkeypatch):
 
     df = out["NEWIPO"]
     assert len(df) == len(valid_dates), (
-        f"pre-IPO NaN rows must be dropped; got {len(df)} rows, expected "
-        f"{len(valid_dates)} (the valid trailing rows only)."
+        f"pre-IPO NaN rows must be dropped at consumer return time; got "
+        f"{len(df)} rows, expected {len(valid_dates)} (valid trailing rows only)."
     )
-    # No NaNs in OHLC columns.
+    # No NaNs in OHLC columns of the returned frame.
     for col in ("Open", "High", "Low", "Close"):
         assert not df[col].isna().any(), f"{col} should have no NaN after dropna"
-    # And the cached parquet should match the dropped frame, so a subsequent
-    # load_ohlcv hit returns the cleaned frame (not the polluted raw one).
+    # The on-disk cache is intentionally LEFT aligned with yfinance's raw
+    # output (NaN rows kept) so _covers reports True on subsequent runs
+    # rather than re-fetching the same NaN-padded data forever.
     cached = pd.read_parquet(tmp_path / "ohlcv" / "NEWIPO.parquet")
-    assert len(cached) == len(valid_dates)
+    assert len(cached) == len(pre_ipo_dates) + len(valid_dates), (
+        "Cache file must keep the raw NaN-padded rows; consumer-return "
+        "dropna handles user-visible cleanliness."
+    )
 
 
 def test_load_ohlcv_keeps_volume_nan_rows_with_valid_ohlc(tmp_path, monkeypatch):

@@ -32,9 +32,10 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+import exchange_calendars as xcals
 import pandas as pd
 import yfinance as yf
 
@@ -43,6 +44,36 @@ _OHLCV_COLS = ("Open", "High", "Low", "Close", "Volume")
 # trading days. Volume can legitimately be NaN on certain holidays / halts
 # while OHLC are present, so it is excluded from this subset.
 _OHLC_ONLY_COLS = ("Open", "High", "Low", "Close")
+
+# Calendar used for the "most recent NYSE session at-or-before today" clamp
+# in :func:`_covers`. Cached at module load — exchange_calendars handles
+# this internally too, but the explicit reference makes the dependency
+# obvious.
+_NYSE = xcals.get_calendar("XNYS")
+
+
+def _drop_ohlc_nan_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop rows where any of Open/High/Low/Close is NaN.
+
+    Volume is excluded from the subset — it can legitimately be NaN on
+    holiday/halt bars where OHLC are present. Applied at consumer-return
+    time (in :func:`load_ohlcv_with_stats`'s final dict comprehension),
+    NOT at cache-write time. Cleaning at cache-write would shift
+    ``idx_min`` for mid-window-IPO tickers (the cache loses its leading
+    NaN-padded rows), and :func:`_covers` would then report "partial
+    coverage" on every subsequent run — an infinite refetch loop.
+    Cleaning at return time keeps the cache aligned with yfinance's raw
+    output (idx_min == window start) so :func:`_covers` returns True on
+    warm runs, while consumers never see the NaN rows that crash
+    downstream code (e.g.,
+    ``swing.evaluation.criteria.risk_feasibility``).
+    """
+    if df is None or df.empty:
+        return df
+    ohlc_present = [c for c in _OHLC_ONLY_COLS if c in df.columns]
+    if not ohlc_present:
+        return df
+    return df.dropna(subset=ohlc_present)
 
 
 @dataclass(frozen=True)
@@ -106,19 +137,13 @@ def _extract_ticker_frame(raw: pd.DataFrame, ticker: str) -> pd.DataFrame:
     else:
         df_t = raw.copy()
 
-    # Keep only the OHLCV columns that are present.
+    # Keep only the OHLCV columns that are present. The pre-IPO NaN
+    # row strip happens at consumer-return time in
+    # :func:`load_ohlcv_with_stats`, NOT here, so the on-disk cache stays
+    # aligned with yfinance's raw output (preventing infinite refetch
+    # loops on mid-window-IPO tickers — see :func:`_drop_ohlc_nan_rows`).
     keep = [c for c in _OHLCV_COLS if c in df_t.columns]
     df_t = df_t[keep]
-    # Strip pre-IPO NaN rows — yf.download(group_by='ticker') pads tickers
-    # that didn't exist at the requested window start with NaN rows back to
-    # the start. Those rows survive replay's bar-count gates (length, not
-    # non-NaN-count) and crash downstream consumers (e.g.,
-    # swing.evaluation.criteria.risk_feasibility's `int(budget // NaN)`).
-    # Drop on OHLC only — Volume can legitimately be NaN on holiday/halt
-    # bars while OHLC are present.
-    ohlc_present = [c for c in _OHLC_ONLY_COLS if c in df_t.columns]
-    if ohlc_present:
-        df_t = df_t.dropna(subset=ohlc_present)
     return df_t
 
 
@@ -132,15 +157,42 @@ def _today() -> date:
     return date.today()
 
 
+def _most_recent_nyse_session_at_or_before(d: date) -> date:
+    """Return the most recent NYSE session date at-or-before ``d``.
+
+    Resolves weekends and exchange holidays so the coverage predicate
+    doesn't ask for a bar yfinance cannot supply (Sunday, July 4, etc.).
+    Falls back to ``d`` if no session is found in a 14-day lookback,
+    which only happens in pathological clock skew — a legitimate cache
+    that doesn't cover ``d`` will then be reported as missing, the
+    conservative outcome.
+    """
+    ts = pd.Timestamp(d)
+    sessions = _NYSE.sessions_in_range(ts - pd.Timedelta(days=14), ts)
+    if len(sessions) == 0:
+        return d
+    return sessions[-1].date()
+
+
 def _covers(cached: pd.DataFrame, start: date, end: date) -> bool:
     """True iff the cached frame covers the requested window [start, end).
 
-    yfinance only returns data up through "today"; if ``end`` extends past
-    today (e.g., ``run.py`` requests 30 sessions of forward buffer), the
-    coverage check is satisfied as soon as the cache reaches today's bar.
-    Pre-fix, this check failed every run with a future-dated ``end``,
-    triggering a ~7-minute refetch that produced no new data — the
-    Session 2c Open Issue #3 case.
+    Two refinements beyond the literal ``end - 1 day`` check:
+
+    1. **Future-end clamp.** yfinance cannot return bars past today, so a
+       request with ``end`` past today is satisfied as soon as the cache
+       covers today's most recent session. ``run.py`` requests ~30
+       trading sessions of forward buffer past the replay window for the
+       simulator's time cap; pre-fix, every full run wasted ~7 minutes
+       refetching data yfinance could not supply (Session 2c Open
+       Issue #3).
+    2. **Session-aware clamp.** The required last bar is then mapped to
+       the most recent NYSE session at-or-before that calendar day, so
+       weekends and exchange holidays don't trip the predicate. Without
+       this, a Monday-pre-market run with a Friday-close cache would
+       report "not covered" because Sunday is not a session and so the
+       cache's Friday bar fails the literal ``end - 1 day = Sunday``
+       comparison.
     """
     if cached.empty:
         return False
@@ -148,12 +200,11 @@ def _covers(cached: pd.DataFrame, start: date, end: date) -> bool:
     idx_max = cached.index.max()
     start_ts = pd.Timestamp(start)
     # yf.download uses an end-exclusive contract; the last bar we need is
-    # strictly before ``end``. Clamp the effective end to today + 1 day
-    # (i.e., today inclusive) since yfinance cannot return future bars —
-    # any cache that covers up through today fully covers a future-dated
-    # request.
+    # strictly before ``end``.
     effective_end = min(end, _today())
-    end_inclusive_ts = pd.Timestamp(effective_end) - pd.Timedelta(days=1)
+    end_calendar_day = effective_end - timedelta(days=1)
+    end_inclusive_session = _most_recent_nyse_session_at_or_before(end_calendar_day)
+    end_inclusive_ts = pd.Timestamp(end_inclusive_session)
     return idx_min <= start_ts and idx_max >= end_inclusive_ts
 
 
@@ -243,8 +294,17 @@ def load_ohlcv_with_stats(
             merged.to_parquet(_ohlcv_cache_file(cache_dir, t))
             cached[t] = merged
 
+    # Drop pre-IPO NaN rows at consumer-return time so warm caches from
+    # before the C3/C5 fix (Session 2c artifacts) are remediated without
+    # touching the on-disk parquet — see :func:`_drop_ohlc_nan_rows`.
     data = {
-        t: _slice_window(cached.get(t, pd.DataFrame(columns=list(_OHLCV_COLS))), start, end)
+        t: _drop_ohlc_nan_rows(
+            _slice_window(
+                cached.get(t, pd.DataFrame(columns=list(_OHLCV_COLS))),
+                start,
+                end,
+            )
+        )
         for t in tickers
     }
     stats = FetchStats(hits=tuple(hits), misses=tuple(needs_fetch))
