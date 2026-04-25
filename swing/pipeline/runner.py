@@ -11,7 +11,10 @@ from swing.config import Config
 from swing.data.db import connect
 from swing.data.models import Candidate, EvaluationRun
 from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
-from swing.data.repos.pipeline import LeaseRevoked
+from swing.data.repos.pipeline import (
+    LeaseRevoked, insert_chart_target, set_evaluation_run_id,
+    update_chart_target_status,
+)
 from swing.data.repos.recommendations import upsert_recommendation
 from swing.data.repos.trades import list_open_trades, list_all_exits
 from swing.data.repos.cash import list_cash
@@ -426,6 +429,13 @@ def _step_evaluate(
     with lease.fenced_write() as conn:
         run_id = insert_evaluation_run(conn, run)
         insert_candidates(conn, run_id, candidates)
+        # Tranche C T2: bind this pipeline_runs row to its OWN eval row in
+        # the same transaction. Replaces the chart_scope resolver's
+        # data_asof + run_ts heuristic for new runs (drift mode A); legacy
+        # rows fall back to the heuristic when evaluation_run_id IS NULL.
+        set_evaluation_run_id(
+            conn, pipeline_run_id=lease.run_id, evaluation_run_id=run_id,
+        )
     return run_id
 
 
@@ -514,17 +524,51 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
         key=lambda w: abs((w.last_close - w.entry_target) / w.entry_target),
     )[:cfg.pipeline.chart_top_n_watch]
 
-    targets = [(c.ticker, c.pivot or 0.0, c.initial_stop or 0.0) for c in aplus]
-    targets.extend([(w.ticker, w.entry_target, w.initial_stop_target or 0.0) for w in near_watch])
+    # Tranche C T2: build a deduped target list with a `source` tag so the
+    # pipeline_chart_targets table can record A+ vs near-by-proximity
+    # provenance. A+ wins when a ticker appears in both sets (the chart is
+    # the same; the source taxonomy reflects WHY it was charted).
+    seen: set[str] = set()
+    targets: list[tuple[str, float, float, str]] = []  # ticker, pivot, stop, source
+    for c in aplus:
+        if c.ticker in seen:
+            continue
+        seen.add(c.ticker)
+        targets.append((c.ticker, c.pivot or 0.0, c.initial_stop or 0.0, "aplus"))
+    for w in near_watch:
+        if w.ticker in seen:
+            continue
+        seen.add(w.ticker)
+        targets.append((
+            w.ticker, w.entry_target, w.initial_stop_target or 0.0,
+            "near_proximity",
+        ))
+
+    # Persist all targets as 'pending' BEFORE per-ticker chart attempts so that
+    # mid-step crashes leave a structurally complete record (the run's state
+    # will be 'failed' or 'force_cleared'; pending rows are inert because the
+    # resolver only reads from state='complete' runs). Single fenced batch.
+    if targets:
+        with lease.fenced_write() as conn:
+            for ticker, _pivot, _stop, source in targets:
+                insert_chart_target(
+                    conn, pipeline_run_id=lease.run_id,
+                    ticker=ticker, source=source, chart_status="pending",
+                )
 
     base = cfg.paths.charts_dir
     staging = StagingDir(base=base, run_id=lease.run_id, artifact_type="charts")
     staging.create()
     out_paths: dict[str, Path] = {}
-    for ticker, pivot, stop in targets:
+    for ticker, pivot, stop, _source in targets:
         try:
             ohlcv = fetcher.get(ticker, lookback_days=200, as_of_date=None)
         except Exception:
+            with lease.fenced_write() as conn:
+                update_chart_target_status(
+                    conn, pipeline_run_id=lease.run_id, ticker=ticker,
+                    chart_status="fetcher_failed",
+                )
             continue
         path = render_chart(
             ticker=ticker, ohlcv=ohlcv, pivot=pivot, stop=stop,
@@ -532,6 +576,19 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
         )
         if path is not None:
             out_paths[ticker] = path
+            with lease.fenced_write() as conn:
+                update_chart_target_status(
+                    conn, pipeline_run_id=lease.run_id, ticker=ticker,
+                    chart_status="ok",
+                )
+        else:
+            # render_chart returns None when the (post-tail) frame has fewer
+            # than MIN_BARS rows — the spec §8 deferred "too_few_bars" case.
+            with lease.fenced_write() as conn:
+                update_chart_target_status(
+                    conn, pipeline_run_id=lease.run_id, ticker=ticker,
+                    chart_status="too_few_bars",
+                )
     promote = promote_staging(
         staging=staging, target=base / data_asof,
         lease_token=lease.token, db_path=cfg.paths.db_path,

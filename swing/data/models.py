@@ -186,6 +186,26 @@ class PipelineRun:
     finviz_csv_path: str | None
     error_message: str | None
     warnings_json: str | None
+    # Tranche C T1: structural FK to the pipeline's own evaluation_runs row.
+    # NULL for legacy rows (pre-migration-0006); chart_scope resolver and
+    # today_decisions retain heuristic fallbacks for those.
+    evaluation_run_id: int | None = None
+
+
+@dataclass(frozen=True)
+class PipelineChartTarget:
+    """One row in `pipeline_chart_targets` — Tranche C T1.
+
+    Persists the per-pipeline-run set of chart-target tickers (A+ ∪ near-by-
+    proximity watchlist top-N) and per-ticker chart-step outcome. Replaces the
+    chart_scope resolver's prior live-watchlist re-derivation (drift mode B)
+    and enables the chart-reason split (T5: fetcher_failed vs too_few_bars).
+    """
+    id: int | None
+    pipeline_run_id: int
+    ticker: str
+    source: str        # 'aplus' | 'near_proximity'
+    chart_status: str  # 'pending' | 'ok' | 'fetcher_failed' | 'too_few_bars'
 
 
 @dataclass(frozen=True)

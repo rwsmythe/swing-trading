@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 import uuid
 
-from swing.data.models import PipelineRun
+from swing.data.models import PipelineChartTarget, PipelineRun
 
 
 class LeaseRevoked(Exception):
@@ -178,7 +178,7 @@ _PR_COLS = """id, started_ts, finished_ts, trigger, data_asof_date, action_sessi
               current_step, weather_status, evaluation_status, watchlist_status,
               recommendations_status, charts_status, export_status,
               rs_universe_version, rs_universe_hash, finviz_csv_path,
-              error_message, warnings_json"""
+              error_message, warnings_json, evaluation_run_id"""
 
 
 def _row_to_run(row: tuple) -> PipelineRun:
@@ -192,4 +192,81 @@ def _row_to_run(row: tuple) -> PipelineRun:
         charts_status=row[15], export_status=row[16],
         rs_universe_version=row[17], rs_universe_hash=row[18],
         finviz_csv_path=row[19], error_message=row[20], warnings_json=row[21],
+        evaluation_run_id=row[22],
     )
+
+
+# ---------------------------------------------------------------------------
+# Tranche C T2: pipeline_runs.evaluation_run_id + pipeline_chart_targets repo.
+#
+# These mutations do NOT take lease_token — they are designed to be called
+# from inside a `lease.fenced_write()` transaction whose lease was already
+# verified atomically by the surrounding context manager. Callers outside a
+# fenced_write must establish their own atomic fence; otherwise the lease
+# guarantee for the larger pipeline mutation does not extend to these writes.
+# ---------------------------------------------------------------------------
+
+
+def set_evaluation_run_id(
+    conn: sqlite3.Connection, *, pipeline_run_id: int, evaluation_run_id: int,
+) -> None:
+    """Bind a pipeline_runs row to the evaluation_runs row produced by its own
+    `_step_evaluate`. Called from inside `lease.fenced_write()` so the FK
+    write lands atomically with the eval-row insert."""
+    conn.execute(
+        "UPDATE pipeline_runs SET evaluation_run_id = ? WHERE id = ?",
+        (evaluation_run_id, pipeline_run_id),
+    )
+
+
+def insert_chart_target(
+    conn: sqlite3.Connection, *, pipeline_run_id: int, ticker: str,
+    source: str, chart_status: str = "pending",
+) -> int:
+    """Persist one row in pipeline_chart_targets. Initial status defaults to
+    'pending' so the chart step can update per-ticker as outcomes are known
+    (`pending` → `ok` | `fetcher_failed` | `too_few_bars`).
+
+    The (pipeline_run_id, ticker) UNIQUE constraint surfaces as
+    sqlite3.IntegrityError on duplicate insert — caller must dedupe.
+    """
+    cur = conn.execute(
+        """INSERT INTO pipeline_chart_targets
+           (pipeline_run_id, ticker, source, chart_status)
+           VALUES (?, ?, ?, ?)""",
+        (pipeline_run_id, ticker, source, chart_status),
+    )
+    return int(cur.lastrowid)
+
+
+def update_chart_target_status(
+    conn: sqlite3.Connection, *, pipeline_run_id: int, ticker: str,
+    chart_status: str,
+) -> None:
+    """Transition a target's chart_status. Silent no-op when no row matches —
+    the chart step inserts before update, but a defensive call after a
+    filter-out should not fail the surrounding fenced_write."""
+    conn.execute(
+        """UPDATE pipeline_chart_targets SET chart_status = ?
+           WHERE pipeline_run_id = ? AND ticker = ?""",
+        (chart_status, pipeline_run_id, ticker),
+    )
+
+
+def list_chart_targets(
+    conn: sqlite3.Connection, *, pipeline_run_id: int,
+) -> list[PipelineChartTarget]:
+    """All chart targets for one pipeline run, ordered by id (insertion order)."""
+    rows = conn.execute(
+        """SELECT id, pipeline_run_id, ticker, source, chart_status
+           FROM pipeline_chart_targets
+           WHERE pipeline_run_id = ? ORDER BY id""",
+        (pipeline_run_id,),
+    ).fetchall()
+    return [
+        PipelineChartTarget(
+            id=r[0], pipeline_run_id=r[1], ticker=r[2],
+            source=r[3], chart_status=r[4],
+        )
+        for r in rows
+    ]
