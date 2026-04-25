@@ -90,50 +90,203 @@ These are confounds the study inherits and cannot eliminate. They are documented
 
 ---
 
-## Run details (D4 — appended post-D3)
+## Run details
 
-*This section is intentionally empty at D1; will be filled at D4.*
+- **Run timestamp:** 2026-04-25T08:10:24
+- **Harness git SHA at run:** `56e0677` (post-D2 follow-up, includes the sector-extraction helper).
+- **Universe:** `sp_1500`, post-dedupe equity count: **1,506**. Combined from iShares IVV (S&P 500) + IJH (S&P MidCap 400) + IJR (S&P SmallCap 600) holdings CSVs.
+  - Source URLs (from `research.harness.earnings_proximity.universe_variants`): IVV (`/239726/...IVV_holdings`), IJH (`/239763/...IJH_holdings`), IJR (`/239774/...IJR_holdings`). Recorded in `universe_provenance_supplement.json` alongside the run manifest.
+  - Snapshot: `~/swing-data/research-cache/universe-snapshots/sp_1500_2026-04-25.csv`, SHA-256 `3ebb5da7b3b9fa0b7d92b5f3c37de292f119bd46c8e836a5783f9b573ecdc5a2`. The snapshot CSV records each ticker's source sub-ETF URL.
+  - All three iShares URLs were fetched within seconds of each other in a single `_load_or_fetch_ishares` call on 2026-04-25T07:34Z. Per-URL fetch timestamps are not tracked at the loader level; fetch-date skew across the three sub-ETFs is bounded by network round-trip time.
+  - **Manifest provenance gap:** `run_manifest.json` records `universe_source_url: null` because the loader contract emits a single URL only for single-URL universes; `universe_provenance_supplement.json` closes this gap by enumerating all three URLs explicitly. Future loader work could add `source_urls` plural to the `UniverseVariant` dataclass; out of scope for this study.
+- **Universe hash:** `0866d9cd596490ae7a706ad0577fbf35cabee293fd5ba38612e3b59088ae8511` (SHA-256 of newline-joined ticker list).
+- **Universe nominal vs measured.** The S&P Composite 1500 nominally aggregates 500 + 400 + 600 = 1,500 issues. The 1,506 measured count reflects the iShares-tracking-fund's holdings on 2026-04-25, after equity-only filtering and dedupe across the three lists. Per the Russell 3000 precedent (2,579 vs nominal 3,000+), iShares-derived ticker counts are slightly off the index-direct count due to dual-class shares, share-class reclassifications, and recent rebalancing not yet reflected. Per-sub-ETF row counts in the snapshot CSV: IVV 503 unique equity rows, IJH 401 unique, IJR 602 unique (sums to 1,506 with no cross-sub-ETF duplicates observed at this fetch).
+- **Window:** 2024-04-19 → 2026-04-23 (504 NYSE sessions). Same as the candidate-sparsity diagnostic baseline.
+- **Capital:** $7,500 (1×, derived from `swing.config.toml` `[account]` via `max(starting_equity, risk_equity_floor)`). Identical to candidate-sparsity diagnostic Run A.
+- **Cache stats:** OHLCV 1,499 hits / 8 misses (8 cold fetches; cache went from 2,595 files → 2,603); earnings 1,497 hits / 9 misses. Russell 3000's earlier cache warm-up covers most of S&P 1500; the cold residue is the small subset of SP1500 tickers not in Russell 3000's 2,579 holdings.
+- **Evaluations / ticker-days:** 750,440 / 759,024 = 98.87 %. The 8,584 skipped ticker-days are tickers with < 200 bars of OHLCV history at the corresponding session (the harness's `_MIN_BARS_FOR_EVALUATION` floor).
 
-## Results — rate (D4 — appended post-D3)
+## Results — rate
 
-*This section is intentionally empty at D1; will be filled at D4.*
+| Metric | Value |
+|---|---:|
+| A+ count | **35** |
+| Evaluation count | 750,440 |
+| Ticker-days (universe × sessions) | 759,024 |
+| **Rate per ticker-day** | **0.00461 %** |
+| Wilson 95 % CI on rate | [0.00332 %, 0.00641 %] |
+| **Rate uplift vs SPX+NDX 1× baseline** | **2.39×** |
 
-## Results — per-criterion binding constraints (production-gated) (D4 — appended post-D3)
+Baseline: SPX+NDX 1× (candidate-sparsity diagnostic Run A) — 5 A+ over 260,064 ticker-days = 0.00193 % per ticker-day, Wilson 95 % CI [0.00083 %, 0.00453 %].
 
-*This section is intentionally empty at D1; will be filled at D4.*
+**Statistical-inference framing.** The Wilson 95 % CIs of SPX+NDX 1× ([0.00083 %, 0.00453 %]) and S&P 1500 1× ([0.00332 %, 0.00641 %]) **overlap** in the interval [0.00332 %, 0.00453 %]. The disjoint-CI shortcut that the candidate-sparsity diagnostic invoked for the SPX+NDX-vs-Russell comparison (where CIs were disjoint) does not apply here. A formal Newcombe interval on (p_SP1500 − p_SPX+NDX) would be the proper test for whether the difference is robustly non-zero; that test is not run here. The point-estimate uplift of 2.39× is the value used for tier classification (per D1's pre-registered procedure, which uses point-estimate uplift, not a hypothesis test on the difference). Operator interpretation that treats 2.39× as a precise effect size on this single window is over-confident; the per-rate Wilson interval bounds inform how much sampling noise the point estimate carries.
 
-## Results — sector breakdown of A+ signals (D4 — appended post-D3)
+For comparison context (NOT used in tier classification):
+- Russell 3000 1× (candidate-sparsity diagnostic Run C): 112 A+ over 1,299,816 ticker-days = 0.00890 % per ticker-day. SP1500 sits between SPX+NDX (0.00193 %) and Russell 3000 (0.00890 %), consistent with the broadening-universe gradient.
+- Session 2a production anchor (Finviz-filtered): ~0.5 % per ticker-day (n=2/400, Wilson CI [0.137 %, 1.806 %]). The residual gap from SP1500 1× (0.00461 %) to the production anchor remains ~108×.
 
-*This section is intentionally empty at D1; will be filled at D4.*
+## Results — per-criterion binding constraints (production-gated)
 
-## Results — liquidity distribution of A+ signals (D4 — appended post-D3)
+Per the candidate-sparsity diagnostic R1 Critical lesson, the **production-gated** blocker (production gating order: `risk_feasibility` hard filter → trend-template gate → VCP fail-count) is the primary metric. Counts below sum to the evaluation total; the `<aplus>` row is the count of (ticker, date) pairs that reached A+. Source: `binding_constraints_prod_gated.csv`.
 
-*This section is intentionally empty at D1; will be filled at D4.*
+| Criterion | Count | % of evaluations |
+|---|---:|---:|
+| `<aplus>` | 35 | 0.00466 % |
+| TT1_above_150_200 | 319,193 | 42.53 % |
+| TT2_150_above_200 | 86,590 | 11.54 % |
+| **risk_feasibility** | **72,419** | **9.65 %** |
+| TT5_above_50 | 65,533 | 8.73 % |
+| ma_stack_10_20_50 | 45,118 | 6.01 % |
+| adr | 44,426 | 5.92 % |
+| proximity_20ma | 26,497 | 3.53 % |
+| TT6_above_52w_low_30pct | 22,993 | 3.06 % |
+| TT4_50_above_150_200 | 22,110 | 2.95 % |
+| ma_short_rising | 16,931 | 2.26 % |
+| TT3_200_rising | 14,135 | 1.88 % |
+| prior_trend | 11,149 | 1.49 % |
+| tightness | 2,470 | 0.33 % |
+| TT7_within_52w_high_25pct | 679 | 0.090 % |
+| vcp_volume_contraction | 144 | 0.019 % |
+| orderliness | 18 | 0.0024 % |
 
-## Results — data-quality characterization (D4 — appended post-D3)
+The emitted-order audit-trail metric is preserved at `binding_constraints.csv`; it is not the primary metric per the diagnostic precedent.
 
-*This section is intentionally empty at D1; will be filled at D4.*
+`risk_feasibility` (production-gated, 1× capital) on S&P 1500 sits at 9.65 % — between Russell 3000 1× (6.91 %) and SPX+NDX 1× (18.62 %). This is consistent with the structural pattern observed in the candidate-sparsity diagnostic: at fixed 1× capital, risk_feasibility blocking shrinks as the universe widens (more low-priced names where the per-share risk budget binds less). This study does not run a 5× cell on S&P 1500 (out of scope per D1) so the capital-binding-shrinkage pattern is not measured directly.
 
-## Tier classification (D4 — appended post-D3)
+## Results — sector breakdown of A+ signals
 
-*This section is intentionally empty at D1; will be filled at D4.*
+Sector source: iShares CSV `Sector` column at fetch date 2026-04-25, via `load_sp_1500_sector_map`. Tickers absent from the iShares sector map are bucketed as "Unknown."
 
-## Findings (descriptive, not prescriptive) (D4 — appended post-D3)
+| Sector | A+ count | % of A+ |
+|---|---:|---:|
+| Information Technology | 7 | 20.0 % |
+| Consumer Discretionary | 6 | 17.1 % |
+| Health Care | 6 | 17.1 % |
+| Industrials | 5 | 14.3 % |
+| Materials | 4 | 11.4 % |
+| Energy | 2 | 5.7 % |
+| Financials | 2 | 5.7 % |
+| Real Estate | 2 | 5.7 % |
+| Communication | 1 | 2.9 % |
 
-*This section is intentionally empty at D1; will be filled at D4.*
+Largest single sector: Information Technology at **20.0 %**, well below the D1 sector-concentration gate of 40 %. Nine of eleven nominal GICS sectors are represented in A+; Utilities and Consumer Staples produce zero A+ signals on this run. This study does not characterize how S&P 1500's sector composition compares to the universe sector composition (the iShares CSVs include sector weights for the universe; computing a "sector over- or under-indexing" ratio would require post-hoc joining; out of scope for this D4).
 
-## What this study does NOT say (D4 — appended post-D3)
+## Results — liquidity distribution of A+ signals
 
-*This section is intentionally empty at D1; will be filled at D4.*
+For each A+ (ticker, date), avg daily $ volume over the prior 20 NYSE sessions is computed from cached OHLCV (`Close * Volume`, mean over the trailing 20-bar window strictly prior to the A+ date).
 
-## Caveats and limitations (D4 — appended post-D3)
+| Statistic | Value |
+|---|---:|
+| Priced count | 35 / 35 |
+| Unpriced count | 0 |
+| Min | $15,732,160 |
+| 25th percentile | $54,798,849 |
+| **Median** | **$84,709,976** |
+| 75th percentile | $144,212,370 |
+| Max | $705,111,996 |
+| Fraction below $500K/day | 0.0 % |
+| Fraction below $1M/day | 0.0 % |
 
-*This section is intentionally empty at D1; will be filled at D4.*
+All 35 A+ signals are priced and have avg daily $ volume well above $1M. The minimum at $15.7M/day is two orders of magnitude above any plausible execution constraint at the operator's 1× capital ($7,500 with ~10 % position size ≈ $750 trade). Per the D1 pre-registration, liquidity is **descriptive, not gating**; this distribution informs the operator's awareness but does not affect tier classification.
 
-## Open questions for the operator (D4 — appended post-D3)
+## Results — data-quality characterization
 
-*This section is intentionally empty at D1; will be filled at D4.*
+| Metric | Value |
+|---|---|
+| A+ signals with `absent_earnings_data=True` | 17 / 35 = **48.6 %** |
+| Universe size | 1,506 |
+| OHLCV cache hit rate | 1,499 / 1,507 = 99.5 % |
+| OHLCV cold-fetch successes | 8 (no fetch failures recorded) |
+| Earnings cache hit rate | 1,497 / 1,506 = 99.4 % |
+| Earnings cold-fetch successes | 9 |
+| Skipped ticker-days (insufficient OHLCV history) | 8,584 / 759,024 = 1.13 % |
 
-## Run artifacts (D4 — appended post-D3)
+The 48.6 % absent-earnings-data fraction on A+ signals is comparable to Russell 3000's 54 % (Run C). yfinance's `Ticker.get_earnings_dates()` coverage is the dominant constraint, not the universe choice — adding the S&P MidCap 400 + S&P SmallCap 600 to SPX 500 inherits the same earnings-coverage gap that affects most non-large-cap names. **D1's Tier 1 gate is `<30 % absent earnings`; the measured 48.6 % fails this gate by a clear margin** even if the rate uplift had reached 3×.
 
-*This section is intentionally empty at D1; will be filled at D4.*
+No yfinance OHLCV-fetch failures were observed on this universe (compare: Russell 3000 had 14 fetch failures out of 2,579 tickers).
+
+## Tier classification
+
+Apply D1's frozen thresholds verbatim:
+
+- **Rate uplift:** 2.39× ≥ 2× threshold (Tier 3 ruled out).
+- **Rate uplift:** 2.39× < 3× threshold (Tier 1's rate gate fails).
+- **Sector concentration:** 20 % largest single sector < 40 % threshold (no concentration override).
+
+The rate-uplift result lands in the [2×, 3×) band, which is the primary Tier 2 cell per D1. The absent-earnings-data fraction (48.6 %) exceeds the Tier 1 gate of < 30 %, so the absent-data alternate path into Tier 2 ("≥3× uplift but ≥30 % absent earnings") is moot on this run. Sector concentration is well-distributed (no concentration override path triggered).
+
+**Tier classification: Tier 2 — Mixed.**
+
+The classification is unambiguous: the rate-uplift point estimate is squarely inside the [2×, 3×) band, with a sample-size-aware Wilson 95 % CI ([0.00332 %, 0.00641 %]) that does not reach the 0.00580 % Tier 1 lower-cutoff at its lower end (and reaches it only above its midpoint). Per D1's anti-rationalization clause, the result IS what the frozen thresholds say it is.
+
+## Findings (descriptive, not prescriptive)
+
+1. **S&P 1500 1× lands at Tier 2 — Mixed under D1's frozen thresholds.** Rate uplift 2.39× over the SPX+NDX 1× baseline (35 A+ over 759,024 ticker-days = 0.00461 % per ticker-day, vs baseline 0.00193 %). Sector concentration is benign (20 % maximum); absent-earnings-data fraction (48.6 %) is high enough to fail D1's Tier 1 < 30 % gate, but the rate-uplift gate is the binding constraint here, not the absent-data gate. Per-rate Wilson 95 % CI ([0.00332 %, 0.00641 %]) overlaps the SPX+NDX 1× CI ([0.00083 %, 0.00453 %]) in the interval [0.00332 %, 0.00453 %]; the disjoint-CI shortcut that justified the SPX+NDX-vs-Russell informal inference does not apply here. The 2.39× point estimate is the figure used for tier classification per D1's pre-registered procedure.
+
+2. **Production-gated `risk_feasibility` blocker on S&P 1500 1× is 9.65 %, between SPX+NDX 1× (18.62 %) and Russell 3000 1× (6.91 %).** Consistent with the structural pattern from the candidate-sparsity diagnostic: at fixed 1× capital, risk_feasibility blocks fewer evaluations as the universe broadens to include lower-priced names where the per-share risk budget binds less often. This study does not run an S&P 1500 5× cell, so the capital-sensitivity transition (the diagnostic's headline finding for SPX+NDX and Russell) is not directly measured on S&P 1500.
+
+3. **TT1 (above 150-day & 200-day MA) is the dominant production-gated blocker at 42.53 %.** Same shape as the candidate-sparsity diagnostic on SPX+NDX (34.39 %) and Russell 3000 (46.04 %). The trend-template stack (TT1–TT7) collectively binds ~73 % of S&P 1500 1× evaluations under production gating, similar to Russell 3000 1× at ~73 %; the trend-template gate dominates the rejection layer above the VCP layer.
+
+4. **A+ signals span 9 of 11 GICS sectors with maximum concentration of 20 % (Information Technology).** Distinct from a "small-cap-tech-tilt" pattern. Consumer Discretionary (17.1 %) and Health Care (17.1 %) tie for second; Industrials (14.3 %) and Materials (11.4 %) round out the top five. Utilities and Consumer Staples are absent from A+ on this window. This is descriptive of the 35 A+ signals on this single run; sector composition over multiple windows or regimes is not characterized.
+
+5. **Liquidity is uniformly strong across A+ signals.** Median avg daily $ volume on the prior 20 sessions is $84.7M; minimum is $15.7M; 0 % of A+ signals have avg daily $ vol below $1M. At the operator's ~$750 typical trade size, no A+ signal in this run is in any execution-difficulty regime that the operator would plausibly need to filter at production-ingest time.
+
+6. **48.6 % of A+ signals carry `absent_earnings_data=True`.** Comparable to Russell 3000's 54 % on Run C; SPX+NDX produced 0 % on Runs A/B. yfinance's earnings coverage is the dominant constraint, not the specific universe choice between Russell 3000 and S&P 1500. Any production deployment of S&P 1500 would inherit this earnings-data gap on roughly half of A+ signals; the production earnings-proximity-exclusion logic would need to handle the absent-data case (Method record M-002 specifies absent-data → flag, do not exclude).
+
+7. **Cache + fetch stats indicate near-fully-warm Russell-3000-derived cache.** Only 8 of 1,506 tickers triggered cold OHLCV fetches; 9 triggered cold earnings fetches. The S&P 1500 universe is essentially a subset of Russell 3000's holdings (with the small residual being recent S&P additions iShares' Russell ETF doesn't yet reflect, or share-class differences). This means the marginal fetch cost of the S&P 1500 expansion is small once the Russell 3000 cache is warm.
+
+8. **Per-rate point-estimate comparison: SPX+NDX 1× → S&P 1500 1× → Russell 3000 1×.** Rates: 0.00193 % → 0.00461 % → 0.00890 % per ticker-day. Universe-size ratios: 516 → 1,506 → 2,579 tickers. Adding mid- and small-caps yields ~2.4× rate uplift; further extending to micro-cap-inclusive Russell 3000 yields another ~1.9× on top of S&P 1500. The marginal rate uplift per added ticker decreases as the universe broadens, but the data-quality cost (absent earnings, OHLCV fetch failures, survivorship-bias inheritance) increases. The S&P 1500 cell measures the middle of this curve at the operator's actual capital.
+
+## What this study does NOT say
+
+- This study does NOT recommend changing the production universe to S&P 1500 (or any other variant). Findings are descriptive; the operator decides what action, if any, the Tier 2 result motivates.
+- This study does NOT make any claim about the **edge quality** of A+ candidates — only about their **rate** (count per ticker-day). No expectancy, win-rate, or gap-through statistics are computed. The harness's `simulate_trade` was deliberately not invoked.
+- This study does NOT establish that the rate observed on S&P 1500 (0.00461 %) is stable across regimes. The single 504-session window is one observation; multi-window or rolling-window characterization is a separate study.
+- This study does NOT formally test whether the S&P 1500 1× rate is significantly different from SPX+NDX 1× — Wilson CIs overlap; a formal Newcombe interval was not computed. The 2.39× point estimate is what D1's tier procedure consumes; whether it is robustly different from 1.0 is a separate question.
+- This study does NOT measure capital-sensitivity on S&P 1500 (only the 1× cell was run, per D1).
+- This study does NOT compare S&P 1500 to other plausible universe variants (ITOT, MSCI USA Investable Market, Wilshire 5000). If the operator wants those compared, it is a separate study.
+- This study does NOT verify that the iShares-reported `Sector` field aligns with whatever sector taxonomy production might use for operator-facing display. The sector breakdown above uses iShares' reported sectors as-fetched.
+- This study does NOT recompute universe membership at point-in-time per session; the 2026-04-25 snapshot is held constant across the entire 2024–2026 window.
+
+## Caveats and limitations
+
+- **Survivorship bias.** The replay uses iShares' current-roster IVV / IJH / IJR holdings as of 2026-04-25; delisted tickers from the 2024–2026 window are absent. Effect is plausibly larger on small-caps (IJR) than large-caps (IVV); the universe-composition direction this study reports is a lower bound on what an S&P-direct, point-in-time, delisting-aware version would show.
+- **Fixed-universe at fetch date; no point-in-time membership reconstruction.** S&P committee adjustments are continuous but iShares' tracking ETFs lag. The 2026-04-25 fetch is applied to historical 2024–2026 data, over-including post-2024 entrants and under-including pre-2024 exits.
+- **iShares-derived ticker list, not S&P-direct.** Authoritative S&P 1500 membership comes from S&P Global directly (paid feed); this study uses iShares tracking-fund holdings as a free, reproducible proxy. The 1,506 vs nominal 1,500 figure reflects iShares' fund composition at the fetch instant; no defect.
+- **iShares per-URL fetch timestamps not tracked.** All three URLs were fetched within seconds of each other in a single `_load_or_fetch_ishares` call; if iShares published a fund composition update between the IVV fetch and the IJR fetch, the universe could be internally inconsistent. The bounded round-trip-time skew makes this unlikely to bind in practice; documented for transparency.
+- **48.6 % absent earnings.** yfinance `Ticker.get_earnings_dates` coverage is materially worse for non-large-cap names. Any extension that depends on earnings-proximity filtering on S&P 1500 would inherit this gap; the D4 finding that this gap is comparable to Russell 3000 is itself only a single-window observation.
+- **2-year window is a single regime.** The 2024-04 → 2026-04 window is one bull-market regime. Rate findings would not necessarily generalize to bear or volatile regimes; multi-regime characterization is hypothesis 4 from the brief, deferred.
+- **Single-window sample for rate inference.** Wilson 95 % CIs on the rate are reported; CIs overlap with the SPX+NDX 1× baseline so the disjoint-CI heuristic doesn't apply. Tier classification uses point-estimate uplift per D1's pre-registered procedure, not a hypothesis test on rate difference. Operator interpretation that treats 2.39× as a precise effect size is over-confident; the rate-difference inference would require a Newcombe interval or similar instrument not run here.
+- **Production-vs-replay parity is partial.** This study runs the same harness as the candidate-sparsity diagnostic; harness-vs-production parity was Tier 1 on n=80 watch/skip (Hypothesis 5, commit 110f7cc); A+-classification parity was not exercised empirically (eval 15 produced zero A+).
+- **`current_equity` is config-derived, not DB-derived.** $7,500 from `swing.config.toml` `[account]`; operator's actual current equity may differ. Per the candidate-sparsity diagnostic precedent, the config-derived value is the reference.
+- **Sector taxonomy is iShares-reported.** No cross-validation against GICS or a different production source.
+
+## Open questions for the operator
+
+These are open questions the findings might prompt; the study does not answer them. Each is phrased as a question, with no embedded methodology prescription.
+
+- Does a Tier 2 result on S&P 1500 — 2.39× rate uplift, 48.6 % absent-earnings-data, 20 % maximum sector concentration, uniformly-strong liquidity — cross any threshold for a production-universe change? D1's Tier 2 framing was "meaningful uplift exists but at observable cost; operator decides whether tradeoff is acceptable."
+- Is the absent-earnings-data fraction (48.6 %) acceptable given that the production earnings-proximity-exclusion rule is designed to flag-not-block on absent data (per Method record M-002)? Or does the high absent-data rate indicate a need for a richer earnings data source before any expansion is considered?
+- If the rate uplift point estimate (2.39×) is operationally interesting but the per-rate Wilson CI is wide (and overlaps SPX+NDX 1×), would a multi-window characterization across 2024 / 2025 / 2026 partial windows tighten the inference enough to inform an adoption decision?
+- The S&P 1500 sector breakdown shows Information Technology (20 %), Consumer Discretionary (17 %), Health Care (17 %) as the top three. Does this composition align with the operator's view of what an A+ feed should look like, or would any of the under-represented sectors (Utilities, Consumer Staples — both 0 % on this window) raise concern?
+- Liquidity is uniformly strong on this run. If a future expansion to a wider universe (Russell 3000, or beyond) shows A+ signals with avg daily $ vol < $1M, would the operator want to filter at production-ingest time, or accept and decide per-candidate?
+- The marginal rate uplift per added ticker decreases as the universe broadens (SPX+NDX → S&P 1500 → Russell 3000 yields 2.4× then ×1.9 on top). Is the diminishing-returns shape itself useful for thinking about where the universe-size sweet spot is for this strategy?
+- Would a same-window Newcombe-interval test on (S&P 1500 1× rate − SPX+NDX 1× rate) provide enough additional confidence on the difference to justify it as a follow-on, or is the point-estimate uplift sufficient information given the single-window sample anyway?
+
+## Run artifacts
+
+| File | Contents | Committed? |
+|---|---|---|
+| `run_manifest.json` | Provenance: git SHA, universe metadata, capital, cache stats, summary counts | yes |
+| `aplus_signals.csv` | 35 A+ signals (ticker, date, entry, stop, next-earnings, absent-data) | yes |
+| `binding_constraints_prod_gated.csv` | **Primary** — production-gated blocker counts (`risk_feasibility` → trend-template → VCP) | yes |
+| `binding_constraints.csv` | **Audit-trail** — emitted-order blocker counts | yes |
+| `sp1500_findings.json` | Sidecar: sector breakdown, liquidity, Wilson CI, rate uplift (D4 quotes from this) | yes |
+| `universe_provenance_supplement.json` | Three iShares CDN URLs + snapshot SHA-256 (closes the manifest's null `source_url` gap) | yes |
+| `evaluations.csv` | Per-(ticker, date) per-criterion `pass`/`fail` results — 96 MB | **no** (in `diagnostic-out/.gitignore`; regenerable from manifest flags) |
+
+Run directory: `research/harness/earnings_proximity/diagnostic-out/run_E_sp1500_1x/`.
+
+Universe snapshot (cached locally, not in the repo):
+- `~/swing-data/research-cache/universe-snapshots/sp_1500_2026-04-25.csv` — 1,506 tickers + per-row source URL.
+- `~/swing-data/research-cache/universe-snapshots/sp_1500_2026-04-25_sectors.json` — ticker → sector mapping (used by the D4 aggregator).
