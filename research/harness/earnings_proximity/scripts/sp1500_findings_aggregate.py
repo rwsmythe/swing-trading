@@ -53,29 +53,68 @@ def _ohlcv_path(cache_dir: Path, ticker: str) -> Path:
 
 
 def compute_sector_breakdown(
-    aplus_rows: list[dict], sector_map: dict[str, str]
+    aplus_rows: list[dict],
+    sector_map: dict[str, str],
+    *,
+    universe_tickers: list[str] | None = None,
 ) -> dict:
-    """Return sector counts + concentration ratio over A+ signals.
+    """Return sector counts + concentration + over/under-indexing over A+ signals.
 
     Tickers absent from the sector map are bucketed under "Unknown".
+
+    When ``universe_tickers`` is provided, also computes the universe's
+    sector composition (denominator) and per-sector index ratio (A+ %
+    divided by universe %), so the reader can see whether A+ signals
+    over- or under-index any sector vs the universe baseline. The
+    universe-composition baseline is required by the dispatch brief
+    (docs/sp1500-universe-study-brief.md §7).
     """
     counts: Counter[str] = Counter()
     for row in aplus_rows:
         sector = sector_map.get(row["ticker"].upper(), "Unknown") or "Unknown"
         counts[sector] += 1
     total = sum(counts.values())
+
+    universe_counts: Counter[str] = Counter()
+    if universe_tickers is not None:
+        for t in universe_tickers:
+            sec = sector_map.get(t.upper(), "Unknown") or "Unknown"
+            universe_counts[sec] += 1
+    universe_total = sum(universe_counts.values())
+
+    sectors_seen = set(counts.keys()) | set(universe_counts.keys())
     breakdown = []
-    for sector, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
+    for sector in sorted(
+        sectors_seen,
+        key=lambda s: (
+            -counts.get(s, 0),
+            -universe_counts.get(s, 0),
+            s,
+        ),
+    ):
+        a_count = counts.get(sector, 0)
+        u_count = universe_counts.get(sector, 0)
+        a_frac = (a_count / total) if total else 0.0
+        u_frac = (u_count / universe_total) if universe_total else 0.0
+        # Index ratio: 1.0 = A+ exactly tracks universe; >1 over-indexes; <1 under-indexes.
+        index_ratio = (a_frac / u_frac) if u_frac else None
         breakdown.append(
             {
                 "sector": sector,
-                "count": count,
-                "fraction": (count / total) if total else 0.0,
+                "count": a_count,
+                "fraction": a_frac,
+                "universe_count": u_count,
+                "universe_fraction": u_frac,
+                "index_ratio": index_ratio,
             }
         )
-    largest = breakdown[0] if breakdown else None
+    largest = next(
+        (b for b in breakdown if b["count"] > 0),
+        None,
+    )
     return {
         "total_aplus": total,
+        "universe_total": universe_total,
         "by_sector": breakdown,
         "largest_sector": largest["sector"] if largest else None,
         "largest_sector_fraction": largest["fraction"] if largest else 0.0,
@@ -173,15 +212,74 @@ def compute_data_quality(aplus_rows: list[dict], manifest: dict) -> dict:
     }
 
 
+def _load_universe_tickers_from_snapshot(snapshot_path: Path) -> list[str]:
+    """Read the per-ticker snapshot CSV produced by load_universe_variant."""
+    tickers: list[str] = []
+    with snapshot_path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped.lower().startswith("ticker,"):
+                continue
+            ticker = stripped.split(",", 1)[0].strip().strip('"').upper()
+            if ticker and ticker != "TICKER":
+                tickers.append(ticker)
+    return tickers
+
+
+def _resolve_pinned_sector_map_path(cache_dir: Path, fetched_date: str) -> Path:
+    """Pin the sector map to the run's universe_fetched_date.
+
+    The aggregator must NOT silently use a more-recent sector map cached
+    after the run; that would diverge sector labels from the universe
+    composition the run actually evaluated against. Returns the exact
+    expected path; absence is an error.
+    """
+    return cache_dir / "universe-snapshots" / f"sp_1500_{fetched_date}_sectors.json"
+
+
 def aggregate_findings(
     run_dir: Path,
     *,
     cache_dir: Path,
-    sector_map: dict[str, str],
+    sector_map: dict[str, str] | None = None,
+    universe_tickers: list[str] | None = None,
 ) -> dict:
     aplus_rows = _load_aplus_signals(run_dir)
     manifest = _load_manifest(run_dir)
-    sector = compute_sector_breakdown(aplus_rows, sector_map)
+
+    # Pin the sector map to the run's universe_fetched_date when not
+    # supplied directly. This prevents a later D4 re-aggregation from
+    # silently using a fresher iShares sector snapshot than the one
+    # corresponding to run_manifest.json's universe_version.
+    if sector_map is None:
+        fetched_date = manifest.get("universe_fetched_date")
+        if fetched_date is None:
+            raise ValueError(
+                "run_manifest.json missing universe_fetched_date; cannot pin sector map"
+            )
+        pinned_path = _resolve_pinned_sector_map_path(cache_dir, fetched_date)
+        if not pinned_path.exists():
+            raise FileNotFoundError(
+                f"Pinned sector map not found at {pinned_path}. The aggregator "
+                "refuses to fall back to a different snapshot — re-fetch with "
+                "research.harness.earnings_proximity.universe_variants."
+                "load_sp_1500_sector_map at the matching fetch date."
+            )
+        sector_map = json.loads(pinned_path.read_text(encoding="utf-8"))
+
+    if universe_tickers is None:
+        fetched_date = manifest.get("universe_fetched_date")
+        snapshot_path = (
+            cache_dir / "universe-snapshots" / f"sp_1500_{fetched_date}.csv"
+        )
+        if snapshot_path.exists():
+            universe_tickers = _load_universe_tickers_from_snapshot(snapshot_path)
+
+    sector = compute_sector_breakdown(
+        aplus_rows, sector_map, universe_tickers=universe_tickers
+    )
     liquidity = compute_liquidity_stats(aplus_rows, cache_dir)
     quality = compute_data_quality(aplus_rows, manifest)
 
@@ -250,9 +348,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    sector_map = load_sp_1500_sector_map(cache_dir=args.cache_dir)
     findings = aggregate_findings(
-        args.run_dir, cache_dir=args.cache_dir, sector_map=sector_map
+        args.run_dir, cache_dir=args.cache_dir
     )
     out = args.run_dir / "sp1500_findings.json"
     out.write_text(json.dumps(findings, indent=2, sort_keys=True), encoding="utf-8")

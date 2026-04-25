@@ -310,6 +310,32 @@ def test_cli_main_invokes_run_diagnostic(monkeypatch, tmp_path):
     assert captured["universe_variant"].name == "spx_ndx"
 
 
+def test_run_diagnostic_records_git_dirty_in_manifest(monkeypatch, tmp_path):
+    """Manifest must carry a git_dirty boolean per the parity-check R1 lesson."""
+    monkeypatch.setattr(
+        "research.harness.earnings_proximity.instrumented_replay.evaluate_one",
+        lambda ctx: _aplus_candidate(ctx.ticker),
+    )
+    _patch_fetchers(monkeypatch, frames=("AAPL",))
+    # Force a deterministic dirty answer so the test does not depend on the
+    # ambient working tree state.
+    monkeypatch.setattr(diagnostic_run, "_git_dirty", lambda repo_root: False)
+
+    output_dir = tmp_path / "out"
+    diagnostic_run.run_diagnostic(
+        universe_variant=_stub_universe(["AAPL"]),
+        base_capital=7500.0,
+        capital_multiplier=1.0,
+        window_start=date(2025, 6, 2),
+        window_end=date(2025, 6, 3),
+        output_dir=output_dir,
+        cache_dir=tmp_path / "cache",
+    )
+    manifest = json.loads((output_dir / "run_manifest.json").read_text())
+    assert "git_dirty" in manifest
+    assert manifest["git_dirty"] is False
+
+
 def test_cli_main_dispatches_sp_1500_universe(monkeypatch, tmp_path):
     """`main(['--universe', 'sp_1500', ...])` resolves to the sp_1500 variant
     and threads it through to run_diagnostic at 1× capital."""

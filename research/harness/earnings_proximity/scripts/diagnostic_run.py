@@ -160,6 +160,32 @@ def _git_sha(repo_root: Path) -> str:
     return head_text
 
 
+def _git_dirty(repo_root: Path) -> bool | None:
+    """Return True iff the working tree has uncommitted changes; None on git error.
+
+    Mirrors `git status --porcelain` exit semantics — any non-empty output
+    means the working tree is dirty. The parity-check D5 R1 lesson
+    requires this surface be captured at run time so manifest provenance
+    is not invalidated by an in-flight uncommitted edit. Captured at
+    run-start in :func:`run_diagnostic`'s manifest emission.
+    """
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return bool(out.stdout.strip())
+
+
 def run_diagnostic(
     *,
     universe_variant: UniverseVariant,
@@ -224,9 +250,11 @@ def run_diagnostic(
 
     aplus_count = counts.get(APLUS_KEY, 0)
     repo_root = Path(__file__).resolve().parents[4]
+    git_dirty = _git_dirty(repo_root)
     manifest = {
         "run_ts": datetime.now().isoformat(),
         "git_sha": _git_sha(repo_root),
+        "git_dirty": git_dirty,
         "universe_name": universe_variant.name,
         "universe_version": universe_variant.version,
         "universe_hash": universe_hash,

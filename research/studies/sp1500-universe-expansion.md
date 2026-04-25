@@ -98,9 +98,10 @@ These are confounds the study inherits and cannot eliminate. They are documented
   - Source URLs (from `research.harness.earnings_proximity.universe_variants`): IVV (`/239726/...IVV_holdings`), IJH (`/239763/...IJH_holdings`), IJR (`/239774/...IJR_holdings`). Recorded in `universe_provenance_supplement.json` alongside the run manifest.
   - Snapshot: `~/swing-data/research-cache/universe-snapshots/sp_1500_2026-04-25.csv`, SHA-256 `3ebb5da7b3b9fa0b7d92b5f3c37de292f119bd46c8e836a5783f9b573ecdc5a2`. The snapshot CSV records each ticker's source sub-ETF URL.
   - All three iShares URLs were fetched within seconds of each other in a single `_load_or_fetch_ishares` call on 2026-04-25T07:34Z. Per-URL fetch timestamps are not tracked at the loader level; fetch-date skew across the three sub-ETFs is bounded by network round-trip time.
-  - **Manifest provenance gap:** `run_manifest.json` records `universe_source_url: null` because the loader contract emits a single URL only for single-URL universes; `universe_provenance_supplement.json` closes this gap by enumerating all three URLs explicitly. Future loader work could add `source_urls` plural to the `UniverseVariant` dataclass; out of scope for this study.
+  - **Manifest provenance gap:** `run_manifest.json` records `universe_source_url: null` because the loader contract emits a single URL only for single-URL universes; `universe_provenance_supplement.json` closes this gap by enumerating all three URLs explicitly and additionally records, in a D5 round-1 audit re-fetch, that all three iShares ETF CSVs report `Fund Holdings as of: Apr 23, 2026` identically — strong evidence that the universe is internally consistent for that as-of date independent of per-URL fetch wall-clock timing.
+  - **Run-time clean-checkout state:** `run_manifest.json` does not currently include a `git_dirty` boolean (the original D3 run pre-dates the D5 round-1 patch that adds this surface). `universe_provenance_supplement.json` records the procedural clean-checkout assertion for THIS run (run kicked off immediately after commit `56e0677` was made; no working-tree edits during the 07:34Z–08:11Z run window). The diagnostic_run script has been amended in a D5 round-1 follow-up commit to capture `harness_git_dirty` at run-start for FUTURE runs; the new field is verified by a unit test in `tests/research/harness/earnings_proximity/test_diagnostic_run.py`.
 - **Universe hash:** `0866d9cd596490ae7a706ad0577fbf35cabee293fd5ba38612e3b59088ae8511` (SHA-256 of newline-joined ticker list).
-- **Universe nominal vs measured.** The S&P Composite 1500 nominally aggregates 500 + 400 + 600 = 1,500 issues. The 1,506 measured count reflects the iShares-tracking-fund's holdings on 2026-04-25, after equity-only filtering and dedupe across the three lists. Per the Russell 3000 precedent (2,579 vs nominal 3,000+), iShares-derived ticker counts are slightly off the index-direct count due to dual-class shares, share-class reclassifications, and recent rebalancing not yet reflected. Per-sub-ETF row counts in the snapshot CSV: IVV 503 unique equity rows, IJH 401 unique, IJR 602 unique (sums to 1,506 with no cross-sub-ETF duplicates observed at this fetch).
+- **Universe nominal vs measured.** The S&P Composite 1500 nominally aggregates 500 + 400 + 600 = 1,500 issues. The 1,506 measured count reflects the iShares-tracking-fund's holdings on 2026-04-25, after equity-only filtering and dedupe across the three lists. Per the Russell 3000 precedent (2,579 vs nominal 3,000+), iShares-derived ticker counts are slightly off the index-direct count due to dual-class shares, share-class reclassifications, and recent rebalancing not yet reflected. Per-sub-ETF row counts in the snapshot CSV (post-dedupe within each sub-ETF; pairwise disjoint across sub-ETFs): IVV 503, IJH 400, IJR 603 (sums to 1,506; verified by parsing source_url per row in `~/swing-data/research-cache/universe-snapshots/sp_1500_2026-04-25.csv`).
 - **Window:** 2024-04-19 → 2026-04-23 (504 NYSE sessions). Same as the candidate-sparsity diagnostic baseline.
 - **Capital:** $7,500 (1×, derived from `swing.config.toml` `[account]` via `max(starting_equity, risk_equity_floor)`). Identical to candidate-sparsity diagnostic Run A.
 - **Cache stats:** OHLCV 1,499 hits / 8 misses (8 cold fetches; cache went from 2,595 files → 2,603); earnings 1,497 hits / 9 misses. Russell 3000's earlier cache warm-up covers most of S&P 1500; the cold residue is the small subset of SP1500 tickers not in Russell 3000's 2,579 holdings.
@@ -155,21 +156,27 @@ The emitted-order audit-trail metric is preserved at `binding_constraints.csv`; 
 
 ## Results — sector breakdown of A+ signals
 
-Sector source: iShares CSV `Sector` column at fetch date 2026-04-25, via `load_sp_1500_sector_map`. Tickers absent from the iShares sector map are bucketed as "Unknown."
+Sector source: iShares CSV `Sector` column at fetch date 2026-04-25, via `load_sp_1500_sector_map` (pinned to the run's `universe_fetched_date` per the D5 R1 fix). Tickers absent from the iShares sector map are bucketed as "Unknown."
 
-| Sector | A+ count | % of A+ |
-|---|---:|---:|
-| Information Technology | 7 | 20.0 % |
-| Consumer Discretionary | 6 | 17.1 % |
-| Health Care | 6 | 17.1 % |
-| Industrials | 5 | 14.3 % |
-| Materials | 4 | 11.4 % |
-| Energy | 2 | 5.7 % |
-| Financials | 2 | 5.7 % |
-| Real Estate | 2 | 5.7 % |
-| Communication | 1 | 2.9 % |
+The table below reports A+ sector count + fraction, the **S&P 1500 universe sector composition** at the same fetch date, and the **index ratio** (A+ % divided by universe %); 1.0 = A+ exactly tracks the universe; > 1 = A+ over-indexes the sector vs the universe; < 1 = A+ under-indexes.
 
-Largest single sector: Information Technology at **20.0 %**, well below the D1 sector-concentration gate of 40 %. Nine of eleven nominal GICS sectors are represented in A+; Utilities and Consumer Staples produce zero A+ signals on this run. This study does not characterize how S&P 1500's sector composition compares to the universe sector composition (the iShares CSVs include sector weights for the universe; computing a "sector over- or under-indexing" ratio would require post-hoc joining; out of scope for this D4).
+| Sector | A+ count | A+ % | Universe count | Universe % | Index ratio |
+|---|---:|---:|---:|---:|---:|
+| Information Technology | 7 | 20.0 % | 191 | 12.7 % | 1.58 |
+| Consumer Discretionary | 6 | 17.1 % | 195 | 12.9 % | 1.32 |
+| Health Care | 6 | 17.1 % | 166 | 11.0 % | 1.56 |
+| Industrials | 5 | 14.3 % | 257 | 17.1 % | 0.84 |
+| Materials | 4 | 11.4 % | 76 | 5.0 % | 2.26 |
+| Energy | 2 | 5.7 % | 70 | 4.6 % | 1.23 |
+| Financials | 2 | 5.7 % | 260 | 17.3 % | 0.33 |
+| Real Estate | 2 | 5.7 % | 102 | 6.8 % | 0.84 |
+| Communication | 1 | 2.9 % | 51 | 3.4 % | 0.84 |
+| Consumer Staples | 0 | 0.0 % | 78 | 5.2 % | 0.00 |
+| Utilities | 0 | 0.0 % | 60 | 4.0 % | 0.00 |
+
+Largest single A+ sector: Information Technology at **20.0 %**, well below the D1 sector-concentration gate of 40 %. Nine of eleven nominal GICS sectors are represented in A+; Utilities and Consumer Staples produce zero A+ signals on this run.
+
+**Over-indexing sectors (A+ index ratio > 1):** Materials (2.26×), Information Technology (1.58×), Health Care (1.56×), Consumer Discretionary (1.32×), Energy (1.23×). **Under-indexing sectors (index ratio < 1):** Financials (0.33×, strongest under-index), Industrials, Real Estate, Communication (all 0.84×). **Zero-A+ sectors:** Consumer Staples, Utilities. The over-/under-indexing pattern is descriptive of this 35-A+ sample on a single 504-session window; broader-sample inference about whether the over-indexing is a stable structural feature of the strategy on S&P 1500 is not measured here.
 
 ## Results — liquidity distribution of A+ signals
 
@@ -187,7 +194,7 @@ For each A+ (ticker, date), avg daily $ volume over the prior 20 NYSE sessions i
 | Fraction below $500K/day | 0.0 % |
 | Fraction below $1M/day | 0.0 % |
 
-All 35 A+ signals are priced and have avg daily $ volume well above $1M. The minimum at $15.7M/day is two orders of magnitude above any plausible execution constraint at the operator's 1× capital ($7,500 with ~10 % position size ≈ $750 trade). Per the D1 pre-registration, liquidity is **descriptive, not gating**; this distribution informs the operator's awareness but does not affect tier classification.
+All 35 A+ signals are priced and have avg daily $ volume above $15M. The minimum at $15.7M/day is two orders of magnitude above the operator's 1× capital ($7,500 with ~10 % position size ≈ $750 trade). Per the D1 pre-registration, liquidity is **descriptive, not gating**; this distribution informs the operator's awareness but does not affect tier classification.
 
 ## Results — data-quality characterization
 
@@ -227,13 +234,13 @@ The classification is unambiguous: the rate-uplift point estimate is squarely in
 
 3. **TT1 (above 150-day & 200-day MA) is the dominant production-gated blocker at 42.53 %.** Same shape as the candidate-sparsity diagnostic on SPX+NDX (34.39 %) and Russell 3000 (46.04 %). The trend-template stack (TT1–TT7) collectively binds ~73 % of S&P 1500 1× evaluations under production gating, similar to Russell 3000 1× at ~73 %; the trend-template gate dominates the rejection layer above the VCP layer.
 
-4. **A+ signals span 9 of 11 GICS sectors with maximum concentration of 20 % (Information Technology).** Distinct from a "small-cap-tech-tilt" pattern. Consumer Discretionary (17.1 %) and Health Care (17.1 %) tie for second; Industrials (14.3 %) and Materials (11.4 %) round out the top five. Utilities and Consumer Staples are absent from A+ on this window. This is descriptive of the 35 A+ signals on this single run; sector composition over multiple windows or regimes is not characterized.
+4. **A+ signals span 9 of 11 GICS sectors with maximum A+ concentration of 20 % (Information Technology).** Distinct from a "small-cap-tech-tilt" pattern. The over/under-indexing analysis (A+ %) ÷ (universe %) yields: Materials over-indexes most strongly (2.26×, on 4 A+ from a 76-ticker universe slice); Information Technology and Health Care over-index ~1.5×; Consumer Discretionary and Energy over-index modestly (1.32× and 1.23×). Financials under-indexes most strongly (0.33×; 5.7 % of A+ vs 17.3 % of universe). Consumer Staples and Utilities produce zero A+ signals on this window despite a combined 9.2 % of universe membership. Sector composition over multiple windows or regimes is not characterized; the over-indexing observed here is descriptive of the 35-A+ sample on a single 504-session window.
 
 5. **Liquidity is uniformly strong across A+ signals.** Median avg daily $ volume on the prior 20 sessions is $84.7M; minimum is $15.7M; 0 % of A+ signals have avg daily $ vol below $1M. At the operator's ~$750 typical trade size, no A+ signal in this run is in any execution-difficulty regime that the operator would plausibly need to filter at production-ingest time.
 
-6. **48.6 % of A+ signals carry `absent_earnings_data=True`.** Comparable to Russell 3000's 54 % on Run C; SPX+NDX produced 0 % on Runs A/B. yfinance's earnings coverage is the dominant constraint, not the specific universe choice between Russell 3000 and S&P 1500. Any production deployment of S&P 1500 would inherit this earnings-data gap on roughly half of A+ signals; the production earnings-proximity-exclusion logic would need to handle the absent-data case (Method record M-002 specifies absent-data → flag, do not exclude).
+6. **48.6 % of A+ signals carry `absent_earnings_data=True`.** Comparable to Russell 3000's 54 % on Run C; SPX+NDX produced 0 % on Runs A/B. yfinance's earnings coverage is the dominant constraint, not the specific universe choice between Russell 3000 and S&P 1500. The fraction is descriptive of A+-rate-side data coverage; how the production earnings-proximity-exclusion path treats absent data is governed by Method record M-002 (absent-data → flag, not exclude) — its applicability to a hypothetical S&P 1500 deployment is an operator decision, not a study finding.
 
-7. **Cache + fetch stats indicate near-fully-warm Russell-3000-derived cache.** Only 8 of 1,506 tickers triggered cold OHLCV fetches; 9 triggered cold earnings fetches. The S&P 1500 universe is essentially a subset of Russell 3000's holdings (with the small residual being recent S&P additions iShares' Russell ETF doesn't yet reflect, or share-class differences). This means the marginal fetch cost of the S&P 1500 expansion is small once the Russell 3000 cache is warm.
+7. **OHLCV / earnings cache hit rates are high.** 1,499 / 1,507 OHLCV cache hits and 1,497 / 1,506 earnings cache hits — only 8 cold OHLCV fetches and 9 cold earnings fetches. From the cache populated by the candidate-sparsity diagnostic Russell 3000 run, the S&P 1500 universe overlap is ~99.5 % at fetch date 2026-04-25. The exact set of S&P-1500 tickers absent from Russell 3000 holdings as of 2026-04-24 is recoverable from the snapshot files (`russell_3000_2026-04-24.csv` minus `sp_1500_2026-04-25.csv` membership) but is not separately characterized here; the cache-hit pattern bounds it at ≤ 8 tickers.
 
 8. **Per-rate point-estimate comparison: SPX+NDX 1× → S&P 1500 1× → Russell 3000 1×.** Rates: 0.00193 % → 0.00461 % → 0.00890 % per ticker-day. Universe-size ratios: 516 → 1,506 → 2,579 tickers. Adding mid- and small-caps yields ~2.4× rate uplift; further extending to micro-cap-inclusive Russell 3000 yields another ~1.9× on top of S&P 1500. The marginal rate uplift per added ticker decreases as the universe broadens, but the data-quality cost (absent earnings, OHLCV fetch failures, survivorship-bias inheritance) increases. The S&P 1500 cell measures the middle of this curve at the operator's actual capital.
 

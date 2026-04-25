@@ -34,52 +34,96 @@
       {
         "count": 7,
         "fraction": 0.2,
-        "sector": "Information Technology"
+        "index_ratio": 1.5769633507853404,
+        "sector": "Information Technology",
+        "universe_count": 191,
+        "universe_fraction": 0.12682602921646746
       },
       {
         "count": 6,
         "fraction": 0.17142857142857143,
-        "sector": "Consumer Discretionary"
+        "index_ratio": 1.323956043956044,
+        "sector": "Consumer Discretionary",
+        "universe_count": 195,
+        "universe_fraction": 0.1294820717131474
       },
       {
         "count": 6,
         "fraction": 0.17142857142857143,
-        "sector": "Health Care"
+        "index_ratio": 1.5552495697074011,
+        "sector": "Health Care",
+        "universe_count": 166,
+        "universe_fraction": 0.1102257636122178
       },
       {
         "count": 5,
         "fraction": 0.14285714285714285,
-        "sector": "Industrials"
+        "index_ratio": 0.8371317398554753,
+        "sector": "Industrials",
+        "universe_count": 257,
+        "universe_fraction": 0.17065073041168657
       },
       {
         "count": 4,
         "fraction": 0.11428571428571428,
-        "sector": "Materials"
+        "index_ratio": 2.2646616541353386,
+        "sector": "Materials",
+        "universe_count": 76,
+        "universe_fraction": 0.05046480743691899
       },
       {
         "count": 2,
         "fraction": 0.05714285714285714,
-        "sector": "Energy"
+        "index_ratio": 0.33098901098901096,
+        "sector": "Financials",
+        "universe_count": 260,
+        "universe_fraction": 0.17264276228419656
       },
       {
         "count": 2,
         "fraction": 0.05714285714285714,
-        "sector": "Financials"
+        "index_ratio": 0.8436974789915966,
+        "sector": "Real Estate",
+        "universe_count": 102,
+        "universe_fraction": 0.06772908366533864
       },
       {
         "count": 2,
         "fraction": 0.05714285714285714,
-        "sector": "Real Estate"
+        "index_ratio": 1.2293877551020407,
+        "sector": "Energy",
+        "universe_count": 70,
+        "universe_fraction": 0.04648074369189907
       },
       {
         "count": 1,
         "fraction": 0.02857142857142857,
-        "sector": "Communication"
+        "index_ratio": 0.8436974789915966,
+        "sector": "Communication",
+        "universe_count": 51,
+        "universe_fraction": 0.03386454183266932
+      },
+      {
+        "count": 0,
+        "fraction": 0.0,
+        "index_ratio": 0.0,
+        "sector": "Consumer Staples",
+        "universe_count": 78,
+        "universe_fraction": 0.05179282868525897
+      },
+      {
+        "count": 0,
+        "fraction": 0.0,
+        "index_ratio": 0.0,
+        "sector": "Utilities",
+        "universe_count": 60,
+        "universe_fraction": 0.0398406374501992
       }
     ],
     "largest_sector": "Information Technology",
     "largest_sector_fraction": 0.2,
-    "total_aplus": 35
+    "total_aplus": 35,
+    "universe_total": 1506
   },
   "spx_ndx_1x_baseline_pct": 0.00193,
   "ticker_days_total": 759024,

@@ -1,23 +1,42 @@
 {
+  "d1_provenance_gap_note": "The diagnostic_run manifest emits universe_source_url=null for multi-URL universes (loader contract: only single-URL universes carry a single source_url). This sidecar records the three iShares CDN URLs unioned into the sp_1500 variant. Per-URL fetch timestamps are not tracked at the loader level for the original D3 fetch; the D5 audit re-fetch timestamps above are the closest available evidence of per-URL fetch coherence.",
+  "d5_d_clean_checkout_assertion": "The D3 manifest records harness_git_sha=56e0677737da504b2e3559998ca352bb374434de with no automatic clean-tree assertion (the diagnostic_run script does not currently capture git_dirty). This run was kicked off by the study implementer at 2026-04-25T07:34Z immediately after commit 56e0677 (the D2 follow-up aggregator commit) was made; no further edits to research/ were made until 2026-04-25T08:11Z when D3 artifact-generation began (after the run finished). The clean-checkout assertion is procedural for THIS run; the diagnostic_run script has been amended in a D5 follow-up commit to capture harness_git_dirty at run time for FUTURE runs.",
+  "d5_d_fund_holdings_coherence": "D5 round-1 mid-fetch-update audit: re-fetched all three iShares URLs on 2026-04-25T18:25Z (~10 hours after the original D3 run at 07:34Z). All three sub-ETF CSV headers report \"Fund Holdings as of: Apr 23, 2026\" identically. iShares' fund composition has not changed between the D3 fetch and the D5 audit re-fetch, providing strong evidence that the original D3 universe is internally consistent for the Apr 23, 2026 as-of date \u2014 independent of the wall-clock fetch timing of each sub-ETF.",
   "fetched_date": "2026-04-25",
-  "notes": "The diagnostic_run manifest emits universe_source_url=null for multi-URL universes (loader contract: only single-URL universes carry a single source_url). This sidecar records the three iShares CDN URLs unioned into the sp_1500 variant. Per-URL fetch timestamps are not tracked at the loader level; all three URLs were fetched within seconds of each other in a single run of research.harness.earnings_proximity.universe_variants._load_or_fetch_ishares at 2026-04-25T07:34Z. The snapshot CSV preserves the per-row source_url so each ticker is traceable to its sub-ETF.",
   "sector_map_path": "C:\\Users\\rwsmy\\swing-data\\research-cache\\universe-snapshots\\sp_1500_2026-04-25_sectors.json",
   "sector_map_present": true,
   "snapshot_csv_path": "C:\\Users\\rwsmy\\swing-data\\research-cache\\universe-snapshots\\sp_1500_2026-04-25.csv",
   "snapshot_csv_sha256": "3ebb5da7b3b9fa0b7d92b5f3c37de292f119bd46c8e836a5783f9b573ecdc5a2",
+  "snapshot_per_subetf_rows": {
+    "IJH": 400,
+    "IJR": 603,
+    "IVV": 503
+  },
   "source_urls": [
     {
-      "description": "iShares Core S&P 500",
+      "d5_fetched_ts_utc": "2026-04-25T18:26:36.043416+00:00",
+      "d5_fund_holdings_as_of": "Apr 23, 2026",
+      "d5_payload_bytes": 88636,
+      "d5_payload_sha256": "6b0b03508208b68679c3ad7588ffd61eaa16fea4a61e80f1393c45029aae9d5e",
+      "description": "iShares Core S&P 500 ETF (S&P 500)",
       "sub_etf": "IVV",
       "url": "https://www.ishares.com/us/products/239726/ishares-core-sp-500-etf/1467271812596.ajax?fileType=csv&fileName=IVV_holdings&dataType=fund"
     },
     {
-      "description": "iShares Core S&P MidCap 400",
+      "d5_fetched_ts_utc": "2026-04-25T18:26:37.397425+00:00",
+      "d5_fund_holdings_as_of": "Apr 23, 2026",
+      "d5_payload_bytes": 78878,
+      "d5_payload_sha256": "3cf9cc98654a260e5ef61fd55c8d9e04c1a7eef06abdd1091952689f130d9525",
+      "description": "iShares Core S&P MidCap ETF (S&P MidCap 400)",
       "sub_etf": "IJH",
       "url": "https://www.ishares.com/us/products/239763/ishares-coresp-midcap-etf/1467271812596.ajax?fileType=csv&fileName=IJH_holdings&dataType=fund"
     },
     {
-      "description": "iShares Core S&P SmallCap 600",
+      "d5_fetched_ts_utc": "2026-04-25T18:26:38.409095+00:00",
+      "d5_fund_holdings_as_of": "Apr 23, 2026",
+      "d5_payload_bytes": 122046,
+      "d5_payload_sha256": "599d94e59b005c8e56405ae51ed2699d444de81eb8cf5a4bad2f3489fe683c1f",
+      "description": "iShares Core S&P SmallCap ETF (S&P SmallCap 600)",
       "sub_etf": "IJR",
       "url": "https://www.ishares.com/us/products/239774/ishares-core-sp-smallcap-etf/1467271812596.ajax?fileType=csv&fileName=IJR_holdings&dataType=fund"
     }
