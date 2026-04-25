@@ -12,7 +12,7 @@
     "ticker_days_total": 759024
   },
   "evaluations_total": 750440,
-  "harness_git_sha": "56e0677737da504b2e3559998ca352bb374434de",
+  "git_sha": "56e0677737da504b2e3559998ca352bb374434de",
   "liquidity": {
     "fraction_below_1m": 0.0,
     "fraction_below_500k": 0.0,

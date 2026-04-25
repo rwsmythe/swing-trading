@@ -319,6 +319,13 @@ def aggregate_findings(
             )
         universe_tickers = _load_universe_tickers_from_snapshot(snapshot_path)
         _verify_universe_hash(manifest, universe_tickers)
+        # Canonicalize after hash verification: identical to what
+        # diagnostic_run.run_diagnostic feeds into the manifest hash
+        # (sorted unique). Using this canonical list for the sector-
+        # baseline computation prevents a duplicate-row cache edit from
+        # silently inflating universe_count / universe_fraction /
+        # index_ratio denominators while still passing the hash check.
+        universe_tickers = sorted(set(universe_tickers))
 
     sector = compute_sector_breakdown(
         aplus_rows, sector_map, universe_tickers=universe_tickers
@@ -351,7 +358,7 @@ def aggregate_findings(
 
     findings = {
         "run_dir": str(run_dir),
-        "harness_git_sha": manifest.get("git_sha"),
+        "git_sha": manifest.get("git_sha"),
         "universe_size_post_dedupe": universe_size,
         "trading_days": trading_days,
         "ticker_days_total": ticker_days,

@@ -297,6 +297,65 @@ def test_aggregate_findings_rejects_universe_hash_mismatch(tmp_path: Path):
         agg.aggregate_findings(run_dir, cache_dir=cache_dir)
 
 
+def test_aggregate_findings_dedupes_universe_for_sector_baseline(tmp_path: Path):
+    """A snapshot with duplicate rows must not inflate universe counts.
+
+    Hash verification dedupes via sorted(set(...)); the sector-baseline
+    computation must consume the SAME canonical (deduped) ticker list so
+    a duplicate-row cache edit cannot pass the hash check while skewing
+    the universe sector denominators (D5 R3 finding).
+    """
+    run_dir = tmp_path / "run"
+    cache_dir = tmp_path / "cache"
+    aplus_date = date(2025, 6, 2)
+    _write_aplus_csv(
+        run_dir / "aplus_signals.csv",
+        [
+            {"ticker": "AAA", "date": aplus_date.isoformat(), "entry_target": "100", "initial_stop": "90",
+             "next_earnings_date": "", "absent_earnings_data": "0"},
+        ],
+    )
+    expected_tickers = ["AAA", "BBB"]
+    _write_manifest(
+        run_dir / "run_manifest.json",
+        {
+            "git_sha": "deadbeef",
+            "universe_size": 2,
+            "universe_fetched_date": "2026-04-25",
+            "universe_hash": _hash_universe(expected_tickers),
+            "trading_days": 1,
+            "evaluations_total": 1,
+            "ticker_days_total": 2,
+            "ohlcv_hits": 2, "ohlcv_misses": 0,
+            "earnings_hits": 2, "earnings_misses": 0,
+        },
+    )
+    _write_ohlcv_parquet(cache_dir, "AAA", end=aplus_date, n_bars=25)
+    snaps = cache_dir / "universe-snapshots"
+    snaps.mkdir(parents=True, exist_ok=True)
+    # Snapshot with DUPLICATE rows for AAA. Dedup-hash matches manifest;
+    # sector-baseline counter must NOT inflate AAA's universe_count.
+    csv_path = snaps / "sp_1500_2026-04-25.csv"
+    csv_path.write_text(
+        "# fetched: 2026-04-25\nticker,source_url\n"
+        "AAA,http://example/AAA\n"
+        "AAA,http://example/AAA\n"  # duplicate row
+        "AAA,http://example/AAA\n"  # duplicate row
+        "BBB,http://example/BBB\n",
+        encoding="utf-8",
+    )
+    (snaps / "sp_1500_2026-04-25_sectors.json").write_text(
+        json.dumps({"AAA": "Information Technology", "BBB": "Industrials"}),
+        encoding="utf-8",
+    )
+    findings = agg.aggregate_findings(run_dir, cache_dir=cache_dir)
+    sectors = {b["sector"]: b for b in findings["sector_breakdown"]["by_sector"]}
+    # Expected universe composition (post-dedup): 1× AAA + 1× BBB = 2.
+    assert findings["sector_breakdown"]["universe_total"] == 2
+    assert sectors["Information Technology"]["universe_count"] == 1
+    assert sectors["Industrials"]["universe_count"] == 1
+
+
 def test_aggregate_findings_pins_sector_map_to_manifest_fetch_date(tmp_path: Path):
     """When sector_map is None, aggregator must load the file matching universe_fetched_date.
 
