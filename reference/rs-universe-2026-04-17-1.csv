@@ -1,5 +1,5 @@
-# version: 2026-04-24-1
-# source: spx_ndx
+# version: 2026-04-17-1
+# source: S&P 500 + NASDAQ-100 (Wikipedia, 2026-04-17-1)
 # columns: ticker
 ticker
 A
@@ -444,6 +444,7 @@ T
 TAP
 TDG
 TDY
+TEAM
 TECH
 TEL
 TER
