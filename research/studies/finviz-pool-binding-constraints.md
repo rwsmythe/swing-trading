@@ -92,7 +92,8 @@ The D3 run manifest will record:
 - **action_session_date range:** 2026-04-20 → 2026-04-27.
 - **Distinct Finviz CSVs across qualifying runs:** **6** (finviz19Apr2026.csv through finviz24Apr2026.csv). The 14 runs collapse to 6 distinct daily inputs because the operator pipeline was re-triggered multiple times per day (run-count per CSV: 19Apr=3, 20Apr=4, 21Apr=2, 22Apr=2, 23Apr=2, 24Apr=1). See §"Caveats and limitations" — the 14 evaluation_runs are NOT 14 independent observations.
 - **Total evaluations across qualifying runs:** **1,209** (sum of `tickers_evaluated` over qualifying runs).
-- **Total candidate rows read:** 1,209. **Total candidate_criteria rows read:** ~21,000 (varies by bucket; populated for non-error rows).
+- **Total candidate rows read:** 1,209. **Total candidate_criteria rows read:** **20,700** (exact; sourced from `run_manifest.json:candidate_criteria_row_count`). The error and excluded buckets contribute zero criteria rows because production short-circuits before evaluation; the rest of the 1,209 candidates carry full per-criterion result tuples.
+- **Manifest integrity:** `harness_git_dirty: false` — D5 R1 fix captures git status BEFORE output writing; the run was performed from a clean tree (after stashing unrelated parallel-work modifications in `swing/trades/entry.py`, `tests/cli/test_cli_journal.py`, `tests/trades/test_entry.py`, `docs/orchestrator-context.md`, `docs/phase3e-todo.md`). The `harness_git_sha` therefore corresponds to a committed state.
 
 ## Results — bucket distribution
 
@@ -128,17 +129,18 @@ The D3 run manifest will record:
 | `TT2_150_above_200` | 146 | 12.076 % |
 | `adr` | 124 | 10.256 % |
 | `ma_short_rising` | 66 | 5.459 % |
-| `<error>` | 59 | 4.880 % |
 | `tightness` | 45 | 3.722 % |
+| `<error>` | 45 | 3.722 % |
 | `risk_feasibility` | 28 | 2.316 % |
 | `TT4_50_above_150_200` | 17 | 1.406 % |
+| `<excluded>` | 14 | 1.158 % |
 | `prior_trend` | 13 | 1.075 % |
 | `TT1_above_150_200` | 12 | 0.993 % |
 | `TT3_200_rising` | 6 | 0.496 % |
 
 Counts sum to 1,209 (denominator integrity verified via test). The `<aplus>` row count equals the `aplus` bucket count exactly — zero re-aggregation drift; `consistency_warnings` was empty.
 
-The `<error>` row in the production-gated table (59) exceeds the `error` bucket count (45) by 14. The 14-row gap is the `excluded` bucket: excluded candidates also have empty `candidate_criteria`, so they are tagged `<error>` in the production-gated re-aggregation by the same "empty-criteria-tuple" rule. In bucket-level reporting, `error` and `excluded` remain distinct (45 + 14 = 59).
+The `<error>` (45) and `<excluded>` (14) sentinel rows are kept distinct in the production-gated table per D5 R1 fix: error rows are operational failures (e.g., OHLCV-fetch errors), excluded rows are intentional exclusions (e.g., open positions written through with `bucket='excluded'`); both have empty `candidate_criteria` tuples but represent semantically different outcomes. The corresponding bucket-level counts (45 + 14 = 59) match the sum of these two sentinels exactly.
 
 ## Results — near-A+ defensible subset
 
@@ -189,11 +191,11 @@ These 10 rows are illustrative; the incompatible subset spans many distinct tick
 
 ## Findings (descriptive, not prescriptive)
 
-1. **`proximity_20ma` is the dominant production-gated blocker on the operator's Finviz pool, by a wide margin.** It accounts for **44.17 %** of evaluations (534 / 1,209). The next two blockers (`ma_stack_10_20_50` 12.90 %, `TT2_150_above_200` 12.08 %) together account for less than `proximity_20ma` alone. This profile is **markedly different** from the broad-universe candidate-sparsity diagnostic, where `TT1_above_150_200` (34–46 %) and `risk_feasibility` (1–19 %) dominated; on the Finviz pool, `TT1_above_150_200` is the production-gated blocker for only 12 evaluations (0.99 %). The descriptive read of this gap is that the operator's Finviz filter is selecting tickers that have already cleared the trend-template stack — what the production filter then prunes is the VCP-layer timing/extension test (`proximity_20ma`).
+1. **`proximity_20ma` is the production-gated blocker for 44.17 % of evaluations on this snapshot (534 / 1,209).** The next two blocker counts are `ma_stack_10_20_50` 12.90 % and `TT2_150_above_200` 12.08 %; together they sum to less than `proximity_20ma` alone. This blocker profile differs from the candidate-sparsity diagnostic's broad-universe runs (SPX+NDX, Russell 3000), where `TT1_above_150_200` was the dominant blocker (34–46 %) and `risk_feasibility` was second (1–19 %); on this snapshot of the operator's Finviz pool, `TT1_above_150_200` is the production-gated blocker for 12 evaluations (0.99 %). **This study does not isolate the contribution of the Finviz filter design from other variables that differ between the operator's pool and the broad universes (snapshot membership, calendar window, re-run multiplicity, sample-size disparity); the difference in blocker profile is a count-level observation, not a causal attribution.** Possible contributing factors (NOT tested by this study) include: Finviz pre-screening, calendar-window regime, the smaller-N count basis on the Finviz pool, and the within-day re-run multiplicity. See "Caveats and limitations" §"Snapshot of operator history" and §"Sample size."
 
-2. **`risk_feasibility` is rarely the production-gated blocker on the Finviz pool (28 evaluations, 2.32 %).** The Finviz pool's price/cap pre-screen appears to filter out candidates whose risk-per-share would exceed the operator's per-share budget at current sizing equity. This is in qualitative contrast to the candidate-sparsity diagnostic's broad-universe finding (`risk_feasibility` 6.91–18.62 % of evaluations under production gating at 1× capital). Note: `risk_feasibility` is a hard filter in production gating order, so non-zero `risk_feasibility` blocker counts here mean candidates whose risk-per-share exceeded the budget regardless of upstream criterion state.
+2. **`risk_feasibility` is the production-gated blocker for 28 evaluations (2.32 %) on this snapshot.** The candidate-sparsity diagnostic's broad-universe runs reported 6.91–18.62 % at 1× capital. The two count-level observations differ; this study does not establish the cause of the difference (e.g., Finviz price/cap pre-screening, calendar-window regime, sizing-equity drift between studies, or other variables are all candidate explanations and are not separated here). Note: `risk_feasibility` is a hard filter in production gating order; non-zero `risk_feasibility` blocker counts mean candidates whose risk-per-share exceeded the budget regardless of upstream criterion state.
 
-3. **The trend-template layer is collectively a smaller production-gated blocker on the Finviz pool than on broad universes.** Summing TT1+TT2+TT3+TT4 (excluded TT5/TT6/TT7 because they have zero blocker count on the Finviz pool, and TT8 is allowed-miss): 12 + 146 + 6 + 17 = **181 of 1,209 evaluations (14.97 %)** are blocked at the trend-template gate. Compare candidate-sparsity diagnostic Run A (SPX+NDX 1×): TT1 alone was 34.39 %. The difference is consistent with the Finviz filter pre-screening for trend-template structure; whether that pre-screening is "tight" or "loose" relative to the production criteria is not measured here.
+3. **The trend-template layer collectively accounts for 181 / 1,209 evaluations (14.97 %) under production gating on this snapshot.** Summing TT1+TT2+TT3+TT4 (TT5/TT6/TT7 have zero blocker count on this snapshot; TT8 is allowed-miss): 12 + 146 + 6 + 17 = 181. The candidate-sparsity diagnostic's broad-universe Run A (SPX+NDX 1×) reported TT1 alone at 34.39 %. The two count-level observations differ; this study does not establish a causal cause for the difference. Possible (untested) contributors include Finviz pre-screening, calendar-window regime, and snapshot-vs-replay-window differences.
 
 4. **All 3 A+ candidates in this snapshot are the same ticker (SLDB) on 2 distinct action_session_dates (2026-04-22 and 2026-04-24).** Run 9 and Run 10 (both action_session_date 2026-04-22) classified SLDB as A+; Run 12 (action_session_date 2026-04-24) reclassified SLDB as A+. The watch:A+ ratio of 83.0 is therefore on a single-ticker A+ population.
 
@@ -232,7 +234,7 @@ These 10 rows are illustrative; the incompatible subset spans many distinct tick
 
 These are open questions the findings might prompt; the study does not answer them. Each is phrased as a question, with no embedded study-design prescription — choice of how (or whether) to follow up is the operator's.
 
-- Does the **44.17 % `proximity_20ma` blocker rate** on the Finviz pool cross any threshold the operator considers material — for example, surfacing a row-level "extended (proximity-20MA fail)" indicator in the dashboard, or a "stage for re-entry on pullback" workflow distinct from the current watch bucket?
+- Does the **44.17 % `proximity_20ma` blocker rate** on the Finviz pool cross any threshold the operator considers material for further investigation? (How a follow-up would be structured — additional study, dashboard surfacing, workflow change, or no action — is the operator's call; this study does not propose a specific follow-up.)
 - Does the **15 defensible rows / 2 tickers / 3 days** count cross the operator's threshold for hypothesis-tagged experimental trade-taking? The parallel Phase 3e hypothesis-labeling infrastructure is the mechanism for collecting evidence; this snapshot does NOT establish whether the evidence would be informative — it only counts the population that would be eligible.
 - Is the **single-ticker A+ population (SLDB only)** in this 8-day snapshot reflective of normal Finviz-pool yield, or an artifact of the calendar window (low-volatility period; fewer A+ setups crossing the bar)? The snapshot does not partition by regime; a longer-window aggregation could be a follow-on once more daily CSVs accumulate.
 - The 14 runs / 6 CSVs ratio reflects the operator pipeline being re-triggered multiple times per day. Is this **per-day re-run pattern** intentional (e.g., manual re-runs, retries) or symptomatic (e.g., transient failures triggering retries — c.f. run 5's 45 errors)? The study reports the run-count breakdown without interpretation.
