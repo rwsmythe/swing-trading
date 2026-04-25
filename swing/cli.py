@@ -277,10 +277,14 @@ def trade_group() -> None:
               help="Entry rationale (closed taxonomy, Tranche B-ops T4). "
                    "'other' requires --notes.")
 @click.option("--notes", default=None)
+@click.option("--hypothesis", "hypothesis", default=None,
+              help="Optional free-text pre-trade hypothesis label. Frozen at "
+                   "entry time; aggregated by `swing journal review`.")
 @click.option("--force", is_flag=True, help="Bypass soft-warn cap (still subject to hard cap)")
 @click.pass_context
 def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
-                    watchlist_target, watchlist_stop, rationale, notes, force):
+                    watchlist_target, watchlist_stop, rationale, notes,
+                    hypothesis, force):
     """Record a trade entry."""
     from datetime import datetime as _dt
     from swing.data.db import connect
@@ -303,6 +307,7 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
             watchlist_initial_stop=watchlist_stop,
             notes=notes, rationale=rationale,
             event_ts=_dt.now().isoformat(timespec="seconds"),
+            hypothesis_label=(hypothesis.strip() if hypothesis and hypothesis.strip() else None),
         )
         try:
             result = record_entry(

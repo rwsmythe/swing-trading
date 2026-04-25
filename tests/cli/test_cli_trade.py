@@ -34,6 +34,52 @@ def test_trade_entry_then_list(tmp_path: Path):
     assert "AAPL" in result2.output
 
 
+def _read_hypothesis_label(cfg_path: Path, ticker: str) -> str | None:
+    """Helper: read trades.hypothesis_label for the given ticker via the repo
+    layer (round-trip through the same SELECT path the dashboard uses)."""
+    import tomllib
+    from swing.data.db import connect
+    from swing.data.repos.trades import find_any_open_trade
+
+    cfg_data = tomllib.loads(cfg_path.read_text())
+    db_path = Path(cfg_data["paths"]["db_path"])
+    conn = connect(db_path)
+    try:
+        t = find_any_open_trade(conn, ticker=ticker)
+        return t.hypothesis_label if t is not None else None
+    finally:
+        conn.close()
+
+
+def test_trade_entry_without_hypothesis_flag_stores_null(tmp_path: Path):
+    """Existing call site preservation: invoking entry without --hypothesis
+    stores NULL on the trades row (no behavior change for legacy invocations)."""
+    runner, cfg = _setup(tmp_path)
+    result = runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "BBB", "--entry-date", "2026-04-15",
+        "--entry-price", "100.0", "--shares", "1",
+        "--initial-stop", "90.0", "--rationale", "vcp-breakout",
+    ])
+    assert result.exit_code == 0, result.output
+    assert _read_hypothesis_label(cfg, "BBB") is None
+
+
+def test_trade_entry_with_hypothesis_flag_stores_label(tmp_path: Path):
+    """Brief §4.4: --hypothesis TEXT carries through to trades.hypothesis_label."""
+    runner, cfg = _setup(tmp_path)
+    result = runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "CCC", "--entry-date", "2026-04-15",
+        "--entry-price", "100.0", "--shares", "1",
+        "--initial-stop", "90.0", "--rationale", "vcp-breakout",
+        "--hypothesis", "Sub-A+ candidate meeting TT + price threshold",
+    ])
+    assert result.exit_code == 0, result.output
+    assert _read_hypothesis_label(cfg, "CCC") == \
+        "Sub-A+ candidate meeting TT + price threshold"
+
+
 def test_trade_list_shows_remaining_shares_after_partial_exit(tmp_path: Path):
     """Regression: `trade list` displayed `initial_shares` instead of
     remaining shares after partial exits. The web dashboard correctly
