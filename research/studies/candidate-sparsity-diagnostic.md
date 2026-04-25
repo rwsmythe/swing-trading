@@ -79,7 +79,7 @@ The "evaluations" column is < ticker-days because tickers with < 200 bars of OHL
     | Status at 1× | Status at 5× | Count |
     |---|---|---|
     | A+ | A+ | 5 |
-    | non-A+ | A+ | 5 (FIX, STX, COHR ×2, LITE — exact set named in finding 7 below) |
+    | non-A+ | A+ | 5 (FIX 2024-08-16; STX 2025-12-24; COHR 2025-12-30 and 2025-12-31; LITE 2025-12-31 — read directly from `aplus_signals.csv` for Run B minus Run A) |
     | A+ | non-A+ | 0 (impossible by monotonicity) |
     | non-A+ | non-A+ | 258,669 |
 
