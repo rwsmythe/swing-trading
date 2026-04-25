@@ -13,6 +13,10 @@ Caching strategy
   Empty list (``[]``) is a VALID result — the method record mandates
   absent-data → do NOT exclude, flag for review.
 
+Both loaders also report per-ticker cache outcomes (``hit`` vs ``miss``) so
+the run-manifest cache_stats reflect actual fetcher behavior rather than
+naive file-existence counts.
+
 yfinance gotchas (CLAUDE.md)
 ----------------------------
 - ``threads=False`` ONLY on :func:`yf.download`. Never pass ``threads=`` to
@@ -27,6 +31,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -34,6 +39,27 @@ import pandas as pd
 import yfinance as yf
 
 _OHLCV_COLS = ("Open", "High", "Low", "Close", "Volume")
+
+
+@dataclass(frozen=True)
+class FetchStats:
+    """Per-ticker fetcher outcomes for one load_* call.
+
+    A ticker counts as a HIT iff its on-disk cache fully covered the request
+    AND no yfinance call was made for it. Any cache-miss, partial-coverage
+    refetch, or stale-earnings refetch counts as a MISS.
+    """
+
+    hits: tuple[str, ...] = field(default_factory=tuple)
+    misses: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def hit_count(self) -> int:
+        return len(self.hits)
+
+    @property
+    def miss_count(self) -> int:
+        return len(self.misses)
 
 
 def _ohlcv_cache_file(cache_dir: Path, ticker: str) -> Path:
@@ -112,15 +138,31 @@ def load_ohlcv(
     start: date,
     end: date,
     cache_dir: Path,
+    stats: FetchStats | None = None,  # noqa: ARG001 — kept for forward signature compat
 ) -> dict[str, pd.DataFrame]:
     """Load OHLCV daily bars for ``tickers`` spanning ``[start, end)``.
 
-    Returns a dict mapping ticker → DataFrame (columns Open/High/Low/Close/Volume,
-    DatetimeIndex). Cache hits are served from disk; cache misses (or
-    requests extending the cached window) trigger a single batched
-    ``yf.download`` call.
+    See :func:`load_ohlcv_with_stats` for the variant that also returns a
+    :class:`FetchStats`. This thin wrapper preserves the historical
+    ``dict[str, DataFrame]``-only return shape for callers that don't need
+    cache telemetry.
+    """
+    data, _ = load_ohlcv_with_stats(tickers, start=start, end=end, cache_dir=cache_dir)
+    return data
 
-    ``end`` is exclusive per yfinance's convention.
+
+def load_ohlcv_with_stats(
+    tickers: Iterable[str],
+    *,
+    start: date,
+    end: date,
+    cache_dir: Path,
+) -> tuple[dict[str, pd.DataFrame], FetchStats]:
+    """Same as :func:`load_ohlcv` but also returns per-ticker cache outcomes.
+
+    A ticker is a HIT iff its parquet existed and fully covered the requested
+    window. Anything that triggered a yf.download call (missing file, partial
+    coverage, or empty cached frame) is a MISS.
     """
     tickers = [t.upper() for t in tickers]
     cache_dir = Path(cache_dir)
@@ -128,12 +170,15 @@ def load_ohlcv(
 
     cached: dict[str, pd.DataFrame] = {}
     needs_fetch: list[str] = []
+    hits: list[str] = []
     for t in tickers:
         path = _ohlcv_cache_file(cache_dir, t)
         if path.exists():
             df = pd.read_parquet(path)
             cached[t] = df
-            if not _covers(df, start, end):
+            if _covers(df, start, end):
+                hits.append(t)
+            else:
                 needs_fetch.append(t)
         else:
             needs_fetch.append(t)
@@ -163,8 +208,12 @@ def load_ohlcv(
             merged.to_parquet(_ohlcv_cache_file(cache_dir, t))
             cached[t] = merged
 
-    return {t: _slice_window(cached.get(t, pd.DataFrame(columns=list(_OHLCV_COLS))), start, end)
-            for t in tickers}
+    data = {
+        t: _slice_window(cached.get(t, pd.DataFrame(columns=list(_OHLCV_COLS))), start, end)
+        for t in tickers
+    }
+    stats = FetchStats(hits=tuple(hits), misses=tuple(needs_fetch))
+    return data, stats
 
 
 def _cache_fresh(path: Path, max_age_hours: int) -> bool:
@@ -220,19 +269,41 @@ def load_earnings(
 ) -> dict[str, list[date]]:
     """Load next-earnings-date lists for ``tickers`` with disk caching.
 
-    Returns a dict mapping ticker → list[date] sorted ascending. Empty list
-    is a valid absent-data result (per method record rule: do NOT exclude,
-    flag for review).
+    See :func:`load_earnings_with_stats` for the variant that also reports
+    per-ticker cache outcomes. Returns a dict mapping ticker → list[date]
+    sorted ascending. Empty list is a valid absent-data result (per method
+    record rule: do NOT exclude, flag for review).
+    """
+    data, _ = load_earnings_with_stats(
+        tickers, cache_dir=cache_dir, cache_max_age_hours=cache_max_age_hours
+    )
+    return data
+
+
+def load_earnings_with_stats(
+    tickers: Iterable[str],
+    *,
+    cache_dir: Path,
+    cache_max_age_hours: int = 24,
+) -> tuple[dict[str, list[date]], FetchStats]:
+    """Same as :func:`load_earnings` but also returns per-ticker cache outcomes.
+
+    A ticker is a HIT iff its JSON cache existed AND was fresh (within
+    ``cache_max_age_hours`` of ``now``). Anything that triggered a refetch
+    (missing file, malformed JSON, stale ``fetched_ts``) is a MISS.
     """
     tickers = [t.upper() for t in tickers]
     cache_dir = Path(cache_dir)
     (cache_dir / "earnings").mkdir(parents=True, exist_ok=True)
 
     out: dict[str, list[date]] = {}
+    hits: list[str] = []
+    misses: list[str] = []
     for t in tickers:
         path = _earnings_cache_file(cache_dir, t)
         if _cache_fresh(path, cache_max_age_hours):
             out[t] = _load_earnings_cache(path)
+            hits.append(t)
             continue
         raw = yf.Ticker(t).get_earnings_dates(limit=30)
         dates = _extract_earnings_dates(raw)
@@ -243,5 +314,6 @@ def load_earnings(
         }
         path.write_text(json.dumps(payload, indent=2))
         out[t] = dates
+        misses.append(t)
 
-    return out
+    return out, FetchStats(hits=tuple(hits), misses=tuple(misses))

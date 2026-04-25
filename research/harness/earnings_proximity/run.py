@@ -39,6 +39,7 @@ from research.harness.earnings_proximity.replay import (
 )
 from research.harness.earnings_proximity.simulator import TradeOutcome, simulate_trade
 from research.harness.earnings_proximity.variants import apply_variant
+from swing.evaluation.rs import load_universe, universe_version_hash
 
 _DEFAULT_CACHE_SUBPATH = Path("swing-data") / "research-cache"
 _BENCHMARK_TICKER = "SPY"
@@ -47,6 +48,10 @@ _BENCHMARK_TICKER = "SPY"
 _HISTORY_PRIOR_BARS = 220
 # Simulator time cap — how many bars forward we need after the last signal day.
 _FORWARD_BUFFER_BARS = 30
+# Default RS universe path, relative to the repo root. The brief mandates the
+# manifest's universe_version_hash reflect the repo's current RS universe CSV
+# rather than whatever ad-hoc smoke-ticker subset --tickers happens to specify.
+_DEFAULT_UNIVERSE_CSV = Path("reference") / "rs-universe.csv"
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -80,6 +85,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--end-date",
         default=None,
         help="ISO date of the last trading day in the replay window. Default: yesterday-ish.",
+    )
+    parser.add_argument(
+        "--universe-csv",
+        default=None,
+        help=(
+            "Path to the RS universe CSV (default: reference/rs-universe.csv "
+            "relative to the repo root). Determines the BatchContext universe "
+            "and the manifest's universe_version_hash."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -137,8 +151,15 @@ def _fetch_window(
     return start, end
 
 
-def _universe_hash(tickers: tuple[str, ...]) -> str:
-    """SHA-256 of a canonical "ticker\\n" rendering — stable for the same set."""
+def _resolve_universe_csv(explicit: str | None, repo_root: Path) -> Path:
+    if explicit:
+        return Path(explicit)
+    return repo_root / _DEFAULT_UNIVERSE_CSV
+
+
+def _ticker_set_hash(tickers: tuple[str, ...]) -> str:
+    """SHA-256 of the canonical sorted ticker list — fallback when no
+    universe CSV is available (e.g., test scenarios)."""
     canonical = "\n".join(sorted(tickers)).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
 
@@ -165,13 +186,40 @@ def run_replay(
     output_dir: Path,
     cache_dir: Path,
     end_date: date | None = None,
+    universe_csv: Path | None = None,
 ) -> list[MetricsRow]:
     """End-to-end: fetch, replay, variant-filter, simulate, aggregate, write.
 
     Exposed separately from the ``main`` CLI entry so tests can mock the
     ``fetchers`` module and drive the pipeline without real yfinance traffic.
+
+    ``tickers`` is the smoke FILTER — the subset of the RS universe whose
+    OHLCV is fetched and which is therefore eligible to emit signals. The
+    BatchContext universe is the full RS universe loaded from
+    ``universe_csv`` (default: ``reference/rs-universe.csv`` relative to the
+    repo root); this keeps the manifest's universe_version_hash provenance
+    accurate per the brief §2.3.
     """
     calendar = xcals.get_calendar("XNYS")
+    repo_root = Path(__file__).resolve().parents[3]
+
+    # --- Load RS universe (provenance-faithful BatchContext universe). ---
+    universe_csv_path = (
+        universe_csv if universe_csv is not None else repo_root / _DEFAULT_UNIVERSE_CSV
+    )
+    if universe_csv_path.exists():
+        universe = load_universe(universe_csv_path)
+        universe_tickers_full = universe.tickers
+        universe_version = universe.version
+        universe_hash_value = universe_version_hash(universe_csv_path)
+    else:
+        # Fallback for tests / harness invocations without the operator's CSV
+        # checked out. Honest: the manifest hash reflects the smoke-ticker set,
+        # not the (missing) RS universe. Documented in notes.
+        universe_tickers_full = tuple(sorted(t.upper() for t in tickers))
+        universe_version = "harness-smoke-fallback"
+        universe_hash_value = _ticker_set_hash(universe_tickers_full)
+
     if end_date is None:
         today = datetime.now().date()
         # Last completed NYSE session on or before today - 1 (conservative).
@@ -186,66 +234,61 @@ def run_replay(
         raise RuntimeError(f"No NYSE trading days found ending {end_date}")
 
     fetch_start, fetch_end = _fetch_window(trading_days, calendar)
-    ticker_set = sorted(set(tickers + [_BENCHMARK_TICKER]))
+    smoke_tickers = sorted({t.upper() for t in tickers})
+    fetch_tickers = sorted({*smoke_tickers, _BENCHMARK_TICKER})
 
-    # --- Fetch OHLCV + earnings (cached). ---
-    cache_stats = CacheStats(
-        ohlcv_hits=sum((cache_dir / "ohlcv" / f"{t}.parquet").exists() for t in ticker_set),
-        earnings_hits=sum((cache_dir / "earnings" / f"{t}.json").exists() for t in ticker_set),
+    # --- Fetch OHLCV + earnings (cached). Real per-ticker hit/miss telemetry. ---
+    ohlcv, ohlcv_stats = fetchers.load_ohlcv_with_stats(
+        fetch_tickers, start=fetch_start, end=fetch_end, cache_dir=cache_dir
     )
-    ohlcv = fetchers.load_ohlcv(ticker_set, start=fetch_start, end=fetch_end, cache_dir=cache_dir)
-    earnings = fetchers.load_earnings(
-        [t for t in ticker_set if t != _BENCHMARK_TICKER],
-        cache_dir=cache_dir,
-    )
-    # Recompute after the fetch to capture final state.
-    ohlcv_existing = sum((cache_dir / "ohlcv" / f"{t}.parquet").exists() for t in ticker_set)
-    earnings_existing = sum(
-        (cache_dir / "earnings" / f"{t}.json").exists()
-        for t in ticker_set
-        if t != _BENCHMARK_TICKER
+    # Earnings are NOT fetched for the benchmark — it's a price-only series.
+    earnings_tickers = [t for t in fetch_tickers if t != _BENCHMARK_TICKER]
+    earnings, earnings_stats = fetchers.load_earnings_with_stats(
+        earnings_tickers, cache_dir=cache_dir
     )
     cache_stats = CacheStats(
-        ohlcv_hits=cache_stats.ohlcv_hits,
-        ohlcv_misses=max(0, ohlcv_existing - cache_stats.ohlcv_hits),
-        earnings_hits=cache_stats.earnings_hits,
-        earnings_misses=max(0, earnings_existing - cache_stats.earnings_hits),
+        ohlcv_hits=ohlcv_stats.hit_count,
+        ohlcv_misses=ohlcv_stats.miss_count,
+        earnings_hits=earnings_stats.hit_count,
+        earnings_misses=earnings_stats.miss_count,
     )
 
-    # --- Run replay (one iteration over all trading days). ---
+    # --- Run replay over the full RS universe; only smoke tickers carry OHLCV. ---
     cfg = build_harness_config()
-    universe_tickers = tuple(tickers)
     signals = list(
         replay(
-            universe_tickers=universe_tickers,
+            universe_tickers=universe_tickers_full,
             trading_days=trading_days,
             ohlcv=ohlcv,
             earnings=earnings,
             cfg=cfg,
-            universe_version="harness-smoke",
-            universe_hash=_universe_hash(universe_tickers),
+            universe_version=universe_version,
+            universe_hash=universe_hash_value,
             benchmark_ticker=_BENCHMARK_TICKER,
         )
     )
 
-    # --- Apply each variant, simulate, aggregate. ---
-    rows: list[MetricsRow] = []
-    absent_total = sum(1 for s in signals if s.absent_earnings_data)
-    dropped_total = 0
+    # --- Simulate each signal once; reuse outcomes across variants. ---
+    outcomes_by_signal: dict[int, TradeOutcome] = {}
+    for s in signals:
+        t_ohlcv = ohlcv.get(s.ticker)
+        if t_ohlcv is None or t_ohlcv.empty:
+            continue
+        outcomes_by_signal[id(s)] = simulate_trade(s, t_ohlcv)
 
+    # Run-level counters (NOT multiplied across variants — each signal counted once).
+    absent_total = sum(1 for s in signals if s.absent_earnings_data)
+    dropped_total = sum(1 for o in outcomes_by_signal.values() if not o.triggered)
+
+    # --- Apply each variant, aggregate per-variant metrics from cached outcomes. ---
+    rows: list[MetricsRow] = []
     for x in variant_list:
         filtered = apply_variant(signals, x, calendar)
-        outcomes: list[TradeOutcome] = []
-        for s in filtered:
-            t_ohlcv = ohlcv.get(s.ticker)
-            if t_ohlcv is None or t_ohlcv.empty:
-                continue
-            outcome = simulate_trade(s, t_ohlcv)
-            outcomes.append(outcome)
-            if not outcome.triggered:
-                dropped_total += 1
+        variant_outcomes = [
+            outcomes_by_signal[id(s)] for s in filtered if id(s) in outcomes_by_signal
+        ]
         row = aggregate(
-            outcomes=outcomes,
+            outcomes=variant_outcomes,
             variant_name=_variant_name(x),
             blackout_trading_days=x,
             absent_data_count=sum(1 for s in filtered if s.absent_earnings_data),
@@ -257,12 +300,12 @@ def run_replay(
     _write_metrics_csv(rows, output_dir / "metrics.csv")
 
     manifest = build_manifest(
-        repo_root=Path(__file__).resolve().parents[3],
-        universe_version_hash=_universe_hash(universe_tickers),
+        repo_root=repo_root,
+        universe_version_hash=universe_hash_value,
         window_start=trading_days[0],
         window_end=trading_days[-1],
         trading_days=len(trading_days),
-        tickers=len(universe_tickers),
+        tickers=len(universe_tickers_full),
         variants=tuple(variant_list),
         cache_stats=cache_stats,
         absent_data_count=absent_total,
@@ -270,6 +313,7 @@ def run_replay(
         notes=(
             "Smoke run — shape check only; not the full study.",
             f"Signal total before variant filtering: {len(signals)}",
+            f"Smoke ticker filter: {','.join(smoke_tickers)} (subset of universe).",
         ),
     )
     write_manifest(manifest, output_dir / "run_manifest.json")
@@ -284,6 +328,11 @@ def main(argv: list[str] | None = None) -> int:
     end_date = date.fromisoformat(args.end_date) if args.end_date else None
     cache_dir = _resolve_cache_dir(args.cache_dir)
     output_dir = Path(args.output_dir)
+    universe_csv = (
+        Path(args.universe_csv)
+        if args.universe_csv
+        else _resolve_universe_csv(None, Path(__file__).resolve().parents[3])
+    )
 
     rows = run_replay(
         tickers=tickers,
@@ -292,6 +341,7 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=output_dir,
         cache_dir=cache_dir,
         end_date=end_date,
+        universe_csv=universe_csv,
     )
     print(f"Wrote {len(rows)} variant rows to {output_dir}/metrics.csv")
     print(f"Manifest: {output_dir}/run_manifest.json")

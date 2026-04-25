@@ -60,19 +60,25 @@ def test_run_replay_end_to_end_produces_metrics_and_manifest(tmp_path, monkeypat
     from research.harness.earnings_proximity import replay, run
 
     # --- Mock fetchers so no yfinance traffic happens. ---
+    from research.harness.earnings_proximity.fetchers import FetchStats
+
     all_tickers = {"AAPL", "SOFI", "SPY"}
     frames = {t: _synth_ohlcv() for t in all_tickers}
 
-    def fake_load_ohlcv(tickers, *, start, end, cache_dir):
-        return {t: frames[t] for t in tickers if t in all_tickers}
+    def fake_load_ohlcv_with_stats(tickers, *, start, end, cache_dir):
+        data = {t: frames[t] for t in tickers if t in all_tickers}
+        # All hits in this hermetic test (we don't actually round-trip to
+        # disk; reporting them as hits is the closest analogue).
+        return data, FetchStats(hits=tuple(data.keys()), misses=())
 
-    def fake_load_earnings(tickers, *, cache_dir, cache_max_age_hours: int = 24):
+    def fake_load_earnings_with_stats(tickers, *, cache_dir, cache_max_age_hours: int = 24):
         # SOFI has one upcoming earnings near the middle of the replay window;
         # AAPL has none (forces the absent/no-upcoming branches).
-        return {t: ([date(2026, 4, 10)] if t == "SOFI" else []) for t in tickers}
+        data = {t: ([date(2026, 4, 10)] if t == "SOFI" else []) for t in tickers}
+        return data, FetchStats(hits=tuple(data.keys()), misses=())
 
-    monkeypatch.setattr(run.fetchers, "load_ohlcv", fake_load_ohlcv)
-    monkeypatch.setattr(run.fetchers, "load_earnings", fake_load_earnings)
+    monkeypatch.setattr(run.fetchers, "load_ohlcv_with_stats", fake_load_ohlcv_with_stats)
+    monkeypatch.setattr(run.fetchers, "load_earnings_with_stats", fake_load_earnings_with_stats)
 
     # --- Mock evaluate_one so we don't depend on OHLCV hitting A+. ---
     monkeypatch.setattr(
@@ -83,6 +89,10 @@ def test_run_replay_end_to_end_produces_metrics_and_manifest(tmp_path, monkeypat
 
     output_dir = tmp_path / "smoke-out"
     cache_dir = tmp_path / "cache"
+    # Synthetic 3-ticker universe (AAPL, SOFI, SPY) so the test is hermetic
+    # — independent of the operator's reference/rs-universe.csv content.
+    universe_csv = tmp_path / "test-universe.csv"
+    universe_csv.write_text("# version: test-universe-v1\nticker\nAAPL\nSOFI\nSPY\n")
 
     rows = run.run_replay(
         tickers=["AAPL", "SOFI"],
@@ -91,6 +101,7 @@ def test_run_replay_end_to_end_produces_metrics_and_manifest(tmp_path, monkeypat
         output_dir=output_dir,
         cache_dir=cache_dir,
         end_date=date(2026, 4, 3),  # Fri — a real NYSE session
+        universe_csv=universe_csv,
     )
 
     # --- Five variants emitted. ---
@@ -135,8 +146,24 @@ def test_run_replay_end_to_end_produces_metrics_and_manifest(tmp_path, monkeypat
     ):
         assert required in manifest, f"manifest missing {required}"
     assert manifest["trading_days"] == 5
-    assert manifest["tickers"] == 2
+    # Universe is now the loaded CSV, not the smoke filter — 3 tickers
+    # (AAPL, SOFI, SPY) per the synthetic universe seeded above.
+    assert manifest["tickers"] == 3
     assert manifest["variants"] == [0, 3, 5, 7, 10]
+    # universe_version_hash reflects the CSV file, not the smoke ticker set.
+    assert len(manifest["universe_version_hash"]) == 64  # SHA-256 hex
+    # cache_stats: fetchers report all-hit since the test seeds the in-memory
+    # frames directly. The stats schema is plumbed through correctly.
+    assert manifest["cache_stats"]["ohlcv_hits"] == 3   # AAPL, SOFI, SPY
+    assert manifest["cache_stats"]["ohlcv_misses"] == 0
+    assert manifest["cache_stats"]["earnings_hits"] == 2  # AAPL, SOFI (no SPY)
+    assert manifest["cache_stats"]["earnings_misses"] == 0
+    # dropped_signal_count is run-level (not multiplied across variants).
+    # Bound: <= total signals emitted before variant filtering. With 5
+    # variants this would be 5x signals if the bug from adversarial review
+    # were still present.
+    signals_total = int(manifest["notes"][1].split(": ")[-1])
+    assert manifest["dropped_signal_count"] <= signals_total
 
 
 def test_parse_args_accepts_smoke_invocation():

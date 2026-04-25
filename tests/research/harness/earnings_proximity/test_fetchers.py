@@ -387,6 +387,68 @@ def test_load_earnings_extracts_ny_timezone_dates(tmp_path, monkeypatch):
     assert out == {"TEST": [date(2025, 6, 4)]}
 
 
+def test_load_ohlcv_with_stats_reports_per_ticker_hit_miss(tmp_path, monkeypatch):
+    """Fix for adversarial-review issue 2: fetchers must report actual
+    per-ticker cache outcomes, not a file-existence count."""
+    from research.harness.earnings_proximity import fetchers as mod
+
+    # Pre-seed AAPL cache covering the request window; MSFT has no cache.
+    seed_dates = [date(2026, 4, 20), date(2026, 4, 21), date(2026, 4, 22)]
+    (tmp_path / "ohlcv").mkdir()
+    _flat_ohlcv(seed_dates).to_parquet(tmp_path / "ohlcv" / "AAPL.parquet")
+
+    def fake_download(*, tickers, start, end, **kwargs):
+        return _multiindex_ohlcv(list(tickers), seed_dates)
+
+    monkeypatch.setattr(mod.yf, "download", fake_download)
+
+    data, stats = mod.load_ohlcv_with_stats(
+        ["AAPL", "MSFT"],
+        start=date(2026, 4, 20),
+        end=date(2026, 4, 23),
+        cache_dir=tmp_path,
+    )
+    assert set(data.keys()) == {"AAPL", "MSFT"}
+    assert stats.hits == ("AAPL",)
+    assert stats.misses == ("MSFT",)
+    assert stats.hit_count == 1
+    assert stats.miss_count == 1
+
+
+def test_load_earnings_with_stats_reports_per_ticker_hit_miss(tmp_path, monkeypatch):
+    """Fix for adversarial-review issue 2 (earnings half): the earnings
+    fetcher reports fresh hits and stale-or-missing misses by ticker."""
+    from research.harness.earnings_proximity import fetchers as mod
+
+    (tmp_path / "earnings").mkdir()
+    # AAPL cache fresh.
+    (tmp_path / "earnings" / "AAPL.json").write_text(
+        json.dumps(
+            {
+                "ticker": "AAPL",
+                "fetched_ts": datetime.now(UTC).isoformat(),
+                "earnings_dates": ["2026-04-30"],
+            }
+        )
+    )
+
+    class FakeTicker:
+        def __init__(self, _t):
+            pass
+
+        def get_earnings_dates(self, **_kw):
+            return pd.DataFrame()
+
+    monkeypatch.setattr(mod.yf, "Ticker", FakeTicker)
+
+    data, stats = mod.load_earnings_with_stats(
+        ["AAPL", "NEWCO"], cache_dir=tmp_path, cache_max_age_hours=24
+    )
+    assert "AAPL" in data and "NEWCO" in data
+    assert stats.hits == ("AAPL",)
+    assert stats.misses == ("NEWCO",)
+
+
 def test_load_earnings_dates_sorted_ascending(tmp_path, monkeypatch):
     from research.harness.earnings_proximity import fetchers as mod
 

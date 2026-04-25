@@ -200,6 +200,30 @@ def test_simulate_positive_r_clean_stop_after_rally():
     assert out.r_multiple == pytest.approx(-1.0)
 
 
+def test_simulate_open_exactly_at_stop_is_clean_stop_not_gap():
+    """Boundary: Open == initial_stop is a clean stop fill, NOT a gap-through.
+
+    Strict-less-than gap convention prevents zero-magnitude "gaps" from
+    polluting the gap_through_rate metric. The fill is still at the stop
+    price, and r_multiple = -1 exactly."""
+    from research.harness.earnings_proximity.simulator import simulate_trade
+
+    df = _ohlcv([
+        ("2026-04-20", 99.0, 99.5, 98.5, 99.0),
+        ("2026-04-21", 99.5, 100.5, 99.0, 100.0),  # trigger
+        # Day+2: open 95 == stop 95, low 94 <= stop. Clean stop, NOT gap.
+        ("2026-04-22", 95.0, 96.0, 94.0, 94.5),
+    ])
+    signal = _signal(entry=100.0, stop=95.0)
+    out = simulate_trade(signal, df, time_cap_days=10)
+
+    assert out.triggered is True
+    assert out.exit_price == pytest.approx(95.0)  # stop fill, not open fill
+    assert out.r_multiple == pytest.approx(-1.0)
+    assert out.gap_through is False
+    assert out.gap_magnitude_r is None
+
+
 def test_simulate_records_bar_dates_via_index():
     """Simulator must locate the signal bar via OHLCV index (DatetimeIndex),
     not by assuming position 0."""

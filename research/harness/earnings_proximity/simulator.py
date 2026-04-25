@@ -14,9 +14,11 @@ Behavioral contract (from the session 2b brief §D4)
   rather than modeling it. Stop scan starts on the bar AFTER the trigger.
 - **Stop scan** starts on the bar AFTER the trigger and runs for at most
   ``time_cap_days`` bars:
-    - If ``Open <= initial_stop``: gap-through. Fill at ``Open`` (worse
-      than stop); ``gap_through=True``.
-    - Elif ``Low <= initial_stop`` and ``Open > initial_stop``: clean
+    - If ``Open < initial_stop``: gap-through. Fill at ``Open`` (strictly
+      worse than stop); ``gap_through=True``. The strict-less-than boundary
+      keeps an exact-at-stop open from polluting the gap-through metric
+      with a zero-magnitude "gap" — equality is treated as a clean stop.
+    - Elif ``Low <= initial_stop`` and ``Open >= initial_stop``: clean
       stop. Fill at ``initial_stop``.
 - **Time cap**: if neither a stop nor the end-of-history is reached within
   ``time_cap_days`` bars, exit at the close of the cap bar. ``time_capped=True``.
@@ -128,8 +130,9 @@ def simulate_trade(
         open_ = float(bar["Open"])
         low_ = float(bar["Low"])
 
-        if open_ <= signal.initial_stop:
-            # Gap-through: fill at open (worse than stop).
+        if open_ < signal.initial_stop:
+            # Gap-through: fill at open (strictly worse than stop). open == stop
+            # is NOT a gap — falls through to the clean-stop branch below.
             exit_price = open_
             r = (exit_price - entry_price) / rps
             gap_mag = (signal.initial_stop - exit_price) / rps
