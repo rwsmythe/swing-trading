@@ -1,0 +1,14 @@
+criterion,count,fraction_of_evaluations
+<aplus>,3,0.002481
+proximity_20ma,534,0.441687
+ma_stack_10_20_50,156,0.129032
+TT2_150_above_200,146,0.120761
+adr,124,0.102564
+ma_short_rising,66,0.054591
+<error>,59,0.048801
+tightness,45,0.037221
+risk_feasibility,28,0.023160
+TT4_50_above_150_200,17,0.014061
+prior_trend,13,0.010753
+TT1_above_150_200,12,0.009926
+TT3_200_rising,6,0.004963

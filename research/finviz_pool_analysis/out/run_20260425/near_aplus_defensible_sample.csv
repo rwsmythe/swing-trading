@@ -1,0 +1,11 @@
+ticker,evaluation_run_id,action_session_date,bucket,failed_criteria
+SLDB,11,2026-04-23,watch,proximity_20ma
+SLDB,5,2026-04-21,watch,proximity_20ma
+SLDB,6,2026-04-21,watch,proximity_20ma
+SLDB,7,2026-04-21,watch,proximity_20ma
+SLDB,8,2026-04-21,watch,proximity_20ma
+UCTT,5,2026-04-21,watch,proximity_20ma
+UCTT,6,2026-04-21,watch,proximity_20ma
+UCTT,7,2026-04-21,watch,proximity_20ma
+UCTT,8,2026-04-21,watch,proximity_20ma
+SLDB,2,2026-04-20,watch,proximity_20ma

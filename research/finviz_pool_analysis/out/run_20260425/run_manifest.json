@@ -1,0 +1,171 @@
+{
+  "harness_git_sha": "bcc3bc43e96ed3ed5464394febe23aa8e0d14cfc",
+  "run_timestamp_utc": "2026-04-25T20:45:02+00:00",
+  "production_db_path": "C:\\Users\\rwsmy\\swing-data\\swing.db",
+  "finviz_inbox_dir": "data\\finviz-inbox",
+  "qualifying_run_count": 14,
+  "skipped_run_count": 1,
+  "qualifying_runs": [
+    {
+      "run_id": 2,
+      "action_session_date": "2026-04-20",
+      "data_asof_date": "2026-04-17",
+      "finviz_csv_basename": "finviz19Apr2026.csv",
+      "resolved_location": "inbox"
+    },
+    {
+      "run_id": 3,
+      "action_session_date": "2026-04-20",
+      "data_asof_date": "2026-04-17",
+      "finviz_csv_basename": "finviz19Apr2026.csv",
+      "resolved_location": "inbox"
+    },
+    {
+      "run_id": 4,
+      "action_session_date": "2026-04-20",
+      "data_asof_date": "2026-04-17",
+      "finviz_csv_basename": "finviz19Apr2026.csv",
+      "resolved_location": "inbox"
+    },
+    {
+      "run_id": 5,
+      "action_session_date": "2026-04-21",
+      "data_asof_date": "2026-04-20",
+      "finviz_csv_basename": "finviz20Apr2026.csv",
+      "resolved_location": "inbox"
+    },
+    {
+      "run_id": 6,
+      "action_session_date": "2026-04-21",
+      "data_asof_date": "2026-04-20",
+      "finviz_csv_basename": "finviz20Apr2026.csv",
+      "resolved_location": "inbox"
+    },
+    {
+      "run_id": 7,
+      "action_session_date": "2026-04-21",
+      "data_asof_date": "2026-04-20",
+      "finviz_csv_basename": "finviz20Apr2026.csv",
+      "resolved_location": "inbox"
+    },
+    {
+      "run_id": 8,
+      "action_session_date": "2026-04-21",
+      "data_asof_date": "2026-04-20",
+      "finviz_csv_basename": "finviz20Apr2026.csv",
+      "resolved_location": "inbox"
+    },
+    {
+      "run_id": 9,
+      "action_session_date": "2026-04-22",
+      "data_asof_date": "2026-04-21",
+      "finviz_csv_basename": "finviz21Apr2026.csv",
+      "resolved_location": "inbox"
+    },
+    {
+      "run_id": 10,
+      "action_session_date": "2026-04-22",
+      "data_asof_date": "2026-04-21",
+      "finviz_csv_basename": "finviz21Apr2026.csv",
+      "resolved_location": "inbox"
+    },
+    {
+      "run_id": 11,
+      "action_session_date": "2026-04-23",
+      "data_asof_date": "2026-04-22",
+      "finviz_csv_basename": "finviz22Apr2026.csv",
+      "resolved_location": "inbox"
+    },
+    {
+      "run_id": 12,
+      "action_session_date": "2026-04-24",
+      "data_asof_date": "2026-04-23",
+      "finviz_csv_basename": "finviz22Apr2026.csv",
+      "resolved_location": "inbox"
+    },
+    {
+      "run_id": 13,
+      "action_session_date": "2026-04-24",
+      "data_asof_date": "2026-04-23",
+      "finviz_csv_basename": "finviz23Apr2026.csv",
+      "resolved_location": "inbox"
+    },
+    {
+      "run_id": 14,
+      "action_session_date": "2026-04-24",
+      "data_asof_date": "2026-04-23",
+      "finviz_csv_basename": "finviz23Apr2026.csv",
+      "resolved_location": "inbox"
+    },
+    {
+      "run_id": 15,
+      "action_session_date": "2026-04-27",
+      "data_asof_date": "2026-04-24",
+      "finviz_csv_basename": "finviz24Apr2026.csv",
+      "resolved_location": "inbox"
+    }
+  ],
+  "skipped_runs": [
+    {
+      "run_id": 1,
+      "action_session_date": "2026-04-20",
+      "finviz_csv_path": "data\\finviz-inbox\\finviz16Apr2026.csv",
+      "finviz_csv_basename": "finviz16Apr2026.csv",
+      "reason": "csv_missing"
+    }
+  ],
+  "action_session_date_range": {
+    "start": "2026-04-20",
+    "end": "2026-04-27"
+  },
+  "total_evaluations": 1209,
+  "bucket_counts": {
+    "skip": 898,
+    "watch": 249,
+    "error": 45,
+    "excluded": 14,
+    "aplus": 3
+  },
+  "blocker_counts": {
+    "TT2_150_above_200": 146,
+    "risk_feasibility": 28,
+    "ma_short_rising": 66,
+    "adr": 124,
+    "proximity_20ma": 534,
+    "ma_stack_10_20_50": 156,
+    "tightness": 45,
+    "TT1_above_150_200": 12,
+    "TT4_50_above_150_200": 17,
+    "prior_trend": 13,
+    "<error>": 59,
+    "TT3_200_rising": 6,
+    "<aplus>": 3
+  },
+  "watch_aplus_ratio_overall": 83.0,
+  "near_aplus_defensible_count": 15,
+  "near_aplus_incompatible_count": 234,
+  "doctrine_defensible_miss_set": [
+    "TT8_rs_rank",
+    "proximity_20ma",
+    "risk_feasibility"
+  ],
+  "doctrine_incompatible_miss_set": [
+    "TT1_above_150_200",
+    "TT2_150_above_200",
+    "TT3_200_rising",
+    "TT4_50_above_150_200",
+    "TT5_above_50",
+    "TT6_above_52w_low_30pct",
+    "TT7_within_52w_high_25pct",
+    "adr",
+    "ma_short_rising",
+    "ma_stack_10_20_50",
+    "orderliness",
+    "prior_trend",
+    "pullback",
+    "tightness",
+    "vcp_volume_contraction"
+  ],
+  "consistency_warnings": [],
+  "path_resolution_rule": "literal basename match against finviz_inbox_dir top level, then rejected/ subdirectory; not-found \u2192 skipped (csv_missing). Rejected files in production are renamed with a timestamp suffix; literal basenames typically do NOT resolve in rejected/."
+}

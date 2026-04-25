@@ -1,0 +1,11 @@
+ticker,evaluation_run_id,action_session_date,bucket,failed_criteria
+ALTO,15,2026-04-27,watch,proximity_20ma|tightness
+DAWN,15,2026-04-27,watch,adr
+DHC,15,2026-04-27,watch,proximity_20ma|tightness
+DNTH,15,2026-04-27,watch,tightness
+ELVN,15,2026-04-27,watch,tightness|vcp_volume_contraction
+GFS,15,2026-04-27,watch,proximity_20ma|tightness
+HPE,15,2026-04-27,watch,proximity_20ma|tightness
+KOD,15,2026-04-27,watch,proximity_20ma|vcp_volume_contraction
+PARR,15,2026-04-27,watch,ma_stack_10_20_50|vcp_volume_contraction
+RLMD,15,2026-04-27,watch,tightness
