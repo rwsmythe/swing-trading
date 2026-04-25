@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import base64
 import logging
+import sqlite3
 from dataclasses import dataclass
 from datetime import date as _date, datetime as _dt
 from pathlib import Path
 
 from swing.config import Config
+from swing.data.backup import do_backup, prune_old_backups, should_backup
 from swing.data.db import connect
 from swing.data.models import Candidate, EvaluationRun
 from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
@@ -60,8 +62,37 @@ def _b64_chart(path: Path | None) -> str | None:
 
 
 
+_BACKUP_RETENTION_WEEKS = 12
+
+
+def _maybe_weekly_backup(cfg: Config) -> None:
+    """First pipeline run of each ISO calendar week snapshots the DB.
+
+    Runs BEFORE any DB writes by this pipeline run (sweep, lease, evaluation).
+    Failures (disk full, permissions, missing DB) are logged but do NOT abort
+    the pipeline — operational data flow takes precedence over backup hygiene.
+    KeyboardInterrupt and SystemExit are intentionally NOT caught.
+    """
+    try:
+        now = _dt.now()
+        if not cfg.paths.db_path.exists():
+            return
+        if not should_backup(cfg.paths.backups_dir, now):
+            return
+        path = do_backup(cfg.paths.db_path, cfg.paths.backups_dir, now=now)
+        log.info("weekly backup written: %s", path)
+    except (OSError, sqlite3.Error) as exc:
+        log.warning("weekly backup failed (continuing pipeline): %s", exc)
+        return
+    try:
+        prune_old_backups(cfg.paths.backups_dir, keep=_BACKUP_RETENTION_WEEKS)
+    except (OSError, sqlite3.Error) as exc:
+        log.warning("weekly backup prune failed (continuing pipeline): %s", exc)
+
+
 def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
     """Synchronous pipeline run. Caller owns the process — heartbeat is in this thread."""
+    _maybe_weekly_backup(cfg)
     sweep = sweep_stale_artifacts(
         db_path=cfg.paths.db_path,
         artifact_dirs=[cfg.paths.charts_dir, cfg.paths.exports_dir],
