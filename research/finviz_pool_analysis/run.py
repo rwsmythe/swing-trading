@@ -69,6 +69,10 @@ def _git_dirty(repo_root: Path) -> bool:
     integrity watch item requires the manifest to distinguish "run from a
     clean commit" from "run from a dirty tree" so subsequent reproductions
     are not silently misled by stale `harness_git_sha`.
+
+    Callers should invoke this BEFORE generating run outputs; otherwise
+    the run's own output files appear as dirty modifications and the
+    flag is uninformative.
     """
     try:
         result = subprocess.run(
@@ -171,6 +175,8 @@ def _write_manifest(
     result: AggregateResult,
     finviz_inbox_dir: Path,
     candidate_criteria_row_count: int,
+    git_sha: str,
+    git_dirty: bool,
 ) -> None:
     if qualifying:
         action_dates = sorted(r.action_session_date for r in qualifying)
@@ -178,8 +184,8 @@ def _write_manifest(
     else:
         date_range = {"start": None, "end": None}
     manifest = {
-        "harness_git_sha": _git_sha(repo_root),
-        "harness_git_dirty": _git_dirty(repo_root),
+        "harness_git_sha": git_sha,
+        "harness_git_dirty": git_dirty,
         "run_timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "production_db_path": str(db_path),
         "finviz_inbox_dir": str(finviz_inbox_dir),
@@ -243,6 +249,12 @@ def run_finviz_pool_aggregation(
     skipped, aggregates, writes all D1-required outputs to ``output_dir``.
     Returns the ``AggregateResult`` so callers (tests) can introspect.
     """
+    # Capture git state BEFORE creating any output files — once the run
+    # writes outputs, the worktree is necessarily dirty, so capture must
+    # happen first to be informative.
+    git_sha = _git_sha(repo_root)
+    git_dirty = _git_dirty(repo_root)
+
     output_dir.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
@@ -277,6 +289,8 @@ def run_finviz_pool_aggregation(
         result=result,
         finviz_inbox_dir=finviz_inbox_dir,
         candidate_criteria_row_count=candidate_criteria_row_count,
+        git_sha=git_sha,
+        git_dirty=git_dirty,
     )
     return result
 
