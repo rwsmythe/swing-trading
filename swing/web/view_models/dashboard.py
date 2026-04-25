@@ -163,11 +163,22 @@ def build_dashboard(
                     f"Last pipeline session: {row[0]} — decisions below are for session "
                     f"{action_session}. Run pipeline for the current session."
                 )
-            # Latest candidates for flag_tags + narrative.
-            row = conn.execute("SELECT id FROM evaluation_runs ORDER BY run_ts DESC LIMIT 1").fetchone()
+            # Tranche C T4 follow-up (adversarial review Major 2): bind
+            # candidates_by_ticker (and the flag_tags it feeds) to the SAME
+            # eval as today_decisions. Otherwise the dashboard could show
+            # pipeline-scoped decisions next to flag tags from a later
+            # standalone eval — the same mixed-anchor inconsistency Bug 7
+            # surfaced for chart-scope. Falls back to latest eval only when
+            # there is no pipeline FK to bind to (legacy NULL or no run yet).
             candidates: list[Candidate] = []
-            if row is not None:
-                candidates = fetch_candidates_for_run(conn, row[0])
+            if pipeline_eval_id is not None:
+                candidates = fetch_candidates_for_run(conn, pipeline_eval_id)
+            else:
+                row = conn.execute(
+                    "SELECT id FROM evaluation_runs ORDER BY run_ts DESC LIMIT 1"
+                ).fetchone()
+                if row is not None:
+                    candidates = fetch_candidates_for_run(conn, row[0])
     finally:
         conn.close()
 

@@ -605,7 +605,16 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
     conn = connect(cfg.paths.db_path)
     try:
         candidates = fetch_candidates_for_run(conn, eval_run_id)
-        recs = list_for_session(conn, action_session.isoformat())
+        # Tranche C T4 follow-up (adversarial review Major 1): scope export
+        # recs to the pipeline's own eval too, otherwise candidates and recs
+        # in the briefing can diverge if a re-run pipeline overwrites only
+        # the tickers it covered (UNIQUE on action_session_date,ticker,
+        # recommendation lets older recs persist for tickers the new eval
+        # dropped). Same FK already used for `candidates` above; pass it
+        # through here so the briefing is internally consistent.
+        recs = list_for_session(
+            conn, action_session.isoformat(), evaluation_run_id=eval_run_id,
+        )
         watchlist = list_active_watchlist(conn)
         weather = get_latest_for_date(conn, data_asof, ticker=cfg.rs.benchmark_ticker)
         trades = list_open_trades(conn)
