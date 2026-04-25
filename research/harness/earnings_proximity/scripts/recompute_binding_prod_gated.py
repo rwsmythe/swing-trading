@@ -26,21 +26,20 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-TT_NAMES_IN_ORDER = (
-    "TT1_above_150_200",
-    "TT2_150_above_200",
-    "TT3_200_rising",
-    "TT4_50_above_150_200",
-    "TT5_above_50",
-    "TT6_above_52w_low_30pct",
-    "TT7_within_52w_high_25pct",
-    "TT8_rs_rank",
-)
+from research.harness.earnings_proximity.replay import build_harness_config
+from swing.evaluation.criteria.trend_template import CHECK_NAMES as TT_CHECK_NAMES
 
-# Production min_passes + allowed_miss from build_harness_config /
-# swing.config.toml: min_passes=7, allowed_miss_names=("TT8_rs_rank",).
-MIN_TT_PASSES = 7
-ALLOWED_MISS_TT = frozenset({"TT8_rs_rank"})
+# Trend-template criterion names in evaluation order (canonical from
+# swing.evaluation.criteria.trend_template). Use the production source
+# of truth, not a hand-maintained copy.
+TT_NAMES_IN_ORDER = TT_CHECK_NAMES
+
+# Production thresholds are loaded from build_harness_config (which
+# mirrors swing.config.toml semantics). This avoids hardcoding values
+# that could drift between the harness and the script.
+_CFG = build_harness_config()
+MIN_TT_PASSES = _CFG.trend_template.min_passes
+ALLOWED_MISS_TT = frozenset(_CFG.trend_template.allowed_miss_names)
 
 VCP_NAMES_IN_ORDER = (
     "prior_trend",

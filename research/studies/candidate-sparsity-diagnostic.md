@@ -71,11 +71,22 @@ For comparison only (NOT a fifth diagnostic run):
 
 The "evaluations" column is < ticker-days because tickers with < 200 bars of OHLCV history at a given session are skipped per `replay._MIN_BARS_FOR_EVALUATION`.
 
-**CI overlap notes (interpretation context).**
-- A vs B Wilson CIs **overlap** ([0.00210 %, 0.00453 %] is the intersection). The 2.0× point-estimate increase from raising SPX+NDX capital 1× → 5× is **not statistically distinguishable from sampling noise** at 95 % confidence given n = 5 and n = 10. The structural shift in production-gated `risk_feasibility` count (48,155 → 3,367; see below) is a more interpretable signal of capital binding than the A+-rate ratio.
-- C vs D Wilson CIs **overlap heavily**. The 1.10× point-estimate change from raising Russell 3000 capital 1× → 5× is **not statistically distinguishable from noise**. Same comment as above applies.
-- A vs C Wilson CIs **do not overlap**. The universe-shape difference at 1× capital (~4.6× point-estimate ratio) is statistically distinguishable from sampling noise.
-- B vs D Wilson CIs **do not overlap**. The universe-shape difference at 5× capital (~2.5× point-estimate ratio) is also statistically distinguishable.
+**Statistical-inference framing.**
+
+- **Capital comparison A↔B and C↔D is PAIRED, not independent.** Both runs in each pair are evaluated on the *same* (ticker, date) set; only `current_equity` differs. Capital scaling is also *monotonic* — `risk_feasibility`'s pass set at 5× is a strict superset of its pass set at 1× (a higher per-share budget can only allow MORE candidates through). So the appropriate framing for the headline A+-rate change is **counting the deterministic transitions** between cells of the discordant-pair table, not Wilson-CI overlap on independent rates.
+  - SPX+NDX A↔B transition table on the 258,679 (ticker, date) pairs:
+
+    | Status at 1× | Status at 5× | Count |
+    |---|---|---|
+    | A+ | A+ | 5 |
+    | non-A+ | A+ | 5 (FIX, STX, COHR ×2, LITE — exact set named in finding 7 below) |
+    | A+ | non-A+ | 0 (impossible by monotonicity) |
+    | non-A+ | non-A+ | 258,669 |
+
+    The 5 → 10 A+ count is a **deterministic count of paired transitions**, not a sampled rate ratio. Under exact one-sided binomial intuition (5 of 5 informative pairs flip in the only direction monotonicity permits), the capital effect is real on this sample by construction; "statistical significance" in the independent-Wilson sense is the wrong frame for paired-monotonic transitions.
+  - Russell 3000 C↔D transition table (analogous): 112 → 123 = **11 deterministic transitions** from non-A+ at 1× to A+ at 5×, 0 reverse, 1 candidate that fails risk_feasibility at both 1× and 5×.
+
+- **Cross-universe comparison A↔C and B↔D is INDEPENDENT** (different (ticker, date) sets). The Wilson CIs reported in the table are intervals on each rate independently. The non-overlap of A's CI [0.00083 %, 0.00453 %] and C's CI [0.00740 %, 0.01070 %] is suggestive of a non-zero rate difference but is not a formal hypothesis test; the disjoint-CI rule has known anti-conservative properties for difference-of-proportions inference. A formal Newcombe interval on (p_C − p_A) would be the proper test; the magnitude of the point-estimate difference (~6.97 × 10⁻⁵, or ~36× the smaller rate) is large enough that the qualitative conclusion is robust to choice of test, though the exact CI width is not reported here.
 
 ### Per-criterion binding-constraint analysis (production-gated)
 
@@ -180,7 +191,7 @@ At constant 1× capital ($7,500), Russell 3000 produces 0.0089 % per ticker-day 
 
 The diagnostic does **not** isolate "universe shape" from these confounders. The conclusion the data supports is that **changing universe from SPX+NDX to Russell-3000-via-IWV** changes the A+ rate by the reported factors; the conclusion the data does **not** support is "A+ rate is determined by trend-template suitability of mid-cap stocks." A matched-cohort or point-in-time-universe study would be needed to separate composition from shape.
 
-A useful summary statistic, with the same caveat applied: of the (ticker, date) pairs that pass production-gated TT1 (i.e., that had `close above MA-150 AND MA-200`), the conditional A+ rate is approximately 5 / 169,709 = 0.00295 % on SPX+NDX (1×) and 112 / 679,198 = 0.01649 % on Russell 3000 (1×) — a ~5.6× higher conditional rate after gating on TT1. This is consistent with downstream criteria (VCP layer, risk) being more often satisfied per-ticker on Russell than on SPX+NDX, but the same compositional confounders apply.
+A useful summary statistic, with the same caveat applied: of the (ticker, date) pairs that pass TT1 directly (i.e., the row's `TT1_above_150_200` column is `pass` regardless of gating), the conditional A+ rate is **5 / 149,540 = 0.00334 %** on SPX+NDX (1×) and **112 / 644,015 = 0.01739 %** on Russell 3000 (1×) — a ~5.2× higher conditional rate after gating on TT1. (Denominators computed from the per-row TT1 column in `evaluations.csv`; the emitted-order TT1-blocker count is 109,139 on SPX+NDX and 614,759 on Russell, and TT1-pass = total evaluations − TT1-fail-or-NA = 258,679 − 109,139 and 1,258,774 − 614,759 respectively.) This is consistent with downstream criteria (VCP layer, risk) being more often satisfied per-ticker on Russell than on SPX+NDX, but the same compositional confounders apply.
 
 ### Capital-sensitivity finding
 
@@ -197,10 +208,10 @@ The +5 / +11 are precisely the candidates whose **only** failing criterion at 1�
 
 **Interpretation, with statistical caveats explicit.**
 - The **structural** observation (`risk_feasibility` blocks 18.6 % → 1.3 % of SPX+NDX evaluations as capital scales) is robust: it is a count over ~258K evaluations and the change is large in absolute terms. The Russell observation (6.9 % → 0.3 %) is similarly robust.
-- The **headline A+-rate** ratio (2.0× SPX, 1.10× Russell) is **not** statistically distinguishable from sampling noise at 95 % Wilson confidence with n = 5–123 successes. The point estimates direction matches the structural signal but the magnitudes are unstable at this sample size.
+- The **headline A+-rate** transition (5 → 10 on SPX+NDX; 112 → 123 on Russell) is a **deterministic count of paired-monotonic transitions** — given that capital scaling can only relax `risk_feasibility`, every flip is in the only physically possible direction. Statistical-significance framing on independent samples (Wilson CI on the rate ratio) is inappropriate here; the right description is "5 candidates on SPX+NDX and 11 on Russell flipped from blocked-only-by-risk_feasibility to A+, in a sample where 1 / 6 (SPX) and 1 / 12 (Russell) candidates remain risk-blocked even at 5×."
 - All differences are by construction attributable only to the `risk_feasibility` criterion: the harness's `current_equity` parameter is consumed only by `swing.evaluation.criteria.risk_feasibility` (verified by code reading and by the empirical data above — every non-`risk_feasibility` row in the production-gated A↔B and C↔D comparisons is shifted only because the upstream-failure counts change when more rows reach the trend-template / VCP layers). This is a deterministic property of the harness; the empirical confirmation is reported here so the reader can verify the harness's capital-routing isolation.
 
-Whether these structural and headline findings constitute "capital is binding" or "capital is non-binding" depends on which threshold matters to the operator. **The diagnostic does not pick a threshold.**
+Whether these structural and transition-count findings constitute "capital is binding" or "capital is non-binding" depends on which threshold matters to the operator. **The diagnostic does not pick a threshold.**
 
 ---
 
@@ -254,7 +265,7 @@ These are open questions the diagnostic findings might prompt; the diagnostic do
 
 - Is the residual gap between this diagnostic's measured rates (Russell 3000 5× ≈ 0.0098 % per ticker-day) and the Session 2a production anchor (~0.5 %) explainable by the variables this diagnostic did not vary (Finviz pre-screening, time period, replay-vs-production parity, anchor sample-size noise)?
 - Does the production-gated `risk_feasibility` count change with capital (SPX+NDX 18.62 % → 1.30 %; Russell 6.91 % → 0.34 %) cross any threshold the operator considers material for product workflow?
-- Does the small absolute count of "only-blocked-by-risk_feasibility" candidates per quarter (≈ 1–3 per universe per year in this window's data) cross the operator's threshold for "this is a UI-relevant signal" (e.g., a "this setup needs more capital" hint on each candidate row)?
+- Does the small absolute count of "only-blocked-by-risk_feasibility" candidates over the diagnostic window (6 on SPX+NDX, 12 on Russell 3000 across the full 2-year window — i.e., a rate on the order of a few candidates per universe per year) cross the operator's threshold for "this is a UI-relevant signal" (e.g., a "this setup needs more capital" hint on each candidate row)?
 - Is the operator's current account-state (`starting_equity = $1,200`, `risk_equity_floor = $7,500` → effective $7,500 sizing equity) the right reference value for "operator capital" in further studies, or would the live DB-derived current equity (starting + realized P&L + cash movements) be a better reference?
 - Does the universe-composition effect direction this diagnostic reports survive a delisting-aware, point-in-time-membership universe? FTSE Russell offers point-in-time-membership feeds; iShares (this diagnostic's source) does not.
 - Is the TT1 ~46 % rejection rate on Russell 3000 a feature of this 2-year window's market regime, or a structural feature of the trend-template definition?
