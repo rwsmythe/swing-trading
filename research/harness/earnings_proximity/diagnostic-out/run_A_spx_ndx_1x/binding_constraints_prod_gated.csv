@@ -1,0 +1,17 @@
+criterion,count,fraction_of_evaluations
+<aplus>,5,0.000019
+TT1_above_150_200,88970,0.343940
+risk_feasibility,48155,0.186157
+TT2_150_above_200,25541,0.098736
+TT5_above_50,22889,0.088484
+adr,18427,0.071235
+ma_stack_10_20_50,14781,0.057140
+TT6_above_52w_low_30pct,11747,0.045411
+TT4_50_above_150_200,7975,0.030830
+proximity_20ma,6713,0.025951
+ma_short_rising,5512,0.021308
+TT3_200_rising,3804,0.014705
+prior_trend,3750,0.014497
+tightness,331,0.001280
+TT7_within_52w_high_25pct,68,0.000263
+vcp_volume_contraction,11,0.000043
