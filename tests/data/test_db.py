@@ -47,3 +47,33 @@ def test_connect_raises_when_db_missing(tmp_path: Path):
     with pytest.raises(SchemaVersionMismatch) as exc:
         connect(missing)
     assert "db-migrate" in str(exc.value)
+
+
+def test_trades_table_has_hypothesis_label_column(tmp_db: Path):
+    """Migration 0007: trades.hypothesis_label TEXT NULL exists post-migration.
+
+    Per trade-hypothesis-label brief — the operator-facing free-text label is
+    persisted on the entry-recording table (`trades`) so it round-trips with
+    every entry event. Column is nullable; existing rows have NULL.
+    """
+    conn = ensure_schema(tmp_db)
+    try:
+        cols = conn.execute("PRAGMA table_info(trades)").fetchall()
+        # PRAGMA table_info returns (cid, name, type, notnull, dflt_value, pk)
+        names = [c[1] for c in cols]
+        assert "hypothesis_label" in names
+        col = next(c for c in cols if c[1] == "hypothesis_label")
+        assert col[2].upper() == "TEXT"
+        assert col[3] == 0  # NOT NULL == 0 → nullable
+        # NULL insert is allowed (existing-call-site preservation):
+        conn.execute(
+            "INSERT INTO trades (ticker, entry_date, entry_price, initial_shares, "
+            "initial_stop, current_stop, status) "
+            "VALUES ('XYZ', '2026-04-25', 10.0, 1, 9.0, 9.0, 'open')"
+        )
+        row = conn.execute(
+            "SELECT hypothesis_label FROM trades WHERE ticker='XYZ'"
+        ).fetchone()
+        assert row[0] is None
+    finally:
+        conn.close()
