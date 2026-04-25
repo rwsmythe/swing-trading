@@ -2,7 +2,7 @@
 
 **Audience:** Future orchestrator-role Claude sessions for the Swing Trading project. Also useful as a reference when the current orchestrator's context window is compacted.
 **Purpose:** Provide enough context to bootstrap an orchestrator role without re-reading conversation history. Not a complete project spec — pointers to authoritative sources are throughout.
-**Last updated:** 2026-04-25 (post-Tranche-C housekeeping)
+**Last updated:** 2026-04-25 (post-parallel-work housekeeping)
 
 ---
 
@@ -77,13 +77,15 @@ Full detail: `reference/Future Work/QuantEcon/2026-04-24-quant-econ-companion-tr
 
 > **This section decays fastest. Update on every meaningful change.**
 
-**As of 2026-04-25 (post-Tranche-C housekeeping):**
+**As of 2026-04-25 (post-parallel-work housekeeping):**
 
-- **Tranche C pipeline-linkage bundle** — SHIPPED. Commits `f45dae8` (T1) → `1cfc117` (R1 review fixes). 700 fast tests passing. Closes Bug 7 + chart-scope drift modes A&B + spec §8 chart-reason split. Adversarial review caught two additional mixed-anchor surfaces (`_step_export`, `candidates_by_ticker`) beyond the original brief scope.
-- **Tranche C candidate-sparsity diagnostic** — SHIPPED. Commits `1b33e21` (D0) → `bd0dae6` (R4 minor fix). 721 fast tests passing. 4-run matrix delivered (SPX+NDX × Russell 3000, 1× × 5× capital). 4 rounds of adversarial review with 1 critical finding (production-gating mismatch in instrumentation) plus 7 major + 5 minor; all fixed.
-- **Both Tranche C sessions complete.** Operational and applied research branches both ready to idle per the three-branch refinement; basic research idle by default. Two queued candidate next-moves: (a) operational Phase 3e items + `build_watchlist` mixed-anchor fix; (b) applied-research parity check (hypothesis 5) when research branch reactivates. Operator deferred any urgent capital-driven workflow change after diagnostic findings (capital is informational, not workflow-changing per 2026-04-25 conversation).
+- **`build_watchlist` mixed-anchor fix** — SHIPPED. Commit `77877c1`. 724 fast tests passing. Closes the last surface of the Bug 7 family in the web layer; survey query confirms every primary read path joining candidates by ticker now binds via `pipeline_runs.evaluation_run_id`. Adversarial review NO_NEW_CRITICAL_MAJOR after R2; both raised majors ACCEPTED with rationale (cross-view fallback divergence: dashboard-pattern was specified by brief; stale_banner on /watchlist: out-of-scope, pre-existing UX gap).
+- **Harness-vs-production parity check (Hypothesis 5)** — SHIPPED. Commits `c47a783` (D1) → `1a88fb7` (D5 R2). 755 fast tests passing. Tier 1 result with maximum-margin agreement: 80/80 buckets, 1,440/1,440 per-criterion pairs on production eval_15 (action_session 2026-04-25). Hypothesis 5 closed. Adversarial review R1 caught a manifest provenance drift (original D3 commit's `harness_git_sha` pointed at D2's SHA when actual run included an uncommitted wrapper); fixed via re-run with byte-identical outputs.
+- **Both parallel-work items complete.** No work in flight.
 
-**No work currently in flight.** All queued follow-ups in `docs/phase3e-todo.md`.
+**Bound on parity claim:** verified at watch/skip classification level only. n=80 produced zero A+ candidates, so A+ classification logic was not exercised empirically. Captured as follow-on candidate ("A+-surface-exercising parity run") in `docs/phase3e-todo.md`.
+
+**All queued follow-ups in `docs/phase3e-todo.md`.**
 
 **Active operator constraints:**
 
@@ -112,6 +114,9 @@ These have been settled with the developer's explicit approval. Don't reopen unl
 - **(2026-04-25) Capital-sensitivity finding interpretive disposition: informational, not workflow-changing.** Diagnostic showed structural risk_feasibility blocking shrinks 18.6% → 1.3% on SPX+NDX (and 6.9% → 0.3% on Russell) when capital scales 1× → 5×, but the deterministic A+ count change (5 → 10 SPX, 112 → 123 Russell) doesn't reach workflow-relevance threshold. Operator's framing: "the amount of money available is the amount of money available; without proven history, doesn't make sense to raise capital 2 orders of magnitude to go from 5 months to 2.5 months per A+ candidate."
 - **(2026-04-25) Next-move post-Tranche-C: parallel operational + applied-research parity check.** Continue operational work (Phase 3e items, `build_watchlist` mixed-anchor fix, etc.); when research branch reactivates, the cheapest applied-research follow-on is hypothesis 5 (production-vs-replay parity check) to investigate the residual ~50× gap between matrix's most-permissive cell and production rate.
 - **(2026-04-25) Production-gating-aware instrumentation as standing pattern.** When instrumenting production logic for diagnostic measurement, mimic production's gating order, not criteria emission order. Caught as R1 Critical in candidate-sparsity diagnostic; would have made primary hypothesis appear 3.5× weaker than reality if uncorrected.
+- **(2026-04-25) Hypothesis 5 closed.** Harness-vs-production parity check returned Tier 1 result on n=80 production candidates from eval_15 (action_session 2026-04-25). Drift between research-branch harness and production pipeline is NOT the explanation for the residual ~50× rate gap from Russell-3000-5× to Session 2a anchor. Bound on claim: parity verified at watch/skip classification level; A+ classification parity unverified empirically (n=80 produced zero A+ candidates).
+- **(2026-04-25) Path 1 selected for residual-gap question.** Accept "anchor noise + universe selection" as the explanation for the residual ~50× rate gap. Session 2a's CI [0.137%, 1.806%] is consistent with true rates as low as 0.05%; combined with Finviz pre-screening narrowing the universe, the gap is at least partially expected. No further study commissioned. Hypothesis 6 (Finviz universe reconstruction) and hypothesis 4 (regime) remain available but not pursued under current capital constraints.
+- **(2026-04-25) Bug 7 family confirmed closed in web layer.** Survey query (`grep -rn 'ORDER BY run_ts DESC LIMIT 1' swing/web/`) on the post-`77877c1` tree confirms every primary read path that joins candidates by ticker now binds via `pipeline_runs.evaluation_run_id` (FK-direct or heuristic). Class durably closed in this layer.
 
 ---
 
@@ -202,6 +207,7 @@ These have caused real problems; resist the impulse:
 - **Mid-session scope expansion.** Bug-class issues discovered mid-session in OTHER surfaces should be flagged in return reports, not fixed inline. The pipeline-linkage session correctly flagged `build_watchlist` per this discipline.
 - **Treating "diagnose, don't decide" as soft.** When a study or diagnostic is scoped as descriptive, sneaking in implicit recommendations through "should" framings or threshold suggestions violates scope. The reviewer will catch this; better to write the discipline in correctly the first time.
 - **Re-fetching expensive data when it can be cached.** yfinance has rate limits. Diagnostic studies should use cache-warm patterns; never burn yfinance quota for re-runs of already-fetched data.
+- **Brief internal inconsistency between "mirror canonical" and prose-asserted counts.** When a brief points the implementer at a canonical template AND prescribes an independent count of cases, the count must match the canonical OR the deviation must be called out explicitly. The build_watchlist mixed-anchor fix brief had §0 say "mirror canonical" (3 tests) and §4.1 say "add a second test" (2 implied); implementer correctly chose canonical-template fidelity but had to do judgment work I should have done at draft time. Always cross-check prose counts against any canonical references the brief points at.
 
 ---
 
@@ -221,6 +227,9 @@ Process insights from this project's history, with examples and pointers:
 - **Diagnostic findings can be informational without being prescriptive.** Operator may reasonably decline to act on a diagnostic finding even when the finding is statistically meaningful. Capital-sensitivity finding (Tranche C diagnostic, 2026-04-25) is the canonical example: structural blocking change is large in proportional terms (18.6% → 1.3%) but the deterministic operational change (5 → 10 SPX A+ signals/year) doesn't cross workflow-relevance threshold for the operator's actual usage. Diagnostic does its job by surfacing the data; operator decides whether the data warrants action. Don't push action when "informational" is a defensible response.
 - **Some bugs are sample-size failures, not discipline failures.** Session 2c's defer outcome with 11 signals against ≥30 needed was a study-design failure (variant filter was a structural no-op on the chosen universe), not a process failure (pre-registration discipline held through 4 review rounds, decision unchanged). Distinguish these in triage: process-level success can coexist with question-level inconclusive.
 - **Brief drafting drift on tracking state.** Don't claim files are uncommitted/untracked without verifying current `git status`. The post-2c housekeeping brief mistakenly claimed `docs/Bugs.txt` was uncommitted when it had been committed by Session 2b's mid-session catch-up commit. Implementer caught and corrected. Pattern: brief drafting that touches tracking state should explicitly call for `git status` verification at dispatch rather than asserting state from orchestrator memory.
+- **Manifest-integrity generalization.** Manifests must reflect actual code state at run time, not the most-recent commit when the artifact was committed. Parity-check D3 originally committed a manifest pointing at D2's SHA when the run included an uncommitted wrapper class (`_CountingPriceFetcher` for cache-stat instrumentation); R1 caught it. Generalization of the candidate-sparsity diagnostic R1 Critical lesson: instrumentation/manifest can lie silently, and adversarial review is the surface that catches it. Pattern: any artifact that asserts code-state provenance must verify against the actual run-time state, not the latest committed state. If you've been editing during a run and have uncommitted changes, your manifest's `git_sha` claim is wrong.
+- **n=1 parity with non-A+ sample bounds the parity claim.** Tier 1 result on a sample with zero A+ candidates verifies parity at the watch/skip classification level but not at A+. When designing parity studies, anticipate sample composition: if the production run typically produces zero or near-zero A+, the parity verification cannot exercise A+ classification logic. Operator-facing interpretation must preserve this bound. Generalizable beyond the parity check: any classification-equivalence study should anticipate sample composition vs the bucket categories the equivalence claim covers.
+- **Brief drafting: canonical-template references win over prose count assertions.** When a brief says "mirror canonical template X" and ALSO independently asserts a count of cases, but the canonical template has a different count, the implementer must do judgment work that should have been done at draft time. Build_watchlist mixed-anchor fix Brief §0 (mirror canonical, 3 tests) vs §4.1 (add a second test, 2 implied) had this inconsistency; implementer correctly chose canonical-template fidelity. Pattern: when a brief points at a canonical template, prose counts must match the template OR explicitly call out the deviation. Prefer "mirror the template (which has N cases)" over independent count assertions.
 
 ---
 
