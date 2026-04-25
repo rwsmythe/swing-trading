@@ -503,7 +503,9 @@ def journal_review_cmd(ctx, period, today):
     from swing.data.repos.cash import list_cash
     from swing.data.repos.trades import list_closed_trades, list_open_trades, list_all_exits
     from swing.journal.flags import compute_flags
-    from swing.journal.stats import compute_stats, period_filter
+    from swing.journal.stats import (
+        compute_hypothesis_breakdown, compute_stats, period_filter,
+    )
 
     cfg = ctx.obj["config"]
     today = today or _date.today().isoformat()
@@ -535,6 +537,30 @@ def journal_review_cmd(ctx, period, today):
         click.echo("\nBehavioral flags:")
         for f in flags:
             click.echo(f"  \u2022 {f.title} \u2014 {f.detail}")
+
+    # Brief \u00a74.5: hypothesis breakdown \u2014 additive section after the existing
+    # review output. Closed-only (matches compute_stats frame); section is
+    # emitted only when at least one bucket exists so an empty journal stays
+    # quiet.
+    # Win-rate definition lives in `compute_hypothesis_breakdown.__doc__`
+    # (brief §5 watch item: definition stated in docstring is acceptable).
+    breakdown = compute_hypothesis_breakdown(trades=filtered, exits=all_exits)
+    if breakdown:
+        click.echo("\nHypothesis breakdown:")
+        for b in breakdown:
+            label_display = "(no label)" if b.label is None else f'"{_sanitize_label(b.label)}"'
+            n_word = "trade" if b.n_trades == 1 else "trades"
+            line = f"  - {label_display}: {b.n_trades} {n_word}, ${b.total_pnl:.2f} total"
+            if b.win_rate is not None:
+                line += f", win rate {b.win_rate * 100:.1f}%"
+            click.echo(line)
+
+
+def _sanitize_label(label: str) -> str:
+    """Collapse any whitespace (including embedded newlines/tabs) into single
+    spaces so a free-text hypothesis can never break the breakdown's one-line-
+    per-bucket layout. Brief \u00a75 watch item: free-text safety in review output."""
+    return " ".join(label.split())
 
 
 @journal_group.command("cash")

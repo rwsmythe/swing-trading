@@ -11,6 +11,21 @@ Period = Literal["week", "month", "quarter", "ytd", "all"]
 
 
 @dataclass(frozen=True)
+class HypothesisBucket:
+    """One row of the journal-review hypothesis breakdown.
+
+    `label is None` is the "(no label)" bucket — closed trades whose
+    `hypothesis_label` was never set. `win_rate is None` means the bucket has
+    fewer than 3 trades and the breakdown suppresses win-rate reporting to
+    avoid small-sample noise (per brief §4.5).
+    """
+    label: str | None
+    n_trades: int
+    total_pnl: float
+    win_rate: float | None
+
+
+@dataclass(frozen=True)
 class JournalStats:
     n_trades: int
     n_wins: int
@@ -133,3 +148,55 @@ def compute_stats(
         total_pnl=sum(p for _, _, p, _ in decorated),
         current_streak=streak, current_streak_kind=kind,
     )
+
+
+# Brief §4.5: minimum trades-per-group for win-rate reporting. Below this
+# threshold the breakdown suppresses win_rate to avoid small-sample noise.
+_MIN_TRADES_FOR_WIN_RATE = 3
+
+
+def compute_hypothesis_breakdown(
+    *, trades: Iterable[Trade], exits: Iterable[Exit],
+) -> list[HypothesisBucket]:
+    """Group closed trades by `hypothesis_label`; return one bucket per group.
+
+    Closed-only is intentional: total_pnl and win_rate are realized-P&L
+    measures and are undefined for trades still open. This matches the
+    `compute_stats` frame, so the section reads as "what did each hypothesis
+    *deliver*", not "what's been opened under each hypothesis".
+
+    Win-rate definition (pinned by test): a winning trade has
+    `realized_pnl > 0` (strict). Zero-P&L trades count toward `n_trades` but
+    not toward wins — they sit between win and loss, the same convention as
+    `compute_stats` (which uses `r > 0`).
+
+    Ordering: the (no label) bucket appears first when non-empty (operator
+    needs it surfaced regardless of count); labeled buckets follow in
+    `n_trades DESC`, then `label ASC` for stable tie-breaking.
+    """
+    exits_list = list(exits)
+    closed = [t for t in trades if t.status == "closed"]
+
+    groups: dict[str | None, list[Trade]] = {}
+    for t in closed:
+        groups.setdefault(t.hypothesis_label, []).append(t)
+
+    buckets: list[HypothesisBucket] = []
+    for label, trades_in_group in groups.items():
+        pnls = [_trade_pnl(t, exits_list) for t in trades_in_group]
+        n = len(pnls)
+        wins = sum(1 for p in pnls if p > 0)
+        win_rate: float | None
+        win_rate = (wins / n) if n >= _MIN_TRADES_FOR_WIN_RATE else None
+        buckets.append(HypothesisBucket(
+            label=label, n_trades=n, total_pnl=sum(pnls), win_rate=win_rate,
+        ))
+
+    # (no label) first when present; rest ordered by count DESC, then label
+    # ASC for deterministic display.
+    no_label = [b for b in buckets if b.label is None]
+    labeled = sorted(
+        (b for b in buckets if b.label is not None),
+        key=lambda b: (-b.n_trades, b.label or ""),
+    )
+    return no_label + labeled
