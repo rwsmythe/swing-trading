@@ -310,6 +310,42 @@ def test_cli_main_invokes_run_diagnostic(monkeypatch, tmp_path):
     assert captured["universe_variant"].name == "spx_ndx"
 
 
+def test_cli_main_dispatches_sp_1500_universe(monkeypatch, tmp_path):
+    """`main(['--universe', 'sp_1500', ...])` resolves to the sp_1500 variant
+    and threads it through to run_diagnostic at 1× capital."""
+    captured: dict = {}
+
+    def fake_run_diagnostic(**kwargs):
+        captured.update(kwargs)
+        kwargs["output_dir"].mkdir(parents=True, exist_ok=True)
+        (kwargs["output_dir"] / "run_manifest.json").write_text("{}")
+
+    monkeypatch.setattr(diagnostic_run, "run_diagnostic", fake_run_diagnostic)
+    monkeypatch.setattr(
+        diagnostic_run,
+        "load_universe_variant_at",
+        lambda name, cache_dir: _stub_universe(["AAPL", "MID1", "SML1"], name=name),
+    )
+
+    rc = diagnostic_run.main(
+        [
+            "--universe", "sp_1500",
+            "--capital-multiplier", "1.0",
+            "--base-capital", "7500.0",
+            "--window-start", "2024-04-19",
+            "--window-end", "2026-04-23",
+            "--output-dir", str(tmp_path / "out"),
+            "--cache-dir", str(tmp_path / "cache"),
+        ]
+    )
+    assert rc == 0
+    assert captured["universe_variant"].name == "sp_1500"
+    assert captured["base_capital"] == 7500.0
+    assert captured["capital_multiplier"] == 1.0
+    assert captured["window_start"] == date(2024, 4, 19)
+    assert captured["window_end"] == date(2026, 4, 23)
+
+
 # ----------------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------------

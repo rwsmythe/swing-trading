@@ -30,9 +30,9 @@ _HEADER_COLS = (
 )
 
 
-def _equity_row(ticker: str) -> str:
+def _equity_row(ticker: str, sector: str = "Information Technology") -> str:
     return (
-        f'"{ticker}","{ticker} CORP","Information Technology","Equity",'
+        f'"{ticker}","{ticker} CORP","{sector}","Equity",'
         f'"1.0","0.001","1.0","1.0","1.0","United States","NASDAQ","USD",'
         f'"1.00","USD","-"'
     )
@@ -48,8 +48,18 @@ _FUTURES_ROW = (
 )
 
 
-def _ishares_csv_payload(tickers: list[str], *, header_date: str = "Apr 23, 2026") -> bytes:
-    """Build a minimal iShares-shaped holdings CSV payload."""
+def _ishares_csv_payload(
+    tickers: list[str],
+    *,
+    header_date: str = "Apr 23, 2026",
+    sectors: dict[str, str] | None = None,
+) -> bytes:
+    """Build a minimal iShares-shaped holdings CSV payload.
+
+    ``sectors`` maps ticker → sector for per-row sector overrides; tickers
+    not in the mapping default to "Information Technology".
+    """
+    sectors = sectors or {}
     lines = [
         "﻿iShares Russell 3000 ETF",
         f'Fund Holdings as of,"{header_date}"',
@@ -63,7 +73,7 @@ def _ishares_csv_payload(tickers: list[str], *, header_date: str = "Apr 23, 2026
         _HEADER_COLS,
     ]
     for t in tickers:
-        lines.append(_equity_row(t))
+        lines.append(_equity_row(t, sectors.get(t, "Information Technology")))
     # Typical non-equity rows iShares includes (cash + derivative / futures).
     lines.append(_CASH_ROW)
     lines.append(_FUTURES_ROW)
@@ -236,6 +246,96 @@ def test_sp_1500_unions_three_etfs(tmp_path: Path):
     assert "AAPL" in variant.tickers
     assert "M000" in variant.tickers
     assert "S000" in variant.tickers
+
+
+# ----------------------------------------------------------------------------
+# Sector-map extraction (used by D4 reporting on S&P 1500)
+# ----------------------------------------------------------------------------
+
+
+def test_parse_ishares_csv_with_sector_extracts_per_ticker_sector(tmp_path: Path):
+    """parse_ishares_csv_with_sector returns (ticker, sector) pairs and skips non-equity rows."""
+    payload = _ishares_csv_payload(
+        ["AAPL", "MSFT", "JPM"],
+        sectors={"AAPL": "Information Technology", "MSFT": "Information Technology", "JPM": "Financials"},
+    )
+    rows = universe_variants.parse_ishares_csv_with_sector(payload)
+    mapping = dict(rows)
+    assert mapping == {
+        "AAPL": "Information Technology",
+        "MSFT": "Information Technology",
+        "JPM": "Financials",
+    }
+    # Cash + futures rows excluded as in the equity-only parser.
+    assert "USD" not in mapping
+    assert "-" not in mapping
+
+
+def test_load_sp_1500_sector_map_unions_three_etfs_and_caches(tmp_path: Path):
+    """load_sp_1500_sector_map fetches IVV/IJH/IJR, unions per-ticker sectors, and caches."""
+    ivv = _ishares_csv_payload(["AAPL"], sectors={"AAPL": "Information Technology"})
+    ijh = _ishares_csv_payload(["MID1"], sectors={"MID1": "Industrials"})
+    ijr = _ishares_csv_payload(["SML1"], sectors={"SML1": "Health Care"})
+
+    calls: list[str] = []
+
+    def fetcher(url: str) -> bytes:
+        calls.append(url)
+        if "IVV" in url:
+            return ivv
+        if "IJH" in url:
+            return ijh
+        if "IJR" in url:
+            return ijr
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    sectors = universe_variants.load_sp_1500_sector_map(
+        cache_dir=tmp_path,
+        fetcher=fetcher,
+        today=lambda: date(2026, 4, 25),
+    )
+    assert sectors == {
+        "AAPL": "Information Technology",
+        "MID1": "Industrials",
+        "SML1": "Health Care",
+    }
+    assert len(calls) == 3  # one per sub-ETF
+
+    # Second call: cache hit; fetcher must not be invoked again.
+    sectors2 = universe_variants.load_sp_1500_sector_map(
+        cache_dir=tmp_path,
+        fetcher=fetcher,
+        today=lambda: date(2026, 4, 25),
+    )
+    assert sectors2 == sectors
+    assert len(calls) == 3
+
+
+def test_load_sp_1500_sector_map_dedupe_keeps_first(tmp_path: Path):
+    """When a ticker appears in more than one sub-ETF, the first sector wins (IVV → IJH → IJR)."""
+    # AAPL appears in both IVV and IJH (artificial overlap for the test);
+    # IVV's "Information Technology" should win.
+    ivv = _ishares_csv_payload(["AAPL"], sectors={"AAPL": "Information Technology"})
+    ijh = _ishares_csv_payload(["AAPL", "MID1"], sectors={"AAPL": "WRONG", "MID1": "Industrials"})
+    ijr = _ishares_csv_payload(["SML1"], sectors={"SML1": "Health Care"})
+
+    def fetcher(url: str) -> bytes:
+        if "IVV" in url:
+            return ivv
+        if "IJH" in url:
+            return ijh
+        if "IJR" in url:
+            return ijr
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    sectors = universe_variants.load_sp_1500_sector_map(
+        cache_dir=tmp_path,
+        fetcher=fetcher,
+        today=lambda: date(2026, 4, 25),
+    )
+    assert sectors["AAPL"] == "Information Technology"
+    assert sectors["MID1"] == "Industrials"
+    assert sectors["SML1"] == "Health Care"
 
 
 # ----------------------------------------------------------------------------

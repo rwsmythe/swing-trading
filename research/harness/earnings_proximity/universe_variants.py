@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -190,6 +191,140 @@ def _parse_ishares_csv(payload: bytes) -> list[str]:
         seen.add(ticker_raw)
         ordered.append(ticker_raw)
     return ordered
+
+
+def parse_ishares_csv_with_sector(payload: bytes) -> list[tuple[str, str]]:
+    """Extract (ticker, sector) pairs from an iShares ETF holdings CSV payload.
+
+    Parallel to :func:`_parse_ishares_csv` but additionally returns the
+    iShares-reported ``Sector`` column. Used by D4 reporting on the
+    S&P 1500 universe expansion study to characterize sector breakdown
+    of A+ signals. Same row-filtering rules: equity rows only; tickers
+    upper-cased, deduplicated (first appearance wins), pathological
+    non-printable garbage skipped.
+
+    Empty / missing sector values are kept as the empty string so the
+    caller can decide how to label them (e.g., "Unknown" in reports).
+    """
+    text = payload.decode("utf-8-sig", errors="replace")
+    reader = csv.reader(io.StringIO(text))
+    header_idx: int | None = None
+    rows: list[list[str]] = []
+    header: list[str] = []
+    for i, row in enumerate(reader):
+        if not row:
+            continue
+        if header_idx is None and row[0].strip().lower() == "ticker" and "Asset Class" in row:
+            header_idx = i
+            header = row
+            continue
+        if header_idx is not None:
+            rows.append(row)
+
+    if header_idx is None:
+        raise ValueError("iShares CSV: did not find 'Ticker,...,Asset Class,...' header row")
+
+    ticker_col = header.index("Ticker")
+    asset_col = header.index("Asset Class")
+    if "Sector" not in header:
+        raise ValueError("iShares CSV: header is missing 'Sector' column")
+    sector_col = header.index("Sector")
+
+    seen: set[str] = set()
+    ordered: list[tuple[str, str]] = []
+    for row in rows:
+        if len(row) <= max(ticker_col, asset_col, sector_col):
+            continue
+        ticker_raw = row[ticker_col].strip().upper()
+        asset = row[asset_col].strip()
+        sector = row[sector_col].strip()
+        if asset != "Equity":
+            continue
+        if not ticker_raw or ticker_raw == "-":
+            continue
+        if not all(c.isalnum() or c in {".", "-"} for c in ticker_raw):
+            continue
+        if ticker_raw in seen:
+            continue
+        seen.add(ticker_raw)
+        ordered.append((ticker_raw, sector))
+    return ordered
+
+
+def _sector_map_path(cache_dir: Path, name: str, snapshot_date: date) -> Path:
+    return _snapshots_dir(cache_dir) / f"{name}_{snapshot_date.isoformat()}_sectors.json"
+
+
+def _latest_sector_map(cache_dir: Path, name: str) -> tuple[Path, date] | None:
+    d = _snapshots_dir(cache_dir)
+    if not d.exists():
+        return None
+    suffix = "_sectors.json"
+    prefix = f"{name}_"
+    candidates: list[tuple[Path, date]] = []
+    for p in d.iterdir():
+        if not p.is_file() or not p.name.startswith(prefix) or not p.name.endswith(suffix):
+            continue
+        stem_date = p.name[len(prefix) : -len(suffix)]
+        try:
+            d_iso = date.fromisoformat(stem_date)
+        except ValueError:
+            continue
+        candidates.append((p, d_iso))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda pair: pair[1])
+    return candidates[-1]
+
+
+def load_sp_1500_sector_map(
+    *,
+    cache_dir: Path | None = None,
+    max_age_days: int = 30,
+    fetcher: Fetcher | None = None,
+    today: Callable[[], date] | None = None,
+) -> dict[str, str]:
+    """Return a {ticker: sector} mapping for the S&P 1500 universe.
+
+    Fetches IVV + IJH + IJR holdings CSVs, extracts per-ticker sectors,
+    and unions across the three lists. The first occurrence wins on
+    duplicate tickers (IVV → IJH → IJR ordering). Caches the result as
+    a JSON sidecar next to the universe snapshot:
+    ``<cache_dir>/universe-snapshots/sp_1500_<YYYY-MM-DD>_sectors.json``.
+
+    The signature mirrors :func:`load_universe_variant` for the sp_1500
+    case: same cache_dir default, same fetcher dependency injection,
+    same today() seam for tests.
+    """
+    if cache_dir is None:
+        cache_dir = Path.home() / "swing-data" / "research-cache"
+    fetcher = fetcher or _default_fetcher
+    today = today or _today_default
+
+    snapshots = _snapshots_dir(cache_dir)
+    snapshots.mkdir(parents=True, exist_ok=True)
+
+    today_d = today()
+    latest = _latest_sector_map(cache_dir, "sp_1500")
+    if latest is not None:
+        sector_path, sector_date = latest
+        age = (today_d - sector_date).days
+        if age <= max_age_days:
+            return json.loads(sector_path.read_text(encoding="utf-8"))
+
+    urls = (SP_500_URL, SP_400_URL, SP_600_URL)
+    mapping: dict[str, str] = {}
+    for url in urls:
+        payload = fetcher(url)
+        for ticker, sector in parse_ishares_csv_with_sector(payload):
+            if ticker not in mapping:
+                mapping[ticker] = sector
+
+    sector_path = _sector_map_path(cache_dir, "sp_1500", today_d)
+    sector_path.write_text(
+        json.dumps(mapping, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    return mapping
 
 
 def _load_or_fetch_ishares(
