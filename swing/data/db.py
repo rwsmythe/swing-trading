@@ -4,7 +4,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-EXPECTED_SCHEMA_VERSION = 5  # trade_events.notes TEXT column (stop-adjust notes parity)
+EXPECTED_SCHEMA_VERSION = 6  # pipeline_runs.evaluation_run_id + pipeline_chart_targets (Tranche C)
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 
