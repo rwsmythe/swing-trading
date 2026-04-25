@@ -449,6 +449,150 @@ def test_load_earnings_with_stats_reports_per_ticker_hit_miss(tmp_path, monkeypa
     assert stats.misses == ("NEWCO",)
 
 
+def test_covers_returns_true_when_fetch_end_is_future_and_cache_covers_today(monkeypatch):
+    """Session 2c Open Issue #3: when the requested fetch_end is beyond
+    yfinance's available data (i.e., > today), `_covers()` previously
+    returned False even when the cache covered every available bar,
+    triggering an unnecessary 7+ minute refetch on every run.
+
+    The fix clamps the effective comparison endpoint to today (the most
+    recent date for which yfinance can return a bar), so a cache that
+    covers up through the most recent completed session is treated as
+    fully covering any fetch_end ≤ today + future_buffer.
+    """
+    from research.harness.earnings_proximity import fetchers as mod
+
+    fixed_today = date(2026, 4, 24)
+    monkeypatch.setattr(mod, "_today", lambda: fixed_today)
+
+    # Cache extends through the most recent completed session (yesterday).
+    cache_dates = [date(2024, 4, 19)] + [date(2026, 4, 22), date(2026, 4, 23)]
+    idx = pd.DatetimeIndex([pd.Timestamp(d) for d in cache_dates])
+    cached = pd.DataFrame(
+        {
+            "Open": [100.0, 100.0, 100.0],
+            "High": [101.0, 101.0, 101.0],
+            "Low": [99.0, 99.0, 99.0],
+            "Close": [100.5, 100.5, 100.5],
+            "Volume": [1_000_000, 1_000_000, 1_000_000],
+        },
+        index=idx,
+    )
+
+    # fetch_end ≈ 30 sessions past window_end — well beyond today.
+    fetch_end_future = date(2026, 6, 5)
+    assert mod._covers(cached, date(2024, 4, 19), fetch_end_future), (
+        "_covers must accept a future fetch_end when cache covers up "
+        "through today (clamping the effective end to today)."
+    )
+
+
+def test_covers_unchanged_for_fetch_end_at_or_before_today(monkeypatch):
+    """No regression for fetch_end ≤ today — the original semantics
+    (idx_max ≥ end - 1 day) are preserved."""
+    from research.harness.earnings_proximity import fetchers as mod
+
+    fixed_today = date(2026, 4, 24)
+    monkeypatch.setattr(mod, "_today", lambda: fixed_today)
+
+    idx = pd.DatetimeIndex([pd.Timestamp(d) for d in (date(2024, 4, 19), date(2024, 4, 22))])
+    cached = pd.DataFrame(
+        {
+            "Open": [100.0, 100.0],
+            "High": [101.0, 101.0],
+            "Low": [99.0, 99.0],
+            "Close": [100.5, 100.5],
+            "Volume": [1_000_000, 1_000_000],
+        },
+        index=idx,
+    )
+    # fetch_end = 2024-04-23 (exclusive) → needs idx_max ≥ 2024-04-22. Cache has it.
+    assert mod._covers(cached, date(2024, 4, 19), date(2024, 4, 23))
+    # fetch_end = 2024-04-25 (exclusive) → needs idx_max ≥ 2024-04-24. Cache fails.
+    assert not mod._covers(cached, date(2024, 4, 19), date(2024, 4, 25))
+
+
+def test_covers_false_for_empty_cache_with_future_fetch_end(monkeypatch):
+    """An empty cache with a future fetch_end must still report no coverage —
+    the future-clamp must not turn an empty cache into a hit."""
+    from research.harness.earnings_proximity import fetchers as mod
+
+    fixed_today = date(2026, 4, 24)
+    monkeypatch.setattr(mod, "_today", lambda: fixed_today)
+
+    empty = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+    assert not mod._covers(empty, date(2024, 4, 19), date(2026, 6, 5))
+
+
+def test_covers_false_for_partial_cache_with_future_fetch_end(monkeypatch):
+    """Cache that does NOT extend up through today must report False even
+    when fetch_end is in the future. The clamp does not weaken the
+    coverage check below today."""
+    from research.harness.earnings_proximity import fetchers as mod
+
+    fixed_today = date(2026, 4, 24)
+    monkeypatch.setattr(mod, "_today", lambda: fixed_today)
+
+    # Cache stops three weeks ago — well before today.
+    idx = pd.DatetimeIndex([pd.Timestamp("2024-04-19"), pd.Timestamp("2026-04-03")])
+    cached = pd.DataFrame(
+        {
+            "Open": [100.0, 100.0],
+            "High": [101.0, 101.0],
+            "Low": [99.0, 99.0],
+            "Close": [100.5, 100.5],
+            "Volume": [1_000_000, 1_000_000],
+        },
+        index=idx,
+    )
+    assert not mod._covers(cached, date(2024, 4, 19), date(2026, 6, 5))
+
+
+def test_load_ohlcv_with_stats_skips_refetch_when_cache_covers_through_today(
+    tmp_path, monkeypatch
+):
+    """End-to-end guard for the C4 fix: a load_ohlcv_with_stats call with
+    a future fetch_end must NOT call yfinance when the cache covers up
+    through today. Pre-fix this was the wasted-7-minutes-per-run case."""
+    from research.harness.earnings_proximity import fetchers as mod
+
+    fixed_today = date(2026, 4, 24)
+    monkeypatch.setattr(mod, "_today", lambda: fixed_today)
+
+    # Pre-seed AAPL cache covering through today's recent completed session.
+    seed_dates = [date(2024, 4, 19), date(2026, 4, 22), date(2026, 4, 23)]
+    (tmp_path / "ohlcv").mkdir()
+    idx = pd.DatetimeIndex([pd.Timestamp(d) for d in seed_dates])
+    seed = pd.DataFrame(
+        {
+            "Open": [100.0, 100.0, 100.0],
+            "High": [101.0, 101.0, 101.0],
+            "Low": [99.0, 99.0, 99.0],
+            "Close": [100.5, 100.5, 100.5],
+            "Volume": [1_000_000, 1_000_000, 1_000_000],
+        },
+        index=idx,
+    )
+    seed.to_parquet(tmp_path / "ohlcv" / "AAPL.parquet")
+
+    def fake_download(**kwargs):  # pragma: no cover — must not be called
+        raise AssertionError(
+            f"yf.download must not be called for cache-covered request; kwargs={kwargs}"
+        )
+
+    monkeypatch.setattr(mod.yf, "download", fake_download)
+
+    data, stats = mod.load_ohlcv_with_stats(
+        ["AAPL"],
+        start=date(2024, 4, 19),
+        end=date(2026, 6, 5),  # Future-dated fetch_end.
+        cache_dir=tmp_path,
+    )
+    assert "AAPL" in data
+    assert stats.hits == ("AAPL",)
+    assert stats.misses == ()
+
+
 def test_load_ohlcv_drops_pre_ipo_nan_rows(tmp_path, monkeypatch):
     """yf.download(group_by='ticker') pads pre-IPO dates with NaN rows back
     to the requested window start. Session 2c hit this on 8 SPX/NDX tickers

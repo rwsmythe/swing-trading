@@ -122,17 +122,38 @@ def _extract_ticker_frame(raw: pd.DataFrame, ticker: str) -> pd.DataFrame:
     return df_t
 
 
+def _today() -> date:
+    """Return today's local date.
+
+    Indirected through this helper so tests can substitute a fixed date
+    via ``monkeypatch.setattr(fetchers, "_today", lambda: ...)`` without
+    monkeypatching the stdlib.
+    """
+    return date.today()
+
+
 def _covers(cached: pd.DataFrame, start: date, end: date) -> bool:
-    """True iff the cached frame covers the requested window [start, end)."""
+    """True iff the cached frame covers the requested window [start, end).
+
+    yfinance only returns data up through "today"; if ``end`` extends past
+    today (e.g., ``run.py`` requests 30 sessions of forward buffer), the
+    coverage check is satisfied as soon as the cache reaches today's bar.
+    Pre-fix, this check failed every run with a future-dated ``end``,
+    triggering a ~7-minute refetch that produced no new data — the
+    Session 2c Open Issue #3 case.
+    """
     if cached.empty:
         return False
     idx_min = cached.index.min()
     idx_max = cached.index.max()
     start_ts = pd.Timestamp(start)
     # yf.download uses an end-exclusive contract; the last bar we need is
-    # strictly before ``end``. We require the cached frame to include at
-    # least one bar at or after (end - 1 day).
-    end_inclusive_ts = pd.Timestamp(end) - pd.Timedelta(days=1)
+    # strictly before ``end``. Clamp the effective end to today + 1 day
+    # (i.e., today inclusive) since yfinance cannot return future bars —
+    # any cache that covers up through today fully covers a future-dated
+    # request.
+    effective_end = min(end, _today())
+    end_inclusive_ts = pd.Timestamp(effective_end) - pd.Timedelta(days=1)
     return idx_min <= start_ts and idx_max >= end_inclusive_ts
 
 
