@@ -4,7 +4,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-EXPECTED_SCHEMA_VERSION = 7  # trades.hypothesis_label (operational-branch hypothesis tagging)
+EXPECTED_SCHEMA_VERSION = 8  # hypothesis_registry (pre-registered investigation plan v0.1)
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 

@@ -219,3 +219,27 @@ class ConfigRevision:
     ts: str
     payload_json: str
     source: str  # 'cli' | 'web'
+
+
+@dataclass(frozen=True)
+class HypothesisRegistryEntry:
+    """One row of `hypothesis_registry` (migration 0008).
+
+    Pre-registered investigation plan v0.1: the four seeded hypotheses,
+    target sample sizes, and tripwire thresholds are FROZEN at the
+    migration. CLI may flip `status` and record `status_change_reason`;
+    everything else is mutated only via a NEW migration with explicit
+    version bump (anti-rationalization discipline; brief §3 + §5).
+    """
+    id: int | None
+    name: str
+    statement: str
+    target_sample_size: int
+    decision_criteria: str
+    status: str  # 'active' | 'paused' | 'closed-escaped' | 'closed-target-met'
+    consecutive_loss_tripwire: int
+    absolute_loss_tripwire_pct: float
+    created_at: str
+    status_changed_at: str | None = None
+    status_change_reason: str | None = None
+    notes: str | None = None
