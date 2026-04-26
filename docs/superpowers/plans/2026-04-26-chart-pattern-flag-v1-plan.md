@@ -60,13 +60,20 @@ def test_classifier_config_default_thresholds():
     assert c.flag_volume_ratio_max == 0.7
 
 
-def test_root_config_exposes_classifier():
-    from swing.config import Config
-    cfg = Config.default() if hasattr(Config, "default") else None
-    # If Config has no default(), at least the type is present and
-    # threadable into classify_flag via plumbing in Task 1.3+.
-    from swing.config import ClassifierConfig
-    assert ClassifierConfig is not None
+def test_root_config_exposes_classifier_field():
+    """Discriminating: assert Config has a `classifier` field of the right
+    type. Catches the case where ClassifierConfig is defined but not wired
+    onto Config (which would break `cfg.classifier` at use sites)."""
+    import dataclasses
+    from swing.config import Config, ClassifierConfig
+    fields = {f.name: f for f in dataclasses.fields(Config)}
+    assert "classifier" in fields, (
+        "Config must expose a `classifier` field; spec §3.1.4/§3.8 + "
+        "Task 3.2's classify_flag(bars, cfg=cfg.classifier) call"
+    )
+    assert fields["classifier"].type in (ClassifierConfig, "ClassifierConfig"), (
+        f"Expected classifier field typed ClassifierConfig, got {fields['classifier'].type}"
+    )
 ```
 
 - [ ] **Step 2: Add the dataclass**
@@ -3033,6 +3040,44 @@ def test_watchlist_omits_flag_tag_when_no_classification(tmp_path: Path):
         resp = client.get("/watchlist")
     assert resp.status_code == 200
     assert "flag (" not in resp.text
+
+
+def test_dashboard_top5_renders_flag_tag_for_classified_ticker(tmp_path: Path):
+    """Spec §1.1(4) display surface includes the dashboard, not just /watchlist.
+    `build_dashboard` plumbing for `pattern_tags` must surface in the rendered
+    top-5 section. Catches the failure mode where the watchlist page works
+    but build_dashboard's pattern_tags field is unwired."""
+    db = tmp_path / "swing.db"
+    _seed_pipeline_with_classification(db, ticker="AAPL", pattern="flag", confidence=0.78)
+    cfg = _make_cfg(db)
+    from swing.web.app import build_app
+    app = build_app(cfg)
+    with TestClient(app) as client:
+        resp = client.get("/")
+    assert resp.status_code == 200
+    # The dashboard's top-5 section includes the same watchlist_row partial,
+    # so 'flag (0.78)' must appear when the ticker is in the top-5 set.
+    assert "flag (0.78)" in resp.text
+
+
+def test_dashboard_top5_omits_flag_tag_when_no_classification(tmp_path: Path):
+    """Inverse: with classifications wiped, the dashboard top-5 must not
+    show any flag tag — proves build_dashboard's pattern_tags is computed
+    and not stuck on stale state."""
+    db = tmp_path / "swing.db"
+    _seed_pipeline_with_classification(db, ticker="AAPL", pattern="flag", confidence=0.78)
+    from swing.data.db import connect
+    conn = connect(db)
+    conn.execute("DELETE FROM pipeline_pattern_classifications")
+    conn.commit()
+    conn.close()
+    cfg = _make_cfg(db)
+    from swing.web.app import build_app
+    app = build_app(cfg)
+    with TestClient(app) as client:
+        resp = client.get("/")
+    assert resp.status_code == 200
+    assert "flag (" not in resp.text
 ```
 
 (Implementer: confirm `swing.web.app.build_app` is the canonical app factory; if the project uses `app = FastAPI(...)` module-level, follow whichever harness pattern existing route tests use.)
@@ -3973,11 +4018,45 @@ def test_render_chart_with_overlay_paints_two_bands_and_separate_pivot_segment(
     from matplotlib.collections import PolyCollection, LineCollection
     polys = [c for c in price_ax.collections if isinstance(c, PolyCollection)]
     assert len(polys) >= 2, "expected pole + flag fill_betweenx bands"
-    # Algo-pivot segment is a separate LineCollection added by hlines().
-    line_colls = [c for c in price_ax.collections if isinstance(c, LineCollection)]
-    assert len(line_colls) >= 1, "expected algo-pivot hlines segment"
     # Title annotation includes the confidence.
     assert "flag (0.78)" in price_ax.get_title()
+
+    # Discriminating check: the algo-pivot segment is an EXTRA
+    # LineCollection added on top of mpf's built-in pivot/stop hlines.
+    # Baseline (overlay=None) → record the count; overlay version must
+    # have strictly more, AND one of the new segments must span the
+    # flag region at y == pattern_overlay.pivot.
+    baseline_captured = {}
+    monkeypatch.setattr(mpf, "plot", real_plot)  # unwrap before baseline call
+    def _capture_baseline(df, **kw):
+        result = real_plot(df, **kw)
+        if kw.get("returnfig"):
+            baseline_captured["axes"] = result[1]
+        return result
+    monkeypatch.setattr(mpf, "plot", _capture_baseline)
+    render_chart(
+        ticker="AAPL", ohlcv=fake_ohlcv, pivot=110.0, stop=95.0,
+        output_path=tmp_path / "baseline.png", pattern_overlay=None,
+    )
+    baseline_lines = [c for c in baseline_captured["axes"][0].collections
+                      if isinstance(c, LineCollection)]
+    overlay_lines = [c for c in price_ax.collections
+                     if isinstance(c, LineCollection)]
+    assert len(overlay_lines) > len(baseline_lines), (
+        "algo-pivot hlines() segment missing — "
+        f"baseline LineCollection count {len(baseline_lines)} == "
+        f"overlay count {len(overlay_lines)}; spec §3.4 algo-pivot not painted"
+    )
+    # At least one of the EXTRA segments must sit at y == overlay.pivot.
+    new_segments = []
+    for lc in overlay_lines:
+        for path in lc.get_paths():
+            for vertex in path.vertices:
+                # vertex == (x, y); algo-pivot segment is horizontal at pivot.
+                new_segments.append(vertex[1])
+    assert any(abs(y - overlay.pivot) < 1e-6 for y in new_segments), (
+        "no LineCollection segment at y == algo-pivot value 120.0"
+    )
 ```
 
 - [ ] **Step 2: Implement painting**
