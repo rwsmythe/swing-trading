@@ -251,7 +251,19 @@ def entry_post(
     # vanishing the form-row. Validating here also keeps the catch tightly
     # typed: we don't risk silently swallowing future, unrelated ValueErrors
     # raised by deeper service/persistence layers as if they were operator
-    # input errors. Service layer still enforces the same invariant.
+    # input errors.
+    #
+    # The same invariant is also enforced in record_entry
+    # (swing/trades/entry.py). This is intentional defense-in-depth: the
+    # service-layer check guards CLI / programmatic callers; this UI-layer
+    # check guards the form swap-shape contract. Drift risk: if the
+    # service-layer check ever tightens (e.g. requires a minimum stop
+    # distance), this copy must be updated to match — otherwise
+    # record_entry will raise ValueError from a case the route admits as
+    # valid, the row-vanish bug returns, and
+    # `test_post_entry_stop_ge_entry_unhandled_value_error_still_500` will
+    # NOT catch it (that test guards against re-introducing a blanket
+    # ValueError catch, not against this specific drift case).
     if initial_stop >= entry_price:
         return _rerender_entry_form_with_error(
             request=request, templates=templates, cfg=cfg, cache=cache,

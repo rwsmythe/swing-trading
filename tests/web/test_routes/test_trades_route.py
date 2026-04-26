@@ -1127,9 +1127,16 @@ def test_post_entry_stop_ge_entry_unhandled_value_error_still_500(
     assert r.status_code == 500
     # Server defect surfaces via the generic error fragment (bare div with
     # data-request-id) — not silently re-rendered as a form-validation
-    # banner. This is the post-fix contract.
+    # banner. This is the post-fix contract: a 500-shaped response, NOT
+    # a 400 + form re-render. Codex R2 M1: deliberately do NOT assert the
+    # raw exception message is echoed in the body; that exposure is a
+    # property of the generic 500 handler today, not a guarantee we want
+    # to lock in (sanitizing the message later should not require updating
+    # this test).
     assert "data-request-id" in r.text
-    assert "synthetic deep-layer invariant violation" in r.text
+    # Negative discriminator: must NOT be the form-rerender shape.
+    assert '<tr id="entry-form-AAPL"' not in r.text
+    assert 'hx-post="/trades/entry"' not in r.text
 
 
 def test_post_entry_duplicate_sizing_hint_not_lying(seeded_db, monkeypatch):
