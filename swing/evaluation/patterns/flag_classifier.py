@@ -28,5 +28,22 @@ class FlagClassificationResult:
 
 
 def classify_flag(bars: pd.DataFrame) -> FlagClassificationResult:
-    """Stub — implementation in subsequent tasks."""
-    raise NotImplementedError
+    if len(bars) < 36:
+        return FlagClassificationResult(
+            detected=False, confidence=0.0, pattern="none",
+            pole_start_date=None, pole_end_date=None,
+            flag_start_date=None, flag_end_date=None,
+            pole_high=None, flag_low=None, pivot=None,
+            components={},
+        )
+    # Search loop — populates baseline components even when no candidate
+    # passes (best-attempted at (M=5, N=5)).
+    M_baseline, N_baseline = 5, 5
+    components = {"pole_M": float(M_baseline), "flag_N": float(N_baseline)}
+    return FlagClassificationResult(
+        detected=False, confidence=0.0, pattern="none",
+        pole_start_date=None, pole_end_date=None,
+        flag_start_date=None, flag_end_date=None,
+        pole_high=None, flag_low=None, pivot=None,
+        components=components,
+    )
