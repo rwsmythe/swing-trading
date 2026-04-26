@@ -105,3 +105,15 @@ def test_tightness_ratio_gate_below_threshold_passes():
     bars = make_flag_bars(flag_tightness_factor=0.667)
     res = classify_flag(bars)
     assert res.detected is True
+
+
+def test_volume_contraction_gate_above_threshold_rejects():
+    bars = make_flag_bars(flag_volume_factor=0.701)
+    res = classify_flag(bars)
+    assert res.detected is False
+
+
+def test_volume_contraction_gate_below_threshold_passes():
+    bars = make_flag_bars(flag_volume_factor=0.699)
+    res = classify_flag(bars)
+    assert res.detected is True
