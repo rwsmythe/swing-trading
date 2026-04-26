@@ -504,15 +504,35 @@ Form POST handler in `swing/web/routes/trades.py` reads `chart_pattern_operator`
 
 **Free-text override design — accepted with rationale (R1 Major 5).** `chart_pattern_operator` is intentionally unconstrained `TEXT` (no CHECK constraint) and the form's `other` dropdown path lets the operator type any pattern label (`'pennant'`, `'cup-handle'`, `'rounded base'`, etc.) even though V1's algorithm only emits `flag`/`none`. Rationale: capturing the operator's qualitative pattern observation NOW — at trade entry, with the chart in front of them — is essentially free; deferring the V2 vocabulary capture would lose this evidence forever. V1 analysis paths only act on `chart_pattern_operator IN ('flag', 'none', NULL)`; other values are stored but ignored by V1 logic. V2 vocabulary expansion (CHECK constraint on operator field, dropdown enum widening) is a separate migration that consumes the captured V1 free-text as the empirical seed for the legitimate-vocabulary list. (Locked-constraint #1 governs the algorithm's pattern-emission scope, not the operator field's storage scope; operator override is governed by locked-constraint #6.)
 
-`EntryRequest` at [swing/trades/entry.py:80-94](../../../swing/trades/entry.py#L80-L94) gains:
+`EntryRequest` at [swing/trades/entry.py:80-94](../../../swing/trades/entry.py#L80-L94) gains four new fields (operator + the resolved-at-entry-surface classification snapshot):
 
 ```python
 chart_pattern_operator: str | None = None
+# Resolved-at-entry-surface classification snapshot (R3 Major 1 fix —
+# eliminates ToCToU between what the operator saw and what gets persisted).
+chart_pattern_algo: str | None = None              # 'flag' | 'none' | None
+chart_pattern_algo_confidence: float | None = None
+chart_pattern_classification_pipeline_run_id: int | None = None  # audit anchor
 ```
 
-`record_entry` canonicalizes via the existing `canonicalize_hypothesis_label` (or extracts a shared `canonicalize_freetext_label` helper if review prefers — the canonicalization rules are identical).
+`record_entry` canonicalizes the operator-provided value via the existing `canonicalize_hypothesis_label` (or extracts a shared `canonicalize_freetext_label` helper if review prefers — the canonicalization rules are identical).
 
-**Cross-surface algo-evidence persistence (R2 Major 3 fix):** `record_entry` itself resolves the cached classification (looking up the latest pipeline_runs.evaluation_run_id → pipeline_run_id → `get_classification(pipeline_run_id, req.ticker)`) and persists `chart_pattern_algo` + `chart_pattern_algo_confidence` on the trade row from that lookup — for **both** the form path and the CLI path. This avoids data-loss where one surface persists algo evidence and the other doesn't. The form's pre-render of the algo display in `build_entry_form_vm` is purely cosmetic; the persistence call is centralized in `record_entry`. Repo-layer cross-column constraint (per §3.2.3): if the lookup yields a cache row with `pattern='flag'`, persist `chart_pattern_algo='flag'` + the cache's confidence value; if `pattern='none'`, persist `'none'` + NULL; if cache row missing OR `pattern IS NULL` (classifier error), persist `chart_pattern_algo=NULL` + `chart_pattern_algo_confidence=NULL`. The repo's `ValueError` invariant check fires only on internally-inconsistent inputs, never on this resolution path.
+**Cross-surface algo-evidence persistence — entry-surface resolution + audit-anchored persistence (R2 Major 3 + R3 Major 1):** Each entry surface (form, CLI) resolves the cached classification ONCE at its own render/execution moment and captures the result in `EntryRequest`. `record_entry` persists those captured values directly to the trade row — it does NOT perform a fresh cache lookup, so a pipeline run completing between render and submit cannot silently change what gets persisted relative to what the operator saw.
+
+| Surface | Resolution time | Persistence path |
+|---|---|---|
+| Form | `build_entry_form_vm` resolves cache row → VM carries `(algo, confidence, pipeline_run_id)` → template emits these as hidden form inputs → POST handler reconstructs `EntryRequest` with the form-supplied snapshot | `record_entry` persists `req.chart_pattern_algo`, `req.chart_pattern_algo_confidence` AS-IS (no re-lookup) |
+| CLI | CLI command resolves cache row at command start → constructs `EntryRequest` with resolved snapshot | Same — `record_entry` persists what's passed, no re-lookup |
+| CLI without cached row | Per §3.7 CLI parity gate, CLI refuses with explicit error before reaching `record_entry` | n/a — entry blocked |
+
+Resolution-mapping rules (applied at entry surface, NOT in `record_entry`):
+- Cache row exists with `pattern='flag'`: capture `chart_pattern_algo='flag'`, `chart_pattern_algo_confidence=<cache's confidence>`, `chart_pattern_classification_pipeline_run_id=<cache row's pipeline_run_id>`.
+- Cache row exists with `pattern='none'`: capture `chart_pattern_algo='none'`, confidence NULL, pipeline_run_id captured for audit.
+- Cache row exists with `pattern=NULL` (classifier error) OR cache row missing: capture all three NULL.
+
+Repo-layer cross-column invariant (per §3.2.3) still fires in `record_entry` — `ValueError` raised if `chart_pattern_algo='flag'` arrives without a non-NULL confidence (catches form-tampering or coding bug).
+
+**Threat model — hidden form-field tampering:** A hostile operator could manipulate the form's hidden `chart_pattern_*` inputs to persist arbitrary algo values they didn't actually see. For V1's personal-use single-operator tool this is an accepted residual risk — the operator has no incentive to misrepresent their own evidence loop. If V1's deployment surface ever broadens to multi-user or untrusted-input contexts, the spec's V2 hardening should re-resolve at submit time and validate against the form-supplied `pipeline_run_id` for tamper-resistance.
 
 ### 3.7 CLI
 
@@ -656,6 +676,12 @@ Per Brief §5; surface to the Codex critic during `copowers:brainstorming`'s adv
 3. **Watchlist tag visibility** appears on the next dashboard render after a pipeline run with classifications. Default threshold 0.0 = all detected flags visible.
 4. **Trade entry form** displays algo data for in-scope tickers immediately; out-of-scope tickers display the "Not classified" stub.
 5. **Operator validation gate.** Before merging V1, run the labeled-example test set; review FP/FN distribution; tighten defaults if FP > FN. Document the chosen defaults in `docs/orchestrator-context.md` recent-decisions.
+
+**Residual integrity acceptances (R3 Minor 1 + R3 Major 1 audit-anchor):** V1 has two intentionally-deferred integrity gaps the operator should be aware of:
+
+1. **Trade-row cross-column constraint enforced at repo layer only.** SQLite ALTER cannot add a multi-column row CHECK to an existing table without a heavyweight CREATE-COPY-DROP-RENAME migration. V1 enforces the `chart_pattern_algo='flag' iff confidence IS NOT NULL` invariant (and the `'none' iff confidence IS NULL` invariant) inside `insert_trade_with_event` only. **A non-repo writer (raw SQL via `sqlite3` CLI; an external import script; a future repo path that bypasses `insert_trade_with_event`) could insert an invalid trade-row state.** The risk is small in practice — `insert_trade_with_event` is the only sanctioned writer — but the residual gap is real and is captured as a deferred V2 hardening item (bundle with any other trade-table column changes that warrant the rebuild). Do NOT introduce a second writer to `trades` without porting the invariant check.
+
+2. **Hidden form-field tampering.** Per §3.6 threat-model paragraph: V1 trusts the form's submitted `chart_pattern_algo`/confidence/pipeline_run_id values. Mitigation deferred to V2 if V1's deployment surface broadens.
 
 ---
 
