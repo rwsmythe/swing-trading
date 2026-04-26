@@ -462,9 +462,23 @@ def build_dashboard(
         snap = open_trade_last_prices.get(t.ticker)
         if snap is None:
             continue
-        remaining = t.initial_shares - sum(
+        remaining_raw = t.initial_shares - sum(
             e.shares for e in exits_by_trade.get(t.id, [])
         )
+        # Clamp negative remainders to 0 (R3 Minor 1). A negative value means
+        # exits overshoot entry shares — a data-integrity bug, not a real
+        # short position. Log loudly and use 0 so a bad row does not push the
+        # dashboard's unrealized P&L into a phantom short PnL.
+        if remaining_raw < 0:
+            import logging
+            logging.getLogger(__name__).warning(
+                "trade %s (%s): exits overshoot entry shares "
+                "(initial=%d, remaining_raw=%d) — clamping to 0",
+                t.id, t.ticker, t.initial_shares, remaining_raw,
+            )
+            remaining = 0
+        else:
+            remaining = remaining_raw
         unrealized += (snap.price - t.entry_price) * remaining
         priced_count += 1
     unrealized_pnl = unrealized if priced_count > 0 else None
