@@ -82,6 +82,29 @@ class HypothesisProgressSummary:
 
 
 @dataclass(frozen=True)
+class TripwireStatus:
+    """Output of `compute_tripwire_status`. All fields derived from
+    closed trades whose `hypothesis_label` matches the hypothesis's
+    canonical name (case-insensitive substring; see
+    `_label_matches_hypothesis`).
+
+    `current_sample` counts closed trades only — open trades have no
+    realized R-multiple and so cannot contribute to either tripwire.
+    `cumulative_loss` is the SUM of realized P&L across matched trades
+    (winners reduce, losers add to). The absolute-loss tripwire fires
+    only when the sum is negative AND its magnitude crosses the
+    threshold (positive cumulative P&L cannot fire a loss tripwire).
+    """
+    hypothesis_id: int
+    current_sample: int
+    consecutive_max_loss_streak: int
+    cumulative_loss: float
+    consecutive_tripwire_fired: bool
+    absolute_tripwire_fired: bool
+    any_tripwire_fired: bool
+
+
+@dataclass(frozen=True)
 class CandidateRecommendation:
     """One row in the operator-facing prioritized recommendation list.
     Carries enough context that a downstream UI/CLI can pre-fill a
@@ -275,3 +298,96 @@ def prioritize_recommendations(
         r.candidate_ticker,
     ))
     return recs
+
+
+def _label_matches_hypothesis(label: str | None, hypothesis_name: str) -> bool:
+    """Trade's `hypothesis_label` matches a hypothesis if the hypothesis
+    NAME appears as a case-insensitive substring of the label.
+
+    Example: VIR's free-text backfill ``"sub-A+ VCP-not-formed test
+    (proximity_20ma + tightness fails); inaugural trade test"`` matches
+    the canonical "Sub-A+ VCP-not-formed" hypothesis. NULL labels never
+    match. The four canonical hypothesis names are distinct phrases so
+    a single label normally maps to at most one hypothesis. If a label
+    DOES contain two canonical names (operator typo / unusual free-text),
+    it counts toward BOTH — the conservative interpretation; the operator
+    can rename the label in a follow-up trade-events 'note' if needed.
+    """
+    if not label:
+        return False
+    return hypothesis_name.lower() in label.lower()
+
+
+def compute_tripwire_status(
+    conn: sqlite3.Connection,
+    *,
+    hypothesis_id: int,
+    starting_equity: float,
+) -> TripwireStatus:
+    """Compute per-hypothesis tripwire signals from closed trades.
+
+    Sample inclusion: a closed trade with non-NULL `hypothesis_label`
+    contributes when `_label_matches_hypothesis(label, hypothesis.name)`
+    holds.
+
+    Consecutive-max-loss streak: walk matched closed trades by
+    (entry_date DESC, id DESC) and count trailing trades whose
+    aggregate share-weighted r_multiple is <= -1.0. Stops at the first
+    non-loss trade (R > -1).
+
+    Absolute-loss tripwire: cumulative realized P&L across matched
+    trades; fires when cumulative_loss <= -starting_equity * pct/100.
+
+    Raises ValueError if `hypothesis_id` is unknown.
+    """
+    # Local import keeps the module DB-agnostic at import time so the
+    # matcher / prioritizer tests don't pull in repo modules.
+    from swing.data.repos.hypothesis import get_hypothesis
+    from swing.data.repos.trades import list_all_exits, list_closed_trades
+
+    h = get_hypothesis(conn, hypothesis_id)
+    if h is None:
+        raise ValueError(f"hypothesis {hypothesis_id} not found")
+
+    closed = list_closed_trades(conn)
+    matched = [
+        t for t in closed
+        if _label_matches_hypothesis(t.hypothesis_label, h.name)
+    ]
+    exits_by_trade: dict[int, list] = {}
+    for e in list_all_exits(conn):
+        exits_by_trade.setdefault(e.trade_id, []).append(e)
+
+    def _r_for(trade) -> float:
+        es = exits_by_trade.get(trade.id, [])
+        return sum(e.r_multiple * (e.shares / trade.initial_shares) for e in es)
+
+    def _pnl_for(trade) -> float:
+        return sum(e.realized_pnl for e in exits_by_trade.get(trade.id, []))
+
+    cumulative = sum(_pnl_for(t) for t in matched)
+
+    # Walk by entry_date DESC, id DESC — the most recent trade first.
+    matched_sorted = sorted(
+        matched, key=lambda t: (t.entry_date, t.id or 0), reverse=True,
+    )
+    streak = 0
+    for t in matched_sorted:
+        if _r_for(t) <= -1.0:
+            streak += 1
+        else:
+            break
+
+    consec_fired = streak >= h.consecutive_loss_tripwire
+    threshold = -starting_equity * (h.absolute_loss_tripwire_pct / 100.0)
+    abs_fired = cumulative <= threshold
+
+    return TripwireStatus(
+        hypothesis_id=hypothesis_id,
+        current_sample=len(matched),
+        consecutive_max_loss_streak=streak,
+        cumulative_loss=cumulative,
+        consecutive_tripwire_fired=consec_fired,
+        absolute_tripwire_fired=abs_fired,
+        any_tripwire_fired=consec_fired or abs_fired,
+    )
