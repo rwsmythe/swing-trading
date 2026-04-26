@@ -127,6 +127,17 @@ class ExportConfig:
 
 
 @dataclass(frozen=True)
+class ClassifierConfig:
+    """Tunable algorithm thresholds for chart-pattern classifiers.
+    Spec §3.1.4 — V1 bias false-positive cost > false-negative cost. After
+    Phase 7 labeled-example calibration, defaults migrate per FP/FN tally."""
+    flag_pole_gain_min: float = 0.30
+    flag_pullback_depth_max: float = 0.15
+    flag_tightness_ratio_max: float = 0.6
+    flag_volume_ratio_max: float = 0.7
+
+
+@dataclass(frozen=True)
 class Web:
     host: str = "127.0.0.1"
     port: int = 8080
@@ -163,6 +174,7 @@ class Config:
     pipeline: PipelineConfig
     export: ExportConfig
     web: Web = field(default_factory=Web)
+    classifier: ClassifierConfig = field(default_factory=ClassifierConfig)
 
 
 _PROJECT_INTERNAL_PREFIXES = ("data/", "exports/", "reference/")
@@ -238,4 +250,5 @@ def load(config_path: Path) -> Config:
         pipeline=PipelineConfig(**raw.get("pipeline", {})),
         export=ExportConfig(**raw.get("export", {})),
         web=Web(**raw.get("web", {})),
+        classifier=ClassifierConfig(**raw.get("classifier", {})),
     )
