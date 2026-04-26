@@ -39,9 +39,19 @@ def make_flag_bars(
     idx = pd.date_range("2026-01-01", periods=n, freq="B")
     closes = np.empty(n, dtype=float)
 
-    # Pre-run: gentle uptrend to seat the SMAs in stacked-and-rising order.
-    pre_close_start = start_close * 0.85
-    closes[:pre_run_bars] = np.linspace(pre_close_start, start_close, pre_run_bars)
+    # Pre-run: FLAT at start_close. This is a deliberate change from a rising
+    # pre-run to bound the classifier search's M-window. With M ∈ [5, 30] and
+    # the pole at indices [pre_run_bars, pre_run_bars + pole_bars), the search
+    # cannot reach past pre_run_bars; flat pre-run forces pole_low = start_close
+    # for any M reaching into pre-run, so measured pole_gain matches the
+    # synthetic pole_gain_pct exactly (required for Tasks 1.4-1.7 threshold
+    # discrimination). Gate 5 (SMA10>SMA20>SMA50 stacked + rising over 5-bar
+    # lookback) still fires because the rising pole bars dominate SMA10's
+    # 10-bar window and pull SMA50 up over the 5-bar shift. Verified via
+    # arithmetic for pole_top ∈ [120, 140] and corresponding pre_run_bars=50,
+    # pole_bars=10. Original rising pre-run admitted spurious pole_gain
+    # measurements >> synthetic pole_gain_pct when M reached into rising bars.
+    closes[:pre_run_bars] = start_close
 
     # Pole: linear advance to start_close * (1 + pole_gain_pct).
     pole_top = start_close * (1.0 + pole_gain_pct)
