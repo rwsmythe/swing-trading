@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 from swing.data.repos.trades import get_trade, list_exits_for_trade
 
@@ -110,14 +110,22 @@ def _fetch_recommendations(
         "c.rs_return_12w_vs_spy, c.pattern_tag, c.notes "
         "FROM candidates c "
         "JOIN evaluation_runs er ON er.id = c.evaluation_run_id "
-        "WHERE c.ticker = ? AND er.run_ts <= ? "
+        "WHERE c.ticker = ? AND er.run_ts < ? "
         f"AND c.bucket IN ({placeholders}) "
         "ORDER BY er.run_ts ASC, c.id ASC"
     )
-    # Compare run_ts (an ISO datetime string) against an upper bound that
-    # includes the entire entry_date (anything stamped on entry_date itself
-    # at any time-of-day still counts as on-or-before).
-    upper_bound = f"{entry_date}T23:59:59"
+    # Exclusive next-day-midnight upper bound. Lexicographic comparison on
+    # the ISO `run_ts` string field: anything stamped on `entry_date` is
+    # included regardless of sub-second precision (`...T23:59:59.500`) or
+    # timezone suffix (`...T23:59:59Z`, `...T23:59:59+00:00`), all of which
+    # would have been incorrectly excluded by an inclusive `<= entry_date
+    # T23:59:59` bound. Adversarial review R2 M1.
+    try:
+        next_day = date.fromisoformat(entry_date) + timedelta(days=1)
+        upper_bound = f"{next_day.isoformat()}T00:00:00"
+    except ValueError:
+        # Malformed entry_date: fall back to no-rec result rather than crash.
+        return ()
     rows = conn.execute(
         sql, (ticker, upper_bound, *_USEFUL_BUCKETS),
     ).fetchall()

@@ -174,6 +174,49 @@ def test_analyze_renders_manually_sourced_trade(tmp_path: Path):
     assert "Hypothesis: manual" in out
 
 
+def test_analyze_renders_partial_exit_open_trade_with_ongoing_duration(tmp_path: Path):
+    """Adversarial R2 M2: a partial exit on an open trade must NOT render
+    'entry to last exit' duration — the position is still live. The CLI
+    should label the duration as ongoing and surface the last partial
+    exit date separately."""
+    runner, cfg = _setup(tmp_path)
+    db_path = _db_path_from_cfg(cfg)
+    conn = ensure_schema(db_path)
+    try:
+        trade = Trade(
+            id=None, ticker="AAA", entry_date="2026-04-15",
+            entry_price=100.0, initial_shares=10, initial_stop=95.0,
+            current_stop=95.0, status="open",
+            watchlist_entry_target=None, watchlist_initial_stop=None,
+            notes=None, hypothesis_label=None,
+        )
+        with conn:
+            tid = insert_trade_with_event(
+                conn, trade, event_ts="2026-04-15T09:30:00", rationale=None,
+            )
+        # Partial exit: 4 of 10 shares. Trade remains open.
+        ex = Exit(
+            id=None, trade_id=tid, exit_date="2026-04-18",
+            exit_price=110.0, shares=4, reason="target",
+            realized_pnl=40.0, r_multiple=2.0, notes=None,
+        )
+        with conn:
+            insert_exit_with_event(
+                conn, ex, event_ts="2026-04-18T16:00:00", rationale=None,
+            )
+    finally:
+        conn.close()
+
+    r = runner.invoke(main, ["--config", str(cfg), "trade", "analyze", str(tid)])
+    assert r.exit_code == 0, r.output
+    out = r.output
+    # "ongoing" + "last partial exit 2026-04-18" markers, NOT "entry to last exit"
+    assert "ongoing" in out
+    assert "last partial exit 2026-04-18" in out
+    assert "trade still open" in out
+    assert "(entry to last exit)" not in out
+
+
 def test_analyze_renders_null_hypothesis_label_as_none(tmp_path: Path):
     runner, cfg = _setup(tmp_path)
     tid = _seed_manual_trade(cfg, hypothesis=None)

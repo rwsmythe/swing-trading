@@ -540,12 +540,14 @@ def trade_analyze_cmd(ctx, trade_id):
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
     try:
-        # Technical read-only enforcement on top of the analyze function's
+        # Connection-level write guard on top of the analyze function's
         # behavioral discipline: PRAGMA query_only=ON makes SQLite refuse any
-        # INSERT/UPDATE/DELETE/DDL on this connection for its lifetime, so a
-        # future bug in the compute path cannot mutate the production DB
-        # through this command. Cheaper than URI ?mode=ro because it preserves
-        # the standard `connect()` schema-version check.
+        # INSERT/UPDATE/DELETE/DDL on THIS CONNECTION for its lifetime. It
+        # does not open the underlying file read-only — concurrent writers on
+        # other connections (e.g. the pipeline) are unaffected — but it does
+        # prevent a future bug in the compute path from mutating the
+        # production DB through this command. Chosen over URI ?mode=ro to
+        # preserve the standard `connect()` schema-version check path.
         conn.execute("PRAGMA query_only = ON")
         try:
             a = analyze_trade(conn, trade_id)
@@ -705,11 +707,11 @@ def _render_trade_analysis(a) -> list[str]:
         )
     else:
         lines.append("  R-multiple (shares-weighted): n/a (no exits)")
-    # Hold duration: entry → last exit (only meaningful when there's at least
-    # one exit; otherwise the trade is still open and "hold duration" is
-    # undefined for retrospective purposes).
-    if a.exits:
-        from datetime import date as _date
+    # Hold duration: branch on trade status so a partial exit on an open
+    # trade doesn't get reported as "entry to last exit" (the position is
+    # still live). Adversarial review R2 M2.
+    from datetime import date as _date
+    if a.exits and a.status == "closed":
         try:
             entry_d = _date.fromisoformat(a.entry_date)
             last_exit_d = max(
@@ -721,8 +723,35 @@ def _render_trade_analysis(a) -> list[str]:
             )
         except ValueError:
             lines.append("  Hold duration: n/a (date parse error)")
+    elif a.exits and a.status == "open":
+        # Partial exits on an open trade — duration is ongoing.
+        try:
+            entry_d = _date.fromisoformat(a.entry_date)
+            today = _date.today()
+            hold_days = (today - entry_d).days
+            last_partial_d = max(
+                _date.fromisoformat(e.exit_date) for e in a.exits
+            )
+            lines.append(
+                f"  Hold duration: {hold_days} days ongoing (entry to today; "
+                f"last partial exit {last_partial_d.isoformat()}; trade still open)"
+            )
+        except ValueError:
+            lines.append("  Hold duration: n/a (date parse error)")
+    elif not a.exits and a.status == "open":
+        try:
+            entry_d = _date.fromisoformat(a.entry_date)
+            today = _date.today()
+            hold_days = (today - entry_d).days
+            lines.append(
+                f"  Hold duration: {hold_days} days ongoing (entry to today; trade still open)"
+            )
+        except ValueError:
+            lines.append("  Hold duration: n/a (trade still open)")
     else:
-        lines.append("  Hold duration: n/a (trade still open)")
+        # status == 'closed' with no exits is invariant-violating per the
+        # trades repo; surface defensively rather than crash.
+        lines.append("  Hold duration: n/a (closed trade with no exits — data anomaly)")
     return lines
 
 

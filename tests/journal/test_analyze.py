@@ -353,6 +353,85 @@ def test_missing_trade_raises(tmp_path):
 # --- DB read-only safety ------------------------------------------------------
 
 
+def test_recommendations_with_fractional_second_run_ts_on_entry_date_included(tmp_path):
+    """Adversarial R2 M1: the upper bound must accept run_ts strings with
+    sub-second precision stamped anywhere within entry_date. Inclusive
+    string compare against 'entry_dateT23:59:59' would silently drop them."""
+    conn = _conn(tmp_path)
+    _insert_run(
+        conn, run_ts="2026-04-20T23:59:59.500",
+        action_session_date="2026-04-20", data_asof_date="2026-04-17",
+        candidates=[_watch_candidate("VIR", pivot=10.76, close=10.75,
+                                     initial_stop=8.26)],
+    )
+    tid = _trade(conn, ticker="VIR", entry_date="2026-04-20",
+                 entry_price=11.30, shares=2, initial_stop=8.26)
+    a = analyze_trade(conn, tid)
+    assert len(a.recommendations) == 1
+    assert a.pct_above_pivot is not None  # deviation math available
+
+
+def test_recommendations_with_z_suffix_run_ts_on_entry_date_included(tmp_path):
+    """R2 M1: also handle the `Z` UTC suffix variant."""
+    conn = _conn(tmp_path)
+    _insert_run(
+        conn, run_ts="2026-04-20T23:59:59Z",
+        action_session_date="2026-04-20", data_asof_date="2026-04-17",
+        candidates=[_watch_candidate("VIR", pivot=10.76, close=10.75)],
+    )
+    tid = _trade(conn, ticker="VIR", entry_date="2026-04-20",
+                 entry_price=11.30, shares=2, initial_stop=8.26)
+    a = analyze_trade(conn, tid)
+    assert len(a.recommendations) == 1
+
+
+def test_recommendations_with_next_day_run_ts_excluded(tmp_path):
+    """R2 M1: ensure the new exclusive bound does NOT silently sweep in the
+    following day's runs."""
+    conn = _conn(tmp_path)
+    _insert_run(
+        conn, run_ts="2026-04-21T00:00:00",
+        action_session_date="2026-04-21", data_asof_date="2026-04-20",
+        candidates=[_watch_candidate("VIR", pivot=10.76, close=10.75)],
+    )
+    tid = _trade(conn, ticker="VIR", entry_date="2026-04-20",
+                 entry_price=11.30, shares=2, initial_stop=8.26)
+    a = analyze_trade(conn, tid)
+    assert a.recommendations == ()
+
+
+def test_malformed_entry_date_returns_no_recs(tmp_path):
+    """R2 M1: defensive fallback when the entry_date can't be parsed for the
+    upper-bound computation."""
+    conn = _conn(tmp_path)
+    # Insert a candidate so we'd otherwise match.
+    _insert_run(
+        conn, run_ts="2026-04-19T18:00:00",
+        action_session_date="2026-04-20", data_asof_date="2026-04-17",
+        candidates=[_watch_candidate("VIR", pivot=10.76, close=10.75)],
+    )
+    # Manually insert a trade with a malformed entry_date via raw SQL — the
+    # repo would refuse, but production data could in principle have it.
+    with conn:
+        conn.execute(
+            "INSERT INTO trades (ticker, entry_date, entry_price, "
+            "initial_shares, initial_stop, current_stop, status, notes) "
+            "VALUES ('VIR', 'not-a-date', 11.30, 2, 8.26, 8.26, 'open', NULL)"
+        )
+        tid = conn.execute(
+            "SELECT id FROM trades WHERE entry_date='not-a-date'"
+        ).fetchone()[0]
+        # Required trade_event for parity with insert_trade_with_event.
+        conn.execute(
+            "INSERT INTO trade_events (trade_id, ts, event_type, payload_json) "
+            "VALUES (?, '2026-04-20T09:30:00', 'entry', '{}')",
+            (tid,),
+        )
+    a = analyze_trade(conn, tid)
+    # Defensive: returns empty recs rather than crashing.
+    assert a.recommendations == ()
+
+
 def test_analyze_does_not_mutate_db(tmp_path):
     """Brief §5 watch item: function must be read-only."""
     conn = _conn(tmp_path)
