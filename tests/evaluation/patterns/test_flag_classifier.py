@@ -88,6 +88,29 @@ def test_pullback_depth_gate_below_threshold_passes():
     assert res.detected is True
 
 
+def test_pullback_depth_gate_is_threshold_sensitive():
+    """Discriminating-test discipline (Codex R2 M2 follow-up): proves
+    gate 6 (pullback_depth ≤ 0.15) is what enforces the threshold by
+    cfg-injection. Tightening cfg.flag_pullback_depth_max below the
+    measured pullback at the winning candidate must flip the same
+    fixture from pass → reject.
+    """
+    from swing.config import ClassifierConfig
+    bars = make_flag_bars()  # default → detected
+    res_default = classify_flag(bars)
+    assert res_default.detected is True
+    measured = res_default.components["pullback_depth"]
+    # Tighten cfg threshold below measured. Add a small safety margin
+    # so the threshold falls below all passing candidates' pullback
+    # values (search must not escape to a smaller-pullback window).
+    cfg = ClassifierConfig(flag_pullback_depth_max=measured * 0.5)
+    res_tight = classify_flag(bars, cfg=cfg)
+    assert res_tight.detected is False, (
+        f"Tightening flag_pullback_depth_max to {measured * 0.5:.4f} "
+        f"(measured pullback={measured:.4f}) should reject the fixture"
+    )
+
+
 # tightness_ratio gate threshold = 0.6 (cfg.flag_tightness_ratio_max).
 # Empirical mapping: measured tightness_ratio = flag_tightness_factor *
 # (pole_close_avg / flag_close_avg) ≈ flag_tightness_factor * 0.9 in this
@@ -173,6 +196,28 @@ def test_volume_contraction_gate_below_threshold_passes():
     bars = make_flag_bars(flag_volume_factor=0.699)
     res = classify_flag(bars)
     assert res.detected is True
+
+
+def test_volume_contraction_gate_is_threshold_sensitive():
+    """Discriminating-test discipline (Codex R2 M2 follow-up): proves
+    gate 8 (volume_ratio ≤ 0.7) is what enforces the threshold by
+    cfg-injection. Tightening cfg.flag_volume_ratio_max below the
+    measured volume_ratio at the winning candidate must flip the same
+    fixture from pass → reject.
+    """
+    from swing.config import ClassifierConfig
+    bars = make_flag_bars()  # default → detected at volume_ratio ≈ 0.565
+    res_default = classify_flag(bars)
+    assert res_default.detected is True
+    measured = res_default.components["volume_ratio"]
+    # Tighten cfg threshold below measured by enough margin to exclude
+    # all passing candidates' volume_ratio (search must not escape).
+    cfg = ClassifierConfig(flag_volume_ratio_max=measured * 0.5)
+    res_tight = classify_flag(bars, cfg=cfg)
+    assert res_tight.detected is False, (
+        f"Tightening flag_volume_ratio_max to {measured * 0.5:.4f} "
+        f"(measured volume_ratio={measured:.4f}) should reject the fixture"
+    )
 
 
 def test_ma_structure_not_stacked_rejects():
