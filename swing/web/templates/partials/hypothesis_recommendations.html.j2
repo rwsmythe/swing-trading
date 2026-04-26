@@ -12,6 +12,7 @@
       <tr>
         <th>Ticker</th>
         <th>Price</th>
+        <th>Pivot</th>
         <th>Hypothesis</th>
         <th>Progress</th>
         <th>Tripwire</th>
@@ -23,6 +24,7 @@
         <tr {% if rec.tripwire_fired %}class="tripwire-fired"{% endif %}>
           <td>{{ rec.ticker }}</td>
           <td>{% if rec.current_price is not none %}${{ "%.2f"|format(rec.current_price) }}{% else %}—{% endif %}</td>
+          <td>{% if rec.pivot_price is not none %}${{ "%.2f"|format(rec.pivot_price) }}{% else %}—{% endif %}</td>
           <td>{{ rec.hypothesis_name }}</td>
           <td>{{ rec.hypothesis_progress_n }} / {{ rec.hypothesis_progress_target }}</td>
           <td>{% if rec.tripwire_fired %}<strong>FIRED</strong>: {{ rec.tripwire_reason or "" }}{% else %}—{% endif %}</td>

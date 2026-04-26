@@ -161,6 +161,7 @@ class HypothesisRecommendation:
     """
     ticker: str
     current_price: float | None
+    pivot_price: float | None      # Candidate.pivot — QoL #3 Pivot column
     hypothesis_id: int
     hypothesis_name: str
     hypothesis_progress_n: int
@@ -477,6 +478,10 @@ def build_dashboard(
             current_price=(
                 prices[r.candidate_ticker].price
                 if r.candidate_ticker in prices else None
+            ),
+            pivot_price=(
+                candidates_by_ticker[r.candidate_ticker].pivot
+                if r.candidate_ticker in candidates_by_ticker else None
             ),
             hypothesis_id=r.hypothesis_id,
             hypothesis_name=r.hypothesis_name,

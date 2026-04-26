@@ -322,6 +322,116 @@ def test_dashboard_section_appears_after_today_decisions(
     )
 
 
+def _hyp_recs_section(body: str) -> str:
+    """Slice the body to JUST the hypothesis-recommendations <section>.
+
+    Other surfaces (watchlist top5) already have a Pivot column; assertions
+    scoped to the hyp-recs section avoid cross-section false positives.
+    """
+    start = body.find('id="hypothesis-recommendations"')
+    assert start >= 0, "hypothesis-recommendations section is missing"
+    end = body.find("</section>", start)
+    assert end > start
+    return body[start:end]
+
+
+def test_dashboard_renders_pivot_price_column(seeded_db, monkeypatch):
+    """QoL #3: the hyp-recs table renders a Pivot column between Price and
+    Hypothesis showing Candidate.pivot formatted as $X.XX."""
+    cfg, cfg_path = seeded_db
+    _seed_aplus_pipeline(cfg)   # AAPL with pivot=181.0
+    _patch_caches(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/")
+    assert r.status_code == 200
+    section = _hyp_recs_section(r.text)
+    # Pivot column header is present in the hyp-recs section specifically.
+    assert "<th>Pivot</th>" in section
+    # Pivot value rendered. Distinguishes from current_price ($180.50).
+    assert "$181.00" in section
+    # Column ordering: Price, then Pivot, then Hypothesis (within the section).
+    price_idx = section.find("<th>Price</th>")
+    pivot_idx = section.find("<th>Pivot</th>")
+    hyp_idx = section.find("<th>Hypothesis</th>")
+    assert price_idx >= 0 and pivot_idx >= 0 and hyp_idx >= 0
+    assert price_idx < pivot_idx < hyp_idx, (
+        "Pivot column must appear between Price and Hypothesis in hyp-recs"
+    )
+
+
+def test_dashboard_pivot_falls_back_to_dash_when_none(seeded_db, monkeypatch):
+    """When the candidate's pivot is NULL the cell renders em-dash, not
+    a stray $0.00 or empty cell."""
+    cfg, cfg_path = seeded_db
+    # Seed an A+ candidate WITHOUT a pivot value (NULL).
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            cur = conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+                    tickers_evaluated, aplus_count, watch_count, skip_count,
+                    excluded_count, error_count,
+                    rs_universe_version, rs_universe_hash)
+                   VALUES (?, ?, ?, NULL, 1, 1, 0, 0, 0, 0, 'v1', 'h1')""",
+                ("2026-04-17T21:49:00", "2026-04-17", "2026-04-20"),
+            )
+            eval_id = cur.lastrowid
+            conn.execute(
+                """INSERT INTO candidates (evaluation_run_id, ticker, bucket,
+                   close, pivot, initial_stop, rs_method)
+                   VALUES (?, 'NOPV', 'aplus', 50.0, NULL, 45.0, 'universe')""",
+                (eval_id,),
+            )
+            conn.execute(
+                """INSERT INTO pipeline_runs
+                   (started_ts, finished_ts, trigger, data_asof_date,
+                    action_session_date, state, lease_token,
+                    evaluation_run_id)
+                   VALUES ('2026-04-17T21:49:00', '2026-04-17T21:55:00',
+                           'scheduled', '2026-04-17', '2026-04-20',
+                           'complete', 'tok', ?)""",
+                (eval_id,),
+            )
+    finally:
+        conn.close()
+    _patch_caches(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/")
+    section = _hyp_recs_section(r.text)
+    # Pivot column header must exist in this section pre/post-fix asymmetry:
+    # pre-fix (no Pivot column rendered in hyp-recs section), this assertion
+    # is the discriminator.
+    assert "<th>Pivot</th>" in section
+    # NOPV row must NOT carry $0.00 or $null in its pivot cell — must
+    # render an em-dash. The hyp-recs section's "Tripwire" column also
+    # renders "—" when not fired, so we cannot rely on a single em-dash.
+    # Instead, count cells in the NOPV row and assert the pivot-position
+    # cell (3rd <td>, after Ticker and Price) is exactly "—".
+    row_start = section.find("NOPV")
+    assert row_start > 0
+    row_end = section.find("</tr>", row_start)
+    row_html = section[row_start:row_end]
+    # Cells: Ticker (NOPV) / Price / Pivot / Hypothesis / Progress / Tripwire / Label
+    # Pivot cell content per the template: either "$X.XX" or "—"
+    assert "$0.00" not in row_html
+    # Reslice from the row's <tr so the Ticker cell is included in the
+    # parse below; otherwise body.find("NOPV") puts us inside the first
+    # <td> and we'd miscount cells.
+    tr_start = section.rfind("<tr", 0, row_start)
+    assert tr_start >= 0
+    full_row_html = section[tr_start:row_end]
+    import re
+    cells = re.findall(r"<td[^>]*>(.*?)</td>", full_row_html, re.DOTALL)
+    # Cells: Ticker / Price / Pivot / Hypothesis / Progress / Tripwire / Label
+    assert len(cells) >= 3, f"row has fewer cells than expected: {cells!r}"
+    pivot_cell = cells[2].strip()
+    assert pivot_cell == "—", f"pivot cell expected em-dash, got {pivot_cell!r}"
+
+
 def test_tripwire_fired_css_class_styled(seeded_db, monkeypatch):
     """The `tripwire-fired` CSS class must have a real style rule (red bg
     or red border) so the visual alarm is obvious. Defends against the
