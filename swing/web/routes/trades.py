@@ -323,6 +323,24 @@ def entry_post(
                 {"error_message": str(exc)},
                 status_code=400,
             )
+        except ValueError as exc:
+            # Bug 2 (2026-04-25): record_entry raises ValueError when
+            # initial_stop >= entry_price. Without this catch the error
+            # propagates to the generic 500 handler which returns a bare
+            # <div> fragment; the form's "closest tr" outerHTML swap then
+            # places the <div> inside <tbody>, the HTML parser hoists it
+            # out (only <tr> is a valid tbody child), and the operator's
+            # form-row vanishes from the watchlist until refresh. Mirror
+            # the duplicate-error drift-recovery shape: 400 + form
+            # re-render + banner + preserved inputs, so the swap stays
+            # row-shaped and the operator can correct entry_price.
+            return _rerender_entry_form_with_error(
+                request=request, templates=templates, cfg=cfg, cache=cache,
+                executor=executor, ticker=ticker, entry_date=entry_date,
+                entry_price=entry_price, shares=shares,
+                initial_stop=initial_stop, rationale=rationale, notes=notes,
+                error_message=str(exc),
+            )
         except HardCapException as exc:
             # Hard cap: do NOT re-render the form — re-submitting won't succeed
             # until a position is closed (spec §8 "No UI bypass for hard-cap").

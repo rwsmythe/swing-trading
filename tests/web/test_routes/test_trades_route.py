@@ -883,6 +883,163 @@ def test_post_entry_duplicate_renders_form_preserved(seeded_db, monkeypatch):
     assert 'value="3"' in r.text
 
 
+def test_post_entry_stop_ge_entry_renders_form_preserved(seeded_db, monkeypatch):
+    """Bug 2 (2026-04-25): stop >= entry must NOT bubble ValueError to the
+    generic 500 handler. The route must catch ValueError and re-render the
+    entry form with an error banner inside a ``<tr id="entry-form-…">`` —
+    otherwise the generic handler returns a bare ``<div>``, which the HTML
+    parser hoists out of ``<tbody>`` and the operator's row vanishes from
+    the watchlist until refresh.
+
+    Operator-reported reproduction: click watchlist Enter button → form
+    appears, adjust entry_price to match initial_stop → submit (Enter key
+    or Submit button) → row collapses, watchlist entry disappears.
+
+    Pre-fix evidence: status=500, body=``<div class="banner banner-degraded"
+    …>Error (request …): stop must be < entry; got entry=170.0, stop=170.0</div>``
+    — NO ``<tr>``, NO form markup. Browser HTML parser hoists the bare
+    ``<div>`` out of ``<tbody>`` (only ``<tr>`` is a valid tbody child),
+    leaving the row position empty. Refresh restores because the watchlist
+    DB row is untouched.
+
+    Post-fix expectation: status=400, response is the trade_entry_form
+    fragment wrapped in ``<tr id="entry-form-AAPL">`` with the error banner
+    and submitted values preserved (entry_price, initial_stop, shares,
+    rationale).
+    """
+    from datetime import datetime
+
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="AAPL", added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: PriceSnapshot(ticker=t, price=170.0, asof=datetime.now(),
+                             is_stale=False, source="live")
+            for t in tickers
+        },
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true", "HX-Target": "entry-form-AAPL"},
+            data={
+                "ticker": "AAPL",
+                "entry_date": "2026-04-18",
+                "entry_price": "170.00",
+                "shares": "5",
+                "initial_stop": "170.00",  # stop == entry → ValueError pre-fix
+                "rationale": "aplus-setup",
+            },
+        )
+    # Pre-fix this is 500; post-fix it must be 400 (validation failure shape
+    # mirroring DuplicateOpenPositionException).
+    assert r.status_code == 400, (
+        f"Expected 400 (validation failure re-render), got {r.status_code}.\n"
+        f"Body[:500]: {r.text[:500]!r}"
+    )
+    # Strongest discriminator: response must be a row-shaped fragment so the
+    # outerHTML swap into the entry-form <tr> stays inside <tbody>. Pre-fix
+    # the body is a bare <div> with no <tr> wrapper.
+    assert '<tr id="entry-form-AAPL"' in r.text, (
+        "Response must be wrapped in the entry-form <tr> so the closest-tr "
+        "swap target stays valid inside <tbody>. Pre-fix the generic "
+        "exception handler returns a bare <div> which the HTML parser hoists "
+        "out of <tbody>, vanishing the row."
+    )
+    # Form must be re-rendered so the operator can correct and resubmit.
+    assert 'name="entry_price"' in r.text
+    assert 'name="initial_stop"' in r.text
+    # Banner with the validation message.
+    assert "banner-degraded" in r.text
+    assert "stop" in r.text and "entry" in r.text  # the ValueError message
+    # Submitted values preserved (mirrors duplicate-error preservation).
+    assert 'value="170.00"' in r.text
+    assert 'value="aplus-setup" selected' in r.text
+    # Bug 1 fix preservation: stale check that nothing in the form template
+    # silently regressed (the form is re-rendered from the canonical partial).
+    assert 'hx-post="/trades/entry"' in r.text
+
+
+def test_post_entry_stop_gt_entry_also_caught(seeded_db, monkeypatch):
+    """Bug 2 follow-up: ValueError catch covers stop > entry (not just ==).
+
+    Same root cause; this guards the boundary in case a future change
+    narrows the catch to equality only.
+    """
+    from datetime import datetime
+
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="AAPL", added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: PriceSnapshot(ticker=t, price=170.0, asof=datetime.now(),
+                             is_stale=False, source="live")
+            for t in tickers
+        },
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true", "HX-Target": "entry-form-AAPL"},
+            data={
+                "ticker": "AAPL",
+                "entry_date": "2026-04-18",
+                "entry_price": "170.00",
+                "shares": "5",
+                "initial_stop": "175.00",  # stop > entry
+                "rationale": "aplus-setup",
+            },
+        )
+    assert r.status_code == 400
+    assert '<tr id="entry-form-AAPL"' in r.text
+    assert 'value="170.00"' in r.text   # entry_price preserved
+    assert 'value="175.00"' in r.text   # initial_stop preserved
+
+
 def test_post_entry_duplicate_sizing_hint_not_lying(seeded_db, monkeypatch):
     """R5 regression: on drift-recovery, the sizing hint must NOT claim the user's
     entered shares is the server's recommendation. The 'Suggested max' text
