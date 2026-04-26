@@ -22,7 +22,7 @@
 ### 1.2 What V1 ships
 
 1. New `swing/evaluation/patterns/flag_classifier.py` — pure-function `classify_flag(bars: DataFrame) -> FlagClassificationResult`.
-2. Two new migrations — `0009_pipeline_pattern_classifications.sql` (cache table) and `0010_trade_chart_pattern.sql` (three trade columns).
+2. Two new migrations — `0009_pipeline_pattern_classifications.sql` (cache table) and `0010_trade_chart_pattern.sql` (four trade columns: algo, algo_confidence, operator, audit-anchor pipeline_run_id).
 3. `_step_charts` extension — call classifier on the in-hand OHLCV; INSERT classification row in the same `lease.fenced_write()` transaction as the chart_target update.
 4. Watchlist tag rendering — `flag (0.78)` appended to the existing tags cell, sort-NEUTRAL.
 5. Trade-entry "Chart pattern" form section — algo display + override dropdown + free-text "other" path canonicalized like `hypothesis_label`.

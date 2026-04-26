@@ -7,7 +7,7 @@ a trackable list. Prioritize before starting a Phase 3e spec cycle.
 
 ## Dashboard / UX enhancements
 
-### 3e.1 — Mark-to-market on Account card
+### 3e.1 — Mark-to-market on Account card — **SHIPPED 2026-04-26** (commit `2b5cded`, QoL bundle Session 1)
 
 **Observed:** The dashboard Account card shows `current_equity` (starting equity +
 realized P&L + net cash). This is "settled cash" semantics, not "total account
@@ -46,7 +46,7 @@ P&L does.
 
 ---
 
-### 3e.3 — `POST /prices/refresh` also clears OHLCV breaker
+### 3e.3 — `POST /prices/refresh` also clears OHLCV breaker — **SHIPPED 2026-04-26** (commit `5b56a2d`, QoL bundle Session 1)
 
 **Observed:** The /prices/refresh button bypasses PriceCache's circuit breaker
 but doesn't touch OhlcvCache. If the OHLCV breaker is tripped, the operator
@@ -65,7 +65,7 @@ the 60s cooldown timer.
 
 ## Watchlist UX bugs
 
-### 3e.4 — Watchlist entries can expand but cannot collapse
+### 3e.4 — Watchlist entries can expand but cannot collapse — **SHIPPED 2026-04-26** (commit `2c04aa2`, QoL bundle Session 1)
 
 **Observed:** Clicking a watchlist row expands it to show details. Clicking the
 expanded row does nothing — no toggle/collapse. Operator has to refresh the
@@ -78,7 +78,7 @@ add an explicit collapse affordance (close X in the expanded panel).
 
 ---
 
-### 3e.5 — Stale placeholder text in expanded watchlist entries
+### 3e.5 — Stale placeholder text in expanded watchlist entries — **SHIPPED 2026-04-26** (commit `d5b076c`, QoL bundle Session 1)
 
 **Observed:** Expanded watchlist entries contain the literal string:
 
@@ -99,7 +99,7 @@ template if we ship the button.
 
 ---
 
-### 3e.6 — No graph pattern shape estimation
+### 3e.6 — No graph pattern shape estimation — **BRAINSTORM SHIPPED 2026-04-26** (spec at `docs/superpowers/specs/2026-04-26-chart-pattern-flag-v1-design.md`, commit chain `9583f19..081f689`); writing-plans dispatch queued. V1 scope = `flag_pattern` only; other patterns deferred to V2+. See "2026-04-26 chart-pattern flag-v1 brainstorm follow-ups" section below.
 
 **Observed:** The app computes VCP tightness via range-CV and bar-ratio checks,
 but doesn't emit a structural classification of the chart pattern (flag,
@@ -124,26 +124,27 @@ suggested pattern reduces cognitive load and provides a falsifiable claim
 test cases over real historical examples, new flag_tag dictionary. Phase 2
 carve-out probably required.
 
-**Reference pattern images already in repo:**
-- `reference/flag_pattern.png`
-- `reference/pennant_pattern.png`
-- `reference/tight_channel_flat_base.png`
+**Reference pattern images already in repo** (correct paths):
+- `reference/images/flag_pattern.png`
+- `reference/images/pennant_pattern.png`
+- `reference/images/tight_channel_flat_base.png`
 
 ---
 
 ## Summary
 
-| ID | Area | Complexity | Phase 2 carve-out? |
-|---|---|---|---|
-| 3e.1 | Unrealized P&L on Account card | Low | No |
-| 3e.2 | Partial-exit realized in journal total | Low | No |
-| 3e.3 | Prices-refresh clears OHLCV breaker | Low | No |
-| 3e.4 | Watchlist collapse toggle | Low | No |
-| 3e.5 | Remove stale "Log entry" placeholder | Trivial | No |
-| 3e.6 | Chart pattern shape estimation | High | Probably yes |
+| ID | Area | Complexity | Phase 2 carve-out? | Status |
+|---|---|---|---|---|
+| 3e.1 | Unrealized P&L on Account card | Low | No | **Shipped 2026-04-26** |
+| 3e.2 | Partial-exit realized in journal total | Low | No | Open |
+| 3e.3 | Prices-refresh clears OHLCV breaker | Low | No | **Shipped 2026-04-26** |
+| 3e.4 | Watchlist collapse toggle | Low | No | **Shipped 2026-04-26** |
+| 3e.5 | Remove stale "Log entry" placeholder | Trivial | No | **Shipped 2026-04-26** |
+| 3e.6 | Chart pattern shape estimation | High | Yes | **Brainstormed 2026-04-26**, writing-plans queued |
 
-3e.1–3e.5 are all small and could land as a single Phase 3e batch (~2–3 days
-of work). 3e.6 is a standalone Phase 3f candidate.
+3e.1, 3e.3, 3e.4, 3e.5 shipped in QoL bundle Session 1 (2026-04-26). 3e.2 remains
+the only small open item from the original Phase 3d backlog. 3e.6 has a complete
+spec; implementation is gated on operator decision to dispatch plan + execute.
 
 ---
 
@@ -327,3 +328,37 @@ Items surfaced during the QoL UI-polish bundle (Session 1, commits `4c264b2..d96
 - **Decouple `_TAG_PRECEDENCE` from UI label strings (Session 2 R1 Minor 3 — accepted, out of scope).** `_TAG_PRECEDENCE` is keyed on the same presentation strings (`"TT✓"`, `"VCP✓"`, `"A+"`) that templates render. A future label rename would silently zero out precedence (unknown keys score 0 because the fallback for unknown tags is `0`). Decoupling: introduce a tag-id enum or constants like `TAG_TT_PASS = "TT✓"` referenced from both the precedence map and the templates. Not urgent; current state is correct.
 
 ---
+
+## 2026-04-26 chart-pattern flag-v1 brainstorm follow-ups
+
+Items surfaced during the chart-pattern flag-v1 brainstorm dispatch (commit chain `9583f19..081f689`, spec at `docs/superpowers/specs/2026-04-26-chart-pattern-flag-v1-design.md`, 5 adversarial Codex rounds reaching `NO_NEW_CRITICAL_MAJOR`). Implementation queued via writing-plans dispatch; these items are explicitly out of V1 scope.
+
+### V2+ pattern coverage (deferred per locked-constraint #1):
+
+- **Pennant pattern.** Same shape geometry as flag but with converging trendlines. V2 adds to `pattern` IN-list via new migration; classifier adds geometric gates for trendline convergence.
+- **Cup-with-handle pattern.** Multi-month U-shape + shallow pullback near pivot. Larger geometric definition surface; likely benefits from multi-timeframe consideration.
+- **Flat base pattern.** ≥5 weeks, range ≤~15%. Simpler than flag; mostly range-CV + duration check.
+- **Tight channel pattern.** 2+ weeks of converging highs/lows. Variant of flag with stricter parallel-line geometry.
+- **Qullamaggie taxonomy patterns.** episodic_pivot, power_earnings_gap, parabolic_short, gap_and_go, base_breakout, ipo_breakout — all available as reference layer via the qullamaggie MCP; some require external context (earnings calendar, IPO date) and are not pure-shape classifications.
+
+### V2 capability extensions:
+
+- **Sort-PARTICIPATING flag tag (operator-decision; affects production UX-priority).** V1 keeps `_sort_watchlist` byte-for-byte unchanged; flag tag is parallel render-only data via `pattern_tags`. Promoting to sort-participation would change watchlist ordering — affects production UX-priority surface and would require V2.1 §VII.F protocol.
+- **Calibration study (algo vs operator agreement-rate).** Gated on 20+ overrides accumulated. Compares `chart_pattern_algo` vs `chart_pattern_operator` to surface algorithm bias / blind spots / threshold-mis-calibration. Output: tuning recommendations for `cfg.classifier.*` defaults and `cfg.web.flag_pattern_display_threshold`.
+- **Slow-test live-fetch suite (`tests/evaluation/patterns/test_flag_classifier_live.py`, `@pytest.mark.slow`).** Exercises classifier against live yfinance pulls for upstream-data-format-drift detection. Deferred per V1 scope; useful when yfinance API changes or pandas/numpy upgrades land.
+- **Tuning-history versioning.** Record `cfg.classifier.*` values per pipeline run alongside the cached classification. Currently `components_json` captures clearances but not the threshold values themselves; without history, retroactive analysis can't distinguish "operator override during low-tightness window" from "operator override after we tuned tightness threshold." Modest scope: extend cache schema, capture threshold dict at compute time.
+- **Manual-trade fallback for out-of-chart-scope tickers.** V1 explicitly does not handle this — operator entering a trade for a ticker not in chart-scope sees "Not classified" stub with override surface hidden. V2 adds synchronous classifier fetch on form load (single-ticker yfinance pull + classifier run + persist). Adds entry-time latency (~1-3s for cold fetch); needs cache-warm check + circuit-breaker discipline.
+- **Multi-timeframe classification (weekly + daily).** V1 is daily-only. Some patterns (cup-with-handle, long bases) are more naturally weekly. V2 extension: classifier accepts both timeframes; gates can require confirmation across timeframes.
+- **Real-time / intraday classification.** Out of V1 scope; classifier runs on completed-bar daily data. V2 candidate if intraday execution becomes operator-relevant (currently it's not — daily-cycle workflow).
+
+### V2 schema / hardening:
+
+- **Schema-layer hardening for trades cross-column constraint.** V1 enforces the `chart_pattern_algo='flag' iff confidence IS NOT NULL` invariant at the repo layer (`insert_trade_with_event` raises `ValueError`). Schema-layer enforcement requires CREATE-COPY-DROP-RENAME migration — heavyweight. **Bundle with the next column-change migration on `trades`** to amortize the cost. Risk in the meantime: non-repo writers (raw SQL via sqlite3 CLI, future migrations) can violate the invariant.
+- **Hidden form-field tampering hardening for chart_pattern_classification_pipeline_run_id.** V1 accepts the field as operator-claimed input from a hidden form field (per §3.6 threat model: "operator-claimed input, not server-verified provenance"). For personal-use single-operator scope this is acceptable residual risk. V2 hardening: re-resolve cache at submit + validate against form-supplied pipeline_run_id; refuse if mismatched.
+- **Dashboard banner for classifier-error count per pipeline run.** V1 emits `logger.warning` per-ticker on classifier exception + end-of-step error count summary log line. Dashboard surface deferred — pipeline logs cover the operational visibility gap. V2 surface = banner showing "Pipeline N had X classifier errors" with drill-down to which tickers.
+
+### Process / lessons-derivative:
+
+- **`swing/web/watchlist_ranking.py` module extraction (per 2026-04-26 deferred item) — natural place to land flag-tag separation if extracted.** `_sort_watchlist`, `_tag_precedence_score`, `_TAG_PRECEDENCE`, `_flag_tags` currently in `swing/web/view_models/dashboard.py`; flag-tag rendering also lives in `_pattern_tags`. Bundling all tag/sort logic in one module clarifies ownership and provides a single edit point for future pattern additions.
+- **§1.2 doc inconsistency fix.** Spec §1.2 item 2 originally said "three trade columns" but R4 added a 4th (audit anchor). Fixed in this housekeeping commit; preserved as a lesson on doc/spec drift across adversarial review rounds.
+- **d266e5f commit message says "R3 fixes" but is actually R4 fixes.** Implementer flagged; preserved per no-amend rule. Commit substance is correct; only the message header is inaccurate.
