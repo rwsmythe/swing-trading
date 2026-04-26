@@ -52,6 +52,91 @@ class AdvisorySuggestionVM:
     message: str   # matches Phase 2 AdvisorySuggestion.message — do not rename
 
 
+def latest_evaluation_run_id(conn) -> int | None:
+    """Return the evaluation_run id the dashboard binds candidates to.
+
+    Two-step selection:
+      1. Most recent COMPLETE pipeline_run's `evaluation_run_id` when
+         non-NULL — the canonical "this is what the operator's UI is
+         showing right now" anchor.
+      2. Fallback: most recent `evaluation_runs` row by `run_ts` — legacy
+         pipeline rows with NULL FK + fresh installs that have run
+         standalone `swing eval` but no pipeline yet.
+
+    Pinned in one helper so the dashboard recommendations panel and the
+    CLI `swing trade entry --hypothesis` pre-fill agree on which run they
+    consult. Cross-surface drift is the trap adversarial review R1 caught:
+    if the dashboard surfaces a recommendation from a standalone eval
+    while the CLI only looks at pipeline-bound evals, the operator's
+    pre-fill silently disagrees with what they were just shown.
+    """
+    pipeline_eval_row = conn.execute(
+        """SELECT evaluation_run_id FROM pipeline_runs
+           WHERE state = 'complete'
+           ORDER BY finished_ts DESC LIMIT 1"""
+    ).fetchone()
+    pipeline_eval_id = (
+        pipeline_eval_row[0] if pipeline_eval_row else None
+    )
+    if pipeline_eval_id is not None:
+        return pipeline_eval_id
+    fallback = conn.execute(
+        "SELECT id FROM evaluation_runs ORDER BY run_ts DESC LIMIT 1"
+    ).fetchone()
+    return fallback[0] if fallback else None
+
+
+def build_recommendation_progress(
+    conn, registry, *, starting_equity: float,
+):
+    """Return `(progress_by_id, progress_summaries)` for the recommendation
+    surfaces. Used by both the dashboard panel build path and the CLI
+    pre-fill helper so they apply the same equity-guard discipline.
+
+    Adversarial review R1 Major 2: `compute_tripwire_status` derives the
+    absolute-loss threshold as `-starting_equity * pct / 100`. With
+    `starting_equity <= 0` the threshold is ≤ 0 and even a cumulative_loss
+    of 0 trips the alarm — making every hypothesis appear FIRED on a
+    fresh DB or misconfigured account. Defense: when equity is non-
+    positive, skip the tripwire compute entirely and emit zeroed progress
+    summaries straight from the registry (current=0, target=registry,
+    no tripwires). Recommendations still render; tripwire signaling is
+    suppressed until the operator fixes the config.
+    """
+    from swing.recommendations.hypothesis import HypothesisProgressSummary
+
+    if starting_equity > 0:
+        from swing.journal.stats import compute_hypothesis_progress_breakdown
+        progress_rows = compute_hypothesis_progress_breakdown(
+            conn, starting_equity=starting_equity,
+        )
+        progress_by_id = {p.hypothesis_id: p for p in progress_rows}
+        progress_summaries = [
+            HypothesisProgressSummary(
+                hypothesis_id=p.hypothesis_id,
+                hypothesis_name=p.name,
+                current_sample=p.current_sample,
+                target_sample=p.target_sample,
+                any_tripwire_fired=p.tripwire_fired,
+            ) for p in progress_rows
+        ]
+        return progress_by_id, progress_summaries
+
+    # Degenerate-equity branch: build progress summaries straight from
+    # the registry so the prioritizer still has target_sample data, but
+    # no hypothesis registers as tripwired.
+    progress_summaries = [
+        HypothesisProgressSummary(
+            hypothesis_id=h.id,
+            hypothesis_name=h.name,
+            current_sample=0,
+            target_sample=h.target_sample_size,
+            any_tripwire_fired=False,
+        ) for h in registry if h.status == "active"
+    ]
+    return {}, progress_summaries
+
+
 @dataclass(frozen=True)
 class HypothesisRecommendation:
     """One row of the dashboard's "Hypothesis-driven recommendations" panel.
@@ -211,47 +296,41 @@ def build_dashboard(
             # standalone eval — the same mixed-anchor inconsistency Bug 7
             # surfaced for chart-scope. Falls back to latest eval only when
             # there is no pipeline FK to bind to (legacy NULL or no run yet).
+            # Selection logic factored into `latest_evaluation_run_id` so the
+            # CLI `swing trade entry` pre-fill consults the SAME eval — see
+            # adversarial review R1 Major 1 (Session 2 frontend).
             candidates: list[Candidate] = []
-            if pipeline_eval_id is not None:
-                candidates = fetch_candidates_for_run(conn, pipeline_eval_id)
-            else:
-                row = conn.execute(
-                    "SELECT id FROM evaluation_runs ORDER BY run_ts DESC LIMIT 1"
-                ).fetchone()
-                if row is not None:
-                    candidates = fetch_candidates_for_run(conn, row[0])
+            candidates_eval_id = latest_evaluation_run_id(conn)
+            if candidates_eval_id is not None:
+                candidates = fetch_candidates_for_run(
+                    conn, candidates_eval_id,
+                )
 
             # Hypothesis-driven recommendations (frontend brief §4.1) — sourced
             # from Session 1's matcher + prioritizer + tripwire compute. Run
             # under the same read snapshot so the registry / progress numbers
-            # are consistent with the candidates we just loaded.
+            # are consistent with the candidates we just loaded. Registry +
+            # target lookup are also retained so VM construction has stable
+            # `target_sample` even on the degenerate-equity branch (where
+            # progress_by_id is empty by design).
             top_recommendations: list = []
             progress_by_id: dict = {}
+            target_by_id: dict[int, int] = {}
             if candidates:
                 from swing.data.repos.hypothesis import list_hypotheses
-                from swing.journal.stats import (
-                    compute_hypothesis_progress_breakdown,
-                )
                 from swing.recommendations.hypothesis import (
-                    HypothesisProgressSummary,
                     match_candidate_to_hypotheses,
                     prioritize_recommendations,
                 )
 
                 registry = list_hypotheses(conn)
-                progress_rows = compute_hypothesis_progress_breakdown(
-                    conn, starting_equity=cfg.account.starting_equity,
+                target_by_id = {h.id: h.target_sample_size for h in registry}
+                progress_by_id, progress_summaries = (
+                    build_recommendation_progress(
+                        conn, registry,
+                        starting_equity=cfg.account.starting_equity,
+                    )
                 )
-                progress_by_id = {p.hypothesis_id: p for p in progress_rows}
-                progress_summaries = [
-                    HypothesisProgressSummary(
-                        hypothesis_id=p.hypothesis_id,
-                        hypothesis_name=p.name,
-                        current_sample=p.current_sample,
-                        target_sample=p.target_sample,
-                        any_tripwire_fired=p.tripwire_fired,
-                    ) for p in progress_rows
-                ]
                 all_matches = []
                 for c in candidates:
                     all_matches.extend(
@@ -383,7 +462,10 @@ def build_dashboard(
     # Map prioritized recommendations to display VMs. Tripwire reason text
     # mirrors `swing.journal.stats.render_hypothesis_progress` so the
     # dashboard and `swing journal review` agree on phrasing — the operator
-    # is reading the same alarm in two places.
+    # is reading the same alarm in two places. `target_by_id` (registry-
+    # sourced) is the fallback for the degenerate-equity branch where
+    # `progress_by_id` is empty by design (see
+    # `build_recommendation_progress`).
     active_recommendations = tuple(
         HypothesisRecommendation(
             ticker=r.candidate_ticker,
@@ -399,7 +481,8 @@ def build_dashboard(
             ),
             hypothesis_progress_target=(
                 progress_by_id[r.hypothesis_id].target_sample
-                if r.hypothesis_id in progress_by_id else 0
+                if r.hypothesis_id in progress_by_id
+                else target_by_id.get(r.hypothesis_id, 0)
             ),
             tripwire_fired=r.tripwire_fired,
             tripwire_reason=_tripwire_reason_text(
@@ -442,7 +525,14 @@ def _tripwire_reason_text(progress) -> str | None:
     """Render the per-hypothesis tripwire alarm as a single string, or None
     when no tripwire is fired. Mirrors `render_hypothesis_progress` in
     `swing.journal.stats` so the operator sees the same phrasing on the
-    dashboard and in `swing journal review`."""
+    dashboard and in `swing journal review`.
+
+    Wording pinned to match the journal review formatter (adversarial
+    review R1 Minor 1): consecutive bit reads "{N} consecutive -1R
+    (threshold {T})", absolute bit reads "absolute loss ${magnitude}",
+    and the trailing recommendation suffix is "recommend escape
+    evaluation". If you change one formatter, change both.
+    """
     if progress is None or not progress.tripwire_fired:
         return None
     bits: list[str] = []
@@ -453,9 +543,11 @@ def _tripwire_reason_text(progress) -> str | None:
         )
     if progress.absolute_tripwire_fired:
         bits.append(
-            f"cumulative loss ${progress.cumulative_loss:+.2f}"
+            f"absolute loss ${-progress.cumulative_loss:.2f}"
         )
-    return "; ".join(bits) if bits else None
+    if not bits:
+        return None
+    return "; ".join(bits) + "; recommend escape evaluation"
 
 
 def _sort_by_proximity(watchlist: list[WatchlistEntry]) -> list[WatchlistEntry]:

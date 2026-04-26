@@ -182,6 +182,64 @@ def test_entry_pre_fill_idempotent_across_re_runs(tmp_path: Path):
     assert label1 == label2
 
 
+def test_entry_pre_fill_falls_back_to_standalone_eval_when_no_pipeline_FK(
+    tmp_path: Path,
+):
+    """Cross-surface consistency (adversarial review R1 Major 1): when the
+    latest pipeline run has NULL `evaluation_run_id` (legacy / drift), the
+    dashboard falls back to the most recent `evaluation_runs` row by
+    `run_ts`. The CLI MUST follow the same fallback so an operator who
+    sees a recommendation on the dashboard can pre-fill from it.
+    """
+    runner, cfg = _setup(tmp_path)
+    # Seed a complete pipeline_run with NULL evaluation_run_id (legacy) +
+    # a standalone eval that DOES have an A+ candidate.
+    import tomllib
+    cfg_data = tomllib.loads(cfg.read_text())
+    db_path = Path(cfg_data["paths"]["db_path"])
+    conn = connect(db_path)
+    try:
+        with conn:
+            cur = conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+                    tickers_evaluated, aplus_count, watch_count, skip_count,
+                    excluded_count, error_count,
+                    rs_universe_version, rs_universe_hash)
+                   VALUES (?, ?, ?, NULL, 1, 1, 0, 0, 0, 0, 'v1', 'h1')""",
+                ("2026-04-17T21:49:00", "2026-04-17", "2026-04-20"),
+            )
+            eval_id = cur.lastrowid
+            conn.execute(
+                """INSERT INTO candidates (evaluation_run_id, ticker, bucket,
+                   close, pivot, initial_stop, rs_method)
+                   VALUES (?, 'AAPL', 'aplus', 180.0, 181.0, 170.0, 'universe')""",
+                (eval_id,),
+            )
+            # Pipeline row with NULL FK — exercises the fallback path.
+            conn.execute(
+                """INSERT INTO pipeline_runs
+                   (started_ts, finished_ts, trigger, data_asof_date,
+                    action_session_date, state, lease_token,
+                    evaluation_run_id)
+                   VALUES ('2026-04-17T21:49:00', '2026-04-17T21:55:00',
+                           'scheduled', '2026-04-17', '2026-04-20',
+                           'complete', 'tok', NULL)""",
+            )
+    finally:
+        conn.close()
+
+    result = runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "AAPL", "--entry-date", "2026-04-15",
+        "--entry-price", "180.0", "--shares", "5",
+        "--initial-stop", "170.0", "--rationale", "aplus-setup",
+    ])
+    assert result.exit_code == 0, result.output
+    # Pre-fill must trigger via the fallback path.
+    assert "Pre-filled --hypothesis" in result.output
+
+
 def test_entry_pre_fill_when_no_pipeline_run_yet(tmp_path: Path):
     """Fresh-install path: no pipeline_runs row at all → no candidate to
     look up → no pre-fill, no crash."""

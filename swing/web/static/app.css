@@ -19,7 +19,11 @@ th, td { text-align: left; padding: 0.25rem 0.5rem; border-bottom: 1px solid #ee
 .hypothesis-recommendations h2 { margin: 0 0 0.5rem; font-size: 1.05rem; }
 /* tripwire-fired marks rows whose hypothesis hit a pre-registered loss
    tripwire (consecutive -1R streak or absolute cumulative loss). The
-   bright-red left border + tinted background must be loud enough that
-   the operator cannot miss it scanning the dashboard. */
-tr.tripwire-fired { background: #ffe6e6; border-left: 4px solid #c00; }
-tr.tripwire-fired td { font-weight: 600; }
+   tinted-red background + red left-edge band must be loud enough that
+   the operator cannot miss it scanning the dashboard. The left edge is
+   painted on the FIRST <td> rather than the <tr> because tables have
+   `border-collapse: collapse` set globally; row-level borders are
+   unreliable across browsers under collapse, so we paint cell borders
+   instead. (Adversarial review R1 Minor 2.) */
+tr.tripwire-fired td { background: #ffe6e6; font-weight: 600; }
+tr.tripwire-fired td:first-child { border-left: 4px solid #c00; }

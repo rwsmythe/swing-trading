@@ -214,6 +214,39 @@ def test_dashboard_vm_recommendation_includes_proximity_match(
     assert rec.suggested_label.startswith("Near-A+ defensible: extension test")
 
 
+def test_dashboard_recommendations_render_with_zero_starting_equity(
+    seeded_db, monkeypatch,
+):
+    """Adversarial review R1 Major 2: with `starting_equity <= 0`, the
+    absolute-loss tripwire's threshold (-equity * pct/100) becomes ≤ 0,
+    so even cumulative_loss=0 fires the alarm. Defense:
+    `build_recommendation_progress` skips the tripwire compute and uses
+    registry-derived target_sample only. Recommendations still surface;
+    no false tripwires.
+    """
+    from dataclasses import replace
+    from swing.web.price_cache import PriceCache
+    from swing.web.view_models.dashboard import build_dashboard
+
+    cfg, _ = seeded_db
+    cfg = replace(cfg, account=replace(cfg.account, starting_equity=0.0))
+    _seed_pipeline_with_candidates(cfg, [
+        {"ticker": "AAPL", "bucket": "aplus", "close": 180.0, "pivot": 181.0},
+    ])
+    _patched_caches(monkeypatch)
+
+    cache = PriceCache(cfg)
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=None)
+    assert len(vm.active_recommendations) == 1
+    rec = vm.active_recommendations[0]
+    assert rec.tripwire_fired is False, (
+        "with starting_equity=0, tripwire must NOT fire spuriously"
+    )
+    assert rec.tripwire_reason is None
+    # Target still rendered correctly via registry fallback.
+    assert rec.hypothesis_progress_target == 20
+
+
 def test_dashboard_vm_active_recommendations_field_default(seeded_db):
     """DashboardVM constructable without active_recommendations — defaults
     to an empty tuple. Defends downstream callers that build ad-hoc VMs in

@@ -310,21 +310,22 @@ def _lookup_active_recommendation_label(
     """
     from swing.data.repos.candidates import fetch_candidates_for_run
     from swing.data.repos.hypothesis import list_hypotheses
-    from swing.journal.stats import compute_hypothesis_progress_breakdown
     from swing.recommendations.hypothesis import (
-        HypothesisProgressSummary,
         match_candidate_to_hypotheses,
         prioritize_recommendations,
     )
+    from swing.web.view_models.dashboard import (
+        build_recommendation_progress,
+        latest_evaluation_run_id,
+    )
 
-    eval_row = conn.execute(
-        """SELECT evaluation_run_id FROM pipeline_runs
-           WHERE state = 'complete' AND evaluation_run_id IS NOT NULL
-           ORDER BY finished_ts DESC LIMIT 1"""
-    ).fetchone()
-    if eval_row is None:
+    # Cross-surface consistency (adversarial review R1 Major 1): use the
+    # SAME evaluation_run id the dashboard binds candidates to. If the
+    # operator sees a recommendation on the dashboard, the CLI must be
+    # able to pre-fill from it — and vice versa.
+    eval_id = latest_evaluation_run_id(conn)
+    if eval_id is None:
         return None
-    eval_id = eval_row[0]
     candidates = fetch_candidates_for_run(conn, eval_id)
     cand = next((c for c in candidates if c.ticker == ticker), None)
     if cand is None:
@@ -337,19 +338,12 @@ def _lookup_active_recommendation_label(
 
     # Reuse the prioritizer so the CLI's choice mirrors the dashboard's
     # most-prominent recommendation for this ticker — operator sees ONE
-    # canonical pre-fill regardless of which surface they came from.
-    progress_rows = compute_hypothesis_progress_breakdown(
-        conn, starting_equity=starting_equity,
+    # canonical pre-fill regardless of which surface they came from. The
+    # equity guard inside `build_recommendation_progress` keeps the
+    # tripwire compute honest under degenerate config (R1 Major 2).
+    _, progress_summaries = build_recommendation_progress(
+        conn, registry, starting_equity=starting_equity,
     )
-    progress_summaries = [
-        HypothesisProgressSummary(
-            hypothesis_id=p.hypothesis_id,
-            hypothesis_name=p.name,
-            current_sample=p.current_sample,
-            target_sample=p.target_sample,
-            any_tripwire_fired=p.tripwire_fired,
-        ) for p in progress_rows
-    ]
     prioritized = prioritize_recommendations(
         matches, registry=registry, progress=progress_summaries,
     )
