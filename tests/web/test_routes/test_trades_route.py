@@ -980,13 +980,21 @@ def test_post_entry_stop_ge_entry_renders_form_preserved(seeded_db, monkeypatch)
     # Bug 1 fix preservation: stale check that nothing in the form template
     # silently regressed (the form is re-rendered from the canonical partial).
     assert 'hx-post="/trades/entry"' in r.text
+    # Negative discriminator: the bare-div generic-error fragment
+    # (partials/error_fragment.html.j2) carries data-request-id; the form's
+    # inline banner does not. Asserting its absence rules out a regression
+    # where the route falls back to the generic 500 path.
+    assert "data-request-id" not in r.text
 
 
 def test_post_entry_stop_gt_entry_also_caught(seeded_db, monkeypatch):
-    """Bug 2 follow-up: ValueError catch covers stop > entry (not just ==).
+    """Bug 2 follow-up: stop > entry (not just ==) is also caught at the
+    request boundary and re-renders the row-shaped form fragment.
 
-    Same root cause; this guards the boundary in case a future change
-    narrows the catch to equality only.
+    Guards the boundary against a future change that might narrow the
+    pre-check to equality only. Comprehensive shape assertions mirror
+    the == case so the row-shape contract is locked down for both
+    invalid-input branches.
     """
     from datetime import datetime
 
@@ -1036,8 +1044,92 @@ def test_post_entry_stop_gt_entry_also_caught(seeded_db, monkeypatch):
         )
     assert r.status_code == 400
     assert '<tr id="entry-form-AAPL"' in r.text
-    assert 'value="170.00"' in r.text   # entry_price preserved
-    assert 'value="175.00"' in r.text   # initial_stop preserved
+    assert 'value="170.00"' in r.text       # entry_price preserved
+    assert 'value="175.00"' in r.text       # initial_stop preserved
+    # Form re-rendered from canonical partial.
+    assert 'hx-post="/trades/entry"' in r.text
+    assert 'name="entry_price"' in r.text
+    assert 'name="initial_stop"' in r.text
+    # Banner present (form's inline banner, not the generic error fragment).
+    assert "banner-degraded" in r.text
+    # Negative discriminator: rule out the bare-div generic-error fallback.
+    assert "data-request-id" not in r.text
+
+
+def test_post_entry_stop_ge_entry_unhandled_value_error_still_500(
+    seeded_db, monkeypatch,
+):
+    """Bug 2 contract guard: the route's pre-boundary check handles the
+    operator-facing stop>=entry case explicitly. Any OTHER ValueError
+    raised by record_entry (a future deeper-layer invariant or a real
+    server defect) MUST surface as 500 — not be silently masked as form
+    validation. Codex R1 Major 1: this prevents the catch from masking
+    server defects as user input errors.
+
+    We monkeypatch record_entry to raise an unrelated ValueError and
+    assert the response is 500 + the generic error_fragment shape,
+    confirming the route does NOT swallow the exception via a stale
+    blanket except clause.
+    """
+    from datetime import datetime
+
+    import swing.web.routes.trades as trades_route
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="AAPL", added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: PriceSnapshot(ticker=t, price=180.0, asof=datetime.now(),
+                             is_stale=False, source="live")
+            for t in tickers
+        },
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+    def _boom(*_a, **_kw):
+        raise ValueError("synthetic deep-layer invariant violation")
+    monkeypatch.setattr(trades_route, "record_entry", _boom)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true", "HX-Target": "entry-form-AAPL"},
+            data={
+                "ticker": "AAPL",
+                "entry_date": "2026-04-18",
+                "entry_price": "180.00",
+                "shares": "5",
+                "initial_stop": "170.00",   # valid (entry > stop) — passes pre-check
+                "rationale": "aplus-setup",
+            },
+        )
+    # The pre-check passes; record_entry's synthetic ValueError must NOT be
+    # swallowed by an over-broad except — it must surface as 500.
+    assert r.status_code == 500
+    # Server defect surfaces via the generic error fragment (bare div with
+    # data-request-id) — not silently re-rendered as a form-validation
+    # banner. This is the post-fix contract.
+    assert "data-request-id" in r.text
+    assert "synthetic deep-layer invariant violation" in r.text
 
 
 def test_post_entry_duplicate_sizing_hint_not_lying(seeded_db, monkeypatch):

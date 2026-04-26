@@ -244,6 +244,26 @@ def entry_post(
             rationale=rationale, notes=notes, error_message=rationale_error,
         )
 
+    # Bug 2 (2026-04-25): validate stop < entry at the request boundary so
+    # the form re-renders gracefully (400 + row-shaped fragment) instead of
+    # bubbling record_entry's internal ValueError to the generic 500 handler,
+    # which returns a bare <div> the HTML parser hoists out of <tbody>,
+    # vanishing the form-row. Validating here also keeps the catch tightly
+    # typed: we don't risk silently swallowing future, unrelated ValueErrors
+    # raised by deeper service/persistence layers as if they were operator
+    # input errors. Service layer still enforces the same invariant.
+    if initial_stop >= entry_price:
+        return _rerender_entry_form_with_error(
+            request=request, templates=templates, cfg=cfg, cache=cache,
+            executor=executor, ticker=ticker, entry_date=entry_date,
+            entry_price=entry_price, shares=shares, initial_stop=initial_stop,
+            rationale=rationale, notes=notes,
+            error_message=(
+                f"stop must be < entry; got entry={entry_price}, "
+                f"stop={initial_stop}"
+            ),
+        )
+
     req = EntryRequest(
         ticker=ticker.upper(),
         entry_date=entry_date,
@@ -322,24 +342,6 @@ def entry_post(
                 request, "partials/trade_form_error.html.j2",
                 {"error_message": str(exc)},
                 status_code=400,
-            )
-        except ValueError as exc:
-            # Bug 2 (2026-04-25): record_entry raises ValueError when
-            # initial_stop >= entry_price. Without this catch the error
-            # propagates to the generic 500 handler which returns a bare
-            # <div> fragment; the form's "closest tr" outerHTML swap then
-            # places the <div> inside <tbody>, the HTML parser hoists it
-            # out (only <tr> is a valid tbody child), and the operator's
-            # form-row vanishes from the watchlist until refresh. Mirror
-            # the duplicate-error drift-recovery shape: 400 + form
-            # re-render + banner + preserved inputs, so the swap stays
-            # row-shaped and the operator can correct entry_price.
-            return _rerender_entry_form_with_error(
-                request=request, templates=templates, cfg=cfg, cache=cache,
-                executor=executor, ticker=ticker, entry_date=entry_date,
-                entry_price=entry_price, shares=shares,
-                initial_stop=initial_stop, rationale=rationale, notes=notes,
-                error_message=str(exc),
             )
         except HardCapException as exc:
             # Hard cap: do NOT re-render the form — re-submitting won't succeed
