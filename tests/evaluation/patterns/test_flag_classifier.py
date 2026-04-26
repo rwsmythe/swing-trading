@@ -47,3 +47,30 @@ def test_default_synthetic_flag_is_detected():
     assert res.detected is True
     assert res.pattern == "flag"
     assert 0.0 < res.confidence <= 1.0
+
+
+def test_pole_gain_gate_at_threshold_below_rejects():
+    bars = make_flag_bars(pole_gain_pct=0.299)
+    res = classify_flag(bars)
+    assert res.detected is False
+    assert res.pattern == "none"
+
+
+def test_pole_gain_gate_at_threshold_above_passes():
+    bars = make_flag_bars(pole_gain_pct=0.301)
+    res = classify_flag(bars)
+    assert res.detected is True
+    assert res.pattern == "flag"
+
+
+def test_pole_gain_gate_is_threshold_sensitive():
+    """Discriminating-test discipline: passing a tightened threshold via
+    cfg argument must flip a previously-passing fixture to rejection.
+    Proves the test pair is actually sensitive to the threshold value."""
+    from swing.config import ClassifierConfig
+    bars = make_flag_bars(pole_gain_pct=0.31)
+    # Default cfg → passes.
+    assert classify_flag(bars).detected is True
+    # Tightened cfg → rejects.
+    cfg = ClassifierConfig(flag_pole_gain_min=0.40)
+    assert classify_flag(bars, cfg=cfg).detected is False
