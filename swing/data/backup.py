@@ -64,7 +64,12 @@ def do_backup(db_path: Path, dest_dir: Path, *, now: datetime | None = None) -> 
     src: sqlite3.Connection | None = None
     dst: sqlite3.Connection | None = None
     try:
-        src = sqlite3.connect(db_path)
+        # Open source read-only via URI so a missing/unreadable DB fails closed
+        # rather than silently fabricating an empty file (sqlite3.connect of a
+        # nonexistent path creates one). Closes a TOCTOU window between the
+        # caller's exists() guard and our open, and protects future callers
+        # that bypass the guard.
+        src = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
         dst = sqlite3.connect(tmp_path)
         src.backup(dst)
     except BaseException:

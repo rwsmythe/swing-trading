@@ -186,6 +186,23 @@ def test_prune_old_backups_handles_missing_dir(tmp_path: Path):
     assert prune_old_backups(dest, keep=12) == []
 
 
+def test_do_backup_fails_closed_when_source_db_missing(tmp_path: Path):
+    """Round 1 Major 1: opening a missing DB with sqlite3.connect normally
+    fabricates an empty file. We open the source read-only via URI so a missing
+    or unreadable source raises OperationalError instead of silently producing
+    a 'successful' empty backup. Also verify no temp/final files are left."""
+    src = tmp_path / "no-such.db"
+    dest = tmp_path / "backups"
+    with pytest.raises(sqlite3.OperationalError):
+        do_backup(src, dest, now=datetime(2026, 4, 25))
+    # Destination dir gets created by mkdir(parents=True) before the failure;
+    # but it must not contain any backup or temp files.
+    if dest.exists():
+        assert list(dest.iterdir()) == [], (
+            f"expected no leftover files, got {list(dest.iterdir())}"
+        )
+
+
 def test_do_backup_under_concurrent_writes_does_not_corrupt(tmp_path: Path):
     """sqlite3 Connection.backup is the contract — verify a backup taken while a
     second connection has an open write transaction still produces a queryable
