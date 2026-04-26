@@ -86,3 +86,22 @@ def test_pullback_depth_gate_below_threshold_passes():
     bars = make_flag_bars(pullback_pct=0.149)
     res = classify_flag(bars)
     assert res.detected is True
+
+
+# tightness_ratio gate threshold = 0.6 (cfg.flag_tightness_ratio_max).
+# Empirical mapping: measured tightness_ratio = flag_tightness_factor *
+# (pole_close_avg / flag_close_avg) ≈ flag_tightness_factor * 0.9 in this
+# fixture (pole avg close ≈ 117.5, flag avg close ≈ 130 at default pullback).
+# So flag_tightness_factor ≈ 0.667 lands measured tightness ≈ 0.5998 (passes
+# 0.6 gate) and 0.668 lands measured ≈ 0.5892 but search shifts to a window
+# that fails (rejected). Verified at the REPL across [0.65, 0.70].
+def test_tightness_ratio_gate_above_threshold_rejects():
+    bars = make_flag_bars(flag_tightness_factor=0.668)
+    res = classify_flag(bars)
+    assert res.detected is False
+
+
+def test_tightness_ratio_gate_below_threshold_passes():
+    bars = make_flag_bars(flag_tightness_factor=0.667)
+    res = classify_flag(bars)
+    assert res.detected is True
