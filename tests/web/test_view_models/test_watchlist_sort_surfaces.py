@@ -342,7 +342,7 @@ def test_build_dashboard_top5_tagged_vs_tagged_count_differential(
     )
 
 
-def test_build_dashboard_top5_tagged_vs_tagged_precedence_differential(
+def test_build_watchlist_tagged_vs_tagged_precedence_differential(
     seeded_db, monkeypatch,
 ):
     """Surface-level discriminator for the tag-PRECEDENCE secondary key:
@@ -350,16 +350,25 @@ def test_build_dashboard_top5_tagged_vs_tagged_precedence_differential(
     differ on precedence score. (A+, TT✓) score 5 must rank above
     (VCP✓, TT✓) score 3.
 
-    Achieved by injecting flag_tags directly into the test (rather than
+    Achieved by injecting `flag_tags` directly into the test (rather than
     through `_flag_tags`), because the natural `_flag_tags` output for an
     A+-bucket candidate is the full ("TT✓", "VCP✓", "A+") triple; the
-    asymmetric (A+, TT✓) vs (VCP✓, TT✓) requires bypassing that synthesis.
+    asymmetric (A+, TT✓) vs (VCP✓, TT✓) requires bypassing that synthesizer.
 
-    Approach: use `build_watchlist` with monkeypatched `_flag_tags` to
-    return the asymmetric mapping. Verifies the surface honors the
-    secondary key when count is tied.
+    The patch target MUST be `swing.web.view_models.watchlist._flag_tags`
+    — the bound reference used by `build_watchlist`. Patching the source
+    module (`swing.web.view_models.dashboard._flag_tags`) is a no-op
+    here because `watchlist.py` imports the function with
+    `from ... import _flag_tags` and keeps its own bound name. Adversarial
+    review R4 caught the original test patching the wrong target.
+
+    Tickers are deliberately ANTI-ALIGNED with precedence: the higher-
+    precedence row is "ZHIGH" and the lower is "AAALOW". Without a
+    precedence-based secondary key the sort would tie on count + proximity
+    and the alphabetical tiebreaker would put AAALOW first — passing the
+    test for the wrong reason. With precedence as secondary, ZHIGH
+    (score 5) wins despite being alphabetically last.
     """
-    from swing.web.view_models import dashboard as dashboard_mod
     from swing.web.view_models.watchlist import build_watchlist
     from swing.web.price_cache import PriceCache
 
@@ -377,7 +386,7 @@ def test_build_dashboard_top5_tagged_vs_tagged_precedence_differential(
                            NULL, 2, 2, 0, 0, 0, 0, 'v1', 'd')""",
             )
             eval_id = int(cur.lastrowid)
-            for ticker in ("APLUS", "VCPTT"):
+            for ticker in ("ZHIGH", "AAALOW"):
                 conn.execute(
                     """INSERT INTO candidates
                        (evaluation_run_id, ticker, bucket, close, pivot, initial_stop,
@@ -395,7 +404,7 @@ def test_build_dashboard_top5_tagged_vs_tagged_precedence_differential(
                            'complete', 't-x', 'ok', ?)""",
                 (eval_id,),
             )
-            for ticker in ("APLUS", "VCPTT"):
+            for ticker in ("ZHIGH", "AAALOW"):
                 upsert_watchlist_entry(conn, WatchlistEntry(
                     ticker=ticker, added_date="2026-04-10",
                     last_qualified_date="2026-04-17", status="watch",
@@ -408,13 +417,13 @@ def test_build_dashboard_top5_tagged_vs_tagged_precedence_differential(
     finally:
         conn.close()
 
-    # Inject the asymmetric tag-precedence mapping. (A+, TT✓) score 5 vs
-    # (VCP✓, TT✓) score 3; equal count = 2.
+    # Inject asymmetric mapping at the BOUND import location. (A+, TT✓)
+    # score 5 vs (VCP✓, TT✓) score 3; equal count = 2.
     monkeypatch.setattr(
-        dashboard_mod, "_flag_tags",
+        "swing.web.view_models.watchlist._flag_tags",
         lambda by_ticker: {
-            "APLUS": ("A+", "TT✓"),
-            "VCPTT": ("VCP✓", "TT✓"),
+            "ZHIGH": ("A+", "TT✓"),
+            "AAALOW": ("VCP✓", "TT✓"),
         },
     )
 
@@ -422,10 +431,22 @@ def test_build_dashboard_top5_tagged_vs_tagged_precedence_differential(
     cache = PriceCache(cfg)
     vm = build_watchlist(cfg=cfg, cache=cache, executor=_no_op_executor())
 
+    # Sanity: confirm the patched mapping flowed into the VM. If the patch
+    # missed the bound reference, vm.flag_tags would carry the natural
+    # _flag_tags output (("TT✓", "VCP✓", "A+") for both A+ buckets).
+    assert vm.flag_tags == {
+        "ZHIGH": ("A+", "TT✓"),
+        "AAALOW": ("VCP✓", "TT✓"),
+    }, (
+        f"monkeypatched _flag_tags must reach the VM; got {dict(vm.flag_tags)}"
+    )
+
     tickers = [w.ticker for w in vm.rows]
-    assert tickers == ["APLUS", "VCPTT"], (
+    assert tickers == ["ZHIGH", "AAALOW"], (
         f"(A+, TT✓) (score 5) must rank above (VCP✓, TT✓) (score 3) "
-        f"at equal count and proximity; got {tickers}"
+        f"at equal count and proximity, even though ZHIGH is "
+        f"alphabetically later than AAALOW (alphabetical tiebreaker only "
+        f"fires after the precedence key tie); got {tickers}"
     )
 
 
