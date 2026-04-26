@@ -220,9 +220,8 @@ def test_dashboard_recommendations_render_with_zero_starting_equity(
     """Adversarial review R1 Major 2: with `starting_equity <= 0`, the
     absolute-loss tripwire's threshold (-equity * pct/100) becomes ≤ 0,
     so even cumulative_loss=0 fires the alarm. Defense:
-    `build_recommendation_progress` skips the tripwire compute and uses
-    registry-derived target_sample only. Recommendations still surface;
-    no false tripwires.
+    `build_recommendation_progress` keeps real progress numbers but
+    overrides the absolute-loss tripwire flag (R2 Major 1 refinement).
     """
     from dataclasses import replace
     from swing.web.price_cache import PriceCache
@@ -243,8 +242,104 @@ def test_dashboard_recommendations_render_with_zero_starting_equity(
         "with starting_equity=0, tripwire must NOT fire spuriously"
     )
     assert rec.tripwire_reason is None
-    # Target still rendered correctly via registry fallback.
+    # Target still rendered correctly.
     assert rec.hypothesis_progress_target == 20
+
+
+def test_dashboard_recommendations_preserve_real_sample_count_under_zero_equity(
+    seeded_db, monkeypatch,
+):
+    """Adversarial review R2 Major 1: zero-equity guard must NOT zero out
+    `current_sample`. Real closed-trade history drives prioritizer ranking
+    and the dashboard's "N / target" display; only the absolute-loss
+    tripwire signal should be suppressed. Pin: with one closed trade
+    labeled `Sub-A+ VCP-not-formed ...`, that hypothesis's row shows
+    `current_sample == 1`, NOT 0, even when starting_equity=0.
+    """
+    from dataclasses import replace
+    from swing.data.db import connect
+    from swing.web.price_cache import PriceCache
+    from swing.web.view_models.dashboard import build_dashboard
+
+    cfg, _ = seeded_db
+    cfg = replace(cfg, account=replace(cfg.account, starting_equity=0.0))
+    # Pipeline + watch candidate matching Sub-A+ VCP-not-formed.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            cur = conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+                    tickers_evaluated, aplus_count, watch_count, skip_count,
+                    excluded_count, error_count,
+                    rs_universe_version, rs_universe_hash)
+                   VALUES (?, ?, ?, NULL, 1, 0, 1, 0, 0, 0, 'v1', 'h1')""",
+                ("2026-04-17T21:49:00", "2026-04-17", "2026-04-20"),
+            )
+            eval_id = cur.lastrowid
+            cand_cur = conn.execute(
+                """INSERT INTO candidates (evaluation_run_id, ticker, bucket,
+                   close, pivot, initial_stop, rs_method)
+                   VALUES (?, 'NUE', 'watch', 100.0, 102.0, 95.0, 'universe')""",
+                (eval_id,),
+            )
+            cid = cand_cur.lastrowid
+            conn.execute(
+                """INSERT INTO candidate_criteria
+                   (candidate_id, criterion_name, layer, result)
+                   VALUES (?, 'tightness', 'vcp', 'fail')""",
+                (cid,),
+            )
+            conn.execute(
+                """INSERT INTO pipeline_runs
+                   (started_ts, finished_ts, trigger, data_asof_date,
+                    action_session_date, state, lease_token,
+                    evaluation_run_id)
+                   VALUES ('2026-04-17T21:49:00', '2026-04-17T21:55:00',
+                           'scheduled', '2026-04-17', '2026-04-20',
+                           'complete', 'tok', ?)""",
+                (eval_id,),
+            )
+            # One closed trade matching the hypothesis prefix; modest loss
+            # well below any absolute threshold.
+            conn.execute(
+                """INSERT INTO trades
+                   (ticker, entry_date, entry_price, initial_shares,
+                    initial_stop, current_stop, status,
+                    watchlist_entry_target, watchlist_initial_stop,
+                    notes, hypothesis_label)
+                   VALUES ('VIR', '2026-04-15', 100.0, 10, 90.0, 90.0,
+                           'closed', NULL, NULL, NULL,
+                           'Sub-A+ VCP-not-formed inaugural')""",
+            )
+            tid = conn.execute(
+                "SELECT id FROM trades WHERE ticker='VIR'"
+            ).fetchone()[0]
+            conn.execute(
+                """INSERT INTO exits
+                   (trade_id, exit_date, exit_price, shares, reason,
+                    realized_pnl, r_multiple, notes)
+                   VALUES (?, '2026-04-20', 95.0, 10, 'stop-hit',
+                           -50.0, -0.5, NULL)""",
+                (tid,),
+            )
+    finally:
+        conn.close()
+    _patched_caches(monkeypatch)
+
+    cache = PriceCache(cfg)
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=None)
+    assert len(vm.active_recommendations) == 1
+    rec = vm.active_recommendations[0]
+    # Real closed-trade history must still be reflected.
+    assert rec.hypothesis_progress_n == 1, (
+        f"current_sample regression — under zero equity the guard must "
+        f"preserve real closed-trade counts; got "
+        f"{rec.hypothesis_progress_n}"
+    )
+    # No absolute-loss tripwire (would have fired at threshold=0).
+    assert rec.tripwire_fired is False
+    assert rec.hypothesis_name == "Sub-A+ VCP-not-formed"
 
 
 def test_dashboard_vm_active_recommendations_field_default(seeded_db):

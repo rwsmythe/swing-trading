@@ -93,48 +93,53 @@ def build_recommendation_progress(
     surfaces. Used by both the dashboard panel build path and the CLI
     pre-fill helper so they apply the same equity-guard discipline.
 
-    Adversarial review R1 Major 2: `compute_tripwire_status` derives the
-    absolute-loss threshold as `-starting_equity * pct / 100`. With
-    `starting_equity <= 0` the threshold is ≤ 0 and even a cumulative_loss
-    of 0 trips the alarm — making every hypothesis appear FIRED on a
-    fresh DB or misconfigured account. Defense: when equity is non-
-    positive, skip the tripwire compute entirely and emit zeroed progress
-    summaries straight from the registry (current=0, target=registry,
-    no tripwires). Recommendations still render; tripwire signaling is
-    suppressed until the operator fixes the config.
+    Adversarial review R1 Major 2 + R2 Major 1: `compute_tripwire_status`
+    derives the absolute-loss threshold as `-starting_equity * pct / 100`.
+    With `starting_equity <= 0` the threshold is ≤ 0 and even a
+    cumulative_loss of 0 trips the absolute-loss alarm — making every
+    hypothesis appear FIRED with no closed trades.
+
+    Defense (R2 fix): always compute progress against a POSITIVE sentinel
+    so `current_sample`, mean R, win rate, and the consecutive-loss
+    streak (which don't depend on equity) remain real and drive
+    prioritization correctly. Then in the degenerate branch, override
+    `absolute_tripwire_fired = False` (the only field whose value depends
+    on the absent equity baseline) and recompute `tripwire_fired` as
+    `consecutive_tripwire_fired` alone. The prior R1 fix zeroed
+    `current_sample` and changed the prioritizer's ranking; the R2 fix
+    suppresses ONLY the absolute-loss signal, leaving every other
+    behavior intact.
     """
+    from dataclasses import replace
+    from swing.journal.stats import compute_hypothesis_progress_breakdown
     from swing.recommendations.hypothesis import HypothesisProgressSummary
 
-    if starting_equity > 0:
-        from swing.journal.stats import compute_hypothesis_progress_breakdown
-        progress_rows = compute_hypothesis_progress_breakdown(
-            conn, starting_equity=starting_equity,
-        )
-        progress_by_id = {p.hypothesis_id: p for p in progress_rows}
-        progress_summaries = [
-            HypothesisProgressSummary(
-                hypothesis_id=p.hypothesis_id,
-                hypothesis_name=p.name,
-                current_sample=p.current_sample,
-                target_sample=p.target_sample,
-                any_tripwire_fired=p.tripwire_fired,
-            ) for p in progress_rows
+    # Sentinel keeps the absolute-loss threshold computation finite under
+    # degenerate config; we override the resulting field below regardless.
+    threshold_equity = starting_equity if starting_equity > 0 else 1.0
+    progress_rows = compute_hypothesis_progress_breakdown(
+        conn, starting_equity=threshold_equity,
+    )
+    if starting_equity <= 0:
+        progress_rows = [
+            replace(
+                p,
+                absolute_tripwire_fired=False,
+                tripwire_fired=p.consecutive_tripwire_fired,
+            )
+            for p in progress_rows
         ]
-        return progress_by_id, progress_summaries
-
-    # Degenerate-equity branch: build progress summaries straight from
-    # the registry so the prioritizer still has target_sample data, but
-    # no hypothesis registers as tripwired.
+    progress_by_id = {p.hypothesis_id: p for p in progress_rows}
     progress_summaries = [
         HypothesisProgressSummary(
-            hypothesis_id=h.id,
-            hypothesis_name=h.name,
-            current_sample=0,
-            target_sample=h.target_sample_size,
-            any_tripwire_fired=False,
-        ) for h in registry if h.status == "active"
+            hypothesis_id=p.hypothesis_id,
+            hypothesis_name=p.name,
+            current_sample=p.current_sample,
+            target_sample=p.target_sample,
+            any_tripwire_fired=p.tripwire_fired,
+        ) for p in progress_rows
     ]
-    return {}, progress_summaries
+    return progress_by_id, progress_summaries
 
 
 @dataclass(frozen=True)
