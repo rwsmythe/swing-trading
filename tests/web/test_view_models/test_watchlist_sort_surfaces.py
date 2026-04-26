@@ -342,6 +342,93 @@ def test_build_dashboard_top5_tagged_vs_tagged_count_differential(
     )
 
 
+def test_build_dashboard_top5_tagged_vs_tagged_precedence_differential(
+    seeded_db, monkeypatch,
+):
+    """Surface-level discriminator for the tag-PRECEDENCE secondary key:
+    two tagged tickers with identical tag count and identical proximity
+    differ on precedence score. (A+, TT✓) score 5 must rank above
+    (VCP✓, TT✓) score 3.
+
+    Achieved by injecting flag_tags directly into the test (rather than
+    through `_flag_tags`), because the natural `_flag_tags` output for an
+    A+-bucket candidate is the full ("TT✓", "VCP✓", "A+") triple; the
+    asymmetric (A+, TT✓) vs (VCP✓, TT✓) requires bypassing that synthesis.
+
+    Approach: use `build_watchlist` with monkeypatched `_flag_tags` to
+    return the asymmetric mapping. Verifies the surface honors the
+    secondary key when count is tied.
+    """
+    from swing.web.view_models import dashboard as dashboard_mod
+    from swing.web.view_models.watchlist import build_watchlist
+    from swing.web.price_cache import PriceCache
+
+    cfg, _ = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            cur = conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+                    tickers_evaluated, aplus_count, watch_count, skip_count,
+                    excluded_count, error_count,
+                    rs_universe_version, rs_universe_hash)
+                   VALUES ('2026-04-17T21:00:00', '2026-04-17', '2026-04-20',
+                           NULL, 2, 2, 0, 0, 0, 0, 'v1', 'd')""",
+            )
+            eval_id = int(cur.lastrowid)
+            for ticker in ("APLUS", "VCPTT"):
+                conn.execute(
+                    """INSERT INTO candidates
+                       (evaluation_run_id, ticker, bucket, close, pivot, initial_stop,
+                        rs_method)
+                       VALUES (?, ?, 'aplus', 105.0, 100.0, 95.0, 'universe')""",
+                    (eval_id, ticker),
+                )
+            conn.execute(
+                """INSERT INTO pipeline_runs
+                   (started_ts, finished_ts, trigger, data_asof_date,
+                    action_session_date, state, lease_token, charts_status,
+                    evaluation_run_id)
+                   VALUES ('2026-04-17T20:55:00', '2026-04-17T21:05:00',
+                           'manual', '2026-04-17', '2026-04-20',
+                           'complete', 't-x', 'ok', ?)""",
+                (eval_id,),
+            )
+            for ticker in ("APLUS", "VCPTT"):
+                upsert_watchlist_entry(conn, WatchlistEntry(
+                    ticker=ticker, added_date="2026-04-10",
+                    last_qualified_date="2026-04-17", status="watch",
+                    qualification_count=1, not_qualified_streak=0,
+                    last_data_asof_date="2026-04-17",
+                    entry_target=100.0, initial_stop_target=95.0,
+                    last_close=105.0, last_pivot=100.0, last_stop=95.0,
+                    last_adr_pct=2.5, missing_criteria=None, notes=None,
+                ))
+    finally:
+        conn.close()
+
+    # Inject the asymmetric tag-precedence mapping. (A+, TT✓) score 5 vs
+    # (VCP✓, TT✓) score 3; equal count = 2.
+    monkeypatch.setattr(
+        dashboard_mod, "_flag_tags",
+        lambda by_ticker: {
+            "APLUS": ("A+", "TT✓"),
+            "VCPTT": ("VCP✓", "TT✓"),
+        },
+    )
+
+    _patch_caches(monkeypatch)
+    cache = PriceCache(cfg)
+    vm = build_watchlist(cfg=cfg, cache=cache, executor=_no_op_executor())
+
+    tickers = [w.ticker for w in vm.rows]
+    assert tickers == ["APLUS", "VCPTT"], (
+        f"(A+, TT✓) (score 5) must rank above (VCP✓, TT✓) (score 3) "
+        f"at equal count and proximity; got {tickers}"
+    )
+
+
 def test_prices_refresh_route_warms_tag_aware_top5(seeded_db, monkeypatch):
     """7-row watchlist where the tagged ticker has the WORST proximity (10%)
     and 6 untagged tickers fill ranks 1–6 by proximity (1%..6%).
@@ -370,20 +457,15 @@ def test_prices_refresh_route_warms_tag_aware_top5(seeded_db, monkeypatch):
         r = client.post("/prices/refresh", headers={"HX-Request": "true"})
     assert r.status_code == 200
     assert "tickers" in captured, "refresh_all was never invoked"
-    # Pre-fix: TAG (rank 7 by proximity) NOT in top-5; post-fix: TAG first.
-    assert "TAG" in captured["tickers"], (
-        f"tagged ticker (worst proximity, rank 7) must appear in the "
-        f"/prices/refresh prefetch list under tag-aware sort; "
-        f"got {captured['tickers']}"
-    )
-    # Sanity: the closest-by-proximity untagged tickers (U01, U02, U03, U04)
-    # also appear — the prewarm picks the top-5 by tag-aware sort, which is
-    # [TAG, U01, U02, U03, U04]. U05/U06 should NOT be in the warmed set
-    # (other than via the open_trade union or the SPY benchmark).
-    warmed = set(captured["tickers"])
-    assert "U05" not in warmed and "U06" not in warmed, (
-        f"tag-aware top-5 must exclude the worst-proximity untagged "
-        f"tickers (U05, U06); got warmed set {warmed}"
+    # Strict contract: the warmed set is exactly the tag-aware top-5
+    # ([TAG, U01, U02, U03, U04]) plus the SPY benchmark. No open trades
+    # in this seed so the open-trade union contributes nothing. A bug that
+    # warms the wrong middle ticker (e.g., U05 sneaks in over U03) or
+    # silently truncates the list is now caught here, not just at the
+    # set-membership extremes.
+    assert set(captured["tickers"]) == {"TAG", "U01", "U02", "U03", "U04", "SPY"}, (
+        f"warmed set must be tag-aware top-5 {{TAG, U01, U02, U03, U04}} "
+        f"plus benchmark SPY; got {sorted(captured['tickers'])}"
     )
 
 
@@ -495,10 +577,12 @@ def test_prices_refresh_uses_pipeline_eval_anchor(seeded_db, monkeypatch):
         r = client.post("/prices/refresh", headers={"HX-Request": "true"})
     assert r.status_code == 200
     assert "tickers" in captured, "refresh_all was never invoked"
-    # Strict discriminator: under E1 anchor TAG keeps A+ → in top-5 →
-    # warmed; under E2 anchor TAG has no tags → falls to rank 7 by
-    # proximity → NOT warmed.
-    assert "TAG" in captured["tickers"], (
-        f"under the pipeline-eval anchor, TAG must remain tagged and "
-        f"appear in the warmed top-5; got {captured['tickers']}"
+    # Strict membership: under E1 anchor, TAG keeps A+ → in top-5 → warmed
+    # set is exactly [TAG, U01..U04] plus SPY benchmark. Under E2 anchor,
+    # TAG has no tags → falls to rank 7 → warmed set would be [U01..U05, SPY]
+    # (without TAG). Asserting the exact set distinguishes both directions.
+    assert set(captured["tickers"]) == {"TAG", "U01", "U02", "U03", "U04", "SPY"}, (
+        f"under the pipeline-eval anchor, warmed set must be tag-aware "
+        f"top-5 {{TAG, U01, U02, U03, U04}} plus benchmark SPY; "
+        f"got {sorted(captured['tickers'])}"
     )
