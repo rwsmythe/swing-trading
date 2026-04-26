@@ -117,3 +117,23 @@ def test_volume_contraction_gate_below_threshold_passes():
     bars = make_flag_bars(flag_volume_factor=0.699)
     res = classify_flag(bars)
     assert res.detected is True
+
+
+def test_ma_structure_not_stacked_rejects():
+    # Override the full pre-run window (50 bars) with a steep downtrend so
+    # SMA50 dominates and prevents SMA10 > SMA20 > SMA50 stacking. Plan's
+    # n_pre=30 leaves 20 flat bars at start_close which preserves stacking;
+    # n_pre=50 + linspace(180, 100, 50) flips the order at flag_start.
+    bars = make_flag_bars()
+    closes = bars["Close"].to_numpy().copy()
+    n_pre = 50
+    closes[:n_pre] = np.linspace(180.0, 100.0, n_pre)  # downtrend into pole
+    bars = bars.assign(Close=closes, Open=closes)
+    res = classify_flag(bars)
+    assert res.detected is False
+
+
+def test_ma_structure_stacked_and_rising_passes():
+    bars = make_flag_bars()
+    res = classify_flag(bars)
+    assert res.detected is True
