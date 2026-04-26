@@ -292,10 +292,14 @@ UPDATE schema_version SET version = 9;
 ```sql
 -- 0010_trade_chart_pattern.sql
 --
--- Three columns on trades for the chart-pattern algo's per-trade encoding.
+-- Four columns on trades for the chart-pattern algo's per-trade encoding.
 -- Brief locked-constraint #6: algo and operator values stored separately so future
 -- agreement-rate / calibration analysis can compare them. Effective-pattern-for-
--- analysis = COALESCE(chart_pattern_operator, chart_pattern_algo).
+-- analysis = COALESCE(chart_pattern_operator, chart_pattern_algo). The
+-- pipeline_run_id column persists the audit anchor of which cached
+-- classification the trade was entered against (R4 Major 1 — without
+-- persisting this, the "audit anchor" added in R3 evaporates at record_entry
+-- return).
 
 ALTER TABLE trades ADD COLUMN chart_pattern_algo TEXT
     CHECK (chart_pattern_algo IS NULL OR chart_pattern_algo IN ('none', 'flag'));
@@ -304,6 +308,15 @@ ALTER TABLE trades ADD COLUMN chart_pattern_algo_confidence REAL
            OR (chart_pattern_algo_confidence >= 0.0
                AND chart_pattern_algo_confidence <= 1.0));
 ALTER TABLE trades ADD COLUMN chart_pattern_operator TEXT;
+-- Audit anchor: the pipeline_run_id of the cached classification row whose
+-- pattern/confidence values the operator-facing entry surface displayed at
+-- entry time. NULL when no cache row was available (out-of-scope ticker or
+-- classifier-error row was the only one present). REFERENCES pipeline_runs(id)
+-- — SQLite recognizes the FK syntactically; cross-table cascade is not
+-- enforced (V1 deliberately accepts this — pipeline_runs rows are not deleted
+-- in normal operation, so no orphans expected).
+ALTER TABLE trades ADD COLUMN chart_pattern_classification_pipeline_run_id INTEGER
+    REFERENCES pipeline_runs(id);
 
 UPDATE schema_version SET version = 10;
 ```
@@ -314,11 +327,16 @@ NULL semantics — `pipeline_pattern_classifications.pattern`:
 - `pattern=NULL, confidence=NULL, components_json contains `"error"` key`: classifier raised an exception. Distinguishable from `'none'` so downstream analysis does not conflate "evaluated negative" with "system failure". (Adversarial-review R1 Major 1.)
 
 NULL semantics — `trades` columns:
-- `chart_pattern_algo='flag', confidence=0.78`: cache row had `pattern='flag'`.
-- `chart_pattern_algo='none', confidence=NULL`: cache row had `pattern='none'`.
-- `chart_pattern_algo=NULL, confidence=NULL`: NO cache row OR cache row had `pattern=NULL` (classifier error). Trade-row level intentionally collapses these two cases into "not classified" because the operator's analysis on the trade rarely needs to distinguish "system failure during classification" from "ticker out-of-scope" (both reduce to "no algo classification available for this trade"). The cache-table distinction remains queryable for diagnostics.
+- `chart_pattern_algo='flag', confidence=0.78, pipeline_run_id=15`: cache row had `pattern='flag'`; full classification + audit anchor captured.
+- `chart_pattern_algo='none', confidence=NULL, pipeline_run_id=15`: cache row had `pattern='none'`; evaluated-no-detect captured with audit anchor.
+- `chart_pattern_algo=NULL, confidence=NULL, pipeline_run_id=NULL`: NO cache row OR cache row had `pattern=NULL` (classifier error). Trade-row level intentionally collapses these two cases into "not classified" because the operator's analysis on the trade rarely needs to distinguish "system failure during classification" from "ticker out-of-scope" (both reduce to "no algo classification available for this trade"). The cache-table distinction remains queryable for diagnostics by JOIN to pipeline_pattern_classifications IF pipeline_run_id were captured for error rows; V1 deliberately doesn't capture pipeline_run_id in the classifier-error case (simpler — operator-facing distinction lost at trade-row level by design).
 - `chart_pattern_operator='flag'` (or any text): operator override, takes precedence in analysis.
 - `chart_pattern_operator=NULL`: operator accepted algorithm; analysis falls through to algo value.
+
+**Joint-NULL invariants** (enforced at repo layer per §3.2.3 cross-column constraint):
+- `chart_pattern_algo IS NOT NULL ⟺ chart_pattern_classification_pipeline_run_id IS NOT NULL` — they are set or unset together.
+- `chart_pattern_algo='flag' ⟺ chart_pattern_algo_confidence IS NOT NULL`.
+- `chart_pattern_algo='none' ⟹ chart_pattern_algo_confidence IS NULL`.
 
 **CHECK constraint extensibility:** the `IN ('none', 'flag')` check is V1-scoped. V2 patterns extend the IN list via a future migration; existing rows preserved.
 
@@ -340,7 +358,7 @@ def list_classifications_for_run(conn, *,
                                  pipeline_run_id: int) -> Mapping[str, PipelinePatternClassification]: ...
 ```
 
-`swing/data/repos/trades.py` — `insert_trade_with_event` adds the three new columns to its INSERT; existing read queries SELECT them. Trade dataclass at `swing/data/models.py` gains three trailing-default fields (mirrors `hypothesis_label` precedent at [models.py:69](../../../swing/data/models.py#L69)) preserving every existing call site.
+`swing/data/repos/trades.py` — `insert_trade_with_event` adds the **four** new columns to its INSERT; existing read queries SELECT them. Trade dataclass at `swing/data/models.py` gains four trailing-default fields (`chart_pattern_algo`, `chart_pattern_algo_confidence`, `chart_pattern_operator`, `chart_pattern_classification_pipeline_run_id`; mirrors `hypothesis_label` precedent at [models.py:69](../../../swing/data/models.py#L69)) preserving every existing call site.
 
 ### 3.3 Pipeline integration
 
@@ -532,7 +550,7 @@ Resolution-mapping rules (applied at entry surface, NOT in `record_entry`):
 
 Repo-layer cross-column invariant (per §3.2.3) still fires in `record_entry` — `ValueError` raised if `chart_pattern_algo='flag'` arrives without a non-NULL confidence (catches form-tampering or coding bug).
 
-**Threat model — hidden form-field tampering:** A hostile operator could manipulate the form's hidden `chart_pattern_*` inputs to persist arbitrary algo values they didn't actually see. For V1's personal-use single-operator tool this is an accepted residual risk — the operator has no incentive to misrepresent their own evidence loop. If V1's deployment surface ever broadens to multi-user or untrusted-input contexts, the spec's V2 hardening should re-resolve at submit time and validate against the form-supplied `pipeline_run_id` for tamper-resistance.
+**Threat model — hidden form-field tampering:** A hostile operator could manipulate the form's hidden `chart_pattern_*` inputs to persist arbitrary algo values they didn't actually see — and that includes `chart_pattern_classification_pipeline_run_id` (R4 Minor 1 clarification). The persisted snapshot is **operator-claimed input, not server-verified provenance** in V1. Don't read the stored anchor as a tamper-proof claim that "this trade was based on the classification at run N"; read it as "this trade's submission claimed it was based on run N." For V1's personal-use single-operator tool this is an accepted residual risk — the operator has no incentive to misrepresent their own evidence loop. If V1's deployment surface ever broadens to multi-user or untrusted-input contexts, the spec's V2 hardening should re-resolve at submit time and validate the form-supplied `pipeline_run_id` against a server-side cache lookup (refusing the submit if they don't agree).
 
 ### 3.7 CLI
 
