@@ -228,17 +228,52 @@ def test_confidence_is_min_of_continuous_clearances():
 
 
 def test_search_prefers_higher_confidence_then_lower_N_then_lower_M():  # noqa: N802  # M, N spec-canonical (§3.1)
-    # Build a fixture admitting multiple valid (M, N) candidates. Default
-    # builder yields one passing window; we widen the flag region so that
-    # several N values pass.
-    bars = make_flag_bars(flag_bars=15)  # multiple N in [5, 15] could pass
+    """Codex R1 M2 follow-up: original test only asserted determinism
+    across two calls. This stronger version also verifies the chosen
+    (M, N) is THE highest-confidence passing candidate (with tie-break
+    by lower N, then lower M) — by enumerating all candidates and
+    cross-checking against a reference computation."""
+    bars = make_flag_bars(flag_bars=15)  # multiple N could pass
     res = classify_flag(bars)
     assert res.detected is True
-    # The search must report SOME (M, N) — and must be deterministic across
-    # calls (tie-break by lower N then lower M).
+    # Determinism: two calls return the same (M, N).
     res2 = classify_flag(bars)
     assert res.components["flag_N"] == res2.components["flag_N"]
     assert res.components["pole_M"] == res2.components["pole_M"]
+    # Correctness: the chosen (M, N) maximizes confidence with tie-break
+    # (-N, -M). Enumerate all passing candidates via direct calls.
+    from swing.evaluation.patterns.flag_classifier import (
+        _evaluate_candidate, _detection_passes, _continuous_clearances,
+        M_RANGE, N_RANGE, _DEFAULT_CFG,
+    )
+    n_bars = len(bars)
+    passing = []
+    for N_ in N_RANGE:
+        flag_end = n_bars
+        flag_start = n_bars - N_
+        if flag_start <= 0:
+            continue
+        for M_ in M_RANGE:
+            pole_start = flag_start - M_
+            if pole_start < 0:
+                continue
+            c = _evaluate_candidate(bars, pole_start, flag_start, flag_end)
+            if _detection_passes(c, _DEFAULT_CFG):
+                conf = min(_continuous_clearances(c, _DEFAULT_CFG))
+                passing.append((conf, -N_, -M_, M_, N_))
+    assert passing, "Test setup error: fixture must produce ≥1 passing candidate"
+    # Sort by (conf desc, -N desc, -M desc) — i.e., the search's tie-break.
+    passing.sort(reverse=True)
+    expected_M = passing[0][3]
+    expected_N = passing[0][4]
+    assert res.components["pole_M"] == float(expected_M), (
+        f"Search picked M={res.components['pole_M']}, "
+        f"reference computation says highest-confidence passing M={expected_M}"
+    )
+    assert res.components["flag_N"] == float(expected_N), (
+        f"Search picked N={res.components['flag_N']}, "
+        f"reference computation says highest-confidence passing N={expected_N}"
+    )
 
 
 def test_best_attempted_uses_max_min_soft_clearance():
