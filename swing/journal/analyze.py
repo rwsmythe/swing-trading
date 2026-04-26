@@ -114,18 +114,29 @@ def _fetch_recommendations(
         f"AND c.bucket IN ({placeholders}) "
         "ORDER BY er.run_ts ASC, c.id ASC"
     )
-    # Exclusive next-day-midnight upper bound. Lexicographic comparison on
-    # the ISO `run_ts` string field: anything stamped on `entry_date` is
-    # included regardless of sub-second precision (`...T23:59:59.500`) or
-    # timezone suffix (`...T23:59:59Z`, `...T23:59:59+00:00`), all of which
-    # would have been incorrectly excluded by an inclusive `<= entry_date
-    # T23:59:59` bound. Adversarial review R2 M1.
+    # Exclusive next-day-midnight upper bound. The query relies on
+    # lexicographic ordering of `er.run_ts` strings, which works correctly
+    # for the storage convention used in production (`pipeline.runner`
+    # writes `datetime.now().isoformat(timespec='seconds')` — naive local
+    # time, no offset). Under that convention, a sub-second-precision row
+    # (`...T23:59:59.500`) or `Z`-suffixed row that landed on `entry_date`
+    # would have been silently excluded by the prior `<= entry_dateT23:59:59`
+    # bound; the next-day-midnight bound includes them. Mixing naive +
+    # offset-bearing timestamps in the same DB would produce ordering-
+    # mismatch artifacts; that's a storage-convention invariant we rely
+    # on, not a normalization guarantee. Adversarial review R2 M1 / R3 m1.
     try:
         next_day = date.fromisoformat(entry_date) + timedelta(days=1)
-        upper_bound = f"{next_day.isoformat()}T00:00:00"
-    except ValueError:
-        # Malformed entry_date: fall back to no-rec result rather than crash.
-        return ()
+    except ValueError as exc:
+        # Adversarial review R3 M1: surface data-integrity failure rather
+        # than silently degrading to "manually-sourced". A malformed
+        # entry_date implies the trades row was inserted outside the repo
+        # (which validates ISO dates), and the operator needs to know.
+        raise ValueError(
+            f"trade.entry_date={entry_date!r} is not ISO 8601 (YYYY-MM-DD); "
+            f"cannot compute recommendation lookup window"
+        ) from exc
+    upper_bound = f"{next_day.isoformat()}T00:00:00"
     rows = conn.execute(
         sql, (ticker, upper_bound, *_USEFUL_BUCKETS),
     ).fetchall()

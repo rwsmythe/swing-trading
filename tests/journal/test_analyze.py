@@ -400,11 +400,11 @@ def test_recommendations_with_next_day_run_ts_excluded(tmp_path):
     assert a.recommendations == ()
 
 
-def test_malformed_entry_date_returns_no_recs(tmp_path):
-    """R2 M1: defensive fallback when the entry_date can't be parsed for the
-    upper-bound computation."""
+def test_malformed_entry_date_raises(tmp_path):
+    """R3 M1: surface a malformed `trades.entry_date` as a clear
+    `ValueError` rather than silently degrading to 'manually-sourced'.
+    Silent fallback would hide data corruption from the operator."""
     conn = _conn(tmp_path)
-    # Insert a candidate so we'd otherwise match.
     _insert_run(
         conn, run_ts="2026-04-19T18:00:00",
         action_session_date="2026-04-20", data_asof_date="2026-04-17",
@@ -421,15 +421,13 @@ def test_malformed_entry_date_returns_no_recs(tmp_path):
         tid = conn.execute(
             "SELECT id FROM trades WHERE entry_date='not-a-date'"
         ).fetchone()[0]
-        # Required trade_event for parity with insert_trade_with_event.
         conn.execute(
             "INSERT INTO trade_events (trade_id, ts, event_type, payload_json) "
             "VALUES (?, '2026-04-20T09:30:00', 'entry', '{}')",
             (tid,),
         )
-    a = analyze_trade(conn, tid)
-    # Defensive: returns empty recs rather than crashing.
-    assert a.recommendations == ()
+    with pytest.raises(ValueError, match="entry_date"):
+        analyze_trade(conn, tid)
 
 
 def test_analyze_does_not_mutate_db(tmp_path):
