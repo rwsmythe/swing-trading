@@ -119,12 +119,26 @@ def test_pullback_depth_gate_is_threshold_sensitive():
 # 0.6 gate) and 0.668 lands measured ≈ 0.5892 but search shifts to a window
 # that fails (rejected). Verified at the REPL across [0.65, 0.70].
 def test_tightness_ratio_gate_above_threshold_rejects():
+    """Detection-outcome regression test at flag_tightness_factor=0.668.
+    NOT a direct gate-threshold test — the parameter does not map 1:1
+    to measured tightness_ratio (close-relative true-range scaling),
+    so this asserts the search-path-resolved detection outcome at this
+    fixture parameter, not the gate boundary itself. The
+    `test_tightness_ratio_gate_is_threshold_sensitive` test is the
+    actual gate-correctness verification.
+    """
     bars = make_flag_bars(flag_tightness_factor=0.668)
     res = classify_flag(bars)
     assert res.detected is False
 
 
 def test_tightness_ratio_gate_below_threshold_passes():
+    """Detection-outcome regression test at flag_tightness_factor=0.667
+    (companion to ..._above_threshold_rejects). NOT a direct
+    gate-threshold test — see docstring on the rejecting-side test
+    for explanation; `test_tightness_ratio_gate_is_threshold_sensitive`
+    is the actual gate-correctness verification.
+    """
     bars = make_flag_bars(flag_tightness_factor=0.667)
     res = classify_flag(bars)
     assert res.detected is True
