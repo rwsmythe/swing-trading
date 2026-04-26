@@ -171,7 +171,7 @@ class FlagClassificationResult:
    - Verify all 11 gates (§3.1.3) for the (M, N) candidate.
    - Compute `confidence = min(four continuous-gate clearances)` (§3.1.4).
 3. **Best fit:** Return the (M*, N*) candidate with highest confidence among those with ALL detection gates (1–9) passing. Ties broken by lower N (shorter flag, "tighter" tagging), then lower M.
-4. **No candidate passes:** Return `detected=False, pattern='none', confidence=0.0`. Components dict populated with the **best-attempted candidate's** measurements for debugging — defined precisely as the (M, N) pair maximizing the **min of soft clearances**, where soft clearance allows negative values for failed gates (e.g., pole_gain=0.25 → soft clearance = (0.25 − 0.30) / 0.70 = −0.071). When no candidate passes any gate, the (M=5, N=5) pair's measurements are persisted as a deterministic baseline. (Adversarial-review R1 Major 3 — eliminates ambiguity in "best-attempted" semantics.)
+4. **No candidate passes:** Return `detected=False, pattern='none', confidence=0.0`. Components dict populated with the **best-attempted candidate's** measurements for debugging — defined precisely as the (M, N) pair maximizing the **min over the four CONTINUOUS-gate soft clearances** (gates 4, 6, 7, 8), where soft clearance allows negative values for failed gates (e.g., pole_gain=0.25 → soft clearance = (0.25 − 0.30) / 0.70 = −0.071). **Binary gates (5 ma_structure, 9 flag_floor_holds) and length-bound gates (2, 3) are EXCLUDED from the ranking** — they are recorded in components_json as raw boolean / numeric values for debugging but do not contribute a soft-clearance value to the max-of-min ranking (they have no continuous-clearance form). When no candidate passes any gate, the (M=5, N=5) pair's measurements are persisted as a deterministic baseline. (Adversarial-review R1 Major 3 + R2 Major 1 — best-attempted ranking is now fully specified over a closed set of contributing gates.)
 
 #### 3.1.3 Gate definitions
 
@@ -248,7 +248,38 @@ CREATE TABLE pipeline_pattern_classifications (
     flag_start_date TEXT,
     flag_end_date TEXT,
     computed_at TEXT NOT NULL,              -- ISO timestamp
-    UNIQUE (pipeline_run_id, ticker)
+    UNIQUE (pipeline_run_id, ticker),
+    -- Row-level state-shape constraint (adversarial-review R2 Major 2).
+    -- SQLite enforces this at INSERT/UPDATE time so the schema rejects
+    -- inconsistent NULL combinations rather than relying on app discipline.
+    --
+    --   pattern='flag': all anchor + confidence columns NOT NULL
+    --   pattern='none': anchor + confidence columns ALL NULL (best-attempted
+    --                   measurements live in components_json, not first-class)
+    --   pattern  IS NULL  (classifier error): anchor + confidence columns ALL NULL
+    --
+    -- components_json is NOT NULL in every row by separate column constraint.
+    CONSTRAINT pattern_state_consistency CHECK (
+        (pattern = 'flag'
+         AND confidence       IS NOT NULL
+         AND pivot            IS NOT NULL
+         AND pole_high        IS NOT NULL
+         AND flag_low         IS NOT NULL
+         AND pole_start_date  IS NOT NULL
+         AND pole_end_date    IS NOT NULL
+         AND flag_start_date  IS NOT NULL
+         AND flag_end_date    IS NOT NULL)
+        OR
+        ((pattern = 'none' OR pattern IS NULL)
+         AND confidence       IS NULL
+         AND pivot            IS NULL
+         AND pole_high        IS NULL
+         AND flag_low         IS NULL
+         AND pole_start_date  IS NULL
+         AND pole_end_date    IS NULL
+         AND flag_start_date  IS NULL
+         AND flag_end_date    IS NULL)
+    )
 );
 
 CREATE INDEX idx_pattern_classifications_run ON pipeline_pattern_classifications(pipeline_run_id);
@@ -290,6 +321,8 @@ NULL semantics — `trades` columns:
 - `chart_pattern_operator=NULL`: operator accepted algorithm; analysis falls through to algo value.
 
 **CHECK constraint extensibility:** the `IN ('none', 'flag')` check is V1-scoped. V2 patterns extend the IN list via a future migration; existing rows preserved.
+
+**Trade-row cross-column constraint (R2 Major 2 — repo-layer enforcement):** SQLite's `ALTER TABLE` cannot add a multi-column row-level CHECK to an existing table without a CREATE-COPY-DROP-RENAME migration. For V1 the cross-column invariant on `trades` (`chart_pattern_algo='flag' iff chart_pattern_algo_confidence IS NOT NULL`; `chart_pattern_algo='none' iff confidence IS NULL`) is enforced at the **repo layer** in `insert_trade_with_event` (raise `ValueError` with explicit message if the input violates the invariant; refuse to INSERT). Tests in `tests/data/test_trade_chart_pattern_columns.py` verify the repo refuses each invalid combination. **Schema-layer hardening for `trades` is captured as a deferred V2 follow-up** (a future migration could rebuild `trades` with the table-level CHECK at the same time as adding any other column changes the operator wants — bundle the cost). The cache table (`pipeline_pattern_classifications`) gets the schema-layer guarantee for free because it's a fresh `CREATE TABLE` in 0009.
 
 #### 3.2.3 Repo layer
 
@@ -367,6 +400,8 @@ for ticker, pivot, stop, _source in targets:
 **Performance budget (hypothesis, verify at impl):** `classify_flag` is pure pandas/numpy on a 60-bar DataFrame searching ≤ 26 × 17 = 442 (M, N) candidates. Expected sub-millisecond per ticker — verify with a microbenchmark during implementation. The pipeline's tolerance is high (~15-ticker chart-scope, full classifier loop expected well under 1s); if measurement reveals 10× the estimate, that's still inside tolerance. (Adversarial-review R1 Minor 3 — softens a hand-waved performance assertion.)
 
 **Failure isolation:** classifier exception for one ticker does NOT fail the chart_target update or other tickers. Same per-ticker failure boundary that already exists for chart rendering.
+
+**Failure observability (R2 Major 4 fix):** classifier exception path emits an explicit `logger.warning(f"flag_classifier failed for {ticker}: {exc!r}")` so the run's stderr / log file carries the diagnostic. At end of `_step_charts`, log a summary line counting any errored tickers in this run (`logger.info(f"flag_classifier: {ok}/{total} ok, {errors} errors")`). The cache row's `pattern=NULL` + `components_json` error remains the queryable record. **Operator-facing surface for classifier-error counts (e.g., dashboard banner showing "N classifier errors in latest pipeline run") is a deferred V2 follow-up** — V1 logging closes the silent-failure red-team concern at the OPERATIONAL layer (operator can grep logs / check stderr) without bloating V1 UI scope.
 
 ### 3.4 Chart overlay (Q11 option B)
 
@@ -477,6 +512,8 @@ chart_pattern_operator: str | None = None
 
 `record_entry` canonicalizes via the existing `canonicalize_hypothesis_label` (or extracts a shared `canonicalize_freetext_label` helper if review prefers — the canonicalization rules are identical).
 
+**Cross-surface algo-evidence persistence (R2 Major 3 fix):** `record_entry` itself resolves the cached classification (looking up the latest pipeline_runs.evaluation_run_id → pipeline_run_id → `get_classification(pipeline_run_id, req.ticker)`) and persists `chart_pattern_algo` + `chart_pattern_algo_confidence` on the trade row from that lookup — for **both** the form path and the CLI path. This avoids data-loss where one surface persists algo evidence and the other doesn't. The form's pre-render of the algo display in `build_entry_form_vm` is purely cosmetic; the persistence call is centralized in `record_entry`. Repo-layer cross-column constraint (per §3.2.3): if the lookup yields a cache row with `pattern='flag'`, persist `chart_pattern_algo='flag'` + the cache's confidence value; if `pattern='none'`, persist `'none'` + NULL; if cache row missing OR `pattern IS NULL` (classifier error), persist `chart_pattern_algo=NULL` + `chart_pattern_algo_confidence=NULL`. The repo's `ValueError` invariant check fires only on internally-inconsistent inputs, never on this resolution path.
+
 ### 3.7 CLI
 
 `swing trade entry` gains `--chart-pattern-operator` (str, default None) for parity with the form. Threads to `EntryRequest.chart_pattern_operator`. **CLI parity gate (R1 Critical 1):** the CLI handler MUST refuse `--chart-pattern-operator` for tickers without a cached classification (i.e., when `get_classification(pipeline_run_id, ticker)` returns None or returns a row with `pattern=NULL`). This mirrors the form's "Not classified" stub design — V1's locked-constraint #5 (cached-only consumption) applies to BOTH entry surfaces. Operator gets a clear error: `"--chart-pattern-operator requires a cached classification for <TICKER>; ticker is out-of-scope for the latest pipeline run. (V1 cached-only; manual fallback deferred to V2.)"` Without the gate, CLI silently bypasses a constraint the form enforces — a divergent-behavior surface that future analysis would have to disentangle.
@@ -515,7 +552,7 @@ Per-component pure-function tests on synthetic DataFrames. Discriminating-test d
 - `test_data_window_too_short`: 35 bars → `detected=False`; 36 bars (boundary) → enters search.
 - `test_confidence_min_aggregation`: build a DataFrame where pole_gain clearance = 0.9 and pullback clearance = 0.2; assert `confidence == 0.2`.
 - `test_search_picks_best_fit`: DataFrame admitting two valid (M, N) candidates; assert algorithm returns the higher-confidence pair, ties broken by lower N then lower M.
-- `test_classifier_error_yields_pattern_none_dataclass`: when classify_flag raises (simulated via patched internal raise), pipeline-side adapter (NOT classify_flag itself, since classifier doesn't catch) produces a `FlagClassificationResult` with `pattern=None` (not `'none'`); cache row persists `pattern=NULL` distinguishing system error from evaluated-negative. (R1 M1.)
+- `test_classifier_error_yields_pattern_NULL_not_string_none`: when classify_flag raises (simulated via patched internal raise), pipeline-side adapter (NOT classify_flag itself, since classifier doesn't catch) produces a `FlagClassificationResult` with `pattern is None` (NoneType — i.e., persists as SQL NULL — not the string `'none'`); cache row persists `pattern=NULL` distinguishing system error from evaluated-negative. Test name explicitly contrasts `NULL` vs `'none'` so future maintainers don't accidentally introduce the exact bug R1 M1 + R2 Minor 1 fixed. (R1 M1; R2 Minor 1 rename.)
 - `test_best_attempted_is_max_min_soft_clearance`: build a DataFrame where two candidates fail with different soft-clearance profiles (one fails by 0.05 on pole_gain, another fails by 0.20 on tightness); assert `components_json` reflects the max-min-soft-clearance candidate (the one closer to passing). When NO candidate passes any gate, the deterministic (5,5) baseline is persisted. (R1 M3.)
 - `test_pattern_none_emits_components_for_debugging`: failed candidate still populates components dict.
 
@@ -564,7 +601,7 @@ Deferred to backlog. Operator can periodically run against live yfinance refresh
 - A WatchlistVM with `flag_tags={'XYZ': ('TT✓',)}` AND `pattern_tags={'XYZ': 'flag (0.99)'}` does NOT outrank a WatchlistVM with `flag_tags={'ABC': ('TT✓','VCP✓')}` AND `pattern_tags={}` — confirms flag tag has zero sort effect because it never reaches `_sort_watchlist`.
 - Two rows with identical `flag_tags=('A+',)` but differing `pattern_tags` (one `'flag (0.99)'`, the other absent) sort by proximity, not by flag presence.
 - **Compounding-confound discipline (per the 2026-04-26 memory extension):** delete the `_pattern_tags` call entirely → row order MUST be unchanged (only the rendered tag span disappears). This proves `pattern_tags` has zero sort influence; if removing it changes order, the architectural separation has regressed.
-- **Byte-stability of `_sort_watchlist`:** add a test that imports `_sort_watchlist` source via `inspect.getsource` and asserts the body string equals a frozen baseline (or, more pragmatically, that a non-trivial sample of pre-V1 sort cases produces identical output to the post-V1 implementation). This catches accidental modification of the function during V1 implementation.
+- **Behavioral parity vector for `_sort_watchlist` (R2 Minor 2 fix — replaces the brittle source-stability check):** committed test fixture is a list of (rows, flag_tags, expected_order) tuples covering the existing pre-V1 sort cases (already exercised by current dashboard tests; just snapshotted). Test calls `_sort_watchlist` on each fixture and asserts byte-equal output ordering. This catches behavioral regression on the existing surface without coupling to source formatting / comments / refactor noise. Source-stability via `inspect.getsource` is explicitly REJECTED — too brittle, false-positives on harmless edits.
 
 ### 4.5 Persistence + integration tests
 
