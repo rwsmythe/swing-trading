@@ -25,6 +25,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 
@@ -52,32 +53,29 @@ def do_backup(db_path: Path, dest_dir: Path, *, now: datetime | None = None) -> 
     """
     if now is None:
         now = datetime.now()
-    # Fail closed before touching dest_dir: sqlite3.connect of a missing path
-    # silently fabricates an empty DB, which would yield a "successful" empty
-    # backup. Adversarial review R1 Major 1 + R2 Major 1: prefer an explicit
-    # exists() check to URI mode=ro, which can fail on WAL-mode DBs whose
-    # -shm/-wal sidecars are absent. FileNotFoundError is an OSError, which
-    # the runner's broad backup-failure catch already handles.
-    if not db_path.exists():
-        raise FileNotFoundError(f"backup source DB not found: {db_path}")
-    dest_dir.mkdir(parents=True, exist_ok=True)
     final_path = compute_backup_destination(now, dest_dir)
 
+    # Fail-closed open: mode=rw refuses to create a missing DB (the default
+    # mode=rwc would fabricate an empty file and our backup would "succeed"
+    # against fresh garbage). mode=ro would also be fail-closed but can refuse
+    # WAL-mode DBs whose -shm/-wal sidecars are absent; mode=rw works with WAL.
+    # Adversarial review R1 Major 1 + R2 Major 1 + R3 Major 1: this single
+    # atomic open closes the TOCTOU window an exists()-then-connect pair has.
+    # url-quote the path so '#' / '?' / etc. in any future config path don't
+    # corrupt the URI.
+    src_uri = "file:" + urllib.parse.quote(db_path.as_posix(), safe="/:") + "?mode=rw"
+    src = sqlite3.connect(src_uri, uri=True)
+
+    # Source open succeeded — now stage the destination.
+    dest_dir.mkdir(parents=True, exist_ok=True)
     # Temp file on the same filesystem as the destination (Windows os.replace
     # cannot cross volumes). delete=False because we need to write+close before
     # opening as a sqlite3 destination connection on Windows.
     fd, tmp_str = tempfile.mkstemp(prefix=".backup-", suffix=".db.tmp", dir=str(dest_dir))
     os.close(fd)
     tmp_path = Path(tmp_str)
-    src: sqlite3.Connection | None = None
     dst: sqlite3.Connection | None = None
     try:
-        # Standard connect (not URI mode=ro) — WAL-mode DBs can refuse a
-        # mode=ro open when -shm/-wal sidecars don't exist on disk, which would
-        # silently break the weekly backup. The exists() check above is the
-        # fail-closed guard. backup() reads from src; no writes are issued
-        # against the source DB.
-        src = sqlite3.connect(db_path)
         dst = sqlite3.connect(tmp_path)
         src.backup(dst)
     except BaseException:
@@ -87,8 +85,7 @@ def do_backup(db_path: Path, dest_dir: Path, *, now: datetime | None = None) -> 
                 dst.close()
         finally:
             try:
-                if src is not None:
-                    src.close()
+                src.close()
             finally:
                 tmp_path.unlink(missing_ok=True)
         raise
