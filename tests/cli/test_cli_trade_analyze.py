@@ -201,6 +201,53 @@ def test_analyze_missing_trade_exits_nonzero(tmp_path: Path):
     assert "999" in r.output or "not found" in r.output.lower()
 
 
+def test_analyze_cli_runs_in_query_only_mode(tmp_path: Path, monkeypatch):
+    """Adversarial M2: read-only safety should be technically enforced, not
+    just behaviorally trusted. The CLI must set PRAGMA query_only on the
+    connection so a future write bug in the compute path raises rather than
+    silently mutating the production DB."""
+    runner, cfg = _setup(tmp_path)
+    tid = _seed_vir_like_trade(cfg)
+
+    # Patch analyze_trade to attempt a write and verify SQLite refuses it.
+    import swing.journal.analyze as analyze_mod
+
+    real_analyze = analyze_mod.analyze_trade
+    captured: dict[str, object] = {}
+
+    def attempt_write(conn, trade_id):
+        try:
+            conn.execute(
+                "UPDATE trades SET notes='SHOULD NOT PERSIST' WHERE id=?",
+                (trade_id,),
+            )
+        except sqlite3.OperationalError as e:
+            captured["write_blocked"] = str(e)
+        return real_analyze(conn, trade_id)
+
+    monkeypatch.setattr("swing.cli.analyze_trade", attempt_write, raising=False)
+    # The CLI imports `analyze_trade` lazily inside the command body, so the
+    # patch needs to sit on the module the command imports from.
+    monkeypatch.setattr(analyze_mod, "analyze_trade", attempt_write)
+
+    r = runner.invoke(main, ["--config", str(cfg), "trade", "analyze", str(tid)])
+    assert r.exit_code == 0, r.output
+    assert "write_blocked" in captured, (
+        "PRAGMA query_only did not block the UPDATE — read-only enforcement is missing."
+    )
+
+    # Confirm the trades.notes was NOT mutated.
+    db_path = _db_path_from_cfg(cfg)
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT notes FROM trades WHERE id=?", (tid,),
+        ).fetchone()
+        assert row[0] != "SHOULD NOT PERSIST"
+    finally:
+        conn.close()
+
+
 def test_analyze_non_int_trade_id_rejected(tmp_path: Path):
     """SQL-injection guard via click int parsing."""
     runner, cfg = _setup(tmp_path)

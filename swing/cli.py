@@ -540,6 +540,13 @@ def trade_analyze_cmd(ctx, trade_id):
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
     try:
+        # Technical read-only enforcement on top of the analyze function's
+        # behavioral discipline: PRAGMA query_only=ON makes SQLite refuse any
+        # INSERT/UPDATE/DELETE/DDL on this connection for its lifetime, so a
+        # future bug in the compute path cannot mutate the production DB
+        # through this command. Cheaper than URI ?mode=ro because it preserves
+        # the standard `connect()` schema-version check.
+        conn.execute("PRAGMA query_only = ON")
         try:
             a = analyze_trade(conn, trade_id)
         except ValueError as exc:
@@ -607,6 +614,7 @@ def _render_trade_analysis(a) -> list[str]:
             )
             failed = [c for c in rec.criteria if c.result == "fail"]
             passed = [c for c in rec.criteria if c.result == "pass"]
+            na = [c for c in rec.criteria if c.result == "na"]
             if failed:
                 lines.append(f"  Failed criteria ({len(failed)}):")
                 for c in failed:
@@ -615,8 +623,20 @@ def _render_trade_analysis(a) -> list[str]:
                     lines.append(
                         f"    {c.layer}/{c.criterion_name}: {val}{rule}"
                     )
+            if na:
+                # Surface na criteria so an operator auditing the recommendation
+                # can tell when criteria were skipped vs. evaluated. Hiding na
+                # would let "all 8 trend_template pass" mask a layer that was
+                # only partially evaluated.
+                lines.append(f"  N/A criteria ({len(na)}):")
+                for c in na:
+                    val = c.value if c.value is not None else ""
+                    rule = f"  ({c.rule})" if c.rule else ""
+                    lines.append(
+                        f"    {c.layer}/{c.criterion_name}: {val}{rule}"
+                    )
             if passed:
-                # Group counts by layer for the all-passed summary
+                # Group counts by layer for the all-passed summary.
                 from collections import Counter
                 layer_counts = Counter(c.layer for c in passed)
                 summary = "; ".join(
@@ -656,9 +676,16 @@ def _render_trade_analysis(a) -> list[str]:
         lines.append("DEVIATIONS (vs latest pre-entry recommendation)")
         lines.append("-" * 47)
         days = a.days_rec_to_entry
-        lines.append(
-            f"  Days from rec to entry: {days if days is not None else 'n/a'}"
-        )
+        if days is None:
+            days_disp = "n/a"
+        elif days < 0:
+            # Action-session-after-entry indicates a forward-looking
+            # recommendation captured before its target session, which is
+            # unusual enough to label rather than print as a raw negative.
+            days_disp = f"{days} (rec action_session is AFTER entry — unusual)"
+        else:
+            days_disp = str(days)
+        lines.append(f"  Days from rec to entry: {days_disp}")
         lines.append(
             f"  Entry % above pivot: {_fmt_optional_pct(a.pct_above_pivot)}"
         )
@@ -717,7 +744,11 @@ def journal_review_cmd(ctx, period, today):
     from swing.data.repos.trades import list_closed_trades, list_open_trades, list_all_exits
     from swing.journal.flags import compute_flags
     from swing.journal.stats import (
-        compute_hypothesis_breakdown, compute_stats, period_filter,
+        compute_hypothesis_breakdown,
+        compute_hypothesis_progress_breakdown,
+        compute_stats,
+        period_filter,
+        render_hypothesis_progress,
     )
 
     cfg = ctx.obj["config"]
@@ -731,6 +762,12 @@ def journal_review_cmd(ctx, period, today):
             "SELECT id, run_ts, asof_date, ticker, status, close, sma10, sma20, sma50, "
             "slope20_5bar, slope10_5bar, rationale FROM weather_runs"
         ).fetchall()
+        # Per backend brief §4.5: "Hypothesis investigation progress"
+        # section is registry-driven (not period-filtered) — operator wants
+        # the full investigation state regardless of `--period`.
+        progress_rows = compute_hypothesis_progress_breakdown(
+            conn, starting_equity=cfg.account.starting_equity,
+        )
     finally:
         conn.close()
 
@@ -778,6 +815,12 @@ def journal_review_cmd(ctx, period, today):
             if b.win_rate is not None:
                 line += f", win rate {b.win_rate * 100:.1f}%"
             click.echo(line)
+
+    # Backend brief §4.5: per-hypothesis investigation progress against
+    # the pre-registered v0.1 plan. Always rendered (registry has 4 seed
+    # rows; section gives the operator a stable at-a-glance view of
+    # what's running, what's near target, what's tripped).
+    click.echo(render_hypothesis_progress(progress_rows))
 
 
 @journal_group.command("cash")

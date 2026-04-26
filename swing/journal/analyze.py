@@ -83,9 +83,25 @@ def _fetch_recommendations(
 ) -> tuple[RecommendationContext, ...]:
     """All `useful_buckets` candidate rows for `ticker` whose evaluation_run
     occurred on or before `entry_date`. Returned in chronological order
-    (run_ts ASC); the caller picks the last element for "latest".
+    (run_ts ASC, then candidate_id ASC for deterministic tiebreak); the
+    caller picks the last element for "latest".
+
+    Selection key: `evaluation_runs.run_ts` (per brief §5 watch item:
+    "MAX(run_ts) WHERE run_ts <= entry_date_timestamp"). This is the
+    operationally-meaningful ordering: "what recommendations did I see
+    BEFORE entering?". An alternative — `action_session_date` — would
+    instead capture "what was the framework's view of this ticker for
+    the entry-day session?", and would include a backfill rerun done
+    AFTER the trade was entered. We use run_ts so a post-entry
+    backfill can never silently re-baseline the deviation math; the
+    `(c.id ASC)` tiebreaker ensures multi-run/same-second results are
+    deterministic.
 
     Uses a bound parameter for `entry_date`; ticker is bound separately.
+    Schema invariant relied on: `UNIQUE(evaluation_run_id, ticker)` on
+    `candidates` (migration 0001), so within a single eval_run there
+    cannot be duplicate ticker rows — the tiebreaker only matters
+    across runs.
     """
     placeholders = ",".join("?" * len(_USEFUL_BUCKETS))
     sql = (
