@@ -36,3 +36,14 @@ def test_data_window_gate_at_threshold_enters_search():
     # components_json must populate (best-attempted baseline) — proof the
     # search ran and was not short-circuited by data_window.
     assert "pole_M" in res.components
+
+
+from tests.evaluation.patterns._synthetic import make_flag_bars
+
+
+def test_default_synthetic_flag_is_detected():
+    bars = make_flag_bars()
+    res = classify_flag(bars)
+    assert res.detected is True
+    assert res.pattern == "flag"
+    assert 0.0 < res.confidence <= 1.0
