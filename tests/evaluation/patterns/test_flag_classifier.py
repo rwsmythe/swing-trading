@@ -120,7 +120,7 @@ def test_tightness_ratio_gate_is_threshold_sensitive():
     escape to a tighter (M, N)), the threshold must be tightened below
     the MINIMUM measured tightness_ratio across all passing candidates.
     """
-    from swing.config import ClassifierConfig
+    from swing.config import ClassifierConfig  # noqa: I001  # in-function import keeps test setup self-contained
     from swing.evaluation.patterns.flag_classifier import (
         _evaluate_candidate, _detection_passes,
         M_RANGE, N_RANGE, _DEFAULT_CFG,
@@ -135,12 +135,12 @@ def test_tightness_ratio_gate_is_threshold_sensitive():
     # otherwise the search escapes to a tighter candidate.
     n_bars = len(bars)
     passing_tightness = []
-    for N_ in N_RANGE:
+    for N_ in N_RANGE:  # noqa: N806  # M, N spec-canonical (§3.1)
         flag_end = n_bars
         flag_start = n_bars - N_
         if flag_start <= 0:
             continue
-        for M_ in M_RANGE:
+        for M_ in M_RANGE:  # noqa: N806  # M, N spec-canonical (§3.1)
             pole_start = flag_start - M_
             if pole_start < 0:
                 continue
@@ -242,18 +242,18 @@ def test_search_prefers_higher_confidence_then_lower_N_then_lower_M():  # noqa: 
     assert res.components["pole_M"] == res2.components["pole_M"]
     # Correctness: the chosen (M, N) maximizes confidence with tie-break
     # (-N, -M). Enumerate all passing candidates via direct calls.
-    from swing.evaluation.patterns.flag_classifier import (
+    from swing.evaluation.patterns.flag_classifier import (  # noqa: I001  # in-function import keeps reference enumeration colocated
         _evaluate_candidate, _detection_passes, _continuous_clearances,
         M_RANGE, N_RANGE, _DEFAULT_CFG,
     )
     n_bars = len(bars)
     passing = []
-    for N_ in N_RANGE:
+    for N_ in N_RANGE:  # noqa: N806  # M, N spec-canonical (§3.1)
         flag_end = n_bars
         flag_start = n_bars - N_
         if flag_start <= 0:
             continue
-        for M_ in M_RANGE:
+        for M_ in M_RANGE:  # noqa: N806  # M, N spec-canonical (§3.1)
             pole_start = flag_start - M_
             if pole_start < 0:
                 continue
@@ -264,8 +264,8 @@ def test_search_prefers_higher_confidence_then_lower_N_then_lower_M():  # noqa: 
     assert passing, "Test setup error: fixture must produce ≥1 passing candidate"
     # Sort by (conf desc, -N desc, -M desc) — i.e., the search's tie-break.
     passing.sort(reverse=True)
-    expected_M = passing[0][3]
-    expected_N = passing[0][4]
+    expected_M = passing[0][3]  # noqa: N806  # M, N spec-canonical (§3.1)
+    expected_N = passing[0][4]  # noqa: N806  # M, N spec-canonical (§3.1)
     assert res.components["pole_M"] == float(expected_M), (
         f"Search picked M={res.components['pole_M']}, "
         f"reference computation says highest-confidence passing M={expected_M}"
@@ -287,17 +287,17 @@ def test_best_attempted_uses_max_min_soft_clearance():
     assert "pole_gain" in res.components
     # Reference enumeration: find (M, N) that maximizes
     # min(soft_clearances) and verify components matches.
-    from swing.evaluation.patterns.flag_classifier import (
+    from swing.evaluation.patterns.flag_classifier import (  # noqa: I001  # in-function import keeps reference enumeration colocated
         _evaluate_candidate, _soft_clearances, M_RANGE, N_RANGE, _DEFAULT_CFG,
     )
     n_bars = len(bars)
     best_soft = None  # (soft_min, M, N, components)
-    for N_ in N_RANGE:
+    for N_ in N_RANGE:  # noqa: N806  # M, N spec-canonical (§3.1)
         flag_end = n_bars
         flag_start = n_bars - N_
         if flag_start <= 0:
             continue
-        for M_ in M_RANGE:
+        for M_ in M_RANGE:  # noqa: N806  # M, N spec-canonical (§3.1)
             pole_start = flag_start - M_
             if pole_start < 0:
                 continue
@@ -306,7 +306,7 @@ def test_best_attempted_uses_max_min_soft_clearance():
             if best_soft is None or soft_min > best_soft[0]:
                 best_soft = (soft_min, M_, N_, c)
     assert best_soft is not None
-    expected_M, expected_N, expected_c = best_soft[1], best_soft[2], best_soft[3]
+    expected_M, expected_N, expected_c = best_soft[1], best_soft[2], best_soft[3]  # noqa: N806  # M, N spec-canonical (§3.1)
     assert res.components["pole_M"] == float(expected_M), (
         f"Best-attempted reported M={res.components['pole_M']}, "
         f"reference says max-min-soft-clearance M={expected_M}"
