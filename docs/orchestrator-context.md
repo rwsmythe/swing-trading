@@ -2,7 +2,7 @@
 
 **Audience:** Future orchestrator-role Claude sessions for the Swing Trading project. Also useful as a reference when the current orchestrator's context window is compacted.
 **Purpose:** Provide enough context to bootstrap an orchestrator role without re-reading conversation history. Not a complete project spec — pointers to authoritative sources are throughout.
-**Last updated:** 2026-04-25 (post-hypothesis-engine + backup + analyze-CLI; full Monday-prep operational batch shipped)
+**Last updated:** 2026-04-25 (post-Bug-1+Bug-2 UI fixes + investigation-discipline lessons captured; Monday-prep complete)
 
 ---
 
@@ -92,6 +92,10 @@ This evening's Monday-prep operational batch (all SHIPPED):
 
 **Cumulative test count: 969 passing, 0 failing as of `fe270a6`.**
 
+Late-evening UI bug-fix batch (all SHIPPED):
+- **Bug 1 (watchlist Enter-button event-propagation)** — SHIPPED. Commit `9aabe8b`. Root cause: row `<tr hx-get="/watchlist/<ticker>/expand">` and child `<button hx-get="/trades/entry/form">` both fired on click via event propagation; race determined which response won the swap. Fix: `onclick="event.stopPropagation()"` on Enter button. Single-file template change; covers both dashboard top-5 and standalone watchlist (same partial). Operator manually verified.
+- **Bug 2 (trade entry form vanishes mid-typing)** — SHIPPED in TWO commits with TWO different fix mechanisms. **First attempt** (`04ef355` → `20d2cab`) addressed the form-submit POST path: when form was submitted with stop≥entry, `record_entry` raised ValueError that propagated to generic exception handler returning a bare `<div>` fragment which got hoisted out of `<tbody>` per HTML parser spec, leaving the row position empty. Fix added explicit pre-check at request boundary; returns proper 400 + form re-render. Adversarial review approved. **HOWEVER, this wasn't operator's actual reproduction.** Operator manually verified post-fix → bug still present. Network trace showed only GET sizing-hint, no POST. **Second attempt = actual root cause** (`2a167d1`): the sizing-hint span in trade_entry_form had no explicit `hx-target`, so it inherited `hx-target="closest tr"` from parent `<form>`. Sizing-hint hx-get fired on input change events; response (`<span id="sizing-hint">`) swapped into the closest tr position — replacing the entire form with just the sizing-hint span. Operator's symptom matched exactly. Fix: add `hx-target="this"` to the sizing-hint span. One-line attribute addition; orchestrator committed directly given clean diagnosis (no implementer dispatch). First-attempt fix is preserved as defense-in-depth (still good behavior for actual form submit). Operator manually verified Bug 2 closed post-`2a167d1`.
+
 **No work currently in flight.** All Monday-prep infrastructure operational. Next move is operational use (take hypothesis-tagged trades; let evidence accumulate).
 
 **Operational branch outcome data: n=1 as of 2026-04-25.** First closed trade (VIR, -$2 / -0.33R loss; framework-recommended in `watch` bucket on 2026-04-20; failed VCP-layer criteria `proximity_20ma` (+11.69% to +15.38% above 20MA — extended) AND `tightness` (0-day streak — base not formed); operator entered ~5% above recommended pivot; tightened stop mid-trade; clean stop-hit exit at -0.33R). hypothesis_label backfilled 2026-04-25 to "sub-A+ VCP-not-formed test (proximity_20ma + tightness fails); inaugural trade test". **Per-criterion analysis confirms the framework correctly flagged this as watch (not A+) for the right reasons** — tightness is a doctrine-incompatible miss (base not yet formed), so VIR was NOT a near-A+ defensible candidate per Finviz study D1 frozen set. Outcome played out as the framework would predict; -0.33R loss is the cost-of-development for an evidence-gathering trade test. Production DB is source-of-truth for trade outcome details. Statistically nothing; case-study informative.
@@ -145,6 +149,8 @@ These have been settled with the developer's explicit approval. Don't reopen unl
 - **(2026-04-25) Hypothesis investigation plan v0.1 OPERATIONAL.** Migration 0008 seeded 4 hypotheses (A+ baseline 20-target; Near-A+ defensible: extension test 10-target; Sub-A+ VCP-not-formed 5-target; Capital-blocked: smaller-position test 10-target). Tripwire values per-hypothesis: consecutive-max-loss N (3 for n=5; 4 for n=6-10; 5 for n=11-20) AND absolute-loss 5% of starting equity. Per-hypothesis status mutation only via `swing hypothesis update --status --reason "..."`; tripwire/sample-size/decision-criteria are immutable post-data (require formal new migration). VIR is sample 1 of 5 in Sub-A+ VCP-not-formed. Dashboard surface and CLI pre-fill operational; operator can take hypothesis-tagged trades from Monday onward.
 - **(2026-04-25) Prefix-label convention (operator-facing).** Hypothesis-label matching against the registry uses **case-insensitive PREFIX** match (not substring; chosen by hyp1 R1 to prevent double-counting). **When operator manually composes a `--hypothesis` value** (e.g., for off-pipeline trades or override of pre-fill), the label MUST start with the canonical hypothesis name (e.g., `"Sub-A+ VCP-not-formed test ..."`, NOT `"my custom test for sub-A+"`) for tripwire/progress aggregation to correctly attribute it. The CLI pre-fill emits matcher's `suggested_label_descriptive` which already follows this convention; manual labels are operator-responsibility.
 - **(2026-04-25) Hypothesis-recommendation engine framing: dashboard PROPOSES, operator DISPOSES.** The dashboard's Hypothesis-driven recommendations panel is an active recommendation surface — not just a listing. It tells the operator "if you take this trade, it advances hypothesis X (currently N/M samples)." Operator validates the recommendation (chart pattern, risk, sector preference) and either takes the trade or declines. Tripwire-fired hypotheses surface visually (red row); operator evaluates whether to pause/escape via `swing hypothesis update --status paused --reason "..."`. Pre-registration discipline applies — hypothesis plan and tripwires are frozen at migration 0008; only `status` is mutable via CLI.
+- **(2026-04-25) Entry discipline for hypothesis trades: wait for pivot (stop-buy at pivot).** All hypothesis-tagged trades enter at-pivot via stop-buy order (or stop-limit for higher-volatility names where slippage control matters). Do NOT chase more than ~1% above pivot; if price gaps significantly above pivot at open, skip that day. Rationale: (a) pivot is the framework's prescribed entry trigger; (b) entry-execution is a confound on per-hypothesis expectancy aggregation — pre-committing to at-pivot eliminates that confound from the per-hypothesis statistics. Applies to ALL four hypotheses uniformly, including Sub-A+ VCP-not-formed (where the "pivot" is somewhat placeholder since base isn't formed; entry-at-pivot is still the cleanest discipline). The framework's initial_stop discipline caps the downside if pivot turns out to be the day's high → pullback. Operator workflow: review hyp-tagged dashboard listings → manual analysis (chart pattern, sector, risk) → if proceeding, stop-buy at recommended pivot → accept that pivot-as-day's-high is a known failure mode budgeted by the initial_stop.
+- **(2026-04-25) Vocabulary for confirmed hypotheses: "promoted" (per V2.1 promotion-path).** A hypothesis whose investigation closes positively (target sample met AND decision criteria evaluated positive AND operator decides to retain as ongoing recommendation surface) is **promoted**, not "lemma" / "validated" / "confirmed" / other generic terms. Reuses V2.1 three-branch promotion-path language (Basic Research → Applied Research → Operational; here: under-investigation → promoted-to-operational). Behavioral implications of `promoted` status: (a) continues to appear on dashboard recommendation surface but with different visual treatment (no "N/M progress" since target was met; instead lifetime stats like "promoted; lifetime: N trades, mean R X.XX"); (b) tripwire stays armed — if performance degrades post-promotion, the tripwire surfaces it for operator re-evaluation; (c) per-trade attribution continues so we can monitor for degradation. **Implementation deferred until first closure approaches:** a future small migration `0009_hypothesis_status_promoted.sql` will add `'promoted'` to the `hypothesis_registry.status` CHECK constraint enum (currently `active`/`paused`/`closed-escaped`/`closed-target-met`). Pre-registration discipline preserved — status enum widening is a formal migration, not a CLI-mutable operation.
 
 ---
 
@@ -199,6 +205,38 @@ When a return report comes back, triage in this order:
 5. **Capture lessons.** Process insights go into this file or into memory.
 6. **Propose next moves.** Don't decide unilaterally; offer options with recommendation.
 
+### Bug-fix briefs and operator-confirmation gate
+
+For bug-fix briefs where the mechanism is not yet diagnosed (scope: "Investigation comes first; fix comes second"), require an explicit **operator-confirmation gate** between the investigation phase and the fix phase. This prevents the failure mode demonstrated by Bug 2 (2026-04-25) — implementer assumes a plausible mechanism, builds a fix that's internally correct but addresses a different path than the one operator is hitting.
+
+**Brief language template (insert between investigation phase and fix phase):**
+
+```
+### Investigation-phase operator-confirmation gate (before §X fix phase)
+
+Before designing the fix, draft a "mechanism candidate" message back to
+the operator containing:
+  - The mechanism you believe is causing the bug
+  - The reproduction sequence you used to confirm it (concrete steps)
+  - Specific evidence (network trace, response body, DOM state, etc.)
+  - Explicit confirmation request: "Does this match what you see?"
+
+Wait for operator confirmation before proceeding to design the fix. If
+the operator says "that's not what I see," repeat investigation with the
+new information. Do NOT design the fix until the mechanism is
+operator-confirmed.
+```
+
+For FIX-DIRECT briefs (known mechanism, specified fix), the gate is not needed.
+
+**Adversarial-review watch items for ALL bug-fix briefs:**
+
+Standing watch items the brief should pass to `copowers:adversarial-critic` for any bug-fix dispatch:
+
+- "Did the investigation empirically reproduce the operator's EXACT symptom (not a plausible-but-different mechanism that produces a similar-looking failure)?" Bug 2 (2026-04-25) demonstrated this failure mode.
+- "Did the fix address the root cause, or only the surface symptom?" Sometimes the symptom can be made to go away without understanding why — that's brittle and likely to recur.
+- For UI bugs specifically: the project lacks a JS test harness (see `docs/phase3e-todo.md` JS-execution test harness gap). String-match assertions on rendered HTML confirm structure but NOT runtime JS behavior. Operator manual verification is the actual confidence source for JS-behavior fixes; document the verification steps in the return report.
+
 ### Housekeeping commits
 
 Periodically, accumulate untracked drift + small backlog updates + minor documentation corrections into a single small "housekeeping" commit. Pattern: `docs/{phase}-housekeeping-brief.md` brief; one-session implementer work; landing commits like `docs: track {description}`. Examples shipped: `4f74493` (Tranche B cleanup), `b03f66a` (B-ops cleanup), `2df7adb..6c179de` (post-2c housekeeping).
@@ -236,6 +274,7 @@ These have caused real problems; resist the impulse:
 - **Treating "diagnose, don't decide" as soft.** When a study or diagnostic is scoped as descriptive, sneaking in implicit recommendations through "should" framings or threshold suggestions violates scope. The reviewer will catch this; better to write the discipline in correctly the first time.
 - **Re-fetching expensive data when it can be cached.** yfinance has rate limits. Diagnostic studies should use cache-warm patterns; never burn yfinance quota for re-runs of already-fetched data.
 - **Brief internal inconsistency between "mirror canonical" and prose-asserted counts.** When a brief points the implementer at a canonical template AND prescribes an independent count of cases, the count must match the canonical OR the deviation must be called out explicitly. The build_watchlist mixed-anchor fix brief had §0 say "mirror canonical" (3 tests) and §4.1 say "add a second test" (2 implied); implementer correctly chose canonical-template fidelity but had to do judgment work I should have done at draft time. Always cross-check prose counts against any canonical references the brief points at.
+- **Bug-fix investigation that tests plausible mechanisms instead of operator's actual reproduction.** Bug 2 (trade entry form vanishes mid-typing, 2026-04-25) demonstrated this failure mode: implementer interpreted operator's ambiguous symptom report ("when I adjust the price") as form submission with stop≥entry; built TestClient probe of POST /trades/entry with stop=entry; got 500 + bare-div response that gets hoisted out of `<tbody>` by HTML parser; declared mechanism identified; built fix for that path. Adversarial review approved because the fix was internally correct. Operator manual verification revealed the actual mechanism was different (sizing-hint span hx-target inheritance from parent form). First fix `04ef355→20d2cab` was correct for ITS mechanism but wasn't operator's bug; required follow-up `2a167d1` for the actual cause. **Pattern to avoid:** treating implementer's interpretation of operator's symptom as ground truth. For UI bugs especially: TestClient confirms server-side behavior but doesn't verify the bug fires through the path the operator is hitting. **Mitigation:** see §"Operating processes" §"Bug-fix briefs and operator-confirmation gate" — INVESTIGATION-FIRST bug-fix briefs must include an operator-confirmation gate between investigation and fix.
 
 ---
 

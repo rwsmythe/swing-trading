@@ -8,7 +8,7 @@ Personal swing-trading tool (Disciplined Swing Trader + Minervini SEPA). Active 
 pip install -e ".[dev,web]"
 swing --help                         # CLI: trade, journal, pipeline, web, finviz, etc.
 swing web                            # FastAPI + HTMX dashboard on 127.0.0.1:8080
-python -m pytest -m "not slow" -q    # fast suite (969 tests as of 2026-04-25, ~40-50s)
+python -m pytest -m "not slow" -q    # fast suite (974 tests as of 2026-04-25, ~40-50s)
 python -m pytest -m slow             # pipeline/yfinance e2e (minutes, needs network)
 ruff check swing/
 ```
