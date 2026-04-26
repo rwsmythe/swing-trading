@@ -107,6 +107,62 @@ def test_tightness_ratio_gate_below_threshold_passes():
     assert res.detected is True
 
 
+def test_tightness_ratio_gate_is_threshold_sensitive():
+    """Discriminating-test discipline (Codex R1 M1 follow-up): the
+    `flag_tightness_factor` parameter does NOT map 1:1 to measured
+    tightness_ratio because tightness uses close-relative true ranges
+    (pole_close_avg ~117.5 vs flag_close_avg ~130 → ~0.9 scaling).
+    The 0.667/0.668 threshold pair test validates DETECTION outcome at
+    a search-path-dependent boundary; this test validates the GATE
+    THRESHOLD is what's actually being enforced. Tightening
+    cfg.flag_tightness_ratio_max via cfg-injection must reject the
+    fixture — and to truly exercise gate 7 (rather than have the search
+    escape to a tighter (M, N)), the threshold must be tightened below
+    the MINIMUM measured tightness_ratio across all passing candidates.
+    """
+    from swing.config import ClassifierConfig
+    from swing.evaluation.patterns.flag_classifier import (
+        _evaluate_candidate, _detection_passes,
+        M_RANGE, N_RANGE, _DEFAULT_CFG,
+    )
+    bars = make_flag_bars()
+    # Default cfg → passes (all gates clear).
+    res_default = classify_flag(bars)
+    assert res_default.detected is True
+    # Enumerate ALL passing candidates' tightness_ratio at default cfg.
+    # The search may pick any of them depending on tie-break — to exercise
+    # gate 7 we must tighten below the MIN across the entire passing set,
+    # otherwise the search escapes to a tighter candidate.
+    n_bars = len(bars)
+    passing_tightness = []
+    for N_ in N_RANGE:
+        flag_end = n_bars
+        flag_start = n_bars - N_
+        if flag_start <= 0:
+            continue
+        for M_ in M_RANGE:
+            pole_start = flag_start - M_
+            if pole_start < 0:
+                continue
+            c = _evaluate_candidate(bars, pole_start, flag_start, flag_end)
+            if _detection_passes(c, _DEFAULT_CFG):
+                passing_tightness.append(c["tightness_ratio"])
+    assert passing_tightness, "Test setup error: must have ≥1 passing candidate"
+    min_passing = min(passing_tightness)
+    # Tighten gate 7 threshold below every passing candidate's measured
+    # tightness — proves the gate is genuinely enforced (not a search-path
+    # artifact).
+    new_threshold = min_passing - 0.01
+    cfg = ClassifierConfig(flag_tightness_ratio_max=new_threshold)
+    res_tight = classify_flag(bars, cfg=cfg)
+    assert res_tight.detected is False, (
+        f"Tightening flag_tightness_ratio_max from "
+        f"{_DEFAULT_CFG.flag_tightness_ratio_max} to {new_threshold:.4f} "
+        f"(min passing tightness across {len(passing_tightness)} candidates "
+        f"= {min_passing:.4f}) must reject the fixture"
+    )
+
+
 def test_volume_contraction_gate_above_threshold_rejects():
     bars = make_flag_bars(flag_volume_factor=0.701)
     res = classify_flag(bars)
