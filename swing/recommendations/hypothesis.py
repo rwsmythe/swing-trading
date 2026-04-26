@@ -85,7 +85,7 @@ class HypothesisProgressSummary:
 class TripwireStatus:
     """Output of `compute_tripwire_status`. All fields derived from
     closed trades whose `hypothesis_label` matches the hypothesis's
-    canonical name (case-insensitive substring; see
+    canonical name (case-insensitive prefix; see
     `_label_matches_hypothesis`).
 
     `current_sample` counts closed trades only — open trades have no
@@ -181,15 +181,28 @@ def _descriptive_label(
     candidate: Candidate, hypothesis_name: str,
 ) -> str:
     """Build the suggested hypothesis-tag string. Format pinned because
-    `compute_tripwire_status` matches by case-insensitive substring on
+    `compute_tripwire_status` matches by case-insensitive PREFIX on
     `hypothesis_name`; the descriptive suffix may evolve without breaking
-    matching."""
+    matching, but the leading hypothesis name MUST stay first.
+
+    Bucket annotation rule (R2 Minor 2): for the Capital-blocked
+    hypothesis, production gating buckets candidates as `skip` even
+    though the operator's intent is to take the trade with smaller
+    position. Rendering `(skip)` would read as "rejected" in the
+    operator-facing label, which contradicts the recommendation. So we
+    annotate it as `(skip; capital-blocked)` to make the deliberate
+    nature of the recommendation clear in the saved label.
+    """
     non_pass = sorted(_non_pass_criterion_names(candidate))
     if non_pass:
         suffix = f"; failed: {', '.join(non_pass)}"
     else:
         suffix = ""
-    return f"{hypothesis_name} ({candidate.bucket}){suffix}"
+    if hypothesis_name == H_CAPITAL_BLOCKED and candidate.bucket == "skip":
+        bucket_disp = "skip; capital-blocked"
+    else:
+        bucket_disp = candidate.bucket
+    return f"{hypothesis_name} ({bucket_disp}){suffix}"
 
 
 def _priority_hint_for(candidate: Candidate) -> float:

@@ -12,16 +12,17 @@
 -- §VII.F), not an in-place UPDATE.
 --
 -- Additive only: this migration introduces a new table; no ALTER on
--- existing tables. The seed rows insert with `INSERT OR IGNORE` keyed on
--- the UNIQUE `name` column, so re-running this script on an existing v8 DB
--- is a no-op (`ensure_schema` already gates on schema_version, but the
--- IGNORE provides defense-in-depth against accidental script re-execution).
+-- existing tables. `ensure_schema` is the SANCTIONED path — it gates on
+-- schema_version and only runs this script when the DB is at v7. INSERT
+-- OR IGNORE on the seed rows is keyed on the UNIQUE `name` column for
+-- the path where ensure_schema applies the migration once and then later
+-- code paths re-touch the same connection. Adversarial review R2 Major 1:
+-- earlier "defense in depth" CREATE TABLE IF NOT EXISTS was reverted —
+-- it would have silently blessed a stale/malformed pre-existing table as
+-- v8 without verifying schema match. Plain CREATE TABLE errors out hard
+-- on accidental manual rerun, which is the right signal.
 
--- IF NOT EXISTS on the table + index so direct script re-execution (e.g. an
--- operator running the .sql file by hand) is a no-op rather than an error.
--- The normal `ensure_schema` path is already gated on schema_version; this
--- defense-in-depth covers the manual-rerun case the Codex R1 review flagged.
-CREATE TABLE IF NOT EXISTS hypothesis_registry (
+CREATE TABLE hypothesis_registry (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
   statement TEXT NOT NULL,
@@ -39,7 +40,7 @@ CREATE TABLE IF NOT EXISTS hypothesis_registry (
   -- dedicated `status_change_reason` column.
   notes TEXT
 );
-CREATE INDEX IF NOT EXISTS ix_hypothesis_status ON hypothesis_registry(status);
+CREATE INDEX ix_hypothesis_status ON hypothesis_registry(status);
 
 INSERT OR IGNORE INTO hypothesis_registry
   (name, statement, target_sample_size, decision_criteria,

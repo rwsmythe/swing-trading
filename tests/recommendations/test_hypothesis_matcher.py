@@ -198,6 +198,39 @@ def test_capital_blocked_matches_skip_bucket_when_only_risk_feasibility_fails():
     assert "Capital-blocked: smaller-position test" in names
 
 
+def test_capital_blocked_skip_bucket_label_annotated_for_clarity():
+    """Adversarial review R2 Minor 2: rendering bucket as bare `(skip)`
+    in the saved label would read as "rejected" in the operator-facing
+    text, contradicting the recommendation to take the trade with
+    smaller position. The label annotates as `(skip; capital-blocked)`
+    so the deliberate nature is visible in the journal."""
+    cand = _candidate("skip", results=[
+        ("risk_feasibility", "risk", "fail"),
+    ])
+    matches = match_candidate_to_hypotheses(
+        cand, doctrine_defensible_set=DOCTRINE_DEFENSIBLE_MISS_SET,
+        registry=_registry(),
+    )
+    capital = next(
+        m for m in matches
+        if m.hypothesis_name == "Capital-blocked: smaller-position test"
+    )
+    assert "skip; capital-blocked" in capital.suggested_label_descriptive
+    # Watch-bucket variant (e.g. replay harness) keeps the bare bucket.
+    cand_watch = _candidate("watch", results=[
+        ("risk_feasibility", "risk", "fail"),
+    ])
+    matches_watch = match_candidate_to_hypotheses(
+        cand_watch, doctrine_defensible_set=DOCTRINE_DEFENSIBLE_MISS_SET,
+        registry=_registry(),
+    )
+    capital_watch = next(
+        m for m in matches_watch
+        if m.hypothesis_name == "Capital-blocked: smaller-position test"
+    )
+    assert "(watch)" in capital_watch.suggested_label_descriptive
+
+
 def test_capital_blocked_skip_bucket_rejects_when_other_failures():
     """skip-bucket candidate failing risk_feasibility AND something else
     is NOT capital-blocked — there are multiple blockers, smaller-
