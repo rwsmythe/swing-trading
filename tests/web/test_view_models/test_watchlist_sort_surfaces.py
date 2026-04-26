@@ -152,23 +152,79 @@ def test_build_watchlist_rows_use_tag_aware_sort(seeded_db, monkeypatch):
     assert vm.flag_tags.get("TAG") == ("A+",)
 
 
-def test_prices_refresh_route_warms_tag_aware_top5(seeded_db, monkeypatch):
-    """The /prices/refresh route's prefetch list must include the tagged
-    ticker (which is now in the dashboard's actual top-5) and not silently
-    fall back to a proximity-only top-5 that would have excluded it.
+def _seed_seven_watchlist_with_eval(
+    cfg, *, tagged_at_worst_proximity: str, untagged_close: list[str],
+) -> None:
+    """Seed a 7-row watchlist where the SOLE tagged ticker has the WORST
+    proximity. Pre-fix top-5 (pure proximity) excludes the tagged ticker;
+    post-fix top-5 (tag-aware) includes it as the first slot.
 
-    Captures the tickers passed to `cache.refresh_all` and asserts the
-    tagged ticker is present.
+    Untagged tickers are placed at proximities 1%, 2%, 3%, 4%, 5%, 6%
+    (closest to farthest). Tagged ticker sits at 10%.
     """
-    from fastapi.testclient import TestClient
-    from swing.web.app import create_app
+    assert len(untagged_close) == 6, "expected 6 untagged tickers"
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            cur = conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+                    tickers_evaluated, aplus_count, watch_count, skip_count,
+                    excluded_count, error_count,
+                    rs_universe_version, rs_universe_hash)
+                   VALUES ('2026-04-17T21:00:00', '2026-04-17', '2026-04-20',
+                           NULL, 7, 1, 6, 0, 0, 0, 'v1', 'd')""",
+            )
+            eval_id = int(cur.lastrowid)
+            conn.execute(
+                """INSERT INTO candidates
+                   (evaluation_run_id, ticker, bucket, close, pivot, initial_stop,
+                    rs_method)
+                   VALUES (?, ?, 'aplus', 110.0, 100.0, 95.0, 'universe')""",
+                (eval_id, tagged_at_worst_proximity),
+            )
+            conn.execute(
+                """INSERT INTO pipeline_runs
+                   (started_ts, finished_ts, trigger, data_asof_date,
+                    action_session_date, state, lease_token, charts_status,
+                    evaluation_run_id)
+                   VALUES ('2026-04-17T20:55:00', '2026-04-17T21:05:00',
+                           'manual', '2026-04-17', '2026-04-20',
+                           'complete', 't-x', 'ok', ?)""",
+                (eval_id,),
+            )
+            conn.execute(
+                """INSERT INTO weather_runs (run_ts, asof_date, ticker, status, close, rationale)
+                   VALUES ('2026-04-17T21:00:00', '2026-04-17', 'SPY', 'Bullish', 450.0, 'ok')""",
+            )
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker=tagged_at_worst_proximity, added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=100.0, initial_stop_target=95.0,
+                last_close=110.0,           # 10% — WORST proximity
+                last_pivot=100.0, last_stop=95.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+            for i, ticker in enumerate(untagged_close, start=1):
+                close = 100.0 + float(i)    # 101..106 → 1%..6% proximity
+                upsert_watchlist_entry(conn, WatchlistEntry(
+                    ticker=ticker, added_date="2026-04-10",
+                    last_qualified_date="2026-04-17", status="watch",
+                    qualification_count=1, not_qualified_streak=0,
+                    last_data_asof_date="2026-04-17",
+                    entry_target=100.0, initial_stop_target=95.0,
+                    last_close=close, last_pivot=100.0, last_stop=95.0,
+                    last_adr_pct=2.5, missing_criteria=None, notes=None,
+                ))
+    finally:
+        conn.close()
+
+
+def _patch_route_caches(monkeypatch, *, captured: dict):
     from swing.web.price_cache import PriceCache
     from swing.web.ohlcv_cache import OhlcvCache
-
-    cfg, cfg_path = seeded_db
-    _seed_two_watchlist_with_eval(cfg, tagged_ticker="TAG", untagged_ticker="UNT")
-
-    captured: dict[str, list[str]] = {}
 
     def fake_refresh_all(self, tickers):
         captured["tickers"] = list(tickers)
@@ -184,66 +240,178 @@ def test_prices_refresh_route_warms_tag_aware_top5(seeded_db, monkeypatch):
         lambda self, tickers, *, deadline_seconds, executor: {})
     monkeypatch.setattr(OhlcvCache, "is_degraded", lambda self: False)
 
+
+def test_build_dashboard_top5_tagged_vs_tagged_count_differential(
+    seeded_db, monkeypatch,
+):
+    """Surface-level discriminator for the tag-COUNT primary key under
+    realistic conditions: two tagged tickers at identical proximity differ
+    on tag count. The 2-tag ticker (TT✓ + A+) must rank above the 1-tag
+    ticker (A+ only).
+
+    A future bug that bypasses `_sort_watchlist` and substitutes a simpler
+    "has any tag" sort at the VM level would still pass the
+    tagged-vs-untagged tests above. This test pins the count axis.
+    """
+    from swing.web.view_models.dashboard import build_dashboard
+    from swing.web.price_cache import PriceCache
+
+    cfg, _ = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            cur = conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+                    tickers_evaluated, aplus_count, watch_count, skip_count,
+                    excluded_count, error_count,
+                    rs_universe_version, rs_universe_hash)
+                   VALUES ('2026-04-17T21:00:00', '2026-04-17', '2026-04-20',
+                           NULL, 2, 2, 0, 0, 0, 0, 'v1', 'd')""",
+            )
+            eval_id = int(cur.lastrowid)
+            # T2: bucket=aplus AND 7 trend_template passes → ("TT✓", "A+"),
+            # tag count 2.
+            cur = conn.execute(
+                """INSERT INTO candidates
+                   (evaluation_run_id, ticker, bucket, close, pivot, initial_stop,
+                    rs_method)
+                   VALUES (?, 'T2', 'aplus', 105.0, 100.0, 95.0, 'universe')""",
+                (eval_id,),
+            )
+            t2_cid = int(cur.lastrowid)
+            for i in range(7):
+                conn.execute(
+                    """INSERT INTO candidate_criteria
+                       (candidate_id, criterion_name, layer, result)
+                       VALUES (?, ?, 'trend_template', 'pass')""",
+                    (t2_cid, f"TT{i}"),
+                )
+            # T1: bucket=aplus only, no criteria → ("A+",), tag count 1.
+            conn.execute(
+                """INSERT INTO candidates
+                   (evaluation_run_id, ticker, bucket, close, pivot, initial_stop,
+                    rs_method)
+                   VALUES (?, 'T1', 'aplus', 105.0, 100.0, 95.0, 'universe')""",
+                (eval_id,),
+            )
+            conn.execute(
+                """INSERT INTO pipeline_runs
+                   (started_ts, finished_ts, trigger, data_asof_date,
+                    action_session_date, state, lease_token, charts_status,
+                    evaluation_run_id)
+                   VALUES ('2026-04-17T20:55:00', '2026-04-17T21:05:00',
+                           'manual', '2026-04-17', '2026-04-20',
+                           'complete', 't-x', 'ok', ?)""",
+                (eval_id,),
+            )
+            conn.execute(
+                """INSERT INTO weather_runs (run_ts, asof_date, ticker, status, close, rationale)
+                   VALUES ('2026-04-17T21:00:00', '2026-04-17', 'SPY', 'Bullish', 450.0, 'ok')""",
+            )
+            # Both watchlist rows at identical 5% proximity.
+            for ticker in ("T1", "T2"):
+                upsert_watchlist_entry(conn, WatchlistEntry(
+                    ticker=ticker, added_date="2026-04-10",
+                    last_qualified_date="2026-04-17", status="watch",
+                    qualification_count=1, not_qualified_streak=0,
+                    last_data_asof_date="2026-04-17",
+                    entry_target=100.0, initial_stop_target=95.0,
+                    last_close=105.0, last_pivot=100.0, last_stop=95.0,
+                    last_adr_pct=2.5, missing_criteria=None, notes=None,
+                ))
+    finally:
+        conn.close()
+
+    _patch_caches(monkeypatch)
+    cache = PriceCache(cfg)
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=_no_op_executor())
+
+    # Sanity on flag_tags shape — confirms the seed produced the expected tags.
+    assert vm.flag_tags.get("T2") == ("TT✓", "A+"), (
+        f"T2 should have 2 tags from criteria + bucket; got {vm.flag_tags.get('T2')}"
+    )
+    assert vm.flag_tags.get("T1") == ("A+",), (
+        f"T1 should have 1 tag (A+ only); got {vm.flag_tags.get('T1')}"
+    )
+
+    tickers = [w.ticker for w in vm.watchlist_top5]
+    assert tickers == ["T2", "T1"], (
+        f"2-tag ticker (T2) must rank above 1-tag ticker (T1) at equal "
+        f"proximity; got {tickers}"
+    )
+
+
+def test_prices_refresh_route_warms_tag_aware_top5(seeded_db, monkeypatch):
+    """7-row watchlist where the tagged ticker has the WORST proximity (10%)
+    and 6 untagged tickers fill ranks 1–6 by proximity (1%..6%).
+
+    Pre-fix discriminator: pure-proximity top-5 = the 5 closest untagged
+    tickers; tagged ticker is RANK 7 → NOT prefetched.
+    Post-fix: tag-aware top-5 = [TAG, then 4 closest untagged] → tagged IS
+    prefetched. Asserting `"TAG" in captured["tickers"]` therefore strictly
+    discriminates the route's own top-5 logic, independent of what the
+    dashboard render does afterward.
+    """
+    from fastapi.testclient import TestClient
+    from swing.web.app import create_app
+
+    cfg, cfg_path = seeded_db
+    _seed_seven_watchlist_with_eval(
+        cfg, tagged_at_worst_proximity="TAG",
+        untagged_close=["U01", "U02", "U03", "U04", "U05", "U06"],
+    )
+
+    captured: dict[str, list[str]] = {}
+    _patch_route_caches(monkeypatch, captured=captured)
+
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
         r = client.post("/prices/refresh", headers={"HX-Request": "true"})
     assert r.status_code == 200
     assert "tickers" in captured, "refresh_all was never invoked"
-    # Tagged ticker MUST be in the prefetch list — under pure-proximity it
-    # would still show up here for N=2 watchlist (top-5 covers everything),
-    # but the assertion that matters is that the tag-aware top-5 IS what
-    # gets warmed. We reinforce that by verifying it ranks ahead of UNT
-    # via the dashboard build that happens inside the route.
+    # Pre-fix: TAG (rank 7 by proximity) NOT in top-5; post-fix: TAG first.
     assert "TAG" in captured["tickers"], (
-        f"tagged ticker must appear in /prices/refresh prefetch list; "
+        f"tagged ticker (worst proximity, rank 7) must appear in the "
+        f"/prices/refresh prefetch list under tag-aware sort; "
         f"got {captured['tickers']}"
     )
-    # The route's own top-5 selection runs `_sort_watchlist` (pre-build). If
-    # someone reverts the route to pure proximity, the prefetch list would
-    # not change for this 2-row watchlist — the discriminator must therefore
-    # be the dashboard VM ordering inside the rendered response. Assert that
-    # the response markup orders TAG before UNT.
-    tag_pos = r.text.find(">TAG<")
-    unt_pos = r.text.find(">UNT<")
-    assert tag_pos != -1 and unt_pos != -1, (
-        f"both tickers must render; TAG@{tag_pos} UNT@{unt_pos}"
-    )
-    assert tag_pos < unt_pos, (
-        f"refresh-now response must order tagged ticker before untagged; "
-        f"TAG@{tag_pos} > UNT@{unt_pos}"
+    # Sanity: the closest-by-proximity untagged tickers (U01, U02, U03, U04)
+    # also appear — the prewarm picks the top-5 by tag-aware sort, which is
+    # [TAG, U01, U02, U03, U04]. U05/U06 should NOT be in the warmed set
+    # (other than via the open_trade union or the SPY benchmark).
+    warmed = set(captured["tickers"])
+    assert "U05" not in warmed and "U06" not in warmed, (
+        f"tag-aware top-5 must exclude the worst-proximity untagged "
+        f"tickers (U05, U06); got warmed set {warmed}"
     )
 
 
 def test_prices_refresh_uses_pipeline_eval_anchor(seeded_db, monkeypatch):
     """Anchor regression: when a standalone `swing eval` runs after the
-    pipeline (the Bug 7 family scenario), /prices/refresh must compute
-    flag_tags from the pipeline's OWN eval, not the latest standalone.
-
-    Pre-fix discriminator: the original /prices/refresh implementation in
-    this commit used `MAX(run_ts) FROM evaluation_runs` with no pipeline
-    anchor. Under the post-pipeline standalone-eval edge case it would
-    have rebuilt flag_tags from the standalone eval (which has different
-    candidates) — silently disagreeing with what the rendered dashboard
-    shows.
+    pipeline (Bug 7 family), /prices/refresh must compute flag_tags from
+    the pipeline's OWN eval, not the latest standalone.
 
     Setup:
-      - E1 (pipeline-bound): TAG is aplus (→ tagged in dashboard)
-      - E2 (standalone, later run_ts): TAG is dropped (no candidate row)
-      - Pure latest-eval anchor would compute flag_tags from E2 → TAG
-        gets no tags → falls behind UNT in the route's top-5 selection
-      - Pipeline-eval anchor uses E1 → TAG remains tagged → wins top-5
+      - E1 (pipeline-bound, earlier run_ts): TAG is aplus
+      - E2 (standalone, later run_ts): TAG is dropped (NO candidate row)
+      - 7-row watchlist: TAG @ 10% proximity (worst), 6 untagged @ 1%..6%
+      - Pipeline-eval anchor (E1): TAG keeps its A+ tag → makes top-5
+      - Latest-eval anchor (E2): TAG has no tags → top-5 falls back to
+        proximity → TAG is rank 7 → NOT in the warmed set
+
+    Discriminator: assert "TAG" in `captured["tickers"]`. Fails under
+    pre-fix latest-eval-anchor; passes under pipeline-eval anchor.
     """
     from fastapi.testclient import TestClient
     from swing.web.app import create_app
-    from swing.web.price_cache import PriceCache
-    from swing.web.ohlcv_cache import OhlcvCache
 
     cfg, cfg_path = seeded_db
 
-    # Build the pipeline-bound eval E1 with TAG=aplus.
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
+            # E1 — pipeline-bound, TAG=aplus.
             cur = conn.execute(
                 """INSERT INTO evaluation_runs
                    (run_ts, data_asof_date, action_session_date, finviz_csv_path,
@@ -258,7 +426,7 @@ def test_prices_refresh_uses_pipeline_eval_anchor(seeded_db, monkeypatch):
                 """INSERT INTO candidates
                    (evaluation_run_id, ticker, bucket, close, pivot, initial_stop,
                     rs_method)
-                   VALUES (?, 'TAG', 'aplus', 108.0, 100.0, 95.0, 'universe')""",
+                   VALUES (?, 'TAG', 'aplus', 110.0, 100.0, 95.0, 'universe')""",
                 (e1,),
             )
             conn.execute(
@@ -271,7 +439,7 @@ def test_prices_refresh_uses_pipeline_eval_anchor(seeded_db, monkeypatch):
                            'complete', 't-x', 'ok', ?)""",
                 (e1,),
             )
-            # E2: later standalone eval — drops TAG, adds OTHER as aplus.
+            # E2 — later standalone, drops TAG, adds OTHER.
             cur = conn.execute(
                 """INSERT INTO evaluation_runs
                    (run_ts, data_asof_date, action_session_date, finviz_csv_path,
@@ -299,51 +467,38 @@ def test_prices_refresh_uses_pipeline_eval_anchor(seeded_db, monkeypatch):
                 qualification_count=1, not_qualified_streak=0,
                 last_data_asof_date="2026-04-17",
                 entry_target=100.0, initial_stop_target=95.0,
-                last_close=108.0, last_pivot=100.0, last_stop=95.0,
+                last_close=110.0,           # 10% — worst proximity
+                last_pivot=100.0, last_stop=95.0,
                 last_adr_pct=2.5, missing_criteria=None, notes=None,
             ))
-            upsert_watchlist_entry(conn, WatchlistEntry(
-                ticker="UNT", added_date="2026-04-10",
-                last_qualified_date="2026-04-17", status="watch",
-                qualification_count=1, not_qualified_streak=0,
-                last_data_asof_date="2026-04-17",
-                entry_target=100.0, initial_stop_target=95.0,
-                last_close=101.0, last_pivot=100.0, last_stop=95.0,
-                last_adr_pct=2.5, missing_criteria=None, notes=None,
-            ))
+            for i, ticker in enumerate(
+                ["U01", "U02", "U03", "U04", "U05", "U06"], start=1
+            ):
+                upsert_watchlist_entry(conn, WatchlistEntry(
+                    ticker=ticker, added_date="2026-04-10",
+                    last_qualified_date="2026-04-17", status="watch",
+                    qualification_count=1, not_qualified_streak=0,
+                    last_data_asof_date="2026-04-17",
+                    entry_target=100.0, initial_stop_target=95.0,
+                    last_close=100.0 + float(i),
+                    last_pivot=100.0, last_stop=95.0,
+                    last_adr_pct=2.5, missing_criteria=None, notes=None,
+                ))
     finally:
         conn.close()
 
     captured: dict[str, list[str]] = {}
-
-    def fake_refresh_all(self, tickers):
-        captured["tickers"] = list(tickers)
-
-    monkeypatch.setattr(PriceCache, "refresh_all", fake_refresh_all)
-    monkeypatch.setattr(PriceCache, "reset_circuit_breaker", lambda self: None)
-    monkeypatch.setattr(PriceCache, "get_many",
-        lambda self, tickers, deadline_seconds, *, executor=None: {})
-    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
-    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
-    monkeypatch.setattr(OhlcvCache, "reset_circuit_breaker", lambda self: None)
-    monkeypatch.setattr(OhlcvCache, "get_many_bundles",
-        lambda self, tickers, *, deadline_seconds, executor: {})
-    monkeypatch.setattr(OhlcvCache, "is_degraded", lambda self: False)
+    _patch_route_caches(monkeypatch, captured=captured)
 
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
         r = client.post("/prices/refresh", headers={"HX-Request": "true"})
     assert r.status_code == 200
-    # The rendered dashboard (built inside the route) uses the pipeline-eval
-    # anchor → TAG stays tagged → orders before UNT. If the route silently
-    # used latest-eval (E2) and the dashboard used pipeline-eval (E1), the
-    # prefetch list would still match on this 2-row watchlist BUT a future
-    # refactor that grew the watchlist could diverge. We assert the rendered
-    # ordering as the primary verification.
-    tag_pos = r.text.find(">TAG<")
-    unt_pos = r.text.find(">UNT<")
-    assert tag_pos != -1 and unt_pos != -1
-    assert tag_pos < unt_pos, (
-        "post-pipeline standalone-eval edge case: TAG must still order "
-        "before UNT (pipeline-eval anchor preserves the A+ tag)"
+    assert "tickers" in captured, "refresh_all was never invoked"
+    # Strict discriminator: under E1 anchor TAG keeps A+ → in top-5 →
+    # warmed; under E2 anchor TAG has no tags → falls to rank 7 by
+    # proximity → NOT warmed.
+    assert "TAG" in captured["tickers"], (
+        f"under the pipeline-eval anchor, TAG must remain tagged and "
+        f"appear in the warmed top-5; got {captured['tickers']}"
     )
