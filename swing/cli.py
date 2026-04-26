@@ -293,6 +293,71 @@ def trade_group() -> None:
     """Trade lifecycle: entry, exit, list, stop adjust, advisory."""
 
 
+def _lookup_active_recommendation_label(
+    conn, *, ticker: str, starting_equity: float,
+) -> str | None:
+    """Return the suggested hypothesis label for `ticker` from the latest
+    completed pipeline run's active hypothesis match, or None if there is
+    no run / no candidate / no match.
+
+    Frontend brief §4.3 + §0: the matcher's suggested_label_descriptive
+    starts with the canonical hypothesis name (case-insensitive). Passing
+    it through unchanged preserves that prefix so future tripwire/progress
+    aggregation attributes the trade correctly. Determinism: the matcher
+    + prioritizer + per-ticker dedup are pure functions on (registry,
+    candidates, progress), so re-running the same lookup yields the same
+    label — needed by the brief §5 watch item on pre-fill stability.
+    """
+    from swing.data.repos.candidates import fetch_candidates_for_run
+    from swing.data.repos.hypothesis import list_hypotheses
+    from swing.journal.stats import compute_hypothesis_progress_breakdown
+    from swing.recommendations.hypothesis import (
+        HypothesisProgressSummary,
+        match_candidate_to_hypotheses,
+        prioritize_recommendations,
+    )
+
+    eval_row = conn.execute(
+        """SELECT evaluation_run_id FROM pipeline_runs
+           WHERE state = 'complete' AND evaluation_run_id IS NOT NULL
+           ORDER BY finished_ts DESC LIMIT 1"""
+    ).fetchone()
+    if eval_row is None:
+        return None
+    eval_id = eval_row[0]
+    candidates = fetch_candidates_for_run(conn, eval_id)
+    cand = next((c for c in candidates if c.ticker == ticker), None)
+    if cand is None:
+        return None
+
+    registry = list_hypotheses(conn)
+    matches = match_candidate_to_hypotheses(cand, registry=registry)
+    if not matches:
+        return None
+
+    # Reuse the prioritizer so the CLI's choice mirrors the dashboard's
+    # most-prominent recommendation for this ticker — operator sees ONE
+    # canonical pre-fill regardless of which surface they came from.
+    progress_rows = compute_hypothesis_progress_breakdown(
+        conn, starting_equity=starting_equity,
+    )
+    progress_summaries = [
+        HypothesisProgressSummary(
+            hypothesis_id=p.hypothesis_id,
+            hypothesis_name=p.name,
+            current_sample=p.current_sample,
+            target_sample=p.target_sample,
+            any_tripwire_fired=p.tripwire_fired,
+        ) for p in progress_rows
+    ]
+    prioritized = prioritize_recommendations(
+        matches, registry=registry, progress=progress_summaries,
+    )
+    if not prioritized:
+        return None
+    return prioritized[0].suggested_label_descriptive
+
+
 @trade_group.command("entry")
 @click.option("--ticker", required=True)
 @click.option("--entry-date", required=True, help="YYYY-MM-DD")
@@ -333,6 +398,21 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
     try:
+        # Pre-fill --hypothesis from the latest pipeline run's active
+        # recommendation when the operator did NOT pass --hypothesis
+        # explicitly (frontend brief §4.3). Empty-string is treated as an
+        # explicit override (operator-typed "no label"), preserved
+        # downstream by `canonicalize_hypothesis_label` → NULL. None means
+        # the flag was omitted, which is the only branch that triggers
+        # pre-fill.
+        if hypothesis is None:
+            prefilled = _lookup_active_recommendation_label(
+                conn, ticker=ticker.upper(),
+                starting_equity=cfg.account.starting_equity,
+            )
+            if prefilled is not None:
+                hypothesis = prefilled
+                click.echo(f"Pre-filled --hypothesis: {prefilled}")
         req = EntryRequest(
             ticker=ticker.upper(), entry_date=entry_date, entry_price=entry_price,
             shares=shares, initial_stop=initial_stop,
