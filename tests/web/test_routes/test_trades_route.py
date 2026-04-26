@@ -118,6 +118,75 @@ def test_get_entry_form_renders(seeded_db, monkeypatch):
     assert "170.00" in r.text
 
 
+def test_get_entry_form_sizing_hint_has_explicit_hx_target(seeded_db, monkeypatch):
+    """Bug 2 root-cause fix: the sizing-hint span MUST carry an explicit hx-target
+    so it does not inherit hx-target='closest tr' from the parent <form>. Without
+    the explicit target, the sizing-hint hx-get response (a <span>) swaps into
+    the entry-form <tr>, replacing the entire form with just the sizing hint —
+    which is exactly what the operator reported.
+
+    Network trace evidence (2026-04-25): operator typed entry_price, blurred,
+    sizing-hint GET fired (200, 0.3 kB), form vanished leaving only
+    'Suggested max: 6 sh (~$5.64 risk = 0.43%)'. That string is the entire
+    contents of partials/sizing_hint.html.j2 — confirming the swap targeted
+    the entire form (via inherited closest-tr) instead of just the span.
+    """
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="AAPL", added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            "AAPL": PriceSnapshot(
+                ticker="AAPL", price=180.95, asof=datetime.now(),
+                is_stale=False, source="live",
+            ),
+        })
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=AAPL")
+    assert r.status_code == 200
+    # Locate the sizing-hint span tag and assert hx-target="this" is in its
+    # opening attribute set. Pre-fix: this attribute was absent and the span
+    # silently inherited hx-target="closest tr" from the parent <form>.
+    import re
+    span_match = re.search(
+        r'<span\s+id="sizing-hint"[^>]*?>',
+        r.text,
+        re.DOTALL,
+    )
+    assert span_match is not None, (
+        "sizing-hint span not found in rendered entry form"
+    )
+    span_open_tag = span_match.group(0)
+    assert 'hx-target="this"' in span_open_tag, (
+        f"sizing-hint span missing explicit hx-target='this'. "
+        f"Got opening tag: {span_open_tag!r}. "
+        f"Without explicit hx-target, the span inherits 'closest tr' "
+        f"from the parent form and the sizing-hint response replaces "
+        f"the entire entry form on every change event."
+    )
+
+
 def test_post_entry_success_emits_row_and_oobs(seeded_db, monkeypatch):
     """POST /trades/entry success → primary row + #status-strip OOB + #watchlist-top5 OOB."""
     from datetime import datetime

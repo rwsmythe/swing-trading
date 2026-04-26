@@ -21,6 +21,7 @@
               hx-get="/trades/entry/sizing-hint"
               hx-trigger="change from:input[name=entry_price],input[name=initial_stop] delay:200ms"
               hx-include="closest form"
+              hx-target="this"
               hx-swap="outerHTML">
           {% if vm.suggested_shares > 0 %}
             Suggested max: <strong>{{ vm.suggested_shares }} sh</strong>
