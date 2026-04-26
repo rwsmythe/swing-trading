@@ -378,6 +378,48 @@ def test_best_attempted_uses_max_min_soft_clearance():
     assert abs(res.components["pole_gain"] - expected_c["pole_gain"]) < 1e-9
 
 
+def test_ma_structure_stacked_but_flat_rejects():
+    """Codex R3 M1 follow-up: gate 5 requires SMA10>SMA20>SMA50 AND each
+    rising over 5-bar lookback. Plan Task 1.8 originally specified three
+    cases (not-stacked, stacked-but-flat, stacked-and-rising); only two
+    were committed in `1f285c5`. This adds the missing 'stacked-but-flat'
+    case via a DIRECT unit test of _ma_structure_passes that constructs
+    its own SMAs in-test without reusing classifier helpers — also
+    addresses R2 M1's lockstep concern for gate 5 by providing
+    independent verification of the rising condition.
+    """
+    from swing.evaluation.patterns.flag_classifier import _ma_structure_passes
+    # Build closes: 30 bars rising 70→100, 15 bars rising 100→140, 16 bars
+    # flat at 140 (idx 45..60). At idx 60 the SMAs are stacked because of
+    # the past rise, but SMA10 is computed entirely from the flat plateau
+    # (bars 51..60) AND from the same plateau 5 bars earlier (bars 46..55),
+    # so SMA10@60 == SMA10@55 → not rising → gate 5 must reject.
+    closes = np.empty(61)
+    closes[:30] = np.linspace(70.0, 100.0, 30)
+    closes[30:45] = np.linspace(100.0, 140.0, 15)
+    closes[45:61] = 140.0
+    # Sanity: SMAs are stacked at idx 60.
+    sma10 = float(np.mean(closes[51:61]))
+    sma20 = float(np.mean(closes[41:61]))
+    sma50 = float(np.mean(closes[11:61]))
+    assert sma10 > sma20 > sma50, (
+        f"Test setup invariant: stacked SMAs at idx 60 "
+        f"(s10={sma10:.4f}, s20={sma20:.4f}, s50={sma50:.4f})"
+    )
+    # Sanity: SMA10 is flat over 5-bar lookback.
+    sma10_earlier = float(np.mean(closes[46:56]))
+    assert sma10 == sma10_earlier, (
+        f"Test setup invariant: SMA10@60 ({sma10:.4f}) == "
+        f"SMA10@55 ({sma10_earlier:.4f}) — flat plateau"
+    )
+    # Gate 5 must reject this configuration.
+    assert _ma_structure_passes(closes, 60) is False, (
+        "Gate 5 regression: _ma_structure_passes accepted a stacked-"
+        "but-flat configuration. The 5-bar rising condition is "
+        "no longer enforced."
+    )
+
+
 def test_pattern_None_distinct_from_string_none_in_dataclass():  # noqa: N802  # `None` is the literal Python sentinel, not a class
     """Future-proofing: pattern is `str | None`, NOT `str`. Pipeline-level
     classifier-error path constructs a result with pattern=None (NoneType)
