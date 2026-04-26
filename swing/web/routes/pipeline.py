@@ -300,8 +300,9 @@ def prices_refresh(request: Request):
 
     # Collect active tickers. Top-5 picking mirrors the dashboard's
     # `_sort_watchlist` (tag-count primary, precedence secondary, proximity
-    # tertiary) so the cache is warmed for the SAME tickers the operator is
-    # about to see post-refresh. The eval-anchor logic — preferring the
+    # tertiary, ticker quaternary for determinism) so the cache is warmed
+    # for the SAME tickers the operator is about to see post-refresh. The
+    # eval-anchor logic — preferring the
     # latest complete pipeline_run's `evaluation_run_id` over MAX(run_ts)
     # FROM evaluation_runs — is the same one `build_watchlist` uses
     # (mixed-anchor fix from the Bug 7 family); a post-pipeline standalone
