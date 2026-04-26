@@ -93,7 +93,14 @@ def do_backup(db_path: Path, dest_dir: Path, *, now: datetime | None = None) -> 
         dst.close()
         src.close()
 
-    os.replace(tmp_path, final_path)
+    try:
+        os.replace(tmp_path, final_path)
+    except BaseException:
+        # If the rename fails (e.g., destination locked on Windows), unlink
+        # the staged temp so repeated failures don't accumulate .backup-*.tmp
+        # files in dest_dir. Adversarial review R4 Minor 1.
+        tmp_path.unlink(missing_ok=True)
+        raise
     return final_path
 
 
