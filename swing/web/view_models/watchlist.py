@@ -13,7 +13,7 @@ from swing.data.repos.watchlist import list_active_watchlist
 from swing.evaluation.dates import action_session_for_run
 from swing.web.chart_scope import resolve_chart_scope
 from swing.web.price_cache import PriceCache, PriceSnapshot
-from swing.web.view_models.dashboard import _flag_tags, _sort_by_proximity
+from swing.web.view_models.dashboard import _flag_tags, _sort_watchlist
 
 
 @dataclass(frozen=True)
@@ -58,7 +58,9 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
-            rows = _sort_by_proximity(list_active_watchlist(conn))
+            rows = list_active_watchlist(conn)
+            # Sort moved BELOW the candidates load: `_sort_watchlist` needs
+            # flag_tags (computed from candidates) for the primary key.
             # Mixed-anchor fix (closes the last surface from the Bug 7 family):
             # bind candidates_by_ticker (and the flag_tags it feeds) to the
             # pipeline's OWN eval via pipeline_runs.evaluation_run_id when
@@ -88,6 +90,9 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
     finally:
         conn.close()
     by_ticker = {c.ticker: c for c in candidates}
+    flag_tags = _flag_tags(by_ticker)
+    # Sort outside `with conn:` is safe — `_sort_watchlist` is pure (no DB).
+    rows = _sort_watchlist(list(rows), flag_tags)
     prices = cache.get_many(
         [r.ticker for r in rows],
         deadline_seconds=cfg.web.price_fetch_deadline_seconds,
@@ -98,7 +103,7 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
         session_date=action_session_for_run(now).isoformat(),
         rows=list(rows),
         watchlist_last_prices={r.ticker: prices[r.ticker] for r in rows if r.ticker in prices},
-        flag_tags=_flag_tags(by_ticker),
+        flag_tags=flag_tags,
         candidates_by_ticker=by_ticker,
         prices_generated_at=now.isoformat(timespec="seconds"),
         price_source_degraded=cache.is_degraded(),

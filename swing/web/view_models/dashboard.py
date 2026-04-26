@@ -364,13 +364,18 @@ def build_dashboard(
         conn.close()
 
     candidates_by_ticker = {c.ticker: c for c in candidates}
+    # flag_tags must be computed BEFORE the watchlist sort because the new
+    # `_sort_watchlist` uses tag count and precedence as primary keys. The
+    # subsequent rebuild of flag_tags later in this function was removed
+    # alongside this move; the same mapping is reused.
+    flag_tags = _flag_tags(candidates_by_ticker)
 
     # Prices — batch fetch all tickers we need. Recommended-ticker prices
     # are added so the panel can render each row's current price live; the
     # cache's last-close fallback covers tickers that the breaker is
     # currently rejecting.
     active_tickers = {t.ticker for t in open_trades}
-    watch_sorted = _sort_by_proximity(watchlist)
+    watch_sorted = _sort_watchlist(watchlist, flag_tags)
     top5 = watch_sorted[:5]
     active_tickers.update(w.ticker for w in top5)
     active_tickers.update(r.candidate_ticker for r in top_recommendations)
@@ -435,8 +440,6 @@ def build_dashboard(
         if snap is not None:
             open_trade_last_prices[t.ticker] = snap
         open_trade_advisories[t.id] = list(advisories_tuple)
-
-    flag_tags = _flag_tags(candidates_by_ticker)
 
     # Open-risk (spec §2). Helper returns dollars + contributing-count +
     # all-above-breakeven; pct computed here because the helper has no
@@ -604,11 +607,48 @@ def _tripwire_reason_text(progress) -> str | None:
     return "; ".join(bits) + "; recommend escape evaluation"
 
 
-def _sort_by_proximity(watchlist: list[WatchlistEntry]) -> list[WatchlistEntry]:
-    def key(w: WatchlistEntry) -> float:
-        if w.entry_target is None or w.last_close is None:
-            return float("inf")
-        return abs(w.last_close - w.entry_target) / max(w.entry_target, 1e-6)
+# Tag precedence encoding for the secondary sort key. Operator-confirmed
+# order: A+ > VCP✓ > TT✓. Sum-of-position-values (rather than strict
+# lexicographic) so the natural tag combinations on real candidates
+# ((A+, VCP✓, TT✓), (VCP✓, TT✓), (TT✓,), ()) order correctly AND a future
+# tag addition only requires assigning a precedence value — the sort
+# survives. Keys MUST exactly match the strings emitted by `_flag_tags`
+# below (note Unicode checkmark `✓`, not ASCII `v`); a mismatch would
+# silently score every tag at 0 via the `.get(t, 0)` fallback.
+_TAG_PRECEDENCE = {"A+": 4, "VCP✓": 2, "TT✓": 1}
+
+
+def _tag_precedence_score(tags: tuple[str, ...]) -> int:
+    """Sum-of-precedence-values across a row's flag tags. Higher score
+    sorts first as the secondary key in `_sort_watchlist`. Unknown tags
+    score 0."""
+    return sum(_TAG_PRECEDENCE.get(t, 0) for t in tags)
+
+
+def _abs_proximity(w: WatchlistEntry) -> float:
+    """abs(% to pivot) — tertiary sort key. Returns +inf when pivot or
+    last_close is missing so those rows sort last on the proximity axis."""
+    if w.entry_target is None or w.last_close is None:
+        return float("inf")
+    return abs(w.last_close - w.entry_target) / max(w.entry_target, 1e-6)
+
+
+def _sort_watchlist(
+    watchlist: list[WatchlistEntry],
+    flag_tags: Mapping[str, tuple[str, ...]],
+) -> list[WatchlistEntry]:
+    """Three-key composite sort: tag count DESC, tag precedence DESC,
+    abs(% to pivot) ASC, ticker ASC for determinism. Tickers absent from
+    `flag_tags` get an empty tag tuple → score 0 → sort last among the
+    no-tag group, ordered by proximity."""
+    def key(w: WatchlistEntry):
+        tags = flag_tags.get(w.ticker, ())
+        return (
+            -len(tags),                    # tag count DESC
+            -_tag_precedence_score(tags),  # tag precedence DESC
+            _abs_proximity(w),             # proximity ASC
+            w.ticker,                      # ticker ASC (determinism)
+        )
     return sorted(watchlist, key=key)
 
 

@@ -16,12 +16,17 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse
 
 from swing.data.db import connect
+from swing.data.repos.candidates import fetch_candidates_for_run
 from swing.data.repos.pipeline import find_active_run, find_run, force_clear
 from swing.data.repos.trades import list_open_trades
 from swing.data.repos.watchlist import list_active_watchlist
 from swing.pipeline.finviz_schema import validate_csv
 from swing.pipeline.staleness import is_stale_eligible
-from swing.web.view_models.dashboard import _sort_by_proximity, build_dashboard
+from swing.web.view_models.dashboard import (
+    _flag_tags,
+    _sort_watchlist,
+    build_dashboard,
+)
 from swing.web.view_models.pipeline import build_pipeline
 
 router = APIRouter()
@@ -293,13 +298,27 @@ def prices_refresh(request: Request):
     executor = request.app.state.price_fetch_executor
     templates = request.app.state.templates
 
-    # Collect active tickers.
+    # Collect active tickers. Top-5 picking mirrors the dashboard's
+    # `_sort_watchlist` (tag-count primary, precedence secondary, proximity
+    # tertiary) so the cache is warmed for the SAME tickers the operator is
+    # about to see post-refresh — keeping prefetch in sync with display.
     conn = connect(cfg.paths.db_path)
     try:
         open_trade_tickers = {t.ticker for t in list_open_trades(conn)}
-        top5_tickers = {w.ticker for w in _sort_by_proximity(list_active_watchlist(conn))[:5]}
+        watch_rows = list_active_watchlist(conn)
+        latest_eval_row = conn.execute(
+            "SELECT id FROM evaluation_runs ORDER BY run_ts DESC LIMIT 1"
+        ).fetchone()
+        candidates = (
+            fetch_candidates_for_run(conn, latest_eval_row[0])
+            if latest_eval_row is not None else []
+        )
     finally:
         conn.close()
+    flag_tags = _flag_tags({c.ticker: c for c in candidates})
+    top5_tickers = {
+        w.ticker for w in _sort_watchlist(list(watch_rows), flag_tags)[:5]
+    }
     active = sorted(open_trade_tickers | top5_tickers | {cfg.rs.benchmark_ticker})
 
     # Manual refresh resets the circuit breaker (R2 Major 2). A user-clicked
