@@ -720,3 +720,275 @@ def test_status_strip_template_shows_dash_when_open_risk_pct_none(
     tile_html = body[slice_start:slice_end]
     # Percent rendered as '—' because equity ≤ 0.
     assert "—" in tile_html
+
+
+def test_status_strip_unrealized_pnl_fully_priced(seeded_db, monkeypatch):
+    """3e.1: AAPL open at $180, 5 shares, last price $182 → unrealized
+    = (182 - 180) * 5 = $10. priced_count == 1 == open_count, so the
+    "(N of M priced)" suffix MUST NOT render."""
+    from swing.web.view_models.dashboard import build_dashboard
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from datetime import datetime
+
+    cfg, _ = seeded_db
+    _seed_for_dashboard(cfg)
+
+    cache = PriceCache(cfg)
+    fake_snap = PriceSnapshot(
+        ticker="AAPL", price=182.0, asof=datetime.now(),
+        is_stale=False, source="live",
+    )
+    monkeypatch.setattr(
+        cache, "get_many",
+        lambda tickers, deadline_seconds, *, executor=None: {
+            t: fake_snap for t in tickers
+        },
+    )
+    monkeypatch.setattr(cache, "is_degraded", lambda: False)
+
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=None)
+    assert vm.status_strip.unrealized_pnl == pytest.approx(10.0)
+    assert vm.status_strip.unrealized_priced_count == 1
+
+
+def test_status_strip_unrealized_pnl_none_when_no_open_trades(
+    seeded_db, monkeypatch,
+):
+    """No open trades → unrealized_pnl is None and priced_count is 0.
+    Template branch hides the line entirely in this state."""
+    from swing.web.view_models.dashboard import build_dashboard
+    from swing.web.price_cache import PriceCache
+
+    cfg, _ = seeded_db
+    # Seed weather only.
+    from swing.data.db import connect
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO weather_runs
+                   (run_ts, asof_date, ticker, status, close, rationale)
+                   VALUES (?, ?, 'SPY', 'Bullish', 450.0, 'ok')""",
+                ("2026-04-17T21:49:00", "2026-04-17"),
+            )
+    finally:
+        conn.close()
+
+    cache = PriceCache(cfg)
+    monkeypatch.setattr(cache, "get_many",
+        lambda tickers, deadline_seconds, *, executor=None: {})
+    monkeypatch.setattr(cache, "is_degraded", lambda: False)
+
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=None)
+    assert vm.status_strip.unrealized_pnl is None
+    assert vm.status_strip.unrealized_priced_count == 0
+
+
+def test_status_strip_unrealized_pnl_partial_priced(seeded_db, monkeypatch):
+    """Two open trades but only one has a price snapshot. Partial unrealized
+    sum + priced_count < open_count, so template renders "(N of M priced)"."""
+    from swing.web.view_models.dashboard import build_dashboard
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from datetime import datetime
+
+    cfg, _ = seeded_db
+    _seed_for_dashboard(cfg)
+    # Add a second open trade, MSFT, with no price snapshot.
+    from swing.data.db import connect
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(
+                conn,
+                Trade(
+                    id=None, ticker="MSFT", entry_date="2026-04-15",
+                    entry_price=300.0, initial_shares=2, initial_stop=290.0,
+                    current_stop=290.0, status="open",
+                    watchlist_entry_target=None, watchlist_initial_stop=None,
+                    notes=None,
+                ),
+                event_ts="2026-04-15T09:30:00",
+            )
+    finally:
+        conn.close()
+
+    cache = PriceCache(cfg)
+    aapl_snap = PriceSnapshot(
+        ticker="AAPL", price=182.0, asof=datetime.now(),
+        is_stale=False, source="live",
+    )
+    # Only AAPL gets a snapshot; MSFT does not — drives priced_count = 1
+    # of 2 open trades.
+    monkeypatch.setattr(
+        cache, "get_many",
+        lambda tickers, deadline_seconds, *, executor=None: {
+            "AAPL": aapl_snap,
+        },
+    )
+    monkeypatch.setattr(cache, "is_degraded", lambda: False)
+
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=None)
+    assert vm.status_strip.unrealized_pnl == pytest.approx(10.0)
+    assert vm.status_strip.unrealized_priced_count == 1
+    assert vm.status_strip.open_count == 2
+
+
+def test_status_strip_template_renders_unrealized_line(seeded_db, monkeypatch):
+    """End-to-end: with one fully-priced open trade, the Account tile
+    contains an "Unrealized: $10.00" line and does NOT contain the
+    "(N of M priced)" suffix.
+
+    Pre-fix: line absent. Post-fix: present. The "(N of M priced)" text
+    is the post-fix-only discriminator for partial-priced state — it
+    must NOT appear here (1 of 1 priced)."""
+    from fastapi.testclient import TestClient
+    from swing.web.app import create_app
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from swing.web.ohlcv_cache import OhlcvCache
+    from datetime import datetime
+
+    cfg, cfg_path = seeded_db
+    _seed_for_dashboard(cfg)
+
+    fake_snap = PriceSnapshot(
+        ticker="AAPL", price=182.0, asof=datetime.now(),
+        is_stale=False, source="live",
+    )
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *, deadline_seconds, executor: {
+            t: fake_snap for t in tickers
+        },
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+    monkeypatch.setattr(
+        OhlcvCache, "get_many_bundles",
+        lambda self, tickers, *, deadline_seconds, executor: {},
+    )
+    monkeypatch.setattr(OhlcvCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/")
+    assert r.status_code == 200
+    body = r.text
+    # Scope assertions to the Account tile so cross-tile text doesn't pollute.
+    acct_start = body.index('id="account-tile"')
+    acct_end = body.index('id="open-risk-tile"')
+    acct_html = body[acct_start:acct_end]
+    assert "Unrealized:" in acct_html
+    assert "$10.00" in acct_html
+    # Fully priced (1 of 1) — partial suffix MUST be absent.
+    assert "priced)" not in acct_html
+
+
+def test_status_strip_template_unrealized_line_partial_priced(
+    seeded_db, monkeypatch,
+):
+    """When some open trades lack a price snapshot, the rendered Account
+    tile carries the "(N of M priced)" suffix. This text is the
+    pre-fix/post-fix discriminator for the partial path — it cannot
+    appear in pre-fix code (no template branch) nor in fully-priced
+    post-fix code (suffix branch guarded)."""
+    from fastapi.testclient import TestClient
+    from swing.web.app import create_app
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from swing.web.ohlcv_cache import OhlcvCache
+    from datetime import datetime
+
+    cfg, cfg_path = seeded_db
+    _seed_for_dashboard(cfg)
+    # Add MSFT open with no snapshot.
+    from swing.data.db import connect
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(
+                conn,
+                Trade(
+                    id=None, ticker="MSFT", entry_date="2026-04-15",
+                    entry_price=300.0, initial_shares=2, initial_stop=290.0,
+                    current_stop=290.0, status="open",
+                    watchlist_entry_target=None, watchlist_initial_stop=None,
+                    notes=None,
+                ),
+                event_ts="2026-04-15T09:30:00",
+            )
+    finally:
+        conn.close()
+
+    aapl_snap = PriceSnapshot(
+        ticker="AAPL", price=182.0, asof=datetime.now(),
+        is_stale=False, source="live",
+    )
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *, deadline_seconds, executor: {
+            "AAPL": aapl_snap,
+        },
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+    monkeypatch.setattr(
+        OhlcvCache, "get_many_bundles",
+        lambda self, tickers, *, deadline_seconds, executor: {},
+    )
+    monkeypatch.setattr(OhlcvCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/")
+    body = r.text
+    acct_start = body.index('id="account-tile"')
+    acct_end = body.index('id="open-risk-tile"')
+    acct_html = body[acct_start:acct_end]
+    assert "Unrealized:" in acct_html
+    assert "$10.00" in acct_html
+    assert "1 of 2 priced" in acct_html
+
+
+def test_status_strip_template_unrealized_line_absent_when_no_open(
+    seeded_db, monkeypatch,
+):
+    """No open trades → no "Unrealized:" line in Account tile."""
+    from fastapi.testclient import TestClient
+    from swing.web.app import create_app
+    from swing.web.price_cache import PriceCache
+    from swing.web.ohlcv_cache import OhlcvCache
+
+    cfg, cfg_path = seeded_db
+    # Only weather; no open trades.
+    from swing.data.db import connect
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO weather_runs
+                   (run_ts, asof_date, ticker, status, close, rationale)
+                   VALUES (?, ?, 'SPY', 'Bullish', 450.0, 'ok')""",
+                ("2026-04-17T21:49:00", "2026-04-17"),
+            )
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *, deadline_seconds, executor: {},
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+    monkeypatch.setattr(
+        OhlcvCache, "get_many_bundles",
+        lambda self, tickers, *, deadline_seconds, executor: {},
+    )
+    monkeypatch.setattr(OhlcvCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/")
+    body = r.text
+    acct_start = body.index('id="account-tile"')
+    acct_end = body.index('id="open-risk-tile"')
+    acct_html = body[acct_start:acct_end]
+    assert "Unrealized:" not in acct_html

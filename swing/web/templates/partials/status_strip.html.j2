@@ -11,6 +11,14 @@
     {{ vm.status_strip.open_count }} / {{ vm.status_strip.soft_warn }}
     (hard cap {{ vm.status_strip.hard_cap }})
   </div>
+  {% if vm.status_strip.unrealized_pnl is not none %}
+    <div class="unrealized">
+      Unrealized: ${{ '%.2f' | format(vm.status_strip.unrealized_pnl) }}
+      {%- if vm.status_strip.unrealized_priced_count < vm.status_strip.open_count %}
+        ({{ vm.status_strip.unrealized_priced_count }} of {{ vm.status_strip.open_count }} priced)
+      {%- endif %}
+    </div>
+  {% endif %}
 </div>
 <div class="tile" id="open-risk-tile">
   <div class="label">Open risk</div>

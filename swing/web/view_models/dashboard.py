@@ -37,6 +37,12 @@ class StatusStripVM:
     open_risk_pct: float | None = 0.0
     open_risk_position_count: int = 0
     open_risk_all_above_breakeven: bool = False
+    # Mark-to-market unrealized P&L (3e.1). None when no priced positions
+    # exist (template hides the line entirely). `unrealized_priced_count`
+    # tracks how many open trades had a price snapshot at compute time;
+    # template renders "(N of M priced)" suffix when this is < open_count.
+    unrealized_pnl: float | None = None
+    unrealized_priced_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -442,6 +448,22 @@ def build_dashboard(
         open_risk_dollars / equity if equity > 0 else None
     )
 
+    # Mark-to-market unrealized P&L (3e.1). Sum (price - entry) * remaining
+    # over priced positions only; None when nothing is priced so the
+    # template hides the line entirely (no "$0.00 (0 of N priced)" noise).
+    unrealized = 0.0
+    priced_count = 0
+    for t in open_trades:
+        snap = open_trade_last_prices.get(t.ticker)
+        if snap is None:
+            continue
+        remaining = t.initial_shares - sum(
+            e.shares for e in exits_by_trade.get(t.id, [])
+        )
+        unrealized += (snap.price - t.entry_price) * remaining
+        priced_count += 1
+    unrealized_pnl = unrealized if priced_count > 0 else None
+
     # Status strip.
     status_strip = StatusStripVM(
         weather_status=(weather.status if weather else "STALE"),
@@ -456,7 +478,10 @@ def build_dashboard(
         open_risk_pct=open_risk_pct,
         open_risk_position_count=len(open_trades),
         open_risk_all_above_breakeven=open_risk_all_above_be,
+        unrealized_pnl=unrealized_pnl,
+        unrealized_priced_count=priced_count,
     )
+
 
     today_decisions = [
         DecisionVM(
