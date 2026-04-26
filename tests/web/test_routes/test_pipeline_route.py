@@ -449,6 +449,45 @@ def test_post_prices_refresh_bypasses_degraded_mode(seeded_db, monkeypatch):
     )
 
 
+def test_post_prices_refresh_resets_ohlcv_breaker(seeded_db, monkeypatch):
+    """3e.3: a manual Refresh-now click must clear the OHLCV cache's
+    circuit breaker too, otherwise SMA advisories remain blanked after
+    the operator's intervention.
+
+    Pre-fix discriminator: OhlcvCache.reset_circuit_breaker is never
+    called by the route. Post-fix: called exactly once."""
+    cfg, cfg_path = seeded_db
+    from swing.web.ohlcv_cache import OhlcvCache
+    from swing.web.price_cache import PriceCache
+
+    ohlcv_resets = {"count": 0}
+    orig = OhlcvCache.reset_circuit_breaker
+
+    def wrapped(self):
+        ohlcv_resets["count"] += 1
+        return orig(self)
+
+    monkeypatch.setattr(OhlcvCache, "reset_circuit_breaker", wrapped)
+    monkeypatch.setattr(PriceCache, "refresh_all", lambda self, tickers: None)
+    monkeypatch.setattr(PriceCache, "reset_circuit_breaker", lambda self: None)
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {})
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(
+        OhlcvCache, "get_many_bundles",
+        lambda self, tickers, *, deadline_seconds, executor: {},
+    )
+    monkeypatch.setattr(OhlcvCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/prices/refresh", headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert ohlcv_resets["count"] == 1, (
+        "POST /prices/refresh must reset the OHLCV breaker once"
+    )
+
+
 def test_get_stale_run_card_renders_for_eligible_run(test_cfg, seeded_db, seed_stale_run):
     """Spec §3.1: GET /pipeline/stale-run-card/{run_id} renders the card for
     an eligible stale run. Used as the Cancel-button target in the confirm UI."""

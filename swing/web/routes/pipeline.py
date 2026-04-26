@@ -308,6 +308,14 @@ def prices_refresh(request: Request):
     # from cascading failure, not to block operator intervention. If the
     # refetch attempt fails, the breaker will simply trip again on its own.
     cache.reset_circuit_breaker()
+    # 3e.3: also reset the OHLCV breaker so SMA advisories recover on the
+    # next dashboard render. Same operator-override rationale; a separately-
+    # tripped OHLCV breaker would otherwise leave advisories blank with no
+    # UI affordance to retry. `app.state.ohlcv_cache` may be None in tests
+    # that skip cache wiring — guard for that.
+    ohlcv_cache = request.app.state.ohlcv_cache
+    if ohlcv_cache is not None:
+        ohlcv_cache.reset_circuit_breaker()
     cache.refresh_all(active)
 
     vm = build_dashboard(cfg=cfg, cache=cache, executor=executor,
