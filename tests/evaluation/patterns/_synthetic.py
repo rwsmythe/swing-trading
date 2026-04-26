@@ -34,56 +34,77 @@ def make_flag_bars(
     Default parameters yield a detection-passing flag against the spec's
     default thresholds. Override one parameter per test to drive a single
     gate across its threshold.
+
+    Geometry calibration (so synthetic params map 1:1 to measured values):
+    - Pre-run: H = L = C = start_close (truly flat, no half-band). Bounds
+      pole_low = start_close exactly when search M reaches into pre-run.
+    - Pole: closes shifted by +pole_range/2 at start and -pole_range/2 at
+      end so first-bar low = start_close and last-bar high = pole_top
+      exactly. Result: measured pole_gain = pole_gain_pct exactly.
+    - Flag: bottom-bar close shifted up by +flag_range/2 so the bottom
+      bar's actual low = pole_top * (1 - pullback_pct). Result: measured
+      pullback_depth = pullback_pct exactly.
     """
     n = pre_run_bars + pole_bars + flag_bars
     idx = pd.date_range("2026-01-01", periods=n, freq="B")
     closes = np.empty(n, dtype=float)
 
-    # Pre-run: FLAT at start_close. This is a deliberate change from a rising
-    # pre-run to bound the classifier search's M-window. With M ∈ [5, 30] and
-    # the pole at indices [pre_run_bars, pre_run_bars + pole_bars), the search
-    # cannot reach past pre_run_bars; flat pre-run forces pole_low = start_close
+    # Pre-compute ranges (needed to offset closes for 1:1 mapping below).
+    pole_top = start_close * (1.0 + pole_gain_pct)
+    pole_range = pole_top * pole_atr_pct
+    flag_range = pole_range * flag_tightness_factor
+
+    # Pre-run: FLAT at start_close (H = L = C). Forces pole_low = start_close
     # for any M reaching into pre-run, so measured pole_gain matches the
-    # synthetic pole_gain_pct exactly (required for Tasks 1.4-1.7 threshold
-    # discrimination). Gate 5 (SMA10>SMA20>SMA50 stacked + rising over 5-bar
-    # lookback) still fires because the rising pole bars dominate SMA10's
-    # 10-bar window and pull SMA50 up over the 5-bar shift. Verified via
-    # arithmetic for pole_top ∈ [120, 140] and corresponding pre_run_bars=50,
-    # pole_bars=10. Original rising pre-run admitted spurious pole_gain
-    # measurements >> synthetic pole_gain_pct when M reached into rising bars.
+    # synthetic pole_gain_pct exactly.
     closes[:pre_run_bars] = start_close
 
-    # Pole: linear advance to start_close * (1 + pole_gain_pct).
-    pole_top = start_close * (1.0 + pole_gain_pct)
+    # Pole: linear advance, but SHIFTED so first-bar low = start_close and
+    # last-bar high = pole_top exactly. With H = C + pole_range/2 and
+    # L = C - pole_range/2 (set below), this makes
+    #   measured pole_gain = (pole_top - start_close) / start_close
+    #                      = pole_gain_pct.
     closes[pre_run_bars:pre_run_bars + pole_bars] = np.linspace(
-        start_close, pole_top, pole_bars,
+        start_close + pole_range / 2,
+        pole_top - pole_range / 2,
+        pole_bars,
     )
 
-    # Flag: drift between pole_top and pole_top * (1 - pullback_pct), with
-    # tightness driven by flag_tightness_factor. Floor holds → second-half
-    # min ≥ first-half min.
+    # Flag: drift between pole_top and flag_low_target, with tightness driven
+    # by flag_tightness_factor. Bottom-bar close shifted UP by flag_range/2
+    # so the bottom bar's actual low (close - flag_range/2) equals
+    # flag_low_target exactly. Result:
+    #   measured pullback_depth = (pole_top - flag_low_target) / pole_top
+    #                           = pullback_pct.
     flag_low_target = pole_top * (1.0 - pullback_pct)
     flag_idx_start = pre_run_bars + pole_bars
     half = flag_bars // 2
     flag_close = np.empty(flag_bars)
+    bottom_close = flag_low_target + flag_range / 2
     if floor_holds:
-        flag_close[:half] = np.linspace(pole_top * 0.99, flag_low_target, half)
-        flag_close[half:] = np.linspace(flag_low_target * 1.005, pole_top * 0.985, flag_bars - half)
+        flag_close[:half] = np.linspace(pole_top * 0.99, bottom_close, half)
+        flag_close[half:] = np.linspace(
+            bottom_close * 1.005, pole_top * 0.985, flag_bars - half,
+        )
     else:
-        # Drifting-down floor — second-half min < first-half min by 5%.
-        flag_close[:half] = np.linspace(pole_top * 0.99, flag_low_target, half)
-        flag_close[half:] = np.linspace(flag_low_target * 0.99, flag_low_target * 0.94, flag_bars - half)
+        # Drifting-down floor — second-half min < first-half min.
+        flag_close[:half] = np.linspace(pole_top * 0.99, bottom_close, half)
+        flag_close[half:] = np.linspace(
+            bottom_close * 0.99, bottom_close * 0.94, flag_bars - half,
+        )
     closes[flag_idx_start:] = flag_close
-
-    pole_range = pole_top * pole_atr_pct
-    flag_range = pole_range * flag_tightness_factor
 
     high = closes.copy()
     low = closes.copy()
-    high[:pre_run_bars] = closes[:pre_run_bars] * 1.005
-    low[:pre_run_bars] = closes[:pre_run_bars] * 0.995
-    high[pre_run_bars:pre_run_bars + pole_bars] = closes[pre_run_bars:pre_run_bars + pole_bars] + pole_range / 2
-    low[pre_run_bars:pre_run_bars + pole_bars] = closes[pre_run_bars:pre_run_bars + pole_bars] - pole_range / 2
+    # Pre-run truly flat (no half-band) — see docstring.
+    high[:pre_run_bars] = closes[:pre_run_bars]
+    low[:pre_run_bars] = closes[:pre_run_bars]
+    high[pre_run_bars:pre_run_bars + pole_bars] = (
+        closes[pre_run_bars:pre_run_bars + pole_bars] + pole_range / 2
+    )
+    low[pre_run_bars:pre_run_bars + pole_bars] = (
+        closes[pre_run_bars:pre_run_bars + pole_bars] - pole_range / 2
+    )
     high[flag_idx_start:] = flag_close + flag_range / 2
     low[flag_idx_start:] = flag_close - flag_range / 2
 
