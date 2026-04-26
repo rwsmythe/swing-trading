@@ -183,3 +183,17 @@ def test_search_prefers_higher_confidence_then_lower_N_then_lower_M():
     res2 = classify_flag(bars)
     assert res.components["flag_N"] == res2.components["flag_N"]
     assert res.components["pole_M"] == res2.components["pole_M"]
+
+
+def test_best_attempted_uses_max_min_soft_clearance():
+    # Build a fixture where NO candidate passes. The algorithm should still
+    # populate components_json with the (M, N) candidate whose min-soft-
+    # clearance is highest (i.e., closest to passing).
+    bars = make_flag_bars(pole_gain_pct=0.20)  # all candidates fail pole_gain
+    res = classify_flag(bars)
+    assert res.detected is False
+    assert "pole_gain" in res.components
+    # Soft clearance for pole_gain at 0.20: (0.20 - 0.30) / 0.70 ≈ -0.143.
+    # Across all (M, N), the best-attempted must report a pole_gain in the
+    # neighborhood of the synthetic value (≈ 0.20).
+    assert 0.15 < res.components["pole_gain"] < 0.25
