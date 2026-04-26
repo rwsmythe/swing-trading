@@ -145,8 +145,8 @@ Total: **17 files** (5 new + 12 modify).
 @dataclass(frozen=True)
 class FlagClassificationResult:
     detected: bool
-    confidence: float                      # 0.0–1.0; 0.0 when not detected (dataclass-only; persists as NULL when pattern='none' — see §3.2)
-    pattern: str                           # 'flag' if detected, 'none' otherwise
+    confidence: float                      # 0.0–1.0; 0.0 when not detected (dataclass-only; persists as NULL when pattern != 'flag' — see §3.2)
+    pattern: str | None                    # 'flag' if detected, 'none' if evaluated-no-detect, None if classifier raised (R1 M1)
     pole_start_date: date | None           # bars[pole_start_idx].date(); None if not detected
     pole_end_date: date | None             # bars[pole_end_idx-1].date() (inclusive last pole bar)
     flag_start_date: date | None
@@ -168,10 +168,10 @@ class FlagClassificationResult:
 1. **Precondition:** `bars` is the last 60 completed daily bars (`Open, High, Low, Close, Volume` columns). If `len(bars) < 36` (need ≥ 5-bar pole + 5-bar flag + 26 bars for SMA50 + buffer), return `detected=False, pattern='none'`.
 
 2. **Search over (M, N):** for `N` in `[5, 21]` (flag length, flag = the LAST N bars of the frame), for `M` in `[5, 30]` (pole length, pole = the M bars immediately preceding the flag):
-   - Verify all 10 gates (§3.1.3) for the (M, N) candidate.
+   - Verify all 11 gates (§3.1.3) for the (M, N) candidate.
    - Compute `confidence = min(four continuous-gate clearances)` (§3.1.4).
-3. **Best fit:** Return the (M*, N*) candidate with highest confidence among those with ALL gates passing. Ties broken by lower N (shorter flag, "tighter" tagging), then lower M.
-4. **No candidate passes:** Return `detected=False, pattern='none', confidence=0.0`. Components dict still populated with the BEST-attempted candidate's measurements for debugging.
+3. **Best fit:** Return the (M*, N*) candidate with highest confidence among those with ALL detection gates (1–9) passing. Ties broken by lower N (shorter flag, "tighter" tagging), then lower M.
+4. **No candidate passes:** Return `detected=False, pattern='none', confidence=0.0`. Components dict populated with the **best-attempted candidate's** measurements for debugging — defined precisely as the (M, N) pair maximizing the **min of soft clearances**, where soft clearance allows negative values for failed gates (e.g., pole_gain=0.25 → soft clearance = (0.25 − 0.30) / 0.70 = −0.071). When no candidate passes any gate, the (M=5, N=5) pair's measurements are persisted as a deterministic baseline. (Adversarial-review R1 Major 3 — eliminates ambiguity in "best-attempted" semantics.)
 
 #### 3.1.3 Gate definitions
 
@@ -187,10 +187,11 @@ Each gate is a pure function over the (pole_bars, flag_bars) split:
 | 6 | pullback_depth | `(max(pole.High) − min(flag.Low)) / max(pole.High) ≤ 0.15` |
 | 7 | tightness | `median((H − L) / C) over flag ≤ 0.6 × median((H − L) / C) over pole` |
 | 8 | volume_contraction | `mean(flag.Volume) ≤ 0.7 × mean(pole.Volume)` |
-| 9 | pivot | `pivot = max(flag.High)` (definitional, not a gate per se) |
-| 10 | breakout | INFORMATIONAL — `today.Close > pivot`. Recorded in components but does NOT gate detection (a flag is a flag pre-breakout so operator can stage it) |
+| 9 | flag_floor_holds | `min(flag.Low[N//2:]) ≥ min(flag.Low[:N//2])` — the second half of the flag's low-floor is no lower than the first half. Captures Qullamaggie's "higher lows" / "non-rolling-over" intuition without requiring strict daily-monotonic higher lows (the reference image's flag has roughly-horizontal lows; strict monotonic would over-exclude). Distinguishes a true flag (floor holds or rises) from a flat shelf that drifts down or a rounded pause that rolls over. (Adversarial-review R1 Critical 2.) |
+| 10 | pivot | `pivot = max(flag.High)` (definitional, not a gate per se) |
+| 11 | breakout | INFORMATIONAL — `today.Close > pivot`. Recorded in components but does NOT gate detection (a flag is a flag pre-breakout so operator can stage it) |
 
-Detection requires gates 1–8 all pass (gate 9 is definitional; gate 10 is informational).
+Detection requires gates 1–9 all pass (gate 10 is definitional; gate 11 is informational).
 
 #### 3.1.4 Confidence formula
 
@@ -204,7 +205,7 @@ confidence = min(clearance_pole_gain, clearance_pullback,
                  clearance_tightness, clearance_volume)
 ```
 
-Binary gates (#5 ma_structure, #2/#3 length bounds) do not enter the formula — by construction they are 1 post-detection.
+Binary gates (#5 ma_structure, #9 flag_floor_holds, #2/#3 length bounds) do not enter the formula — by construction they are 1 post-detection.
 
 **Threshold defaults** (config; tunable from labeled-example test feedback):
 - `cfg.classifier.flag_pole_gain_min = 0.30`
@@ -213,6 +214,8 @@ Binary gates (#5 ma_structure, #2/#3 length bounds) do not enter the formula —
 - `cfg.classifier.flag_volume_ratio_max = 0.7`
 
 V1 bias: false-positive cost > false-negative cost (operator-arbiter framing; FP erodes tag trust). If labeled tests reveal FP > FN, tighten defaults — captured as a tuning note in the spec, not as a separate config-amendment process.
+
+**Confidence is a geometric clearance score, NOT a calibrated probability.** The displayed `flag (0.78)` value reflects the weakest of four normalized continuous-gate clearances, on the (M*, N*) candidate the search picked. It does **not** account for: (a) MA-structure quality margin (gate 5 is binary — either stacked-and-rising or not), (b) ambiguity between competing (M, N) windows that scored similarly, (c) prior probability of "this is a flag" given the candidate's broader market context. Downstream analysis must NOT treat this score as a calibrated probability of "this is a true flag." The score is honest about clearance-from-thresholds, no more. (Adversarial-review R1 Major 6 — addresses overclaiming via explicit framing rather than scope-changing gate additions or rename.)
 
 ### 3.2 Persistence
 
@@ -237,6 +240,13 @@ CREATE TABLE pipeline_pattern_classifications (
     pivot REAL,
     pole_high REAL,
     flag_low REAL,
+    -- First-class boundary dates for queryability without JSON-extracting
+    -- (adversarial-review R1 Minor 2). All four NULL on classifier-error rows
+    -- and on rows where no candidate passed any gate (best-attempted baseline).
+    pole_start_date TEXT,
+    pole_end_date TEXT,
+    flag_start_date TEXT,
+    flag_end_date TEXT,
     computed_at TEXT NOT NULL,              -- ISO timestamp
     UNIQUE (pipeline_run_id, ticker)
 );
@@ -267,10 +277,15 @@ ALTER TABLE trades ADD COLUMN chart_pattern_operator TEXT;
 UPDATE schema_version SET version = 10;
 ```
 
-NULL semantics:
-- `chart_pattern_algo='flag', confidence=0.78`: classifier detected.
-- `chart_pattern_algo='none', confidence=NULL`: classifier evaluated, no detection.
-- `chart_pattern_algo=NULL, confidence=NULL`: classifier did NOT run on this ticker (out-of-scope manual trade; V1 deferred).
+NULL semantics — `pipeline_pattern_classifications.pattern`:
+- `pattern='flag', confidence=0.0–1.0`: classifier detected.
+- `pattern='none', confidence=NULL`: classifier ran successfully, did not detect a flag (a true evaluated negative).
+- `pattern=NULL, confidence=NULL, components_json contains `"error"` key`: classifier raised an exception. Distinguishable from `'none'` so downstream analysis does not conflate "evaluated negative" with "system failure". (Adversarial-review R1 Major 1.)
+
+NULL semantics — `trades` columns:
+- `chart_pattern_algo='flag', confidence=0.78`: cache row had `pattern='flag'`.
+- `chart_pattern_algo='none', confidence=NULL`: cache row had `pattern='none'`.
+- `chart_pattern_algo=NULL, confidence=NULL`: NO cache row OR cache row had `pattern=NULL` (classifier error). Trade-row level intentionally collapses these two cases into "not classified" because the operator's analysis on the trade rarely needs to distinguish "system failure during classification" from "ticker out-of-scope" (both reduce to "no algo classification available for this trade"). The cache-table distinction remains queryable for diagnostics.
 - `chart_pattern_operator='flag'` (or any text): operator override, takes precedence in analysis.
 - `chart_pattern_operator=NULL`: operator accepted algorithm; analysis falls through to algo value.
 
@@ -278,7 +293,7 @@ NULL semantics:
 
 #### 3.2.3 Repo layer
 
-**Confidence persistence rule:** the dataclass's `confidence: float` field is always populated (0.0 when not detected) for in-memory completeness. The repo layer translates: when `result.pattern == 'none'`, `confidence` column persists as **NULL** (matches the trade-row NULL semantics in §3.2.2 and the CHECK constraint in §3.2.1). When `result.pattern == 'flag'`, the float value persists as-is.
+**Confidence persistence rule:** the dataclass's `confidence: float` field is always populated (0.0 when not detected) for in-memory completeness. The repo layer translates: when `result.pattern != 'flag'` (i.e., `'none'` or `None`), `confidence` column persists as **NULL** (matches the trade-row NULL semantics in §3.2.2 and the CHECK constraint in §3.2.1). When `result.pattern == 'flag'`, the float value persists as-is. When `result.pattern is None` (classifier error), the cache `pattern` column ALSO persists as NULL (preserves the error-distinguishable state per §3.2.2).
 
 `swing/data/repos/pattern_classifications.py`:
 
@@ -312,11 +327,14 @@ for ticker, pivot, stop, _source in targets:
     try:
         classification = classify_flag(bars_60)
     except Exception as exc:
-        # Persist a row with components_json carrying the error so the
-        # falsifiability path stays intact even on classifier bugs. Trade
-        # row reads see chart_pattern_algo='none' for this ticker.
+        # Persist a row with pattern=NULL (NOT 'none' — we must distinguish
+        # system failure from true evaluated-negative for downstream analysis,
+        # adversarial-review R1 Major 1). components_json carries the error.
+        # Trade row reads see chart_pattern_algo=NULL for this ticker (the
+        # cache-row vs no-cache-row distinction is preserved at the cache table
+        # level; the trade row collapses both to "not classified" per §3.2.2).
         classification = FlagClassificationResult(
-            detected=False, confidence=0.0, pattern='none',
+            detected=False, confidence=0.0, pattern=None,    # ← NULL not 'none'
             pole_start_date=None, pole_end_date=None,
             flag_start_date=None, flag_end_date=None,
             pole_high=None, flag_low=None, pivot=None,
@@ -346,7 +364,7 @@ for ticker, pivot, stop, _source in targets:
         )
 ```
 
-**Performance budget:** `classify_flag` is pure pandas/numpy on a 60-bar DataFrame searching ≤ 26 × 17 = 442 (M, N) candidates. Sub-millisecond per ticker. Negligible (<1s for 15-ticker chart-scope set).
+**Performance budget (hypothesis, verify at impl):** `classify_flag` is pure pandas/numpy on a 60-bar DataFrame searching ≤ 26 × 17 = 442 (M, N) candidates. Expected sub-millisecond per ticker — verify with a microbenchmark during implementation. The pipeline's tolerance is high (~15-ticker chart-scope, full classifier loop expected well under 1s); if measurement reveals 10× the estimate, that's still inside tolerance. (Adversarial-review R1 Minor 3 — softens a hand-waved performance assertion.)
 
 **Failure isolation:** classifier exception for one ticker does NOT fail the chart_target update or other tickers. Same per-ticker failure boundary that already exists for chart rendering.
 
@@ -380,49 +398,54 @@ class PatternOverlay:
 
 ### 3.5 Watchlist tag rendering
 
-`_flag_tags` at [swing/web/view_models/dashboard.py:658-673](../../../swing/web/view_models/dashboard.py#L658-L673) gains a sibling helper or extends in-place:
+**Architecture (revised after R1 Major 2):** The flag tag is delivered to the template via a **SEPARATE** field — NOT mixed into the existing `tags` tuple. This keeps `_sort_watchlist` and `_flag_tags` byte-for-byte unchanged and removes the §1.3-vs-§3.5 internal inconsistency the R1 review caught.
+
+`_flag_tags` at [swing/web/view_models/dashboard.py:658-673](../../../swing/web/view_models/dashboard.py#L658-L673) is **NOT modified** — it continues to emit `('TT✓', 'VCP✓', 'A+')` tuples scoped to the binary-tag taxonomy.
+
+A new sibling helper:
 
 ```python
-def _flag_tags(
-    candidates_by_ticker: Mapping[str, Candidate],
-    classifications_by_ticker: Mapping[str, PipelinePatternClassification] | None = None,
-    display_threshold: float = 0.0,
-) -> Mapping[str, tuple[str, ...]]:
-    tags: dict[str, tuple[str, ...]] = {}
-    for ticker, c in candidates_by_ticker.items():
-        row_tags = []
-        # ... existing TT/VCP/A+ logic unchanged ...
-        if classifications_by_ticker:
-            cls = classifications_by_ticker.get(ticker)
-            if cls and cls.pattern == 'flag' and cls.confidence is not None \
-               and cls.confidence >= display_threshold:
-                row_tags.append(f"flag ({cls.confidence:.2f})")
-        if row_tags:
-            tags[ticker] = tuple(row_tags)
-    return tags
+def _pattern_tags(
+    classifications_by_ticker: Mapping[str, PipelinePatternClassification] | None,
+    display_threshold: float,
+) -> Mapping[str, str]:
+    """Return {ticker: 'flag (0.78)'} for tickers whose classification's
+    pattern == 'flag' and confidence >= threshold. Tickers absent from this
+    map have no flag tag rendered."""
+    if not classifications_by_ticker:
+        return {}
+    out: dict[str, str] = {}
+    for ticker, cls in classifications_by_ticker.items():
+        if cls.pattern == 'flag' and cls.confidence is not None \
+           and cls.confidence >= display_threshold:
+            out[ticker] = f"flag ({cls.confidence:.2f})"
+    return out
 ```
 
-**`_sort_watchlist` and `_TAG_PRECEDENCE` remain UNTOUCHED.** The flag tag is appended to the tuple but excluded from sort key computation — `_sort_watchlist` already counts `len(tags)` and sums `_TAG_PRECEDENCE.get(t, 0)`, so:
-- `len(tags)` would naturally include the flag tag (raising tag_count) — UNDESIRED.
-- `_TAG_PRECEDENCE.get(t, 0)` for `"flag (0.78)"` returns 0 (unknown key, falls through) — DESIRED.
+**`_sort_watchlist` and `_TAG_PRECEDENCE` remain BYTE-FOR-BYTE UNCHANGED.** No sort-key code is touched — the sort genuinely cannot see the flag tag because the flag tag never enters `tags`.
 
-To preserve sort-NEUTRAL: change `_sort_watchlist`'s tag-count term to **count only TT/VCP/A+ tags** (not the full tuple). One-line guard:
+**VM extensions:** `WatchlistVM` and `DashboardVM` gain ONE new field each:
 
 ```python
-tt_vcp_aplus_count = sum(1 for t in tags if t in _TAG_PRECEDENCE)
-return (
-    -tt_vcp_aplus_count,           # was -len(tags)
-    -_tag_precedence_score(tags),  # already 0 for unknown flag tag
-    _abs_proximity(w),
-    w.ticker,
-)
+pattern_tags: Mapping[str, str] = field(default_factory=dict)   # {ticker: 'flag (0.78)'}
 ```
 
-Discriminating-test discipline: tests must verify a row with `('TT✓', 'flag (0.99)')` does NOT outrank a row with `('TT✓', 'VCP✓')` — i.e., flag tag does NOT bump count or precedence.
+`watchlist_row.html.j2` template extends the tags cell to render BOTH:
 
-`build_watchlist` and `build_watchlist_row` at [swing/web/view_models/watchlist.py](../../../swing/web/view_models/watchlist.py) gain a query path that resolves `pipeline_run_id` from the same `pipeline_runs.evaluation_run_id` block they already use, then `list_classifications_for_run(pipeline_run_id)` and pass the result to `_flag_tags`. No anchor mismatch.
+```jinja
+{% for t in vm.flag_tags.get(w.ticker, ()) %}
+  <span class="tag">{{ t }}</span>
+{% endfor %}
+{% if vm.pattern_tags.get(w.ticker) %}
+  <span class="tag tag-pattern">{{ vm.pattern_tags[w.ticker] }}</span>
+{% endif %}
+```
 
-`watchlist_row.html.j2` template renders `tags` cell unchanged — the new tag is just one more string in the existing tuple iteration. No layout change.
+**Base-layout shared VM gotcha (CLAUDE.md):** `pattern_tags` does NOT need to propagate to other base-layout VMs (`PipelineVM`, `JournalVM`, `PageErrorVM`) because `base.html.j2` does NOT reference `vm.pattern_tags` — only the watchlist + dashboard partials do. Verify no incidental base-template references at implementation; if any are found, all base-layout VMs gain a `pattern_tags = {}` default.
+
+`build_watchlist`, `build_watchlist_row`, and `build_dashboard` resolve `pipeline_run_id` from the same `pipeline_runs.evaluation_run_id` block they already use, then `list_classifications_for_run(pipeline_run_id)`, then call `_pattern_tags(...)` to populate the new VM field. No anchor mismatch.
+
+Discriminating-test discipline: tests verify a row with `flag_tags=('TT✓',)` + `pattern_tags['XYZ']='flag (0.99)'` does NOT outrank a row with `flag_tags=('TT✓','VCP✓')`. The sort cannot see the flag tag at all — this is structurally guaranteed, not just behaviorally tested. (Compounding-confound discipline per 2026-04-26 memory: also test that disabling the new helper changes ONLY the rendered tag presence, never the row order — confirms the architectural separation.)
 
 ### 3.6 Trade-entry form
 
@@ -431,7 +454,7 @@ Discriminating-test discipline: tests must verify a row with `('TT✓', 'flag (0
 ```python
 chart_pattern_algo: str | None = None              # 'flag' | 'none' | None
 chart_pattern_algo_confidence: float | None = None
-chart_pattern_algo_evaluated: bool = False         # True if a classification row exists
+chart_pattern_algo_evaluated: bool = False         # True iff a cache row exists with pattern in ('flag', 'none') (NOT for classifier-error rows where pattern=NULL)
 chart_pattern_algo_computed_at: str | None = None  # for the "from pipeline run finished ..." subline
 ```
 
@@ -444,6 +467,8 @@ chart_pattern_algo_computed_at: str | None = None  # for the "from pipeline run 
 
 Form POST handler in `swing/web/routes/trades.py` reads `chart_pattern_operator` and `chart_pattern_operator_other` form fields. Resolution: if `chart_pattern_operator == "other"`, use `chart_pattern_operator_other`; else use the dropdown value (or `None` for "Accept algo").
 
+**Free-text override design — accepted with rationale (R1 Major 5).** `chart_pattern_operator` is intentionally unconstrained `TEXT` (no CHECK constraint) and the form's `other` dropdown path lets the operator type any pattern label (`'pennant'`, `'cup-handle'`, `'rounded base'`, etc.) even though V1's algorithm only emits `flag`/`none`. Rationale: capturing the operator's qualitative pattern observation NOW — at trade entry, with the chart in front of them — is essentially free; deferring the V2 vocabulary capture would lose this evidence forever. V1 analysis paths only act on `chart_pattern_operator IN ('flag', 'none', NULL)`; other values are stored but ignored by V1 logic. V2 vocabulary expansion (CHECK constraint on operator field, dropdown enum widening) is a separate migration that consumes the captured V1 free-text as the empirical seed for the legitimate-vocabulary list. (Locked-constraint #1 governs the algorithm's pattern-emission scope, not the operator field's storage scope; operator override is governed by locked-constraint #6.)
+
 `EntryRequest` at [swing/trades/entry.py:80-94](../../../swing/trades/entry.py#L80-L94) gains:
 
 ```python
@@ -454,7 +479,9 @@ chart_pattern_operator: str | None = None
 
 ### 3.7 CLI
 
-`swing trade entry` gains `--chart-pattern-operator` (str, default None) for parity with the form. Threads to `EntryRequest.chart_pattern_operator`. **Optional sub-scope** — if scope is tight at execution time, this is the cheapest item to defer to a follow-up; the form path is the operator's primary entry surface.
+`swing trade entry` gains `--chart-pattern-operator` (str, default None) for parity with the form. Threads to `EntryRequest.chart_pattern_operator`. **CLI parity gate (R1 Critical 1):** the CLI handler MUST refuse `--chart-pattern-operator` for tickers without a cached classification (i.e., when `get_classification(pipeline_run_id, ticker)` returns None or returns a row with `pattern=NULL`). This mirrors the form's "Not classified" stub design — V1's locked-constraint #5 (cached-only consumption) applies to BOTH entry surfaces. Operator gets a clear error: `"--chart-pattern-operator requires a cached classification for <TICKER>; ticker is out-of-scope for the latest pipeline run. (V1 cached-only; manual fallback deferred to V2.)"` Without the gate, CLI silently bypasses a constraint the form enforces — a divergent-behavior surface that future analysis would have to disentangle.
+
+**Optional sub-scope** — if scope is tight at execution time, this is the cheapest item to defer to a follow-up; the form path is the operator's primary entry surface.
 
 ### 3.8 Config
 
@@ -466,6 +493,8 @@ class Web:
 ```
 
 (Algorithm thresholds at §3.1.4 are also config-tunable; they live under `cfg.classifier.*` as a new sub-namespace.)
+
+**Default 0.0 — accepted with rationale (R1 Minor 1).** The display threshold's default of 0.0 (show every detected flag) appears in tension with the FP-biased tuning posture in §3.1.4. The reconciliation is operational: FP-bias governs ALGORITHM TUNING (which thresholds the classifier USES to decide detection), not display GATING (which decides whether a detected flag's tag renders on watchlist). At V1, no labeled-example calibration data exists yet; suppressing flags before the operator has had a chance to chart-validate them would short-circuit the encoding-into-feedback-loop framing. The operator dials the threshold up after operational experience reveals which confidence bands map to chart-validated flags. Default 0.0 is the "show everything the algo classified" V1 starting point; default migrates to a calibrated value (e.g., 0.20) once labeled-example test results inform the breakpoint.
 
 ---
 
@@ -482,18 +511,28 @@ Per-component pure-function tests on synthetic DataFrames. Discriminating-test d
 - `test_tightness_ratio_at_threshold`: ratio 0.601 → reject; 0.599 → pass.
 - `test_volume_contraction_at_threshold`: ratio 0.701 → reject; 0.699 → pass.
 - `test_ma_structure_requires_stack_and_rising`: 10>20>50 not stacked → reject; stacked but flat → reject; stacked + rising → pass.
+- `test_flag_floor_holds_gate`: flag with declining low-floor (e.g., second-half min 5% below first-half min) → reject; flag with flat or rising low-floor → pass. (R1 C2 — distinguishes flag from drifting-down shelf.)
 - `test_data_window_too_short`: 35 bars → `detected=False`; 36 bars (boundary) → enters search.
 - `test_confidence_min_aggregation`: build a DataFrame where pole_gain clearance = 0.9 and pullback clearance = 0.2; assert `confidence == 0.2`.
 - `test_search_picks_best_fit`: DataFrame admitting two valid (M, N) candidates; assert algorithm returns the higher-confidence pair, ties broken by lower N then lower M.
+- `test_classifier_error_yields_pattern_none_dataclass`: when classify_flag raises (simulated via patched internal raise), pipeline-side adapter (NOT classify_flag itself, since classifier doesn't catch) produces a `FlagClassificationResult` with `pattern=None` (not `'none'`); cache row persists `pattern=NULL` distinguishing system error from evaluated-negative. (R1 M1.)
+- `test_best_attempted_is_max_min_soft_clearance`: build a DataFrame where two candidates fail with different soft-clearance profiles (one fails by 0.05 on pole_gain, another fails by 0.20 on tightness); assert `components_json` reflects the max-min-soft-clearance candidate (the one closer to passing). When NO candidate passes any gate, the deterministic (5,5) baseline is persisted. (R1 M3.)
 - `test_pattern_none_emits_components_for_debugging`: failed candidate still populates components dict.
 
 ### 4.2 Layer 2 — Integration tests (`tests/evaluation/patterns/test_flag_classifier_integration.py`)
 
 Operator-curated labeled fixtures committed to repo (V1 floor: ≥15 examples = 8 flags + 7 non-flags spanning the rejection cases enumerated in Q2: wide-and-loose, deep base/cup, sideways drift with no pole, late-stage failed breakout, stage-4 with bounce, multi-month flat base, ambiguous edge case).
 
+**Labeling protocol (R1 Major 4):**
+- **Labeler.** The operator (Reid Smythe) is the sole labeler in V1. No second-labeler cross-check; no inter-rater reliability metric.
+- **Rubric.** §3.1.3's 11 gates + the reference image at `reference/images/flag_pattern.png`. A bar set qualifies as a `flag` label iff the operator chart-reads it and judges (a) the visual pattern matches a flag per the reference image, AND (b) at least four of gates 4 / 6 / 7 / 8 / 9 visually appear to clear (i.e., the operator's eye agrees with the algorithm's intent without literally computing each gate). The label is the operator's qualitative call; the algorithm's actual gate evaluation is the test under test, not the label generator.
+- **Procedure.** Operator picks N (ticker, ending-date) pairs from chart-reading sessions, fetches OHLCV via yfinance into a 60-bar window ending at the chosen date, labels each as `flag` or `none`, captures notes (e.g., "wide-and-loose, fails tightness"), saves CSV + JSON to `tests/evaluation/patterns/fixtures/`. CSV is the literal yfinance OHLCV pull, NOT a hand-edited variant — fixtures must be reproducible from a yfinance refresh of the same (ticker, date).
+- **Disagreement resolution.** N/A in V1 (single labeler).
+- **Versioning.** Labels are immutable once committed (anti-rationalization discipline analogous to `hypothesis_label`). If a label later turns out to be wrong (operator changed their mind on the chart), retire the fixture (delete CSV+JSON; commit) and add a new fixture under a different filename — never edit-in-place.
+
 Fixture format:
 ```
-tests/evaluation/patterns/fixtures/<TICKER>_<YYYY-MM-DD>_<label>.csv   ← 60 daily bars
+tests/evaluation/patterns/fixtures/<TICKER>_<YYYY-MM-DD>_<label>.csv   ← 60 daily bars (literal yfinance pull)
 tests/evaluation/patterns/fixtures/<TICKER>_<YYYY-MM-DD>_<label>.json  ← {label, notes, expected_confidence_min (for flags)}
 ```
 
@@ -520,10 +559,12 @@ Deferred to backlog. Operator can periodically run against live yfinance refresh
 
 ### 4.4 Sort-neutrality regression (`tests/web/view_models/test_dashboard_sort.py` extension)
 
-Must include:
-- A row with tags `('TT✓', 'flag (0.99)')` does NOT outrank a row with tags `('TT✓', 'VCP✓')` — confirms flag is excluded from `tag_count`.
-- Two rows tagged `('A+',)` and `('A+', 'flag (0.99)')` sort by proximity, not by flag presence — confirms flag does NOT bump precedence.
-- Compounding-confound discipline (per the 2026-04-26 memory extension): each test temporarily zeroes out the keyed-on element and re-asserts to confirm the test is not vacuous.
+**Architectural guarantee (R1 M2 fix):** the new `_pattern_tags` helper is a SIBLING to `_flag_tags`; the flag tag never enters the `tags` tuple consumed by `_sort_watchlist`. Sort-neutrality is structurally guaranteed, but tests still verify the contract:
+
+- A WatchlistVM with `flag_tags={'XYZ': ('TT✓',)}` AND `pattern_tags={'XYZ': 'flag (0.99)'}` does NOT outrank a WatchlistVM with `flag_tags={'ABC': ('TT✓','VCP✓')}` AND `pattern_tags={}` — confirms flag tag has zero sort effect because it never reaches `_sort_watchlist`.
+- Two rows with identical `flag_tags=('A+',)` but differing `pattern_tags` (one `'flag (0.99)'`, the other absent) sort by proximity, not by flag presence.
+- **Compounding-confound discipline (per the 2026-04-26 memory extension):** delete the `_pattern_tags` call entirely → row order MUST be unchanged (only the rendered tag span disappears). This proves `pattern_tags` has zero sort influence; if removing it changes order, the architectural separation has regressed.
+- **Byte-stability of `_sort_watchlist`:** add a test that imports `_sort_watchlist` source via `inspect.getsource` and asserts the body string equals a frozen baseline (or, more pragmatically, that a non-trivial sample of pre-V1 sort cases produces identical output to the post-V1 implementation). This catches accidental modification of the function during V1 implementation.
 
 ### 4.5 Persistence + integration tests
 
