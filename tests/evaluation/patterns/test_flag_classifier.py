@@ -277,17 +277,46 @@ def test_search_prefers_higher_confidence_then_lower_N_then_lower_M():  # noqa: 
 
 
 def test_best_attempted_uses_max_min_soft_clearance():
-    # Build a fixture where NO candidate passes. The algorithm should still
-    # populate components_json with the (M, N) candidate whose min-soft-
-    # clearance is highest (i.e., closest to passing).
+    """Codex R1 M2 follow-up: original test asserted only a broad pole_gain
+    range. This stronger version verifies the best-attempted candidate
+    matches the EXACT (M, N) that maximizes min-soft-clearance via a
+    reference enumeration."""
     bars = make_flag_bars(pole_gain_pct=0.20)  # all candidates fail pole_gain
     res = classify_flag(bars)
     assert res.detected is False
     assert "pole_gain" in res.components
-    # Soft clearance for pole_gain at 0.20: (0.20 - 0.30) / 0.70 ≈ -0.143.
-    # Across all (M, N), the best-attempted must report a pole_gain in the
-    # neighborhood of the synthetic value (≈ 0.20).
-    assert 0.15 < res.components["pole_gain"] < 0.25
+    # Reference enumeration: find (M, N) that maximizes
+    # min(soft_clearances) and verify components matches.
+    from swing.evaluation.patterns.flag_classifier import (
+        _evaluate_candidate, _soft_clearances, M_RANGE, N_RANGE, _DEFAULT_CFG,
+    )
+    n_bars = len(bars)
+    best_soft = None  # (soft_min, M, N, components)
+    for N_ in N_RANGE:
+        flag_end = n_bars
+        flag_start = n_bars - N_
+        if flag_start <= 0:
+            continue
+        for M_ in M_RANGE:
+            pole_start = flag_start - M_
+            if pole_start < 0:
+                continue
+            c = _evaluate_candidate(bars, pole_start, flag_start, flag_end)
+            soft_min = min(_soft_clearances(c, _DEFAULT_CFG))
+            if best_soft is None or soft_min > best_soft[0]:
+                best_soft = (soft_min, M_, N_, c)
+    assert best_soft is not None
+    expected_M, expected_N, expected_c = best_soft[1], best_soft[2], best_soft[3]
+    assert res.components["pole_M"] == float(expected_M), (
+        f"Best-attempted reported M={res.components['pole_M']}, "
+        f"reference says max-min-soft-clearance M={expected_M}"
+    )
+    assert res.components["flag_N"] == float(expected_N), (
+        f"Best-attempted reported N={res.components['flag_N']}, "
+        f"reference says max-min-soft-clearance N={expected_N}"
+    )
+    # And the reported pole_gain matches the reference candidate's pole_gain.
+    assert abs(res.components["pole_gain"] - expected_c["pole_gain"]) < 1e-9
 
 
 def test_pattern_None_distinct_from_string_none_in_dataclass():  # noqa: N802  # `None` is the literal Python sentinel, not a class
