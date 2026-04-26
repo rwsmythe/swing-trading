@@ -38,7 +38,61 @@
 **Pre-conditions:** baseline fast suite green; no DB or web surface touched yet.
 **Scope:** Pure-function `classify_flag(bars: DataFrame) -> FlagClassificationResult`. Zero DB / web / IO. Synthetic-DataFrame unit tests at every gate threshold.
 **Phase-end checkpoint:** all unit tests in `tests/evaluation/patterns/test_flag_classifier.py` green; `python -m pytest -m "not slow" -q` green; `ruff check swing/evaluation/patterns/` clean.
-**Spec sections:** §1.2 deliverable 1; §3.1 (algorithm); §4.1 (Layer 1 unit tests).
+**Spec sections:** §1.2 deliverable 1; §3.1 (algorithm); §3.1.4 (config-tunable thresholds); §4.1 (Layer 1 unit tests).
+
+### Task 1.0 — Config: `cfg.classifier.*` threshold namespace
+
+Implements spec §3.1.4 ("Threshold defaults (config; tunable from labeled-example test feedback)") + §3.8 reference. Lands FIRST in Phase 1 so `classify_flag` can accept thresholds via dependency injection rather than module-level constants — Phase 7 FP-biased tuning depends on this surface.
+
+**Files:**
+- Modify: `swing/config.py`
+
+- [ ] **Step 1: Write failing test**
+
+```python
+# tests/test_config_classifier.py
+def test_classifier_config_default_thresholds():
+    from swing.config import ClassifierConfig, Config
+    c = ClassifierConfig()
+    assert c.flag_pole_gain_min == 0.30
+    assert c.flag_pullback_depth_max == 0.15
+    assert c.flag_tightness_ratio_max == 0.6
+    assert c.flag_volume_ratio_max == 0.7
+
+
+def test_root_config_exposes_classifier():
+    from swing.config import Config
+    cfg = Config.default() if hasattr(Config, "default") else None
+    # If Config has no default(), at least the type is present and
+    # threadable into classify_flag via plumbing in Task 1.3+.
+    from swing.config import ClassifierConfig
+    assert ClassifierConfig is not None
+```
+
+- [ ] **Step 2: Add the dataclass**
+
+In `swing/config.py`:
+
+```python
+@dataclass(frozen=True)
+class ClassifierConfig:
+    """Tunable algorithm thresholds for chart-pattern classifiers.
+    Spec §3.1.4 — V1 bias false-positive cost > false-negative cost. After
+    Phase 7 labeled-example calibration, defaults migrate per FP/FN tally."""
+    flag_pole_gain_min: float = 0.30
+    flag_pullback_depth_max: float = 0.15
+    flag_tightness_ratio_max: float = 0.6
+    flag_volume_ratio_max: float = 0.7
+```
+
+Add `classifier: ClassifierConfig` to the `Config` dataclass (with default `field(default_factory=ClassifierConfig)`). If a `Config.default()` factory exists, ensure it constructs the `ClassifierConfig`.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add swing/config.py tests/test_config_classifier.py
+git commit -m "feat(config): ClassifierConfig namespace (V1: flag_pattern thresholds)"
+```
 
 ### Task 1.1 — Package skeleton
 
@@ -332,13 +386,15 @@ from datetime import date
 import pandas as pd
 import numpy as np
 
-POLE_GAIN_MIN = 0.30
-PULLBACK_DEPTH_MAX = 0.15
-TIGHTNESS_RATIO_MAX = 0.6
-VOLUME_RATIO_MAX = 0.7
+from swing.config import ClassifierConfig
+
+# Defaults match ClassifierConfig defaults; live class-tunable via the
+# `cfg` argument in classify_flag(). Phase 7 FP-biased tuning dials these
+# via cfg.classifier.* — module-level constants are NOT to be edited.
 M_RANGE = range(5, 31)   # pole length [5, 30]
 N_RANGE = range(5, 22)   # flag length [5, 21]
 MIN_BARS = 36
+_DEFAULT_CFG = ClassifierConfig()
 
 
 @dataclass(frozen=True)
@@ -431,37 +487,41 @@ def _evaluate_candidate(
     }
 
 
-def _continuous_clearances(c: dict) -> tuple[float, float, float, float]:
+def _continuous_clearances(c: dict, cfg: ClassifierConfig) -> tuple[float, float, float, float]:
     return (
-        _clamp((c["pole_gain"] - POLE_GAIN_MIN) / 0.70, 0.0, 1.0),
-        _clamp((PULLBACK_DEPTH_MAX - c["pullback_depth"]) / PULLBACK_DEPTH_MAX, 0.0, 1.0),
-        _clamp((TIGHTNESS_RATIO_MAX - c["tightness_ratio"]) / TIGHTNESS_RATIO_MAX, 0.0, 1.0),
-        _clamp((VOLUME_RATIO_MAX - c["volume_ratio"]) / VOLUME_RATIO_MAX, 0.0, 1.0),
+        _clamp((c["pole_gain"] - cfg.flag_pole_gain_min) / 0.70, 0.0, 1.0),
+        _clamp((cfg.flag_pullback_depth_max - c["pullback_depth"]) / cfg.flag_pullback_depth_max, 0.0, 1.0),
+        _clamp((cfg.flag_tightness_ratio_max - c["tightness_ratio"]) / cfg.flag_tightness_ratio_max, 0.0, 1.0),
+        _clamp((cfg.flag_volume_ratio_max - c["volume_ratio"]) / cfg.flag_volume_ratio_max, 0.0, 1.0),
     )
 
 
-def _soft_clearances(c: dict) -> tuple[float, float, float, float]:
+def _soft_clearances(c: dict, cfg: ClassifierConfig) -> tuple[float, float, float, float]:
     """Allow negative values for failed continuous gates (best-attempted ranking)."""
     return (
-        (c["pole_gain"] - POLE_GAIN_MIN) / 0.70,
-        (PULLBACK_DEPTH_MAX - c["pullback_depth"]) / PULLBACK_DEPTH_MAX,
-        (TIGHTNESS_RATIO_MAX - c["tightness_ratio"]) / TIGHTNESS_RATIO_MAX,
-        (VOLUME_RATIO_MAX - c["volume_ratio"]) / VOLUME_RATIO_MAX,
+        (c["pole_gain"] - cfg.flag_pole_gain_min) / 0.70,
+        (cfg.flag_pullback_depth_max - c["pullback_depth"]) / cfg.flag_pullback_depth_max,
+        (cfg.flag_tightness_ratio_max - c["tightness_ratio"]) / cfg.flag_tightness_ratio_max,
+        (cfg.flag_volume_ratio_max - c["volume_ratio"]) / cfg.flag_volume_ratio_max,
     )
 
 
-def _detection_passes(c: dict) -> bool:
+def _detection_passes(c: dict, cfg: ClassifierConfig) -> bool:
     return (
-        c["pole_gain"] >= POLE_GAIN_MIN
-        and c["pullback_depth"] <= PULLBACK_DEPTH_MAX
-        and c["tightness_ratio"] <= TIGHTNESS_RATIO_MAX
-        and c["volume_ratio"] <= VOLUME_RATIO_MAX
+        c["pole_gain"] >= cfg.flag_pole_gain_min
+        and c["pullback_depth"] <= cfg.flag_pullback_depth_max
+        and c["tightness_ratio"] <= cfg.flag_tightness_ratio_max
+        and c["volume_ratio"] <= cfg.flag_volume_ratio_max
         and c["ma_structure"] >= 1.0
         and c["flag_floor_holds"] >= 1.0
     )
 
 
-def classify_flag(bars: pd.DataFrame) -> FlagClassificationResult:
+def classify_flag(
+    bars: pd.DataFrame,
+    cfg: ClassifierConfig | None = None,
+) -> FlagClassificationResult:
+    cfg = cfg or _DEFAULT_CFG
     if len(bars) < MIN_BARS:
         return FlagClassificationResult(
             detected=False, confidence=0.0, pattern="none",
@@ -486,13 +546,13 @@ def classify_flag(bars: pd.DataFrame) -> FlagClassificationResult:
                 continue
             c = _evaluate_candidate(bars, pole_start, flag_start, flag_end)
             anchors = (pole_start, flag_start, flag_end)
-            if _detection_passes(c):
-                conf = min(_continuous_clearances(c))
+            if _detection_passes(c, cfg):
+                conf = min(_continuous_clearances(c, cfg))
                 # Tie-break: higher confidence first; on tie, lower N then lower M.
                 key = (conf, -N, -M)
                 if best_pass is None or key > best_pass[0]:
                     best_pass = (key, c, anchors)
-            soft_min = min(_soft_clearances(c))
+            soft_min = min(_soft_clearances(c, cfg))
             if best_attempt is None or soft_min > best_attempt[0]:
                 best_attempt = (soft_min, c, anchors)
 
@@ -501,7 +561,7 @@ def classify_flag(bars: pd.DataFrame) -> FlagClassificationResult:
         idx = bars.index
         return FlagClassificationResult(
             detected=True,
-            confidence=min(_continuous_clearances(c)),
+            confidence=min(_continuous_clearances(c, cfg)),
             pattern="flag",
             pole_start_date=idx[ps].date() if hasattr(idx[ps], "date") else None,
             pole_end_date=idx[fs - 1].date() if hasattr(idx[fs - 1], "date") else None,
@@ -569,7 +629,23 @@ Expected: PASS both. If FAIL, the threshold logic is wrong — fix in `_detectio
 
 - [ ] **Step 3: Confirm discriminating-test discipline**
 
-Manually toggle `POLE_GAIN_MIN` to `0.25` in the source, re-run the pair: the `_below_rejects` test MUST flip to detected=True. Restore `0.30`. This proves the test pair is sensitive to the threshold value. If both tests pass under both threshold settings, the synthetic fixture is not actually crossing the gate — fix the fixture.
+Add a third test that explicitly verifies the threshold-sensitivity:
+
+```python
+def test_pole_gain_gate_is_threshold_sensitive():
+    """Discriminating-test discipline: passing a tightened threshold via
+    cfg argument must flip a previously-passing fixture to rejection.
+    Proves the test pair is actually sensitive to the threshold value."""
+    from swing.config import ClassifierConfig
+    bars = make_flag_bars(pole_gain_pct=0.31)
+    # Default cfg → passes.
+    assert classify_flag(bars).detected is True
+    # Tightened cfg → rejects.
+    cfg = ClassifierConfig(flag_pole_gain_min=0.40)
+    assert classify_flag(bars, cfg=cfg).detected is False
+```
+
+This replaces the manual constant-toggle workflow — the test is now reproducible in CI.
 
 - [ ] **Step 4: Commit**
 
@@ -1466,7 +1542,7 @@ from pathlib import Path
 import pytest
 from swing.data.db import ensure_schema
 from swing.data.models import Trade
-from swing.data.repos.trades import insert_trade_with_event, get_trade
+from swing.data.repos.trades import insert_trade_with_event
 
 
 def _make_trade(**over) -> Trade:
@@ -1482,6 +1558,7 @@ def _make_trade(**over) -> Trade:
 
 
 def test_insert_trade_with_chart_pattern_flag_persists_all_four(tmp_path: Path):
+    """Round-trip via raw SQL — read paths NOT yet threaded (Task 2.8 follow-up)."""
     conn = ensure_schema(tmp_path / "swing.db")
     try:
         with conn:
@@ -1495,17 +1572,23 @@ def test_insert_trade_with_chart_pattern_flag_persists_all_four(tmp_path: Path):
                 ),
                 event_ts="2026-04-26T00:00:00", rationale="aplus-setup",
             )
-        t = get_trade(conn, tid)
-        assert t.chart_pattern_algo == "flag"
-        assert t.chart_pattern_algo_confidence == 0.78
-        assert t.chart_pattern_operator == "flag"
-        assert t.chart_pattern_classification_pipeline_run_id == 42
+        row = conn.execute(
+            "SELECT chart_pattern_algo, chart_pattern_algo_confidence, "
+            "chart_pattern_operator, chart_pattern_classification_pipeline_run_id "
+            "FROM trades WHERE id = ?",
+            (tid,),
+        ).fetchone()
+        assert row[0] == "flag"
+        assert row[1] == 0.78
+        assert row[2] == "flag"
+        assert row[3] == 42
     finally:
         conn.close()
 
 
-def test_insert_trade_with_no_chart_pattern_columns_works(tmp_path: Path):
-    """Backward-compat: existing call sites pass no chart_pattern_* fields."""
+def test_insert_trade_with_no_chart_pattern_columns_writes_NULL(tmp_path: Path):
+    """Backward-compat: existing call sites pass no chart_pattern_* fields.
+    Read via raw SQL until Task 2.8 threads new columns through `_row_to_trade`."""
     conn = ensure_schema(tmp_path / "swing.db")
     try:
         with conn:
@@ -1513,11 +1596,13 @@ def test_insert_trade_with_no_chart_pattern_columns_works(tmp_path: Path):
                 conn, _make_trade(),
                 event_ts="2026-04-26T00:00:00", rationale="aplus-setup",
             )
-        t = get_trade(conn, tid)
-        assert t.chart_pattern_algo is None
-        assert t.chart_pattern_algo_confidence is None
-        assert t.chart_pattern_operator is None
-        assert t.chart_pattern_classification_pipeline_run_id is None
+        row = conn.execute(
+            "SELECT chart_pattern_algo, chart_pattern_algo_confidence, "
+            "chart_pattern_operator, chart_pattern_classification_pipeline_run_id "
+            "FROM trades WHERE id = ?",
+            (tid,),
+        ).fetchone()
+        assert row == (None, None, None, None)
     finally:
         conn.close()
 
@@ -1693,7 +1778,10 @@ Append to `tests/data/test_trade_chart_pattern_columns.py`:
 
 ```python
 def test_list_open_trades_returns_chart_pattern_columns(tmp_path: Path):
-    from swing.data.repos.trades import list_open_trades, list_closed_trades, find_any_open_trade, find_open_trade_by_match
+    from swing.data.repos.trades import (
+        list_open_trades, list_closed_trades, find_any_open_trade,
+        find_open_trade_by_match, get_trade,
+    )
     conn = ensure_schema(tmp_path / "swing.db")
     try:
         with conn:
@@ -1966,24 +2054,91 @@ def stub_pipeline_state(tmp_path: Path):
     return {"db_path": db_path, "run_id": run_id}
 
 
-def test_step_charts_writes_classification_row_for_each_target(stub_pipeline_state, tmp_path):
+def test_step_charts_writes_classification_row_for_each_target(
+    stub_pipeline_state, tmp_path, monkeypatch,
+):
     """End-to-end: _step_charts iterates targets, calls classify_flag,
     persists via insert_classification under the SAME lease.fenced_write
     as update_chart_target_status."""
-    # NOTE: this test uses the harness-pattern of building a minimal cfg/lease
-    # and passing a stub PriceFetcher. Refer to existing
-    # tests/pipeline/test_step_charts_*.py for the harness shape and adapt.
-    pytest.skip(
-        "Harness-construction TODO during execution: lift the existing "
-        "_step_charts test harness from tests/pipeline/test_step_charts_*.py "
-        "and patch fetcher.get to return make_flag_bars() for ticker AAPL "
-        "and a non-flag fixture for ticker NOPE. After patching, run "
-        "_step_charts and assert list_classifications_for_run returns "
-        "{'AAPL': pattern='flag', 'NOPE': pattern='none'}."
+    from swing.data.repos.candidates import insert_candidate
+    from swing.data.models import Candidate
+    from swing.pipeline import runner as runner_mod
+    from swing.pipeline.lease import Lease
+
+    db_path = stub_pipeline_state["db_path"]
+    run_id = stub_pipeline_state["run_id"]
+
+    # Seed an evaluation_runs row + an A+ candidate so _step_charts has a
+    # target to iterate.
+    from swing.data.db import connect
+    conn = connect(db_path)
+    conn.execute(
+        "INSERT INTO evaluation_runs (run_ts, data_asof_date, action_session_date, "
+        "finviz_csv_path, tickers_evaluated, aplus_count, watch_count, skip_count, "
+        "excluded_count, error_count) "
+        "VALUES ('2026-04-26T00:00:00','2026-04-25','2026-04-26', NULL, 2,2,0,0,0,0)"
     )
+    eval_id = conn.execute("SELECT id FROM evaluation_runs ORDER BY id DESC LIMIT 1").fetchone()[0]
+    conn.execute("UPDATE pipeline_runs SET evaluation_run_id = ? WHERE id = ?", (eval_id, run_id))
+    # Insert two A+ candidates: AAPL (will detect flag), NOPE (will not).
+    for ticker, pivot in (("AAPL", 119.5), ("NOPE", 100.0)):
+        insert_candidate(conn, evaluation_run_id=eval_id, candidate=Candidate(
+            ticker=ticker, bucket="aplus", close=100.0, pivot=pivot,
+            initial_stop=95.0, adr_pct=2.0, tight_streak=10,
+            pullback_pct=5.0, prior_trend_pct=30.0, rs_rank=80,
+            rs_return_12w_vs_spy=0.10, rs_method="universe",
+            pattern_tag=None, notes=None, criteria=(),
+        ))
+    conn.commit()
+    conn.close()
+
+    # Stub fetcher.get → make_flag_bars for AAPL, flat-bars for NOPE.
+    flat_bars = pd.DataFrame({
+        "Open": [100.0]*60, "High": [100.5]*60, "Low": [99.5]*60,
+        "Close": [100.0]*60, "Volume": [1_000_000.0]*60,
+    }, index=pd.date_range("2026-01-01", periods=60, freq="B"))
+    fetcher = MagicMock()
+    fetcher.get.side_effect = lambda ticker, **kw: (
+        make_flag_bars() if ticker == "AAPL" else flat_bars
+    )
+
+    # Stub render_chart so we don't actually paint mplfinance figures.
+    monkeypatch.setattr(runner_mod, "render_chart",
+                        lambda **kw: kw["output_path"])
+
+    # Stub promote_staging — the harness in tests/pipeline/test_step_charts_*.py
+    # has the canonical pattern; lift it. For this test, monkeypatch to a
+    # no-op that returns a stub PromoteResult.
+    class _PromoteStub:
+        target_path = tmp_path
+    monkeypatch.setattr(runner_mod, "promote_staging", lambda **kw: _PromoteStub())
+
+    # Build cfg + lease — implementer: lift the existing fixture from
+    # tests/pipeline/test_step_charts_*.py (look for `_make_lease` or
+    # `cfg` fixture).
+    cfg = _make_cfg(db_path)
+    lease = Lease.acquire(cfg.paths.db_path, run_id=run_id)
+
+    runner_mod._step_charts(
+        cfg=cfg, lease=lease, eval_run_id=eval_id,
+        data_asof="2026-04-25", fetcher=fetcher,
+    )
+
+    conn = connect(db_path)
+    classifications = list_classifications_for_run(conn, pipeline_run_id=run_id)
+    conn.close()
+    assert "AAPL" in classifications
+    assert classifications["AAPL"].pattern == "flag"
+    assert "NOPE" in classifications
+    assert classifications["NOPE"].pattern == "none"
 ```
 
-The test is intentionally `pytest.skip`-based at this drafting stage because the existing `_step_charts` test harness is non-trivial (lease, staging dir, fetcher stub). Implementer's first step: locate `tests/pipeline/test_step_charts_*.py`, lift the smallest harness, adapt — replace the skip with the real assertions.
+**Implementer note on `_make_cfg` / `Lease.acquire` / `insert_candidate`:** the test above references three project-local fixtures/utilities. Lift each from the existing test surface:
+- `_make_cfg(db_path) -> Config` — pattern in `tests/pipeline/test_step_charts_*.py` (look for any `_make_cfg` or `cfg` fixture).
+- `Lease.acquire(...)` — confirm signature against `swing/pipeline/lease.py`; if the production constructor differs, adapt.
+- `insert_candidate(...)` — confirm signature against `swing/data/repos/candidates.py`.
+
+Once those are wired, this test runs concretely and asserts the spec §3.3 happy path end-to-end.
 
 - [ ] **Step 2: Modify `_step_charts` to integrate the classifier**
 
@@ -2018,7 +2173,7 @@ for ticker, pivot, stop, _source in targets:
     # Classify on the in-hand OHLCV (last 60 completed bars).
     bars_60 = ohlcv.tail(60)
     try:
-        classification = classify_flag(bars_60)
+        classification = classify_flag(bars_60, cfg=cfg.classifier)
     except Exception as exc:
         logger.warning(
             f"flag_classifier failed for {ticker}: {exc!r}"
@@ -2093,20 +2248,77 @@ Implements spec §3.3 failure path (R2 M4 logging + R1 M1 NULL distinction).
 - [ ] **Step 1: Write failing test**
 
 ```python
-def test_step_charts_classifier_exception_persists_NULL_and_logs(stub_pipeline_state, caplog):
+def test_step_charts_classifier_exception_persists_NULL_and_logs(
+    stub_pipeline_state, caplog, monkeypatch, tmp_path,
+):
     """Classifier exception → cache row with pattern=NULL + components_json
-    error key; logger.warning fires; chart still renders (pattern_overlay=None)."""
-    # Patch classify_flag at the runner's import site to raise on AAPL only.
-    pytest.skip(
-        "Implementer: monkeypatch swing.pipeline.runner.classify_flag to raise "
-        "ValueError('boom') for one specific ticker. Run _step_charts. "
-        "Assert list_classifications_for_run[ticker].pattern is None, "
-        "json.loads(components_json)['error'] contains 'boom', "
-        "and 'flag_classifier failed for' appears in caplog.records."
-    )
-```
+    'error' key; logger.warning fires; chart still renders (pattern_overlay=None).
 
-Implementer flesh-out: monkeypatch the classifier import inside `swing.pipeline.runner` (NOT the source `swing.evaluation.patterns.flag_classifier.classify_flag` directly — patching at the runner's import site is the established pattern in this codebase per its other pipeline tests).
+    Patch at the runner's import site (NOT the source
+    swing.evaluation.patterns.flag_classifier.classify_flag) so the live
+    behavior of the classifier remains exercised in unrelated tests."""
+    import json
+    import logging
+    from swing.pipeline import runner as runner_mod
+    from swing.data.db import connect
+    from swing.data.repos.candidates import insert_candidate
+    from swing.data.models import Candidate
+    from swing.pipeline.lease import Lease
+
+    db_path = stub_pipeline_state["db_path"]
+    run_id = stub_pipeline_state["run_id"]
+
+    conn = connect(db_path)
+    conn.execute(
+        "INSERT INTO evaluation_runs (run_ts, data_asof_date, action_session_date, "
+        "finviz_csv_path, tickers_evaluated, aplus_count, watch_count, skip_count, "
+        "excluded_count, error_count) "
+        "VALUES ('2026-04-26T00:00:00','2026-04-25','2026-04-26', NULL, 1,1,0,0,0,0)"
+    )
+    eval_id = conn.execute("SELECT id FROM evaluation_runs ORDER BY id DESC LIMIT 1").fetchone()[0]
+    conn.execute("UPDATE pipeline_runs SET evaluation_run_id=? WHERE id=?", (eval_id, run_id))
+    insert_candidate(conn, evaluation_run_id=eval_id, candidate=Candidate(
+        ticker="AAPL", bucket="aplus", close=100.0, pivot=120.0, initial_stop=95.0,
+        adr_pct=2.0, tight_streak=10, pullback_pct=5.0, prior_trend_pct=30.0,
+        rs_rank=80, rs_return_12w_vs_spy=0.10, rs_method="universe",
+        pattern_tag=None, notes=None, criteria=(),
+    ))
+    conn.commit()
+    conn.close()
+
+    flat_bars = pd.DataFrame({
+        "Open": [100.0]*60, "High": [100.5]*60, "Low": [99.5]*60,
+        "Close": [100.0]*60, "Volume": [1e6]*60,
+    }, index=pd.date_range("2026-01-01", periods=60, freq="B"))
+    fetcher = MagicMock()
+    fetcher.get.return_value = flat_bars
+
+    def _raising_classify(*a, **kw):
+        raise ValueError("boom")
+    monkeypatch.setattr(runner_mod, "classify_flag", _raising_classify)
+    monkeypatch.setattr(runner_mod, "render_chart", lambda **kw: kw["output_path"])
+    class _PromoteStub:
+        target_path = tmp_path
+    monkeypatch.setattr(runner_mod, "promote_staging", lambda **kw: _PromoteStub())
+
+    cfg = _make_cfg(db_path)
+    lease = Lease.acquire(cfg.paths.db_path, run_id=run_id)
+    with caplog.at_level(logging.WARNING):
+        runner_mod._step_charts(
+            cfg=cfg, lease=lease, eval_run_id=eval_id,
+            data_asof="2026-04-25", fetcher=fetcher,
+        )
+
+    conn = connect(db_path)
+    cls = list_classifications_for_run(conn, pipeline_run_id=run_id)
+    conn.close()
+    assert "AAPL" in cls
+    assert cls["AAPL"].pattern is None
+    components = json.loads(cls["AAPL"].components_json)
+    assert "error" in components
+    assert "boom" in components["error"]
+    assert any("flag_classifier failed for AAPL" in r.message for r in caplog.records)
+```
 
 - [ ] **Step 2: Implementation already in 3.2 — confirm RED → GREEN with fleshed test**
 
@@ -2332,31 +2544,121 @@ Implements spec §3.5 + Bug-7-family anchor discipline.
 
 ```python
 # tests/web/view_models/test_watchlist_classifications_anchor.py
+from datetime import date
 from pathlib import Path
-import pytest
-from swing.data.db import ensure_schema
+from unittest.mock import MagicMock
+
+from swing.config import Config
+from swing.data.db import ensure_schema, connect
 from swing.data.repos.pattern_classifications import insert_classification
 from swing.evaluation.patterns.flag_classifier import FlagClassificationResult
-from datetime import date
+from swing.web.view_models.watchlist import build_watchlist
 
 
-def test_build_watchlist_uses_pipeline_run_id_not_latest_eval(tmp_path: Path):
-    """Mixed-anchor closed: a post-pipeline standalone eval does NOT leak
-    classifications from a prior pipeline run."""
-    # Seed: pipeline_run #1 (complete) → has classification for AAPL.
-    # Seed: standalone eval AFTER pipeline_run #1 finishes — no
-    # classification rows. build_watchlist must surface AAPL's flag tag
-    # from pipeline_run #1's row, NOT consult eval-latest at all.
-    pytest.skip(
-        "Implementer: seed pipeline_runs (state='complete', "
-        "evaluation_run_id=N) with insert_classification for AAPL; seed "
-        "an evaluation_runs row newer than the pipeline's finished_ts; "
-        "call build_watchlist; assert vm.pattern_tags['AAPL'] == "
-        "'flag (0.78)'. Then DELETE the classification row, re-call "
-        "build_watchlist, assert pattern_tags is empty (proving the read "
-        "binds to pipeline_run_id, not 'latest classification anywhere')."
+def _seed_pipeline_with_classification(db_path: Path, *, ticker: str,
+                                        pattern: str, confidence: float):
+    """Seed: evaluation_runs + pipeline_runs(state='complete', evaluation_run_id=eval_id)
+    + active watchlist row + classification row. Returns (run_id, eval_id)."""
+    conn = ensure_schema(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO evaluation_runs (run_ts, data_asof_date, "
+            "action_session_date, finviz_csv_path, tickers_evaluated, "
+            "aplus_count, watch_count, skip_count, excluded_count, error_count) "
+            "VALUES ('2026-04-26T00:00:00','2026-04-25','2026-04-26', NULL, "
+            "1,1,0,0,0,0)"
+        )
+        eval_id = conn.execute("SELECT id FROM evaluation_runs ORDER BY id DESC LIMIT 1").fetchone()[0]
+        conn.execute(
+            "INSERT INTO pipeline_runs (started_ts, finished_ts, trigger, "
+            "data_asof_date, action_session_date, state, lease_token, "
+            "evaluation_run_id) VALUES ('2026-04-26T00:00:00', "
+            "'2026-04-26T00:30:00','manual','2026-04-25','2026-04-26',"
+            "'complete','t', ?)",
+            (eval_id,),
+        )
+        run_id = conn.execute("SELECT id FROM pipeline_runs ORDER BY id DESC LIMIT 1").fetchone()[0]
+        # Active watchlist row.
+        conn.execute(
+            "INSERT INTO watchlist (ticker, added_date, last_qualified_date, "
+            "status, qualification_count, not_qualified_streak, "
+            "last_data_asof_date, entry_target, last_close) "
+            "VALUES (?, '2026-04-01','2026-04-26','watch',1,0,'2026-04-25',110.0,100.0)",
+            (ticker,),
+        )
+        with conn:
+            insert_classification(
+                conn, pipeline_run_id=run_id, ticker=ticker,
+                result=FlagClassificationResult(
+                    detected=(pattern == "flag"), confidence=confidence,
+                    pattern=pattern,
+                    pole_start_date=date(2026, 4, 1), pole_end_date=date(2026, 4, 10),
+                    flag_start_date=date(2026, 4, 11), flag_end_date=date(2026, 4, 18),
+                    pole_high=120.0, flag_low=110.0, pivot=119.5,
+                    components={"pole_gain": 0.45},
+                ),
+                computed_at="2026-04-26T00:00:00",
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return run_id, eval_id
+
+
+def _make_cfg(db_path: Path) -> Config:
+    """Build a minimal Config pointing at db_path. Reuse the test-config
+    helper if one exists in conftest; otherwise import the project's
+    `Config.default()` factory and override paths."""
+    # Implementer: this should be the same harness used in
+    # tests/web/view_models/test_dashboard_*.py (look for the `_make_cfg`
+    # or `cfg` fixture there). The shape is: Config(...) with all sub-
+    # configs at defaults, paths overridden to tmp_path.
+    raise NotImplementedError(
+        "Lift the existing _make_cfg fixture from tests/web/view_models/test_dashboard_*.py"
     )
+
+
+def test_build_watchlist_surfaces_pattern_tag_from_pipeline_run(tmp_path: Path):
+    db = tmp_path / "swing.db"
+    _seed_pipeline_with_classification(db, ticker="AAPL", pattern="flag", confidence=0.78)
+    cfg = _make_cfg(db)
+    cache = MagicMock()
+    cache.get_many.return_value = {}
+    cache.degraded_until.return_value = None
+    cache.is_degraded.return_value = False
+    vm = build_watchlist(cfg=cfg, cache=cache, executor=MagicMock())
+    assert vm.pattern_tags.get("AAPL") == "flag (0.78)"
+
+
+def test_build_watchlist_does_NOT_surface_pattern_tag_when_classification_deleted(tmp_path: Path):
+    """Compounding-confound (anchor edition): with the cache row deleted,
+    pattern_tags is empty even if a newer evaluation_runs row exists.
+    Proves the read binds to pipeline_run_id, NOT 'latest classification
+    anywhere'."""
+    db = tmp_path / "swing.db"
+    run_id, _ = _seed_pipeline_with_classification(db, ticker="AAPL", pattern="flag", confidence=0.78)
+    # Seed a NEWER evaluation_runs row (no pipeline; would win MAX(run_ts) if
+    # anchor logic were buggy).
+    conn = connect(db)
+    conn.execute("DELETE FROM pipeline_pattern_classifications WHERE pipeline_run_id = ?", (run_id,))
+    conn.execute(
+        "INSERT INTO evaluation_runs (run_ts, data_asof_date, action_session_date, "
+        "finviz_csv_path, tickers_evaluated, aplus_count, watch_count, skip_count, "
+        "excluded_count, error_count) "
+        "VALUES ('2026-04-27T00:00:00','2026-04-26','2026-04-27', NULL, 1,1,0,0,0,0)"
+    )
+    conn.commit()
+    conn.close()
+    cfg = _make_cfg(db)
+    cache = MagicMock()
+    cache.get_many.return_value = {}
+    cache.degraded_until.return_value = None
+    cache.is_degraded.return_value = False
+    vm = build_watchlist(cfg=cfg, cache=cache, executor=MagicMock())
+    assert vm.pattern_tags == {}
 ```
+
+**Note on `_make_cfg`:** the helper is left as `NotImplementedError` because lifting the existing test config fixture requires reading the conftest at execution time. The implementer's first action in this task is to find the existing fixture pattern (grep `tests/web/view_models/` for `Config(` or `def _make_cfg`) and copy it. The tests above are otherwise concrete and run as-written once `_make_cfg` is plugged in.
 
 - [ ] **Step 2: Implementation**
 
@@ -2412,12 +2714,43 @@ Implements spec §3.5 for the compact-row collapse path.
 
 ```python
 def test_build_watchlist_row_returns_pattern_tag_when_classification_exists(tmp_path):
-    pytest.skip(
-        "Implementer: same harness as test_build_watchlist_uses_pipeline_run_id_*. "
-        "Seed an active watchlist row for AAPL + a pipeline_pattern_classifications "
-        "row with pattern='flag'. Call build_watchlist_row(ticker='AAPL'); assert "
-        "row.pattern_tag == 'flag (0.78)'."
+    """Compact-row collapse path surfaces pattern_tag from the same anchor."""
+    from unittest.mock import MagicMock
+    from swing.web.view_models.watchlist import build_watchlist_row
+    # Reuses _seed_pipeline_with_classification + _make_cfg from
+    # tests/web/view_models/test_watchlist_classifications_anchor.py — lift
+    # via `from .test_watchlist_classifications_anchor import ...` or move
+    # both to a shared conftest.
+    db = tmp_path / "swing.db"
+    _seed_pipeline_with_classification(db, ticker="AAPL", pattern="flag", confidence=0.78)
+    cfg = _make_cfg(db)
+    cache = MagicMock()
+    cache.get_many.return_value = {}
+    row_vm = build_watchlist_row(
+        cfg=cfg, cache=cache, ticker="AAPL", executor=MagicMock(),
     )
+    assert row_vm is not None
+    assert row_vm.pattern_tag == "flag (0.78)"
+
+
+def test_build_watchlist_row_pattern_tag_is_None_when_no_classification(tmp_path):
+    from unittest.mock import MagicMock
+    from swing.data.db import connect
+    from swing.web.view_models.watchlist import build_watchlist_row
+    db = tmp_path / "swing.db"
+    _seed_pipeline_with_classification(db, ticker="AAPL", pattern="flag", confidence=0.78)
+    conn = connect(db)
+    conn.execute("DELETE FROM pipeline_pattern_classifications")
+    conn.commit()
+    conn.close()
+    cfg = _make_cfg(db)
+    cache = MagicMock()
+    cache.get_many.return_value = {}
+    row_vm = build_watchlist_row(
+        cfg=cfg, cache=cache, ticker="AAPL", executor=MagicMock(),
+    )
+    assert row_vm is not None
+    assert row_vm.pattern_tag is None
 ```
 
 - [ ] **Step 2: Modify `WatchlistRowVM`**
@@ -2549,24 +2882,60 @@ Implements spec §3.5 + §4.4 compounding-confound discipline.
 **Files:**
 - Modify: `tests/web/view_models/test_dashboard_sort_parity.py` (extend) OR new file.
 
-- [ ] **Step 1: Write the test**
+- [ ] **Step 1: Write the test (E2E via build_watchlist, NOT direct _sort_watchlist call)**
+
+This test is END-TO-END through `build_watchlist` so it actually catches the failure mode the spec is guarding against: a code path where `_pattern_tags` output accidentally leaks into `_sort_watchlist`'s primary sort key. A direct-call test of `_sort_watchlist(rows, flag_tags)` is vacuous because the sort signature doesn't even accept pattern_tags.
 
 ```python
-def test_disabling_pattern_tags_does_not_change_sort_order(monkeypatch):
-    """Compounding-confound: deleting the _pattern_tags call from a
-    build_watchlist run must NOT change row order — only the rendered tag
-    presence. If removing the call DOES change order, the architectural
-    separation has regressed."""
-    from swing.web.view_models import dashboard as dash_mod
-    rows = [_entry("AAA", 100.0, 110.0), _entry("BBB", 105.0, 110.0)]
-    flag_tags = {"AAA": ("TT✓",)}
-    baseline = [r.ticker for r in _sort_watchlist(rows, flag_tags)]
+# tests/web/view_models/test_dashboard_sort_parity.py — append
+from pathlib import Path
+from unittest.mock import MagicMock
+from swing.web.view_models.watchlist import build_watchlist
+# _seed_pipeline_with_classification + _make_cfg lifted from
+# tests/web/view_models/test_watchlist_classifications_anchor.py
 
-    # Force _pattern_tags to return an empty mapping no matter what — i.e.,
-    # the architectural disable. Sort must be unchanged.
-    monkeypatch.setattr(dash_mod, "_pattern_tags", lambda *a, **k: {})
-    after_disable = [r.ticker for r in _sort_watchlist(rows, flag_tags)]
-    assert baseline == after_disable
+
+def test_pattern_tags_do_not_influence_watchlist_row_order(tmp_path: Path):
+    """Compounding-confound: a row carrying a pattern_tag must NOT outrank
+    a row without one. With identical flag_tags + proximity, the sort
+    must be byte-equivalent whether classifications exist or not."""
+    db = tmp_path / "swing.db"
+    # Seed two watchlist rows; classify ONLY 'AAA' as flag; both rows must
+    # stay in alphabetical-by-ticker order (their flag_tags + proximity
+    # are equal, and the pattern_tag must NOT enter the sort).
+    _seed_pipeline_with_classification(db, ticker="AAA", pattern="flag", confidence=0.99)
+    conn = connect(db)
+    conn.execute(
+        "INSERT INTO watchlist (ticker, added_date, last_qualified_date, "
+        "status, qualification_count, not_qualified_streak, "
+        "last_data_asof_date, entry_target, last_close) "
+        "VALUES ('BBB', '2026-04-01','2026-04-26','watch',1,0,'2026-04-25',110.0,100.0)"
+    )
+    conn.commit()
+    conn.close()
+    cfg = _make_cfg(db)
+    cache = MagicMock()
+    cache.get_many.return_value = {}
+    cache.degraded_until.return_value = None
+    cache.is_degraded.return_value = False
+    vm_with = build_watchlist(cfg=cfg, cache=cache, executor=MagicMock())
+    order_with = [r.ticker for r in vm_with.rows]
+
+    # Now wipe the classification — pattern_tags MUST become empty, sort
+    # order MUST be unchanged.
+    conn = connect(db)
+    conn.execute("DELETE FROM pipeline_pattern_classifications")
+    conn.commit()
+    conn.close()
+    vm_without = build_watchlist(cfg=cfg, cache=cache, executor=MagicMock())
+    order_without = [r.ticker for r in vm_without.rows]
+
+    assert order_with == order_without, (
+        "Removing the only pattern_tag changed row order — pattern_tag "
+        "is influencing _sort_watchlist. Architectural separation regressed."
+    )
+    assert vm_with.pattern_tags == {"AAA": "flag (0.99)"}
+    assert vm_without.pattern_tags == {}
 ```
 
 - [ ] **Step 2: Run + commit**
@@ -2631,14 +3000,42 @@ Modify the tags cell:
 
 ```python
 # tests/web/routes/test_watchlist_pattern_tag_render.py
-def test_watchlist_top5_renders_flag_tag_for_classified_ticker(client):
-    pytest.skip(
-        "Implementer: seed DB with active watchlist + pipeline_run + "
-        "classification(pattern='flag', confidence=0.78). GET /. Assert "
-        "'flag (0.78)' appears in response body within the watchlist-top5 "
-        "section."
-    )
+from pathlib import Path
+from fastapi.testclient import TestClient
+# Reuse the seed helpers + cfg fixture lifted into conftest.
+
+
+def test_watchlist_renders_flag_tag_for_classified_ticker(tmp_path: Path):
+    """The /watchlist page renders the flag tag in the row's tags cell."""
+    db = tmp_path / "swing.db"
+    _seed_pipeline_with_classification(db, ticker="AAPL", pattern="flag", confidence=0.78)
+    cfg = _make_cfg(db)
+    from swing.web.app import build_app
+    app = build_app(cfg)
+    with TestClient(app) as client:
+        resp = client.get("/watchlist")
+    assert resp.status_code == 200
+    assert "flag (0.78)" in resp.text
+
+
+def test_watchlist_omits_flag_tag_when_no_classification(tmp_path: Path):
+    db = tmp_path / "swing.db"
+    _seed_pipeline_with_classification(db, ticker="AAPL", pattern="flag", confidence=0.78)
+    from swing.data.db import connect
+    conn = connect(db)
+    conn.execute("DELETE FROM pipeline_pattern_classifications")
+    conn.commit()
+    conn.close()
+    cfg = _make_cfg(db)
+    from swing.web.app import build_app
+    app = build_app(cfg)
+    with TestClient(app) as client:
+        resp = client.get("/watchlist")
+    assert resp.status_code == 200
+    assert "flag (" not in resp.text
 ```
+
+(Implementer: confirm `swing.web.app.build_app` is the canonical app factory; if the project uses `app = FastAPI(...)` module-level, follow whichever harness pattern existing route tests use.)
 
 - [ ] **Step 5: Commit**
 
@@ -2834,31 +3231,58 @@ Implements spec §3.6.
 import pytest
 
 
+from unittest.mock import MagicMock
+from swing.web.view_models.trades import build_entry_form_vm
+
+
 def test_entry_form_vm_populates_chart_pattern_when_classification_exists(tmp_path):
-    pytest.skip(
-        "Implementer: seed pipeline_runs + classification('AAPL', 'flag', 0.78). "
-        "Build the cfg/cache/executor harness used by other entry-form-VM tests. "
-        "Call build_entry_form_vm(ticker='AAPL', ...). Assert vm.chart_pattern_algo "
-        "== 'flag', vm.chart_pattern_algo_confidence == 0.78, "
-        "vm.chart_pattern_algo_evaluated is True, "
-        "vm.chart_pattern_classification_pipeline_run_id == <seeded run id>."
-    )
+    db = tmp_path / "swing.db"
+    run_id, _ = _seed_pipeline_with_classification(db, ticker="AAPL", pattern="flag", confidence=0.78)
+    cfg = _make_cfg(db)
+    cache = MagicMock()
+    cache.get_many.return_value = {}
+    vm = build_entry_form_vm(ticker="AAPL", cfg=cfg, cache=cache, executor=MagicMock())
+    assert vm.chart_pattern_algo == "flag"
+    assert vm.chart_pattern_algo_confidence == 0.78
+    assert vm.chart_pattern_algo_evaluated is True
+    assert vm.chart_pattern_classification_pipeline_run_id == run_id
 
 
 def test_entry_form_vm_chart_pattern_evaluated_False_for_classifier_error(tmp_path):
-    pytest.skip(
-        "Implementer: seed classification('AAPL', pattern=None, confidence=NULL, "
-        "components_json='{\"error\": \"...\"}'). Build VM. Assert "
-        "vm.chart_pattern_algo_evaluated is False (classifier-error rows render "
-        "the 'Not classified' stub, not the override dropdown)."
+    db = tmp_path / "swing.db"
+    run_id, _ = _seed_pipeline_with_classification(db, ticker="AAPL", pattern="flag", confidence=0.78)
+    # Replace the seeded 'flag' row with a classifier-error row.
+    from swing.data.db import connect
+    conn = connect(db)
+    conn.execute("DELETE FROM pipeline_pattern_classifications WHERE pipeline_run_id=?", (run_id,))
+    conn.execute(
+        "INSERT INTO pipeline_pattern_classifications "
+        "(pipeline_run_id, ticker, pattern, confidence, components_json, computed_at) "
+        "VALUES (?, ?, NULL, NULL, '{\"error\":\"boom\"}', '2026-04-26T00:00:00')",
+        (run_id, "AAPL"),
     )
+    conn.commit()
+    conn.close()
+    cfg = _make_cfg(db)
+    cache = MagicMock()
+    cache.get_many.return_value = {}
+    vm = build_entry_form_vm(ticker="AAPL", cfg=cfg, cache=cache, executor=MagicMock())
+    assert vm.chart_pattern_algo_evaluated is False
 
 
 def test_entry_form_vm_chart_pattern_evaluated_False_for_no_cache_row(tmp_path):
-    pytest.skip(
-        "Implementer: seed pipeline_run with NO classification row for AAPL. "
-        "Build VM. Assert vm.chart_pattern_algo_evaluated is False."
-    )
+    db = tmp_path / "swing.db"
+    run_id, _ = _seed_pipeline_with_classification(db, ticker="AAPL", pattern="flag", confidence=0.78)
+    from swing.data.db import connect
+    conn = connect(db)
+    conn.execute("DELETE FROM pipeline_pattern_classifications WHERE pipeline_run_id=?", (run_id,))
+    conn.commit()
+    conn.close()
+    cfg = _make_cfg(db)
+    cache = MagicMock()
+    cache.get_many.return_value = {}
+    vm = build_entry_form_vm(ticker="AAPL", cfg=cfg, cache=cache, executor=MagicMock())
+    assert vm.chart_pattern_algo_evaluated is False
 ```
 
 - [ ] **Step 2: Modify `TradeEntryFormVM`**
@@ -2953,32 +3377,63 @@ Implements spec §3.6 form fragment.
 import pytest
 
 
-def test_entry_form_renders_chart_pattern_section_when_evaluated(client):
-    pytest.skip(
-        "Implementer: seed classification('AAPL', 'flag', 0.78). "
-        "GET /trades/entry/form?ticker=AAPL. Assert response body contains:\n"
-        "  - input[type=hidden][name=chart_pattern_algo][value=flag]\n"
-        "  - input[type=hidden][name=chart_pattern_algo_confidence][value=0.78]\n"
-        "  - input[type=hidden][name=chart_pattern_classification_pipeline_run_id]\n"
-        "  - select[name=chart_pattern_operator] with options "
-        "    'Accept algo' / 'flag' / 'none' / 'other'\n"
-        "  - text input for chart_pattern_operator_other (hidden until 'other' selected)"
-    )
+def test_entry_form_renders_chart_pattern_section_when_evaluated(tmp_path):
+    db = tmp_path / "swing.db"
+    _seed_pipeline_with_classification(db, ticker="AAPL", pattern="flag", confidence=0.78)
+    cfg = _make_cfg(db)
+    from swing.web.app import build_app
+    app = build_app(cfg)
+    with TestClient(app) as client:
+        resp = client.get("/trades/entry/form?ticker=AAPL")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'name="chart_pattern_algo"' in body
+    assert 'value="flag"' in body
+    assert 'name="chart_pattern_algo_confidence"' in body
+    assert 'value="0.78"' in body
+    assert 'name="chart_pattern_classification_pipeline_run_id"' in body
+    assert 'name="chart_pattern_operator"' in body
+    # Dropdown options.
+    assert "Accept algo" in body
+    assert ">flag<" in body
+    assert ">none<" in body
+    assert "other (specify)" in body
 
 
-def test_entry_form_renders_not_classified_stub_when_unevaluated(client):
-    pytest.skip(
-        "Implementer: GET /trades/entry/form?ticker=NOPE (no classification). "
-        "Assert response contains 'Not classified' stub text and DOES NOT "
-        "contain a chart_pattern_operator <select>."
+def test_entry_form_renders_not_classified_stub_when_unevaluated(tmp_path):
+    db = tmp_path / "swing.db"
+    # Seed a watchlist row for NOPE but NO classification.
+    from swing.data.db import ensure_schema
+    conn = ensure_schema(db)
+    conn.execute(
+        "INSERT INTO watchlist (ticker, added_date, last_qualified_date, "
+        "status, qualification_count, not_qualified_streak, "
+        "last_data_asof_date, entry_target, last_close) "
+        "VALUES ('NOPE', '2026-04-01','2026-04-26','watch',1,0,'2026-04-25',110.0,100.0)"
     )
+    conn.commit()
+    conn.close()
+    cfg = _make_cfg(db)
+    from swing.web.app import build_app
+    app = build_app(cfg)
+    with TestClient(app) as client:
+        resp = client.get("/trades/entry/form?ticker=NOPE")
+    assert resp.status_code == 200
+    assert "Not classified" in resp.text
+    assert 'name="chart_pattern_operator"' not in resp.text
 ```
 
-- [ ] **Step 2: Edit the template**
+- [ ] **Step 2: Extract the section into a SHARED include partial (CLAUDE.md OOB-swap discipline)**
 
-Insert the "Chart pattern" section between the sizing-hint block and the rationale field:
+Per spec §6 watch-item ("form section uses shared `{% include %}` — flag panel reusable from row reload"), the chart-pattern block lives in its OWN partial that the trade entry form `{% include %}`s. This protects against drift if a future row-reload OOB-swap path needs to re-render the same section.
+
+**Files:**
+- Create: `swing/web/templates/partials/trade_entry_chart_pattern_section.html.j2`
 
 ```jinja
+{#- Expects: vm (TradeEntryFormVM with chart_pattern_* fields).
+    Reusable include — drift-protect any future OOB-swap surface that
+    re-renders this section. Spec §3.6, CLAUDE.md HTMX OOB-swap gotcha. -#}
 {% if vm.chart_pattern_algo_evaluated %}
 <div class="chart-pattern-section">
   <label>Chart pattern (algo)</label>
@@ -3017,6 +3472,12 @@ Insert the "Chart pattern" section between the sizing-hint block and the rationa
 {% endif %}
 ```
 
+In `partials/trade_entry_form.html.j2`, between the sizing-hint block and the rationale field, insert:
+
+```jinja
+{% include "partials/trade_entry_chart_pattern_section.html.j2" %}
+```
+
 - [ ] **Step 3: Commit**
 
 ```bash
@@ -3034,33 +3495,119 @@ Implements spec §3.6.
 - [ ] **Step 1: Write failing test (E2E POST → trade row)**
 
 ```python
-def test_post_entry_with_chart_pattern_override_persists(client):
-    pytest.skip(
-        "Implementer: seed classification('AAPL', 'flag', 0.78, run_id=42). "
-        "POST /trades/entry with form fields including:\n"
-        "  chart_pattern_algo=flag, chart_pattern_algo_confidence=0.78,\n"
-        "  chart_pattern_classification_pipeline_run_id=42,\n"
-        "  chart_pattern_operator=flag\n"
-        "Assert response 200; query DB for the new trade; assert "
-        "chart_pattern_algo='flag', chart_pattern_algo_confidence=0.78, "
-        "chart_pattern_operator='flag', "
-        "chart_pattern_classification_pipeline_run_id=42."
+def _post_entry_form(client, **fields):
+    """Helper: POST /trades/entry with the minimum-valid form payload merged
+    with `fields` overrides. Returns the response."""
+    base = {
+        "ticker": "AAPL", "entry_date": "2026-04-26",
+        "entry_price": "10.0", "shares": "1", "initial_stop": "9.0",
+        "rationale": "aplus-setup", "notes": "",
+    }
+    base.update({k: ("" if v is None else str(v)) for k, v in fields.items()})
+    return client.post("/trades/entry", data=base, headers={"HX-Request": "true"})
+
+
+def test_post_entry_with_chart_pattern_override_persists(tmp_path):
+    db = tmp_path / "swing.db"
+    run_id, _ = _seed_pipeline_with_classification(db, ticker="AAPL", pattern="flag", confidence=0.78)
+    cfg = _make_cfg(db)
+    from swing.web.app import build_app
+    from swing.data.db import connect
+    app = build_app(cfg)
+    with TestClient(app) as client:
+        resp = _post_entry_form(client,
+            chart_pattern_algo="flag", chart_pattern_algo_confidence="0.78",
+            chart_pattern_classification_pipeline_run_id=str(run_id),
+            chart_pattern_operator="flag",
+        )
+    assert resp.status_code == 200, resp.text
+    conn = connect(db)
+    row = conn.execute(
+        "SELECT chart_pattern_algo, chart_pattern_algo_confidence, "
+        "chart_pattern_operator, chart_pattern_classification_pipeline_run_id "
+        "FROM trades WHERE ticker='AAPL'"
+    ).fetchone()
+    conn.close()
+    assert row == ("flag", 0.78, "flag", run_id)
+
+
+def test_post_entry_with_accept_algo_persists_NULL_operator(tmp_path):
+    db = tmp_path / "swing.db"
+    run_id, _ = _seed_pipeline_with_classification(db, ticker="AAPL", pattern="flag", confidence=0.78)
+    cfg = _make_cfg(db)
+    from swing.web.app import build_app
+    from swing.data.db import connect
+    app = build_app(cfg)
+    with TestClient(app) as client:
+        resp = _post_entry_form(client,
+            chart_pattern_algo="flag", chart_pattern_algo_confidence="0.78",
+            chart_pattern_classification_pipeline_run_id=str(run_id),
+            chart_pattern_operator="",  # Accept algo
+        )
+    assert resp.status_code == 200
+    conn = connect(db)
+    row = conn.execute(
+        "SELECT chart_pattern_operator FROM trades WHERE ticker='AAPL'"
+    ).fetchone()
+    conn.close()
+    assert row[0] is None
+
+
+def test_post_entry_other_with_text_canonicalizes(tmp_path):
+    """Operator submits 'other' + free-text with embedded ZWSP/tab —
+    canonicalization strips invisibles per canonicalize_hypothesis_label."""
+    db = tmp_path / "swing.db"
+    run_id, _ = _seed_pipeline_with_classification(db, ticker="AAPL", pattern="flag", confidence=0.78)
+    cfg = _make_cfg(db)
+    from swing.web.app import build_app
+    from swing.data.db import connect
+    app = build_app(cfg)
+    with TestClient(app) as client:
+        resp = _post_entry_form(client,
+            chart_pattern_algo="flag", chart_pattern_algo_confidence="0.78",
+            chart_pattern_classification_pipeline_run_id=str(run_id),
+            chart_pattern_operator="other",
+            chart_pattern_operator_other="  pennant​\t  ",
+        )
+    assert resp.status_code == 200
+    conn = connect(db)
+    row = conn.execute(
+        "SELECT chart_pattern_operator FROM trades WHERE ticker='AAPL'"
+    ).fetchone()
+    conn.close()
+    assert row[0] == "pennant"
+
+
+def test_post_entry_refuses_operator_override_when_no_cache(tmp_path):
+    """Cached-only consumption gate (spec §1.1 #5 + §3.7 R1 C1) —
+    POST mirrors CLI refusal. No trade row inserted."""
+    db = tmp_path / "swing.db"
+    # Seed a watchlist row but no classification.
+    from swing.data.db import ensure_schema, connect
+    conn = ensure_schema(db)
+    conn.execute(
+        "INSERT INTO watchlist (ticker, added_date, last_qualified_date, "
+        "status, qualification_count, not_qualified_streak, "
+        "last_data_asof_date, entry_target, last_close) "
+        "VALUES ('AAPL', '2026-04-01','2026-04-26','watch',1,0,'2026-04-25',110.0,100.0)"
     )
-
-
-def test_post_entry_with_accept_algo_persists_NULL_operator(client):
-    pytest.skip(
-        "Implementer: same as above but submit chart_pattern_operator='' "
-        "(Accept algo). Assert trade row's chart_pattern_operator IS NULL."
-    )
-
-
-def test_post_entry_other_with_text_canonicalizes(client):
-    pytest.skip(
-        "Implementer: submit chart_pattern_operator=other, "
-        "chart_pattern_operator_other='  pennant​\\t  '. "
-        "Assert trade row's chart_pattern_operator == 'pennant' (canonicalized)."
-    )
+    conn.commit()
+    conn.close()
+    cfg = _make_cfg(db)
+    from swing.web.app import build_app
+    app = build_app(cfg)
+    with TestClient(app) as client:
+        resp = _post_entry_form(client,
+            chart_pattern_algo="", chart_pattern_algo_confidence="",
+            chart_pattern_classification_pipeline_run_id="",
+            chart_pattern_operator="flag",  # operator submitted override w/o cache
+        )
+    assert resp.status_code == 400
+    assert "Chart-pattern override requires a cached classification" in resp.text
+    conn = connect(db)
+    count = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+    conn.close()
+    assert count == 0
 ```
 
 - [ ] **Step 2: Modify `entry_post` in `swing/web/routes/trades.py:213`**
@@ -3101,6 +3648,24 @@ def entry_post(
     cp_algo_value = chart_pattern_algo or None
     cp_conf_value = chart_pattern_algo_confidence  # already typed float|None
     cp_anchor_value = chart_pattern_classification_pipeline_run_id
+
+    # Cached-only consumption gate (spec §1.1 #5 + §3.7 R1 C1 — applies to
+    # BOTH form and CLI). If the operator submitted an override but no
+    # cached snapshot rode along, refuse — out-of-scope ticker has no V1
+    # surface for an override. Mirrors the CLI's refusal in Task 5.5.
+    cache_evaluated = cp_algo_value is not None and cp_anchor_value is not None
+    if cp_operator_value is not None and not cache_evaluated:
+        return _rerender_entry_form_with_error(
+            request=request, templates=templates, cfg=cfg, cache=cache,
+            executor=executor, ticker=ticker, entry_date=entry_date,
+            entry_price=entry_price, shares=shares, initial_stop=initial_stop,
+            rationale=rationale, notes=notes,
+            error_message=(
+                "Chart-pattern override requires a cached classification for "
+                f"{ticker.upper()}; ticker is out-of-scope for the latest "
+                "pipeline run. (V1 cached-only; manual fallback deferred to V2.)"
+            ),
+        )
 
     req = EntryRequest(
         ticker=ticker.upper(),
@@ -3148,34 +3713,82 @@ from click.testing import CliRunner
 from swing.cli import cli
 
 
+def _run_entry_cli(cfg, *extra_args):
+    """Helper: invoke `swing trade entry` with minimum-valid args + extras."""
+    runner = CliRunner()
+    return runner.invoke(cli, [
+        "--config", str(cfg.paths.config_path) if hasattr(cfg.paths, "config_path") else "",
+        "trade", "entry",
+        "--ticker", "AAPL", "--entry-date", "2026-04-26",
+        "--entry-price", "10.0", "--shares", "1", "--initial-stop", "9.0",
+        "--rationale", "aplus-setup",
+        *extra_args,
+    ], obj={"config": cfg})
+
+
 def test_cli_trade_entry_chart_pattern_operator_refused_without_cache(tmp_path):
-    pytest.skip(
-        "Implementer: build the cfg fixture pattern used by other CLI tests "
-        "(initialized DB at tmp_path). DO NOT seed any classification row. "
-        "Run `swing trade entry --ticker AAPL ... --chart-pattern-operator flag`. "
-        "Assert exit_code != 0; result.output contains "
-        "'requires a cached classification' or similar refusal message."
-    )
+    """Spec §3.7 R1 C1: CLI refuses --chart-pattern-operator when no cache row exists."""
+    from swing.data.db import ensure_schema
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+    cfg = _make_cfg(db)
+    result = _run_entry_cli(cfg, "--chart-pattern-operator", "flag")
+    assert result.exit_code != 0
+    assert "requires a cached classification" in (result.output or str(result.exception))
 
 
 def test_cli_trade_entry_chart_pattern_operator_persists_when_cached(tmp_path):
-    pytest.skip(
-        "Implementer: seed classification('AAPL', 'flag', 0.78, run_id=42). "
-        "Run `swing trade entry --ticker AAPL ... --chart-pattern-operator flag`. "
-        "Assert exit_code == 0; query DB for the trade; assert "
-        "chart_pattern_operator='flag', chart_pattern_algo='flag', "
-        "chart_pattern_algo_confidence=0.78, "
-        "chart_pattern_classification_pipeline_run_id=42."
-    )
+    db = tmp_path / "swing.db"
+    run_id, _ = _seed_pipeline_with_classification(db, ticker="AAPL", pattern="flag", confidence=0.78)
+    cfg = _make_cfg(db)
+    result = _run_entry_cli(cfg, "--chart-pattern-operator", "flag")
+    assert result.exit_code == 0, result.output
+    from swing.data.db import connect
+    conn = connect(db)
+    row = conn.execute(
+        "SELECT chart_pattern_algo, chart_pattern_algo_confidence, "
+        "chart_pattern_operator, chart_pattern_classification_pipeline_run_id "
+        "FROM trades WHERE ticker='AAPL'"
+    ).fetchone()
+    conn.close()
+    assert row == ("flag", 0.78, "flag", run_id)
 
 
 def test_cli_trade_entry_no_chart_pattern_flag_omitted_works(tmp_path):
-    pytest.skip(
-        "Backward-compat: existing CLI invocations without "
-        "--chart-pattern-operator must still succeed. Assert trade row's "
-        "chart_pattern_operator IS NULL; algo+confidence+anchor surface "
-        "from the cached classification (or NULL if no cache)."
-    )
+    """Backward-compat: existing CLI invocations without --chart-pattern-operator
+    must still succeed. With a cached classification, snapshot rides along."""
+    db = tmp_path / "swing.db"
+    run_id, _ = _seed_pipeline_with_classification(db, ticker="AAPL", pattern="flag", confidence=0.78)
+    cfg = _make_cfg(db)
+    result = _run_entry_cli(cfg)
+    assert result.exit_code == 0, result.output
+    from swing.data.db import connect
+    conn = connect(db)
+    row = conn.execute(
+        "SELECT chart_pattern_algo, chart_pattern_algo_confidence, "
+        "chart_pattern_operator, chart_pattern_classification_pipeline_run_id "
+        "FROM trades WHERE ticker='AAPL'"
+    ).fetchone()
+    conn.close()
+    assert row == ("flag", 0.78, None, run_id)
+
+
+def test_cli_trade_entry_no_chart_pattern_flag_omitted_with_no_cache_works(tmp_path):
+    """Backward-compat: no flag, no cache → trade row with NULL chart_pattern columns."""
+    from swing.data.db import ensure_schema, connect
+    db = tmp_path / "swing.db"
+    conn = ensure_schema(db)
+    conn.commit()
+    conn.close()
+    cfg = _make_cfg(db)
+    result = _run_entry_cli(cfg)
+    assert result.exit_code == 0, result.output
+    conn = connect(db)
+    row = conn.execute(
+        "SELECT chart_pattern_algo, chart_pattern_operator FROM trades WHERE ticker='AAPL'"
+    ).fetchone()
+    conn.close()
+    assert row == (None, None)
 ```
 
 - [ ] **Step 2: Modify `swing/cli.py:trade_entry_cmd`**
@@ -3316,6 +3929,55 @@ def test_render_chart_with_pattern_overlay_writes_png_and_preserves_existing_hli
     assert res == out
     assert out.exists()
     assert out.stat().st_size > 0
+
+
+def test_render_chart_with_overlay_paints_two_bands_and_separate_pivot_segment(
+    tmp_path: Path, fake_ohlcv, monkeypatch,
+):
+    """Discriminating overlay test: capture the figure axes returned by
+    mpf.plot to verify TWO fill_betweenx polygons (pole + flag bands) AND
+    a 1-segment hlines collection (algo-pivot, flag-spanning) are added on
+    TOP of the existing candidate-pivot hline (spec §3.4 + §6 candidate-
+    pivot preserved). Inspecting the axes catches missing bands / missing
+    algo-pivot / accidental removal of the existing hline."""
+    from swing.rendering.charts import render_chart, PatternOverlay
+    overlay = PatternOverlay(
+        pattern="flag", confidence=0.78,
+        pole_start_date=fake_ohlcv.index[80].date(),
+        pole_end_date=fake_ohlcv.index[100].date(),
+        flag_start_date=fake_ohlcv.index[101].date(),
+        flag_end_date=fake_ohlcv.index[119].date(),
+        pivot=120.0,
+    )
+
+    captured = {}
+    import mplfinance as mpf
+    real_plot = mpf.plot
+    def _capture(df, **kw):
+        result = real_plot(df, **kw)
+        if kw.get("returnfig"):
+            fig, axes = result
+            captured["fig"] = fig
+            captured["axes"] = axes
+        return result
+    monkeypatch.setattr(mpf, "plot", _capture)
+
+    out = tmp_path / "AAPL.png"
+    render_chart(
+        ticker="AAPL", ohlcv=fake_ohlcv, pivot=110.0, stop=95.0,
+        output_path=out, pattern_overlay=overlay,
+    )
+
+    price_ax = captured["axes"][0]
+    # fill_betweenx adds PolyCollection objects; expect ≥2 (pole + flag).
+    from matplotlib.collections import PolyCollection, LineCollection
+    polys = [c for c in price_ax.collections if isinstance(c, PolyCollection)]
+    assert len(polys) >= 2, "expected pole + flag fill_betweenx bands"
+    # Algo-pivot segment is a separate LineCollection added by hlines().
+    line_colls = [c for c in price_ax.collections if isinstance(c, LineCollection)]
+    assert len(line_colls) >= 1, "expected algo-pivot hlines segment"
+    # Title annotation includes the confidence.
+    assert "flag (0.78)" in price_ax.get_title()
 ```
 
 - [ ] **Step 2: Implement painting**
@@ -3368,22 +4030,33 @@ def render_chart(
 
     fig, axes = mpf.plot(df, returnfig=True, **plot_kwargs)
     price_ax = axes[0]
-    # Convert overlay dates to matplotlib x-coords using df.index.
-    def _idx_for(d):
-        # Find the first index >= d; falls back to last bar if d > last.
-        match = df.index[df.index.date >= d]
-        return match[0] if len(match) else df.index[-1]
-    pole_start_x = _idx_for(pattern_overlay.pole_start_date)
-    pole_end_x = _idx_for(pattern_overlay.pole_end_date)
-    flag_start_x = _idx_for(pattern_overlay.flag_start_date)
-    flag_end_x = _idx_for(pattern_overlay.flag_end_date)
-    # Pole band — faint green.
-    price_ax.axvspan(pole_start_x, pole_end_x, alpha=0.15, color="green")
-    # Flag band — faint yellow.
-    price_ax.axvspan(flag_start_x, flag_end_x, alpha=0.15, color="yellow")
-    # Algo-pivot horizontal segment — only spans flag region.
+    # Convert overlay dates to integer x-positions in the bar index — mpf
+    # uses positional integers on the x-axis (not timestamps) for candle
+    # plots, so we map each overlay date to its bar position.
+    bar_dates = [d.date() if hasattr(d, "date") else d for d in df.index]
+    def _bar_idx(d):
+        # First bar whose date >= d; falls back to last bar if d > last.
+        for i, bd in enumerate(bar_dates):
+            if bd >= d:
+                return i
+        return len(bar_dates) - 1
+    pole_start_i = _bar_idx(pattern_overlay.pole_start_date)
+    pole_end_i = _bar_idx(pattern_overlay.pole_end_date)
+    flag_start_i = _bar_idx(pattern_overlay.flag_start_date)
+    flag_end_i = _bar_idx(pattern_overlay.flag_end_date)
+    # Pole + flag bands via fill_betweenx (spec §3.4) — vertical stripes
+    # spanning the price axis y-range across the band's bar positions.
+    y_lo, y_hi = price_ax.get_ylim()
+    price_ax.fill_betweenx(
+        [y_lo, y_hi], pole_start_i, pole_end_i, alpha=0.15, color="green",
+    )
+    price_ax.fill_betweenx(
+        [y_lo, y_hi], flag_start_i, flag_end_i, alpha=0.15, color="yellow",
+    )
+    # Algo-pivot horizontal segment — only spans flag region (distinct from
+    # the existing candidate-pivot hline which spans the full chart).
     price_ax.hlines(
-        y=pattern_overlay.pivot, xmin=flag_start_x, xmax=flag_end_x,
+        y=pattern_overlay.pivot, xmin=flag_start_i, xmax=flag_end_i,
         colors="darkblue", linestyles="-", linewidth=1.5,
     )
     fig.savefig(str(output_path), dpi=100, bbox_inches="tight")
@@ -3391,8 +4064,6 @@ def render_chart(
     plt.close(fig)
     return output_path
 ```
-
-(If matplotlib's `axvspan` complains about the index being a `Timestamp`, fall back to numeric x indices via `df.index.get_indexer([...])`.)
 
 - [ ] **Step 3: Run + commit**
 
