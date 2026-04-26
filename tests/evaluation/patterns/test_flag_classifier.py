@@ -74,3 +74,15 @@ def test_pole_gain_gate_is_threshold_sensitive():
     # Tightened cfg → rejects.
     cfg = ClassifierConfig(flag_pole_gain_min=0.40)
     assert classify_flag(bars, cfg=cfg).detected is False
+
+
+def test_pullback_depth_gate_above_threshold_rejects():
+    bars = make_flag_bars(pullback_pct=0.151)
+    res = classify_flag(bars)
+    assert res.detected is False
+
+
+def test_pullback_depth_gate_below_threshold_passes():
+    bars = make_flag_bars(pullback_pct=0.149)
+    res = classify_flag(bars)
+    assert res.detected is True
