@@ -311,10 +311,19 @@ ALTER TABLE trades ADD COLUMN chart_pattern_operator TEXT;
 -- Audit anchor: the pipeline_run_id of the cached classification row whose
 -- pattern/confidence values the operator-facing entry surface displayed at
 -- entry time. NULL when no cache row was available (out-of-scope ticker or
--- classifier-error row was the only one present). REFERENCES pipeline_runs(id)
--- — SQLite recognizes the FK syntactically; cross-table cascade is not
--- enforced (V1 deliberately accepts this — pipeline_runs rows are not deleted
--- in normal operation, so no orphans expected).
+-- classifier-error row was the only one present). The column is declared
+-- with `REFERENCES pipeline_runs(id)`; whether the FK is ENFORCED depends on
+-- `PRAGMA foreign_keys = ON` (SQLite default is OFF unless set per-connection).
+-- The project's existing connection setup turns FKs on. Even with FKs enforced,
+-- V1 deliberately does NOT rely on:
+--   (a) cross-table cascade semantics (no ON DELETE/UPDATE specified, so the
+--       default "NO ACTION" applies — a deleted pipeline_runs row whose id is
+--       referenced here would block the delete; pipeline_runs rows are not
+--       deleted in normal operation), or
+--   (b) tamper-proof provenance (per §3.6 threat model the value is operator-
+--       claimed input from a hidden form field, not server-verified). The FK
+--       gives schema-level "this column is shaped like a pipeline_runs id" but
+--       NOT "this trade was demonstrably classified by that pipeline run."
 ALTER TABLE trades ADD COLUMN chart_pattern_classification_pipeline_run_id INTEGER
     REFERENCES pipeline_runs(id);
 
