@@ -269,21 +269,41 @@ def test_flag_floor_holds_gate_holding_floor_passes():
 
 
 def test_confidence_is_min_of_continuous_clearances():
-    # pole_gain just above 0.30 → clearance ≈ 0.014 (smallest)
-    # pullback_pct = 0.05 → pullback clearance ≈ 0.667
-    # tightness 0.3 → clearance ≈ 0.5
-    # volume 0.3 → clearance ≈ 0.571
+    """Codex R3 Minor 1 follow-up: recompute clearances from the
+    returned components against default cfg, then assert exact equality
+    (1e-9) to res.confidence. Catches clamp / normalization regressions
+    that the prior < 0.05 tolerance allowed.
+    """
+    from swing.config import ClassifierConfig
     bars = make_flag_bars(
-        pole_gain_pct=0.31,           # tight on pole_gain
+        pole_gain_pct=0.31,           # tight on pole_gain → smallest clearance
         pullback_pct=0.05,
         flag_tightness_factor=0.3,
         flag_volume_factor=0.3,
     )
     res = classify_flag(bars)
     assert res.detected is True
-    # The minimum clearance (pole_gain) should drive confidence.
-    expected_min = (0.31 - 0.30) / 0.70
-    assert abs(res.confidence - expected_min) < 0.05
+    # Recompute the four continuous-gate clearances from the returned
+    # components against the default cfg, mirroring spec §3.1.4.
+    cfg = ClassifierConfig()
+    pg = res.components["pole_gain"]
+    pd_ = res.components["pullback_depth"]
+    tr = res.components["tightness_ratio"]
+    vr = res.components["volume_ratio"]
+    cl_pg = max(0.0, min(1.0, (pg - cfg.flag_pole_gain_min) / 0.70))
+    cl_pd = max(
+        0.0, min(1.0, (cfg.flag_pullback_depth_max - pd_) / cfg.flag_pullback_depth_max)
+    )
+    cl_tr = max(
+        0.0, min(1.0, (cfg.flag_tightness_ratio_max - tr) / cfg.flag_tightness_ratio_max)
+    )
+    cl_vr = max(
+        0.0, min(1.0, (cfg.flag_volume_ratio_max - vr) / cfg.flag_volume_ratio_max)
+    )
+    expected = min(cl_pg, cl_pd, cl_tr, cl_vr)
+    assert abs(res.confidence - expected) < 1e-9, (
+        f"confidence {res.confidence:.10f} != min(clearances) {expected:.10f}"
+    )
 
 
 def test_search_prefers_higher_confidence_then_lower_N_then_lower_M():  # noqa: N802  # M, N spec-canonical (§3.1)
