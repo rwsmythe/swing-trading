@@ -197,3 +197,21 @@ def test_best_attempted_uses_max_min_soft_clearance():
     # Across all (M, N), the best-attempted must report a pole_gain in the
     # neighborhood of the synthetic value (≈ 0.20).
     assert 0.15 < res.components["pole_gain"] < 0.25
+
+
+def test_pattern_None_distinct_from_string_none_in_dataclass():
+    """Future-proofing: pattern is `str | None`, NOT `str`. Pipeline-level
+    classifier-error path constructs a result with pattern=None (NoneType)
+    that persists as SQL NULL, distinguishing it from pattern='none'
+    (evaluated negative). This test guards against accidental
+    `pattern: str = 'none'` field re-typing."""
+    from swing.evaluation.patterns.flag_classifier import FlagClassificationResult
+    err_result = FlagClassificationResult(
+        detected=False, confidence=0.0, pattern=None,
+        pole_start_date=None, pole_end_date=None,
+        flag_start_date=None, flag_end_date=None,
+        pole_high=None, flag_low=None, pivot=None,
+        components={"error": "boom"},
+    )
+    assert err_result.pattern is None
+    assert err_result.pattern != "none"
