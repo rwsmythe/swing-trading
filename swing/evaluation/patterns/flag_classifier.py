@@ -5,10 +5,12 @@ no logging side-effects. Spec: docs/superpowers/specs/2026-04-26-chart-
 pattern-flag-v1-design.md §3.1.
 """
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from datetime import date
-import pandas as pd
+
 import numpy as np
+import pandas as pd
 
 from swing.config import ClassifierConfig
 
@@ -49,13 +51,12 @@ def _ma_structure_passes(closes: np.ndarray, flag_start_idx: int) -> bool:
         return float(np.mean(closes[at - window + 1:at + 1]))
     today = flag_start_idx
     earlier = flag_start_idx - 5
-    s10 = sma(10, today); s20 = sma(20, today); s50 = sma(50, today)
+    s10 = sma(10, today)
+    s20 = sma(20, today)
+    s50 = sma(50, today)
     if not (s10 > s20 > s50):
         return False
-    for w in (10, 20, 50):
-        if sma(w, today) <= sma(w, earlier):
-            return False
-    return True
+    return all(sma(w, today) > sma(w, earlier) for w in (10, 20, 50))
 
 
 def _evaluate_candidate(
@@ -84,14 +85,22 @@ def _evaluate_candidate(
     flag_med = float(np.median(flag_ranges)) if len(flag_ranges) else 0.0
     tightness_ratio = flag_med / max(pole_med, 1e-9)
 
-    pole_vol_mean = float(np.mean(vols[pole_start:flag_start])) if (flag_start - pole_start) else 0.0
-    flag_vol_mean = float(np.mean(vols[flag_start:flag_end])) if (flag_end - flag_start) else 0.0
+    pole_vol_mean = (
+        float(np.mean(vols[pole_start:flag_start])) if (flag_start - pole_start) else 0.0
+    )
+    flag_vol_mean = (
+        float(np.mean(vols[flag_start:flag_end])) if (flag_end - flag_start) else 0.0
+    )
     volume_ratio = flag_vol_mean / max(pole_vol_mean, 1e-9)
 
-    N = flag_end - flag_start
+    N = flag_end - flag_start  # noqa: N806  # M, N are spec-canonical (§3.1: pole length M, flag length N)
     half = N // 2
-    flag_low_first_half = float(np.min(lows[flag_start:flag_start + half])) if half else flag_low
-    flag_low_second_half = float(np.min(lows[flag_start + half:flag_end])) if (N - half) else flag_low
+    flag_low_first_half = (
+        float(np.min(lows[flag_start:flag_start + half])) if half else flag_low
+    )
+    flag_low_second_half = (
+        float(np.min(lows[flag_start + half:flag_end])) if (N - half) else flag_low
+    )
     flag_floor_holds = flag_low_second_half >= flag_low_first_half
 
     ma_ok = _ma_structure_passes(closes, flag_start)
@@ -114,9 +123,21 @@ def _evaluate_candidate(
 def _continuous_clearances(c: dict, cfg: ClassifierConfig) -> tuple[float, float, float, float]:
     return (
         _clamp((c["pole_gain"] - cfg.flag_pole_gain_min) / 0.70, 0.0, 1.0),
-        _clamp((cfg.flag_pullback_depth_max - c["pullback_depth"]) / cfg.flag_pullback_depth_max, 0.0, 1.0),
-        _clamp((cfg.flag_tightness_ratio_max - c["tightness_ratio"]) / cfg.flag_tightness_ratio_max, 0.0, 1.0),
-        _clamp((cfg.flag_volume_ratio_max - c["volume_ratio"]) / cfg.flag_volume_ratio_max, 0.0, 1.0),
+        _clamp(
+            (cfg.flag_pullback_depth_max - c["pullback_depth"]) / cfg.flag_pullback_depth_max,
+            0.0,
+            1.0,
+        ),
+        _clamp(
+            (cfg.flag_tightness_ratio_max - c["tightness_ratio"]) / cfg.flag_tightness_ratio_max,
+            0.0,
+            1.0,
+        ),
+        _clamp(
+            (cfg.flag_volume_ratio_max - c["volume_ratio"]) / cfg.flag_volume_ratio_max,
+            0.0,
+            1.0,
+        ),
     )
 
 
@@ -156,15 +177,16 @@ def classify_flag(
         )
 
     n = len(bars)
-    best_pass = None  # (key, c, anchors) where key = (confidence, -N (lower better), -M (lower better))
+    # best_pass key = (confidence, -N (lower better), -M (lower better))
+    best_pass = None
     best_attempt = None  # (max_min_soft_clearance, c, anchors)
 
-    for N in N_RANGE:
+    for N in N_RANGE:  # noqa: N806  # M, N are spec-canonical (§3.1: pole length M, flag length N)
         flag_end = n
         flag_start = n - N
         if flag_start <= 0:
             continue
-        for M in M_RANGE:
+        for M in M_RANGE:  # noqa: N806  # M, N are spec-canonical (§3.1: pole length M, flag length N)
             pole_start = flag_start - M
             if pole_start < 0:
                 continue
@@ -197,8 +219,12 @@ def classify_flag(
             components=c,
         )
 
-    # No candidate passes. Use deterministic baseline (5, 5) IF best_attempt's
-    # soft_min < 0 and (5, 5) was evaluable; else use best_attempt for debugging.
+    # No candidate passes. Components carry the best-attempted candidate's
+    # measurements per spec §3.1 (R2 Major 1) — the (M, N) pair maximizing
+    # min over the four continuous-gate soft clearances. The (5, 5) literal
+    # fallback is reachable only when no candidate was evaluable at all,
+    # which the data-window gate (MIN_BARS=36) effectively prevents — kept
+    # as belt-and-braces for type-stability of components.
     if best_attempt is not None:
         _, c, _ = best_attempt
         components = dict(c)
