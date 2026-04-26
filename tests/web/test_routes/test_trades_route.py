@@ -1194,15 +1194,21 @@ def test_post_entry_stop_ge_entry_unhandled_value_error_still_500(
     # The pre-check passes; record_entry's synthetic ValueError must NOT be
     # swallowed by an over-broad except — it must surface as 500.
     assert r.status_code == 500
-    # Server defect surfaces via the generic error fragment (bare div with
-    # data-request-id) — not silently re-rendered as a form-validation
-    # banner. This is the post-fix contract: a 500-shaped response, NOT
-    # a 400 + form re-render. Codex R2 M1: deliberately do NOT assert the
-    # raw exception message is echoed in the body; that exposure is a
-    # property of the generic 500 handler today, not a guarantee we want
-    # to lock in (sanitizing the message later should not require updating
-    # this test).
-    assert "data-request-id" in r.text
+    # 3e Bug 2 follow-up (T7): unhandled non-HTTPExceptions on row-target
+    # HTMX requests now render `partials/trade_form_error.html.j2` (a <tr>)
+    # rather than `partials/error_fragment.html.j2` (a <div>) so the HTML
+    # parser does not hoist a <div> out of <tbody>. The 500 status is
+    # preserved (NOT silently masked as 400 form-validation), and the
+    # body is structurally NOT the form re-render. Codex R2 M1: still do
+    # NOT assert the raw exception message; trade_form_error does embed
+    # error_message inline today, but locking that in would block future
+    # sanitization. Test the structural shape only.
+    body = r.text.lstrip()
+    assert body.startswith("<tr"), (
+        f"row-target 500 must be <tr> shape (trade_form_error), got: "
+        f"{body[:80]!r}"
+    )
+    assert 'class="trade-form-error"' in body
     # Negative discriminator: must NOT be the form-rerender shape.
     assert '<tr id="entry-form-AAPL"' not in r.text
     assert 'hx-post="/trades/entry"' not in r.text

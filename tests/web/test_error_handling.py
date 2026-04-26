@@ -44,6 +44,76 @@ def test_htmx_post_error_returns_error_fragment(seeded_db, monkeypatch):
     assert "<html" not in r.text.lower()
 
 
+def test_handle_any_returns_row_fragment_for_row_target_htmx(seeded_db):
+    """Bug 2 follow-up (T7): when an unhandled non-HTTPException fires
+    inside an HTMX request whose HX-Target is a row-prefix value (entry-
+    form-*, exit-form-*, stop-form-*, watchlist-row-*, open-position-*),
+    the response body must be a <tr> fragment from
+    partials/trade_form_error.html.j2 — NOT a <div> from
+    partials/error_fragment.html.j2.
+
+    Pre-fix: body starts with `<div class="banner banner-degraded">`.
+    Post-fix: body starts with `<tr ...>`.
+
+    This is the same row-target awareness `_handle_http_exc` already has;
+    `_handle_any` was the gap.
+    """
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+
+    @app.post("/_row_target_explode")
+    def _hx_row():
+        raise RuntimeError("simulated row-target explosion")
+
+    r = TestClient(app, raise_server_exceptions=False).post(
+        "/_row_target_explode",
+        headers={
+            "HX-Request": "true",
+            # Use one of the _ROW_TARGET_PREFIXES values so the row-target
+            # branch is selected. entry-form-* matches the entry-row case
+            # the operator hits when submitting the trade entry form.
+            "HX-Target": "entry-form-watchlist-row-AAPL",
+        },
+    )
+    assert r.status_code == 500
+    body = r.text.lstrip()
+    assert body.startswith("<tr"), (
+        f"row-target HTMX request must receive a <tr> fragment from "
+        f"trade_form_error; pre-fix returns <div> from error_fragment. "
+        f"Got: {body[:100]!r}"
+    )
+    # Discriminator in the negative direction: the pre-fix banner-degraded
+    # marker MUST NOT lead the body. (It may appear in the inner banner
+    # div inside the <tr>, so we check it does not LEAD the body.)
+    assert not body.startswith('<div class="banner banner-degraded"')
+
+
+def test_handle_any_returns_div_fragment_for_non_row_target_htmx(seeded_db):
+    """Symmetric to the row-target test: when HX-Target is NOT a row prefix
+    (e.g. sizing-hint, run-panel, plain dashboard fragments), the existing
+    error_fragment <div> shape is preserved. Guards against the row-target
+    awareness over-triggering."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+
+    @app.post("/_non_row_target_explode")
+    def _hx_norow():
+        raise RuntimeError("simulated non-row-target explosion")
+
+    r = TestClient(app, raise_server_exceptions=False).post(
+        "/_non_row_target_explode",
+        headers={
+            "HX-Request": "true",
+            "HX-Target": "sizing-hint",
+        },
+    )
+    assert r.status_code == 500
+    body = r.text.lstrip()
+    assert not body.startswith("<tr"), (
+        f"non-row-target must NOT receive a <tr> fragment; got: {body[:100]!r}"
+    )
+
+
 def test_configure_web_logging_is_idempotent(tmp_path):
     """Calling create_app (or configure_web_logging directly) multiple times
     against the SAME log directory must NOT accumulate duplicate handlers

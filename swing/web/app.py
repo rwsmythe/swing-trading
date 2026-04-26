@@ -77,6 +77,17 @@ def _register_exception_handlers(app: FastAPI) -> None:
         log.exception("unhandled error (request_id=%s)", rid)
         tpls = _build_templates(app.state.templates_dir)
         is_htmx = request.headers.get("HX-Request", "").lower() == "true"
+        # Bug 2 follow-up (defense-in-depth): row-target HTMX requests get
+        # a <tr> fragment so the HTML parser does not hoist a bare <div>
+        # out of <tbody>, leaving an empty row position. Mirrors
+        # `_handle_http_exc`'s row-target awareness for the unhandled-
+        # exception path.
+        if is_htmx and _is_row_swap_target(request):
+            return tpls.TemplateResponse(
+                request, "partials/trade_form_error.html.j2",
+                {"error_message": str(exc)},
+                status_code=500,
+            )
         template = "partials/error_fragment.html.j2" if is_htmx else "error.html.j2"
         return tpls.TemplateResponse(
             request, template,
