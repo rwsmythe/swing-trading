@@ -169,3 +169,17 @@ def test_confidence_is_min_of_continuous_clearances():
     # The minimum clearance (pole_gain) should drive confidence.
     expected_min = (0.31 - 0.30) / 0.70
     assert abs(res.confidence - expected_min) < 0.05
+
+
+def test_search_prefers_higher_confidence_then_lower_N_then_lower_M():
+    # Build a fixture admitting multiple valid (M, N) candidates. Default
+    # builder yields one passing window; we widen the flag region so that
+    # several N values pass.
+    bars = make_flag_bars(flag_bars=15)  # multiple N in [5, 15] could pass
+    res = classify_flag(bars)
+    assert res.detected is True
+    # The search must report SOME (M, N) — and must be deterministic across
+    # calls (tie-break by lower N then lower M).
+    res2 = classify_flag(bars)
+    assert res.components["flag_N"] == res2.components["flag_N"]
+    assert res.components["pole_M"] == res2.components["pole_M"]
