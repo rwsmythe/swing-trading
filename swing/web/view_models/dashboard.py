@@ -637,10 +637,13 @@ def _sort_watchlist(
     watchlist: list[WatchlistEntry],
     flag_tags: Mapping[str, tuple[str, ...]],
 ) -> list[WatchlistEntry]:
-    """Three-key composite sort: tag count DESC, tag precedence DESC,
-    abs(% to pivot) ASC, ticker ASC for determinism. Tickers absent from
-    `flag_tags` get an empty tag tuple → score 0 → sort last among the
-    no-tag group, ordered by proximity."""
+    """Four-key composite sort: tag count DESC, tag precedence DESC,
+    abs(% to pivot) ASC, ticker ASC for determinism. The trailing ticker
+    key is part of the contract — without it, Python's stable sort
+    preserves whatever order `list_active_watchlist` happens to return
+    on full-equality ties, which is non-deterministic. Tickers absent
+    from `flag_tags` get an empty tag tuple → score 0 → sort last among
+    the no-tag group, ordered by proximity."""
     def key(w: WatchlistEntry):
         tags = flag_tags.get(w.ticker, ())
         return (

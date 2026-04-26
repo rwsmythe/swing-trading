@@ -1,11 +1,11 @@
-"""Tests for `_sort_watchlist` — the three-key composite sort that replaces
+"""Tests for `_sort_watchlist` — the four-key composite sort that replaces
 the prior pure-proximity sort on the dashboard top-5 and /watchlist surface.
 
 Sort key (descending priority):
   1. tag count (DESC)
   2. tag precedence score (DESC) — A+=4, VCP✓=2, TT✓=1
   3. abs(% to pivot) (ASC) — None entry_target/last_close → +inf (sorts last)
-  4. ticker (ASC) — determinism tiebreaker
+  4. ticker (ASC) — determinism tiebreaker (part of the contract)
 """
 from __future__ import annotations
 

@@ -301,18 +301,33 @@ def prices_refresh(request: Request):
     # Collect active tickers. Top-5 picking mirrors the dashboard's
     # `_sort_watchlist` (tag-count primary, precedence secondary, proximity
     # tertiary) so the cache is warmed for the SAME tickers the operator is
-    # about to see post-refresh — keeping prefetch in sync with display.
+    # about to see post-refresh. The eval-anchor logic — preferring the
+    # latest complete pipeline_run's `evaluation_run_id` over MAX(run_ts)
+    # FROM evaluation_runs — is the same one `build_watchlist` uses
+    # (mixed-anchor fix from the Bug 7 family); a post-pipeline standalone
+    # `swing eval` would otherwise win MAX(run_ts) and seed flag_tags from
+    # an eval the dashboard does not render.
     conn = connect(cfg.paths.db_path)
     try:
         open_trade_tickers = {t.ticker for t in list_open_trades(conn)}
         watch_rows = list_active_watchlist(conn)
-        latest_eval_row = conn.execute(
-            "SELECT id FROM evaluation_runs ORDER BY run_ts DESC LIMIT 1"
+        pipeline_eval_row = conn.execute(
+            """SELECT evaluation_run_id FROM pipeline_runs
+               WHERE state = 'complete'
+               ORDER BY finished_ts DESC LIMIT 1"""
         ).fetchone()
-        candidates = (
-            fetch_candidates_for_run(conn, latest_eval_row[0])
-            if latest_eval_row is not None else []
+        pipeline_eval_id = (
+            pipeline_eval_row[0] if pipeline_eval_row else None
         )
+        candidates = []
+        if pipeline_eval_id is not None:
+            candidates = fetch_candidates_for_run(conn, pipeline_eval_id)
+        else:
+            fallback = conn.execute(
+                "SELECT id FROM evaluation_runs ORDER BY run_ts DESC LIMIT 1"
+            ).fetchone()
+            if fallback is not None:
+                candidates = fetch_candidates_for_run(conn, fallback[0])
     finally:
         conn.close()
     flag_tags = _flag_tags({c.ticker: c for c in candidates})
