@@ -187,20 +187,18 @@ def test_prune_old_backups_handles_missing_dir(tmp_path: Path):
 
 
 def test_do_backup_fails_closed_when_source_db_missing(tmp_path: Path):
-    """Round 1 Major 1: opening a missing DB with sqlite3.connect normally
-    fabricates an empty file. We open the source read-only via URI so a missing
-    or unreadable source raises OperationalError instead of silently producing
-    a 'successful' empty backup. Also verify no temp/final files are left."""
+    """Round 1 Major 1 + Round 2 Major 1: a missing source DB must raise
+    rather than silently fabricate an empty file. We use an explicit exists()
+    guard (FileNotFoundError) instead of URI mode=ro, since a WAL-mode DB can
+    refuse mode=ro when -shm/-wal sidecars are absent. Also verify no
+    leftover backup/temp files in dest."""
     src = tmp_path / "no-such.db"
     dest = tmp_path / "backups"
-    with pytest.raises(sqlite3.OperationalError):
+    with pytest.raises(FileNotFoundError):
         do_backup(src, dest, now=datetime(2026, 4, 25))
-    # Destination dir gets created by mkdir(parents=True) before the failure;
-    # but it must not contain any backup or temp files.
-    if dest.exists():
-        assert list(dest.iterdir()) == [], (
-            f"expected no leftover files, got {list(dest.iterdir())}"
-        )
+    # The exists() guard runs BEFORE dest_dir.mkdir, so dest must not even be
+    # created on the missing-source path.
+    assert not dest.exists(), f"dest_dir should not be created on missing source"
 
 
 def test_do_backup_under_concurrent_writes_does_not_corrupt(tmp_path: Path):

@@ -52,6 +52,14 @@ def do_backup(db_path: Path, dest_dir: Path, *, now: datetime | None = None) -> 
     """
     if now is None:
         now = datetime.now()
+    # Fail closed before touching dest_dir: sqlite3.connect of a missing path
+    # silently fabricates an empty DB, which would yield a "successful" empty
+    # backup. Adversarial review R1 Major 1 + R2 Major 1: prefer an explicit
+    # exists() check to URI mode=ro, which can fail on WAL-mode DBs whose
+    # -shm/-wal sidecars are absent. FileNotFoundError is an OSError, which
+    # the runner's broad backup-failure catch already handles.
+    if not db_path.exists():
+        raise FileNotFoundError(f"backup source DB not found: {db_path}")
     dest_dir.mkdir(parents=True, exist_ok=True)
     final_path = compute_backup_destination(now, dest_dir)
 
@@ -64,12 +72,12 @@ def do_backup(db_path: Path, dest_dir: Path, *, now: datetime | None = None) -> 
     src: sqlite3.Connection | None = None
     dst: sqlite3.Connection | None = None
     try:
-        # Open source read-only via URI so a missing/unreadable DB fails closed
-        # rather than silently fabricating an empty file (sqlite3.connect of a
-        # nonexistent path creates one). Closes a TOCTOU window between the
-        # caller's exists() guard and our open, and protects future callers
-        # that bypass the guard.
-        src = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
+        # Standard connect (not URI mode=ro) — WAL-mode DBs can refuse a
+        # mode=ro open when -shm/-wal sidecars don't exist on disk, which would
+        # silently break the weekly backup. The exists() check above is the
+        # fail-closed guard. backup() reads from src; no writes are issued
+        # against the source DB.
+        src = sqlite3.connect(db_path)
         dst = sqlite3.connect(tmp_path)
         src.backup(dst)
     except BaseException:
