@@ -1058,5 +1058,143 @@ def web_cmd(ctx, host, port, reload):
     )
 
 
+@main.group("hypothesis")
+def hypothesis_group() -> None:
+    """Inspect + mutate the hypothesis investigation registry.
+
+    Backend brief §4.6: only `--status` is mutable via CLI; frozen
+    fields (target_sample_size, tripwire thresholds, decision criteria)
+    can ONLY be changed via a NEW migration with explicit version bump.
+    """
+
+
+@hypothesis_group.command("list")
+@click.pass_context
+def hypothesis_list_cmd(ctx: click.Context) -> None:
+    """List all registered hypotheses with status + sample progress."""
+    from swing.data.db import connect
+    from swing.data.repos.hypothesis import list_hypotheses
+    from swing.recommendations.hypothesis import compute_tripwire_status
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        rows = list_hypotheses(conn)
+        click.echo("ID  STATUS              N/TARGET  TRIPWIRE  NAME")
+        for h in rows:
+            tw = compute_tripwire_status(
+                conn, hypothesis_id=h.id,
+                starting_equity=cfg.account.starting_equity,
+            )
+            tw_label = "FIRED" if tw.any_tripwire_fired else "ok"
+            click.echo(
+                f"{h.id:<3} {h.status:<19} "
+                f"{tw.current_sample}/{h.target_sample_size:<7} "
+                f"{tw_label:<9} {h.name}"
+            )
+    finally:
+        conn.close()
+
+
+@hypothesis_group.command("status")
+@click.argument("hypothesis_id", type=int)
+@click.pass_context
+def hypothesis_status_cmd(ctx: click.Context, hypothesis_id: int) -> None:
+    """Print detailed status for one hypothesis."""
+    from swing.data.db import connect
+    from swing.data.repos.hypothesis import get_hypothesis
+    from swing.recommendations.hypothesis import compute_tripwire_status
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        h = get_hypothesis(conn, hypothesis_id)
+        if h is None:
+            raise click.ClickException(f"hypothesis {hypothesis_id} not found")
+        tw = compute_tripwire_status(
+            conn, hypothesis_id=h.id,
+            starting_equity=cfg.account.starting_equity,
+        )
+    finally:
+        conn.close()
+
+    click.echo(f"Hypothesis #{h.id}: {h.name}")
+    click.echo(f"  Status:           {h.status}")
+    click.echo(f"  Statement:        {h.statement}")
+    click.echo(f"  Target sample:    {h.target_sample_size}")
+    click.echo(f"  Current sample:   {tw.current_sample}")
+    click.echo(f"  Decision criteria:{h.decision_criteria}")
+    click.echo(
+        f"  Consecutive -1R tripwire: streak {tw.consecutive_max_loss_streak} "
+        f"of {h.consecutive_loss_tripwire}"
+        + ("  [FIRED]" if tw.consecutive_tripwire_fired else "")
+    )
+    click.echo(
+        f"  Absolute-loss tripwire:   cumulative ${tw.cumulative_loss:+.2f} "
+        f"vs {h.absolute_loss_tripwire_pct:.1f}%-of-equity threshold"
+        + ("  [FIRED]" if tw.absolute_tripwire_fired else "")
+    )
+    click.echo(f"  Created at:       {h.created_at}")
+    if h.status_changed_at:
+        click.echo(f"  Status changed:   {h.status_changed_at}")
+        click.echo(f"  Status reason:    {h.status_change_reason or '(none)'}")
+
+
+@hypothesis_group.command("update")
+@click.argument("hypothesis_id", type=int)
+@click.option(
+    "--status", "new_status", required=True,
+    type=click.Choice(["active", "paused", "closed-escaped", "closed-target-met"]),
+    help="New status. Frozen fields (target, tripwire thresholds, "
+         "decision_criteria) are NOT mutable via CLI.",
+)
+@click.option(
+    "--reason", required=True,
+    help="Required free-text reason; recorded to audit trail.",
+)
+@click.pass_context
+def hypothesis_update_cmd(ctx: click.Context, hypothesis_id: int,
+                          new_status: str, reason: str) -> None:
+    """Update a hypothesis's status. Records change with timestamp + reason.
+
+    Allowed transitions per brief §4.6:
+      active   -> paused | closed-escaped | closed-target-met
+      paused   -> active | closed-escaped
+      closed-escaped -> active
+      closed-target-met -> (terminal — no reopen via CLI)
+    """
+    from datetime import datetime as _dt
+    from swing.data.db import connect
+    from swing.data.repos.hypothesis import (
+        HypothesisStatusTransitionError,
+        update_hypothesis_status,
+    )
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            try:
+                update_hypothesis_status(
+                    conn, hypothesis_id,
+                    new_status=new_status,
+                    reason=reason,
+                    now_iso=_dt.now().isoformat(timespec="seconds"),
+                )
+            except HypothesisStatusTransitionError as exc:
+                # Make the error message explicit so the test (and
+                # operator) can tell it's a transition issue, not a
+                # generic value error.
+                raise click.ClickException(f"transition not allowed: {exc}")
+            except ValueError as exc:
+                raise click.ClickException(str(exc))
+    finally:
+        conn.close()
+    click.echo(
+        f"hypothesis #{hypothesis_id} -> {new_status} "
+        f"(reason: {reason})"
+    )
+
+
 if __name__ == "__main__":  # pragma: no cover
     main()
