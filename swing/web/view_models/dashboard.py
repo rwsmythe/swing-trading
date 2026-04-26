@@ -167,7 +167,6 @@ class HypothesisRecommendation:
     """
     ticker: str
     current_price: float | None
-    pivot_price: float | None      # Candidate.pivot — QoL #3 Pivot column
     hypothesis_id: int
     hypothesis_name: str
     hypothesis_progress_n: int
@@ -175,6 +174,12 @@ class HypothesisRecommendation:
     tripwire_fired: bool
     tripwire_reason: str | None
     suggested_label: str
+    # `pivot_price` is APPENDED with a default rather than inserted between
+    # current_price and hypothesis_id so positional callers (current or
+    # future) cannot silently shift later fields. Template renders fields
+    # by name so on-screen column order is independent of dataclass order.
+    # (Adversarial review R1 Major 1.)
+    pivot_price: float | None = None
 
 
 # Top-N cap for the dashboard recommendations panel. Pinned as a module

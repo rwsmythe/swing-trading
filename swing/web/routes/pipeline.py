@@ -311,9 +311,9 @@ def prices_refresh(request: Request):
     # 3e.3: also reset the OHLCV breaker so SMA advisories recover on the
     # next dashboard render. Same operator-override rationale; a separately-
     # tripped OHLCV breaker would otherwise leave advisories blank with no
-    # UI affordance to retry. `app.state.ohlcv_cache` may be None in tests
-    # that skip cache wiring — guard for that.
-    ohlcv_cache = request.app.state.ohlcv_cache
+    # UI affordance to retry. Use getattr so the guard is real for both
+    # absent attribute AND attribute-set-to-None cases (R1 Minor 1).
+    ohlcv_cache = getattr(request.app.state, "ohlcv_cache", None)
     if ohlcv_cache is not None:
         ohlcv_cache.reset_circuit_breaker()
     cache.refresh_all(active)
