@@ -181,15 +181,65 @@ def test_journal_review_label_with_special_chars_does_not_break_formatting(tmp_p
     assert r.exit_code == 0, r.output
     out = r.output
     assert "Hypothesis breakdown" in out
-    # Find lines under the breakdown section and assert each starts with "- ".
+    # Find lines in the breakdown section, bounded by the next "##" header
+    # (the per-hypothesis investigation-progress section that the backend
+    # brief §4.5 appends below). Each bucket renders as exactly one line.
     section_start = out.index("Hypothesis breakdown")
-    section = out[section_start:].splitlines()[1:]
+    section_text = out[section_start:]
+    next_header = section_text.find("\n## ")
+    if next_header != -1:
+        section_text = section_text[:next_header]
+    section = section_text.splitlines()[1:]
     bullet_lines = [ln for ln in section if ln.strip()]
     # Exactly one bucket recorded → exactly one bullet line below the header.
     assert len(bullet_lines) == 1
     assert bullet_lines[0].lstrip().startswith("- ")
     # Newline and quote characters are sanitized so the row stays single-line.
     assert "\n" not in bullet_lines[0]
+
+
+def test_journal_review_emits_hypothesis_progress_section(tmp_path: Path):
+    """Backend brief §4.5 + done criteria: `swing journal review` always
+    emits the per-hypothesis investigation-progress section after the
+    existing breakdown. With zero closed trades, all four registered
+    hypotheses appear at "0 / N samples"."""
+    runner, cfg = _setup(tmp_path)
+    r = runner.invoke(main, ["--config", str(cfg), "journal", "review"])
+    assert r.exit_code == 0, r.output
+    out = r.output
+    assert "## Hypothesis investigation progress" in out
+    for name in [
+        "A+ baseline",
+        "Near-A+ defensible: extension test",
+        "Sub-A+ VCP-not-formed",
+        "Capital-blocked: smaller-position test",
+    ]:
+        assert name in out
+    # Each row should show "X / Y samples" for the four seeded hypotheses.
+    progress = out.split("## Hypothesis investigation progress", 1)[1]
+    for fraction in ["0 / 20", "0 / 10", "0 / 5", "0 / 10"]:
+        assert fraction in progress
+
+
+def test_journal_review_progress_counts_vir_under_sub_aplus(tmp_path: Path):
+    """Done criterion: `swing journal review` shows hypothesis-progress
+    section with VIR contributing as 1/5 sample under "Sub-A+ VCP-not-
+    formed" (the backfilled hypothesis_label starts with that name)."""
+    runner, cfg = _setup(tmp_path)
+    vir_label = (
+        "sub-A+ VCP-not-formed test (proximity_20ma + tightness fails); "
+        "inaugural trade test"
+    )
+    _record_closed_trade(
+        cfg, ticker="VIR", hypothesis=vir_label, exit_price=95.0,
+    )
+    r = runner.invoke(main, ["--config", str(cfg), "journal", "review"])
+    assert r.exit_code == 0, r.output
+    progress = r.output.split("## Hypothesis investigation progress", 1)[1]
+    sub_line = next(
+        ln for ln in progress.splitlines() if "Sub-A+ VCP-not-formed" in ln
+    )
+    assert "1 / 5" in sub_line
 
 
 def test_journal_cash_deposit(tmp_path: Path):

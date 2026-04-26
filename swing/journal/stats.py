@@ -1,6 +1,7 @@
 """Journal stats — share-weighted R per trade + win rate + expectancy + streak."""
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Iterable, Literal
@@ -200,3 +201,153 @@ def compute_hypothesis_breakdown(
         key=lambda b: (-b.n_trades, b.label or ""),
     )
     return no_label + labeled
+
+
+# --- Hypothesis investigation progress (Phase 3e: backend brief §4.5) ---
+
+
+@dataclass(frozen=True)
+class HypothesisProgress:
+    """One row of the per-hypothesis investigation-progress breakdown.
+
+    Joins `hypothesis_registry` (status + target) with the closed-trade
+    aggregate (current sample, mean R, win rate) and the tripwire signal.
+    `mean_r_multiple` and `win_rate` are None when the bucket has zero
+    samples; `win_rate` is also None when n < 3 (matches the existing
+    free-text hypothesis breakdown's small-sample suppression).
+    """
+    hypothesis_id: int
+    name: str
+    status: str
+    target_sample: int
+    current_sample: int
+    mean_r_multiple: float | None
+    win_rate: float | None
+    consecutive_max_loss_streak: int
+    cumulative_loss: float
+    consecutive_tripwire_fired: bool
+    absolute_tripwire_fired: bool
+    tripwire_fired: bool
+    consecutive_loss_tripwire_threshold: int
+
+
+def compute_hypothesis_progress_breakdown(
+    conn: sqlite3.Connection, *, starting_equity: float,
+) -> list[HypothesisProgress]:
+    """Return one `HypothesisProgress` per registered hypothesis.
+
+    Includes paused/closed hypotheses (status carries over) so the
+    journal review surfaces all four — operator can see at a glance
+    which hypotheses are running, paused, or closed. Tripwire signals
+    are computed for ALL hypotheses (even closed ones); the CLI render
+    layer chooses how to display "tripwire fired but hypothesis closed."
+    """
+    # Local imports avoid pulling repo + recommendations modules into
+    # `swing.journal.stats` import time (the journal stats module is
+    # used in many test fixtures that don't need DB access).
+    from swing.data.repos.hypothesis import list_hypotheses
+    from swing.data.repos.trades import list_all_exits, list_closed_trades
+    from swing.recommendations.hypothesis import (
+        _label_matches_hypothesis,
+        compute_tripwire_status,
+    )
+
+    hypotheses = list_hypotheses(conn)
+    closed = list_closed_trades(conn)
+    exits_by_trade: dict[int, list[Exit]] = {}
+    for e in list_all_exits(conn):
+        exits_by_trade.setdefault(e.trade_id, []).append(e)
+
+    rows: list[HypothesisProgress] = []
+    for h in hypotheses:
+        matched = [
+            t for t in closed
+            if _label_matches_hypothesis(t.hypothesis_label, h.name)
+        ]
+        n = len(matched)
+        if n > 0:
+            rs = []
+            for t in matched:
+                es = exits_by_trade.get(t.id, [])
+                share_weighted = sum(
+                    e.r_multiple * (e.shares / t.initial_shares) for e in es
+                )
+                rs.append(share_weighted)
+            mean_r: float | None = sum(rs) / n
+        else:
+            mean_r = None
+
+        # Win-rate definition pinned in `compute_hypothesis_breakdown`
+        # docstring: realized_pnl > 0 strict; suppressed when n < 3.
+        if n >= _MIN_TRADES_FOR_WIN_RATE:
+            wins = sum(
+                1 for t in matched
+                if sum(e.realized_pnl for e in exits_by_trade.get(t.id, [])) > 0
+            )
+            win_rate: float | None = wins / n
+        else:
+            win_rate = None
+
+        tw = compute_tripwire_status(
+            conn, hypothesis_id=h.id, starting_equity=starting_equity,
+        )
+        rows.append(HypothesisProgress(
+            hypothesis_id=h.id,
+            name=h.name,
+            status=h.status,
+            target_sample=h.target_sample_size,
+            current_sample=n,
+            mean_r_multiple=mean_r,
+            win_rate=win_rate,
+            consecutive_max_loss_streak=tw.consecutive_max_loss_streak,
+            cumulative_loss=tw.cumulative_loss,
+            consecutive_tripwire_fired=tw.consecutive_tripwire_fired,
+            absolute_tripwire_fired=tw.absolute_tripwire_fired,
+            tripwire_fired=tw.any_tripwire_fired,
+            consecutive_loss_tripwire_threshold=h.consecutive_loss_tripwire,
+        ))
+    return rows
+
+
+def render_hypothesis_progress(rows: Iterable[HypothesisProgress]) -> str:
+    """Render the journal-review "Hypothesis investigation progress"
+    section. Plain-text, deterministic ordering (registry order).
+
+    Tripwire-fired rows annotate inline with the firing reason — operator
+    gets the actionable signal in the same line as the sample fraction,
+    not buried in a separate section.
+    """
+    lines = ["", "## Hypothesis investigation progress"]
+    for r in rows:
+        suffix_bits: list[str] = []
+        if r.tripwire_fired:
+            firing: list[str] = []
+            if r.consecutive_tripwire_fired:
+                firing.append(
+                    f"{r.consecutive_max_loss_streak} consecutive -1R "
+                    f"(threshold {r.consecutive_loss_tripwire_threshold})"
+                )
+            if r.absolute_tripwire_fired:
+                firing.append(
+                    f"absolute loss ${-r.cumulative_loss:.2f}"
+                )
+            suffix_bits.append(
+                f"TRIPWIRE FIRED — {'; '.join(firing)}; "
+                "recommend escape evaluation"
+            )
+        status_label = r.status if not suffix_bits else f"{r.status}, {suffix_bits[0]}"
+        line = (
+            f"- {r.name} ({status_label}): "
+            f"{r.current_sample} / {r.target_sample} samples"
+        )
+        extras: list[str] = []
+        if r.mean_r_multiple is not None:
+            extras.append(f"mean R: {r.mean_r_multiple:+.2f}")
+        if r.win_rate is not None:
+            extras.append(f"win rate {r.win_rate * 100:.1f}%")
+        if r.cumulative_loss != 0.0 and not r.tripwire_fired:
+            extras.append(f"cumulative P&L ${r.cumulative_loss:+.2f}")
+        if extras:
+            line += "; " + "; ".join(extras)
+        lines.append(line)
+    return "\n".join(lines)
