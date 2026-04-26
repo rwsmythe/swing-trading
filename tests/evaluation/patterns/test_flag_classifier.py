@@ -171,7 +171,7 @@ def test_confidence_is_min_of_continuous_clearances():
     assert abs(res.confidence - expected_min) < 0.05
 
 
-def test_search_prefers_higher_confidence_then_lower_N_then_lower_M():
+def test_search_prefers_higher_confidence_then_lower_N_then_lower_M():  # noqa: N802  # M, N spec-canonical (§3.1)
     # Build a fixture admitting multiple valid (M, N) candidates. Default
     # builder yields one passing window; we widen the flag region so that
     # several N values pass.
@@ -199,7 +199,7 @@ def test_best_attempted_uses_max_min_soft_clearance():
     assert 0.15 < res.components["pole_gain"] < 0.25
 
 
-def test_pattern_None_distinct_from_string_none_in_dataclass():
+def test_pattern_None_distinct_from_string_none_in_dataclass():  # noqa: N802  # `None` is the literal Python sentinel, not a class
     """Future-proofing: pattern is `str | None`, NOT `str`. Pipeline-level
     classifier-error path constructs a result with pattern=None (NoneType)
     that persists as SQL NULL, distinguishing it from pattern='none'
