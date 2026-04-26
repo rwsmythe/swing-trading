@@ -137,3 +137,17 @@ def test_ma_structure_stacked_and_rising_passes():
     bars = make_flag_bars()
     res = classify_flag(bars)
     assert res.detected is True
+
+
+def test_flag_floor_holds_gate_drifting_floor_rejects():
+    bars = make_flag_bars(floor_holds=False)
+    res = classify_flag(bars)
+    assert res.detected is False
+    # Discriminating verification: flag_floor_holds component must be 0.0.
+    assert res.components.get("flag_floor_holds", 1.0) == 0.0
+
+
+def test_flag_floor_holds_gate_holding_floor_passes():
+    bars = make_flag_bars(floor_holds=True)
+    res = classify_flag(bars)
+    assert res.detected is True
