@@ -53,6 +53,42 @@ class AdvisorySuggestionVM:
 
 
 @dataclass(frozen=True)
+class HypothesisRecommendation:
+    """One row of the dashboard's "Hypothesis-driven recommendations" panel.
+
+    Display VM derived from `CandidateRecommendation` plus per-hypothesis
+    progress + the live/cached price snapshot for the candidate ticker.
+    `suggested_label` is passed through unchanged from the matcher so the
+    canonical hypothesis-name prefix (case-insensitive — Session 1 R1 fix)
+    is preserved when this string is used to pre-fill `swing trade entry
+    --hypothesis`. If the prefix were stripped or rewritten, downstream
+    tripwire/progress aggregation would silently fail to attribute the
+    trade to its hypothesis.
+
+    `tripwire_reason` is None when no tripwire is fired; otherwise it
+    describes the firing condition(s) (consecutive -1R streak, absolute
+    cumulative loss) so the operator sees why the alarm raised.
+    """
+    ticker: str
+    current_price: float | None
+    hypothesis_id: int
+    hypothesis_name: str
+    hypothesis_progress_n: int
+    hypothesis_progress_target: int
+    tripwire_fired: bool
+    tripwire_reason: str | None
+    suggested_label: str
+
+
+# Top-N cap for the dashboard recommendations panel. Pinned as a module
+# constant (not config) so the rendering surface remains predictable; if
+# the operator wants more, the section is paginated by the prioritizer's
+# stable ordering and they can pull the rest from the journal-progress
+# section.
+_RECOMMENDATIONS_TOP_N = 10
+
+
+@dataclass(frozen=True)
 class DashboardVM:
     generated_at: str
     session_date: str
@@ -74,6 +110,11 @@ class DashboardVM:
     # Additive field — populated by Task 6 refactor. Default preserves backward
     # compat for any caller that constructs DashboardVM without this argument.
     open_trade_rows: Mapping[int, object] = field(default_factory=dict)
+    # Frontend brief §4.1 — top-N hypothesis-driven recommendations sourced
+    # from the Session 1 matcher + prioritizer. Default empty tuple so any
+    # ad-hoc VM construction (tests, fixtures) doesn't trip the template's
+    # `{% if vm.active_recommendations %}` guard.
+    active_recommendations: tuple[HypothesisRecommendation, ...] = ()
 
 
 def build_dashboard(
@@ -179,16 +220,64 @@ def build_dashboard(
                 ).fetchone()
                 if row is not None:
                     candidates = fetch_candidates_for_run(conn, row[0])
+
+            # Hypothesis-driven recommendations (frontend brief §4.1) — sourced
+            # from Session 1's matcher + prioritizer + tripwire compute. Run
+            # under the same read snapshot so the registry / progress numbers
+            # are consistent with the candidates we just loaded.
+            top_recommendations: list = []
+            progress_by_id: dict = {}
+            if candidates:
+                from swing.data.repos.hypothesis import list_hypotheses
+                from swing.journal.stats import (
+                    compute_hypothesis_progress_breakdown,
+                )
+                from swing.recommendations.hypothesis import (
+                    HypothesisProgressSummary,
+                    match_candidate_to_hypotheses,
+                    prioritize_recommendations,
+                )
+
+                registry = list_hypotheses(conn)
+                progress_rows = compute_hypothesis_progress_breakdown(
+                    conn, starting_equity=cfg.account.starting_equity,
+                )
+                progress_by_id = {p.hypothesis_id: p for p in progress_rows}
+                progress_summaries = [
+                    HypothesisProgressSummary(
+                        hypothesis_id=p.hypothesis_id,
+                        hypothesis_name=p.name,
+                        current_sample=p.current_sample,
+                        target_sample=p.target_sample,
+                        any_tripwire_fired=p.tripwire_fired,
+                    ) for p in progress_rows
+                ]
+                all_matches = []
+                for c in candidates:
+                    all_matches.extend(
+                        match_candidate_to_hypotheses(c, registry=registry)
+                    )
+                prioritized = prioritize_recommendations(
+                    all_matches, registry=registry,
+                    progress=progress_summaries,
+                )
+                top_recommendations = list(
+                    prioritized[:_RECOMMENDATIONS_TOP_N]
+                )
     finally:
         conn.close()
 
     candidates_by_ticker = {c.ticker: c for c in candidates}
 
-    # Prices — batch fetch all tickers we need.
+    # Prices — batch fetch all tickers we need. Recommended-ticker prices
+    # are added so the panel can render each row's current price live; the
+    # cache's last-close fallback covers tickers that the breaker is
+    # currently rejecting.
     active_tickers = {t.ticker for t in open_trades}
     watch_sorted = _sort_by_proximity(watchlist)
     top5 = watch_sorted[:5]
     active_tickers.update(w.ticker for w in top5)
+    active_tickers.update(r.candidate_ticker for r in top_recommendations)
     prices = cache.get_many(
         sorted(active_tickers),
         deadline_seconds=cfg.web.price_fetch_deadline_seconds,
@@ -291,6 +380,36 @@ def build_dashboard(
         ) for r in recs if r.recommendation == "today_decision"
     ]
 
+    # Map prioritized recommendations to display VMs. Tripwire reason text
+    # mirrors `swing.journal.stats.render_hypothesis_progress` so the
+    # dashboard and `swing journal review` agree on phrasing — the operator
+    # is reading the same alarm in two places.
+    active_recommendations = tuple(
+        HypothesisRecommendation(
+            ticker=r.candidate_ticker,
+            current_price=(
+                prices[r.candidate_ticker].price
+                if r.candidate_ticker in prices else None
+            ),
+            hypothesis_id=r.hypothesis_id,
+            hypothesis_name=r.hypothesis_name,
+            hypothesis_progress_n=(
+                progress_by_id[r.hypothesis_id].current_sample
+                if r.hypothesis_id in progress_by_id else 0
+            ),
+            hypothesis_progress_target=(
+                progress_by_id[r.hypothesis_id].target_sample
+                if r.hypothesis_id in progress_by_id else 0
+            ),
+            tripwire_fired=r.tripwire_fired,
+            tripwire_reason=_tripwire_reason_text(
+                progress_by_id.get(r.hypothesis_id),
+            ),
+            suggested_label=r.suggested_label_descriptive,
+        )
+        for r in top_recommendations
+    )
+
     degraded_until = cache.degraded_until()
     return DashboardVM(
         generated_at=now.isoformat(timespec="seconds"),
@@ -315,7 +434,28 @@ def build_dashboard(
             ohlcv_cache.is_degraded() if ohlcv_cache is not None else False
         ),
         open_trade_rows=open_trade_rows,
+        active_recommendations=active_recommendations,
     )
+
+
+def _tripwire_reason_text(progress) -> str | None:
+    """Render the per-hypothesis tripwire alarm as a single string, or None
+    when no tripwire is fired. Mirrors `render_hypothesis_progress` in
+    `swing.journal.stats` so the operator sees the same phrasing on the
+    dashboard and in `swing journal review`."""
+    if progress is None or not progress.tripwire_fired:
+        return None
+    bits: list[str] = []
+    if progress.consecutive_tripwire_fired:
+        bits.append(
+            f"{progress.consecutive_max_loss_streak} consecutive -1R "
+            f"(threshold {progress.consecutive_loss_tripwire_threshold})"
+        )
+    if progress.absolute_tripwire_fired:
+        bits.append(
+            f"cumulative loss ${progress.cumulative_loss:+.2f}"
+        )
+    return "; ".join(bits) if bits else None
 
 
 def _sort_by_proximity(watchlist: list[WatchlistEntry]) -> list[WatchlistEntry]:
