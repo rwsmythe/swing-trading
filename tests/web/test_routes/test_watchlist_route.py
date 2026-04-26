@@ -81,6 +81,70 @@ def test_watchlist_row_has_ticker_id_for_hx_target(seeded_db, monkeypatch):
     assert 'id="watchlist-row-AAPL"' in r.text
 
 
+def test_watchlist_row_collapse_route_returns_compact_tr(seeded_db, monkeypatch):
+    """3e.4: GET /watchlist/<ticker>/row returns the compact row partial
+    so the close button on an expanded row can swap back to the compact
+    state without re-fetching the whole page.
+
+    Pre-fix: route does not exist → 404.
+    Post-fix: 200 + body starts with '<tr' (NOT '<div'/'<section') and
+    contains the ticker."""
+    cfg, cfg_path = seeded_db
+    _seed_one_watchlist(cfg)
+    from swing.web.price_cache import PriceCache
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {})
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/watchlist/AAPL/row", headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    body = r.text.lstrip()
+    assert body.startswith("<tr"), (
+        f"compact row must be a <tr> (HTMX swaps it into <tbody>); got: "
+        f"{body[:80]!r}"
+    )
+    assert "AAPL" in body
+    # The compact row carries the watchlist-row-<ticker> id (this is the same
+    # id the expanded <tr> uses, and HTMX targets the row by id).
+    assert 'id="watchlist-row-AAPL"' in body
+
+
+def test_watchlist_row_collapse_route_unknown_ticker_404(seeded_db, monkeypatch):
+    """Mirror /expand's 404 contract for unknown tickers."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/watchlist/NOPE/row", headers={"HX-Request": "true"})
+    assert r.status_code == 404
+
+
+def test_watchlist_expanded_partial_has_close_button(seeded_db, monkeypatch):
+    """The expanded partial must include a close button whose hx-get points
+    at /watchlist/<ticker>/row. Without it the operator can only collapse
+    by reloading the whole page.
+
+    Pre-fix discriminator: the close button doesn't exist; the assertion
+    on the close button HTML fails."""
+    cfg, cfg_path = seeded_db
+    _seed_one_watchlist(cfg)
+    from swing.web.price_cache import PriceCache
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {})
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/watchlist/AAPL/expand", headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    body = r.text
+    # Close button: rendered with class="close-expanded" + hx-get on /row.
+    assert 'class="close-expanded"' in body
+    assert 'hx-get="/watchlist/AAPL/row"' in body
+    # Defense-in-depth: stopPropagation guards future row-level HTMX additions.
+    assert "stopPropagation" in body
+
+
 def test_watchlist_row_enter_button_stops_click_propagation(seeded_db, monkeypatch):
     """Bug 1 (2026-04-25): the row `<tr>` has hx-get='/watchlist/<t>/expand'
     (HTMX default click trigger). The Enter button has its own hx-get; without

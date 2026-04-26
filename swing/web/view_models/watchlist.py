@@ -31,6 +31,18 @@ class WatchlistVM:
 
 
 @dataclass(frozen=True)
+class WatchlistRowVM:
+    """Compact-row context for the /watchlist/<ticker>/row collapse path.
+
+    Mirrors the (w, price, tags) shape `partials/watchlist_row.html.j2`
+    expects so the route handler can render that partial directly.
+    """
+    w: WatchlistEntry
+    price: PriceSnapshot | None
+    tags: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class WatchlistExpandedVM:
     ticker: str
     entry: WatchlistEntry
@@ -94,6 +106,55 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
             degraded_until.isoformat(timespec="seconds") if degraded_until else None
         ),
     )
+
+
+def build_watchlist_row(
+    *, cfg: Config, cache: PriceCache, ticker: str, executor,
+) -> WatchlistRowVM | None:
+    """Build the (w, price, tags) tuple for the compact-row collapse route.
+
+    Returns None when `ticker` is not on the active watchlist — the route
+    surfaces this as 404, mirroring `build_watchlist_expanded`'s contract.
+    Tag computation reuses `_flag_tags` so the compact row's tag column
+    matches what /watchlist renders for the same ticker.
+    """
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            rows = list_active_watchlist(conn)
+            row = next((r for r in rows if r.ticker == ticker), None)
+            if row is None:
+                return None
+            # Bind candidates to the pipeline's own eval (same anchor logic
+            # as build_watchlist) so flag tags don't drift from /watchlist.
+            pipeline_eval_row = conn.execute(
+                """SELECT evaluation_run_id FROM pipeline_runs
+                   WHERE state = 'complete'
+                   ORDER BY finished_ts DESC LIMIT 1"""
+            ).fetchone()
+            pipeline_eval_id = (
+                pipeline_eval_row[0] if pipeline_eval_row else None
+            )
+            candidates: list[Candidate] = []
+            if pipeline_eval_id is not None:
+                candidates = fetch_candidates_for_run(conn, pipeline_eval_id)
+            else:
+                fallback = conn.execute(
+                    "SELECT id FROM evaluation_runs ORDER BY run_ts DESC LIMIT 1"
+                ).fetchone()
+                if fallback is not None:
+                    candidates = fetch_candidates_for_run(conn, fallback[0])
+    finally:
+        conn.close()
+    by_ticker = {c.ticker: c for c in candidates}
+    snaps = cache.get_many(
+        [ticker],
+        deadline_seconds=cfg.web.price_fetch_deadline_seconds,
+        executor=executor,
+    )
+    snap = snaps.get(ticker)
+    tags = _flag_tags(by_ticker).get(ticker, ())
+    return WatchlistRowVM(w=row, price=snap, tags=tags)
 
 
 def build_watchlist_expanded(

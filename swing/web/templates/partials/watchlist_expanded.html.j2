@@ -1,6 +1,13 @@
 {#- Expects: expanded (WatchlistExpandedVM) -#}
 <tr id="watchlist-row-{{ expanded.ticker }}" class="expanded">
   <td colspan="7">
+    <button class="close-expanded"
+            onclick="event.stopPropagation()"
+            hx-get="/watchlist/{{ expanded.ticker }}/row"
+            hx-target="closest tr"
+            hx-swap="outerHTML"
+            hx-headers='{"HX-Request": "true"}'
+            title="Close">✕</button>
     <h3>{{ expanded.ticker }}</h3>
     {% if expanded.last_price %}
       <p>Last: ${{ '%.2f' | format(expanded.last_price.price) }}
