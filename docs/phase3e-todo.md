@@ -240,7 +240,7 @@ Items surfaced during the Finviz-pool per-criterion analysis (commits `618cb9c..
 
 ### From Finviz-pool study:
 
-- **Watch-staging UI surface for near-A+ defensible candidates.** Phase 3e candidate. Show tickers in the near-A+ defensible subset (currently SLDB, UCTT — those failing only `proximity_20ma`) in a separate dashboard section flagged "near-A+, awaiting pullback." Operator can monitor for pullback to 20MA, then re-evaluate for trade entry. Modest scope: ~1 VM extension + ~1 template + ~1 query helper. Genuine operational value once identification volume + capital cycling is in motion.
+- ~~**Watch-staging UI surface for near-A+ defensible candidates.**~~ SUBSUMED 2026-04-25 by hypothesis recommendation engine (commits `b24506b` → `fe270a6`). Near-A+ defensible candidates surface in the dashboard "Hypothesis-driven recommendations" section under the "Near-A+ defensible: extension test" hypothesis. SLDB/UCTT-class tickers automatically appear there when they recur as watch-bucket candidates failing only `proximity_20ma`.
 - **Longer-window Finviz-pool re-run after 30-60 days more data accumulates.** Same study module (`research/finviz_pool_analysis/`); just re-execute. The 8-day single-ticker SLDB-population caveat resolves naturally as more daily Finviz CSVs accumulate. Estimated 30 minutes once enough data exists; useful for operator to confirm or revise the descriptive findings.
 - **Path-resolution policy for renamed-rejected CSVs.** Implementer flagged: 1 evaluation_run skipped because its CSV was renamed to `data/finviz-inbox/rejected/finviz16Apr2026.rejected-20260419T064456.csv`. Strict literal-basename match was implemented; stem-prefix match could include rejected runs. **Defer indefinitely.** 1 run affected; semantics could go either way; not load-bearing.
 - **Single-ticker A+ population caveat.** All 3 A+ rows in the 8-day snapshot were SLDB on 2 dates. Inherent limitation of a small window; resolves with longer-window re-run above. Not a follow-up task; documented limitation.
@@ -252,14 +252,34 @@ Items surfaced during the Finviz-pool per-criterion analysis (commits `618cb9c..
 
 ### Cross-cutting: Post-hoc trade analysis CLI tool
 
-- **`swing trade analyze <trade_id>` retrospective tool.** All data exists in the production DB to produce a structured per-trade retrospective: candidate row + criteria from the recommendation evaluation_run, entry/exit data, recommendation-bucket, criteria-failed-at-recommendation, time-from-recommendation-to-entry, entry-vs-pivot deviation, exit-vs-stop deviation, P&L, hold duration. With hypothesis_label now persisted, the tool can also surface the operator's pre-trade hypothesis alongside outcome. **Higher operational value than I initially framed** — surfaces the case-study analysis the operator asked about for VIR. Modest scope (~1 session, single CLI command, SQL joins on existing tables). Phase 3e candidate; would compose with the hypothesis-label aggregation work.
+- ~~**`swing trade analyze <trade_id>` retrospective tool.**~~ SHIPPED 2026-04-25 (commits `375344f` cross-contaminated + `2815daa` + `4c2fdbd` → `d5b1753`). VIR verification reproduces manual case-study output exactly. Handles both production-recommended and manually-sourced trades.
 
 ### Operational hygiene
 
-- **Weekly DB backups during the first pipeline run of the calendar week.** Add backup logic to the pipeline runner: on the first pipeline run of each ISO calendar week, copy `~/swing-data/swing.db` to `~/swing-data/backups/swing-YYYYWW.db` (or similar dating scheme) before any DB writes. Track most-recent-backup-week to detect "first run of week"; consider rolling retention (e.g., keep 12 most-recent weekly backups, ~3 months coverage). Modest scope (~1 session): pipeline runner change + a small `swing/data/backup.py` helper + tests + a CLI hook (`swing db-backup --force` for manual triggering). Operationally important — production DB is the source-of-truth for trade outcomes + per-criterion data + hypothesis labels; loss would be unrecoverable.
+- ~~**Weekly DB backups during the first pipeline run of the calendar week.**~~ SHIPPED 2026-04-25 (commits `4a565c6` → `1540489`). WAL-safe via `sqlite3.Connection.backup()` API. Auto-backup verified working in operator's mid-session db-migrate.
 
 ### Chart-pattern algorithm framing note (cross-reference)
 
 Per `docs/orchestrator-context.md` 2026-04-25 binding-constraint analysis: chart-pattern algorithm (Phase 3e §3e.6) is for **encoding qualitative chart-pattern input into structured feedback-loop data**, NOT for throughput acceleration (operator can manually assess at saturation rate). Important addition; not urgent. Multi-session copowers cycle when ready. Hypothesis-label free-text absorbs qualitative chart-pattern input as interim solution.
+
+---
+
+## 2026-04-25 hypothesis-engine + analyze + backup follow-ups
+
+Items surfaced from the Monday-prep operational batch (commits `4a565c6` → `fe270a6`).
+
+### From hypothesis-recommendation engine work:
+
+- **WatchlistVM extension for active recommendations** (optional). hyp2 declined per scope discipline — dashboard + CLI pre-fill cover the primary loop; the watchlist page already shows flag tags. If operator wants the standalone `/watchlist` page to also list active recommendations, clean follow-up: add `active_recommendations` field to `WatchlistVM`; render the same partial in the watchlist template. ~30 min work.
+- **Monitor for first hypothesis closure → revisit longer-horizon planning.** Per orchestrator-context.md 2026-04-25 entry: when the first hypothesis closes (target sample met OR tripwire-fired escape), revisit the longer-horizon planning question with operator. Likely first to close: Sub-A+ VCP-not-formed (5-sample target; VIR is sample 1) or A+ baseline (20-sample) depending on operator's actual identification + take pace.
+- **Hypothesis registry-mutation discipline (operator-facing).** Per pre-registration discipline, only `status` is mutable via `swing hypothesis update`. To add a NEW hypothesis or change target_sample / tripwire / decision_criteria of existing hypotheses requires a formal new migration (e.g., `0009_hypothesis_v0.2_amendment.sql`). This boundary is a feature, not a limitation; preserves anti-rationalization integrity. If operator decides to add hypothesis 5 (e.g., post-first-closure planning), it's a small Phase 2 carve-out: new migration + seed.
+
+### From `swing trade analyze` CLI work:
+
+- **Cross-contamination commit-title misattribution.** Commits `375344f` (titled "feat(pipeline): trigger weekly DB backup...") and `43b4d35` (titled "feat(cli): add db-backup subcommand...") accidentally bundled trade-analyze implementer's work due to parallel `git add` race. Code is correct; commit titles are misattributed. Could be addressed via git notes if attribution preservation matters; recommendation per orchestrator-context.md 2026-04-25 lesson is to leave as-is (the lesson is durable; archaeology fix is administrative overhead). Future parallel dispatches should use git worktrees to prevent this class of issue.
+
+### From weekly DB backup work:
+
+- (No follow-ups; clean implementation.)
 
 ---
