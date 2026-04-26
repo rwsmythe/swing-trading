@@ -151,3 +151,21 @@ def test_flag_floor_holds_gate_holding_floor_passes():
     bars = make_flag_bars(floor_holds=True)
     res = classify_flag(bars)
     assert res.detected is True
+
+
+def test_confidence_is_min_of_continuous_clearances():
+    # pole_gain just above 0.30 → clearance ≈ 0.014 (smallest)
+    # pullback_pct = 0.05 → pullback clearance ≈ 0.667
+    # tightness 0.3 → clearance ≈ 0.5
+    # volume 0.3 → clearance ≈ 0.571
+    bars = make_flag_bars(
+        pole_gain_pct=0.31,           # tight on pole_gain
+        pullback_pct=0.05,
+        flag_tightness_factor=0.3,
+        flag_volume_factor=0.3,
+    )
+    res = classify_flag(bars)
+    assert res.detected is True
+    # The minimum clearance (pole_gain) should drive confidence.
+    expected_min = (0.31 - 0.30) / 0.70
+    assert abs(res.confidence - expected_min) < 0.05
