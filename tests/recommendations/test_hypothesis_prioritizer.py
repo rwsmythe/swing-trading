@@ -179,11 +179,13 @@ def test_recommendation_includes_label_and_hypothesis_id():
     assert "A+ baseline" in out[0].suggested_label_descriptive
 
 
-def test_multi_match_candidate_appears_under_each_matched_hypothesis():
-    """A candidate that matched two hypotheses surfaces once per match —
-    deduplication is the prioritizer caller's responsibility (the UI may
-    want to show 'one recommendation per ticker, prefer hypothesis X' or
-    'one recommendation per match'; both are valid views)."""
+def test_multi_match_candidate_dedupes_to_highest_priority_hypothesis():
+    """Adversarial review R1 Major 3: brief §8 says when a candidate
+    fits multiple hypotheses, the prioritizer "picks the most-
+    investigation-valuable one." A+ baseline (target 20, current 0,
+    distance 20) outranks Sub-A+ VCP-not-formed (target 5, current 0,
+    distance 5), so the single surviving recommendation for ticker AAAA
+    should be the A+ baseline match."""
     reg = _registry()
     matches = [
         _match("A+ baseline", "AAAA", registry=reg),
@@ -191,7 +193,21 @@ def test_multi_match_candidate_appears_under_each_matched_hypothesis():
     ]
     progress = [_progress(name=r.name, current=0, registry=reg) for r in reg]
     out = prioritize_recommendations(matches, registry=reg, progress=progress)
+    assert len(out) == 1
+    assert out[0].candidate_ticker == "AAAA"
+    assert out[0].hypothesis_name == "A+ baseline"
+
+
+def test_multi_match_dedup_preserves_other_tickers():
+    """Per-ticker dedup keeps first (highest-priority) entry per ticker;
+    other tickers are unaffected."""
+    reg = _registry()
+    matches = [
+        _match("A+ baseline", "AAAA", registry=reg),
+        _match("Sub-A+ VCP-not-formed", "AAAA", registry=reg),
+        _match("A+ baseline", "BBBB", registry=reg),
+    ]
+    progress = [_progress(name=r.name, current=0, registry=reg) for r in reg]
+    out = prioritize_recommendations(matches, registry=reg, progress=progress)
     assert len(out) == 2
-    assert {r.hypothesis_name for r in out} == {
-        "A+ baseline", "Sub-A+ VCP-not-formed",
-    }
+    assert {r.candidate_ticker for r in out} == {"AAAA", "BBBB"}

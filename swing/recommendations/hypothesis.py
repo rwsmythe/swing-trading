@@ -158,17 +158,21 @@ def _sub_aplus_vcp_not_formed_match(
 
 
 def _capital_blocked_match(candidate: Candidate) -> bool:
-    """Watch bucket AND non-pass set is exactly {risk_feasibility}.
+    """Capital-blocked = "would be A+ except risk_feasibility is the only
+    blocker." Since `risk_feasibility` is a hard pre-filter in production
+    (`bucket_for` returns 'skip' the moment risk fails), the production-
+    realized form of this hypothesis is `bucket == 'skip'` rather than
+    `'watch'`. Adversarial review R1 Major 1: the brief's literal rule
+    `bucket == 'watch' AND non_pass == {'risk_feasibility'}` is dead-on-
+    arrival on production data; we accept matches in either bucket as
+    long as the only failing criterion is risk_feasibility.
 
-    Note: `risk_feasibility` is a hard pre-filter in production — a
-    candidate that fails it is bucketed `skip`, not `watch`. By the
-    matcher rule "watch + only risk_feasibility fails" this hypothesis
-    will never fire on real production data today; the rule is preserved
-    for future variants where production gating changes (or for replay
-    studies that disable the hard filter to characterize the structural
-    distribution).
+    Allowing both buckets preserves brief intent ("candidates A+ except
+    risk_feasibility") without coupling the matcher to a specific
+    production gating order. Replay-harness variants that disable the
+    hard filter (and so see these candidates in 'watch') still match.
     """
-    if candidate.bucket != "watch":
+    if candidate.bucket not in ("watch", "skip"):
         return False
     return _non_pass_criterion_names(candidate) == {"risk_feasibility"}
 
@@ -247,7 +251,7 @@ def prioritize_recommendations(
     registry: Iterable[HypothesisRegistryEntry],
     progress: Iterable[HypothesisProgressSummary],
 ) -> list[CandidateRecommendation]:
-    """Rank matches by hypothesis-investigation value.
+    """Rank matches by hypothesis-investigation value, ONE row per ticker.
 
     Sort key (lower → higher priority):
       1. tripwire_fired (False before True; tripwire-fired hypotheses
@@ -258,12 +262,15 @@ def prioritize_recommendations(
          signal).
       4. candidate_ticker (alpha, deterministic tie-breaker).
 
+    Per-ticker dedup (brief §8 + adversarial review R1 Major 3): a
+    candidate matching multiple hypotheses surfaces ONCE under its
+    most-investigation-valuable hypothesis (the same sort key applied
+    within the per-ticker group). Operator gets one recommendation per
+    name on the dashboard, not duplicates.
+
     Matches against non-active hypotheses (paused, closed-*) are dropped
     even if the matcher returned them — defense-in-depth so a stale
     in-memory registry can't surface a closed hypothesis to the operator.
-    Each surviving match becomes one `CandidateRecommendation`; multi-
-    match candidates appear once per matched hypothesis (the caller
-    decides whether to dedupe by ticker).
     """
     registry_list = list(registry)
     active_by_id = {h.id: h for h in registry_list if h.status == "active"}
@@ -291,31 +298,51 @@ def prioritize_recommendations(
             tripwire_fired=tripwire,
         ))
 
-    recs.sort(key=lambda r: (
+    sort_key = lambda r: (
         r.tripwire_fired,
         -r.distance_to_target,
         r.priority_hint,
         r.candidate_ticker,
-    ))
-    return recs
+    )
+    recs.sort(key=sort_key)
+
+    # Per-ticker dedup: keep the first (highest-priority) entry per
+    # ticker. Tickers with no ticker (matcher built without
+    # candidate_ticker, e.g. older test paths) are kept as-is — the
+    # empty-string sentinel doesn't collide with real symbols.
+    seen: set[str] = set()
+    deduped: list[CandidateRecommendation] = []
+    for r in recs:
+        if r.candidate_ticker == "":
+            deduped.append(r)
+            continue
+        if r.candidate_ticker in seen:
+            continue
+        seen.add(r.candidate_ticker)
+        deduped.append(r)
+    return deduped
 
 
 def _label_matches_hypothesis(label: str | None, hypothesis_name: str) -> bool:
-    """Trade's `hypothesis_label` matches a hypothesis if the hypothesis
-    NAME appears as a case-insensitive substring of the label.
+    """Trade's `hypothesis_label` matches a hypothesis if the label
+    STARTS WITH the hypothesis NAME (case-insensitive).
 
-    Example: VIR's free-text backfill ``"sub-A+ VCP-not-formed test
-    (proximity_20ma + tightness fails); inaugural trade test"`` matches
-    the canonical "Sub-A+ VCP-not-formed" hypothesis. NULL labels never
-    match. The four canonical hypothesis names are distinct phrases so
-    a single label normally maps to at most one hypothesis. If a label
-    DOES contain two canonical names (operator typo / unusual free-text),
-    it counts toward BOTH — the conservative interpretation; the operator
-    can rename the label in a follow-up trade-events 'note' if needed.
+    Adversarial review R1 Major 2: prior implementation used substring
+    match, which would silently double-count a label like
+    "A+ baseline / Sub-A+ VCP-not-formed combo" toward both hypotheses
+    and contaminate tripwire/progress arithmetic. Prefix is strict
+    enough to prevent that while still accepting VIR's free-text
+    backfill (which begins with "sub-A+ VCP-not-formed ..." matching
+    the "Sub-A+ VCP-not-formed" hypothesis after case-folding).
+
+    Operator-facing implication: when free-typing a hypothesis label,
+    START with the canonical hypothesis name; descriptive context goes
+    AFTER. The recommendation engine's `_descriptive_label` builder
+    already follows this convention. NULL labels never match.
     """
     if not label:
         return False
-    return hypothesis_name.lower() in label.lower()
+    return label.lower().startswith(hypothesis_name.lower())
 
 
 def compute_tripwire_status(

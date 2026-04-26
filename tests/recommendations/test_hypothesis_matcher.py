@@ -181,6 +181,39 @@ def test_capital_blocked_test_matches_only_risk_feasibility_failure():
     assert "Capital-blocked: smaller-position test" in names
 
 
+def test_capital_blocked_matches_skip_bucket_when_only_risk_feasibility_fails():
+    """Adversarial review R1 Major 1: production gating buckets
+    risk_feasibility-only failures as `skip` (hard pre-filter), so the
+    matcher must accept `bucket == 'skip'` for the hypothesis to fire on
+    real data. Without this, the Capital-blocked hypothesis is dead-on-
+    arrival in production."""
+    cand = _candidate("skip", results=[
+        ("risk_feasibility", "risk", "fail"),
+    ])
+    matches = match_candidate_to_hypotheses(
+        cand, doctrine_defensible_set=DOCTRINE_DEFENSIBLE_MISS_SET,
+        registry=_registry(),
+    )
+    names = {m.hypothesis_name for m in matches}
+    assert "Capital-blocked: smaller-position test" in names
+
+
+def test_capital_blocked_skip_bucket_rejects_when_other_failures():
+    """skip-bucket candidate failing risk_feasibility AND something else
+    is NOT capital-blocked — there are multiple blockers, smaller-
+    position alone won't unblock the trade."""
+    cand = _candidate("skip", results=[
+        ("risk_feasibility", "risk", "fail"),
+        ("TT1_above_150_200", "trend_template", "fail"),
+    ])
+    matches = match_candidate_to_hypotheses(
+        cand, doctrine_defensible_set=DOCTRINE_DEFENSIBLE_MISS_SET,
+        registry=_registry(),
+    )
+    names = {m.hypothesis_name for m in matches}
+    assert "Capital-blocked: smaller-position test" not in names
+
+
 def test_capital_blocked_test_rejects_when_additional_failures():
     cand = _candidate("watch", results=[
         ("risk_feasibility", "risk", "fail"),
@@ -214,13 +247,20 @@ def test_na_counts_as_non_pass_per_bucket_for_semantics():
     assert "Sub-A+ VCP-not-formed" in names
 
 
-def test_skip_bucket_no_match():
-    cand = _candidate("skip", results=[("risk_feasibility", "risk", "fail")])
+def test_skip_bucket_with_unrelated_failure_no_match():
+    """A skip-bucket candidate with failures OUTSIDE the capital-blocked
+    rule does not match any hypothesis. (Capital-blocked specifically
+    accepts skip + only-risk_feasibility — see
+    test_capital_blocked_matches_skip_bucket_when_only_risk_feasibility_fails.)
+    """
+    cand = _candidate("skip", results=[
+        ("TT1_above_150_200", "trend_template", "fail"),
+        ("adr", "vcp", "fail"),
+    ])
     matches = match_candidate_to_hypotheses(
         cand, doctrine_defensible_set=DOCTRINE_DEFENSIBLE_MISS_SET,
         registry=_registry(),
     )
-    # No active hypothesis matches `skip` bucket
     assert matches == []
 
 

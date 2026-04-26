@@ -241,9 +241,13 @@ def test_both_tripwires_can_fire_simultaneously(tmp_db: Path):
         conn.close()
 
 
-def test_label_match_is_case_insensitive_substring(tmp_db: Path):
-    """Per brief §8: VIR's label was 'sub-A+ VCP-not-formed test (proximity_20ma + tightness fails); inaugural trade test'
-    — must match the 'Sub-A+ VCP-not-formed' hypothesis. Case-insensitive substring."""
+def test_label_match_is_case_insensitive_prefix(tmp_db: Path):
+    """Adversarial review R1 Major 2: matching is case-insensitive PREFIX
+    (not substring) so a label like "A+ baseline / Sub-A+ VCP-not-formed
+    combo" can't double-count. VIR's free-text backfill starts with
+    "sub-A+ VCP-not-formed test (...)" → matches "Sub-A+ VCP-not-formed"
+    case-insensitively as a prefix.
+    """
     conn = _setup(tmp_db)
     try:
         h = _hyp(conn, "Sub-A+ VCP-not-formed")
@@ -264,6 +268,32 @@ def test_label_match_is_case_insensitive_substring(tmp_db: Path):
         )
         assert status.current_sample == 1
         assert status.cumulative_loss == -2.0
+    finally:
+        conn.close()
+
+
+def test_label_match_substring_in_middle_does_NOT_match(tmp_db: Path):
+    """R1 Major 2: with prefix-match, a label that mentions the
+    hypothesis name in the middle does NOT match. This protects the
+    tripwire arithmetic from contamination by descriptive labels that
+    reference multiple hypotheses."""
+    conn = _setup(tmp_db)
+    try:
+        h = _hyp(conn, "Sub-A+ VCP-not-formed")
+        with conn:
+            tid = _add_open_trade(
+                conn, ticker="MID", entry_date="2026-04-01",
+                label="experimental: Sub-A+ VCP-not-formed trial",
+            )
+            _close_trade_with_r(
+                conn, tid, exit_date="2026-04-02",
+                r_multiple=-1.0, realized_pnl=-50.0,
+            )
+        status = compute_tripwire_status(
+            conn, hypothesis_id=h.id, starting_equity=7500.0,
+        )
+        # Label does NOT start with the hypothesis name → not counted.
+        assert status.current_sample == 0
     finally:
         conn.close()
 

@@ -17,7 +17,11 @@
 -- is a no-op (`ensure_schema` already gates on schema_version, but the
 -- IGNORE provides defense-in-depth against accidental script re-execution).
 
-CREATE TABLE hypothesis_registry (
+-- IF NOT EXISTS on the table + index so direct script re-execution (e.g. an
+-- operator running the .sql file by hand) is a no-op rather than an error.
+-- The normal `ensure_schema` path is already gated on schema_version; this
+-- defense-in-depth covers the manual-rerun case the Codex R1 review flagged.
+CREATE TABLE IF NOT EXISTS hypothesis_registry (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
   statement TEXT NOT NULL,
@@ -30,9 +34,12 @@ CREATE TABLE hypothesis_registry (
   created_at TEXT NOT NULL,
   status_changed_at TEXT,
   status_change_reason TEXT,
+  -- notes: operator free-text annotations (e.g. mid-investigation context
+  -- the operator wants to remember). status-change audit trail uses the
+  -- dedicated `status_change_reason` column.
   notes TEXT
 );
-CREATE INDEX ix_hypothesis_status ON hypothesis_registry(status);
+CREATE INDEX IF NOT EXISTS ix_hypothesis_status ON hypothesis_registry(status);
 
 INSERT OR IGNORE INTO hypothesis_registry
   (name, statement, target_sample_size, decision_criteria,
