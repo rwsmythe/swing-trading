@@ -1,0 +1,35 @@
+{#- swing/web/templates/partials/hypothesis_recommendations.html.j2 -#}
+{#- Frontend brief §4.2 — top-N hypothesis-driven recommendations. The
+    surrounding {% if %} guard means the section vanishes entirely when
+    `vm.active_recommendations` is empty (empty tuple → falsy in Jinja).
+    Kept as a partial so future routes (watchlist, dedicated page) can
+    include the same markup without copy/paste drift. -#}
+{% if vm.active_recommendations %}
+<section id="hypothesis-recommendations" class="hypothesis-recommendations">
+  <h2>Hypothesis-driven recommendations</h2>
+  <table class="hypothesis-recommendations">
+    <thead>
+      <tr>
+        <th>Ticker</th>
+        <th>Price</th>
+        <th>Hypothesis</th>
+        <th>Progress</th>
+        <th>Tripwire</th>
+        <th>Suggested label</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for rec in vm.active_recommendations %}
+        <tr {% if rec.tripwire_fired %}class="tripwire-fired"{% endif %}>
+          <td>{{ rec.ticker }}</td>
+          <td>{% if rec.current_price is not none %}${{ "%.2f"|format(rec.current_price) }}{% else %}—{% endif %}</td>
+          <td>{{ rec.hypothesis_name }}</td>
+          <td>{{ rec.hypothesis_progress_n }} / {{ rec.hypothesis_progress_target }}</td>
+          <td>{% if rec.tripwire_fired %}<strong>FIRED</strong>: {{ rec.tripwire_reason or "" }}{% else %}—{% endif %}</td>
+          <td title="{{ rec.suggested_label }}">{{ rec.suggested_label[:60] }}{% if rec.suggested_label|length > 60 %}…{% endif %}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}

@@ -15,3 +15,11 @@ body { font-family: system-ui, sans-serif; margin: 1rem; }
 .stale { color: #b00; font-size: 0.75rem; }
 table { border-collapse: collapse; width: 100%; }
 th, td { text-align: left; padding: 0.25rem 0.5rem; border-bottom: 1px solid #eee; }
+.hypothesis-recommendations { margin: 1rem 0; }
+.hypothesis-recommendations h2 { margin: 0 0 0.5rem; font-size: 1.05rem; }
+/* tripwire-fired marks rows whose hypothesis hit a pre-registered loss
+   tripwire (consecutive -1R streak or absolute cumulative loss). The
+   bright-red left border + tinted background must be loud enough that
+   the operator cannot miss it scanning the dashboard. */
+tr.tripwire-fired { background: #ffe6e6; border-left: 4px solid #c00; }
+tr.tripwire-fired td { font-weight: 600; }
