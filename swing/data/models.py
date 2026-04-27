@@ -67,6 +67,13 @@ class Trade:
     # research-study pre-registration. Default None preserves existing call
     # sites that construct Trade(...) without the new field. Migration 0007.
     hypothesis_label: str | None = None
+    # Chart pattern columns (migration 0010). All four NULL unless the
+    # pipeline classification step ran for this ticker's pipeline run.
+    # chart_pattern_operator is operator override (free-text, see spec §3.2.2).
+    chart_pattern_algo: str | None = None
+    chart_pattern_algo_confidence: float | None = None
+    chart_pattern_operator: str | None = None
+    chart_pattern_classification_pipeline_run_id: int | None = None
 
 
 @dataclass(frozen=True)
