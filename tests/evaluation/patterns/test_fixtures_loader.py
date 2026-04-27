@@ -177,6 +177,18 @@ def test_load_labeled_fixtures_raises_clear_error_on_csv_parser_failure(
     assert "parser error" in msg.lower()
 
 
+def test_load_labeled_fixtures_raises_on_non_dict_json_root(tmp_path: Path) -> None:
+    """Per Codex R3 M1: JSON root must be an object (not list/string/number)."""
+    pd.DataFrame(
+        {"Open": [1.0]*60, "High": [1.0]*60, "Low": [1.0]*60, "Close": [1.0]*60, "Volume": [1]*60},
+        index=pd.Index(pd.date_range("2026-01-02", periods=60, freq="B"), name="Date"),
+    ).to_csv(tmp_path / "BAD_2026-04-26_flag.csv")
+    # Valid JSON, but root is a list, not an object.
+    (tmp_path / "BAD_2026-04-26_flag.json").write_text("[]")
+    with pytest.raises(ValueError, match="must be an object"):
+        load_labeled_fixtures(tmp_path)
+
+
 def test_load_labeled_fixtures_raises_on_invalid_label(tmp_path: Path) -> None:
     """Per Codex R1 M2: label outside {flag, none} raises ValueError with path."""
     _write_synthetic_pair(tmp_path, "BAD_2026-04-26_flag", label="pennant")

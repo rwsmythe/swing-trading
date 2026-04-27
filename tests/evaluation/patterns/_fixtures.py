@@ -35,6 +35,9 @@ def load_labeled_fixtures(fixture_dir: Path = FIXTURE_DIR) -> list[LabeledFixtur
     - Returns list sorted by ``csv_path.stem`` (deterministic for parametrize ids).
     - Malformed JSON: raise ``json.JSONDecodeError`` with the path in the message
       (operator-debuggability over silent skip — clearly unrecoverable).
+    - JSON is read as UTF-8 (locale-independent); non-ASCII notes are supported.
+    - JSON top-level value must be an object (dict); a syntactically valid file
+      whose root is a list/string/number raises ``ValueError`` with the path.
     - Malformed CSV (parser failures, empty, missing OHLCV columns): raise
       ValueError with the file path in the message (operator-debuggability over
       silent skip — clearly unrecoverable, symmetric with malformed-JSON
@@ -59,11 +62,19 @@ def load_labeled_fixtures(fixture_dir: Path = FIXTURE_DIR) -> list[LabeledFixtur
         if not json_path.exists():
             continue  # unpaired CSV; skip silently
         try:
-            meta = json.loads(json_path.read_text())
+            meta = json.loads(json_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             raise json.JSONDecodeError(
                 f"{exc.msg} (in {json_path})", exc.doc, exc.pos
             ) from exc
+        # Per Codex R3 M1: top-level JSON value must be a dict; otherwise
+        # downstream `.get` / `in` calls raise AttributeError / TypeError and
+        # mask the path-bearing error contract for operators.
+        if not isinstance(meta, dict):
+            raise ValueError(
+                f"Invalid JSON root in {json_path}: must be an object, got "
+                f"{type(meta).__name__}."
+            )
         # Per Codex R1 M1: catch real parser failures (binary content, encoding
         # errors, mismatched quotes) BEFORE the missing-column check; re-raise
         # as ValueError with the file path so operators see the path, not a
