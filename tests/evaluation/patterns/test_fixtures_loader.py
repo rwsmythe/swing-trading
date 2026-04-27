@@ -24,7 +24,7 @@ def _write_synthetic_pair(
     label: str,
     notes: str = "",
     expected_confidence_min: float | None = None,
-    rows: int = 5,
+    rows: int = 60,
 ) -> None:
     """Write paired CSV (Date index + OHLCV) + JSON metadata under `dir_path`."""
     dates = pd.date_range("2026-01-02", periods=rows, freq="B")
@@ -75,7 +75,7 @@ def test_load_labeled_fixtures_pairs_csv_and_json(tmp_path: Path) -> None:
         label="flag",
         notes="textbook bull-flag continuation",
         expected_confidence_min=0.55,
-        rows=5,
+        rows=60,
     )
     fixtures = load_labeled_fixtures(tmp_path)
     assert len(fixtures) == 1
@@ -85,7 +85,8 @@ def test_load_labeled_fixtures_pairs_csv_and_json(tmp_path: Path) -> None:
     assert fx.label == "flag"
     assert fx.notes == "textbook bull-flag continuation"
     assert fx.expected_confidence_min == 0.55
-    assert len(fx.bars) == 5
+    # Per Codex R1 M3: loader trims to exactly 60 bars per spec §4.2 contract.
+    assert len(fx.bars) == 60
     # Discriminating: confirm the DataFrame has the OHLCV columns we wrote.
     assert list(fx.bars.columns) == ["Open", "High", "Low", "Close", "Volume"]
 
@@ -154,3 +155,120 @@ def test_load_labeled_fixtures_raises_clear_error_on_malformed_csv(
     msg = str(excinfo.value)
     assert "BROKEN_2026-04-26_flag.csv" in msg
     assert "Malformed CSV" in msg
+
+
+def test_load_labeled_fixtures_raises_clear_error_on_csv_parser_failure(
+    tmp_path: Path,
+) -> None:
+    """Per Codex R1 M1: real pandas parser failures (binary content, encoding
+    errors) raise ValueError with the file path, not pandas internal exception
+    types."""
+    csv_path = tmp_path / "BINARY_2026-04-26_flag.csv"
+    csv_path.write_bytes(
+        b"\xff\xfe\xfd\xfc\xfb\xfa\x00\x01\x02\x03 totally not utf-8"
+    )
+    (tmp_path / "BINARY_2026-04-26_flag.json").write_text(
+        '{"label": "flag", "notes": "binary garbage"}'
+    )
+    with pytest.raises(ValueError) as excinfo:
+        load_labeled_fixtures(tmp_path)
+    msg = str(excinfo.value)
+    assert "BINARY_2026-04-26_flag.csv" in msg
+    assert "parser error" in msg.lower()
+
+
+def test_load_labeled_fixtures_raises_on_invalid_label(tmp_path: Path) -> None:
+    """Per Codex R1 M2: label outside {flag, none} raises ValueError with path."""
+    _write_synthetic_pair(tmp_path, "BAD_2026-04-26_flag", label="pennant")
+    with pytest.raises(ValueError, match="Invalid label"):
+        load_labeled_fixtures(tmp_path)
+
+
+def test_load_labeled_fixtures_raises_on_non_numeric_expected_confidence_min(
+    tmp_path: Path,
+) -> None:
+    """Per Codex R1 M2: expected_confidence_min must be a number, not a string."""
+    # Write a fixture with string expected_confidence_min via direct JSON write.
+    pd.DataFrame(
+        {
+            "Open": [1.0] * 60,
+            "High": [1.0] * 60,
+            "Low": [1.0] * 60,
+            "Close": [1.0] * 60,
+            "Volume": [1] * 60,
+        },
+        index=pd.Index(
+            pd.date_range("2026-01-02", periods=60, freq="B"), name="Date"
+        ),
+    ).to_csv(tmp_path / "BAD_2026-04-26_flag.csv")
+    (tmp_path / "BAD_2026-04-26_flag.json").write_text(
+        '{"label": "flag", "notes": "bad type", "expected_confidence_min": "0.7"}'
+    )
+    with pytest.raises(ValueError, match="expected_confidence_min"):
+        load_labeled_fixtures(tmp_path)
+
+
+def test_load_labeled_fixtures_raises_on_out_of_range_expected_confidence_min(
+    tmp_path: Path,
+) -> None:
+    """Per Codex R1 M2: expected_confidence_min must be in [0.0, 1.0]."""
+    pd.DataFrame(
+        {
+            "Open": [1.0] * 60,
+            "High": [1.0] * 60,
+            "Low": [1.0] * 60,
+            "Close": [1.0] * 60,
+            "Volume": [1] * 60,
+        },
+        index=pd.Index(
+            pd.date_range("2026-01-02", periods=60, freq="B"), name="Date"
+        ),
+    ).to_csv(tmp_path / "BAD_2026-04-26_flag.csv")
+    (tmp_path / "BAD_2026-04-26_flag.json").write_text(
+        '{"label": "flag", "notes": "out of range", "expected_confidence_min": 1.5}'
+    )
+    with pytest.raises(ValueError, match="out of range"):
+        load_labeled_fixtures(tmp_path)
+
+
+def test_load_labeled_fixtures_raises_on_expected_confidence_min_on_none_fixture(
+    tmp_path: Path,
+) -> None:
+    """Per Codex R1 M2 + README §2: expected_confidence_min only allowed on
+    'flag' fixtures."""
+    pd.DataFrame(
+        {
+            "Open": [1.0] * 60,
+            "High": [1.0] * 60,
+            "Low": [1.0] * 60,
+            "Close": [1.0] * 60,
+            "Volume": [1] * 60,
+        },
+        index=pd.Index(
+            pd.date_range("2026-01-02", periods=60, freq="B"), name="Date"
+        ),
+    ).to_csv(tmp_path / "BAD_2026-04-26_none.csv")
+    (tmp_path / "BAD_2026-04-26_none.json").write_text(
+        '{"label": "none", "notes": "no floor allowed", "expected_confidence_min": 0.5}'
+    )
+    with pytest.raises(ValueError, match="not allowed on 'none' fixture"):
+        load_labeled_fixtures(tmp_path)
+
+
+def test_load_labeled_fixtures_trims_to_last_60_bars(tmp_path: Path) -> None:
+    """Per Codex R1 M3 + spec §4.2: loader trims to last 60 rows."""
+    _write_synthetic_pair(
+        tmp_path, "AAPL_2026-04-26_flag", label="flag", rows=63
+    )
+    fixtures = load_labeled_fixtures(tmp_path)
+    assert len(fixtures) == 1
+    assert len(fixtures[0].bars) == 60  # trimmed from 63
+
+
+def test_load_labeled_fixtures_raises_on_fewer_than_60_bars(tmp_path: Path) -> None:
+    """Per Codex R1 M3 + spec §4.2: input <60 rows raises ValueError."""
+    _write_synthetic_pair(
+        tmp_path, "AAPL_2026-04-26_flag", label="flag", rows=59
+    )
+    with pytest.raises(ValueError, match="≥60 daily bars"):
+        load_labeled_fixtures(tmp_path)

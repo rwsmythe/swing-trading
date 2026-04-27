@@ -128,11 +128,12 @@ discipline check and starts being a rubber stamp.
    python -c "import yfinance as yf; df = yf.Ticker('AAPL').history(end='2026-04-26', period='90d'); df.to_csv('tests/evaluation/patterns/fixtures/AAPL_2026-04-26_flag.csv')"
    ```
 
-   `period='90d'` yields ~63 trading days of data, comfortably above the
-   classifier's 36-bar minimum (`MIN_BARS=36` in
-   `swing/evaluation/patterns/flag_classifier.py`). The helper passes the full
-   window through to `classify_flag`; the classifier searches anchor positions
-   over the available bars and does not require pre-trimming.
+   `period='90d'` yields ~63 trading days of data; the helper trims to the
+   last 60 bars per spec §4.2's "60 daily bars" contract before passing to
+   `classify_flag`. If yfinance returns fewer than 60 trading days for your
+   `(ticker, end_date)` pair (e.g., short period, holiday-heavy month), the
+   loader raises `ValueError` — increase `period='120d'` or longer to ensure
+   margin.
 
 3. **Author the paired JSON** alongside the CSV. Same stem, `.json` extension.
    At minimum: `label` and `notes`. Include `expected_confidence_min` for

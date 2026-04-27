@@ -29,9 +29,12 @@ def test_classify_flag_matches_labeled_fixture(fixture: LabeledFixture) -> None:
     result = classify_flag(fixture.bars, cfg=cfg)
 
     if fixture.label == "flag":
-        assert result.pattern == "flag", (
+        # Per Codex R1 M4 + spec §4.2 (line 631): assert both detected AND
+        # pattern == "flag" (binding source-of-truth exemplar shape).
+        assert result.detected and result.pattern == "flag", (
             f"Fixture {fixture.name} labeled 'flag' but classifier returned "
-            f"pattern={result.pattern!r}. Notes: {fixture.notes}"
+            f"detected={result.detected} pattern={result.pattern!r}. "
+            f"Notes: {fixture.notes}"
         )
         if fixture.expected_confidence_min is not None:
             assert result.confidence >= fixture.expected_confidence_min, (
@@ -40,9 +43,13 @@ def test_classify_flag_matches_labeled_fixture(fixture: LabeledFixture) -> None:
                 f"{fixture.expected_confidence_min:.3f}."
             )
     elif fixture.label == "none":
-        assert result.pattern in ("none", None), (
+        # Per Codex R1 M4 + spec §4.2 (line 635): assert both NOT detected AND
+        # pattern == "none". The string sentinel is the contract; accepting
+        # ``None`` defensively could mask future error-sentinel regressions.
+        assert not result.detected and result.pattern == "none", (
             f"Fixture {fixture.name} labeled 'none' but classifier returned "
-            f"pattern={result.pattern!r}. Notes: {fixture.notes}"
+            f"detected={result.detected} pattern={result.pattern!r}. "
+            f"Notes: {fixture.notes}"
         )
     else:
         pytest.fail(f"Unknown label {fixture.label!r} on fixture {fixture.name}")
