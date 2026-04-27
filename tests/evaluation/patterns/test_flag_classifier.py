@@ -456,3 +456,28 @@ def test_pattern_None_distinct_from_string_none_in_dataclass():  # noqa: N802  #
     )
     assert err_result.pattern is None
     assert err_result.pattern != "none"
+
+
+def test_components_dict_includes_clearances_and_smas():
+    """Spec §3.1.1: components dict carries the 4 continuous-gate clearances
+    and the 3 SMA-at-flag-start values for falsifiability/diagnostics. These
+    values are unrecoverable once raw bars are not persisted alongside."""
+    import math
+    from swing.evaluation.patterns.flag_classifier import classify_flag
+    bars = make_flag_bars()
+    res = classify_flag(bars)
+    assert res.detected, "fixture should be a passing flag"
+    c = res.components
+    # Four soft clearances present and finite.
+    for k in ("pole_gain_clearance", "pullback_clearance",
+              "tightness_clearance", "volume_clearance"):
+        assert k in c, f"missing {k}"
+        assert math.isfinite(c[k]), f"{k} not finite: {c[k]!r}"
+    # Three SMAs at flag_start present and finite (passing candidates have
+    # MIN_BARS >= 36 with MA-structure precondition flag_start_idx >= 55).
+    for k in ("sma10_at_flag_start", "sma20_at_flag_start", "sma50_at_flag_start"):
+        assert k in c, f"missing {k}"
+        assert math.isfinite(c[k]), f"{k} not finite: {c[k]!r}"
+    # SMA10 > SMA20 > SMA50 (Gate 5 ma_structure precondition for any passing
+    # candidate, so the values should respect that order).
+    assert c["sma10_at_flag_start"] > c["sma20_at_flag_start"] > c["sma50_at_flag_start"]

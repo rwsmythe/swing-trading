@@ -151,6 +151,34 @@ def _soft_clearances(c: dict, cfg: ClassifierConfig) -> tuple[float, float, floa
     )
 
 
+def _enrich_components(
+    c: dict, anchors: tuple[int, int, int],
+    bars: pd.DataFrame, cfg: ClassifierConfig,
+) -> dict:
+    """Augment the per-gate components dict with the 4 soft clearances and
+    3 SMA-at-flag-start values per spec §3.1.1. SMA values become
+    unrecoverable once raw bars aren't persisted alongside (Phase 1 → 2
+    handoff item)."""
+    pole_gain_cl, pullback_cl, tightness_cl, volume_cl = _soft_clearances(c, cfg)
+    closes = bars["Close"].to_numpy(dtype=float)
+    _, flag_start, _ = anchors
+
+    def sma(window: int) -> float:
+        if flag_start < window - 1:
+            return float("nan")
+        return float(np.mean(closes[flag_start - window + 1:flag_start + 1]))
+
+    enriched = dict(c)
+    enriched["pole_gain_clearance"] = pole_gain_cl
+    enriched["pullback_clearance"] = pullback_cl
+    enriched["tightness_clearance"] = tightness_cl
+    enriched["volume_clearance"] = volume_cl
+    enriched["sma10_at_flag_start"] = sma(10)
+    enriched["sma20_at_flag_start"] = sma(20)
+    enriched["sma50_at_flag_start"] = sma(50)
+    return enriched
+
+
 def _detection_passes(c: dict, cfg: ClassifierConfig) -> bool:
     return (
         c["pole_gain"] >= cfg.flag_pole_gain_min
@@ -216,7 +244,7 @@ def classify_flag(
             pole_high=c["pole_high"],
             flag_low=c["flag_low"],
             pivot=c["pivot"],
-            components=c,
+            components=_enrich_components(c, (ps, fs, fe), bars, cfg),
         )
 
     # No candidate passes. Components carry the best-attempted candidate's
@@ -226,8 +254,8 @@ def classify_flag(
     # which the data-window gate (MIN_BARS=36) effectively prevents — kept
     # as belt-and-braces for type-stability of components.
     if best_attempt is not None:
-        _, c, _ = best_attempt
-        components = dict(c)
+        _, c, anchors = best_attempt
+        components = _enrich_components(c, anchors, bars, cfg)
     else:
         components = {"pole_M": 5.0, "flag_N": 5.0}
     return FlagClassificationResult(
