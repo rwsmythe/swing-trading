@@ -5,7 +5,9 @@ import base64
 import logging
 import sqlite3
 from dataclasses import dataclass
-from datetime import date as _date, datetime as _dt
+from datetime import UTC
+from datetime import date as _date
+from datetime import datetime as _dt
 from pathlib import Path
 
 from swing.config import Config
@@ -13,30 +15,37 @@ from swing.data.backup import do_backup, prune_old_backups, should_backup
 from swing.data.db import connect
 from swing.data.models import Candidate, EvaluationRun
 from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
+from swing.data.repos.cash import list_cash
+from swing.data.repos.pattern_classifications import insert_classification
 from swing.data.repos.pipeline import (
-    LeaseRevoked, insert_chart_target, set_evaluation_run_id,
+    LeaseRevoked,
+    insert_chart_target,
+    set_evaluation_run_id,
     update_chart_target_status,
 )
-from swing.data.repos.pattern_classifications import insert_classification
 from swing.data.repos.recommendations import upsert_recommendation
-from swing.data.repos.trades import list_open_trades, list_all_exits
-from swing.data.repos.cash import list_cash
+from swing.data.repos.trades import list_all_exits, list_open_trades
 from swing.data.repos.watchlist import (
-    archive_watchlist_entry, list_active_watchlist, upsert_watchlist_entry,
+    archive_watchlist_entry,
+    list_active_watchlist,
+    upsert_watchlist_entry,
 )
 from swing.data.repos.weather import get_latest_for_date
 from swing.evaluation.context import BatchContext, CandidateContext, MarketContext
 from swing.evaluation.dates import action_session_for_run, last_completed_session
 from swing.evaluation.evaluator import evaluate_batch
 from swing.evaluation.patterns.flag_classifier import (
-    FlagClassificationResult, classify_flag,
+    FlagClassificationResult,
+    classify_flag,
 )
 from swing.evaluation.rs import load_universe, universe_version_hash
 from swing.pipeline.finviz_schema import reject_csv, validate_csv
-from swing.pipeline.finviz_select import select_csv, NoFilesError, AmbiguousInboxError
+from swing.pipeline.finviz_select import AmbiguousInboxError, NoFilesError, select_csv
 from swing.pipeline.heartbeat import Heartbeat
 from swing.pipeline.lease import (
-    Lease, acquire_lease, ConcurrentRunBlocked,
+    ConcurrentRunBlocked,
+    Lease,
+    acquire_lease,
 )
 from swing.pipeline.recovery import sweep_stale_artifacts
 from swing.pipeline.staging import StagingDir, promote_staging
@@ -44,7 +53,9 @@ from swing.prices import PriceFetcher
 from swing.recommendations.build import BuildContext, build_recommendations
 from swing.rendering.briefing import BriefingInputs, build_briefing_view_model
 from swing.rendering.charts import (
-    ChartingUnavailable, PatternOverlay, render_chart,
+    ChartingUnavailable,
+    PatternOverlay,
+    render_chart,
 )
 from swing.rendering.exporter import export_briefing
 from swing.trades.equity import current_equity, sizing_equity
@@ -184,9 +195,9 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
         try:
             lease.step("weather")
             try:
-                from swing.weather.classifier import classify_weather
                 from swing.data.models import WeatherRun
                 from swing.data.repos.weather import upsert_weather_run
+                from swing.weather.classifier import classify_weather
                 ohlcv = fetcher.get(
                     cfg.rs.benchmark_ticker, lookback_days=180, as_of_date=None,
                 )
@@ -597,23 +608,42 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
     staging = StagingDir(base=base, run_id=lease.run_id, artifact_type="charts")
     staging.create()
     out_paths: dict[str, Path] = {}
-    errors_count = 0  # classifier-exception count for end-of-step summary
+    errors_count = 0
+    classified_ok = 0
+    total = 0
     for ticker, pivot, stop, _source in targets:
         try:
             ohlcv = fetcher.get(ticker, lookback_days=200, as_of_date=None)
         except Exception:
+            total += 1
+            errors_count += 1
+            classification = FlagClassificationResult(
+                detected=False, confidence=0.0, pattern=None,
+                pole_start_date=None, pole_end_date=None,
+                flag_start_date=None, flag_end_date=None,
+                pole_high=None, flag_low=None, pivot=None,
+                components={"error": "fetcher failed"},
+            )
             with lease.fenced_write() as conn:
                 update_chart_target_status(
                     conn, pipeline_run_id=lease.run_id, ticker=ticker,
                     chart_status="fetcher_failed",
                 )
+                insert_classification(
+                    conn, pipeline_run_id=lease.run_id, ticker=ticker,
+                    result=classification,
+                    computed_at=_dt.now(UTC).isoformat(timespec="seconds"),
+                )
             continue
 
         bars_60 = ohlcv.tail(60)
+        total += 1
         try:
             classification = classify_flag(bars_60)
+            pattern_overlay = PatternOverlay.from_classification(classification)
+            classified_ok += 1
         except Exception as exc:
-            log.warning(f"flag_classifier failed for {ticker}: {exc!r}")
+            log.warning("classify_flag failed for %s: %s", ticker, repr(exc))
             errors_count += 1
             classification = FlagClassificationResult(
                 detected=False, confidence=0.0, pattern=None,
@@ -622,8 +652,7 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
                 pole_high=None, flag_low=None, pivot=None,
                 components={"error": repr(exc)},
             )
-
-        pattern_overlay = PatternOverlay.from_classification(classification)
+            pattern_overlay = None
 
         path = render_chart(
             ticker=ticker, ohlcv=ohlcv, pivot=pivot, stop=stop,
@@ -649,16 +678,13 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
             insert_classification(
                 conn, pipeline_run_id=lease.run_id, ticker=ticker,
                 result=classification,
-                computed_at=_dt.now().isoformat(timespec="seconds"),
+                computed_at=_dt.now(UTC).isoformat(timespec="seconds"),
             )
 
-    # End-of-step summary. "ok" semantics here track classifier success: a
-    # classifier-exception ticker is NOT-ok even if the chart rendered to disk.
-    total = len(targets)
-    ok = total - errors_count - sum(
-        1 for t, *_ in targets if t not in out_paths
+    log.info(
+        "_step_charts complete: %d/%d classified, %d errors",
+        classified_ok, total, errors_count,
     )
-    log.info(f"flag_classifier: {ok}/{total} ok, {errors_count} errors")
     promote = promote_staging(
         staging=staging, target=base / data_asof,
         lease_token=lease.token, db_path=cfg.paths.db_path,
