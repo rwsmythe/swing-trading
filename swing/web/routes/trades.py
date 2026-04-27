@@ -223,6 +223,15 @@ def entry_post(
     watchlist_target: float | None = Form(None),
     watchlist_stop: float | None = Form(None),
     force: str | None = Form(None),
+    # Phase 5 spec §3.6 — chart-pattern snapshot from hidden form
+    # fields populated by build_entry_form_vm at form-render time;
+    # operator override + free-text companion field. Each is Optional
+    # so existing form submitters (CLI tests; bare cURL) keep working.
+    chart_pattern_algo: str | None = Form(None),
+    chart_pattern_algo_confidence: float | None = Form(None),
+    chart_pattern_classification_pipeline_run_id: int | None = Form(None),
+    chart_pattern_operator: str | None = Form(None),
+    chart_pattern_operator_other: str | None = Form(None),
 ):
     cfg = request.app.state.cfg
     cache = request.app.state.price_cache
@@ -276,6 +285,42 @@ def entry_post(
             ),
         )
 
+    # Phase 5 spec §3.6 — resolve the operator override.
+    #   "" (Accept algo)  → None
+    #   "other"           → use chart_pattern_operator_other (None if empty)
+    #   "flag" / "none"   → pass through verbatim (record_entry canonicalizes)
+    if chart_pattern_operator == "other":
+        cp_operator_value = chart_pattern_operator_other or None
+    else:
+        cp_operator_value = chart_pattern_operator or None
+
+    # Empty-string Form values from hidden inputs (e.g. when the form
+    # rendered the "Not classified" stub but a CLI replay still posts
+    # the field) arrive as "" — coerce to None for the dataclass.
+    cp_algo_value = chart_pattern_algo or None
+    cp_conf_value = chart_pattern_algo_confidence  # already typed float|None
+    cp_anchor_value = chart_pattern_classification_pipeline_run_id
+
+    # Cached-only consumption gate (spec §1.1 #5 + §3.7 R1 C1; symmetric
+    # with the CLI's refusal gate in Task 5.5). If the operator submitted
+    # an override but no cached snapshot rode along, refuse — out-of-scope
+    # ticker has no V1 surface for an override. The form's "Not
+    # classified" stub gates the dropdown out of the UI; this is the
+    # server-side defense for hand-crafted POSTs and Js-bypass cases.
+    cache_evaluated = cp_algo_value is not None and cp_anchor_value is not None
+    if cp_operator_value is not None and not cache_evaluated:
+        return _rerender_entry_form_with_error(
+            request=request, templates=templates, cfg=cfg, cache=cache,
+            executor=executor, ticker=ticker, entry_date=entry_date,
+            entry_price=entry_price, shares=shares, initial_stop=initial_stop,
+            rationale=rationale, notes=notes,
+            error_message=(
+                "Chart-pattern override requires a cached classification for "
+                f"{ticker.upper()}; ticker is out-of-scope for the latest "
+                "pipeline run. (V1 cached-only; manual fallback deferred to V2.)"
+            ),
+        )
+
     req = EntryRequest(
         ticker=ticker.upper(),
         entry_date=entry_date,
@@ -287,6 +332,10 @@ def entry_post(
         notes=notes,
         rationale=rationale,
         event_ts=datetime.now().isoformat(timespec="seconds"),
+        chart_pattern_operator=cp_operator_value,
+        chart_pattern_algo=cp_algo_value,
+        chart_pattern_algo_confidence=cp_conf_value,
+        chart_pattern_classification_pipeline_run_id=cp_anchor_value,
     )
 
     conn = connect(cfg.paths.db_path)
