@@ -198,25 +198,32 @@ def test_render_chart_with_overlay_paints_two_bands_and_separate_pivot_segment(
     expected = "AAPL | pivot $110.00 stop $95.00 | last 120 bars | flag (0.78)"
     assert suptitle == expected, f"got {suptitle!r}"
 
-    # Discriminating check: the algo-pivot segment is an EXTRA
-    # LineCollection added on top of mpf's built-in pivot/stop hlines.
-    # Baseline (overlay=None) → record the count; overlay version must
-    # have strictly more, AND one of the new segments must span the
-    # flag region at y == pattern_overlay.pivot.
-    baseline_captured = {}
+    # Discriminating check: directly call mpf.plot with the same plot_kwargs
+    # render_chart constructs internally, but WITHOUT the overlay's
+    # hlines/fill_betweenx additions. This gives a true baseline of
+    # LineCollections that mpf alone produces, so the count comparison is
+    # meaningful (the None-path can't be reused as a baseline because it
+    # doesn't pass returnfig=True — that's required to keep byte-identity
+    # for the None case).
     monkeypatch.setattr(mpf, "plot", real_plot)  # unwrap before baseline call
-    def _capture_baseline(df, **kw):
-        result = real_plot(df, **kw)
-        if kw.get("returnfig"):
-            baseline_captured["axes"] = result[1]
-        return result
-    monkeypatch.setattr(mpf, "plot", _capture_baseline)
-    render_chart(
-        ticker="AAPL", ohlcv=fake_ohlcv, pivot=110.0, stop=95.0,
-        output_path=tmp_path / "baseline.png", pattern_overlay=None,
+    df = fake_ohlcv.tail(120).copy()
+    baseline_title = "AAPL | pivot $110.00 stop $95.00 | last 120 bars"
+    addplots = []
+    closes = df["Close"]
+    for window, color in ((10, "blue"), (20, "orange"), (50, "red")):
+        sma = closes.rolling(window).mean()
+        if not sma.isna().all():
+            addplots.append(mpf.make_addplot(sma, color=color, width=1.0))
+    baseline_fig, baseline_axes = mpf.plot(
+        df, type="candle", volume=True, style="yahoo",
+        figsize=(11, 6), title=baseline_title,
+        ylabel_lower="Volume", addplot=addplots,
+        hlines=dict(hlines=[110.0, 95.0], colors=["green", "red"], linestyle="--"),
+        vlines=dict(vlines=[df.index[-10]], colors=["purple"], linestyle=":", alpha=0.5),
+        returnfig=True,
     )
-    baseline_lines = [c for c in baseline_captured["axes"][0].collections
-                      if isinstance(c, LineCollection)] if baseline_captured else []
+    baseline_lines = [c for c in baseline_axes[0].collections
+                      if isinstance(c, LineCollection)]
     overlay_lines = [c for c in price_ax.collections
                      if isinstance(c, LineCollection)]
     assert len(overlay_lines) > len(baseline_lines), (
@@ -224,6 +231,8 @@ def test_render_chart_with_overlay_paints_two_bands_and_separate_pivot_segment(
         f"baseline LineCollection count {len(baseline_lines)} == "
         f"overlay count {len(overlay_lines)}; spec §3.4 algo-pivot not painted"
     )
+    import matplotlib.pyplot as plt
+    plt.close(baseline_fig)
     # At least one of the EXTRA segments must sit at y == overlay.pivot.
     new_segments = []
     for lc in overlay_lines:
