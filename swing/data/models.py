@@ -243,3 +243,29 @@ class HypothesisRegistryEntry:
     status_changed_at: str | None = None
     status_change_reason: str | None = None
     notes: str | None = None
+
+
+@dataclass(frozen=True)
+class PipelinePatternClassification:
+    """One row of `pipeline_pattern_classifications` (migration 0009).
+
+    NULL semantics — spec §3.2.1:
+      - pattern='flag', confidence=0.0–1.0 → detection.
+      - pattern='none', confidence=NULL    → evaluated negative.
+      - pattern=NULL,   confidence=NULL    → classifier error
+        (components_json carries an "error" key).
+    """
+    id: int | None
+    pipeline_run_id: int
+    ticker: str
+    pattern: str | None        # 'none' | 'flag' | None
+    confidence: float | None
+    components_json: str
+    pivot: float | None
+    pole_high: float | None
+    flag_low: float | None
+    pole_start_date: str | None
+    pole_end_date: str | None
+    flag_start_date: str | None
+    flag_end_date: str | None
+    computed_at: str
