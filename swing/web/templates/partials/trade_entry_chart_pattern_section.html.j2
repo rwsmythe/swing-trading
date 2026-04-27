@@ -24,7 +24,12 @@
       <em>none</em>
     {% endif %}
     {% if vm.chart_pattern_algo_computed_at %}
-      <span class="subtitle">from pipeline run {{ vm.chart_pattern_algo_computed_at }}</span>
+      {#- Codex R1 Minor 2 — chart_pattern_algo_computed_at is a
+          timestamp (insert_classification's computed_at column), not
+          a pipeline-run identifier. The audit anchor (the pipeline
+          run id) flows separately via the hidden snapshot input.
+          Wording: "computed {timestamp}". -#}
+      <span class="subtitle">computed {{ vm.chart_pattern_algo_computed_at }}</span>
     {% endif %}
   </div>
   <input type="hidden" name="chart_pattern_algo" value="{{ vm.chart_pattern_algo or '' }}">
