@@ -44,3 +44,6 @@ tests/fixtures/finviz/suggested-diffs-*.yaml
 
 # Research harness smoke-test output (regenerated; not tracked)
 research/harness/*/smoke-out/
+
+# Phase 4 chart-pattern flag-v1 pytest scratch (regenerated; not tracked)
+.tmp-phase4/

@@ -5,6 +5,7 @@ import json
 import math
 import sqlite3
 from collections.abc import Mapping
+from datetime import date
 
 from swing.data.models import PipelinePatternClassification
 from swing.evaluation.patterns.flag_classifier import FlagClassificationResult
@@ -86,13 +87,25 @@ def insert_classification(
     return int(cur.lastrowid)
 
 
+def _parse_date(s) -> date | None:
+    """Parse an ISO date string into a `date`; pass NULL through unchanged.
+
+    Task 4.0a (Phase 2 carve-out extension; Phase 3 R3 M1): SQLite stores
+    the four anchor columns as ISO strings, but
+    `PipelinePatternClassification` annotates them as `date | None`. Phase
+    4 consumers (template comparisons, downstream date arithmetic) and
+    Phase 6 chart-overlay painting need real `date` objects.
+    """
+    return date.fromisoformat(s) if s is not None else None
+
+
 def _row_to_classification(row: tuple) -> PipelinePatternClassification:
     return PipelinePatternClassification(
         id=row[0], pipeline_run_id=row[1], ticker=row[2],
         pattern=row[3], confidence=row[4], components_json=row[5],
         pivot=row[6], pole_high=row[7], flag_low=row[8],
-        pole_start_date=row[9], pole_end_date=row[10],
-        flag_start_date=row[11], flag_end_date=row[12],
+        pole_start_date=_parse_date(row[9]), pole_end_date=_parse_date(row[10]),
+        flag_start_date=_parse_date(row[11]), flag_end_date=_parse_date(row[12]),
         computed_at=row[13],
     )
 
