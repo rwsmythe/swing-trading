@@ -175,10 +175,13 @@ def test_step_charts_happy_path_persists_classification_row(
     assert len(captured_bars) == 60, (
         f"classify_flag must receive ohlcv.tail(60); got {len(captured_bars)}"
     )
+    # Codex R3 Minor 1: assert index fidelity. classify_flag uses the
+    # DataFrame index (date) to populate anchor fields (pole_start_date
+    # etc) on the result; a regression that preserves OHLCV values but
+    # alters or strips the index would break date persistence silently.
+    # Compare frames WITHOUT reset_index so index equality is verified.
     pd.testing.assert_frame_equal(
-        captured_bars.reset_index(drop=True),
-        expected_tail.reset_index(drop=True),
-        check_exact=False,
+        captured_bars, expected_tail, check_exact=False,
     )
 
     conn = sqlite3.connect(cfg.paths.db_path)
