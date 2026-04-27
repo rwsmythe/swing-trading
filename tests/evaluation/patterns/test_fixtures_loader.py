@@ -318,3 +318,18 @@ def test_load_labeled_fixtures_raises_on_fewer_than_60_bars(tmp_path: Path) -> N
     )
     with pytest.raises(ValueError, match="≥60 daily bars"):
         load_labeled_fixtures(tmp_path)
+
+
+def test_load_labeled_fixtures_raises_on_non_utf8_json(tmp_path: Path) -> None:
+    """Per Codex R4 M1: non-UTF-8 JSON file raises ValueError with path
+    (not bare UnicodeDecodeError)."""
+    pd.DataFrame(
+        {"Open": [1.0]*60, "High": [1.0]*60, "Low": [1.0]*60, "Close": [1.0]*60, "Volume": [1]*60},
+        index=pd.Index(pd.date_range("2026-01-02", periods=60, freq="B"), name="Date"),
+    ).to_csv(tmp_path / "BAD_2026-04-26_flag.csv")
+    # Bytes that are not valid UTF-8 (CP1252 with high-byte garbage).
+    (tmp_path / "BAD_2026-04-26_flag.json").write_bytes(
+        b"\xff\xfe { \"label\": \"flag\", \"notes\": \"latin1\" }"
+    )
+    with pytest.raises(ValueError, match="Invalid UTF-8 encoding"):
+        load_labeled_fixtures(tmp_path)

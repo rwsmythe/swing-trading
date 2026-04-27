@@ -35,7 +35,8 @@ def load_labeled_fixtures(fixture_dir: Path = FIXTURE_DIR) -> list[LabeledFixtur
     - Returns list sorted by ``csv_path.stem`` (deterministic for parametrize ids).
     - Malformed JSON: raise ``json.JSONDecodeError`` with the path in the message
       (operator-debuggability over silent skip — clearly unrecoverable).
-    - JSON is read as UTF-8 (locale-independent); non-ASCII notes are supported.
+    - JSON is read as UTF-8 (locale-independent); non-UTF-8 bytes raise ValueError
+      with the file path in the message.
     - JSON top-level value must be an object (dict); a syntactically valid file
       whose root is a list/string/number raises ``ValueError`` with the path.
     - Malformed CSV (parser failures, empty, missing OHLCV columns): raise
@@ -62,7 +63,13 @@ def load_labeled_fixtures(fixture_dir: Path = FIXTURE_DIR) -> list[LabeledFixtur
         if not json_path.exists():
             continue  # unpaired CSV; skip silently
         try:
-            meta = json.loads(json_path.read_text(encoding="utf-8"))
+            raw = json_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(
+                f"Invalid UTF-8 encoding in {json_path}: {exc}"
+            ) from exc
+        try:
+            meta = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise json.JSONDecodeError(
                 f"{exc.msg} (in {json_path})", exc.doc, exc.pos
