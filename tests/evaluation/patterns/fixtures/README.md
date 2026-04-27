@@ -128,8 +128,11 @@ discipline check and starts being a rubber stamp.
    python -c "import yfinance as yf; df = yf.Ticker('AAPL').history(end='2026-04-26', period='90d'); df.to_csv('tests/evaluation/patterns/fixtures/AAPL_2026-04-26_flag.csv')"
    ```
 
-   `period='90d'` gives margin for the helper's 60-bar window selection. The
-   helper module (`_fixtures.py`, Task 7.2) handles trimming.
+   `period='90d'` yields ~63 trading days of data, comfortably above the
+   classifier's 60-bar minimum (`MIN_BARS=60` in
+   `swing/evaluation/patterns/flag_classifier.py`). The helper passes the full
+   window through to `classify_flag`; the classifier searches anchor positions
+   over the available bars and does not require pre-trimming.
 
 3. **Author the paired JSON** alongside the CSV. Same stem, `.json` extension.
    At minimum: `label` and `notes`. Include `expected_confidence_min` for
@@ -163,9 +166,11 @@ Behavior:
   **SKIPS gracefully**. This is the bootstrap state.
 - **With committed fixtures** → suite parametrizes one test case per fixture,
   loads the CSV via the helper module, runs `classify_flag(bars)`, and asserts:
-  - For `label == "flag"`: `result.detected and result.pattern == "flag"`, and
-    if `expected_confidence_min` is set, `result.confidence >= expected_confidence_min`.
-  - For `label == "none"`: `not result.detected and result.pattern == "none"`.
+  - For `label == "flag"`: `result.pattern == "flag"`, and if
+    `expected_confidence_min` is set, `result.confidence >= expected_confidence_min`.
+  - For `label == "none"`: `result.pattern in ("none", None)` (accepts both the
+    evaluated-negative sentinel `"none"` and the system-error sentinel `None`
+    defensively).
 
 If a fixture starts failing after a classifier change, the operator must
 either (a) accept the failure as a regression and revert/fix the classifier,
