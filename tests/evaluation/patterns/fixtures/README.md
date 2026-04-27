@@ -19,7 +19,7 @@ evaluation is the test under test, NOT the label generator.
 Each fixture is a **pair** of files sharing a stem:
 
 ```
-<TICKER>_<YYYY-MM-DD>_<label>.csv    ← 60-bar daily OHLCV (literal yfinance pull)
+<TICKER>_<YYYY-MM-DD>_<label>.csv    ← OHLCV bars (literal yfinance pull; ~63 trading days via period='90d')
 <TICKER>_<YYYY-MM-DD>_<label>.json   ← {label, notes, expected_confidence_min?}
 ```
 
