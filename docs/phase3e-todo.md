@@ -442,3 +442,38 @@ Items surfaced by Phase 3 execution (commit chain `6ac8f56..dd699de` including `
 
 - **Phase 3 produced one rogue task duplicate** (`b080da9` + revert `132142c`) despite single-subagent dispatch. Bounded noise (~20% of chain vs Phase 2's ~30%); net code state correct; Codex caught it. Operator decision: continue with brief discipline + ADD observable verification (subagent must include `git log --grep="Task X.Y" --oneline` output in commit body before each task commit) for Phase 4. If Phase 4 sees another rogue, escalate to worktree isolation in Phase 5+.
 - **Review-fix commit message convention formalized** in orchestrator-context "Binding conventions" section (2026-04-26). Task implementations get task IDs; review-fix commits use round + finding ID format; format-only cleanup commits no task ID needed.
+
+---
+
+## 2026-04-26 chart-pattern flag-v1 Phase 4 → Phase 5 handoff items
+
+Items surfaced by Phase 4 execution (commit chain `195acbc..ad29f9e`, 3 adversarial Codex rounds → `NO_NEW_CRITICAL_MAJOR`, 13 commits, 1059→1102 fast tests +43, ZERO rogue duplicate task commits) that are deferred to Phase 5 or are housekeeping items.
+
+### For Phase 5 (trade-entry form + CLI) implementer:
+
+- **Task 5.0a — `PipelinePatternClassification` dataclass annotation retype (Phase 2 carve-out extension; Phase 5 prerequisite).** Phase 4 Task 4.0a fixed `_row_to_classification` to parse anchor dates as `date` objects at runtime, but the dataclass annotation in `swing/data/models.py:274` still says `str | None`. Type-vs-runtime drift. Phase 5's `build_entry_form_vm` and Phase 6's chart overlay painting both `isinstance(cls.pole_start_date, date)` checks; the annotation should match runtime. Small fix (~4 line annotations); justified Phase 2 carve-out extension; mirrors Phase 4's Task 4.0a pattern (standalone first commit before Phase 5 main work).
+- **`pipeline_run_id` resolution pattern.** Phase 5's `build_entry_form_vm` should mirror Phase 4's single-round-trip `SELECT id, evaluation_run_id FROM pipeline_runs WHERE state='complete' ORDER BY finished_ts DESC LIMIT 1` query (avoids the secondary `WHERE evaluation_run_id = ?` lookup which races with concurrent pipeline_runs writes). The `id` IS the parent `pipeline_run_id` by construction.
+- **`_pattern_tags` is SIBLING to `_flag_tags`.** Phase 5's per-row resolution for the entry-form Chart-Pattern section uses `_pattern_tags`-style filtering logic if it needs to gate display, NOT touch `_flag_tags`. The `pattern_tags` parallel VM field design is the architectural pattern.
+- **Snapshot-at-entry-surface ToCToU pattern (per spec §3.6 + Phase 1 brainstorm Decision 6).** `EntryRequest` carries the resolved snapshot + `pipeline_run_id` audit anchor; `record_entry` persists what's passed AS-IS (no re-resolve at submit). Cache resolution happens ONCE at entry-surface (form/CLI) per the spec ToCToU fix.
+- **CLI cached-only refusal gate.** `swing trade entry --chart-pattern-operator` mirrors form's stub gate — refuses for tickers without cached classification (per locked-constraint #5; per spec §3.6 + Phase 1 Codex R1 C1 fix). Symmetric refusal across entry surfaces.
+- **Operator override surface (per spec §3.6).** Dropdown {Accept algo / flag / none / other(text)}; default = Accept algo → NULL persisted. Free-text "other" path canonicalized like `hypothesis_label` (NFC + control-byte stripping; reuse the existing canonicalization helper).
+- **Repo-layer cross-column invariant** (4 cases enforced in Phase 2). Phase 5's `record_entry` inherits this guarantee — any invalid combination of (algo, confidence, operator, anchor) at insert time raises `ValueError`.
+- **Shared seed helper at `tests/web/test_view_models/_pattern_classification_seed.py`** (leading-underscore opts out of pytest collection). Phase 5/6/7 tests can reuse `seed_pipeline_with_classification`, `add_active_watchlist_row`, `delete_all_classifications` rather than rebuilding seed scaffolding.
+- **`build_watchlist_row` reuses run-wide classification fetch** (Phase 4 R1 Minor 1 accepted): single-source threshold + format. Trigger threshold for optimization is watchlist > ~100 rows. Phase 5 trade-entry form's per-ticker fetch may want to use `get_classification(pipeline_run_id, ticker)` directly for lighter rendering, but Phase 4's pattern is fine for current scale.
+- **Test-suite baseline for Phase 5: 1102 fast tests** passing on main at HEAD `ad29f9e`. Phase 5 can add tests for `TradeEntryFormVM.chart_pattern_*` fields, `EntryRequest.chart_pattern_*` fields, `record_entry` snapshot persistence, CLI flag refusal gate, and operator-override canonicalization.
+
+### Brief discipline updates for Phase 5:
+
+- **Observable verification refined to subject-only anchored grep** (operator decision 2026-04-26): `git log --pretty='%s' --grep='^[a-z]+\([a-z]+\): Task X.Y'`. Eliminates forward-reference false positives that surfaced in Phase 4 (commit bodies cross-referencing future task IDs in narrative prose). Phase 5 brief adopts this refinement.
+- **Don't blanket-require 5-VM rule.** CLAUDE.md base-layout VM gotcha applies only when `base.html.j2` dereferences the field. Phase 5's new `chart_pattern_*` fields on `TradeEntryFormVM` are consumer-scoped (entry form only); `base.html.j2` doesn't reference them. Don't blanket-require all 5 base-layout VMs to gain the field.
+- **Downstream-test scope acceptance.** When the brief authorizes Task 5.0a Phase 2 carve-out extension (annotation retype touching `swing/data/models.py`), downstream tests of the modified file are naturally in-scope. Brief should explicitly say "downstream tests of carve-out file are in-scope by extension" to pre-empt scope-deviation findings.
+
+### Housekeeping items:
+
+- **Scratch directories accumulating across phases.** Phase 2 left 10+ (`.tmp_pytest_red/`, `task28_pytest_*/`, etc.); Phase 3 added 4 more (`.tmp-pytest-phase3-task32/`, `tmp-pytest-phase3/`, `tmp-pytest-phase3-task32/`, `tmp-task32-probe/`); Phase 4 cleaned its own (`.tmp-phase4/`) but inherited the prior pile remains. All blocked by Windows ACL on `Remove-Item`. Aggregate cleanup is a privileged-tool task (`takeown` + `icacls`) — defer until convenient or escalate as a separate operator-action item.
+- **`tests/data/test_db_v8.py` filename now stale** (schema is v10 after Phase 2 migrations 0009 + 0010). Recommended rename to `test_schema_version_pin.py`. Carry-over from Phase 2/3 handoffs; still pending.
+
+### Process-meta items:
+
+- **Phase 4 vindicated single-subagent + observable-verification approach.** ZERO rogue duplicates this phase (vs Phase 3's one and Phase 2's many). Brief discipline + observable evidence is a working alternative to worktree isolation at this scale. Worktree isolation reserved as fallback for future phases if a new failure mode emerges.
+- **Codex's adversarial review pattern across 4 phases:** R1 catches structural issues (Phase 1: cfg-injection sensitivity needed; Phase 2: orphan-confidence guard, NaN strict-JSON; Phase 3: log denominator semantics; Phase 4: compounding-confound conflation), R2 catches subtle vacuousness (Phase 4: ticker-symmetry vacuousness), R3+ refine. The 5-round investment is yielding repeated ROI on test-quality dimension; not just spec-fidelity. Worth continuing.
