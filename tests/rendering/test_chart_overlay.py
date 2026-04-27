@@ -79,7 +79,7 @@ def test_render_chart_pattern_overlay_none_is_byte_identical_to_default(
     )
 
 
-def test_render_chart_real_pattern_overlay_is_NOT_byte_identical_to_default(
+def test_render_chart_real_pattern_overlay_is_not_byte_identical_to_default(
     tmp_path: Path, fake_ohlcv,
 ):
     """Phase 6 contract (replaces the Phase 3 no-op byte-identity test):
@@ -205,6 +205,11 @@ def test_render_chart_with_overlay_paints_two_bands_and_separate_pivot_segment(
     # meaningful (the None-path can't be reused as a baseline because it
     # doesn't pass returnfig=True — that's required to keep byte-identity
     # for the None case).
+    # DUPLICATION WARNING: the plot_kwargs below mirror render_chart's
+    # internal construction. If render_chart's kwargs change (new vlines,
+    # different SMA windows, style override), keep this baseline in sync
+    # — otherwise the LineCollection-count comparison stops being a faithful
+    # baseline-vs-overlay comparison.
     monkeypatch.setattr(mpf, "plot", real_plot)  # unwrap before baseline call
     df = fake_ohlcv.tail(120).copy()
     baseline_title = "AAPL | pivot $110.00 stop $95.00 | last 120 bars"

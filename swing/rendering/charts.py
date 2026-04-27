@@ -60,6 +60,7 @@ def render_chart(
     The candidate-pivot/stop hline pair (legacy) is preserved in both cases.
     """
     try:
+        import matplotlib.pyplot as plt
         import mplfinance as mpf
     except ImportError as exc:
         raise ChartingUnavailable("mplfinance not installed") from exc
@@ -102,13 +103,21 @@ def render_chart(
 
     fig, axes = mpf.plot(df, returnfig=True, **plot_kwargs)
     price_ax = axes[0]
+    # Note: mpf renders `title=` as fig.suptitle (NOT axes[0].title); do not
+    # set_title here — it would create a duplicate visible title. Read via
+    # fig._suptitle (or fig.texts) instead. (Internal review fix, commit 803607e.)
     # Convert overlay dates to integer x-positions in the bar index — mpf
     # uses positional integers on the x-axis (not timestamps) for candle
     # plots, so we map each overlay date to its bar position.
     bar_dates = [d.date() if hasattr(d, "date") else d for d in df.index]
 
     def _bar_idx(d: date) -> int:
-        # First bar whose date >= d; falls back to last bar if d > last.
+        # Map an overlay date to the index of the first bar whose date >= d.
+        # If d falls beyond the last bar in the lookback window (e.g., the
+        # classification's flag region extends past the chart slice),
+        # intentionally clamp to the last bar — the resulting band/segment
+        # collapses to zero width at the right edge, which is the desired
+        # visual signal that the overlay is partially out-of-window.
         for i, bd in enumerate(bar_dates):
             if bd >= d:
                 return i
@@ -118,8 +127,16 @@ def render_chart(
     pole_end_i = _bar_idx(pattern_overlay.pole_end_date)
     flag_start_i = _bar_idx(pattern_overlay.flag_start_date)
     flag_end_i = _bar_idx(pattern_overlay.flag_end_date)
+    # Algo-pivot horizontal segment drawn first so matplotlib autoscales
+    # around it before we capture the y-range for fill_betweenx — avoids
+    # bands being frozen to pre-hlines limits if pivot is near the axis edge.
+    price_ax.hlines(
+        y=pattern_overlay.pivot, xmin=flag_start_i, xmax=flag_end_i,
+        colors="darkblue", linestyles="-", linewidth=1.5,
+    )
     # Pole + flag bands via fill_betweenx (spec §3.4) — vertical stripes
-    # spanning the price axis y-range across the band's bar positions.
+    # spanning the full autoscaled y-range across the band's bar positions.
+    # y-range captured AFTER hlines so bands span the post-autoscale axis.
     y_lo, y_hi = price_ax.get_ylim()
     price_ax.fill_betweenx(
         [y_lo, y_hi], pole_start_i, pole_end_i, alpha=0.15, color="green",
@@ -127,13 +144,6 @@ def render_chart(
     price_ax.fill_betweenx(
         [y_lo, y_hi], flag_start_i, flag_end_i, alpha=0.15, color="yellow",
     )
-    # Algo-pivot horizontal segment — only spans flag region (distinct from
-    # the existing candidate-pivot hline which spans the full chart).
-    price_ax.hlines(
-        y=pattern_overlay.pivot, xmin=flag_start_i, xmax=flag_end_i,
-        colors="darkblue", linestyles="-", linewidth=1.5,
-    )
     fig.savefig(str(output_path), dpi=100, bbox_inches="tight")
-    import matplotlib.pyplot as plt
     plt.close(fig)
     return output_path
