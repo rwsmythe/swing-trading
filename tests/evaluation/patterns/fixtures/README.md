@@ -129,7 +129,7 @@ discipline check and starts being a rubber stamp.
    ```
 
    `period='90d'` yields ~63 trading days of data, comfortably above the
-   classifier's 60-bar minimum (`MIN_BARS=60` in
+   classifier's 36-bar minimum (`MIN_BARS=36` in
    `swing/evaluation/patterns/flag_classifier.py`). The helper passes the full
    window through to `classify_flag`; the classifier searches anchor positions
    over the available bars and does not require pre-trimming.
