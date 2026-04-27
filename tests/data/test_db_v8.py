@@ -108,5 +108,5 @@ def test_migration_0008_idempotent_on_re_apply(tmp_db: Path):
         conn.close()
 
 
-def test_expected_schema_version_is_8():
-    assert EXPECTED_SCHEMA_VERSION == 8
+def test_expected_schema_version_is_10():
+    assert EXPECTED_SCHEMA_VERSION == 10
