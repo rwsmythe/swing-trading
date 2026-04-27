@@ -1,0 +1,49 @@
+{#- Phase 5 — Chart Pattern section for the trade-entry form.
+    Expects: vm (TradeEntryFormVM with chart_pattern_* fields).
+
+    Reusable include — drift-protect any future OOB-swap surface that
+    re-renders this section (CLAUDE.md HTMX OOB-swap gotcha; spec §3.6).
+
+    Display contract (spec §3.6):
+      - vm.chart_pattern_algo_evaluated = True (cached row exists with
+        pattern in ('flag','none')) →
+            algo display + hidden snapshot inputs + override dropdown.
+      - vm.chart_pattern_algo_evaluated = False (no row, classifier-error
+        row, or out-of-scope ticker) →
+            "Not classified" stub. NO hidden inputs and NO override
+            dropdown — the cached-only consumption gate's UI half;
+            symmetric with the CLI's refusal gate (Task 5.5).
+-#}
+{% if vm.chart_pattern_algo_evaluated %}
+<div class="chart-pattern-section">
+  <label>Chart pattern (algo)</label>
+  <div>
+    {% if vm.chart_pattern_algo == 'flag' %}
+      <strong>flag</strong> ({{ '%.2f' | format(vm.chart_pattern_algo_confidence) }})
+    {% else %}
+      <em>none</em>
+    {% endif %}
+    {% if vm.chart_pattern_algo_computed_at %}
+      <span class="subtitle">from pipeline run {{ vm.chart_pattern_algo_computed_at }}</span>
+    {% endif %}
+  </div>
+  <input type="hidden" name="chart_pattern_algo" value="{{ vm.chart_pattern_algo or '' }}">
+  <input type="hidden" name="chart_pattern_algo_confidence" value="{{ vm.chart_pattern_algo_confidence if vm.chart_pattern_algo_confidence is not none else '' }}">
+  <input type="hidden" name="chart_pattern_classification_pipeline_run_id" value="{{ vm.chart_pattern_classification_pipeline_run_id if vm.chart_pattern_classification_pipeline_run_id is not none else '' }}">
+  <label>Operator override</label>
+  <select name="chart_pattern_operator"
+          onchange="var h=this.form.querySelector('.cp-other-input'); if(h){h.style.display=(this.value==='other')?'inline':'none';}">
+    <option value="">Accept algo</option>
+    <option value="flag">flag</option>
+    <option value="none">none</option>
+    <option value="other">other (specify)</option>
+  </select>
+  <input type="text" name="chart_pattern_operator_other"
+         class="cp-other-input" style="display:none" placeholder="other label">
+</div>
+{% else %}
+<div class="chart-pattern-section">
+  <label>Chart pattern (algo)</label>
+  <div class="subtitle">Not classified (out-of-scope or no recent pipeline run).</div>
+</div>
+{% endif %}
