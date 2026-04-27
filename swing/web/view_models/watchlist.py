@@ -13,7 +13,14 @@ from swing.data.repos.watchlist import list_active_watchlist
 from swing.evaluation.dates import action_session_for_run
 from swing.web.chart_scope import resolve_chart_scope
 from swing.web.price_cache import PriceCache, PriceSnapshot
-from swing.web.view_models.dashboard import _flag_tags, _sort_watchlist
+from swing.data.repos.pattern_classifications import (
+    list_classifications_for_run,
+)
+from swing.web.view_models.dashboard import (
+    _flag_tags,
+    _pattern_tags,
+    _sort_watchlist,
+)
 
 
 @dataclass(frozen=True)
@@ -76,12 +83,15 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
             # build_watchlist_expanded (commit 4678398) already closed. Falls
             # back to latest eval only for legacy NULL-FK rows or fresh installs.
             pipeline_eval_row = conn.execute(
-                """SELECT evaluation_run_id FROM pipeline_runs
+                """SELECT id, evaluation_run_id FROM pipeline_runs
                    WHERE state = 'complete'
                    ORDER BY finished_ts DESC LIMIT 1"""
             ).fetchone()
-            pipeline_eval_id = (
+            pipeline_run_id = (
                 pipeline_eval_row[0] if pipeline_eval_row else None
+            )
+            pipeline_eval_id = (
+                pipeline_eval_row[1] if pipeline_eval_row else None
             )
             candidates: list[Candidate] = []
             if pipeline_eval_id is not None:
@@ -92,10 +102,31 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
                 ).fetchone()
                 if row is not None:
                     candidates = fetch_candidates_for_run(conn, row[0])
+            # Bug-7-family anchor discipline (Phase 4 Task 4.3):
+            # classifications bind to pipeline_run_id. Reuse the SAME
+            # most-recent COMPLETE pipeline_run id we already resolved
+            # above; do NOT re-derive via a SELECT id FROM pipeline_runs
+            # WHERE evaluation_run_id = ? lookup, because that
+            # round-trip can race with concurrent pipeline_runs writes
+            # and silently mis-anchor. The resolved id IS the parent of
+            # `pipeline_eval_id` by construction. NO MAX(run_ts) fallback
+            # for classifications — when no completed pipeline exists,
+            # classifications stay empty (legacy NULL-FK eval rows have
+            # no chart-pattern data anyway).
+            if pipeline_run_id is not None:
+                classifications = list_classifications_for_run(
+                    conn, pipeline_run_id=pipeline_run_id,
+                )
+            else:
+                classifications = {}
     finally:
         conn.close()
     by_ticker = {c.ticker: c for c in candidates}
     flag_tags = _flag_tags(by_ticker)
+    pattern_tags = _pattern_tags(
+        classifications,
+        display_threshold=cfg.web.flag_pattern_display_threshold,
+    )
     # Sort outside `with conn:` is safe — `_sort_watchlist` is pure (no DB).
     rows = _sort_watchlist(list(rows), flag_tags)
     prices = cache.get_many(
@@ -115,6 +146,7 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
         price_source_degraded_until=(
             degraded_until.isoformat(timespec="seconds") if degraded_until else None
         ),
+        pattern_tags=pattern_tags,
     )
 
 

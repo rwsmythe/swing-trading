@@ -11,6 +11,9 @@ from swing.data.db import connect
 from swing.data.models import Candidate, Trade, WatchlistEntry, WeatherRun
 from swing.data.repos.cash import list_cash
 from swing.data.repos.candidates import fetch_candidates_for_run
+from swing.data.repos.pattern_classifications import (
+    list_classifications_for_run,
+)
 from swing.data.repos.recommendations import list_for_session
 from swing.data.repos.trades import list_all_exits, list_open_trades
 from swing.data.repos.watchlist import list_active_watchlist
@@ -256,12 +259,15 @@ def build_dashboard(
             # Legacy NULL-FK rows fall back to the pre-T4 date-only filter
             # so older runs still render today_decisions.
             pipeline_eval_row = conn.execute(
-                """SELECT evaluation_run_id FROM pipeline_runs
+                """SELECT id, evaluation_run_id FROM pipeline_runs
                    WHERE state = 'complete'
                    ORDER BY finished_ts DESC LIMIT 1"""
             ).fetchone()
-            pipeline_eval_id = (
+            pipeline_run_id = (
                 pipeline_eval_row[0] if pipeline_eval_row else None
+            )
+            pipeline_eval_id = (
+                pipeline_eval_row[1] if pipeline_eval_row else None
             )
             recs = list_for_session(
                 conn, action_session, evaluation_run_id=pipeline_eval_id,
@@ -368,6 +374,18 @@ def build_dashboard(
                 top_recommendations = list(
                     prioritized[:_RECOMMENDATIONS_TOP_N]
                 )
+
+            # Bug-7-family anchor discipline (Phase 4 Task 4.3):
+            # classifications bind to pipeline_run_id resolved above.
+            # NO MAX(run_ts) fallback — when there is no completed
+            # pipeline run, classifications stay empty (legacy NULL-FK
+            # eval rows have no chart-pattern data anyway).
+            if pipeline_run_id is not None:
+                classifications = list_classifications_for_run(
+                    conn, pipeline_run_id=pipeline_run_id,
+                )
+            else:
+                classifications = {}
     finally:
         conn.close()
 
@@ -377,6 +395,10 @@ def build_dashboard(
     # subsequent rebuild of flag_tags later in this function was removed
     # alongside this move; the same mapping is reused.
     flag_tags = _flag_tags(candidates_by_ticker)
+    pattern_tags = _pattern_tags(
+        classifications,
+        display_threshold=cfg.web.flag_pattern_display_threshold,
+    )
 
     # Prices — batch fetch all tickers we need. Recommended-ticker prices
     # are added so the panel can render each row's current price live; the
@@ -583,6 +605,7 @@ def build_dashboard(
         ),
         open_trade_rows=open_trade_rows,
         active_recommendations=active_recommendations,
+        pattern_tags=pattern_tags,
     )
 
 
