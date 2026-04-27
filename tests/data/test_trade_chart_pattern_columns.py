@@ -189,3 +189,35 @@ def test_list_open_trades_round_trip_chart_pattern(tmp_path: Path):
         assert t.chart_pattern_classification_pipeline_run_id == run_id
     finally:
         conn.close()
+
+
+def test_list_open_trades_returns_chart_pattern_columns(tmp_path: Path):
+    from swing.data.repos.trades import (
+        list_open_trades, find_any_open_trade,
+        find_open_trade_by_match,
+    )
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        run_id = _seed_pipeline_run(conn)
+        with conn:
+            insert_trade_with_event(
+                conn,
+                _make_trade(
+                    chart_pattern_algo="flag",
+                    chart_pattern_algo_confidence=0.78,
+                    chart_pattern_operator=None,
+                    chart_pattern_classification_pipeline_run_id=run_id,
+                ),
+                event_ts="ts", rationale="aplus-setup",
+            )
+        # Every read path must surface the new columns.
+        for trades in [
+            list_open_trades(conn),
+            [find_any_open_trade(conn, ticker="AAPL")],
+            [find_open_trade_by_match(conn, ticker="AAPL", entry_date="2026-04-26")],
+        ]:
+            assert trades[0].chart_pattern_algo == "flag"
+            assert trades[0].chart_pattern_algo_confidence == 0.78
+            assert trades[0].chart_pattern_classification_pipeline_run_id == run_id
+    finally:
+        conn.close()
