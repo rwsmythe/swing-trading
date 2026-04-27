@@ -547,3 +547,58 @@ Items surfaced by Phase 6 execution (commit chain `bce79b1..13d8cc5` + mathtext 
 - **Phase 4 + Phase 5 + Phase 6 all produced ZERO rogue duplicate task commits.** Single-subagent + observable verification + subject-only grep refinement is robust at this project's scale. Worktree isolation reserved as fallback for novel failure modes only.
 - **Codex's 6-phase review pattern shows compound ROI:** R1 catches structural issues; R2 catches subtle vacuousness; R3+ refine + escalate coupling concerns into explicit contracts; Phase 5 added cross-feature interactions (soft-warn × new fields); Phase 6 added internal-Codex pre-emption. The 5-round investment yields repeated ROI on test-quality + spec-fidelity + cross-feature-integration + visual-correctness + contract-documentation dimensions.
 - **Phase 6 commit-message convention surfaced 4th case:** internal-Codex within-task vs orchestrator-Codex post-task. `(internal)` qualifier formalized in Binding conventions for Phase 7+.
+
+---
+
+## 2026-04-27 chart-pattern flag-v1 Phase 7 implementer-side → operator + orchestrator handoff
+
+Phase 7 implementer-side complete (commit chain `528d38b..ca66216`, 11 commits, 5 adversarial Codex rounds → `NO_NEW_CRITICAL_MAJOR`, 1127→1145 fast tests +18 plus +1 gracefully-skipped integration test, 8 subagent dispatches with ZERO rogue duplicate task commits). Operator-labeling boundary preserved end-to-end.
+
+### For OPERATOR — manual verification + Task 7.3 fixture labeling:
+
+**Step 1: Manual verification walkthrough.** Run `docs/chart-pattern-flag-v1-manual-verification.md` end-to-end (~30-45 min thorough; ~10-15 min spot-check). Surfaces any UI bugs in chart-pattern surfaces (dashboard, /watchlist, chart overlay, trade-entry form, CLI) before fixture labeling work begins. Any check failures → surface to orchestrator before proceeding.
+
+**Step 2: Task 7.3 fixture labeling (operator pace).** Per spec §4.2 + Phase 7 implementer's labeling protocol README at `tests/evaluation/patterns/fixtures/README.md`:
+- ≥15 fixtures floor = 8 flags + 7 non-flags spanning rejection cases (wide-and-loose, deep base/cup, sideways drift with no pole, late-stage failed breakout, stage-4 with bounce, multi-month flat base, ambiguous edge case).
+- File format: paired `<TICKER>_<YYYY-MM-DD>_<label>.csv` (literal yfinance pull) + `.json` (label + notes + optional expected_confidence_min).
+- Loader canonicalization: yfinance pull is preserved on disk; helper trims to last 60 bars before classification. Operator's visual labeling should focus on the right edge of the chart.
+- JSON schema validation gates (per Codex R1 M2 + R2 M2): label ∈ {flag, none}; notes is required (no silent default); expected_confidence_min must be numeric in [0,1] AND only set on flag fixtures (not none).
+- Fixtures immutable: never edit-in-place; retire-and-replace if a label changes.
+- Generation procedure example in README §6: `python -c "import yfinance as yf; df = yf.Ticker('TICKER').history(end='YYYY-MM-DD', period='90d'); df.to_csv('tests/evaluation/patterns/fixtures/TICKER_YYYY-MM-DD_flag.csv')"` (or use period='120d' if a holiday-heavy month yields <60 trading days).
+- MIN_BARS in classifier is 36; spec's 60-bar contract is more conservative. period='90d' is sufficient for typical months.
+
+**Step 3: Each fixture commit:** `test(patterns): add labeled flag fixture <TICKER>_<DATE>` (or `none` variant). Standard convention; not a "task implementation" so no task-ID prefix needed.
+
+### For ORCHESTRATOR — Task 7.4 checkpoint (gated on operator labeling):
+
+**When Task 7.3 fixtures ship (≥15 committed):**
+
+1. Run `python -m pytest tests/evaluation/patterns/test_flag_classifier_integration.py -v` to execute parametrized integration tests over committed fixtures.
+2. Each parametrized test reports `<fixture-name> PASSED/FAILED`; failed assertions include label + actual pattern + notes in the error message.
+3. **Operator manually classifies failures as FP (algo says flag, operator labeled none) or FN (algo says none, operator labeled flag).** Per Q2 (2026-04-27): no automated FP/FN aggregator was added in V1; operator does manual classification from pytest output. Acceptable for V1 personal-use scope; if operator needs aggregation tooling, add as a small standalone follow-up.
+4. **Tune `cfg.classifier.*` if FP > FN per spec §3.1.4.** FP-biased: prefer false-negatives (algo missing real flags) over false-positives (algo flagging non-flags) — operator's eye is the validating ground truth, so over-flagging wastes operator-review time. Tighten thresholds (raise `flag_pole_gain_min`, lower `flag_pullback_depth_max`, etc.) until FP ≤ FN at default thresholds OR operator accepts the current calibration.
+5. **Phase 7 checkpoint criteria:** ≥15 fixtures committed; integration tests run; FP/FN classified; tuning applied (if needed) OR baseline accepted; final test-suite run green.
+6. **V1 ship criteria:** Task 7.4 closure marks chart-pattern flag-v1 V1 fully shipped. Document outcome in orchestrator-context "Recent decisions and framings" + lessons captured.
+
+### V1 known limitations (deferred to V2+):
+
+- Manual-trade fallback for out-of-chart-scope tickers (locked-constraint #5; spec §3.6).
+- ML / LLM / hybrid classifiers (operator preference: rule-based geometric for V1).
+- Multi-timeframe analysis (weekly + daily); currently daily-only.
+- Real-time / intraday classification.
+- Sort-PARTICIPATING flag tag (sort-neutral in V1 by spec).
+- Calibration study (algo vs operator agreement-rate); gated on 20+ overrides.
+- Slow-test live-fetch suite (deferred per spec §4.3).
+- Tuning-history versioning.
+- Schema-layer cross-column constraint hardening on `trades` (CREATE-COPY-DROP-RENAME).
+- Hidden form-field tampering hardening (re-resolve at submit + validate).
+- Dashboard banner for classifier-error count.
+- Additional patterns beyond `flag_pattern` (V1 = single pattern; V2+ extensions via separate dispatch).
+- `(M=5, N=5)` literal fallback in classifier (unreachable under MIN_BARS=36; documented inline).
+- Automated FP/FN aggregator for Task 7.4 tuning (Q2, 2026-04-27).
+
+### Process-meta items (post-V1):
+
+- **4-phase ZERO-rogue track record (Phases 4 + 5 + 6 + 7).** Single-subagent dispatch + observable verification + 4-tier commit-message convention is the working baseline at this project's scale. Worktree isolation NOT escalated.
+- **Codex's 7-phase review pattern shows compound ROI:** R1 catches structural; R2 catches second-order interactions; R3+ catches defense-in-depth; Phase 7 added induced-bug pattern (R3→R4 chain). The 5-round investment yields repeated ROI on test-quality + spec-fidelity + cross-feature-integration + visual-correctness + contract-documentation + induced-bug-detection dimensions.
+- **Subject-only grep regex amended to ERE + POSIX** (Q1, 2026-04-27). Past briefs' BRE-incompatible regex was technically non-functional; the discipline still worked because of other partitioning rules. Phase 7+ briefs use the ERE form.
