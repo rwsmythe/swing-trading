@@ -17,6 +17,7 @@ from swing.data.repos.pipeline import (
     LeaseRevoked, insert_chart_target, set_evaluation_run_id,
     update_chart_target_status,
 )
+from swing.data.repos.pattern_classifications import insert_classification
 from swing.data.repos.recommendations import upsert_recommendation
 from swing.data.repos.trades import list_open_trades, list_all_exits
 from swing.data.repos.cash import list_cash
@@ -27,6 +28,9 @@ from swing.data.repos.weather import get_latest_for_date
 from swing.evaluation.context import BatchContext, CandidateContext, MarketContext
 from swing.evaluation.dates import action_session_for_run, last_completed_session
 from swing.evaluation.evaluator import evaluate_batch
+from swing.evaluation.patterns.flag_classifier import (
+    FlagClassificationResult, classify_flag,
+)
 from swing.evaluation.rs import load_universe, universe_version_hash
 from swing.pipeline.finviz_schema import reject_csv, validate_csv
 from swing.pipeline.finviz_select import select_csv, NoFilesError, AmbiguousInboxError
@@ -39,7 +43,9 @@ from swing.pipeline.staging import StagingDir, promote_staging
 from swing.prices import PriceFetcher
 from swing.recommendations.build import BuildContext, build_recommendations
 from swing.rendering.briefing import BriefingInputs, build_briefing_view_model
-from swing.rendering.charts import render_chart, ChartingUnavailable
+from swing.rendering.charts import (
+    ChartingUnavailable, PatternOverlay, render_chart,
+)
 from swing.rendering.exporter import export_briefing
 from swing.trades.equity import current_equity, sizing_equity
 from swing.watchlist.service import compute_watchlist_changes
@@ -591,6 +597,7 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
     staging = StagingDir(base=base, run_id=lease.run_id, artifact_type="charts")
     staging.create()
     out_paths: dict[str, Path] = {}
+    errors_count = 0  # classifier-exception count for end-of-step summary
     for ticker, pivot, stop, _source in targets:
         try:
             ohlcv = fetcher.get(ticker, lookback_days=200, as_of_date=None)
@@ -601,25 +608,57 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
                     chart_status="fetcher_failed",
                 )
             continue
+
+        bars_60 = ohlcv.tail(60)
+        try:
+            classification = classify_flag(bars_60)
+        except Exception as exc:
+            log.warning(f"flag_classifier failed for {ticker}: {exc!r}")
+            errors_count += 1
+            classification = FlagClassificationResult(
+                detected=False, confidence=0.0, pattern=None,
+                pole_start_date=None, pole_end_date=None,
+                flag_start_date=None, flag_end_date=None,
+                pole_high=None, flag_low=None, pivot=None,
+                components={"error": repr(exc)},
+            )
+
+        pattern_overlay = PatternOverlay.from_classification(classification)
+
         path = render_chart(
             ticker=ticker, ohlcv=ohlcv, pivot=pivot, stop=stop,
             output_path=staging.path / f"{ticker}.png",
+            pattern_overlay=pattern_overlay,
         )
         if path is not None:
             out_paths[ticker] = path
-            with lease.fenced_write() as conn:
-                update_chart_target_status(
-                    conn, pipeline_run_id=lease.run_id, ticker=ticker,
-                    chart_status="ok",
-                )
+            chart_status = "ok"
         else:
             # render_chart returns None when the (post-tail) frame has fewer
             # than MIN_BARS rows — the spec §8 deferred "too_few_bars" case.
-            with lease.fenced_write() as conn:
-                update_chart_target_status(
-                    conn, pipeline_run_id=lease.run_id, ticker=ticker,
-                    chart_status="too_few_bars",
-                )
+            chart_status = "too_few_bars"
+
+        # Single fenced write per ticker — chart_status update + classification
+        # row commit together so a partial-failure leaves a structurally
+        # consistent state.
+        with lease.fenced_write() as conn:
+            update_chart_target_status(
+                conn, pipeline_run_id=lease.run_id, ticker=ticker,
+                chart_status=chart_status,
+            )
+            insert_classification(
+                conn, pipeline_run_id=lease.run_id, ticker=ticker,
+                result=classification,
+                computed_at=_dt.now().isoformat(timespec="seconds"),
+            )
+
+    # End-of-step summary. "ok" semantics here track classifier success: a
+    # classifier-exception ticker is NOT-ok even if the chart rendered to disk.
+    total = len(targets)
+    ok = total - errors_count - sum(
+        1 for t, *_ in targets if t not in out_paths
+    )
+    log.info(f"flag_classifier: {ok}/{total} ok, {errors_count} errors")
     promote = promote_staging(
         staging=staging, target=base / data_asof,
         lease_token=lease.token, db_path=cfg.paths.db_path,

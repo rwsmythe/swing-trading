@@ -132,9 +132,11 @@ def test_step_charts_writes_chart_targets_with_ok_status(
 
     # Avoid mplfinance dependency in the test env: render_chart returns the
     # path on success, but we monkeypatch it to write a stub PNG so we can
-    # test the success branch without mplfinance installed.
+    # test the success branch without mplfinance installed. Phase 3 added a
+    # `pattern_overlay` kwarg the runner now passes through; accept and
+    # discard.
     def fake_render(
-        *, ticker, ohlcv, pivot, stop, output_path,
+        *, ticker, ohlcv, pivot, stop, output_path, pattern_overlay=None,
     ):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"stub-png")
@@ -185,7 +187,7 @@ def test_step_charts_records_fetcher_failed(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("swing.prices.PriceFetcher.get", selective_fetcher)
     monkeypatch.setattr(
         "swing.pipeline.runner.render_chart",
-        lambda *, ticker, ohlcv, pivot, stop, output_path: (
+        lambda *, ticker, ohlcv, pivot, stop, output_path, pattern_overlay=None: (
             output_path.parent.mkdir(parents=True, exist_ok=True)
             or output_path.write_bytes(b"stub")
             or output_path
@@ -221,7 +223,7 @@ def test_step_charts_records_too_few_bars(tmp_path: Path, monkeypatch):
     )
 
     def short_render(
-        *, ticker, ohlcv, pivot, stop, output_path,
+        *, ticker, ohlcv, pivot, stop, output_path, pattern_overlay=None,
     ):
         # Simulate the MIN_BARS short-circuit for AAPL specifically.
         if ticker == "AAPL":
@@ -267,7 +269,7 @@ def test_step_charts_dedupes_aplus_then_near_proximity(
     )
     monkeypatch.setattr(
         "swing.pipeline.runner.render_chart",
-        lambda *, ticker, ohlcv, pivot, stop, output_path: (
+        lambda *, ticker, ohlcv, pivot, stop, output_path, pattern_overlay=None: (
             output_path.parent.mkdir(parents=True, exist_ok=True)
             or output_path.write_bytes(b"stub")
             or output_path
