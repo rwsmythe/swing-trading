@@ -92,6 +92,20 @@ class EntryRequest:
     # Operator-frozen pre-trade hypothesis (free-text, optional). Default None
     # preserves existing call sites and persists NULL on the trades row.
     hypothesis_label: str | None = None
+    # Operator-override label for the chart-pattern flag (free-text,
+    # canonicalized at record_entry boundary the same way as
+    # hypothesis_label). Default None preserves existing call sites and
+    # persists NULL.
+    chart_pattern_operator: str | None = None
+    # Resolved-at-entry-surface classification snapshot — persisted
+    # AS-IS by record_entry (no re-lookup at submit). ToCToU fix per
+    # spec §3.6 (R2 M3 + R3 M1): cache resolution happens once at
+    # form/CLI render; the resolved values flow through the request and
+    # the persisted trade row reflects the operator's view at submit
+    # time, not whatever a fresh re-lookup would return.
+    chart_pattern_algo: str | None = None
+    chart_pattern_algo_confidence: float | None = None
+    chart_pattern_classification_pipeline_run_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -178,6 +192,14 @@ def record_entry(
         watchlist_initial_stop=req.watchlist_initial_stop,
         notes=req.notes,
         hypothesis_label=canonicalize_hypothesis_label(req.hypothesis_label),
+        # Snapshot AS-IS — no re-resolve here (spec §3.6 ToCToU fix).
+        # The operator override re-uses canonicalize_hypothesis_label
+        # because spec §3.6 specifies identical NFC + control-byte rules
+        # for both free-text labels.
+        chart_pattern_algo=req.chart_pattern_algo,
+        chart_pattern_algo_confidence=req.chart_pattern_algo_confidence,
+        chart_pattern_operator=canonicalize_hypothesis_label(req.chart_pattern_operator),
+        chart_pattern_classification_pipeline_run_id=req.chart_pattern_classification_pipeline_run_id,
     )
 
     archived = False
