@@ -102,11 +102,6 @@ def render_chart(
 
     fig, axes = mpf.plot(df, returnfig=True, **plot_kwargs)
     price_ax = axes[0]
-    # mpf renders `title` as a fig.suptitle, leaving axes[0] title empty.
-    # Mirror the title onto the price axes so downstream consumers (and the
-    # discriminating overlay test) can read the annotation directly off the
-    # axes — keeps the visible suptitle unchanged.
-    price_ax.set_title(title)
     # Convert overlay dates to integer x-positions in the bar index — mpf
     # uses positional integers on the x-axis (not timestamps) for candle
     # plots, so we map each overlay date to its bar position.

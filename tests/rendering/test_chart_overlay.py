@@ -187,8 +187,16 @@ def test_render_chart_with_overlay_paints_two_bands_and_separate_pivot_segment(
     from matplotlib.collections import LineCollection, PolyCollection
     polys = [c for c in price_ax.collections if isinstance(c, PolyCollection)]
     assert len(polys) >= 2, "expected pole + flag fill_betweenx bands"
-    # Title annotation includes the confidence.
-    assert "flag (0.78)" in price_ax.get_title()
+    # Title annotation includes the confidence. mpf renders `title=` as a
+    # figure suptitle (not on axes[0]); read it via fig._suptitle with a
+    # tolerant fallback to fig.texts for any mpf version that uses
+    # fig.text() instead of fig.suptitle().
+    fig = captured["fig"]
+    suptitle = fig._suptitle.get_text() if fig._suptitle is not None else ""
+    if not suptitle:
+        suptitle = "\n".join(t.get_text() for t in fig.texts)
+    expected = "AAPL | pivot $110.00 stop $95.00 | last 120 bars | flag (0.78)"
+    assert suptitle == expected, f"got {suptitle!r}"
 
     # Discriminating check: the algo-pivot segment is an EXTRA
     # LineCollection added on top of mpf's built-in pivot/stop hlines.
