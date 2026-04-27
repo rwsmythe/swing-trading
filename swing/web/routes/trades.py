@@ -482,11 +482,12 @@ def entry_post(
             # DuplicateOpenPositionException upstream — but defense in
             # depth).
             msg = str(exc)
-            chart_pattern_check = (
-                "chart_pattern_algo" in msg
-                or "chart_pattern_algo_confidence" in msg
-                or "chart_pattern_classification_pipeline_run_id" in msg
-            )
+            # V1: schema-message-coupled — substring-matches CHECK constraint text; forward hardening = pre-insert FK existence check
+            chart_pattern_check = any(col in msg for col in (
+                "chart_pattern_algo",
+                "chart_pattern_algo_confidence",
+                "chart_pattern_classification_pipeline_run_id",
+            ))
             chart_pattern_fk = (
                 "FOREIGN KEY constraint failed" in msg
                 and cp_anchor_value is not None
