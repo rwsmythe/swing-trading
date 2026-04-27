@@ -9,13 +9,13 @@ from swing.config import Config
 from swing.data.db import connect
 from swing.data.models import Candidate, WatchlistEntry
 from swing.data.repos.candidates import fetch_candidates_for_run
+from swing.data.repos.pattern_classifications import (
+    list_classifications_for_run,
+)
 from swing.data.repos.watchlist import list_active_watchlist
 from swing.evaluation.dates import action_session_for_run
 from swing.web.chart_scope import resolve_chart_scope
 from swing.web.price_cache import PriceCache, PriceSnapshot
-from swing.data.repos.pattern_classifications import (
-    list_classifications_for_run,
-)
 from swing.web.view_models.dashboard import (
     _flag_tags,
     _pattern_tags,
