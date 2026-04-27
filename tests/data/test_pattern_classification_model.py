@@ -11,3 +11,19 @@ def test_pattern_classification_dataclass_shape():
     )
     assert row.pattern == "flag"
     assert row.confidence == 0.78
+
+
+def test_trade_has_four_chart_pattern_fields():
+    from swing.data.models import Trade
+    t = Trade(
+        id=None, ticker="AAPL", entry_date="2026-04-26",
+        entry_price=10.0, initial_shares=1, initial_stop=9.0,
+        current_stop=9.0, status="open",
+        watchlist_entry_target=None, watchlist_initial_stop=None,
+        notes=None,
+    )
+    assert t.hypothesis_label is None
+    assert t.chart_pattern_algo is None
+    assert t.chart_pattern_algo_confidence is None
+    assert t.chart_pattern_operator is None
+    assert t.chart_pattern_classification_pipeline_run_id is None
