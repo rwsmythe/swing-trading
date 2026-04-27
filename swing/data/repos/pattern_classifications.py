@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Mapping
+from collections.abc import Mapping
 
 from swing.data.models import PipelinePatternClassification
 from swing.evaluation.patterns.flag_classifier import FlagClassificationResult
