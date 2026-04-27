@@ -22,6 +22,11 @@ class PatternOverlay:
 
     Distinct from the candidate-pivot hline already drawn by render_chart.
     Spec §3.4. Phase 6 paints (was Phase 3 no-op stub).
+
+    Coordinate contract (V1): the date fields are mapped to integer bar
+    positions (0..N-1) at render time via render_chart's `_bar_idx` helper.
+    mpf candle plots render along a positional x-axis, not a true date axis.
+    Out-of-window dates clamp to the chart's left/right edge (see _bar_idx).
     """
     pattern: str
     confidence: float
@@ -106,9 +111,18 @@ def render_chart(
     # Note: mpf renders `title=` as fig.suptitle (NOT axes[0].title); do not
     # set_title here — it would create a duplicate visible title. Read via
     # fig._suptitle (or fig.texts) instead. (Internal review fix, commit 803607e.)
-    # Convert overlay dates to integer x-positions in the bar index — mpf
-    # uses positional integers on the x-axis (not timestamps) for candle
-    # plots, so we map each overlay date to its bar position.
+    # V1 design contract (approved Phase 6): overlay placement uses integer
+    # bar positions, NOT date-axis coordinates. mpf candle plots render
+    # along a positional integer x-axis (bar 0, bar 1, ..., bar N-1), even
+    # though `df.index` is a DatetimeIndex. The brief's hint about
+    # "matplotlib auto-converts via the date locator" applies to line/area
+    # plots, not candles — empirically verified during Phase 6 implementation.
+    # Consequence: if mpf changes its candle x-axis to true datetime
+    # coordinates in a future version, this code AND the tests asserting
+    # specific integer extents (e.g., (80, 100), (101, 119)) MUST be
+    # updated together. The integer-extent assertions are intentional
+    # — they pin the contract — and are NOT a hidden coupling to
+    # implementation details.
     bar_dates = [d.date() if hasattr(d, "date") else d for d in df.index]
 
     def _bar_idx(d: date) -> int:

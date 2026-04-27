@@ -156,7 +156,16 @@ def test_render_chart_with_overlay_paints_two_bands_and_separate_pivot_segment(
     a 1-segment hlines collection (algo-pivot, flag-spanning) are added on
     TOP of the existing candidate-pivot hline (spec §3.4 + §6 candidate-
     pivot preserved). Inspecting the axes catches missing bands / missing
-    algo-pivot / accidental removal of the existing hline."""
+    algo-pivot / accidental removal of the existing hline.
+
+    Note: the integer-extent assertions (e.g., pole (80, 100), flag (101,
+    119), candidate-pivot full-width 0..119) pin the V1 positional-x-axis
+    contract documented in PatternOverlay's class docstring. mpf candle
+    plots use integer bar positions, NOT a true date axis. If mpf changes
+    this in a future release, both this test and `_bar_idx` must update
+    together — the assertions are intentional contract pins, not
+    accidental coupling to library internals.
+    """
     overlay = PatternOverlay(
         pattern="flag", confidence=0.78,
         pole_start_date=fake_ohlcv.index[80].date(),
