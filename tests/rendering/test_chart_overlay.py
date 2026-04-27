@@ -267,7 +267,7 @@ def test_render_chart_with_overlay_paints_two_bands_and_separate_pivot_segment(
     suptitle = fig._suptitle.get_text() if fig._suptitle is not None else ""
     if not suptitle:
         suptitle = "\n".join(t.get_text() for t in fig.texts)
-    expected = "AAPL | pivot $110.00 stop $95.00 | last 120 bars | flag (0.78)"
+    expected = r"AAPL | pivot \$110.00 stop \$95.00 | last 120 bars | flag (0.78)"
     assert suptitle == expected, f"got {suptitle!r}"
 
     # Discriminating check: directly call mpf.plot with the same plot_kwargs
@@ -284,7 +284,7 @@ def test_render_chart_with_overlay_paints_two_bands_and_separate_pivot_segment(
     # baseline-vs-overlay comparison.
     monkeypatch.setattr(mpf, "plot", real_plot)  # unwrap before baseline call
     df = fake_ohlcv.tail(120).copy()
-    baseline_title = "AAPL | pivot $110.00 stop $95.00 | last 120 bars"
+    baseline_title = r"AAPL | pivot \$110.00 stop \$95.00 | last 120 bars"
     addplots = []
     closes = df["Close"]
     for window, color in ((10, "blue"), (20, "orange"), (50, "red")):

@@ -83,7 +83,11 @@ def render_chart(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    title = f"{ticker} | pivot ${pivot:.2f} stop ${stop:.2f} | last {len(df)} bars"
+    # Escape `$` with `\$` to prevent matplotlib mathtext interpretation
+    # (paired `$..$` would render the intervening text in italic math mode,
+    # e.g. "stop" between the two prices). matplotlib renders `\$` as a
+    # literal `$` glyph without entering math mode.
+    title = rf"{ticker} | pivot \${pivot:.2f} stop \${stop:.2f} | last {len(df)} bars"
     if pattern_overlay is not None:
         title += f" | flag ({pattern_overlay.confidence:.2f})"
 
