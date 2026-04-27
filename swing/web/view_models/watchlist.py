@@ -48,10 +48,16 @@ class WatchlistRowVM:
 
     Mirrors the (w, price, tags) shape `partials/watchlist_row.html.j2`
     expects so the route handler can render that partial directly.
+
+    Phase 4 Task 4.4: `pattern_tag` is a parallel field — independent of
+    `tags` so the sort surface (which the row VM does not participate
+    in) cannot drift. Default None matches the template's
+    `{% if pattern_tag %}` guard.
     """
     w: WatchlistEntry
     price: PriceSnapshot | None
     tags: tuple[str, ...]
+    pattern_tag: str | None = None
 
 
 @dataclass(frozen=True)
@@ -170,12 +176,15 @@ def build_watchlist_row(
             # Bind candidates to the pipeline's own eval (same anchor logic
             # as build_watchlist) so flag tags don't drift from /watchlist.
             pipeline_eval_row = conn.execute(
-                """SELECT evaluation_run_id FROM pipeline_runs
+                """SELECT id, evaluation_run_id FROM pipeline_runs
                    WHERE state = 'complete'
                    ORDER BY finished_ts DESC LIMIT 1"""
             ).fetchone()
-            pipeline_eval_id = (
+            pipeline_run_id = (
                 pipeline_eval_row[0] if pipeline_eval_row else None
+            )
+            pipeline_eval_id = (
+                pipeline_eval_row[1] if pipeline_eval_row else None
             )
             candidates: list[Candidate] = []
             if pipeline_eval_id is not None:
@@ -186,6 +195,18 @@ def build_watchlist_row(
                 ).fetchone()
                 if fallback is not None:
                     candidates = fetch_candidates_for_run(conn, fallback[0])
+            # Phase 4 Task 4.4: classification lookup for the compact row,
+            # bound to the same `pipeline_run_id` as build_watchlist.
+            # Inside the same `with conn:` block (plan note: refactor scope
+            # so the new query is inside the same transaction). We reuse
+            # `_pattern_tags` rather than `get_classification` so the
+            # threshold + format logic is identical to the full watchlist
+            # path — single source of truth for the rendered string.
+            row_classifications = {}
+            if pipeline_run_id is not None:
+                row_classifications = list_classifications_for_run(
+                    conn, pipeline_run_id=pipeline_run_id,
+                )
     finally:
         conn.close()
     by_ticker = {c.ticker: c for c in candidates}
@@ -196,7 +217,11 @@ def build_watchlist_row(
     )
     snap = snaps.get(ticker)
     tags = _flag_tags(by_ticker).get(ticker, ())
-    return WatchlistRowVM(w=row, price=snap, tags=tags)
+    pattern_tag = _pattern_tags(
+        row_classifications,
+        display_threshold=cfg.web.flag_pattern_display_threshold,
+    ).get(ticker)
+    return WatchlistRowVM(w=row, price=snap, tags=tags, pattern_tag=pattern_tag)
 
 
 def build_watchlist_expanded(
