@@ -79,8 +79,10 @@ def _seed_active_watchlist_entry(
 def _make_cfg(tmp_path: Path):
     from swing.config import load
     from tests.cli.test_cli_eval import _minimal_config
-    project = tmp_path / "project"; project.mkdir()
-    home = tmp_path / "home"; home.mkdir()
+    project = tmp_path / "project"
+    project.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
     cfg_path = _minimal_config(project, home)
     cfg = load(cfg_path)
     ensure_schema(cfg.paths.db_path).close()
