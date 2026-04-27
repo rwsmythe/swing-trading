@@ -245,7 +245,7 @@ class HypothesisRegistryEntry:
     notes: str | None = None
 
 
-@dataclass(frozen=True, init=False, slots=True)
+@dataclass(frozen=True)
 class PipelinePatternClassification:
     """One row of `pipeline_pattern_classifications` (migration 0009).
 
@@ -255,105 +255,17 @@ class PipelinePatternClassification:
       - pattern=NULL,   confidence=NULL    → classifier error
         (components_json carries an "error" key).
     """
-    _id: int | None
-    _pipeline_run_id: int
-    _ticker: str
-    _pattern: str | None
-    _confidence: float | None
-    _components_json: str
-    _pivot: float | None
-    _pole_high: float | None
-    _flag_low: float | None
-    _pole_start_date: str | None
-    _pole_end_date: str | None
-    _flag_start_date: str | None
-    _flag_end_date: str | None
-    _computed_at: str
-
-    def __init__(
-        self,
-        id: int | None,
-        pipeline_run_id: int,
-        ticker: str,
-        pattern: str | None,
-        confidence: float | None,
-        components_json: str,
-        pivot: float | None,
-        pole_high: float | None,
-        flag_low: float | None,
-        pole_start_date: str | None,
-        pole_end_date: str | None,
-        flag_start_date: str | None,
-        flag_end_date: str | None,
-        computed_at: str,
-    ) -> None:
-        object.__setattr__(self, "_id", id)
-        object.__setattr__(self, "_pipeline_run_id", pipeline_run_id)
-        object.__setattr__(self, "_ticker", ticker)
-        object.__setattr__(self, "_pattern", pattern)
-        object.__setattr__(self, "_confidence", confidence)
-        object.__setattr__(self, "_components_json", components_json)
-        object.__setattr__(self, "_pivot", pivot)
-        object.__setattr__(self, "_pole_high", pole_high)
-        object.__setattr__(self, "_flag_low", flag_low)
-        object.__setattr__(self, "_pole_start_date", pole_start_date)
-        object.__setattr__(self, "_pole_end_date", pole_end_date)
-        object.__setattr__(self, "_flag_start_date", flag_start_date)
-        object.__setattr__(self, "_flag_end_date", flag_end_date)
-        object.__setattr__(self, "_computed_at", computed_at)
-
-    @property
-    def id(self) -> int | None:
-        return self._id
-
-    @property
-    def pipeline_run_id(self) -> int:
-        return self._pipeline_run_id
-
-    @property
-    def ticker(self) -> str:
-        return self._ticker
-
-    @property
-    def pattern(self) -> str | None:
-        return self._pattern
-
-    @property
-    def confidence(self) -> float | None:
-        return self._confidence
-
-    @property
-    def components_json(self) -> str:
-        return self._components_json
-
-    @property
-    def pivot(self) -> float | None:
-        return self._pivot
-
-    @property
-    def pole_high(self) -> float | None:
-        return self._pole_high
-
-    @property
-    def flag_low(self) -> float | None:
-        return self._flag_low
-
-    @property
-    def pole_start_date(self) -> str | None:
-        return self._pole_start_date
-
-    @property
-    def pole_end_date(self) -> str | None:
-        return self._pole_end_date
-
-    @property
-    def flag_start_date(self) -> str | None:
-        return self._flag_start_date
-
-    @property
-    def flag_end_date(self) -> str | None:
-        return self._flag_end_date
-
-    @property
-    def computed_at(self) -> str:
-        return self._computed_at
+    id: int | None
+    pipeline_run_id: int
+    ticker: str
+    pattern: str | None        # 'none' | 'flag' | None
+    confidence: float | None
+    components_json: str
+    pivot: float | None
+    pole_high: float | None
+    flag_low: float | None
+    pole_start_date: str | None
+    pole_end_date: str | None
+    flag_start_date: str | None
+    flag_end_date: str | None
+    computed_at: str
