@@ -499,3 +499,120 @@ def test_post_entry_with_bogus_pipeline_run_id_returns_400_with_error_banner(
     assert count == 0
 
 
+# ---------------------------------------------------------------------
+# Codex R1 Major 2 — soft-warn confirm flow must preserve chart_pattern
+# snapshot fields. Currently the soft-warn template iterates form_values
+# but the entry_post handler does not include the 5 chart_pattern fields
+# in form_values — so the force=true resubmit drops the snapshot.
+# ---------------------------------------------------------------------
+
+
+def test_soft_warn_confirm_round_trip_preserves_chart_pattern_snapshot(
+    seeded_db, monkeypatch,
+):
+    """Spec §3.6 ``snapshot-at-entry-surface persists AS-IS`` requires
+    the soft-warn confirm round-trip to carry the chart_pattern fields
+    forward, not drop them.
+
+    Discriminating: pre-fix the soft-warn confirm body iterates
+    form_values which lacks chart_pattern_*; the rendered HTML does NOT
+    contain hidden inputs for the 5 chart_pattern fields. Post-fix: all
+    5 fields appear as hidden inputs, and the force=true resubmit
+    persists the original snapshot.
+
+    Compounding-confound: seed 4 unrelated open trades to push
+    open_count to soft_warn_open=4, then submit AAPL with chart_pattern
+    snapshot → SoftWarnException fires inside record_entry → confirm
+    fragment renders. Verifies the bug is in the confirm-render path,
+    not in the cached-only gate or invariant.
+    """
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+
+    cfg, cfg_path = seeded_db
+    run_id, _eval_id = seed_pipeline_with_classification(
+        cfg.paths.db_path, ticker="AAPL", pattern="flag", confidence=0.78,
+    )
+    # Seed 4 open trades to hit the soft cap.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            for i, t in enumerate(("MSFT", "NVDA", "GOOG", "META")):
+                insert_trade_with_event(conn, Trade(
+                    id=None, ticker=t, entry_date="2026-04-15",
+                    entry_price=100.0, initial_shares=1, initial_stop=90.0,
+                    current_stop=90.0, status="open",
+                    watchlist_entry_target=None, watchlist_initial_stop=None,
+                    notes=None,
+                ), event_ts=f"2026-04-15T09:{30+i}:00")
+    finally:
+        conn.close()
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        # First submit at soft cap with chart_pattern snapshot.
+        r1 = _post_entry(
+            client,
+            chart_pattern_algo="flag",
+            chart_pattern_algo_confidence="0.78",
+            chart_pattern_classification_pipeline_run_id=str(run_id),
+            chart_pattern_operator="",  # Accept algo
+            chart_pattern_operator_other="",
+        )
+        assert r1.status_code == 200
+        assert "Soft cap reached" in r1.text
+        body = r1.text
+        # All 5 chart_pattern fields must appear as hidden inputs in the
+        # soft-warn confirm form so the force=true resubmit carries them.
+        assert (
+            '<input type="hidden" name="chart_pattern_algo" value="flag">'
+            in body
+        ), f"chart_pattern_algo hidden input missing. Body[:800]: {body[:800]!r}"
+        assert (
+            '<input type="hidden" name="chart_pattern_algo_confidence" '
+            'value="0.78">'
+            in body
+        ), (
+            "chart_pattern_algo_confidence hidden input missing. "
+            f"Body[:800]: {body[:800]!r}"
+        )
+        assert (
+            '<input type="hidden" name="chart_pattern_classification_pipeline_run_id" '
+            f'value="{run_id}">'
+            in body
+        ), (
+            "chart_pattern_classification_pipeline_run_id hidden input missing. "
+            f"Body[:800]: {body[:800]!r}"
+        )
+        assert (
+            'name="chart_pattern_operator"' in body
+        ), f"chart_pattern_operator hidden input missing. Body[:800]: {body[:800]!r}"
+        assert (
+            'name="chart_pattern_operator_other"' in body
+        ), (
+            "chart_pattern_operator_other hidden input missing. "
+            f"Body[:800]: {body[:800]!r}"
+        )
+
+        # Second submit with force=true and the carried snapshot.
+        r2 = _post_entry(
+            client,
+            chart_pattern_algo="flag",
+            chart_pattern_algo_confidence="0.78",
+            chart_pattern_classification_pipeline_run_id=str(run_id),
+            chart_pattern_operator="",
+            chart_pattern_operator_other="",
+            force="true",
+        )
+        assert r2.status_code == 200, r2.text
+    # Verify the snapshot landed on the trades row.
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT chart_pattern_algo, chart_pattern_algo_confidence, "
+            "chart_pattern_operator, chart_pattern_classification_pipeline_run_id "
+            "FROM trades WHERE ticker='AAPL'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row == ("flag", 0.78, None, run_id)

@@ -359,6 +359,15 @@ def entry_post(
                 actual_open = len(list_open_trades(conn_count))
             finally:
                 conn_count.close()
+            # Codex R1 Major 2 — soft-warn confirm must preserve the
+            # chart_pattern snapshot AS-IS (spec §3.6). Without these 5
+            # fields, the force=true resubmit drops the snapshot →
+            # persists NULL columns or trips the cached-only gate
+            # differently than what the operator saw at first submit.
+            # Use the raw incoming form values (not the canonicalized
+            # ``cp_*_value`` locals) so the second submit re-runs the
+            # exact same canonicalization path as the first — single
+            # source of truth.
             form_values = {
                 "ticker": req.ticker,
                 "entry_date": req.entry_date,
@@ -369,6 +378,18 @@ def entry_post(
                 "notes": req.notes or "",
                 "watchlist_target": req.watchlist_entry_target or "",
                 "watchlist_stop": req.watchlist_initial_stop or "",
+                "chart_pattern_algo": chart_pattern_algo or "",
+                "chart_pattern_algo_confidence": (
+                    chart_pattern_algo_confidence
+                    if chart_pattern_algo_confidence is not None else ""
+                ),
+                "chart_pattern_classification_pipeline_run_id": (
+                    chart_pattern_classification_pipeline_run_id
+                    if chart_pattern_classification_pipeline_run_id is not None
+                    else ""
+                ),
+                "chart_pattern_operator": chart_pattern_operator or "",
+                "chart_pattern_operator_other": chart_pattern_operator_other or "",
                 "open_count": actual_open,
                 "soft_warn": cfg.position_limits.soft_warn_open,
                 "hard_cap": cfg.position_limits.hard_cap_open,

@@ -1,5 +1,19 @@
 {#- Soft-warn 2-step confirmation fragment.
-    Expects: form_values (dict of the original form submission fields). -#}
+    Expects: form_values (dict of the original form submission fields).
+
+    Codex R1 Major 2 — the iterator below emits a hidden <input> for every
+    form_values key except the three banner-only keys ('open_count',
+    'soft_warn', 'hard_cap'). The route layer (entry_post in
+    swing/web/routes/trades.py) places the 5 chart_pattern fields
+    (chart_pattern_algo, chart_pattern_algo_confidence,
+    chart_pattern_classification_pipeline_run_id, chart_pattern_operator,
+    chart_pattern_operator_other) into form_values so they ride along on
+    the force=true resubmit and persist AS-IS per spec §3.6
+    (snapshot-at-entry-surface). Drift risk: any new banner-only key
+    must be added to the exclusion list AND no chart_pattern field may
+    be excluded — both halves are required for the round-trip to land
+    the original snapshot on the trades row.
+-#}
 <tr class="soft-warn-confirm">
   <td colspan="8">
     <div class="banner" style="background:#fff3cd;color:#92400e;padding:12px;">
