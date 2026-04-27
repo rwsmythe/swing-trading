@@ -184,6 +184,19 @@ def test_load_labeled_fixtures_raises_on_invalid_label(tmp_path: Path) -> None:
         load_labeled_fixtures(tmp_path)
 
 
+def test_load_labeled_fixtures_raises_on_missing_notes(tmp_path: Path) -> None:
+    """Per Codex R2 M2 + README §2: notes field is required (operator rationale)."""
+    pd.DataFrame(
+        {"Open": [1.0]*60, "High": [1.0]*60, "Low": [1.0]*60, "Close": [1.0]*60, "Volume": [1]*60},
+        index=pd.Index(pd.date_range("2026-01-02", periods=60, freq="B"), name="Date"),
+    ).to_csv(tmp_path / "BAD_2026-04-26_flag.csv")
+    (tmp_path / "BAD_2026-04-26_flag.json").write_text(
+        '{"label": "flag"}'
+    )
+    with pytest.raises(ValueError, match="Missing required 'notes' field"):
+        load_labeled_fixtures(tmp_path)
+
+
 def test_load_labeled_fixtures_raises_on_non_numeric_expected_confidence_min(
     tmp_path: Path,
 ) -> None:
@@ -256,13 +269,34 @@ def test_load_labeled_fixtures_raises_on_expected_confidence_min_on_none_fixture
 
 
 def test_load_labeled_fixtures_trims_to_last_60_bars(tmp_path: Path) -> None:
-    """Per Codex R1 M3 + spec §4.2: loader trims to last 60 rows."""
-    _write_synthetic_pair(
-        tmp_path, "AAPL_2026-04-26_flag", label="flag", rows=63
+    """Per Codex R1 M3 + R2 Minor 2 + spec §4.2: loader trims to last 60 rows
+    (not first 60 or arbitrary slice)."""
+    rows = 63  # 3 surplus rows
+    dates = pd.date_range("2026-01-02", periods=rows, freq="B")
+    # Per-row distinguishable Close values: first 3 rows have Close ∈ {0,1,2};
+    # last 60 rows have Close ∈ {3..62}. Asserting Close[0] == 3 (not 0)
+    # proves the last 60 were retained.
+    df = pd.DataFrame(
+        {
+            "Open": [10.0 + i for i in range(rows)],
+            "High": [11.0 + i for i in range(rows)],
+            "Low": [9.5 + i for i in range(rows)],
+            "Close": list(range(rows)),
+            "Volume": [1_000_000 + i for i in range(rows)],
+        },
+        index=pd.Index(dates, name="Date"),
+    )
+    df.to_csv(tmp_path / "AAPL_2026-04-26_flag.csv")
+    (tmp_path / "AAPL_2026-04-26_flag.json").write_text(
+        '{"label": "flag", "notes": "trim test"}'
     )
     fixtures = load_labeled_fixtures(tmp_path)
     assert len(fixtures) == 1
-    assert len(fixtures[0].bars) == 60  # trimmed from 63
+    bars = fixtures[0].bars
+    assert len(bars) == 60
+    # Discriminating: confirm we got the LAST 60 rows (Close 3..62), not first 60 (0..59).
+    assert bars["Close"].iloc[0] == 3
+    assert bars["Close"].iloc[-1] == 62
 
 
 def test_load_labeled_fixtures_raises_on_fewer_than_60_bars(tmp_path: Path) -> None:

@@ -11,6 +11,14 @@ second-labeler cross-check and no inter-rater reliability metric. The labels
 encoded here are the operator's qualitative chart-reading calls; they are the
 ground truth that the classifier (`classify_flag(bars)`) is evaluated against.
 
+**Loader canonicalization (per spec §4.2):** the on-disk CSV is the operator's
+literal yfinance pull (typically 60–63 daily bars from `period='90d'`); the
+helper module trims to the **last 60 bars** before passing to `classify_flag`,
+satisfying spec §4.2's "60 daily bars" contract. The CSV is never hand-edited;
+only the in-memory DataFrame is canonicalized at load time. The operator's
+visual labeling should focus on the right edge of the chart (the 60 most
+recent bars), since that is the slice the classifier evaluates.
+
 The label is the operator's qualitative call — the algorithm's actual gate
 evaluation is the test under test, NOT the label generator.
 
@@ -39,6 +47,11 @@ The CSV is the **literal yfinance OHLCV pull** — the unmodified output of
 
 **DO NOT hand-edit values.** Fixtures must be reproducible from a yfinance
 refresh of the same `(ticker, end_date)` pair.
+
+**Bar count:** the operator's pull may include surplus margin (e.g.,
+`period='90d'` yields ~63 trading days). The loader trims to the last 60 bars
+at load time per spec §4.2. The CSV on disk is preserved as-is — never
+hand-edit to enforce a 60-row count.
 
 ### JSON schema
 
@@ -128,9 +141,11 @@ discipline check and starts being a rubber stamp.
    python -c "import yfinance as yf; df = yf.Ticker('AAPL').history(end='2026-04-26', period='90d'); df.to_csv('tests/evaluation/patterns/fixtures/AAPL_2026-04-26_flag.csv')"
    ```
 
-   `period='90d'` yields ~63 trading days of data; the helper trims to the
+   `period='90d'` yields ~63 trading days of data. The on-disk CSV captures
+   the literal pull (preserve as-is). At test time, the helper trims to the
    last 60 bars per spec §4.2's "60 daily bars" contract before passing to
-   `classify_flag`. If yfinance returns fewer than 60 trading days for your
+   `classify_flag` — this is the canonicalization step described in §1
+   (Purpose). If yfinance returns fewer than 60 trading days for your
    `(ticker, end_date)` pair (e.g., short period, holiday-heavy month), the
    loader raises `ValueError` — increase `period='120d'` or longer to ensure
    margin.
@@ -167,11 +182,12 @@ Behavior:
   **SKIPS gracefully**. This is the bootstrap state.
 - **With committed fixtures** → suite parametrizes one test case per fixture,
   loads the CSV via the helper module, runs `classify_flag(bars)`, and asserts:
-  - For `label == "flag"`: `result.pattern == "flag"`, and if
-    `expected_confidence_min` is set, `result.confidence >= expected_confidence_min`.
-  - For `label == "none"`: `result.pattern in ("none", None)` (accepts both the
-    evaluated-negative sentinel `"none"` and the system-error sentinel `None`
-    defensively).
+  - For `label == "flag"`: `result.detected and result.pattern == "flag"`,
+    and if `expected_confidence_min` is set,
+    `result.confidence >= expected_confidence_min`.
+  - For `label == "none"`: `not result.detected and result.pattern == "none"`
+    (matches spec §4.2 exactly; `None` system-error sentinel is NOT accepted
+    as a valid evaluated-negative).
 
 If a fixture starts failing after a classifier change, the operator must
 either (a) accept the failure as a regression and revert/fix the classifier,

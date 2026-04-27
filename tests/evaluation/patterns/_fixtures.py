@@ -41,10 +41,12 @@ def load_labeled_fixtures(fixture_dir: Path = FIXTURE_DIR) -> list[LabeledFixtur
       behavior). Per Codex R1 M1, parser failures (UnicodeDecodeError,
       ParserError, EmptyDataError, IOError) are caught at ``pd.read_csv`` and
       re-raised as ValueError BEFORE the missing-column check.
-    - JSON schema (per Codex R1 M2 + README §2): ``label`` must be ``"flag"``
-      or ``"none"``; ``notes`` must be string; ``expected_confidence_min`` (if
-      present) must be a float in [0.0, 1.0] and is only allowed on ``"flag"``
-      fixtures. Violations raise ValueError with the json path.
+    - JSON schema (per Codex R1 M2 + R2 M2 + README §2): ``label`` must be
+      ``"flag"`` or ``"none"``; ``notes`` is required (must be present, must
+      be string — empty string allowed but missing key raises);
+      ``expected_confidence_min`` (if present) must be a float in [0.0, 1.0]
+      and is only allowed on ``"flag"`` fixtures. Violations raise ValueError
+      with the json path.
     - Bar count: trims to the last 60 rows per spec §4.2 contract; raises
       ValueError if input has <60 rows (operator should use ``period='90d'`` or
       larger to ensure margin).
@@ -93,7 +95,12 @@ def load_labeled_fixtures(fixture_dir: Path = FIXTURE_DIR) -> list[LabeledFixtur
             raise ValueError(
                 f"Invalid label {label!r} in {json_path}: must be 'flag' or 'none'."
             )
-        notes = meta.get("notes", "")
+        if "notes" not in meta:
+            raise ValueError(
+                f"Missing required 'notes' field in {json_path}: per README §2, "
+                f"every fixture must record operator rationale."
+            )
+        notes = meta["notes"]
         if not isinstance(notes, str):
             raise ValueError(
                 f"Invalid notes type in {json_path}: must be string, got "
