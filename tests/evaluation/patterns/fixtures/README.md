@@ -56,7 +56,7 @@ refresh of the same `(ticker, end_date)` pair.
 | `notes`                     | string          | yes      | Operator rationale: which gate(s) the fixture exercises (e.g., "wide-and-loose, fails tightness").                                |
 | `expected_confidence_min`   | float in [0, 1] | optional | For `flag` fixtures only. Pins a confidence floor — test asserts `result.confidence >= expected_confidence_min`.                  |
 
-## 3. Labeling rules (verbatim from spec §4.2)
+## 3. Labeling rules (per spec §4.2)
 
 - **Labeler.** The operator (Reid Smythe) is the sole labeler in V1. No
   second-labeler cross-check; no inter-rater reliability metric.
@@ -104,8 +104,11 @@ match the algorithm's behavior.
 - **NEVER edit a fixture's CSV or JSON in place.**
 - If a label later turns out to be wrong (operator changed their mind on
   re-review), **retire the fixture**: delete both the CSV and JSON, commit the
-  deletion, and add a new fixture under a **different filename** (e.g., a
-  different end-date, or a `_v2` suffix on the ticker stem if needed).
+  deletion, and add a new fixture under a **different end-date** (e.g., the
+  next-or-prior trading day's 60-bar window). Never add a `_v2`-style version
+  suffix on the ticker — the filename schema `<TICKER>_<YYYY-MM-DD>_<label>`
+  reserves the underscore as the field separator, and a versioned suffix
+  corrupts the at-a-glance inventory schema.
 - Bug-fix to a corrupted CSV (e.g., yfinance returned partial data the day it
   was pulled) is also a retire-and-replace, not an edit-in-place.
 
