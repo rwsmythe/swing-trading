@@ -164,6 +164,28 @@ def test_insert_trade_anchor_set_algo_unset_raises_valueerror(tmp_path: Path):
         conn.close()
 
 
+def test_insert_trade_orphan_confidence_raises_valueerror(tmp_path: Path):
+    """Reverse direction of algo='flag' biconditional: conf NOT NULL with
+    algo NULL is a spec §3.2.2 invariant violation. Joint-NULL XOR on
+    (algo, anchor) catches the (None, run_id) and (set, None) directions
+    but does NOT catch (None, None) with orphan conf."""
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        with pytest.raises(ValueError, match="chart_pattern"):
+            with conn:
+                insert_trade_with_event(
+                    conn,
+                    _make_trade(
+                        chart_pattern_algo=None,
+                        chart_pattern_algo_confidence=0.5,
+                        chart_pattern_classification_pipeline_run_id=None,
+                    ),
+                    event_ts="ts", rationale="aplus-setup",
+                )
+    finally:
+        conn.close()
+
+
 def test_list_open_trades_round_trip_chart_pattern(tmp_path: Path):
     """list_open_trades returns Trade with chart_pattern fields populated (Task 2.8)."""
     conn = ensure_schema(tmp_path / "swing.db")

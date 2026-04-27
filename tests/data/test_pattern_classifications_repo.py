@@ -108,6 +108,49 @@ def test_pattern_None_classifier_error_persists_NULL(tmp_path: Path):
         conn.close()
 
 
+def test_classifier_components_with_nan_sma_persists_as_strict_json_null(tmp_path: Path):
+    """When _enrich_components yields NaN (e.g., SMA50 at flag_start_idx < 49),
+    the persisted components_json must be RFC 8259 strict JSON — NaN is not.
+    Per spec §3.2.1's 'frozen feature snapshot' contract, the JSON must be
+    parseable by strict consumers (SQLite json1, external analyzers)."""
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        run_id = _seed_pipeline_run(conn)
+        # Construct a result with a NaN component (mimics undefined SMA).
+        nan_result = FlagClassificationResult(
+            detected=False, confidence=0.0, pattern="none",
+            pole_start_date=None, pole_end_date=None,
+            flag_start_date=None, flag_end_date=None,
+            pole_high=None, flag_low=None, pivot=None,
+            components={
+                "pole_gain": 0.10,
+                "sma10_at_flag_start": 100.0,
+                "sma20_at_flag_start": 99.5,
+                "sma50_at_flag_start": float("nan"),
+            },
+        )
+        with conn:
+            insert_classification(conn, pipeline_run_id=run_id, ticker="X",
+                                  result=nan_result, computed_at="ts")
+        row = get_classification(conn, pipeline_run_id=run_id, ticker="X")
+        # Strict-JSON parse must succeed (default json.loads is RFC-compliant).
+        # Python's json.loads accepts NaN by default, so use a strict-mode
+        # check: raw text must NOT contain literal "NaN".
+        assert "NaN" not in row.components_json, \
+            f"components_json contains literal NaN (non-strict JSON): {row.components_json!r}"
+        # Round-trip via strict parse: explicit allow_nan=False not exposed in
+        # json.loads but we can verify via re.search for any NaN/Infinity literal.
+        import re
+        assert not re.search(r"\b(NaN|-?Infinity)\b", row.components_json)
+        # And the value is None (not NaN, not omitted).
+        parsed = json.loads(row.components_json)
+        assert parsed["sma50_at_flag_start"] is None
+        # Other (finite) values preserved.
+        assert parsed["sma10_at_flag_start"] == 100.0
+    finally:
+        conn.close()
+
+
 def test_unique_constraint_rejects_duplicate_run_ticker(tmp_path: Path):
     conn = ensure_schema(tmp_path / "swing.db")
     try:

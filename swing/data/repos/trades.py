@@ -28,6 +28,11 @@ def _validate_chart_pattern_invariant(trade: Trade) -> None:
             "chart_pattern_classification_pipeline_run_id must both be "
             "NULL or both be non-NULL"
         )
+    if algo is None and conf is not None:
+        raise ValueError(
+            "chart_pattern invariant: chart_pattern_algo_confidence requires "
+            "chart_pattern_algo NOT NULL (no orphan confidence)"
+        )
     if algo == "flag" and conf is None:
         raise ValueError(
             "chart_pattern invariant: chart_pattern_algo='flag' requires "

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from collections.abc import Mapping
 
@@ -17,6 +18,18 @@ def _confidence_for_persistence(result: FlagClassificationResult) -> float | Non
 
 def _date_iso(d) -> str | None:
     return d.isoformat() if d is not None else None
+
+
+def _serialize_components(components: dict) -> str:
+    """Strict-JSON serialization: replace NaN with None per RFC 8259.
+    NaN may arise from _enrich_components when SMA windows exceed
+    flag_start_idx. RFC 8259 has no NaN literal; downstream strict-JSON
+    consumers (SQLite json1, external analyzers) reject it."""
+    cleaned = {
+        k: (None if isinstance(v, float) and math.isnan(v) else v)
+        for k, v in components.items()
+    }
+    return json.dumps(cleaned, sort_keys=True, allow_nan=False)
 
 
 def insert_classification(
@@ -58,7 +71,7 @@ def insert_classification(
         """,
         (
             pipeline_run_id, ticker, pattern, confidence,
-            json.dumps(result.components, sort_keys=True),
+            _serialize_components(result.components),
             pivot, pole_high, flag_low,
             pole_start, pole_end, flag_start, flag_end,
             computed_at,
