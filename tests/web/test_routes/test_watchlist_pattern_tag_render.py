@@ -47,7 +47,15 @@ def test_watchlist_renders_flag_tag_for_classified_ticker(seeded_db, monkeypatch
     with TestClient(app) as client:
         resp = client.get("/watchlist")
     assert resp.status_code == 200
-    assert "flag (0.78)" in resp.text
+    # Exact-fragment match (Codex R1 Major 3 tightening): assert the
+    # rendered <span> markup verbatim so a regression that puts the
+    # text in the wrong cell, drops the CSS class, or renders bare
+    # text would fail. Substring check on the full element catches
+    # placement + markup drift without requiring an HTML parser.
+    assert (
+        '<span class="tag tag-pattern">flag (0.78)</span>'
+        in resp.text
+    )
 
 
 def test_watchlist_omits_flag_tag_when_no_classification(seeded_db, monkeypatch):
@@ -87,7 +95,15 @@ def test_dashboard_top5_renders_flag_tag_for_classified_ticker(
     with TestClient(app) as client:
         resp = client.get("/")
     assert resp.status_code == 200
-    assert "flag (0.78)" in resp.text
+    # Exact-fragment match (Codex R1 Major 3 tightening): assert the
+    # rendered <span> markup verbatim so a regression that puts the
+    # text in the wrong cell, drops the CSS class, or renders bare
+    # text would fail. Substring check on the full element catches
+    # placement + markup drift without requiring an HTML parser.
+    assert (
+        '<span class="tag tag-pattern">flag (0.78)</span>'
+        in resp.text
+    )
 
 
 def test_dashboard_top5_omits_flag_tag_when_no_classification(
@@ -127,4 +143,12 @@ def test_watchlist_row_collapse_renders_flag_tag(seeded_db, monkeypatch):
             headers={"HX-Request": "true"},
         )
     assert resp.status_code == 200
-    assert "flag (0.78)" in resp.text
+    # Exact-fragment match (Codex R1 Major 3 tightening): assert the
+    # rendered <span> markup verbatim so a regression that puts the
+    # text in the wrong cell, drops the CSS class, or renders bare
+    # text would fail. Substring check on the full element catches
+    # placement + markup drift without requiring an HTML parser.
+    assert (
+        '<span class="tag tag-pattern">flag (0.78)</span>'
+        in resp.text
+    )
