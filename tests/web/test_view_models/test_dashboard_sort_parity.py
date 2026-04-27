@@ -133,3 +133,78 @@ def test_sort_watchlist_byte_for_byte_parity(
     assert [r.ticker for r in sorted_rows] == expected_order, (
         f"Sort regression on case '{label}'."
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 4.6 — Compounding-confound test (per 2026-04-26 lesson).
+#
+# Spec §3.5 + §4.4: pattern_tag must NOT influence row order. The direct
+# `_sort_watchlist(rows, flag_tags)` test would be vacuous (the function
+# signature doesn't even accept pattern_tags). Instead test E2E through
+# `build_watchlist` and verify that toggling classifications ON / OFF
+# leaves the row order unchanged. If sort logic ever picks up the flag
+# tag, this test FAILS first — well before the operator notices reorder.
+# ---------------------------------------------------------------------------
+
+from unittest.mock import MagicMock  # noqa: E402  — keep test-internal import grouping
+
+from ._pattern_classification_seed import (  # noqa: E402
+    add_active_watchlist_row,
+    delete_all_classifications,
+    seed_pipeline_with_classification,
+)
+
+
+def test_pattern_tags_do_not_influence_watchlist_row_order(seeded_db):
+    """Compounding-confound: a row carrying a pattern_tag must NOT outrank
+    a row without one. With identical flag_tags + proximity, the sort
+    must be byte-equivalent whether classifications exist or not.
+
+    Setup: two watchlist rows (AAA, BBB), identical entry_target +
+    last_close (so proximity is equal); only AAA has a classification.
+    No flag_tags applied (no candidates seeded), so the only difference
+    between the rows is `pattern_tag`. The sort must leave them in
+    deterministic ticker order.
+
+    Verification has two parts:
+    1. Order with classification present == order without it.
+    2. The pattern_tags VM field is non-empty in the first run, empty in
+       the second — proves the classification machinery DID toggle (so
+       the test isn't vacuously passing because nothing changed).
+    """
+    from swing.web.view_models.watchlist import build_watchlist
+    cfg, _ = seeded_db
+    seed_pipeline_with_classification(
+        cfg.paths.db_path, ticker="AAA",
+        pattern="flag", confidence=0.99,
+    )
+    add_active_watchlist_row(cfg.paths.db_path, ticker="BBB")
+    cache = MagicMock()
+    cache.get_many.return_value = {}
+    cache.degraded_until.return_value = None
+    cache.is_degraded.return_value = False
+
+    vm_with = build_watchlist(cfg=cfg, cache=cache, executor=MagicMock())
+    order_with = [r.ticker for r in vm_with.rows]
+
+    delete_all_classifications(cfg.paths.db_path)
+
+    vm_without = build_watchlist(cfg=cfg, cache=cache, executor=MagicMock())
+    order_without = [r.ticker for r in vm_without.rows]
+
+    # Architectural check: sort order is identical regardless of
+    # classification state. If `_pattern_tags` ever leaks into the sort
+    # primary key, this fails first.
+    assert order_with == order_without, (
+        f"Removing the only pattern_tag changed row order ({order_with} → "
+        f"{order_without}). pattern_tag is influencing _sort_watchlist; "
+        "architectural separation regressed."
+    )
+
+    # Compounding-confound second leg: confirm the classification
+    # machinery actually toggled. Without this assertion, both runs
+    # could produce empty pattern_tags (because of, say, the threshold
+    # filter or a wiring break), and the order check would
+    # tautologically pass.
+    assert vm_with.pattern_tags == {"AAA": "flag (0.99)"}
+    assert vm_without.pattern_tags == {}
