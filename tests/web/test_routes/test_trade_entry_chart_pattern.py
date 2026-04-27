@@ -384,3 +384,118 @@ def test_post_entry_refuses_operator_override_when_no_cache(seeded_db, monkeypat
     finally:
         conn.close()
     assert count == 0
+
+
+# ---------------------------------------------------------------------
+# Codex R1 Major 1 — tampered hidden-form-field POST must NOT 500.
+# I1's existing fix only catches ValueError from the cross-column
+# invariant. SQLite's CHECK on chart_pattern_algo and the FK on
+# chart_pattern_classification_pipeline_run_id raise sqlite3.IntegrityError
+# at INSERT time, which the route currently does not catch — producing a
+# generic HTTP 500 instead of the standard 400 + re-rendered banner.
+# ---------------------------------------------------------------------
+
+
+def test_post_entry_with_tampered_algo_value_returns_400_with_error_banner(
+    seeded_db, monkeypatch,
+):
+    """Tampered ``chart_pattern_algo='pennant'`` (value not in the
+    schema CHECK enum) with otherwise-valid fields must NOT bubble a 500.
+
+    Cached-only gate accepts the POST because algo + anchor are both
+    non-NULL; cross-column invariant is not violated (algo is non-NULL,
+    confidence is non-NULL, anchor is non-NULL). The CHECK constraint
+    fires at INSERT time and SQLite raises ``sqlite3.IntegrityError``
+    with the column name in the message. Route must catch and re-render
+    with HTTP 400.
+
+    Discriminating: pre-fix the route catches only ``ValueError`` from
+    the cross-column invariant; an IntegrityError bypasses the catch and
+    becomes 500. Post-fix: the IntegrityError predicate matches the
+    chart_pattern_algo CHECK message and renders the 400 banner. Asserts
+    no trade row inserted (transaction rolled back).
+    """
+    cfg, cfg_path = seeded_db
+    run_id, _eval_id = seed_pipeline_with_classification(
+        cfg.paths.db_path, ticker="AAPL", pattern="flag", confidence=0.78,
+    )
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = _post_entry(
+            client,
+            chart_pattern_algo="pennant",  # tampered: not in CHECK enum
+            chart_pattern_algo_confidence="0.78",
+            chart_pattern_classification_pipeline_run_id=str(run_id),
+            chart_pattern_operator="",  # Accept algo (no override)
+        )
+    assert resp.status_code == 400, (
+        f"Expected 400 (chart_pattern CHECK re-render), got "
+        f"{resp.status_code}. Body[:500]: {resp.text[:500]!r}"
+    )
+    # Banner must reference chart_pattern (column name appears in CHECK
+    # error and is surfaced through the route's error message).
+    assert "chart_pattern" in resp.text.lower() or "Chart-pattern" in resp.text, (
+        "Response body must reference chart_pattern. "
+        f"Body[:500]: {resp.text[:500]!r}"
+    )
+    # No trade row inserted (transaction rolled back).
+    conn = connect(cfg.paths.db_path)
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE ticker='AAPL'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert count == 0
+
+
+def test_post_entry_with_bogus_pipeline_run_id_returns_400_with_error_banner(
+    seeded_db, monkeypatch,
+):
+    """Tampered ``chart_pattern_classification_pipeline_run_id=999999``
+    (FK target does not exist) must NOT bubble a 500.
+
+    Cached-only gate accepts (algo + anchor both non-NULL); cross-column
+    invariant accepts (algo='flag' + confidence non-NULL). The FK
+    constraint fires at INSERT time and SQLite raises
+    ``sqlite3.IntegrityError("FOREIGN KEY constraint failed")``.
+
+    Discriminating: pre-fix → 500 (IntegrityError unhandled). Post-fix:
+    route's pre-INSERT FK existence check (or IntegrityError catch with
+    chart-pattern predicate) renders the 400 banner. Asserts no trade
+    row inserted.
+    """
+    cfg, cfg_path = seeded_db
+    # NB: do NOT seed any pipeline_runs row; 999999 must not exist.
+    # Seed only a watchlist row so the form re-render can reach
+    # build_entry_form_vm (mirrors refusal-path test fixture).
+    _seed_aapl_watchlist(cfg)
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = _post_entry(
+            client,
+            chart_pattern_algo="flag",
+            chart_pattern_algo_confidence="0.78",
+            chart_pattern_classification_pipeline_run_id="999999",  # FK miss
+            chart_pattern_operator="",  # Accept algo (no override)
+        )
+    assert resp.status_code == 400, (
+        f"Expected 400 (chart_pattern FK re-render), got "
+        f"{resp.status_code}. Body[:500]: {resp.text[:500]!r}"
+    )
+    assert "chart_pattern" in resp.text.lower() or "Chart-pattern" in resp.text, (
+        "Response body must reference chart_pattern. "
+        f"Body[:500]: {resp.text[:500]!r}"
+    )
+    conn = connect(cfg.paths.db_path)
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE ticker='AAPL'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert count == 0
+
+

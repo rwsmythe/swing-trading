@@ -4,6 +4,7 @@ under strict OriginGuard (spec §3.3)."""
 from __future__ import annotations
 
 import logging
+import sqlite3
 from datetime import datetime
 
 from fastapi import APIRouter, Form, HTTPException, Request
@@ -425,6 +426,51 @@ def entry_post(
             # so we don't silently swallow unrelated failures as if they
             # were operator input errors.
             if "chart_pattern" not in str(exc):
+                raise
+            return _rerender_entry_form_with_error(
+                request=request, templates=templates, cfg=cfg, cache=cache,
+                executor=executor, ticker=ticker, entry_date=entry_date,
+                entry_price=entry_price, shares=shares,
+                initial_stop=initial_stop, rationale=rationale, notes=notes,
+                error_message=(
+                    f"Chart-pattern fields failed validation: {exc}. Please "
+                    "contact a developer if the form was not manually altered."
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            # Codex R1 Major 1 — tampered hidden-form-field POST that slips
+            # past the cross-column ValueError invariant can still trip the
+            # schema-level guards at INSERT time:
+            #   (a) CHECK constraint on chart_pattern_algo (algo not in the
+            #       ('none','flag') enum). The error message includes the
+            #       column name verbatim, e.g.:
+            #         "CHECK constraint failed: chart_pattern_algo IS NULL
+            #          OR chart_pattern_algo IN ('none','flag')"
+            #   (b) FOREIGN KEY constraint on
+            #       chart_pattern_classification_pipeline_run_id (anchor id
+            #       does not point to an existing pipeline_runs row). The
+            #       FK error message is GENERIC ("FOREIGN KEY constraint
+            #       failed") with no column hint — but the trades table has
+            #       exactly one FK column (this one), so an FK failure on
+            #       this code path is unambiguous when ``cp_anchor_value``
+            #       was non-None.
+            # Both cases must surface as the standard 400 + re-rendered
+            # form pattern, not a generic 500. Re-raise IntegrityErrors
+            # not attributable to chart_pattern (e.g., the partial unique
+            # index ux_trades_one_open_per_ticker, already mapped to
+            # DuplicateOpenPositionException upstream — but defense in
+            # depth).
+            msg = str(exc)
+            chart_pattern_check = (
+                "chart_pattern_algo" in msg
+                or "chart_pattern_algo_confidence" in msg
+                or "chart_pattern_classification_pipeline_run_id" in msg
+            )
+            chart_pattern_fk = (
+                "FOREIGN KEY constraint failed" in msg
+                and cp_anchor_value is not None
+            )
+            if not (chart_pattern_check or chart_pattern_fk):
                 raise
             return _rerender_entry_form_with_error(
                 request=request, templates=templates, cfg=cfg, cache=cache,
