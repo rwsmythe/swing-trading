@@ -43,7 +43,12 @@ def watchlist_row(request: Request, ticker: str):
         raise HTTPException(status_code=404, detail=f"ticker {ticker} not on watchlist")
     return request.app.state.templates.TemplateResponse(
         request, "partials/watchlist_row.html.j2",
-        {"w": row_vm.w, "price": row_vm.price, "tags": row_vm.tags},
+        {
+            "w": row_vm.w,
+            "price": row_vm.price,
+            "tags": row_vm.tags,
+            "pattern_tag": row_vm.pattern_tag,
+        },
     )
 
 

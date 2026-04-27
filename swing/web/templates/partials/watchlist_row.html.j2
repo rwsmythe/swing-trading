@@ -1,4 +1,5 @@
-{#- Expects: w (WatchlistEntry), price (PriceSnapshot|None), tags (tuple[str]) -#}
+{#- Expects: w (WatchlistEntry), price (PriceSnapshot|None), tags (tuple[str]),
+              pattern_tag (str|None — Phase 4 Task 4.7; spec §3.5 SIBLING to tags) -#}
 <tr id="watchlist-row-{{ w.ticker }}"
     hx-get="/watchlist/{{ w.ticker }}/expand" hx-swap="outerHTML"
     hx-headers='{"HX-Request": "true"}'>
@@ -19,7 +20,13 @@
     {% else %}—{% endif %}
   </td>
   <td>{{ '%.2f' | format(w.last_adr_pct or 0) }}</td>
-  <td>{{ tags | join(' · ') }}</td>
+  <td>
+    {{ tags | join(' · ') }}
+    {%- if pattern_tag is defined and pattern_tag %}
+      {%- if tags %} · {% endif -%}
+      <span class="tag tag-pattern">{{ pattern_tag }}</span>
+    {%- endif %}
+  </td>
   <td>
     <button onclick="event.stopPropagation()"
             hx-get="/trades/entry/form?ticker={{ w.ticker }}"
