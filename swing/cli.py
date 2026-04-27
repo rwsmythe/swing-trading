@@ -372,11 +372,17 @@ def _lookup_active_recommendation_label(
 @click.option("--hypothesis", "hypothesis", default=None,
               help="Optional free-text pre-trade hypothesis label. Frozen at "
                    "entry time; aggregated by `swing journal review`.")
+@click.option("--chart-pattern-operator", "chart_pattern_operator",
+              default=None,
+              help="Operator override for chart pattern (free text per "
+                   "spec §3.6 — canonicalized at persistence). Refused "
+                   "if the ticker has no cached classification (V1 "
+                   "cached-only; manual fallback deferred to V2).")
 @click.option("--force", is_flag=True, help="Bypass soft-warn cap (still subject to hard cap)")
 @click.pass_context
 def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
                     watchlist_target, watchlist_stop, rationale, notes,
-                    hypothesis, force):
+                    hypothesis, chart_pattern_operator, force):
     """Record a trade entry."""
     from datetime import datetime as _dt
     from swing.data.db import connect
@@ -392,6 +398,49 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
     try:
+        # Phase 5 spec §3.6 ToCToU fix — resolve the chart-pattern
+        # cache row ONCE at command start (entry-surface). Snapshot
+        # then flows through EntryRequest and record_entry persists
+        # AS-IS. Single-round-trip pipeline_run resolution mirroring
+        # build_entry_form_vm and the Phase 4 watchlist pattern: the
+        # ``id`` IS the parent ``pipeline_run_id`` by construction;
+        # no secondary ``WHERE evaluation_run_id = ?`` round-trip.
+        cp_algo: str | None = None
+        cp_conf: float | None = None
+        cp_anchor: int | None = None
+        cp_evaluated = False
+        pipeline_eval_row = conn.execute(
+            """SELECT id, evaluation_run_id FROM pipeline_runs
+               WHERE state='complete'
+               ORDER BY finished_ts DESC LIMIT 1"""
+        ).fetchone()
+        if pipeline_eval_row is not None and pipeline_eval_row[0] is not None:
+            from swing.data.repos.pattern_classifications import (
+                get_classification,
+            )
+            cls = get_classification(
+                conn, pipeline_run_id=pipeline_eval_row[0],
+                ticker=ticker.upper(),
+            )
+            if cls is not None and cls.pattern in ("flag", "none"):
+                cp_algo = cls.pattern
+                cp_conf = cls.confidence
+                cp_anchor = cls.pipeline_run_id
+                cp_evaluated = True
+
+        # Spec §3.7 R1 C1 — CLI parity gate. Symmetric with the form's
+        # "Not classified" stub gate (Task 5.3) and the POST handler's
+        # 400 refusal (Task 5.4): if the operator passed
+        # ``--chart-pattern-operator`` for a ticker without a cached
+        # classification (or only a classifier-error row), refuse.
+        if chart_pattern_operator is not None and not cp_evaluated:
+            raise click.ClickException(
+                f"--chart-pattern-operator requires a cached classification "
+                f"for {ticker.upper()}; ticker is out-of-scope for the "
+                f"latest pipeline run. (V1 cached-only; manual fallback "
+                f"deferred to V2.)"
+            )
+
         # Pre-fill --hypothesis from the latest pipeline run's active
         # recommendation when the operator did NOT pass --hypothesis
         # explicitly (frontend brief §4.3). Empty-string is treated as an
@@ -418,6 +467,10 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
             # (web routes, scripts) get the same normalization. CLI passes
             # raw user input through unchanged.
             hypothesis_label=hypothesis,
+            chart_pattern_operator=chart_pattern_operator,
+            chart_pattern_algo=cp_algo,
+            chart_pattern_algo_confidence=cp_conf,
+            chart_pattern_classification_pipeline_run_id=cp_anchor,
         )
         try:
             result = record_entry(
