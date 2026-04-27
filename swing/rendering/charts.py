@@ -32,7 +32,7 @@ class PatternOverlay:
     pivot: float
 
     @classmethod
-    def from_classification(cls, r) -> "PatternOverlay | None":
+    def from_classification(cls, r) -> PatternOverlay | None:
         """Build from a FlagClassificationResult; returns None when not detected."""
         if not r.detected or r.pattern != "flag":
             return None
@@ -47,7 +47,7 @@ class PatternOverlay:
 def render_chart(
     *, ticker: str, ohlcv: pd.DataFrame, pivot: float, stop: float,
     output_path: Path,
-    pattern_overlay: "PatternOverlay | None" = None,
+    pattern_overlay: PatternOverlay | None = None,
 ) -> Path | None:
     """Render a daily chart with SMAs 10/20/50 + pivot/stop hlines + consolidation marker.
 
