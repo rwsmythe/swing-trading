@@ -174,18 +174,25 @@ def test_pattern_tags_do_not_influence_watchlist_row_order(seeded_db):
     don't conflate.
 
     Setup: two watchlist rows (AAA, BBB), identical entry_target +
-    last_close (so proximity is equal); only AAA has a classification.
-    No flag_tags applied (no candidates seeded), so the only difference
-    between the rows is `pattern_tag`. The sort must leave them in
-    deterministic ticker order.
+    last_close (so proximity is equal); only **BBB** has a classification.
+    Why BBB and not AAA: ticker-ASC tiebreak already places AAA first
+    under the correct sort. Classifying AAA would be vacuous — a
+    hypothetical bug where pattern-tag presence illegally sorted FIRST
+    would still place AAA first (it has both the alphabetical advantage
+    AND the bogus pattern-tag advantage), so the discriminator would
+    fail to distinguish. Classifying BBB inverts the test: the correct
+    sort places AAA first (alphabetical); a bug giving pattern-tag
+    presence priority would flip BBB to first. order_with vs
+    order_without then disagrees only when sort-neutrality is broken.
+    Codex Round 2 Major 1 fix.
     """
     from swing.web.view_models.watchlist import build_watchlist
     cfg, _ = seeded_db
     seed_pipeline_with_classification(
-        cfg.paths.db_path, ticker="AAA",
+        cfg.paths.db_path, ticker="BBB",
         pattern="flag", confidence=0.99,
     )
-    add_active_watchlist_row(cfg.paths.db_path, ticker="BBB")
+    add_active_watchlist_row(cfg.paths.db_path, ticker="AAA")
     cache = MagicMock()
     cache.get_many.return_value = {}
     cache.degraded_until.return_value = None
@@ -199,15 +206,25 @@ def test_pattern_tags_do_not_influence_watchlist_row_order(seeded_db):
     vm_without = build_watchlist(cfg=cfg, cache=cache, executor=MagicMock())
     order_without = [r.ticker for r in vm_without.rows]
 
-    # SOLE assertion: sort order is identical regardless of classification
-    # state. If `_pattern_tags` ever leaks into the sort primary key,
-    # this fails first. Removing `_pattern_tags` from `build_watchlist`
-    # would NOT fail this test — that's the point. The wiring leg lives
-    # in the separate test below.
-    assert order_with == order_without, (
-        f"Removing the only pattern_tag changed row order ({order_with} → "
-        f"{order_without}). pattern_tag is influencing _sort_watchlist; "
+    # Exact-order assertions (Codex R2 Major 1 strengthening): asserting
+    # only `order_with == order_without` was vacuous if both runs
+    # produced the same coincidentally-wrong order. The deterministic
+    # ticker-ASC tiebreak puts AAA before BBB regardless of pattern_tag
+    # state; if `_pattern_tags` ever leaks into the sort primary key,
+    # the classified BBB would jump first in `vm_with` and these
+    # exact-order assertions would fire. Removing `_pattern_tags` from
+    # `build_watchlist` leaves both assertions green by construction —
+    # that's the structural proof. The wiring leg lives in the separate
+    # test below.
+    assert order_with == ["AAA", "BBB"], (
+        f"Sort with classification present produced {order_with} — "
+        f"expected deterministic [AAA, BBB] (alphabetical). "
+        "pattern_tag is influencing _sort_watchlist; "
         "architectural separation regressed."
+    )
+    assert order_without == ["AAA", "BBB"], (
+        f"Sort with classifications wiped produced {order_without} — "
+        f"expected deterministic [AAA, BBB]. Sort logic itself regressed."
     )
 
 
@@ -224,18 +241,22 @@ def test_pattern_tags_wiring_active_in_build_watchlist(seeded_db):
     """
     from swing.web.view_models.watchlist import build_watchlist
     cfg, _ = seeded_db
+    # Ticker assignment mirrors the sort-neutrality test (Codex R2 fix):
+    # classify BBB, leave AAA unclassified. Setup parity keeps both
+    # tests on the same fixture shape so a future refactor can lift
+    # them into a shared @pytest.fixture if needed.
     seed_pipeline_with_classification(
-        cfg.paths.db_path, ticker="AAA",
+        cfg.paths.db_path, ticker="BBB",
         pattern="flag", confidence=0.99,
     )
-    add_active_watchlist_row(cfg.paths.db_path, ticker="BBB")
+    add_active_watchlist_row(cfg.paths.db_path, ticker="AAA")
     cache = MagicMock()
     cache.get_many.return_value = {}
     cache.degraded_until.return_value = None
     cache.is_degraded.return_value = False
 
     vm_with = build_watchlist(cfg=cfg, cache=cache, executor=MagicMock())
-    assert vm_with.pattern_tags == {"AAA": "flag (0.99)"}
+    assert vm_with.pattern_tags == {"BBB": "flag (0.99)"}
 
     delete_all_classifications(cfg.paths.db_path)
 
