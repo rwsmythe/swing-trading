@@ -50,6 +50,23 @@ def test_load_labeled_fixtures_empty_dir_returns_empty_list(tmp_path: Path) -> N
     assert load_labeled_fixtures(tmp_path) == []
 
 
+def test_load_labeled_fixtures_missing_dir_returns_empty_list(tmp_path: Path) -> None:
+    """Per brief §5: missing directory returns []."""
+    nonexistent = tmp_path / "does_not_exist"
+    assert not nonexistent.exists()
+    assert load_labeled_fixtures(nonexistent) == []
+
+
+def test_load_labeled_fixtures_skips_unpaired_json(tmp_path: Path) -> None:
+    """Per brief §5: JSON without paired CSV is silently skipped (loop iterates *.csv only)."""
+    # Write only the JSON, no matching CSV.
+    (tmp_path / "ORPHAN_2026-04-26_flag.json").write_text(
+        '{"label": "flag", "notes": "orphan"}'
+    )
+    result = load_labeled_fixtures(tmp_path)
+    assert result == []
+
+
 def test_load_labeled_fixtures_pairs_csv_and_json(tmp_path: Path) -> None:
     """Paired CSV + JSON yield one LabeledFixture; fields exact-match."""
     _write_synthetic_pair(
@@ -119,3 +136,21 @@ def test_load_labeled_fixtures_raises_clear_error_on_malformed_json(
     with pytest.raises(json.JSONDecodeError) as excinfo:
         load_labeled_fixtures(tmp_path)
     assert "BROKEN_2026-04-26_flag.json" in str(excinfo.value)
+
+
+def test_load_labeled_fixtures_raises_clear_error_on_malformed_csv(
+    tmp_path: Path,
+) -> None:
+    """Per brief §5: malformed CSV (empty / missing OHLCV columns) raises
+    ValueError with the file path in the message (symmetric with malformed-JSON
+    behavior)."""
+    csv_path = tmp_path / "BROKEN_2026-04-26_flag.csv"
+    csv_path.write_text("not,a,csv\nat all\n")  # parses as 1 row, no Date/OHLCV columns
+    (tmp_path / "BROKEN_2026-04-26_flag.json").write_text(
+        '{"label": "flag", "notes": "n/a"}'
+    )
+    with pytest.raises(ValueError) as excinfo:
+        load_labeled_fixtures(tmp_path)
+    msg = str(excinfo.value)
+    assert "BROKEN_2026-04-26_flag.csv" in msg
+    assert "Malformed CSV" in msg

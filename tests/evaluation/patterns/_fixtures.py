@@ -35,6 +35,9 @@ def load_labeled_fixtures(fixture_dir: Path = FIXTURE_DIR) -> list[LabeledFixtur
     - Returns list sorted by ``csv_path.stem`` (deterministic for parametrize ids).
     - Malformed JSON: raise ``json.JSONDecodeError`` with the path in the message
       (operator-debuggability over silent skip — clearly unrecoverable).
+    - Malformed CSV (empty / missing OHLCV columns): raise ValueError with the
+      file path in the message (operator-debuggability over silent skip — clearly
+      unrecoverable, symmetric with malformed-JSON behavior).
     """
     if not fixture_dir.exists():
         return []
@@ -50,6 +53,13 @@ def load_labeled_fixtures(fixture_dir: Path = FIXTURE_DIR) -> list[LabeledFixtur
                 f"{exc.msg} (in {json_path})", exc.doc, exc.pos
             ) from exc
         bars = pd.read_csv(csv_path, parse_dates=[0], index_col=0)
+        required_cols = {"Open", "High", "Low", "Close", "Volume"}
+        missing = required_cols - set(bars.columns)
+        if bars.empty or missing:
+            raise ValueError(
+                f"Malformed CSV at {csv_path}: empty or missing OHLCV columns "
+                f"(missing={sorted(missing)!r})"
+            )
         fixtures.append(
             LabeledFixture(
                 name=csv_path.stem,
