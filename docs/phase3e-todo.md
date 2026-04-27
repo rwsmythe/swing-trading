@@ -477,3 +477,37 @@ Items surfaced by Phase 4 execution (commit chain `195acbc..ad29f9e`, 3 adversar
 
 - **Phase 4 vindicated single-subagent + observable-verification approach.** ZERO rogue duplicates this phase (vs Phase 3's one and Phase 2's many). Brief discipline + observable evidence is a working alternative to worktree isolation at this scale. Worktree isolation reserved as fallback for future phases if a new failure mode emerges.
 - **Codex's adversarial review pattern across 4 phases:** R1 catches structural issues (Phase 1: cfg-injection sensitivity needed; Phase 2: orphan-confidence guard, NaN strict-JSON; Phase 3: log denominator semantics; Phase 4: compounding-confound conflation), R2 catches subtle vacuousness (Phase 4: ticker-symmetry vacuousness), R3+ refine. The 5-round investment is yielding repeated ROI on test-quality dimension; not just spec-fidelity. Worth continuing.
+
+---
+
+## 2026-04-26 chart-pattern flag-v1 Phase 5 → Phase 6 handoff items
+
+Items surfaced by Phase 5 execution (commit chain `9b7908c..27fb060`, 13 commits incl Task 5.0a + 4 review-fixes + 2 post-report R2-minor follow-ups, 2 adversarial Codex rounds → `NO_NEW_CRITICAL_MAJOR`, 1102→1124 fast tests +22, ZERO rogue duplicate task commits) that are deferred to Phase 6 or are housekeeping items.
+
+### For Phase 6 (chart overlay painting) implementer:
+
+- **Phase 6 lights up the chart-overlay painting (no-op stub from Phase 3).** Phase 3 added `pattern_overlay: PatternOverlay | None = None` kwarg to `render_chart` as a no-op stub; Phase 6 implements actual `fill_betweenx` pole/flag bands + algo-pivot horizontal segment + title annotation per spec §3.4. Existing candidate-pivot hline preserved as a separate visual element (algo-pivot is distinct).
+- **Phase 3 byte-identity tests WILL FAIL when Phase 6 lands** (`test_render_chart_pattern_overlay_none_is_byte_identical_to_default` + `test_render_chart_real_pattern_overlay_is_byte_identical_to_default` were load-bearing for Phase 3's no-op contract). Phase 6 implementer should expect to UPDATE or REPLACE these with overlay-rendered equivalence tests (e.g., LineCollection count delta from baseline; pole/flag band fill_betweenx presence; title annotation contains classification label).
+- **`PatternOverlay.from_classification(r)` filtering rule already in place** (Phase 3): returns None when `not r.detected or r.pattern != 'flag'`. Covers classifier-error rows (`pattern=NULL`) implicitly. No Phase 6 changes needed there.
+- **Phase 5 Task 5.0a aligned the dataclass annotation with Phase 4 runtime fix.** Phase 6 painting can `isinstance(cls.pole_start_date, date)` and use `pd.Timestamp(cls.pole_start_date)` directly without TypeError on `str.isoformat()`.
+- **Test-suite baseline for Phase 6: 1124 fast tests** passing on main at HEAD `27fb060`.
+- **Spec language fidelity** (per 2026-04-26 lesson on `axvspan` vs `fill_betweenx`): spec explicitly specifies `fill_betweenx` for the band painting. Use the spec's API name verbatim even if alternatives are more familiar.
+
+### Brief discipline updates for Phase 6:
+
+- **Continue subject-only grep observable verification** (Phase 4 + Phase 5 both ZERO rogues with this pattern): `git log --pretty='%s' --grep='^[a-z]+\([a-z]+\): Task X.Y'` in commit body before each task implementation commit.
+- **Continue 3-tier commit-message convention** (refined Phase 5): task implementations (`feat(area): Task X.Y — ...`); review-fix commits including internal code-review (`fix(area): code-review I1 — ...`) AND Codex (`fix(area): Codex R1 Major 2 — ...`); format-only cleanup (no task ID).
+- **Encourage internal code-review BEFORE Codex round.** Per Phase 5 lesson: pre-empts plan-anticipated misses; saves Codex round budget. Brief should explicitly suggest the internal pass after task implementations land but before invoking Codex.
+- **Don't blanket-require base-layout 5-VM rule.** Phase 6 touches `swing/rendering/`; doesn't add VM fields. Not applicable.
+- **In-scope-by-extension clause** (per Phase 4 + Phase 5 pattern): Phase 6 implicitly authorizes downstream tests of `render_chart` to be updated/replaced (the byte-identity tests from Phase 3 are the obvious case). Brief should explicitly say "Phase 3's byte-identity tests are expected to fail and need to be replaced with overlay-rendered equivalence tests" to pre-empt scope-deviation findings.
+
+### Housekeeping items:
+
+- **Scratch directories accumulating across phases.** Phase 2 left 10+ (`.tmp_pytest_red/`, `task28_pytest_*/`, etc.); Phase 3 added 4 more (`.tmp-pytest-phase3-task32/`, `tmp-pytest-phase3/`, `tmp-pytest-phase3-task32/`, `tmp-task32-probe/`); Phase 4 cleaned its own (`.tmp-phase4/`); Phase 5 cleaned its own (`.tmp-phase5/`); inherited Phase 2-3 pile remains. All blocked by Windows ACL on `Remove-Item`. Aggregate cleanup is a privileged-tool task (`takeown` + `icacls`) — defer until convenient or escalate as a separate operator-action item.
+- **`tests/data/test_db_v8.py` filename now stale** (schema is v10 after Phase 2 migrations 0009 + 0010). Recommended rename to `test_schema_version_pin.py`. Carry-over from Phase 2/3/4 handoffs; still pending.
+
+### Process-meta items:
+
+- **Phase 4 + Phase 5 vindicated single-subagent + observable-verification approach.** ZERO rogue duplicates across both phases (vs Phase 3's one and Phase 2's many). Brief discipline + observable evidence + subject-only grep refinement is a working alternative to worktree isolation at this scale. Worktree isolation reserved as fallback for novel failure modes.
+- **Codex's 5-phase review pattern shows compound ROI:** R1 catches structural issues; R2 catches subtle vacuousness; R3+ refine; Phase 5 added a NEW class — cross-feature interactions (R1 M2 soft-warn × new chart_pattern fields) that internal review naturally misses. The 5-round investment yields repeated ROI on test-quality + spec-fidelity + cross-feature-integration dimensions.
+- **R2 minors closed post-report.** Phase 5 R2 minors (schema-message coupling docs; soft-warn × "other" test) were ACCEPTED with rationale in implementer's return report; commits `4ef9044` + `27fb060` landed post-report addressing them. Net: nothing deferred; Phase 5 → Phase 6 handoff doesn't carry R2-minor advisory follow-ups.
