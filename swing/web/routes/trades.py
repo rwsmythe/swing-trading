@@ -412,6 +412,30 @@ def entry_post(
                 {"error_message": str(exc)},
                 status_code=400,
             )
+        except ValueError as exc:
+            # Code-review I1 (plan §Task 5.4 lines 3801-3802) —
+            # _validate_chart_pattern_invariant in
+            # swing/data/repos/trades.py raises ValueError when a tampered
+            # POST passes the cached-only gate but violates the
+            # cross-column rule (e.g. algo='flag' + confidence=None +
+            # valid run_id). Convert to the standard 400 + re-rendered
+            # form pattern so a hand-crafted POST cannot produce a generic
+            # 500. Only catch chart_pattern-flagged messages — re-raise
+            # any other ValueError from deeper service/persistence layers
+            # so we don't silently swallow unrelated failures as if they
+            # were operator input errors.
+            if "chart_pattern" not in str(exc):
+                raise
+            return _rerender_entry_form_with_error(
+                request=request, templates=templates, cfg=cfg, cache=cache,
+                executor=executor, ticker=ticker, entry_date=entry_date,
+                entry_price=entry_price, shares=shares,
+                initial_stop=initial_stop, rationale=rationale, notes=notes,
+                error_message=(
+                    f"Chart-pattern fields failed validation: {exc}. Please "
+                    "contact a developer if the form was not manually altered."
+                ),
+            )
     finally:
         conn.close()
 

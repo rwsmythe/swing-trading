@@ -293,6 +293,68 @@ def test_post_entry_other_with_text_canonicalizes(seeded_db, monkeypatch):
     assert row[0] == "pennant"
 
 
+def test_post_entry_with_tampered_form_returns_400_with_error_banner(
+    seeded_db, monkeypatch,
+):
+    """Code-review I1 — hidden-form-field tampering must NOT bubble a
+    generic 500.
+
+    Plan §Task 5.4 (lines 3801-3802) explicitly anticipated this:
+    ``record_entry`` re-validates the chart_pattern invariant via
+    ``_validate_chart_pattern_invariant`` and raises ``ValueError`` when
+    a tampered POST passes the route's cached-only gate but violates the
+    cross-column rule. The route must catch that ValueError and re-render
+    the form with a 400 banner, mirroring the SoftWarn / Duplicate /
+    HardCap handlers.
+
+    Tampered scenario: ``chart_pattern_algo='flag'`` + valid run_id
+    (cached-only gate accepts it because ``cache_evaluated`` is True with
+    algo+anchor non-NULL) + ``chart_pattern_algo_confidence=''`` (coerces
+    to ``None``). The invariant ``algo='flag' requires confidence
+    NOT NULL`` then fires inside ``record_entry``.
+
+    Discriminating: pre-fix the route does NOT catch ValueError →
+    TestClient with ``raise_server_exceptions=False`` records a 500;
+    post-fix the route catches it, re-renders the form, returns 400 with
+    a banner referencing ``chart_pattern``. Asserts no trade row was
+    inserted in either case (record_entry's ``with conn:`` rolls back).
+    """
+    cfg, cfg_path = seeded_db
+    run_id, _eval_id = seed_pipeline_with_classification(
+        cfg.paths.db_path, ticker="AAPL", pattern="flag", confidence=0.78,
+    )
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = _post_entry(
+            client,
+            chart_pattern_algo="flag",
+            chart_pattern_algo_confidence="",  # tampered: empty → None
+            chart_pattern_classification_pipeline_run_id=str(run_id),
+            chart_pattern_operator="",  # Accept algo (no override)
+        )
+    # Post-fix: 400 (re-rendered form). Pre-fix: 500 (unhandled ValueError).
+    assert resp.status_code == 400, (
+        f"Expected 400 (chart_pattern invariant re-render), got "
+        f"{resp.status_code}. Body[:500]: {resp.text[:500]!r}"
+    )
+    # Banner text must reference chart_pattern (substring of the invariant
+    # message raised by _validate_chart_pattern_invariant).
+    assert "chart_pattern" in resp.text, (
+        "Response body must contain the invariant message (substring "
+        f"'chart_pattern'). Body[:500]: {resp.text[:500]!r}"
+    )
+    # No trade row inserted (transaction rolled back / never started).
+    conn = connect(cfg.paths.db_path)
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE ticker='AAPL'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert count == 0
+
+
 def test_post_entry_refuses_operator_override_when_no_cache(seeded_db, monkeypatch):
     """Cached-only consumption gate (spec §1.1 #5 + §3.7 R1 C1) — POST
     mirrors CLI refusal. No trade row inserted.
