@@ -511,3 +511,39 @@ Items surfaced by Phase 5 execution (commit chain `9b7908c..27fb060`, 13 commits
 - **Phase 4 + Phase 5 vindicated single-subagent + observable-verification approach.** ZERO rogue duplicates across both phases (vs Phase 3's one and Phase 2's many). Brief discipline + observable evidence + subject-only grep refinement is a working alternative to worktree isolation at this scale. Worktree isolation reserved as fallback for novel failure modes.
 - **Codex's 5-phase review pattern shows compound ROI:** R1 catches structural issues; R2 catches subtle vacuousness; R3+ refine; Phase 5 added a NEW class — cross-feature interactions (R1 M2 soft-warn × new chart_pattern fields) that internal review naturally misses. The 5-round investment yields repeated ROI on test-quality + spec-fidelity + cross-feature-integration dimensions.
 - **R2 minors closed post-report.** Phase 5 R2 minors (schema-message coupling docs; soft-warn × "other" test) were ACCEPTED with rationale in implementer's return report; commits `4ef9044` + `27fb060` landed post-report addressing them. Net: nothing deferred; Phase 5 → Phase 6 handoff doesn't carry R2-minor advisory follow-ups.
+
+---
+
+## 2026-04-26 chart-pattern flag-v1 Phase 6 → Phase 7 handoff items
+
+Items surfaced by Phase 6 execution (commit chain `bce79b1..13d8cc5` + mathtext follow-up `2fd0ecc`, 7+1 commits, 4 adversarial Codex rounds → `NO_NEW_CRITICAL_MAJOR`, 1124→1127 fast tests +3, ZERO rogue duplicate task commits) plus Q1 + Q2 operator decisions.
+
+### For Phase 7 (operator-labeled fixtures + integration tests + tuning) implementer:
+
+**Phase 7 implementer-side scope is small.** Tasks 7.1 (fixture directory + labeling protocol README) + 7.2 (fixture-loader + parametrized integration test) + 7.4 checkpoint (gated on operator-labeling + tuning). Task 7.3 (≥15 fixtures labeled by operator) is OPERATOR-ONLY work running in parallel with implementer's 7.1/7.2 ship.
+
+- **Phase 7 brief should ship 7.1 + 7.2 immediately.** Task 7.3 operator-labeling can run at any pace alongside; Task 7.4 closes after operator labeling + FP-biased tuning.
+- **Chart overlay painting works on in-window portions of any classification's date range.** Phase 6 documented and tested LEFT-truncation (date before chart window snaps to index 0) and RIGHT-truncation (date after last bar — zero-width band at right edge) as intentional. No new edge cases expected from Phase 7 fixture parametrization.
+- **Test-suite baseline for Phase 7: 1127 fast tests** passing on main at HEAD `2fd0ecc` (post-mathtext-fix).
+- **Two-pivot rendering preserved** per spec §3.4. Operator-labeling work in Task 7.3 will see both candidate-pivot (full-width hline) AND algo-pivot (flag-region segment); they may coincide or differ. Spec deliberately allows visual comparison.
+- **Mathtext quirk fixed** (commit `2fd0ecc`). Chart titles now render legibly without mathtext italicization.
+- **Manual verification procedure prepared** at `docs/chart-pattern-flag-v1-manual-verification.md`. Operator walks through web + CLI surfaces post Phase 7 implementer ship to confirm everything displays correctly. Procedure will likely surface follow-up items.
+
+### Brief discipline updates for Phase 7:
+
+- **Continue subject-only grep observable verification** (3-phase ZERO-rogue track record: Phases 4 + 5 + 6).
+- **Continue 3-tier (now 4-tier with `(internal)` qualifier) commit-message convention.** Internal-Codex commits append `(internal)` qualifier per Q2 decision (2026-04-26 post-Phase-6 triage); orchestrator-Codex commits stay as-is.
+- **Encourage internal review BEFORE Codex** at BOTH discipline levels: manual code-review (per Phase 5 lesson) AND internal-Codex round (per Phase 6 lesson). Each layer pre-empts orchestrator round budget.
+- **Subagent role-partitioning within a task is collision-safe.** Phase 6 dispatched 7 subagents at different roles within Task 6.1 (implementer / reviewer / fix-implementer) with ZERO rogues. The disjoint-task-partitioning discipline operates at the TASK level, not subagent-count level.
+- **Manual visual verification is required for rendering changes.** If Phase 7 fixture parametrization touches chart rendering (e.g., overlay edge cases per the LEFT/RIGHT truncation), manual PNG inspection must accompany structural test verification.
+
+### Housekeeping items:
+
+- **Scratch directories accumulating across phases.** Phase 2: 10+; Phase 3: 4 more; Phase 4: cleaned own; Phase 5: cleaned own; Phase 6: created `.tmp-phase6-*` and similar (ACL-blocked). All blocked by Windows ACL on `Remove-Item`. Aggregate cleanup is a privileged-tool task (`takeown` + `icacls`) — defer until convenient or escalate as a separate operator-action item.
+- **`tests/data/test_db_v8.py` filename now stale** (schema is v10). Recommended rename to `test_schema_version_pin.py`. Carry-over from Phase 2-5 handoffs; still pending.
+
+### Process-meta items:
+
+- **Phase 4 + Phase 5 + Phase 6 all produced ZERO rogue duplicate task commits.** Single-subagent + observable verification + subject-only grep refinement is robust at this project's scale. Worktree isolation reserved as fallback for novel failure modes only.
+- **Codex's 6-phase review pattern shows compound ROI:** R1 catches structural issues; R2 catches subtle vacuousness; R3+ refine + escalate coupling concerns into explicit contracts; Phase 5 added cross-feature interactions (soft-warn × new fields); Phase 6 added internal-Codex pre-emption. The 5-round investment yields repeated ROI on test-quality + spec-fidelity + cross-feature-integration + visual-correctness + contract-documentation dimensions.
+- **Phase 6 commit-message convention surfaced 4th case:** internal-Codex within-task vs orchestrator-Codex post-task. `(internal)` qualifier formalized in Binding conventions for Phase 7+.
