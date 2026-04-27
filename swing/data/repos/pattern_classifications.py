@@ -24,7 +24,13 @@ def _serialize_components(components: dict) -> str:
     """Strict-JSON serialization: replace NaN with None per RFC 8259.
     NaN may arise from _enrich_components when SMA windows exceed
     flag_start_idx. RFC 8259 has no NaN literal; downstream strict-JSON
-    consumers (SQLite json1, external analyzers) reject it."""
+    consumers (SQLite json1, external analyzers) reject it.
+
+    Scope: handles a flat ``dict[str, float | bool]`` (the current
+    classifier payload). Inf/-Inf, nested containers, and non-builtin
+    numeric scalars (e.g. numpy.float64) raise via ``allow_nan=False``
+    rather than degrading silently. If future component fields broaden
+    beyond Python floats, broaden the sanitizer accordingly."""
     cleaned = {
         k: (None if isinstance(v, float) and math.isnan(v) else v)
         for k, v in components.items()
