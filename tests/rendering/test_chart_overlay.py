@@ -6,12 +6,13 @@ without painting.
 """
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
-from swing.rendering.charts import render_chart
+from swing.rendering.charts import PatternOverlay, render_chart
 
 
 @pytest.fixture
@@ -75,4 +76,44 @@ def test_render_chart_pattern_overlay_none_is_byte_identical_to_default(
     assert default_path.read_bytes() == explicit_path.read_bytes(), (
         "render_chart with pattern_overlay=None must produce a byte-identical "
         "PNG to the default kwarg-omitted call (Phase 3 no-op stub contract)"
+    )
+
+
+def test_render_chart_real_pattern_overlay_is_byte_identical_to_default(
+    tmp_path: Path, fake_ohlcv,
+):
+    """Phase 3 contract (Codex R2 Major 2): the no-op stub MUST hold even
+    when pattern_overlay is a fully-populated PatternOverlay. _step_charts
+    passes a non-None overlay whenever classify_flag detects a flag — Phase
+    3 must produce identical PNGs in BOTH the None and the non-None case.
+
+    A premature Phase 6 painting that fires only on non-None overlays would
+    pass `pattern_overlay=None` byte-identity tests but break this test.
+    Phase 6 lands the actual painting; this test is expected to be updated
+    or removed when that lands.
+    """
+    overlay = PatternOverlay(
+        pattern="flag", confidence=0.85,
+        pole_start_date=date(2026, 1, 5),
+        pole_end_date=date(2026, 1, 19),
+        flag_start_date=date(2026, 1, 20),
+        flag_end_date=date(2026, 1, 29),
+        pivot=110.5,
+    )
+    default_path = tmp_path / "default.png"
+    overlay_path = tmp_path / "with_overlay.png"
+
+    render_chart(
+        ticker="AAPL", ohlcv=fake_ohlcv, pivot=110.0, stop=95.0,
+        output_path=default_path,
+    )
+    render_chart(
+        ticker="AAPL", ohlcv=fake_ohlcv, pivot=110.0, stop=95.0,
+        output_path=overlay_path, pattern_overlay=overlay,
+    )
+
+    assert default_path.read_bytes() == overlay_path.read_bytes(), (
+        "render_chart with a non-None PatternOverlay must produce a byte-"
+        "identical PNG to the default call in Phase 3 (no-op stub). If this "
+        "test fails, Phase 6 painting may have leaked into Phase 3."
     )

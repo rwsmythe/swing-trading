@@ -19,6 +19,7 @@ import sqlite3
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from swing.data.db import ensure_schema
 from swing.data.repos.pattern_classifications import list_classifications_for_run
@@ -196,6 +197,43 @@ def test_step_charts_happy_path_persists_classification_row(
             f"classifier returned {captured_result.pattern!r}, "
             f"persisted {row.pattern!r}"
         )
+        # Codex R2 Minor 2: verify ALL Phase-2-persisted fields round-trip
+        # from classify_flag through insert_classification correctly. A
+        # mapping bug in the persistence boundary that corrupts confidence
+        # / pivot / dates while leaving `pattern` correct would otherwise
+        # pass undetected by Phase 3's integration test.
+        #
+        # NOTE: dates are persisted as ISO strings and the repo's
+        # `_row_to_classification` does NOT parse them back to `date`
+        # objects despite the dataclass field annotation. This is a
+        # Phase 2 carve-out concern (swing/data/repos/pattern_classifications.py)
+        # surfaced by tightening Phase 3's assertions; flagged as OPEN
+        # QUESTION in the Phase 3 return report. The test compares ISO-string
+        # forms to verify Phase 3's persistence call carries the correct
+        # values regardless of the deserialization gap.
+        if captured_result.pattern == "flag":
+            assert row.confidence == pytest.approx(captured_result.confidence)
+            assert row.pivot == pytest.approx(captured_result.pivot)
+            assert row.pole_high == pytest.approx(captured_result.pole_high)
+            assert row.flag_low == pytest.approx(captured_result.flag_low)
+            assert row.pole_start_date == captured_result.pole_start_date.isoformat()
+            assert row.pole_end_date == captured_result.pole_end_date.isoformat()
+            assert row.flag_start_date == captured_result.flag_start_date.isoformat()
+            assert row.flag_end_date == captured_result.flag_end_date.isoformat()
+        else:
+            # pattern == 'none': spec §3.2.3 confidence persists as NULL;
+            # all anchor columns NULL.
+            assert row.confidence is None
+            assert row.pivot is None
+            assert row.pole_high is None
+            assert row.flag_low is None
+            assert row.pole_start_date is None
+            assert row.pole_end_date is None
+            assert row.flag_start_date is None
+            assert row.flag_end_date is None
+        # components_json must be valid JSON in either case.
+        assert row.components_json is not None
+        assert json.loads(row.components_json) is not None
         assert row.computed_at is not None
         assert row.pipeline_run_id == result.run_id
     finally:
