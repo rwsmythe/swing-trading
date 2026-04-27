@@ -602,3 +602,37 @@ Phase 7 implementer-side complete (commit chain `528d38b..ca66216`, 11 commits, 
 - **4-phase ZERO-rogue track record (Phases 4 + 5 + 6 + 7).** Single-subagent dispatch + observable verification + 4-tier commit-message convention is the working baseline at this project's scale. Worktree isolation NOT escalated.
 - **Codex's 7-phase review pattern shows compound ROI:** R1 catches structural; R2 catches second-order interactions; R3+ catches defense-in-depth; Phase 7 added induced-bug pattern (R3→R4 chain). The 5-round investment yields repeated ROI on test-quality + spec-fidelity + cross-feature-integration + visual-correctness + contract-documentation + induced-bug-detection dimensions.
 - **Subject-only grep regex amended to ERE + POSIX** (Q1, 2026-04-27). Past briefs' BRE-incompatible regex was technically non-functional; the discipline still worked because of other partitioning rules. Phase 7+ briefs use the ERE form.
+
+---
+
+## 2026-04-27 chart-pattern flag-v1 manual verification round 1 — findings
+
+Full technical detail in `docs/chart-pattern-flag-v1-manual-verification-results.md`. Summary of action items by tier:
+
+### Tier 1 — V1-quality fix (dispatch BEFORE Task 7.3 fixture labeling)
+
+1. **Mathtext title regression** — commit `2fd0ecc` `\$` escape doesn't prevent matplotlib mathtext entry; rendered title shows `pivot 72.97stop40.69` with "stop" italicized. Fix options: (a) remove `$` from title format, (b) `fig.suptitle(..., parse_math=False)` after `mpf.plot(returnfig=True)`. Recommended: (a) for simplicity. Files: `swing/rendering/charts.py:86`, `tests/rendering/test_chart_overlay.py:270` and `:287`. **Manual visual verification required** before committing — do NOT rely on string-equality tests alone (the lesson from this regression).
+
+### Tier 2 — Operator-workflow improvements (post-V1)
+
+2. **No standalone chart-image route.** `/charts/<TICKER>.png` returns 404. Add route in `swing/web/routes/` to serve PNGs from `exports/<session>/charts/`.
+3. **Open positions rows don't expand to chart.** UX gap during trade management. Options: HTMX-swap to chart partial OR "View chart" button in Actions column OR link to standalone route (#2).
+4. **Chart-scope set misaligned with Phase 4 watchlist sort.** Empirically confirmed during verification: dashboard top-5 watchlist (Phase 4 tag-aware composite sort) only overlaps chart-scope set on 1 of 5 tickers (DHC). "Chart unavailable" message wording confirms legacy "near-trigger" criterion in chart_scope resolver. Investigation: chart-scope resolver. Hypothesis: aligning chart-scope with watchlist's tag-aware sort would surface flag patterns currently missed (zero flag detections in current data may be partly attributable to this misalignment). Operator-design discussion required before implementation due to chart-generation cost implications.
+
+### Tier 3 — Operator-design questions
+
+5. **Lightning icon trigger logic re-evaluation.** Current rule: `price >= 0.99 × entry_target`. Operator surfaced concern that simple "near pivot" indicator may not be the right "actionability" signal post-Phase-4 (with richer tag tier + pattern classification + hypothesis-recommendation engine). Options enumerated in verification-results doc.
+6. **Multiple concurrent advisories vs single price-stop field.** Open positions can show multiple trail-stop advisories (e.g., 10MA + 20MA based) but trade row supports only one stop value. Reconciliation needed: state-machine when stop adjusted to satisfy one but not all advisories. Phase 3d follow-up.
+
+### Tier 4 — Verification doc fixes (single doc-fix commit when convenient)
+
+7-14. Verification doc has SQL queries assuming `sqlite3` CLI on PATH, conflated "error" column SQL, PowerShell-incompatible Python multi-line syntax, missing "conditional on open positions" note for §1.1.a, account-card field-list overstated vs actual UI, §3 chart-image instructions assume ticker stays in watchlist post-trade, §5.2 CLI command had wrong option names + missing required options (`--entry`/`--entry-price`, `--stop`/`--initial-stop`, missing `--entry-date` + `--shares`, `--rationale` is `click.Choice`), and chart's purple dotted "consolidation marker" lacks operator-facing legend. Bundle as single doc-fix commit. Full details in verification-results doc.
+
+### Verification deferred (re-run when conditions enable)
+
+- §3.2 chart overlay flag-painting — needs flag classifications. Currently zero. Retest post Tier 2 #4 (chart-scope alignment) AND/OR when market produces flag patterns.
+- §3.4 classifier-error chart — needs error rows. Currently zero.
+- §4.3-4.5 override variants — exercise at next 2-3 trade entries via web form.
+- §4.7 soft-warn × chart_pattern — needs 4+ open trades.
+- §5.1 + §5.3 CLI variants — exercise at next CLI trade entry.
+- §6 full cross-surface consistency — needs `pattern='flag'` ticker.
