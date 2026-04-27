@@ -13,31 +13,31 @@ from swing.data.models import Exit, Trade, TradeEvent
 
 
 def _validate_chart_pattern_invariant(trade: "Trade") -> None:
-    """Enforce joint-NULL invariants for chart_pattern columns (V1 deferral:
-    multi-column CHECK cannot be added via ALTER TABLE in SQLite, so enforced
-    at repo layer instead of schema layer).
+    """Repo-layer cross-column invariant per spec §3.2.2 (R2 M2).
 
-    Rules (spec §3.2.2):
-      - chart_pattern_algo='flag': confidence AND pipeline_run_id must NOT be NULL.
-      - chart_pattern_algo != 'flag' (including 'none' or NULL): confidence must be NULL.
+    SQLite ALTER TABLE cannot add a multi-column row CHECK without a
+    heavyweight rebuild. V1 enforces the invariant here. V2 hardens at
+    schema level when the next trade-table rebuild bundles other changes.
     """
     algo = trade.chart_pattern_algo
     conf = trade.chart_pattern_algo_confidence
-    run_id = trade.chart_pattern_classification_pipeline_run_id
-    if algo == "flag":
-        if conf is None:
-            raise ValueError(
-                "chart_pattern_algo='flag' requires chart_pattern_algo_confidence"
-            )
-        if run_id is None:
-            raise ValueError(
-                "chart_pattern_algo='flag' requires chart_pattern_classification_pipeline_run_id"
-            )
-    else:
-        if conf is not None:
-            raise ValueError(
-                "chart_pattern_algo_confidence must be NULL when chart_pattern_algo != 'flag'"
-            )
+    anchor = trade.chart_pattern_classification_pipeline_run_id
+    if (algo is None) != (anchor is None):
+        raise ValueError(
+            "chart_pattern invariant: algo and "
+            "chart_pattern_classification_pipeline_run_id must both be "
+            "NULL or both be non-NULL"
+        )
+    if algo == "flag" and conf is None:
+        raise ValueError(
+            "chart_pattern invariant: chart_pattern_algo='flag' requires "
+            "chart_pattern_algo_confidence NOT NULL"
+        )
+    if algo == "none" and conf is not None:
+        raise ValueError(
+            "chart_pattern invariant: chart_pattern_algo='none' requires "
+            "chart_pattern_algo_confidence NULL"
+        )
 
 
 def insert_trade_with_event(
@@ -189,7 +189,9 @@ def get_trade(conn: sqlite3.Connection, trade_id: int) -> Trade | None:
         """
         SELECT id, ticker, entry_date, entry_price, initial_shares, initial_stop,
                current_stop, status, watchlist_entry_target,
-               watchlist_initial_stop, notes, hypothesis_label
+               watchlist_initial_stop, notes, hypothesis_label,
+               chart_pattern_algo, chart_pattern_algo_confidence,
+               chart_pattern_operator, chart_pattern_classification_pipeline_run_id
         FROM trades WHERE id = ?
         """,
         (trade_id,),
@@ -202,7 +204,9 @@ def list_open_trades(conn: sqlite3.Connection) -> list[Trade]:
         """
         SELECT id, ticker, entry_date, entry_price, initial_shares, initial_stop,
                current_stop, status, watchlist_entry_target,
-               watchlist_initial_stop, notes, hypothesis_label
+               watchlist_initial_stop, notes, hypothesis_label,
+               chart_pattern_algo, chart_pattern_algo_confidence,
+               chart_pattern_operator, chart_pattern_classification_pipeline_run_id
         FROM trades WHERE status='open' ORDER BY entry_date, ticker
         """,
     ).fetchall()
@@ -217,7 +221,9 @@ def list_closed_trades(
             """
             SELECT t.id, t.ticker, t.entry_date, t.entry_price, t.initial_shares,
                    t.initial_stop, t.current_stop, t.status, t.watchlist_entry_target,
-                   t.watchlist_initial_stop, t.notes, t.hypothesis_label
+                   t.watchlist_initial_stop, t.notes, t.hypothesis_label,
+                   t.chart_pattern_algo, t.chart_pattern_algo_confidence,
+                   t.chart_pattern_operator, t.chart_pattern_classification_pipeline_run_id
             FROM trades t
             WHERE t.status='closed'
               AND EXISTS (SELECT 1 FROM exits e WHERE e.trade_id=t.id AND e.exit_date >= ?)
@@ -230,7 +236,9 @@ def list_closed_trades(
             """
             SELECT id, ticker, entry_date, entry_price, initial_shares, initial_stop,
                    current_stop, status, watchlist_entry_target,
-                   watchlist_initial_stop, notes, hypothesis_label
+                   watchlist_initial_stop, notes, hypothesis_label,
+                   chart_pattern_algo, chart_pattern_algo_confidence,
+                   chart_pattern_operator, chart_pattern_classification_pipeline_run_id
             FROM trades WHERE status='closed' ORDER BY entry_date DESC, ticker
             """,
         ).fetchall()
@@ -303,7 +311,9 @@ def find_any_open_trade(
         """
         SELECT id, ticker, entry_date, entry_price, initial_shares, initial_stop,
                current_stop, status, watchlist_entry_target,
-               watchlist_initial_stop, notes, hypothesis_label
+               watchlist_initial_stop, notes, hypothesis_label,
+               chart_pattern_algo, chart_pattern_algo_confidence,
+               chart_pattern_operator, chart_pattern_classification_pipeline_run_id
         FROM trades WHERE ticker=? AND status='open'
         ORDER BY entry_date ASC LIMIT 1
         """,
@@ -322,7 +332,9 @@ def find_open_trade_by_match(
             """
             SELECT id, ticker, entry_date, entry_price, initial_shares, initial_stop,
                    current_stop, status, watchlist_entry_target,
-                   watchlist_initial_stop, notes, hypothesis_label
+                   watchlist_initial_stop, notes, hypothesis_label,
+                   chart_pattern_algo, chart_pattern_algo_confidence,
+                   chart_pattern_operator, chart_pattern_classification_pipeline_run_id
             FROM trades WHERE ticker=? AND entry_date=? AND initial_shares=? AND status='open'
             LIMIT 1
             """,
@@ -333,7 +345,9 @@ def find_open_trade_by_match(
             """
             SELECT id, ticker, entry_date, entry_price, initial_shares, initial_stop,
                    current_stop, status, watchlist_entry_target,
-                   watchlist_initial_stop, notes, hypothesis_label
+                   watchlist_initial_stop, notes, hypothesis_label,
+                   chart_pattern_algo, chart_pattern_algo_confidence,
+                   chart_pattern_operator, chart_pattern_classification_pipeline_run_id
             FROM trades WHERE ticker=? AND entry_date=? AND status='open'
             LIMIT 1
             """,
@@ -349,4 +363,8 @@ def _row_to_trade(row: tuple) -> Trade:
         status=row[7], watchlist_entry_target=row[8],
         watchlist_initial_stop=row[9], notes=row[10],
         hypothesis_label=row[11],
+        chart_pattern_algo=row[12],
+        chart_pattern_algo_confidence=row[13],
+        chart_pattern_operator=row[14],
+        chart_pattern_classification_pipeline_run_id=row[15],
     )

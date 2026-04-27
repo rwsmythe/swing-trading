@@ -2,7 +2,7 @@ from pathlib import Path
 import pytest
 from swing.data.db import ensure_schema
 from swing.data.models import Trade
-from swing.data.repos.trades import insert_trade_with_event
+from swing.data.repos.trades import insert_trade_with_event, list_open_trades
 
 
 def _make_trade(**over) -> Trade:
@@ -139,5 +139,53 @@ def test_insert_trade_algo_set_anchor_unset_raises_valueerror(tmp_path: Path):
                     ),
                     event_ts="ts", rationale="aplus-setup",
                 )
+    finally:
+        conn.close()
+
+
+def test_insert_trade_anchor_set_algo_unset_raises_valueerror(tmp_path: Path):
+    """Joint-NULL invariant in the OTHER direction: anchor NOT NULL with
+    algo NULL must also raise. Spec §3.2.2 joint-NULL XOR rule."""
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        run_id = _seed_pipeline_run(conn)
+        with pytest.raises(ValueError, match="chart_pattern"):
+            with conn:
+                insert_trade_with_event(
+                    conn,
+                    _make_trade(
+                        chart_pattern_algo=None,
+                        chart_pattern_algo_confidence=None,
+                        chart_pattern_classification_pipeline_run_id=run_id,
+                    ),
+                    event_ts="ts", rationale="aplus-setup",
+                )
+    finally:
+        conn.close()
+
+
+def test_list_open_trades_round_trip_chart_pattern(tmp_path: Path):
+    """list_open_trades returns Trade with chart_pattern fields populated (Task 2.8)."""
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        run_id = _seed_pipeline_run(conn)
+        with conn:
+            insert_trade_with_event(
+                conn,
+                _make_trade(
+                    chart_pattern_algo="flag",
+                    chart_pattern_algo_confidence=0.91,
+                    chart_pattern_operator=None,
+                    chart_pattern_classification_pipeline_run_id=run_id,
+                ),
+                event_ts="2026-04-26T09:30:00", rationale="task28-test",
+            )
+        trades = list_open_trades(conn)
+        assert len(trades) == 1
+        t = trades[0]
+        assert t.chart_pattern_algo == "flag"
+        assert t.chart_pattern_algo_confidence == 0.91
+        assert t.chart_pattern_operator is None
+        assert t.chart_pattern_classification_pipeline_run_id == run_id
     finally:
         conn.close()
