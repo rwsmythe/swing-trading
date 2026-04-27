@@ -155,6 +155,11 @@ class Web:
     # its pipeline_runs row (acquire its lease). Python 3.14 + heavy imports
     # on Windows regularly exceed 2s cold-start; 5s gives comfortable headroom.
     pipeline_lease_wait_seconds: float = 5.0
+    # Spec §3.8: filters watchlist flag-tag rendering. Default 0.0 = show every
+    # detected flag (V1 — no labeled-example calibration data exists yet).
+    # Operator dials up after operational experience reveals which confidence
+    # bands map to chart-validated flags.
+    flag_pattern_display_threshold: float = 0.0
 
 
 @dataclass(frozen=True)
