@@ -1892,6 +1892,74 @@ Expected files (and only these in carve-out trees): `swing/data/db.py`, `swing/d
 
 ---
 
+## Phase 2 Return Report
+
+**Status:** COMPLETE ✅  
+**HEAD SHA:** `115c96b` (`fix(data): chart_pattern invariant rejects orphan confidence + components_json strict-JSON serialization`)  
+**Commit range:** `5d7dab2..115c96b` (15 commits)  
+**Date completed:** 2026-04-26  
+**Code review:** APPROVED (first-pass) + adversarial Codex review found 2 Major issues (both fixed in `115c96b`); final state clean
+
+### Tasks completed
+
+| Task | Title | Commits |
+|------|-------|---------|
+| 2.1 | Migrations 0009 + 0010 (schema v8→v10) | `8eca791` |
+| 2.2 | `PipelinePatternClassification` dataclass | `b8d0435`, `2d00e9f` |
+| 2.3 | `Trade` dataclass chart_pattern fields | `d1a13fb` |
+| 2.4 | `pattern_classifications` repo (insert/get/list) | `22c9f65`, `e3bafba` |
+| 2.5 | `PipelinePatternClassification` simplification + `_enrich_components` handoff | `5424229`, `e464762` |
+| 2.6 | `test_trade_chart_pattern_columns.py` shape test relocated | `3c2f2c9` |
+| 2.7 | `insert_trade_with_event` writes 4 chart_pattern columns + `_validate_chart_pattern_invariant` (5 invariant tests) | `c606df1`, `56fec37`, `b75be3a` |
+| 2.8 | All 6 read paths thread 4 chart_pattern columns through `_row_to_trade` (3 read-path tests) | `9c19460` |
+| 2.9 | Phase 2 checkpoint + ruff cleanup | `0303096` |
+| 2.9+ | Adversarial review fixes: orphan-confidence invariant + NaN-safe components_json serialization | `115c96b` |
+
+### Test counts
+
+- **Fast suite at HEAD:** 1052 passed, 8 deselected (baseline was 1029)
+- **Net new Phase-2-specific tests:** +53 across 7 test files (includes 2 adversarial-review fixes)
+- **New test files:** `test_migration_0009_pattern_classifications.py` (3), `test_migration_0010_trade_chart_pattern.py` (2), `test_pattern_classification_model.py` (2), `test_pattern_classifications_repo.py` (5), `test_trade_chart_pattern_columns.py` (8), extended `test_flag_classifier.py` (+1), updated `test_db_v8.py` (+1 renamed test)
+
+### Key decisions
+
+1. **Joint-NULL XOR fix (commit `b75be3a`):** Original `_validate_chart_pattern_invariant` used `if algo == "flag": ... else: ...` formulation that silently permitted `(algo=None, anchor=set, conf=None)`. Fixed to plan-spec verbatim `(algo is None) != (anchor is None)` XOR check as first rule. Confirmed with 6th test (`test_insert_trade_anchor_set_algo_unset_raises_valueerror`) via RED (`DID NOT RAISE`) → GREEN cycle.
+
+2. **FK-seeding pattern:** Tests for the 4 ValueError invariants seed a real `pipeline_runs` row via `_seed_pipeline_run()` helper so `PRAGMA foreign_keys=ON` does not fire `IntegrityError` before the repo-layer `ValueError` can fire. Without this, the FK violation would mask the invariant under test.
+
+3. **Discriminating-test confound methodology:** Each invariant test was verified by disabling the specific validate check and confirming `DID NOT RAISE` (not `IntegrityError`). Each read-path test was verified by temporarily stripping the 4 columns from one SELECT and confirming `IndexError` at `_row_to_trade` row[12].
+
+4. **`PipelinePatternClassification` kept simple:** An over-engineered version with `PatternState` enum was reverted to the plan-spec `@dataclass(frozen=True)` with plain string fields. The enum adds complexity without consumer benefit at this phase.
+
+5. **`_enrich_components` scope placement:** Added to `flag_classifier.py` (outside Phase 2 carve-out) as a Phase 1→2 handoff item. Augments `FlagClassificationResult.components` with 4 soft clearances + 3 SMA-at-flag-start values at classification time. These values are unrecoverable without raw bars; persisting in `components_json` is the only window.
+
+### Scope deviation
+
+- **`swing/evaluation/patterns/flag_classifier.py` (commit `e464762`):** `_enrich_components` helper added; enriches components dict with 4 soft clearances + 3 SMA-at-flag-start values. Outside Phase 2 carve-out (which covers `swing/data/` only). Justified as Phase 1→2 handoff item per spec §3.1.1. Test coverage added in `test_flag_classifier.py`. No other scope deviations.
+
+### Ruff / lint
+
+- `ruff check swing/data/`: 6 errors — all pre-existing (N818×3 exception naming, I001×2 import sort, E501×1 pre-existing at trades.py:329). Zero Phase-2 regressions confirmed by pre/post comparison at `5d7dab2` vs `0303096`.
+- `ruff check swing/evaluation/patterns/`: All checks passed.
+- Phase-2-introduced violations cleaned in `0303096`: UP037 (removed quotes from `trade: "Trade"` annotation), E501 (EXPECTED_SCHEMA_VERSION comment split).
+
+### Code review findings (minor, non-blocking)
+
+1. `tests/data/test_db_v8.py` filename stale — contains `test_expected_schema_version_is_10`. Recommend rename to `test_schema_version_pin.py` in a housekeeping batch.
+2. `_date_iso(d)` in `pattern_classifications.py` parameter untyped — should be `d: "date | None"`.
+3. Actual SELECT count in `trades.py` is 7 (not 6) — `find_open_trade_by_match` has two branches; both correctly threaded. Brief language drift only.
+4. Stale docstring in `test_insert_trade_with_chart_pattern_flag_persists_all_four` — says "read paths NOT yet threaded" but Task 2.8 is complete.
+
+### Adversarial review findings (post-first-pass)
+
+Adversarial Codex review (`mcp__plugin_copowers_codex__codex`, read-only) at HEAD `0303096` found:
+
+**Major 1 (FIXED in `115c96b`):** `_validate_chart_pattern_invariant` missed one direction of spec §3.2.2 biconditional — `(algo=None, conf=NOT NULL, anchor=None)` was permitted. Added `if algo is None and conf is not None:` raise as 4th invariant guard. Test `test_insert_trade_orphan_confidence_raises_valueerror` confirmed RED (DID NOT RAISE) before fix, GREEN after.
+
+**Major 2 (FIXED in `115c96b`):** `insert_classification` used `json.dumps(..., allow_nan=True)` (default), emitting literal `NaN` for SMA values when `flag_start_idx < window - 1`. RFC 8259 has no NaN literal; SQLite json1 and external tools reject it. Added `_serialize_components` helper (NaN → None, `allow_nan=False`) replacing the `json.dumps` call. Test `test_classifier_components_with_nan_sma_persists_as_strict_json_null` confirmed RED (literal `NaN` in DB) before fix, GREEN after.
+
+**Minor issues (3, non-blocking):** `test_db_v8.py` filename stale; `_date_iso(d)` untyped parameter; stale docstring in one test. Not fixed in Phase 2 — defer to housekeeping batch.
+
 # Phase 3 — Pipeline integration (`_step_charts` extension)
 
 **Pre-conditions:** Phase 2 green; classifier callable; cache table writable.
