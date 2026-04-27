@@ -13,6 +13,32 @@ def test_pattern_classification_dataclass_shape():
     assert row.confidence == 0.78
 
 
+def test_pattern_classification_anchor_date_annotations_are_date_or_none():
+    """Task 5.0a (Phase 2 carve-out extension; Phase 4 → Phase 5 handoff):
+    The four anchor-date fields on PipelinePatternClassification must be
+    annotated as ``date | None``, not ``str | None``. Phase 4's Task 4.0a
+    fixed runtime parsing in ``_row_to_classification`` to return ``date``
+    objects; Phase 5 brings the dataclass annotation in line with runtime.
+
+    Discriminating: pre-fix returns ``str | None``; post-fix returns
+    ``date | None``. Compounding-confound: also asserts the round-trip
+    runtime value through ``insert_classification`` →
+    ``get_classification`` returns a ``date`` instance, so a future
+    accidental revert that drops ``_parse_date`` would also fail.
+    """
+    from datetime import date
+    from typing import get_type_hints
+
+    from swing.data.models import PipelinePatternClassification
+
+    hints = get_type_hints(PipelinePatternClassification)
+    expected = date | None
+    assert hints["pole_start_date"] == expected
+    assert hints["pole_end_date"] == expected
+    assert hints["flag_start_date"] == expected
+    assert hints["flag_end_date"] == expected
+
+
 def test_trade_has_four_chart_pattern_fields():
     from swing.data.models import Trade
     t = Trade(

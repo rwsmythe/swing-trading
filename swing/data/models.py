@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 
 @dataclass(frozen=True)
@@ -271,8 +272,8 @@ class PipelinePatternClassification:
     pivot: float | None
     pole_high: float | None
     flag_low: float | None
-    pole_start_date: str | None
-    pole_end_date: str | None
-    flag_start_date: str | None
-    flag_end_date: str | None
+    pole_start_date: date | None
+    pole_end_date: date | None
+    flag_start_date: date | None
+    flag_end_date: date | None
     computed_at: str
