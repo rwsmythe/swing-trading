@@ -53,3 +53,6 @@ research/harness/*/smoke-out/
 
 # Phase 6 chart-pattern flag-v1 pytest scratch (regenerated; not tracked)
 .tmp-phase6/
+
+# Phase 7 chart-pattern flag-v1 pytest scratch (regenerated; not tracked)
+.tmp-phase7/
