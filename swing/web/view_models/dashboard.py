@@ -217,6 +217,14 @@ class DashboardVM:
     # ad-hoc VM construction (tests, fixtures) doesn't trip the template's
     # `{% if vm.active_recommendations %}` guard.
     active_recommendations: tuple[HypothesisRecommendation, ...] = ()
+    # Spec §3.5 (Phase 4 Task 4.2): SIBLING to flag_tags. {ticker: 'flag (0.78)'}
+    # for chart-scope tickers with detected flag patterns. Default empty dict so
+    # the dashboard renders gracefully when no classifications are loaded.
+    # base.html.j2 was empirically verified at Phase 4 to NOT reference
+    # `pattern_tags` (zero matches), so the field stays scoped to the two
+    # consuming VMs (DashboardVM + WatchlistVM) — other base-layout VMs
+    # (PipelineVM, JournalVM, PageErrorVM) need not propagate.
+    pattern_tags: Mapping[str, str] = field(default_factory=dict)
 
 
 def build_dashboard(

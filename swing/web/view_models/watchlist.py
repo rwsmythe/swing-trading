@@ -1,7 +1,7 @@
 """WatchlistVM + builder."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Mapping
 
@@ -28,6 +28,11 @@ class WatchlistVM:
     price_source_degraded_until: str | None
     stale_banner: str | None = None   # placeholder — populated only on the main dashboard
     ohlcv_source_degraded: bool = False              # NEW (Phase 3d §3.4)
+    # Spec §3.5 (Phase 4 Task 4.2): SIBLING to flag_tags. {ticker: 'flag (0.78)'}
+    # for chart-scope tickers with detected flag patterns. Default empty dict so
+    # VMs constructed without classifications (tests, fixtures, code paths
+    # without a pipeline_run_id) render gracefully.
+    pattern_tags: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

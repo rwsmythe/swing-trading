@@ -91,3 +91,63 @@ def test_pattern_tags_format_uses_two_decimal_places():
     classifications = {"X": _make_cls("X", "flag", 0.7)}
     tags = _pattern_tags(classifications, display_threshold=0.0)
     assert tags == {"X": "flag (0.70)"}
+
+
+# ---------------------------------------------------------------------------
+# Task 4.2 — WatchlistVM + DashboardVM gain pattern_tags field.
+#
+# Spec §3.5: parallel VM field; default empty dict so VMs constructed
+# without classifications (tests, fixtures) don't need to specify it.
+# Per CLAUDE.md base-layout shared VM gotcha: only WatchlistVM +
+# DashboardVM need the field IFF base.html.j2 does not reference
+# `pattern_tags` (verified empirically — zero matches).
+# ---------------------------------------------------------------------------
+
+
+def test_watchlist_vm_has_pattern_tags_field():
+    """Discriminating: pre-fix, dataclasses.fields() does NOT include
+    'pattern_tags'; post-fix it does."""
+    import dataclasses
+    from swing.web.view_models.watchlist import WatchlistVM
+    fields = {f.name for f in dataclasses.fields(WatchlistVM)}
+    assert "pattern_tags" in fields
+
+
+def test_dashboard_vm_has_pattern_tags_field():
+    import dataclasses
+    from swing.web.view_models.dashboard import DashboardVM
+    fields = {f.name for f in dataclasses.fields(DashboardVM)}
+    assert "pattern_tags" in fields
+
+
+def test_watchlist_vm_pattern_tags_defaults_to_empty_dict():
+    """Safe default: a WatchlistVM constructed without specifying
+    pattern_tags must not raise; the field is an empty dict. This is the
+    contract the templates rely on (graceful render when no
+    classifications loaded)."""
+    from datetime import datetime
+    from swing.web.view_models.watchlist import WatchlistVM
+    vm = WatchlistVM(
+        session_date="2026-04-26",
+        rows=[],
+        watchlist_last_prices={},
+        flag_tags={},
+        candidates_by_ticker={},
+        prices_generated_at=datetime.now().isoformat(timespec="seconds"),
+        price_source_degraded=False,
+        price_source_degraded_until=None,
+    )
+    assert vm.pattern_tags == {}
+
+
+def test_dashboard_vm_pattern_tags_defaults_to_empty_dict():
+    """Same safe-default contract for DashboardVM — base-layout VM
+    consumers can construct without specifying pattern_tags."""
+    import dataclasses
+    from swing.web.view_models.dashboard import DashboardVM
+    f = next(
+        f for f in dataclasses.fields(DashboardVM) if f.name == "pattern_tags"
+    )
+    # Default factory returns {} — discriminator: pre-fix, no such field
+    # at all (StopIteration raises in `next()` above pre-fix).
+    assert f.default_factory() == {}
