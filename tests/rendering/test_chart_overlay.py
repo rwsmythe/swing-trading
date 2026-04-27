@@ -122,12 +122,14 @@ def test_render_chart_real_pattern_overlay_is_not_byte_identical_to_default(
     )
 
 
-def test_render_chart_with_pattern_overlay_writes_png_and_preserves_existing_hlines(
+def test_render_chart_with_pattern_overlay_writes_nonempty_png(
     tmp_path: Path, fake_ohlcv,
 ):
     """Smoke test: with overlay, the function still returns the path and
-    writes a non-empty PNG. Detailed visual checks are deferred to slow
-    tests; this guards against accidental crash paths."""
+    writes a non-empty PNG. This is purely a crash-resistance + non-empty-
+    output guard; structural checks (band x-bounds, candidate-pivot
+    preservation, algo-pivot segment) live in
+    test_render_chart_with_overlay_paints_two_bands_and_separate_pivot_segment."""
     overlay = PatternOverlay(
         pattern="flag", confidence=0.78,
         pole_start_date=fake_ohlcv.index[80].date(),
@@ -187,6 +189,67 @@ def test_render_chart_with_overlay_paints_two_bands_and_separate_pivot_segment(
     from matplotlib.collections import LineCollection, PolyCollection
     polys = [c for c in price_ax.collections if isinstance(c, PolyCollection)]
     assert len(polys) >= 2, "expected pole + flag fill_betweenx bands"
+
+    # Bug guard (Codex R1 M2): each fill_betweenx band must occupy its
+    # correct x-bounds. _bar_idx maps overlay dates to bar positions; the
+    # fixture's overlay places pole at indices 80..100 and flag at 101..119.
+    # A swap (pole at flag bounds, flag at pole bounds), an off-by-one, or
+    # a wrong-bounds bug would silently slip past the count-only assertion.
+    pole_bounds = None
+    flag_bounds = None
+    all_band_extents = []
+    for poly in polys:
+        for path in poly.get_paths():
+            verts = path.vertices
+            xs = [v[0] for v in verts]
+            xmin, xmax = min(xs), max(xs)
+            all_band_extents.append((xmin, xmax))
+            # Identify which band by its x-range against the known overlay coords.
+            if abs(xmin - 80) < 1.0 and abs(xmax - 100) < 1.0:
+                pole_bounds = (xmin, xmax)
+            elif abs(xmin - 101) < 1.0 and abs(xmax - 119) < 1.0:
+                flag_bounds = (xmin, xmax)
+    assert pole_bounds is not None, (
+        f"pole band missing or wrong x-bounds; got polys with x-extents "
+        f"{all_band_extents} (expected pole ~ (80, 100))"
+    )
+    assert flag_bounds is not None, (
+        f"flag band missing or wrong x-bounds; got polys with x-extents "
+        f"{all_band_extents} (expected flag ~ (101, 119))"
+    )
+
+    # Bug guard (Codex R1 M1): the candidate-pivot hline at y=110 must survive
+    # Phase 6 painting — it spans the FULL chart width (distinct from the
+    # flag-scoped algo-pivot at y=120). A regression that drops [pivot, stop]
+    # from plot_kwargs would still leave the algo-pivot segment, masking the
+    # loss. Walk every LineCollection segment and verify a full-width y=110
+    # segment exists.
+    candidate_pivot_y = 110.0
+    last_x = len(fake_ohlcv.tail(120)) - 1  # mpf bar positions are 0..N-1
+    overlay_lines_for_pivot_check = [
+        c for c in price_ax.collections if isinstance(c, LineCollection)
+    ]
+    candidate_segments = []
+    for lc in overlay_lines_for_pivot_check:
+        for path in lc.get_paths():
+            verts = path.vertices
+            if len(verts) < 2:
+                continue
+            ys = [v[1] for v in verts]
+            xs = [v[0] for v in verts]
+            if all(abs(y - candidate_pivot_y) < 1e-6 for y in ys):
+                candidate_segments.append((min(xs), max(xs)))
+    # Must find at least one full-width candidate-pivot segment.
+    assert any(
+        xmin <= 1.0 and xmax >= last_x - 1.0
+        for xmin, xmax in candidate_segments
+    ), (
+        "candidate-pivot hline at y=110 is missing or not full-width — "
+        f"found segments {candidate_segments}; spec §3.4 requires existing "
+        "candidate-pivot to be preserved as a SEPARATE element from the "
+        "flag-scoped algo-pivot at y=120"
+    )
+
     # Title annotation includes the confidence. mpf renders `title=` as a
     # figure suptitle (not on axes[0]); read it via fig._suptitle with a
     # tolerant fallback to fig.texts for any mpf version that uses
