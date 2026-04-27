@@ -616,3 +616,52 @@ def test_soft_warn_confirm_round_trip_preserves_chart_pattern_snapshot(
     finally:
         conn.close()
     assert row == ("flag", 0.78, None, run_id)
+
+
+def test_soft_warn_confirm_other_operator_roundtrip(seeded_db, monkeypatch):
+    """Soft-warn confirm path must also preserve operator='other' flow."""
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+
+    cfg, cfg_path = seeded_db
+    run_id, _eval_id = seed_pipeline_with_classification(
+        cfg.paths.db_path, ticker="AAPL", pattern="flag", confidence=0.78,
+    )
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            for i, t in enumerate(("MSFT", "NVDA", "GOOG", "META")):
+                insert_trade_with_event(conn, Trade(
+                    id=None, ticker=t, entry_date="2026-04-15",
+                    entry_price=100.0, initial_shares=1, initial_stop=90.0,
+                    current_stop=90.0, status="open",
+                    watchlist_entry_target=None, watchlist_initial_stop=None,
+                    notes=None,
+                ), event_ts=f"2026-04-15T09:{30+i}:00")
+    finally:
+        conn.close()
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r1 = _post_entry(
+            client,
+            chart_pattern_algo="flag",
+            chart_pattern_algo_confidence="0.78",
+            chart_pattern_classification_pipeline_run_id=str(run_id),
+            chart_pattern_operator="other",
+            chart_pattern_operator_other="",
+        )
+        assert r1.status_code == 200
+        assert "Soft cap reached" in r1.text
+
+        r2 = _post_entry(
+            client,
+            chart_pattern_algo="flag",
+            chart_pattern_algo_confidence="0.78",
+            chart_pattern_classification_pipeline_run_id=str(run_id),
+            chart_pattern_operator="other",
+            chart_pattern_operator_other="manual review",
+            force="true",
+        )
+        assert r2.status_code == 200, r2.text
+        assert "open-position-" in r2.text
