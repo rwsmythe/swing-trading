@@ -12,7 +12,7 @@ import sqlite3
 from swing.data.models import Exit, Trade, TradeEvent
 
 
-def _validate_chart_pattern_invariant(trade: "Trade") -> None:
+def _validate_chart_pattern_invariant(trade: Trade) -> None:
     """Repo-layer cross-column invariant per spec §3.2.2 (R2 M2).
 
     SQLite ALTER TABLE cannot add a multi-column row CHECK without a
