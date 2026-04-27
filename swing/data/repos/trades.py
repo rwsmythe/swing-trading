@@ -12,6 +12,34 @@ import sqlite3
 from swing.data.models import Exit, Trade, TradeEvent
 
 
+def _validate_chart_pattern_invariant(trade: "Trade") -> None:
+    """Enforce joint-NULL invariants for chart_pattern columns (V1 deferral:
+    multi-column CHECK cannot be added via ALTER TABLE in SQLite, so enforced
+    at repo layer instead of schema layer).
+
+    Rules (spec §3.2.2):
+      - chart_pattern_algo='flag': confidence AND pipeline_run_id must NOT be NULL.
+      - chart_pattern_algo != 'flag' (including 'none' or NULL): confidence must be NULL.
+    """
+    algo = trade.chart_pattern_algo
+    conf = trade.chart_pattern_algo_confidence
+    run_id = trade.chart_pattern_classification_pipeline_run_id
+    if algo == "flag":
+        if conf is None:
+            raise ValueError(
+                "chart_pattern_algo='flag' requires chart_pattern_algo_confidence"
+            )
+        if run_id is None:
+            raise ValueError(
+                "chart_pattern_algo='flag' requires chart_pattern_classification_pipeline_run_id"
+            )
+    else:
+        if conf is not None:
+            raise ValueError(
+                "chart_pattern_algo_confidence must be NULL when chart_pattern_algo != 'flag'"
+            )
+
+
 def insert_trade_with_event(
     conn: sqlite3.Connection, trade: Trade, *,
     event_ts: str, rationale: str | None = None,
@@ -19,18 +47,24 @@ def insert_trade_with_event(
     """Insert a trade and an 'entry' trade_event in the same transaction.
     Caller wraps in `with conn:`. Returns the new trade id.
     """
+    _validate_chart_pattern_invariant(trade)
     cur = conn.execute(
         """
         INSERT INTO trades
             (ticker, entry_date, entry_price, initial_shares, initial_stop,
              current_stop, status, watchlist_entry_target,
-             watchlist_initial_stop, notes, hypothesis_label)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             watchlist_initial_stop, notes, hypothesis_label,
+             chart_pattern_algo, chart_pattern_algo_confidence,
+             chart_pattern_operator,
+             chart_pattern_classification_pipeline_run_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (trade.ticker, trade.entry_date, trade.entry_price, trade.initial_shares,
          trade.initial_stop, trade.current_stop, trade.status,
          trade.watchlist_entry_target, trade.watchlist_initial_stop, trade.notes,
-         trade.hypothesis_label),
+         trade.hypothesis_label, trade.chart_pattern_algo,
+         trade.chart_pattern_algo_confidence, trade.chart_pattern_operator,
+         trade.chart_pattern_classification_pipeline_run_id),
     )
     trade_id = int(cur.lastrowid)
     payload = {
