@@ -206,23 +206,19 @@ def test_step_charts_happy_path_persists_classification_row(
         # / pivot / dates while leaving `pattern` correct would otherwise
         # pass undetected by Phase 3's integration test.
         #
-        # NOTE: dates are persisted as ISO strings and the repo's
-        # `_row_to_classification` does NOT parse them back to `date`
-        # objects despite the dataclass field annotation. This is a
-        # Phase 2 carve-out concern (swing/data/repos/pattern_classifications.py)
-        # surfaced by tightening Phase 3's assertions; flagged as OPEN
-        # QUESTION in the Phase 3 return report. The test compares ISO-string
-        # forms to verify Phase 3's persistence call carries the correct
-        # values regardless of the deserialization gap.
+        # Phase 4 Task 4.0a (Phase 2 carve-out extension; commit 195acbc)
+        # closed the Phase 3 OPEN QUESTION: `_row_to_classification` now
+        # parses anchor ISO strings back to `date` objects. The
+        # round-trip assertion compares `date` objects directly.
         if captured_result.pattern == "flag":
             assert row.confidence == pytest.approx(captured_result.confidence)
             assert row.pivot == pytest.approx(captured_result.pivot)
             assert row.pole_high == pytest.approx(captured_result.pole_high)
             assert row.flag_low == pytest.approx(captured_result.flag_low)
-            assert row.pole_start_date == captured_result.pole_start_date.isoformat()
-            assert row.pole_end_date == captured_result.pole_end_date.isoformat()
-            assert row.flag_start_date == captured_result.flag_start_date.isoformat()
-            assert row.flag_end_date == captured_result.flag_end_date.isoformat()
+            assert row.pole_start_date == captured_result.pole_start_date
+            assert row.pole_end_date == captured_result.pole_end_date
+            assert row.flag_start_date == captured_result.flag_start_date
+            assert row.flag_end_date == captured_result.flag_end_date
         else:
             # pattern == 'none': spec §3.2.3 confidence persists as NULL;
             # all anchor columns NULL.
