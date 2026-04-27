@@ -671,3 +671,34 @@ def _flag_tags(candidates_by_ticker: Mapping[str, Candidate]) -> Mapping[str, tu
         if row_tags:
             tags[ticker] = tuple(row_tags)
     return tags
+
+
+def _pattern_tags(
+    classifications_by_ticker, display_threshold: float,
+) -> Mapping[str, str]:
+    """Return {ticker: 'flag (0.78)'} for tickers whose classification's
+    pattern == 'flag' and confidence >= threshold. Spec \u00a73.5 (R1 M2).
+
+    SIBLING to `_flag_tags` \u2014 by construction the pattern tag NEVER enters
+    the `tags` tuple consumed by `_sort_watchlist`. Sort-neutrality is
+    structurally guaranteed: callers populate the parallel `pattern_tags`
+    VM field with this helper's output and consume both fields at render
+    time without merging.
+
+    `classifications_by_ticker` is a mapping of ticker \u2192
+    PipelinePatternClassification (the shape produced by
+    `list_classifications_for_run`). None or empty mapping returns {}.
+    Format pinned to two decimals to give stable visual width across
+    confidence bands.
+    """
+    if not classifications_by_ticker:
+        return {}
+    out: dict[str, str] = {}
+    for ticker, cls in classifications_by_ticker.items():
+        if (
+            cls.pattern == "flag"
+            and cls.confidence is not None
+            and cls.confidence >= display_threshold
+        ):
+            out[ticker] = f"flag ({cls.confidence:.2f})"
+    return out
