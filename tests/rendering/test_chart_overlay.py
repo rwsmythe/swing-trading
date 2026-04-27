@@ -301,13 +301,93 @@ def test_render_chart_with_overlay_paints_two_bands_and_separate_pivot_segment(
     )
     import matplotlib.pyplot as plt
     plt.close(baseline_fig)
-    # At least one of the EXTRA segments must sit at y == overlay.pivot.
-    new_segments = []
+    # At least one of the EXTRA segments must sit at y == overlay.pivot
+    # AND span ONLY the flag region (xmin ≈ flag_start_i, xmax ≈ flag_end_i).
+    # Bug guard (Codex R2 M1): a regression drawing the algo-pivot full-width
+    # or across the pole region would silently pass a y-only check; the
+    # x-bounds check binds spec §3.4 "drawn ONLY across the flag region".
+    algo_pivot_y = overlay.pivot
+    expected_flag_xmin = 101.0  # _bar_idx(fake_ohlcv.index[101].date()) per fixture
+    expected_flag_xmax = 119.0  # _bar_idx(fake_ohlcv.index[119].date()) per fixture
+    algo_pivot_segments = []
     for lc in overlay_lines:
         for path in lc.get_paths():
-            for vertex in path.vertices:
-                # vertex == (x, y); algo-pivot segment is horizontal at pivot.
-                new_segments.append(vertex[1])
-    assert any(abs(y - overlay.pivot) < 1e-6 for y in new_segments), (
-        "no LineCollection segment at y == algo-pivot value 120.0"
+            verts = path.vertices
+            if len(verts) < 2:
+                continue
+            ys = [v[1] for v in verts]
+            xs = [v[0] for v in verts]
+            if all(abs(y - algo_pivot_y) < 1e-6 for y in ys):
+                algo_pivot_segments.append((min(xs), max(xs)))
+    assert any(
+        abs(xmin - expected_flag_xmin) < 1.0 and abs(xmax - expected_flag_xmax) < 1.0
+        for xmin, xmax in algo_pivot_segments
+    ), (
+        f"algo-pivot at y={algo_pivot_y} must span ONLY the flag region "
+        f"(x ≈ {expected_flag_xmin}..{expected_flag_xmax}); got segments "
+        f"{algo_pivot_segments}; spec §3.4 algo-pivot is flag-scoped, distinct "
+        f"from candidate-pivot which is full-width"
+    )
+
+
+def test_render_chart_overlay_left_out_of_window_truncates_to_chart_left_edge(
+    tmp_path: Path, fake_ohlcv, monkeypatch,
+):
+    """Bug guard (Codex R2 M2): when an overlay's pole_start_date falls
+    BEFORE the chart's first bar, _bar_idx clamps to index 0. The pole
+    band must render starting at the chart's left edge (x ≈ 0), NOT be
+    silently dropped. Symmetric with the right-edge clamp (out-of-window
+    end date → zero-width band at right edge).
+
+    The fixture spans 2026-01-01..2026-06-19 (120 business days). Setting
+    pole_start_date to 2025-06-01 (well before the window) should render
+    the pole band from x=0 to x=_bar_idx(pole_end_date).
+    """
+    overlay = PatternOverlay(
+        pattern="flag", confidence=0.78,
+        pole_start_date=date(2025, 6, 1),  # BEFORE the chart window
+        pole_end_date=fake_ohlcv.index[20].date(),  # in-window
+        flag_start_date=fake_ohlcv.index[21].date(),
+        flag_end_date=fake_ohlcv.index[40].date(),
+        pivot=120.0,
+    )
+
+    captured = {}
+    import mplfinance as mpf
+    real_plot = mpf.plot
+    def _capture(df, **kw):
+        result = real_plot(df, **kw)
+        if kw.get("returnfig"):
+            captured["axes"] = result[1]
+        return result
+    monkeypatch.setattr(mpf, "plot", _capture)
+
+    out = tmp_path / "AAPL.png"
+    render_chart(
+        ticker="AAPL", ohlcv=fake_ohlcv, pivot=110.0, stop=95.0,
+        output_path=out, pattern_overlay=overlay,
+    )
+
+    from matplotlib.collections import PolyCollection
+    polys = [c for c in captured["axes"][0].collections
+             if isinstance(c, PolyCollection)]
+    # Find the pole band (xmin ≈ 0, xmax ≈ 20).
+    pole_band_xmin = None
+    for poly in polys:
+        for path in poly.get_paths():
+            xs = [v[0] for v in path.vertices]
+            xmin, xmax = min(xs), max(xs)
+            if abs(xmin - 0.0) < 1.0 and abs(xmax - 20.0) < 1.0:
+                pole_band_xmin = xmin
+                break
+        if pole_band_xmin is not None:
+            break
+    all_extents = [
+        (min(v[0] for v in path.vertices), max(v[0] for v in path.vertices))
+        for poly in polys for path in poly.get_paths()
+    ]
+    assert pole_band_xmin is not None, (
+        f"pole band starting at chart's left edge (x≈0) missing for "
+        f"left-out-of-window pole_start_date; got polys with x-extents "
+        f"{all_extents}; _bar_idx left-truncation contract broken"
     )

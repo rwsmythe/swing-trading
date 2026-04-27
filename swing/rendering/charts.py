@@ -113,11 +113,18 @@ def render_chart(
 
     def _bar_idx(d: date) -> int:
         # Map an overlay date to the index of the first bar whose date >= d.
-        # If d falls beyond the last bar in the lookback window (e.g., the
-        # classification's flag region extends past the chart slice),
-        # intentionally clamp to the last bar — the resulting band/segment
-        # collapses to zero width at the right edge, which is the desired
-        # visual signal that the overlay is partially out-of-window.
+        # Two clamp behaviors, both intentional:
+        # - LEFT-truncation: if d falls BEFORE the first bar in the window
+        #   (every bar.date >= d → returns 0), the band starts at the chart's
+        #   left edge. Visually represents the visible portion of an overlay
+        #   whose start date precedes the lookback window.
+        # - RIGHT-truncation: if d falls AFTER the last bar (no bar.date >= d
+        #   → returns len(bar_dates)-1), the band collapses to zero width at
+        #   the chart's right edge. Visually represents an overlay whose end
+        #   date extends past the lookback window.
+        # Both behaviors render partially-out-of-window classifications as
+        # "snapped to edge" rather than dropped entirely; operator can see
+        # the visible portion of the pattern in either case.
         for i, bd in enumerate(bar_dates):
             if bd >= d:
                 return i
