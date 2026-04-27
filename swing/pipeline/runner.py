@@ -597,7 +597,14 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
     staging = StagingDir(base=base, run_id=lease.run_id, artifact_type="charts")
     staging.create()
     out_paths: dict[str, Path] = {}
-    errors_count = 0  # classifier-exception count for end-of-step summary
+    # Classifier-summary counters: track classifier outcomes directly. A
+    # ticker reaches the classifier iff fetcher.get succeeded (fetcher_failed
+    # tickers `continue` before classify_flag is called). The summary's
+    # denominator is "classifier attempts" = success + errors, NOT len(targets)
+    # — fetcher_failed and chart-render outcomes are unrelated to classifier
+    # health (Codex R1 Major 1).
+    classifier_success = 0
+    classifier_errors = 0
     for ticker, pivot, stop, _source in targets:
         try:
             ohlcv = fetcher.get(ticker, lookback_days=200, as_of_date=None)
@@ -612,9 +619,10 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
         bars_60 = ohlcv.tail(60)
         try:
             classification = classify_flag(bars_60)
+            classifier_success += 1
         except Exception as exc:
             log.warning(f"flag_classifier failed for {ticker}: {exc!r}")
-            errors_count += 1
+            classifier_errors += 1
             classification = FlagClassificationResult(
                 detected=False, confidence=0.0, pattern=None,
                 pole_start_date=None, pole_end_date=None,
@@ -652,13 +660,16 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
                 computed_at=_dt.now().isoformat(timespec="seconds"),
             )
 
-    # End-of-step summary. "ok" semantics here track classifier success: a
-    # classifier-exception ticker is NOT-ok even if the chart rendered to disk.
-    total = len(targets)
-    ok = total - errors_count - sum(
-        1 for t, *_ in targets if t not in out_paths
+    # End-of-step summary. Denominator is classifier attempts (success +
+    # error), NOT len(targets) — fetcher_failed tickers never reached the
+    # classifier and are not in the classifier-health denominator. Spec §3.3
+    # contract: `flag_classifier: {ok}/{total} ok, {errors} errors` where
+    # totals are classifier-attempt-scoped (Codex R1 Major 1 fix).
+    classifier_attempts = classifier_success + classifier_errors
+    log.info(
+        f"flag_classifier: {classifier_success}/{classifier_attempts} ok, "
+        f"{classifier_errors} errors"
     )
-    log.info(f"flag_classifier: {ok}/{total} ok, {errors_count} errors")
     promote = promote_staging(
         staging=staging, target=base / data_asof,
         lease_token=lease.token, db_path=cfg.paths.db_path,

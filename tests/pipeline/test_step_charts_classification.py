@@ -129,21 +129,56 @@ def test_step_charts_happy_path_persists_classification_row(
     tmp_path: Path, monkeypatch,
 ):
     """Happy path: chart step persists a pattern_classifications row keyed
-    on the in-flight pipeline_run_id for every chart_target ticker."""
+    on the in-flight pipeline_run_id for every chart_target ticker.
+
+    Watch-item 8 (OHLCV reuse) + watch-item 10 (discriminating tests):
+    spy on `classify_flag` to verify (a) it is called exactly once per
+    chart-scope ticker, (b) the input is the 60-bar tail of the same OHLCV
+    `render_chart` consumes, (c) the persisted row reflects the classifier's
+    actual return value (not a default).
+    """
     cfg = _make_cfg(tmp_path)
     _csv(cfg.paths.finviz_inbox_dir)
     _seed_active_watchlist_entry(
         cfg.paths.db_path, ticker="AAPL", entry_target=180.0, last_close=180.0,
     )
 
+    bars = _flag_bars()
+    expected_tail = bars.tail(60)
+
     monkeypatch.setattr(
         "swing.prices.PriceFetcher.get",
-        lambda self, ticker, lookback_days, *, as_of_date=None: _flag_bars(),
+        lambda self, ticker, lookback_days, *, as_of_date=None: bars,
     )
     monkeypatch.setattr("swing.pipeline.runner.render_chart", _stub_render)
 
+    captured: list[tuple[pd.DataFrame, object]] = []
+    real_classify = runner_mod.classify_flag
+
+    def spy_classify(bars_arg):
+        result = real_classify(bars_arg)
+        captured.append((bars_arg.copy(), result))
+        return result
+
+    monkeypatch.setattr(runner_mod, "classify_flag", spy_classify)
+
     result = run_pipeline_internal(cfg=cfg, trigger="manual")
     assert result.state == "complete"
+
+    # Watch-item 8: classifier called once with the 60-bar tail.
+    assert len(captured) == 1, (
+        f"classify_flag must be called exactly once per chart-scope ticker; "
+        f"got {len(captured)} calls"
+    )
+    captured_bars, captured_result = captured[0]
+    assert len(captured_bars) == 60, (
+        f"classify_flag must receive ohlcv.tail(60); got {len(captured_bars)}"
+    )
+    pd.testing.assert_frame_equal(
+        captured_bars.reset_index(drop=True),
+        expected_tail.reset_index(drop=True),
+        check_exact=False,
+    )
 
     conn = sqlite3.connect(cfg.paths.db_path)
     try:
@@ -153,8 +188,13 @@ def test_step_charts_happy_path_persists_classification_row(
             "every chart_target ticker (spec §3.3)"
         )
         row = rows["AAPL"]
-        assert row.pattern in ("flag", "none"), (
-            f"pattern must be 'flag' or 'none' on success, got {row.pattern!r}"
+        # Watch-item 10: persisted row reflects classifier's ACTUAL return,
+        # not a default. Discriminates against any path that always persists
+        # 'none' regardless of classify_flag's verdict.
+        assert row.pattern == captured_result.pattern, (
+            f"persisted pattern must reflect classifier return; "
+            f"classifier returned {captured_result.pattern!r}, "
+            f"persisted {row.pattern!r}"
         )
         assert row.computed_at is not None
         assert row.pipeline_run_id == result.run_id
@@ -259,14 +299,17 @@ def test_step_charts_classifier_exception_persists_null_pattern_with_error(
         f"got warning messages: {warning_msgs!r}"
     )
 
+    # Watch-item 7: assert the EXACT summary format under a controlled
+    # scenario. AAPL is the only chart-scope ticker; classify_flag raised
+    # for it; 0 successes, 1 error, 1 attempt. Discriminating against any
+    # formula that conflates fetcher_failed / too_few_bars with classifier
+    # failures (Codex R1 Major 1 + 2).
     info_msgs = [
         rec.getMessage() for rec in caplog.records
         if rec.levelno == logging.INFO
     ]
-    assert any(
-        m.startswith("flag_classifier: ") and "errors" in m
-        for m in info_msgs
-    ), (
-        f"expected end-of-step log.info('flag_classifier: ok/total ok, "
-        f"N errors'); got info messages: {info_msgs!r}"
+    assert "flag_classifier: 0/1 ok, 1 errors" in info_msgs, (
+        f"expected end-of-step log.info exactly "
+        f"'flag_classifier: 0/1 ok, 1 errors' (1 ticker, classifier raised); "
+        f"got info messages: {info_msgs!r}"
     )
