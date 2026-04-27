@@ -48,3 +48,31 @@ def test_render_chart_accepts_pattern_overlay_none_kwarg(
         output_path=out, pattern_overlay=None,
     )
     assert res == out
+
+
+def test_render_chart_pattern_overlay_none_is_byte_identical_to_default(
+    tmp_path: Path, fake_ohlcv,
+):
+    """Phase 3 contract: `pattern_overlay=None` MUST produce a chart byte-
+    identical to the legacy call without the kwarg. Phase 6 lands the actual
+    painting; until then the kwarg is a no-op stub.
+
+    Discriminating: if Phase 6 painting accidentally landed early (or the
+    `del pattern_overlay` line was removed), this test would diverge.
+    """
+    default_path = tmp_path / "default.png"
+    explicit_path = tmp_path / "explicit_none.png"
+
+    render_chart(
+        ticker="AAPL", ohlcv=fake_ohlcv, pivot=110.0, stop=95.0,
+        output_path=default_path,
+    )
+    render_chart(
+        ticker="AAPL", ohlcv=fake_ohlcv, pivot=110.0, stop=95.0,
+        output_path=explicit_path, pattern_overlay=None,
+    )
+
+    assert default_path.read_bytes() == explicit_path.read_bytes(), (
+        "render_chart with pattern_overlay=None must produce a byte-identical "
+        "PNG to the default kwarg-omitted call (Phase 3 no-op stub contract)"
+    )
