@@ -225,6 +225,16 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
 
         return await request_validation_exception_handler(request, exc)
 
+    # Date-less chart redirect route MUST be registered BEFORE the /charts
+    # StaticFiles mount: Starlette resolves routes in registration order, and
+    # `app.mount("/charts", ...)` claims everything under /charts unless an
+    # earlier-registered route matches first. Single-segment paths like
+    # /charts/AAPL.png hit the dynamic handler; two-segment date-prefixed
+    # paths (/charts/<date>/<ticker>.png) don't match the {ticker}.png param
+    # template and correctly fall through to StaticFiles.
+    from swing.web.routes import charts as charts_route
+    app.include_router(charts_route.router)
+
     # Static mounts. charts_dir is written by the pipeline; if no run has
     # happened yet, the dir may not exist. `check_dir=False` defers the check
     # to request time — missing chart URL returns 404, and the dashboard's
