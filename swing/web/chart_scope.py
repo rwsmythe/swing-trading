@@ -154,8 +154,11 @@ def resolve_chart_scope(
     `latest_completed_pipeline_run(conn)`. Resolver does NOT re-read
     `pipeline_runs` internally. Returns `(reason, message)` — both None when
     chart is available; otherwise reason ∈ {no-run, engine-missing,
-    pipeline-failed, out-of-scope, insufficient-data, fetcher_failed,
-    too_few_bars} and message is the operator-facing copy.
+    pipeline-failed, out-of-scope, out-of-scope-legacy, insufficient-data,
+    fetcher_failed, too_few_bars} and message is the operator-facing copy.
+    `out-of-scope` is emitted by the FK-backed `_resolve_via_chart_targets`
+    path (V2 three-tier scope); `out-of-scope-legacy` is emitted by
+    `_resolve_via_heuristic` for pre-V2 NULL-evaluation_run_id runs.
 
     Binding contract (spec §C "Binding scope definition"):
     - One binding per HTTP request handler.
