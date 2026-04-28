@@ -548,37 +548,74 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
     a staging dir's worth of charts only to discard them at promote time."""
     lease.verify_held()
     from swing.data.repos.candidates import fetch_candidates_for_run
+    from swing.data.repos.trades import list_open_trades  # NEW (Task 5)
     conn = connect(cfg.paths.db_path)
     try:
         candidates = fetch_candidates_for_run(conn, eval_run_id)
         watchlist = list_active_watchlist(conn)
+        # Task 5 (spec §A "Open-position tier"): read open trades inside the
+        # same snapshot block — must happen BEFORE conn.close() below so the
+        # 3-tier composition sees a consistent view of candidates +
+        # watchlist + trades.
+        open_trades = list_open_trades(conn)
     finally:
         conn.close()
 
+    # Spec §A — three-tier composition with precedence-ordered dedup.
     aplus = [c for c in candidates if c.bucket == "aplus"]
-    near_watch = sorted(
-        [w for w in watchlist if w.entry_target and w.last_close],
-        key=lambda w: abs((w.last_close - w.entry_target) / w.entry_target),
-    )[:cfg.pipeline.chart_top_n_watch]
 
-    # Tranche C T2: build a deduped target list with a `source` tag so the
-    # pipeline_chart_targets table can record A+ vs near-by-proximity
-    # provenance. A+ wins when a ticker appears in both sets (the chart is
-    # the same; the source taxonomy reflects WHY it was charted).
+    # Tag-aware top-N from watchlist via the shared sort helper (Task 4
+    # extracted `_tag_aware_sort_key` so this loop and `_sort_watchlist` in
+    # the dashboard view-model are byte-identical by construction).
+    # Filter to data-eligible rows first (entry_target + last_close populated)
+    # to enforce spec §A "Residual filter-intersection limitation" — a
+    # tagged-but-data-incomplete row cannot enter chart-scope.
+    data_eligible = [w for w in watchlist if w.entry_target and w.last_close]
+    by_ticker = {c.ticker: c for c in candidates}
+    from swing.web.view_models.dashboard import (
+        _flag_tags as _dashboard_flag_tags,
+    )
+    from swing.web.view_models.dashboard import _tag_aware_sort_key
+    flag_tags = _dashboard_flag_tags(by_ticker)
+    tag_aware_sorted = sorted(
+        data_eligible,
+        key=lambda w: _tag_aware_sort_key(w, flag_tags),
+    )
+    tag_aware_top_n = tag_aware_sorted[: cfg.pipeline.chart_top_n_watch]
+
+    # Spec §A "Deduplication": linear pass through tiers in precedence order
+    # (aplus > open_position > tag_aware_top_n) with ticker canonicalization
+    # (.upper()) before being added to `seen` (Codex R1 Minor 3
+    # defense-in-depth — production data is already upper-case but the
+    # canonicalization makes the dedup robust to a future code path that
+    # introduces mixed case).
     seen: set[str] = set()
     targets: list[tuple[str, float, float, str]] = []  # ticker, pivot, stop, source
     for c in aplus:
-        if c.ticker in seen:
+        t_canon = c.ticker.upper()
+        if t_canon in seen:
             continue
-        seen.add(c.ticker)
-        targets.append((c.ticker, c.pivot or 0.0, c.initial_stop or 0.0, "aplus"))
-    for w in near_watch:
-        if w.ticker in seen:
+        seen.add(t_canon)
+        targets.append((t_canon, c.pivot or 0.0, c.initial_stop or 0.0, "aplus"))
+    for tr in open_trades:
+        t_canon = tr.ticker.upper()
+        if t_canon in seen:
             continue
-        seen.add(w.ticker)
+        seen.add(t_canon)
+        # Spec §A "Pivot/stop sourcing": entry_price is the pivot proxy for
+        # an open position; current_stop reflects the post-stop_adjust value
+        # (Phase 2 stop_adjust event mutates current_stop in place).
         targets.append((
-            w.ticker, w.entry_target, w.initial_stop_target or 0.0,
-            "near_proximity",
+            t_canon, tr.entry_price, tr.current_stop or 0.0, "open_position",
+        ))
+    for w in tag_aware_top_n:
+        t_canon = w.ticker.upper()
+        if t_canon in seen:
+            continue
+        seen.add(t_canon)
+        targets.append((
+            t_canon, w.entry_target, w.initial_stop_target or 0.0,
+            "tag_aware_top_n",
         ))
 
     # Persist all targets as 'pending' BEFORE per-ticker chart attempts so that

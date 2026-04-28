@@ -217,7 +217,7 @@ class PipelineChartTarget:
     id: int | None
     pipeline_run_id: int
     ticker: str
-    source: str        # 'aplus' | 'near_proximity'
+    source: str        # 'aplus' | 'open_position' | 'tag_aware_top_n' | 'near_proximity' (legacy)
     chart_status: str  # 'pending' | 'ok' | 'fetcher_failed' | 'too_few_bars'
 
 
