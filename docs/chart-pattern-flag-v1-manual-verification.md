@@ -7,7 +7,7 @@
 **Expected duration:** ~30-45 minutes for a thorough walkthrough.
 
 **Prerequisites:**
-- swing-trading repo at HEAD with Phase 7 implementer-side shipped (or at minimum Phase 6 complete + mathtext fix `2fd0ecc` landed).
+- swing-trading repo at HEAD with Phase 7 implementer-side shipped (or at minimum Phase 6 complete + mathtext title fix `29c93f5` landed; commit `2fd0ecc` was a failed earlier attempt — see `docs/chart-pattern-flag-v1-manual-verification-results.md` §#1).
 - Production DB at `~/swing-data/swing.db` with schema_version = 10.
 - A recent pipeline run with classifications populated in `pipeline_pattern_classifications` table.
 - `swing` CLI on PATH (`%APPDATA%\Python\Python314\Scripts\` per CLAUDE.md).
@@ -16,7 +16,32 @@
 
 ## §0 Pre-flight checks
 
-Before walking through the surfaces, confirm baseline state:
+Before walking through the surfaces, confirm baseline state.
+
+**Note on running SQL queries:** The blocks below use the `sqlite3` CLI for readability. If `sqlite3` isn't on your PATH (default Windows install rarely has it), use Python's stdlib `sqlite3` module instead — it ships with every Python install.
+
+```bash
+# Python stdlib equivalent — works without sqlite3 CLI on PATH (gitbash):
+python -c "
+import sqlite3, os
+conn = sqlite3.connect(os.path.expanduser('~/swing-data/swing.db'))
+for row in conn.execute('SELECT version FROM schema_version'):
+    print(row)
+"
+```
+
+PowerShell users: `python -c "..."` mangles triple-quoted multi-line SQL through PowerShell's quoting. Easiest workaround — write a temp `.py` file:
+
+```powershell
+@'
+import sqlite3, os
+conn = sqlite3.connect(os.path.expanduser("~/swing-data/swing.db"))
+for row in conn.execute("SELECT version FROM schema_version"):
+    print(row)
+'@ | Out-File -Encoding utf8 _query.py; python _query.py; Remove-Item _query.py
+```
+
+Adapt the cursor query body for each SQL block in the rest of this doc.
 
 ```bash
 # 1. Schema version is 10 (Phase 2 migrations 0009 + 0010 applied)
@@ -35,13 +60,16 @@ sqlite3 ~/swing-data/swing.db "
     COUNT(ppc.ticker) AS classification_count,
     SUM(CASE WHEN ppc.pattern = 'flag' THEN 1 ELSE 0 END) AS flag_detected_count,
     SUM(CASE WHEN ppc.pattern = 'none' THEN 1 ELSE 0 END) AS no_flag_count,
-    SUM(CASE WHEN ppc.pattern IS NULL THEN 1 ELSE 0 END) AS classifier_error_count
+    SUM(CASE WHEN ppc.pattern IS NULL AND ppc.ticker IS NOT NULL THEN 1 ELSE 0 END) AS classifier_error_count
   FROM pipeline_runs pr
   LEFT JOIN pipeline_pattern_classifications ppc ON ppc.pipeline_run_id = pr.id
   WHERE pr.state = 'complete'
   GROUP BY pr.id
   ORDER BY pr.finished_ts DESC
   LIMIT 5"
+# NOTE: classifier_error_count requires `AND ppc.ticker IS NOT NULL` — without it,
+# a LEFT-JOIN-NULL row (no classification was ever attempted for this pipeline_run)
+# is conflated with a true classifier-error row (ppc row exists, pattern is NULL).
 ```
 
 **Expected output:** at least one row showing `state='complete'` and `classification_count > 0`. Note the `pipeline_run_id` and any tickers with `pattern='flag'` for the per-ticker steps below.
@@ -72,8 +100,9 @@ swing web
 Open `http://127.0.0.1:8080/` in browser.
 
 ### §1.1 Account card + Open positions
-- [ ] **Account card** displays starting equity + realized P&L + net cash + **Unrealized P&L** line item (Phase 3e.1; shipped pre-V1).
-- [ ] **Open positions** table renders without 500 errors. If you have open trades, they appear.
+- [ ] **Account card** displays compact form: `$<equity> + <open_count>/<concurrent_cap> (hard cap <hard_cap>)` (e.g., `$1298 + 0/4 (hard cap 6)`).
+- [ ] **Unrealized P&L line item** — appears as `Unrealized: $X.XX` **only when at least one open position exists** (Phase 3e.1; shipped pre-V1). With ZERO open positions, the line legitimately does NOT render — this is correct behavior, not a regression. Skip this check if no open positions.
+- [ ] **Open positions** table renders without 500 errors. If you have open trades, they appear; if zero open trades, the table renders empty or is omitted depending on template state.
 
 ### §1.2 Watchlist top-5
 - [ ] Watchlist top-5 section heading "Watchlist - near trigger" appears (Bug 1 from Bugs.txt — fixed pre-V1).
@@ -114,7 +143,37 @@ Navigate to `http://127.0.0.1:8080/watchlist`.
 
 ## §3 Web surface — Chart image (overlay verification)
 
-For a ticker with `pattern='flag'` (from §0 step 3), navigate to its chart via the dashboard expanded row OR directly via `http://127.0.0.1:8080/charts/<TICKER>.png`.
+**Chart access path (V1 known limitations):**
+
+In V1, the only operator-accessible chart-view path is the **dashboard expanded watchlist row** — click a watchlist ticker to expand, the chart appears inline. Direct URL `http://127.0.0.1:8080/charts/<TICKER>.png` returns 404 (no standalone chart-image route in V1; backlog item #2 in `docs/chart-pattern-flag-v1-manual-verification-results.md`).
+
+Implications for this verification round:
+
+- **Watchlist tickers in chart-scope set:** expand the row (works).
+- **Chart-scope tickers NOT in watchlist** (e.g., A+ candidates without near-trigger ranking): no in-app path. Inspect the PNG directly on disk at `exports/<latest_session>/charts/<TICKER>.png` if needed.
+- **Open-positions tickers:** open-positions rows do NOT expand to chart in V1 (backlog item #3). Chart-view path disappears once a watchlist ticker is taken as a trade. Inspect the PNG directly on disk for those.
+
+For a ticker with `pattern='flag'` (from §0 step 3), pick one that's still in the watchlist + chart-scope set; expand the row.
+
+### §3.0 Chart-element legend (V1)
+
+Charts paint several visual elements; the table below names them so failed checks can be reported precisely.
+
+| Element | Style | Meaning |
+|---|---|---|
+| Candlesticks | green/red bars | Daily OHLC bars |
+| 10MA | blue line | 10-day simple moving average |
+| 20MA | orange line | 20-day SMA |
+| 50MA | red line | 50-day SMA |
+| Candidate-pivot hline | green dashed, full chart width | Operator's pivot price from candidate selection (pre-V1) |
+| Stop hline | red dashed, full chart width | Operator's stop price |
+| Pole band (overlay only) | light green fill, α=0.15 | Pole region detected by flag classifier (Phase 6) |
+| Flag band (overlay only) | light yellow fill, α=0.15 | Flag region detected by flag classifier (Phase 6) |
+| Algo-pivot segment (overlay only) | dark blue horizontal, spans flag region only | Algorithm's computed pivot — SEPARATE from the candidate-pivot hline |
+| Consolidation marker | purple dotted vertical line | Right-edge boundary of the pattern-detection window (separates the window from the latest bar). Pre-existing pre-V1; not specific to flag overlay. |
+| Volume panel | green/red bars below price panel | Daily volume |
+
+If a chart shows an element this legend doesn't explain, surface to orchestrator as a doc gap (#14 family).
 
 ### §3.1 Chart title (mathtext fix verification)
 - [ ] **Title reads cleanly** — for example: `AAPL | pivot 110.00 stop 95.00 | last 120 bars | flag (0.78)`.
@@ -203,9 +262,11 @@ Navigate to `http://127.0.0.1:8080/trades/entry/<TICKER>` for a ticker WITH a `p
 
 ### §5.1 CLI with `--chart-pattern-operator` for ticker WITH cached classification
 ```bash
-swing trade entry --ticker AAPL --entry 110.00 --stop 95.00 --chart-pattern-operator flag --rationale "manual test"
-# (Adjust ticker + prices to match a current cached-classification ticker)
+swing trade entry --ticker AAPL --entry-date 2026-04-27 --entry-price 110.00 --shares 10 --initial-stop 95.00 --rationale other --notes "manual verification test" --chart-pattern-operator flag
 ```
+- Adjust `--ticker`, `--entry-date`, `--entry-price`, `--shares` to match a current cached-classification ticker.
+- `--rationale` is `click.Choice([aplus-setup, near-trigger-breakout, vcp-breakout, pivot-breakout, post-earnings-continuation, relative-strength, other])` — see `swing trade entry --help`. For `other`, `--notes` is required (per spec parity with web form).
+- All five `--ticker / --entry-date / --entry-price / --shares / --initial-stop` are required.
 
 - [ ] **Command succeeds** (exit code 0).
 - [ ] Trade record created.
@@ -213,9 +274,9 @@ swing trade entry --ticker AAPL --entry 110.00 --stop 95.00 --chart-pattern-oper
 
 ### §5.2 CLI with `--chart-pattern-operator` for ticker WITHOUT cached classification
 ```bash
-swing trade entry --ticker XYZX --entry 50.00 --stop 45.00 --chart-pattern-operator flag --rationale "manual test"
-# (Use a ticker NOT in chart-scope for the latest pipeline run)
+swing trade entry --ticker XYZX --entry-date 2026-04-27 --entry-price 50.00 --shares 1 --initial-stop 45.00 --rationale other --notes "manual test for refusal gate" --chart-pattern-operator flag
 ```
+Use a ticker NOT in chart-scope for the latest pipeline run (e.g., one that doesn't appear in `pipeline_pattern_classifications.ticker` for the latest `pipeline_run_id`).
 
 - [ ] **Command FAILS with non-zero exit code.**
 - [ ] **Error message** (per spec §3.7-verbatim): something like `Error: --chart-pattern-operator requires a cached classification for XYZX; ticker is out-of-scope for the latest pipeline run. (V1 cached-only; manual fallback deferred to V2.)`.
@@ -223,7 +284,7 @@ swing trade entry --ticker XYZX --entry 50.00 --stop 45.00 --chart-pattern-opera
 
 ### §5.3 CLI WITHOUT `--chart-pattern-operator` (existing behavior, backward-compat)
 ```bash
-swing trade entry --ticker AAPL --entry 110.00 --stop 95.00 --rationale "manual test"
+swing trade entry --ticker AAPL --entry-date 2026-04-27 --entry-price 110.00 --shares 10 --initial-stop 95.00 --rationale other --notes "manual test"
 ```
 
 - [ ] **Command succeeds** (existing CLI invocations without the flag still work).

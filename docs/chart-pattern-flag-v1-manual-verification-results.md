@@ -139,6 +139,25 @@
 
 **Investigation:** Phase 3d advisory expiry logic. May need to clarify operator intent before deciding state-machine.
 
+**Mechanical answers (from `swing/trades/advisory.py` read, 2026-04-27):**
+
+- Each `suggest_trail_ma` call fires independently when `current_price ≥ ma_value` AND `proposed_stop > current_stop`. No state machine picks between them.
+- Adjusting stop to the **higher** (tighter) advisory level clears the lower advisory (proposed ≤ current_stop → returns None). For DHC: setting stop to $7.23 (10MA-based) clears both.
+- Adjusting to the **lower** advisory leaves the higher one firing. For DHC: setting stop to $7.06 (20MA-based) leaves the 10MA-based advisory active.
+- Wording note: "more conservative" in stop terms = HIGHER stop (locks in more profit). The reconciliation question's parenthetical "more conservative value (lower of the two)" reads ambiguously; the correct reading is "more restrictive constraint = higher stop number = tighter."
+
+**Operator framing (2026-04-27 conversation):**
+
+Display principle: **maximum communication** — surface all firing advisories; do NOT suppress based on heuristic state. Future state-machine work should be **annotative, not filtering**: alongside the existing advisory display, surface contextual notes (e.g., "this is a new trade — hold off on tightening until trade has matured") so operator gets the recommendation AND meta-judgment about whether the recommendation is appropriate now.
+
+Trade-maturity gating concept (for future state-machine design):
+
+- **New trade** (just entered, ~0R unrealized) → initial stop is the binding reference; trail-MA advisories are forward-looking. System should annotate something like "trade hasn't earned tightening yet — initial stop remains the right reference until ~+Xr accrued."
+- **Mature trade** (~+1.5R to +2R, price comfortably above candidate trail-MA — not hugging it) → trail-MA tightening earns its place. Default progression: **20MA early** (more breathing room, rides out 1-3 day pullback noise), **upgrade to 10MA after meaningful gain** (locks in profit on a now-free trade; matches Minervini "let winners run, don't give back" once they've run).
+- **Match the trail to trade lifecycle stage**, not just to which advisory is mathematically valid. The advisories represent "available levels," not "recommended actions" — they fire mechanically the moment they're math-valid, even when the trade hasn't earned the tightening.
+
+Status: captured for future discussion. No implementation decision yet. Operator: "We will discuss when we revisit."
+
 ---
 
 ## Verification doc fixes needed

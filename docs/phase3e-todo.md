@@ -622,11 +622,11 @@ Full technical detail in `docs/chart-pattern-flag-v1-manual-verification-results
 ### Tier 3 — Operator-design questions
 
 5. **Lightning icon trigger logic re-evaluation.** Current rule: `price >= 0.99 × entry_target`. Operator surfaced concern that simple "near pivot" indicator may not be the right "actionability" signal post-Phase-4 (with richer tag tier + pattern classification + hypothesis-recommendation engine). Options enumerated in verification-results doc.
-6. **Multiple concurrent advisories vs single price-stop field.** Open positions can show multiple trail-stop advisories (e.g., 10MA + 20MA based) but trade row supports only one stop value. Reconciliation needed: state-machine when stop adjusted to satisfy one but not all advisories. Phase 3d follow-up.
+6. **Multiple concurrent advisories vs single price-stop field.** Open positions can show multiple trail-stop advisories (e.g., 10MA + 20MA based) but trade row supports only one stop value. Reconciliation needed: state-machine when stop adjusted to satisfy one but not all advisories. Phase 3d follow-up. _Operator framing recorded 2026-04-27 (verification-results doc §#6): maximum-communication principle — annotate, don't suppress; trade-maturity gating concept (default 20MA early, upgrade to 10MA after ~+1.5-2R)._
 
-### Tier 4 — Verification doc fixes (single doc-fix commit when convenient)
+### Tier 4 — Verification doc fixes — **SHIPPED 2026-04-27** (this commit)
 
-7-14. Verification doc has SQL queries assuming `sqlite3` CLI on PATH, conflated "error" column SQL, PowerShell-incompatible Python multi-line syntax, missing "conditional on open positions" note for §1.1.a, account-card field-list overstated vs actual UI, §3 chart-image instructions assume ticker stays in watchlist post-trade, §5.2 CLI command had wrong option names + missing required options (`--entry`/`--entry-price`, `--stop`/`--initial-stop`, missing `--entry-date` + `--shares`, `--rationale` is `click.Choice`), and chart's purple dotted "consolidation marker" lacks operator-facing legend. Bundle as single doc-fix commit. Full details in verification-results doc.
+7-14. Verification doc had SQL queries assuming `sqlite3` CLI on PATH, conflated "error" column SQL, PowerShell-incompatible Python multi-line syntax, missing "conditional on open positions" note for §1.1.a, account-card field-list overstated vs actual UI, §3 chart-image instructions assumed ticker stays in watchlist post-trade, §5.x CLI commands had wrong option names + missing required options (`--entry`/`--entry-price`, `--stop`/`--initial-stop`, missing `--entry-date` + `--shares`, `--rationale` is `click.Choice`), and chart's purple dotted "consolidation marker" lacked operator-facing legend. **All resolved in the Tier-4 doc-fix bundle commit alongside post-mathtext-fix follow-ups (below).** Full details in `docs/chart-pattern-flag-v1-manual-verification-results.md`.
 
 ### Verification deferred (re-run when conditions enable)
 
@@ -636,3 +636,26 @@ Full technical detail in `docs/chart-pattern-flag-v1-manual-verification-results
 - §4.7 soft-warn × chart_pattern — needs 4+ open trades.
 - §5.1 + §5.3 CLI variants — exercise at next CLI trade entry.
 - §6 full cross-surface consistency — needs `pattern='flag'` ticker.
+
+---
+
+## 2026-04-27 chart-pattern flag-v1 mathtext fix follow-ups
+
+Items surfaced from the Tier-1 mathtext title regression fix dispatch (commit `29c93f5`, single-task implementer dispatch with 2-round Codex review → `NO_NEW_CRITICAL_MAJOR`).
+
+### Mathtext-hardening on the suptitle path (R1 Major; ACCEPTED out-of-scope; defer)
+
+The Tier-1 fix dropped `$` from the chart title format string. Adversarial Codex R1 raised a defense-in-depth concern: the production path passes `title=` to `mpf.plot(...)`, which routes through `fig.suptitle` with default `parse_math=True`. If a future ticker symbol ever contains a mathtext metacharacter (`$`, `^`, `_`, unbalanced `\`), it would re-enter math mode despite the current title format being `$`-free.
+
+Threat-model assessment: real-world US equity tickers use `[A-Z\.\-]` only; none of those characters trigger matplotlib's mathtext interpreter. Numeric formatters (`{:.2f}`) emit only digits + `.`. The current fix is sufficient for the ticker character set the framework actually consumes.
+
+Possible future hardening if the threat model widens:
+
+- **(a)** Switch `mpf.plot(returnfig=True)` and call `fig.suptitle(title, parse_math=False)` explicitly after — disables math-mode parsing on the suptitle entirely. Defense-in-depth at the rendering boundary.
+- **(b)** `_sanitize_for_mathtext()` helper that escapes/strips `$ ^ _ \` from the ticker substring at title-construction time. Defense-in-depth at the format-string boundary.
+
+Cheap insurance; not urgent. Pick up if the codebase ever ingests non-US tickers, derivative symbols, or any source that could put metacharacters into the ticker field.
+
+### Mathtext metacharacter gotcha (informational; captured in CLAUDE.md gotchas)
+
+Matplotlib mathtext fires on `$` (paired math mode), `^` (superscript), `_` (subscript), and unbalanced `\`. Future title-format additions (scientific notation, exponents, footnote markers, custom annotations) will need visual re-verification on rendered PNG, NOT just string-equality assertions. Captured in CLAUDE.md gotchas in this same housekeeping commit.
