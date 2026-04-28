@@ -432,47 +432,51 @@ from swing.web.chart_scope import (
 )
 
 
-def test_latest_completed_pipeline_run_returns_none_on_empty_db(seeded_db):
+def test_latest_completed_pipeline_run_returns_none_on_empty_db(db_conn):
     """No completed runs → helper returns None.
 
     Discriminating verification: pre-fix code (no helper exists) raises
     ImportError. Post-fix the helper returns None. Asserting on None
     distinguishes from "raised some error" failure mode.
+
+    Fixture: `db_conn` (already in tests/web/test_chart_scope.py) yields
+    `(cfg, conn)` where conn is an open sqlite3.Connection over a fully-
+    migrated empty DB. NOT `seeded_db` — that fixture returns
+    `(cfg, cfg_path)`, not a connection.
     """
-    # seeded_db fixture omits any pipeline_runs by default — we'll wipe to be sure.
-    with seeded_db as conn:
-        conn.execute("DELETE FROM pipeline_runs")
-        conn.commit()
-        assert latest_completed_pipeline_run(conn) is None
+    cfg, conn = db_conn
+    # db_conn yields a fresh DB; pipeline_runs is empty by default.
+    assert latest_completed_pipeline_run(conn) is None
 
 
-def test_latest_completed_pipeline_run_returns_binding_with_all_fields(seeded_db):
+def test_latest_completed_pipeline_run_returns_binding_with_all_fields(db_conn):
     """Helper populates all 5 fields from the latest completed run.
 
     Discriminating verification: each field's value is checked against the
     seeded data; if the helper SELECTed the wrong column or omitted a field,
     the assertion fails on the specific mismatch.
     """
-    with seeded_db as conn:
-        conn.execute("DELETE FROM pipeline_runs")
-        conn.execute(
-            """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
-                                           data_asof_date, action_session_date,
-                                           charts_status, evaluation_run_id)
-               VALUES (10, '2026-04-01T09:00:00', '2026-04-01T09:30:00',
-                       'complete', '2026-04-01', '2026-04-02', 'ok', 7)""",
-        )
-        conn.commit()
-        binding = latest_completed_pipeline_run(conn)
-        assert binding is not None
-        assert binding.run_id == 10
-        assert binding.finished_ts == "2026-04-01T09:30:00"
-        assert binding.data_asof_date == "2026-04-01"
-        assert binding.charts_status == "ok"
-        assert binding.evaluation_run_id == 7
+    cfg, conn = db_conn
+    conn.execute(
+        """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
+                                       data_asof_date, action_session_date,
+                                       charts_status, evaluation_run_id,
+                                       trigger, lease_token)
+           VALUES (10, '2026-04-01T09:00:00', '2026-04-01T09:30:00',
+                   'complete', '2026-04-01', '2026-04-02', 'ok', 7,
+                   'manual', 'tok-10')""",
+    )
+    conn.commit()
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
+    assert binding.run_id == 10
+    assert binding.finished_ts == "2026-04-01T09:30:00"
+    assert binding.data_asof_date == "2026-04-01"
+    assert binding.charts_status == "ok"
+    assert binding.evaluation_run_id == 7
 
 
-def test_latest_completed_pipeline_run_id_desc_tiebreaker(seeded_db):
+def test_latest_completed_pipeline_run_id_desc_tiebreaker(db_conn):
     """When two completed runs share `finished_ts`, helper picks the higher id.
 
     Discriminating verification: pre-fix `ORDER BY finished_ts DESC LIMIT 1`
@@ -484,28 +488,29 @@ def test_latest_completed_pipeline_run_id_desc_tiebreaker(seeded_db):
     (5 then 12 then 3) so a "natural row order" lookup would NOT pick id=12;
     the test would fail with id=3 or id=5 if the tiebreaker is missing.
     """
-    with seeded_db as conn:
-        conn.execute("DELETE FROM pipeline_runs")
-        # Insert in non-monotonic order to defeat natural-row-order coincidence.
-        for run_id in (5, 12, 3):
-            conn.execute(
-                """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
-                                               data_asof_date, action_session_date,
-                                               charts_status, evaluation_run_id)
-                   VALUES (?, '2026-04-01T09:00:00', '2026-04-01T09:30:00',
-                           'complete', '2026-04-01', '2026-04-02', 'ok', NULL)""",
-                (run_id,),
-            )
-        conn.commit()
-        binding = latest_completed_pipeline_run(conn)
-        assert binding is not None
-        assert binding.run_id == 12, (
-            f"expected id-DESC tiebreaker to pick 12, got {binding.run_id}; "
-            "regression: missing `id DESC` in ORDER BY"
+    cfg, conn = db_conn
+    # Insert in non-monotonic order to defeat natural-row-order coincidence.
+    for run_id in (5, 12, 3):
+        conn.execute(
+            """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
+                                           data_asof_date, action_session_date,
+                                           charts_status, evaluation_run_id,
+                                           trigger, lease_token)
+               VALUES (?, '2026-04-01T09:00:00', '2026-04-01T09:30:00',
+                       'complete', '2026-04-01', '2026-04-02', 'ok', NULL,
+                       'manual', ?)""",
+            (run_id, f"tok-{run_id}"),
         )
+    conn.commit()
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
+    assert binding.run_id == 12, (
+        f"expected id-DESC tiebreaker to pick 12, got {binding.run_id}; "
+        "regression: missing `id DESC` in ORDER BY"
+    )
 
 
-def test_latest_completed_pipeline_run_skips_in_progress_runs(seeded_db):
+def test_latest_completed_pipeline_run_skips_in_progress_runs(db_conn):
     """Runs with state != 'complete' are excluded.
 
     Discriminating verification: a run with finished_ts='2026-04-02T09:30:00'
@@ -513,29 +518,32 @@ def test_latest_completed_pipeline_run_skips_in_progress_runs(seeded_db):
     The test asserts the older 'complete' run is selected, which fails if
     the state filter is missing.
     """
-    with seeded_db as conn:
-        conn.execute("DELETE FROM pipeline_runs")
-        conn.execute(
-            """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
-                                           data_asof_date, action_session_date,
-                                           charts_status, evaluation_run_id)
-               VALUES (1, '2026-04-01T09:00:00', '2026-04-01T09:30:00',
-                       'complete', '2026-04-01', '2026-04-02', 'ok', NULL)""",
-        )
-        conn.execute(
-            """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
-                                           data_asof_date, action_session_date,
-                                           charts_status, evaluation_run_id)
-               VALUES (2, '2026-04-02T09:00:00', '2026-04-02T09:30:00',
-                       'running', '2026-04-02', '2026-04-03', NULL, NULL)""",
-        )
-        conn.commit()
-        binding = latest_completed_pipeline_run(conn)
-        assert binding is not None
-        assert binding.run_id == 1, (
-            f"expected the only 'complete' run (id=1) to win; got id={binding.run_id}; "
-            "regression: WHERE state='complete' filter dropped"
-        )
+    cfg, conn = db_conn
+    conn.execute(
+        """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
+                                       data_asof_date, action_session_date,
+                                       charts_status, evaluation_run_id,
+                                       trigger, lease_token)
+           VALUES (1, '2026-04-01T09:00:00', '2026-04-01T09:30:00',
+                   'complete', '2026-04-01', '2026-04-02', 'ok', NULL,
+                   'manual', 'tok-1')""",
+    )
+    conn.execute(
+        """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
+                                       data_asof_date, action_session_date,
+                                       charts_status, evaluation_run_id,
+                                       trigger, lease_token)
+           VALUES (2, '2026-04-02T09:00:00', '2026-04-02T09:30:00',
+                   'running', '2026-04-02', '2026-04-03', NULL, NULL,
+                   'manual', 'tok-2')""",
+    )
+    conn.commit()
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
+    assert binding.run_id == 1, (
+        f"expected the only 'complete' run (id=1) to win; got id={binding.run_id}; "
+        "regression: WHERE state='complete' filter dropped"
+    )
 
 
 def test_pipeline_run_binding_is_frozen():
@@ -670,7 +678,7 @@ git commit -m "feat(web): Task 2 — PipelineRunBinding + latest_completed_pipel
 ```python
 # tests/web/test_chart_scope.py — append
 
-def test_resolve_chart_scope_uses_binding_run_id_not_latest_select(seeded_db, tmp_path):
+def test_resolve_chart_scope_uses_binding_run_id_not_latest_select(db_conn, tmp_path):
     """Pass a deliberately-stale binding (runN) while runN+1 has completed
     AFTER the binding was captured. Resolver must answer from runN's
     chart_targets, NOT runN+1's.
@@ -683,56 +691,62 @@ def test_resolve_chart_scope_uses_binding_run_id_not_latest_select(seeded_db, tm
     runN+1's chart_targets include MSFT only. We pass binding=runN, query
     for AAPL → expect None (in-scope). Pre-fix would re-SELECT, find
     runN+1 (latest), and AAPL would be 'out-of-scope' there.
+    Fixture: `db_conn` (existing in tests/web/test_chart_scope.py) yields
+    `(cfg, conn)`. NOT `seeded_db` (which yields cfg, cfg_path).
     """
-    with seeded_db as conn:
-        # Seed runN with AAPL.
-        conn.execute(
-            """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
-                                           data_asof_date, action_session_date,
-                                           charts_status, evaluation_run_id)
-               VALUES (100, '2026-04-01T09:00:00', '2026-04-01T09:30:00',
-                       'complete', '2026-04-01', '2026-04-02', 'ok', NULL)""",
-        )
-        conn.execute(
-            """INSERT INTO pipeline_chart_targets (pipeline_run_id, ticker, source, chart_status)
-               VALUES (100, 'AAPL', 'aplus', 'ok')""",
-        )
-        # Seed runN+1 with MSFT (newer, would win a re-SELECT).
-        conn.execute(
-            """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
-                                           data_asof_date, action_session_date,
-                                           charts_status, evaluation_run_id)
-               VALUES (101, '2026-04-02T09:00:00', '2026-04-02T09:30:00',
-                       'complete', '2026-04-02', '2026-04-03', 'ok', NULL)""",
-        )
-        conn.execute(
-            """INSERT INTO pipeline_chart_targets (pipeline_run_id, ticker, source, chart_status)
-               VALUES (101, 'MSFT', 'aplus', 'ok')""",
-        )
-        conn.commit()
-        # Place PNGs on disk for runN's date.
-        charts_dir = tmp_path / "charts"
-        (charts_dir / "2026-04-01").mkdir(parents=True)
-        (charts_dir / "2026-04-01" / "AAPL.png").write_bytes(b"png-stub")
-        # Pin to runN (the older run).
-        binding = PipelineRunBinding(
-            run_id=100, finished_ts="2026-04-01T09:30:00",
-            data_asof_date="2026-04-01", charts_status="ok",
-            evaluation_run_id=None,
-        )
-        # AAPL is in-scope ONLY for runN. Pre-fix resolver re-reads
-        # pipeline_runs, picks runN+1, finds no AAPL row, returns
-        # 'out-of-scope'. Post-fix resolver uses binding.run_id=100 and
-        # finds AAPL.
-        reason, message = resolve_chart_scope(
-            conn, binding=binding, ticker="AAPL",
-            charts_dir=charts_dir, chart_top_n_watch=10,
-        )
-        assert reason is None, (
-            f"binding-stale resolver returned {reason!r} ({message!r}); "
-            "regression: resolver re-read pipeline_runs and bound to runN+1 "
-            "instead of honoring the passed binding"
-        )
+    cfg, conn = db_conn
+    # Seed runN with AAPL.
+    conn.execute(
+        """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
+                                       data_asof_date, action_session_date,
+                                       charts_status, evaluation_run_id,
+                                       trigger, lease_token)
+           VALUES (100, '2026-04-01T09:00:00', '2026-04-01T09:30:00',
+                   'complete', '2026-04-01', '2026-04-02', 'ok', NULL,
+                   'manual', 'tok-100')""",
+    )
+    conn.execute(
+        """INSERT INTO pipeline_chart_targets (pipeline_run_id, ticker, source, chart_status)
+           VALUES (100, 'AAPL', 'aplus', 'ok')""",
+    )
+    # Seed runN+1 with MSFT (newer, would win a re-SELECT).
+    conn.execute(
+        """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
+                                       data_asof_date, action_session_date,
+                                       charts_status, evaluation_run_id,
+                                       trigger, lease_token)
+           VALUES (101, '2026-04-02T09:00:00', '2026-04-02T09:30:00',
+                   'complete', '2026-04-02', '2026-04-03', 'ok', NULL,
+                   'manual', 'tok-101')""",
+    )
+    conn.execute(
+        """INSERT INTO pipeline_chart_targets (pipeline_run_id, ticker, source, chart_status)
+           VALUES (101, 'MSFT', 'aplus', 'ok')""",
+    )
+    conn.commit()
+    # Place PNGs on disk for runN's date.
+    charts_dir = tmp_path / "charts"
+    (charts_dir / "2026-04-01").mkdir(parents=True)
+    (charts_dir / "2026-04-01" / "AAPL.png").write_bytes(b"png-stub")
+    # Pin to runN (the older run).
+    binding = PipelineRunBinding(
+        run_id=100, finished_ts="2026-04-01T09:30:00",
+        data_asof_date="2026-04-01", charts_status="ok",
+        evaluation_run_id=None,
+    )
+    # AAPL is in-scope ONLY for runN. Pre-fix resolver re-reads
+    # pipeline_runs, picks runN+1, finds no AAPL row, returns
+    # 'out-of-scope'. Post-fix resolver uses binding.run_id=100 and
+    # finds AAPL.
+    reason, message = resolve_chart_scope(
+        conn, binding=binding, ticker="AAPL",
+        charts_dir=charts_dir, chart_top_n_watch=10,
+    )
+    assert reason is None, (
+        f"binding-stale resolver returned {reason!r} ({message!r}); "
+        "regression: resolver re-read pipeline_runs and bound to runN+1 "
+        "instead of honoring the passed binding"
+    )
 
 
 def test_resolve_chart_scope_requires_binding_kwarg():
@@ -911,59 +925,69 @@ Add a new test asserting the binding pinning:
 ```python
 # tests/web/test_routes/test_charts_route.py — append
 
-def test_charts_redirect_uses_binding_data_asof_not_re_read(
-    seeded_db, charts_dir, app_client, monkeypatch,
-):
+def test_charts_redirect_uses_binding_data_asof_not_re_read(seeded_db, monkeypatch):
     """Charts route uses binding's data_asof_date for the redirect URL,
     NOT a re-read of pipeline_runs.
+
+    Fixture pattern matches existing tests in this file (`seeded_db` yields
+    `(cfg, cfg_path)`; tests construct their own conn + TestClient).
 
     Setup: seed two completed runs with different data_asof_date values
     AND different chart_targets (runN has AAPL, runN+1 has MSFT only).
     Place a PNG on disk for runN's date. Monkeypatch
-    `latest_completed_pipeline_run` to return runN's binding (simulating
-    request-entry pinning).
+    `swing.web.routes.charts.latest_completed_pipeline_run` to return
+    runN's binding (simulating request-entry pinning, regardless of what's
+    in the DB).
 
     Discriminating verification: pre-fix the route SELECTs data_asof_date
-    independently → wins runN+1's date AAPL.png does not exist there → 404.
+    independently → wins runN+1's date → AAPL.png does not exist there → 404.
     Post-fix the route uses binding.data_asof_date (runN's) → 303 redirect
-    to /charts/<runN-date>/AAPL.png. The test asserts the 303 redirect
+    to /charts/2026-04-01/AAPL.png. The test asserts the 303 redirect
     target's date matches runN's, NOT runN+1's.
     """
+    from fastapi.testclient import TestClient
+    from swing.data.db import connect
+    from swing.web.app import create_app
     from swing.web.chart_scope import PipelineRunBinding
 
-    # Seed runN (older, with AAPL).
-    with seeded_db as conn:
-        conn.execute("DELETE FROM pipeline_runs")
-        conn.execute("DELETE FROM pipeline_chart_targets")
-        conn.execute(
-            """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
-                                           data_asof_date, action_session_date,
-                                           charts_status, evaluation_run_id)
-               VALUES (200, '2026-04-01T09:00:00', '2026-04-01T09:30:00',
-                       'complete', '2026-04-01', '2026-04-02', 'ok', NULL)""",
-        )
-        conn.execute(
-            """INSERT INTO pipeline_chart_targets
-               (pipeline_run_id, ticker, source, chart_status)
-               VALUES (200, 'AAPL', 'aplus', 'ok')""",
-        )
-        # Seed runN+1 (newer; would win a re-SELECT).
-        conn.execute(
-            """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
-                                           data_asof_date, action_session_date,
-                                           charts_status, evaluation_run_id)
-               VALUES (201, '2026-04-02T09:00:00', '2026-04-02T09:30:00',
-                       'complete', '2026-04-02', '2026-04-03', 'ok', NULL)""",
-        )
-        conn.execute(
-            """INSERT INTO pipeline_chart_targets
-               (pipeline_run_id, ticker, source, chart_status)
-               VALUES (201, 'MSFT', 'aplus', 'ok')""",
-        )
-        conn.commit()
-    # Place PNG on disk for runN's date only.
-    (charts_dir / "2026-04-01").mkdir(parents=True, exist_ok=True)
-    (charts_dir / "2026-04-01" / "AAPL.png").write_bytes(b"png-stub")
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            # Seed runN (older, with AAPL chart_target).
+            conn.execute(
+                """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
+                                               data_asof_date, action_session_date,
+                                               charts_status, evaluation_run_id,
+                                               trigger, lease_token)
+                   VALUES (200, '2026-04-01T09:00:00', '2026-04-01T09:30:00',
+                           'complete', '2026-04-01', '2026-04-02', 'ok', NULL,
+                           'manual', 'tok-200')""",
+            )
+            conn.execute(
+                """INSERT INTO pipeline_chart_targets
+                   (pipeline_run_id, ticker, source, chart_status)
+                   VALUES (200, 'AAPL', 'aplus', 'ok')""",
+            )
+            # Seed runN+1 (newer; would win a re-SELECT) — has MSFT only.
+            conn.execute(
+                """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
+                                               data_asof_date, action_session_date,
+                                               charts_status, evaluation_run_id,
+                                               trigger, lease_token)
+                   VALUES (201, '2026-04-02T09:00:00', '2026-04-02T09:30:00',
+                           'complete', '2026-04-02', '2026-04-03', 'ok', NULL,
+                           'manual', 'tok-201')""",
+            )
+            conn.execute(
+                """INSERT INTO pipeline_chart_targets
+                   (pipeline_run_id, ticker, source, chart_status)
+                   VALUES (201, 'MSFT', 'aplus', 'ok')""",
+            )
+    finally:
+        conn.close()
+    # Place PNG on disk for runN's date only (NOT runN+1's).
+    _write_chart(cfg.paths.charts_dir, date="2026-04-01", ticker="AAPL")
 
     # Monkeypatch the helper to return runN's binding deterministically.
     runN_binding = PipelineRunBinding(
@@ -973,21 +997,20 @@ def test_charts_redirect_uses_binding_data_asof_not_re_read(
     )
     monkeypatch.setattr(
         "swing.web.routes.charts.latest_completed_pipeline_run",
-        lambda conn: runN_binding,
+        lambda _conn: runN_binding,
     )
 
-    response = app_client.get("/charts/AAPL.png", follow_redirects=False)
-    assert response.status_code == 303, (
-        f"expected 303 redirect; got {response.status_code} body={response.text[:200]}"
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/charts/AAPL.png", follow_redirects=False)
+    assert r.status_code == 303, (
+        f"expected 303 redirect; got {r.status_code} body={r.text[:200]!r}"
     )
-    location = response.headers["location"]
-    assert location == "/charts/2026-04-01/AAPL.png", (
-        f"expected runN's date in redirect; got {location!r}; "
+    assert r.headers["location"] == "/charts/2026-04-01/AAPL.png", (
+        f"expected runN's date in redirect; got {r.headers.get('location')!r}; "
         "regression: route re-read pipeline_runs and used runN+1's date"
     )
 ```
-
-(The exact fixture names `seeded_db`/`charts_dir`/`app_client` depend on `tests/web/conftest.py`; the implementer MUST verify each fixture exists or substitute the project's actual equivalents at execution time. The body above is concrete enough to fail informatively if fixtures are missing.)
 
 Commit:
 
