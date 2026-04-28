@@ -1443,14 +1443,27 @@ from swing.web.view_models.dashboard import _tag_aware_sort_key
 
 def _wl(ticker: str, *, entry_target: float | None = 100.0,
         last_close: float | None = 99.0) -> WatchlistEntry:
-    """Helper to build minimal WatchlistEntry for sort tests."""
-    # Construct with the dataclass defaults at execution time; verify
-    # field count matches via dataclasses.fields.
+    """Helper to build minimal WatchlistEntry for sort tests.
+
+    All 16 WatchlistEntry fields populated explicitly per
+    swing/data/models.py:115-130. Adjust if the model gains fields.
+    """
     return WatchlistEntry(
-        ticker=ticker, entry_target=entry_target,
-        initial_stop_target=None, last_close=last_close,
-        # ... other required fields with safe defaults; see existing pattern in
-        # tests/web/test_view_models/test_dashboard_sort.py
+        ticker=ticker,
+        added_date="2026-04-15",
+        last_qualified_date="2026-04-17",
+        status="watch",
+        qualification_count=1,
+        not_qualified_streak=0,
+        last_data_asof_date="2026-04-17",
+        entry_target=entry_target,
+        initial_stop_target=None,
+        last_close=last_close,
+        last_pivot=None,
+        last_stop=None,
+        last_adr_pct=None,
+        missing_criteria=None,
+        notes=None,
     )
 
 
@@ -1986,7 +1999,7 @@ git commit -m "feat(pipeline): Task 5 — _step_charts 3-tier policy + canonical
 
 **Files:**
 - Modify: `swing/rendering/charts.py` (or whichever module hosts `render_chart` — verify path at execution time)
-- Modify: `tests/rendering/test_chart_overlay.py` (or equivalent — verify path at execution time)
+- Create: `tests/rendering/test_render_chart_stop_omission.py` (new file — distinct from existing `tests/rendering/test_chart_overlay.py` which covers Phase 6 overlay rendering; the stop-omission concern is a separate test surface)
 
 - [ ] **Step 1: Write failing tests**
 
@@ -2192,11 +2205,13 @@ Expected: new tests pass; existing chart-rendering tests pass.
 
 - [ ] **Step 5: Manual visual verification (per Phase 6 lesson)**
 
-Generate two PNGs manually and `Read` them:
+Generate two PNGs manually into a workspace-relative scratch directory (project is on Windows; `/tmp` is gitbash-pseudo-path, but using a workspace-relative path avoids ambiguity across shells):
 
 ```bash
+mkdir -p .tmp-stopomission-verify
 python -c "
 import pandas as pd
+from pathlib import Path
 from swing.rendering.charts import render_chart
 
 idx = pd.date_range('2026-01-01', periods=80, freq='B')
@@ -2204,16 +2219,17 @@ df = pd.DataFrame(
     {'Open': 100.0, 'High': 102.0, 'Low': 99.0, 'Close': 101.0, 'Volume': 1_000_000.0},
     index=idx,
 )
+out_dir = Path('.tmp-stopomission-verify')
 render_chart(ticker='AAPL', ohlcv=df, pivot=110.0, stop=0.0,
-             output_path='/tmp/aapl-stopzero.png', pattern_overlay=None)
+             output_path=out_dir / 'aapl-stopzero.png', pattern_overlay=None)
 render_chart(ticker='AAPL', ohlcv=df, pivot=110.0, stop=95.0,
-             output_path='/tmp/aapl-stoppositive.png', pattern_overlay=None)
+             output_path=out_dir / 'aapl-stoppositive.png', pattern_overlay=None)
 "
 ```
 
 Then `Read` both PNGs and confirm:
-- `/tmp/aapl-stopzero.png`: no second hline; title shows "AAPL  pivot 110.00" (no `stop` segment).
-- `/tmp/aapl-stoppositive.png`: two hlines; title shows "AAPL  pivot 110.00  stop 95.00".
+- `.tmp-stopomission-verify/aapl-stopzero.png`: no second hline; title shows "AAPL  pivot 110.00" (no `stop` segment).
+- `.tmp-stopomission-verify/aapl-stoppositive.png`: two hlines; title shows "AAPL  pivot 110.00  stop 95.00".
 
 Confirm visual evidence in the commit body. Per CLAUDE.md mathtext gotcha, also confirm the title has no `$`, `^`, `_`, or unbalanced `\` glyphs — the post-fix format string MUST NOT introduce mathtext metacharacters as a side effect of the omission.
 
