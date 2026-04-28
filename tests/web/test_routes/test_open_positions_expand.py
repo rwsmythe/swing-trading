@@ -398,6 +398,126 @@ def test_open_positions_row_action_buttons_stop_propagation(seeded_db, monkeypat
     )
 
 
+def test_build_open_positions_expanded_uses_binding_not_re_read(
+    seeded_db, monkeypatch,
+):
+    """build_open_positions_expanded uses binding.data_asof_date for the VM
+    output, NOT a re-read of pipeline_runs. Mirrors the charts-route test
+    pattern.
+
+    Setup: seed two completed runs with different data_asof_date values.
+    Seed an open trade for a ticker that is in runN's chart_targets but NOT
+    in runN+1's. Monkeypatch
+    `swing.web.view_models.open_positions_row.latest_completed_pipeline_run`
+    to return runN's binding.
+
+    Discriminating verification: pre-fix code did its own SELECT on
+    pipeline_runs (returns runN+1's data_asof_date) AND the resolver re-read
+    (returns runN+1's chart_targets, where AAPL is NOT present → 'out-of-scope').
+    Post-fix the binding pins both reads to runN: data_asof matches runN's
+    AND chart_reason is None.
+    """
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+    from swing.web.chart_scope import PipelineRunBinding
+    from swing.web.view_models.open_positions_row import (
+        build_open_positions_expanded,
+    )
+
+    cfg, _cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            # Eval runs first (FK-backed path requires evaluation_run_id to be
+            # non-NULL on each pipeline_run).
+            conn.execute(
+                """INSERT INTO evaluation_runs (id, run_ts, data_asof_date,
+                                                 action_session_date, finviz_csv_path,
+                                                 tickers_evaluated, aplus_count,
+                                                 watch_count, skip_count, excluded_count,
+                                                 error_count, rs_universe_version,
+                                                 rs_universe_hash)
+                   VALUES (350, '2026-04-01T09:00:00', '2026-04-01', '2026-04-02', NULL,
+                           1, 1, 0, 0, 0, 0, 'v1', 'deadbeef')""",
+            )
+            conn.execute(
+                """INSERT INTO evaluation_runs (id, run_ts, data_asof_date,
+                                                 action_session_date, finviz_csv_path,
+                                                 tickers_evaluated, aplus_count,
+                                                 watch_count, skip_count, excluded_count,
+                                                 error_count, rs_universe_version,
+                                                 rs_universe_hash)
+                   VALUES (351, '2026-04-02T09:00:00', '2026-04-02', '2026-04-03', NULL,
+                           1, 1, 0, 0, 0, 0, 'v1', 'deadbeef')""",
+            )
+            # Two runs, different dates; AAPL in-scope ONLY for runN — eval id 350.
+            conn.execute(
+                """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
+                                               data_asof_date, action_session_date,
+                                               charts_status, evaluation_run_id,
+                                               trigger, lease_token)
+                   VALUES (300, '2026-04-01T09:00:00', '2026-04-01T09:30:00',
+                           'complete', '2026-04-01', '2026-04-02', 'ok', 350,
+                           'manual', 'tok-300')""",
+            )
+            conn.execute(
+                """INSERT INTO pipeline_chart_targets
+                   (pipeline_run_id, ticker, source, chart_status)
+                   VALUES (300, 'AAPL', 'open_position', 'ok')""",
+            )
+            conn.execute(
+                """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
+                                               data_asof_date, action_session_date,
+                                               charts_status, evaluation_run_id,
+                                               trigger, lease_token)
+                   VALUES (301, '2026-04-02T09:00:00', '2026-04-02T09:30:00',
+                           'complete', '2026-04-02', '2026-04-03', 'ok', 351,
+                           'manual', 'tok-301')""",
+            )
+            # Open AAPL trade. Trade dataclass fields per swing/data/models.py;
+            # `notes` and `hypothesis_label` default-None acceptable.
+            trade = Trade(
+                id=None, ticker="AAPL", entry_date="2026-04-01",
+                entry_price=100.0, initial_shares=10, initial_stop=95.0,
+                current_stop=95.0, status="open",
+                watchlist_entry_target=100.0,
+                watchlist_initial_stop=95.0,
+                notes=None,
+                hypothesis_label=None,
+            )
+            trade_id = insert_trade_with_event(
+                conn, trade, event_ts="2026-04-01T09:35:00",
+            )
+        # Place PNG on disk for runN's date.
+        (cfg.paths.charts_dir / "2026-04-01").mkdir(parents=True, exist_ok=True)
+        (cfg.paths.charts_dir / "2026-04-01" / "AAPL.png").write_bytes(b"png-stub")
+
+        runN_binding = PipelineRunBinding(
+            run_id=300, finished_ts="2026-04-01T09:30:00",
+            data_asof_date="2026-04-01", charts_status="ok",
+            evaluation_run_id=350,
+        )
+        monkeypatch.setattr(
+            "swing.web.view_models.open_positions_row.latest_completed_pipeline_run",
+            lambda _conn: runN_binding,
+        )
+
+        vm = build_open_positions_expanded(conn=conn, cfg=cfg, trade_id=trade_id)
+    finally:
+        conn.close()
+
+    assert vm is not None
+    assert vm.data_asof_date == "2026-04-01", (
+        f"expected runN's data_asof; got {vm.data_asof_date!r}; "
+        "regression: builder did its own SELECT on pipeline_runs"
+    )
+    assert vm.chart_reason is None, (
+        f"expected chart-available (binding=runN, AAPL in runN's targets); "
+        f"got reason={vm.chart_reason!r} message={vm.chart_reason_message!r}; "
+        "regression: resolver re-read pipeline_runs and bound to runN+1"
+    )
+
+
 def test_expanded_partial_colspan_matches_row(seeded_db, monkeypatch):
     """The expanded <tr>'s <td colspan=N> must match the compact row's
     actual <td> count. A mismatch breaks the table layout (cells overflow
