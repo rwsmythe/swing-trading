@@ -2285,27 +2285,40 @@ def _slow_fetcher_stub(sleep_seconds: float):
     return SlowFetcher()
 
 
+def _patch_monotonic(monkeypatch, seq: list[float]) -> None:
+    """Patch `swing.pipeline.runner.time.monotonic` to return the next value
+    from `seq` on each call. Requires the production code to use a
+    MODULE-LEVEL `import time` (NOT function-local) so the attribute lookup
+    `swing.pipeline.runner.time` resolves to a patchable object.
+
+    Sentinel-iterator pattern: each call advances. Tests use [start, end]
+    pairs so first call = entry timestamp, second call = exit timestamp.
+    """
+    it = iter(seq)
+    monkeypatch.setattr(
+        "swing.pipeline.runner.time.monotonic", lambda: next(it),
+    )
+
+
 def test_step_charts_logs_warning_when_walltime_above_soft_budget(
-    pipeline_test_context, caplog,
+    pipeline_test_context, caplog, monkeypatch,
 ):
     """Wall time > 60s → WARNING log line emitted.
 
-    Discriminating verification: the test seeds `time.monotonic` (via
-    monkeypatch) so the elapsed measurement returns 65.0s without the
-    test waiting 65 real seconds. Caplog captures the WARNING record.
-    Substring 'soft budget' in the log message catches the WARN-vs-ERROR
-    discriminator (ERROR uses 'hard budget'); also asserts the actual
-    measured value appears in the message body.
+    Discriminating verification: the test patches `time.monotonic` (via the
+    `_patch_monotonic` helper above) so the elapsed measurement returns
+    65.0s without the test waiting 65 real seconds. Caplog captures the
+    WARNING record. Substring 'soft budget' in the log message catches the
+    WARN-vs-ERROR discriminator (ERROR uses 'hard budget'); also asserts
+    the actual measured value appears in the message body.
 
     Per Phase 3 lesson: the assertion is exact-string on the log line
     template, not just substring 'errors' on the message. Format:
     `chart-step wall-time exceeded soft budget: <actual>s > 60s; scope=<count> tickers; consider reducing chart_top_n_watch`.
     """
     ctx = pipeline_test_context
-    # Monkeypatch time.monotonic to advance by exactly 65s between
-    # _step_charts entry and exit.
-    times = iter([0.0, 65.0])  # entry, exit
-    monkeypatch_monotonic(times)
+    # entry timestamp = 0.0; exit timestamp = 65.0 → elapsed = 65.0s.
+    _patch_monotonic(monkeypatch, [0.0, 65.0])
     caplog.set_level(logging.WARNING)
     from swing.pipeline.runner import _step_charts
     _step_charts(cfg=ctx.cfg, lease=ctx.lease, eval_run_id=ctx.eval_run_id,
@@ -2322,7 +2335,7 @@ def test_step_charts_logs_warning_when_walltime_above_soft_budget(
 
 
 def test_step_charts_logs_error_when_walltime_above_hard_budget(
-    pipeline_test_context, caplog,
+    pipeline_test_context, caplog, monkeypatch,
 ):
     """Wall time > 120s → ERROR log line emitted (NOT just WARNING).
 
@@ -2333,8 +2346,7 @@ def test_step_charts_logs_error_when_walltime_above_hard_budget(
     emits only ERROR for >120s.
     """
     ctx = pipeline_test_context
-    times = iter([0.0, 130.0])
-    monkeypatch_monotonic(times)
+    _patch_monotonic(monkeypatch, [0.0, 130.0])
     caplog.set_level(logging.WARNING)
     from swing.pipeline.runner import _step_charts
     _step_charts(cfg=ctx.cfg, lease=ctx.lease, eval_run_id=ctx.eval_run_id,
@@ -2353,7 +2365,7 @@ def test_step_charts_logs_error_when_walltime_above_hard_budget(
 
 
 def test_step_charts_no_log_when_walltime_under_soft_budget(
-    pipeline_test_context, caplog,
+    pipeline_test_context, caplog, monkeypatch,
 ):
     """Wall time < 60s → no chart-step wall-time log emitted (verified-
     empirically pin per Phase 1 lesson).
@@ -2362,8 +2374,7 @@ def test_step_charts_no_log_when_walltime_under_soft_budget(
     always logs (even on healthy runs), spamming pipeline-run logs.
     """
     ctx = pipeline_test_context
-    times = iter([0.0, 30.0])
-    monkeypatch_monotonic(times)
+    _patch_monotonic(monkeypatch, [0.0, 30.0])
     caplog.set_level(logging.WARNING)
     from swing.pipeline.runner import _step_charts
     _step_charts(cfg=ctx.cfg, lease=ctx.lease, eval_run_id=ctx.eval_run_id,
@@ -2377,7 +2388,7 @@ def test_step_charts_no_log_when_walltime_under_soft_budget(
 
 
 def test_step_charts_pipeline_runs_charts_status_unchanged_on_overrun(
-    pipeline_test_context, caplog,
+    pipeline_test_context, caplog, monkeypatch,
 ):
     """`pipeline_runs.charts_status` remains 'ok' regardless of wall-time
     overrun (spec §A "Behavior on threshold exceed: pipeline continues normally").
@@ -2387,8 +2398,7 @@ def test_step_charts_pipeline_runs_charts_status_unchanged_on_overrun(
     keeps 'ok' — overrun is a soft monitoring signal, not a step failure.
     """
     ctx = pipeline_test_context
-    times = iter([0.0, 130.0])
-    monkeypatch_monotonic(times)
+    _patch_monotonic(monkeypatch, [0.0, 130.0])
     caplog.set_level(logging.WARNING)
     from swing.pipeline.runner import _step_charts
     _step_charts(cfg=ctx.cfg, lease=ctx.lease, eval_run_id=ctx.eval_run_id,
@@ -2416,17 +2426,22 @@ Expected: 4 tests fail — pre-fix code emits NO timer log; tests asserting on t
 
 - [ ] **Step 3: Implement the timer**
 
-In `swing/pipeline/runner.py:_step_charts`, add at the top of the function (immediately after `lease.verify_held()`):
+(a) Ensure `swing/pipeline/runner.py` has a MODULE-LEVEL `import time` at the top of the file (NOT a function-local import). Tests patch `swing.pipeline.runner.time.monotonic` via `monkeypatch.setattr` — this only works if the `time` module is bound as an attribute of the `runner` module. A function-local `import time as _time_module` would create a local-scope binding that monkeypatch CANNOT reach. If the module already imports `time` at file level, no change is needed; otherwise add it alongside the other top-of-file imports.
+
+(b) In `_step_charts`, add at the top of the function (immediately after `lease.verify_held()`):
 
 ```python
-    import time as _time_module  # local-import to keep file imports tidy
-    _walltime_start = _time_module.monotonic()
+    _walltime_start = time.monotonic()
 ```
 
-At the end of `_step_charts` (immediately before `return {t: promote.target_path / f"{t}.png" for t in out_paths}`), add:
+(c) Per spec §A "Timer-boundary specification (Codex R3 Minor 2)" — the timer ends after the LAST `lease.fenced_write` for chart_status updates. The per-ticker for-loop ends with the in-loop `with lease.fenced_write() as conn:` block; AFTER the loop and BEFORE `promote_staging`, place:
 
 ```python
-    _walltime_elapsed = _time_module.monotonic() - _walltime_start
+    # Spec §A "Timer-boundary specification": timer ends after the last
+    # per-ticker fenced_write for chart_status. promote_staging runs
+    # OUTSIDE the timer because it's a separate concern (artifact-promote,
+    # not chart-step measured work). Codex R3 Minor 2.
+    _walltime_elapsed = time.monotonic() - _walltime_start
     _scope_count = len(targets)
     if _walltime_elapsed > 120.0:
         log.error(
@@ -2441,7 +2456,9 @@ At the end of `_step_charts` (immediately before `return {t: promote.target_path
         )
 ```
 
-The boundary spec (per Codex R3 Minor 2) covers tier composition + iteration + per-ticker fetch/classify/render/persist + final promote_staging — all of which happen between `lease.verify_held()` and `return`.
+The existing `flag_classifier` summary log (currently logged before `promote_staging`) stays where it is — the wall-time log is a SEPARATE log line.
+
+The boundary covers: tier composition + per-tier `pending` insert + staging-dir creation + per-ticker fetch/classify/render/persist + the final per-ticker `update_chart_target_status` fenced write. It excludes `promote_staging`, which is artifact-management work (atomic rename of staging → canonical), not chart-step work the operator can tune via `chart_top_n_watch`.
 
 - [ ] **Step 4: Run tests to see GREEN**
 
@@ -2465,8 +2482,9 @@ git commit -m "feat(pipeline): Task 7 — chart-step wall-time monitoring + log-
 - Healthy runs (<60s) emit no timer log.
 
 **Adversarial-review watch items:**
-- **`monkeypatch_monotonic` helper** referenced in test bodies must exist OR be added by the implementer. Use `monkeypatch.setattr('swing.pipeline.runner._time_module.monotonic', lambda: next(times))` pattern. Confirm at execution time that the import path matches the local-import name used in production code.
+- **`_patch_monotonic` helper is defined inline in the test file** (Step 1) and patches `swing.pipeline.runner.time.monotonic`. Reviewer must confirm production code uses MODULE-LEVEL `import time`, NOT a function-local import — otherwise the patch target doesn't exist as an attribute of the `runner` module and the patch silently no-ops.
 - **WARN/ERROR mutual exclusion** is the discriminator for the second test. Implementer's `if/elif` structure ensures this; reviewer must confirm no `if/if` (which would emit BOTH).
+- **Timer boundary excludes `promote_staging`** per spec §A "Timer-boundary specification (Codex R3 Minor 2)." Reviewer must confirm the elapsed-end timestamp is taken AFTER the per-ticker for-loop and BEFORE the `promote_staging` call. A regression that places the timer-end after `promote_staging` would over-attribute artifact-promote latency to chart-step work.
 - **Per Phase 6 lesson "monkeypatch-capture failures":** verify the caplog records actually contain the WARNING — print `[r.message for r in caplog.records]` if the test fails. Substring-only assertions ("errors") would be vacuous; the tests use exact-substring on `'soft budget'` and the measured-value appearance.
 - **Per Phase 3 lesson "discriminating-test discipline applies to log-line format":** the assertion includes BOTH the severity-discriminator string ('soft budget' vs 'hard budget') AND the measured-value substring. A regression that swaps severities OR drops the measured value fails the test.
 - **Codex may flag the `slow` benchmark test (mentioned in spec §A) as missing.** Spec §A: "A separate benchmark-only test (skipped in `-m 'not slow'` fast suite; runs on demand via `-m slow` or a dedicated benchmark CI job)." This plan's scope is the deterministic log-capture mechanism (the actual regression-detection surface). The `-m slow` benchmark test is a follow-up; document in plan's "Open follow-ups" section below.
