@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-27
 **Author:** Reid Smythe (operator) + orchestrator
-**Status:** DRAFT — pending operator review + adversarial Codex review
+**Status:** Approved by adversarial Codex review (4 rounds → NO_NEW_CRITICAL_MAJOR); pending operator final approval + writing-plans dispatch. Codex-resolved findings tagged inline (R1 Major 1-6 + Minor 1-5; R2 Major 1-3 + Minor 1-2; R3 Major 1-2 + Minor 1-2; R4 Minor 1-2). All majors addressed via spec edits; minors either resolved or accepted-with-rationale per V1 scope discipline.
 **Skill posture:** Output of `copowers:brainstorming` (wraps `superpowers:brainstorming` with adversarial Codex review). Next phase: `copowers:writing-plans` to translate this spec into a per-task implementation plan.
 
 ---
@@ -53,14 +53,26 @@ Three tiers compose the chart-scope set per pipeline run, with deduplication pre
 | Precedence | Tier | Source value | Selection |
 |---|---|---|---|
 | 1 (highest) | A+ candidates | `'aplus'` | All candidates with `bucket = 'aplus'` from the run's evaluation. Unchanged from current behavior. |
-| 2 | Open positions | `'open_position'` | All currently-open trades from `list_open_trades(conn)`. **NEW** — replaces today's "open positions are never charted" gap. |
-| 3 | Tag-aware watchlist top-N | `'tag_aware_top_n'` | Top-N from `list_active_watchlist(conn)` ranked by Phase 4 4-key composite. N = `cfg.pipeline.chart_top_n_watch`, default raised 5 → 10. Replaces today's `'near_proximity'` selection. |
+| 2 | Open positions | `'open_position'` | All currently-open trades from `list_open_trades(conn)`. **NEW** — replaces today's "open positions are never charted" gap. **Batch-scope note:** charts are generated during the scheduled pipeline run; a position opened AFTER the latest completed run will remain unchartable until the next pipeline run. On-demand chart generation is out-of-scope per §F. |
+| 3 | Tag-aware watchlist top-N | `'tag_aware_top_n'` | Top-N from `list_active_watchlist(conn)` ranked by Phase 4 4-key composite. N = `cfg.pipeline.chart_top_n_watch`, default raised 5 → 10. Replaces today's `'near_proximity'` selection. **Data-eligible scope note:** alignment to the dashboard's tag-aware ordering is defined over data-eligible watchlist rows only (entries with both `entry_target` and `last_close` populated). |
 
 ### Deduplication
 
 A ticker that appears in multiple tiers is recorded ONCE in `pipeline_chart_targets` under the highest-precedence source value. Implementation: linear pass through tiers in precedence order with a `seen: set[str]`, mirroring the existing dedup pattern in `_step_charts:568-582`.
 
+**Ticker canonicalization before dedup** (Codex R1 Minor 3): all tickers normalized to upper-case before being added to `seen`. Watchlist + candidates + trades all currently emit upper-case tickers in production, so this is defensive — but mismatched casing across tiers would silently produce duplicate `pipeline_chart_targets` rows under different sources, breaking the UNIQUE `(pipeline_run_id, ticker)` constraint. Normalize at tier-source extraction.
+
 Edge case: ticker in all three tiers → recorded as `'aplus'`. In practice, A+ ∩ open_position is rare (A+ implies fresh near-pivot setup; held positions have moved past pivot). The dedup precedence rule covers the rare overlap defensively.
+
+### Open-position tier snapshot semantics (Codex R1 Major 2)
+
+The `open_position` tier is sourced from `list_open_trades(conn)` at the moment `_step_charts` executes (mid-pipeline, after `_step_evaluate`). The resulting set is a **snapshot** taken during run N's chart step and persisted to `pipeline_chart_targets` immutably. Subsequent runs re-snapshot independently.
+
+Implication: chart-scope is "as-of pipeline run N" by virtue of the snapshot being persisted at run N. The web layer's `resolve_chart_scope` reads `pipeline_chart_targets` rows for the binding's `run_id` — those rows reflect run N's snapshot. **There is NO race between web-layer "binding" and "currently open trades"** — the binding indirects through the persisted snapshot, not through a live trades query.
+
+Edge case: a trade opened AFTER run N's chart step started but BEFORE run N completes — included in run N's open_position tier. A trade opened AFTER run N completes — not in run N's snapshot; appears in run N+1's snapshot. Acceptable (snapshot semantics; operator entering trade between runs sees chart access via `/charts/<ticker>.png` after next run completes).
+
+Edge case: a trade closed BETWEEN run N and the operator's web request that hits run N's binding — chart still appears (run N's snapshot included it; rows immutable). Operator may see a chart for a now-closed trade until next pipeline run completes. Consistent with binding's "pinned to run N" semantics; not a defect.
 
 ### Tag-aware composite definition
 
@@ -71,9 +83,11 @@ Mirrors the Phase 4 watchlist sort exactly (per `swing/web/view_models/watchlist
 3. **Proximity to pivot ASC** — `abs((last_close - entry_target) / entry_target)`.
 4. **Ticker ASC** — deterministic tiebreaker.
 
-Filter: only watchlist entries with both `entry_target` AND `last_close` populated (matches existing filter in `_step_charts:559-562`). Ticker selected if rank ≤ N AND not already covered by a higher-precedence tier (post-dedup).
+Filter: only watchlist entries with both `entry_target` AND `last_close` populated (matches existing filter in `_step_charts:559-562`). Ticker selected if rank ≤ N AND not already covered by a higher-precedence tier (post-dedup). **Note:** the watchlist UI surfaces all watchlist rows including data-ineligible ones (via `inf` proximity fallback); the chart-scope alignment claim is bounded to data-eligible rows only. Data-ineligible rows (missing pivot/price) remain without charts by design.
 
 Tag set definition: must MATCH `_sort_watchlist`'s tag derivation byte-for-byte **on the same filtered input set** (entries with both `entry_target` and `last_close` populated). If `_sort_watchlist` applies a wider/narrower filter, the spec's chart-scope sort applies the same `_step_charts:559-562`-style filter first and the byte-identity claim is over the intersection. If `_sort_watchlist` is refactored or tag taxonomy widens (e.g., `flag` tag becoming sort-participating in V2), `_step_charts` must follow to maintain alignment. **Implementation note:** the writing-plans phase should consider extracting a shared `_tag_aware_sort_key(watchlist)` helper to ensure both call sites stay aligned by construction; otherwise document the byte-identity invariant explicitly with a test pin.
+
+**Residual filter-intersection limitation (Codex R1 Major 3 — accepted with rationale):** `_sort_watchlist` (web) sorts the full active watchlist for dashboard display, including rows missing `entry_target` or `last_close`. `_step_charts` (pipeline) filters those rows out because the tag-aware composite sort's proximity tiebreaker requires both fields. **Net effect:** a watchlist row visible on the dashboard top-N but missing `entry_target` or `last_close` will NOT enter chart-scope. The byte-identity claim therefore covers the *intersection* (rows passing the chart-scope filter), not the dashboard's full top-N. **Quantified impact:** in practice, watchlist rows without `entry_target` are tickers without a recommended pivot (typically not actionable); rows without `last_close` are price-cache misses (transient). Both are unusual states; the residual gap is small but real. **Future work:** aligning the two filters (either by widening `_step_charts` to include rows with proximity-undefined fallback OR by narrowing `_sort_watchlist` to only show fully-qualified rows) is a separate dispatch; not in this spec's scope. The writing-plans phase MUST add a test that explicitly demonstrates the intersection limit (e.g., a watchlist with one fully-qualified row + one partially-qualified row, asserting only the qualified row enters chart-scope) so the limitation is documented in code.
 
 ### Pivot/stop sourcing for chart rendering
 
@@ -89,22 +103,78 @@ Rationale for open-position tier: at-pivot entry discipline (per `docs/orchestra
 
 Recommendation-table linkage for open-position pivot was considered and rejected per Q3-confirmed simplicity preference: the 1-cent-or-so difference between `entry_price` and recommendation-time pivot doesn't materially affect the chart's hline position.
 
-### Budget validation
+**Edge cases for open-position pivot/stop sourcing (Codex R1 Minor 5):**
+
+- **Partial exits:** `trades.entry_price` is the original entry price; partial exits do NOT modify it. Chart pivot remains the original entry. Acceptable — the pivot represents the trade thesis's anchor point, not the position's current cost basis.
+- **Position adds (averaged entries):** the project's current trade model does NOT support averaged entries (each entry creates a separate trade row; cf. `swing/trades/entry.py` + the `one_open_trade_per_ticker` constraint from migration 0004). So averaged-entry behavior is N/A in V1. If V2 introduces averaged entries, chart pivot semantics need re-design.
+- **Stop-less trades** (`trades.current_stop IS NULL` or 0): operator-discipline violation; should not occur in production trades. **Render behavior:** OMIT the stop hline entirely (Codex R2 Major 3). Plotting `stop=0.0` would auto-scale the y-axis to include zero, compressing price action and implying false catastrophic downside. The rendering layer accepts a sentinel `stop is None or stop <= 0.0` and renders the chart with NO stop line; the title format also omits the `stop X.XX` segment in this case. Implementation: `render_chart` (or its overlay-aware caller) gains a conditional skip on the stop hline; tests pin this behavior.
+- **Stop adjusted via `trade_events`:** `trades.current_stop` reflects the latest stop after all `trade_events` of `kind='stop_adjust'` have been applied. Chart shows the current value, NOT the initial. Consistent with operator's "what's my current stop?" mental model.
+
+### Budget validation (Codex R1 Major 4 + Major 5)
 
 Per pipeline run:
 
 | Tier | Typical | Maximum |
 |---|---|---|
-| A+ | 0-2 | unbounded (rare to exceed 5 on Finviz pool) |
-| open_position | 0-2 | 6 (hard cap per CLAUDE.md) |
+| A+ | 0-2 | UNBOUNDED by policy (every A+ is operator-actionable; never silently dropped) |
+| open_position | 0-2 | 6 (hard cap per CLAUDE.md `concurrent_cap` config) |
 | tag_aware_top_n | 10 | 10 (config-bounded) |
-| **Total per run** | **~10-13** | **~21** |
+| **Total per run** | **~10-13** | **~21 under typical A+ conditions; potentially higher** |
+
+**A+ tier is intentionally unbounded** (Codex R2 Major 1). A+ classifications are the framework's most-actionable signal; silently dropping them would violate the "operator drives, agent serves" discipline. The "~21 max" estimate is anchored to TYPICAL A+ counts (0-2 per day on the operator's Finviz pool). If a future regime produces sustained A+ spikes (e.g., 20+ per day), the budget is breached: detection happens via the wall-time monitoring logged for each pipeline run (see "Budget overrun behavior" below); a follow-up dispatch can then tune `chart_top_n_watch` down OR introduce A+-tier prioritization.
 
 Current chart-scope: ~5-7 per run. New chart-scope: typical 10-13, max ~21.
 
-yfinance fetch cost: ~10-13 sequential fetches at ~1s each = 10-13s extra latency per pipeline run. Well below the rate-limit threshold (yfinance daily quota is per-key per-day; current usage is well under 1% of quota). Per CLAUDE.md gotchas: rate-limit issues arise from `yf.download(threads=True)` (forbidden) and concurrency on `Ticker.history()` (bounded by app-level executor); sequential-fetch latency is the only observable cost. Acceptable.
+**Per-ticker cost breakdown** (sequential, post-fetch):
 
-Disk space: each PNG is ~50-200 KB. Doubling chart count adds ~5-10 MB per pipeline session. Negligible vs `exports/` retention budget (90 days × 1 run/day × ~10 MB ≈ 900 MB; retention sweep already exists).
+| Component | Per-ticker cost | Source |
+|---|---|---|
+| yfinance `Ticker.history()` fetch | ~1.0s (cached: ~0.1s) | network-bound; rate-limit per `yf.download(threads=True)` gotcha |
+| `classify_flag` on 60-bar slice | ~10ms | CPU-bound; cheap (per Phase 1 measurements in chart-pattern flag-v1 phase notes) |
+| `render_chart` (mplfinance + overlay) | ~150-200ms | CPU+IO-bound; PNG write to staging dir |
+| **Total per ticker** | **~1.2s typical, ~0.3s cached** | |
+
+**Total wall-time budget:**
+
+| Scope size | Cold-fetch wall time | Warm-cache wall time |
+|---|---|---|
+| 5 tickers (current) | ~6s | ~1.5s |
+| 10 tickers (typical post-V2) | ~12s | ~3s |
+| 13 tickers (typical post-V2) | ~16s | ~4s |
+| 21 tickers (max post-V2) | ~25s | ~6s |
+
+**Acceptance threshold (Codex R2 Major 2 — operational response defined):** total chart-step wall time targets are 60s typical / 120s maximum. The estimated max (25s for 21 tickers cold-fetch) is well under. **Behavior on threshold exceed:**
+
+- Wall time > 60s → `_step_charts` emits a WARNING log line: `chart-step wall-time exceeded soft budget: <actual>s > 60s; scope=<count> tickers; consider reducing chart_top_n_watch`. Pipeline continues normally. Monitoring surface for operator (visible in pipeline-run logs).
+- Wall time > 120s → `_step_charts` emits an ERROR log line: `chart-step wall-time exceeded hard budget: <actual>s > 120s; scope=<count> tickers`. Pipeline continues normally (does NOT fail; the work is already done). Operator-actionable signal (visible in pipeline-run logs); implies a tuning dispatch is needed.
+- The existing `pipeline_runs.charts_status` field is unchanged — `'ok'` regardless of wall-time overrun. Time overrun is a soft signal, not a chart-step failure.
+
+**Test instrumentation (Codex R2 Minor 1):** wall-time assertions in unit tests are flaky across machines / network states. The integration test instead asserts on:
+
+- A *log capture* test that `_step_charts` emits the WARNING/ERROR log line when given a synthetic-slow stub of `fetcher.get` that exceeds the threshold (deterministic; no real timing dependency).
+- A separate benchmark-only test (skipped in `-m "not slow"` fast suite; runs on demand via `-m slow` or a dedicated benchmark CI job) that measures real wall time on a representative scope and asserts the typical case is under 60s. This is the actual regression-detection mechanism for performance.
+
+**Timer-boundary specification (Codex R3 Minor 2):** the writing-plans phase MUST specify the exact timer interval. Recommendation: timer starts at `_step_charts` entry (before any DB read for tier composition); timer ends after the last `lease.fenced_write` for chart_status updates. This boundary covers all chart-step work (tier composition + ticker iteration + per-ticker fetch/classify/render/persist) and excludes pipeline-step machinery outside `_step_charts`. The metric is `chart_step_wall_time_seconds`. Document the boundary in the WARNING/ERROR log line text so log readers know what the number represents.
+
+**Sub-phase timing attribution (Codex R4 Minor 1 — informational; deferred):** the end-to-end metric does NOT distinguish whether overrun cost came from tier composition queries, fetch latency, classifier/render work, or fenced writes. If a future tuning effort requires attribution, sub-phase timers (e.g., `tier_composition_ms`, `fetch_total_ms`, `classify_total_ms`, `render_total_ms`, `persist_total_ms`) can be added in a follow-up. Not in V1 scope — the end-to-end signal is sufficient to detect overrun; per-ticker fetch latency dominates the cost (~80% of expected wall-time per the cost breakdown above), so attribution is unlikely to surprise.
+
+The hard wall-time assertion in standard CI is rejected; instrumentation + log capture is the deterministic substitute.
+
+**Future hardening (deferred to post-V1):** if log-driven monitoring proves insufficient, a follow-up dispatch can introduce TIER-BASED SHEDDING — when wall time is projected to exceed the soft budget mid-step, skip remaining `tag_aware_top_n` tickers (lowest priority); mark them with a new `chart_status='skipped_for_budget'`. Tier-based shedding is NOT in V1 scope (adds complexity, requires forward-projecting wall time mid-step, requires new chart_status enum value).
+
+**V1 trade-off explicitly acknowledged (Codex R3 Major 1):** V1 prioritizes A+/open_position correctness + tag-aware coverage over wall-time CONTROL. The thresholds are MONITORING signals, not control mechanisms. A pathologically slow yfinance state (e.g., rate-limit hold, network outage, per-ticker timeout) can drag chart-step wall time well past 120s while `pipeline_runs.charts_status` still completes as `'ok'`. **This is intentional for V1** — operator scale (1 pipeline/day, ~10-21 tickers) makes the slowdown tolerable, and avoiding tier-shedding preserves the correctness/coverage guarantees that motivated this dispatch. **Operator escalation path:** the ERROR log line on >120s overrun is the trigger. If the operator sees repeated ERROR-level overruns in pipeline-run logs, the response is to dispatch a follow-up: either (a) reduce `chart_top_n_watch` from 10 → 5 to cut the watchlist tier in half, or (b) implement tier-based shedding per the deferred-hardening note above.
+
+**`pipeline_runs.charts_status` observability (Codex R3 Major 2):** the schema-level `charts_status` field continues to mean "chart-step completed without per-ticker rendering failure" (`'ok'`/`'failed'`/`'skipped'`); it does NOT carry budget-compliance state in V1. Downstream consumers querying `charts_status` cannot distinguish "completed in 5s" from "completed in 600s." **This is a deliberate V1 limitation** — adding a persisted budget-status column (e.g., `charts_wall_time_ms` integer or `charts_budget_status` enum) would require schema migration 0012 + write-path threading + consumer audit. For V1 personal-use scale, log-only health is acceptable. **Future V2 hardening:** if the operator builds an alerting layer or external monitoring, a follow-up migration can add `pipeline_runs.charts_wall_time_ms` as a queryable signal. NOT in this spec.
+
+**Per CLAUDE.md gotchas:** rate-limit issues arise from `yf.download(threads=True)` (forbidden) and concurrency on `Ticker.history()` (bounded by app-level executor); sequential-fetch latency is the only observable cost. Acceptable.
+
+**Classifier + PNG cost:** each chart also runs `classify_flag` (heuristic pattern detection; ~0.1-0.5 s/chart, CPU-bound) and saves a PNG (~0.1-0.3 s I/O). Scaling to 10-13 charts adds ~1-8 s beyond yfinance, for a total `_step_charts` wall-time budget of ~15-25 s typical (up from ~7-12 s current). Within single-session pipeline tolerance; no new rate limits apply. Accept.
+
+**V1 unified scope decision (Codex R1 Major 5 — accepted with rationale):** all three tiers feed BOTH PNG generation AND classifier processing. Held positions get classifier output even though flag patterns rarely apply to already-running setups. Justification: classifier is cheap (~10ms/ticker); produces consistent per-ticker output across the chart-scope set; defensive against future patterns (e.g., breakdown patterns) that ARE applicable to held positions. **V2 may split scopes** (e.g., classifier scope = aplus + tag_aware; chart scope = aplus + open_position + tag_aware) if classifier compute grows or new patterns demand differential treatment. V1 keeps unified scope for simplicity.
+
+**Crowding-out concern (Codex R1 Major 5):** A+ + open_position tiers have unbounded slot allocation (subject to hard caps); tag_aware_top_n has fixed N=10. In high-utilization state (e.g., 6 open positions + 5 A+ candidates) total scope = 21 max, with tag_aware preserved at 10. The discovery tier (tag_aware_top_n) does NOT shrink when other tiers grow; the spec preserves discovery budget by construction. Tradeoff accepted: chart-scope total can grow to 21 max (operator's yfinance cost); discovery coverage stays at 10 regardless.
+
+**Disk space:** each PNG is ~50-200 KB. Doubling chart count adds ~5-10 MB per pipeline session. Negligible vs `exports/` retention budget (90 days × 1 run/day × ~10 MB ≈ 900 MB; retention sweep already exists).
 
 ---
 
@@ -151,6 +221,21 @@ UPDATE schema_version SET version = 11;
 ```
 
 Forward-only; no down-migration. `chart_status` enum unchanged.
+
+**Pre-migration schema inventory (implementer requirement):** Verify `pipeline_chart_targets` has no additional indexes, triggers, or views beyond `idx_pipeline_chart_targets_run` before executing the migration. Run:
+```sql
+SELECT name, type FROM sqlite_master
+WHERE type IN ('index', 'trigger', 'view')
+  AND tbl_name = 'pipeline_chart_targets';
+```
+Expected result: exactly one row — `idx_pipeline_chart_targets_run` / index. Migration 0006 created only that index; no triggers or views were added per repo audit. If unexpected objects are present, recreate them in the migration before the DROP TABLE step.
+
+**Schema-objects inventory verification (Codex R1 Major 6):** before applying the migration, the writing-plans phase MUST verify the current `pipeline_chart_targets` schema state matches the assumed baseline. Specifically:
+
+- Run `SELECT name, sql FROM sqlite_master WHERE tbl_name = 'pipeline_chart_targets'` against a current production-shape DB. Expected output: 1 table definition + 1 index (`idx_pipeline_chart_targets_run`). NO triggers, NO additional indexes, NO views.
+- If the inventory diverges from the assumed baseline (e.g., a side-migration added a trigger or another index in 0007-0010 that this spec missed), the migration as drafted would silently lose those objects on DROP TABLE. Before migration runs in production, the writing-plans phase must update the migration SQL to recreate ALL objects discovered in the inventory.
+- Verified at brief-drafting time (orchestrator inspection of `swing/data/migrations/0007_*.sql` through `0010_*.sql` shows none touch `pipeline_chart_targets`); but the writing-plans phase MUST reconfirm against the actual production DB schema before approving the migration.
+- The migration test (per §E) MUST assert post-migration that the same set of indexes/triggers exists as pre-migration.
 
 ### Source value taxonomy
 
@@ -202,13 +287,26 @@ def latest_completed_pipeline_run(conn) -> PipelineRunBinding | None:
     Returns None when no completed runs exist. Caller MUST handle the None
     case before calling resolve_chart_scope.
     """
+    # ORDER BY adds `id DESC` tiebreaker (Codex R1 Minor 1) — defends
+    # against second-precision finished_ts collisions on rapid runs.
     row = conn.execute(
         """SELECT id, finished_ts, data_asof_date, charts_status, evaluation_run_id
            FROM pipeline_runs
            WHERE state = 'complete'
-           ORDER BY finished_ts DESC LIMIT 1"""
+           ORDER BY finished_ts DESC, id DESC LIMIT 1"""
     ).fetchone()
-    return PipelineRunBinding(*row) if row else None
+    if row is None:
+        return None
+    # Construct by named arg, not positional unpack (Codex R1 Minor 2)
+    # — defensive against future SELECT column-order drift.
+    run_id, finished_ts, data_asof_date, charts_status, evaluation_run_id = row
+    return PipelineRunBinding(
+        run_id=run_id,
+        finished_ts=finished_ts,
+        data_asof_date=data_asof_date,
+        charts_status=charts_status,
+        evaluation_run_id=evaluation_run_id,
+    )
 ```
 
 ### New `resolve_chart_scope` signature
@@ -234,6 +332,17 @@ The resolver:
 - Branches identical to current: charts_status check → FK-backed path (when `evaluation_run_id` is non-null) → heuristic fallback (legacy NULL path).
 
 The `chart_top_n_watch` parameter is retained because the legacy heuristic fallback path (`_resolve_via_heuristic`) still uses it. Even though new pipeline runs don't traverse the heuristic path, legacy `pipeline_runs` rows with `evaluation_run_id IS NULL` from before migration 0006 still trigger the heuristic; preserving the parameter avoids a parallel signature change there.
+
+### Binding scope definition (Codex R1 Major 1)
+
+**Scope of a single binding: ONE binding per HTTP request handler.** The race the binding closes is the intra-request race between (a) the caller's SELECT for `data_asof_date` (used to construct chart URLs) and (b) the resolver's internal SELECT for the latest run's chart_targets — these were two reads against `pipeline_runs` that could see different runs if a new run completed between them.
+
+**What the binding does NOT close:**
+
+- **Inter-request races** (different HTTP requests fired by the same operator from the same dashboard): a `/watchlist/{ticker}/expand` request at T0 binds to runN; an `/trades/open/{trade_id}/expand` request at T1>T0 may bind to runN+1 if a new pipeline run completed between T0 and T1. The operator may see `data_asof_date` of runN on one expanded row and runN+1 on another — visible only if the operator notices the date in the chart URL or waits for the dashboard's `stale_banner` to update. Acceptable; closing this would require server-side cross-request session pinning (out-of-scope for this dispatch).
+- **Intra-request multi-builder races IF a future request handler invokes multiple chart_scope.resolve_chart_scope calls without sharing the binding.** The current 3 caller sites each call resolve_chart_scope at most once per request. If a future surface composes multiple chart-scope resolutions in one request handler (e.g., a future "all open positions chart grid" page that resolves N tickers in one render), it MUST pin the binding ONCE at the top of the handler and pass it down to all resolve_chart_scope invocations. **Writing-plans phase MUST add a docstring/comment on `resolve_chart_scope` explicitly stating the "one binding per request handler" contract**, and reviewers should reject any future caller that violates it.
+
+The current 3 caller sites are leaf surfaces (one resolve_chart_scope call per request); the binding contract is sufficient. Future surfaces that compose multiple resolutions need to honor the contract.
 
 ### Caller updates (3 sites)
 
@@ -261,6 +370,22 @@ reason, message = resolve_chart_scope(
 ### No backward-compat shim
 
 The signature change is breaking. All 3 callers migrate in the same dispatch. There are no third-party consumers of `chart_scope.py` outside the project (verified via repo-wide grep at brief-drafting time).
+
+**Caller-site contract enforcement (Codex R1 Minor 4 + R2 Minor 2 — refined):** the writing-plans phase MUST:
+
+- Add an explicit docstring on `resolve_chart_scope` stating: "MUST be called with a `binding` pinned at the request handler entry via `latest_completed_pipeline_run`. Multiple calls within the same handler MUST share the same binding instance to honor the race-tightening contract."
+- Add the binding-scope contract to project's code-review checklist or `CONTRIBUTING.md` if one exists (per project-context: code review is mandatory; orchestrator-facing).
+- The earlier proposal of an automated grep-pin on `resolve_chart_scope(` call sites is REJECTED (Codex R2 Minor 2): such tests are brittle against harmless refactors (e.g., wrapper helpers, code moves, test-only call sites) and fail noisily without catching real contract violations.
+
+The contract is enforceable by docstring + review, not by test count. Code review remains the actual enforcement mechanism (per orchestrator-context: adversarial review on every code-shipping session is mandatory).
+
+**Technical guardrail deferral (Codex R3 Minor 1 — accepted with rationale):** for V1, the binding-scope contract is process-enforced (docstring + review), not technically enforced (e.g., binding sentinel attributes, restrictive caller patterns). All current 3 callers are leaf surfaces with one resolve_chart_scope call per request; there are no multi-surface request patterns to constrain technically. **If a future surface composes multiple resolve_chart_scope calls in one handler**, the writing-plans phase for THAT surface MUST add explicit tests asserting the binding is shared across calls. Until that surface emerges, the technical guardrail is YAGNI. Adding it preemptively would create constraint code without a falsifiable test target.
+
+**Reviewer-checklist hardening (Codex R4 Minor 2):** the writing-plans phase MUST include in its done-criteria checklist an explicit reviewer item: "Inspect all new `resolve_chart_scope` call sites; confirm each calls `latest_completed_pipeline_run` ONCE at request handler entry and passes the resulting binding through any downstream multi-call surface." This converts the social/process enforcement into an explicit code-review checklist line, reducing documentation-to-implementation drift risk on future web-surface changes.
+
+### Operator-facing copy update
+
+`CHART_REASON_MESSAGES["out-of-scope"]` in `swing/web/chart_scope.py` currently reads something like "No chart available — [ticker] is outside the current chart-scope set (A+ names + top near-trigger watchlist)." This copy becomes false after migration 0011 because the scope now also includes open positions and tag-aware top-10. The implementer MUST update this string to reflect the three-tier model, e.g.: "No chart available — [ticker] is outside the current chart-scope set (A+ candidates, open positions, and tag-aware watchlist top-10)." **Test requirement:** add a test assertion on the updated message text in `tests/web/test_chart_scope.py`.
 
 ---
 
@@ -410,4 +535,4 @@ Items intentionally excluded from this dispatch:
 - Pending: `copowers:writing-plans` to translate this spec into per-task plan.
 - Pending: `copowers:executing-plans` to dispatch the implementation.
 
-**Operator signing:** orchestrator drafted; operator approved each design section (§A through §F); spec-review loop pending; adversarial Codex review pending; writing-plans dispatch pending.
+**Operator signing:** orchestrator drafted; operator approved each design section (§A through §F); orchestrator self-review pass cleared placeholders, internal consistency, scope, ambiguity; **adversarial Codex review completed in 4 rounds → NO_NEW_CRITICAL_MAJOR** (all 11 majors across R1-R3 resolved via spec edits + 9 minors resolved or accepted-with-rationale per V1 scope); pending operator final approval + writing-plans dispatch.
