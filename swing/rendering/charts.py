@@ -83,11 +83,13 @@ def render_chart(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Escape `$` with `\$` to prevent matplotlib mathtext interpretation
-    # (paired `$..$` would render the intervening text in italic math mode,
-    # e.g. "stop" between the two prices). matplotlib renders `\$` as a
-    # literal `$` glyph without entering math mode.
-    title = rf"{ticker} | pivot \${pivot:.2f} stop \${stop:.2f} | last {len(df)} bars"
+    # Omit `$` from the title because matplotlib's mathtext interpreter
+    # treats paired `$..$` as math mode, italicizing intervening text and
+    # consuming the `$` glyphs. The `\$` escape (commit `2fd0ecc`) does
+    # NOT prevent math-mode entry — matplotlib resolves `\$` to a literal
+    # `$` BEFORE the math-mode parse pass. Trading context implies the
+    # values are dollars; the labels "pivot" / "stop" carry the meaning.
+    title = f"{ticker} | pivot {pivot:.2f} stop {stop:.2f} | last {len(df)} bars"
     if pattern_overlay is not None:
         title += f" | flag ({pattern_overlay.confidence:.2f})"
 

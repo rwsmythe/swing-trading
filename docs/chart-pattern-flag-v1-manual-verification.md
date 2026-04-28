@@ -116,10 +116,10 @@ Navigate to `http://127.0.0.1:8080/watchlist`.
 
 For a ticker with `pattern='flag'` (from §0 step 3), navigate to its chart via the dashboard expanded row OR directly via `http://127.0.0.1:8080/charts/<TICKER>.png`.
 
-### §3.1 Chart title (mathtext fix verification — commit `2fd0ecc`)
-- [ ] **Title reads cleanly** — for example: `AAPL | pivot $110.00 stop $95.00 | last 120 bars | flag (0.78)`.
-- [ ] **The word "stop" is NOT italicized.** Pre-fix: matplotlib mathtext interpreted `$..$` as math mode and italicized "stop." Post-fix (commit `2fd0ecc`): `\$` escape prevents math mode entry; "stop" displays in normal font.
-- [ ] **No backslash visible in the title.** matplotlib renders `\$` as a literal `$` glyph; the backslash is consumed by the renderer.
+### §3.1 Chart title (mathtext fix verification)
+- [ ] **Title reads cleanly** — for example: `AAPL | pivot 110.00 stop 95.00 | last 120 bars | flag (0.78)`.
+- [ ] **The word "stop" is NOT italicized.** Pre-fix: matplotlib mathtext interpreted `$..$` as math mode and italicized "stop." Post-fix: `$` is omitted from the title format entirely, so math mode never engages.
+- [ ] **No `$` glyphs in the title.** Trading context already implies dollar values; the labels "pivot" / "stop" carry the meaning.
 
 ### §3.2 Chart overlay (flag pattern detected — Phase 6)
 - [ ] **Pole band** (light green, faint α=0.15) shaded over the pole region (typically 5-30 bars before the flag start).
@@ -132,7 +132,7 @@ For a ticker with `pattern='flag'` (from §0 step 3), navigate to its chart via 
 ### §3.3 Chart for a non-flag ticker
 - [ ] Navigate to a ticker WITHOUT a flag classification (e.g., a chart-scope ticker where `pattern='none'`).
 - [ ] **No overlay bands or algo-pivot painted** — chart renders as it did pre-V1 (existing candidate-pivot hline + stop hline + SMAs + volume panel).
-- [ ] Title format is the same except no `| flag (...)` suffix: `AAPL | pivot $110.00 stop $95.00 | last 120 bars`.
+- [ ] Title format is the same except no `| flag (...)` suffix: `AAPL | pivot 110.00 stop 95.00 | last 120 bars`.
 
 ### §3.4 Chart for a classifier-error ticker (if any)
 - [ ] If `§0 step 3` showed any classifier-error rows (`pattern IS NULL`), navigate to one of those tickers' charts.
