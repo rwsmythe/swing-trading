@@ -51,10 +51,59 @@ a strict improvement over the pre-change eval-sourced binding.
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 
 from swing.data.repos.candidates import fetch_candidates_for_run
 from swing.data.repos.watchlist import list_active_watchlist
+
+
+@dataclass(frozen=True)
+class PipelineRunBinding:
+    """Pinned pipeline_run state for race-free chart-scope resolution.
+
+    Computed once at request entry by `latest_completed_pipeline_run(conn)`
+    and passed to `resolve_chart_scope` so all downstream reads bind to the
+    SAME run, even if a new run completes mid-request. Closes the R2 Major
+    drift race surfaced in chart-access UX dispatch (commit `f0d13e8`,
+    2026-04-27).
+    """
+    run_id: int
+    finished_ts: str
+    data_asof_date: str
+    charts_status: str | None
+    evaluation_run_id: int | None
+
+
+def latest_completed_pipeline_run(conn: sqlite3.Connection) -> PipelineRunBinding | None:
+    """Single-read source of truth for 'which pipeline_run does this request bind to?'.
+
+    Returns None when no completed runs exist. Caller MUST handle the None
+    case before calling resolve_chart_scope.
+
+    Codex R1 Minor 1: `id DESC` tiebreaker defends against second-precision
+    finished_ts collisions on rapid runs.
+
+    Codex R1 Minor 2: dataclass constructed via NAMED arguments — defensive
+    against future SELECT column-order drift.
+    """
+    row = conn.execute(
+        """SELECT id, finished_ts, data_asof_date, charts_status, evaluation_run_id
+           FROM pipeline_runs
+           WHERE state = 'complete'
+           ORDER BY finished_ts DESC, id DESC LIMIT 1"""
+    ).fetchone()
+    if row is None:
+        return None
+    run_id, finished_ts, data_asof_date, charts_status, evaluation_run_id = row
+    return PipelineRunBinding(
+        run_id=run_id,
+        finished_ts=finished_ts,
+        data_asof_date=data_asof_date,
+        charts_status=charts_status,
+        evaluation_run_id=evaluation_run_id,
+    )
+
 
 CHART_REASON_MESSAGES: dict[str, str] = {
     "no-run": "Chart unavailable — no pipeline run yet for this session.",

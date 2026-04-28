@@ -381,3 +381,150 @@ def test_resolver_ignores_running_pipeline_uses_last_complete(db_conn, tmp_path)
         conn, ticker="AAPL", charts_dir=tmp_path, chart_top_n_watch=5,
     )
     assert reason is None, "in-flight run must not mask the last-completed run"
+
+
+from swing.web.chart_scope import (
+    PipelineRunBinding,
+    latest_completed_pipeline_run,
+)
+
+
+def test_latest_completed_pipeline_run_returns_none_on_empty_db(db_conn):
+    """No completed runs → helper returns None.
+
+    Discriminating verification: pre-fix code (no helper exists) raises
+    ImportError. Post-fix the helper returns None. Asserting on None
+    distinguishes from "raised some error" failure mode.
+
+    Fixture: `db_conn` (already in tests/web/test_chart_scope.py) yields
+    `(cfg, conn)` where conn is an open sqlite3.Connection over a fully-
+    migrated empty DB. NOT `seeded_db` — that fixture returns
+    `(cfg, cfg_path)`, not a connection.
+    """
+    cfg, conn = db_conn
+    # db_conn yields a fresh DB; pipeline_runs is empty by default.
+    assert latest_completed_pipeline_run(conn) is None
+
+
+def test_latest_completed_pipeline_run_returns_binding_with_all_fields(db_conn):
+    """Helper populates all 5 fields from the latest completed run.
+
+    Discriminating verification: each field's value is checked against the
+    seeded data; if the helper SELECTed the wrong column or omitted a field,
+    the assertion fails on the specific mismatch.
+    """
+    cfg, conn = db_conn
+    # Seed the evaluation_run first so the FK constraint on pipeline_runs
+    # (evaluation_run_id REFERENCES evaluation_runs(id)) is satisfied.
+    conn.execute(
+        """INSERT INTO evaluation_runs
+               (id, run_ts, data_asof_date, action_session_date, finviz_csv_path,
+                tickers_evaluated, aplus_count, watch_count, skip_count,
+                excluded_count, error_count, rs_universe_version, rs_universe_hash)
+           VALUES (7, '2026-04-01T09:00:00', '2026-04-01', '2026-04-02', NULL,
+                   1, 1, 0, 0, 0, 0, 'v1', 'deadbeef')""",
+    )
+    conn.execute(
+        """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
+                                       data_asof_date, action_session_date,
+                                       charts_status, evaluation_run_id,
+                                       trigger, lease_token)
+           VALUES (10, '2026-04-01T09:00:00', '2026-04-01T09:30:00',
+                   'complete', '2026-04-01', '2026-04-02', 'ok', 7,
+                   'manual', 'tok-10')""",
+    )
+    conn.commit()
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
+    assert binding.run_id == 10
+    assert binding.finished_ts == "2026-04-01T09:30:00"
+    assert binding.data_asof_date == "2026-04-01"
+    assert binding.charts_status == "ok"
+    assert binding.evaluation_run_id == 7
+
+
+def test_latest_completed_pipeline_run_id_desc_tiebreaker(db_conn):
+    """When two completed runs share `finished_ts`, helper picks the higher id.
+
+    Discriminating verification: pre-fix `ORDER BY finished_ts DESC LIMIT 1`
+    relies on SQLite's natural-row-ordering for ties — non-deterministic.
+    Post-fix `ORDER BY finished_ts DESC, id DESC LIMIT 1` deterministically
+    picks the higher id. Codex R1 Minor 1.
+
+    Compounding-confound discipline: ids are seeded in non-monotonic order
+    (5 then 12 then 3) so a "natural row order" lookup would NOT pick id=12;
+    the test would fail with id=3 or id=5 if the tiebreaker is missing.
+    """
+    cfg, conn = db_conn
+    # Insert in non-monotonic order to defeat natural-row-order coincidence.
+    for run_id in (5, 12, 3):
+        conn.execute(
+            """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
+                                           data_asof_date, action_session_date,
+                                           charts_status, evaluation_run_id,
+                                           trigger, lease_token)
+               VALUES (?, '2026-04-01T09:00:00', '2026-04-01T09:30:00',
+                       'complete', '2026-04-01', '2026-04-02', 'ok', NULL,
+                       'manual', ?)""",
+            (run_id, f"tok-{run_id}"),
+        )
+    conn.commit()
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
+    assert binding.run_id == 12, (
+        f"expected id-DESC tiebreaker to pick 12, got {binding.run_id}; "
+        "regression: missing `id DESC` in ORDER BY"
+    )
+
+
+def test_latest_completed_pipeline_run_skips_in_progress_runs(db_conn):
+    """Runs with state != 'complete' are excluded.
+
+    Discriminating verification: a run with finished_ts='2026-04-02T09:30:00'
+    state='running' would WIN the ORDER BY if the WHERE clause were dropped.
+    The test asserts the older 'complete' run is selected, which fails if
+    the state filter is missing.
+    """
+    cfg, conn = db_conn
+    conn.execute(
+        """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
+                                       data_asof_date, action_session_date,
+                                       charts_status, evaluation_run_id,
+                                       trigger, lease_token)
+           VALUES (1, '2026-04-01T09:00:00', '2026-04-01T09:30:00',
+                   'complete', '2026-04-01', '2026-04-02', 'ok', NULL,
+                   'manual', 'tok-1')""",
+    )
+    conn.execute(
+        """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
+                                       data_asof_date, action_session_date,
+                                       charts_status, evaluation_run_id,
+                                       trigger, lease_token)
+           VALUES (2, '2026-04-02T09:00:00', '2026-04-02T09:30:00',
+                   'running', '2026-04-02', '2026-04-03', NULL, NULL,
+                   'manual', 'tok-2')""",
+    )
+    conn.commit()
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
+    assert binding.run_id == 1, (
+        f"expected the only 'complete' run (id=1) to win; got id={binding.run_id}; "
+        "regression: WHERE state='complete' filter dropped"
+    )
+
+
+def test_pipeline_run_binding_is_frozen():
+    """Dataclass is frozen (immutable). A snapshot pinned at request entry
+    must not be mutable mid-handler.
+
+    Discriminating verification: assigning to a field on a frozen dataclass
+    raises FrozenInstanceError; on a non-frozen dataclass the assignment
+    silently succeeds. Catches a regression that drops `frozen=True`.
+    """
+    import dataclasses
+    binding = PipelineRunBinding(
+        run_id=1, finished_ts="t", data_asof_date="d",
+        charts_status="ok", evaluation_run_id=None,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        binding.run_id = 999  # type: ignore[misc]
