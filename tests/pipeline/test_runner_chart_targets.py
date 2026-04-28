@@ -26,7 +26,7 @@ new persistence semantics added by Tranche C.
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pandas as pd
@@ -463,6 +463,7 @@ def _make_step_charts_ctx(
     candidates: list[Candidate] | None = None,
     open_trades: list[tuple[str, float, float]] | None = None,
     watchlist: list[dict] | None = None,
+    chart_top_n_watch: int = 5,  # Pin test default independently of production default (Codex R3 Minor 1)
 ) -> _StepChartsCtx:
     """Set up the minimum DB state for a direct `_step_charts` invocation:
       - a fresh schema'd DB
@@ -472,6 +473,8 @@ def _make_step_charts_ctx(
     Returns a context the caller can pass to `_step_charts(...)`.
     """
     cfg = _make_cfg(tmp_path)
+    # Pin chart_top_n_watch independently of production default.
+    cfg = replace(cfg, pipeline=replace(cfg.pipeline, chart_top_n_watch=chart_top_n_watch))
     data_asof = "2026-04-15"
     action_session = "2026-04-16"
     lease = acquire_lease(
@@ -811,7 +814,8 @@ def test_step_charts_tag_aware_uses_shared_sort_key(
     post-fix uses the 4-key composite. With this fixture the proximity-only
     order differs from the tag-aware order, so a regression that drops the
     helper import would fail the order check. Asserts the chart_top_n_watch
-    cap is applied (we seed 6 rows; expect cap=5 by default).
+    cap is applied (we seed 6 rows; fixture pins cap=5 independently of the
+    production default per Codex R3 Minor 1).
     """
     # Seed 6 watchlist rows. Mixed tag profiles: some get full TT+VCP,
     # one gets only TT, one gets nothing.
@@ -857,6 +861,7 @@ def test_step_charts_tag_aware_uses_shared_sort_key(
     candidates.append(_make_untagged_candidate("GGG", bucket="watch"))
     ctx = _make_step_charts_ctx(
         tmp_path, candidates=candidates, watchlist=watchlist,
+        chart_top_n_watch=5,
     )
     _stub_render(monkeypatch)
     _step_charts(
@@ -884,7 +889,8 @@ def test_step_charts_tag_aware_uses_shared_sort_key(
         f"chart-scope tag_aware order != _tag_aware_sort_key order; "
         f"actual={actual_order} expected={expected_order}"
     )
-    # Cap discriminator: with chart_top_n_watch=5 and 6 data-eligible rows,
+    # Cap discriminator: test fixture pins chart_top_n_watch=5 (independent of
+    # production default per Codex R3 Minor 1); with 6 data-eligible rows,
     # exactly 5 should be written.
     assert len(actual_order) == ctx.cfg.pipeline.chart_top_n_watch
     # Also verify the tag-aware order differs from a proximity-only sort
