@@ -49,8 +49,26 @@ class PatternOverlay:
         )
 
 
+def _build_chart_title(*, ticker: str, pivot: float, stop: float | None) -> str:
+    """Build the ticker + pivot/stop segment of the chart title.
+
+    Spec §A: when stop is None or <= 0, the `stop X.XX` segment is omitted
+    entirely (avoids matplotlib auto-scaling y-axis to include zero).
+    Per CLAUDE.md mathtext gotcha, NO `$`, `^`, `_`, or unbalanced `\\` in
+    the format — those metacharacters trigger mathtext interpretation and
+    silently italicize / consume glyphs.
+
+    The caller (render_chart) appends the `| last N bars` suffix and any
+    pattern-overlay segment.
+    """
+    parts = [ticker, f"pivot {pivot:.2f}"]
+    if stop is not None and stop > 0.0:
+        parts.append(f"stop {stop:.2f}")
+    return " | ".join(parts)
+
+
 def render_chart(
-    *, ticker: str, ohlcv: pd.DataFrame, pivot: float, stop: float,
+    *, ticker: str, ohlcv: pd.DataFrame, pivot: float, stop: float | None,
     output_path: Path,
     pattern_overlay: PatternOverlay | None = None,
 ) -> Path | None:
@@ -89,9 +107,19 @@ def render_chart(
     # NOT prevent math-mode entry — matplotlib resolves `\$` to a literal
     # `$` BEFORE the math-mode parse pass. Trading context implies the
     # values are dollars; the labels "pivot" / "stop" carry the meaning.
-    title = f"{ticker} | pivot {pivot:.2f} stop {stop:.2f} | last {len(df)} bars"
+    # Spec §A: stop segment omitted when stop is None or <= 0 (_build_chart_title).
+    title = _build_chart_title(
+        ticker=ticker, pivot=pivot, stop=stop,
+    ) + f" | last {len(df)} bars"
     if pattern_overlay is not None:
         title += f" | flag ({pattern_overlay.confidence:.2f})"
+
+    # hlines + colors must stay length-aligned (spec §A: omit stop when None/0).
+    _hlines_list = [pivot]
+    _hlines_colors = ["green"]
+    if stop is not None and stop > 0.0:
+        _hlines_list.append(stop)
+        _hlines_colors.append("red")
 
     plot_kwargs = dict(
         type="candle", volume=True, style="yahoo",
@@ -99,7 +127,7 @@ def render_chart(
         title=title,
         ylabel_lower="Volume",
         addplot=addplots,
-        hlines=dict(hlines=[pivot, stop], colors=["green", "red"], linestyle="--"),
+        hlines=dict(hlines=_hlines_list, colors=_hlines_colors, linestyle="--"),
         vlines=dict(vlines=[df.index[-CONSOLIDATION_DAYS]],
                     colors=["purple"], linestyle=":", alpha=0.5),
     )

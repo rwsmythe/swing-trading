@@ -267,7 +267,7 @@ def test_render_chart_with_overlay_paints_two_bands_and_separate_pivot_segment(
     suptitle = fig._suptitle.get_text() if fig._suptitle is not None else ""
     if not suptitle:
         suptitle = "\n".join(t.get_text() for t in fig.texts)
-    expected = "AAPL | pivot 110.00 stop 95.00 | last 120 bars | flag (0.78)"
+    expected = "AAPL | pivot 110.00 | stop 95.00 | last 120 bars | flag (0.78)"
     assert suptitle == expected, f"got {suptitle!r}"
 
     # Discriminating check: directly call mpf.plot with the same plot_kwargs
