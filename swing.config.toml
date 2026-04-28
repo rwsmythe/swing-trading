@@ -90,7 +90,7 @@ heartbeat_interval_seconds = 30
 block_if_running_within_seconds = 120     # concurrent-run rejection window
 staging_orphan_age_seconds = 3600          # delete .staging/ without manifest after 1h
 prev_dir_retention_days = 7                # delete .prev/ after N days
-chart_top_n_watch = 5                       # render charts for top-N near-trigger watchlist
+chart_top_n_watch = 10                      # render charts for top-N tag-aware watchlist (chart-scope policy v2; was 5 pre-2026-04-28)
 
 [export]
 # Briefing export (spec §6.4)
