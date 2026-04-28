@@ -119,6 +119,14 @@ Open `http://127.0.0.1:8080/` in browser.
 - [ ] **Close button** at top-right of expanded row collapses it (Phase 3e.4; shipped pre-V1).
 - [ ] **Stale "Log entry" placeholder REMOVED** (Phase 3e.5; shipped pre-V1).
 
+### §1.5 Click into expanded open-positions row (Tier-2 #3)
+- [ ] Click an open-positions row.
+- [ ] Row expands inline. If the ticker is in the latest pipeline's chart-scope set the chart `<img>` renders; if it isn't (the common case for held positions, since open-positions rotate out of chart-scope as the ticker drops out of A+ / near-trigger watchlist), a "Chart unavailable — …" message renders with the resolver's reason text.
+- [ ] **Close button (✕)** at top-right of the expanded row collapses back to the compact row.
+- [ ] Click the row a second time → re-expands cleanly (toggle works; no stale state).
+- [ ] Exit + Adjust-stop buttons inside the compact row do NOT trigger the row expand on click (`event.stopPropagation()` guard per Bug-1 lesson).
+- [ ] After clicking the dashboard's **Refresh now** button (POST /prices/refresh), the open-positions table re-renders via OOB swap and the click-to-expand binding still works on the refreshed rows (single-include guarantee — `prices_refresh_container.html.j2` uses the same partial).
+
 ### §1.4 Refresh-now button at bottom of dashboard
 - [ ] Click "Refresh now" button.
 - [ ] **Layout does NOT break** — heading "Watchlist - near trigger" stays visible; watchlist table doesn't butt up against open positions table (Bug 1 from Bugs.txt).
@@ -143,15 +151,22 @@ Navigate to `http://127.0.0.1:8080/watchlist`.
 
 ## §3 Web surface — Chart image (overlay verification)
 
-**Chart access path (V1 known limitations):**
+**Chart access paths (post Tier-2 #2 + #3):**
 
-In V1, the only operator-accessible chart-view path is the **dashboard expanded watchlist row** — click a watchlist ticker to expand, the chart appears inline. Direct URL `http://127.0.0.1:8080/charts/<TICKER>.png` returns 404 (no standalone chart-image route in V1; backlog item #2 in `docs/chart-pattern-flag-v1-manual-verification-results.md`).
+Three operator-accessible chart-view paths:
 
-Implications for this verification round:
+1. **Dashboard expanded watchlist row** — click a watchlist ticker to expand, chart appears inline (covered in §1.3).
+2. **Dashboard expanded open-positions row** — click an open-positions row to expand, chart appears inline if the ticker is in chart-scope; otherwise the chart-unavailable reason renders (Tier-2 #3; covered in §1.5).
+3. **Date-less chart URL `http://127.0.0.1:8080/charts/<TICKER>.png`** — Tier-2 #2 routes this to the latest completed pipeline's date-prefixed PNG (303 redirect to `/charts/<data_asof_date>/<TICKER>.png`), or returns a 404 page with the operator-facing chart-unavailable reason from `chart_scope.resolve_chart_scope`.
 
-- **Watchlist tickers in chart-scope set:** expand the row (works).
-- **Chart-scope tickers NOT in watchlist** (e.g., A+ candidates without near-trigger ranking): no in-app path. Inspect the PNG directly on disk at `exports/<latest_session>/charts/<TICKER>.png` if needed.
-- **Open-positions tickers:** open-positions rows do NOT expand to chart in V1 (backlog item #3). Chart-view path disappears once a watchlist ticker is taken as a trade. Inspect the PNG directly on disk for those.
+### §3.A Date-less chart URL verification (Tier-2 #2)
+
+- [ ] Hit `http://127.0.0.1:8080/charts/<chart-scope-ticker>.png` (use a ticker known to be in latest pipeline's chart-scope set — see §0 step 3 for SQL to find them). The chart PNG renders in the browser; URL bar may settle on the date-prefixed URL after the silent 303 redirect.
+- [ ] Hit `http://127.0.0.1:8080/charts/XYZNOTINSCOPE.png` (a clearly out-of-scope ticker). 404 page renders with the operator-facing reason message (e.g., "Chart unavailable — this ticker isn't in today's charting scope (A+ names + top near-trigger watchlist).").
+
+### §3.B Remaining V1 known limitation
+
+- **Chart-scope tickers NOT in watchlist** (e.g., A+ candidates without near-trigger ranking, or open-positions tickers that have rotated out of the watchlist sort): post-Tier-2-#2, the workaround is now hitting `/charts/<TICKER>.png` directly. Tier-2 #4 (chart-scope set alignment) still pending — when an operator's open position is OUT of the chart-scope set entirely (the common case after a few sessions), neither path renders a chart; the open-positions expand surface displays the chart-unavailable reason instead.
 
 For a ticker with `pattern='flag'` (from §0 step 3), pick one that's still in the watchlist + chart-scope set; expand the row.
 
