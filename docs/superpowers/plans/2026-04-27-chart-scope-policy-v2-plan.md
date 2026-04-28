@@ -669,9 +669,41 @@ git commit -m "feat(web): Task 2 — PipelineRunBinding + latest_completed_pipel
 - Modify: `swing/web/view_models/open_positions_row.py`
 - Modify: `swing/web/view_models/watchlist.py`
 - Modify: `tests/web/test_chart_scope.py`
+- Modify: `tests/web/test_chart_scope_fk.py` (existing FK-path resolver tests — many call `resolve_chart_scope(...)` with the OLD signature; each call site must construct a `PipelineRunBinding` explicitly via the helper or directly and pass `binding=...`. Codex R2 Major 1.)
+- Modify: `tests/web/test_chart_scope_t5_reason_split.py` (existing T5-reason-split resolver tests — same migration pattern as `test_chart_scope_fk.py`; Codex R2 Major 1.)
 - Modify: `tests/web/test_routes/test_charts_route.py`
 - Modify: `tests/web/test_routes/test_open_positions_expand.py` (or equivalent — verify path at execution time)
 - Modify: `tests/web/test_view_models/` watchlist expand test file (verify path at execution time)
+
+**Test-file migration pattern for `test_chart_scope_fk.py` + `test_chart_scope_t5_reason_split.py`** (Codex R2 Major 1): each existing test that called the old signature now needs to construct a binding before calling. Replace:
+
+```python
+# Before:
+reason, msg = resolve_chart_scope(
+    conn, ticker="AAPL", charts_dir=tmp_path, chart_top_n_watch=5,
+)
+```
+
+with:
+
+```python
+# After:
+from swing.web.chart_scope import latest_completed_pipeline_run
+binding = latest_completed_pipeline_run(conn)
+assert binding is not None, "test fixture must seed at least one completed run"
+reason, msg = resolve_chart_scope(
+    conn, binding=binding, ticker="AAPL",
+    charts_dir=tmp_path, chart_top_n_watch=5,
+)
+```
+
+For tests asserting on the `'no-run'` reason (pre-fix triggered by `latest is None` inside the resolver), the helper now returns `None` and the resolver is no longer called at all — the test must instead assert that `latest_completed_pipeline_run(conn)` returned None and call sites would short-circuit to `'no-run'` themselves. If a test was specifically pinning the OLD resolver-internal behavior, change its assertion to pin the helper-returns-None contract instead.
+
+This migration is mechanical but exhaustive — implementer must grep for every `resolve_chart_scope(` call site in `tests/` and apply one of the two patterns above:
+
+```bash
+grep -RnE 'resolve_chart_scope\(' tests/
+```
 
 - [ ] **Step 1: Write failing tests for stale-binding race**
 
@@ -1127,15 +1159,23 @@ def test_build_open_positions_expanded_uses_binding_not_re_read(
                            'complete', '2026-04-02', '2026-04-03', 'ok', NULL,
                            'manual', 'tok-301')""",
             )
-            # Open AAPL trade.
+            # Open AAPL trade. Trade dataclass fields per swing/data/models.py:54-77;
+            # `notes` is required (not optional). `watchlist_initial_stop` is the
+            # field name (NOT `watchlist_initial_stop_target`).
+            # `insert_trade_with_event` requires `event_ts=` kwarg per
+            # swing/data/repos/trades.py:48-51.
             trade = Trade(
                 id=None, ticker="AAPL", entry_date="2026-04-01",
                 entry_price=100.0, initial_shares=10, initial_stop=95.0,
                 current_stop=95.0, status="open",
-                watchlist_entry_target=100.0, watchlist_initial_stop_target=95.0,
+                watchlist_entry_target=100.0,
+                watchlist_initial_stop=95.0,
+                notes=None,
                 hypothesis_label=None,
             )
-            trade_id = insert_trade_with_event(conn, trade)
+            trade_id = insert_trade_with_event(
+                conn, trade, event_ts="2026-04-01T09:35:00",
+            )
         # Place PNG on disk for runN's date.
         (cfg.paths.charts_dir / "2026-04-01").mkdir(parents=True, exist_ok=True)
         (cfg.paths.charts_dir / "2026-04-01" / "AAPL.png").write_bytes(b"png-stub")
@@ -2038,15 +2078,37 @@ def test_render_chart_omits_stop_hline_when_stop_is_none(tmp_path):
     raises). Post-fix: no hline at the stop position.
     """
     out = tmp_path / "AAPL.png"
-    render_chart(
-        ticker="AAPL", ohlcv=_ohlcv(), pivot=110.0, stop=None,
-        output_path=out, pattern_overlay=None,
+    captured: dict = {}
+
+    def _capture_kwargs(df, **kwargs):
+        # Capture the hlines kwarg passed to mpf.plot, then short-circuit
+        # the actual render so the test doesn't depend on mpf rendering
+        # to a file. Plan Step 3 keeps render_chart calling mpf.plot with
+        # `hlines=dict(hlines=[...], colors=[...], linestyle="--")` —
+        # the test asserts on the LIST inside that dict.
+        captured["hlines"] = kwargs.get("hlines", {}).get("hlines", [])
+        # Return a stub fig so render_chart's no-overlay branch doesn't
+        # raise. (For overlay branch, mpf.plot returns (fig, axes) under
+        # returnfig=True; this test uses pattern_overlay=None so the
+        # savefig branch is taken — see swing/rendering/charts.py:108.)
+        return None
+
+    monkeypatch_savefig_path = pytest.MonkeyPatch()
+    try:
+        monkeypatch_savefig_path.setattr(
+            "swing.rendering.charts.mpf.plot", _capture_kwargs,
+        )
+        render_chart(
+            ticker="AAPL", ohlcv=_ohlcv(), pivot=110.0, stop=None,
+            output_path=out, pattern_overlay=None,
+        )
+    finally:
+        monkeypatch_savefig_path.undo()
+    assert captured.get("hlines") == [110.0], (
+        f"expected hlines=[110.0] (pivot only) when stop=None; "
+        f"got {captured.get('hlines')!r}; "
+        "regression: render_chart still passes stop to mpf.plot"
     )
-    assert out.exists()
-    # ... figure-level assertion: count HLines collections; pre-fix=2, post-fix=1.
-    # Reuse the LineCollection-count comparison pattern from Phase 6
-    # tests/rendering/test_chart_overlay.py:* (verify exact assertion shape
-    # at execution time per existing test file).
 
 
 def test_render_chart_omits_stop_hline_when_stop_is_zero(tmp_path):
@@ -2057,12 +2119,28 @@ def test_render_chart_omits_stop_hline_when_stop_is_zero(tmp_path):
     include 0 (compressing legitimate price action). Post-fix omits.
     """
     out = tmp_path / "AAPL.png"
-    render_chart(
-        ticker="AAPL", ohlcv=_ohlcv(), pivot=110.0, stop=0.0,
-        output_path=out, pattern_overlay=None,
+    captured: dict = {}
+
+    def _capture_kwargs(df, **kwargs):
+        captured["hlines"] = kwargs.get("hlines", {}).get("hlines", [])
+        return None
+
+    monkeypatch_savefig_path = pytest.MonkeyPatch()
+    try:
+        monkeypatch_savefig_path.setattr(
+            "swing.rendering.charts.mpf.plot", _capture_kwargs,
+        )
+        render_chart(
+            ticker="AAPL", ohlcv=_ohlcv(), pivot=110.0, stop=0.0,
+            output_path=out, pattern_overlay=None,
+        )
+    finally:
+        monkeypatch_savefig_path.undo()
+    assert captured.get("hlines") == [110.0], (
+        f"expected hlines=[110.0] (pivot only) when stop=0.0; "
+        f"got {captured.get('hlines')!r}; "
+        "regression: render_chart still passes stop=0.0 to mpf.plot"
     )
-    assert out.exists()
-    # Same figure-level HLines count assertion as above.
 
 
 def test_render_chart_title_omits_stop_segment_when_stop_is_zero(tmp_path):
@@ -2137,15 +2215,31 @@ def test_render_chart_renders_stop_hline_when_stop_is_positive(tmp_path):
     """Verified-empirically pin: positive stop renders the hline as before.
 
     Discriminating verification: catches a regression that omits the hline
-    even when stop > 0.
+    even when stop > 0. With stop=95.0, hlines=[110.0, 95.0] (pivot+stop).
     """
     out = tmp_path / "AAPL.png"
-    render_chart(
-        ticker="AAPL", ohlcv=_ohlcv(), pivot=110.0, stop=95.0,
-        output_path=out, pattern_overlay=None,
+    captured: dict = {}
+
+    def _capture_kwargs(df, **kwargs):
+        captured["hlines"] = kwargs.get("hlines", {}).get("hlines", [])
+        return None
+
+    monkeypatch_savefig_path = pytest.MonkeyPatch()
+    try:
+        monkeypatch_savefig_path.setattr(
+            "swing.rendering.charts.mpf.plot", _capture_kwargs,
+        )
+        render_chart(
+            ticker="AAPL", ohlcv=_ohlcv(), pivot=110.0, stop=95.0,
+            output_path=out, pattern_overlay=None,
+        )
+    finally:
+        monkeypatch_savefig_path.undo()
+    assert captured.get("hlines") == [110.0, 95.0], (
+        f"expected hlines=[110.0, 95.0] (pivot + stop) when stop>0; "
+        f"got {captured.get('hlines')!r}; "
+        "regression: render_chart drops the stop hline even when stop is positive"
     )
-    assert out.exists()
-    # Figure-level HLines count assertion: pre-fix=2 (pivot+stop), post-fix=2.
 ```
 
 - [ ] **Step 2: Run tests to see RED**
@@ -2156,41 +2250,80 @@ python -m pytest tests/rendering/test_render_chart_stop_omission.py -v
 
 Expected: 4 tests fail. Two on the `stop=None` path (pre-fix code may TypeError on `float(None)`); two on the title format.
 
-- [ ] **Step 3: Implement the conditional + extract `_build_chart_title` helper**
+- [ ] **Step 3: Widen `render_chart` signature + extract `_build_chart_title` helper + apply conditional**
 
-(a) Add a small pure helper `_build_chart_title` at module scope of `swing/rendering/charts.py` so the title-format contract is testable in isolation (per the title-format test in Step 1):
+(a) Widen the `render_chart` signature: change `stop: float` → `stop: float | None` so callers can pass `None` (Codex R2 Minor 3). Current signature at `swing/rendering/charts.py:52-55`:
+
+```python
+def render_chart(
+    *, ticker: str, ohlcv: pd.DataFrame, pivot: float, stop: float,
+    output_path: Path,
+    pattern_overlay: PatternOverlay | None = None,
+) -> Path | None:
+```
+
+becomes:
+
+```python
+def render_chart(
+    *, ticker: str, ohlcv: pd.DataFrame, pivot: float, stop: float | None,
+    output_path: Path,
+    pattern_overlay: PatternOverlay | None = None,
+) -> Path | None:
+```
+
+(b) Update the title-build line and the `hlines` line in `render_chart`. The current code at `swing/rendering/charts.py:92` is:
+
+```python
+title = f"{ticker} | pivot {pivot:.2f} stop {stop:.2f} | last {len(df)} bars"
+```
+
+and at line 102:
+
+```python
+hlines=dict(hlines=[pivot, stop], colors=["green", "red"], linestyle="--"),
+```
+
+Replace both with conditional-on-stop logic via `_build_chart_title` for the title (incorporating the existing `| last {len(df)} bars` suffix) and a conditional list for hlines:
+
+```python
+# Title (uses _build_chart_title helper from Step 3a):
+title = _build_chart_title(
+    ticker=ticker, pivot=pivot, stop=stop,
+) + f" | last {len(df)} bars"
+if pattern_overlay is not None:
+    title += f" | flag ({pattern_overlay.confidence:.2f})"
+
+# hlines + colors must stay length-aligned:
+_hlines_list = [pivot]
+_hlines_colors = ["green"]
+if stop is not None and stop > 0.0:
+    _hlines_list.append(stop)
+    _hlines_colors.append("red")
+
+# Replace the old hlines kwarg:
+hlines=dict(hlines=_hlines_list, colors=_hlines_colors, linestyle="--"),
+```
+
+(c) Add the `_build_chart_title` helper at module scope of `swing/rendering/charts.py` (used by render_chart in step (b) above and tested directly by the title-format test). The helper uses ` | ` separator to match the existing format's separator style; the `| last N bars` suffix is appended at the call site so the helper stays focused on the pivot/stop rendering:
 
 ```python
 def _build_chart_title(*, ticker: str, pivot: float, stop: float | None) -> str:
-    """Build the chart title segment-by-segment.
+    """Build the ticker + pivot/stop segment of the chart title.
 
     Spec §A: when stop is None or <= 0, the `stop X.XX` segment is omitted
     entirely (avoids matplotlib auto-scaling y-axis to include zero).
-    Per CLAUDE.md mathtext gotcha, NO `$`, `^`, `_`, or unbalanced `\` in
+    Per CLAUDE.md mathtext gotcha, NO `$`, `^`, `_`, or unbalanced `\\` in
     the format — those metacharacters trigger mathtext interpretation and
     silently italicize / consume glyphs.
+
+    The caller (render_chart) appends the `| last N bars` suffix and any
+    pattern-overlay segment.
     """
     parts = [ticker, f"pivot {pivot:.2f}"]
     if stop is not None and stop > 0.0:
         parts.append(f"stop {stop:.2f}")
-    return "  ".join(parts)
-```
-
-(b) Update `render_chart` to use the helper for its title arg AND apply the conditional to the hline-build section:
-
-```python
-# Before (illustrative):
-hlines = [pivot, stop]
-labels = [f"pivot {pivot:.2f}", f"stop {stop:.2f}"]
-title = f"{ticker}  pivot {pivot:.2f}  stop {stop:.2f}"
-
-# After:
-hlines = [pivot]
-labels = [f"pivot {pivot:.2f}"]
-if stop is not None and stop > 0.0:
-    hlines.append(stop)
-    labels.append(f"stop {stop:.2f}")
-title = _build_chart_title(ticker=ticker, pivot=pivot, stop=stop)
+    return " | ".join(parts)
 ```
 
 The exact pre-existing code structure depends on the current `render_chart` signature; implementer reads the function at execution time and applies the conditional consistently to BOTH the hline list AND the title string. Both must omit the `stop` segment when `stop is None or stop <= 0.0`.
@@ -2261,8 +2394,8 @@ git commit -m "feat(rendering): Task 6 — omit stop hline + title segment when 
 **Goal:** Instrument `_step_charts` with a wall-time timer that brackets all chart-step work (from entry through last fenced write). Emit a WARNING log line if `> 60s` and an ERROR log line if `> 120s`. The integration test uses a synthetic-slow `fetcher.get` stub to make the timer cross thresholds deterministically; assertions are on log records (via `caplog`), not on real timing.
 
 **Files:**
-- Modify: `swing/pipeline/runner.py` (timer + log emit at end of `_step_charts`)
-- Modify: `tests/pipeline/test_runner_chart_targets.py` (or a sibling — verify path at execution time)
+- Modify: `swing/pipeline/runner.py` (module-level `import time` if not already present; timer instrumentation in `_step_charts`)
+- Create: `tests/pipeline/test_runner_chart_step_walltime.py` (new file)
 
 - [ ] **Step 1: Write failing log-capture tests**
 
@@ -2705,14 +2838,25 @@ Per spec §C "Reviewer-checklist hardening (Codex R4 Minor 2)" — explicit done
 Concrete steps:
 
 ```bash
-# Enumerate all call sites
+# Enumerate all call sites (production)
 grep -RnE 'resolve_chart_scope\(' swing/
 
 # Expected post-Task-3: exactly 3 production call sites:
 #   swing/web/routes/charts.py
 #   swing/web/view_models/open_positions_row.py
 #   swing/web/view_models/watchlist.py
-# Plus tests/web/test_chart_scope.py and tests/web/test_routes/test_charts_route.py.
+
+# Enumerate all call sites (tests) — should ALL be migrated to binding= kwarg
+grep -RnE 'resolve_chart_scope\(' tests/
+
+# Expected non-empty results across:
+#   tests/web/test_chart_scope.py
+#   tests/web/test_chart_scope_fk.py
+#   tests/web/test_chart_scope_t5_reason_split.py
+#   tests/web/test_routes/test_charts_route.py
+#   tests/web/test_view_models/test_watchlist_expand.py (or wherever the new caller test landed)
+#   tests/web/test_routes/test_open_positions_expand.py (or equivalent)
+# All must use the `binding=` kwarg pattern post-Task-3.
 ```
 
 For each production call site, confirm by inspection:
