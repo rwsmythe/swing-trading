@@ -4,6 +4,10 @@ The pure assembler `_open_positions_row_vm` has NO I/O and is called by
 `build_dashboard` in its batched path. The convenience wrapper
 `build_open_positions_row` does the per-row I/O and is used by POST-success
 handlers that need exactly one row (spec §3.4).
+
+Tier-2 #3 also defines `OpenPositionsExpandedVM` and `build_open_positions_expanded`
+for the open-positions row click-to-expand chart-display fragment (mirrors
+WatchlistExpandedVM's chart_reason / data_asof_date contract).
 """
 from __future__ import annotations
 
@@ -14,10 +18,11 @@ from datetime import datetime
 from swing.config import Config
 from swing.data.db import connect
 from swing.data.models import Trade
-from swing.data.repos.trades import list_exits_for_trade
+from swing.data.repos.trades import get_trade, list_exits_for_trade
 from swing.data.repos.weather import get_latest
 from swing.evaluation.dates import action_session_for_run
 from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
+from swing.web.chart_scope import resolve_chart_scope
 from swing.web.price_cache import PriceCache, PriceSnapshot
 from swing.web.view_models.dashboard import AdvisorySuggestionVM
 
@@ -131,4 +136,62 @@ def build_open_positions_row(
         price_snapshot=snapshot,
         remaining_shares=remaining,
         advisories=advisories,
+    )
+
+
+@dataclass(frozen=True)
+class OpenPositionsExpandedVM:
+    """Tier-2 #3 — fragment-input VM for the open-positions click-to-expand
+    chart-display row. Mirrors WatchlistExpandedVM's chart_reason contract
+    so the same chart-unavailable rendering pattern applies.
+
+    `data_asof_date` is the latest completed pipeline run's data_asof_date,
+    used to construct the date-prefixed `/charts/<date>/<ticker>.png` URL
+    when the chart is available. `chart_reason` and `chart_reason_message`
+    are returned verbatim from `swing.web.chart_scope.resolve_chart_scope`.
+    """
+    trade_id: int
+    ticker: str
+    data_asof_date: str | None
+    chart_reason: str | None
+    chart_reason_message: str | None
+
+
+def build_open_positions_expanded(
+    *, conn: sqlite3.Connection, cfg: Config, trade_id: int,
+) -> OpenPositionsExpandedVM | None:
+    """Resolve the expanded-row VM for an open trade.
+
+    Returns None when:
+      - The trade does not exist, OR
+      - The trade exists but is not currently open (closed trades 404 the
+        route — closed-trade ids must not display open-positions UI).
+
+    Otherwise returns a VM populated with the latest completed pipeline run's
+    data_asof_date and the chart_scope-resolved chart-availability tuple.
+    Note: when no completed pipeline run exists, data_asof_date is None and
+    the resolver returns 'no-run' so the partial renders the chart-unavailable
+    message instead of a broken /charts URL.
+    """
+    trade = get_trade(conn, trade_id)
+    if trade is None or trade.status != "open":
+        return None
+
+    pipe_row = conn.execute(
+        """SELECT data_asof_date FROM pipeline_runs
+           WHERE state = 'complete'
+           ORDER BY finished_ts DESC LIMIT 1""",
+    ).fetchone()
+    data_asof = pipe_row[0] if pipe_row else None
+
+    chart_reason, chart_reason_message = resolve_chart_scope(
+        conn, ticker=trade.ticker, charts_dir=cfg.paths.charts_dir,
+        chart_top_n_watch=cfg.pipeline.chart_top_n_watch,
+    )
+    return OpenPositionsExpandedVM(
+        trade_id=trade.id,
+        ticker=trade.ticker,
+        data_asof_date=data_asof,
+        chart_reason=chart_reason,
+        chart_reason_message=chart_reason_message,
     )

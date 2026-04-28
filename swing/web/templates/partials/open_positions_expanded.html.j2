@@ -1,0 +1,40 @@
+{#- Tier-2 #3: open-positions row expanded fragment.
+    Expects: expanded (OpenPositionsExpandedVM)
+
+    V1 scope-limit (per chart-access UX brief §2): expanded row contains
+    chart only — no P&L breakdown, no advisories list, no recent events.
+    Operator can request additional fields as a separate post-V1 dispatch.
+
+    Chart-display block intentionally duplicates watchlist_expanded.html.j2
+    lines 33-40 (CLAUDE.md HTMX OOB-swap drift gotcha allows verbatim
+    duplication when factoring would force changes outside scope; the
+    watchlist expand pattern is explicitly out-of-scope per brief §2).
+    If a future dispatch factors a shared chart_display partial, BOTH
+    files must migrate together.
+
+    Colspan must match the compact open_positions_row.html.j2 cell count
+    (8 cells: Ticker, Entry date, Entry price, Shares, Current stop, Last,
+    Advisory, Actions). A mismatch breaks the table layout.
+-#}
+<tr id="open-position-{{ expanded.trade_id }}" class="expanded">
+  <td colspan="8">
+    <button class="close-expanded"
+            type="button"
+            onclick="event.stopPropagation()"
+            hx-get="/trades/open/{{ expanded.trade_id }}/row"
+            hx-target="closest tr"
+            hx-swap="outerHTML"
+            hx-headers='{"HX-Request": "true"}'
+            aria-label="Close expanded row for {{ expanded.ticker }}"
+            title="Close">✕</button>
+    <h3>{{ expanded.ticker }}</h3>
+    {% if expanded.chart_reason is none and expanded.data_asof_date %}
+      <img src="/charts/{{ expanded.data_asof_date }}/{{ expanded.ticker }}.png"
+           alt="Chart {{ expanded.ticker }}">
+    {% elif expanded.chart_reason_message %}
+      <div class="chart-unavailable" data-chart-reason="{{ expanded.chart_reason }}">
+        {{ expanded.chart_reason_message }}
+      </div>
+    {% endif %}
+  </td>
+</tr>

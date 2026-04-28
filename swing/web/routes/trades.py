@@ -25,7 +25,10 @@ from swing.trades.entry import (
 )
 from swing.trades.equity import current_equity
 from swing.web.view_models.dashboard import build_dashboard
-from swing.web.view_models.open_positions_row import build_open_positions_row
+from swing.web.view_models.open_positions_row import (
+    build_open_positions_expanded,
+    build_open_positions_row,
+)
 from swing.web.view_models.trades import build_entry_form_vm, build_exit_form_vm, build_stop_form_vm
 
 log = logging.getLogger(__name__)
@@ -779,3 +782,66 @@ def stop_post(
         request=request, row=row_vm,
     )
     return HTMLResponse(Markup(row_html))
+
+
+# Tier-2 #3 — open-positions row click-to-expand (chart-display fragment).
+# trade_id is the route key (more unambiguous than ticker — defends against
+# the closed/reopened-position edge case where two trades exist for the
+# same ticker).
+
+
+@router.get("/trades/open/{trade_id}/expand", response_class=HTMLResponse)
+def open_position_expand(request: Request, trade_id: int):
+    """Render the open-positions expanded fragment for `trade_id`. 404 when
+    the trade does not exist OR is not currently open (closed trades must
+    not display the open-positions UI)."""
+    cfg = request.app.state.cfg
+    templates = request.app.state.templates
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            expanded = build_open_positions_expanded(
+                conn=conn, cfg=cfg, trade_id=trade_id,
+            )
+    finally:
+        conn.close()
+    if expanded is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Trade #{trade_id} not found or not open",
+        )
+    return templates.TemplateResponse(
+        request, "partials/open_positions_expanded.html.j2",
+        {"expanded": expanded},
+    )
+
+
+@router.get("/trades/open/{trade_id}/row", response_class=HTMLResponse)
+def open_position_row(request: Request, trade_id: int):
+    """Return the compact open-positions row partial for `trade_id`. Used by
+    the close button on an expanded row to swap back to the compact state
+    without a full page reload. Mirrors /watchlist/<ticker>/row contract:
+    404 on unknown/closed trade, 200 + <tr> body on success."""
+    cfg = request.app.state.cfg
+    cache = request.app.state.price_cache
+    executor = request.app.state.price_fetch_executor
+    templates = request.app.state.templates
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        trade = get_trade(conn, trade_id)
+    finally:
+        conn.close()
+    if trade is None or trade.status != "open":
+        raise HTTPException(
+            status_code=404,
+            detail=f"Trade #{trade_id} not found or not open",
+        )
+
+    row_vm = build_open_positions_row(
+        trade=trade, cfg=cfg, cache=cache,
+        ohlcv_cache=request.app.state.ohlcv_cache, executor=executor,
+    )
+    return templates.TemplateResponse(
+        request, "partials/open_positions_row.html.j2", {"row": row_vm},
+    )

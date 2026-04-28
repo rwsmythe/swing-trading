@@ -3,8 +3,16 @@
       trade (Trade), price_snapshot (PriceSnapshot|None),
       remaining_shares (int), advisories (tuple[AdvisorySuggestionVM, ...]).
     No dual-contract / legacy locals branch. All call sites MUST pass `row`.
-    Task 13: Exit button added. Adjust stop button appended in Task 15. -#}
-<tr id="open-position-{{ row.trade.id }}">
+    Task 13: Exit button added. Adjust stop button appended in Task 15.
+    Tier-2 #3: <tr> carries hx-get='/trades/open/<id>/expand' for click-to-
+    expand chart-display; Exit/Adjust buttons need event.stopPropagation()
+    so a button click doesn't also fire the row's expand binding (Bug-1
+    lesson — see CLAUDE.md HTMX click propagation gotcha). -#}
+<tr id="open-position-{{ row.trade.id }}"
+    hx-get="/trades/open/{{ row.trade.id }}/expand"
+    hx-target="closest tr"
+    hx-swap="outerHTML"
+    hx-headers='{"HX-Request": "true"}'>
   <td>{{ row.trade.ticker }}</td>
   <td>{{ row.trade.entry_date }}</td>
   <td>${{ '%.2f' | format(row.trade.entry_price) }}</td>
@@ -22,10 +30,12 @@
     {% endfor %}
   </td>
   <td class="row-actions">
-    <button hx-get="/trades/{{ row.trade.id }}/exit/form"
+    <button onclick="event.stopPropagation()"
+            hx-get="/trades/{{ row.trade.id }}/exit/form"
             hx-target="closest tr" hx-swap="outerHTML"
             hx-headers='{"HX-Request": "true"}'>Exit</button>
-    <button hx-get="/trades/{{ row.trade.id }}/stop/form"
+    <button onclick="event.stopPropagation()"
+            hx-get="/trades/{{ row.trade.id }}/stop/form"
             hx-target="closest tr" hx-swap="outerHTML"
             hx-headers='{"HX-Request": "true"}'>Adjust stop</button>
   </td>
