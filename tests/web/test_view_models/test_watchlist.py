@@ -319,6 +319,124 @@ def test_watchlist_expanded_template_renders_pipeline_failed_reason(
     assert "onerror=" not in body
 
 
+def test_build_watchlist_expanded_uses_binding_not_re_read(seeded_db, monkeypatch):
+    """build_watchlist_expanded uses binding's data_asof_date AND the resolver
+    answer that goes with it, NOT a re-read of pipeline_runs.
+
+    Setup: same pattern as the open-positions caller test. Two completed
+    runs; AAPL is in runN's chart_targets but NOT runN+1's. Watchlist has
+    AAPL active. Monkeypatch
+    `swing.web.view_models.watchlist.latest_completed_pipeline_run` to
+    return runN's binding.
+
+    Discriminating verification: pre-fix watchlist.py:243-260 did its own
+    SELECT for `data_asof_date` AND the resolver re-read. Pre-fix
+    data_asof would be runN+1's '2026-04-02' AND chart_reason would be
+    'out-of-scope' (AAPL not in runN+1's targets). Post-fix: data_asof
+    pinned to runN's '2026-04-01' AND chart_reason is None.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from swing.web.chart_scope import PipelineRunBinding
+    from swing.web.price_cache import PriceCache
+    from swing.web.view_models.watchlist import build_watchlist_expanded
+
+    cfg, _cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            # Eval runs first (FK-backed path).
+            conn.execute(
+                """INSERT INTO evaluation_runs (id, run_ts, data_asof_date,
+                                                 action_session_date, finviz_csv_path,
+                                                 tickers_evaluated, aplus_count,
+                                                 watch_count, skip_count, excluded_count,
+                                                 error_count, rs_universe_version,
+                                                 rs_universe_hash)
+                   VALUES (450, '2026-04-01T09:00:00', '2026-04-01', '2026-04-02', NULL,
+                           1, 1, 0, 0, 0, 0, 'v1', 'deadbeef')""",
+            )
+            conn.execute(
+                """INSERT INTO evaluation_runs (id, run_ts, data_asof_date,
+                                                 action_session_date, finviz_csv_path,
+                                                 tickers_evaluated, aplus_count,
+                                                 watch_count, skip_count, excluded_count,
+                                                 error_count, rs_universe_version,
+                                                 rs_universe_hash)
+                   VALUES (451, '2026-04-02T09:00:00', '2026-04-02', '2026-04-03', NULL,
+                           1, 1, 0, 0, 0, 0, 'v1', 'deadbeef')""",
+            )
+            # Two runs, different dates; AAPL chart_target only in runN — eval id 450.
+            conn.execute(
+                """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
+                                               data_asof_date, action_session_date,
+                                               charts_status, evaluation_run_id,
+                                               trigger, lease_token)
+                   VALUES (400, '2026-04-01T09:00:00', '2026-04-01T09:30:00',
+                           'complete', '2026-04-01', '2026-04-02', 'ok', 450,
+                           'manual', 'tok-400')""",
+            )
+            conn.execute(
+                """INSERT INTO pipeline_chart_targets
+                   (pipeline_run_id, ticker, source, chart_status)
+                   VALUES (400, 'AAPL', 'tag_aware_top_n', 'ok')""",
+            )
+            conn.execute(
+                """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
+                                               data_asof_date, action_session_date,
+                                               charts_status, evaluation_run_id,
+                                               trigger, lease_token)
+                   VALUES (401, '2026-04-02T09:00:00', '2026-04-02T09:30:00',
+                           'complete', '2026-04-02', '2026-04-03', 'ok', 451,
+                           'manual', 'tok-401')""",
+            )
+            # Active watchlist row for AAPL.
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="AAPL", added_date="2026-04-01",
+                last_qualified_date="2026-04-01", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-01",
+                entry_target=100.0, initial_stop_target=95.0,
+                last_close=99.0, last_pivot=100.0, last_stop=95.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+        # PNG on disk for runN's date.
+        (cfg.paths.charts_dir / "2026-04-01").mkdir(parents=True, exist_ok=True)
+        (cfg.paths.charts_dir / "2026-04-01" / "AAPL.png").write_bytes(b"png-stub")
+    finally:
+        conn.close()
+
+    runN_binding = PipelineRunBinding(
+        run_id=400, finished_ts="2026-04-01T09:30:00",
+        data_asof_date="2026-04-01", charts_status="ok",
+        evaluation_run_id=450,
+    )
+    monkeypatch.setattr(
+        "swing.web.view_models.watchlist.latest_completed_pipeline_run",
+        lambda _conn: runN_binding,
+    )
+
+    cache = PriceCache(cfg)
+    monkeypatch.setattr(cache, "get_many",
+        lambda tickers, deadline_seconds, *, executor=None: {})
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        vm = build_watchlist_expanded(
+            cfg=cfg, cache=cache, ticker="AAPL", executor=executor,
+        )
+
+    assert vm is not None
+    assert vm.data_asof_date == "2026-04-01", (
+        f"expected runN's data_asof; got {vm.data_asof_date!r}; "
+        "regression: builder did its own SELECT on pipeline_runs"
+    )
+    assert vm.chart_reason is None, (
+        f"expected chart-available (binding=runN, AAPL in runN's targets); "
+        f"got reason={vm.chart_reason!r}; "
+        "regression: resolver re-read pipeline_runs and bound to runN+1"
+    )
+
+
 def test_watchlist_expanded_template_shows_img_when_chart_available(
     seeded_db, monkeypatch, tmp_path,
 ):
