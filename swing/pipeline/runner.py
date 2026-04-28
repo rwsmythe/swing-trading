@@ -553,13 +553,25 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
     from swing.data.repos.trades import list_open_trades  # NEW (Task 5)
     conn = connect(cfg.paths.db_path)
     try:
-        candidates = fetch_candidates_for_run(conn, eval_run_id)
-        watchlist = list_active_watchlist(conn)
-        # Task 5 (spec §A "Open-position tier"): read open trades inside the
-        # same snapshot block — must happen BEFORE conn.close() below so the
-        # 3-tier composition sees a consistent view of candidates +
-        # watchlist + trades.
-        open_trades = list_open_trades(conn)
+        # Spec §A "Open-position tier snapshot semantics": all three reads
+        # MUST observe the same committed DB state. Without an explicit
+        # transaction, SQLite begins a fresh read transaction per statement
+        # — a concurrent writer (e.g., operator entering a trade mid-pipeline)
+        # could tear the snapshot across tiers.
+        conn.execute("BEGIN")
+        try:
+            candidates = fetch_candidates_for_run(conn, eval_run_id)
+            watchlist = list_active_watchlist(conn)
+            # Task 5 (spec §A "Open-position tier"): read open trades inside the
+            # same snapshot block — must happen BEFORE conn.close() below so the
+            # 3-tier composition sees a consistent view of candidates +
+            # watchlist + trades.
+            open_trades = list_open_trades(conn)
+        finally:
+            # Read-only transaction — ROLLBACK to release the read lock without
+            # writing anything (COMMIT would be valid too; ROLLBACK is more
+            # explicit about the read-only intent).
+            conn.execute("ROLLBACK")
     finally:
         conn.close()
 
