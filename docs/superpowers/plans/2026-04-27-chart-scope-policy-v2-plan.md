@@ -2973,7 +2973,7 @@ Each item must point to a passing test:
 - `latest_completed_pipeline_run`, `PipelineRunBinding`, race-tightening, signature → Task 2's 5 tests + Task 3's 3 chart-scope tests.
 - Caller migration tests → Task 3 sub-commits (charts route binding test + open-positions binding test + watchlist binding test).
 - Tag-aware sort byte-identity → Task 4's 3 tests.
-- Stop-hline omission → Task 6's 4 tests.
+- Stop-hline omission + title format + render-to-helper wiring → Task 6's 5 tests.
 - Wall-time monitoring → Task 7's 4 tests.
 - Config knob default → Task 8's 1 test.
 
