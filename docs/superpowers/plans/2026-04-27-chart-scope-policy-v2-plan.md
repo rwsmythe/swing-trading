@@ -693,9 +693,11 @@ binding = latest_completed_pipeline_run(conn)
 assert binding is not None, "test fixture must seed at least one completed run"
 reason, msg = resolve_chart_scope(
     conn, binding=binding, ticker="AAPL",
-    charts_dir=tmp_path, chart_top_n_watch=5,
+    charts_dir=tmp_path, chart_top_n_watch=5,  # literal test data, NOT runtime default
 )
 ```
+
+(The literal `chart_top_n_watch=5` here is preserved test data — it pre-dates Task 8's default change. Each existing test pinned its own N value; the runtime default change does not break them. Implementer should NOT update existing test literals to 10 unless an individual test specifically asserted on the runtime default. Codex R3 Minor 1.)
 
 For tests asserting on the `'no-run'` reason (pre-fix triggered by `latest is None` inside the resolver), the helper now returns `None` and the resolver is no longer called at all — the test must instead assert that `latest_completed_pipeline_run(conn)` returned None and call sites would short-circuit to `'no-run'` themselves. If a test was specifically pinning the OLD resolver-internal behavior, change its assertion to pin the helper-returns-None contract instead.
 
@@ -727,28 +729,54 @@ def test_resolve_chart_scope_uses_binding_run_id_not_latest_select(db_conn, tmp_
     `(cfg, conn)`. NOT `seeded_db` (which yields cfg, cfg_path).
     """
     cfg, conn = db_conn
-    # Seed runN with AAPL.
+    # Seed eval runs (Codex R3 Major 1: race-tightening contract is verified
+    # for the FK-backed path `_resolve_via_chart_targets`, which fires only
+    # when binding.evaluation_run_id is non-None. Tests with NULL eval id
+    # would route through `_resolve_via_heuristic` and verify the WRONG
+    # branch.) Spec §C: binding.evaluation_run_id is set when the pipeline
+    # ran post-migration-0006 (production case for V2 chart-scope policy).
+    conn.execute(
+        """INSERT INTO evaluation_runs (id, run_ts, data_asof_date,
+                                         action_session_date, finviz_csv_path,
+                                         tickers_evaluated, aplus_count,
+                                         watch_count, skip_count, excluded_count,
+                                         error_count, rs_universe_version,
+                                         rs_universe_hash)
+           VALUES (50, '2026-04-01T09:00:00', '2026-04-01', '2026-04-02', NULL,
+                   1, 1, 0, 0, 0, 0, 'v1', 'deadbeef')""",
+    )
+    conn.execute(
+        """INSERT INTO evaluation_runs (id, run_ts, data_asof_date,
+                                         action_session_date, finviz_csv_path,
+                                         tickers_evaluated, aplus_count,
+                                         watch_count, skip_count, excluded_count,
+                                         error_count, rs_universe_version,
+                                         rs_universe_hash)
+           VALUES (51, '2026-04-02T09:00:00', '2026-04-02', '2026-04-03', NULL,
+                   1, 1, 0, 0, 0, 0, 'v1', 'deadbeef')""",
+    )
+    # Seed runN with AAPL — evaluation_run_id=50 routes through FK-backed path.
     conn.execute(
         """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
                                        data_asof_date, action_session_date,
                                        charts_status, evaluation_run_id,
                                        trigger, lease_token)
            VALUES (100, '2026-04-01T09:00:00', '2026-04-01T09:30:00',
-                   'complete', '2026-04-01', '2026-04-02', 'ok', NULL,
+                   'complete', '2026-04-01', '2026-04-02', 'ok', 50,
                    'manual', 'tok-100')""",
     )
     conn.execute(
         """INSERT INTO pipeline_chart_targets (pipeline_run_id, ticker, source, chart_status)
            VALUES (100, 'AAPL', 'aplus', 'ok')""",
     )
-    # Seed runN+1 with MSFT (newer, would win a re-SELECT).
+    # Seed runN+1 with MSFT (newer, would win a re-SELECT) — eval id=51.
     conn.execute(
         """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
                                        data_asof_date, action_session_date,
                                        charts_status, evaluation_run_id,
                                        trigger, lease_token)
            VALUES (101, '2026-04-02T09:00:00', '2026-04-02T09:30:00',
-                   'complete', '2026-04-02', '2026-04-03', 'ok', NULL,
+                   'complete', '2026-04-02', '2026-04-03', 'ok', 51,
                    'manual', 'tok-101')""",
     )
     conn.execute(
@@ -760,11 +788,11 @@ def test_resolve_chart_scope_uses_binding_run_id_not_latest_select(db_conn, tmp_
     charts_dir = tmp_path / "charts"
     (charts_dir / "2026-04-01").mkdir(parents=True)
     (charts_dir / "2026-04-01" / "AAPL.png").write_bytes(b"png-stub")
-    # Pin to runN (the older run).
+    # Pin to runN (the older run) with FK-backed eval id.
     binding = PipelineRunBinding(
         run_id=100, finished_ts="2026-04-01T09:30:00",
         data_asof_date="2026-04-01", charts_status="ok",
-        evaluation_run_id=None,
+        evaluation_run_id=50,
     )
     # AAPL is in-scope ONLY for runN. Pre-fix resolver re-reads
     # pipeline_runs, picks runN+1, finds no AAPL row, returns
@@ -986,14 +1014,37 @@ def test_charts_redirect_uses_binding_data_asof_not_re_read(seeded_db, monkeypat
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
-            # Seed runN (older, with AAPL chart_target).
+            # Seed eval runs first (Codex R3 Major 1: race-tightening contract
+            # is verified for the FK-backed path which only fires when
+            # binding.evaluation_run_id is non-None).
+            conn.execute(
+                """INSERT INTO evaluation_runs (id, run_ts, data_asof_date,
+                                                 action_session_date, finviz_csv_path,
+                                                 tickers_evaluated, aplus_count,
+                                                 watch_count, skip_count, excluded_count,
+                                                 error_count, rs_universe_version,
+                                                 rs_universe_hash)
+                   VALUES (250, '2026-04-01T09:00:00', '2026-04-01', '2026-04-02', NULL,
+                           1, 1, 0, 0, 0, 0, 'v1', 'deadbeef')""",
+            )
+            conn.execute(
+                """INSERT INTO evaluation_runs (id, run_ts, data_asof_date,
+                                                 action_session_date, finviz_csv_path,
+                                                 tickers_evaluated, aplus_count,
+                                                 watch_count, skip_count, excluded_count,
+                                                 error_count, rs_universe_version,
+                                                 rs_universe_hash)
+                   VALUES (251, '2026-04-02T09:00:00', '2026-04-02', '2026-04-03', NULL,
+                           1, 1, 0, 0, 0, 0, 'v1', 'deadbeef')""",
+            )
+            # Seed runN (older, with AAPL chart_target) — eval_run_id=250.
             conn.execute(
                 """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
                                                data_asof_date, action_session_date,
                                                charts_status, evaluation_run_id,
                                                trigger, lease_token)
                    VALUES (200, '2026-04-01T09:00:00', '2026-04-01T09:30:00',
-                           'complete', '2026-04-01', '2026-04-02', 'ok', NULL,
+                           'complete', '2026-04-01', '2026-04-02', 'ok', 250,
                            'manual', 'tok-200')""",
             )
             conn.execute(
@@ -1008,7 +1059,7 @@ def test_charts_redirect_uses_binding_data_asof_not_re_read(seeded_db, monkeypat
                                                charts_status, evaluation_run_id,
                                                trigger, lease_token)
                    VALUES (201, '2026-04-02T09:00:00', '2026-04-02T09:30:00',
-                           'complete', '2026-04-02', '2026-04-03', 'ok', NULL,
+                           'complete', '2026-04-02', '2026-04-03', 'ok', 251,
                            'manual', 'tok-201')""",
             )
             conn.execute(
@@ -1022,10 +1073,12 @@ def test_charts_redirect_uses_binding_data_asof_not_re_read(seeded_db, monkeypat
     _write_chart(cfg.paths.charts_dir, date="2026-04-01", ticker="AAPL")
 
     # Monkeypatch the helper to return runN's binding deterministically.
+    # FK-backed path: evaluation_run_id=250 routes resolver to
+    # _resolve_via_chart_targets (the actual race-tightened branch).
     runN_binding = PipelineRunBinding(
         run_id=200, finished_ts="2026-04-01T09:30:00",
         data_asof_date="2026-04-01", charts_status="ok",
-        evaluation_run_id=None,
+        evaluation_run_id=250,
     )
     monkeypatch.setattr(
         "swing.web.routes.charts.latest_completed_pipeline_run",
@@ -1135,14 +1188,36 @@ def test_build_open_positions_expanded_uses_binding_not_re_read(
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
-            # Two runs, different dates; AAPL in-scope ONLY for runN.
+            # Eval runs first (Codex R3 Major 1: FK-backed path requires
+            # evaluation_run_id to be non-NULL on each pipeline_run).
+            conn.execute(
+                """INSERT INTO evaluation_runs (id, run_ts, data_asof_date,
+                                                 action_session_date, finviz_csv_path,
+                                                 tickers_evaluated, aplus_count,
+                                                 watch_count, skip_count, excluded_count,
+                                                 error_count, rs_universe_version,
+                                                 rs_universe_hash)
+                   VALUES (350, '2026-04-01T09:00:00', '2026-04-01', '2026-04-02', NULL,
+                           1, 1, 0, 0, 0, 0, 'v1', 'deadbeef')""",
+            )
+            conn.execute(
+                """INSERT INTO evaluation_runs (id, run_ts, data_asof_date,
+                                                 action_session_date, finviz_csv_path,
+                                                 tickers_evaluated, aplus_count,
+                                                 watch_count, skip_count, excluded_count,
+                                                 error_count, rs_universe_version,
+                                                 rs_universe_hash)
+                   VALUES (351, '2026-04-02T09:00:00', '2026-04-02', '2026-04-03', NULL,
+                           1, 1, 0, 0, 0, 0, 'v1', 'deadbeef')""",
+            )
+            # Two runs, different dates; AAPL in-scope ONLY for runN — eval id 350.
             conn.execute(
                 """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
                                                data_asof_date, action_session_date,
                                                charts_status, evaluation_run_id,
                                                trigger, lease_token)
                    VALUES (300, '2026-04-01T09:00:00', '2026-04-01T09:30:00',
-                           'complete', '2026-04-01', '2026-04-02', 'ok', NULL,
+                           'complete', '2026-04-01', '2026-04-02', 'ok', 350,
                            'manual', 'tok-300')""",
             )
             conn.execute(
@@ -1156,7 +1231,7 @@ def test_build_open_positions_expanded_uses_binding_not_re_read(
                                                charts_status, evaluation_run_id,
                                                trigger, lease_token)
                    VALUES (301, '2026-04-02T09:00:00', '2026-04-02T09:30:00',
-                           'complete', '2026-04-02', '2026-04-03', 'ok', NULL,
+                           'complete', '2026-04-02', '2026-04-03', 'ok', 351,
                            'manual', 'tok-301')""",
             )
             # Open AAPL trade. Trade dataclass fields per swing/data/models.py:54-77;
@@ -1183,7 +1258,7 @@ def test_build_open_positions_expanded_uses_binding_not_re_read(
         runN_binding = PipelineRunBinding(
             run_id=300, finished_ts="2026-04-01T09:30:00",
             data_asof_date="2026-04-01", charts_status="ok",
-            evaluation_run_id=None,
+            evaluation_run_id=350,
         )
         monkeypatch.setattr(
             "swing.web.view_models.open_positions_row.latest_completed_pipeline_run",
@@ -1333,14 +1408,35 @@ def test_build_watchlist_expanded_uses_binding_not_re_read(seeded_db, monkeypatc
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
-            # Two runs, different dates; AAPL chart_target only in runN.
+            # Eval runs first (Codex R3 Major 1: FK-backed path).
+            conn.execute(
+                """INSERT INTO evaluation_runs (id, run_ts, data_asof_date,
+                                                 action_session_date, finviz_csv_path,
+                                                 tickers_evaluated, aplus_count,
+                                                 watch_count, skip_count, excluded_count,
+                                                 error_count, rs_universe_version,
+                                                 rs_universe_hash)
+                   VALUES (450, '2026-04-01T09:00:00', '2026-04-01', '2026-04-02', NULL,
+                           1, 1, 0, 0, 0, 0, 'v1', 'deadbeef')""",
+            )
+            conn.execute(
+                """INSERT INTO evaluation_runs (id, run_ts, data_asof_date,
+                                                 action_session_date, finviz_csv_path,
+                                                 tickers_evaluated, aplus_count,
+                                                 watch_count, skip_count, excluded_count,
+                                                 error_count, rs_universe_version,
+                                                 rs_universe_hash)
+                   VALUES (451, '2026-04-02T09:00:00', '2026-04-02', '2026-04-03', NULL,
+                           1, 1, 0, 0, 0, 0, 'v1', 'deadbeef')""",
+            )
+            # Two runs, different dates; AAPL chart_target only in runN — eval id 450.
             conn.execute(
                 """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
                                                data_asof_date, action_session_date,
                                                charts_status, evaluation_run_id,
                                                trigger, lease_token)
                    VALUES (400, '2026-04-01T09:00:00', '2026-04-01T09:30:00',
-                           'complete', '2026-04-01', '2026-04-02', 'ok', NULL,
+                           'complete', '2026-04-01', '2026-04-02', 'ok', 450,
                            'manual', 'tok-400')""",
             )
             conn.execute(
@@ -1354,7 +1450,7 @@ def test_build_watchlist_expanded_uses_binding_not_re_read(seeded_db, monkeypatc
                                                charts_status, evaluation_run_id,
                                                trigger, lease_token)
                    VALUES (401, '2026-04-02T09:00:00', '2026-04-02T09:30:00',
-                           'complete', '2026-04-02', '2026-04-03', 'ok', NULL,
+                           'complete', '2026-04-02', '2026-04-03', 'ok', 451,
                            'manual', 'tok-401')""",
             )
             # Active watchlist row for AAPL.
@@ -1375,7 +1471,7 @@ def test_build_watchlist_expanded_uses_binding_not_re_read(seeded_db, monkeypatc
     runN_binding = PipelineRunBinding(
         run_id=400, finished_ts="2026-04-01T09:30:00",
         data_asof_date="2026-04-01", charts_status="ok",
-        evaluation_run_id=None,
+        evaluation_run_id=450,
     )
     monkeypatch.setattr(
         "swing.web.view_models.watchlist.latest_completed_pipeline_run",
@@ -2070,7 +2166,7 @@ def _ohlcv(n: int = 80) -> pd.DataFrame:
     )
 
 
-def test_render_chart_omits_stop_hline_when_stop_is_none(tmp_path):
+def test_render_chart_omits_stop_hline_when_stop_is_none(tmp_path, monkeypatch):
     """Stop=None → no stop hline drawn AND no `stop X.XX` segment in title.
 
     Discriminating verification: capture the generated figure's HLines
@@ -2093,17 +2189,19 @@ def test_render_chart_omits_stop_hline_when_stop_is_none(tmp_path):
         # savefig branch is taken — see swing/rendering/charts.py:108.)
         return None
 
-    monkeypatch_savefig_path = pytest.MonkeyPatch()
-    try:
-        monkeypatch_savefig_path.setattr(
-            "swing.rendering.charts.mpf.plot", _capture_kwargs,
-        )
-        render_chart(
-            ticker="AAPL", ohlcv=_ohlcv(), pivot=110.0, stop=None,
-            output_path=out, pattern_overlay=None,
-        )
-    finally:
-        monkeypatch_savefig_path.undo()
+    # Patch `mplfinance.plot` directly on the mplfinance module — NOT via
+    # `swing.rendering.charts.mpf.plot` (mpf is imported function-locally
+    # inside render_chart's try/except, so it's NOT a module-level
+    # attribute of swing.rendering.charts and cannot be patched there).
+    # Patching the upstream module is robust because `mpf.plot(...)`
+    # resolves `plot` against the mplfinance module object at call time.
+    # Codex R3 Major 2.
+    import mplfinance
+    monkeypatch.setattr(mplfinance, "plot", _capture_kwargs)
+    render_chart(
+        ticker="AAPL", ohlcv=_ohlcv(), pivot=110.0, stop=None,
+        output_path=out, pattern_overlay=None,
+    )
     assert captured.get("hlines") == [110.0], (
         f"expected hlines=[110.0] (pivot only) when stop=None; "
         f"got {captured.get('hlines')!r}; "
@@ -2111,7 +2209,7 @@ def test_render_chart_omits_stop_hline_when_stop_is_none(tmp_path):
     )
 
 
-def test_render_chart_omits_stop_hline_when_stop_is_zero(tmp_path):
+def test_render_chart_omits_stop_hline_when_stop_is_zero(tmp_path, monkeypatch):
     """Stop=0.0 → same omission behavior as None.
 
     Discriminating verification: pre-fix code passed `stop=0.0` directly to
@@ -2125,17 +2223,19 @@ def test_render_chart_omits_stop_hline_when_stop_is_zero(tmp_path):
         captured["hlines"] = kwargs.get("hlines", {}).get("hlines", [])
         return None
 
-    monkeypatch_savefig_path = pytest.MonkeyPatch()
-    try:
-        monkeypatch_savefig_path.setattr(
-            "swing.rendering.charts.mpf.plot", _capture_kwargs,
-        )
-        render_chart(
-            ticker="AAPL", ohlcv=_ohlcv(), pivot=110.0, stop=0.0,
-            output_path=out, pattern_overlay=None,
-        )
-    finally:
-        monkeypatch_savefig_path.undo()
+    # Patch `mplfinance.plot` directly on the mplfinance module — NOT via
+    # `swing.rendering.charts.mpf.plot` (mpf is imported function-locally
+    # inside render_chart's try/except, so it's NOT a module-level
+    # attribute of swing.rendering.charts and cannot be patched there).
+    # Patching the upstream module is robust because `mpf.plot(...)`
+    # resolves `plot` against the mplfinance module object at call time.
+    # Codex R3 Major 2.
+    import mplfinance
+    monkeypatch.setattr(mplfinance, "plot", _capture_kwargs)
+    render_chart(
+        ticker="AAPL", ohlcv=_ohlcv(), pivot=110.0, stop=0.0,
+        output_path=out, pattern_overlay=None,
+    )
     assert captured.get("hlines") == [110.0], (
         f"expected hlines=[110.0] (pivot only) when stop=0.0; "
         f"got {captured.get('hlines')!r}; "
@@ -2156,41 +2256,13 @@ def test_render_chart_title_omits_stop_segment_when_stop_is_zero(tmp_path):
     its place.
 
     Title-extraction pattern (Phase 6 lesson): mpf renders title via
-    `fig.suptitle`, NOT `price_ax.set_title`. `price_ax.get_title()`
-    returns empty string under mpf default. To capture the title for
-    assertion, call `render_chart` through a wrapper that intercepts
-    the title arg, OR refactor render_chart to expose the title string
-    via the existing returnfig path. The simplest assertion: read the
-    title arg passed to mpf.plot via monkeypatch capture (see Phase 6
-    `test_chart_overlay.py` pattern for the capture helper).
+    `fig.suptitle`, NOT `price_ax.set_title`. Rather than capture mpf's
+    title kwarg through monkeypatch (which is brittle), this test calls
+    the new pure helper `_build_chart_title` directly — single source of
+    truth for the title's pivot/stop segment. The full rendered title
+    appended at the call site (`| last N bars`) is verified separately
+    by manual visual verification (Step 5).
     """
-    captured_titles: list[str] = []
-
-    def _capture_title(*args, **kwargs):
-        # mpf.plot signature: positional first arg is the OHLCV df;
-        # `title` kwarg is what render_chart passes through. Capture
-        # the title for inspection, then call original to render.
-        captured_titles.append(kwargs.get("title", ""))
-        # Return a minimal stub so render_chart's downstream save call
-        # behaves like a real mpf path. The actual save is intercepted
-        # via tmp_path fixture, so we don't need a real figure here.
-        return None
-
-    import mplfinance as mpf
-    monkeypatch_target = "swing.rendering.charts.mpf.plot"
-    # Use pytest's monkeypatch fixture (passed in via test signature).
-    # Implementer adds `monkeypatch` to the test's positional args.
-    # Fall back: if mpf.plot is imported as `from mplfinance import plot`,
-    # patch the imported name in swing.rendering.charts directly.
-    out = tmp_path / "AAPL.png"
-    # The actual assertion: render_chart with stop=0.0 produces a title
-    # WITHOUT the 'stop' segment.
-    # NOTE: this test asserts the CONTRACT of the title format, not the
-    # mechanics of mpf.plot. Per Phase 6 lesson, the title-string format
-    # is what render_chart constructs BEFORE passing to mpf.plot — we
-    # assert on render_chart's output directly. If render_chart returns
-    # the title (or exposes a helper `_build_chart_title(ticker, pivot,
-    # stop)`), test that helper directly:
     from swing.rendering.charts import _build_chart_title  # NEW helper
     title_stop_zero = _build_chart_title(ticker="AAPL", pivot=110.0, stop=0.0)
     title_stop_none = _build_chart_title(ticker="AAPL", pivot=110.0, stop=None)
@@ -2211,7 +2283,7 @@ def test_render_chart_title_omits_stop_segment_when_stop_is_zero(tmp_path):
         )
 
 
-def test_render_chart_renders_stop_hline_when_stop_is_positive(tmp_path):
+def test_render_chart_renders_stop_hline_when_stop_is_positive(tmp_path, monkeypatch):
     """Verified-empirically pin: positive stop renders the hline as before.
 
     Discriminating verification: catches a regression that omits the hline
@@ -2224,17 +2296,19 @@ def test_render_chart_renders_stop_hline_when_stop_is_positive(tmp_path):
         captured["hlines"] = kwargs.get("hlines", {}).get("hlines", [])
         return None
 
-    monkeypatch_savefig_path = pytest.MonkeyPatch()
-    try:
-        monkeypatch_savefig_path.setattr(
-            "swing.rendering.charts.mpf.plot", _capture_kwargs,
-        )
-        render_chart(
-            ticker="AAPL", ohlcv=_ohlcv(), pivot=110.0, stop=95.0,
-            output_path=out, pattern_overlay=None,
-        )
-    finally:
-        monkeypatch_savefig_path.undo()
+    # Patch `mplfinance.plot` directly on the mplfinance module — NOT via
+    # `swing.rendering.charts.mpf.plot` (mpf is imported function-locally
+    # inside render_chart's try/except, so it's NOT a module-level
+    # attribute of swing.rendering.charts and cannot be patched there).
+    # Patching the upstream module is robust because `mpf.plot(...)`
+    # resolves `plot` against the mplfinance module object at call time.
+    # Codex R3 Major 2.
+    import mplfinance
+    monkeypatch.setattr(mplfinance, "plot", _capture_kwargs)
+    render_chart(
+        ticker="AAPL", ohlcv=_ohlcv(), pivot=110.0, stop=95.0,
+        output_path=out, pattern_overlay=None,
+    )
     assert captured.get("hlines") == [110.0, 95.0], (
         f"expected hlines=[110.0, 95.0] (pivot + stop) when stop>0; "
         f"got {captured.get('hlines')!r}; "
