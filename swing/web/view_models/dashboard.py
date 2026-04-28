@@ -664,26 +664,37 @@ def _abs_proximity(w: WatchlistEntry) -> float:
     return abs(w.last_close - w.entry_target) / max(w.entry_target, 1e-6)
 
 
+def _tag_aware_sort_key(
+    entry: WatchlistEntry,
+    flag_tags: Mapping[str, tuple[str, ...]],
+) -> tuple[int, int, float, str]:
+    """4-key composite sort key. Spec §A.
+
+    Returns (-tag_count, -tag_precedence_score, abs_proximity, ticker).
+
+    Shared between _sort_watchlist (web view-model) and _step_charts
+    (pipeline) — by-construction byte identity for the chart-scope
+    tag-aware tier per spec §A "Tag-aware composite definition."
+    """
+    tags = flag_tags.get(entry.ticker, ())
+    return (
+        -len(tags),
+        -_tag_precedence_score(tags),
+        _abs_proximity(entry),
+        entry.ticker,
+    )
+
+
 def _sort_watchlist(
     watchlist: list[WatchlistEntry],
     flag_tags: Mapping[str, tuple[str, ...]],
 ) -> list[WatchlistEntry]:
-    """Four-key composite sort: tag count DESC, tag precedence DESC,
-    abs(% to pivot) ASC, ticker ASC for determinism. The trailing ticker
-    key is part of the contract — without it, Python's stable sort
-    preserves whatever order `list_active_watchlist` happens to return
-    on full-equality ties, which is non-deterministic. Tickers absent
-    from `flag_tags` get an empty tag tuple → score 0 → sort last among
-    the no-tag group, ordered by proximity."""
-    def key(w: WatchlistEntry):
-        tags = flag_tags.get(w.ticker, ())
-        return (
-            -len(tags),                    # tag count DESC
-            -_tag_precedence_score(tags),  # tag precedence DESC
-            _abs_proximity(w),             # proximity ASC
-            w.ticker,                      # ticker ASC (determinism)
-        )
-    return sorted(watchlist, key=key)
+    """4-key composite via _tag_aware_sort_key. The trailing ticker key is
+    part of the contract — without it, Python's stable sort preserves
+    whatever order list_active_watchlist happens to return on full-equality
+    ties, which is non-deterministic.
+    """
+    return sorted(watchlist, key=lambda w: _tag_aware_sort_key(w, flag_tags))
 
 
 def _flag_tags(candidates_by_ticker: Mapping[str, Candidate]) -> Mapping[str, tuple[str, ...]]:
