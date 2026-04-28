@@ -123,3 +123,15 @@ def test_load_raises_on_missing_section(tmp_path: Path):
     with pytest.raises(KeyError) as exc:
         load(cfg_file)
     assert "account" in str(exc.value).lower() or "section" in str(exc.value).lower()
+
+
+def test_pipeline_config_chart_top_n_watch_default_is_10():
+    """Spec §D — chart_top_n_watch default raised 5 → 10 in chart-scope
+    policy v2 (2026-04-27).
+
+    Discriminating verification: pre-fix returns 5; post-fix returns 10.
+    Asserting on the exact value catches both directions of regression.
+    """
+    from swing.config import PipelineConfig
+    cfg = PipelineConfig()
+    assert cfg.chart_top_n_watch == 10

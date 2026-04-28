@@ -115,7 +115,7 @@ class PipelineConfig:
     block_if_running_within_seconds: int = 120
     staging_orphan_age_seconds: int = 3600
     prev_dir_retention_days: int = 7
-    chart_top_n_watch: int = 5
+    chart_top_n_watch: int = 10  # was 5; raised in chart-scope policy v2 (2026-04-27)
 
 
 @dataclass(frozen=True)
