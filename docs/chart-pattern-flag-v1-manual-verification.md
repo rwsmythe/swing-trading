@@ -348,3 +348,47 @@ When all sections complete with checks passing:
 - [ ] Optionally amend this doc if any check should be added/removed/refined for future verification cycles.
 
 **Estimated time:** 30-45 min thorough walkthrough; ~10-15 min if just spot-checking key surfaces (§1.2 + §3.2 + §4.1 + §5.1 + §5.2).
+
+---
+
+## Post-V2 chart-scope policy (2026-04-27)
+
+After migration `0011` (chart-scope policy v2), `pipeline_chart_targets.source` accepts FOUR values: `aplus`, `near_proximity` (legacy, read-only post-migration), `open_position`, `tag_aware_top_n`.
+
+Chart-scope set per pipeline run is now the precedence-ordered union:
+
+1. `aplus` — A+ candidates (unchanged from V1).
+2. `open_position` — currently-open trades from `list_open_trades(conn)`. Pivot from `trades.entry_price`, stop from `trades.current_stop`. **Charts are generated during the scheduled pipeline run; a position opened AFTER the latest completed run remains unchartable until the next pipeline run.**
+3. `tag_aware_top_n` — top-N watchlist (default N=10, was 5) by Phase 4 4-key composite (tag count DESC, tag precedence DESC, proximity ASC, ticker ASC).
+
+Deduplication precedence: `aplus > open_position > tag_aware_top_n`. A ticker in multiple tiers is recorded ONCE under the highest-precedence source.
+
+### Verification queries (post-migration)
+
+```sql
+-- All chart-scope tickers for the latest completed run, with source
+SELECT ticker, source, chart_status
+FROM pipeline_chart_targets
+WHERE pipeline_run_id = (
+    SELECT id FROM pipeline_runs
+    WHERE state = 'complete' ORDER BY finished_ts DESC, id DESC LIMIT 1
+)
+ORDER BY ticker;
+
+-- Distribution of source values across the latest run
+SELECT source, COUNT(*) AS cnt
+FROM pipeline_chart_targets
+WHERE pipeline_run_id = (
+    SELECT id FROM pipeline_runs
+    WHERE state = 'complete' ORDER BY finished_ts DESC, id DESC LIMIT 1
+)
+GROUP BY source;
+```
+
+### Wall-time monitoring
+
+Each pipeline run logs `chart-step wall-time` if the chart step exceeds soft (60s) or hard (120s) budgets. Search pipeline-run logs for `chart-step wall-time exceeded`. If repeated overrun: dispatch a follow-up to reduce `chart_top_n_watch` from 10 to 5 OR implement tier-based shedding (see spec §A "Future hardening").
+
+### Stop hline omission
+
+Trades with `current_stop = NULL` or `current_stop = 0.0` render WITHOUT a stop hline (post-2026-04-27). Confirm visually if you encounter such a trade — the chart still renders pivot but no stop horizontal line, and the title omits the `stop X.XX` segment.
