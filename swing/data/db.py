@@ -5,7 +5,8 @@ import sqlite3
 from pathlib import Path
 
 # pipeline_pattern_classifications + trade chart_pattern columns (migrations 0009 + 0010)
-EXPECTED_SCHEMA_VERSION = 10
+# chart_targets source taxonomy expansion (migration 0011)
+EXPECTED_SCHEMA_VERSION = 11
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 
