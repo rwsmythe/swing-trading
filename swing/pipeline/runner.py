@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import logging
 import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import date as _date, datetime as _dt
 from pathlib import Path
@@ -547,6 +548,7 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
     canonical rename. `verify_held()` is a cheap fail-fast so we don't render
     a staging dir's worth of charts only to discard them at promote time."""
     lease.verify_held()
+    _walltime_start = time.monotonic()
     from swing.data.repos.candidates import fetch_candidates_for_run
     from swing.data.repos.trades import list_open_trades  # NEW (Task 5)
     conn = connect(cfg.paths.db_path)
@@ -707,6 +709,23 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
         f"flag_classifier: {classifier_success}/{classifier_attempts} ok, "
         f"{classifier_errors} errors"
     )
+    # Spec §A "Timer-boundary specification": timer ends after the last
+    # per-ticker fenced_write for chart_status. promote_staging runs
+    # OUTSIDE the timer because it's a separate concern (artifact-promote,
+    # not chart-step measured work). Codex R3 Minor 2.
+    _walltime_elapsed = time.monotonic() - _walltime_start
+    _scope_count = len(targets)
+    if _walltime_elapsed > 120.0:
+        log.error(
+            f"chart-step wall-time exceeded hard budget: "
+            f"{_walltime_elapsed:.1f}s > 120s; scope={_scope_count} tickers"
+        )
+    elif _walltime_elapsed > 60.0:
+        log.warning(
+            f"chart-step wall-time exceeded soft budget: "
+            f"{_walltime_elapsed:.1f}s > 60s; scope={_scope_count} tickers; "
+            "consider reducing chart_top_n_watch"
+        )
     promote = promote_staging(
         staging=staging, target=base / data_asof,
         lease_token=lease.token, db_path=cfg.paths.db_path,
