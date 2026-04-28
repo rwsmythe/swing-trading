@@ -1868,16 +1868,25 @@ Expected: 8 new tests fail with various assertion errors related to missing tier
 
 - [ ] **Step 3: Implement the rewrite**
 
-In `swing/pipeline/runner.py`, replace lines 558-595 (`aplus = ...` through end of pre-iteration target persistence) with:
+**Edit scope:** `swing/pipeline/runner.py` lines 550-595. The current read block (lines 552-556) closes `conn` BEFORE the target-composition section runs; `list_open_trades(conn)` therefore CANNOT live in the post-close section without re-opening the connection. The fix is to add `list_open_trades(conn)` INSIDE the existing `with conn:`-equivalent `try` block (lines 552-556), then use the resulting `open_trades` list in the unchanged-after-close target-composition section.
+
+Replace lines 550-595 (from `from swing.data.repos.candidates import fetch_candidates_for_run` through the existing pre-iteration `insert_chart_target` loop) with:
 
 ```python
+    from swing.data.repos.candidates import fetch_candidates_for_run
+    from swing.data.repos.trades import list_open_trades  # NEW
+    conn = connect(cfg.paths.db_path)
+    try:
+        candidates = fetch_candidates_for_run(conn, eval_run_id)
+        watchlist = list_active_watchlist(conn)
+        # NEW: read open trades inside the same snapshot — must happen
+        # BEFORE conn.close() below. Spec §A "Open-position tier."
+        open_trades = list_open_trades(conn)
+    finally:
+        conn.close()
+
     # Spec §A — three-tier composition with precedence-ordered dedup.
     aplus = [c for c in candidates if c.bucket == "aplus"]
-
-    # Open trades — sourced from list_open_trades; pivot from entry_price,
-    # stop from current_stop. Read here (already inside the read-conn block).
-    from swing.data.repos.trades import list_open_trades
-    open_trades = list_open_trades(conn)
 
     # Tag-aware top-N from watchlist via the shared sort helper.
     # Filter to data-eligible rows first (entry_target + last_close populated)
@@ -1928,7 +1937,7 @@ In `swing/pipeline/runner.py`, replace lines 558-595 (`aplus = ...` through end 
         ))
 ```
 
-The remainder of `_step_charts` (the staging dir, per-target iteration, fenced writes, classifier counters, summary log, promote_staging) is unchanged.
+The remainder of `_step_charts` (the per-tier `pending` insert loop, staging dir, per-target iteration, fenced writes, classifier counters, summary log, promote_staging) is unchanged.
 
 - [ ] **Step 4: Run tests to see GREEN**
 
