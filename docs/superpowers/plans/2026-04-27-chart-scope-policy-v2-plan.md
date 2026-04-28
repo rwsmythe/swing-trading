@@ -1405,7 +1405,7 @@ Expected: green.
 
 **Adversarial-review watch items:**
 - **Resolver+caller commit ordering.** Mid-task RED state would surface if the resolver lands without callers (or vice versa). The bundled first commit prevents this. Reviewer must confirm the actual commit chain has no ordering RED window.
-- **`pass` placeholder in Step 4 test body.** The plan acknowledges this is the single placeholder; implementer MUST fill it in concretely with the seeded_db pattern from existing tests. If left as `pass`, the test passes vacuously and provides no discriminating value.
+- **Charts-route binding test fixture-name accuracy.** Step 4's new test uses `seeded_db` (returns `(cfg, cfg_path)` per existing route-test precedent) and constructs its own `connect()` + `TestClient`. Reviewer must confirm the test imports `_write_chart` (already defined in `tests/web/test_routes/test_charts_route.py`) and follows the existing route-test pattern verbatim. A regression here would surface as ImportError or AttributeError, NOT as a vacuous test.
 - **Watchlist expand builder's eval-linkage refactor.** The legacy heuristic eval-linkage query (lines 243-260 currently) still exists in the new code for the NULL-FK fallback case. Reviewer must verify this fallback is preserved unchanged for legacy `pipeline_runs` rows.
 - **Out-of-scope copy update is small but breaks substring assertions in any test that currently asserts on the OLD copy.** Reviewer should grep for any other test asserting on `"top near-trigger"` substring before declaring the task done.
 - **`charts_status` enum unchanged.** Spec §B confirms `chart_status` enum is unchanged. Reviewer must verify the migration preserves the OLD `chart_status` CHECK exactly (`'ok', 'fetcher_failed', 'too_few_bars', 'pending'`).
@@ -2231,7 +2231,7 @@ git commit -m "feat(rendering): Task 6 — omit stop hline + title segment when 
 - Full fast suite green.
 
 **Adversarial-review watch items:**
-- **Test bodies use `pass` in two cases** — implementer MUST flesh these out concretely (figure-level HLines count assertion + title extraction via `fig.suptitle`). Phase 6 lesson: monkeypatch-capture vacuousness; the captured figure must be inspected directly, not via `price_ax.get_title()` (returns empty in mpf default).
+- **Title-format test calls `_build_chart_title` directly** (Step 1) — this is the discriminating test surface. The HLines-count assertions in the other 3 tests reference "Same figure-level HLines count assertion as above" and rely on the implementer reusing the Phase 6 LineCollection-count comparison pattern from `tests/rendering/test_chart_overlay.py`. Implementer MUST verify the actual hline-count assertion at execution time — Phase 6 lesson: `price_ax.get_title()` returns empty in mpf default; use `fig.suptitle` or capture via `mpf.plot(returnfig=True)`.
 - **`stop=0.0` vs `stop is None` are SEPARATE branches** in production trades — `current_stop` column is `NOT NULL` per migration 0001 default but a stop_adjust to 0.0 is theoretically possible (operator-discipline violation). Both must be caught by the conditional. Test both paths.
 - **CLAUDE.md mathtext gotcha** — the title format change must visually re-verify on a rendered PNG. Phase 6's lesson + the 2026-04-27 mathtext regression both reinforce this. Implementer MUST do the visual check before committing.
 - **Existing tests on `render_chart` may assume the old 2-hline behavior.** Reviewer should grep for `hlines` / `stop` substring assertions in existing rendering tests; some may need updating for the new conditional. The plan's existing-tests-still-pass assertion in Step 4 catches this.
@@ -2672,7 +2672,7 @@ Each item must point to a passing test:
 - Migration `0011` schema_version, CHECK accept/reject, row preservation, index, inventory → Task 1's 6 tests.
 - `_step_charts` 3-tier composition, dedup precedence, canonicalization, edge cases → Task 5's 8 tests.
 - `latest_completed_pipeline_run`, `PipelineRunBinding`, race-tightening, signature → Task 2's 5 tests + Task 3's 3 chart-scope tests.
-- Caller migration tests → Task 3 sub-commit (charts route + open-positions + watchlist).
+- Caller migration tests → Task 3 sub-commits (charts route binding test + open-positions binding test + watchlist binding test).
 - Tag-aware sort byte-identity → Task 4's 3 tests.
 - Stop-hline omission → Task 6's 4 tests.
 - Wall-time monitoring → Task 7's 4 tests.
@@ -2680,7 +2680,34 @@ Each item must point to a passing test:
 
 If ANY item lacks a passing test, return to that task and add coverage before declaring the phase complete.
 
-- [ ] **Step 3: Commit-message-only checkpoint commit (or skip if everything is already committed)**
+- [ ] **Step 3: Reviewer checklist — `resolve_chart_scope` call-site audit**
+
+Per spec §C "Reviewer-checklist hardening (Codex R4 Minor 2)" — explicit done-criteria item:
+
+> **Inspect all `resolve_chart_scope` call sites; confirm each calls `latest_completed_pipeline_run` ONCE at request handler entry and passes the resulting binding through any downstream multi-call surface.**
+
+Concrete steps:
+
+```bash
+# Enumerate all call sites
+grep -RnE 'resolve_chart_scope\(' swing/
+
+# Expected post-Task-3: exactly 3 production call sites:
+#   swing/web/routes/charts.py
+#   swing/web/view_models/open_positions_row.py
+#   swing/web/view_models/watchlist.py
+# Plus tests/web/test_chart_scope.py and tests/web/test_routes/test_charts_route.py.
+```
+
+For each production call site, confirm by inspection:
+1. `latest_completed_pipeline_run(conn)` is called ONCE at the top of the handler / builder.
+2. The returned `binding` is passed to `resolve_chart_scope(...)` as the `binding=` kwarg.
+3. The binding's `data_asof_date` (and any other `binding.*` field consumed by the handler) is used as the SAME source for any URL construction or VM field — NOT a separate SELECT.
+4. No production call site passes `binding=None` (the signature requires a non-None binding; spec §C "binding required").
+
+If a fourth or more call site has emerged during plan execution (e.g., a new surface), the binding-scope contract per spec §C requires that surface to also pin the binding ONCE at handler entry. Document any new call site in the return report; if it composes multiple `resolve_chart_scope` calls in one handler, the writing-plans phase for THAT surface MUST add an explicit shared-binding test (per spec §C "Technical guardrail deferral") — flag for follow-up.
+
+- [ ] **Step 4: Commit-message-only checkpoint commit (or skip if everything is already committed)**
 
 If all tasks committed individually, no checkpoint commit is needed. If any work was done outside a task (e.g., ruff fix introduced by phase work), commit that as `style(area): Task 10 — ruff cleanup`.
 
@@ -2688,6 +2715,7 @@ If all tasks committed individually, no checkpoint commit is needed. If any work
 - Full fast suite green (1145 + ~30 new tests).
 - Ruff clean (no new violations).
 - Each spec §E item maps to a passing test.
+- Reviewer call-site audit confirms 3 production sites all pin binding at handler entry; any additional sites flagged in return report.
 
 **Adversarial-review watch items:**
 - **Test-count drift.** CLAUDE.md gotcha: trust pytest output, not the plan's estimate. Confirm fast-suite test count matches reasonable post-task expectations.
@@ -2725,7 +2753,7 @@ These are concerns surfaced during plan drafting that are intentionally deferred
 1. **Slow-marked benchmark test for chart-step wall time.** Spec §A "Test instrumentation": "A separate benchmark-only test (skipped in `-m 'not slow'` fast suite; runs on demand via `-m slow` or a dedicated benchmark CI job) that measures real wall time on a representative scope and asserts the typical case is under 60s." This plan implements only the deterministic log-capture mechanism; the slow benchmark is a follow-up dispatch.
 2. **`pipeline_runs.charts_wall_time_ms` persisted column.** Per spec §A "Future V2 hardening." If operator builds external alerting / monitoring, persist the wall-time as a queryable signal.
 3. **Tier-based shedding.** Per spec §A "Future hardening (deferred to post-V1)." When wall time projected to exceed soft budget mid-step, skip remaining tag_aware_top_n tickers; new `chart_status='skipped_for_budget'` enum value.
-4. **Reviewer-checklist hardening.** Per spec §C "Reviewer-checklist hardening (Codex R4 Minor 2)." Add explicit code-review checklist line: "Inspect all new `resolve_chart_scope` call sites; confirm each calls `latest_completed_pipeline_run` ONCE at request handler entry and passes the resulting binding through any downstream multi-call surface." Operator-side process item; not a code change.
+4. **Reviewer-checklist hardening — INCORPORATED into Task 10 Step 3 done-criteria** per spec §C R4 Minor 2 (no longer deferred; the call-site audit happens at phase-end before declaring the plan complete).
 5. **Future surfaces composing multiple `resolve_chart_scope` calls in one handler.** Per spec §C "Technical guardrail deferral." When such a surface emerges, the writing-plans phase for THAT surface MUST add explicit tests asserting the binding is shared across calls. Until then, YAGNI.
 6. **Filter-intersection alignment between `_sort_watchlist` and `_step_charts`.** Per spec §A "Residual filter-intersection limitation." A separate dispatch could either widen `_step_charts` to include rows with proximity-undefined fallback OR narrow `_sort_watchlist` to only show fully-qualified rows. Not in V2 scope.
 7. **Cross-request session pinning.** Inter-request races (different HTTP requests from the same dashboard) are NOT closed by `PipelineRunBinding`. Spec §C "What the binding does NOT close." Future dispatch could add session-state pinning if the inter-request inconsistency proves operator-visible.
