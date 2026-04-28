@@ -1064,10 +1064,118 @@ python -m pytest tests/web/test_routes/test_open_positions_expand.py -v
 
 Expected: existing tests still pass.
 
+Add a NEW discriminating test for binding-stale data_asof on the open-positions
+caller (Codex R1 Major 2 — spec §E "caller-migration tests" requires per-site
+discriminating coverage; the existing tests only verify pass-through, not
+binding-pinning):
+
+```python
+# tests/web/test_routes/test_open_positions_expand.py — append (or test_view_models/test_open_positions_row.py per actual file location; verify at exec time)
+
+def test_build_open_positions_expanded_uses_binding_not_re_read(
+    seeded_db, monkeypatch,
+):
+    """build_open_positions_expanded uses binding.data_asof_date for the VM
+    output, NOT a re-read of pipeline_runs. Mirrors the charts-route test
+    pattern.
+
+    Setup: seed two completed runs with different data_asof_date values.
+    Seed an open trade for a ticker that is in runN's chart_targets but NOT
+    in runN+1's. Monkeypatch
+    `swing.web.view_models.open_positions_row.latest_completed_pipeline_run`
+    to return runN's binding.
+
+    Discriminating verification: pre-fix code did its own SELECT on
+    pipeline_runs (returns runN+1's data_asof_date) AND the resolver re-read
+    (returns runN+1's chart_targets, where AAPL is NOT present → 'out-of-scope').
+    Post-fix the binding pins both reads to runN: data_asof matches runN's
+    AND chart_reason is None.
+    """
+    from swing.data.db import connect
+    from swing.data.repos.trades import insert_trade_with_event
+    from swing.data.models import Trade
+    from swing.web.chart_scope import PipelineRunBinding
+    from swing.web.view_models.open_positions_row import (
+        build_open_positions_expanded,
+    )
+
+    cfg, _cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            # Two runs, different dates; AAPL in-scope ONLY for runN.
+            conn.execute(
+                """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
+                                               data_asof_date, action_session_date,
+                                               charts_status, evaluation_run_id,
+                                               trigger, lease_token)
+                   VALUES (300, '2026-04-01T09:00:00', '2026-04-01T09:30:00',
+                           'complete', '2026-04-01', '2026-04-02', 'ok', NULL,
+                           'manual', 'tok-300')""",
+            )
+            conn.execute(
+                """INSERT INTO pipeline_chart_targets
+                   (pipeline_run_id, ticker, source, chart_status)
+                   VALUES (300, 'AAPL', 'open_position', 'ok')""",
+            )
+            conn.execute(
+                """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
+                                               data_asof_date, action_session_date,
+                                               charts_status, evaluation_run_id,
+                                               trigger, lease_token)
+                   VALUES (301, '2026-04-02T09:00:00', '2026-04-02T09:30:00',
+                           'complete', '2026-04-02', '2026-04-03', 'ok', NULL,
+                           'manual', 'tok-301')""",
+            )
+            # Open AAPL trade.
+            trade = Trade(
+                id=None, ticker="AAPL", entry_date="2026-04-01",
+                entry_price=100.0, initial_shares=10, initial_stop=95.0,
+                current_stop=95.0, status="open",
+                watchlist_entry_target=100.0, watchlist_initial_stop_target=95.0,
+                hypothesis_label=None,
+            )
+            trade_id = insert_trade_with_event(conn, trade)
+        # Place PNG on disk for runN's date.
+        (cfg.paths.charts_dir / "2026-04-01").mkdir(parents=True, exist_ok=True)
+        (cfg.paths.charts_dir / "2026-04-01" / "AAPL.png").write_bytes(b"png-stub")
+
+        runN_binding = PipelineRunBinding(
+            run_id=300, finished_ts="2026-04-01T09:30:00",
+            data_asof_date="2026-04-01", charts_status="ok",
+            evaluation_run_id=None,
+        )
+        monkeypatch.setattr(
+            "swing.web.view_models.open_positions_row.latest_completed_pipeline_run",
+            lambda _conn: runN_binding,
+        )
+
+        vm = build_open_positions_expanded(conn=conn, cfg=cfg, trade_id=trade_id)
+    finally:
+        conn.close()
+
+    assert vm is not None
+    assert vm.data_asof_date == "2026-04-01", (
+        f"expected runN's data_asof; got {vm.data_asof_date!r}; "
+        "regression: builder did its own SELECT on pipeline_runs"
+    )
+    assert vm.chart_reason is None, (
+        f"expected chart-available (binding=runN, AAPL in runN's targets); "
+        f"got reason={vm.chart_reason!r} message={vm.chart_reason_message!r}; "
+        "regression: resolver re-read pipeline_runs and bound to runN+1"
+    )
+```
+
+(The exact `Trade` constructor signature + `insert_trade_with_event` shape
+must be re-verified at execution time against `swing/data/models.py` +
+`swing/data/repos/trades.py` — the migration history may have added optional
+columns. Use whatever helper the existing open-positions tests use to seed
+a test trade.)
+
 Commit:
 
 ```bash
-git add swing/web/view_models/open_positions_row.py
+git add swing/web/view_models/open_positions_row.py tests/web/test_routes/test_open_positions_expand.py
 git commit -m "feat(web): Task 3 (sub) — open-positions expand binds to PipelineRunBinding"
 ```
 
@@ -1152,10 +1260,110 @@ python -m pytest tests/web/ -k "watchlist_expand or build_watchlist_expanded" -v
 
 Expected: existing tests still pass.
 
+Add a NEW discriminating test for binding-pinning on the watchlist-expand
+caller (Codex R1 Major 2 — spec §E "caller-migration tests" requires per-site
+discriminating coverage):
+
+```python
+# tests/web/test_view_models/test_watchlist_expand.py — append (verify exact path at exec time)
+
+def test_build_watchlist_expanded_uses_binding_not_re_read(seeded_db, monkeypatch):
+    """build_watchlist_expanded uses binding's data_asof_date AND the resolver
+    answer that goes with it, NOT a re-read of pipeline_runs.
+
+    Setup: same pattern as the open-positions caller test. Two completed
+    runs; AAPL is in runN's chart_targets but NOT runN+1's. Watchlist has
+    AAPL active. Monkeypatch
+    `swing.web.view_models.watchlist.latest_completed_pipeline_run` to
+    return runN's binding.
+
+    Discriminating verification: pre-fix watchlist.py:243-260 did its own
+    SELECT for `data_asof_date` AND the resolver re-read. Pre-fix
+    data_asof would be runN+1's '2026-04-02' AND chart_reason would be
+    'out-of-scope' (AAPL not in runN+1's targets). Post-fix: data_asof
+    pinned to runN's '2026-04-01' AND chart_reason is None.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from swing.data.db import connect
+    from swing.web.chart_scope import PipelineRunBinding
+    from swing.web.price_cache import PriceCache
+    from swing.web.view_models.watchlist import build_watchlist_expanded
+
+    cfg, _cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            # Two runs, different dates; AAPL chart_target only in runN.
+            conn.execute(
+                """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
+                                               data_asof_date, action_session_date,
+                                               charts_status, evaluation_run_id,
+                                               trigger, lease_token)
+                   VALUES (400, '2026-04-01T09:00:00', '2026-04-01T09:30:00',
+                           'complete', '2026-04-01', '2026-04-02', 'ok', NULL,
+                           'manual', 'tok-400')""",
+            )
+            conn.execute(
+                """INSERT INTO pipeline_chart_targets
+                   (pipeline_run_id, ticker, source, chart_status)
+                   VALUES (400, 'AAPL', 'tag_aware_top_n', 'ok')""",
+            )
+            conn.execute(
+                """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
+                                               data_asof_date, action_session_date,
+                                               charts_status, evaluation_run_id,
+                                               trigger, lease_token)
+                   VALUES (401, '2026-04-02T09:00:00', '2026-04-02T09:30:00',
+                           'complete', '2026-04-02', '2026-04-03', 'ok', NULL,
+                           'manual', 'tok-401')""",
+            )
+            # Active watchlist row for AAPL.
+            conn.execute(
+                """INSERT INTO watchlist (ticker, added_date, last_qualified_date,
+                                          status, qualification_count,
+                                          not_qualified_streak, last_data_asof_date,
+                                          entry_target, initial_stop_target, last_close)
+                   VALUES ('AAPL', '2026-04-01', '2026-04-01', 'watch', 1, 0,
+                           '2026-04-01', 100.0, 95.0, 99.0)""",
+            )
+        # PNG on disk for runN's date.
+        (cfg.paths.charts_dir / "2026-04-01").mkdir(parents=True, exist_ok=True)
+        (cfg.paths.charts_dir / "2026-04-01" / "AAPL.png").write_bytes(b"png-stub")
+    finally:
+        conn.close()
+
+    runN_binding = PipelineRunBinding(
+        run_id=400, finished_ts="2026-04-01T09:30:00",
+        data_asof_date="2026-04-01", charts_status="ok",
+        evaluation_run_id=None,
+    )
+    monkeypatch.setattr(
+        "swing.web.view_models.watchlist.latest_completed_pipeline_run",
+        lambda _conn: runN_binding,
+    )
+
+    cache = PriceCache(cfg=cfg)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        vm = build_watchlist_expanded(
+            cfg=cfg, cache=cache, ticker="AAPL", executor=executor,
+        )
+
+    assert vm is not None
+    assert vm.data_asof_date == "2026-04-01", (
+        f"expected runN's data_asof; got {vm.data_asof_date!r}; "
+        "regression: builder did its own SELECT on pipeline_runs"
+    )
+    assert vm.chart_reason is None, (
+        f"expected chart-available (binding=runN, AAPL in runN's targets); "
+        f"got reason={vm.chart_reason!r}; "
+        "regression: resolver re-read pipeline_runs and bound to runN+1"
+    )
+```
+
 Commit:
 
 ```bash
-git add swing/web/view_models/watchlist.py
+git add swing/web/view_models/watchlist.py tests/web/test_view_models/test_watchlist_expand.py
 git commit -m "feat(web): Task 3 (sub) — watchlist expand binds to PipelineRunBinding"
 ```
 
