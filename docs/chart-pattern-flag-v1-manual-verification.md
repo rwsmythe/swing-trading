@@ -125,7 +125,7 @@ Open `http://127.0.0.1:8080/` in browser.
 - [ ] **Close button (✕)** at top-right of the expanded row collapses back to the compact row.
 - [ ] Click the row a second time → re-expands cleanly (toggle works; no stale state).
 - [ ] Exit + Adjust-stop buttons inside the compact row do NOT trigger the row expand on click (`event.stopPropagation()` guard per Bug-1 lesson).
-- [ ] After clicking the dashboard's **Refresh now** button (POST /prices/refresh), the open-positions table re-renders via OOB swap and the click-to-expand binding still works on the refreshed rows (single-include guarantee — `prices_refresh_container.html.j2` uses the same partial).
+- [ ] After clicking the dashboard's **Refresh now** button (POST /prices/refresh), the open-positions table re-renders via OOB swap and the click-to-expand binding still works on the refreshed rows (single-include guarantee — `prices_refresh_container.html.j2` uses the same partial). **Note (clarification 2026-04-28):** any visually-expanded row collapses back to compact form on refresh. This is expected HTMX OOB-swap behavior, NOT a regression — the OOB swap replaces the table HTML wholesale, so transient client-side expansion state resets. The click-to-expand BINDING survives (you can re-click to re-expand); the EXPANDED VISUAL STATE does not. Operator confirmed this is fine for V1; preserving expanded state across OOB swap would require either server-side session-tracked expansion state OR HTMX `hx-preserve` attributes — both deferred indefinitely.
 
 ### §1.4 Refresh-now button at bottom of dashboard
 - [ ] Click "Refresh now" button.

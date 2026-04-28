@@ -12,7 +12,7 @@
 
 **Brief:** `docs/chart-scope-policy-v2-writing-plans-brief.md`.
 
-**Baseline:** `main` at HEAD when the executing-plans dispatch starts (currently `63036cf`); `python -m pytest -m "not slow" -q` green at 1145 tests; `schema_version = 10`.
+**Baseline:** `main` at HEAD when the executing-plans dispatch starts (currently `63036cf`); `python -m pytest -m "not slow" -q` green at 1163 tests (post-Tier-2 #2/#3 dispatch added 18 tests; this plan-header was 1145 in the original plan due to a docs drift, corrected 2026-04-28 in housekeeping); `schema_version = 10`.
 
 **Phase isolation:** This plan modifies code under `swing/web/`, `swing/pipeline/`, `swing/data/migrations/`, `swing/config.py`, `swing/rendering/`. **Phase 2 carve-out:** the migration adds a SQL file under `swing/data/migrations/`; `swing/data/db.py:EXPECTED_SCHEMA_VERSION` bumps 10 → 11. Both are within the migration-cost amortization pattern established in chart-pattern flag-v1 Phase 2; no new repo-layer code under `swing/data/repos/` is touched. `swing/trades/` is NOT modified.
 
@@ -387,7 +387,7 @@ Expected: all 6 tests PASS.
 python -m pytest -m "not slow" -q
 ```
 
-Expected: prior 1145 + 6 new = 1151 tests passing (count is approximate; trust pytest output per CLAUDE.md test-count-drift gotcha).
+Expected: prior 1163 + 6 new = 1169 tests passing (count is approximate; trust pytest output per CLAUDE.md test-count-drift gotcha; original plan said 1145 baseline, corrected 2026-04-28).
 
 - [ ] **Step 8: Commit**
 
@@ -3022,7 +3022,7 @@ If a fourth or more call site has emerged during plan execution (e.g., a new sur
 If all tasks committed individually, no checkpoint commit is needed. If any work was done outside a task (e.g., ruff fix introduced by phase work), commit that as `style(area): Task 10 — ruff cleanup`.
 
 **Acceptance:**
-- Full fast suite green (1145 + ~30 new tests).
+- Full fast suite green (1163 + ~30-40 new tests; corrected 2026-04-28 — actual post-dispatch was 1203, +40).
 - Ruff clean (no new violations).
 - Each spec §E item maps to a passing test.
 - Reviewer call-site audit confirms 3 production sites all pin binding at handler entry; any additional sites flagged in return report.

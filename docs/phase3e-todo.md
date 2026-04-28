@@ -615,9 +615,9 @@ Full technical detail in `docs/chart-pattern-flag-v1-manual-verification-results
 
 ### Tier 2 — Operator-workflow improvements (post-V1)
 
-2. **No standalone chart-image route.** `/charts/<TICKER>.png` returns 404. Add route in `swing/web/routes/` to serve PNGs from `exports/<session>/charts/`.
-3. **Open positions rows don't expand to chart.** UX gap during trade management. Options: HTMX-swap to chart partial OR "View chart" button in Actions column OR link to standalone route (#2).
-4. **Chart-scope set misaligned with Phase 4 watchlist sort.** Empirically confirmed during verification: dashboard top-5 watchlist (Phase 4 tag-aware composite sort) only overlaps chart-scope set on 1 of 5 tickers (DHC). "Chart unavailable" message wording confirms legacy "near-trigger" criterion in chart_scope resolver. Investigation: chart-scope resolver. Hypothesis: aligning chart-scope with watchlist's tag-aware sort would surface flag patterns currently missed (zero flag detections in current data may be partly attributable to this misalignment). Operator-design discussion required before implementation due to chart-generation cost implications.
+2. **No standalone chart-image route.** ~~Add route in `swing/web/routes/` to serve PNGs from `exports/<session>/charts/`.~~ **SHIPPED 2026-04-27** (chart-access UX dispatch, commit `772d69b`). Date-less `/charts/{ticker}.png` route; 303 redirect to existing date-prefixed StaticFiles URL or chart_scope-aware 404 with operator-facing reason.
+3. **Open positions rows don't expand to chart.** ~~UX gap during trade management.~~ **SHIPPED 2026-04-27** (chart-access UX dispatch, commit `f0d13e8`). HTMX click-to-expand on dashboard open-positions rows, mirroring watchlist expand pattern. Chart inline if ticker in chart-scope; "Chart unavailable" message with chart_scope reason otherwise. **Note:** clicking dashboard's "Refresh now" button collapses any expanded rows back to compact form — expected HTMX OOB-swap behavior (the swap replaces the table HTML so transient client-side expansion state resets). Click-to-expand binding survives, but expanded VISUAL state does not. Operator confirmed this is fine.
+4. **Chart-scope set misaligned with Phase 4 watchlist sort.** ~~Empirically confirmed during verification: dashboard top-5 watchlist (Phase 4 tag-aware composite sort) only overlaps chart-scope set on 1 of 5 tickers (DHC). Operator-design discussion required before implementation.~~ **SHIPPED 2026-04-28** (chart-scope policy v2 dispatch chain `c4820d0..527e334`, 15 commits). Three-tier policy `aplus > open_position > tag_aware_top_n` with N=10 watchlist top-N (default raised 5 → 10). Cross-surface drift race closed via `PipelineRunBinding` pinned at request-handler entry. Schema migration 0011 extends `pipeline_chart_targets.source` CHECK. Stop-hline omission active for None/0 stops. Wall-time monitoring active (60s WARN / 120s ERROR). Spec at `docs/superpowers/specs/2026-04-27-chart-scope-policy-v2-design.md`; plan at `docs/superpowers/plans/2026-04-27-chart-scope-policy-v2-plan.md`.
 
 ### Tier 3 — Operator-design questions
 
@@ -659,3 +659,27 @@ Cheap insurance; not urgent. Pick up if the codebase ever ingests non-US tickers
 ### Mathtext metacharacter gotcha (informational; captured in CLAUDE.md gotchas)
 
 Matplotlib mathtext fires on `$` (paired math mode), `^` (superscript), `_` (subscript), and unbalanced `\`. Future title-format additions (scientific notation, exponents, footnote markers, custom annotations) will need visual re-verification on rendered PNG, NOT just string-equality assertions. Captured in CLAUDE.md gotchas in this same housekeeping commit.
+
+---
+
+## 2026-04-28 chart-scope policy v2 follow-ups
+
+Items surfaced from the chart-scope policy v2 cycle (spec `c52835f` 4-round Codex + plan `d1dc4e4` 5-round Codex + executing-plans chain `c4820d0..527e334` 2-round Codex; 15 commits total). Tier-2 #4 fully shipped; these are forward-looking deferrals or accepted-with-rationale items captured for future dispatches.
+
+### From spec (V1-deferred items, all explicitly out-of-scope):
+
+- **Slow-marked benchmark test for chart-step wall time.** Deterministic log-capture mechanism shipped in Task 7; real-timing benchmark deferred to `-m slow` suite or dedicated benchmark CI. Spec §A "Test instrumentation."
+- **`pipeline_runs.charts_wall_time_ms` persisted column** for queryable wall-time history (currently log-only). Would require migration 0012 + write-path threading + consumer audit. Defer until operator builds external monitoring or alerting layer. Spec §A "Future V2 hardening."
+- **Tier-based shedding** when wall time projected > soft budget mid-step. Skip remaining `tag_aware_top_n` tickers; add `chart_status='skipped_for_budget'` enum value. Spec §A "Future hardening." Adds complexity; only worth it if wall-time overruns become operationally common.
+- **Filter-intersection alignment** between `_sort_watchlist` (web) and `_step_charts` (pipeline). Watchlist rows missing `entry_target` or `last_close` are visible on dashboard but excluded from chart-scope. Future dispatch could align filters bidirectionally. Spec §A "Residual filter-intersection limitation." Small but real coverage gap.
+- **Cross-request session pinning** for inter-request races. Currently bindings pin per-request only; user clicking different rows over time may see different `data_asof_date` values across same session. Closing requires server-side cross-request session state. Spec §C "What the binding does NOT close."
+- **Future surfaces composing multiple `resolve_chart_scope` calls in one handler** must add explicit shared-binding tests when they emerge. Spec §C "Technical guardrail deferral." YAGNI for V1; convert to test pin when first multi-call surface ships.
+
+### From executing-plans dispatch (R1/R2 ACCEPTED-with-rationale):
+
+- **Tag-aware sort `flag_tags` lookup canonicalization beyond dedup boundary** (executing-plans R1 Minor 1). `.upper()` discipline applied at dedup boundary in `_step_charts`; the flag_tags lookup keyed by raw `c.ticker` / `entry.ticker` (no `.upper()`) is acceptable in V1 because production data is consistently upper-case per spec. Defense-in-depth tightening (extend `.upper()` to all ticker references) deferred until/unless mixed-case watchlist/candidate data appears.
+- **Rendered-surface (route or HTMX template) test for `out-of-scope-legacy` reason code** (executing-plans R2 Minor 2). Currently pinned only at resolver/unit-test level. Future dispatch could add a TestClient-level test asserting the rendered "Chart unavailable" surface displays the `out-of-scope-legacy` reason text. Additional test coverage; not a regression.
+
+### Plan-implementation completed (was tracked as deferred; now resolved):
+
+- ~~**Reviewer-checklist hardening for binding contract enforcement.**~~ INCORPORATED into plan Task 10 Step 3 (writing-plans phase R4 Minor 2 fix). Shipped as part of executing-plans Task 10 phase checkpoint.
