@@ -14,7 +14,11 @@ from swing.data.repos.pattern_classifications import (
 )
 from swing.data.repos.watchlist import list_active_watchlist
 from swing.evaluation.dates import action_session_for_run
-from swing.web.chart_scope import resolve_chart_scope
+from swing.web.chart_scope import (
+    CHART_REASON_MESSAGES,
+    latest_completed_pipeline_run,
+    resolve_chart_scope,
+)
 from swing.web.price_cache import PriceCache, PriceSnapshot
 from swing.web.view_models.dashboard import (
     _flag_tags,
@@ -237,34 +241,40 @@ def build_watchlist_expanded(
             # Chart URL + criteria BOTH bind to the latest completed pipeline
             # run's own evaluation_run (adversarial-review Round 3 Major 1:
             # mixed as-of anchors produce contradictory UI when a standalone
-            # `swing eval` ran after the pipeline). Eval-linkage uses the
-            # same `data_asof_date + run_ts <= finished_ts` heuristic as
-            # chart_scope, keeping both views internally consistent.
-            pipe_row = conn.execute(
-                """SELECT finished_ts, data_asof_date FROM pipeline_runs
-                   WHERE state = 'complete'
-                   ORDER BY finished_ts DESC LIMIT 1""",
-            ).fetchone()
-            data_asof = pipe_row[1] if pipe_row else None
+            # `swing eval` ran after the pipeline). The PipelineRunBinding
+            # closes the intra-request race between the data_asof_date read
+            # (used for chart URLs) and the chart_scope resolver's read of
+            # pipeline_chart_targets — same binding instance used by both.
+            binding = latest_completed_pipeline_run(conn)
+            data_asof = binding.data_asof_date if binding else None
             eval_run_id: int | None = None
-            if pipe_row is not None:
-                finished_ts, pipeline_asof = pipe_row
-                linked = conn.execute(
-                    """SELECT id FROM evaluation_runs
-                       WHERE data_asof_date = ? AND run_ts <= ?
-                       ORDER BY run_ts DESC LIMIT 1""",
-                    (pipeline_asof, finished_ts),
-                ).fetchone()
-                if linked is not None:
-                    eval_run_id = linked[0]
-                # If pipe_row IS set but linkage failed, deliberately leave
-                # eval_run_id=None. Falling back to the latest-eval here
-                # would re-introduce the mixed-anchor bug (Round 3 Major 1):
-                # a post-pipeline standalone `swing eval` would silently
-                # seed the criteria panel with an eval the pipeline did not
-                # chart. The chart_scope resolver collapses this same case
-                # to 'insufficient-data'; the criteria panel accepts the
-                # symmetric cost and renders without criteria.
+            if binding is not None:
+                if binding.evaluation_run_id is not None:
+                    # FK-backed path — bind candidates to the pipeline's own eval.
+                    eval_run_id = binding.evaluation_run_id
+                else:
+                    # Legacy NULL-FK pipeline run — fall back to the heuristic
+                    # eval-linkage lookup (same as the legacy resolver path).
+                    # Eval-linkage uses the same
+                    # `data_asof_date + run_ts <= finished_ts` heuristic as
+                    # chart_scope, keeping both views internally consistent.
+                    # If pipe_row IS set but linkage failed, deliberately
+                    # leave eval_run_id=None. Falling back to the latest-eval
+                    # here would re-introduce the mixed-anchor bug (Round 3
+                    # Major 1): a post-pipeline standalone `swing eval` would
+                    # silently seed the criteria panel with an eval the
+                    # pipeline did not chart. The chart_scope resolver
+                    # collapses this same case to 'insufficient-data'; the
+                    # criteria panel accepts the symmetric cost and renders
+                    # without criteria.
+                    linked = conn.execute(
+                        """SELECT id FROM evaluation_runs
+                           WHERE data_asof_date = ? AND run_ts <= ?
+                           ORDER BY run_ts DESC LIMIT 1""",
+                        (binding.data_asof_date, binding.finished_ts),
+                    ).fetchone()
+                    if linked is not None:
+                        eval_run_id = linked[0]
             else:
                 # Fresh-install / no-pipeline-yet path — fall back to the
                 # latest eval so the criteria panel can still render
@@ -281,10 +291,15 @@ def build_watchlist_expanded(
                     if c.ticker == ticker:
                         candidate = c
                         break
-            chart_reason, chart_reason_message = resolve_chart_scope(
-                conn, ticker=ticker, charts_dir=cfg.paths.charts_dir,
-                chart_top_n_watch=cfg.pipeline.chart_top_n_watch,
-            )
+            if binding is None:
+                chart_reason: str | None = "no-run"
+                chart_reason_message: str | None = CHART_REASON_MESSAGES["no-run"]
+            else:
+                chart_reason, chart_reason_message = resolve_chart_scope(
+                    conn, binding=binding, ticker=ticker,
+                    charts_dir=cfg.paths.charts_dir,
+                    chart_top_n_watch=cfg.pipeline.chart_top_n_watch,
+                )
     finally:
         conn.close()
     snaps = cache.get_many(

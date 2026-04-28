@@ -88,19 +88,23 @@ def db_conn(seeded_db):
     conn.close()
 
 
-def test_resolver_no_run_when_no_completed_pipeline(db_conn, tmp_path):
-    from swing.web.chart_scope import resolve_chart_scope
+def test_resolver_no_run_when_no_completed_pipeline(db_conn):
+    """Pre-fix: resolver internally returned 'no-run' when no completed run.
+    Post-fix: caller is responsible — `latest_completed_pipeline_run` returns
+    None and the caller short-circuits BEFORE invoking the resolver. This
+    test pins the helper-returns-None contract instead.
+    """
+    from swing.web.chart_scope import latest_completed_pipeline_run
 
     cfg, conn = db_conn
-    reason, msg = resolve_chart_scope(
-        conn, ticker="AAPL", charts_dir=tmp_path, chart_top_n_watch=5,
-    )
-    assert reason == "no-run"
-    assert "no pipeline run yet" in msg
+    assert latest_completed_pipeline_run(conn) is None
 
 
 def test_resolver_engine_missing_when_charts_status_skipped(db_conn, tmp_path):
-    from swing.web.chart_scope import resolve_chart_scope
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
 
     cfg, conn = db_conn
     with conn:
@@ -109,15 +113,21 @@ def test_resolver_engine_missing_when_charts_status_skipped(db_conn, tmp_path):
             finished_ts="2026-04-17T21:55:00",
             data_asof_date="2026-04-17", charts_status="skipped",
         )
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
     reason, msg = resolve_chart_scope(
-        conn, ticker="AAPL", charts_dir=tmp_path, chart_top_n_watch=5,
+        conn, binding=binding, ticker="AAPL",
+        charts_dir=tmp_path, chart_top_n_watch=5,
     )
     assert reason == "engine-missing"
     assert "mplfinance" in msg
 
 
 def test_resolver_pipeline_failed_when_charts_status_failed(db_conn, tmp_path):
-    from swing.web.chart_scope import resolve_chart_scope
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
 
     cfg, conn = db_conn
     with conn:
@@ -126,15 +136,21 @@ def test_resolver_pipeline_failed_when_charts_status_failed(db_conn, tmp_path):
             finished_ts="2026-04-17T21:55:00",
             data_asof_date="2026-04-17", charts_status="failed",
         )
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
     reason, msg = resolve_chart_scope(
-        conn, ticker="AAPL", charts_dir=tmp_path, chart_top_n_watch=5,
+        conn, binding=binding, ticker="AAPL",
+        charts_dir=tmp_path, chart_top_n_watch=5,
     )
     assert reason == "pipeline-failed"
     assert "chart step failed" in msg.lower()
 
 
 def test_resolver_available_when_aplus_and_png_exists(db_conn, tmp_path):
-    from swing.web.chart_scope import resolve_chart_scope
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
 
     cfg, conn = db_conn
     with conn:
@@ -149,15 +165,21 @@ def test_resolver_available_when_aplus_and_png_exists(db_conn, tmp_path):
         )
     _write_chart(tmp_path, date="2026-04-17", ticker="AAPL")
 
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
     reason, msg = resolve_chart_scope(
-        conn, ticker="AAPL", charts_dir=tmp_path, chart_top_n_watch=5,
+        conn, binding=binding, ticker="AAPL",
+        charts_dir=tmp_path, chart_top_n_watch=5,
     )
     assert reason is None
     assert msg is None
 
 
 def test_resolver_out_of_scope_when_not_aplus_and_not_near_top_n(db_conn, tmp_path):
-    from swing.web.chart_scope import resolve_chart_scope
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
 
     cfg, conn = db_conn
     with conn:
@@ -171,8 +193,11 @@ def test_resolver_out_of_scope_when_not_aplus_and_not_near_top_n(db_conn, tmp_pa
             data_asof_date="2026-04-17", charts_status="ok",
         )
         # ZZZ is not A+ nor on watchlist.
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
     reason, msg = resolve_chart_scope(
-        conn, ticker="ZZZ", charts_dir=tmp_path, chart_top_n_watch=5,
+        conn, binding=binding, ticker="ZZZ",
+        charts_dir=tmp_path, chart_top_n_watch=5,
     )
     assert reason == "out-of-scope"
     assert "charting scope" in msg
@@ -180,7 +205,10 @@ def test_resolver_out_of_scope_when_not_aplus_and_not_near_top_n(db_conn, tmp_pa
 
 def test_resolver_insufficient_data_when_in_scope_but_png_missing(db_conn, tmp_path):
     """Ticker is in scope (A+), run was ok, but no PNG on disk."""
-    from swing.web.chart_scope import resolve_chart_scope
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
 
     cfg, conn = db_conn
     with conn:
@@ -194,8 +222,11 @@ def test_resolver_insufficient_data_when_in_scope_but_png_missing(db_conn, tmp_p
             data_asof_date="2026-04-17", charts_status="ok",
         )
     # No PNG written.
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
     reason, msg = resolve_chart_scope(
-        conn, ticker="AAPL", charts_dir=tmp_path, chart_top_n_watch=5,
+        conn, binding=binding, ticker="AAPL",
+        charts_dir=tmp_path, chart_top_n_watch=5,
     )
     assert reason == "insufficient-data"
     assert "data too thin" in msg.lower()
@@ -204,7 +235,10 @@ def test_resolver_insufficient_data_when_in_scope_but_png_missing(db_conn, tmp_p
 def test_resolver_watchlist_ticker_in_scope_by_proximity(db_conn, tmp_path):
     """A watchlist ticker WITHIN top-N by proximity is in scope (chart renders
     or is insufficient-data, NEVER out-of-scope)."""
-    from swing.web.chart_scope import resolve_chart_scope
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
 
     cfg, conn = db_conn
     with conn:
@@ -222,15 +256,19 @@ def test_resolver_watchlist_ticker_in_scope_by_proximity(db_conn, tmp_path):
         _insert_watchlist_row(conn, ticker="GOOG", entry_target=100.0, last_close=95.0)
     _write_chart(tmp_path, date="2026-04-17", ticker="MSFT")
 
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
     # MSFT is in top-1 → chart renders (None).
     reason, _ = resolve_chart_scope(
-        conn, ticker="MSFT", charts_dir=tmp_path, chart_top_n_watch=1,
+        conn, binding=binding, ticker="MSFT",
+        charts_dir=tmp_path, chart_top_n_watch=1,
     )
     assert reason is None
 
     # GOOG is in rank 2 → out-of-scope with top_n=1.
     reason_goog, _ = resolve_chart_scope(
-        conn, ticker="GOOG", charts_dir=tmp_path, chart_top_n_watch=1,
+        conn, binding=binding, ticker="GOOG",
+        charts_dir=tmp_path, chart_top_n_watch=1,
     )
     assert reason_goog == "out-of-scope"
 
@@ -243,7 +281,10 @@ def test_resolver_eval_linkage_picks_pipelines_eval_not_later_standalone(
      ORDER BY run_ts DESC LIMIT 1`
     so a standalone `swing eval` run AFTER the pipeline finished doesn't
     poison the resolver's A+ set."""
-    from swing.web.chart_scope import resolve_chart_scope
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
 
     cfg, conn = db_conn
     with conn:
@@ -268,9 +309,12 @@ def test_resolver_eval_linkage_picks_pipelines_eval_not_later_standalone(
         _insert_candidate(conn, eval_id=e2, ticker="NVDA", bucket="aplus")
     _write_chart(tmp_path, date="2026-04-17", ticker="AAPL")
 
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
     # Resolver must pick E1's A+ set → AAPL is in-scope → available.
     reason_aapl, _ = resolve_chart_scope(
-        conn, ticker="AAPL", charts_dir=tmp_path, chart_top_n_watch=5,
+        conn, binding=binding, ticker="AAPL",
+        charts_dir=tmp_path, chart_top_n_watch=5,
     )
     assert reason_aapl is None, (
         "resolver must bind to E1 (pipeline's own eval); AAPL must resolve "
@@ -279,7 +323,8 @@ def test_resolver_eval_linkage_picks_pipelines_eval_not_later_standalone(
 
     # NVDA was only in E2 — not what the pipeline charted → out-of-scope.
     reason_nvda, _ = resolve_chart_scope(
-        conn, ticker="NVDA", charts_dir=tmp_path, chart_top_n_watch=5,
+        conn, binding=binding, ticker="NVDA",
+        charts_dir=tmp_path, chart_top_n_watch=5,
     )
     assert reason_nvda == "out-of-scope", (
         "resolver must NOT pick E2 (standalone post-pipeline eval)"
@@ -294,7 +339,10 @@ def test_resolver_drift_proximity_rank_approximated_from_render_time(
     run) and T2 (expand), the resolver returns the render-time answer.
     Bounded-drift case — the resolver does not try to reconstruct run-time
     rankings (they aren't persisted)."""
-    from swing.web.chart_scope import resolve_chart_scope
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
 
     cfg, conn = db_conn
     with conn:
@@ -310,16 +358,20 @@ def test_resolver_drift_proximity_rank_approximated_from_render_time(
         _insert_watchlist_row(conn, ticker="AAA", entry_target=100.0, last_close=99.9)
         _insert_watchlist_row(conn, ticker="BBB", entry_target=100.0, last_close=90.0)
 
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
     # AAA ranks 1 at T2 (render time).
     reason_aaa, _ = resolve_chart_scope(
-        conn, ticker="AAA", charts_dir=tmp_path, chart_top_n_watch=1,
+        conn, binding=binding, ticker="AAA",
+        charts_dir=tmp_path, chart_top_n_watch=1,
     )
     # In top-1 but no PNG → insufficient-data.
     assert reason_aaa == "insufficient-data"
 
     # BBB is outside top-1 at T2.
     reason_bbb, _ = resolve_chart_scope(
-        conn, ticker="BBB", charts_dir=tmp_path, chart_top_n_watch=1,
+        conn, binding=binding, ticker="BBB",
+        charts_dir=tmp_path, chart_top_n_watch=1,
     )
     assert reason_bbb == "out-of-scope"
 
@@ -331,7 +383,10 @@ def test_resolver_falls_back_to_insufficient_data_when_eval_linkage_missing(
     anomaly, or pipeline completed without an eval step), the resolver
     falls back to `insufficient-data` for probed tickers — collapsing toward
     the data-quality bucket rather than misleading the operator."""
-    from swing.web.chart_scope import resolve_chart_scope
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
 
     cfg, conn = db_conn
     with conn:
@@ -342,8 +397,11 @@ def test_resolver_falls_back_to_insufficient_data_when_eval_linkage_missing(
             finished_ts="2026-04-17T21:55:00",
             data_asof_date="2026-04-17", charts_status="ok",
         )
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
     reason, msg = resolve_chart_scope(
-        conn, ticker="AAPL", charts_dir=tmp_path, chart_top_n_watch=5,
+        conn, binding=binding, ticker="AAPL",
+        charts_dir=tmp_path, chart_top_n_watch=5,
     )
     assert reason == "insufficient-data"
     assert "data too thin" in msg.lower()
@@ -353,7 +411,10 @@ def test_resolver_ignores_running_pipeline_uses_last_complete(db_conn, tmp_path)
     """A new pipeline run mid-flight (state='running', finished_ts IS NULL)
     must NOT mask the last-completed run — the resolver looks only at
     state='complete' rows when picking the reference run."""
-    from swing.web.chart_scope import resolve_chart_scope
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
 
     cfg, conn = db_conn
     with conn:
@@ -377,15 +438,20 @@ def test_resolver_ignores_running_pipeline_uses_last_complete(db_conn, tmp_path)
         )
     _write_chart(tmp_path, date="2026-04-17", ticker="AAPL")
 
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
     reason, _ = resolve_chart_scope(
-        conn, ticker="AAPL", charts_dir=tmp_path, chart_top_n_watch=5,
+        conn, binding=binding, ticker="AAPL",
+        charts_dir=tmp_path, chart_top_n_watch=5,
     )
     assert reason is None, "in-flight run must not mask the last-completed run"
 
 
 from swing.web.chart_scope import (
+    CHART_REASON_MESSAGES,
     PipelineRunBinding,
     latest_completed_pipeline_run,
+    resolve_chart_scope,
 )
 
 
@@ -528,3 +594,136 @@ def test_pipeline_run_binding_is_frozen():
     )
     with pytest.raises(dataclasses.FrozenInstanceError):
         binding.run_id = 999  # type: ignore[misc]
+
+
+def test_resolve_chart_scope_uses_binding_run_id_not_latest_select(db_conn, tmp_path):
+    """Pass a deliberately-stale binding (runN) while runN+1 has completed
+    AFTER the binding was captured. Resolver must answer from runN's
+    chart_targets, NOT runN+1's.
+
+    This is the spec §E race-tightening contract pin. Pre-fix the resolver
+    re-reads pipeline_runs and binds to runN+1; post-fix the resolver uses
+    `binding.run_id` directly and binds to runN.
+
+    Discriminating verification: runN's chart_targets include AAPL only.
+    runN+1's chart_targets include MSFT only. We pass binding=runN, query
+    for AAPL → expect None (in-scope). Pre-fix would re-SELECT, find
+    runN+1 (latest), and AAPL would be 'out-of-scope' there.
+    """
+    cfg, conn = db_conn
+    # Seed eval runs (Codex R3 Major 1: race-tightening contract is verified
+    # for the FK-backed path `_resolve_via_chart_targets`, which fires only
+    # when binding.evaluation_run_id is non-None. Tests with NULL eval id
+    # would route through `_resolve_via_heuristic` and verify the WRONG
+    # branch.) Spec §C: binding.evaluation_run_id is set when the pipeline
+    # ran post-migration-0006 (production case for V2 chart-scope policy).
+    conn.execute(
+        """INSERT INTO evaluation_runs (id, run_ts, data_asof_date,
+                                         action_session_date, finviz_csv_path,
+                                         tickers_evaluated, aplus_count,
+                                         watch_count, skip_count, excluded_count,
+                                         error_count, rs_universe_version,
+                                         rs_universe_hash)
+           VALUES (50, '2026-04-01T09:00:00', '2026-04-01', '2026-04-02', NULL,
+                   1, 1, 0, 0, 0, 0, 'v1', 'deadbeef')""",
+    )
+    conn.execute(
+        """INSERT INTO evaluation_runs (id, run_ts, data_asof_date,
+                                         action_session_date, finviz_csv_path,
+                                         tickers_evaluated, aplus_count,
+                                         watch_count, skip_count, excluded_count,
+                                         error_count, rs_universe_version,
+                                         rs_universe_hash)
+           VALUES (51, '2026-04-02T09:00:00', '2026-04-02', '2026-04-03', NULL,
+                   1, 1, 0, 0, 0, 0, 'v1', 'deadbeef')""",
+    )
+    # Seed runN with AAPL — evaluation_run_id=50 routes through FK-backed path.
+    conn.execute(
+        """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
+                                       data_asof_date, action_session_date,
+                                       charts_status, evaluation_run_id,
+                                       trigger, lease_token)
+           VALUES (100, '2026-04-01T09:00:00', '2026-04-01T09:30:00',
+                   'complete', '2026-04-01', '2026-04-02', 'ok', 50,
+                   'manual', 'tok-100')""",
+    )
+    conn.execute(
+        """INSERT INTO pipeline_chart_targets (pipeline_run_id, ticker, source, chart_status)
+           VALUES (100, 'AAPL', 'aplus', 'ok')""",
+    )
+    # Seed runN+1 with MSFT (newer, would win a re-SELECT) — eval id=51.
+    conn.execute(
+        """INSERT INTO pipeline_runs (id, started_ts, finished_ts, state,
+                                       data_asof_date, action_session_date,
+                                       charts_status, evaluation_run_id,
+                                       trigger, lease_token)
+           VALUES (101, '2026-04-02T09:00:00', '2026-04-02T09:30:00',
+                   'complete', '2026-04-02', '2026-04-03', 'ok', 51,
+                   'manual', 'tok-101')""",
+    )
+    conn.execute(
+        """INSERT INTO pipeline_chart_targets (pipeline_run_id, ticker, source, chart_status)
+           VALUES (101, 'MSFT', 'aplus', 'ok')""",
+    )
+    conn.commit()
+    # Place PNGs on disk for runN's date.
+    charts_dir = tmp_path / "charts"
+    (charts_dir / "2026-04-01").mkdir(parents=True)
+    (charts_dir / "2026-04-01" / "AAPL.png").write_bytes(b"png-stub")
+    # Pin to runN (the older run) with FK-backed eval id.
+    binding = PipelineRunBinding(
+        run_id=100, finished_ts="2026-04-01T09:30:00",
+        data_asof_date="2026-04-01", charts_status="ok",
+        evaluation_run_id=50,
+    )
+    # AAPL is in-scope ONLY for runN. Pre-fix resolver re-reads
+    # pipeline_runs, picks runN+1, finds no AAPL row, returns
+    # 'out-of-scope'. Post-fix resolver uses binding.run_id=100 and
+    # finds AAPL.
+    reason, message = resolve_chart_scope(
+        conn, binding=binding, ticker="AAPL",
+        charts_dir=charts_dir, chart_top_n_watch=10,
+    )
+    assert reason is None, (
+        f"binding-stale resolver returned {reason!r} ({message!r}); "
+        "regression: resolver re-read pipeline_runs and bound to runN+1 "
+        "instead of honoring the passed binding"
+    )
+
+
+def test_resolve_chart_scope_requires_binding_kwarg():
+    """Calling resolve_chart_scope WITHOUT binding raises TypeError.
+
+    Discriminating verification: pre-fix the function accepts call without
+    binding; post-fix it raises. Catches a regression where binding default
+    is reintroduced (e.g., `binding: PipelineRunBinding | None = None`).
+    """
+    import inspect
+    sig = inspect.signature(resolve_chart_scope)
+    binding_param = sig.parameters.get("binding")
+    assert binding_param is not None, "resolve_chart_scope must accept `binding`"
+    assert binding_param.default is inspect.Parameter.empty, (
+        "binding MUST be required (no default); spec §C"
+    )
+    assert binding_param.kind == inspect.Parameter.KEYWORD_ONLY, (
+        "binding MUST be keyword-only; spec §C"
+    )
+
+
+def test_chart_reason_messages_out_of_scope_lists_three_tiers():
+    """The operator-facing 'out-of-scope' message reflects the three-tier
+    model post-migration: A+ candidates, open positions, tag-aware top-10.
+
+    Discriminating verification: pre-fix message was 'A+ names + top
+    near-trigger watchlist'; post-fix message references all three tiers.
+    Substring-match on each tier name catches a regression that reverts
+    the message OR drops a tier from the list.
+    """
+    msg = CHART_REASON_MESSAGES["out-of-scope"]
+    assert "A+" in msg
+    assert "open position" in msg.lower(), (
+        "out-of-scope message must reference open-position tier"
+    )
+    assert "watchlist" in msg.lower(), (
+        "out-of-scope message must reference watchlist tier"
+    )

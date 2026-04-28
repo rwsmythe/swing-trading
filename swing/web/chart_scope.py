@@ -115,7 +115,7 @@ CHART_REASON_MESSAGES: dict[str, str] = {
     ),
     "out-of-scope": (
         "Chart unavailable — this ticker isn't in today's charting scope "
-        "(A+ names + top near-trigger watchlist)."
+        "(A+ candidates, open positions, and tag-aware watchlist top-10)."
     ),
     "insufficient-data": (
         "Chart unavailable — data too thin or fetch error for this ticker at "
@@ -139,50 +139,57 @@ CHART_REASON_MESSAGES: dict[str, str] = {
 def resolve_chart_scope(
     conn: sqlite3.Connection,
     *,
+    binding: PipelineRunBinding,
     ticker: str,
     charts_dir: Path,
     chart_top_n_watch: int,
 ) -> tuple[str | None, str | None]:
-    """Return (chart_reason, chart_reason_message).
+    """Race-free chart-scope resolver.
 
-    Both are None when the chart is available. Otherwise the reason is one of:
-      no-run | engine-missing | pipeline-failed | out-of-scope | insufficient-data
+    Caller MUST pin the binding at request handler entry via
+    `latest_completed_pipeline_run(conn)`. Resolver does NOT re-read
+    `pipeline_runs` internally. Returns `(reason, message)` — both None when
+    chart is available; otherwise reason ∈ {no-run, engine-missing,
+    pipeline-failed, out-of-scope, insufficient-data, fetcher_failed,
+    too_few_bars} and message is the operator-facing copy.
+
+    Binding contract (spec §C "Binding scope definition"):
+    - One binding per HTTP request handler.
+    - The binding closes the intra-request race between the caller's read
+      of `pipeline_runs.data_asof_date` (used to construct chart URLs) and
+      the resolver's read of `pipeline_chart_targets`.
+    - Multiple `resolve_chart_scope` calls within the same request handler
+      MUST share the same binding instance to honor the contract. Future
+      surfaces composing multiple resolutions in one handler MUST pin the
+      binding ONCE at the top and pass it through to all calls.
+    - Inter-request races (different HTTP requests from the same dashboard)
+      are NOT closed by this contract; cross-request session pinning is
+      out-of-scope (spec §C "What the binding does NOT close").
     """
-    latest = conn.execute(
-        """SELECT id, finished_ts, data_asof_date, charts_status,
-                  evaluation_run_id
-           FROM pipeline_runs
-           WHERE state = 'complete'
-           ORDER BY finished_ts DESC LIMIT 1""",
-    ).fetchone()
-    if latest is None:
-        return "no-run", CHART_REASON_MESSAGES["no-run"]
-    run_id, finished_ts, data_asof_date, charts_status, evaluation_run_id = latest
-
-    if charts_status == "skipped":
+    if binding.charts_status == "skipped":
         return "engine-missing", CHART_REASON_MESSAGES["engine-missing"]
-    if charts_status == "failed":
+    if binding.charts_status == "failed":
         return "pipeline-failed", CHART_REASON_MESSAGES["pipeline-failed"]
-    if charts_status != "ok":
+    if binding.charts_status != "ok":
         # None, or any unexpected sentinel — the chart step never signaled
         # success, so a PNG cannot be trusted. Prefer pipeline-failed so the
         # operator is told to re-run, not that this specific ticker was thin.
         return "pipeline-failed", CHART_REASON_MESSAGES["pipeline-failed"]
 
     # charts_status == 'ok'.
-    if evaluation_run_id is not None:
+    if binding.evaluation_run_id is not None:
         # FK-backed path (Tranche C T3): scope is the persisted chart_targets
         # row set; no recomputation, no eval-linkage heuristic.
         return _resolve_via_chart_targets(
-            conn, ticker=ticker, pipeline_run_id=run_id,
-            data_asof_date=data_asof_date, charts_dir=charts_dir,
+            conn, ticker=ticker, pipeline_run_id=binding.run_id,
+            data_asof_date=binding.data_asof_date, charts_dir=charts_dir,
         )
 
     # Legacy fallback (pre-migration-0006 rows): heuristic eval-linkage +
     # live-watchlist proximity. Spec §4 accepted-with-rationale drift.
     return _resolve_via_heuristic(
-        conn, ticker=ticker, finished_ts=finished_ts,
-        data_asof_date=data_asof_date, charts_dir=charts_dir,
+        conn, ticker=ticker, finished_ts=binding.finished_ts,
+        data_asof_date=binding.data_asof_date, charts_dir=charts_dir,
         chart_top_n_watch=chart_top_n_watch,
     )
 

@@ -64,7 +64,10 @@ def db_conn(seeded_db):
 
 
 def test_resolver_emits_fetcher_failed_state(db_conn, tmp_path: Path):
-    from swing.web.chart_scope import resolve_chart_scope
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
 
     cfg, conn = db_conn
     with conn:
@@ -74,8 +77,11 @@ def test_resolver_emits_fetcher_failed_state(db_conn, tmp_path: Path):
             conn, run_id=run_id, ticker="AAPL", chart_status="fetcher_failed",
         )
 
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
     reason, msg = resolve_chart_scope(
-        conn, ticker="AAPL", charts_dir=tmp_path, chart_top_n_watch=5,
+        conn, binding=binding, ticker="AAPL",
+        charts_dir=tmp_path, chart_top_n_watch=5,
     )
     assert reason == "fetcher_failed"
     assert "fetch failed" in msg.lower()
@@ -83,7 +89,10 @@ def test_resolver_emits_fetcher_failed_state(db_conn, tmp_path: Path):
 
 
 def test_resolver_emits_too_few_bars_state(db_conn, tmp_path: Path):
-    from swing.web.chart_scope import resolve_chart_scope
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
 
     cfg, conn = db_conn
     with conn:
@@ -93,8 +102,11 @@ def test_resolver_emits_too_few_bars_state(db_conn, tmp_path: Path):
             conn, run_id=run_id, ticker="AAPL", chart_status="too_few_bars",
         )
 
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
     reason, msg = resolve_chart_scope(
-        conn, ticker="AAPL", charts_dir=tmp_path, chart_top_n_watch=5,
+        conn, binding=binding, ticker="AAPL",
+        charts_dir=tmp_path, chart_top_n_watch=5,
     )
     assert reason == "too_few_bars"
     assert "bars" in msg.lower() or "historical" in msg.lower()
@@ -106,7 +118,10 @@ def test_resolver_pending_still_collapses_to_insufficient_data(
     """'pending' represents an in-flight or crashed-mid-step state — neither
     a fetcher failure nor a thin-bars skip. Operator sees the catch-all
     'insufficient-data' message rather than a misleading specific cause."""
-    from swing.web.chart_scope import resolve_chart_scope
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
 
     cfg, conn = db_conn
     with conn:
@@ -116,8 +131,11 @@ def test_resolver_pending_still_collapses_to_insufficient_data(
             conn, run_id=run_id, ticker="AAPL", chart_status="pending",
         )
 
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
     reason, _ = resolve_chart_scope(
-        conn, ticker="AAPL", charts_dir=tmp_path, chart_top_n_watch=5,
+        conn, binding=binding, ticker="AAPL",
+        charts_dir=tmp_path, chart_top_n_watch=5,
     )
     assert reason == "insufficient-data"
 
@@ -128,7 +146,10 @@ def test_resolver_legacy_null_fk_still_uses_insufficient_data(
     """Heuristic-fallback path (legacy NULL FK) cannot distinguish fetcher
     failures from short-bar skips — it sees only the absence of a PNG.
     The catch-all 'insufficient-data' state remains for these rows."""
-    from swing.web.chart_scope import resolve_chart_scope
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
 
     cfg, conn = db_conn
     with conn:
@@ -151,9 +172,12 @@ def test_resolver_legacy_null_fk_still_uses_insufficient_data(
                        'manual', '2026-04-17', '2026-04-17',
                        'complete', 't-x', 'ok', NULL)""",
         )
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
     # No PNG written.
     reason, msg = resolve_chart_scope(
-        conn, ticker="AAPL", charts_dir=tmp_path, chart_top_n_watch=5,
+        conn, binding=binding, ticker="AAPL",
+        charts_dir=tmp_path, chart_top_n_watch=5,
     )
     assert reason == "insufficient-data"
     assert "data too thin" in msg.lower()
@@ -161,7 +185,10 @@ def test_resolver_legacy_null_fk_still_uses_insufficient_data(
 
 def test_resolver_ok_status_with_png_still_returns_none(db_conn, tmp_path: Path):
     """Sanity check: T5 must not have regressed the success path."""
-    from swing.web.chart_scope import resolve_chart_scope
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
 
     cfg, conn = db_conn
     with conn:
@@ -174,8 +201,11 @@ def test_resolver_ok_status_with_png_still_returns_none(db_conn, tmp_path: Path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(b"stub")
 
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
     reason, msg = resolve_chart_scope(
-        conn, ticker="AAPL", charts_dir=tmp_path, chart_top_n_watch=5,
+        conn, binding=binding, ticker="AAPL",
+        charts_dir=tmp_path, chart_top_n_watch=5,
     )
     assert reason is None
     assert msg is None

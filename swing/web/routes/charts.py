@@ -19,7 +19,11 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from swing.data.db import connect
-from swing.web.chart_scope import CHART_REASON_MESSAGES, resolve_chart_scope
+from swing.web.chart_scope import (
+    CHART_REASON_MESSAGES,
+    latest_completed_pipeline_run,
+    resolve_chart_scope,
+)
 
 router = APIRouter()
 
@@ -44,15 +48,14 @@ def charts_redirect(request: Request, ticker: str):
     ticker_upper = ticker.upper()
     cfg = request.app.state.cfg
 
+    redirect_date: str | None = None
+    reason: str | None = None
+    message: str | None = None
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
-            row = conn.execute(
-                """SELECT data_asof_date FROM pipeline_runs
-                   WHERE state = 'complete'
-                   ORDER BY finished_ts DESC LIMIT 1""",
-            ).fetchone()
-            if row is None:
+            binding = latest_completed_pipeline_run(conn)
+            if binding is None:
                 return HTMLResponse(
                     _unavailable_html(
                         ticker=ticker_upper,
@@ -60,18 +63,21 @@ def charts_redirect(request: Request, ticker: str):
                     ),
                     status_code=404,
                 )
-            data_asof_date = row[0]
             reason, message = resolve_chart_scope(
-                conn, ticker=ticker_upper,
+                conn, binding=binding, ticker=ticker_upper,
                 charts_dir=cfg.paths.charts_dir,
                 chart_top_n_watch=cfg.pipeline.chart_top_n_watch,
             )
+            if reason is None:
+                # binding.data_asof_date is paired with binding.run_id —
+                # SAME run that produced `reason=None`. No drift race.
+                redirect_date = binding.data_asof_date
     finally:
         conn.close()
 
     if reason is None:
         return RedirectResponse(
-            url=f"/charts/{data_asof_date}/{ticker_upper}.png",
+            url=f"/charts/{redirect_date}/{ticker_upper}.png",
             status_code=303,
         )
     return HTMLResponse(

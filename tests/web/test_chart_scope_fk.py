@@ -76,7 +76,10 @@ def test_resolver_uses_pipeline_chart_targets_when_fk_present(db_conn, tmp_path)
     """When pipeline_runs.evaluation_run_id is set AND a chart_targets row
     exists for the ticker with chart_status='ok' AND the PNG is on disk,
     the resolver returns (None, None) — chart is available."""
-    from swing.web.chart_scope import resolve_chart_scope
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
 
     cfg, conn = db_conn
     with conn:
@@ -95,8 +98,11 @@ def test_resolver_uses_pipeline_chart_targets_when_fk_present(db_conn, tmp_path)
         )
     _write_chart(tmp_path, date="2026-04-17", ticker="AAPL")
 
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
     reason, msg = resolve_chart_scope(
-        conn, ticker="AAPL", charts_dir=tmp_path, chart_top_n_watch=5,
+        conn, binding=binding, ticker="AAPL",
+        charts_dir=tmp_path, chart_top_n_watch=5,
     )
     assert reason is None
     assert msg is None
@@ -105,7 +111,10 @@ def test_resolver_uses_pipeline_chart_targets_when_fk_present(db_conn, tmp_path)
 def test_resolver_fk_path_out_of_scope_when_no_target_row(db_conn, tmp_path):
     """When FK is set but the ticker has no chart_targets row, the resolver
     returns out-of-scope (the pipeline did not chart this ticker)."""
-    from swing.web.chart_scope import resolve_chart_scope
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
 
     cfg, conn = db_conn
     with conn:
@@ -123,8 +132,11 @@ def test_resolver_fk_path_out_of_scope_when_no_target_row(db_conn, tmp_path):
             source="aplus", chart_status="ok",
         )
 
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
     reason, msg = resolve_chart_scope(
-        conn, ticker="ZZZ", charts_dir=tmp_path, chart_top_n_watch=5,
+        conn, binding=binding, ticker="ZZZ",
+        charts_dir=tmp_path, chart_top_n_watch=5,
     )
     assert reason == "out-of-scope"
     assert "charting scope" in msg
@@ -140,7 +152,10 @@ def test_resolver_fk_path_eliminates_drift_mode_a(db_conn, tmp_path):
     whichever of E1 or E2 satisfied `run_ts <= finished_ts` (E1 in this
     case because E2's run_ts is after finished_ts), so this case is
     hardened more strongly by T3 than by T2 alone."""
-    from swing.web.chart_scope import resolve_chart_scope
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
 
     cfg, conn = db_conn
     with conn:
@@ -165,8 +180,11 @@ def test_resolver_fk_path_eliminates_drift_mode_a(db_conn, tmp_path):
         )
     _write_chart(tmp_path, date="2026-04-17", ticker="AAPL")
 
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
     reason_aapl, _ = resolve_chart_scope(
-        conn, ticker="AAPL", charts_dir=tmp_path, chart_top_n_watch=5,
+        conn, binding=binding, ticker="AAPL",
+        charts_dir=tmp_path, chart_top_n_watch=5,
     )
     assert reason_aapl is None, (
         "AAPL must remain in-scope via the FK-backed chart_targets read; "
@@ -174,7 +192,8 @@ def test_resolver_fk_path_eliminates_drift_mode_a(db_conn, tmp_path):
     )
 
     reason_nvda, _ = resolve_chart_scope(
-        conn, ticker="NVDA", charts_dir=tmp_path, chart_top_n_watch=5,
+        conn, binding=binding, ticker="NVDA",
+        charts_dir=tmp_path, chart_top_n_watch=5,
     )
     assert reason_nvda == "out-of-scope", (
         "NVDA was only ever in E2's A+ set, never charted — must be "
@@ -189,7 +208,10 @@ def test_resolver_fk_path_eliminates_drift_mode_b(db_conn, tmp_path):
     recompute proximity at render time — it reads what was actually persisted
     in pipeline_chart_targets. AAA was the top-1 at T1 (charted); BBB became
     top-1 at T2 but was never charted, so BBB is out-of-scope."""
-    from swing.web.chart_scope import resolve_chart_scope
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
 
     cfg, conn = db_conn
     with conn:
@@ -227,8 +249,11 @@ def test_resolver_fk_path_eliminates_drift_mode_b(db_conn, tmp_path):
         )
     _write_chart(tmp_path, date="2026-04-17", ticker="AAA")
 
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
     reason_aaa, _ = resolve_chart_scope(
-        conn, ticker="AAA", charts_dir=tmp_path, chart_top_n_watch=1,
+        conn, binding=binding, ticker="AAA",
+        charts_dir=tmp_path, chart_top_n_watch=1,
     )
     assert reason_aaa is None, (
         "AAA was charted at T1 — FK-backed read keeps it in scope even "
@@ -236,7 +261,8 @@ def test_resolver_fk_path_eliminates_drift_mode_b(db_conn, tmp_path):
     )
 
     reason_bbb, _ = resolve_chart_scope(
-        conn, ticker="BBB", charts_dir=tmp_path, chart_top_n_watch=1,
+        conn, binding=binding, ticker="BBB",
+        charts_dir=tmp_path, chart_top_n_watch=1,
     )
     assert reason_bbb == "out-of-scope", (
         "BBB became top-1 only at render time; FK-backed read never picks "
@@ -251,7 +277,10 @@ def test_resolver_fk_path_chart_status_too_few_bars_and_fetcher_failed(
     its own reason; same for 'fetcher_failed'. Pre-T5 both collapsed to
     'insufficient-data'; that catch-all now only fires for legacy heuristic
     runs and the 'pending' chart_status."""
-    from swing.web.chart_scope import resolve_chart_scope
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
 
     cfg, conn = db_conn
     with conn:
@@ -273,11 +302,15 @@ def test_resolver_fk_path_chart_status_too_few_bars_and_fetcher_failed(
             source="aplus", chart_status="fetcher_failed",
         )
 
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
     aapl_reason, _ = resolve_chart_scope(
-        conn, ticker="AAPL", charts_dir=tmp_path, chart_top_n_watch=5,
+        conn, binding=binding, ticker="AAPL",
+        charts_dir=tmp_path, chart_top_n_watch=5,
     )
     msft_reason, _ = resolve_chart_scope(
-        conn, ticker="MSFT", charts_dir=tmp_path, chart_top_n_watch=5,
+        conn, binding=binding, ticker="MSFT",
+        charts_dir=tmp_path, chart_top_n_watch=5,
     )
     assert aapl_reason == "too_few_bars"
     assert msft_reason == "fetcher_failed"
@@ -287,7 +320,10 @@ def test_resolver_fk_path_pending_yields_insufficient_data(db_conn, tmp_path):
     """A 'pending' chart_status means the chart step never finalized this
     ticker (e.g., crashed mid-step). Resolver collapses to insufficient-data
     rather than claiming success without a PNG."""
-    from swing.web.chart_scope import resolve_chart_scope
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
 
     cfg, conn = db_conn
     with conn:
@@ -305,8 +341,11 @@ def test_resolver_fk_path_pending_yields_insufficient_data(db_conn, tmp_path):
             source="aplus", chart_status="pending",
         )
 
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
     reason, _ = resolve_chart_scope(
-        conn, ticker="AAPL", charts_dir=tmp_path, chart_top_n_watch=5,
+        conn, binding=binding, ticker="AAPL",
+        charts_dir=tmp_path, chart_top_n_watch=5,
     )
     assert reason == "insufficient-data"
 
@@ -315,7 +354,10 @@ def test_resolver_legacy_null_fk_falls_back_to_heuristic(db_conn, tmp_path):
     """Pre-migration-0006 rows have evaluation_run_id IS NULL. The resolver
     must NOT return out-of-scope (nor crash) — it must use the heuristic
     eval-linkage + live-watchlist code path that existing tests cover."""
-    from swing.web.chart_scope import resolve_chart_scope
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
 
     cfg, conn = db_conn
     with conn:
@@ -339,8 +381,11 @@ def test_resolver_legacy_null_fk_falls_back_to_heuristic(db_conn, tmp_path):
         )
     _write_chart(tmp_path, date="2026-04-17", ticker="AAPL")
 
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
     reason, msg = resolve_chart_scope(
-        conn, ticker="AAPL", charts_dir=tmp_path, chart_top_n_watch=5,
+        conn, binding=binding, ticker="AAPL",
+        charts_dir=tmp_path, chart_top_n_watch=5,
     )
     assert reason is None, (
         "legacy NULL-FK row must fall back to the heuristic and find AAPL "

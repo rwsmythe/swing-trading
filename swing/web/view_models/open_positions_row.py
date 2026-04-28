@@ -22,7 +22,11 @@ from swing.data.repos.trades import get_trade, list_exits_for_trade
 from swing.data.repos.weather import get_latest
 from swing.evaluation.dates import action_session_for_run
 from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
-from swing.web.chart_scope import resolve_chart_scope
+from swing.web.chart_scope import (
+    CHART_REASON_MESSAGES,
+    latest_completed_pipeline_run,
+    resolve_chart_scope,
+)
 from swing.web.price_cache import PriceCache, PriceSnapshot
 from swing.web.view_models.dashboard import AdvisorySuggestionVM
 
@@ -177,21 +181,26 @@ def build_open_positions_expanded(
     if trade is None or trade.status != "open":
         return None
 
-    pipe_row = conn.execute(
-        """SELECT data_asof_date FROM pipeline_runs
-           WHERE state = 'complete'
-           ORDER BY finished_ts DESC LIMIT 1""",
-    ).fetchone()
-    data_asof = pipe_row[0] if pipe_row else None
+    binding = latest_completed_pipeline_run(conn)
+    if binding is None:
+        # No completed runs — chart unavailable AND data_asof_date is None.
+        return OpenPositionsExpandedVM(
+            trade_id=trade.id,
+            ticker=trade.ticker,
+            data_asof_date=None,
+            chart_reason="no-run",
+            chart_reason_message=CHART_REASON_MESSAGES["no-run"],
+        )
 
     chart_reason, chart_reason_message = resolve_chart_scope(
-        conn, ticker=trade.ticker, charts_dir=cfg.paths.charts_dir,
+        conn, binding=binding, ticker=trade.ticker,
+        charts_dir=cfg.paths.charts_dir,
         chart_top_n_watch=cfg.pipeline.chart_top_n_watch,
     )
     return OpenPositionsExpandedVM(
         trade_id=trade.id,
         ticker=trade.ticker,
-        data_asof_date=data_asof,
+        data_asof_date=binding.data_asof_date,
         chart_reason=chart_reason,
         chart_reason_message=chart_reason_message,
     )
