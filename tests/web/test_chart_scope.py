@@ -199,7 +199,7 @@ def test_resolver_out_of_scope_when_not_aplus_and_not_near_top_n(db_conn, tmp_pa
         conn, binding=binding, ticker="ZZZ",
         charts_dir=tmp_path, chart_top_n_watch=5,
     )
-    assert reason == "out-of-scope"
+    assert reason == "out-of-scope-legacy"
     assert "charting scope" in msg
 
 
@@ -265,12 +265,12 @@ def test_resolver_watchlist_ticker_in_scope_by_proximity(db_conn, tmp_path):
     )
     assert reason is None
 
-    # GOOG is in rank 2 → out-of-scope with top_n=1.
+    # GOOG is in rank 2 → out-of-scope-legacy with top_n=1 (heuristic/legacy path).
     reason_goog, _ = resolve_chart_scope(
         conn, binding=binding, ticker="GOOG",
         charts_dir=tmp_path, chart_top_n_watch=1,
     )
-    assert reason_goog == "out-of-scope"
+    assert reason_goog == "out-of-scope-legacy"
 
 
 def test_resolver_eval_linkage_picks_pipelines_eval_not_later_standalone(
@@ -321,12 +321,13 @@ def test_resolver_eval_linkage_picks_pipelines_eval_not_later_standalone(
         "to available even though E2 later dropped it from A+"
     )
 
-    # NVDA was only in E2 — not what the pipeline charted → out-of-scope.
+    # NVDA was only in E2 — not what the pipeline charted → out-of-scope-legacy
+    # (heuristic/legacy path: NULL evaluation_run_id).
     reason_nvda, _ = resolve_chart_scope(
         conn, binding=binding, ticker="NVDA",
         charts_dir=tmp_path, chart_top_n_watch=5,
     )
-    assert reason_nvda == "out-of-scope", (
+    assert reason_nvda == "out-of-scope-legacy", (
         "resolver must NOT pick E2 (standalone post-pipeline eval)"
     )
 
@@ -368,12 +369,12 @@ def test_resolver_drift_proximity_rank_approximated_from_render_time(
     # In top-1 but no PNG → insufficient-data.
     assert reason_aaa == "insufficient-data"
 
-    # BBB is outside top-1 at T2.
+    # BBB is outside top-1 at T2 — out-of-scope-legacy (heuristic/legacy path).
     reason_bbb, _ = resolve_chart_scope(
         conn, binding=binding, ticker="BBB",
         charts_dir=tmp_path, chart_top_n_watch=1,
     )
-    assert reason_bbb == "out-of-scope"
+    assert reason_bbb == "out-of-scope-legacy"
 
 
 def test_resolver_falls_back_to_insufficient_data_when_eval_linkage_missing(
@@ -726,4 +727,56 @@ def test_chart_reason_messages_out_of_scope_lists_three_tiers():
     )
     assert "watchlist" in msg.lower(), (
         "out-of-scope message must reference watchlist tier"
+    )
+
+
+def test_chart_reason_messages_out_of_scope_legacy_omits_three_tiers():
+    """The legacy out-of-scope message (used by the NULL-evaluation-run-id
+    heuristic resolver path) must NOT enumerate the V2 three tiers — those
+    weren't part of the legacy scope. Codex R1 Major 2."""
+    msg = CHART_REASON_MESSAGES["out-of-scope-legacy"]
+    assert "open position" not in msg.lower()
+    assert "tag-aware" not in msg.lower()
+    assert "legacy" in msg.lower()
+
+
+def test_heuristic_path_emits_out_of_scope_legacy_reason(db_conn, tmp_path):
+    """_resolve_via_heuristic (NULL evaluation_run_id path) must return the
+    'out-of-scope-legacy' reason code, not 'out-of-scope'. The V2 three-tier
+    'out-of-scope' message would be misleading for pre-migration rows that
+    never used open-position or tag-aware scope. Codex R1 Major 2."""
+    from swing.web.chart_scope import (
+        latest_completed_pipeline_run,
+        resolve_chart_scope,
+    )
+
+    cfg, conn = db_conn
+    with conn:
+        eval_id = _insert_eval_run(
+            conn, run_ts="2026-04-17T21:30:00", data_asof_date="2026-04-17",
+        )
+        # A+ candidate so the eval-linkage heuristic succeeds, but ZZZ is
+        # not in the A+ set and not on the watchlist — heuristic path OOS.
+        _insert_candidate(conn, eval_id=eval_id, ticker="NVDA", bucket="aplus")
+        # Pipeline run with NULL evaluation_run_id (legacy pre-migration-0006).
+        _insert_pipeline_run(
+            conn, started_ts="2026-04-17T21:00:00",
+            finished_ts="2026-04-17T21:55:00",
+            data_asof_date="2026-04-17", charts_status="ok",
+        )
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
+    assert binding.evaluation_run_id is None, (
+        "test requires a legacy NULL-FK run to exercise _resolve_via_heuristic"
+    )
+    reason, msg = resolve_chart_scope(
+        conn, binding=binding, ticker="ZZZ",
+        charts_dir=tmp_path, chart_top_n_watch=5,
+    )
+    assert reason == "out-of-scope-legacy", (
+        f"heuristic path must return 'out-of-scope-legacy', got {reason!r}; "
+        "Codex R1 Major 2: V2 three-tier message must not appear on legacy runs"
+    )
+    assert "legacy" in msg.lower(), (
+        "out-of-scope-legacy message must contain the word 'legacy'"
     )

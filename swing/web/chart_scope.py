@@ -117,6 +117,10 @@ CHART_REASON_MESSAGES: dict[str, str] = {
         "Chart unavailable — this ticker isn't in today's charting scope "
         "(A+ candidates, open positions, and tag-aware watchlist top-10)."
     ),
+    "out-of-scope-legacy": (
+        "Chart unavailable — this ticker isn't in today's charting scope "
+        "(A+ candidates and top near-trigger watchlist; legacy run pre-V2)."
+    ),
     "insufficient-data": (
         "Chart unavailable — data too thin or fetch error for this ticker at "
         "last pipeline run."
@@ -256,7 +260,7 @@ def _resolve_via_heuristic(
     top_n_tickers = {w.ticker for w in near_by_proximity}
 
     if ticker not in aplus_tickers and ticker not in top_n_tickers:
-        return "out-of-scope", CHART_REASON_MESSAGES["out-of-scope"]
+        return "out-of-scope-legacy", CHART_REASON_MESSAGES["out-of-scope-legacy"]
 
     png_path = charts_dir / data_asof_date / f"{ticker}.png"
     if not png_path.exists():
