@@ -2283,6 +2283,73 @@ def test_render_chart_title_omits_stop_segment_when_stop_is_zero(tmp_path):
         )
 
 
+def test_render_chart_passes_built_title_to_mpf_plot(tmp_path, monkeypatch):
+    """Wiring pin: render_chart's `title=` kwarg to mpf.plot must START with
+    the value produced by _build_chart_title (the call site appends the
+    `| last N bars` suffix).
+
+    Codex R4 Major 1: without this test, a regression where `_build_chart_title`
+    is correct but `render_chart` reverts to the old f-string `f"{ticker} |
+    pivot {pivot:.2f} stop {stop:.2f} | last ..."` would pass ALL hline-count
+    tests AND the helper-direct title test, only failing at manual visual
+    verification. Verifying render_chart's actual title kwarg pins the
+    helper-to-render wiring.
+
+    Discriminating verification: with stop=0.0, the captured title prefix is
+    `_build_chart_title(ticker="AAPL", pivot=110.0, stop=0.0)`. A regression
+    that drops the helper call AND keeps the old f-string would emit a title
+    containing "stop 0.00" — the assertion `"stop" not in captured_title`
+    fails. **Verified-empirically pin** (also asserted in same test): with
+    stop=95.0, the captured title prefix DOES include "stop 95.00", proving
+    the helper-driven path correctly emits the segment when stop is positive.
+    """
+    from swing.rendering.charts import _build_chart_title
+
+    captured: dict = {}
+
+    def _capture_kwargs(df, **kwargs):
+        captured["title"] = kwargs.get("title", "")
+        return None
+
+    import mplfinance
+    monkeypatch.setattr(mplfinance, "plot", _capture_kwargs)
+    out = tmp_path / "AAPL.png"
+
+    # stop=0.0 — title must NOT contain 'stop' substring AND must start with
+    # the helper's output for these args.
+    render_chart(
+        ticker="AAPL", ohlcv=_ohlcv(), pivot=110.0, stop=0.0,
+        output_path=out, pattern_overlay=None,
+    )
+    title_zero = captured["title"]
+    expected_prefix_zero = _build_chart_title(
+        ticker="AAPL", pivot=110.0, stop=0.0,
+    )
+    assert title_zero.startswith(expected_prefix_zero), (
+        f"render_chart title does not start with helper output; "
+        f"got {title_zero!r}; expected prefix {expected_prefix_zero!r}; "
+        "regression: render_chart constructs title without _build_chart_title"
+    )
+    assert "stop" not in title_zero.lower(), (
+        f"render_chart title still contains 'stop' segment when stop=0.0: "
+        f"{title_zero!r}"
+    )
+
+    # Verified-empirically: stop=95.0 — title MUST contain 'stop 95.00'
+    # (proves the helper-driven path is correct, not just emitting empty).
+    captured.clear()
+    render_chart(
+        ticker="AAPL", ohlcv=_ohlcv(), pivot=110.0, stop=95.0,
+        output_path=out, pattern_overlay=None,
+    )
+    title_pos = captured["title"]
+    assert "stop 95.00" in title_pos, (
+        f"render_chart title MISSING 'stop 95.00' segment when stop>0; "
+        f"got {title_pos!r}; "
+        "regression: helper-driven path emits empty stop segment even when stop>0"
+    )
+
+
 def test_render_chart_renders_stop_hline_when_stop_is_positive(tmp_path, monkeypatch):
     """Verified-empirically pin: positive stop renders the hline as before.
 
@@ -2322,7 +2389,7 @@ def test_render_chart_renders_stop_hline_when_stop_is_positive(tmp_path, monkeyp
 python -m pytest tests/rendering/test_render_chart_stop_omission.py -v
 ```
 
-Expected: 4 tests fail. Two on the `stop=None` path (pre-fix code may TypeError on `float(None)`); two on the title format.
+Expected: 5 tests fail. Two on the `stop=None` path (pre-fix code may TypeError on `float(None)`); the helper-direct title test fails with `ImportError: cannot import name '_build_chart_title'`; the wiring-pin test fails with the same import; the positive-stop hline test fails because pre-fix code drops `[110.0, 95.0]` shape on the captured kwargs.
 
 - [ ] **Step 3: Widen `render_chart` signature + extract `_build_chart_title` helper + apply conditional**
 
@@ -2412,10 +2479,11 @@ Expected: new tests pass; existing chart-rendering tests pass.
 
 - [ ] **Step 5: Manual visual verification (per Phase 6 lesson)**
 
-Generate two PNGs manually into a workspace-relative scratch directory (project is on Windows; `/tmp` is gitbash-pseudo-path, but using a workspace-relative path avoids ambiguity across shells):
+Generate two PNGs manually into a workspace-relative scratch directory (project is on Windows; `/tmp` is gitbash-pseudo-path, but using a workspace-relative path avoids ambiguity across shells). PowerShell-native form (mkdir without `-p` works because PS's `New-Item` succeeds when the dir already exists with `-Force`; gitbash-native form uses `mkdir -p`):
 
-```bash
-mkdir -p .tmp-stopomission-verify
+```powershell
+# PowerShell:
+New-Item -ItemType Directory -Force -Path .tmp-stopomission-verify | Out-Null
 python -c "
 import pandas as pd
 from pathlib import Path
@@ -2448,7 +2516,7 @@ git commit -m "feat(rendering): Task 6 — omit stop hline + title segment when 
 ```
 
 **Acceptance:**
-- 4 new tests pass.
+- 5 new tests pass (2 hline-count + 1 helper-direct title + 1 render-to-helper wiring + 1 positive-stop verified-empirically).
 - Manual visual verification confirms no stop hline + correct title format.
 - No mathtext metacharacters introduced.
 - Full fast suite green.
@@ -2465,7 +2533,7 @@ git commit -m "feat(rendering): Task 6 — omit stop hline + title segment when 
 
 **Spec section:** §A "Acceptance threshold" + "Test instrumentation" + "Timer-boundary specification."
 
-**Goal:** Instrument `_step_charts` with a wall-time timer that brackets all chart-step work (from entry through last fenced write). Emit a WARNING log line if `> 60s` and an ERROR log line if `> 120s`. The integration test uses a synthetic-slow `fetcher.get` stub to make the timer cross thresholds deterministically; assertions are on log records (via `caplog`), not on real timing.
+**Goal:** Instrument `_step_charts` with a wall-time timer that brackets all chart-step work (from entry through last fenced write). Emit a WARNING log line if `> 60s` and an ERROR log line if `> 120s`. The integration tests drive the timer past thresholds deterministically by patching `swing.pipeline.runner.time.monotonic` (Codex R4 Minor 2 — narrative aligned to actual mechanism); assertions are on log records (via `caplog`), not on real timing or on a slow-sleep fetcher.
 
 **Files:**
 - Modify: `swing/pipeline/runner.py` (module-level `import time` if not already present; timer instrumentation in `_step_charts`)
@@ -2481,8 +2549,16 @@ git commit -m "feat(rendering): Task 6 — omit stop hline + title segment when 
 Timer boundary (Codex R3 Minor 2): timer starts at _step_charts entry
 (before any DB read for tier composition); timer ends after the last
 lease.fenced_write for chart_status updates. The metric is
-chart_step_wall_time_seconds. Test instrumentation uses a synthetic-slow
-fetcher stub — deterministic, no real timing dependency.
+chart_step_wall_time_seconds.
+
+Test instrumentation (Codex R4 Minor 2 — narrative aligned to
+implementation): the discriminating mechanism is `_patch_monotonic`
+(monkeypatch on `swing.pipeline.runner.time.monotonic`) — deterministic,
+no real timing dependency. The `_slow_fetcher_stub` helper below is
+defined for completeness (e.g., the `-m slow` benchmark test in
+follow-ups can use it for end-to-end real-timing verification), but the
+log-capture tests in this file rely on the time-patch path, NOT on the
+fetcher stub's sleep, to drive elapsed-time discrimination.
 """
 from __future__ import annotations
 
