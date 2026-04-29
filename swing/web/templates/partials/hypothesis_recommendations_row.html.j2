@@ -25,4 +25,9 @@
   <td>{{ rec.hypothesis_progress_n }} / {{ rec.hypothesis_progress_target }}</td>
   <td>{% if rec.tripwire_fired %}<strong>FIRED</strong>: {{ rec.tripwire_reason or "" }}{% else %}—{% endif %}</td>
   <td title="{{ rec.suggested_label }}">{{ rec.suggested_label[:60] }}{% if rec.suggested_label|length > 60 %}…{% endif %}</td>
+  <td><button type="button"
+              hx-get="/trades/entry/form?ticker={{ rec.ticker }}&origin=hyp-recs"
+              hx-target="closest tr"
+              hx-swap="outerHTML"
+              hx-headers='{"HX-Request": "true"}'>Enter</button></td>
 </tr>

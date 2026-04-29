@@ -196,9 +196,213 @@ def test_existing_seven_columns_preserved(seeded_db, monkeypatch):
         assert f">{label}<" in section, (
             f"existing column header '{label}' missing from thead"
         )
-    # Column count = 8 at the end of Task 5.4 (chevron + 7 existing).
+    # Column count = 9 at the end of Task 5.5 (chevron + 7 existing + Action).
     th_pattern = re.compile(r"<th\b[^>]*>", flags=re.DOTALL)
     th_count = len(th_pattern.findall(section))
-    assert th_count == 8, (
-        f"expected 8 thead <th> elements (chevron + 7 originals), got {th_count}"
+    assert th_count == 9, (
+        f"expected 9 thead <th> elements (chevron + 7 originals + Action),"
+        f" got {th_count}"
+    )
+
+
+# -- Task 5.5 — per-row Enter button (Q7) tests ---------------------------------
+
+
+def _extract_hyp_recs_enter_button(body: str, ticker: str) -> str:
+    """Return the literal hyp-recs per-row Enter <button>...</button> for ticker.
+
+    Anchored on `hx-get="/trades/entry/form?ticker={ticker}` (prefix match —
+    the URL also carries `&origin=hyp-recs` or its escaped form). Returns the
+    full button element including its closing tag.
+    """
+    # Match <button ...hx-get="/trades/entry/form?ticker=NVDA...">Enter</button>
+    pattern = re.compile(
+        r'<button\b[^>]*hx-get="/trades/entry/form\?ticker='
+        + re.escape(ticker)
+        + r'[^"]*"[^>]*>[^<]*</button>',
+    )
+    m = pattern.search(body)
+    assert m is not None, (
+        f"could not find hyp-recs Enter button for ticker={ticker}"
+    )
+    return m.group(0)
+
+
+def test_action_column_header_present(seeded_db, monkeypatch):
+    """Task 5.5 test 1 — the new trailing Action <th> appears in thead."""
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg)
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/hyp-recs/refresh", headers={"HX-Request": "true"},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    # Anchor on the hyp-recs section's thead so we don't pick up an Action
+    # header from another section (defensive).
+    section_thead = re.search(
+        r'<section[^>]*id="hypothesis-recommendations"[^>]*>.*?</thead>',
+        body, flags=re.DOTALL,
+    )
+    assert section_thead is not None, (
+        "could not locate hyp-recs section thead in body"
+    )
+    assert '<th aria-label="Action"' in section_thead.group(0), (
+        "trailing Action <th> must be present in hyp-recs thead"
+    )
+
+
+def test_per_row_enter_button_url_carries_origin(seeded_db, monkeypatch):
+    """Task 5.5 test 2 — per-row Enter button URL contains
+    `&origin=hyp-recs` (or HTML-escaped `&amp;origin=hyp-recs`).
+    """
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg)
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/hyp-recs/refresh", headers={"HX-Request": "true"},
+        )
+    assert resp.status_code == 200, resp.text
+    btn = _extract_hyp_recs_enter_button(resp.text, "NVDA")
+    # Extract the hx-get URL from the button.
+    url_match = re.search(r'hx-get="([^"]+)"', btn)
+    assert url_match is not None, f"no hx-get attribute on button: {btn}"
+    url = url_match.group(1)
+    # Accept either literal `&` or HTML-escaped `&amp;` between query params.
+    assert "origin=hyp-recs" in url, (
+        f"button URL must carry origin=hyp-recs query param. URL={url}"
+    )
+    assert ("&origin=" in url) or ("&amp;origin=" in url), (
+        f"origin must be a query-param separator (& or &amp;). URL={url}"
+    )
+
+
+def test_per_row_enter_button_has_no_stop_propagation(seeded_db, monkeypatch):
+    """Task 5.5 test 3 — D.5 differentiator: the hyp-recs row is NOT an
+    HTMX trigger (only the chevron BUTTON is), so the Enter button does
+    NOT need event.stopPropagation. Assert it is absent.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg)
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/hyp-recs/refresh", headers={"HX-Request": "true"},
+        )
+    assert resp.status_code == 200, resp.text
+    btn = _extract_hyp_recs_enter_button(resp.text, "NVDA")
+    assert "stoppropagation" not in btn.lower(), (
+        f"hyp-recs Enter button must NOT carry event.stopPropagation"
+        f" (D.5 — row is not an HTMX trigger). Button: {btn}"
+    )
+
+
+def test_watchlist_enter_button_still_has_stop_propagation(
+    seeded_db, monkeypatch,
+):
+    """Task 5.5 test 4 (discriminating) — the WATCHLIST Enter button STILL
+    has event.stopPropagation. Proves the architectural difference between
+    watchlist (row IS a trigger, Enter must stop propagation) and hyp-recs
+    (row is NOT a trigger, Enter does not need it) is INTENTIONAL.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg)
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get("/")
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    # The watchlist row carries id="watchlist-row-{ticker}". Locate the
+    # row and assert the Enter button inside has stopPropagation.
+    row_pattern = re.compile(
+        r'<tr\b[^>]*id="watchlist-row-NVDA"[^>]*>.*?</tr>',
+        flags=re.DOTALL,
+    )
+    row_match = row_pattern.search(body)
+    assert row_match is not None, (
+        "could not find watchlist row for NVDA in dashboard render"
+    )
+    row = row_match.group(0)
+    btn_pattern = re.compile(
+        r'<button\b[^>]*hx-get="/trades/entry/form\?ticker=NVDA[^"]*"[^>]*>'
+        r'[^<]*</button>',
+    )
+    btn_match = btn_pattern.search(row)
+    assert btn_match is not None, (
+        f"could not find watchlist Enter button in row. Row={row}"
+    )
+    watchlist_btn = btn_match.group(0)
+    assert "stopPropagation" in watchlist_btn, (
+        "watchlist Enter button must STILL carry event.stopPropagation"
+        " (architectural invariant — watchlist <tr> IS an HTMX trigger)."
+        f" Button: {watchlist_btn}"
+    )
+
+
+def test_hyp_recs_enter_url_differs_from_watchlist_enter_url(
+    seeded_db, monkeypatch,
+):
+    """Task 5.5 test 5 (discriminating) — the per-row Enter URLs differ.
+    Watchlist Enter routes to `/trades/entry/form?ticker=X` (no origin);
+    hyp-recs Enter routes to `/trades/entry/form?ticker=X&origin=hyp-recs`.
+    A regression collapsing the two to the same URL would fail this test.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg)
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        full_resp = client.get("/")
+    assert full_resp.status_code == 200, full_resp.text
+    body = full_resp.text
+
+    # Extract watchlist Enter URL (anchored inside the watchlist row).
+    wl_row_match = re.search(
+        r'<tr\b[^>]*id="watchlist-row-NVDA"[^>]*>.*?</tr>',
+        body, flags=re.DOTALL,
+    )
+    assert wl_row_match is not None
+    wl_btn_match = re.search(
+        r'<button\b[^>]*hx-get="(/trades/entry/form\?ticker=NVDA[^"]*)"',
+        wl_row_match.group(0),
+    )
+    assert wl_btn_match is not None, "watchlist Enter URL not found"
+    watchlist_url = wl_btn_match.group(1)
+
+    # Extract hyp-recs Enter URL (anchored inside the hyp-rec row).
+    hr_row_match = re.search(
+        r'<tr\b[^>]*id="hyp-rec-row-NVDA"[^>]*>.*?</tr>',
+        body, flags=re.DOTALL,
+    )
+    assert hr_row_match is not None
+    hr_btn_match = re.search(
+        r'<button\b[^>]*hx-get="(/trades/entry/form\?ticker=NVDA[^"]*)"',
+        hr_row_match.group(0),
+    )
+    assert hr_btn_match is not None, "hyp-recs Enter URL not found"
+    hyp_recs_url = hr_btn_match.group(1)
+
+    # Both URLs should target /trades/entry/form?ticker=NVDA at minimum.
+    assert watchlist_url.startswith("/trades/entry/form?ticker=NVDA")
+    assert hyp_recs_url.startswith("/trades/entry/form?ticker=NVDA")
+    # But they MUST differ — hyp-recs carries the origin query param.
+    assert watchlist_url != hyp_recs_url, (
+        "hyp-recs Enter URL must NOT match watchlist Enter URL — a"
+        " regression collapsing them to the same URL would lose the"
+        f" origin discriminator. watchlist={watchlist_url!r}"
+        f" hyp_recs={hyp_recs_url!r}"
+    )
+    # And specifically: hyp-recs must contain origin=hyp-recs while
+    # watchlist must NOT.
+    assert "origin=hyp-recs" in hyp_recs_url, (
+        f"hyp-recs URL missing origin=hyp-recs. URL={hyp_recs_url}"
+    )
+    assert "origin=" not in watchlist_url, (
+        f"watchlist URL must not carry origin query param. URL={watchlist_url}"
     )
