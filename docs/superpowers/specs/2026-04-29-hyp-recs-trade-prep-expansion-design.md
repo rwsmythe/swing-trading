@@ -896,7 +896,7 @@ def build_entry_form_vm(*, ticker, cfg, cache, executor, origin="watchlist"):
     # use anchor_eval_id and anchor_pipeline_run_id appropriately.
 ```
 
-**Visible "as of" disclosure on the form when `origin=hyp-recs`** (mirrors §3.5.6 expansion's freshness signal): the form template gains a freshness footer when `vm.origin == "hyp-recs"` showing `As of pipeline finished {{ vm.pipeline_finished_at }}` — same string the expansion shows. Operator can recognize at-a-glance divergence between expansion and form.
+**Visible "as of" disclosure on the form when `origin=hyp-recs`** (mirrors §3.5.6 expansion's freshness signal): the form template gains a freshness footer when `vm.origin == "hyp-recs"` showing `Candidate context as of pipeline finished {{ vm.pipeline_finished_at }}`. Wording deliberately scoped to "candidate context" (R5-Minor-2): the entry form's `entry_price` field still comes from the live `PriceCache` (or the `wl_entry.last_close` fallback), NOT the pipeline snapshot — only the candidate-derived fields (sector, industry, pivot, initial_stop, chart-pattern) are bound to the pipeline anchor. The wording avoids implying live-price freshness, preventing the operator from over-trusting a stale `entry_price` field that's actually fresh.
 
 **Test coverage** (added to §4.3):
 - `test_hyp_recs_form_anchor_matches_expansion_anchor`: insert a pipeline_run completing with eval_id N; insert a standalone eval N+1 newer; build the hyp-recs expansion VM and the hyp-recs-origin entry form VM. Both reads bind to eval_id N; their pivot/initial_stop/sector/industry values agree byte-for-byte. Discriminating: pre-fix path (sector/industry from latest_evaluation_run_id) would yield N+1 in the form vs N in the expansion.
@@ -1068,9 +1068,22 @@ Per the brief and the established chart-pattern flag-v1 §6 pattern. Surface the
 ## 7. Migration / rollout
 
 1. **No migration.** Schema unchanged; first deploy after merge takes effect immediately.
-2. **First page-render after deploy** shows the new chevron column on the flat hyp-recs table. Operator click triggers the route handler.
+2. **First page-render after deploy** shows the new chevron column + Enter button on the flat hyp-recs table. Operator click triggers the route handler.
 3. **Configuration default** — `cfg.web.chase_factor = 0.01` ships as code default. Operators who want a different chase factor in V1 add a `[web]` row to their local `swing.config.toml` (deliberate opt-in until Phase 5 ships the editor). Spec calls out this asymmetry in §3.1.
 4. **CC pivot bug fix** lands as a separate task in the same merge; watchlist `Pivot` column starts rendering current-eval pivot on the next page load.
+
+### 7.1 Recommended implementation sequencing (R5-Minor-1)
+
+The dispatch has grown materially through R1-R4 (single expansion → multi-surface integration touching hyp-recs UI, watchlist pivot semantics, shared entry-form origin handling, soft-warn confirm behavior, anchor policy). Writing-plans dispatch should sequence the work to minimize cross-task interference and preserve a clean revert path at each milestone. Recommended ordering:
+
+1. **CC pivot fix (independent; revertible).** Touches `partials/watchlist_row.html.j2`, `partials/watchlist_top5_section.html.j2`, `watchlist.html.j2`, `view_models/watchlist.py`, `routes/watchlist.py`. No coupling to the rest of this dispatch. Land + verify cross-surface consistency before any hyp-recs work begins. Single-task revert if anything breaks.
+2. **`Config.web.chase_factor` field (atomic; no UX impact).** Pure config addition. Lands without any template change; consumed only by §3.5.3's `build_hyp_recs_expanded`.
+3. **Hyp-recs expansion (Q-A through Q-J + Q-L; route + VM + templates).** Includes chevron column, expansion partial, `/hyp-recs/{ticker}/expand` + `/hyp-recs/refresh` routes, `_ROW_TARGET_PREFIXES` extension. Excludes the per-row Enter button (Q7) + Take-this-trade button (Q8); those land at step 5. Verify expansion + close cycle works end-to-end.
+4. **Scoped `build_hyp_recs_section` extraction (R2-Major-2).** Move the existing recommendation-construction loop in `build_dashboard` into the shared `_build_active_recommendations` helper. Refresh route uses the new builder. Sentinel-based isolation tests confirm refresh doesn't trigger open-trades / watchlist / OHLCV builds.
+5. **Per-row Enter button + Take-this-trade button (Q7 + Q8).** Adds the Enter column to the flat-table row partial; adds the Take-this-trade button to the expansion partial. Reuses the existing entry-form route via `?origin=hyp-recs` (which lands at step 6).
+6. **Origin-aware entry form (R3 + R4).** `TradeEntryFormVM.origin` field; template parameterization (colspan + Cancel target + freshness footer + hidden form field); route handler GET + POST origin handling; soft-warn round-trip; anchor consistency for hyp-recs origin; off-watchlist candidate fallback. Largest task; lands last so any defects don't block the simpler steps.
+
+Each step is atomically revertable. Steps 3-6 are sequentially dependent (later steps assume the earlier scaffolding); steps 1 + 2 are independently revertable from each other and from the rest. Writing-plans dispatch may further subdivide step 6 into validation-error / soft-warn / candidate-fallback sub-tasks.
 
 **Residual integrity acceptances:**
 - **Snapshot-at-render staleness.** A user keeps the expansion open through a pipeline run; the displayed values become stale. Mitigation: the "As of pipeline finished <ISO>" footer signals when the snapshot was captured. V2 candidate: HTMX SSE/polling to invalidate open expansions on pipeline-run completion.
