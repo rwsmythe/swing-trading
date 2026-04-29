@@ -47,8 +47,9 @@ def insert_candidates(
             INSERT INTO candidates
                 (evaluation_run_id, ticker, bucket, close, pivot, initial_stop,
                  adr_pct, tight_streak, pullback_pct, prior_trend_pct,
-                 rs_rank, rs_return_12w_vs_spy, rs_method, pattern_tag, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 rs_rank, rs_return_12w_vs_spy, rs_method, pattern_tag, notes,
+                 sector, industry)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -66,6 +67,8 @@ def insert_candidates(
                 c.rs_method,
                 c.pattern_tag,
                 c.notes,
+                c.sector,
+                c.industry,
             ),
         )
         cid = int(cur.lastrowid)
@@ -85,7 +88,8 @@ def fetch_candidates_for_run(conn: sqlite3.Connection, run_id: int) -> list[Cand
         """
         SELECT id, ticker, bucket, close, pivot, initial_stop, adr_pct,
                tight_streak, pullback_pct, prior_trend_pct, rs_rank,
-               rs_return_12w_vs_spy, rs_method, pattern_tag, notes
+               rs_return_12w_vs_spy, rs_method, pattern_tag, notes,
+               sector, industry
         FROM candidates
         WHERE evaluation_run_id = ?
         ORDER BY ticker
@@ -126,6 +130,8 @@ def fetch_candidates_for_run(conn: sqlite3.Connection, run_id: int) -> list[Cand
                 pattern_tag=row[13],
                 notes=row[14],
                 criteria=criteria,
+                sector=row[15],
+                industry=row[16],
             )
         )
     return result

@@ -31,6 +31,13 @@ class Candidate:
     pattern_tag: str | None
     notes: str | None
     criteria: tuple[CriterionResult, ...]
+    # Migration 0012 — Finviz Sector + Industry passthrough. Defaults to
+    # empty string so any caller that constructs Candidate without these
+    # fields (older test fixtures, ETF-blocklist / open-position synthesis
+    # in _step_evaluate, classifier-error rows) continues to work; the
+    # _step_evaluate path uses dataclasses.replace to populate from CSV.
+    sector: str = ""
+    industry: str = ""
 
 
 @dataclass(frozen=True)

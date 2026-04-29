@@ -131,3 +131,55 @@ def test_insert_run_and_candidates_roundtrip(tmp_db: Path):
     assert by_ticker["UNIT"].bucket == "watch"
     assert by_ticker["UNIT"].criteria[0].result == "fail"
     conn.close()
+
+
+def test_candidate_sector_industry_roundtrip(tmp_db):
+    """A Candidate with sector + industry inserted via insert_candidates is
+    fetched back with both fields populated AS-IS. Distinct values
+    ("Healthcare" / "Biotechnology") chosen to discriminate against any
+    test fixture default that might mask a passthrough bug."""
+    conn = ensure_schema(tmp_db)
+    try:
+        with conn:
+            run_id = insert_evaluation_run(conn, EvaluationRun(
+                id=None, run_ts="2026-04-28T00:00:00",
+                data_asof_date="2026-04-25", action_session_date="2026-04-28",
+                finviz_csv_path=None,
+                tickers_evaluated=1, aplus_count=0, watch_count=1,
+                skip_count=0, excluded_count=0, error_count=0,
+            ))
+            insert_candidates(conn, run_id, [
+                Candidate(
+                    ticker="ZZZA", bucket="watch",
+                    close=100.0, pivot=105.0, initial_stop=95.0,
+                    adr_pct=2.0, tight_streak=5, pullback_pct=None,
+                    prior_trend_pct=None, rs_rank=None,
+                    rs_return_12w_vs_spy=None, rs_method="fallback_spy",
+                    pattern_tag=None, notes=None,
+                    criteria=(),
+                    sector="Healthcare", industry="Biotechnology",
+                ),
+            ])
+        rows = fetch_candidates_for_run(conn, run_id)
+        assert len(rows) == 1
+        assert rows[0].ticker == "ZZZA"
+        assert rows[0].sector == "Healthcare"
+        assert rows[0].industry == "Biotechnology"
+    finally:
+        conn.close()
+
+
+def test_candidate_default_sector_industry_empty(tmp_path):
+    """A Candidate constructed without explicit sector/industry uses empty
+    strings as defaults — preserves call sites that don't carry these fields."""
+    from swing.data.models import Candidate
+    c = Candidate(
+        ticker="DFLT", bucket="watch",
+        close=None, pivot=None, initial_stop=None,
+        adr_pct=None, tight_streak=None, pullback_pct=None,
+        prior_trend_pct=None, rs_rank=None,
+        rs_return_12w_vs_spy=None, rs_method="unavailable",
+        pattern_tag=None, notes=None, criteria=(),
+    )
+    assert c.sector == ""
+    assert c.industry == ""
