@@ -280,6 +280,93 @@ def _build_active_recommendations(
     )
 
 
+@dataclass(frozen=True)
+class HypRecsSectionVM:
+    """Sub-VM shaped exactly as the hypothesis_recommendations.html.j2
+    partial expects (`vm.active_recommendations`). Returned by
+    GET /hyp-recs/refresh; renders the same flat-table chevron + Enter
+    column markup the full-page render produces.
+
+    Spec §3.5.4 (R2-Major-2 resolution).
+    """
+    active_recommendations: tuple[HypothesisRecommendation, ...] = ()
+
+
+def build_hyp_recs_section(
+    *, cfg: Config, cache: PriceCache, executor,
+) -> HypRecsSectionVM:
+    """Refresh-route VM builder. Resolves ONLY the data needed for the
+    hyp-recs section: candidates_by_ticker (for pivot_price), prices for
+    the recommended tickers (subset, NOT the full watchlist), and the
+    progress/registry data the prioritizer needs. Does NOT touch
+    open-trade OHLCV, watchlist top-5, advisories, status strip.
+
+    R2-Major-2 motivation: a hyp-recs close-button refresh MUST NOT
+    depend on subsystems unrelated to hyp-recs — open-trade OHLCV
+    breaker tripping or watchlist sort-anchor mis-alignment must not
+    break the close action.
+
+    Spec §3.5.4.
+    """
+    from swing.data.repos.hypothesis import list_hypotheses
+    from swing.recommendations.hypothesis import (
+        match_candidate_to_hypotheses,
+        prioritize_recommendations,
+    )
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            # Anchor on the latest completed pipeline run's evaluation
+            # — same anchor build_dashboard uses for candidates_by_ticker.
+            pipe_row = conn.execute(
+                """SELECT id, evaluation_run_id FROM pipeline_runs
+                   WHERE state='complete'
+                   ORDER BY finished_ts DESC, id DESC LIMIT 1"""
+            ).fetchone()
+            if pipe_row is None or pipe_row[1] is None:
+                # No completed pipeline yet — return empty section.
+                return HypRecsSectionVM(active_recommendations=())
+            eval_id = pipe_row[1]
+            candidates = fetch_candidates_for_run(conn, eval_id)
+            candidates_by_ticker = {c.ticker: c for c in candidates}
+            registry = list_hypotheses(conn)
+            target_by_id = {h.id: h.target_sample_size for h in registry}
+            progress_by_id, progress_summaries = (
+                build_recommendation_progress(
+                    conn, registry,
+                    starting_equity=cfg.account.starting_equity,
+                )
+            )
+            all_matches = []
+            for c in candidates:
+                all_matches.extend(
+                    match_candidate_to_hypotheses(c, registry=registry)
+                )
+            prioritized = prioritize_recommendations(
+                all_matches, registry=registry, progress=progress_summaries,
+            )
+            top_recommendations = list(prioritized[:_RECOMMENDATIONS_TOP_N])
+    finally:
+        conn.close()
+    recommended_tickers = sorted(
+        {r.candidate_ticker for r in top_recommendations}
+    )
+    prices = cache.get_many(
+        recommended_tickers,
+        deadline_seconds=cfg.web.price_fetch_deadline_seconds,
+        executor=executor,
+    )
+    active_recommendations = _build_active_recommendations(
+        prices=prices,
+        candidates_by_ticker=candidates_by_ticker,
+        top_recommendations=top_recommendations,
+        progress_by_id=progress_by_id,
+        target_by_id=target_by_id,
+    )
+    return HypRecsSectionVM(active_recommendations=active_recommendations)
+
+
 def build_dashboard(
     *, cfg: Config, cache: PriceCache, executor, ohlcv_cache=None,
 ) -> DashboardVM:
