@@ -545,6 +545,51 @@ def test_expanded_partial_colspan_matches_row(seeded_db, monkeypatch):
     )
 
 
+def test_open_position_row_target_500_renders_colspan_10(
+    seeded_db, monkeypatch,
+):
+    """Codex R3 Major-1 — when the global exception handler renders
+    `trade_form_error.html.j2` for an `open-position-*` HX-Target, the <td>
+    must be `colspan="10"` to match the 10-column open-positions table
+    layout (Ticker / Entry date / Entry price / Shares / Current stop /
+    Last / Sector / Industry / Advisory / Actions).
+
+    Discriminating: pre-fix `_row_error_colspan` returned 9 for
+    `hyp-rec-row-*` and 8 for everything else (including
+    `open-position-*`), leaving a 2-cell short row in the 10-col
+    open-positions table on every server-error swap.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_in_scope_trade(cfg, ticker="AAPL")
+    _patch_price_cache(monkeypatch)
+
+    # Force the open-positions expand route to raise so the global
+    # exception handler renders trade_form_error.html.j2.
+    from swing.web.routes import trades as trades_route
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("forced 500 for open-position row-target test")
+
+    monkeypatch.setattr(trades_route, "build_open_positions_expanded", _boom)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = client.get(
+            f"/trades/open/{trade_id}/expand",
+            headers={
+                "HX-Request": "true",
+                "HX-Target": f"open-position-{trade_id}",
+            },
+        )
+    assert resp.status_code == 500, resp.text
+    body = resp.text
+    assert 'colspan="10"' in body, (
+        "open-position-* row-target error fragment must render colspan=10 "
+        "(10-col open-positions table); pre-fix renders colspan=8.\nBody:\n"
+        + body[:600]
+    )
+
+
 def test_open_positions_row_renders_sector_industry(seeded_db, monkeypatch):
     """Open positions row renders Sector + Industry from trade.sector / .industry.
     Sentinel 'OP-Sector-T9' / 'OP-Industry-T9' guards against default-string

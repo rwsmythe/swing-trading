@@ -45,14 +45,28 @@ def _is_row_swap_target(request: Request) -> bool:
 def _row_error_colspan(request: Request) -> int:
     """Return the colspan to render on `trade_form_error.html.j2`.
 
-    Codex R2 Major-2: hyp-recs rows live in a 9-column table; every
-    other row-swap target (open-positions, watchlist, entry/exit/stop
-    forms) is in an 8-column table. Pre-fix the partial hardcoded
-    colspan=8, leaving a 1-cell short row on every hyp-recs-row error
-    swap. Selects 9 for `hyp-rec-row-*` targets and 8 otherwise.
+    Per-target column-count mapping for HTMX row-swap error fragments:
+
+    - `hyp-rec-row-*`     → 9  (hyp-recs table; Codex R2 Major-2)
+    - `open-position-*`   → 10 (open-positions table; Codex R3 Major-1)
+    - everything else     → 8  (default)
+
+    The default-8 bucket currently covers `watchlist-row-*` (8-col
+    watchlist table) and the form-target prefixes
+    (`entry-form-*`, `exit-form-*`, `stop-form-*`). The form-target
+    prefixes are PRE-EXISTING AMBIGUOUS: a form id alone does not
+    reveal the originating table (entry forms replace watchlist rows,
+    exit/stop forms replace open-position rows), so the correct
+    colspan can't be derived without additional context. Tracked as
+    follow-up; until then, those targets fall through to 8 and may
+    render a 2-cell-short error row on a server error during exit/stop
+    form submission. Surfaced by Codex R3.
     """
-    if request.headers.get("HX-Target", "").startswith("hyp-rec-row-"):
+    hx_target = request.headers.get("HX-Target", "")
+    if hx_target.startswith("hyp-rec-row-"):
         return 9
+    if hx_target.startswith("open-position-"):
+        return 10
     return 8
 
 
