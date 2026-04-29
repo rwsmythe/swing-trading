@@ -14,7 +14,7 @@ def test_migration_0010_adds_four_trade_columns(tmp_path: Path):
         assert "chart_pattern_operator" in cols
         assert "chart_pattern_classification_pipeline_run_id" in cols
         cur = conn.execute("SELECT version FROM schema_version")
-        assert cur.fetchone()[0] == 11
+        assert cur.fetchone()[0] == 12
     finally:
         conn.close()
 
