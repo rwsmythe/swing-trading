@@ -160,6 +160,14 @@ class Web:
     # Operator dials up after operational experience reveals which confidence
     # bands map to chart-validated flags.
     flag_pattern_display_threshold: float = 0.0
+    # Spec §3.1 (hyp-recs trade-prep expansion 2026-04-29): chase factor
+    # used by HypRecsExpandedVM.buy_limit = pivot × (1 + chase_factor).
+    # Operator's pure-trigger discipline (2026-04-25): wait for pivot,
+    # don't chase >1% above pivot. Phase 5 surfaces an editor; this
+    # dispatch ships the storage + read path. Toml-shadowing audit
+    # (Q-F resolution): no row in swing.config.toml — the field is
+    # CODE-ONLY in V1.
+    chase_factor: float = 0.01
 
 
 @dataclass(frozen=True)

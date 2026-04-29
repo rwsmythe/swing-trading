@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from swing.config import Web, load
 
 
@@ -155,3 +157,89 @@ def test_web_config_ohlcv_fields_parsed_from_toml(tmp_path: Path):
     cfg = load(cfg_path)
     assert cfg.web.ohlcv_cache_ttl_seconds == 1800
     assert cfg.web.max_concurrent_ohlcv_fetches == 4
+
+
+def test_config_web_chase_factor_default_is_one_percent():
+    """Spec §3.1 — Config.web.chase_factor default = 0.01 (1%).
+
+    Sourced from the 2026-04-25 entry-discipline framing: 'wait for pivot,
+    don't chase >1% above pivot'. The hyp-recs trade-prep expansion's
+    buy_limit = pivot × (1 + chase_factor). Phase 5 surfaces an editor;
+    this dispatch ships the storage + read path only.
+
+    Discriminating-test: asserts both attribute existence AND the specific
+    0.01 value, so a default of 0.0 or 0.02 would fail.
+    """
+    from swing.config import Web
+
+    web = Web()
+    assert hasattr(web, "chase_factor"), (
+        "spec §3.1 requires Config.web.chase_factor field"
+    )
+    assert web.chase_factor == 0.01, (
+        f"chase_factor default must be 0.01 (1%); got {web.chase_factor}"
+    )
+
+
+def test_config_web_chase_factor_no_toml_shadow():
+    """Spec §3.1 — toml-shadowing audit.
+
+    Per the 2026-04-29 multi-path-ingestion lesson + the prior aeb2084
+    lesson, the field MUST NOT have a row in any GIT-TRACKED toml file
+    in V1. Phase 5 (configuration page) surfaces all Web overrides
+    together; until then, operators write the value into their local
+    untracked toml as a deliberate opt-in (NOT scanned by this audit).
+
+    R1-Major-4 + R3-Minor-1 (Codex) — implemented in pure Python rather
+    than shelling out to `grep` (portable Win/Unix; no PATH dependency)
+    AND scoped strictly to git-tracked files via `git ls-files` (a
+    developer's local untracked `swing.config.toml` override is NOT
+    a shadowing concern; the audit catches only what's committed to
+    the repo).
+    """
+    import subprocess
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    # Use git ls-files to enumerate tracked toml files. Falls back to
+    # an empty set if git is unavailable (the assertion is then
+    # vacuously true — surface in CI logs that the audit was skipped).
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "*.toml"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pytest.skip("git unavailable; toml-shadowing audit skipped")
+        return
+    tracked_tomls = [
+        repo_root / line.strip()
+        for line in result.stdout.splitlines()
+        if line.strip()
+    ]
+    offenders: list[tuple[Path, int, str]] = []
+    for tomlfile in tracked_tomls:
+        if not tomlfile.exists():
+            continue
+        try:
+            lines = tomlfile.read_text(encoding="utf-8").splitlines()
+        except (UnicodeDecodeError, OSError):
+            continue
+        for lineno, line in enumerate(lines, start=1):
+            if "chase_factor" in line:
+                offenders.append((tomlfile, lineno, line))
+    # docs/ matches are in the spec + brief documents; those are NOT
+    # toml shadowing. (No tracked toml under docs/ at plan-time, but
+    # filter defensively.)
+    offenders = [
+        (p, ln, line) for (p, ln, line) in offenders
+        if "docs" not in p.parts
+    ]
+    assert offenders == [], (
+        "chase_factor must not appear in any GIT-TRACKED toml file"
+        " (multi-path-ingestion lesson). Offenders:\n"
+        + "\n".join(f"  {p}:{ln}: {line}" for p, ln, line in offenders)
+    )
