@@ -802,6 +802,142 @@ def test_step_charts_tag_aware_filter_intersection_limit(
     )
 
 
+def _csv_inverted(inbox: Path) -> Path:
+    """Inversion-against-alphabetical: AAPL -> Healthcare / Pharmaceuticals;
+    ZZZB -> Energy / Oil & Gas E&P. Guards against row-index-vs-ticker
+    binding bug (Phase 4 R2 ticker-symmetry class).
+    """
+    inbox.mkdir(parents=True, exist_ok=True)
+    csv = inbox / "finviz15Apr2026.csv"
+    cols = (
+        "No.,Ticker,Sector,Industry,Country,Price,Change,Average Volume,"
+        "Relative Volume,Average True Range,52-Week High,52-Week Low,Market Cap"
+    )
+    csv.write_text(
+        cols + "\n"
+        "1,AAPL,Healthcare,Pharmaceuticals,USA,180.0,2.5%,200000,1.5,5.0,200.0,150.0,3e9\n"
+        "2,ZZZB,Energy,Oil & Gas E&P,USA,420.0,1.5%,250000,1.2,4.5,440.0,330.0,3.5e9\n",
+        encoding="utf-8",
+    )
+    return csv
+
+
+def test_step_evaluate_persists_sector_industry_from_finviz_csv(
+    tmp_path: Path, monkeypatch,
+):
+    """_step_evaluate plumbs Sector + Industry from the Finviz CSV into the
+    candidate row. AAPL -> Healthcare / Pharmaceuticals; ZZZB -> Energy /
+    Oil & Gas E&P. Inversion-against-alphabetical: a row-index binding bug
+    would yield AAPL -> Energy / Oil & Gas E&P (alphabetical-first row
+    bound to alphabetical-first ticker).
+    """
+    cfg = _make_cfg(tmp_path)
+    _csv_inverted(cfg.paths.finviz_inbox_dir)
+    monkeypatch.setattr(
+        "swing.prices.PriceFetcher.get",
+        lambda self, ticker, lookback_days, *, as_of_date=None: _ohlcv(),
+    )
+    result = run_pipeline_internal(cfg=cfg, trigger="manual")
+    assert result.state == "complete"
+
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        run = find_run(conn, result.run_id)
+        cands = conn.execute(
+            "SELECT ticker, sector, industry FROM candidates "
+            "WHERE evaluation_run_id = ? ORDER BY ticker",
+            (run.evaluation_run_id,),
+        ).fetchall()
+        assert (
+            "AAPL", "Healthcare", "Pharmaceuticals",
+        ) in cands, f"AAPL -> Healthcare/Pharmaceuticals expected, got: {cands}"
+        assert (
+            "ZZZB", "Energy", "Oil & Gas E&P",
+        ) in cands, f"ZZZB -> Energy/Oil & Gas E&P expected, got: {cands}"
+    finally:
+        conn.close()
+
+
+def test_step_evaluate_held_position_not_in_csv_persists_empty_sector_industry(
+    tmp_path: Path, monkeypatch,
+):
+    """Held-trade tickers that aren't in the finviz CSV (rotated out of
+    screener) get appended to the candidate set via _step_evaluate's
+    held_tickers loop with bucket='excluded'. Sector/industry default to
+    empty strings (the dict.get(t, ('','')) lookup misses)."""
+    cfg = _make_cfg(tmp_path)
+    _csv_inverted(cfg.paths.finviz_inbox_dir)
+    # Seed an open trade for a ticker NOT in the CSV - appears via held_tickers.
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="HELD", entry_date="2026-04-10",
+                entry_price=50.0, initial_shares=10, initial_stop=45.0,
+                current_stop=45.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-10T09:30:00")
+    finally:
+        conn.close()
+    monkeypatch.setattr(
+        "swing.prices.PriceFetcher.get",
+        lambda self, ticker, lookback_days, *, as_of_date=None: _ohlcv(),
+    )
+    result = run_pipeline_internal(cfg=cfg, trigger="manual")
+    assert result.state == "complete"
+
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        run = find_run(conn, result.run_id)
+        held_row = conn.execute(
+            "SELECT bucket, sector, industry FROM candidates "
+            "WHERE evaluation_run_id = ? AND ticker = 'HELD'",
+            (run.evaluation_run_id,),
+        ).fetchone()
+        assert held_row is not None, "held-position ticker missing from candidates"
+        assert held_row == ("excluded", "", ""), (
+            f"held-position ticker should be excluded with empty sector/industry; got {held_row}"
+        )
+    finally:
+        conn.close()
+
+
+def test_step_evaluate_csv_ticker_with_fetch_failure_keeps_sector_industry(
+    tmp_path: Path, monkeypatch,
+):
+    """A ticker that's in the finviz CSV AND has its OHLCV fetch fail lands
+    as bucket='error' - but its sector/industry come from the CSV (the
+    post-evaluate_batch dict.get() lookup hits)."""
+    cfg = _make_cfg(tmp_path)
+    _csv_inverted(cfg.paths.finviz_inbox_dir)
+
+    def selective_fetcher(self, ticker, lookback_days, *, as_of_date=None):
+        if ticker == "AAPL":
+            raise RuntimeError("simulated yfinance outage for AAPL")
+        return _ohlcv()
+
+    monkeypatch.setattr("swing.prices.PriceFetcher.get", selective_fetcher)
+    result = run_pipeline_internal(cfg=cfg, trigger="manual")
+    assert result.state == "complete"
+
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        run = find_run(conn, result.run_id)
+        aapl = conn.execute(
+            "SELECT bucket, sector, industry FROM candidates "
+            "WHERE evaluation_run_id = ? AND ticker='AAPL'",
+            (run.evaluation_run_id,),
+        ).fetchone()
+        assert aapl is not None
+        assert aapl[0] == "error"
+        # Sector/industry STILL persist from CSV even though OHLCV failed.
+        assert aapl[1] == "Healthcare"
+        assert aapl[2] == "Pharmaceuticals"
+    finally:
+        conn.close()
+
+
 def test_step_charts_tag_aware_uses_shared_sort_key(
     tmp_path: Path, monkeypatch,
 ):

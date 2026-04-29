@@ -329,6 +329,23 @@ def _step_evaluate(
         raise ValueError(f"finviz CSV missing 'Ticker' column: {list(finviz_df.columns)}")
     tickers = finviz_df["Ticker"].dropna().astype(str).str.upper().tolist()
 
+    # Sector/Industry passthrough from Finviz CSV -> candidate rows. Built
+    # from the same DataFrame we just read so row-index-vs-ticker binding
+    # matches the CSV exactly. NaN cells become empty strings; tickers not
+    # in the CSV (held-position tickers appended via the loop below;
+    # ETF-blocklist rows synthesized post-evaluate_batch) default to ('','').
+    sector_industry_by_ticker: dict[str, tuple[str, str]] = {}
+    for _, fv_row in finviz_df.iterrows():
+        t_raw = fv_row.get("Ticker")
+        if pd.isna(t_raw):
+            continue
+        ticker_key = str(t_raw).upper()
+        sec = fv_row.get("Sector", "")
+        ind = fv_row.get("Industry", "")
+        sec = "" if pd.isna(sec) else str(sec)
+        ind = "" if pd.isna(ind) else str(ind)
+        sector_industry_by_ticker[ticker_key] = (sec, ind)
+
     # Include open-trade tickers in the OHLCV fetch so their fresh close lands
     # in candidates.close. PriceCache._last_close reads that table; without
     # this, an open position whose ticker has rotated out of the finviz
@@ -451,6 +468,23 @@ def _step_evaluate(
             rs_rank=None, rs_return_12w_vs_spy=None, rs_method="unavailable",
             pattern_tag=None, notes="OHLCV fetch failed", criteria=(),
         ))
+
+    # Apply Sector/Industry uniformly across all candidate buckets (aplus /
+    # watch / skip / error / excluded). evaluate_batch returns dataclasses
+    # without these fields populated; held-position + ETF-blocklist + error
+    # tickers were appended above in this function. Tickers in the CSV pull
+    # from the lookup; tickers NOT in the CSV (held-position rows whose
+    # symbol rotated out of finviz) default to ('','') -- graceful degradation
+    # mirrors hypothesis_label free-text behavior.
+    from dataclasses import replace as _dc_replace
+    candidates = [
+        _dc_replace(
+            c,
+            sector=sector_industry_by_ticker.get(c.ticker, ("", ""))[0],
+            industry=sector_industry_by_ticker.get(c.ticker, ("", ""))[1],
+        )
+        for c in candidates
+    ]
 
     run = EvaluationRun(
         id=None, run_ts=run_now.isoformat(timespec="seconds"),
