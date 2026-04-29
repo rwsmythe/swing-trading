@@ -101,18 +101,21 @@ tests/
 Files touched (full list):
 
 - **Production NEW (4):** `swing/web/routes/recommendations.py`, `swing/web/templates/partials/hypothesis_recommendations_row.html.j2`, `swing/web/templates/partials/hypothesis_recommendations_expanded.html.j2`, `swing/web/templates/partials/hyp_recs_expand_unavailable.html.j2`.
-- **Production MODIFY (8):**
+- **Production MODIFY (11):**
   1. `swing/config.py` — one new `Web` field (`chase_factor`).
-  2. `swing/web/view_models/dashboard.py` — add `HypRecsExpandedVM` + `build_hyp_recs_expanded`. `HypothesisRecommendation` UNCHANGED (per R1-Major-1).
+  2. `swing/web/view_models/dashboard.py` — add `HypRecsExpandedVM` + `build_hyp_recs_expanded` + `HypRecsSectionVM` + `build_hyp_recs_section` + `_build_active_recommendations` shared helper (R2-Major-2). `HypothesisRecommendation` UNCHANGED (per R1-Major-1).
   3. `swing/web/view_models/watchlist.py` — `WatchlistRowVM` gains `current_pivot: float | None = None` (R1-Major-3).
-  4. `swing/web/routes/watchlist.py` — `/watchlist/{ticker}/row` populates `WatchlistRowVM.current_pivot` from `candidates_by_ticker`.
-  5. `swing/web/app.py` — register the recommendations router AND extend `_ROW_TARGET_PREFIXES` to include `hyp-rec-row-` (R1-Major-2).
-  6. `swing/web/templates/partials/hypothesis_recommendations.html.j2` — chevron leading column + iterate per-row partial.
-  7. `swing/web/templates/partials/watchlist_row.html.j2` — CC pivot bug fix at line 16 (R1-Minor-3 dash sentinel for missing both).
-  8. **TWO parent templates that iterate watchlist rows (R2-Major-1 correction):** `swing/web/templates/partials/watchlist_top5_section.html.j2` (dashboard top-5 path; `dashboard.html.j2:15` includes this section but does NOT iterate rows directly) AND `swing/web/templates/watchlist.html.j2` (standalone watchlist page). Each gains `{% set current_pivot = vm.candidates_by_ticker[w.ticker].pivot if w.ticker in vm.candidates_by_ticker else None %}` immediately before the `{% include "partials/watchlist_row.html.j2" %}`. (Counted as one MODIFY entry but two file edits — finalized at writing-plans dispatch.)
+  4. `swing/web/view_models/trades.py` — `TradeEntryFormVM` gains `origin: Literal["watchlist","hyp-recs"] = "watchlist"`; `build_entry_form_vm` accepts `origin` param + extends candidate-row SELECT to fetch `pivot` + `initial_stop` + falls back to candidate values when `wl_entry` is None (R3-Major-1 + R3-Major-2).
+  5. `swing/web/routes/watchlist.py` — `/watchlist/{ticker}/row` populates `WatchlistRowVM.current_pivot` from `candidates_by_ticker`.
+  6. `swing/web/routes/trades.py` — entry-form route handler reads `?origin=` query param, whitelist-validates, threads to `build_entry_form_vm` (R3-Major-1).
+  7. `swing/web/app.py` — register the recommendations router AND extend `_ROW_TARGET_PREFIXES` to include `hyp-rec-row-` (R1-Major-2).
+  8. `swing/web/templates/partials/hypothesis_recommendations.html.j2` — chevron leading column + Enter-button trailing column + iterate per-row partial.
+  9. `swing/web/templates/partials/trade_entry_form.html.j2` — parameterize `colspan` + Cancel button `hx-get`/`hx-target` based on `vm.origin` (R3-Major-1).
+  10. `swing/web/templates/partials/watchlist_row.html.j2` — CC pivot bug fix at line 16 (R1-Minor-3 dash sentinel for missing both).
+  11. **TWO parent templates that iterate watchlist rows (R2-Major-1 correction):** `swing/web/templates/partials/watchlist_top5_section.html.j2` (dashboard top-5 path; `dashboard.html.j2:15` includes this section but does NOT iterate rows directly) AND `swing/web/templates/watchlist.html.j2` (standalone watchlist page). Each gains `{% set current_pivot = vm.candidates_by_ticker[w.ticker].pivot if w.ticker in vm.candidates_by_ticker else None %}` immediately before the `{% include "partials/watchlist_row.html.j2" %}`. (Counted as one MODIFY entry but two file edits — finalized at writing-plans dispatch.)
 - **Test NEW (6):** the six files listed in the `tests/` block.
 
-Total: **18 files** (4 production NEW + 8 production MODIFY + 6 test NEW). No migrations. No Phase 2 carve-outs (see §5).
+Total: **21 files** (4 production NEW + 11 production MODIFY + 6 test NEW; the test count expands at writing-plans dispatch as the entry-form-integration tests in §3.8b.2 + §4.3 land). No migrations. No Phase 2 carve-outs (see §5).
 
 ### 2.2 Design invariants
 
@@ -743,6 +746,109 @@ V2 candidates if confusion proves operationally costly:
 - Visual distinction between "entry_target" and "current_pivot" in the watchlist row (which would push this dispatch into a wider scope; Tier-3 #5 conversation territory).
 - Repurposing lightning entirely (Tier-3 #5).
 
+### 3.8b Origin-aware entry-form integration (R3-Major-1 + R3-Major-2)
+
+The Q7/Q8 buttons reuse the existing `/trades/entry/form?ticker=...` route, which renders `partials/trade_entry_form.html.j2`. R3 review caught two product gaps that this reuse exposes — neither was triggered pre-Q7/Q8 because the watchlist Enter button is the only existing caller and it always returns to the watchlist surface.
+
+#### 3.8b.1 Colspan + Cancel-target parameterization (R3-Major-1)
+
+Verified at baseline `4ba9c62`:
+- `partials/trade_entry_form.html.j2:4` hardcodes `<td colspan="8">`.
+- `partials/trade_entry_form.html.j2:72-74` hardcodes Cancel button `hx-get="/watchlist/{{ vm.ticker }}/expand"`.
+
+Two failure modes when reused from hyp-recs:
+1. **Colspan mismatch.** A 9-column hyp-recs row swapped to a colspan-8 entry form leaves a stray cell at column 9 (the entry form's right edge ends one column shy of the table's right edge); cosmetic but visually broken.
+2. **Cancel target dead-link.** Cancel from a hyp-recs-originated form fires `/watchlist/{ticker}/expand`. If the ticker is on the watchlist, the operator is teleported to a watchlist row that they weren't viewing — disorienting. If the ticker is NOT on the watchlist, the route 404s.
+
+**Resolution: parameterize `colspan` + `cancel_hx_get` + `cancel_hx_target` on `TradeEntryFormVM` via an `origin` discriminator.**
+
+`TradeEntryFormVM` gains:
+
+```python
+origin: Literal["watchlist", "hyp-recs"] = "watchlist"   # NEW (default preserves existing behavior)
+```
+
+The template at `partials/trade_entry_form.html.j2` parameterizes:
+
+```jinja
+<tr id="entry-form-{{ vm.ticker }}">
+  <td colspan="{{ 9 if vm.origin == 'hyp-recs' else 8 }}">
+    ...
+    <button type="button"
+            hx-get="{{ '/hyp-recs/refresh' if vm.origin == 'hyp-recs' else '/watchlist/' ~ vm.ticker ~ '/expand' }}"
+            hx-target="{{ '#hypothesis-recommendations' if vm.origin == 'hyp-recs' else 'closest tr' }}"
+            hx-swap="outerHTML"
+            hx-headers='{"HX-Request": "true"}'>Cancel</button>
+```
+
+Server-side validation: the route handler accepts `?origin={watchlist,hyp-recs}` as a query param. Unknown values default to `"watchlist"` (the safe default — preserves existing behavior for any caller that doesn't send the param). The validation is whitelist (server-controlled enum), NOT pass-through string — closes the URL-injection threat surface that would otherwise let an operator submit `?origin=javascript:...` and have the template emit it as a Cancel `hx-get` target.
+
+The hyp-recs per-row Enter and Take-this-trade buttons append `&origin=hyp-recs` to their `hx-get`:
+```jinja
+hx-get="/trades/entry/form?ticker={{ rec.ticker }}&origin=hyp-recs"
+```
+
+The watchlist Enter button is unchanged (no `origin` param → defaults to `watchlist`).
+
+**Cancel behavior for hyp-recs origin:** Cancel fires `/hyp-recs/refresh` with `hx-target="#hypothesis-recommendations"` `hx-swap="outerHTML"` — same mechanism as the expansion's close button (§3.5.4). The Cancel target is the same regardless of whether the entry form was reached via per-row Enter (collapsed-row swap) or Take-this-trade (expanded-row swap); both unwind to the flat-table state. (R3-Minor-1 disposition: documented explicitly.)
+
+#### 3.8b.2 Off-watchlist `initial_stop` + `entry_target` fallback (R3-Major-2)
+
+Verified at baseline `4ba9c62`, `swing/web/view_models/trades.py:142`:
+```python
+initial_stop = wl_entry.initial_stop_target if wl_entry and wl_entry.initial_stop_target else 0.0
+```
+
+When the operator clicks Enter or Take-this-trade on a hyp-recs row whose ticker is NOT on the active watchlist, `wl_entry` is `None` and `initial_stop` falls back to `0.0`. The form renders a stop field of `$0.00`, defeating the point of having just verified the snapshot in the expansion.
+
+**Resolution: extend `build_entry_form_vm` to fall back to `candidates_by_ticker[ticker]` when `wl_entry` is `None`.**
+
+The existing candidate fetch at `swing/web/view_models/trades.py:121-129` already reads `sector` and `industry` from the latest evaluation's candidate row. Extend the SELECT to also fetch `pivot` and `initial_stop`. Then:
+
+```python
+# After the existing wl_entry / candidate-row reads:
+if wl_entry is not None and wl_entry.initial_stop_target:
+    initial_stop = wl_entry.initial_stop_target
+elif cand_initial_stop is not None:
+    initial_stop = cand_initial_stop
+else:
+    initial_stop = 0.0
+
+if wl_entry is not None and wl_entry.entry_target:
+    entry_target_for_form = wl_entry.entry_target
+elif cand_pivot is not None:
+    entry_target_for_form = cand_pivot
+else:
+    entry_target_for_form = None
+# entry_price field uses the live PriceCache snap as today; if neither
+# snap nor wl_entry.last_close exists, fall back to cand_pivot as a
+# best-effort default (operator can override).
+if snap is not None:
+    entry_price = snap.price
+elif wl_entry is not None and wl_entry.last_close:
+    entry_price = wl_entry.last_close
+elif cand_pivot is not None:
+    entry_price = cand_pivot     # NEW fallback
+else:
+    entry_price = 0.0
+```
+
+The `watchlist_entry_target` and `watchlist_initial_stop` hidden inputs (template lines 37-44) remain BOUND TO `wl_entry` ONLY (they exist for watchlist-bookkeeping purposes; their POST-side meaning is "the value the watchlist had at form-render"). When the form is hyp-recs-originated and `wl_entry` is None, both hidden inputs are absent — preserving the semantic that they refer to watchlist state.
+
+**Test coverage** (added to §4.3):
+- `test_hyp_recs_entry_form_off_watchlist_uses_candidate_pivot_for_target`: hyp-recs Enter on a ticker that's NOT on the watchlist; the rendered form's entry_price = candidate.pivot (or live price if available); initial_stop = candidate.initial_stop. Pre-fix path would render `$0.00` for both.
+- `test_hyp_recs_entry_form_on_watchlist_prefers_watchlist_values`: hyp-recs Enter on a ticker that IS on the watchlist with watchlist values DIFFERENT from candidate values; the form prefers watchlist values (preserves existing semantic).
+- `test_origin_param_validation`: GET `/trades/entry/form?ticker=AAPL&origin=javascript:alert(1)` → form renders with origin defaulted to "watchlist" (whitelist validation), NOT the malicious string passed through to the template.
+
+#### 3.8b.3 Plumbing summary
+
+The Q7+Q8 + R3 resolution adds these to the dispatch's MODIFY list:
+- `swing/web/templates/partials/trade_entry_form.html.j2` — parameterize colspan + Cancel target (R3-Major-1).
+- `swing/web/view_models/trades.py` — `TradeEntryFormVM` gains `origin: Literal["watchlist", "hyp-recs"] = "watchlist"` field; `build_entry_form_vm` accepts `origin` param + falls back to candidate row for `entry_price`, `initial_stop`, target field when `wl_entry` is None (R3-Major-1 + R3-Major-2).
+- `swing/web/routes/trades.py` — entry-form route handler reads `?origin=` query param, validates against whitelist, threads to `build_entry_form_vm`.
+
+These are 3 additional MODIFY files NOT in the original §2.1 file map; updated below in the consolidated map and §9 done criteria.
+
 ### 3.9 CC pivot bug fix (Q-G)
 
 **Resolution: separate task in the writing-plans output, scoped to a single template change + a discriminating regression test.**
@@ -943,6 +1049,8 @@ Per the brief and the established chart-pattern flag-v1 §6 pattern. Surface the
 - [ ] Sector + Industry rendered in the Context group; empty strings render as `"—"`.
 - [ ] "As of pipeline finished <ISO>" footer present on the expansion.
 - [ ] All test layers green: sizing twins; expansion VM (anchor consistency, degenerate-sizing); route (expand 200 + 404 + chart-scope + 500 row-target-prefix coverage; refresh 200 + scoped-builder isolation; per-row Enter swap; Take-this-trade swap; muscle-memory mirror); template (9-column regression; per-row Enter mirrors watchlist; visual differentiation); CC pivot (3-render-site coverage + dash sentinel + lightning binding preserved).
+- [ ] **Origin-aware entry form (R3-Major-1):** colspan + Cancel target parameterized via `vm.origin`; whitelist-validated query param; hyp-recs-originated forms render colspan=9 + Cancel `hx-get="/hyp-recs/refresh"`; watchlist-originated forms preserve existing colspan=8 + Cancel `hx-get="/watchlist/{ticker}/expand"` behavior.
+- [ ] **Off-watchlist candidate fallback (R3-Major-2):** `build_entry_form_vm` for off-watchlist tickers populates `entry_price` and `initial_stop` from candidate row; on-watchlist tickers preserve existing watchlist-priority semantics.
 - [ ] Adversarial Codex review reaches `NO_NEW_CRITICAL_MAJOR`.
 - [ ] No new migration; no new repo function beyond a single optional `get_for_evaluation` accessor (verified at writing-plans).
 - [ ] Toml-shadowing audit recorded clean for `chase_factor` (no row added; phase3e-todo retains the asymmetry note).
