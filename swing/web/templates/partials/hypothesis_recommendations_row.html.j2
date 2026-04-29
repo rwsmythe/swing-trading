@@ -1,0 +1,28 @@
+{#- swing/web/templates/partials/hypothesis_recommendations_row.html.j2 -#}
+{#- Per-row partial for the hypothesis-recommendations table (Task 5.4).
+    Single source of truth for the collapsed row markup — included by both
+    the full-page render and the /hyp-recs/refresh route, plus used as the
+    swap-back target after the close button collapses an expanded row.
+
+    Spec §3.5.5 Q-C resolution: the chevron BUTTON in column 1 is the ONLY
+    HTMX trigger. The <tr> itself MUST NOT carry hx-get/hx-target/hx-trigger
+    attributes (this is the discriminator vs. the watchlist row, which IS a
+    trigger). Tested by tests/web/test_hyp_recs_table_regression.py.
+
+    Expected to be rendered inside `{% for rec in vm.active_recommendations %}`
+    so `rec` is bound. -#}
+<tr id="hyp-rec-row-{{ rec.ticker }}"{% if rec.tripwire_fired %} class="tripwire-fired"{% endif %}>
+  <td><button class="expand-toggle" type="button"
+              hx-get="/hyp-recs/{{ rec.ticker }}/expand"
+              hx-target="closest tr"
+              hx-swap="outerHTML"
+              hx-headers='{"HX-Request": "true"}'
+              aria-label="Expand {{ rec.ticker }}">▸</button></td>
+  <td>{{ rec.ticker }}</td>
+  <td>{% if rec.current_price is not none %}${{ "%.2f"|format(rec.current_price) }}{% else %}—{% endif %}</td>
+  <td>{% if rec.pivot_price is not none %}${{ "%.2f"|format(rec.pivot_price) }}{% else %}—{% endif %}</td>
+  <td>{{ rec.hypothesis_name }}</td>
+  <td>{{ rec.hypothesis_progress_n }} / {{ rec.hypothesis_progress_target }}</td>
+  <td>{% if rec.tripwire_fired %}<strong>FIRED</strong>: {{ rec.tripwire_reason or "" }}{% else %}—{% endif %}</td>
+  <td title="{{ rec.suggested_label }}">{{ rec.suggested_label[:60] }}{% if rec.suggested_label|length > 60 %}…{% endif %}</td>
+</tr>
