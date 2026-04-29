@@ -1020,3 +1020,183 @@ def test_hyp_recs_entry_form_on_watchlist_prefers_watchlist_values(
         "on-watchlist initial_stop must prefer watchlist value (105.00)"
         " over candidate (95.00) per backward-compat semantic"
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 8 — origin survives POST round-trips (R4-Major-1).
+# Spec §3.8b.3 — three round-trip paths (validation error, duplicate
+# position, soft-warn) must preserve the origin discriminator so the
+# re-rendered form / soft-warn confirm fragment matches the originating
+# surface (colspan=9 + Cancel /hyp-recs/refresh for hyp-recs).
+# ---------------------------------------------------------------------------
+
+
+def test_validation_error_rerender_preserves_origin(seeded_db, monkeypatch):
+    """R4-Major-1 — validation-error round-trip preserves origin.
+
+    POST with origin=hyp-recs and an invalid rationale → the form
+    re-renders at 400 with origin still 'hyp-recs' so the layout matches
+    the originating hyp-recs surface (colspan=9 + Cancel
+    /hyp-recs/refresh).
+
+    Discriminating: pre-fix, ``_rerender_entry_form_with_error`` rebuilds
+    the VM via ``build_entry_form_vm(ticker=...)`` (no origin) so the
+    VM defaults to origin='watchlist' → template renders colspan=8 +
+    Cancel /watchlist/NVDA/expand.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg, tickers=["NVDA"])
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/trades/entry",
+            data={
+                "ticker": "NVDA",
+                "entry_date": "2026-04-29",
+                "entry_price": "100.00",
+                "shares": "10",
+                "initial_stop": "95.00",
+                "rationale": "invalid_rationale",  # trips _validate_rationale
+                "origin": "hyp-recs",
+            },
+            headers={"HX-Request": "true", "HX-Target": "hyp-rec-row-NVDA"},
+        )
+    assert resp.status_code == 400, resp.text
+    body = resp.text
+    assert 'colspan="9"' in body, (
+        "validation-error re-render must preserve origin=hyp-recs"
+        " (colspan=9; pre-fix would default to colspan=8)"
+    )
+    assert "/hyp-recs/refresh" in body, (
+        "validation-error re-render Cancel must target /hyp-recs/refresh"
+    )
+
+
+def test_duplicate_open_position_rerender_preserves_origin(
+    seeded_db, monkeypatch,
+):
+    """R4-Major-1 — duplicate-position round-trip preserves origin.
+
+    POST with origin=hyp-recs for a ticker that already has an OPEN
+    trade → DuplicateOpenPositionException → form re-renders at 400
+    with origin still 'hyp-recs'.
+
+    Discriminating: pre-fix the duplicate re-render branch calls
+    ``build_entry_form_vm(ticker=...)`` without origin → VM defaults to
+    origin='watchlist' → colspan=8 + Cancel /watchlist/NVDA/expand.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg, tickers=["NVDA"])
+    # Seed an existing OPEN trade for NVDA so the new POST trips
+    # DuplicateOpenPositionException at record_entry.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO trades
+                   (ticker, entry_date, entry_price, initial_shares,
+                    initial_stop, current_stop, status)
+                   VALUES ('NVDA','2026-04-28',95.0,10,90.0,90.0,'open')"""
+            )
+    finally:
+        conn.close()
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/trades/entry",
+            data={
+                "ticker": "NVDA",
+                "entry_date": "2026-04-29",
+                "entry_price": "100.00",
+                "shares": "10",
+                "initial_stop": "95.00",
+                "rationale": "aplus-setup",  # valid rationale
+                "origin": "hyp-recs",
+            },
+            headers={"HX-Request": "true", "HX-Target": "hyp-rec-row-NVDA"},
+        )
+    assert resp.status_code == 400, resp.text
+    body = resp.text
+    assert 'colspan="9"' in body, (
+        "duplicate-position re-render must preserve origin=hyp-recs"
+        " (colspan=9; pre-fix would default to colspan=8)"
+    )
+    assert "/hyp-recs/refresh" in body, (
+        "duplicate-position re-render Cancel must target /hyp-recs/refresh"
+    )
+
+
+def test_soft_warn_confirm_round_trips_origin(seeded_db, monkeypatch):
+    """R4-Major-1 + R1-Major-1 (Codex R1) — soft-warn confirm round-trips
+    origin AND renders the right colspan for the originating surface.
+
+    POST with origin=hyp-recs that trips soft_warn → confirm fragment
+    renders at 200 with hidden origin=hyp-recs input + Cancel
+    /hyp-recs/refresh + colspan=9.
+
+    Discriminating: pre-fix the soft-warn ``form_values`` dict lacks
+    ``origin`` → no hidden input emitted; the confirm partial's Cancel
+    target hardcodes /watchlist/{ticker}/expand and ``<td colspan>``
+    hardcodes 8. Post-fix all three signals (origin field + Cancel
+    target + colspan=9) appear.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg, tickers=["NVDA"])
+    # Seed soft_warn_open=4 open trades to trip soft-warn on the next POST.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            for i, tk in enumerate(("TK1", "TK2", "TK3", "TK4")):
+                conn.execute(
+                    """INSERT INTO trades
+                       (ticker, entry_date, entry_price, initial_shares,
+                        initial_stop, current_stop, status)
+                       VALUES (?, '2026-04-20', 100.0, 1, 95.0, 95.0,
+                               'open')""",
+                    (tk,),
+                )
+    finally:
+        conn.close()
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/trades/entry",
+            data={
+                "ticker": "NVDA",
+                "entry_date": "2026-04-29",
+                "entry_price": "100.00",
+                "shares": "10",
+                "initial_stop": "95.00",
+                "rationale": "aplus-setup",
+                "origin": "hyp-recs",
+            },
+            headers={"HX-Request": "true", "HX-Target": "hyp-rec-row-NVDA"},
+        )
+    assert resp.status_code == 200, (
+        "soft-warn confirm renders 200 with the confirm partial; got "
+        f"{resp.status_code}\nBody[:400]: {resp.text[:400]!r}"
+    )
+    body = resp.text
+    assert "Soft cap reached" in body, (
+        "soft-warn confirm fragment must render; otherwise the seed didn't"
+        " trip the soft-warn path"
+    )
+    # Hidden origin field on the confirm partial — auto-emitted by the
+    # form_values.items() loop once "origin" is in form_values.
+    assert 'name="origin"' in body, (
+        "soft-warn confirm must include hidden origin input"
+    )
+    assert 'value="hyp-recs"' in body, (
+        "soft-warn confirm hidden origin input must carry value=hyp-recs"
+    )
+    assert "/hyp-recs/refresh" in body, (
+        "soft-warn confirm Cancel must target /hyp-recs/refresh"
+    )
+    assert 'colspan="9"' in body, (
+        "soft-warn confirm fragment must render colspan=9 when origin="
+        "hyp-recs (R1-Major-1); pre-fix renders colspan=8 — visually"
+        " broken inside the 9-cell hyp-recs table"
+    )

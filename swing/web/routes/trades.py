@@ -29,7 +29,9 @@ from swing.web.view_models.open_positions_row import (
     build_open_positions_expanded,
     build_open_positions_row,
 )
-from swing.web.view_models.trades import build_entry_form_vm, build_exit_form_vm, build_stop_form_vm
+from swing.web.view_models.trades import (
+    _coerce_origin, build_entry_form_vm, build_exit_form_vm, build_stop_form_vm,
+)
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -103,16 +105,22 @@ def _rerender_entry_form_with_error(
     *, request: Request, templates, cfg, cache, executor,
     ticker: str, entry_date: str, entry_price: float, shares: int,
     initial_stop: float, rationale: str, notes: str | None,
-    error_message: str,
+    error_message: str, origin: str = "watchlist",
 ) -> HTMLResponse:
     """T4: re-render trade_entry_form with preserved values + banner at 400.
 
     Mirrors the duplicate-error re-render path but called from rationale
     validation failures before record_entry is invoked.
+
+    Task 8 (R4-Major-1): ``origin`` threads through so the re-rendered
+    form's colspan + Cancel target match the originating surface
+    (hyp-recs vs watchlist). Defaults to 'watchlist' for backward
+    compat with any caller that omits the kwarg.
     """
     from dataclasses import replace as dc_replace
     vm = build_entry_form_vm(
         ticker=ticker.upper(), cfg=cfg, cache=cache, executor=executor,
+        origin=origin,
     )
     if vm is not None:
         vm = dc_replace(
@@ -245,11 +253,23 @@ def entry_post(
     # bare cURL) keep working.
     sector: str = Form(""),
     industry: str = Form(""),
+    # Task 8 (R4-Major-1) — origin discriminator survives POST round-trips.
+    # The hidden form field emitted by trade_entry_form.html.j2 carries the
+    # value resolved at form-render time. Default 'watchlist' preserves
+    # behavior for existing callers (CLI tests / bare cURL) that don't post
+    # the field. Whitelist-coerced via _coerce_origin to defend against
+    # tampered POSTs (XSS / open-redirect into the rendered Cancel target).
+    origin: str = Form("watchlist"),
 ):
     cfg = request.app.state.cfg
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
     templates = request.app.state.templates
+
+    # Task 8 — coerce once at the request boundary; thread the coerced
+    # value through every re-render path so the operator sees a stable
+    # layout on each round-trip.
+    origin_coerced = _coerce_origin(origin)
 
     # Tranche B-ops T4: enum-validate the rationale *before* constructing
     # EntryRequest. On failure, re-render the form (preserving user inputs)
@@ -264,6 +284,7 @@ def entry_post(
             executor=executor, ticker=ticker, entry_date=entry_date,
             entry_price=entry_price, shares=shares, initial_stop=initial_stop,
             rationale=rationale, notes=notes, error_message=rationale_error,
+            origin=origin_coerced,
         )
 
     # Bug 2 (2026-04-25): validate stop < entry at the request boundary so
@@ -296,6 +317,7 @@ def entry_post(
                 f"stop must be < entry; got entry={entry_price}, "
                 f"stop={initial_stop}"
             ),
+            origin=origin_coerced,
         )
 
     # Phase 5 spec §3.6 — resolve the operator override.
@@ -332,6 +354,7 @@ def entry_post(
                 f"{ticker.upper()}; ticker is out-of-scope for the latest "
                 "pipeline run. (V1 cached-only; manual fallback deferred to V2.)"
             ),
+            origin=origin_coerced,
         )
 
     req = EntryRequest(
@@ -411,6 +434,14 @@ def entry_post(
                 # these keys auto-emits hidden inputs.
                 "sector": sector,
                 "industry": industry,
+                # Task 8 (R4-Major-1) — origin must round-trip through the
+                # soft-warn confirm so (a) the force=true resubmit's POST
+                # carries origin back; (b) the confirm partial's colspan +
+                # Cancel target match the originating surface. The
+                # form_values.items() loop in soft_warn_confirm.html.j2
+                # auto-emits the hidden <input name="origin"> because
+                # 'origin' is not in the banner-only exclusion list.
+                "origin": origin_coerced,
                 "open_count": actual_open,
                 "soft_warn": cfg.position_limits.soft_warn_open,
                 "hard_cap": cfg.position_limits.hard_cap_open,
@@ -422,9 +453,13 @@ def entry_post(
         except DuplicateOpenPositionException as exc:
             # Spec §5.1 case 1: re-render form with submitted values preserved
             # so the user sees the conflict without losing typed inputs.
+            # Task 8 (R4-Major-1): pass ``origin=origin_coerced`` so the
+            # re-render's colspan + Cancel target match the originating
+            # surface (hyp-recs vs watchlist).
             from dataclasses import replace as dc_replace
             vm = build_entry_form_vm(
                 ticker=ticker.upper(), cfg=cfg, cache=cache, executor=executor,
+                origin=origin_coerced,
             )
             if vm is not None:
                 vm = dc_replace(
@@ -478,6 +513,7 @@ def entry_post(
                     f"Chart-pattern fields failed validation: {exc}. Please "
                     "contact a developer if the form was not manually altered."
                 ),
+                origin=origin_coerced,
             )
         except sqlite3.IntegrityError as exc:
             # Codex R1 Major 1 — tampered hidden-form-field POST that slips
@@ -524,6 +560,7 @@ def entry_post(
                     f"Chart-pattern fields failed validation: {exc}. Please "
                     "contact a developer if the form was not manually altered."
                 ),
+                origin=origin_coerced,
             )
     finally:
         conn.close()

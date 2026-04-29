@@ -7,6 +7,7 @@
           hx-target="closest tr" hx-swap="outerHTML"
           hx-headers='{"HX-Request": "true"}'>
       <input type="hidden" name="ticker" value="{{ vm.ticker }}">
+      <input type="hidden" name="origin" value="{{ vm.origin }}">
       <div><label>Ticker</label>
         <span>{{ vm.ticker }}</span></div>
       <div><label>Entry date</label>
