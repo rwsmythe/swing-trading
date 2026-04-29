@@ -48,6 +48,7 @@ def watchlist_row(request: Request, ticker: str):
             "price": row_vm.price,
             "tags": row_vm.tags,
             "pattern_tag": row_vm.pattern_tag,
+            "current_pivot": row_vm.current_pivot,
         },
     )
 

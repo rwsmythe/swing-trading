@@ -8,6 +8,7 @@
       {% set price = vm.watchlist_last_prices.get(w.ticker) %}
       {% set tags = vm.flag_tags.get(w.ticker, ()) %}
       {% set pattern_tag = vm.pattern_tags.get(w.ticker) %}
+      {% set current_pivot = vm.candidates_by_ticker[w.ticker].pivot if w.ticker in vm.candidates_by_ticker else None %}
       {% include "partials/watchlist_row.html.j2" %}
     {% endfor %}
   </tbody>

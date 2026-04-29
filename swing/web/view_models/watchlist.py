@@ -57,11 +57,19 @@ class WatchlistRowVM:
     `tags` so the sort surface (which the row VM does not participate
     in) cannot drift. Default None matches the template's
     `{% if pattern_tag %}` guard.
+
+    CC-pivot R1-Major-3 (hyp-recs trade-prep expansion plan, Task 1):
+    `current_pivot` carries the candidates.pivot value for the row's
+    ticker so the close-path render surfaces the same value the
+    dashboard top-5 and standalone watchlist surface — without this
+    field, expand-then-close would revert the Pivot column to
+    entry_target.
     """
     w: WatchlistEntry
     price: PriceSnapshot | None
     tags: tuple[str, ...]
     pattern_tag: str | None = None
+    current_pivot: float | None = None
 
 
 @dataclass(frozen=True)
@@ -225,7 +233,13 @@ def build_watchlist_row(
         row_classifications,
         display_threshold=cfg.web.flag_pattern_display_threshold,
     ).get(ticker)
-    return WatchlistRowVM(w=row, price=snap, tags=tags, pattern_tag=pattern_tag)
+    return WatchlistRowVM(
+        w=row,
+        price=snap,
+        tags=tags,
+        pattern_tag=pattern_tag,
+        current_pivot=(by_ticker[ticker].pivot if ticker in by_ticker else None),
+    )
 
 
 def build_watchlist_expanded(

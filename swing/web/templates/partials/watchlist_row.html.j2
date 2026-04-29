@@ -13,7 +13,7 @@
       {% if price.is_stale %}<span class="stale">(stale)</span>{% endif %}
     {% else %}—{% endif %}
   </td>
-  <td>${{ '%.2f' | format(w.entry_target or 0) }}</td>
+  <td>{% if current_pivot is not none %}${{ '%.2f' | format(current_pivot) }}{% elif w.entry_target %}${{ '%.2f' | format(w.entry_target) }}{% else %}—{% endif %}</td>
   <td>
     {% if price and w.entry_target %}
       {{ '%.1f' | format(((price.price - w.entry_target) / w.entry_target) * 100) }}%
