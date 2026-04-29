@@ -78,8 +78,9 @@ swing/
 │       │   ├── hypothesis_recommendations_expanded.html.j2 # NEW: expansion partial
 │       │   ├── hyp_recs_expand_unavailable.html.j2         # NEW: 404-state row partial (§3.5.4)
 │       │   └── watchlist_row.html.j2                       # MODIFY (CC pivot bug, §3.9)
-│       └── (parent templates that include watchlist_row.html.j2: dashboard.html.j2, standalone watchlist template)
-│                                                            # MODIFY: {% set current_pivot = ... %} before each include
+│       ├── partials/watchlist_top5_section.html.j2         # MODIFY (CC pivot wiring, R2-M1):
+│       │                                                    #   {% set current_pivot %} before row include
+│       └── watchlist.html.j2                                # MODIFY (CC pivot wiring): same {% set %}
 
 tests/
 ├── recommendations/
@@ -106,7 +107,7 @@ Files touched (full list):
   5. `swing/web/app.py` — register the recommendations router AND extend `_ROW_TARGET_PREFIXES` to include `hyp-rec-row-` (R1-Major-2).
   6. `swing/web/templates/partials/hypothesis_recommendations.html.j2` — chevron leading column + iterate per-row partial.
   7. `swing/web/templates/partials/watchlist_row.html.j2` — CC pivot bug fix at line 16 (R1-Minor-3 dash sentinel for missing both).
-  8. Parent templates that include `watchlist_row.html.j2` (`dashboard.html.j2` and the standalone watchlist template) — `{% set current_pivot = ... %}` before each include.
+  8. **TWO parent templates that iterate watchlist rows (R2-Major-1 correction):** `swing/web/templates/partials/watchlist_top5_section.html.j2` (dashboard top-5 path; `dashboard.html.j2:15` includes this section but does NOT iterate rows directly) AND `swing/web/templates/watchlist.html.j2` (standalone watchlist page). Each gains `{% set current_pivot = vm.candidates_by_ticker[w.ticker].pivot if w.ticker in vm.candidates_by_ticker else None %}` immediately before the `{% include "partials/watchlist_row.html.j2" %}`. (Counted as one MODIFY entry but two file edits — finalized at writing-plans dispatch.)
 - **Test NEW (6):** the six files listed in the `tests/` block.
 
 Total: **18 files** (4 production NEW + 8 production MODIFY + 6 test NEW). No migrations. No Phase 2 carve-outs (see §5).
@@ -599,11 +600,14 @@ V2 candidates if confusion proves operationally costly:
 
 **Bug:** `partials/watchlist_row.html.j2:16` renders `{{ '%.2f' | format(w.entry_target or 0) }}` under a header that says "Pivot." `WatchlistEntry.entry_target` is the value frozen when the operator added the ticker to the watchlist; `candidates.pivot` is the current pipeline-eval pivot. A ticker whose pivot has shifted (rebase / VCP re-evaluation) shows a stale value under "Pivot" — operator decoding "Pivot" reads stale, while hyp-recs and trade-entry already render the current value (cross-surface inconsistency).
 
-**Fix scope** — the partial is rendered from THREE distinct call sites; the fix touches all three (R1-Major-3 resolution).
+**Fix scope** — the partial `watchlist_row.html.j2` is rendered from THREE distinct call sites; the fix touches all three (R1-Major-3 resolution; R2-Major-1 correction on the parent-template site identification).
 
 - **File 1: `swing/web/templates/partials/watchlist_row.html.j2:16`.** Change `{{ '%.2f' | format(w.entry_target or 0) }}` → `{% if current_pivot is not none %}${{ '%.2f' | format(current_pivot) }}{% elif w.entry_target %}${{ '%.2f' | format(w.entry_target) }}{% else %}—{% endif %}`. (R1-Minor-3 sentinel: render `—` rather than `$0.00` when both `current_pivot` and `entry_target` are absent.) New required template-context variable: `current_pivot: float | None`.
-- **File 2: parent template wiring for full-page dashboard + standalone watchlist page** (`dashboard.html.j2` and the standalone watchlist template, wherever `watchlist_row.html.j2` is included via `{% include %}` from a `<tbody>` iteration). Insert `{% set current_pivot = vm.candidates_by_ticker[w.ticker].pivot if w.ticker in vm.candidates_by_ticker else None %}` immediately before each include. Jinja's `include with context` (default behavior) propagates `current_pivot` into the partial scope.
-- **File 3: `WatchlistRowVM` at `swing/web/view_models/watchlist.py:50-64`.** Add `current_pivot: float | None = None` trailing-default field. The `/watchlist/{ticker}/row` close-path route handler in `swing/web/routes/watchlist.py` must populate it via `candidates_by_ticker[ticker].pivot if ticker in candidates_by_ticker else None`. Without this, the watchlist's expand-then-close cycle would revert the Pivot column to `entry_target` exactly when the operator most needs the current value, recreating the bug post-close. The route handler renders `partials/watchlist_row.html.j2` with `current_pivot=row_vm.current_pivot` in the template context (or, if the route already passes the row VM directly, the partial reads it from `row_vm.current_pivot` via the existing template parameter).
+- **File 2: `swing/web/templates/partials/watchlist_top5_section.html.j2`** (rendered by `dashboard.html.j2:15` via `{% include "partials/watchlist_top5_section.html.j2" %}`; this partial is where the `<tbody>` iteration over `vm.watchlist_top5` happens — confirmed at `watchlist_top5_section.html.j2:7-12`). The dashboard does NOT iterate rows directly. Insert `{% set current_pivot = vm.candidates_by_ticker[w.ticker].pivot if w.ticker in vm.candidates_by_ticker else None %}` inside the `{% for w in vm.watchlist_top5 %}` block, immediately before `{% include "partials/watchlist_row.html.j2" %}`. (R2-Major-1 correction: `dashboard.html.j2` is the WRONG site; this partial is the right one.)
+- **File 3: `swing/web/templates/watchlist.html.j2`** (standalone watchlist page; iterates rows at `watchlist.html.j2:13`). Same `{% set current_pivot = ... %}` insertion immediately before the row include.
+- **File 4: `WatchlistRowVM` at `swing/web/view_models/watchlist.py:50-64`.** Add `current_pivot: float | None = None` trailing-default field. The `/watchlist/{ticker}/row` close-path route handler in `swing/web/routes/watchlist.py` must populate it via `candidates_by_ticker[ticker].pivot if ticker in candidates_by_ticker else None`. Without this, the watchlist's expand-then-close cycle would revert the Pivot column to `entry_target` exactly when the operator most needs the current value, recreating the bug post-close.
+
+The `watchlist_row.html.j2` partial reads `current_pivot` from its template scope. Two callers (Files 2 and 3) provide it via `{% set %}`; the third caller (Watchlist row-collapse route via `WatchlistRowVM`) provides it via `current_pivot=row_vm.current_pivot` in the template context dict, or by extending the existing `{% include %}` invocation in the row-collapse route handler to set the variable before include.
 
 Lightning trigger at line 7 stays unchanged: `{% if price and w.entry_target and price.price >= w.entry_target * 0.99 %}⚡{% endif %}` — `entry_target` binding preserved per Q4. Tests verify the unchanged trigger after the column-display change (§4.5 includes the discriminating fixture for this).
 
