@@ -796,3 +796,227 @@ def test_entry_form_origin_query_param_whitelist_validation(
         "whitelist coercion failed; raw query-param value leaked into"
         " rendered HTML"
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 7 — off-watchlist candidate fallback for entry_price + initial_stop
+# (R3-Major-2). Spec §3.8b.2 — gated on coerced_origin == "hyp-recs"
+# (R1-Major-2). Watchlist-origin off-watchlist callers preserve $0.00.
+# ---------------------------------------------------------------------------
+
+
+def _patch_price_cache_no_snap(monkeypatch):
+    """Stub PriceCache.get_many to return empty dict so snap is None.
+
+    Forces the entry_price fallback chain (live snap → wl_entry.last_close
+    → candidate.pivot → 0.0) to skip the live-snap branch.
+    """
+
+    def get_many(self, tickers, *, deadline_seconds, executor):
+        return {}
+    monkeypatch.setattr(PriceCache, "get_many", get_many)
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+
+
+def test_hyp_recs_entry_form_off_watchlist_uses_candidate_pivot_for_target(
+    seeded_db, monkeypatch,
+):
+    """Spec §3.8b.2 R3-Major-2 — off-watchlist hyp-recs entry uses
+    candidate row's pivot for entry_price + initial_stop.
+
+    Discriminating: pre-fix renders entry_price=$0.00 and
+    initial_stop=$0.00; post-fix renders candidate values.
+    """
+    cfg, cfg_path = seeded_db
+    # Seed candidate but NOT watchlist for ticker 'OFF'.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+                    tickers_evaluated, aplus_count, watch_count, skip_count,
+                    excluded_count, error_count)
+                   VALUES ('2026-04-29T09:00:00','2026-04-28','2026-04-29',
+                           NULL, 1, 1, 0, 0, 0, 0)"""
+            )
+            eval_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.execute(
+                """INSERT INTO pipeline_runs
+                   (state, started_ts, finished_ts, trigger,
+                    action_session_date, data_asof_date,
+                    evaluation_run_id, charts_status, lease_token)
+                   VALUES ('complete','2026-04-29T08:00:00',
+                           '2026-04-29T09:00:00','scheduled',
+                           '2026-04-29','2026-04-28',?,'ok','tok-off1')""",
+                (eval_id,),
+            )
+            conn.execute(
+                """INSERT INTO candidates
+                   (evaluation_run_id, ticker, bucket, close, pivot,
+                    initial_stop, adr_pct, tight_streak, pullback_pct,
+                    prior_trend_pct, rs_rank, rs_return_12w_vs_spy,
+                    rs_method, pattern_tag, notes, sector, industry)
+                   VALUES (?, 'OFF', 'aplus', 49.0, 50.0, 48.0, 2.0, 5,
+                           NULL, NULL, NULL, NULL, 'fallback_spy',
+                           NULL, NULL, 'Energy', 'Oil & Gas E&P')""",
+                (eval_id,),
+            )
+    finally:
+        conn.close()
+    _patch_price_cache_no_snap(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/trades/entry/form?ticker=OFF&origin=hyp-recs",
+            headers={"HX-Request": "true", "HX-Target": "hyp-rec-row-OFF"},
+        )
+    assert resp.status_code == 200
+    body = resp.text
+    # entry_price input = candidate.pivot = $50.00 (since no live price snap).
+    # The template renders value="{{ '%.2f' | format(vm.entry_price) }}".
+    assert 'name="entry_price"' in body
+    assert 'value="50.00"' in body, (
+        f"off-watchlist entry_price must fall back to candidate.pivot;"
+        f" pre-fix would render value=\"0.00\""
+    )
+    # initial_stop input = candidate.initial_stop = $48.00.
+    assert 'name="initial_stop"' in body
+    assert 'value="48.00"' in body, (
+        "off-watchlist initial_stop must fall back to candidate.initial_stop"
+    )
+
+
+def test_watchlist_origin_off_watchlist_preserves_zero_fallback(
+    seeded_db, monkeypatch,
+):
+    """R1-Major-2 (Codex R1) — gating regression: watchlist-origin
+    request for an off-watchlist ticker MUST preserve the existing
+    0.0 fallback (NOT silently start using candidate.pivot).
+
+    Discriminating: pre-Task-7 path renders entry_price=$0.00,
+    initial_stop=$0.00. Post-Task-7 path with origin=hyp-recs renders
+    candidate values. Post-Task-7 path with origin=watchlist (or
+    default) MUST still render $0.00 — the fallback is gated.
+    """
+    cfg, cfg_path = seeded_db
+    # Same off-watchlist + candidate seed as the hyp-recs test, but
+    # request without ?origin= so it defaults to 'watchlist'.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+                    tickers_evaluated, aplus_count, watch_count, skip_count,
+                    excluded_count, error_count)
+                   VALUES ('2026-04-29T09:00:00','2026-04-28','2026-04-29',
+                           NULL, 1, 1, 0, 0, 0, 0)"""
+            )
+            eval_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.execute(
+                """INSERT INTO pipeline_runs
+                   (state, started_ts, finished_ts, trigger,
+                    action_session_date, data_asof_date,
+                    evaluation_run_id, charts_status, lease_token)
+                   VALUES ('complete','2026-04-29T08:00:00',
+                           '2026-04-29T09:00:00','scheduled',
+                           '2026-04-29','2026-04-28',?,'ok','tok-off2')""",
+                (eval_id,),
+            )
+            conn.execute(
+                """INSERT INTO candidates
+                   (evaluation_run_id, ticker, bucket, close, pivot,
+                    initial_stop, adr_pct, tight_streak, pullback_pct,
+                    prior_trend_pct, rs_rank, rs_return_12w_vs_spy,
+                    rs_method, pattern_tag, notes, sector, industry)
+                   VALUES (?, 'OFF', 'aplus', 49.0, 50.0, 48.0, 2.0, 5,
+                           NULL, NULL, NULL, NULL, 'fallback_spy',
+                           NULL, NULL, 'Energy', 'Oil & Gas E&P')""",
+                (eval_id,),
+            )
+    finally:
+        conn.close()
+    _patch_price_cache_no_snap(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        # NO ?origin= → defaults to 'watchlist'. Off-watchlist ticker.
+        resp = client.get(
+            "/trades/entry/form?ticker=OFF",
+            headers={"HX-Request": "true", "HX-Target": "watchlist-row-OFF"},
+        )
+    assert resp.status_code == 200
+    body = resp.text
+    # Watchlist origin + off-watchlist + no live snap → existing 0.0
+    # fallback preserved. The candidate fallback gated to hyp-recs only.
+    # R2-Minor-1 (Codex R2) — strengthen: assert candidate values
+    # ABSENT from BOTH entry_price and initial_stop fields. The form
+    # may render multiple "0.00" values (open trade count, sizing
+    # hint, etc.); the candidate-pivot regression signal is the
+    # SPECIFIC values 50.00 (entry_price ← candidate.pivot) and 48.00
+    # (initial_stop ← candidate.initial_stop) appearing in the
+    # respective input value attributes.
+    import re
+    entry_price_input = re.search(
+        r'<input[^>]*name="entry_price"[^>]*value="([^"]*)"', body,
+    )
+    initial_stop_input = re.search(
+        r'<input[^>]*name="initial_stop"[^>]*value="([^"]*)"', body,
+    )
+    assert entry_price_input is not None
+    assert initial_stop_input is not None
+    assert entry_price_input.group(1) == "0.00", (
+        f"watchlist-origin off-watchlist entry_price must preserve 0.0"
+        f" fallback; got {entry_price_input.group(1)!r}. A regression"
+        f" that applies candidate.pivot globally would yield '50.00'."
+    )
+    assert initial_stop_input.group(1) == "0.00", (
+        f"watchlist-origin off-watchlist initial_stop must preserve 0.0"
+        f" fallback; got {initial_stop_input.group(1)!r}. A regression"
+        f" that applies candidate.initial_stop globally would yield '48.00'."
+    )
+    # Sector/industry STILL come from candidate (unchanged behavior).
+    assert "Energy" in body
+
+
+def test_hyp_recs_entry_form_on_watchlist_prefers_watchlist_values(
+    seeded_db, monkeypatch,
+):
+    """Spec §3.8b.2 — when ticker IS on the watchlist with values DIFFERENT
+    from candidate values, the form prefers watchlist (preserves existing
+    semantic). Discriminating: a regression that always overrides with
+    candidate would render 95.00; the assertion targets the watchlist
+    value 105.00."""
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg, tickers=["NVDA"])  # candidate pivot = 100.0, initial_stop = 95.0
+    # The seeded NVDA candidate has pivot=100, initial_stop=95. The
+    # _seed_hyp_recs_fixture also seeds a watchlist row with
+    # entry_target=100, initial_stop_target=95. upsert_watchlist_entry
+    # FREEZES entry_target/initial_stop_target on conflict (per repo
+    # docstring), so override via a direct UPDATE to discriminate
+    # watchlist-priority semantic with DIFFERENT values from candidate.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                """UPDATE watchlist
+                   SET entry_target = 110.0, initial_stop_target = 105.0
+                   WHERE ticker = 'NVDA'""",
+            )
+    finally:
+        conn.close()
+    _patch_price_cache_no_snap(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/trades/entry/form?ticker=NVDA&origin=hyp-recs",
+            headers={"HX-Request": "true", "HX-Target": "hyp-rec-row-NVDA"},
+        )
+    assert resp.status_code == 200
+    body = resp.text
+    # Watchlist initial_stop=105 wins over candidate 95.
+    assert 'value="105.00"' in body, (
+        "on-watchlist initial_stop must prefer watchlist value (105.00)"
+        " over candidate (95.00) per backward-compat semantic"
+    )

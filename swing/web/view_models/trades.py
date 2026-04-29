@@ -142,16 +142,20 @@ def build_entry_form_vm(
             )
             cand_sector = ""
             cand_industry = ""
+            cand_pivot: float | None = None
+            cand_initial_stop: float | None = None
             sector_eval_id = latest_evaluation_run_id(conn)
             if sector_eval_id is not None:
                 cand_row = conn.execute(
-                    """SELECT sector, industry FROM candidates
+                    """SELECT sector, industry, pivot, initial_stop FROM candidates
                        WHERE evaluation_run_id = ? AND ticker = ?""",
                     (sector_eval_id, ticker),
                 ).fetchone()
                 if cand_row is not None:
                     cand_sector = cand_row[0] or ""
                     cand_industry = cand_row[1] or ""
+                    cand_pivot = cand_row[2]
+                    cand_initial_stop = cand_row[3]
     finally:
         conn.close()
 
@@ -162,9 +166,41 @@ def build_entry_form_vm(
         executor=executor,
     )
     snap = prices.get(ticker)
-    entry_price = snap.price if snap else (wl_entry.last_close if wl_entry else 0.0)
 
-    initial_stop = wl_entry.initial_stop_target if wl_entry and wl_entry.initial_stop_target else 0.0
+    # R3-Major-2 fallback chain — GATED on origin=hyp-recs (R1-Major-2).
+    # Watchlist origin (default) preserves existing behavior for backward
+    # compat: a watchlist Enter caller hitting an off-watchlist ticker is
+    # a degenerate path under existing UX (the watchlist Enter button only
+    # fires from watchlist rows by construction); preserving the 0.0
+    # fallback there is the conservative choice. Hyp-recs origin gets the
+    # candidate-row fallback so off-watchlist hyp-recs Enter sees useful
+    # values from the latest evaluation.
+    if coerced_origin == "hyp-recs":
+        if wl_entry is not None and wl_entry.initial_stop_target:
+            initial_stop = wl_entry.initial_stop_target
+        elif cand_initial_stop is not None:
+            initial_stop = cand_initial_stop
+        else:
+            initial_stop = 0.0
+    else:
+        # Watchlist origin: existing behavior.
+        initial_stop = wl_entry.initial_stop_target if wl_entry and wl_entry.initial_stop_target else 0.0
+
+    # entry_price fallback chain. For hyp-recs origin: live snap →
+    # wl_entry.last_close → candidate.pivot → 0.0. For watchlist origin:
+    # preserve existing behavior (live snap → wl_entry.last_close → 0.0).
+    if snap is not None:
+        entry_price = snap.price
+    elif wl_entry is not None and wl_entry.last_close:
+        entry_price = wl_entry.last_close
+    elif coerced_origin == "hyp-recs" and cand_pivot is not None:
+        entry_price = cand_pivot
+    else:
+        entry_price = 0.0
+
+    # Hidden inputs stay BOUND TO wl_entry ONLY (spec §3.8b.2): their
+    # POST-side semantic is "the value the watchlist had at form-render".
+    # When hyp-recs-originated and wl_entry is None, both are absent.
     watchlist_entry_target = wl_entry.entry_target if wl_entry else None
     watchlist_initial_stop = wl_entry.initial_stop_target if wl_entry else None
 
