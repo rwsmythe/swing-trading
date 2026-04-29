@@ -45,14 +45,7 @@ tests/fixtures/finviz/suggested-diffs-*.yaml
 # Research harness smoke-test output (regenerated; not tracked)
 research/harness/*/smoke-out/
 
-# Phase 4 chart-pattern flag-v1 pytest scratch (regenerated; not tracked)
-.tmp-phase4/
-
-# Phase 5 chart-pattern flag-v1 pytest scratch (regenerated; not tracked)
-.tmp-phase5/
-
-# Phase 6 chart-pattern flag-v1 pytest scratch (regenerated; not tracked)
-.tmp-phase6/
-
-# Phase 7 chart-pattern flag-v1 pytest scratch (regenerated; not tracked)
-.tmp-phase7/
+# Pytest / orchestrator scratch directories (regenerated; not tracked).
+# Covers per-phase (.tmp-phase4/ etc.) and per-verify (.tmp-orchestrator-verify/,
+# .tmp-mathtext-verify/, .tmp-manual/, etc.) variants under one glob.
+.tmp-*/
