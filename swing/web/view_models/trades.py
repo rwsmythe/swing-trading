@@ -50,6 +50,14 @@ class TradeEntryFormVM:
     chart_pattern_algo_evaluated: bool = False
     chart_pattern_algo_computed_at: str | None = None
     chart_pattern_classification_pipeline_run_id: int | None = None
+    # Task 6 — sector/industry snapshot resolved at form-render time from
+    # the candidate row anchored on ``latest_evaluation_run_id()`` (same
+    # helper the dashboard candidates_by_ticker binding uses, so the form
+    # sees the same run). Hidden inputs flow these through POST →
+    # EntryRequest → record_entry. Empty strings = off-pipeline entry
+    # (graceful degradation per brief §5.8).
+    sector: str = ""
+    industry: str = ""
 
 
 def build_entry_form_vm(
@@ -95,6 +103,30 @@ def build_entry_form_vm(
                 cls = get_classification(
                     conn, pipeline_run_id=pipeline_run_id, ticker=ticker,
                 )
+            # Task 6 — sector/industry snapshot. Anchor via the canonical
+            # ``latest_evaluation_run_id()`` helper (R1 Codex Major 4)
+            # so this form sees the same run as the dashboard's
+            # candidates_by_ticker binding; preserves the helper's
+            # two-step selection across pipeline-bound complete and
+            # standalone-eval fallback. The chart_pattern read above
+            # stays bound to ``pipeline_runs`` (it requires a completed
+            # pipeline); both queries run independently in the same
+            # snapshot.
+            from swing.web.view_models.dashboard import (
+                latest_evaluation_run_id,
+            )
+            cand_sector = ""
+            cand_industry = ""
+            sector_eval_id = latest_evaluation_run_id(conn)
+            if sector_eval_id is not None:
+                cand_row = conn.execute(
+                    """SELECT sector, industry FROM candidates
+                       WHERE evaluation_run_id = ? AND ticker = ?""",
+                    (sector_eval_id, ticker),
+                ).fetchone()
+                if cand_row is not None:
+                    cand_sector = cand_row[0] or ""
+                    cand_industry = cand_row[1] or ""
     finally:
         conn.close()
 
@@ -164,6 +196,8 @@ def build_entry_form_vm(
         chart_pattern_algo_evaluated=cp_evaluated,
         chart_pattern_algo_computed_at=cp_computed_at,
         chart_pattern_classification_pipeline_run_id=cp_anchor,
+        sector=cand_sector,
+        industry=cand_industry,
     )
 
 

@@ -115,3 +115,66 @@ def test_entry_form_vm_chart_pattern_evaluated_False_for_no_cache_row(seeded_db)
     assert vm.chart_pattern_algo_evaluated is False
     assert vm.chart_pattern_algo is None
     assert vm.chart_pattern_classification_pipeline_run_id is None
+
+
+# ---------------------------------------------------------------------
+# Task 6 — sector/industry snapshot at form-render time. Resolved from
+# the candidates row anchored on latest_evaluation_run_id() (the same
+# helper the dashboard candidates_by_ticker binding uses) so the form
+# sees the same run as the dashboard. Snapshot rides hidden form fields
+# to POST and persists AS-IS.
+# ---------------------------------------------------------------------
+
+
+def test_entry_form_vm_populates_sector_industry_from_candidate(seeded_db):
+    """build_entry_form_vm reads sector + industry from the candidate row
+    by ticker. Sentinel values 'Sector-T6-A' / 'Industry-T6-A' guarantee
+    no production code path defaults to them."""
+    from swing.web.view_models.trades import build_entry_form_vm
+    cfg, _ = seeded_db
+    run_id, eval_id = seed_pipeline_with_classification(
+        cfg.paths.db_path,
+        ticker="AAPL", pattern="flag", confidence=0.78,
+    )
+    conn = connect(cfg.paths.db_path)
+    try:
+        conn.execute(
+            """INSERT INTO candidates
+               (evaluation_run_id, ticker, bucket, close, pivot, initial_stop,
+                adr_pct, tight_streak, pullback_pct, prior_trend_pct, rs_rank,
+                rs_return_12w_vs_spy, rs_method, pattern_tag, notes,
+                sector, industry)
+               VALUES (?, 'AAPL', 'watch', 100.0, 105.0, 95.0,
+                       2.0, 5, NULL, NULL, NULL, NULL, 'fallback_spy',
+                       NULL, NULL, 'Sector-T6-A', 'Industry-T6-A')""",
+            (eval_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    cache = MagicMock()
+    cache.get_many.return_value = {}
+    vm = build_entry_form_vm(
+        ticker="AAPL", cfg=cfg, cache=cache, executor=MagicMock(),
+    )
+    assert vm.sector == "Sector-T6-A"
+    assert vm.industry == "Industry-T6-A"
+
+
+def test_entry_form_vm_no_candidate_row_defaults_empty_sector_industry(seeded_db):
+    """When no candidate row exists for the entered ticker (off-pipeline
+    entry), the VM exposes empty strings — graceful degradation per
+    brief §5.8."""
+    from swing.web.view_models.trades import build_entry_form_vm
+    cfg, _ = seeded_db
+    seed_pipeline_with_classification(
+        cfg.paths.db_path,
+        ticker="OTHER", pattern="flag", confidence=0.5,
+    )
+    cache = MagicMock()
+    cache.get_many.return_value = {}
+    vm = build_entry_form_vm(
+        ticker="AAPL", cfg=cfg, cache=cache, executor=MagicMock(),
+    )
+    assert vm.sector == ""
+    assert vm.industry == ""

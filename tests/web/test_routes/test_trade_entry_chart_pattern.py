@@ -665,3 +665,110 @@ def test_soft_warn_confirm_other_operator_roundtrip(seeded_db, monkeypatch):
         )
         assert r2.status_code == 200, r2.text
         assert "open-position-" in r2.text
+
+
+# ---------------------------------------------------------------------
+# Task 6 — sector/industry snapshot persists from POST and round-trips
+# through the soft-warn confirm fragment. Mirrors the chart_pattern
+# preservation pattern (Codex R1 Major 2): the soft_warn_confirm partial
+# uses an exclusion-list iterator over form_values, so adding sector +
+# industry to form_values makes them auto-emit as hidden inputs.
+# ---------------------------------------------------------------------
+
+
+def test_post_entry_persists_sector_industry_from_form(seeded_db, monkeypatch):
+    """POST /trades/entry with hidden sector + industry form fields persists
+    them on the Trade row AS-IS (snapshot-at-entry-surface ToCToU)."""
+    from swing.data.repos.trades import find_any_open_trade
+    cfg, cfg_path = seeded_db
+    seed_pipeline_with_classification(
+        cfg.paths.db_path,
+        ticker="AAPL", pattern="flag", confidence=0.78,
+    )
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = _post_entry(
+            client,
+            sector="Sector-Route-T6-B",
+            industry="Industry-Route-T6-B",
+        )
+    assert r.status_code == 200, r.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        t = find_any_open_trade(conn, ticker="AAPL")
+    finally:
+        conn.close()
+    assert t is not None
+    assert t.sector == "Sector-Route-T6-B"
+    assert t.industry == "Industry-Route-T6-B"
+
+
+def test_post_entry_soft_warn_confirm_preserves_sector_industry(
+    seeded_db, monkeypatch,
+):
+    """First POST trips soft_warn cap → returns soft_warn_confirm fragment
+    carrying sector + industry as hidden inputs. Second POST (force=true)
+    persists those values on the Trade. Mirrors the chart_pattern
+    snapshot preservation pattern (Phase 5 Codex R1 Major 2)."""
+    from swing.data.models import Trade
+    from swing.data.repos.trades import (
+        find_any_open_trade, insert_trade_with_event,
+    )
+
+    cfg, cfg_path = seeded_db
+    seed_pipeline_with_classification(
+        cfg.paths.db_path,
+        ticker="AAPL", pattern="flag", confidence=0.78,
+    )
+    # Seed enough open trades to trip soft_warn (default soft_warn_open=4).
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            for i, tk in enumerate(("TK1", "TK2", "TK3", "TK4")):
+                insert_trade_with_event(conn, Trade(
+                    id=None, ticker=tk, entry_date="2026-04-20",
+                    entry_price=100.0, initial_shares=1, initial_stop=95.0,
+                    current_stop=95.0, status="open",
+                    watchlist_entry_target=None, watchlist_initial_stop=None,
+                    notes=None,
+                ), event_ts=f"2026-04-20T09:30:0{i}")
+    finally:
+        conn.close()
+    _patch_price_cache_with_snapshot(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        # First POST — trips soft_warn.
+        r1 = _post_entry(
+            client,
+            sector="Sector-SoftWarn-T6",
+            industry="Industry-SoftWarn-T6",
+        )
+        assert r1.status_code == 200
+        assert "Soft cap reached" in r1.text
+        body = r1.text
+        assert (
+            '<input type="hidden" name="sector" value="Sector-SoftWarn-T6">'
+            in body
+        ), f"sector hidden input missing. Body[:800]: {body[:800]!r}"
+        assert (
+            '<input type="hidden" name="industry" value="Industry-SoftWarn-T6">'
+            in body
+        ), f"industry hidden input missing. Body[:800]: {body[:800]!r}"
+        # Second POST — force=true; round-trip submits the snapshot.
+        r2 = _post_entry(
+            client,
+            sector="Sector-SoftWarn-T6",
+            industry="Industry-SoftWarn-T6",
+            force="true",
+        )
+        assert r2.status_code == 200, r2.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        t = find_any_open_trade(conn, ticker="AAPL")
+    finally:
+        conn.close()
+    assert t is not None
+    assert t.sector == "Sector-SoftWarn-T6"
+    assert t.industry == "Industry-SoftWarn-T6"

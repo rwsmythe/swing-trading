@@ -43,6 +43,14 @@
         <input type="hidden" name="watchlist_stop" value="{{ vm.watchlist_initial_stop }}">
       {% endif %}
       {% include "partials/trade_entry_chart_pattern_section.html.j2" %}
+      <div><label>Sector</label>
+        <span>{{ vm.sector or "—" }}</span>
+        <input type="hidden" name="sector" value="{{ vm.sector }}">
+      </div>
+      <div><label>Industry</label>
+        <span>{{ vm.industry or "—" }}</span>
+        <input type="hidden" name="industry" value="{{ vm.industry }}">
+      </div>
       <div><label>Rationale &#9733;</label>
         <select name="rationale" required
                 onchange="var h=this.form.querySelector('.rationale-other-hint'); if(h){h.style.display=(this.value==='other')?'inline':'none';}">

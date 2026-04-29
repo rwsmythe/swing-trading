@@ -236,6 +236,12 @@ def entry_post(
     chart_pattern_classification_pipeline_run_id: int | None = Form(None),
     chart_pattern_operator: str | None = Form(None),
     chart_pattern_operator_other: str | None = Form(None),
+    # Task 6 — sector/industry snapshot from hidden form fields populated
+    # by build_entry_form_vm at form-render time (snapshot-at-entry-surface
+    # ToCToU pattern). Default to "" so existing form submitters (CLI tests;
+    # bare cURL) keep working.
+    sector: str = Form(""),
+    industry: str = Form(""),
 ):
     cfg = request.app.state.cfg
     cache = request.app.state.price_cache
@@ -340,6 +346,8 @@ def entry_post(
         chart_pattern_algo=cp_algo_value,
         chart_pattern_algo_confidence=cp_conf_value,
         chart_pattern_classification_pipeline_run_id=cp_anchor_value,
+        sector=sector,
+        industry=industry,
     )
 
     conn = connect(cfg.paths.db_path)
@@ -393,6 +401,13 @@ def entry_post(
                 ),
                 "chart_pattern_operator": chart_pattern_operator or "",
                 "chart_pattern_operator_other": chart_pattern_operator_other or "",
+                # Task 6 — sector/industry must round-trip through the
+                # soft-warn confirm so the force=true resubmit persists
+                # the original snapshot AS-IS. soft_warn_confirm.html.j2
+                # iterates form_values with an exclusion list; adding
+                # these keys auto-emits hidden inputs.
+                "sector": sector,
+                "industry": industry,
                 "open_count": actual_open,
                 "soft_warn": cfg.position_limits.soft_warn_open,
                 "hard_cap": cfg.position_limits.hard_cap_open,
