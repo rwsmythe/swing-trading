@@ -344,3 +344,43 @@ def test_concurrent_entry_one_wins_schema_level(tmp_path: Path):
             record_entry(conn, _req("AAPL"), soft_warn=10, hard_cap=10, force=False)
     finally:
         conn.close()
+
+
+def test_record_entry_persists_sector_industry_as_is(tmp_path):
+    """record_entry persists EntryRequest.sector + .industry AS-IS on the
+    Trade row (snapshot-at-entry-surface — no re-resolve at submit time)."""
+    from swing.data.db import ensure_schema
+    from swing.data.repos.trades import get_trade
+    from swing.trades.entry import EntryRequest, record_entry
+    db_path = tmp_path / "swing.db"
+    conn = ensure_schema(db_path)
+    try:
+        req = EntryRequest(
+            ticker="ZZZF", entry_date="2026-04-28", entry_price=100.0,
+            shares=10, initial_stop=95.0,
+            watchlist_entry_target=None, watchlist_initial_stop=None,
+            notes=None, rationale="aplus-setup",
+            event_ts="2026-04-28T00:00:00",
+            sector="Healthcare", industry="Pharmaceuticals",
+        )
+        result = record_entry(conn, req, soft_warn=999, hard_cap=999, force=False)
+        t = get_trade(conn, result.trade_id)
+        assert t is not None
+        assert t.sector == "Healthcare"
+        assert t.industry == "Pharmaceuticals"
+    finally:
+        conn.close()
+
+
+def test_entry_request_default_sector_industry_empty():
+    """EntryRequest constructed without sector/industry uses '' defaults."""
+    from swing.trades.entry import EntryRequest
+    req = EntryRequest(
+        ticker="DFLT", entry_date="2026-04-28", entry_price=100.0,
+        shares=10, initial_stop=95.0,
+        watchlist_entry_target=None, watchlist_initial_stop=None,
+        notes=None, rationale="aplus-setup",
+        event_ts="2026-04-28T00:00:00",
+    )
+    assert req.sector == ""
+    assert req.industry == ""

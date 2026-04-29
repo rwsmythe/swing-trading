@@ -106,6 +106,13 @@ class EntryRequest:
     chart_pattern_algo: str | None = None
     chart_pattern_algo_confidence: float | None = None
     chart_pattern_classification_pipeline_run_id: int | None = None
+    # Migration 0012 — sector/industry snapshot-at-entry-surface. Resolved
+    # at form/CLI render time from the candidate row; persisted AS-IS by
+    # record_entry. Defaults '' so off-pipeline / off-watchlist trade entries
+    # (no candidate row to read) persist empty strings — graceful
+    # degradation matches the hypothesis_label free-text behavior.
+    sector: str = ""
+    industry: str = ""
 
 
 @dataclass(frozen=True)
@@ -200,6 +207,8 @@ def record_entry(
         chart_pattern_algo_confidence=req.chart_pattern_algo_confidence,
         chart_pattern_operator=canonicalize_hypothesis_label(req.chart_pattern_operator),
         chart_pattern_classification_pipeline_run_id=req.chart_pattern_classification_pipeline_run_id,
+        sector=req.sector,
+        industry=req.industry,
     )
 
     archived = False
