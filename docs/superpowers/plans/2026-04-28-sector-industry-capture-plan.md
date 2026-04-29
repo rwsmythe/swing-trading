@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Persist Finviz `Sector` + `Industry` (currently ingested but discarded) on `candidates` (per-pipeline-run) and on `trades` (frozen-at-entry); display on 4 surfaces (hyp-recs, watchlist expansion, trade entry, open positions).
+**Goal:** Persist Finviz `Sector` + `Industry` (currently ingested but discarded) on `candidates` (per-pipeline-run) and on `trades` (frozen-at-entry); display on 3 V1 surfaces (watchlist expansion, trade entry form, open positions row). The 4th surface listed in dispatch brief §2.2 — hyp-recs row expansion — is DEFERRED to the future hyp-recs trade-prep expansion brainstorm per brief §1's explicit "downstream concern — out of scope for THIS dispatch" framing (R1 Codex Major 3 RESOLVED). Data plumbing (Tasks 2 + 4) is sufficient for the future brainstorm to consume.
 
 **Architecture:** Mirrors the snapshot-at-entry-surface pattern from `hypothesis_label` (migration 0007) and `chart_pattern_*` (migration 0010). Schema migration 0012 adds 2 columns to `candidates` and 2 to `trades` via `ALTER TABLE ADD COLUMN` (no CREATE-COPY-DROP-RENAME needed — additive only, no cross-column invariants). Pipeline ingestion plumbs sector/industry from Finviz CSV into the candidate row post-`evaluate_batch` via `dataclasses.replace` (evaluator stays domain-pure: it works on OHLCV, sector/industry are CSV passthrough). Trade entry uses the existing ToCToU snapshot pattern: `build_entry_form_vm` resolves sector/industry from the candidate row at GET render time; hidden form fields carry through POST; `record_entry` persists AS-IS. CLI auto-resolves from candidate row by ticker; persists empty strings when no candidate exists (graceful degradation, mirrors `hypothesis_label` free-text pattern).
 
@@ -14,7 +14,7 @@
 
 **Locked decisions (per dispatch brief §2 — DO NOT re-litigate):**
 1. Persist BOTH sector AND industry; display BOTH on display surfaces.
-2. Display surfaces (V1): hyp-recs row, watchlist row expansion, trade entry form, open positions row. Out of scope (V2): journal review aggregation, sector concentration warnings.
+2. Display surfaces (V1): watchlist row expansion, trade entry form, open positions row. **Hyp-recs row expansion deferred** — see the explanation paragraph below; tracked in writing-plans return report so the orchestrator can confirm the deferral. Out of scope (V2): journal review aggregation, sector concentration warnings.
 3. Frozen-at-entry on `trades` table (mirrors `hypothesis_label` / `chart_pattern_*`).
 4. Source-of-truth: Finviz only. No yfinance reconciliation.
 
@@ -118,36 +118,80 @@ git log -E --pretty='%s' --grep='^[a-z]+\([a-z]+\): Task 1'
 
 Expected: `EXPECTED_SCHEMA_VERSION = 11`; `0011_pipeline_chart_targets_source_taxonomy.sql` is the last migration; grep returns empty.
 
-- [ ] **Step 1.2: Write the failing migration test.**
+- [ ] **Step 1.2: Write the failing migration test (incremental v11→v12 pattern).**
 
-Create `tests/data/test_migration_0012.py` (modeled on `tests/data/test_migration_0011.py`):
+Create `tests/data/test_migration_0012.py` mirroring `tests/data/test_migration_0011.py`'s `_migrate_to_v<N>` pattern (R2 Codex Major 1 RESOLVED). The incremental pattern proves the standalone 0012 SQL transitions a real v11 database correctly — bootstrap-only assertions could pass for unrelated reasons:
 
 ```python
-"""Migration 0012 — sector + industry columns on candidates + trades."""
+"""Migration 0012 — sector + industry columns on candidates + trades.
+
+Incremental v11→v12 pattern: applies migrations 0001-0011 from disk to
+bring an empty conn to schema_version=11, then applies ONLY 0012 to
+exercise the transition. Mirrors test_migration_0011.py's _migrate_to_v10.
+"""
 from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
 
-from swing.data.db import EXPECTED_SCHEMA_VERSION, ensure_schema
+from swing.data.db import EXPECTED_SCHEMA_VERSION
+
+
+def _migrate_to_v11(conn: sqlite3.Connection) -> None:
+    """Apply migrations 0001-0011 sequentially from disk."""
+    from swing.data import migrations
+    migs_dir = Path(migrations.__file__).parent
+    for n in range(1, 12):
+        sql_files = sorted(migs_dir.glob(f"{n:04d}_*.sql"))
+        assert len(sql_files) == 1, f"expected exactly one migration {n:04d}, got {sql_files}"
+        conn.executescript(sql_files[0].read_text(encoding="utf-8"))
+    conn.commit()
+
+
+def _apply_migration_0012(conn: sqlite3.Connection) -> None:
+    """Apply ONLY migration 0012 (the v11 → v12 transition under test)."""
+    from swing.data import migrations
+    migs_dir = Path(migrations.__file__).parent
+    sql_files = sorted(migs_dir.glob("0012_*.sql"))
+    assert len(sql_files) == 1, f"expected one 0012 migration, got {sql_files}"
+    conn.executescript(sql_files[0].read_text(encoding="utf-8"))
+    conn.commit()
+
+
+def test_expected_schema_version_is_12():
+    """Code-side constant matches the migration's UPDATE schema_version."""
+    assert EXPECTED_SCHEMA_VERSION == 12
+
+
+def test_migration_0012_advances_schema_version_from_11_to_12(tmp_path: Path):
+    """The standalone 0012 SQL transitions a v11 database to v12."""
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA foreign_keys=ON")
+    try:
+        _migrate_to_v11(conn)
+        v_before = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        assert v_before == 11
+
+        _apply_migration_0012(conn)
+        v_after = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        assert v_after == 12
+    finally:
+        conn.close()
 
 
 def test_migration_0012_adds_sector_industry_to_candidates_and_trades(tmp_path: Path):
     """Migration 0012 adds NOT NULL DEFAULT '' sector + industry columns to
     BOTH candidates and trades. Default values apply on INSERTs that omit
     the columns, preserving backfill behavior on historical rows."""
-    from swing.data.db import EXPECTED_SCHEMA_VERSION, ensure_schema
-    db_path = tmp_path / "swing.db"
-    conn = ensure_schema(db_path)
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA foreign_keys=ON")
     try:
-        # EXPECTED_SCHEMA_VERSION must be 12 once the migration is included.
-        assert EXPECTED_SCHEMA_VERSION == 12
+        _migrate_to_v11(conn)
+        _apply_migration_0012(conn)
 
-        # Schema version actually advanced.
-        version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 12
-
-        # Both tables have the new columns.
+        # Both tables have the new columns with the right shape.
         for table in ("candidates", "trades"):
             cols = {
                 row[1]: row for row in conn.execute(f"PRAGMA table_info({table})")
@@ -1429,7 +1473,7 @@ def test_post_entry_soft_warn_confirm_preserves_sector_industry(seeded_db):
 python -m pytest tests/web/test_view_models/test_trade_entry_form_classification.py tests/web/test_routes/test_trade_entry_chart_pattern.py -v -k "sector_industry or persists_sector_industry or soft_warn_confirm_preserves_sector_industry"
 ```
 
-Expected: FAIL with NotImplementedError (skeleton) or sector/industry mismatch (after harness).
+Expected: FAIL — `vm.sector` raises `AttributeError` pre-fix (the field doesn't exist on `TradeEntryFormVM` yet), and the route-level test fails because `EntryRequest`'s constructor rejects the `sector`/`industry` kwargs.
 
 - [ ] **Step 6.3: Add fields to TradeEntryFormVM and resolve from candidate.**
 
@@ -1709,11 +1753,57 @@ def test_cli_trade_entry_resolves_sector_industry_from_candidate(tmp_path: Path)
     assert t.industry == "CLI-Industry-T7"
 
 
-def test_cli_trade_entry_no_candidate_persists_empty_sector_industry(tmp_path: Path):
-    """When no candidate row exists for the entered ticker, `swing trade entry`
-    persists sector='' + industry='' (graceful degradation per brief §5.8;
-    matches the hypothesis_label free-text behavior). Pipeline-bypass /
-    off-watchlist trade entries are explicitly supported."""
+def test_cli_trade_entry_evaluation_exists_but_ticker_absent_persists_empty(
+    tmp_path: Path,
+):
+    """Discriminating on the eval-present-but-ticker-absent branch (R2 Codex
+    Major 2 fix). Seed a completed evaluation_run + candidate row for a
+    DIFFERENT ticker so `latest_evaluation_run_id(conn)` returns non-None
+    and the candidate-by-ticker SELECT actually executes — but the lookup
+    misses because AAPL is absent from the seeded run. Persists empty
+    strings via graceful degradation per brief §5.8.
+
+    If the implementation skipped the candidate lookup entirely, this test
+    would still pass — but the previous positive-path test
+    (`test_cli_trade_entry_resolves_sector_industry_from_candidate`)
+    catches that bug. Together they discriminate both branches: "eval ID
+    is None" (no pipeline yet) and "eval ID resolves but ticker absent"."""
+    runner, cfg = _setup(tmp_path)
+    db_path = _db_path_for_cfg(cfg)
+    # Seed a completed eval + candidate for OTHER ticker (not AAPL).
+    _, eval_id = seed_pipeline_with_classification(
+        db_path, ticker="OTHER", pattern="flag", confidence=0.5,
+    )
+    _seed_candidate_row(
+        db_path, eval_id=eval_id, ticker="OTHER",
+        sector="OTHER-Sector", industry="OTHER-Industry",
+    )
+    result = runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "AAPL", "--entry-date", "2026-04-26",
+        "--entry-price", "10.0", "--shares", "1", "--initial-stop", "9.0",
+        "--rationale", "aplus-setup",
+    ])
+    assert result.exit_code == 0, result.output
+    from swing.data.db import connect
+    from swing.data.repos.trades import find_any_open_trade
+    conn = connect(db_path)
+    try:
+        t = find_any_open_trade(conn, ticker="AAPL")
+    finally:
+        conn.close()
+    assert t is not None
+    # Eval was found, but AAPL was absent from candidates → empty strings,
+    # NOT the "OTHER-Sector" / "OTHER-Industry" sentinels (would expose a
+    # bug binding by index/wrong-key).
+    assert t.sector == ""
+    assert t.industry == ""
+
+
+def test_cli_trade_entry_no_eval_at_all_persists_empty(tmp_path: Path):
+    """Trivial fallback: no completed pipeline OR standalone eval exists
+    yet. `latest_evaluation_run_id` returns None; the candidate SELECT
+    is skipped; sector/industry persist empty strings."""
     runner, cfg = _setup(tmp_path)
     result = runner.invoke(main, [
         "--config", str(cfg), "trade", "entry",
