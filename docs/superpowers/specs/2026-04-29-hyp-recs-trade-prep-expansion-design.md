@@ -33,12 +33,12 @@ The dispatch brief §3.D presupposes "the hyp-recs row already has an 'Enter' bu
 ### 1.3 What V1 ships
 
 1. **`Config.web.chase_factor`** — single new config field, default 0.01, no migration (pure Python).
-2. **One new VM dataclass** — `HypRecsExpandedVM` rendered by a new partial `partials/hypothesis_recommendations_expanded.html.j2`.
-3. **Two existing VMs extended** — `HypothesisRecommendation` gains four trailing-default fields used by the expansion contract (`current_balance`, `risk_equity`, sizing snapshots, sector/industry). `DashboardVM` gains no new fields beyond what's wired through `HypothesisRecommendation` (no new base-layout VM field — see §2.2 base-layout discipline).
-4. **One new route handler** — `GET /hyp-recs/{ticker}/expand` returning the expansion partial (HTMX swap target).
-5. **Modified template** — `partials/hypothesis_recommendations.html.j2` gains a chevron column triggering the expansion + the OOB-safe `{% include %}` of the new partial.
-6. **Bundled CC pivot bug fix** — separate task in the writing-plans output (see §3.9): `partials/watchlist_row.html.j2:16` switches from `w.entry_target` to a parent-supplied `current_pivot` lookup; lightning trigger at line 7 stays unchanged.
-7. **Tests across three layers** — unit (sizing-twin compute), VM (HypRecsExpandedVM build + cache anchor), route (HTMX expand + chart-scope fallback), template (regression on flat table, regression on watchlist Pivot column).
+2. **One new VM dataclass** — `HypRecsExpandedVM` (route-local, snapshot-on-click), rendered by the new partial `partials/hypothesis_recommendations_expanded.html.j2`. **Existing `HypothesisRecommendation` is unchanged** — sizing twins, sector, industry, current_balance live ONLY on `HypRecsExpandedVM` and are computed at click time, NOT precomputed on the collapsed-table render. (R1-Major-1 resolution: keeps the §2.2 snapshot-at-render invariant honest; §1.3 and §2.3 no longer contradict it.)
+3. **Two new route handlers** — `GET /hyp-recs/{ticker}/expand` returns the expansion partial; `GET /hyp-recs/refresh` returns the full hyp-recs section partial (used by the close button — see §3.5.4 / §4.6 for the rejected per-row reconstruction path).
+4. **Row-target prefix extension** — `_ROW_TARGET_PREFIXES` in `swing/web/app.py:31-37` extended to include `hyp-rec-row-` so HTMX 4xx/5xx error fragments swap as `<tr>` rather than `<div>` (R1-Major-2 resolution; the current tuple covers `open-position-`, `entry-form-`, `exit-form-`, `stop-form-`, `watchlist-row-` only).
+5. **Modified template** — `partials/hypothesis_recommendations.html.j2` gains a leading chevron column; the per-row markup is extracted into `hypothesis_recommendations_row.html.j2` (used only by the full-table render in V1 — see §4.6 rationale).
+6. **Bundled CC pivot bug fix** — separate task in the writing-plans output (see §3.9): `partials/watchlist_row.html.j2:16` switches from `w.entry_target` to a `current_pivot` lookup. The fix touches THREE render sites: the dashboard top-5 watchlist include, the standalone watchlist page include, AND `WatchlistRowVM` (`swing/web/view_models/watchlist.py:50-64`) so the watchlist's `/watchlist/{ticker}/row` close-path doesn't revert the column to `entry_target` after expand-close (R1-Major-3 resolution). Lightning trigger at line 7 stays unchanged.
+7. **Tests across four layers** — unit (sizing-twin compute), VM (HypRecsExpandedVM build + anchor), route (HTMX expand + refresh + chart-scope fallback + row-target-prefix coverage), template (regression on flat table, regression on watchlist Pivot column across all three render sites).
 
 ### 1.4 What V1 does NOT ship (deferred)
 
@@ -64,40 +64,52 @@ swing/
 ├── config.py                                        # MODIFY: cfg.web.chase_factor (1 new field)
 ├── web/
 │   ├── view_models/
-│   │   └── dashboard.py                             # MODIFY: extend HypothesisRecommendation;
-│   │                                                #         build_hyp_recs_expanded helper
+│   │   ├── dashboard.py                             # MODIFY: add build_hyp_recs_expanded + HypRecsExpandedVM
+│   │   └── watchlist.py                             # MODIFY: WatchlistRowVM gains current_pivot field (§3.9)
 │   ├── routes/
-│   │   └── recommendations.py                       # NEW: /hyp-recs/{ticker}/expand + /row
+│   │   ├── recommendations.py                       # NEW: /hyp-recs/{ticker}/expand + /hyp-recs/refresh
+│   │   └── watchlist.py                             # MODIFY: /watchlist/{ticker}/row populates WatchlistRowVM.current_pivot
 │   ├── chart_scope.py                               # READ-ONLY: existing helper consumed
-│   ├── app.py                                       # MODIFY: register recommendations router
-│   └── templates/partials/
-│       ├── hypothesis_recommendations.html.j2          # MODIFY: chevron col + table iterates row partial
-│       ├── hypothesis_recommendations_row.html.j2      # NEW: per-row partial (extracted; §4.6)
-│       ├── hypothesis_recommendations_expanded.html.j2 # NEW: expansion partial
-│       ├── hyp_recs_expand_unavailable.html.j2         # NEW: 404-state row partial (§3.5.4)
-│       └── watchlist_row.html.j2                       # MODIFY (CC pivot bug): line 16 + caller wiring
+│   ├── app.py                                       # MODIFY: register router + extend _ROW_TARGET_PREFIXES (§3.5.4)
+│   └── templates/
+│       ├── partials/
+│       │   ├── hypothesis_recommendations.html.j2          # MODIFY: chevron col + iterate row partial
+│       │   ├── hypothesis_recommendations_row.html.j2      # NEW: per-row partial (extracted; §4.6)
+│       │   ├── hypothesis_recommendations_expanded.html.j2 # NEW: expansion partial
+│       │   ├── hyp_recs_expand_unavailable.html.j2         # NEW: 404-state row partial (§3.5.4)
+│       │   └── watchlist_row.html.j2                       # MODIFY (CC pivot bug, §3.9)
+│       └── (parent templates that include watchlist_row.html.j2: dashboard.html.j2, standalone watchlist template)
+│                                                            # MODIFY: {% set current_pivot = ... %} before each include
 
 tests/
 ├── recommendations/
-│   └── test_hypothesis_sizing_twins.py              # NEW (§4.1): risk-based + cash-feasible parity
+│   └── test_hypothesis_sizing_twins.py              # NEW (§4.1)
 └── web/
     ├── view_models/
-    │   ├── test_hyp_recs_expansion_vm.py            # NEW (§4.2): HypRecsExpandedVM build
-    │   └── test_hyp_recs_sort_neutrality.py         # NEW (§4.4): prioritized_recommendations unchanged
+    │   ├── test_hyp_recs_expansion_vm.py            # NEW (§4.2)
+    │   └── test_hyp_recs_sort_neutrality.py         # NEW (§4.4)
     ├── routes/
-    │   └── test_hyp_recs_expand_route.py            # NEW (§4.3): HTMX route + chart-scope fallback
+    │   └── test_hyp_recs_expand_route.py            # NEW (§4.3): expand + refresh + row-target-prefix coverage
     └── templates/
-        ├── test_hyp_recs_table_regression.py        # NEW (§4.4): flat-table preserved when collapsed
-        └── test_watchlist_pivot_column.py           # NEW (§4.5): CC pivot bug fix discriminating
+        ├── test_hyp_recs_table_regression.py        # NEW (§4.4)
+        └── test_watchlist_pivot_column.py           # NEW (§4.5): three-render-site coverage
 ```
 
 Files touched (full list):
 
 - **Production NEW (4):** `swing/web/routes/recommendations.py`, `swing/web/templates/partials/hypothesis_recommendations_row.html.j2`, `swing/web/templates/partials/hypothesis_recommendations_expanded.html.j2`, `swing/web/templates/partials/hyp_recs_expand_unavailable.html.j2`.
-- **Production MODIFY (5):** `swing/config.py` (one new `Web` field), `swing/web/view_models/dashboard.py` (extend `HypothesisRecommendation`, add `build_hyp_recs_expanded`), `swing/web/templates/partials/hypothesis_recommendations.html.j2` (chevron column + iterate row partial), `swing/web/templates/partials/watchlist_row.html.j2` (CC pivot bug; caller wiring lands in the parent template that includes it — `dashboard.html.j2` and the standalone watchlist template), `swing/web/app.py` (router registration).
+- **Production MODIFY (8):**
+  1. `swing/config.py` — one new `Web` field (`chase_factor`).
+  2. `swing/web/view_models/dashboard.py` — add `HypRecsExpandedVM` + `build_hyp_recs_expanded`. `HypothesisRecommendation` UNCHANGED (per R1-Major-1).
+  3. `swing/web/view_models/watchlist.py` — `WatchlistRowVM` gains `current_pivot: float | None = None` (R1-Major-3).
+  4. `swing/web/routes/watchlist.py` — `/watchlist/{ticker}/row` populates `WatchlistRowVM.current_pivot` from `candidates_by_ticker`.
+  5. `swing/web/app.py` — register the recommendations router AND extend `_ROW_TARGET_PREFIXES` to include `hyp-rec-row-` (R1-Major-2).
+  6. `swing/web/templates/partials/hypothesis_recommendations.html.j2` — chevron leading column + iterate per-row partial.
+  7. `swing/web/templates/partials/watchlist_row.html.j2` — CC pivot bug fix at line 16 (R1-Minor-3 dash sentinel for missing both).
+  8. Parent templates that include `watchlist_row.html.j2` (`dashboard.html.j2` and the standalone watchlist template) — `{% set current_pivot = ... %}` before each include.
 - **Test NEW (6):** the six files listed in the `tests/` block.
 
-Total: **15 files** (4 production NEW + 5 production MODIFY + 6 test NEW). No migrations. No Phase 2 carve-outs (see §5).
+Total: **18 files** (4 production NEW + 8 production MODIFY + 6 test NEW). No migrations. No Phase 2 carve-outs (see §5).
 
 ### 2.2 Design invariants
 
@@ -113,60 +125,62 @@ Total: **15 files** (4 production NEW + 5 production MODIFY + 6 test NEW). No mi
 
 ```
 [web request: GET /]
-    build_dashboard ↓
+    build_dashboard ↓                        # UNCHANGED at HypothesisRecommendation level
         candidates_by_ticker = {c.ticker: c for c in candidates}
-        # existing path
         active_recommendations: tuple[HypothesisRecommendation, ...] = (
-            HypothesisRecommendation(
-                ticker=...,
-                current_price=..., pivot_price=...,
-                # NEW trailing-default fields (§3.4):
-                current_balance=...,
-                risk_equity=sizing_equity(real_equity=..., floor=cfg.account.risk_equity_floor),
-                sizing_risk=compute_shares(entry=pivot, stop=initial_stop,
-                                           equity=risk_equity,
-                                           max_risk_pct=cfg.risk.max_risk_pct,
-                                           position_pct_cap=cfg.sizing.position_pct_cap),
-                sizing_cash=compute_shares(entry=pivot, stop=initial_stop,
-                                           equity=current_balance,
-                                           max_risk_pct=cfg.risk.max_risk_pct,
-                                           position_pct_cap=cfg.sizing.position_pct_cap),
-                sector=..., industry=...,
-                initial_stop=..., chase_factor=cfg.web.chase_factor,
-                # ... existing fields
-            )
+            HypothesisRecommendation(...)    # existing fields only — no extension
             for r in top_recommendations
         )
-    DashboardVM(...)   # no new top-level field
+    DashboardVM(...)                          # no new top-level field
     ↓
-    template renders hyp-recs FLAT TABLE (initially collapsed; chevron column added)
+    template renders hyp-recs FLAT TABLE — only the existing 7 fields plus a leading
+    chevron BUTTON (no collapsed-row data plumbing changes)
 
 [web request: GET /hyp-recs/{ticker}/expand  (HTMX)]
-    build_hyp_recs_expanded(conn, cfg, ticker) ↓
-        binding = latest_completed_pipeline_run(conn)         # same anchor
-        candidate = get_candidate_by_ticker(binding.eval_id, ticker)  # via repo
-        recs_by_ticker = {r.ticker: r for r in active_recommendations}
-        rec = recs_by_ticker.get(ticker)                       # may be None if changed
-        chart_reason, chart_message = resolve_chart_scope(...) # in/out of scope
+    handler:
+        current_balance = current_equity(starting_equity=cfg.account.starting_equity,
+                                         exits=list_exits(conn),
+                                         cash_movements=list_cash_movements(conn))
+        vm = build_hyp_recs_expanded(conn, cfg, ticker=ticker, current_balance=current_balance)
+        if vm is None: return 404 partial (hyp_recs_expand_unavailable.html.j2)
+        return 200 partial (hypothesis_recommendations_expanded.html.j2)
+
+    build_hyp_recs_expanded(conn, cfg, *, ticker, current_balance):
+        binding = latest_completed_pipeline_run(conn)              # SHARED anchor
+        candidate = candidates_repo.get_for_evaluation(conn,
+                        evaluation_run_id=binding.eval_id, ticker=ticker)
+        chart_reason, chart_message = resolve_chart_scope(conn, binding=binding, ...)
+        risk_equity = sizing_equity(real_equity=current_balance,
+                                    floor=cfg.account.risk_equity_floor)
+        sizing_risk = compute_shares(entry=candidate.pivot, stop=candidate.initial_stop,
+                                     equity=risk_equity, ...)
+        sizing_cash = compute_shares(entry=candidate.pivot, stop=candidate.initial_stop,
+                                     equity=current_balance, ...)
         return HypRecsExpandedVM(
-            ticker=ticker,
             buy_stop=candidate.pivot,
             buy_limit=candidate.pivot * (1 + cfg.web.chase_factor),
             sell_stop=candidate.initial_stop,
-            sizing_risk=rec.sizing_risk,
-            sizing_cash=rec.sizing_cash,
-            sector=candidate.sector,
-            industry=candidate.industry,
+            chase_factor=cfg.web.chase_factor,
+            current_balance=current_balance,
+            risk_equity=risk_equity,
+            sizing_risk=sizing_risk, sizing_cash=sizing_cash,
+            sector=candidate.sector, industry=candidate.industry,
             data_asof_date=binding.data_asof_date,
-            chart_reason=chart_reason,
-            chart_reason_message=chart_message,
+            chart_reason=chart_reason, chart_reason_message=chart_message,
             pipeline_finished_at=binding.finished_ts,
         )
-    ↓
-    render hypothesis_recommendations_expanded.html.j2
+
+[web request: GET /hyp-recs/refresh  (HTMX, fired by close button)]
+    handler:
+        # Equivalent to the hyp-recs slice of build_dashboard. Returns the
+        # rendered hypothesis_recommendations.html.j2 section.
+        # Acceptable simplification per R1-Major-4 — see §4.6 for the
+        # rejected per-row reconstruction path.
+        return render hypothesis_recommendations.html.j2 with the same
+            active_recommendations build_dashboard would compute right now
 ```
 
-The route handler is the only place a hyp-rec snapshot is built ad-hoc. The full-page `build_dashboard` plumbs `chase_factor` and the sizing twins onto `HypothesisRecommendation` so the row-level template (the chevron + collapsed cells) doesn't need a per-row repo lookup.
+The expansion VM is **route-local snapshot-at-click**. The collapsed table renders only the existing seven fields (no precomputed sizing or sector data on `HypothesisRecommendation`). The close button issues a full-section refresh rather than a per-row reconstruction (R1-Major-4 resolution; §4.6 rationale).
 
 ---
 
@@ -198,7 +212,7 @@ class Web:
 
 **Rejected alternative:** computing fresh via `compute_shares` at render time. The framework's initial stop is set by the evaluator at pipeline time and is the same value the entry form would propose if the operator hit Enter; a fresh computation would either return the same value (no benefit) or risk drifting from the entry-form's auto-fill (creating a confusing "sell stop here, different sell stop on entry form" experience). Spec choice keeps the expansion's "Sell stop" identical to what the operator sees on the entry form for the same ticker.
 
-**Plumbing:** `HypothesisRecommendation` gains a `initial_stop: float | None = None` trailing-default field, populated from `candidates_by_ticker[r.candidate_ticker].initial_stop` in `build_dashboard`'s recommendation-construction loop. The expansion partial reads it directly. The route handler also re-fetches via the candidate lookup so the expansion can be requested for a ticker whose recommendation rotated out of `active_recommendations` between full-page render and click — see §3.5.4 freshness handling.
+**Plumbing:** Read directly from `Candidate.initial_stop` inside `build_hyp_recs_expanded` — no `HypothesisRecommendation` extension. The route handler fetches the candidate via `candidates_repo.get_for_evaluation(conn, evaluation_run_id, ticker)` against the SAME `pipeline_runs.evaluation_run_id` binding `latest_completed_pipeline_run` returned. The route's per-click resolver is the only producer of expansion data; the collapsed table never needs `initial_stop`.
 
 ### 3.3 Sizing twins (Q-I cost display)
 
@@ -258,25 +272,9 @@ Empty-string values (unknown/missing from Finviz) render as `"—"` to mirror th
 
 ### 3.5 VM and route
 
-#### 3.5.1 `HypothesisRecommendation` extension
+#### 3.5.1 `HypothesisRecommendation` — UNCHANGED
 
-Located at `swing/web/view_models/dashboard.py` (current dataclass spans approximately lines 60–100; precise lines pinned at writing-plans). Add **eight** trailing-default fields:
-
-```python
-@dataclass(frozen=True)
-class HypothesisRecommendation:
-    # ... existing fields (ticker, current_price, pivot_price, ...) ...
-    initial_stop: float | None = None
-    chase_factor: float = 0.01           # cfg.web.chase_factor at build time
-    current_balance: float | None = None
-    risk_equity: float | None = None      # = sizing_equity(...)
-    sizing_risk: SizingResult | None = None
-    sizing_cash: SizingResult | None = None
-    sector: str = ""
-    industry: str = ""
-```
-
-All trailing-default — every existing call site preserves backward compatibility (mirrors the `hypothesis_label` precedent at `swing/data/models.py:69`). The flat hyp-recs table (collapsed) renders only the existing seven fields plus the new chevron control; the expansion partial reads the new fields.
+(R1-Major-1 resolution.) `HypothesisRecommendation` at `swing/web/view_models/dashboard.py` is NOT extended. The collapsed hyp-recs table renders only the existing seven fields plus a leading chevron BUTTON column (button is template-only — no VM data needed). All expansion-only data lives on `HypRecsExpandedVM` (§3.5.2) and is computed at click time inside `build_hyp_recs_expanded` (§3.5.3). This eliminates the §1.3-vs-§2.2 contradiction R1 caught and removes a class of "stale precomputed value rendered into the freshly-clicked expansion" bugs.
 
 #### 3.5.2 New `HypRecsExpandedVM`
 
@@ -365,7 +363,7 @@ Failure modes (returning `None`) are handled by the route as 404 with an operato
 
 **`compute_shares` precondition (`stop < entry`):** the sizing call raises `ValueError` when `candidate.initial_stop >= candidate.pivot`. In normal pipeline state this never holds (the evaluator's stop is below pivot by construction), but a degenerate pipeline run could in principle produce one. The helper wraps the two `compute_shares` calls in `try`/`except ValueError` and returns `None` on either failure (route returns 404 with the `"degenerate sizing parameters"` message). This is a defensive-at-boundary acceptance — the spec does NOT add a stronger-typed constraint at the `Candidate` layer because that would expand scope into evaluator validation.
 
-#### 3.5.4 Route: `GET /hyp-recs/{ticker}/expand`
+#### 3.5.4 Routes: `GET /hyp-recs/{ticker}/expand` and `GET /hyp-recs/refresh`
 
 ```python
 # swing/web/routes/recommendations.py
@@ -388,10 +386,6 @@ def hyp_recs_expand(request: Request, ticker: str):
                 conn, cfg, ticker=ticker_upper, current_balance=current_balance,
             )
             if vm is None:
-                # Operator clicked expand on a ticker whose candidate row no
-                # longer exists in the latest run, OR the evaluator emitted a
-                # degenerate (stop >= pivot) candidate. Render an inline error
-                # row consistent with the chart-unavailable message style.
                 return templates.TemplateResponse(
                     request,
                     "partials/hyp_recs_expand_unavailable.html.j2",
@@ -404,11 +398,43 @@ def hyp_recs_expand(request: Request, ticker: str):
             )
     finally:
         conn.close()
+
+
+@router.get("/hyp-recs/refresh")
+def hyp_recs_refresh(request: Request):
+    """Close-button target. Returns the freshly-rendered hyp-recs section so
+    the closing operator sees the same values the page would render right
+    now. Per §4.6, the alternative — per-row reconstruction — is rejected
+    because hyp-recs rows are prioritizer + top-N output, not stable
+    projections of one persisted record."""
+    cfg = request.app.state.cfg
+    cache = request.app.state.price_cache
+    executor = request.app.state.price_fetch_executor
+    ohlcv_cache = getattr(request.app.state, "ohlcv_cache", None)
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=executor, ohlcv_cache=ohlcv_cache)
+    return templates.TemplateResponse(
+        request, "partials/hypothesis_recommendations.html.j2",
+        {"vm": vm}, status_code=200,
+    )
 ```
 
-**HTMX 4xx semantics.** Per the CLAUDE.md gotcha, `base.html.j2` already overrides HTMX 2.x default to swap on 4xx. The 404 path renders an `<tr>` fragment that swaps in place of the row, displaying the unavailable message. The unavailable partial is a small additional NEW file: `partials/hyp_recs_expand_unavailable.html.j2` (one `<tr><td colspan="...">` with the message + close button).
+**Row-target prefix extension (R1-Major-2).** `swing/web/app.py:31-37` `_ROW_TARGET_PREFIXES` MUST gain `hyp-rec-row-`:
+
+```python
+_ROW_TARGET_PREFIXES = (
+    "open-position-", "entry-form-", "exit-form-", "stop-form-",
+    "watchlist-row-",
+    "hyp-rec-row-",      # NEW — see swing/web/routes/recommendations.py
+)
+```
+
+Without this addition, an HTMX request whose `HX-Target` is `hyp-rec-row-XYZ` would NOT be detected by `_is_row_swap_target`, and the global exception handler at `swing/web/app.py` would render the generic `<div>` error fragment into a `<tbody>`, breaking the table DOM. The 404 partial (`hyp_recs_expand_unavailable.html.j2`) and any 500 from the route MUST swap as a `<tr>`. Tested in §4.3 with both a 404 path and a forced-500 path.
+
+**HTMX 4xx semantics.** Per the CLAUDE.md gotcha, `base.html.j2` already overrides HTMX 2.x default to swap on 4xx. The 404 path renders an `<tr>` fragment that swaps in place of the row, displaying the unavailable message. The unavailable partial is `partials/hyp_recs_expand_unavailable.html.j2` (one `<tr><td colspan="8">` with the message + close button).
 
 **Anchor consistency.** All reads (`latest_completed_pipeline_run`, `candidates_repo.get_for_evaluation`, `resolve_chart_scope`) bind to the SAME `pipeline_runs.id` resolved at the start of the handler — no "latest" by `started_ts` race. Mirrors the established pattern in `swing/web/routes/charts.py:43-89`.
+
+**Refresh-route shared-state caveat.** `GET /hyp-recs/refresh` calls `build_dashboard` to re-resolve `active_recommendations` consistent with what the page would render right now. This means the close button sees an up-to-date snapshot, NOT a frozen reconstruction of the expand-time row set. If a pipeline run completed between expand and close, the close render reflects the new state — operator sees the latest data on dismiss, which is the safer default (R1-Major-4 disposition).
 
 #### 3.5.5 Template: `hypothesis_recommendations.html.j2` modification
 
@@ -463,8 +489,8 @@ Cost accepted: an additional 8th column. Hyp-recs is a narrow table (7 cells of 
 <tr id="hyp-rec-row-{{ expanded.ticker }}" class="expanded">
   <td colspan="8">
     <button class="close-expanded" type="button"
-            hx-get="/hyp-recs/{{ expanded.ticker }}/row"
-            hx-target="closest tr" hx-swap="outerHTML"
+            hx-get="/hyp-recs/refresh"
+            hx-target="#hypothesis-recommendations" hx-swap="outerHTML"
             hx-headers='{"HX-Request": "true"}'
             aria-label="Close expanded row for {{ expanded.ticker }}"
             title="Close">✕</button>
@@ -573,14 +599,15 @@ V2 candidates if confusion proves operationally costly:
 
 **Bug:** `partials/watchlist_row.html.j2:16` renders `{{ '%.2f' | format(w.entry_target or 0) }}` under a header that says "Pivot." `WatchlistEntry.entry_target` is the value frozen when the operator added the ticker to the watchlist; `candidates.pivot` is the current pipeline-eval pivot. A ticker whose pivot has shifted (rebase / VCP re-evaluation) shows a stale value under "Pivot" — operator decoding "Pivot" reads stale, while hyp-recs and trade-entry already render the current value (cross-surface inconsistency).
 
-**Fix scope:**
-- File: `swing/web/templates/partials/watchlist_row.html.j2` line 16.
-- Change: `{{ '%.2f' | format(w.entry_target or 0) }}` → `{{ '%.2f' | format(current_pivot if current_pivot is not none else (w.entry_target or 0)) }}`.
-- New required parameter to the partial: `current_pivot: float | None`. Passed via `{% include "partials/watchlist_row.html.j2" with context %}` ... actually Jinja `include with context` propagates the parent scope; the parent must define `current_pivot` before the `{% include %}`.
-- Caller side: in `dashboard.html.j2` and the standalone `watchlist.html.j2` (wherever `watchlist_row.html.j2` is included), set `{% set current_pivot = vm.candidates_by_ticker[w.ticker].pivot if w.ticker in vm.candidates_by_ticker else None %}` immediately before each include (or via a Jinja macro that does the same).
-- Lightning trigger at line 7 stays unchanged: `{% if price and w.entry_target and price.price >= w.entry_target * 0.99 %}⚡{% endif %}` — `entry_target` binding preserved per Q4.
+**Fix scope** — the partial is rendered from THREE distinct call sites; the fix touches all three (R1-Major-3 resolution).
 
-**Fallback semantics.** When `candidates_by_ticker` does NOT contain the watchlist ticker (the ticker rotated out of finviz this run, so no `candidates` row exists for the latest evaluation), the column falls back to `entry_target` so the cell is never blank. This is rare but real (`_step_evaluate` writes open-trade tickers as `bucket='excluded'` to keep `PriceCache._last_close` fresh — the ticker would still appear in `candidates`; but a watchlist-only ticker that's not an open trade and not in the latest finviz CSV WOULD be missing). The fallback's UX impact: the operator sees the same "Pivot" they've always seen for that row when no current pivot exists — strictly an improvement on the status quo (current pivot when available; stale `entry_target` when not, same as today).
+- **File 1: `swing/web/templates/partials/watchlist_row.html.j2:16`.** Change `{{ '%.2f' | format(w.entry_target or 0) }}` → `{% if current_pivot is not none %}${{ '%.2f' | format(current_pivot) }}{% elif w.entry_target %}${{ '%.2f' | format(w.entry_target) }}{% else %}—{% endif %}`. (R1-Minor-3 sentinel: render `—` rather than `$0.00` when both `current_pivot` and `entry_target` are absent.) New required template-context variable: `current_pivot: float | None`.
+- **File 2: parent template wiring for full-page dashboard + standalone watchlist page** (`dashboard.html.j2` and the standalone watchlist template, wherever `watchlist_row.html.j2` is included via `{% include %}` from a `<tbody>` iteration). Insert `{% set current_pivot = vm.candidates_by_ticker[w.ticker].pivot if w.ticker in vm.candidates_by_ticker else None %}` immediately before each include. Jinja's `include with context` (default behavior) propagates `current_pivot` into the partial scope.
+- **File 3: `WatchlistRowVM` at `swing/web/view_models/watchlist.py:50-64`.** Add `current_pivot: float | None = None` trailing-default field. The `/watchlist/{ticker}/row` close-path route handler in `swing/web/routes/watchlist.py` must populate it via `candidates_by_ticker[ticker].pivot if ticker in candidates_by_ticker else None`. Without this, the watchlist's expand-then-close cycle would revert the Pivot column to `entry_target` exactly when the operator most needs the current value, recreating the bug post-close. The route handler renders `partials/watchlist_row.html.j2` with `current_pivot=row_vm.current_pivot` in the template context (or, if the route already passes the row VM directly, the partial reads it from `row_vm.current_pivot` via the existing template parameter).
+
+Lightning trigger at line 7 stays unchanged: `{% if price and w.entry_target and price.price >= w.entry_target * 0.99 %}⚡{% endif %}` — `entry_target` binding preserved per Q4. Tests verify the unchanged trigger after the column-display change (§4.5 includes the discriminating fixture for this).
+
+**Fallback semantics.** When `candidates_by_ticker` does NOT contain the watchlist ticker (rare: rotated out of finviz this run; not an open trade so `_step_evaluate`'s `bucket='excluded'` carve-out doesn't fire), the column falls back to `entry_target` if available, else "—". UX impact: when a current pivot exists, operator sees it (the new behavior); when not, falls back to the prior behavior (`entry_target`); when even that's missing, "—" instead of `$0.00` (clearer signal of missing data).
 
 **Why a separate task and not bundled into expansion task:**
 1. **Clean revert path.** If the fix turns out to break a test surface or expose a regression in the standalone watchlist view, a single-task revert touches one file and one test. Bundled with the expansion, a revert pulls in all the expansion machinery.
@@ -622,11 +649,15 @@ Discriminating-test discipline (per the `feedback_regression_test_arithmetic` me
 
 Use `TestClient(app)` with lifespan context per CLAUDE.md TestClient convention.
 
-- `test_expand_route_returns_partial_html_for_in_scope_ticker`: GET `/hyp-recs/AAPL/expand` with HX-Request header → 200, body contains `<tr id="hyp-rec-row-AAPL" class="expanded">` and the order-params + sizing markup.
-- `test_expand_route_returns_404_partial_for_unknown_ticker`: GET `/hyp-recs/ZZZZ/expand` → 404 with `partials/hyp_recs_expand_unavailable.html.j2` body containing the operator-facing message (HTMX 4xx swap allows the row replacement).
+- `test_expand_route_returns_partial_html_for_in_scope_ticker`: GET `/hyp-recs/AAPL/expand` with HX-Request header + `HX-Target: hyp-rec-row-AAPL` → 200, body contains `<tr id="hyp-rec-row-AAPL" class="expanded">` and the order-params + sizing markup.
+- `test_expand_route_returns_404_partial_for_unknown_ticker`: GET `/hyp-recs/ZZZZ/expand` with `HX-Target: hyp-rec-row-ZZZZ` → 404 with `partials/hyp_recs_expand_unavailable.html.j2` body containing the operator-facing message.
+- `test_expand_route_404_swaps_as_tr_via_row_target_prefix` (R1-Major-2 regression): GET `/hyp-recs/ZZZZ/expand` with `HX-Target: hyp-rec-row-ZZZZ` → response body opens with `<tr` (NOT `<div`); confirms `_ROW_TARGET_PREFIXES` covers the new prefix. Discriminating: a parallel test omits the `hyp-rec-row-` prefix from `_ROW_TARGET_PREFIXES` (via patched tuple) and asserts the response body opens with `<div`, proving the prefix entry is load-bearing.
+- `test_expand_route_500_swaps_as_tr_via_row_target_prefix`: a forced 500 (e.g., `monkeypatch.setattr` on `build_hyp_recs_expanded` to raise) with `HX-Target: hyp-rec-row-AAPL` returns a body opening with `<tr`. Closes the gap that caused the watchlist drift family.
 - `test_expand_route_chart_unavailable_renders_message`: ticker out of chart-scope → 200 with `chart-unavailable` div, NOT the chart `<img>`.
 - `test_expand_route_uses_latest_completed_pipeline_run_anchor`: insert a NEW `pipeline_runs` row with `finished_ts=NULL` after a completed run. Route MUST resolve against the completed run's binding (no race on `started_ts DESC`).
-- `test_close_button_emits_row_replace_request`: rendered HTML contains `hx-get="/hyp-recs/AAPL/row"` on the close button. (The `/hyp-recs/{ticker}/row` route is NOT new in this dispatch — it MUST be added as a sibling of `/expand` since the close button needs to swap back to the row state. See §4.5 sibling route requirement.)
+- `test_close_button_emits_full_section_refresh`: rendered expansion HTML contains `hx-get="/hyp-recs/refresh"` and `hx-target="#hypothesis-recommendations"` on the close button (NOT `/hyp-recs/{ticker}/row`). Confirms the R1-Major-4 mechanism shipped.
+- `test_refresh_route_returns_section_partial`: GET `/hyp-recs/refresh` returns 200 with the rendered `hypothesis_recommendations.html.j2` section (root element `<section id="hypothesis-recommendations">`). Renders with the same flat-table chevron column.
+- `test_refresh_route_reflects_current_state_not_expand_time_state`: capture `active_recommendations` snapshot A; insert a new pipeline run completing with a different snapshot B; GET `/hyp-recs/refresh` returns the section reflecting B. Documents the R1-Major-4 disposition (close shows current state, not expand-time state).
 
 ### 4.4 Layer 4 — Template + sort-neutrality regression
 
@@ -636,16 +667,34 @@ Use `TestClient(app)` with lifespan context per CLAUDE.md TestClient convention.
 
 ### 4.5 CC pivot bug discriminating regression (`tests/web/templates/test_watchlist_pivot_column.py`)
 
-- `test_pivot_column_renders_current_pivot_when_candidate_exists`: `WatchlistEntry(entry_target=42.00)` + `candidates_by_ticker={ticker: Candidate(pivot=44.50)}`. Rendered cell at column index 3 = `$44.50`. Discriminating against pre-fix: pre-fix path renders `$42.00`.
-- `test_pivot_column_falls_back_to_entry_target_when_no_candidate`: `WatchlistEntry(entry_target=42.00)` + `candidates_by_ticker={}`. Rendered cell = `$42.00` (fallback semantic).
-- `test_lightning_trigger_unchanged_uses_entry_target`: price = $41.60 (≥ 0.99 × $42.00), entry_target = $42.00, current_pivot = $44.50. Lightning ⚡ rendered (test confirms lightning still fires off `entry_target`, not `current_pivot`).
-- `test_lightning_does_not_fire_at_current_pivot_threshold`: price = $44.10 (≥ 0.99 × $44.50 BUT < 0.99 × $42.00 is FALSE — price > entry_target so lightning would fire under entry_target binding too). Construct two test cases that DISCRIMINATE: (a) price = $41.60, entry_target = $42.00, current_pivot = $50.00 — lightning fires (entry_target threshold met). (b) price = $49.50, entry_target = $42.00, current_pivot = $50.00 — lightning fires (entry_target threshold MORE than met). To genuinely discriminate the binding, the test fixture needs price between 0.99×entry_target and 0.99×current_pivot; the simplest construction is `entry_target=42, current_pivot=100, price=41.60` — under entry_target binding, 41.60 ≥ 0.99 × 42 = 41.58, lightning fires; under current_pivot binding, 41.60 ≥ 0.99 × 100 = 99 is FALSE, lightning would NOT fire. The test asserts lightning DOES fire, confirming the entry_target binding survives the fix.
+The fix touches THREE render sites (per §3.9 R1-Major-3 resolution); each gets its own discriminating test.
 
-### 4.6 Sibling route requirement: `GET /hyp-recs/{ticker}/row`
+- `test_dashboard_top5_pivot_column_renders_current_pivot`: full-page dashboard render with `WatchlistEntry(entry_target=42.00)` + `candidates_by_ticker={ticker: Candidate(pivot=44.50)}`. Rendered cell = `$44.50`. Discriminating against pre-fix: pre-fix path renders `$42.00`.
+- `test_standalone_watchlist_pivot_column_renders_current_pivot`: standalone `/watchlist` page render — same fixture and assertion. (Standalone watchlist uses a different template wiring, so independent verification.)
+- `test_watchlist_row_close_path_pivot_column_renders_current_pivot` (R1-Major-3 regression): GET `/watchlist/AAPL/row` (the close-button target) with `WatchlistEntry(entry_target=42.00)` + the candidate row present. Rendered cell = `$44.50`. Without the `WatchlistRowVM.current_pivot` extension, this would revert to `$42.00`, recreating the bug post-close.
+- `test_pivot_column_falls_back_to_entry_target_when_no_candidate`: candidates_by_ticker = {}, entry_target = $42.00. Cell = `$42.00`.
+- `test_pivot_column_dash_when_both_absent` (R1-Minor-3 regression): candidates_by_ticker = {}, entry_target = None. Cell = `—` (NOT `$0.00`).
+- `test_lightning_trigger_unchanged_uses_entry_target`: discriminating fixture chosen so the trigger fires under `entry_target` binding but would NOT fire under `current_pivot` binding — `entry_target=$42.00`, `current_pivot=$100.00`, `price=$41.60`. Under entry_target binding: `41.60 ≥ 0.99 × 42 = 41.58` → lightning fires. Under current_pivot binding: `41.60 ≥ 0.99 × 100 = 99` → would NOT fire. Test asserts lightning DOES fire, proving the trigger binding survives the column-display change.
 
-Symmetric to `/watchlist/{ticker}/row` (mounted in `swing/web/routes/watchlist.py`) and `/trades/open/{trade_id}/row` (mounted in `swing/web/routes/trades.py`). The close button on the expansion swaps the expanded `<tr>` back to a collapsed `<tr>` rendered from the SAME flat-table-row Jinja block. To avoid hand-duplicating markup (HTMX OOB-swap drift gotcha), the flat-table row is extracted into the dedicated partial `swing/web/templates/partials/hypothesis_recommendations_row.html.j2` (listed in §2.1). Both `hypothesis_recommendations.html.j2` (full table; iterates rows via `{% include %}`) and the close-button's `/hyp-recs/{ticker}/row` endpoint render that same partial.
+### 4.6 Close-button mechanism: full-section refresh (R1-Major-4 resolution)
 
-Implementation note for writing-plans: the route handler for `/row` resolves the same `HypothesisRecommendation` the full-page render would produce for the same ticker — i.e., re-builds the per-ticker recommendation by re-running the prioritizer query for that ticker (or, simpler, re-runs `build_dashboard`-equivalent dependency loading scoped to the single ticker and looks the row up). Closing an expansion mid-way through pipeline run completion thus shows the operator the latest values consistently with the rest of the page rather than reverting to a stale snapshot. If this turns out to be more complex than expected at writing-plans time, an acceptable simplification is for the close button to issue a full-table refresh (`hx-get="/" hx-target="#hypothesis-recommendations" hx-swap="outerHTML"`) — that's a small UX cost (full table re-render on every close) but avoids the per-row resolver. Spec leaves the choice to writing-plans dispatch with the simpler refresh as the safe fallback.
+**Decision: full-section refresh on close. NO per-row reconstruction route.**
+
+Rejected alternative — symmetric `/hyp-recs/{ticker}/row` route mirroring `/watchlist/{ticker}/row` and `/trades/open/{trade_id}/row`. R1 review caught the asymmetry: a watchlist row is a stable projection of one persisted `WatchlistEntry`; a hyp-rec row is the output of matcher + prioritizer + top-N truncation + live-price fetch during `build_dashboard`. The set of recommendations and their ordering can change between expand and close (price tick crosses a tripwire threshold; pipeline completes; candidate rotates). A per-row reconstruction route would either:
+1. **Re-run the prioritizer** (correct but expensive; close-button UX feels heavy on a long-running operation), OR
+2. **Reconstruct from a frozen-at-expand snapshot** (cheap but stale; operator sees a value the rest of the page no longer agrees with).
+
+Both fail the operator-clarity bar. Full-section refresh is the third option and the V1 choice:
+
+- Close button on the expansion fires `hx-get="/hyp-recs/refresh"` with `hx-target="#hypothesis-recommendations"` and `hx-swap="outerHTML"`.
+- The route handler (§3.5.4) calls `build_dashboard(...)` and renders `hypothesis_recommendations.html.j2` against the fresh result.
+- The closing operator sees the page's current truth — same data the full-page reload would produce.
+
+**Cost accepted:** one extra HTTP round-trip per close, and a re-render of the entire hyp-recs section (typically ≤ top-N rows, where N is small). On a small table this is imperceptible.
+
+**Row-partial extraction.** The per-row markup is still extracted into `partials/hypothesis_recommendations_row.html.j2` so `hypothesis_recommendations.html.j2`'s `<tbody>` iterates via `{% include %}` instead of hand-duplicating row markup inline. This anticipates a V2 per-row close path (if the operator decides the full-section refresh's UX cost is too high after operational use) without requiring a template re-shape at that time.
+
+**Implementation note.** `build_dashboard` requires `cache`, `executor`, and optional `ohlcv_cache` from `request.app.state` — the refresh route handler reuses the same accessors the full-page render path uses. No new caching layer; no new lifespan-scoped resource.
 
 ---
 
@@ -672,7 +721,10 @@ Per the brief and the established chart-pattern flag-v1 §6 pattern. Surface the
 - **Base-layout shared VM gotcha.** No new `vm.foo` field on `DashboardVM`. The new `HypRecsExpandedVM` is route-scoped, not part of `base.html.j2` references.
 - **HTMX OOB-swap partial drift.** Flat-table row extracted to a shared partial (`hypothesis_recommendations_row.html.j2`); close-button `/row` endpoint and full-page `<tbody>` iteration both `{% include %}` the same target. No hand-duplicated row markup anywhere.
 - **CLAUDE.md `os.replace` / yfinance gotchas.** Not applicable — this dispatch adds no filesystem-replace flows and no yfinance call sites.
-- **Cross-surface pivot consistency.** After the CC bug fix, `candidates.pivot` is the value rendered on (a) hyp-recs flat table "Pivot" column, (b) hyp-recs expansion "Buy stop", (c) watchlist row "Pivot" column. Lightning trigger on watchlist row stays bound to `entry_target` (deliberate inconsistency per Q4).
+- **Cross-surface pivot consistency.** After the CC bug fix, `candidates.pivot` is the value rendered on (a) hyp-recs flat table "Pivot" column, (b) hyp-recs expansion "Buy stop", (c) watchlist row "Pivot" column rendered from the dashboard top-5, (d) watchlist row "Pivot" column rendered from the standalone watchlist page, AND (e) watchlist row "Pivot" column rendered via the `/watchlist/{ticker}/row` close-path (R1-Major-3 — the close-path was missing in R0 and would have reverted to `entry_target` after every expand-close cycle). Lightning trigger stays bound to `entry_target` per Q4.
+- **HTMX row-target prefix coverage.** `_ROW_TARGET_PREFIXES` includes `hyp-rec-row-` so that 4xx/5xx error fragments from the new route swap as `<tr>` rather than the generic `<div>` (R1-Major-2). Tested with both the 404 and forced-500 paths.
+- **Snapshot-vs-precompute consistency.** No precomputation of expansion-only data on `HypothesisRecommendation` (R1-Major-1). All sizing, sector, industry, current_balance flow through the route-local `build_hyp_recs_expanded` helper. The "snapshot-at-render" invariant in §2.2 has no carve-outs.
+- **Close-button mechanism.** Full-section refresh via `/hyp-recs/refresh` (R1-Major-4). The route returns the page's CURRENT hyp-recs section, not a frozen-at-expand reconstruction. Operator who closes after a pipeline run completes sees the new state.
 - **Sizing same-source check.** `current_balance` value used by the expansion is computed from the SAME `current_equity` accessor `build_dashboard` already invokes for its existing equity strip. The dashboard's equity display and the expansion's cash-feasible label agree by construction.
 - **Discriminating tests.** Each test in §4 differs from its pair / regression target by ONE feature; lightning-trigger discriminator constructs price-fixture values explicitly between `0.99 × entry_target` and `0.99 × current_pivot`.
 - **Snapshot-at-render purity.** Expansion VM is computed on the route handler thread, never persisted, never carried into a subsequent entry submission as hidden form values. Q-K (ToCToU) is moot under §3.7 information-only resolution.
