@@ -81,6 +81,15 @@ class TradeEntryFormVM:
     # field → template parameterizes colspan + Cancel target. POST
     # round-trip survival ships in Task 8 via a hidden form field.
     origin: Literal["watchlist", "hyp-recs"] = "watchlist"
+    # Spec §3.8b.4 R4-Major-2 — when origin=hyp-recs, this is the
+    # pipeline_runs.finished_ts of the binding pipeline run; rendered
+    # in the freshness footer ("Candidate context as of pipeline
+    # finished {ISO}"). Wording is deliberately scoped to "candidate
+    # context" — the form's entry_price still comes from live
+    # PriceCache / wl_entry.last_close (NOT the pipeline snapshot),
+    # so the footer must NOT imply live-price freshness. None for
+    # watchlist origin (no footer rendered).
+    pipeline_finished_at: str | None = None
 
 
 def build_entry_form_vm(
@@ -102,6 +111,7 @@ def build_entry_form_vm(
     coerced_origin = _coerce_origin(origin)
     ticker = ticker.upper()
     cls = None
+    pipeline_finished_at: str | None = None
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
@@ -110,16 +120,28 @@ def build_entry_form_vm(
             open_trades = list_open_trades(conn)
             exits = list_all_exits(conn)
             cash_movements = list_cash(conn)
-            # Resolve the chart-pattern classification cache row in the
-            # same transaction so the template & POST handler see the
-            # snapshot the operator did at form-render time.
+            # Resolve the latest-completed pipeline_run ONCE: chart-pattern
+            # ALWAYS binds to this row (both origins, existing behavior);
+            # hyp-recs origin ALSO uses this row's evaluation_run_id as
+            # the sector/industry/pivot/initial_stop anchor (Task 9
+            # R4-Major-2 — matches build_hyp_recs_expanded's anchor so
+            # the form does not split anchors across columns).
+            # `id DESC` tiebreaker matches latest_completed_pipeline_run
+            # in chart_scope.py (defends against second-precision
+            # finished_ts collisions on rapid runs).
             pipeline_eval_row = conn.execute(
-                """SELECT id, evaluation_run_id FROM pipeline_runs
+                """SELECT id, evaluation_run_id, finished_ts FROM pipeline_runs
                    WHERE state = 'complete'
-                   ORDER BY finished_ts DESC LIMIT 1"""
+                   ORDER BY finished_ts DESC, id DESC LIMIT 1"""
             ).fetchone()
             pipeline_run_id = (
                 pipeline_eval_row[0] if pipeline_eval_row else None
+            )
+            pipeline_eval_id = (
+                pipeline_eval_row[1] if pipeline_eval_row else None
+            )
+            pipeline_finished_at = (
+                pipeline_eval_row[2] if pipeline_eval_row else None
             )
             if pipeline_run_id is not None:
                 from swing.data.repos.pattern_classifications import (
@@ -128,23 +150,29 @@ def build_entry_form_vm(
                 cls = get_classification(
                     conn, pipeline_run_id=pipeline_run_id, ticker=ticker,
                 )
-            # Task 6 — sector/industry snapshot. Anchor via the canonical
-            # ``latest_evaluation_run_id()`` helper (R1 Codex Major 4)
-            # so this form sees the same run as the dashboard's
-            # candidates_by_ticker binding; preserves the helper's
-            # two-step selection across pipeline-bound complete and
-            # standalone-eval fallback. The chart_pattern read above
-            # stays bound to ``pipeline_runs`` (it requires a completed
-            # pipeline); both queries run independently in the same
-            # snapshot.
-            from swing.web.view_models.dashboard import (
-                latest_evaluation_run_id,
-            )
+            # Task 6 + Task 9 — sector/industry/pivot/initial_stop snapshot.
+            # Anchor selection branches on origin:
+            #   - hyp-recs: bind to the pipeline-bound eval (matches the
+            #     hyp-recs expansion's anchor so candidate-derived reads
+            #     don't split across columns; closes Task 9 R4-Major-2).
+            #   - watchlist: preserve the existing canonical
+            #     ``latest_evaluation_run_id()`` helper (R1 Codex Major 4)
+            #     so the watchlist surface keeps its existing anchor
+            #     contract — backward compat.
+            # Chart-pattern read above stays bound to ``pipeline_runs`` for
+            # BOTH origins (existing behavior; chart-pattern requires a
+            # completed pipeline).
             cand_sector = ""
             cand_industry = ""
             cand_pivot: float | None = None
             cand_initial_stop: float | None = None
-            sector_eval_id = latest_evaluation_run_id(conn)
+            if coerced_origin == "hyp-recs":
+                sector_eval_id = pipeline_eval_id
+            else:
+                from swing.web.view_models.dashboard import (
+                    latest_evaluation_run_id,
+                )
+                sector_eval_id = latest_evaluation_run_id(conn)
             if sector_eval_id is not None:
                 cand_row = conn.execute(
                     """SELECT sector, industry, pivot, initial_stop FROM candidates
@@ -260,6 +288,9 @@ def build_entry_form_vm(
         sector=cand_sector,
         industry=cand_industry,
         origin=coerced_origin,
+        pipeline_finished_at=(
+            pipeline_finished_at if coerced_origin == "hyp-recs" else None
+        ),
     )
 
 

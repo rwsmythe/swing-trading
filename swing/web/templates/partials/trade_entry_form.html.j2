@@ -67,6 +67,11 @@
           </span>
         </label>
         <textarea name="notes">{{ vm.notes }}</textarea></div>
+      {% if vm.origin == 'hyp-recs' and vm.pipeline_finished_at %}
+        <p class="freshness muted">
+          Candidate context as of pipeline finished {{ vm.pipeline_finished_at }}
+        </p>
+      {% endif %}
       <div>
         <button type="submit">Submit</button>
         <button type="button"

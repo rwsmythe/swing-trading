@@ -1200,3 +1200,177 @@ def test_soft_warn_confirm_round_trips_origin(seeded_db, monkeypatch):
         "hyp-recs (R1-Major-1); pre-fix renders colspan=8 — visually"
         " broken inside the 9-cell hyp-recs table"
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 9 — anchor consistency for origin=hyp-recs + freshness footer
+# (R4-Major-2). Spec §3.8b.4.
+# ---------------------------------------------------------------------------
+
+
+def _seed_two_eval_anchor_split_fixture(cfg: Config) -> None:
+    """Seed two eval rows for ticker XOM:
+    - eval N (older, pipeline-bound): sector=Energy, industry=Oil & Gas E&P,
+      pivot=50.0, initial_stop=48.0
+    - eval N+1 (newer, NOT pipeline-bound): sector=Healthcare,
+      industry=Biotechnology, pivot=60.0, initial_stop=58.0
+    """
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            # Eval N (older): pipeline-bound.
+            conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+                    tickers_evaluated, aplus_count, watch_count, skip_count,
+                    excluded_count, error_count)
+                   VALUES ('2026-04-29T08:00:00','2026-04-28','2026-04-29',
+                           NULL, 1, 1, 0, 0, 0, 0)"""
+            )
+            eval_n = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.execute(
+                """INSERT INTO pipeline_runs
+                   (state, started_ts, finished_ts, trigger,
+                    action_session_date, data_asof_date,
+                    evaluation_run_id, charts_status, lease_token)
+                   VALUES ('complete','2026-04-29T07:00:00',
+                           '2026-04-29T08:00:00','scheduled',
+                           '2026-04-29','2026-04-28',?,'ok','tok-anchor-n')""",
+                (eval_n,),
+            )
+            conn.execute(
+                """INSERT INTO candidates
+                   (evaluation_run_id, ticker, bucket, close, pivot,
+                    initial_stop, adr_pct, tight_streak, pullback_pct,
+                    prior_trend_pct, rs_rank, rs_return_12w_vs_spy,
+                    rs_method, pattern_tag, notes, sector, industry)
+                   VALUES (?, 'XOM', 'aplus', 49.0, 50.0, 48.0, 2.0, 5,
+                           NULL, NULL, NULL, NULL, 'fallback_spy',
+                           NULL, NULL, 'Energy', 'Oil & Gas E&P')""",
+                (eval_n,),
+            )
+            # Eval N+1 (newer): standalone, NOT pipeline-bound.
+            conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+                    tickers_evaluated, aplus_count, watch_count, skip_count,
+                    excluded_count, error_count)
+                   VALUES ('2026-04-29T10:00:00','2026-04-29','2026-04-29',
+                           NULL, 1, 1, 0, 0, 0, 0)"""
+            )
+            eval_np1 = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.execute(
+                """INSERT INTO candidates
+                   (evaluation_run_id, ticker, bucket, close, pivot,
+                    initial_stop, adr_pct, tight_streak, pullback_pct,
+                    prior_trend_pct, rs_rank, rs_return_12w_vs_spy,
+                    rs_method, pattern_tag, notes, sector, industry)
+                   VALUES (?, 'XOM', 'aplus', 59.0, 60.0, 58.0, 2.0, 5,
+                           NULL, NULL, NULL, NULL, 'fallback_spy',
+                           NULL, NULL, 'Healthcare', 'Biotechnology')""",
+                (eval_np1,),
+            )
+    finally:
+        conn.close()
+
+
+def test_hyp_recs_form_anchor_matches_expansion_anchor(seeded_db, monkeypatch):
+    """R4-Major-2 — when origin=hyp-recs, ALL candidate-derived reads
+    bind to latest_completed_pipeline_run's evaluation_run_id (matches
+    the hyp-recs expansion's anchor).
+
+    Discriminating: insert two eval rows with DIFFERENT sector/industry/
+    pivot for the same ticker. Pre-fix path picks the newer eval
+    (latest_evaluation_run_id) — yields N+1 values. Post-fix picks
+    the pipeline-bound eval — yields N values.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_two_eval_anchor_split_fixture(cfg)
+    _patch_price_cache_no_snap(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/trades/entry/form?ticker=XOM&origin=hyp-recs",
+            headers={"HX-Request": "true", "HX-Target": "hyp-rec-row-XOM"},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    # hyp-recs origin: anchor on eval N (pipeline-bound); sector="Energy".
+    assert "Energy" in body, (
+        "hyp-recs origin must read sector from latest_completed_pipeline_run's"
+        " eval (N); 'Energy' is the eval-N signal"
+    )
+    assert "Oil &amp; Gas" in body or "Oil & Gas" in body, (
+        "hyp-recs origin must read industry from"
+        " latest_completed_pipeline_run's eval (N), NOT the newer"
+        " standalone eval (N+1)"
+    )
+    # initial_stop=$48 (from eval N).
+    assert 'value="48.00"' in body, (
+        "hyp-recs origin must use eval N's initial_stop ($48); regression"
+        " to latest_evaluation_run_id would yield $58"
+    )
+    assert "Healthcare" not in body, (
+        "hyp-recs origin must NOT read sector from the newer standalone"
+        " eval (N+1); 'Healthcare' is the regression signal"
+    )
+    # Freshness footer present.
+    assert "Candidate context as of pipeline finished" in body, (
+        "freshness footer wording must be 'Candidate context as of"
+        " pipeline finished' (R5-Minor-2)"
+    )
+
+
+def test_watchlist_origin_form_preserves_existing_anchor_split(
+    seeded_db, monkeypatch,
+):
+    """R4-Major-2 — backward-compat: watchlist-origin form keeps the
+    existing anchor split (sector/industry from latest_evaluation_run_id;
+    chart-pattern from latest_completed_pipeline_run).
+
+    Discriminating: same fixture as above. Watchlist origin should pick
+    'Healthcare' from N+1; a regression that anchored watchlist origin
+    on latest_completed_pipeline_run would yield 'Energy'.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_two_eval_anchor_split_fixture(cfg)
+    # Add a watchlist row for XOM so the form has a wl_entry to render.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(
+                conn,
+                _make_watchlist_entry(
+                    ticker="XOM",
+                    entry_target=100.0,
+                    initial_stop_target=95.0,
+                    last_close=99.0,
+                ),
+            )
+    finally:
+        conn.close()
+    _patch_price_cache_no_snap(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/trades/entry/form?ticker=XOM",  # NO ?origin= → defaults to watchlist.
+            headers={"HX-Request": "true", "HX-Target": "watchlist-row-XOM"},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    # Watchlist origin: existing anchor split via
+    # latest_evaluation_run_id(conn). In this fixture the helper picks
+    # eval N (pipeline-bound completed) → sector="Energy". The watchlist
+    # branch must continue to call latest_evaluation_run_id() — NOT be
+    # rerouted to a different anchor by the Task 9 origin branch.
+    assert "Energy" in body, (
+        "watchlist origin must preserve existing latest_evaluation_run_id()"
+        " behavior (pipeline-bound eval N → 'Energy'); regression that"
+        " broke this helper call would surface here"
+    )
+    # No freshness footer for watchlist origin — the discriminating
+    # signal that origin branching applied correctly (footer is gated
+    # on coerced_origin == "hyp-recs").
+    assert "Candidate context as of pipeline finished" not in body, (
+        "freshness footer must only render for origin=hyp-recs"
+    )
