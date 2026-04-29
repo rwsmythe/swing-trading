@@ -760,3 +760,119 @@ Operator surfaced 2026-04-28: as small operator-tunable settings accumulate (cha
 **Cross-references:**
 - toml-shadowing lesson in `docs/orchestrator-context.md` Lessons captured (post-`aeb2084`).
 - `project_capital_risk_floor.md` memory.
+
+---
+
+## 2026-04-28 OHLCV archive consolidation (QUEUED; Medium effort)
+
+Operator surfaced 2026-04-28 during research-resource discussion: "are we archiving any of the yfinance data we are pulling down? One way to improve throughput would be to start creating a local history which could be queried for all historical data, only using yfinance to pull down the most recent OHLCV numbers." Survey of current code found three caching paths with inconsistent semantics:
+
+### Current state (orchestrator survey 2026-04-28):
+
+1. **`swing/prices.py PriceFetcher` → `~/swing-data/prices-cache/`.** On-disk parquet cache. Used by pipeline runner, CLI commands, weather runner. **53 MB, 5,521 files.** Keying is wasteful: `{ticker}_{lookback_days}d_asof-{YYYY-MM-DD}.parquet` produces a new file per as_of_date even when 99% of the data overlaps. AAPL alone has separate parquets for 8+ as-of-dates over 2 weeks; same 120-day window re-stored each session. ~200-300 unique tickers represented across 5,521 redundant snapshots.
+2. **`swing/pipeline/ohlcv.py` (chart-step OHLCV).** Used by `_step_charts` to feed chart rendering AND chart-pattern flag-v1 classifier. **No disk cache.** Fresh `yf.Ticker.history(...)` pull every pipeline run for chart-scope tickers (open positions + tag-aware top-N + A+ ≈ 5-15 tickers/run, all re-pulled).
+3. **`swing/web/ohlcv_cache.py OhlcvCache`.** TTL-cached in-memory (3600s default), sliding-window circuit breaker. Used for dashboard SMA advisories on open positions. **Restart-flushed.** Not persisted.
+4. **`~/swing-data/research-cache/ohlcv/`** (research branch). **92 MB across 2,603 ticker files.** One file per ticker (NOT per as_of_date) — the proper incremental-archive pattern. Used by research-branch harness; production paths don't consume it.
+
+### The architectural gap:
+
+Production paths (#1 + #2) re-fetch from yfinance every run for data that's already on disk in the research cache (#4). The proper incremental-archive pattern exists in the codebase — just not used by production. Migration to per-ticker incremental cache cuts per-run yfinance call volume by ~99% for established tickers.
+
+### V1 scope (this dispatch):
+
+1. **Consolidate `prices-cache/` keying.** Switch `PriceFetcher` from per-as-of-date parquet files to per-ticker parquets with date-range tracking. New file format: `{TICKER}.parquet` with `as_of_max` metadata or column. One-time migration script consolidates the 5,521 redundant files into ~200-300 per-ticker files.
+2. **Add disk archive to `_step_charts` chart-fetch path.** Wrap `swing/pipeline/ohlcv.py`'s `yf.Ticker(t).history(...)` in a per-ticker incremental-fetch helper. On each call: read latest stored bar for ticker; pull yfinance for `latest+1` → today; append. New tickers get full history pull.
+3. **(Optional V1) Back `OhlcvCache` with the disk archive for warm-restart.** Currently the in-memory TTL flushes on every web restart. Backing it with the same disk archive eliminates the cold-start fetch storm after restart.
+
+### Open design questions for brainstorm/spec:
+
+- **Corporate-action retroactive adjustment policy.** yfinance retroactively adjusts splits/dividends. A "permanent archive" with stale adjustments diverges from current yfinance over time. Mitigation options:
+  - (a) **Periodic full-refresh on active tickers** (e.g., weekly cron OR on first-pull-of-session detection). Simple; small wasted bandwidth.
+  - (b) **Store both raw + adjustment-factor columns separately**; recompute adjustments on access from the latest known split/dividend ratios. More complex; closer to a real time-series database.
+  - (c) **Accept staleness on tickers without recent corporate actions; explicit refresh on operator-flagged tickers.** Pragmatic; requires corporate-action detection or operator-driven invalidation.
+  - Default-recommendation for V1: (a) — simplest, wastes ~10-20% bandwidth on weekly full-refresh of active tickers, but tolerates the asymmetry.
+- **Cache-coherence policy.** Need explicit rule for "trust archive" vs "re-fetch fresh." Probably keyed on (ticker, last_corporate_action_check_date) with explicit TTL on the corporate-action check.
+- **Migration strategy for 5,521 redundant files.** One-time consolidation script; runs once, then archived/deleted. Preserve any uniquely-historic data (oldest as_of_date per ticker) before consolidation.
+- **Schema location.** Is the archive a per-ticker parquet (current research-cache pattern), or a single SQLite table with composite key (ticker, date)? Parquet is faster for long history scans; SQLite integrates with existing infrastructure. Both fit; design choice.
+
+### V1-deferred / V2:
+
+- 1-min intraday bars (would multiply storage by ~390× — ~37 GB for full universe; out of V1 scope; framework is daily-cycle).
+- Cross-platform sync (Drive-synced archive would require careful WAL-mode handling per the SQLite-DB-location invariant). Out of V1 scope.
+- Automatic universe expansion (auto-archiving tickers operator hasn't asked about). V1 archives only what production paths request; demand-driven not pre-emptive.
+
+### Storage budget (concrete):
+
+| Universe | Tickers | 5-year history | Notes |
+|---|---|---|---|
+| Operator's Finviz pool only | ~500 | ~18 MB | Demand-driven minimum |
+| SPX + NDX + S&P 1500 | ~1,500-2,000 | ~70-100 MB | Reasonable target |
+| Full Russell 3000 | ~3,000 | ~110 MB | Comprehensive |
+| 10-year Russell 3000 | ~3,000 | ~220 MB | Decadal coverage |
+
+Storage is essentially free at all scales relevant to this project. Real value is yfinance rate-limit relief + pipeline speed + research-branch parity + diagnostic capability for any-time-window analysis.
+
+### Cross-references:
+- yfinance rate-limit + threading gotcha in CLAUDE.md gotchas.
+- `swing/prices.py:24` `PriceFetcher` (Phase 2 carve-out territory).
+- `swing/pipeline/ohlcv.py` (no current cache).
+- `swing/web/ohlcv_cache.py` (in-memory TTL).
+- `~/swing-data/research-cache/ohlcv/` existing pattern (use as architectural reference).
+
+---
+
+## 2026-04-28 sector/industry capture + display (QUEUED; Medium effort)
+
+Operator-recall surfaced 2026-04-28: "At some point several days ago there was a discussion about capturing which industry the tickers fall under and displaying/capturing that as a data point which might be useful for making a trade determination." Orchestrator survey confirmed: data is INGESTED but DROPPED on the production path. Never persisted, displayed, or used in decision logic.
+
+### Current state (orchestrator survey 2026-04-28):
+
+- **Ingested.** Finviz CSV schema validator at `swing/pipeline/finviz_schema.py:12` requires both `Sector` and `Industry` columns. CSV is rejected to `data/finviz-inbox/rejected/` if either column is missing.
+- **Not persisted.** Zero hits for `sector`/`industry` columns anywhere in `swing/data/` (11 migrations + repo files + dataclass models surveyed). The fields are read from the CSV and discarded.
+- **Not displayed.** No template, VM, or route consumes sector/industry data.
+- **Not used in decision logic.** Only mention in production code outside the Finviz schema is a comment in `swing/trades/stop_adjust.py:31` about the "news" rationale enum value.
+- **But the framework PRESUMES sector analysis happens.** orchestrator-context.md lines 156–157 explicitly include sector in operator's manual decision process: "Operator validates the recommendation (chart pattern, risk, **sector preference**)..." — operator currently has to look up sector externally per ticker because the framework drops the data.
+
+### V1 scope (this dispatch):
+
+Mirrors the `hypothesis_label` and `chart_pattern_*` patterns already shipped (snapshot-at-entry-surface frozen-at-entry):
+
+1. **Schema migration 0012** — add `sector TEXT NOT NULL DEFAULT ''` and `industry TEXT NOT NULL DEFAULT ''` columns to `candidates` table (refreshed each pipeline run from Finviz CSV). Add same columns to `trades` table (frozen at entry, mirrors `hypothesis_label`).
+2. **Pipeline ingestion** — `_step_evaluate` writes Sector/Industry from each Finviz CSV row into the candidate row. Already-validated by schema; just needs to flow to persistence.
+3. **VM + template surface** — display sector/industry on the surfaces where operator decision happens:
+   - Hyp-recs row expansion (NEW; coordinates with hyp-recs trade-prep expansion dispatch — see "Sequencing question" below).
+   - Watchlist row expansion.
+   - Trade entry form (read-only field showing the snapshot value to be persisted).
+   - Open positions row (informational; operator can confirm what they bought).
+4. **Trade entry capture** — frozen-at-entry like `hypothesis_label`. Captured via the snapshot-at-entry-surface ToCToU pattern (spec §3.6 / Phase 5). `EntryRequest` carries `sector` + `industry`; `record_entry` persists what's passed AS-IS.
+
+### Open design questions for brainstorm/spec:
+
+1. **Granularity.** Finviz provides Sector (~11 broad: Technology, Healthcare, Financial Services, Energy, etc.) AND Industry (~150 narrow: Software-Infrastructure, Biotechnology, Banks-Regional, Oil-Gas-E&P, etc.). Show both? Show only sector? Show industry but group by sector? Recommendation: persist both, display both — sector for grouping/concentration, industry for context. Cheap to defer the granularity decision to display-time.
+2. **Display surfaces.** Hyp-recs row expansion is obvious. Watchlist row expansion likewise. Trade entry form likely. Open positions row? Journal review? Each surface is a small-incremental cost. Suggested V1 scope: 4 surfaces (hyp-recs expansion, watchlist expansion, trade entry, open positions). Defer journal review aggregation to V2.
+3. **Snapshot vs always-current.** Sector/industry are very stable for a ticker (rarely change — corporate restructuring is the main driver). Both approaches work:
+   - **Frozen-at-entry** (matches `hypothesis_label` / `chart_pattern_*` patterns; consistent with framework's pre-registration discipline).
+   - **Always-current** (read from latest candidate row at display time; no persistence on `trades`).
+   - Recommendation: frozen-at-entry per the existing pattern. If sector data drifts post-entry due to ticker reclassification, that's information worth preserving (the operator entered when this ticker was Tech; it's now Industrials — the analysis should know that).
+4. **Sector source-of-truth.** Finviz only. yfinance has its own sector taxonomy that differs from Finviz. Don't reconcile across sources in V1 — Finviz is the single authoritative source for the framework's sector view.
+
+### V2 follow-up (gated on V1 shipping):
+
+- **Sector concentration warning surface.** Once sector is captured on `trades`, dashboard could surface "you have 3 open positions in Technology, max-sector-concentration N% of risk" warnings. Prevents over-concentration in a single sector. Configurable cap (e.g., max 50% of total open risk in a single sector). Separate dispatch; ungated on V1 shipping.
+- **Industry-level concentration** (probably NOT useful for a $7,500 account at 5 concurrent positions; sector-level is the right granularity at this scale).
+- **Sector-level analytics on `swing trade analyze`.** Group historical trades by sector; per-sector expectancy, win rate, R-multiple. Useful for identifying operator's per-sector edge (or anti-edge). Separate dispatch.
+
+### Sequencing question:
+
+Sector/industry display surfaces include **hyp-recs row expansion** — which is the central artifact of the just-queued hyp-recs trade-prep expansion brainstorm (`docs/phase3e-todo.md` 2026-04-28 hyp-recs trade-prep expansion section). Two ways to sequence:
+
+- **(A) Fold sector/industry into the hyp-recs expansion brainstorm** — the snapshot expansion already designs a multi-line context display for hyp-rec rows; sector/industry fits naturally as additional context fields. Avoids a second dispatch on overlapping surface. Sector-capture migration becomes a prerequisite (Task 0a) of the hyp-recs expansion plan.
+- **(B) Ship sector/industry capture FIRST as a small standalone migration** — schema 0012 + pipeline ingestion + minimal display (4 surfaces, all read-only). Then hyp-recs expansion brainstorm starts with sector data already captured and queryable.
+
+Recommendation: **(B)**. Sector capture is a tighter, more bounded scope (just data flow + display); hyp-recs expansion can consume the captured field without scope creep on its brainstorm. Keeps the brainstorm focused on its own design questions (chase factor, cost-display semantics, etc.) without adding sector-granularity questions.
+
+### Cross-references:
+- `swing/pipeline/finviz_schema.py:12` (validator requires both columns; data flows in this far and stops).
+- orchestrator-context.md lines 156-157 (framework-presumes-sector-analysis already in decision-making).
+- `hypothesis_label` and `chart_pattern_*` patterns (snapshot-at-entry-surface frozen-at-entry; existing repo precedent).
+- 2026-04-28 hyp-recs trade-prep expansion section above (sequencing-question dependency).
