@@ -19,6 +19,7 @@ from swing.data.repos.trades import list_all_exits, list_open_trades
 from swing.data.repos.watchlist import list_active_watchlist
 from swing.data.repos.weather import get_latest
 from swing.evaluation.dates import action_session_for_run
+from swing.journal.stats import HypothesisProgress
 from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
 from swing.trades.equity import current_equity, total_current_risk
 from swing.web.price_cache import PriceCache, PriceSnapshot
@@ -232,12 +233,12 @@ class DashboardVM:
 
 def _build_active_recommendations(
     *,
-    prices: Mapping[str, "PriceSnapshot"],
-    candidates_by_ticker: Mapping[str, "Candidate"],
+    prices: Mapping[str, PriceSnapshot],
+    candidates_by_ticker: Mapping[str, Candidate],
     top_recommendations: list,
-    progress_by_id: Mapping[int, "HypothesisProgress"],
+    progress_by_id: Mapping[int, HypothesisProgress],
     target_by_id: Mapping[int, int],
-) -> tuple["HypothesisRecommendation", ...]:
+) -> tuple[HypothesisRecommendation, ...]:
     """Construct the hyp-recs `active_recommendations` tuple from
     prerequisites. Single source of truth — consumed by:
       - `build_dashboard` (full-page render path);
