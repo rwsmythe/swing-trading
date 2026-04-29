@@ -82,6 +82,14 @@ class Trade:
     chart_pattern_algo_confidence: float | None = None
     chart_pattern_operator: str | None = None
     chart_pattern_classification_pipeline_run_id: int | None = None
+    # Migration 0012 — Finviz Sector + Industry, frozen-at-entry per the
+    # snapshot-at-entry-surface pattern (precedents: hypothesis_label /
+    # 0007; chart_pattern_* / 0010). Defaults to empty string so callers
+    # that don't yet plumb these fields keep working; the entry surface
+    # (web form + CLI) resolves the actual value from the candidate row
+    # at form/CLI render time and persists AS-IS via record_entry.
+    sector: str = ""
+    industry: str = ""
 
 
 @dataclass(frozen=True)

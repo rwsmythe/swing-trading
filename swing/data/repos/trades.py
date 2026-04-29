@@ -61,15 +61,17 @@ def insert_trade_with_event(
              watchlist_initial_stop, notes, hypothesis_label,
              chart_pattern_algo, chart_pattern_algo_confidence,
              chart_pattern_operator,
-             chart_pattern_classification_pipeline_run_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             chart_pattern_classification_pipeline_run_id,
+             sector, industry)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (trade.ticker, trade.entry_date, trade.entry_price, trade.initial_shares,
          trade.initial_stop, trade.current_stop, trade.status,
          trade.watchlist_entry_target, trade.watchlist_initial_stop, trade.notes,
          trade.hypothesis_label, trade.chart_pattern_algo,
          trade.chart_pattern_algo_confidence, trade.chart_pattern_operator,
-         trade.chart_pattern_classification_pipeline_run_id),
+         trade.chart_pattern_classification_pipeline_run_id,
+         trade.sector, trade.industry),
     )
     trade_id = int(cur.lastrowid)
     payload = {
@@ -196,7 +198,8 @@ def get_trade(conn: sqlite3.Connection, trade_id: int) -> Trade | None:
                current_stop, status, watchlist_entry_target,
                watchlist_initial_stop, notes, hypothesis_label,
                chart_pattern_algo, chart_pattern_algo_confidence,
-               chart_pattern_operator, chart_pattern_classification_pipeline_run_id
+               chart_pattern_operator, chart_pattern_classification_pipeline_run_id,
+               sector, industry
         FROM trades WHERE id = ?
         """,
         (trade_id,),
@@ -211,7 +214,8 @@ def list_open_trades(conn: sqlite3.Connection) -> list[Trade]:
                current_stop, status, watchlist_entry_target,
                watchlist_initial_stop, notes, hypothesis_label,
                chart_pattern_algo, chart_pattern_algo_confidence,
-               chart_pattern_operator, chart_pattern_classification_pipeline_run_id
+               chart_pattern_operator, chart_pattern_classification_pipeline_run_id,
+               sector, industry
         FROM trades WHERE status='open' ORDER BY entry_date, ticker
         """,
     ).fetchall()
@@ -228,7 +232,8 @@ def list_closed_trades(
                    t.initial_stop, t.current_stop, t.status, t.watchlist_entry_target,
                    t.watchlist_initial_stop, t.notes, t.hypothesis_label,
                    t.chart_pattern_algo, t.chart_pattern_algo_confidence,
-                   t.chart_pattern_operator, t.chart_pattern_classification_pipeline_run_id
+                   t.chart_pattern_operator, t.chart_pattern_classification_pipeline_run_id,
+                   t.sector, t.industry
             FROM trades t
             WHERE t.status='closed'
               AND EXISTS (SELECT 1 FROM exits e WHERE e.trade_id=t.id AND e.exit_date >= ?)
@@ -243,7 +248,8 @@ def list_closed_trades(
                    current_stop, status, watchlist_entry_target,
                    watchlist_initial_stop, notes, hypothesis_label,
                    chart_pattern_algo, chart_pattern_algo_confidence,
-                   chart_pattern_operator, chart_pattern_classification_pipeline_run_id
+                   chart_pattern_operator, chart_pattern_classification_pipeline_run_id,
+                   sector, industry
             FROM trades WHERE status='closed' ORDER BY entry_date DESC, ticker
             """,
         ).fetchall()
@@ -318,7 +324,8 @@ def find_any_open_trade(
                current_stop, status, watchlist_entry_target,
                watchlist_initial_stop, notes, hypothesis_label,
                chart_pattern_algo, chart_pattern_algo_confidence,
-               chart_pattern_operator, chart_pattern_classification_pipeline_run_id
+               chart_pattern_operator, chart_pattern_classification_pipeline_run_id,
+               sector, industry
         FROM trades WHERE ticker=? AND status='open'
         ORDER BY entry_date ASC LIMIT 1
         """,
@@ -339,7 +346,8 @@ def find_open_trade_by_match(
                    current_stop, status, watchlist_entry_target,
                    watchlist_initial_stop, notes, hypothesis_label,
                    chart_pattern_algo, chart_pattern_algo_confidence,
-                   chart_pattern_operator, chart_pattern_classification_pipeline_run_id
+                   chart_pattern_operator, chart_pattern_classification_pipeline_run_id,
+                   sector, industry
             FROM trades WHERE ticker=? AND entry_date=? AND initial_shares=? AND status='open'
             LIMIT 1
             """,
@@ -352,7 +360,8 @@ def find_open_trade_by_match(
                    current_stop, status, watchlist_entry_target,
                    watchlist_initial_stop, notes, hypothesis_label,
                    chart_pattern_algo, chart_pattern_algo_confidence,
-                   chart_pattern_operator, chart_pattern_classification_pipeline_run_id
+                   chart_pattern_operator, chart_pattern_classification_pipeline_run_id,
+                   sector, industry
             FROM trades WHERE ticker=? AND entry_date=? AND status='open'
             LIMIT 1
             """,
@@ -372,4 +381,5 @@ def _row_to_trade(row: tuple) -> Trade:
         chart_pattern_algo_confidence=row[13],
         chart_pattern_operator=row[14],
         chart_pattern_classification_pipeline_run_id=row[15],
+        sector=row[16], industry=row[17],
     )

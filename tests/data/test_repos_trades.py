@@ -368,3 +368,92 @@ def test_update_stop_with_event_rejects_missing_trade():
             assert rows[0] == 0
         finally:
             conn.close()
+
+
+def test_trade_sector_industry_roundtrip_all_select_paths(tmp_path):
+    """Trade with sector + industry roundtrips through ALL FIVE repo SELECT
+    paths. Each path hand-rolls its column list — missing one path while
+    fixing the others is the recurring repo-SELECT-coverage bug."""
+    from swing.data.db import ensure_schema
+    from swing.data.models import Trade
+    from swing.data.repos.trades import (
+        find_any_open_trade,
+        find_open_trade_by_match,
+        get_trade,
+        insert_trade_with_event,
+        list_closed_trades,
+        list_open_trades,
+    )
+    db_path = tmp_path / "swing.db"
+    conn = ensure_schema(db_path)
+    try:
+        with conn:
+            trade_id = insert_trade_with_event(conn, Trade(
+                id=None, ticker="ZZZE", entry_date="2026-04-28",
+                entry_price=100.0, initial_shares=10,
+                initial_stop=95.0, current_stop=95.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None, hypothesis_label=None,
+                sector="Energy", industry="Oil & Gas E&P",
+            ), event_ts="2026-04-28T00:00:00")
+        # Path 1: get_trade
+        t1 = get_trade(conn, trade_id)
+        assert t1 is not None and t1.sector == "Energy"
+        assert t1.industry == "Oil & Gas E&P"
+        # Path 2: list_open_trades
+        opens = list_open_trades(conn)
+        assert any(t.ticker == "ZZZE" and t.sector == "Energy" for t in opens)
+        # Path 3a: find_any_open_trade
+        t3 = find_any_open_trade(conn, ticker="ZZZE")
+        assert t3 is not None and t3.sector == "Energy"
+        assert t3.industry == "Oil & Gas E&P"
+        # Path 3b: find_open_trade_by_match (with shares)
+        t4 = find_open_trade_by_match(
+            conn, ticker="ZZZE", entry_date="2026-04-28", initial_shares=10,
+        )
+        assert t4 is not None and t4.sector == "Energy"
+        # Path 3c: find_open_trade_by_match (without shares)
+        t5 = find_open_trade_by_match(
+            conn, ticker="ZZZE", entry_date="2026-04-28", initial_shares=None,
+        )
+        assert t5 is not None and t5.industry == "Oil & Gas E&P"
+        # Path 4: list_closed_trades — close the trade first.
+        with conn:
+            conn.execute(
+                "UPDATE trades SET status='closed' WHERE id=?", (trade_id,),
+            )
+        closed_all = list_closed_trades(conn)
+        assert any(
+            t.ticker == "ZZZE" and t.sector == "Energy" and
+            t.industry == "Oil & Gas E&P" for t in closed_all
+        )
+        # Path 4b: list_closed_trades with since_date branch (requires an
+        # exits row to satisfy the EXISTS subquery; insert directly).
+        with conn:
+            conn.execute(
+                """INSERT INTO exits
+                   (trade_id, exit_date, exit_price, shares, reason,
+                    realized_pnl, r_multiple, notes)
+                   VALUES (?, '2026-04-28', 100.0, 10, 'manual', 0.0, 0.0, NULL)""",
+                (trade_id,),
+            )
+        closed_since = list_closed_trades(conn, since_date="2026-04-01")
+        assert any(
+            t.ticker == "ZZZE" and t.sector == "Energy" for t in closed_since
+        )
+    finally:
+        conn.close()
+
+
+def test_trade_default_sector_industry_empty():
+    """Trade constructed without sector/industry uses '' defaults."""
+    from swing.data.models import Trade
+    t = Trade(
+        id=None, ticker="DFLT", entry_date="2026-04-28",
+        entry_price=100.0, initial_shares=10,
+        initial_stop=95.0, current_stop=95.0, status="open",
+        watchlist_entry_target=None, watchlist_initial_stop=None,
+        notes=None,
+    )
+    assert t.sector == ""
+    assert t.industry == ""
