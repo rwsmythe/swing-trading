@@ -249,11 +249,13 @@ def test_migration_0012_adds_sector_industry_to_candidates_and_trades(tmp_path: 
 
 > **Why a new file rather than appending to `tests/data/test_db.py` (which holds general schema tests).** Migration 0011 ships its tests in a dedicated `test_migration_0011.py` (one file per migration). 0012 follows the same precedent — new file = clean diff, no risk of fixture coupling with unrelated tests.
 
-- [ ] **Step 1.3: Run the failing test.**
+- [ ] **Step 1.3: Run the failing tests.**
 
 ```bash
-python -m pytest tests/data/test_migration_0012.py::test_migration_0012_adds_sector_industry_to_candidates_and_trades -v
+python -m pytest tests/data/test_migration_0012.py -v
 ```
+
+This runs ALL three new tests: `test_expected_schema_version_is_12`, `test_migration_0012_advances_schema_version_from_11_to_12`, and `test_migration_0012_adds_sector_industry_to_candidates_and_trades`.
 
 Expected: FAIL — `EXPECTED_SCHEMA_VERSION == 11` (not 12), or schema_version table reports 11, or the columns don't exist.
 
@@ -301,11 +303,13 @@ Edit `swing/data/db.py` line 9:
 EXPECTED_SCHEMA_VERSION = 12
 ```
 
-- [ ] **Step 1.6: Run the test to verify it passes.**
+- [ ] **Step 1.6: Run the tests to verify they pass.**
 
 ```bash
-python -m pytest tests/data/test_migration_0012.py::test_migration_0012_adds_sector_industry_to_candidates_and_trades -v
+python -m pytest tests/data/test_migration_0012.py -v
 ```
+
+Expected: all three tests PASS (`test_expected_schema_version_is_12`, `test_migration_0012_advances_schema_version_from_11_to_12`, `test_migration_0012_adds_sector_industry_to_candidates_and_trades`).
 
 Expected: PASS.
 
@@ -1670,11 +1674,16 @@ git add swing/web/view_models/trades.py swing/web/routes/trades.py \
 git commit -m "feat(web): Task 6 — trade-entry form snapshots sector/industry at GET, persists at POST
 
 build_entry_form_vm resolves sector + industry from the candidate row by
-ticker against the latest completed pipeline_run's evaluation_run_id (in
-the same read-snapshot transaction as the chart_pattern resolution).
-Hidden inputs ride POST → entry_post → EntryRequest → record_entry.
-soft_warn_confirm round-trip preserves both fields via form_values dict
-extension (no template change — iterator covers new keys automatically).
+ticker via the canonical latest_evaluation_run_id() helper from
+swing.web.view_models.dashboard (R1 Codex Major 4 — same anchor the
+dashboard candidates_by_ticker binding uses; preserves the helper's
+two-step selection across pipeline-bound complete and standalone-eval
+fallback). The chart_pattern resolution stays on the pipeline_run anchor
+(it requires a completed pipeline). Both queries run in the same read
+snapshot so the form sees a coherent view at GET time. Hidden inputs
+ride POST → entry_post → EntryRequest → record_entry. soft_warn_confirm
+round-trip preserves both fields via form_values dict extension (no
+template change — iterator covers new keys automatically).
 
 Observable verification: \`git log -E --grep='^[a-z]+\\([a-z]+\\): Task 6'\` empty pre-commit.
 "
@@ -1828,7 +1837,7 @@ def test_cli_trade_entry_no_eval_at_all_persists_empty(tmp_path: Path):
 - [ ] **Step 7.2: Run the failing tests.**
 
 ```bash
-python -m pytest tests/cli/test_cli_trade_entry_chart_pattern.py -v -k "sector_industry"
+python -m pytest tests/cli/test_cli_trade_entry_chart_pattern.py -v -k "sector_industry or evaluation_exists_but_ticker_absent or no_eval_at_all"
 ```
 
 Expected: FAIL.
@@ -1910,7 +1919,7 @@ Add `sector=cli_sector, industry=cli_industry` to the `req = EntryRequest(...)` 
 - [ ] **Step 7.4: Run the test + full suite.**
 
 ```bash
-python -m pytest tests/cli/test_cli_trade_entry_chart_pattern.py -v -k "sector_industry"
+python -m pytest tests/cli/test_cli_trade_entry_chart_pattern.py -v -k "sector_industry or evaluation_exists_but_ticker_absent or no_eval_at_all"
 python -m pytest -m "not slow" -q 2>&1 | tail -10
 ```
 
@@ -1926,10 +1935,16 @@ git log -E --pretty='%s' --grep='^[a-z]+\([a-z]+\): Task 7'
 git add swing/cli.py tests/cli/test_cli_trade_entry_chart_pattern.py
 git commit -m "feat(cli): Task 7 — \`swing trade entry\` auto-resolves sector/industry from candidate
 
-Single 2-column SELECT against the FK-backed evaluation_run_id within the
-existing read snapshot; persists empty strings when no candidate row exists
-for the ticker (graceful degradation per brief §5.8). No --sector / --industry
-flags in V1 — V1 trusts Finviz; manual override deferred.
+Uses the canonical latest_evaluation_run_id() helper from
+swing.web.view_models.dashboard (R1 Codex Major 4 — same anchor the
+dashboard candidates_by_ticker binding uses, same anchor the existing
+CLI hypothesis pre-fill helper uses; preserves two-step selection across
+pipeline-bound complete and standalone-eval fallback). Single 2-column
+SELECT bound to (evaluation_run_id, ticker) against the helper's
+resolved eval. Persists empty strings when no eval exists OR when the
+ticker is absent from candidates for that eval (graceful degradation per
+brief §5.8). No --sector / --industry flags in V1 — V1 trusts Finviz;
+manual override deferred.
 
 Observable verification: \`git log -E --grep='^[a-z]+\\([a-z]+\\): Task 7'\` empty pre-commit.
 "
@@ -2299,7 +2314,7 @@ Observable verification: \`git log -E --grep='^[a-z]+\\([a-z]+\\): Task 9'\` emp
 python -m pytest -m "not slow" -q 2>&1 | tail -5
 ```
 
-Expected: `>= 1218 passed, 1 skipped, 8 deselected` (1203 baseline + at least 15 new tests across Tasks 1 (×1), 2 (×2), 3 (×3), 4 (×2), 5 (×2), 6 (×4), 7 (×2), 8 (×2), 9 (×2); actual count varies; no decreases).
+Expected: `>= 1223 passed, 1 skipped, 8 deselected` (1203 baseline + at least 20 new tests across Tasks 1 (×3), 2 (×2), 3 (×3), 4 (×2), 5 (×2), 6 (×4), 7 (×3), 8 (×2), 9 (×2); actual count varies if implementer adds extra cases; no decreases).
 
 - [ ] **Step 10.2: Subject-only grep audit — exactly one task implementation per task.**
 
