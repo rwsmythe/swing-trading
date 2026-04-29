@@ -425,11 +425,27 @@ def test_lightning_trigger_unchanged_uses_entry_target(tmp_path: Path):
 
 > **Test-helper bootstrap.** If `tests/conftest.py` does not export a `minimal_config_for_tests` helper, locate the existing test that constructs a TestClient-compatible `Config` (e.g. `tests/web/test_view_models/test_watchlist.py` line 153 region's `seeded_db` pattern) and inline its config-building helper into this file. The hyp-recs expand-route tests (Task 4 sub-step 4.2) will share the helper — extract it to `tests/web/_hyp_recs_helpers.py` if convenient, or inline at each test file. Prefer inline at this point — extraction is mid-session refactor scope and the dispatch already has scope budget concerns.
 
-> **WatchlistEntry constructor.** The actual `WatchlistEntry` dataclass at `swing/data/models.py:130-145` has more required fields than the simplified `WatchlistEntry(ticker=..., entry_target=..., initial_stop_target=..., last_close=..., last_adr_pct=..., added_session=..., removed_session=...)` constructor used in the test code blocks above and elsewhere in this plan. Required fields include: `added_date`, `last_qualified_date`, `status`, `qualification_count`, `not_qualified_streak`, `last_data_asof_date`, `last_pivot`, `last_stop`, `missing_criteria`, `notes`. Implementer should:
->   1. Locate an existing `WatchlistEntry` factory in the test suite (search: `grep -rn "WatchlistEntry(" tests/` — the factory likely lives in `tests/conftest.py` or `tests/web/test_view_models/test_watchlist.py`).
->   2. Reuse that factory across this plan's tests; pass `entry_target`, `initial_stop_target`, `last_close`, `last_adr_pct` as explicit overrides; let the factory populate the boilerplate fields with sensible defaults.
->   3. Where this plan's test-code blocks call `WatchlistEntry(...)` directly with the simplified args, treat those as PSEUDOCODE — substitute the real factory at implementation time.
-> Same applies to `upsert_watchlist_entry` callers: build a real `WatchlistEntry` via the factory and pass it through.
+> **WatchlistEntry constructor + watchlist table — pseudocode → factory substitution (R2-Major-1 Codex fix).** The actual `WatchlistEntry` dataclass at `swing/data/models.py:130-145` has more required fields than the simplified test snippets in this plan use. Required fields include: `added_date`, `last_qualified_date`, `status`, `qualification_count`, `not_qualified_streak`, `last_data_asof_date`, `last_pivot`, `last_stop`, `missing_criteria`, `notes`. There is NO `added_session` / `removed_session` field; the actual table is `watchlist`, NOT `watchlist_entries`.
+>
+> **Wherever this plan's test-code blocks call `WatchlistEntry(...)` directly OR show direct SQL against `watchlist_entries`, treat those as PSEUDOCODE.** The implementer MUST:
+>   1. Locate an existing `WatchlistEntry` factory in the test suite (search: `grep -rn "WatchlistEntry(" tests/` — the factory likely lives in `tests/conftest.py` or `tests/web/test_view_models/test_watchlist.py`). If none exists, define a local `_make_watchlist_entry(*, ticker, entry_target=None, initial_stop_target=None, last_close=None, last_adr_pct=2.0)` helper at the top of each test file. Helper body:
+>      ```python
+>      def _make_watchlist_entry(*, ticker, entry_target=None, initial_stop_target=None,
+>                                 last_close=None, last_adr_pct=2.0):
+>          return WatchlistEntry(
+>              ticker=ticker, added_date="2026-04-29",
+>              last_qualified_date="2026-04-29", status="watch",
+>              qualification_count=1, not_qualified_streak=0,
+>              last_data_asof_date="2026-04-28",
+>              entry_target=entry_target, initial_stop_target=initial_stop_target,
+>              last_close=last_close, last_pivot=None, last_stop=None,
+>              last_adr_pct=last_adr_pct, missing_criteria=None, notes=None,
+>          )
+>      ```
+>   2. Use `upsert_watchlist_entry(conn, _make_watchlist_entry(ticker=..., entry_target=..., initial_stop_target=..., last_close=...))` everywhere this plan calls `WatchlistEntry(...)` directly or shows direct INSERT SQL against `watchlist_entries`.
+>   3. The plan's `test_pivot_column_dash_when_both_absent` (Task 1) currently shows `INSERT INTO watchlist_entries (ticker, entry_target, ...)` — the actual table is `watchlist` and the column set is much wider. Replace the direct SQL with `upsert_watchlist_entry(conn, _make_watchlist_entry(ticker="NEM", entry_target=None, initial_stop_target=None, last_close=43.00))` (NULL `entry_target` is the discriminating fixture for the dash-sentinel test).
+>
+> This substitution is binding for EVERY `WatchlistEntry(...)` call and every `INSERT INTO watchlist_entries` SQL block in the plan, including those in Tasks 1, 5, 6, 7, 8, 9. The plan's pseudocode is for documentation clarity; the implementer compiles it through the factory.
 
 - [ ] **Step 1.4: Run the failing tests.**
 
@@ -2065,10 +2081,31 @@ def test_watchlist_origin_off_watchlist_preserves_zero_fallback(tmp_path: Path):
     body = resp.text
     # Watchlist origin + off-watchlist + no live snap → existing 0.0
     # fallback preserved. The candidate fallback gated to hyp-recs only.
-    assert 'value="0.00"' in body, (
-        "watchlist-origin off-watchlist MUST preserve the 0.0 fallback;"
-        " a regression that applies the candidate fallback globally"
-        " would render 50.00 (from candidate.pivot)"
+    # R2-Minor-1 (Codex R2) — strengthen: assert candidate values
+    # ABSENT from BOTH entry_price and initial_stop fields. The form
+    # may render multiple "0.00" values (open trade count, sizing
+    # hint, etc.); the candidate-pivot regression signal is the
+    # SPECIFIC values 50.00 (entry_price ← candidate.pivot) and 48.00
+    # (initial_stop ← candidate.initial_stop) appearing in the
+    # respective input value attributes.
+    import re
+    entry_price_input = re.search(
+        r'<input[^>]*name="entry_price"[^>]*value="([^"]*)"', body,
+    )
+    initial_stop_input = re.search(
+        r'<input[^>]*name="initial_stop"[^>]*value="([^"]*)"', body,
+    )
+    assert entry_price_input is not None
+    assert initial_stop_input is not None
+    assert entry_price_input.group(1) == "0.00", (
+        f"watchlist-origin off-watchlist entry_price must preserve 0.0"
+        f" fallback; got {entry_price_input.group(1)!r}. A regression"
+        f" that applies candidate.pivot globally would yield '50.00'."
+    )
+    assert initial_stop_input.group(1) == "0.00", (
+        f"watchlist-origin off-watchlist initial_stop must preserve 0.0"
+        f" fallback; got {initial_stop_input.group(1)!r}. A regression"
+        f" that applies candidate.initial_stop globally would yield '48.00'."
     )
     # Sector/industry STILL come from candidate (unchanged behavior).
     assert "Energy" in body
@@ -2302,7 +2339,7 @@ def test_duplicate_open_position_rerender_preserves_origin(tmp_path: Path):
             "ticker": "NVDA", "entry_date": "2026-04-29",
             "entry_price": "100.00", "shares": "10",
             "initial_stop": "95.00",
-            "rationale": "pivot_breakout",  # valid rationale
+            "rationale": "pivot-breakout",  # valid rationale
             "origin": "hyp-recs",
         }, headers={"HX-Request": "true", "HX-Target": "hyp-rec-row-NVDA"})
     assert resp.status_code == 400
@@ -2332,7 +2369,7 @@ def test_soft_warn_confirm_round_trips_origin(tmp_path: Path):
             "ticker": "NVDA", "entry_date": "2026-04-29",
             "entry_price": "100.00", "shares": "10",
             "initial_stop": "95.00",
-            "rationale": "pivot_breakout",
+            "rationale": "pivot-breakout",
             "origin": "hyp-recs",
         }, headers={"HX-Request": "true", "HX-Target": "hyp-rec-row-NVDA"})
     assert resp.status_code == 200, (
