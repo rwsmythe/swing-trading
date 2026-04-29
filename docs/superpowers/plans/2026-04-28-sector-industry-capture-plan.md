@@ -18,7 +18,7 @@
 3. Frozen-at-entry on `trades` table (mirrors `hypothesis_label` / `chart_pattern_*`).
 4. Source-of-truth: Finviz only. No yfinance reconciliation.
 
-**Open question for orchestrator triage (NOT a re-litigation; this is an internal contradiction in the dispatch brief):** Brief §2.2 names "Hyp-recs row expansion (HTMX-expanded panel under `partials/`)" as a V1 display surface. **No such expansion exists yet.** `partials/hypothesis_recommendations.html.j2` is a flat read-only `<table>` with 7 columns and no `hx-get`/expand wiring; the corresponding HTMX expansion mechanism is the deliverable of the queued **hyp-recs trade-prep expansion brainstorm** (`docs/phase3e-todo.md` 2026-04-28 §"hyp-recs trade-prep expansion"). The brief itself acknowledges this conflict in §1: *"Hyp-recs expansion will consume sector as a pre-captured field; that's a downstream concern — out of scope for THIS dispatch."* This plan resolves the contradiction by adding sector + industry as **two new columns** in the existing flat hyp-recs table (Task 9). This delivers the operator-visible data on the hyp-recs surface NOW; when the future expansion brainstorm ships, it will move them from columns to the expanded panel as a structural relocation, not new data plumbing. Surfaced in the writing-plans return report so the orchestrator can confirm the interpretation before executing-plans dispatches.
+**Hyp-recs surface deferred (R1 Codex Major 3 RESOLVED).** Brief §2.2 names "Hyp-recs row expansion (HTMX-expanded panel under `partials/`)" as a V1 display surface. **No such expansion exists yet** — `partials/hypothesis_recommendations.html.j2` is a flat read-only `<table>` with 7 columns and zero expand wiring. The HTMX expansion mechanism is the deliverable of the queued **hyp-recs trade-prep expansion brainstorm** (`docs/phase3e-todo.md` 2026-04-28 §"hyp-recs trade-prep expansion"). Brief §1 explicitly says: *"Hyp-recs expansion will consume sector as a pre-captured field; that's a downstream concern — out of scope for THIS dispatch."* This plan therefore HONORS the brief's §1 framing and DEFERS hyp-recs display to the future expansion brainstorm. The data IS captured on `candidates` (Task 2) and on `trades` (Task 4), so the future brainstorm consumes from `candidates_by_ticker` (already in scope at the dashboard build site, [swing/web/view_models/dashboard.py:552-581](../../swing/web/view_models/dashboard.py)) without any rework. **Surfaced as a deferred-by-spec-conflict item in the writing-plans return report.** Per dispatch brief §8: "If a locked decision (§2) appears impossible to implement as written: STOP, surface in return report. Do NOT silently re-design." The §2.2 listing is impossible as written (the panel does not exist); the §1 framing makes the deferral explicit; this plan respects the brief's own escape hatch rather than inventing a column-based interpretation that re-shapes the operator's intended UX.
 
 **Hyp-recs sort key NOT touched.** Per orchestrator-context "sort-neutrality is structurally guaranteed when the new tag never enters the existing sort tuple" lesson (chart-pattern-flag-v1 R1 M2). Hyp-recs prioritization is hypothesis-aware (progress, target distance, tripwire) and lives in `swing.recommendations.hypothesis`. Sector/industry are decorative display fields ONLY — they do NOT enter any sort or prioritization tuple. Watchlist `_sort_watchlist` is also untouched.
 
@@ -42,27 +42,24 @@
 - `swing/web/routes/trades.py` — `entry_post` accepts sector/industry as Form fields; passes to `EntryRequest`; serializes into `soft_warn_confirm` `form_values` dict (Task 6).
 - `swing/web/view_models/trades.py` — `TradeEntryFormVM` gains `sector: str` + `industry: str`; `build_entry_form_vm` resolves from candidate-by-ticker query inside the existing read snapshot (Task 6).
 - `swing/web/templates/partials/trade_entry_form.html.j2` — render read-only sector/industry rows + hidden inputs (Task 6).
-- `swing/web/view_models/dashboard.py` — `HypothesisRecommendation` gains `sector: str` + `industry: str`; `active_recommendations` builder reads from `candidates_by_ticker` (Task 9).
-- `swing/web/templates/partials/hypothesis_recommendations.html.j2` — add Sector and Industry `<th>` headers + `<td>` cells (Task 9).
 - `swing/web/view_models/watchlist.py` — `WatchlistExpandedVM.candidate` already carries the candidate; sector/industry are accessed via `expanded.candidate.sector` / `.industry` directly. **No VM-field addition needed.** (Task 8 — template-only change.)
 - `swing/web/templates/partials/watchlist_expanded.html.j2` — add Sector + Industry rows when `expanded.candidate` is present (Task 8).
-- `swing/web/templates/partials/open_positions_row.html.j2` — add Sector + Industry cells (consumed via `row.trade.sector` / `.industry`); update `colspan` in `open_positions_expanded.html.j2` to match the new cell count (Task 10).
+- `swing/web/templates/partials/open_positions_row.html.j2` — add Sector + Industry cells (consumed via `row.trade.sector` / `.industry`); update `colspan` in `open_positions_expanded.html.j2` to match the new cell count (Task 9).
+- `swing/web/templates/partials/open_positions.html.j2` — add `<th>Sector</th>` + `<th>Industry</th>` to the open-positions `<thead>` to keep header/data column counts aligned (Task 9).
 
-**Test files:**
-- `tests/data/test_migrations.py` — migration 0012 schema-shape tests (Task 1).
-- `tests/data/test_candidates.py` — Candidate insert+select roundtrip (Task 2).
-- `tests/data/test_trades.py` — Trade insert+select roundtrip (Task 4).
-- `tests/pipeline/test_step_evaluate.py` (or co-located) — sector/industry flow from finviz CSV → candidate rows (Task 3).
-- `tests/trades/test_entry.py` — `record_entry` passes sector/industry through AS-IS (Task 5).
-- `tests/cli/test_trade_entry.py` — CLI auto-resolves from candidate; empty-string fallback when no candidate (Task 7).
-- `tests/web/test_routes/test_trades_entry.py` — POST flow + soft_warn_confirm round-trip (Task 6).
-- `tests/web/test_view_models/test_trade_entry_form_vm.py` — VM populated from candidate (Task 6).
-- `tests/web/test_view_models/test_dashboard_hypothesis_recommendations.py` — HypothesisRecommendation populated (Task 9).
-- `tests/web/test_templates/test_hypothesis_recommendations_partial.py` (or content equivalent) — partial renders columns (Task 9).
-- `tests/web/test_templates/test_watchlist_expanded.py` — partial renders sector/industry rows (Task 8).
-- `tests/web/test_templates/test_open_positions_row.py` — partial renders sector/industry cells (Task 10).
+**Test files (R1 Codex Major 2 RESOLVED — paths verified against actual tree at HEAD `ba2b252`):**
+- Create: `tests/data/test_migration_0012.py` — migration 0012 schema-shape tests (Task 1). Mirrors `tests/data/test_migration_0011.py` pattern (sequential migration apply via `_migrate_to_v<N>` helper, FK seed, schema_version assertion).
+- Extend: `tests/data/test_repos_candidates.py` — Candidate insert+select roundtrip (Task 2). Existing file with `tmp_db` fixture + concrete Candidate fixture.
+- Extend: `tests/data/test_repos_trades.py` — Trade insert+select all-paths roundtrip (Task 4). Existing file with `_trade()` factory + `tmp_path` pattern.
+- Extend: `tests/pipeline/test_runner_chart_targets.py` — sector/industry flow from finviz CSV → candidate rows (Task 3). Existing file with `_csv()` finviz fixture, `_make_cfg()`, `run_pipeline_internal` end-to-end pattern; `_csv()` already emits `Sector,Industry` columns.
+- Extend: `tests/trades/test_entry.py` — `record_entry` passes sector/industry through AS-IS (Task 5). Existing file with `_req()` EntryRequest factory and `ensure_schema(tmp_path / "swing.db")` pattern.
+- Extend: `tests/cli/test_cli_trade_entry_chart_pattern.py` — CLI auto-resolves from candidate; empty-string fallback (Task 7). Existing file with `_setup` (CliRunner + `_minimal_config` + `db-migrate`) + `seed_pipeline_with_classification` precedent. Sector/industry tests can reuse the same scaffolding plus a candidate-row seed.
+- Extend: `tests/web/test_routes/test_trade_entry_chart_pattern.py` — POST flow + soft_warn_confirm round-trip preserves sector/industry (Task 6). Existing file with `seeded_db` fixture + `seed_pipeline_with_classification` + TestClient lifespan-bound pattern.
+- Extend: `tests/web/test_view_models/test_trade_entry_form_classification.py` — VM populated from candidate (Task 6). Existing file with `seeded_db` + `seed_pipeline_with_classification` + `MagicMock` cache pattern.
+- Extend: `tests/web/test_view_models/test_watchlist.py` — partial renders sector/industry rows in expansion (Task 8). Existing file with `seeded_db` + `upsert_watchlist_entry` + `TestClient(app)` template-render pattern (line 153 precedent: `test_watchlist_expanded_template_renders_reason_message`).
+- Extend: `tests/web/test_routes/test_open_positions_expand.py` — partial renders sector/industry cells + colspan match (Task 9). Existing file at line 521 has the colspan-alignment pattern Codex referenced.
 
-> **Test-path verification.** During each task, the implementer must `Glob`/`Grep` the test file path before creating it — existing test layout may use slightly different filenames. Use the closest existing file under the matching directory; if none exists, create with the path shown above.
+> **Test-path verification at executing-plans dispatch.** Implementer should `Read` the precedent test files BEFORE adding the new tests so the new tests adopt the existing scaffolding pattern (fixture imports, helper invocations, assertion shape). Mid-file insertion, not new-file creation, is the V1 plan unless an existing file is structurally incompatible.
 
 ---
 
@@ -107,7 +104,7 @@ No Claude co-author footer. No `--no-verify`. No amending. Conventional-commits 
 **Files:**
 - Create: `swing/data/migrations/0012_sector_industry.sql`
 - Modify: `swing/data/db.py:9` (EXPECTED_SCHEMA_VERSION 11 → 12)
-- Test: `tests/data/test_migrations.py` (or `tests/data/test_db.py` — verify which exists; if both, prefer `test_migrations.py`).
+- Test: create `tests/data/test_migration_0012.py` — mirrors `tests/data/test_migration_0011.py` pattern (sequential `_migrate_to_v<N>` helper, schema_version assertion, NOT NULL DEFAULT '' shape verification).
 
 **Discriminating-test sanity-check.** The migration test asserts the four new columns exist by name AND by NOT NULL DEFAULT '' constraint shape AND by non-NULL value on a fresh INSERT that omits the columns (defaults must apply). If the migration only added the columns without the DEFAULT clause, the third assertion fails (omitted columns persist as NULL on INSERT, violating NOT NULL). **Would this test fail if the implementation never actually applied the migration? Yes — `_current_version(conn)` returns 11 (or 0), and the assertion `cursor.execute("PRAGMA table_info(candidates)")` returns no row matching `name='sector'`, both of which fail explicitly.**
 
@@ -121,12 +118,21 @@ git log -E --pretty='%s' --grep='^[a-z]+\([a-z]+\): Task 1'
 
 Expected: `EXPECTED_SCHEMA_VERSION = 11`; `0011_pipeline_chart_targets_source_taxonomy.sql` is the last migration; grep returns empty.
 
-- [ ] **Step 1.2: Write the failing migration tests.**
+- [ ] **Step 1.2: Write the failing migration test.**
 
-Append to `tests/data/test_migrations.py` (or the analogous file — verify path first):
+Create `tests/data/test_migration_0012.py` (modeled on `tests/data/test_migration_0011.py`):
 
 ```python
-def test_migration_0012_adds_sector_industry_to_candidates_and_trades(tmp_path):
+"""Migration 0012 — sector + industry columns on candidates + trades."""
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+from swing.data.db import EXPECTED_SCHEMA_VERSION, ensure_schema
+
+
+def test_migration_0012_adds_sector_industry_to_candidates_and_trades(tmp_path: Path):
     """Migration 0012 adds NOT NULL DEFAULT '' sector + industry columns to
     BOTH candidates and trades. Default values apply on INSERTs that omit
     the columns, preserving backfill behavior on historical rows."""
@@ -197,12 +203,12 @@ def test_migration_0012_adds_sector_industry_to_candidates_and_trades(tmp_path):
         conn.close()
 ```
 
-If the existing test module uses a different fixture/helper (e.g., `seeded_db`, `db_conn`), inline this test verbatim — do NOT call shared helpers that may set the schema_version differently. Verify by running the existing tests in that file with `pytest tests/data/test_migrations.py -v` first to confirm baseline.
+> **Why a new file rather than appending to `tests/data/test_db.py` (which holds general schema tests).** Migration 0011 ships its tests in a dedicated `test_migration_0011.py` (one file per migration). 0012 follows the same precedent — new file = clean diff, no risk of fixture coupling with unrelated tests.
 
 - [ ] **Step 1.3: Run the failing test.**
 
 ```bash
-python -m pytest tests/data/test_migrations.py::test_migration_0012_adds_sector_industry_to_candidates_and_trades -v
+python -m pytest tests/data/test_migration_0012.py::test_migration_0012_adds_sector_industry_to_candidates_and_trades -v
 ```
 
 Expected: FAIL — `EXPECTED_SCHEMA_VERSION == 11` (not 12), or schema_version table reports 11, or the columns don't exist.
@@ -254,7 +260,7 @@ EXPECTED_SCHEMA_VERSION = 12
 - [ ] **Step 1.6: Run the test to verify it passes.**
 
 ```bash
-python -m pytest tests/data/test_migrations.py::test_migration_0012_adds_sector_industry_to_candidates_and_trades -v
+python -m pytest tests/data/test_migration_0012.py::test_migration_0012_adds_sector_industry_to_candidates_and_trades -v
 ```
 
 Expected: PASS.
@@ -276,7 +282,7 @@ git log -E --pretty='%s' --grep='^[a-z]+\([a-z]+\): Task 1'
 Expected: empty.
 
 ```bash
-git add swing/data/migrations/0012_sector_industry.sql swing/data/db.py tests/data/test_migrations.py
+git add swing/data/migrations/0012_sector_industry.sql swing/data/db.py tests/data/test_migration_0012.py
 git commit -m "feat(data): Task 1 — migration 0012 adds sector + industry to candidates + trades
 
 Schema migration 0012 closes the gap from Finviz CSV ingestion: Sector + Industry
@@ -298,30 +304,21 @@ Observable verification: \`git log -E --grep='^[a-z]+\\([a-z]+\\): Task 1'\` emp
 **Files:**
 - Modify: `swing/data/models.py:18-33` (add fields to Candidate dataclass)
 - Modify: `swing/data/repos/candidates.py` (extend `insert_candidates` SQL, `fetch_candidates_for_run` SQL, candidate-row construction).
-- Test: `tests/data/test_candidates.py` (verify path; create if absent).
+- Test: extend `tests/data/test_repos_candidates.py` (existing file — uses `tmp_db` fixture from `tests/conftest.py` and the standard `Candidate` factory pattern at lines 36-54).
 
 **Discriminating-test sanity-check.** Test inserts a Candidate with sector="Healthcare" + industry="Biotechnology" (specific to this test — no other test fixture should use these values), then reads back via `fetch_candidates_for_run` and asserts both fields are populated with those EXACT strings (`assert c.sector == "Healthcare"` not `assert c.sector`). If `insert_candidates` silently dropped the sector/industry params or `_row_to_candidate` ignored those columns, the test would observe `""` (the schema default) on read-back, failing the assertion. **Would this test fail if the implementation never actually called the new code? Yes — without modifying `insert_candidates`'s SQL the column values are not bound, default `""` is persisted, and the read-back equality check fails.**
 
 - [ ] **Step 2.1: Write the failing test.**
 
-Append to `tests/data/test_candidates.py` (or create if absent):
+Append to `tests/data/test_repos_candidates.py` — the `tmp_db` fixture (declared in `tests/conftest.py`) and existing imports (`ensure_schema`, `Candidate`, `EvaluationRun`, `fetch_candidates_for_run`, `insert_candidates`, `insert_evaluation_run`) are already in scope from the file's existing tests:
 
 ```python
-def test_candidate_sector_industry_roundtrip(tmp_path):
+def test_candidate_sector_industry_roundtrip(tmp_db):
     """A Candidate with sector + industry inserted via insert_candidates is
     fetched back with both fields populated AS-IS. Distinct values
     ("Healthcare" / "Biotechnology") chosen to discriminate against any
     test fixture default that might mask a passthrough bug."""
-    from swing.data.db import ensure_schema
-    from swing.data.models import Candidate, EvaluationRun
-    from swing.data.repos.candidates import (
-        fetch_candidates_for_run,
-        insert_candidates,
-        insert_evaluation_run,
-    )
-
-    db_path = tmp_path / "swing.db"
-    conn = ensure_schema(db_path)
+    conn = ensure_schema(tmp_db)
     try:
         with conn:
             run_id = insert_evaluation_run(conn, EvaluationRun(
@@ -371,7 +368,7 @@ def test_candidate_default_sector_industry_empty(tmp_path):
 - [ ] **Step 2.2: Run the test.**
 
 ```bash
-python -m pytest tests/data/test_candidates.py::test_candidate_sector_industry_roundtrip tests/data/test_candidates.py::test_candidate_default_sector_industry_empty -v
+python -m pytest tests/data/test_repos_candidates.py::test_candidate_sector_industry_roundtrip tests/data/test_repos_candidates.py::test_candidate_default_sector_industry_empty -v
 ```
 
 Expected: FAIL — `Candidate.__init__()` raises `TypeError: got an unexpected keyword argument 'sector'`.
@@ -412,7 +409,7 @@ class Candidate:
 - [ ] **Step 2.4: Run the dataclass-construction test (only the second one) to verify it passes.**
 
 ```bash
-python -m pytest tests/data/test_candidates.py::test_candidate_default_sector_industry_empty -v
+python -m pytest tests/data/test_repos_candidates.py::test_candidate_default_sector_industry_empty -v
 ```
 
 Expected: PASS. The roundtrip test still fails (repo not yet updated).
@@ -507,7 +504,7 @@ def fetch_candidates_for_run(conn: sqlite3.Connection, run_id: int) -> list[Cand
 - [ ] **Step 2.6: Run the roundtrip test.**
 
 ```bash
-python -m pytest tests/data/test_candidates.py::test_candidate_sector_industry_roundtrip -v
+python -m pytest tests/data/test_repos_candidates.py::test_candidate_sector_industry_roundtrip -v
 ```
 
 Expected: PASS.
@@ -529,7 +526,7 @@ git log -E --pretty='%s' --grep='^[a-z]+\([a-z]+\): Task 2'
 Expected: empty.
 
 ```bash
-git add swing/data/models.py swing/data/repos/candidates.py tests/data/test_candidates.py
+git add swing/data/models.py swing/data/repos/candidates.py tests/data/test_repos_candidates.py
 git commit -m "feat(data): Task 2 — Candidate dataclass + repo carry sector/industry
 
 Adds sector + industry fields to Candidate (defaults '' to preserve call sites
@@ -547,74 +544,164 @@ Observable verification: \`git log -E --grep='^[a-z]+\\([a-z]+\\): Task 2'\` emp
 
 **Files:**
 - Modify: `swing/pipeline/runner.py:321-477` (`_step_evaluate`)
-- Test: `tests/pipeline/test_step_evaluate_sector_industry.py` (or extend an existing `_step_evaluate` test file).
+- Test: extend `tests/pipeline/test_runner_chart_targets.py` — existing file with `_csv()` finviz fixture (already emits `Sector,Industry` columns), `_make_cfg()` cfg builder, monkey-patched `PriceFetcher.get`, and `run_pipeline_internal` end-to-end pattern.
 
 **Discriminating-test sanity-check.** Test seeds a Finviz CSV with rows where ticker → (sector, industry) mapping is INVERTED relative to alphabetical: e.g., ticker `AAPL` → `Healthcare / Pharmaceuticals`, ticker `ZZZB` → `Energy / Oil & Gas E&P`. Asserts that `fetch_candidates_for_run`'s output rows have the EXACT mapping the CSV specified (not a swapped or default mapping). **Inversion-against-alphabetical** prevents the Phase 4 R2 ticker-symmetry vacuousness pattern: if the implementation accidentally bound sectors by row INDEX (i.e., post-evaluate_batch's alphabetically-sorted output) instead of by TICKER, the test catches it. **Would this test fail if the implementation never actually called the new code? Yes — without the post-`evaluate_batch` plumbing, candidate rows persist `sector=""` (schema default) and the assertion `c.sector == "Healthcare"` fails for AAPL.**
 
-Also asserts: held-position tickers (added via `held_tickers`, may not be in finviz) persist empty strings (graceful degradation per brief §5.8). ETF-blocklist tickers persist empty strings. Error-tickers (OHLCV fetch failed) persist empty strings.
+**Error-ticker semantics CLARIFIED (R1 Codex Major 5 RESOLVED).** Error tickers (OHLCV fetch failed) ARE in the finviz CSV (they came from `tickers = finviz_df["Ticker"]....`); the sector/industry dict.get() lookup will return their CSV values. The post-evaluate_batch `dataclasses.replace` loop applies UNIFORMLY to every Candidate (a+, watch, skip, error, excluded) — sector/industry source is "whatever is in the CSV for this ticker; empty if not." So:
+- **Tickers in CSV (any bucket: aplus / watch / skip / error / excluded-via-ETF-blocklist):** persist sector + industry FROM THE CSV.
+- **Held-position tickers appended via `held_tickers` and NOT in CSV:** persist empty strings (graceful degradation; the CSV does not contain a row for them, dict.get(default=("","")) returns empty).
 
-- [ ] **Step 3.1: Write the failing test.**
+This is internally consistent — sector/industry are CSV-derived metadata, present whenever the CSV has the ticker.
 
-Place in `tests/pipeline/test_step_evaluate_sector_industry.py` (or extend the closest existing pipeline test file under `tests/pipeline/`):
+- [ ] **Step 3.1: Write the failing tests.**
+
+Append to `tests/pipeline/test_runner_chart_targets.py`. Reuse the existing `_csv`, `_ohlcv`, and `_make_cfg` helpers + `run_pipeline_internal` pattern. Add a custom `_csv_inverted` helper that produces an inversion-against-alphabetical mapping (and a fixture that seeds a held-position trade for the empty-string case):
 
 ```python
-def test_step_evaluate_persists_sector_industry_from_finviz_csv(tmp_path, monkeypatch):
-    """_step_evaluate plumbs Sector + Industry from the Finviz CSV into the
-    candidate row. Inversion test: AAPL → Healthcare / Pharmaceuticals;
-    ZZZB → Energy / Oil & Gas E&P. Bug class guarded: binding by row-index
-    instead of by ticker would yield AAPL → Energy / Oil & Gas E&P.
+def _csv_inverted(inbox: Path) -> Path:
+    """Inversion-against-alphabetical: AAPL → Healthcare / Pharmaceuticals;
+    ZZZB → Energy / Oil & Gas E&P. Guards against row-index-vs-ticker
+    binding bug (Phase 4 R2 ticker-symmetry class).
     """
-    # The exact harness pattern depends on existing tests for _step_evaluate;
-    # this is a SKELETON — implementer adapts to the project's pipeline-test
-    # fixture pattern (likely `tests/pipeline/test_runner.py` or similar).
-    # Required scaffolding:
-    #   1. Build a Finviz CSV with REQUIRED_COLUMNS at tmp_path / "finviz.csv".
-    #      Two ticker rows: AAPL with Sector='Healthcare', Industry='Pharmaceuticals';
-    #      ZZZB with Sector='Energy', Industry='Oil & Gas E&P'.
-    #   2. Stub OHLCV fetcher to return enough bars so both pass the bars_needed
-    #      filter (or fail-fast and route to error_tickers — the assertion below
-    #      handles both branches).
-    #   3. Build a minimal Config + universe + lease, run _step_evaluate.
-    #   4. Open the resulting DB, fetch candidates, assert the mapping.
-    #
-    # Implementer: see tests/pipeline/test_runner.py (or wherever _step_evaluate
-    # is exercised) for the existing fixture pattern; copy that pattern verbatim.
-    # If no _step_evaluate test fixture exists yet, this task ALSO commits the
-    # fixture (single commit per TDD red-green discipline).
-    raise NotImplementedError(
-        "Adapt to existing test scaffolding; see implementation notes."
+    inbox.mkdir(parents=True, exist_ok=True)
+    csv = inbox / "finviz15Apr2026.csv"
+    cols = (
+        "No.,Ticker,Sector,Industry,Country,Price,Change,Average Volume,"
+        "Relative Volume,Average True Range,52-Week High,52-Week Low,Market Cap"
     )
-
-
-def test_step_evaluate_holds_persist_empty_sector_industry(tmp_path, monkeypatch):
-    """Open-trade tickers that get appended via held_tickers but are absent
-    from the finviz CSV persist sector='' and industry='' (graceful
-    degradation; matches the hypothesis_label free-text behavior).
-    Same harness pattern as the previous test."""
-    raise NotImplementedError(
-        "Adapt to existing test scaffolding; see implementation notes."
+    csv.write_text(
+        cols + "\n"
+        "1,AAPL,Healthcare,Pharmaceuticals,USA,180.0,2.5%,200000,1.5,5.0,200.0,150.0,3e9\n"
+        "2,ZZZB,Energy,Oil & Gas E&P,USA,420.0,1.5%,250000,1.2,4.5,440.0,330.0,3.5e9\n",
+        encoding="utf-8",
     )
+    return csv
 
 
-def test_step_evaluate_error_tickers_persist_empty_sector_industry(tmp_path, monkeypatch):
-    """Tickers in finviz CSV whose OHLCV fetch failed land in error_tickers
-    (synthesized Candidate with bucket='error'). They DO have sector/industry
-    in the CSV — assert the synthesized error candidate carries those values
-    rather than empty strings (consistent with the 'data is in CSV' framing)."""
-    raise NotImplementedError(
-        "Adapt to existing test scaffolding; see implementation notes."
+def test_step_evaluate_persists_sector_industry_from_finviz_csv(
+    tmp_path: Path, monkeypatch,
+):
+    """_step_evaluate plumbs Sector + Industry from the Finviz CSV into the
+    candidate row. AAPL → Healthcare / Pharmaceuticals; ZZZB → Energy /
+    Oil & Gas E&P. Inversion-against-alphabetical: a row-index binding bug
+    would yield AAPL → Energy / Oil & Gas E&P (alphabetical-first row
+    bound to alphabetical-first ticker).
+    """
+    cfg = _make_cfg(tmp_path)
+    _csv_inverted(cfg.paths.finviz_inbox_dir)
+    monkeypatch.setattr(
+        "swing.prices.PriceFetcher.get",
+        lambda self, ticker, lookback_days, *, as_of_date=None: _ohlcv(),
     )
+    result = run_pipeline_internal(cfg=cfg, trigger="manual")
+    assert result.state == "complete"
+
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        run = find_run(conn, result.run_id)
+        cands = conn.execute(
+            "SELECT ticker, sector, industry FROM candidates "
+            "WHERE evaluation_run_id = ? ORDER BY ticker",
+            (run.evaluation_run_id,),
+        ).fetchall()
+        assert (
+            "AAPL", "Healthcare", "Pharmaceuticals",
+        ) in cands, f"AAPL → Healthcare/Pharmaceuticals expected, got: {cands}"
+        assert (
+            "ZZZB", "Energy", "Oil & Gas E&P",
+        ) in cands, f"ZZZB → Energy/Oil & Gas E&P expected, got: {cands}"
+    finally:
+        conn.close()
+
+
+def test_step_evaluate_held_position_not_in_csv_persists_empty_sector_industry(
+    tmp_path: Path, monkeypatch,
+):
+    """Held-trade tickers that aren't in the finviz CSV (rotated out of
+    screener) get appended to the candidate set via _step_evaluate's
+    held_tickers loop with bucket='excluded'. Sector/industry default to
+    empty strings (the dict.get(t, ('','')) lookup misses)."""
+    cfg = _make_cfg(tmp_path)
+    _csv_inverted(cfg.paths.finviz_inbox_dir)
+    # Seed an open trade for a ticker NOT in the CSV — appears via held_tickers.
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="HELD", entry_date="2026-04-10",
+                entry_price=50.0, initial_shares=10, initial_stop=45.0,
+                current_stop=45.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-10T09:30:00")
+    finally:
+        conn.close()
+    monkeypatch.setattr(
+        "swing.prices.PriceFetcher.get",
+        lambda self, ticker, lookback_days, *, as_of_date=None: _ohlcv(),
+    )
+    result = run_pipeline_internal(cfg=cfg, trigger="manual")
+    assert result.state == "complete"
+
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        run = find_run(conn, result.run_id)
+        held_row = conn.execute(
+            "SELECT bucket, sector, industry FROM candidates "
+            "WHERE evaluation_run_id = ? AND ticker = 'HELD'",
+            (run.evaluation_run_id,),
+        ).fetchone()
+        assert held_row is not None, "held-position ticker missing from candidates"
+        assert held_row == ("excluded", "", ""), (
+            f"held-position ticker should be excluded with empty sector/industry; got {held_row}"
+        )
+    finally:
+        conn.close()
+
+
+def test_step_evaluate_csv_ticker_with_fetch_failure_keeps_sector_industry(
+    tmp_path: Path, monkeypatch,
+):
+    """A ticker that's in the finviz CSV AND has its OHLCV fetch fail lands
+    as bucket='error' — but its sector/industry come from the CSV (the
+    post-evaluate_batch dict.get() lookup hits)."""
+    cfg = _make_cfg(tmp_path)
+    _csv_inverted(cfg.paths.finviz_inbox_dir)
+
+    def selective_fetcher(self, ticker, lookback_days, *, as_of_date=None):
+        if ticker == "AAPL":
+            raise RuntimeError("simulated yfinance outage for AAPL")
+        return _ohlcv()
+
+    monkeypatch.setattr("swing.prices.PriceFetcher.get", selective_fetcher)
+    result = run_pipeline_internal(cfg=cfg, trigger="manual")
+    assert result.state == "complete"
+
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        run = find_run(conn, result.run_id)
+        aapl = conn.execute(
+            "SELECT bucket, sector, industry FROM candidates "
+            "WHERE evaluation_run_id = ? AND ticker='AAPL'",
+            (run.evaluation_run_id,),
+        ).fetchone()
+        assert aapl is not None
+        assert aapl[0] == "error"
+        # Sector/industry STILL persist from CSV even though OHLCV failed.
+        assert aapl[1] == "Healthcare"
+        assert aapl[2] == "Pharmaceuticals"
+    finally:
+        conn.close()
 ```
 
-> **Test-skeleton replacement guidance.** The plan keeps these tests as skeletons because the existing `_step_evaluate` test scaffolding is project-specific (lease fixture, fetcher stub, config). The implementer's first action in Task 3 is to find the existing `_step_evaluate` test file via `grep -rn "_step_evaluate\|def _step_evaluate" tests/pipeline/` and adapt the harness. If no existing test exercises `_step_evaluate` end-to-end (in which case the cheapest route is unit-test the post-`evaluate_batch` plumbing in isolation), use `dataclasses.replace` directly: construct a list of `Candidate` instances, build the same sector/industry dict from a stub finviz_df, apply the replace pattern, assert the mapping. **Either form satisfies the discriminating-test discipline above; the inversion-against-alphabetical assertion is what matters.**
-
-- [ ] **Step 3.2: Run the failing test.**
+- [ ] **Step 3.2: Run the failing tests.**
 
 ```bash
-python -m pytest tests/pipeline/test_step_evaluate_sector_industry.py -v
+python -m pytest tests/pipeline/test_runner_chart_targets.py -v -k "sector_industry or held_position_not_in_csv or fetch_failure_keeps_sector"
 ```
 
-Expected: FAIL with NotImplementedError (skeleton) OR with sector/industry mismatch (after harness is adapted).
+Expected: FAIL — candidates have empty sector/industry pre-implementation; assertion mismatches.
 
 - [ ] **Step 3.3: Implement the post-`evaluate_batch` plumbing.**
 
@@ -677,7 +764,7 @@ def _step_evaluate(
 - [ ] **Step 3.4: Run the test.**
 
 ```bash
-python -m pytest tests/pipeline/test_step_evaluate_sector_industry.py -v
+python -m pytest tests/pipeline/test_runner_chart_targets.py -v -k "sector_industry or held_position_not_in_csv or fetch_failure_keeps_sector"
 ```
 
 Expected: PASS for the inversion test, the holds-empty test, and the error-tickers-from-CSV test.
@@ -699,7 +786,7 @@ git log -E --pretty='%s' --grep='^[a-z]+\([a-z]+\): Task 3'
 Expected: empty.
 
 ```bash
-git add swing/pipeline/runner.py tests/pipeline/test_step_evaluate_sector_industry.py
+git add swing/pipeline/runner.py tests/pipeline/test_runner_chart_targets.py
 git commit -m "feat(pipeline): Task 3 — _step_evaluate plumbs Sector + Industry from CSV
 
 Builds a per-CSV sector/industry dict from the same finviz_df already loaded;
@@ -719,13 +806,13 @@ Observable verification: \`git log -E --grep='^[a-z]+\\([a-z]+\\): Task 3'\` emp
 **Files:**
 - Modify: `swing/data/models.py:53-77` (Trade dataclass)
 - Modify: `swing/data/repos/trades.py` (insert_trade_with_event SQL + 5 SELECT call sites + `_row_to_trade`)
-- Test: `tests/data/test_trades.py` (verify path; create if absent).
+- Test: extend `tests/data/test_repos_trades.py` (existing file with `_trade()` factory + `tmp_path / "swing.db"` pattern; precedent: `test_insert_trade_persists_hypothesis_label` at line 99).
 
 **Discriminating-test sanity-check.** Test inserts a Trade with `sector="Energy"` + `industry="Oil & Gas E&P"`, reads back via `get_trade`, `list_open_trades`, `list_closed_trades` (after closing), `find_any_open_trade`, and `find_open_trade_by_match` — asserts ALL FIVE SELECT paths return the EXACT values set on insert. The 5 SELECT paths all hand-roll their column lists (no shared SELECT helper). If any one path's SELECT or `_row_to_trade` mapping is missed, the test for that path observes empty strings (schema default after migration 0012) and the assertion fails. **Would this test fail if the implementation never actually called the new code? Yes — five distinct read paths each fail individually if their SELECT list isn't extended.**
 
 - [ ] **Step 4.1: Write the failing test.**
 
-Append to `tests/data/test_trades.py`:
+Append to `tests/data/test_repos_trades.py`:
 
 ```python
 def test_trade_sector_industry_roundtrip_all_select_paths(tmp_path):
@@ -820,7 +907,7 @@ def test_trade_default_sector_industry_empty():
 - [ ] **Step 4.2: Run the failing tests.**
 
 ```bash
-python -m pytest tests/data/test_trades.py::test_trade_sector_industry_roundtrip_all_select_paths tests/data/test_trades.py::test_trade_default_sector_industry_empty -v
+python -m pytest tests/data/test_repos_trades.py::test_trade_sector_industry_roundtrip_all_select_paths tests/data/test_repos_trades.py::test_trade_default_sector_industry_empty -v
 ```
 
 Expected: FAIL — `Trade.__init__()` raises `TypeError`.
@@ -861,7 +948,7 @@ class Trade:
 - [ ] **Step 4.4: Run the dataclass-default test only.**
 
 ```bash
-python -m pytest tests/data/test_trades.py::test_trade_default_sector_industry_empty -v
+python -m pytest tests/data/test_repos_trades.py::test_trade_default_sector_industry_empty -v
 ```
 
 Expected: PASS.
@@ -972,7 +1059,7 @@ def _row_to_trade(row: tuple) -> Trade:
 - [ ] **Step 4.7: Run the roundtrip test.**
 
 ```bash
-python -m pytest tests/data/test_trades.py::test_trade_sector_industry_roundtrip_all_select_paths -v
+python -m pytest tests/data/test_repos_trades.py::test_trade_sector_industry_roundtrip_all_select_paths -v
 ```
 
 Expected: PASS.
@@ -994,7 +1081,7 @@ git log -E --pretty='%s' --grep='^[a-z]+\([a-z]+\): Task 4'
 Expected: empty.
 
 ```bash
-git add swing/data/models.py swing/data/repos/trades.py tests/data/test_trades.py
+git add swing/data/models.py swing/data/repos/trades.py tests/data/test_repos_trades.py
 git commit -m "feat(data): Task 4 — Trade dataclass + repo carry sector/industry on all SELECT paths
 
 Adds sector + industry to Trade with '' defaults; extends insert_trade_with_event
@@ -1013,7 +1100,7 @@ Observable verification: \`git log -E --grep='^[a-z]+\\([a-z]+\\): Task 4'\` emp
 
 **Files:**
 - Modify: `swing/trades/entry.py:80-109` (`EntryRequest`), `swing/trades/entry.py:158-232` (`record_entry`)
-- Test: `tests/trades/test_entry.py` (verify path; create if absent).
+- Test: extend `tests/trades/test_entry.py` (existing file with `_req()` EntryRequest factory + `ensure_schema(tmp_path / "swing.db")` pattern at lines 19-26).
 
 **Discriminating-test sanity-check.** Test constructs an `EntryRequest` with `sector="Healthcare"` + `industry="Pharmaceuticals"`; calls `record_entry`; asserts the persisted Trade row carries those exact strings. If `record_entry`'s `Trade(...)` construction omits the new fields (or hard-codes empty defaults), the assertion fails. **Would this test fail if the implementation never actually called the new code? Yes — without explicit pass-through, the Trade is constructed with default `""` for both fields, and the assertion `t.sector == "Healthcare"` fails.**
 
@@ -1165,7 +1252,8 @@ Observable verification: \`git log -E --grep='^[a-z]+\\([a-z]+\\): Task 5'\` emp
 - Modify: `swing/web/view_models/trades.py:21-167` (`TradeEntryFormVM` + `build_entry_form_vm`)
 - Modify: `swing/web/templates/partials/trade_entry_form.html.j2`
 - Modify: `swing/web/routes/trades.py:218-403` (`entry_post` Form params, `req` construction, soft_warn_confirm `form_values` dict, `_rerender_entry_form_with_error` preservation path)
-- Test: `tests/web/test_view_models/test_trade_entry_form_vm.py` and `tests/web/test_routes/test_trades_entry.py` (verify paths; create if absent).
+- Test (VM): extend `tests/web/test_view_models/test_trade_entry_form_classification.py` — existing file with `seeded_db` fixture, `seed_pipeline_with_classification` precedent helper, `MagicMock` cache pattern.
+- Test (route + soft_warn round-trip): extend `tests/web/test_routes/test_trade_entry_chart_pattern.py` — existing file with `seeded_db` fixture + `seed_pipeline_with_classification` + `TestClient(app)` lifespan-bound pattern.
 
 **Discriminating-test sanity-check.** Test for VM populates the candidate row's sector/industry to specific test-only values (`"Sector-T6-A"` / `"Industry-T6-A"`) and asserts the constructed VM exposes those exact values. Test for the POST route submits a multipart form with hidden `sector="Sector-T6-B"` and `industry="Industry-T6-B"`; asserts the persisted Trade row carries those values. The Test-prefixed sentinel values guarantee NO production code path defaults to them — if the field plumbing is broken, the persisted value diverges from the sentinel and the assertion fails. **Would these tests fail if the implementation never actually called the new code? Yes — VM construction without the candidate-row-lookup branch returns `sector=""`; POST handler that ignores the form fields constructs EntryRequest with default `""`; both fail the assertion.**
 
@@ -1173,55 +1261,172 @@ Test for soft_warn_confirm round-trip: first POST hits soft_warn cap, route retu
 
 - [ ] **Step 6.1: Write the failing tests.**
 
-In `tests/web/test_view_models/test_trade_entry_form_vm.py` (or extend the existing test file):
+Append to `tests/web/test_view_models/test_trade_entry_form_classification.py` (extend the existing file — `seeded_db` fixture and `seed_pipeline_with_classification` helper are already imported):
 
 ```python
-def test_build_entry_form_vm_populates_sector_industry_from_candidate(tmp_path, monkeypatch):
-    """build_entry_form_vm reads the candidate row by ticker against the
-    latest completed pipeline_run's evaluation_run_id and exposes
-    sector/industry on the VM. Test-prefixed sentinel values guarantee
-    no fallback path masks the bug."""
-    # Implementer: adapt to existing TradeEntryFormVM test fixture pattern.
-    # Key shape:
-    #   1. Seed pipeline_runs (state='complete', evaluation_run_id set).
-    #   2. Seed candidates row with ticker='ZZZG', sector='Sector-T6-A',
-    #      industry='Industry-T6-A'.
-    #   3. Seed watchlist row for 'ZZZG' so build_entry_form_vm finds wl_entry.
-    #   4. Construct a stub PriceCache + Config; call build_entry_form_vm.
-    #   5. Assert vm.sector == 'Sector-T6-A' and vm.industry == 'Industry-T6-A'.
-    raise NotImplementedError("Adapt to existing fixture pattern.")
+def test_entry_form_vm_populates_sector_industry_from_candidate(seeded_db):
+    """build_entry_form_vm reads sector + industry from the candidate row
+    by ticker. Sentinel values 'Sector-T6-A' / 'Industry-T6-A' guarantee
+    no production code path defaults to them."""
+    from unittest.mock import MagicMock
+    from swing.data.db import connect
+    from swing.web.view_models.trades import build_entry_form_vm
+    cfg, _ = seeded_db
+    # Reuse the seed helper for the pipeline_run + watchlist scaffold,
+    # then UPDATE the candidate row's sector/industry to the sentinels.
+    run_id, eval_id = seed_pipeline_with_classification(
+        cfg.paths.db_path,
+        ticker="AAPL", pattern="flag", confidence=0.78,
+    )
+    conn = connect(cfg.paths.db_path)
+    try:
+        # Seed a candidates row keyed on the FK-backed eval_id with the sentinels.
+        conn.execute(
+            """INSERT INTO candidates
+               (evaluation_run_id, ticker, bucket, close, pivot, initial_stop,
+                adr_pct, tight_streak, pullback_pct, prior_trend_pct, rs_rank,
+                rs_return_12w_vs_spy, rs_method, pattern_tag, notes,
+                sector, industry)
+               VALUES (?, 'AAPL', 'watch', 100.0, 105.0, 95.0,
+                       2.0, 5, NULL, NULL, NULL, NULL, 'fallback_spy',
+                       NULL, NULL, 'Sector-T6-A', 'Industry-T6-A')""",
+            (eval_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    cache = MagicMock()
+    cache.get_many.return_value = {}
+    vm = build_entry_form_vm(
+        ticker="AAPL", cfg=cfg, cache=cache, executor=MagicMock(),
+    )
+    assert vm.sector == "Sector-T6-A"
+    assert vm.industry == "Industry-T6-A"
 
 
-def test_build_entry_form_vm_no_candidate_for_ticker_defaults_empty(tmp_path):
-    """When no candidate row exists for the entered ticker (e.g., ticker
-    rotated out of finviz), the VM exposes empty strings — graceful
-    degradation per brief §5.8."""
-    raise NotImplementedError("Adapt to existing fixture pattern.")
+def test_entry_form_vm_no_candidate_row_defaults_empty_sector_industry(seeded_db):
+    """When no candidate row exists for the entered ticker (off-pipeline
+    entry), the VM exposes empty strings — graceful degradation per
+    brief §5.8."""
+    from unittest.mock import MagicMock
+    from swing.web.view_models.trades import build_entry_form_vm
+    cfg, _ = seeded_db
+    # Seed pipeline + watchlist but NOT a candidates row for the ticker.
+    seed_pipeline_with_classification(
+        cfg.paths.db_path,
+        ticker="OTHER", pattern="flag", confidence=0.5,
+    )
+    cache = MagicMock()
+    cache.get_many.return_value = {}
+    vm = build_entry_form_vm(
+        ticker="AAPL", cfg=cfg, cache=cache, executor=MagicMock(),
+    )
+    assert vm.sector == ""
+    assert vm.industry == ""
 ```
 
-In `tests/web/test_routes/test_trades_entry.py`:
+Append to `tests/web/test_routes/test_trade_entry_chart_pattern.py` (extend the existing file — `seeded_db` + `seed_pipeline_with_classification` + `TestClient(app)` pattern already in scope; existing soft-warn tests at line 510 are the closest precedent):
 
 ```python
-def test_entry_post_persists_sector_industry_from_form(tmp_path, ...):
+def test_post_entry_persists_sector_industry_from_form(seeded_db):
     """POST /trades/entry with hidden sector + industry form fields persists
     them on the Trade row AS-IS (snapshot-at-entry-surface ToCToU)."""
-    raise NotImplementedError("Adapt to existing fixture pattern.")
+    from fastapi.testclient import TestClient
+    from swing.data.db import connect
+    from swing.data.repos.trades import find_any_open_trade
+    from swing.web.app import create_app
+    cfg, cfg_path = seeded_db
+    seed_pipeline_with_classification(
+        cfg.paths.db_path,
+        ticker="AAPL", pattern="flag", confidence=0.78,
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/trades/entry", data={
+            "ticker": "AAPL", "entry_date": "2026-04-28",
+            "entry_price": "100.0", "shares": "1", "initial_stop": "95.0",
+            "rationale": "aplus-setup",
+            "sector": "Sector-Route-T6-B",
+            "industry": "Industry-Route-T6-B",
+        }, headers={"HX-Request": "true"})
+    assert r.status_code == 200, r.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        t = find_any_open_trade(conn, ticker="AAPL")
+    finally:
+        conn.close()
+    assert t is not None
+    assert t.sector == "Sector-Route-T6-B"
+    assert t.industry == "Industry-Route-T6-B"
 
 
-def test_entry_post_soft_warn_confirm_preserves_sector_industry(tmp_path, ...):
-    """First POST that trips the soft_warn cap returns the soft_warn_confirm
-    fragment carrying sector + industry as hidden inputs. Second POST
-    (force=true) persists those values on the Trade. Mirrors the chart_pattern
+def test_post_entry_soft_warn_confirm_preserves_sector_industry(seeded_db):
+    """First POST trips soft_warn cap → returns soft_warn_confirm fragment
+    carrying sector + industry as hidden inputs. Second POST (force=true)
+    persists those values on the Trade. Mirrors the chart_pattern
     snapshot preservation pattern (Phase 5 Codex R1 Major 2)."""
-    raise NotImplementedError("Adapt to existing fixture pattern.")
-```
+    from fastapi.testclient import TestClient
+    from swing.data.db import connect
+    from swing.data.repos.trades import find_any_open_trade, insert_trade_with_event
+    from swing.data.models import Trade
+    from swing.web.app import create_app
+    cfg, cfg_path = seeded_db
+    seed_pipeline_with_classification(
+        cfg.paths.db_path,
+        ticker="AAPL", pattern="flag", confidence=0.78,
+    )
+    # Seed enough open trades to trip soft_warn (default soft_warn_open=4).
+    conn = connect(cfg.paths.db_path)
+    try:
+        for i, tk in enumerate(["TK1", "TK2", "TK3", "TK4"]):
+            with conn:
+                insert_trade_with_event(conn, Trade(
+                    id=None, ticker=tk, entry_date="2026-04-20",
+                    entry_price=100.0, initial_shares=1, initial_stop=95.0,
+                    current_stop=95.0, status="open",
+                    watchlist_entry_target=None, watchlist_initial_stop=None,
+                    notes=None,
+                ), event_ts=f"2026-04-20T09:30:0{i}")
+    finally:
+        conn.close()
 
-> **Adapt to existing test scaffolding.** Look for `tests/web/test_routes/test_trade_entry*.py` or any file containing `entry_post` test patterns. Use the same `TestClient(app)` + `with TestClient(app) as client:` pattern (CLAUDE.md gotcha: lifespan-required for `app.state.price_fetch_executor`). The chart_pattern soft_warn_confirm tests (Phase 5) are the closest precedent.
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        # First POST — trips soft_warn.
+        r1 = client.post("/trades/entry", data={
+            "ticker": "AAPL", "entry_date": "2026-04-28",
+            "entry_price": "100.0", "shares": "1", "initial_stop": "95.0",
+            "rationale": "aplus-setup",
+            "sector": "Sector-SoftWarn-T6", "industry": "Industry-SoftWarn-T6",
+        }, headers={"HX-Request": "true"})
+        assert r1.status_code == 200
+        # Confirm fragment carries sector/industry as hidden inputs.
+        body = r1.text
+        assert 'name="sector" value="Sector-SoftWarn-T6"' in body
+        assert 'name="industry" value="Industry-SoftWarn-T6"' in body
+        # Second POST — force=true; round-trip submits the snapshot.
+        r2 = client.post("/trades/entry", data={
+            "ticker": "AAPL", "entry_date": "2026-04-28",
+            "entry_price": "100.0", "shares": "1", "initial_stop": "95.0",
+            "rationale": "aplus-setup",
+            "sector": "Sector-SoftWarn-T6", "industry": "Industry-SoftWarn-T6",
+            "force": "true",
+        }, headers={"HX-Request": "true"})
+        assert r2.status_code == 200, r2.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        t = find_any_open_trade(conn, ticker="AAPL")
+    finally:
+        conn.close()
+    assert t is not None
+    assert t.sector == "Sector-SoftWarn-T6"
+    assert t.industry == "Industry-SoftWarn-T6"
+```
 
 - [ ] **Step 6.2: Run the failing tests.**
 
 ```bash
-python -m pytest tests/web/test_view_models/test_trade_entry_form_vm.py tests/web/test_routes/test_trades_entry.py -v -k "sector_industry or soft_warn_confirm_preserves"
+python -m pytest tests/web/test_view_models/test_trade_entry_form_classification.py tests/web/test_routes/test_trade_entry_chart_pattern.py -v -k "sector_industry or persists_sector_industry or soft_warn_confirm_preserves_sector_industry"
 ```
 
 Expected: FAIL with NotImplementedError (skeleton) or sector/industry mismatch (after harness).
@@ -1264,7 +1469,7 @@ class TradeEntryFormVM:
     industry: str = ""
 ```
 
-In `build_entry_form_vm`, extend the read-snapshot block to also fetch sector/industry from the candidate row by ticker (against the SAME pipeline_run resolution already performed for chart-pattern). Concrete change inside the `with conn:` block:
+In `build_entry_form_vm`, extend the read-snapshot block to ALSO fetch sector/industry. **Use the canonical `latest_evaluation_run_id()` helper** (`swing/web/view_models/dashboard.py:64-95`) so the entry form binds to the SAME evaluation run anchor the dashboard hyp-rec surface uses — closes the cross-surface drift Codex R1 Major 4 flagged. Falling back to the helper preserves the dashboard's two-step selection (pipeline-bound complete → fallback to latest standalone eval). Concrete change inside the `with conn:` block:
 
 ```python
         with conn:
@@ -1281,18 +1486,22 @@ In `build_entry_form_vm`, extend the read-snapshot block to also fetch sector/in
             pipeline_run_id = (
                 pipeline_eval_row[0] if pipeline_eval_row else None
             )
-            # NEW: Reuse the same row to also fetch the candidate's sector
-            # + industry via the FK-backed evaluation_run_id when present.
-            pipeline_eval_id = (
-                pipeline_eval_row[1] if pipeline_eval_row else None
-            )
+            # NEW (R1 Codex Major 4): use the canonical helper for
+            # candidate-row binding to keep entry surfaces aligned with
+            # the dashboard's hyp-rec surface. The helper falls back to
+            # the latest standalone eval when no completed pipeline-bound
+            # eval exists — same fallback the dashboard uses, so a
+            # post-pipeline standalone `swing eval` produces consistent
+            # sector/industry across the two surfaces.
+            from swing.web.view_models.dashboard import latest_evaluation_run_id
             cand_sector = ""
             cand_industry = ""
-            if pipeline_eval_id is not None:
+            sector_eval_id = latest_evaluation_run_id(conn)
+            if sector_eval_id is not None:
                 cand_row = conn.execute(
                     """SELECT sector, industry FROM candidates
                        WHERE evaluation_run_id = ? AND ticker = ?""",
-                    (pipeline_eval_id, ticker),
+                    (sector_eval_id, ticker),
                 ).fetchone()
                 if cand_row is not None:
                     cand_sector = cand_row[0] or ""
@@ -1308,7 +1517,9 @@ In `build_entry_form_vm`, extend the read-snapshot block to also fetch sector/in
 
 Then thread `sector=cand_sector, industry=cand_industry` into the final `TradeEntryFormVM(...)` construction at the bottom of the function.
 
-> **Why query directly here instead of `fetch_candidates_for_run` + iterate?** `fetch_candidates_for_run` returns the full Candidate (criteria + all metric columns) and triggers an N+1-style criteria SELECT per candidate. For the entry-form VM we need only sector + industry — a single 2-column SELECT bound to `(evaluation_run_id, ticker)` is the minimum query. **Verify** by checking the candidates schema's index coverage in `swing/data/migrations/0001_*.sql` (or wherever `candidates` is created); there should be an index on `evaluation_run_id` (else the query is a table scan, but at the scale of 5-200 candidates per run that's harmless). If the schema lacks the index, NOTE — do not add one in this dispatch (out of scope; surface as follow-up).
+> **Why query candidates directly instead of `fetch_candidates_for_run` + iterate?** `fetch_candidates_for_run` returns the full Candidate (criteria + all metric columns) and triggers an N+1-style criteria SELECT per candidate. For the entry-form VM we need only sector + industry — a single 2-column SELECT bound to `(evaluation_run_id, ticker)` is the minimum query.
+
+> **Why decouple the candidate-row eval anchor from the chart_pattern pipeline_run anchor?** Chart-pattern classifications are keyed on `pipeline_run_id` — they require a completed PIPELINE run, not just an eval. Sector/industry are on the candidate row, which is keyed on `evaluation_run_id` — the dashboard binds candidates_by_ticker via `latest_evaluation_run_id()` (which prefers pipeline-bound complete but falls back to latest standalone eval). The entry-form VM should match the dashboard's anchor for sector/industry; the chart-pattern resolution stays on the pipeline-run anchor. The two queries are independent reads in the same transaction; no risk of inconsistency.
 
 - [ ] **Step 6.4: Update the trade_entry_form template.**
 
@@ -1390,7 +1601,7 @@ In the SoftWarnException branch's `form_values` dict, add:
 - [ ] **Step 6.6: Run the failing tests + full fast suite.**
 
 ```bash
-python -m pytest tests/web/test_view_models/test_trade_entry_form_vm.py tests/web/test_routes/test_trades_entry.py -v -k "sector_industry or soft_warn_confirm_preserves"
+python -m pytest tests/web/test_view_models/test_trade_entry_form_classification.py tests/web/test_routes/test_trade_entry_chart_pattern.py -v -k "sector_industry or persists_sector_industry or soft_warn_confirm_preserves_sector_industry"
 ```
 
 Expected: PASS.
@@ -1410,8 +1621,8 @@ git log -E --pretty='%s' --grep='^[a-z]+\([a-z]+\): Task 6'
 ```bash
 git add swing/web/view_models/trades.py swing/web/routes/trades.py \
         swing/web/templates/partials/trade_entry_form.html.j2 \
-        tests/web/test_view_models/test_trade_entry_form_vm.py \
-        tests/web/test_routes/test_trades_entry.py
+        tests/web/test_view_models/test_trade_entry_form_classification.py \
+        tests/web/test_routes/test_trade_entry_chart_pattern.py
 git commit -m "feat(web): Task 6 — trade-entry form snapshots sector/industry at GET, persists at POST
 
 build_entry_form_vm resolves sector + industry from the candidate row by
@@ -1431,45 +1642,118 @@ Observable verification: \`git log -E --grep='^[a-z]+\\([a-z]+\\): Task 6'\` emp
 
 **Files:**
 - Modify: `swing/cli.py:355-491` (`trade_entry_cmd`)
-- Test: `tests/cli/test_trade_entry.py` (verify path; create if absent).
+- Test: extend `tests/cli/test_cli_trade_entry_chart_pattern.py` — existing file with `_setup` (CliRunner + `_minimal_config` + `db-migrate`), `seed_pipeline_with_classification` precedent, and `_db_path_for_cfg` helper at line 62.
 
 **Discriminating-test sanity-check.** Test invokes `swing trade entry` against a DB seeded with a candidate row that has sector="CLI-Sector-T7" / industry="CLI-Industry-T7"; asserts the persisted Trade carries those exact values. Second test uses a ticker NOT in the candidate table; asserts the persisted Trade has empty strings. Test-prefixed sentinels prevent any default-string mask. **Would this test fail if the implementation never actually called the new code? Yes — without the candidate-row lookup the EntryRequest gets default `""`, and the persisted trade row's sector/industry don't match the seeded sentinels.**
 
 - [ ] **Step 7.1: Write the failing tests.**
 
+Append to `tests/cli/test_cli_trade_entry_chart_pattern.py` (extend the existing file — `_setup`, `_db_path_for_cfg`, `seed_pipeline_with_classification` already in scope from existing imports):
+
 ```python
-def test_trade_entry_cli_resolves_sector_industry_from_candidate(tmp_path, ...):
-    """`swing trade entry` reads sector + industry from the latest candidate
-    row by ticker (FK-backed pipeline_run path); persists AS-IS via record_entry."""
-    raise NotImplementedError("Adapt to existing CLI test fixture pattern.")
+def _seed_candidate_row(
+    db_path: Path, *, eval_id: int, ticker: str,
+    sector: str, industry: str,
+):
+    """Seed one candidates row keyed on the FK-backed eval_id."""
+    from swing.data.db import connect
+    conn = connect(db_path)
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO candidates
+                   (evaluation_run_id, ticker, bucket, close, pivot, initial_stop,
+                    adr_pct, tight_streak, pullback_pct, prior_trend_pct, rs_rank,
+                    rs_return_12w_vs_spy, rs_method, pattern_tag, notes,
+                    sector, industry)
+                   VALUES (?, ?, 'watch', 100.0, 105.0, 95.0,
+                           2.0, 5, NULL, NULL, NULL, NULL, 'fallback_spy',
+                           NULL, NULL, ?, ?)""",
+                (eval_id, ticker, sector, industry),
+            )
+    finally:
+        conn.close()
 
 
-def test_trade_entry_cli_no_candidate_persists_empty(tmp_path, ...):
+def test_cli_trade_entry_resolves_sector_industry_from_candidate(tmp_path: Path):
+    """`swing trade entry` reads sector + industry from the candidate row
+    via `latest_evaluation_run_id()` (canonical helper used by dashboard
+    + hypothesis pre-fill); persists AS-IS on the trade row. Sentinel
+    'CLI-Sector-T7' / 'CLI-Industry-T7' guards against any default-string
+    mask."""
+    runner, cfg = _setup(tmp_path)
+    db_path = _db_path_for_cfg(cfg)
+    _, eval_id = seed_pipeline_with_classification(
+        db_path, ticker="AAPL", pattern="flag", confidence=0.78,
+    )
+    _seed_candidate_row(
+        db_path, eval_id=eval_id, ticker="AAPL",
+        sector="CLI-Sector-T7", industry="CLI-Industry-T7",
+    )
+    result = runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "AAPL", "--entry-date", "2026-04-26",
+        "--entry-price", "10.0", "--shares", "1", "--initial-stop", "9.0",
+        "--rationale", "aplus-setup",
+    ])
+    assert result.exit_code == 0, result.output
+    from swing.data.db import connect
+    from swing.data.repos.trades import find_any_open_trade
+    conn = connect(db_path)
+    try:
+        t = find_any_open_trade(conn, ticker="AAPL")
+    finally:
+        conn.close()
+    assert t is not None
+    assert t.sector == "CLI-Sector-T7"
+    assert t.industry == "CLI-Industry-T7"
+
+
+def test_cli_trade_entry_no_candidate_persists_empty_sector_industry(tmp_path: Path):
     """When no candidate row exists for the entered ticker, `swing trade entry`
-    persists sector='' + industry='' (graceful degradation; matches
-    hypothesis_label free-text behavior). Pipeline-bypass / off-watchlist
-    trade entries are explicitly supported per brief §5.8."""
-    raise NotImplementedError("Adapt to existing CLI test fixture pattern.")
+    persists sector='' + industry='' (graceful degradation per brief §5.8;
+    matches the hypothesis_label free-text behavior). Pipeline-bypass /
+    off-watchlist trade entries are explicitly supported."""
+    runner, cfg = _setup(tmp_path)
+    result = runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "AAPL", "--entry-date", "2026-04-26",
+        "--entry-price", "10.0", "--shares", "1", "--initial-stop", "9.0",
+        "--rationale", "aplus-setup",
+    ])
+    assert result.exit_code == 0, result.output
+    from swing.data.db import connect
+    from swing.data.repos.trades import find_any_open_trade
+    db_path = _db_path_for_cfg(cfg)
+    conn = connect(db_path)
+    try:
+        t = find_any_open_trade(conn, ticker="AAPL")
+    finally:
+        conn.close()
+    assert t is not None
+    assert t.sector == ""
+    assert t.industry == ""
 ```
-
-> **Adapt to existing CLI test fixture pattern.** `tests/cli/test_trade_entry.py` (or whichever existing file uses `CliRunner` / `click.testing`) has the precedent for invoking `swing trade entry` against a temp DB. Look for tests that already exercise hypothesis pre-fill or chart_pattern resolution; mirror that fixture.
 
 - [ ] **Step 7.2: Run the failing tests.**
 
 ```bash
-python -m pytest tests/cli/test_trade_entry.py -v -k "sector_industry"
+python -m pytest tests/cli/test_cli_trade_entry_chart_pattern.py -v -k "sector_industry"
 ```
 
 Expected: FAIL.
 
 - [ ] **Step 7.3: Implement candidate-row lookup in `trade_entry_cmd`.**
 
-In `swing/cli.py`, modify `trade_entry_cmd`'s body. Right after the existing `pipeline_eval_row = conn.execute(...)` query (around line 412), add a parallel query for sector/industry:
+In `swing/cli.py`, modify `trade_entry_cmd`'s body. **Use the canonical `latest_evaluation_run_id()` helper** (R1 Codex Major 4 RESOLVED) so the CLI binds to the SAME evaluation anchor the dashboard uses for sector/industry — same anchor the existing CLI hypothesis pre-fill helper uses (`swing/cli.py:296+`). Right after the existing chart-pattern resolution block (around line 442), add the sector/industry resolution:
 
 ```python
         # Phase 5 spec §3.6 ToCToU fix — chart-pattern cache resolved once
         # at command start (existing). Migration 0012 — sector + industry
-        # resolved from the same candidate row in the same read snapshot.
+        # resolved from the candidate row via latest_evaluation_run_id() so
+        # the CLI binds to the SAME evaluation anchor the dashboard uses
+        # (Codex R1 Major 4 — closes cross-surface drift; matches the
+        # hypothesis pre-fill helper's anchor at swing/cli.py:296+).
         cp_algo: str | None = None
         cp_conf: float | None = None
         cp_anchor: int | None = None
@@ -1494,22 +1778,22 @@ In `swing/cli.py`, modify `trade_entry_cmd`'s body. Right after the existing `pi
                 cp_conf = cls.confidence
                 cp_anchor = cls.pipeline_run_id
                 cp_evaluated = True
-            # NEW: candidate-row lookup for sector/industry against the
-            # FK-backed evaluation_run_id when present. Single 2-column
-            # SELECT — no fallback to legacy heuristic resolver, because
-            # this is the BEST-KNOWN view of metadata at command time;
-            # legacy NULL-FK pipeline_runs predate migration 0012 anyway.
-            pipeline_eval_id = pipeline_eval_row[1]
-            if pipeline_eval_id is not None:
-                cand_row = conn.execute(
-                    """SELECT sector, industry FROM candidates
-                       WHERE evaluation_run_id = ? AND ticker = ?""",
-                    (pipeline_eval_id, ticker.upper()),
-                ).fetchone()
-                if cand_row is not None:
-                    cli_sector = cand_row[0] or ""
-                    cli_industry = cand_row[1] or ""
+
+        # NEW: sector/industry candidate-row lookup via the canonical helper.
+        from swing.web.view_models.dashboard import latest_evaluation_run_id
+        sector_eval_id = latest_evaluation_run_id(conn)
+        if sector_eval_id is not None:
+            cand_row = conn.execute(
+                """SELECT sector, industry FROM candidates
+                   WHERE evaluation_run_id = ? AND ticker = ?""",
+                (sector_eval_id, ticker.upper()),
+            ).fetchone()
+            if cand_row is not None:
+                cli_sector = cand_row[0] or ""
+                cli_industry = cand_row[1] or ""
 ```
+
+> **Why import from `swing.web.view_models.dashboard`?** That's where the canonical helper lives. The CLI consuming a web-VM helper is precedent: `swing/cli.py:296+` (`_lookup_active_recommendation_label`) already pulls from the dashboard's hypothesis prioritizer. Reusing the helper preserves cross-surface anchor consistency without duplicating the two-step selection logic.
 
 Add `sector=cli_sector, industry=cli_industry` to the `req = EntryRequest(...)` construction:
 
@@ -1536,7 +1820,7 @@ Add `sector=cli_sector, industry=cli_industry` to the `req = EntryRequest(...)` 
 - [ ] **Step 7.4: Run the test + full suite.**
 
 ```bash
-python -m pytest tests/cli/test_trade_entry.py -v -k "sector_industry"
+python -m pytest tests/cli/test_cli_trade_entry_chart_pattern.py -v -k "sector_industry"
 python -m pytest -m "not slow" -q 2>&1 | tail -10
 ```
 
@@ -1549,7 +1833,7 @@ git log -E --pretty='%s' --grep='^[a-z]+\([a-z]+\): Task 7'
 ```
 
 ```bash
-git add swing/cli.py tests/cli/test_trade_entry.py
+git add swing/cli.py tests/cli/test_cli_trade_entry_chart_pattern.py
 git commit -m "feat(cli): Task 7 — \`swing trade entry\` auto-resolves sector/industry from candidate
 
 Single 2-column SELECT against the FK-backed evaluation_run_id within the
@@ -1567,34 +1851,115 @@ Observable verification: \`git log -E --grep='^[a-z]+\\([a-z]+\\): Task 7'\` emp
 
 **Files:**
 - Modify: `swing/web/templates/partials/watchlist_expanded.html.j2`
-- Test: `tests/web/test_templates/test_watchlist_expanded.py` (verify path; create if absent).
+- Test: extend `tests/web/test_view_models/test_watchlist.py` — existing file with `seeded_db` fixture, `upsert_watchlist_entry` + `TestClient(app)` template-render pattern (line 153 precedent: `test_watchlist_expanded_template_renders_reason_message`).
 
 **Discriminating-test sanity-check.** Test renders the partial with a `WatchlistExpandedVM` whose `candidate.sector="WL-Sector-T8"` + `candidate.industry="WL-Industry-T8"`; asserts the rendered HTML contains the EXACT string `"WL-Sector-T8"` (substring match against the test-prefixed sentinel). Second test renders with `candidate=None` and asserts the rendered HTML contains NEITHER `Sector:` heading NOR `Industry:` heading (the rows are gated on `candidate` being present, mirroring the existing Trend Template / VCP grids gating). **Would these tests fail if the implementation never actually called the new code? Yes — without the new template lines the rendered HTML omits `WL-Sector-T8` entirely; the substring assertion fails. The candidate=None test guards against unconditional rendering.**
 
-- [ ] **Step 8.1: Write the failing test.**
+- [ ] **Step 8.1: Write the failing tests.**
+
+Append to `tests/web/test_view_models/test_watchlist.py` (extend existing file — `seeded_db`, `upsert_watchlist_entry`, `WatchlistEntry`, `TestClient(app)` already in scope from existing tests):
 
 ```python
-def test_watchlist_expanded_renders_sector_industry_when_candidate_present(...):
-    """Partial renders Sector and Industry rows when expanded.candidate is set,
-    using the exact test-only values from candidate.sector / .industry."""
-    # Construct a WatchlistExpandedVM with a Candidate carrying
-    # sector='WL-Sector-T8' + industry='WL-Industry-T8'; render the partial
-    # via Jinja; assert both strings appear in the rendered HTML.
-    raise NotImplementedError("Adapt to existing template-test pattern.")
+def test_watchlist_expanded_renders_sector_industry_when_candidate_present(
+    seeded_db, monkeypatch,
+):
+    """GET /watchlist/AAPL/expand renders sector + industry rows pulled
+    from the candidate row. Sentinel 'WL-Sector-T8' / 'WL-Industry-T8'
+    guards against any default-string mask."""
+    from fastapi.testclient import TestClient
+    from swing.data.db import connect
+    from swing.web.app import create_app
+    from swing.web.price_cache import PriceCache
+    from tests.web.test_view_models._pattern_classification_seed import (
+        seed_pipeline_with_classification,
+    )
+    cfg, cfg_path = seeded_db
+    # Reuse the seed helper for pipeline + watchlist scaffold (creates
+    # an active watchlist row for AAPL); then add a candidates row with
+    # the sentinel sector/industry on the FK-backed eval.
+    _, eval_id = seed_pipeline_with_classification(
+        cfg.paths.db_path, ticker="AAPL", pattern="flag", confidence=0.78,
+    )
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO candidates
+                   (evaluation_run_id, ticker, bucket, close, pivot, initial_stop,
+                    adr_pct, tight_streak, pullback_pct, prior_trend_pct, rs_rank,
+                    rs_return_12w_vs_spy, rs_method, pattern_tag, notes,
+                    sector, industry)
+                   VALUES (?, 'AAPL', 'watch', 100.0, 105.0, 95.0,
+                           2.0, 5, NULL, NULL, NULL, NULL, 'fallback_spy',
+                           NULL, NULL, 'WL-Sector-T8', 'WL-Industry-T8')""",
+                (eval_id,),
+            )
+    finally:
+        conn.close()
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *, deadline_seconds, executor: {},
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/watchlist/AAPL/expand")
+    assert r.status_code == 200
+    body = r.text
+    assert "WL-Sector-T8" in body
+    assert "WL-Industry-T8" in body
 
 
-def test_watchlist_expanded_no_sector_industry_when_candidate_none(...):
-    """Partial does NOT emit Sector or Industry rows when expanded.candidate
-    is None (e.g., off-pipeline watchlist entry)."""
-    raise NotImplementedError("Adapt to existing template-test pattern.")
+def test_watchlist_expanded_no_sector_industry_when_candidate_none(
+    seeded_db, monkeypatch,
+):
+    """When no candidate row exists for the ticker (off-pipeline watchlist
+    entry), partial does NOT emit the Classification heading or Sector /
+    Industry rows. Only the watchlist row + chart-unavailable block render."""
+    from fastapi.testclient import TestClient
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.app import create_app
+    from swing.web.price_cache import PriceCache
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="AAPL", added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *, deadline_seconds, executor: {},
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/watchlist/AAPL/expand")
+    assert r.status_code == 200
+    body = r.text
+    # Classification heading + sector/industry rows are gated on candidate
+    # being present; absent here.
+    assert "<h4>Classification</h4>" not in body
+    assert "Sector:" not in body
+    assert "Industry:" not in body
 ```
-
-> **Adapt to existing template-test pattern.** Look for `tests/web/test_templates/` or any test that renders a partial via `app.state.templates.get_template(...).render(...)`. The chart_pattern partial test from Phase 5 is the closest precedent.
 
 - [ ] **Step 8.2: Run the failing test.**
 
 ```bash
-python -m pytest tests/web/test_templates/test_watchlist_expanded.py -v -k "sector_industry"
+python -m pytest tests/web/test_view_models/test_watchlist.py -v -k "sector_industry"
 ```
 
 Expected: FAIL.
@@ -1628,7 +1993,7 @@ In `swing/web/templates/partials/watchlist_expanded.html.j2`, add a Sector/Indus
 - [ ] **Step 8.4: Run the test + full suite.**
 
 ```bash
-python -m pytest tests/web/test_templates/test_watchlist_expanded.py -v -k "sector_industry"
+python -m pytest tests/web/test_view_models/test_watchlist.py -v -k "sector_industry"
 python -m pytest -m "not slow" -q 2>&1 | tail -10
 ```
 
@@ -1640,7 +2005,7 @@ git log -E --pretty='%s' --grep='^[a-z]+\([a-z]+\): Task 8'
 
 ```bash
 git add swing/web/templates/partials/watchlist_expanded.html.j2 \
-        tests/web/test_templates/test_watchlist_expanded.py
+        tests/web/test_view_models/test_watchlist.py
 git commit -m "feat(web): Task 8 — watchlist expansion renders sector + industry rows
 
 Reads from expanded.candidate.sector / .industry (no new VM field — Candidate
@@ -1654,217 +2019,64 @@ Observable verification: \`git log -E --grep='^[a-z]+\\([a-z]+\\): Task 8'\` emp
 
 ---
 
-## Task 9: Hypothesis recommendations — display sector + industry as new columns
+## Task 9: Open positions row — display sector + industry
 
 **Files:**
-- Modify: `swing/web/view_models/dashboard.py:154-185` (`HypothesisRecommendation`), `swing/web/view_models/dashboard.py:552-581` (`active_recommendations` builder)
-- Modify: `swing/web/templates/partials/hypothesis_recommendations.html.j2`
-- Test: `tests/web/test_view_models/test_dashboard_hypothesis_recommendations.py` and equivalent template test (verify paths; create if absent).
+- Modify: `swing/web/templates/partials/open_positions_row.html.j2` (add Sector + Industry `<td>` cells)
+- Modify: `swing/web/templates/partials/open_positions.html.j2:8` (add Sector + Industry `<th>` to the `<thead>` — known parent header file; per Codex R1 Minor 2)
+- Modify: `swing/web/templates/partials/open_positions_expanded.html.j2:20` (update `colspan` 8 → 10 to match new cell count)
+- Test: extend `tests/web/test_routes/test_open_positions_expand.py` (existing file with route + colspan-alignment pattern at line 521 per Codex R1 Major 2 reference).
 
-> **Surface interpretation note (re-stated from header).** Brief §2.2 names "Hyp-recs row expansion (HTMX-expanded panel under `partials/`)" but no such expansion exists yet — the expansion mechanism is the deliverable of the queued hyp-recs trade-prep expansion brainstorm. This plan ships sector + industry as **new columns** in the existing flat hyp-recs table. Surfaced for orchestrator confirmation before executing-plans dispatch.
-
-**Discriminating-test sanity-check.** Test seeds a candidate with `sector="HR-Sector-T9"` / `industry="HR-Industry-T9"` for ticker `ZZZH` and verifies that the corresponding `HypothesisRecommendation` VM exposes those exact values (sentinel + substring assert). Template test renders the partial with a HypothesisRecommendation carrying the same sentinel values; asserts the rendered HTML's `<td>` cells contain the strings. Second template test renders with empty-string sector/industry; asserts the rendered HTML contains a placeholder `—` (or empty cell — whichever the template chooses) so the column structure stays intact. **Would these tests fail if the implementation never actually called the new code? Yes — without the VM-builder change, `HypothesisRecommendation.sector == ""`; without the template change, the `<td>` cells don't render the new columns at all (and column count drops from 9 to 7 → also a structural regression).**
+**Discriminating-test sanity-check.** Test seeds an open Trade with `sector="OP-Sector-T9"` + `industry="OP-Industry-T9"`; renders the open-positions section via TestClient; asserts the rendered HTML contains both sentinel strings. Test also asserts colspan in `open_positions_expanded.html.j2` is `"10"` (was `"8"`). **Would these tests fail if the implementation never actually called the new code? Yes — without the new `<td>` cells the rendered HTML omits both sentinel strings; without the colspan update the chart-display fragment is structurally misaligned with the row.**
 
 - [ ] **Step 9.1: Write the failing tests.**
 
-In `tests/web/test_view_models/test_dashboard_hypothesis_recommendations.py`:
+Append to `tests/web/test_routes/test_open_positions_expand.py` (extend existing file — TestClient + Trade-seeding patterns already in scope):
 
 ```python
-def test_active_recommendations_carries_sector_industry_from_candidate(...):
-    """active_recommendations builder reads sector + industry from
-    candidates_by_ticker[r.candidate_ticker] and exposes them on
-    HypothesisRecommendation."""
-    raise NotImplementedError("Adapt to existing dashboard-test fixture pattern.")
-
-
-def test_hypothesis_recommendation_default_sector_industry_empty():
-    """HypothesisRecommendation constructed without sector/industry uses ''."""
-    from swing.web.view_models.dashboard import HypothesisRecommendation
-    r = HypothesisRecommendation(
-        ticker="X", current_price=None, hypothesis_id=1,
-        hypothesis_name="hy", hypothesis_progress_n=0,
-        hypothesis_progress_target=10, tripwire_fired=False,
-        tripwire_reason=None, suggested_label="lbl",
+def test_open_positions_row_renders_sector_industry(seeded_db, monkeypatch):
+    """Open positions row renders Sector + Industry from trade.sector / .industry.
+    Sentinel 'OP-Sector-T9' / 'OP-Industry-T9' guards against default-string
+    masks."""
+    from fastapi.testclient import TestClient
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+    from swing.web.app import create_app
+    from swing.web.price_cache import PriceCache
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="AAPL", entry_date="2026-04-15",
+                entry_price=180.0, initial_shares=10, initial_stop=170.0,
+                current_stop=170.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None, sector="OP-Sector-T9", industry="OP-Industry-T9",
+            ), event_ts="2026-04-15T09:30:00")
+    finally:
+        conn.close()
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *, deadline_seconds, executor: {},
     )
-    assert r.sector == ""
-    assert r.industry == ""
-```
-
-In a template-rendering test (`tests/web/test_templates/test_hypothesis_recommendations_partial.py` or content-equivalent under existing dashboard route tests):
-
-```python
-def test_hyp_recs_partial_renders_sector_industry_columns(...):
-    """The partial renders Sector and Industry as additional <th> + <td>
-    columns. Test-prefixed sentinel values guard against default-string
-    masks. Column count check: 9 <th> headers (was 7 pre-this-task)."""
-    raise NotImplementedError("Adapt to existing template-test pattern.")
-```
-
-- [ ] **Step 9.2: Run the failing tests.**
-
-```bash
-python -m pytest tests/web/test_view_models/test_dashboard_hypothesis_recommendations.py tests/web/test_templates/test_hypothesis_recommendations_partial.py -v -k "sector_industry"
-```
-
-Expected: FAIL.
-
-- [ ] **Step 9.3: Add fields to HypothesisRecommendation.**
-
-In `swing/web/view_models/dashboard.py`, modify `HypothesisRecommendation`:
-
-```python
-@dataclass(frozen=True)
-class HypothesisRecommendation:
-    """One row of the dashboard's "Hypothesis-driven recommendations" panel."""
-    ticker: str
-    current_price: float | None
-    hypothesis_id: int
-    hypothesis_name: str
-    hypothesis_progress_n: int
-    hypothesis_progress_target: int
-    tripwire_fired: bool
-    tripwire_reason: str | None
-    suggested_label: str
-    pivot_price: float | None = None
-    # Migration 0012 — sector/industry sourced from candidates_by_ticker
-    # at build time. Decorative DISPLAY-ONLY — does NOT enter any sort
-    # or prioritization tuple (sort-neutrality structurally guaranteed).
-    sector: str = ""
-    industry: str = ""
-```
-
-- [ ] **Step 9.4: Update the active_recommendations builder.**
-
-In `swing/web/view_models/dashboard.py`, modify the `HypothesisRecommendation(...)` construction inside the `active_recommendations = tuple(...)` comprehension:
-
-```python
-    active_recommendations = tuple(
-        HypothesisRecommendation(
-            ticker=r.candidate_ticker,
-            current_price=(
-                prices[r.candidate_ticker].price
-                if r.candidate_ticker in prices else None
-            ),
-            pivot_price=(
-                candidates_by_ticker[r.candidate_ticker].pivot
-                if r.candidate_ticker in candidates_by_ticker else None
-            ),
-            sector=(
-                candidates_by_ticker[r.candidate_ticker].sector
-                if r.candidate_ticker in candidates_by_ticker else ""
-            ),
-            industry=(
-                candidates_by_ticker[r.candidate_ticker].industry
-                if r.candidate_ticker in candidates_by_ticker else ""
-            ),
-            hypothesis_id=r.hypothesis_id,
-            hypothesis_name=r.hypothesis_name,
-            # ... unchanged ...
-        )
-        for r in top_recommendations
-    )
-```
-
-- [ ] **Step 9.5: Update the template.**
-
-In `swing/web/templates/partials/hypothesis_recommendations.html.j2`, add Sector and Industry header cells + data cells. Insert AFTER the `<th>Suggested label</th>` row's closing `</tr>` is wrong — insert at end of `<thead>` row to match the `<td>` order:
-
-```html+jinja
-<section id="hypothesis-recommendations" class="hypothesis-recommendations">
-  <h2>Hypothesis-driven recommendations</h2>
-  <table class="hypothesis-recommendations">
-    <thead>
-      <tr>
-        <th>Ticker</th>
-        <th>Price</th>
-        <th>Pivot</th>
-        <th>Sector</th>
-        <th>Industry</th>
-        <th>Hypothesis</th>
-        <th>Progress</th>
-        <th>Tripwire</th>
-        <th>Suggested label</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for rec in vm.active_recommendations %}
-        <tr {% if rec.tripwire_fired %}class="tripwire-fired"{% endif %}>
-          <td>{{ rec.ticker }}</td>
-          <td>{% if rec.current_price is not none %}${{ "%.2f"|format(rec.current_price) }}{% else %}—{% endif %}</td>
-          <td>{% if rec.pivot_price is not none %}${{ "%.2f"|format(rec.pivot_price) }}{% else %}—{% endif %}</td>
-          <td>{{ rec.sector or "—" }}</td>
-          <td>{{ rec.industry or "—" }}</td>
-          <td>{{ rec.hypothesis_name }}</td>
-          <td>{{ rec.hypothesis_progress_n }} / {{ rec.hypothesis_progress_target }}</td>
-          <td>{% if rec.tripwire_fired %}<strong>FIRED</strong>: {{ rec.tripwire_reason or "" }}{% else %}—{% endif %}</td>
-          <td title="{{ rec.suggested_label }}">{{ rec.suggested_label[:60] }}{% if rec.suggested_label|length > 60 %}…{% endif %}</td>
-        </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</section>
-```
-
-> **Column ordering rationale.** Sector + Industry placed AFTER Pivot and BEFORE Hypothesis to keep `(Ticker, Price, Pivot)` together as the price-anchored block, then `(Sector, Industry)` as a classification block, then `(Hypothesis, Progress, Tripwire, Suggested label)` as the recommendation block. **Operator-confirm at executing-plans time:** if the orchestrator prefers Sector+Industry at the END of the row (least disruption to existing column order memory), the swap is a 4-line change.
-
-- [ ] **Step 9.6: Run the tests + full suite.**
-
-```bash
-python -m pytest tests/web/test_view_models/test_dashboard_hypothesis_recommendations.py tests/web/test_templates/test_hypothesis_recommendations_partial.py -v -k "sector_industry"
-python -m pytest -m "not slow" -q 2>&1 | tail -10
-```
-
-- [ ] **Step 9.7: Observable-verification grep + commit.**
-
-```bash
-git log -E --pretty='%s' --grep='^[a-z]+\([a-z]+\): Task 9'
-```
-
-```bash
-git add swing/web/view_models/dashboard.py \
-        swing/web/templates/partials/hypothesis_recommendations.html.j2 \
-        tests/web/test_view_models/test_dashboard_hypothesis_recommendations.py \
-        tests/web/test_templates/test_hypothesis_recommendations_partial.py
-git commit -m "feat(web): Task 9 — hyp-recs displays sector + industry as new columns
-
-HypothesisRecommendation gains sector + industry fields (DISPLAY-ONLY — does
-NOT enter any sort/prioritization tuple). Builder reads from candidates_by_ticker.
-Template adds 2 new columns between Pivot and Hypothesis.
-
-Brief §2.2 names 'hyp-recs row expansion' as the V1 surface but no such
-expansion partial exists; column-based display is the V1 interpretation
-flagged for orchestrator confirmation. Future hyp-recs trade-prep expansion
-brainstorm will move these to the expanded panel as a structural
-relocation; the data plumbing is now in place.
-
-Observable verification: \`git log -E --grep='^[a-z]+\\([a-z]+\\): Task 9'\` empty pre-commit.
-"
-```
-
----
-
-## Task 10: Open positions row — display sector + industry
-
-**Files:**
-- Modify: `swing/web/templates/partials/open_positions_row.html.j2`
-- Modify: `swing/web/templates/partials/open_positions_expanded.html.j2:20` (update `colspan` to match new cell count)
-- Test: `tests/web/test_templates/test_open_positions_row.py` (verify path).
-
-**Discriminating-test sanity-check.** Test renders the partial with an `OpenPositionsRowVM` whose `trade.sector="OP-Sector-T10"` + `trade.industry="OP-Industry-T10"`; asserts the rendered HTML contains both strings. Test also asserts the colspan in `open_positions_expanded.html.j2` matches the new column count (was 8; +2 cells → 10). **Would these tests fail if the implementation never actually called the new code? Yes — without the new `<td>` cells the rendered HTML omits both sentinel strings; without the colspan update the chart-display fragment is structurally misaligned with the row.**
-
-- [ ] **Step 10.1: Write the failing tests.**
-
-```python
-def test_open_positions_row_renders_sector_industry(...):
-    """Partial renders Sector + Industry cells from row.trade.sector / .industry."""
-    raise NotImplementedError("Adapt to existing template-test pattern.")
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/")
+    assert r.status_code == 200
+    body = r.text
+    assert "OP-Sector-T9" in body
+    assert "OP-Industry-T9" in body
 
 
 def test_open_positions_expanded_colspan_matches_new_row_cell_count():
-    """colspan in open_positions_expanded.html.j2 matches the cell count
+    """colspan in open_positions_expanded.html.j2 must match the cell count
     in open_positions_row.html.j2 — was 8, becomes 10 with sector + industry."""
     from pathlib import Path
-    expanded = Path("swing/web/templates/partials/open_positions_expanded.html.j2").read_text()
+    expanded = Path("swing/web/templates/partials/open_positions_expanded.html.j2").read_text(encoding="utf-8")
     assert 'colspan="10"' in expanded, (
         "colspan must be 10 to match open_positions_row.html.j2's 10 cells "
         "(Ticker, Entry date, Entry price, Shares, Current stop, Last, "
@@ -1872,15 +2084,15 @@ def test_open_positions_expanded_colspan_matches_new_row_cell_count():
     )
 ```
 
-- [ ] **Step 10.2: Run the failing tests.**
+- [ ] **Step 9.2: Run the failing tests.**
 
 ```bash
-python -m pytest tests/web/test_templates/test_open_positions_row.py -v -k "sector_industry or colspan"
+python -m pytest tests/web/test_routes/test_open_positions_expand.py -v -k "sector_industry or colspan_matches"
 ```
 
 Expected: FAIL.
 
-- [ ] **Step 10.3: Update `open_positions_row.html.j2`.**
+- [ ] **Step 9.3: Update `open_positions_row.html.j2`.**
 
 In `swing/web/templates/partials/open_positions_row.html.j2`, add Sector and Industry cells AFTER the Last (price) cell and BEFORE the Advisory cell:
 
@@ -1921,7 +2133,7 @@ In `swing/web/templates/partials/open_positions_row.html.j2`, add Sector and Ind
 </tr>
 ```
 
-- [ ] **Step 10.4: Update colspan in `open_positions_expanded.html.j2`.**
+- [ ] **Step 9.4: Update colspan in `open_positions_expanded.html.j2`.**
 
 Edit `swing/web/templates/partials/open_positions_expanded.html.j2` line 20:
 
@@ -1933,63 +2145,76 @@ Edit `swing/web/templates/partials/open_positions_expanded.html.j2` line 20:
 
 Also update the docstring comment block at the top of `open_positions_expanded.html.j2` to reflect the new cell count: `"Colspan must match the compact open_positions_row.html.j2 cell count (10 cells: Ticker, Entry date, Entry price, Shares, Current stop, Last, Sector, Industry, Advisory, Actions)."`
 
-- [ ] **Step 10.5: Check parent table column header.**
+- [ ] **Step 9.5: Update parent-table `<thead>`.**
 
-Search for the parent template that renders the open-positions `<table>` header (`<thead>` with `<th>`s):
+Edit `swing/web/templates/partials/open_positions.html.j2:8` (parent header file confirmed by Codex R1 Minor 2). Add `<th>Sector</th>` + `<th>Industry</th>` between `<th>Last</th>` and `<th>Advisory</th>`:
 
-```bash
-grep -rn "Open Positions\|open_positions_row\|<th>Ticker" swing/web/templates/ | head -10
+```html+jinja
+<thead>
+  <tr>
+    <th>Ticker</th>
+    <th>Entry date</th>
+    <th>Entry price</th>
+    <th>Shares</th>
+    <th>Current stop</th>
+    <th>Last</th>
+    <th>Sector</th>
+    <th>Industry</th>
+    <th>Advisory</th>
+    <th>Actions</th>
+  </tr>
+</thead>
 ```
 
-If the parent template (likely `partials/open_positions.html.j2` or `dashboard.html.j2`) hand-rolls the `<thead>`, ADD `<th>Sector</th>` and `<th>Industry</th>` between `<th>Last</th>` and `<th>Advisory</th>` in that file too. Failure to do so produces a header/data column mismatch that the eye notices but tests may not (HTML allows mismatch).
+> **Verification.** Read `swing/web/templates/partials/open_positions.html.j2` first to confirm the existing `<thead>` shape; if it differs (e.g., wraps under a different selector or uses a class-only `<tr>`), match the existing structure exactly.
 
-- [ ] **Step 10.6: Run tests + full suite.**
+- [ ] **Step 9.6: Run tests + full suite.**
 
 ```bash
-python -m pytest tests/web/test_templates/test_open_positions_row.py -v -k "sector_industry or colspan"
+python -m pytest tests/web/test_routes/test_open_positions_expand.py -v -k "sector_industry or colspan_matches"
 python -m pytest -m "not slow" -q 2>&1 | tail -10
 ```
 
-- [ ] **Step 10.7: Observable-verification grep + commit.**
+- [ ] **Step 9.7: Observable-verification grep + commit.**
 
 ```bash
-git log -E --pretty='%s' --grep='^[a-z]+\([a-z]+\): Task 10'
+git log -E --pretty='%s' --grep='^[a-z]+\([a-z]+\): Task 9'
 ```
 
 ```bash
 git add swing/web/templates/partials/open_positions_row.html.j2 \
+        swing/web/templates/partials/open_positions.html.j2 \
         swing/web/templates/partials/open_positions_expanded.html.j2 \
-        tests/web/test_templates/test_open_positions_row.py
-# Plus the parent-table file if Step 10.5 surfaced one.
-git commit -m "feat(web): Task 10 — open positions row displays sector + industry
+        tests/web/test_routes/test_open_positions_expand.py
+git commit -m "feat(web): Task 9 — open positions row displays sector + industry
 
 Reads from row.trade.sector / .industry directly (Task 4 already populated
 these fields on Trade across all SELECT paths). Two new <td> cells between
-Last and Advisory; colspan in open_positions_expanded bumped 8 → 10 to
-match. Parent-table <thead> updated if applicable.
+Last and Advisory; matching <th> additions in the parent open_positions.html.j2;
+colspan in open_positions_expanded bumped 8 → 10 to match.
 
-Observable verification: \`git log -E --grep='^[a-z]+\\([a-z]+\\): Task 10'\` empty pre-commit.
+Observable verification: \`git log -E --grep='^[a-z]+\\([a-z]+\\): Task 9'\` empty pre-commit.
 "
 ```
 
 ---
 
-## Task 11: Final verification
+## Task 10: Final verification
 
 **Files:** none (verification only).
 
-- [ ] **Step 11.1: Full fast-suite run + delta count.**
+- [ ] **Step 10.1: Full fast-suite run + delta count.**
 
 ```bash
 python -m pytest -m "not slow" -q 2>&1 | tail -5
 ```
 
-Expected: `>= 1216 passed, 1 skipped, 8 deselected` (1203 baseline + at least 13 new tests across Tasks 1, 2, 3 (×3), 4 (×2), 5 (×2), 6 (×4), 7 (×2), 8 (×2), 9 (×3), 10 (×2) — actual count varies based on per-task fixture skeleton expansion; no decreases).
+Expected: `>= 1218 passed, 1 skipped, 8 deselected` (1203 baseline + at least 15 new tests across Tasks 1 (×1), 2 (×2), 3 (×3), 4 (×2), 5 (×2), 6 (×4), 7 (×2), 8 (×2), 9 (×2); actual count varies; no decreases).
 
-- [ ] **Step 11.2: Subject-only grep audit — exactly one task implementation per task.**
+- [ ] **Step 10.2: Subject-only grep audit — exactly one task implementation per task.**
 
 ```bash
-for n in 1 2 3 4 5 6 7 8 9 10; do
+for n in 1 2 3 4 5 6 7 8 9; do
   echo "=== Task $n ==="
   git log -E --pretty='%s' --grep="^[a-z]+\([a-z]+\): Task $n( |—|$)"
 done
@@ -1997,7 +2222,7 @@ done
 
 Expected: each task has EXACTLY ONE matching commit (plus optional Codex review-fix commits, which use `Codex R<n>` not `Task <n>` in the subject line).
 
-- [ ] **Step 11.3: Schema integrity verification.**
+- [ ] **Step 10.3: Schema integrity verification.**
 
 ```bash
 python -c "from swing.data.db import EXPECTED_SCHEMA_VERSION; print(EXPECTED_SCHEMA_VERSION)"
@@ -2019,7 +2244,7 @@ with tempfile.TemporaryDirectory() as td:
 "
 ```
 
-- [ ] **Step 11.4: ruff check.**
+- [ ] **Step 10.4: ruff check.**
 
 ```bash
 ruff check swing/ 2>&1 | tail -5
@@ -2027,7 +2252,7 @@ ruff check swing/ 2>&1 | tail -5
 
 Expected: 91 errors (baseline; no new violations introduced by this dispatch).
 
-- [ ] **Step 11.5: TOML-shadowing audit (per 2026-04-28 lesson).**
+- [ ] **Step 10.5: TOML-shadowing audit (per 2026-04-28 lesson).**
 
 ```bash
 grep -rn "sector\|industry" swing.config.toml swing/config.py
@@ -2035,7 +2260,7 @@ grep -rn "sector\|industry" swing.config.toml swing/config.py
 
 Expected: zero matches. Sector/industry are data fields, not config defaults; no toml override surface. If any match surfaces, investigate before declaring the dispatch complete.
 
-- [ ] **Step 11.6: Production-state verification (post-merge, operator-paced).**
+- [ ] **Step 10.6: Production-state verification (post-merge, operator-paced).**
 
 After all tasks land on `main`, the operator runs `swing db-migrate` then `swing pipeline run` against a fresh Finviz CSV; verifies via SQL that candidates have non-empty sector/industry on the new run. THIS STEP IS OPERATOR-PACED and is NOT part of the implementer's deliverable; surface in the executing-plans return report as a manual-verification gate.
 
@@ -2047,23 +2272,25 @@ After all tasks land on `main`, the operator runs `swing db-migrate` then `swing
 - A. Schema migration 0012 — Task 1.
 - B. Pipeline ingestion — Tasks 2 + 3.
 - C. Trade entry capture (frozen-at-entry) — Tasks 4 + 5 + 6 + 7.
-- D. Display surfaces (4 surfaces) — Tasks 6 (trade entry form), 8 (watchlist), 9 (hyp-recs), 10 (open positions). All four surfaces covered.
+- D. Display surfaces — Tasks 6 (trade entry form), 8 (watchlist expansion), 9 (open positions). **Hyp-recs row expansion DEFERRED** to the future hyp-recs trade-prep expansion brainstorm per brief §1's explicit "downstream concern — out of scope for THIS dispatch" framing (R1 Codex Major 3 RESOLVED). 3 of 4 V1 display surfaces shipping; the 4th (hyp-recs) consumes the data plumbed by Tasks 2 + 4 when the future brainstorm ships.
 - Test count baseline pinned: 1203 fast tests at HEAD `ba2b252`.
 
-**Placeholder scan:** Tasks 3, 6, 7, 8, 9, 10 contain `NotImplementedError` skeletons for tests. These are deliberate — the project's existing test-fixture patterns are non-trivial (lease fixtures for `_step_evaluate`; lifespan-bound TestClient for web routes; CliRunner for CLI; Jinja-context construction for templates). Each skeleton includes a sentence telling the implementer where to find the existing fixture pattern. The plan does NOT skip the test code; it scopes it as fixture-adapter work that must complete before the failing test runs. **Acceptable per the spec rationale** — the production code in each task is fully specified and the skeleton's sentinel-value discipline is enforced.
+**Placeholder scan:** All `NotImplementedError` skeletons removed in R1 fix pass (Codex R1 Major 1 RESOLVED). Every test task now contains concrete test code that exercises the discriminating-test discipline against real fixture patterns from the existing test tree.
 
-**Type consistency:** `sector: str` / `industry: str` are consistent across `Candidate`, `Trade`, `EntryRequest`, `TradeEntryFormVM`, `HypothesisRecommendation`. Default `""` everywhere. No type drift.
+**Type consistency:** `sector: str` / `industry: str` are consistent across `Candidate`, `Trade`, `EntryRequest`, `TradeEntryFormVM`. Default `""` everywhere. `HypothesisRecommendation` does NOT gain these fields in V1 — deferred with the hyp-recs display surface.
 
-**Open question for orchestrator triage** (re-stated):
-1. Hyp-recs surface — column-based vs deferred-to-future-expansion. Plan currently implements column-based.
+**Cross-surface anchor consistency (R1 Codex Major 4 RESOLVED).** Sector/industry candidate-row lookups in `build_entry_form_vm` (Task 6) and `trade_entry_cmd` (Task 7) use the canonical `latest_evaluation_run_id()` helper (`swing/web/view_models/dashboard.py:64-95`) — same anchor the dashboard candidates_by_ticker binding uses, and same anchor the existing CLI hypothesis pre-fill helper uses. No raw `pipeline_runs` SELECT bypasses the helper.
 
-If the orchestrator confirms Option A (column-based), Task 9 ships as written. If the orchestrator selects "defer all hyp-recs display until the hyp-recs trade-prep expansion brainstorm," delete Task 9 (data is still captured on candidates and the future expansion brainstorm consumes it directly from `candidates_by_ticker` — no data plumbing rework). Either choice ships sector/industry on the OTHER three V1 surfaces (watchlist expansion, trade entry, open positions) without modification.
+**Error-ticker semantics unambiguous (R1 Codex Major 5 RESOLVED).** Tickers in the finviz CSV (any bucket, including `error`) persist sector/industry FROM the CSV. Held-position tickers appended via `held_tickers` and NOT in the CSV persist empty strings. Test prose and implementation aligned on this rule.
 
 **Migration safety:** Migration 0012 is `ALTER TABLE ADD COLUMN ... NOT NULL DEFAULT ''` — additive, O(metadata), no historical row rewrite. No existing query filters on `sector IS NULL` (verified via `grep -rn "sector\|industry" swing/`). No FK introduced. No CHECK constraints (V1 trusts Finviz; no field-format invariants).
 
-**Sort-neutrality verified:** Hyp-recs (Task 9), watchlist (Task 8), open positions (Task 10) — sector/industry are decorative display fields ONLY. NOT included in `_sort_watchlist`, NOT included in hyp-recs prioritizer, NOT included in any other sort tuple. Per chart-pattern flag-v1 R1 M2 lesson: sort-neutrality is structurally guaranteed because the new fields never enter the existing sort tuple.
+**Sort-neutrality verified:** sector/industry are decorative display fields ONLY. NOT included in `_sort_watchlist`, NOT included in hyp-recs prioritizer, NOT included in any other sort tuple. Per chart-pattern flag-v1 R1 M2 lesson: sort-neutrality is structurally guaranteed because the new fields never enter the existing sort tuple. Watchlist (Task 8) and open positions (Task 9) read from existing dataclass fields without disturbing any sort key.
 
 **Base-layout 5-VM rule does NOT apply:** verified via `grep -n "sector\|industry" swing/web/templates/base.html.j2` returns zero matches.
+
+**Open question for orchestrator triage:**
+1. **Hyp-recs row expansion is deferred to the future expansion brainstorm.** Operator should confirm before executing-plans dispatch that this is the desired V1 scope (vs forcing column-based display now). The brief's §1 framing supports the deferral explicitly; this plan honors that framing.
 
 ---
 
