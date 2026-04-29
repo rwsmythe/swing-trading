@@ -201,3 +201,63 @@ def test_cli_eval_writes_excluded_and_error_rows(tmp_path: Path, monkeypatch):
     assert run[0] == 1
     assert run[1] == 1
     conn.close()
+
+
+def test_cli_eval_persists_sector_industry_from_finviz_csv(tmp_path: Path, monkeypatch):
+    """Standalone `swing eval` must plumb Sector/Industry from the Finviz CSV
+    into the persisted candidate rows. The downstream trade-entry surfaces
+    (web VM + CLI) consult `latest_evaluation_run_id`, which falls back to
+    the most-recent standalone evaluation_runs row when no pipeline-bound
+    eval exists — so dropping Sector/Industry here silently feeds empty
+    classification through to the operator UI even when the CSV had values.
+
+    Inversion-against-alphabetical mapping (AAPL -> Healthcare,
+    ZZZB -> Energy) discriminates a row-index-vs-ticker binding bug from a
+    correct dict-keyed lookup.
+    """
+    project_dir = tmp_path / "project"
+    home_dir = tmp_path / "home"
+    project_dir.mkdir()
+    home_dir.mkdir()
+    cfg_path = _minimal_config(project_dir, home_dir)
+
+    csv_path = project_dir / "finviz-with-sector.csv"
+    df = pd.DataFrame({
+        "No.": [1, 2],
+        # Inverted against alphabetical ordering of the Sector/Industry pairs:
+        # AAPL (alphabetically first) gets Healthcare/Pharmaceuticals,
+        # ZZZB (alphabetically last) gets Energy/Oil & Gas E&P. A row-index-
+        # bound bug would map the values in CSV-row order; a ticker-keyed
+        # lookup preserves the inverted pairing.
+        "Ticker": ["AAPL", "ZZZB"],
+        "Sector": ["Healthcare", "Energy"],
+        "Industry": ["Pharmaceuticals", "Oil & Gas E&P"],
+        "Price": [200.0, 199.0],
+    })
+    df.to_csv(csv_path, index=False)
+
+    def fake_get(self, ticker, lookback_days, *, as_of_date=None):
+        closes = [10.0 + i * 0.15 for i in range(260)]
+        idx = pd.bdate_range(end="2026-04-17", periods=260)
+        return pd.DataFrame(
+            {"Open": closes, "High": [c * 1.01 for c in closes],
+             "Low": [c * 0.99 for c in closes], "Close": closes,
+             "Volume": [1_000_000] * 260}, index=idx,
+        )
+
+    monkeypatch.setattr("swing.prices.PriceFetcher.get", fake_get)
+
+    runner = CliRunner()
+    runner.invoke(main, ["--config", str(cfg_path), "db-migrate"])
+    result = runner.invoke(main, ["--config", str(cfg_path), "eval", "--csv", str(csv_path)])
+    assert result.exit_code == 0, result.output
+
+    conn = sqlite3.connect(home_dir / "swing-data" / "swing.db")
+    rows = conn.execute(
+        "SELECT ticker, sector, industry FROM candidates ORDER BY ticker"
+    ).fetchall()
+    by_ticker = {r[0]: (r[1], r[2]) for r in rows}
+    conn.close()
+
+    assert by_ticker["AAPL"] == ("Healthcare", "Pharmaceuticals")
+    assert by_ticker["ZZZB"] == ("Energy", "Oil & Gas E&P")

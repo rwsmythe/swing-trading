@@ -118,6 +118,27 @@ def eval_cmd(ctx: click.Context, csv_path: str, as_of_date_str: str | None) -> N
         )
     tickers = finviz_df["Ticker"].dropna().astype(str).str.upper().tolist()
 
+    # Sector/Industry passthrough from Finviz CSV -> candidate rows. Mirrors
+    # the `_step_evaluate` plumbing in swing/pipeline/runner.py so standalone
+    # `swing eval` and the pipeline persist classification identically. The
+    # downstream `latest_evaluation_run_id()` helper falls back to standalone
+    # evaluation_runs when no pipeline-bound eval exists, so this is the
+    # only place classification can land for an operator running eval-only.
+    # eval_cmd does NOT enforce finviz_schema.REQUIRED_COLUMNS — `Sector`
+    # and `Industry` may be absent; `.get(..., "")` degrades to empty
+    # strings (same default as the dataclass) without raising.
+    sector_industry_by_ticker: dict[str, tuple[str, str]] = {}
+    for _, fv_row in finviz_df.iterrows():
+        t_raw = fv_row.get("Ticker")
+        if pd.isna(t_raw):
+            continue
+        ticker_key = str(t_raw).upper()
+        sec = fv_row.get("Sector", "")
+        ind = fv_row.get("Industry", "")
+        sec = "" if pd.isna(sec) else str(sec)
+        ind = "" if pd.isna(ind) else str(ind)
+        sector_industry_by_ticker[ticker_key] = (sec, ind)
+
     click.echo(f"Evaluating {len(tickers)} tickers from {csv_file.name}")
 
     # 2. Load RS universe
@@ -231,6 +252,22 @@ def eval_cmd(ctx: click.Context, csv_path: str, as_of_date_str: str | None) -> N
             rs_rank=None, rs_return_12w_vs_spy=None, rs_method="unavailable",
             pattern_tag=None, notes="OHLCV fetch failed", criteria=(),
         ))
+
+    # Plumb Sector/Industry uniformly across every bucket — applied AFTER
+    # both the evaluate_batch result and the synthesized excluded/error rows
+    # so any candidate whose ticker is in the CSV gets classification, and
+    # any ticker not in the CSV (defensive — eval_cmd only sources tickers
+    # from finviz_df, so this should be empty in practice) defaults to the
+    # ('', '') dataclass default. Mirrors the runner._step_evaluate pattern.
+    from dataclasses import replace as _dc_replace
+    candidates = [
+        _dc_replace(
+            c,
+            sector=sector_industry_by_ticker.get(c.ticker, ("", ""))[0],
+            industry=sector_industry_by_ticker.get(c.ticker, ("", ""))[1],
+        )
+        for c in candidates
+    ]
 
     # 9. Persist atomically — run row + candidates + criteria in a single transaction
     conn = connect(cfg.paths.db_path)
