@@ -499,3 +499,99 @@ def test_watchlist_expanded_template_shows_img_when_chart_available(
     assert '<img src="/charts/2026-04-17/AAPL.png"' in body
     assert 'class="chart-unavailable"' not in body
     assert "onerror=" not in body
+
+
+def test_watchlist_expanded_renders_sector_industry_when_candidate_present(
+    seeded_db, monkeypatch,
+):
+    """GET /watchlist/AAPL/expand renders sector + industry rows pulled
+    from the candidate row. Sentinel 'WL-Sector-T8' / 'WL-Industry-T8'
+    guards against any default-string mask."""
+    from fastapi.testclient import TestClient
+    from swing.data.db import connect
+    from swing.web.app import create_app
+    from swing.web.price_cache import PriceCache
+    from tests.web.test_view_models._pattern_classification_seed import (
+        seed_pipeline_with_classification,
+    )
+    cfg, cfg_path = seeded_db
+    # Reuse the seed helper for pipeline + watchlist scaffold (creates
+    # an active watchlist row for AAPL); then add a candidates row with
+    # the sentinel sector/industry on the FK-backed eval.
+    _, eval_id = seed_pipeline_with_classification(
+        cfg.paths.db_path, ticker="AAPL", pattern="flag", confidence=0.78,
+    )
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO candidates
+                   (evaluation_run_id, ticker, bucket, close, pivot, initial_stop,
+                    adr_pct, tight_streak, pullback_pct, prior_trend_pct, rs_rank,
+                    rs_return_12w_vs_spy, rs_method, pattern_tag, notes,
+                    sector, industry)
+                   VALUES (?, 'AAPL', 'watch', 100.0, 105.0, 95.0,
+                           2.0, 5, NULL, NULL, NULL, NULL, 'fallback_spy',
+                           NULL, NULL, 'WL-Sector-T8', 'WL-Industry-T8')""",
+                (eval_id,),
+            )
+    finally:
+        conn.close()
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *, deadline_seconds, executor: {},
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/watchlist/AAPL/expand")
+    assert r.status_code == 200
+    body = r.text
+    assert "WL-Sector-T8" in body
+    assert "WL-Industry-T8" in body
+
+
+def test_watchlist_expanded_no_sector_industry_when_candidate_none(
+    seeded_db, monkeypatch,
+):
+    """When no candidate row exists for the ticker (off-pipeline watchlist
+    entry), partial does NOT emit the Classification heading or Sector /
+    Industry rows. Only the watchlist row + chart-unavailable block render."""
+    from fastapi.testclient import TestClient
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.app import create_app
+    from swing.web.price_cache import PriceCache
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="AAPL", added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *, deadline_seconds, executor: {},
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/watchlist/AAPL/expand")
+    assert r.status_code == 200
+    body = r.text
+    # Classification heading + sector/industry rows are gated on candidate
+    # being present; absent here.
+    assert "<h4>Classification</h4>" not in body
+    assert "Sector:" not in body
+    assert "Industry:" not in body

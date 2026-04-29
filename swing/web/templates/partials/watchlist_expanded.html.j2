@@ -29,6 +29,9 @@
           <li class="{{ cr.result }}">{{ cr.criterion_name }}: {{ cr.result }}</li>
         {% endfor %}
       </ul>
+      <h4>Classification</h4>
+      <p>Sector: {{ expanded.candidate.sector or "—" }}</p>
+      <p>Industry: {{ expanded.candidate.industry or "—" }}</p>
     {% endif %}
     {% if expanded.chart_reason is none and expanded.data_asof_date %}
       <img src="/charts/{{ expanded.data_asof_date }}/{{ expanded.ticker }}.png"
