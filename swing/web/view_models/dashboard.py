@@ -230,6 +230,55 @@ class DashboardVM:
     pattern_tags: Mapping[str, str] = field(default_factory=dict)
 
 
+def _build_active_recommendations(
+    *,
+    prices: Mapping[str, "PriceSnapshot"],
+    candidates_by_ticker: Mapping[str, "Candidate"],
+    top_recommendations: list,
+    progress_by_id: Mapping[int, "HypothesisProgress"],
+    target_by_id: Mapping[int, int],
+) -> tuple["HypothesisRecommendation", ...]:
+    """Construct the hyp-recs `active_recommendations` tuple from
+    prerequisites. Single source of truth — consumed by:
+      - `build_dashboard` (full-page render path);
+      - `build_hyp_recs_section` (Task 4: /hyp-recs/refresh route).
+
+    Code motion only — no semantic change vs the inlined tuple
+    construction at swing/web/view_models/dashboard.py:552-581 prior
+    to this refactor.
+    """
+    return tuple(
+        HypothesisRecommendation(
+            ticker=r.candidate_ticker,
+            current_price=(
+                prices[r.candidate_ticker].price
+                if r.candidate_ticker in prices else None
+            ),
+            pivot_price=(
+                candidates_by_ticker[r.candidate_ticker].pivot
+                if r.candidate_ticker in candidates_by_ticker else None
+            ),
+            hypothesis_id=r.hypothesis_id,
+            hypothesis_name=r.hypothesis_name,
+            hypothesis_progress_n=(
+                progress_by_id[r.hypothesis_id].current_sample
+                if r.hypothesis_id in progress_by_id else 0
+            ),
+            hypothesis_progress_target=(
+                progress_by_id[r.hypothesis_id].target_sample
+                if r.hypothesis_id in progress_by_id
+                else target_by_id.get(r.hypothesis_id, 0)
+            ),
+            tripwire_fired=r.tripwire_fired,
+            tripwire_reason=_tripwire_reason_text(
+                progress_by_id.get(r.hypothesis_id),
+            ),
+            suggested_label=r.suggested_label_descriptive,
+        )
+        for r in top_recommendations
+    )
+
+
 def build_dashboard(
     *, cfg: Config, cache: PriceCache, executor, ohlcv_cache=None,
 ) -> DashboardVM:
@@ -549,35 +598,12 @@ def build_dashboard(
     # sourced) is the fallback for the degenerate-equity branch where
     # `progress_by_id` is empty by design (see
     # `build_recommendation_progress`).
-    active_recommendations = tuple(
-        HypothesisRecommendation(
-            ticker=r.candidate_ticker,
-            current_price=(
-                prices[r.candidate_ticker].price
-                if r.candidate_ticker in prices else None
-            ),
-            pivot_price=(
-                candidates_by_ticker[r.candidate_ticker].pivot
-                if r.candidate_ticker in candidates_by_ticker else None
-            ),
-            hypothesis_id=r.hypothesis_id,
-            hypothesis_name=r.hypothesis_name,
-            hypothesis_progress_n=(
-                progress_by_id[r.hypothesis_id].current_sample
-                if r.hypothesis_id in progress_by_id else 0
-            ),
-            hypothesis_progress_target=(
-                progress_by_id[r.hypothesis_id].target_sample
-                if r.hypothesis_id in progress_by_id
-                else target_by_id.get(r.hypothesis_id, 0)
-            ),
-            tripwire_fired=r.tripwire_fired,
-            tripwire_reason=_tripwire_reason_text(
-                progress_by_id.get(r.hypothesis_id),
-            ),
-            suggested_label=r.suggested_label_descriptive,
-        )
-        for r in top_recommendations
+    active_recommendations = _build_active_recommendations(
+        prices=prices,
+        candidates_by_ticker=candidates_by_ticker,
+        top_recommendations=top_recommendations,
+        progress_by_id=progress_by_id,
+        target_by_id=target_by_id,
     )
 
     degraded_until = cache.degraded_until()

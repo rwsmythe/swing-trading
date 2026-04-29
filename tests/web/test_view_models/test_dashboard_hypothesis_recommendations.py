@@ -342,6 +342,109 @@ def test_dashboard_recommendations_preserve_real_sample_count_under_zero_equity(
     assert rec.hypothesis_name == "Sub-A+ VCP-not-formed"
 
 
+def test_build_active_recommendations_helper_extracted_matches_build_dashboard(
+    seeded_db, monkeypatch,
+):
+    """Task 3 — pure refactor regression: extract _build_active_recommendations
+    helper; the helper's output MUST equal build_dashboard's
+    active_recommendations field byte-for-byte.
+
+    Discriminating: if the helper extraction reorders fields, drops a
+    field, or swaps progress_n/progress_target, the tuple equality
+    fails. Pre-extraction the helper does not exist, so the import
+    raises ImportError — that is the failing-test signal.
+    """
+    from swing.data.db import connect
+    from swing.data.repos.candidates import fetch_candidates_for_run
+    from swing.data.repos.hypothesis import list_hypotheses
+    from swing.recommendations.hypothesis import (
+        match_candidate_to_hypotheses,
+        prioritize_recommendations,
+    )
+    from swing.web.price_cache import PriceCache
+    from swing.web.view_models.dashboard import (
+        _build_active_recommendations,
+        _RECOMMENDATIONS_TOP_N,
+        build_dashboard,
+        build_recommendation_progress,
+    )
+
+    cfg, _ = seeded_db
+    # Seed multiple candidates so the equality check is non-vacuous on a
+    # single-element tuple. Mix A+ and watch-bucket+proximity-fail rows so
+    # multiple distinct hypotheses surface in the prioritized output.
+    _seed_pipeline_with_candidates(cfg, [
+        {"ticker": "AAPL", "bucket": "aplus", "close": 180.0, "pivot": 181.0},
+        {"ticker": "MSFT", "bucket": "aplus", "close": 200.0, "pivot": 201.0},
+        {
+            "ticker": "NVDA", "bucket": "watch",
+            "close": 150.0, "pivot": 152.0,
+            "criteria": [("proximity_20ma", "fail")],
+        },
+    ])
+    _patched_caches(monkeypatch)
+
+    cache = PriceCache(cfg)
+    full_vm = build_dashboard(cfg=cfg, cache=cache, executor=None)
+    expected = full_vm.active_recommendations
+    assert len(expected) >= 2, (
+        "fixture seeds insufficient data for a discriminating test"
+    )
+
+    # Recompute the inputs the helper takes, mirroring build_dashboard's
+    # internal resolution. The helper is then called directly; its output
+    # MUST equal build_dashboard's active_recommendations field.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            pipe_row = conn.execute(
+                """SELECT id, evaluation_run_id FROM pipeline_runs
+                   WHERE state='complete'
+                   ORDER BY finished_ts DESC, id DESC LIMIT 1"""
+            ).fetchone()
+            assert pipe_row is not None
+            eval_id = pipe_row[1]
+            candidates = fetch_candidates_for_run(conn, eval_id)
+            candidates_by_ticker = {c.ticker: c for c in candidates}
+            registry = list_hypotheses(conn)
+            target_by_id = {h.id: h.target_sample_size for h in registry}
+            progress_by_id, progress_summaries = (
+                build_recommendation_progress(
+                    conn, registry,
+                    starting_equity=cfg.account.starting_equity,
+                )
+            )
+            all_matches = []
+            for c in candidates:
+                all_matches.extend(
+                    match_candidate_to_hypotheses(c, registry=registry)
+                )
+            prioritized = prioritize_recommendations(
+                all_matches, registry=registry,
+                progress=progress_summaries,
+            )
+            top_recommendations = list(prioritized[:_RECOMMENDATIONS_TOP_N])
+    finally:
+        conn.close()
+
+    prices = cache.get_many(
+        [r.candidate_ticker for r in top_recommendations],
+        deadline_seconds=cfg.web.price_fetch_deadline_seconds,
+        executor=None,
+    )
+    helper_result = _build_active_recommendations(
+        prices=prices,
+        candidates_by_ticker=candidates_by_ticker,
+        top_recommendations=top_recommendations,
+        progress_by_id=progress_by_id,
+        target_by_id=target_by_id,
+    )
+    assert helper_result == expected, (
+        "_build_active_recommendations helper output must equal "
+        "build_dashboard's active_recommendations field byte-for-byte"
+    )
+
+
 def test_dashboard_vm_active_recommendations_field_default(seeded_db):
     """DashboardVM constructable without active_recommendations — defaults
     to an empty tuple. Defends downstream callers that build ad-hoc VMs in
