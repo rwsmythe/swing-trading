@@ -375,6 +375,52 @@ def test_expand_route_500_swaps_as_tr_via_row_target_prefix(
     )
 
 
+def test_expand_route_500_row_target_renders_colspan_9(
+    seeded_db, monkeypatch,
+):
+    """Codex R2 Major-2 — when the global exception handler renders
+    `trade_form_error.html.j2` for a `hyp-rec-row-*` target, the <td>
+    must be `colspan="9"` to match the 9-column hyp-recs table layout.
+
+    Discriminating: pre-fix `trade_form_error.html.j2` hardcodes
+    `colspan="8"`, which leaves a 1-cell short row in a 9-col table
+    on every hyp-recs-row server-error swap.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg)
+    _patch_price_cache(monkeypatch)
+
+    from swing.web.routes import recommendations as rec_route
+    from swing.web.view_models import dashboard as dashboard_mod
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("forced 500 for row-target colspan test")
+
+    monkeypatch.setattr(dashboard_mod, "build_hyp_recs_expanded", _boom)
+    if hasattr(rec_route, "build_hyp_recs_expanded"):
+        monkeypatch.setattr(rec_route, "build_hyp_recs_expanded", _boom)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = client.get(
+            "/hyp-recs/NVDA/expand",
+            headers={
+                "HX-Request": "true",
+                "HX-Target": "hyp-rec-row-NVDA",
+            },
+        )
+    assert resp.status_code == 500, resp.text
+    body = resp.text
+    assert 'colspan="9"' in body, (
+        "hyp-rec-row-* row-target error fragment must render colspan=9 "
+        "(9-col hyp-recs table); pre-fix renders colspan=8.\nBody:\n"
+        + body[:600]
+    )
+    assert 'colspan="8"' not in body, (
+        "must not still render colspan=8 for hyp-rec-row-* targets"
+    )
+
+
 def test_expand_route_chart_unavailable_renders_message(
     seeded_db, monkeypatch,
 ):

@@ -436,7 +436,18 @@ def build_hyp_recs_expanded(
         return None
     candidates = fetch_candidates_for_run(conn, binding.evaluation_run_id)
     candidate = next((c for c in candidates if c.ticker == ticker), None)
-    if candidate is None or candidate.pivot is None:
+    # Codex R2 Major-1: `Candidate.initial_stop` is `float | None` per
+    # the dataclass; the schema (migration 0001) declares the column as
+    # nullable REAL. A NULL stop reaches `compute_shares` as `stop=None`,
+    # whose `if stop >= entry:` precondition raises TypeError — NOT the
+    # ValueError the surrounding try/except catches — and the route
+    # 500s instead of returning the intended unavailable partial. Guard
+    # at the same upfront barrier as `pivot is None`.
+    if (
+        candidate is None
+        or candidate.pivot is None
+        or candidate.initial_stop is None
+    ):
         return None
 
     chart_reason, chart_message = resolve_chart_scope(

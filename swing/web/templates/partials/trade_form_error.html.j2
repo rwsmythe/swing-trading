@@ -3,9 +3,16 @@
     form-GET). For drift-recovery cases (§5.1 cases 1, 2, 3), routes render
     the relevant form template directly with an `error_message` context var —
     the banner appears INLINE inside the form's `<td>`, so the next submit
-    replaces both at once (no orphaned banner row). -#}
+    replaces both at once (no orphaned banner row).
+
+    `colspan` is caller-parameterized (Codex R2 Major-2): the global
+    exception handler in `swing/web/app.py` selects 9 for `hyp-rec-row-*`
+    targets (9-col hyp-recs table) and falls back to 8 for every other
+    row-swap target (open-positions / watchlist / entry/exit/stop forms,
+    all 8-col tables). Defaults to 8 to preserve historical behavior for
+    any caller that doesn't pass `colspan`. -#}
 <tr class="trade-form-error">
-  <td colspan="8">
+  <td colspan="{{ colspan|default(8) }}">
     <div class="banner banner-degraded" role="alert">{{ error_message }}</div>
   </td>
 </tr>

@@ -406,3 +406,34 @@ def test_sizing_twins_discriminate_below_floor(seeded_db):
     # Pin the actual numerics (matches Task 5.1 hand-derivation).
     assert vm.sizing_risk.shares == 45
     assert vm.sizing_cash.shares == 7
+
+
+# ---------------------------------------------------------------------------
+# Test 10 — Codex R2 Major-1: candidate.initial_stop IS NULL must return
+# None, NOT raise TypeError.
+#
+# Discriminating: pre-fix path threads `stop=None` into compute_shares,
+# whose `if stop >= entry:` precondition raises TypeError comparing
+# NoneType to float (the surrounding `try/except ValueError` does NOT
+# catch TypeError). Post-fix: helper returns None on the upfront guard.
+# ---------------------------------------------------------------------------
+def test_initial_stop_none_returns_none(seeded_db):
+    from swing.web.view_models.dashboard import build_hyp_recs_expanded
+
+    cfg, _ = seeded_db
+    # Schema (migration 0001) declares candidates.initial_stop as REAL
+    # without NOT NULL — NULL is a realistic value on disk for a
+    # degenerate evaluator output that produced a pivot but no stop.
+    _seed_complete_pipeline(cfg, candidates=[
+        {"ticker": "AAPL", "pivot": 100.0, "initial_stop": None},
+    ])
+    conn = connect(cfg.paths.db_path)
+    try:
+        # Must return None cleanly — no TypeError leak from compute_shares.
+        vm = build_hyp_recs_expanded(
+            conn, cfg, ticker="AAPL", current_balance=10_000.0,
+        )
+    finally:
+        conn.close()
+
+    assert vm is None

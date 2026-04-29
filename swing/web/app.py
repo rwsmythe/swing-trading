@@ -42,6 +42,20 @@ def _is_row_swap_target(request: Request) -> bool:
     return request.headers.get("HX-Target", "").startswith(_ROW_TARGET_PREFIXES)
 
 
+def _row_error_colspan(request: Request) -> int:
+    """Return the colspan to render on `trade_form_error.html.j2`.
+
+    Codex R2 Major-2: hyp-recs rows live in a 9-column table; every
+    other row-swap target (open-positions, watchlist, entry/exit/stop
+    forms) is in an 8-column table. Pre-fix the partial hardcoded
+    colspan=8, leaving a 1-cell short row on every hyp-recs-row error
+    swap. Selects 9 for `hyp-rec-row-*` targets and 8 otherwise.
+    """
+    if request.headers.get("HX-Target", "").startswith("hyp-rec-row-"):
+        return 9
+    return 8
+
+
 def _static_dir() -> Path:
     return Path(__file__).parent / "static"
 
@@ -86,7 +100,10 @@ def _register_exception_handlers(app: FastAPI) -> None:
         if is_htmx and _is_row_swap_target(request):
             return tpls.TemplateResponse(
                 request, "partials/trade_form_error.html.j2",
-                {"error_message": str(exc)},
+                {
+                    "error_message": str(exc),
+                    "colspan": _row_error_colspan(request),
+                },
                 status_code=500,
             )
         template = "partials/error_fragment.html.j2" if is_htmx else "error.html.j2"
@@ -161,7 +178,10 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
             if _is_row_swap_target(request):
                 return tpls.TemplateResponse(
                     request, "partials/trade_form_error.html.j2",
-                    {"error_message": exc.detail},
+                    {
+                        "error_message": exc.detail,
+                        "colspan": _row_error_colspan(request),
+                    },
                     status_code=exc.status_code,
                 )
             return tpls.TemplateResponse(
@@ -191,7 +211,10 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
             if _is_row_swap_target(request):
                 return tpls.TemplateResponse(
                     request, "partials/trade_form_error.html.j2",
-                    {"error_message": f"Invalid input in {field}: {msg}"},
+                    {
+                        "error_message": f"Invalid input in {field}: {msg}",
+                        "colspan": _row_error_colspan(request),
+                    },
                     status_code=400,
                 )
             return tpls.TemplateResponse(
