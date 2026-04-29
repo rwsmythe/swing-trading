@@ -39,6 +39,8 @@
 
 Plan task ordering = spec §7.1 ordering. Acknowledged transient state: Task 5 ships the per-row Enter and Take-this-trade buttons WITHOUT origin handling in the form (Tasks 6-9). Until Task 9 lands, clicking those buttons emits `?origin=hyp-recs` but the form ignores the param and renders with default `origin="watchlist"` (colspan=8 + Cancel `/watchlist/{ticker}/expand`). Each Task 5–9 commit is individually green (test suite stays passing); operator-facing UI is fully coherent only at end-of-plan. This trade is per spec §7.1 explicit guidance: "step 6 lands last so any defects don't block the simpler steps."
 
+> **Codex R1 Major 3 — accepted with rationale.** Codex flagged the transient state as a partitioning hazard ("a worker landing/pausing after Task 5 ships a broken workflow"). Reordering buttons-after-form (Tasks 5.5/5.6 → after Task 9) would eliminate the transient but DEVIATES from spec §7.1's explicit ordering. The spec author considered this trade-off and chose buttons-before-form-scaffolding deliberately because (a) the hyp-recs UI surface is gated behind operator click — operators see the transient only if they actively click a button mid-dispatch and validate post-Task-5 outcomes, AND (b) the executing-plans dispatch is single-subagent + sequential — there is no operator-facing release between commits inside the dispatch (the merge-to-main happens at end-of-plan). The transient is bounded to the implementer's local working tree, NOT to a shipped artifact. The spec's ordering rationale ("largest task lands last so defects don't block simpler steps") is preserved. Accept; document explicitly so future readers understand the intentionality.
+
 **Hyp-recs sort key NOT touched.** Per spec §2.2 sort-neutrality invariant. `prioritized_recommendations`, `_sort_watchlist`, and all `_TAG_PRECEDENCE` references are byte-for-byte unchanged. Task 5 adds a sort-neutrality regression test (`tests/web/test_view_models/test_hyp_recs_sort_neutrality.py`) as a guard against future churn — `HypothesisRecommendation` is unchanged in V1 so the sort path has zero new inputs.
 
 **Base-layout 5-VM rule does NOT apply.** Verified at plan-time: `grep -n "expanded\|chase_factor\|HypRecsExpandedVM\|sizing_twins" swing/web/templates/base.html.j2` returns zero matches. The expansion data lives ONLY on `HypRecsExpandedVM` (route-scoped); the new partial is included only via the HTMX expand route, never via the dashboard's full-page render path. No new top-level `vm.foo` field is introduced.
@@ -148,7 +150,7 @@ No Claude co-author footer. No `--no-verify`. No amending. Conventional-commits 
 
 **Why first.** Per spec §7.1 step 1: "Touches `partials/watchlist_row.html.j2`, `partials/watchlist_top5_section.html.j2`, `watchlist.html.j2`, `view_models/watchlist.py`, `routes/watchlist.py`. No coupling to the rest of this dispatch. Land + verify cross-surface consistency before any hyp-recs work begins. Single-task revert if anything breaks."
 
-**Bug.** `partials/watchlist_row.html.j2:16` renders `{{ '%.2f' | format(w.entry_target or 0) }}` under a column header that says "Pivot." `WatchlistEntry.entry_target` is the value frozen when the operator added the ticker to the watchlist; `candidates.pivot` is the current pipeline-eval pivot. After a pivot rebase / VCP re-evaluation, the ticker shows a stale value under "Pivot" while hyp-recs and the trade-entry form already render the current value. The fix renders `candidates.pivot` from the latest evaluation across ALL THREE render sites; lightning trigger logic (line 7) stays bound to `entry_target` per locked decision §1.1 #4.
+**Bug.** `partials/watchlist_row.html.j2:16` renders `{{ '%.2f' | format(w.entry_target or 0) }}` under a column header that says "Pivot." `WatchlistEntry.entry_target` is the value frozen when the operator added the ticker to the watchlist; `candidates.pivot` is the current pipeline-eval pivot. After a pivot rebase / VCP re-evaluation, the ticker shows a stale value under "Pivot." The hyp-recs flat table already renders the current pivot via `candidates_by_ticker[ticker].pivot` (`pivot_price` field on `HypothesisRecommendation`); the trade-entry form's existing behavior is to read sector/industry from candidates but to derive `entry_price` and `initial_stop` from the live PriceCache + watchlist values, NOT from the candidate pivot. (Task 7 of THIS plan extends the entry form to also fall back to `candidate.pivot` for off-watchlist hyp-recs origin, gated tightly so default/watchlist origin is unchanged.) The cross-surface inconsistency the CC pivot fix closes is between the watchlist's "Pivot" column (stale `entry_target`) and the hyp-recs flat table's "Pivot" column (current `candidates.pivot`) — the fix renders `candidates.pivot` on watchlist's column too, across ALL THREE render sites; lightning trigger logic (line 7) stays bound to `entry_target` per locked decision §1.1 #4.
 
 **Three render sites (per spec §3.9, R1-Major-3 + R2-Major-1 resolutions):**
 1. `partials/watchlist_top5_section.html.j2` — dashboard top-5 path (`dashboard.html.j2:15` includes this section; it's where the `<tbody>` iteration over `vm.watchlist_top5` happens).
@@ -658,30 +660,53 @@ def test_config_web_chase_factor_default_is_one_percent():
 
 
 def test_config_web_chase_factor_no_toml_shadow():
-    """Spec §3.1 — toml-shadowing audit.
+    """Spec §3.1 — toml-shadowing audit (R1-Major-4 portability fix).
 
     Per the 2026-04-29 multi-path-ingestion lesson + the prior aeb2084
     lesson, the field MUST NOT have a row in any tracked toml file in
     V1. Phase 5 (configuration page) surfaces all Web overrides
     together; until then, operators write the value into their local
     toml as a deliberate opt-in.
+
+    Implemented in pure Python (Path.rglob) rather than a shell-out to
+    `grep` so the test is portable across Windows/Unix and does not
+    depend on external PATH state. Scans tracked toml files in the
+    repo root + swing/ tree (intentionally excludes the developer's
+    local-untracked .copowers / .tmp areas which are noise for this
+    audit).
     """
-    import subprocess
     from pathlib import Path
 
     repo_root = Path(__file__).resolve().parents[2]
-    result = subprocess.run(
-        ["grep", "-rn", "chase_factor", "--include=*.toml", "."],
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    # grep returns 1 (no matches) or 0 (matches found); either is fine —
-    # the assertion is on stdout being empty.
-    assert result.stdout.strip() == "", (
-        f"chase_factor must not appear in any tracked toml file (multi-path-"
-        f"ingestion lesson). grep stdout:\n{result.stdout}"
+    # Scan the canonical config locations; do NOT recurse into .git or
+    # build artifact dirs.
+    scan_dirs = [repo_root, repo_root / "swing", repo_root / "docs"]
+    offenders: list[tuple[Path, int, str]] = []
+    for base in scan_dirs:
+        if not base.exists():
+            continue
+        for tomlfile in base.rglob("*.toml"):
+            # Skip vendor / cache / build dirs.
+            parts = set(tomlfile.parts)
+            if parts & {".git", ".tmp", "node_modules", ".venv", "__pycache__"}:
+                continue
+            try:
+                lines = tomlfile.read_text(encoding="utf-8").splitlines()
+            except (UnicodeDecodeError, OSError):
+                continue
+            for lineno, line in enumerate(lines, start=1):
+                if "chase_factor" in line:
+                    offenders.append((tomlfile, lineno, line))
+    # Filter out matches inside docs/ (the spec + brief documents
+    # discuss chase_factor; those are NOT shadowing).
+    offenders = [
+        (p, ln, line) for (p, ln, line) in offenders
+        if "docs" not in p.parts
+    ]
+    assert offenders == [], (
+        "chase_factor must not appear in any tracked toml file outside docs/"
+        " (multi-path-ingestion lesson). Offenders:\n"
+        + "\n".join(f"  {p}:{ln}: {line}" for p, ln, line in offenders)
     )
 ```
 
@@ -1981,6 +2006,74 @@ def test_hyp_recs_entry_form_off_watchlist_uses_candidate_pivot_for_target(
     )
 
 
+def test_watchlist_origin_off_watchlist_preserves_zero_fallback(tmp_path: Path):
+    """R1-Major-2 (Codex R1) — gating regression: watchlist-origin
+    request for an off-watchlist ticker MUST preserve the existing
+    0.0 fallback (NOT silently start using candidate.pivot).
+
+    Discriminating: pre-Task-7 path renders entry_price=$0.00,
+    initial_stop=$0.00. Post-Task-7 path with origin=hyp-recs renders
+    candidate values. Post-Task-7 path with origin=watchlist (or
+    default) MUST still render $0.00 — the fallback is gated.
+    """
+    cfg = _make_cfg(tmp_path)
+    # Same off-watchlist + candidate seed as the hyp-recs test, but
+    # request without ?origin= so it defaults to 'watchlist'.
+    from swing.data.db import connect, ensure_schema
+    ensure_schema(cfg.paths.db_path)
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+                    tickers_evaluated, aplus_count, watch_count, skip_count,
+                    excluded_count, error_count)
+                   VALUES ('2026-04-29T09:00:00','2026-04-28','2026-04-29',
+                           NULL, 1, 1, 0, 0, 0, 0)"""
+            )
+            eval_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.execute(
+                """INSERT INTO pipeline_runs
+                   (state, started_ts, finished_ts, action_session_date,
+                    data_asof_date, evaluation_run_id, charts_status)
+                   VALUES ('complete','2026-04-29T08:00:00',
+                           '2026-04-29T09:00:00','2026-04-29','2026-04-28',?,'ok')""",
+                (eval_id,),
+            )
+            conn.execute(
+                """INSERT INTO candidates
+                   (evaluation_run_id, ticker, bucket, close, pivot,
+                    initial_stop, adr_pct, tight_streak, pullback_pct,
+                    prior_trend_pct, rs_rank, rs_return_12w_vs_spy,
+                    rs_method, pattern_tag, notes, sector, industry)
+                   VALUES (?, 'OFF', 'aplus', 49.0, 50.0, 48.0, 2.0, 5,
+                           NULL, NULL, NULL, NULL, 'fallback_spy',
+                           NULL, NULL, 'Energy', 'Oil & Gas E&P')""",
+                (eval_id,),
+            )
+    finally:
+        conn.close()
+    app = create_app(cfg)
+    with TestClient(app) as client:
+        # NO ?origin= → defaults to 'watchlist'. Off-watchlist ticker.
+        resp = client.get(
+            "/trades/entry/form?ticker=OFF",
+            headers={"HX-Request": "true", "HX-Target": "watchlist-row-OFF"},
+        )
+    assert resp.status_code == 200
+    body = resp.text
+    # Watchlist origin + off-watchlist + no live snap → existing 0.0
+    # fallback preserved. The candidate fallback gated to hyp-recs only.
+    assert 'value="0.00"' in body, (
+        "watchlist-origin off-watchlist MUST preserve the 0.0 fallback;"
+        " a regression that applies the candidate fallback globally"
+        " would render 50.00 (from candidate.pivot)"
+    )
+    # Sector/industry STILL come from candidate (unchanged behavior).
+    assert "Energy" in body
+
+
 def test_hyp_recs_entry_form_on_watchlist_prefers_watchlist_values(tmp_path: Path):
     """Spec §3.8b.2 — when ticker IS on the watchlist with values DIFFERENT
     from candidate values, the form prefers watchlist (preserves existing
@@ -2024,7 +2117,7 @@ def test_hyp_recs_entry_form_on_watchlist_prefers_watchlist_values(tmp_path: Pat
 
 - [ ] **Step 7.2: Run failing tests; expect 1 FAIL** (`off_watchlist_uses_candidate_pivot_for_target`). The on-watchlist test passes pre-fix because watchlist-priority semantic is the existing behavior.
 
-- [ ] **Step 7.3: Modify `swing/web/view_models/trades.py`'s `build_entry_form_vm`** to fetch + use candidate pivot/initial_stop. In the existing candidate-row SELECT inside the `with conn:` block (around lines 122-129), extend the SELECT:
+- [ ] **Step 7.3: Modify `swing/web/view_models/trades.py`'s `build_entry_form_vm`** to fetch + use candidate pivot/initial_stop **gated on `coerced_origin == "hyp-recs"`** (R1-Major-2 fix: scope the new fallback tightly so default/watchlist origin off-watchlist callers do NOT silently change behavior). In the existing candidate-row SELECT inside the `with conn:` block (around lines 122-129), extend the SELECT to also fetch pivot + initial_stop (always — the SELECT is cheap and the fields are unconditionally available; gating happens at the fallback decision below):
 
 ```python
 cand_sector = ""
@@ -2045,25 +2138,36 @@ if sector_eval_id is not None:
         cand_initial_stop = cand_row[3]
 ```
 
-Then replace the existing `initial_stop = wl_entry.initial_stop_target if wl_entry and wl_entry.initial_stop_target else 0.0` and the `entry_price = snap.price if snap else (wl_entry.last_close if wl_entry else 0.0)` lines with:
+Then replace the existing `initial_stop = wl_entry.initial_stop_target if wl_entry and wl_entry.initial_stop_target else 0.0` and the `entry_price = snap.price if snap else (wl_entry.last_close if wl_entry else 0.0)` lines with **origin-gated** fallback chains:
 
 ```python
-# R3-Major-2 fallback chain.
-if wl_entry is not None and wl_entry.initial_stop_target:
-    initial_stop = wl_entry.initial_stop_target
-elif cand_initial_stop is not None:
-    initial_stop = cand_initial_stop
+# R3-Major-2 fallback chain — GATED on origin=hyp-recs (R1-Major-2).
+# Watchlist origin (default) preserves existing behavior for backward
+# compat: a watchlist Enter caller hitting an off-watchlist ticker is
+# a degenerate path under existing UX (the watchlist Enter button only
+# fires from watchlist rows by construction); preserving the 0.0
+# fallback there is the conservative choice. Hyp-recs origin gets the
+# candidate-row fallback so off-watchlist hyp-recs Enter sees useful
+# values from the latest evaluation.
+if coerced_origin == "hyp-recs":
+    if wl_entry is not None and wl_entry.initial_stop_target:
+        initial_stop = wl_entry.initial_stop_target
+    elif cand_initial_stop is not None:
+        initial_stop = cand_initial_stop
+    else:
+        initial_stop = 0.0
 else:
-    initial_stop = 0.0
+    # Watchlist origin: existing behavior.
+    initial_stop = wl_entry.initial_stop_target if wl_entry and wl_entry.initial_stop_target else 0.0
 
-# entry_price prefers live price snap → wl_entry.last_close →
-# candidate.pivot → 0.0. The candidate fallback is NEW; pre-fix path
-# fell to 0.0 when no snap and no wl_entry.
+# entry_price fallback chain. For hyp-recs origin: live snap →
+# wl_entry.last_close → candidate.pivot → 0.0. For watchlist origin:
+# preserve existing behavior (live snap → wl_entry.last_close → 0.0).
 if snap is not None:
     entry_price = snap.price
 elif wl_entry is not None and wl_entry.last_close:
     entry_price = wl_entry.last_close
-elif cand_pivot is not None:
+elif coerced_origin == "hyp-recs" and cand_pivot is not None:
     entry_price = cand_pivot
 else:
     entry_price = 0.0
@@ -2275,17 +2379,71 @@ origin_coerced = _coerce_origin(origin)
 
 (e) Modify the soft-warn `form_values` dict to include `"origin": origin_coerced` (the existing `for key, value in form_values.items()` loop in `soft_warn_confirm.html.j2` auto-emits the hidden input once the key is added to the dict).
 
-- [ ] **Step 8.5: Modify `swing/web/templates/partials/soft_warn_confirm.html.j2`** Cancel button to parameterize on `form_values.origin`:
+- [ ] **Step 8.5: Modify `swing/web/templates/partials/soft_warn_confirm.html.j2`** to parameterize BOTH `<td colspan>` AND Cancel button on `form_values.origin` (R1-Major-1: the existing template hardcodes `colspan="8"` at line 18 — without this fix, hyp-recs round-trips render the soft-warn confirm fragment with colspan=8 inside a 9-cell table, leaving the layout structurally wrong even after Task 8 "passes" the round-trip preservation tests):
 
 ```jinja
-<button type="button"
-        hx-get="{{ '/hyp-recs/refresh' if form_values.origin == 'hyp-recs' else '/watchlist/' ~ form_values.ticker ~ '/expand' }}"
-        hx-target="{{ '#hypothesis-recommendations' if form_values.origin == 'hyp-recs' else 'closest tr' }}"
-        hx-swap="outerHTML"
-        hx-headers='{"HX-Request": "true"}'>Cancel</button>
+{#- Soft-warn 2-step confirmation fragment.
+    Expects: form_values (dict of the original form submission fields,
+    including 'origin' for R4-Major-1 round-trip survival).
+
+    R1-Major-1 (Codex R1): colspan + Cancel target parameterized on
+    form_values.origin so the fragment shape matches the originating
+    table's column count (9 for hyp-recs; 8 for watchlist).
+-#}
+<tr class="soft-warn-confirm">
+  <td colspan="{{ 9 if form_values.origin == 'hyp-recs' else 8 }}">
+    <div class="banner" style="background:#fff3cd;color:#92400e;padding:12px;">
+      <strong>⚠ Soft cap reached ({{ form_values.open_count }}/{{ form_values.soft_warn }}).</strong>
+      <p>Opening this trade exceeds your configured soft-warn threshold.
+         Hard cap is {{ form_values.hard_cap }} (still available).</p>
+      <form hx-post="/trades/entry" hx-target="closest tr" hx-swap="outerHTML"
+            hx-headers='{"HX-Request": "true"}'>
+        {% for key, value in form_values.items() %}
+          {% if key not in ("open_count", "soft_warn", "hard_cap") %}
+            <input type="hidden" name="{{ key }}" value="{{ value }}">
+          {% endif %}
+        {% endfor %}
+        <input type="hidden" name="force" value="true">
+        <button type="submit">Submit anyway</button>
+        <button type="button"
+                hx-get="{{ '/hyp-recs/refresh' if form_values.origin == 'hyp-recs' else '/watchlist/' ~ form_values.ticker ~ '/expand' }}"
+                hx-target="{{ '#hypothesis-recommendations' if form_values.origin == 'hyp-recs' else 'closest tr' }}"
+                hx-swap="outerHTML"
+                hx-headers='{"HX-Request": "true"}'>Cancel</button>
+      </form>
+    </div>
+  </td>
+</tr>
 ```
 
 The hidden origin input is auto-emitted by the existing `{% for key, value in form_values.items() %}` loop because `origin` is now in `form_values` (added in step 8.4 (e)).
+
+Strengthen the soft-warn round-trip test in step 8.1 to ALSO assert `colspan="9"` on the returned fragment (R1-Major-1 + Codex Minor 2):
+
+```python
+def test_soft_warn_confirm_round_trips_origin(tmp_path: Path):
+    """R4-Major-1 + R1-Major-1 (Codex R1) — soft-warn confirm
+    round-trips origin AND renders the right colspan for the
+    originating surface.
+
+    Discriminating: pre-fix path renders colspan=8 in soft_warn_confirm
+    even when origin=hyp-recs (R1-Major-1 caught this); the colspan=9
+    assertion catches the layout regression that the hidden-field-
+    presence assertion alone would miss.
+    """
+    # ... (seed as before — soft_warn trip via existing position count) ...
+    # ... assertions:
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'name="origin"' in body
+    assert 'value="hyp-recs"' in body
+    assert "/hyp-recs/refresh" in body
+    assert 'colspan="9"' in body, (
+        "soft-warn confirm fragment must render colspan=9 when origin="
+        "hyp-recs (R1-Major-1); pre-fix renders colspan=8 — visually"
+        " broken inside the 9-cell hyp-recs table"
+    )
+```
 
 - [ ] **Step 8.6: Run the tests; expect 3 PASS.**
 
