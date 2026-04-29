@@ -20,8 +20,13 @@ from swing.data.repos.watchlist import list_active_watchlist
 from swing.data.repos.weather import get_latest
 from swing.evaluation.dates import action_session_for_run
 from swing.journal.stats import HypothesisProgress
+from swing.recommendations.sizing import SizingResult, compute_shares
 from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
-from swing.trades.equity import current_equity, total_current_risk
+from swing.trades.equity import current_equity, sizing_equity, total_current_risk
+from swing.web.chart_scope import (
+    latest_completed_pipeline_run,
+    resolve_chart_scope,
+)
 from swing.web.price_cache import PriceCache, PriceSnapshot
 
 
@@ -365,6 +370,120 @@ def build_hyp_recs_section(
         target_by_id=target_by_id,
     )
     return HypRecsSectionVM(active_recommendations=active_recommendations)
+
+
+@dataclass(frozen=True)
+class HypRecsExpandedVM:
+    """Per-ticker hyp-recs expansion VM (spec §3.5.2).
+
+    Carries the order parameters (buy_stop = pivot, buy_limit = pivot ×
+    (1 + chase_factor), sell_stop = initial_stop), the dual sizing
+    regimes (`sizing_risk` uses `sizing_equity(real, floor)`; `sizing_cash`
+    uses real balance directly), context (sector/industry), the chart-
+    scope reason for the same pipeline-run binding, and the freshness
+    timestamp from the COMPLETED pipeline run the helper resolved.
+
+    Returned by `build_hyp_recs_expanded`; the route handler renders it
+    via the `hypothesis_recommendations_expanded.html.j2` partial (Task 5.3).
+    """
+    ticker: str
+    # Order params.
+    buy_stop: float                       # = candidate.pivot
+    buy_limit: float                      # = pivot × (1 + chase_factor)
+    sell_stop: float | None               # = candidate.initial_stop
+    chase_factor: float                   # echo for footer / tooltip
+    # Sizing (two regimes).
+    current_balance: float
+    risk_equity: float
+    sizing_risk: SizingResult
+    sizing_cash: SizingResult
+    # Context.
+    sector: str
+    industry: str
+    # Chart.
+    data_asof_date: str | None            # for /charts/{date}/{TICKER}.png URL
+    chart_reason: str | None              # None → in scope
+    chart_reason_message: str | None
+    # Freshness.
+    pipeline_finished_at: str | None      # ISO timestamp of binding pipeline run
+
+
+def build_hyp_recs_expanded(
+    conn, cfg: Config, *, ticker: str, current_balance: float,
+) -> HypRecsExpandedVM | None:
+    """Resolve a hyp-recs expansion VM at request time. Returns None when:
+
+    - No completed pipeline_run exists yet.
+    - The ticker has no candidate row in the latest completed pipeline
+      run's evaluation (operator's expansion request races a candidate
+      rotation).
+    - `candidate.pivot` is None (degenerate evaluator output).
+    - `compute_shares` raises ValueError (degenerate sizing — `stop >=
+      entry`; spec §3.5.3 last paragraph).
+
+    Spec §3.5.3. Phase 2 carve-out: candidate lookup uses
+    `fetch_candidates_for_run` + Python-side ticker filter rather than a
+    new `get_for_evaluation` accessor — keeps `swing/data/repos/` change-
+    free for this dispatch.
+    """
+    binding = latest_completed_pipeline_run(conn)
+    if binding is None:
+        return None
+    if binding.evaluation_run_id is None:
+        # Legacy NULL-FK pipeline_run rows pre-date migration 0006; we
+        # cannot bind candidates to such a run. Treat as "no run" for the
+        # hyp-recs expansion surface.
+        return None
+    candidates = fetch_candidates_for_run(conn, binding.evaluation_run_id)
+    candidate = next((c for c in candidates if c.ticker == ticker), None)
+    if candidate is None or candidate.pivot is None:
+        return None
+
+    chart_reason, chart_message = resolve_chart_scope(
+        conn, binding=binding, ticker=ticker,
+        charts_dir=cfg.paths.charts_dir,
+        chart_top_n_watch=cfg.pipeline.chart_top_n_watch,
+    )
+
+    risk_equity = sizing_equity(
+        real_equity=current_balance, floor=cfg.account.risk_equity_floor,
+    )
+    try:
+        sizing_risk = compute_shares(
+            entry=candidate.pivot, stop=candidate.initial_stop,
+            equity=risk_equity,
+            max_risk_pct=cfg.risk.max_risk_pct,
+            position_pct_cap=cfg.sizing.position_pct_cap,
+        )
+        sizing_cash = compute_shares(
+            entry=candidate.pivot, stop=candidate.initial_stop,
+            equity=current_balance,
+            max_risk_pct=cfg.risk.max_risk_pct,
+            position_pct_cap=cfg.sizing.position_pct_cap,
+        )
+    except ValueError:
+        # Degenerate sizing parameters (stop >= entry). Defensive-at-
+        # boundary acceptance — the route handler renders 404 with the
+        # operator-facing message; spec §3.5.3 last paragraph.
+        return None
+
+    return HypRecsExpandedVM(
+        ticker=ticker,
+        buy_stop=candidate.pivot,
+        buy_limit=candidate.pivot * (1.0 + cfg.web.chase_factor),
+        sell_stop=candidate.initial_stop,
+        chase_factor=cfg.web.chase_factor,
+        current_balance=current_balance,
+        risk_equity=risk_equity,
+        sizing_risk=sizing_risk,
+        sizing_cash=sizing_cash,
+        sector=candidate.sector or "",
+        industry=candidate.industry or "",
+        data_asof_date=binding.data_asof_date,
+        chart_reason=chart_reason,
+        chart_reason_message=chart_message,
+        pipeline_finished_at=binding.finished_ts,
+    )
 
 
 def build_dashboard(
