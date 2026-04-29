@@ -1712,7 +1712,53 @@ EOF
 > **Sub-task 5.7 — Sort-neutrality regression** (`tests/web/test_view_models/test_hyp_recs_sort_neutrality.py`): seeds 3+ candidates that exercise the prioritizer's tie-breaking. Two binding test shapes (R3-Major-1 + R4-Major-2 Codex fix — determinism alone is weaker than neutrality; first-green-after-edit is weaker than pre-change baseline):
 >   1. **Cross-builder neutrality** (the spec's actual invariant per §2.2): assert `build_dashboard.active_recommendations` ticker order EQUALS `build_hyp_recs_section.active_recommendations` ticker order, given the same DB state. Discriminating: a regression in the Task 3 `_build_active_recommendations` extraction (e.g. dropped a field, swapped sort key) would diverge the two builders' output. (Note: Task 3 already commits a byte-equivalence regression test `test_build_active_recommendations_helper_extracted_matches_build_dashboard` — this sub-task adds a SECOND layer asserting cross-builder equivalence at the rendered tuple level, not just at the construction-helper level.)
 >   2. **Pinned-baseline neutrality**: pin a ticker order tuple captured against the PRE-CHANGE baseline (HEAD `a492b84`, the commit at which this plan's test baseline was pinned), NOT against the first-green-after-edit run.
->      **Capture protocol (binding — R5-Major-1 Codex fix; the alternative "trust byte-equivalence" protocol was rejected because Task 3's byte-equivalence test only proves post-change self-consistency, NOT equivalence to the pre-change baseline; if the extraction regressed both paths identically, byte-equivalence still holds while the baseline drifts):** at sub-step 5.7 dispatch start, the implementer creates a temporary git worktree at `a492b84` (pre-Task-3 commit) — `git worktree add /tmp/swing-baseline a492b84` — seeds the SAME fixture there, runs `build_dashboard` against the pre-Task-3 module via a one-shot `python -c` snippet, records the observed ticker tuple, then writes that tuple as the assertion target in the sub-task 5.7 test. The worktree is discarded with `git worktree remove /tmp/swing-baseline` after capture. Implementer documents the captured tuple + the capture-protocol step in the Task 5.7 commit body.
+>      **Capture protocol (binding — R5-Major-1 + R6-Major-1/2 Codex fixes; the alternative "trust byte-equivalence" protocol was rejected because Task 3's byte-equivalence test only proves post-change self-consistency, NOT equivalence to the pre-change baseline; if the extraction regressed both paths identically, byte-equivalence still holds while the baseline drifts):**
+>
+>      **Step 1 — choose a portable temp path for the baseline worktree.** Use any path the implementer's shell + filesystem accepts (the example below uses bash `${TMPDIR:-$TEMP}` which resolves on Windows/Git-Bash to the user's TEMP dir; PowerShell users can substitute `$env:TEMP\swing-baseline` or any other valid local path). The path MUST be outside the working tree and outside any Drive-synced folder (CLAUDE.md DB-location invariant — same hazard class).
+>
+>      **Step 2 — author a non-committed capture helper in the MAIN tree** (do not commit; pre-add to a local-only `.gitignore` if convenient): create `tests/web/test_view_models/_capture_baseline.py` that uses the existing `sample_config` fixture + the same fixture-seed function the sub-task 5.7 test will use, runs `build_dashboard`, prints the ticker tuple to stdout. Concrete shape:
+>      ```python
+>      # tests/web/test_view_models/_capture_baseline.py — DO NOT COMMIT.
+>      from swing.web.view_models.dashboard import build_dashboard
+>      def test_capture(sample_config, tmp_path):
+>          # Reuse the SAME seed function sub-task 5.7's test will use:
+>          from tests.web.test_view_models.test_hyp_recs_sort_neutrality import (
+>              _seed_sort_neutrality_fixture,
+>          )
+>          _seed_sort_neutrality_fixture(sample_config)
+>          # Build a stub cache + executor matching the test's pattern.
+>          ...
+>          vm = build_dashboard(cfg=sample_config, cache=cache, executor=executor, ohlcv_cache=None)
+>          tickers = tuple(r.ticker for r in vm.active_recommendations)
+>          print(f"BASELINE_TUPLE = {tickers!r}")  # noqa: T201
+>          assert False, "capture-only — never commit"  # force pytest to print the tuple
+>      ```
+>
+>      **Step 3 — create the baseline worktree at HEAD `a492b84`** (pre-Task-3 commit):
+>      ```bash
+>      # bash / Git-Bash:
+>      git worktree add "${TMPDIR:-$TEMP}/swing-baseline" a492b84
+>      cd "${TMPDIR:-$TEMP}/swing-baseline"
+>      pip install -e ".[dev,web]"   # match the main tree's editable install
+>      ```
+>      ```powershell
+>      # PowerShell equivalent:
+>      git worktree add "$env:TEMP\swing-baseline" a492b84
+>      Set-Location "$env:TEMP\swing-baseline"
+>      pip install -e ".[dev,web]"
+>      ```
+>
+>      **Step 4 — copy the capture helper INTO the baseline worktree** (the worktree is at pre-Task-3 commit so the new `_seed_sort_neutrality_fixture` does NOT exist there — implementer pastes both the capture helper AND the seed function into the worktree as untracked files). Run `pytest tests/web/test_view_models/_capture_baseline.py::test_capture -v -s` in the baseline worktree; observe the printed `BASELINE_TUPLE = (...)` line + the deliberate `assert False` (the test fails after printing — that's the signal the tuple was captured).
+>
+>      **Step 5 — back in the main tree, write the captured tuple as the assertion target** in `tests/web/test_view_models/test_hyp_recs_sort_neutrality.py`. Document the captured tuple + the capture-protocol step in the Task 5.7 commit body so future readers can audit the baseline rooting.
+>
+>      **Step 6 — clean up:**
+>      ```bash
+>      git worktree remove "${TMPDIR:-$TEMP}/swing-baseline" --force
+>      rm -f tests/web/test_view_models/_capture_baseline.py  # main tree
+>      ```
+>
+>      The 6-step protocol is concrete enough that the implementer can follow it without re-deriving fixture bootstrap or shell-path conventions.
 >      Discriminating: any future PR perturbing prioritizer logic, hypothesis registry scoring, or default sort tiebreakers fails the suite. The pin is rooted in real pre-change behavior, not in post-Task-3-self-consistency.
 > No production code change in this sub-task — both tests are forward-regression guards. The implementer commits the captured tuple as the assertion target.
 
