@@ -2,7 +2,7 @@
 
 **Baseline:** `main` at commit `4ba9c62` (hyp-recs trade-prep expansion brainstorming dispatch brief). Fast suite ~974 tests green as of 2026-04-25 (per CLAUDE.md Quick Start; exact count pinned at writing-plans dispatch per the project's standing test-count-drift discipline). schema_version = 12 (after 2026-04-29 sector/industry capture, migration 0012).
 
-**Goal:** Convert the hyp-recs panel from a flat 7-column read-only table into a click-to-expand surface that shows the operator's full trade-preparation context for each recommendation: order parameters (buy stop = pivot, buy limit = pivot × (1 + chase_factor), sell stop = framework's initial stop), sizing in two complementary regimes (risk-based using the $7,500 floor, cash-feasible capped at the actual current balance), context (sector, industry), and an inline chart when in chart-scope. The expansion makes the operator's pure-trigger discipline ("price is inside the buy window?") an at-a-glance check rather than an ad-hoc external lookup. Bundles a small bug fix on the watchlist `Pivot` column (renders the frozen-at-add `entry_target` under a header that says `Pivot`; the fix renders `candidates.pivot` from the latest evaluation, matching what hyp-recs already does).
+**Goal:** Convert the hyp-recs panel from a flat 7-column read-only table into a click-to-expand surface that shows the operator's full trade-preparation context for each recommendation: order parameters (buy stop = pivot, buy limit = pivot × (1 + chase_factor), sell stop = framework's initial stop), sizing in two complementary regimes (risk-based using the $7,500 floor, cash-feasible capped at the actual current balance), context (sector, industry), and an inline chart when in chart-scope. Adds **two action surfaces** per Q7 + Q8 (operator-locked 2026-04-29): a per-row "Enter" button (mirrors watchlist's pattern; serves the "I'm already convinced, commit immediately" workflow) AND a "Take this trade" button inside the expansion (serves the "let me verify the snapshot first" workflow). Bundles a small bug fix on the watchlist `Pivot` column (renders the frozen-at-add `entry_target` under a header that says `Pivot`; the fix renders `candidates.pivot` from the latest evaluation, matching what hyp-recs already does).
 
 **Framing (binding, from `docs/orchestrator-context.md` 2026-04-25):** *"Dashboard PROPOSES, operator DISPOSES."* The expansion adds DECISION-RELEVANT context to the proposal surface; it does NOT add new automation, does NOT change which rows surface as recommendations, and does NOT introduce a new entry-execution path. The operator continues to disposition each row manually through the existing entry surface.
 
@@ -26,23 +26,25 @@ These are the six pre-locked decisions from the dispatch brief §2. Every spec s
 
 6. **CC pivot bug bundled.** Watchlist `Pivot` column header currently renders `WatchlistEntry.entry_target` (frozen at add time) — fix renders `candidates.pivot` for the latest pipeline-eval row. Lightning trigger logic stays bound to `entry_target` per #4 (independent code reference; only the column display changes).
 
-### 1.2 Operator-judgment-call disclosures (surface in return report)
+7. **Per-row Enter button on hyp-recs table.** Operator-locked 2026-04-29 (commit `427ef95`). Each hyp-rec row gains an "Enter" action that takes the operator to the entry form for the row's ticker, mirroring the existing watchlist Enter button at `partials/watchlist_row.html.j2:32`. The pre-fill pipeline (commit chain `b24506b → fe270a6`, 2026-04-25) auto-populates `hypothesis_label`, `chart_pattern_*`, `sector`, and `industry` on entry-form render. Closes the workflow gap that the prior brief draft mistakenly referred to as "an existing Enter button" — verified pre-Q7, the partial had zero in-row action affordances. (Spec resolves D.1 + D.5 per §3.7.)
 
-The dispatch brief §3.D presupposes "the hyp-recs row already has an 'Enter' button (visible in operator's earlier screenshots)." Spec investigation at baseline `4ba9c62` confirms `swing/web/templates/partials/hypothesis_recommendations.html.j2` does NOT contain an Enter button — the seven columns are Ticker, Price, Pivot, Hypothesis, Progress, Tripwire, Suggested label, with no actions cell. The closest existing Enter button is on watchlist rows (`partials/watchlist_row.html.j2:32`); operators today reach the entry form via the watchlist's `Enter` button after recognizing a hyp-rec match by ticker. Spec resolves Q-D against this corrected premise (information-only expansion; see §3.7). Surfaced in the return report under "Brief premise corrections."
+8. **"Take this trade" button INSIDE the expansion.** Operator-locked 2026-04-29 (same commit). IN ADDITION TO Q7 (not instead of). When the operator expands a row to verify the snapshot, the action button is right there — no need to close the expansion to commit. Visual treatment + pre-fill semantics resolved in §3.7 (D.2-D.4); existence of the button is locked.
 
 ### 1.3 What V1 ships
 
 1. **`Config.web.chase_factor`** — single new config field, default 0.01, no migration (pure Python).
 2. **One new VM dataclass** — `HypRecsExpandedVM` (route-local, snapshot-on-click), rendered by the new partial `partials/hypothesis_recommendations_expanded.html.j2`. **Existing `HypothesisRecommendation` is unchanged** — sizing twins, sector, industry, current_balance live ONLY on `HypRecsExpandedVM` and are computed at click time, NOT precomputed on the collapsed-table render. (R1-Major-1 resolution: keeps the §2.2 snapshot-at-render invariant honest; §1.3 and §2.3 no longer contradict it.)
-3. **Two new route handlers** — `GET /hyp-recs/{ticker}/expand` returns the expansion partial; `GET /hyp-recs/refresh` returns the full hyp-recs section partial (used by the close button — see §3.5.4 / §4.6 for the rejected per-row reconstruction path).
+3. **Two new route handlers** — `GET /hyp-recs/{ticker}/expand` returns the expansion partial; `GET /hyp-recs/refresh` returns the freshly-rendered hyp-recs section (used by the close button — see §3.5.4 / §4.6 for the rejected per-row reconstruction path; R2-Major-2 resolution scopes the refresh handler to a hyp-recs-only builder, NOT a full `build_dashboard` rebuild).
 4. **Row-target prefix extension** — `_ROW_TARGET_PREFIXES` in `swing/web/app.py:31-37` extended to include `hyp-rec-row-` so HTMX 4xx/5xx error fragments swap as `<tr>` rather than `<div>` (R1-Major-2 resolution; the current tuple covers `open-position-`, `entry-form-`, `exit-form-`, `stop-form-`, `watchlist-row-` only).
-5. **Modified template** — `partials/hypothesis_recommendations.html.j2` gains a leading chevron column; the per-row markup is extracted into `hypothesis_recommendations_row.html.j2` (used only by the full-table render in V1 — see §4.6 rationale).
-6. **Bundled CC pivot bug fix** — separate task in the writing-plans output (see §3.9): `partials/watchlist_row.html.j2:16` switches from `w.entry_target` to a `current_pivot` lookup. The fix touches THREE render sites: the dashboard top-5 watchlist include, the standalone watchlist page include, AND `WatchlistRowVM` (`swing/web/view_models/watchlist.py:50-64`) so the watchlist's `/watchlist/{ticker}/row` close-path doesn't revert the column to `entry_target` after expand-close (R1-Major-3 resolution). Lightning trigger at line 7 stays unchanged.
-7. **Tests across four layers** — unit (sizing-twin compute), VM (HypRecsExpandedVM build + anchor), route (HTMX expand + refresh + chart-scope fallback + row-target-prefix coverage), template (regression on flat table, regression on watchlist Pivot column across all three render sites).
+5. **Modified template** — `partials/hypothesis_recommendations.html.j2` gains a leading chevron column AND a trailing Enter-button column; the per-row markup is extracted into `hypothesis_recommendations_row.html.j2` (used only by the full-table render in V1 — see §4.6 rationale).
+6. **Per-row "Enter" button on each hyp-recs row** (Q7) — mirrors the watchlist Enter button at `partials/watchlist_row.html.j2:32` exactly: HTMX `hx-get="/trades/entry/form?ticker={ticker}"`, `hx-target="closest tr"`, `hx-swap="outerHTML"`. Reuses the existing `entry-form-` row-target prefix; reuses the existing per-ticker pre-fill pipeline (auto-populates `hypothesis_label`, `chart_pattern_*`, `sector`, `industry` at form render). NO `event.stopPropagation()` needed because the row itself is NOT an HTMX trigger (Q-C resolution made the chevron column the expand trigger). See §3.7 D.1 + D.5.
+7. **"Take this trade" button INSIDE the expansion** (Q8) — uses the SAME query-param mechanism as the per-row Enter button (D.2 = option (a) per §3.7 rationale): HTMX `hx-get="/trades/entry/form?ticker={ticker}"`, `hx-target="closest tr"`, `hx-swap="outerHTML"`. Visually differentiated from the per-row Enter button per D.3 (different label "Take this trade"; positioned with the Order parameters group; primary-action styling). The expanded-row-replaced-by-entry-form swap implicitly closes the expansion. ToCToU window is identical-class to the per-row Enter button (D.4); no new ToCToU class introduced.
+8. **Bundled CC pivot bug fix** — separate task in the writing-plans output (see §3.9): `partials/watchlist_row.html.j2:16` switches from `w.entry_target` to a `current_pivot` lookup. The fix touches THREE render sites: `partials/watchlist_top5_section.html.j2` (dashboard top-5), `watchlist.html.j2` (standalone page), AND `WatchlistRowVM` (`swing/web/view_models/watchlist.py:50-64`) so the watchlist's `/watchlist/{ticker}/row` close-path doesn't revert the column to `entry_target` after expand-close (R1-Major-3 + R2-Major-1 resolution). Lightning trigger at line 7 stays unchanged.
+9. **Tests across four layers** — unit (sizing-twin compute), VM (HypRecsExpandedVM build + anchor), route (HTMX expand + scoped refresh + chart-scope fallback + row-target-prefix coverage + per-row Enter button + expansion Take-this-trade button), template (regression on flat table, per-row Enter markup mirrors watchlist, regression on watchlist Pivot column across all three render sites).
 
 ### 1.4 What V1 does NOT ship (deferred)
 
-- "Take this trade" action button on the expansion (Q-D) — V2 candidate (requires pre-fill plumbing + ToCToU handling for a new entry surface; out of scope per §3.7 rationale).
+- Extended-snapshot pre-fill (D.2 option (b)) — carrying `buy_stop`, `sell_stop`, `shares`, `notional` into the entry form via hidden inputs / POST body to eliminate the ToCToU window between expansion render and form render. V1 picks the simpler query-param mechanism (D.2 = option (a)); V2 candidate if operators report ToCToU pain in operational use.
 - Watchlist + open-positions snapshot extensions (locked OUT per §1.1 #5).
 - Mobile/responsive design (Q-M; deferred per brief §3.M).
 - Sort-PARTICIPATING fields (any sizing/cost/sector value never enters the hyp-recs prioritizer or `_sort_watchlist`).
@@ -403,21 +405,79 @@ def hyp_recs_expand(request: Request, ticker: str):
 
 @router.get("/hyp-recs/refresh")
 def hyp_recs_refresh(request: Request):
-    """Close-button target. Returns the freshly-rendered hyp-recs section so
-    the closing operator sees the same values the page would render right
-    now. Per §4.6, the alternative — per-row reconstruction — is rejected
-    because hyp-recs rows are prioritizer + top-N output, not stable
-    projections of one persisted record."""
+    """Close-button target. Returns ONLY the freshly-rendered hyp-recs section
+    so the closing operator sees current hyp-recs values without rebuilding
+    open-trades, watchlist top-5, prices for non-recommended tickers, or
+    OHLCV (R2-Major-2 — scoped builder, NOT a full build_dashboard call).
+
+    Cross-panel snapshot consistency caveat: the swap target is
+    #hypothesis-recommendations only — other dashboard sections retain
+    their full-page-render snapshot. This is inherent to the partial-swap
+    UX and is the intentional V1 trade: cheap close action, accept that
+    other panels remain at their last full-render snapshot.
+    """
     cfg = request.app.state.cfg
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
-    ohlcv_cache = getattr(request.app.state, "ohlcv_cache", None)
-    vm = build_dashboard(cfg=cfg, cache=cache, executor=executor, ohlcv_cache=ohlcv_cache)
+    section_vm = build_hyp_recs_section(cfg=cfg, cache=cache, executor=executor)
     return templates.TemplateResponse(
         request, "partials/hypothesis_recommendations.html.j2",
-        {"vm": vm}, status_code=200,
+        {"vm": section_vm}, status_code=200,
     )
 ```
+
+**Scoped section builder (`build_hyp_recs_section`)** lives in `swing/web/view_models/dashboard.py` adjacent to `build_dashboard` and is constructed by extracting the existing recommendation-construction logic into a shared helper. R2-Major-2 motivation: the refresh route MUST NOT depend on subsystems unrelated to hyp-recs (open-positions ohlcv, watchlist top-5 sorting, advisories computation) — those are unrelated failure modes that would couple a simple close-button click to the entire dashboard's wellness.
+
+```python
+@dataclass(frozen=True)
+class HypRecsSectionVM:
+    """Sub-VM shaped exactly as the hypothesis_recommendations.html.j2
+    partial expects (`vm.active_recommendations`). Returned by
+    GET /hyp-recs/refresh; renders the same flat-table chevron + Enter
+    column markup the full-page render produces."""
+    active_recommendations: tuple[HypothesisRecommendation, ...]
+
+
+def _build_active_recommendations(
+    *, conn, cfg, prices: Mapping[str, PriceSnapshot],
+    candidates_by_ticker: Mapping[str, Candidate],
+) -> tuple[HypothesisRecommendation, ...]:
+    """Shared helper extracted from build_dashboard. Constructs the
+    active_recommendations tuple given the prerequisites. Both
+    build_dashboard (full page) and build_hyp_recs_section (refresh
+    route) call this — single source of truth for recommendation
+    construction logic."""
+    # ... (existing top_recommendations + progress_by_id + tripwire_reason
+    # logic, unchanged from build_dashboard's current implementation at
+    # swing/web/view_models/dashboard.py:540-581) ...
+
+
+def build_hyp_recs_section(*, cfg, cache, executor) -> HypRecsSectionVM:
+    """Refresh-route VM builder. Resolves ONLY the data needed for the
+    hyp-recs section: candidates_by_ticker (for pivot_price), prices for
+    the recommended tickers (subset, NOT the full watchlist), and the
+    progress/registry data the prioritizer needs. Does NOT touch
+    open-trade ohlcv, watchlist top-5, advisories, status strip."""
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            candidates = fetch_candidates_for_run_via_pipeline_binding(conn)
+            candidates_by_ticker = {c.ticker: c for c in candidates}
+            top_recommendations = prioritize_recommendations(conn)
+            recommended_tickers = sorted({r.candidate_ticker for r in top_recommendations})
+            prices = cache.get_prices(recommended_tickers, executor=executor)
+            active_recommendations = _build_active_recommendations(
+                conn=conn, cfg=cfg, prices=prices,
+                candidates_by_ticker=candidates_by_ticker,
+            )
+            return HypRecsSectionVM(active_recommendations=active_recommendations)
+    finally:
+        conn.close()
+```
+
+The `cache.get_prices(recommended_tickers, ...)` scope keeps the price fetch narrow (typically 1–10 tickers vs the full watchlist's 20–50). PriceCache's existing graceful-degradation path (last-close fallback when fetch deadline misses) applies unchanged. The refresh route inherits zero new failure modes from open-positions / watchlist / advisories paths.
+
+**`build_dashboard` refactor:** `build_dashboard` is updated to call `_build_active_recommendations` instead of inlining the loop — single source of truth. The existing recommendation-construction logic at `swing/web/view_models/dashboard.py:540-581` is moved into the new helper without semantic change.
 
 **Row-target prefix extension (R1-Major-2).** `swing/web/app.py:31-37` `_ROW_TARGET_PREFIXES` MUST gain `hyp-rec-row-`:
 
@@ -439,12 +499,12 @@ Without this addition, an HTMX request whose `HX-Target` is `hyp-rec-row-XYZ` wo
 
 #### 3.5.5 Template: `hypothesis_recommendations.html.j2` modification
 
-Current state: 7-column table, no row interactivity. Modified state: 8 columns (chevron added as the LEADING column), each `<tr>` becomes an HTMX trigger:
+Current state: 7-column read-only table, no row interactivity. Modified state: **9 columns** — leading chevron, the seven existing columns, and a trailing Enter-button column (Q7):
 
 ```jinja
 <thead>
   <tr>
-    <th aria-label="Expand"></th>     {# NEW: chevron column #}
+    <th aria-label="Expand"></th>     {# NEW: chevron column (col 1) #}
     <th>Ticker</th>
     <th>Price</th>
     <th>Pivot</th>
@@ -452,43 +512,68 @@ Current state: 7-column table, no row interactivity. Modified state: 8 columns (
     <th>Progress</th>
     <th>Tripwire</th>
     <th>Suggested label</th>
+    <th aria-label="Action"></th>     {# NEW: per-row Enter button (col 9) #}
   </tr>
 </thead>
 <tbody>
   {% for rec in vm.active_recommendations %}
-    <tr id="hyp-rec-row-{{ rec.ticker }}"
-        {% if rec.tripwire_fired %}class="tripwire-fired"{% endif %}>
-      <td>
-        <button type="button" class="expand-toggle"
-                hx-get="/hyp-recs/{{ rec.ticker }}/expand"
-                hx-target="closest tr"
-                hx-swap="outerHTML"
-                hx-headers='{"HX-Request": "true"}'
-                aria-label="Expand {{ rec.ticker }}">▸</button>
-      </td>
-      <td>{{ rec.ticker }}</td>
-      ...
-    </tr>
+    {% include "partials/hypothesis_recommendations_row.html.j2" %}
   {% endfor %}
 </tbody>
 ```
 
-**HTMX expansion mechanics (Q-C resolution):** **dedicated chevron column with explicit button click.**
+The per-row partial (`hypothesis_recommendations_row.html.j2`):
+
+```jinja
+{#- Expects: rec (HypothesisRecommendation) -#}
+<tr id="hyp-rec-row-{{ rec.ticker }}"
+    {% if rec.tripwire_fired %}class="tripwire-fired"{% endif %}>
+  <td>
+    <button type="button" class="expand-toggle"
+            hx-get="/hyp-recs/{{ rec.ticker }}/expand"
+            hx-target="closest tr"
+            hx-swap="outerHTML"
+            hx-headers='{"HX-Request": "true"}'
+            aria-label="Expand {{ rec.ticker }}">▸</button>
+  </td>
+  <td>{{ rec.ticker }}</td>
+  <td>{% if rec.current_price is not none %}${{ "%.2f"|format(rec.current_price) }}{% else %}—{% endif %}</td>
+  <td>{% if rec.pivot_price is not none %}${{ "%.2f"|format(rec.pivot_price) }}{% else %}—{% endif %}</td>
+  <td>{{ rec.hypothesis_name }}</td>
+  <td>{{ rec.hypothesis_progress_n }} / {{ rec.hypothesis_progress_target }}</td>
+  <td>{% if rec.tripwire_fired %}<strong>FIRED</strong>: {{ rec.tripwire_reason or "" }}{% else %}—{% endif %}</td>
+  <td title="{{ rec.suggested_label }}">{{ rec.suggested_label[:60] }}{% if rec.suggested_label|length > 60 %}…{% endif %}</td>
+  <td>
+    {#- Per-row Enter button (Q7). Mirrors watchlist_row.html.j2:31-35 markup
+        for operator muscle memory. NO event.stopPropagation needed because
+        the <tr> itself is NOT an HTMX trigger — only the chevron and Enter
+        buttons are (Q-C / D.5 resolution). -#}
+    <button type="button"
+            hx-get="/trades/entry/form?ticker={{ rec.ticker }}"
+            hx-target="closest tr"
+            hx-swap="outerHTML"
+            hx-headers='{"HX-Request": "true"}'>Enter</button>
+  </td>
+</tr>
+```
+
+**HTMX expansion mechanics (Q-C resolution):** **dedicated chevron column with explicit button click — NOT row-level `hx-get`.**
 
 Rejected alternative: row-level `hx-get` (mirroring watchlist's pattern at `partials/watchlist_row.html.j2:3-5`). Rationale for rejection:
-1. **Existing architectural concern.** The orchestrator-context "Bug 1 follow-up: Watchlist row HTMX trigger architecture refactor" notes that interactive children inside row-click rows require `event.stopPropagation()` on every nested control. The watchlist row already has this complexity for its `Enter` button at `:31`.
-2. **Future "Take this trade" button.** Per Q-D resolution (§3.7) information-only is V1, but V2 will likely add an action button to the expansion. A row-level click would force `stopPropagation()` to be retrofitted to that future button; an explicit chevron sidesteps the retrofit.
-3. **Affordance clarity.** A leading chevron is a stronger visual cue ("this row expands") than a hover-state on the whole row. The hyp-recs panel's framing ("dashboard PROPOSES, operator DISPOSES") is well-served by an explicit operator-action surface.
-4. **Accessibility.** The button is keyboard-focusable and screen-reader-labelled (`aria-label="Expand {ticker}"`); a row-level click is not.
+1. **Existing architectural concern (Bug 1 follow-up).** Watchlist's row-level click pattern means EVERY interactive child (the existing `Enter` button at `:31`) needs `event.stopPropagation()`. With Q7 + Q8 adding two MORE buttons (per-row Enter + expansion Take-this-trade), choosing row-level click would force `stopPropagation` on three buttons. Chevron-as-trigger sidesteps this entirely (D.5 resolution: row is NOT a trigger; no stopPropagation anywhere on the hyp-recs surface).
+2. **Affordance clarity.** A leading chevron is a stronger visual cue ("this row expands") than a hover-state on the whole row.
+3. **Accessibility.** Both the chevron and the Enter button are keyboard-focusable, screen-reader-labelled, and operate via explicit click — a row-level click is not.
 
-Cost accepted: an additional 8th column. Hyp-recs is a narrow table (7 cells of mostly-numeric content); one more column does not push the table past readable width. The chevron column is intentionally narrow (`width:1.5em`) to minimize layout disruption.
+Cost accepted: nine columns total (chevron + 7 existing + Enter). Hyp-recs is a narrow table (mostly numeric content); two narrow control columns at column-1 and column-9 do not push the table past readable width. The chevron column is `width:1.5em`; the Enter-button column is `width:5em` (matches watchlist).
+
+**Entry-form colspan compatibility (writing-plans concern, surfaced for tracking):** the per-row Enter button's HTMX swap replaces the `<tr>` with the entry form `<tr>`. The entry form template's `colspan` must accommodate the 9-cell hyp-recs row. Watchlist row is 7 cells; if the entry-form template hardcodes 7, writing-plans dispatch determines whether to (a) parameterize the colspan or (b) accept a visual quirk (colspan mismatch in HTML degrades to "extra/missing trailing cell"). Ditto for the expansion's "Take this trade" swap (replacing the 9-colspan expanded `<tr>`).
 
 #### 3.5.6 New partial: `hypothesis_recommendations_expanded.html.j2`
 
 ```jinja
 {#- Expects: expanded (HypRecsExpandedVM) -#}
 <tr id="hyp-rec-row-{{ expanded.ticker }}" class="expanded">
-  <td colspan="8">
+  <td colspan="9">
     <button class="close-expanded" type="button"
             hx-get="/hyp-recs/refresh"
             hx-target="#hypothesis-recommendations" hx-swap="outerHTML"
@@ -506,6 +591,19 @@ Cost accepted: an additional 8th column. Hyp-recs is a narrow table (7 cells of 
                      {% else %}—{% endif %}
           <span class="muted">(framework initial stop)</span></li>
     </ul>
+
+    <p class="action-row">
+      {#- Q8: "Take this trade" button (D.2 = option (a) query-param mechanism;
+          D.3 differentiated label + primary-action styling). HTMX swap
+          replaces the expanded <tr> with the entry form <tr> — the swap
+          implicitly closes the expansion. NO stopPropagation needed
+          (D.5: row is not a trigger). -#}
+      <button type="button" class="take-this-trade primary"
+              hx-get="/trades/entry/form?ticker={{ expanded.ticker }}"
+              hx-target="closest tr"
+              hx-swap="outerHTML"
+              hx-headers='{"HX-Request": "true"}'>Take this trade</button>
+    </p>
 
     <h4>Sizing</h4>
     <ul class="sizing-twins">
@@ -563,18 +661,69 @@ Cost accepted: an additional 8th column. Hyp-recs is a narrow table (7 cells of 
 
 **Chart inline rendering (Q-E resolution):** **mirror the chart-scope server-side resolution pattern from `watchlist_expanded.html.j2:36-43` and `open_positions_expanded.html.j2:32-39`.** The `<img>` URL is the SAME date-prefixed `/charts/{date}/{TICKER}.png` already mounted as StaticFiles; in-scope tickers render directly. Out-of-scope tickers render the `chart-unavailable` div with the operator-facing reason from `CHART_REASON_MESSAGES`. The `/charts/{TICKER}.png` (date-less) Tier-2 #2 redirect is NOT used here because we already know the date at VM build time — the redirect's purpose is for URLs operators paste into the address bar, not internal template references.
 
-### 3.7 Action button decision (Q-D + Q-K)
+### 3.7 Action-button design (Q-D, post Q7 + Q8 update)
 
-**Resolution: Information-only V1 expansion. No "Take this trade" button.**
+The dispatch brief was updated 2026-04-29 (commit `427ef95`) to lock both a per-row Enter button (Q7) AND a "Take this trade" button inside the expansion (Q8). §3.D in the brief now is a 5-sub-question section (D.1–D.5) on implementation details. Resolutions:
 
-**Brief premise correction (surfaced in return report):** the dispatch brief states "the hyp-recs row already has an 'Enter' button (visible in operator's earlier screenshots)" but inspection of `swing/web/templates/partials/hypothesis_recommendations.html.j2` at baseline `4ba9c62` shows seven columns with no actions cell. The operator's current path from a hyp-rec to the entry form is via the watchlist's `Enter` button at `swing/web/templates/partials/watchlist_row.html.j2:32` (matching by ticker between the hyp-recs row and the watchlist row). Spec resolves Q-D against this corrected premise.
+#### D.1 — Per-row Enter button styling + structure
 
-**Rationale for information-only:**
-1. **Simplest first step.** The expansion's whole purpose is decision-quality (in/out of buy window, sizing math, chart visual). After the operator's mental "yes," they navigate to entry via the existing watchlist Enter button. Adding a parallel "Take this trade" button doubles the entry-surface count and forces a decision about pre-fill semantics + ToCToU handling for a NEW surface.
-2. **Q-K becomes moot.** With no action button, the snapshot-at-render values are display-only; nothing carries them into a subsequent entry submission. The existing entry-form's snapshot-at-entry-surface ToCToU pattern (chart-pattern flag-v1 §3.6) is unchanged.
-3. **Reversibility / V2 path.** Adding a button later is a one-template change; removing one is the same. V2 can either add a button to this expansion OR add an Enter button directly to the hyp-recs row (cleaner: matches the watchlist's row-level Enter button). The operator can choose at V2 dispatch time.
+**Resolution: mirror the watchlist Enter button exactly.** Markup verified at `partials/watchlist_row.html.j2:31-35` is `<button hx-get="/trades/entry/form?ticker={ticker}" hx-target="closest tr" hx-swap="outerHTML" hx-headers='{"HX-Request": "true"}'>Enter</button>`. Hyp-recs row's per-row button is byte-equivalent except the `event.stopPropagation()` is dropped — the watchlist needs it because the row itself is an HTMX trigger (`<tr hx-get="/watchlist/{ticker}/expand">` at `:3-5`); the hyp-recs row's chevron-button-driven expansion (Q-C resolution; §3.5.5) means the `<tr>` is NOT a trigger and the button click does not need to stop bubbling. Operator muscle memory (label "Enter", trailing column, primary-default styling) is preserved across surfaces.
 
-**Operator workflow (V1):** scan hyp-recs flat table → click chevron on row of interest → review buy window / sizing / chart → close expansion → cross-reference watchlist by ticker → click watchlist Enter button → entry form (which already pre-fills hypothesis_label from the matching recommendation, per existing logic). Adds one extra cognitive step (matching ticker between two rows on the same dashboard); the expansion's at-a-glance benefit is preserved.
+**Rejected alternatives:**
+- Differentiate label ("Take this trade" / "Buy") on the per-row button — defeats the muscle-memory goal. The per-row Enter is the immediate-commit affordance; the differentiated label belongs ONLY on the expansion-internal button (D.3).
+- Place the Enter button in a different column position (e.g., column 2 next to ticker) — increases visual-density confusion vs the established Action-column pattern.
+
+#### D.2 — Expansion-internal button: pre-fill semantics
+
+**Resolution: option (a) — same query-param mechanism as the per-row Enter button.** Both buttons fire `hx-get="/trades/entry/form?ticker={rec.ticker}"` and rely on the existing per-ticker pre-fill pipeline (`hypothesis_label`, `chart_pattern_*`, `sector`, `industry` auto-populated at form-render time from the candidate row).
+
+**Rejected alternative — option (b) extended snapshot pre-fill via hidden inputs / POST body:**
+1. **Plumbing cost.** Carrying `buy_stop`, `buy_limit`, `sell_stop`, `shares`, `notional` would require: (i) extending the entry-form route to accept these as request params; (ii) wiring them into `EntryRequest` / `TradeEntryFormVM`; (iii) extending the soft-warn round-trip to preserve them across confirmation reload (Phase 5 R1 Major 2 lesson); (iv) extending the form's hidden-input set so a POST submit re-presents them. That's a four-touchpoint plumbing change for a single optimization.
+2. **Threat model surface area.** Hidden-input snapshot carry is operator-claimed input, not server-verified provenance — the chart-pattern flag-v1 §3.6 threat model already accepts this for `chart_pattern_*` and the `pipeline_run_id` audit anchor. Adding more hidden-input fields broadens the surface area of "operator can submit any value they like by manipulating the form."
+3. **ToCToU pain unconfirmed.** The brief flags ToCToU as the rationale for option (b), but operationally the operator's click → form-render path completes within 100ms typically. A pipeline run completing in that window is a rare event class. V1 ships the cheap path; if operators report ToCToU pain in operational use, V2 can tighten with option (b) — the spec captures this as the V1.4 deferred item.
+4. **Consistency with per-row Enter button.** Choosing (a) makes BOTH buttons use the SAME mechanism. Choosing (b) for the expansion button only would create two distinct entry-form-render code paths (one query-param-only, one extended-snapshot). One mechanism is easier to reason about and easier to test.
+
+**Q-D.2.i (which shares figure carries) is moot under option (a)** — neither figure is carried; the entry form uses its existing sizing recomputation (`compute_shares` at form-render) and the operator manually selects the desired figure if they want to override.
+
+#### D.3 — Visual differentiation between per-row Enter and expansion-internal button
+
+**Resolution: differentiate by label and styling.**
+- **Per-row Enter button:** label "Enter", default-button styling (matches watchlist exactly).
+- **Expansion-internal button:** label "Take this trade", primary-action styling (visual weight: bolder, full-width inside the Order-parameters group, accent-color background). Positioned immediately below the Order-parameters list — the operator's eye flow is "verify the buy window → click Take this trade."
+
+Rationale: the two buttons serve different operator workflows:
+- The per-row Enter is the "I already know what I want; commit immediately" path. The default-button visual treatment is correct — Don't Make Me Think; predictable.
+- The expansion's Take this trade is the "I just verified the snapshot; commit with confidence" path. Primary-action styling reinforces the workflow intent ("you've earned this click").
+
+**Rejected alternative: visually identical buttons.** Same label and styling would create the wrong cognitive frame — "is this a duplicate of the per-row button or something different?" Differentiation eliminates the moment of confusion.
+
+#### D.4 — ToCToU class implication
+
+**Under D.2 = option (a), no NEW ToCToU class is introduced.** Both buttons inherit the existing per-ticker entry-form ToCToU window (the entry form re-resolves from candidate at form-render; if the candidate row changed between operator click and form-render, the form shows the new value). This is the SAME ToCToU class as the existing watchlist Enter button — V1 does not add a third ToCToU surface.
+
+The spec's existing snapshot-at-render purity invariant (§2.2) is preserved: the expansion's display values are computed at click-to-expand time, NOT carried into the subsequent entry-form-render. The Take this trade button's behavior is "navigate to the standard entry form for this ticker"; the operator cannot accidentally submit stale snapshot values.
+
+**Soft-warn round-trip compatibility (Phase 5 R1 Major 2):** since neither button carries new hidden inputs, the existing soft-warn confirm round-trip is unchanged; no new fields need to survive the re-render.
+
+If V2 adopts option (b) (extended snapshot pre-fill), §3.7 D.4 is the natural extension point; the threat model + hidden-input survival across soft-warn would require explicit treatment at that time.
+
+#### D.5 — Per-row Enter button accessibility / `stopPropagation` cross-coupling
+
+**Cross-coupled with §3.5.5 Q-C resolution: chevron column expansion mechanism.** Because the hyp-recs `<tr>` is NOT itself an HTMX trigger (only the chevron button and the Enter button are), the per-row Enter button does NOT need `event.stopPropagation()`. The watchlist's `stopPropagation` is needed because watchlist's `<tr>` IS a trigger; copying it on the hyp-recs Enter button would be defensive cargo-cult (no harmful effect, but signals a pattern that doesn't apply here).
+
+**This is a genuine architectural improvement over the watchlist's pattern.** The Bug-1-follow-up "Watchlist row HTMX trigger architecture refactor" (orchestrator-context recent-decisions) flags the watchlist's row-trigger + child-button pattern as an architectural smell to be revisited. Hyp-recs ships the cleaner pattern from V1, demonstrating an alternative path forward — relevant for the future watchlist refactor.
+
+#### Cross-cutting workflow summary
+
+Two operator workflows the dual-button design serves:
+
+| Operator state | Action | Outcome |
+|---|---|---|
+| "I'm convinced; commit immediately" | Click per-row "Enter" button (column 9). | Row swaps with entry form via HTMX. |
+| "Let me verify the snapshot first" | Click chevron (column 1) → review expansion → click "Take this trade" button. | Expanded row swaps with entry form via HTMX. |
+| "Let me verify but not commit yet" | Click chevron → review → click ✕ close. | Section refresh via `/hyp-recs/refresh`; operator continues scanning. |
+
+All three use the SAME entry-form route + pre-fill pipeline; only the entry surface (per-row vs expansion vs none) differs.
 
 ### 3.8 Lightning icon coexistence (Q-H)
 
@@ -660,14 +809,21 @@ Use `TestClient(app)` with lifespan context per CLAUDE.md TestClient convention.
 - `test_expand_route_chart_unavailable_renders_message`: ticker out of chart-scope → 200 with `chart-unavailable` div, NOT the chart `<img>`.
 - `test_expand_route_uses_latest_completed_pipeline_run_anchor`: insert a NEW `pipeline_runs` row with `finished_ts=NULL` after a completed run. Route MUST resolve against the completed run's binding (no race on `started_ts DESC`).
 - `test_close_button_emits_full_section_refresh`: rendered expansion HTML contains `hx-get="/hyp-recs/refresh"` and `hx-target="#hypothesis-recommendations"` on the close button (NOT `/hyp-recs/{ticker}/row`). Confirms the R1-Major-4 mechanism shipped.
-- `test_refresh_route_returns_section_partial`: GET `/hyp-recs/refresh` returns 200 with the rendered `hypothesis_recommendations.html.j2` section (root element `<section id="hypothesis-recommendations">`). Renders with the same flat-table chevron column.
+- `test_refresh_route_returns_section_partial`: GET `/hyp-recs/refresh` returns 200 with the rendered `hypothesis_recommendations.html.j2` section (root element `<section id="hypothesis-recommendations">`). Renders with the same flat-table chevron + Enter columns.
 - `test_refresh_route_reflects_current_state_not_expand_time_state`: capture `active_recommendations` snapshot A; insert a new pipeline run completing with a different snapshot B; GET `/hyp-recs/refresh` returns the section reflecting B. Documents the R1-Major-4 disposition (close shows current state, not expand-time state).
+- `test_refresh_route_does_not_invoke_full_dashboard_build` (R2-Major-2 regression): patch a sentinel into the open-trades / watchlist / OHLCV builder paths and assert they are NOT called during `GET /hyp-recs/refresh`. Discriminating: a parallel test on `GET /` (full dashboard) confirms those sentinels ARE called there. Catches a regression where a future change accidentally re-routes the refresh handler back through `build_dashboard`.
+- `test_refresh_route_isolated_from_unrelated_subsystem_failure` (R2-Major-2 regression): force the open-trades query path to raise, then GET `/hyp-recs/refresh` — assert 200 (refresh succeeds because it doesn't depend on open-trades). Discriminating: GET `/` returns 500 with the same monkeypatch (full dashboard does depend on open-trades).
+- `test_per_row_enter_button_swap` (Q7): rendered hyp-recs row HTML contains `hx-get="/trades/entry/form?ticker={ticker}"`, `hx-target="closest tr"`, `hx-swap="outerHTML"`, `hx-headers='{"HX-Request": "true"}'`, label "Enter". GET the per-row Enter URL with `HX-Target: hyp-rec-row-AAPL` and assert the response body is the entry form `<tr>` (replaces the hyp-recs row). The same /trades/entry/form route that watchlist Enter uses; no new route.
+- `test_per_row_enter_button_no_stoppropagation` (D.5): the per-row Enter button's `<button>` element has NO `onclick="event.stopPropagation()"` attribute (contrasts with watchlist's `:31` attribute). Discriminating: a parallel watchlist test verifies watchlist's button DOES have `stopPropagation`, confirming the architectural difference is intentional.
+- `test_take_this_trade_button_swap` (Q8): rendered expansion HTML contains the "Take this trade" button with same HTMX attrs as per-row Enter (D.2 = option (a)). HTMX response replaces the expanded `<tr>` with the entry form `<tr>`.
+- `test_per_row_enter_button_mirrors_watchlist_markup` (D.1 regression): assert byte-equivalent HTMX attribute set between watchlist row Enter and hyp-recs row Enter (modulo `stopPropagation`, which is intentionally absent on hyp-recs per D.5). Operator muscle-memory invariant.
+- `test_take_this_trade_button_visual_differentiation` (D.3): rendered expansion's button has class containing `take-this-trade` and/or `primary`; per-row Enter button does NOT carry those classes. Confirms visual differentiation per D.3 lock.
 
 ### 4.4 Layer 4 — Template + sort-neutrality regression
 
-- `tests/web/templates/test_hyp_recs_table_regression.py` — `test_collapsed_table_renders_8_columns_with_chevron`: full-page render with `vm.active_recommendations` populated → 8 `<th>` elements; chevron button per row; close-button NOT present (tr is not yet expanded).
+- `tests/web/templates/test_hyp_recs_table_regression.py` — `test_collapsed_table_renders_9_columns_chevron_and_enter`: full-page render with `vm.active_recommendations` populated → 9 `<th>` elements (chevron + 7 existing + Enter); chevron button on column 1; Enter button on column 9; close-button NOT present (tr is not yet expanded).
 - `test_hyp_recs_collapsed_does_not_render_expansion_partial`: ensure the expansion partial is NOT pulled in via incidental include (HTMX OOB-swap drift discipline).
-- `tests/web/view_models/test_hyp_recs_sort_neutrality.py` — `test_sort_unchanged_with_extended_recommendation_fields`: `prioritized_recommendations` order must be byte-for-byte identical between the pre-extension and post-extension `HypothesisRecommendation` shapes (snapshot test; covers compounding-confound regression).
+- `tests/web/view_models/test_hyp_recs_sort_neutrality.py` — `test_sort_unchanged`: `prioritized_recommendations` order is byte-for-byte identical to the pre-V1 baseline. (Per R1-Major-1, `HypothesisRecommendation` is unchanged in V1, so the sort path has zero new inputs; the test is still committed as a regression guard against future churn.)
 
 ### 4.5 CC pivot bug discriminating regression (`tests/web/templates/test_watchlist_pivot_column.py`)
 
@@ -680,25 +836,27 @@ The fix touches THREE render sites (per §3.9 R1-Major-3 resolution); each gets 
 - `test_pivot_column_dash_when_both_absent` (R1-Minor-3 regression): candidates_by_ticker = {}, entry_target = None. Cell = `—` (NOT `$0.00`).
 - `test_lightning_trigger_unchanged_uses_entry_target`: discriminating fixture chosen so the trigger fires under `entry_target` binding but would NOT fire under `current_pivot` binding — `entry_target=$42.00`, `current_pivot=$100.00`, `price=$41.60`. Under entry_target binding: `41.60 ≥ 0.99 × 42 = 41.58` → lightning fires. Under current_pivot binding: `41.60 ≥ 0.99 × 100 = 99` → would NOT fire. Test asserts lightning DOES fire, proving the trigger binding survives the column-display change.
 
-### 4.6 Close-button mechanism: full-section refresh (R1-Major-4 resolution)
+### 4.6 Close-button mechanism: scoped section refresh (R1-Major-4 + R2-Major-2 resolution)
 
-**Decision: full-section refresh on close. NO per-row reconstruction route.**
+**Decision: full-section refresh on close, served by a SCOPED hyp-recs builder. NO per-row reconstruction route. NO full `build_dashboard` rebuild.**
 
-Rejected alternative — symmetric `/hyp-recs/{ticker}/row` route mirroring `/watchlist/{ticker}/row` and `/trades/open/{trade_id}/row`. R1 review caught the asymmetry: a watchlist row is a stable projection of one persisted `WatchlistEntry`; a hyp-rec row is the output of matcher + prioritizer + top-N truncation + live-price fetch during `build_dashboard`. The set of recommendations and their ordering can change between expand and close (price tick crosses a tripwire threshold; pipeline completes; candidate rotates). A per-row reconstruction route would either:
-1. **Re-run the prioritizer** (correct but expensive; close-button UX feels heavy on a long-running operation), OR
-2. **Reconstruct from a frozen-at-expand snapshot** (cheap but stale; operator sees a value the rest of the page no longer agrees with).
+**Rejected alternative #1 — symmetric `/hyp-recs/{ticker}/row` route mirroring `/watchlist/{ticker}/row` and `/trades/open/{trade_id}/row` (R1-Major-4 disposition).** A watchlist row is a stable projection of one persisted `WatchlistEntry`; a hyp-rec row is the output of matcher + prioritizer + top-N truncation + live-price fetch. Per-row reconstruction would either re-run the prioritizer expensively or render a stale frozen snapshot.
 
-Both fail the operator-clarity bar. Full-section refresh is the third option and the V1 choice:
+**Rejected alternative #2 — section refresh that calls `build_dashboard` (R2-Major-2 disposition).** `build_dashboard` rebuilds open trades, watchlist top-5, advisories, status strip, and OHLCV-backed open-position context — far more than the refresh swap target needs. Two failure modes:
+1. **Cross-panel inconsistency.** The swap is `#hypothesis-recommendations` only; other dashboard sections keep their full-page-render snapshot. With `build_dashboard` the refresh would compute a NEW snapshot for those other sections too, but discard it — wasted work.
+2. **Failure coupling.** A subsystem failure unrelated to hyp-recs (yfinance breaker tripped, OHLCV cache failure on an open-trade ticker) could break the close action.
 
-- Close button on the expansion fires `hx-get="/hyp-recs/refresh"` with `hx-target="#hypothesis-recommendations"` and `hx-swap="outerHTML"`.
-- The route handler (§3.5.4) calls `build_dashboard(...)` and renders `hypothesis_recommendations.html.j2` against the fresh result.
-- The closing operator sees the page's current truth — same data the full-page reload would produce.
+**V1 choice — scoped `build_hyp_recs_section`.** §3.5.4 specifies the helper. The refresh handler resolves ONLY: `candidates_by_ticker` (for pivot_price), prices for the recommended tickers (typically 1–10, NOT the full watchlist), and the progress/registry data the prioritizer needs. Open-trade OHLCV, watchlist top-5, advisories, status strip are all UNTOUCHED on refresh.
 
-**Cost accepted:** one extra HTTP round-trip per close, and a re-render of the entire hyp-recs section (typically ≤ top-N rows, where N is small). On a small table this is imperceptible.
+Cross-panel snapshot consistency: the partial-swap UX is partial by design. The operator who closes a hyp-recs expansion sees current hyp-recs data; the rest of the dashboard reflects its last full-render snapshot. This is the same property as every other partial-swap surface on the page (watchlist row close, open-position row close, etc.).
 
-**Row-partial extraction.** The per-row markup is still extracted into `partials/hypothesis_recommendations_row.html.j2` so `hypothesis_recommendations.html.j2`'s `<tbody>` iterates via `{% include %}` instead of hand-duplicating row markup inline. This anticipates a V2 per-row close path (if the operator decides the full-section refresh's UX cost is too high after operational use) without requiring a template re-shape at that time.
+**Cost accepted:** one extra HTTP round-trip per close + a section re-render scoped to ≤ top-N rows. Imperceptible on a small table.
 
-**Implementation note.** `build_dashboard` requires `cache`, `executor`, and optional `ohlcv_cache` from `request.app.state` — the refresh route handler reuses the same accessors the full-page render path uses. No new caching layer; no new lifespan-scoped resource.
+**`build_dashboard` is refactored to call the same shared helper (`_build_active_recommendations`) so both the full-page render path and the refresh route construct recommendations identically (single source of truth).** No drift between full-page and refresh-route output.
+
+**Row-partial extraction.** The per-row markup is extracted into `partials/hypothesis_recommendations_row.html.j2` so `hypothesis_recommendations.html.j2`'s `<tbody>` iterates via `{% include %}`. The per-row partial is the SAME markup whether rendered by the full-page path or the refresh-route path — drift impossible.
+
+**Future per-row close (V2).** If operational use shows the full-section refresh has too much UX cost (e.g., a flicker when many rows re-render), V2 can add a `/hyp-recs/{ticker}/row` per-row route. The infrastructure is in place: the per-row partial is already extracted, the row-target prefix already covers `hyp-rec-row-`, and the per-row route would just need a stable per-row reconstruction strategy (likely "fetch the SAME `HypothesisRecommendation` from a request-scoped cache populated when the page was rendered").
 
 ---
 
@@ -728,11 +886,13 @@ Per the brief and the established chart-pattern flag-v1 §6 pattern. Surface the
 - **Cross-surface pivot consistency.** After the CC bug fix, `candidates.pivot` is the value rendered on (a) hyp-recs flat table "Pivot" column, (b) hyp-recs expansion "Buy stop", (c) watchlist row "Pivot" column rendered from the dashboard top-5, (d) watchlist row "Pivot" column rendered from the standalone watchlist page, AND (e) watchlist row "Pivot" column rendered via the `/watchlist/{ticker}/row` close-path (R1-Major-3 — the close-path was missing in R0 and would have reverted to `entry_target` after every expand-close cycle). Lightning trigger stays bound to `entry_target` per Q4.
 - **HTMX row-target prefix coverage.** `_ROW_TARGET_PREFIXES` includes `hyp-rec-row-` so that 4xx/5xx error fragments from the new route swap as `<tr>` rather than the generic `<div>` (R1-Major-2). Tested with both the 404 and forced-500 paths.
 - **Snapshot-vs-precompute consistency.** No precomputation of expansion-only data on `HypothesisRecommendation` (R1-Major-1). All sizing, sector, industry, current_balance flow through the route-local `build_hyp_recs_expanded` helper. The "snapshot-at-render" invariant in §2.2 has no carve-outs.
-- **Close-button mechanism.** Full-section refresh via `/hyp-recs/refresh` (R1-Major-4). The route returns the page's CURRENT hyp-recs section, not a frozen-at-expand reconstruction. Operator who closes after a pipeline run completes sees the new state.
+- **Close-button mechanism.** Scoped section refresh via `/hyp-recs/refresh` (R1-Major-4 + R2-Major-2). The route uses a hyp-recs-only `build_hyp_recs_section` builder, NOT the full `build_dashboard`. Open-trades, watchlist, advisories, OHLCV are untouched on refresh — failure isolation + zero wasted work. Cross-panel snapshot consistency is the inherent partial-swap UX trade.
+- **Action-button design (Q7 + Q8 + D.1-D.5).** Per-row Enter button mirrors watchlist exactly (D.1) without `stopPropagation` (D.5 — row is not a trigger). Take-this-trade button uses query-param mechanism (D.2 = option (a); ToCToU window same class as per-row Enter, no new ToCToU surface per D.4). Visual differentiation by label + styling (D.3). Both buttons fire the SAME `hx-get="/trades/entry/form?ticker={ticker}"` HTMX swap; the entry-form route handles all pre-fill via existing per-ticker mechanism.
+- **Entry-form colspan compatibility (writing-plans concern).** The entry form `<tr>` colspan must accommodate either the 9-cell hyp-recs row (per-row Enter) OR the 9-cell expanded `<tr>` (Take this trade) when swap fires. Watchlist row is 7 cells; if the entry-form template hardcodes 7, writing-plans dispatch decides whether to parameterize the colspan or accept a visual quirk. Either choice is valid for V1 — flagged here so writing-plans doesn't silently inherit a broken layout.
 - **Sizing same-source check.** `current_balance` value used by the expansion is computed from the SAME `current_equity` accessor `build_dashboard` already invokes for its existing equity strip. The dashboard's equity display and the expansion's cash-feasible label agree by construction.
 - **Discriminating tests.** Each test in §4 differs from its pair / regression target by ONE feature; lightning-trigger discriminator constructs price-fixture values explicitly between `0.99 × entry_target` and `0.99 × current_pivot`.
-- **Snapshot-at-render purity.** Expansion VM is computed on the route handler thread, never persisted, never carried into a subsequent entry submission as hidden form values. Q-K (ToCToU) is moot under §3.7 information-only resolution.
-- **Operator-judgment-call escalations.** The brief's premise about an existing Enter button on hyp-recs is empirically wrong. Spec resolves Q-D against the corrected premise (information-only); flagged in §1.2 and the return report. Codex round may surface this as a finding — disposition is "operator-judgment-call corrections handled at brief level; spec proceeds on the empirical evidence."
+- **Snapshot-at-render purity.** Expansion VM is computed on the route handler thread, never persisted, never carried into a subsequent entry submission as hidden form values. With D.2 = option (a), Q-K (ToCToU) is the SAME class as the existing per-row Enter button — no new ToCToU surface is introduced. The expansion's display values are at-click snapshots, NOT carried into the entry form.
+- **Brief premise history.** Earlier brief drafts (pre-Q7) erroneously asserted an existing Enter button on hyp-recs. The 2026-04-29 brief update (commit `427ef95`) closed that gap by locking Q7 — every hyp-recs row gains a per-row Enter button as part of this dispatch. Spec resolves D.1-D.5 on top of the locked Q7 + Q8 decisions; no operator-judgment-call escalation outstanding for V1.
 
 ---
 
@@ -751,7 +911,8 @@ Per the brief and the established chart-pattern flag-v1 §6 pattern. Surface the
 
 ## 8. Open follow-ups (V2 candidates, NOT in V1 scope)
 
-- "Take this trade" action button on the expansion (with explicit pre-fill plumbing + ToCToU handling per chart-pattern flag-v1 §3.6). Operator may instead prefer adding an Enter button directly to the hyp-recs row (cleaner; matches watchlist's row-level Enter button).
+- **Extended-snapshot pre-fill (D.2 option (b)) for the expansion's Take-this-trade button** — carrying `buy_stop`, `sell_stop`, shares, notional via hidden inputs to eliminate the ToCToU window between expansion-render and form-render. Adds plumbing complexity + threat-model surface (per chart-pattern flag-v1 §3.6). V1 ships option (a) (query-param mechanism) per §3.7 D.2; V2 candidate if operators report ToCToU pain in operational use.
+- **Per-row close (V2 candidate)** — if operational use shows the full-section refresh's flicker / repaint cost is too high, V2 can add `/hyp-recs/{ticker}/row` per-row close. Infrastructure prepared in V1 (per-row partial extracted; row-target prefix already covers `hyp-rec-row-`).
 - Configuration-page UI for `chase_factor` (Phase 5 of the operator sequence).
 - Risk-display on cost numbers — show `risk_dollars` and `risk_pct` for both the risk-based and cash-feasible regimes.
 - Multi-trade preview: select multiple hyp-recs, see aggregate cost and total risk exposure across the selection.
@@ -767,17 +928,21 @@ Per the brief and the established chart-pattern flag-v1 §6 pattern. Surface the
 ## 9. Done criteria
 
 - [ ] `Config.web.chase_factor: float = 0.01` field added; no toml row introduced.
-- [ ] `HypothesisRecommendation` extended with eight trailing-default fields; existing call sites unchanged.
+- [ ] `HypothesisRecommendation` UNCHANGED (per R1-Major-1); existing call sites byte-for-byte identical.
 - [ ] `HypRecsExpandedVM` dataclass exists; `build_hyp_recs_expanded` returns it on the happy path and `None` on rotation / no-run / degenerate-sizing.
+- [ ] `HypRecsSectionVM` + `build_hyp_recs_section` exist (R2-Major-2); refresh route uses scoped builder NOT full `build_dashboard`.
+- [ ] `_build_active_recommendations` shared helper exists; `build_dashboard` and `build_hyp_recs_section` both call it (single source of truth for recommendation construction).
 - [ ] `GET /hyp-recs/{ticker}/expand` returns the expansion partial; 404 for unknown / rotated tickers; chart-unavailable div for out-of-scope tickers.
-- [ ] `GET /hyp-recs/{ticker}/row` returns the collapsed-row partial (close-button target).
-- [ ] Hyp-recs flat table gains the chevron column; full-page render is otherwise byte-for-byte identical to baseline (regression test §4.4).
-- [ ] Watchlist `Pivot` column renders `candidates.pivot` when the ticker has a candidate row; falls back to `WatchlistEntry.entry_target` when not.
+- [ ] `GET /hyp-recs/refresh` returns the scoped section partial; row-target prefix `hyp-rec-row-` covers 4xx/5xx swaps; refresh does NOT trigger open-trades / watchlist / OHLCV builds.
+- [ ] **Per-row Enter button (Q7) on each hyp-rec row** renders with byte-equivalent HTMX attrs to watchlist Enter button; NO `stopPropagation` (D.5); HTMX swap to entry form `<tr>` works.
+- [ ] **Take this trade button (Q8) inside the expansion** renders with same HTMX attrs (D.2 = option (a)) but differentiated label + styling (D.3); HTMX swap replaces the expanded `<tr>` with entry form.
+- [ ] Hyp-recs flat table renders 9 columns (chevron + 7 existing + Enter); chevron column on col 1, Enter on col 9.
+- [ ] Watchlist `Pivot` column renders `candidates.pivot` across ALL THREE render sites (dashboard top-5 via `watchlist_top5_section.html.j2`, standalone watchlist page via `watchlist.html.j2`, watchlist `/watchlist/{ticker}/row` close-path via `WatchlistRowVM.current_pivot`); falls back to `entry_target`; "—" when both absent.
 - [ ] Lightning trigger on watchlist row stays bound to `entry_target` (regression test §4.5).
 - [ ] Sizing twins (risk-based + cash-feasible) computed and rendered with two-row layout; infeasibility path renders the `infeasible (constraint)` annotation.
 - [ ] Sector + Industry rendered in the Context group; empty strings render as `"—"`.
 - [ ] "As of pipeline finished <ISO>" footer present on the expansion.
-- [ ] All four test layers green; sort-neutrality regression confirmed; CC pivot discriminating regression confirmed.
+- [ ] All test layers green: sizing twins; expansion VM (anchor consistency, degenerate-sizing); route (expand 200 + 404 + chart-scope + 500 row-target-prefix coverage; refresh 200 + scoped-builder isolation; per-row Enter swap; Take-this-trade swap; muscle-memory mirror); template (9-column regression; per-row Enter mirrors watchlist; visual differentiation); CC pivot (3-render-site coverage + dash sentinel + lightning binding preserved).
 - [ ] Adversarial Codex review reaches `NO_NEW_CRITICAL_MAJOR`.
 - [ ] No new migration; no new repo function beyond a single optional `get_for_evaluation` accessor (verified at writing-plans).
 - [ ] Toml-shadowing audit recorded clean for `chase_factor` (no row added; phase3e-todo retains the asymmetry note).
