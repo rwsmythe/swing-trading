@@ -210,10 +210,32 @@ from swing.config import Config
 from swing.web.app import create_app
 
 
-def _make_cfg(tmp_path: Path) -> Config:
-    """Minimal Config with isolated DB + charts dir for TestClient."""
-    from tests.conftest import minimal_config_for_tests  # type: ignore[attr-defined]
-    return minimal_config_for_tests(tmp_path)
+# Tests inject the `sample_config` fixture from tests/conftest.py:41
+# (verified at plan-authoring time). All test functions take
+# `sample_config` as a parameter; assign `cfg = sample_config`.
+
+
+from swing.data.models import WatchlistEntry
+
+
+def _make_watchlist_entry(
+    *,
+    ticker: str,
+    entry_target: float | None = None,
+    initial_stop_target: float | None = None,
+    last_close: float | None = None,
+    last_adr_pct: float = 2.0,
+) -> WatchlistEntry:
+    """Factory matching swing/data/models.py:130-145 dataclass shape."""
+    return WatchlistEntry(
+        ticker=ticker, added_date="2026-04-29",
+        last_qualified_date="2026-04-29", status="watch",
+        qualification_count=1, not_qualified_streak=0,
+        last_data_asof_date="2026-04-28",
+        entry_target=entry_target, initial_stop_target=initial_stop_target,
+        last_close=last_close, last_pivot=None, last_stop=None,
+        last_adr_pct=last_adr_pct, missing_criteria=None, notes=None,
+    )
 
 
 def _seed_watchlist_and_candidate(
@@ -225,7 +247,6 @@ def _seed_watchlist_and_candidate(
     None`, no candidate row exists for the ticker (fallback path)."""
     from swing.data.db import connect, ensure_schema
     from swing.data.repos.watchlist import upsert_watchlist_entry
-    from swing.data.models import WatchlistEntry
 
     ensure_schema(cfg.paths.db_path)
     conn = connect(cfg.paths.db_path)
@@ -233,14 +254,11 @@ def _seed_watchlist_and_candidate(
         with conn:
             upsert_watchlist_entry(
                 conn,
-                WatchlistEntry(
+                _make_watchlist_entry(
                     ticker=ticker,
                     entry_target=entry_target,
                     initial_stop_target=entry_target * 0.95,
                     last_close=price,
-                    last_adr_pct=2.0,
-                    added_session=None,
-                    removed_session=None,
                 ),
             )
             # Insert a completed pipeline_run + evaluation_run so the
@@ -1177,13 +1195,46 @@ from swing.config import Config
 from swing.web.app import create_app
 
 
-def _make_cfg(tmp_path: Path) -> Config:
-    """Minimal Config helper. Mirrors Task 1's _make_cfg but kept separate
-    so the two test files do not couple — extraction to a shared helper
-    is post-V1 scope.
+from swing.data.models import WatchlistEntry
+
+
+def _make_watchlist_entry(
+    *,
+    ticker: str,
+    entry_target: float | None = None,
+    initial_stop_target: float | None = None,
+    last_close: float | None = None,
+    last_adr_pct: float = 2.0,
+) -> WatchlistEntry:
+    """Factory matching the actual WatchlistEntry dataclass shape at
+    swing/data/models.py:130-145. Populates the boilerplate fields
+    (added_date, last_qualified_date, status, qualification_count,
+    not_qualified_streak, last_data_asof_date, last_pivot, last_stop,
+    missing_criteria, notes) with sensible defaults; tests pass only
+    the discriminating fields as overrides.
     """
-    from tests.conftest import minimal_config_for_tests  # type: ignore[attr-defined]
-    return minimal_config_for_tests(tmp_path)
+    return WatchlistEntry(
+        ticker=ticker,
+        added_date="2026-04-29",
+        last_qualified_date="2026-04-29",
+        status="watch",
+        qualification_count=1,
+        not_qualified_streak=0,
+        last_data_asof_date="2026-04-28",
+        entry_target=entry_target,
+        initial_stop_target=initial_stop_target,
+        last_close=last_close,
+        last_pivot=None,
+        last_stop=None,
+        last_adr_pct=last_adr_pct,
+        missing_criteria=None,
+        notes=None,
+    )
+
+
+# Tests inject the `sample_config` fixture from tests/conftest.py:41
+# (verified at plan-authoring time). All test functions below take
+# `sample_config` as the first parameter; `cfg = sample_config`.
 
 
 def _seed_hyp_recs_fixture(
@@ -1197,7 +1248,6 @@ def _seed_hyp_recs_fixture(
     """
     from swing.data.db import connect, ensure_schema
     from swing.data.repos.watchlist import upsert_watchlist_entry
-    from swing.data.models import WatchlistEntry
 
     tickers = tickers or ["NVDA", "AMD"]
     ensure_schema(cfg.paths.db_path)
@@ -1225,10 +1275,9 @@ def _seed_hyp_recs_fixture(
             for tk in tickers:
                 upsert_watchlist_entry(
                     conn,
-                    WatchlistEntry(
-                        ticker=tk, entry_target=100.0, initial_stop_target=95.0,
-                        last_close=99.0, last_adr_pct=2.0,
-                        added_session=None, removed_session=None,
+                    _make_watchlist_entry(
+                        ticker=tk, entry_target=100.0,
+                        initial_stop_target=95.0, last_close=99.0,
                     ),
                 )
                 conn.execute(
@@ -1660,10 +1709,13 @@ EOF
 >   - Insert `<p class="action-row"><button type="button" class="take-this-trade primary" hx-get="/trades/entry/form?ticker={{ expanded.ticker }}&origin=hyp-recs" hx-target="closest tr" hx-swap="outerHTML" hx-headers='{"HX-Request": "true"}'>Take this trade</button></p>` into `hypothesis_recommendations_expanded.html.j2` between Order parameters and Sizing groups (per spec §3.5.6 layout).
 >   - Tests in `tests/web/test_routes/test_hyp_recs_expand_route.py` assert: Take-this-trade button present in expansion render; URL is `/trades/entry/form?ticker={X}&origin=hyp-recs` (D.2 option (a) — same URL as per-row Enter); class contains `take-this-trade` or `primary` (D.3 visual differentiation); per-row Enter and Take-this-trade share the SAME URL (discriminating-test pair vs an extended-snapshot regression).
 >
-> **Sub-task 5.7 — Sort-neutrality regression** (`tests/web/test_view_models/test_hyp_recs_sort_neutrality.py`): seeds 3+ candidates that exercise the prioritizer's tie-breaking. Two binding test shapes (R3-Major-1 Codex fix — determinism alone is weaker than neutrality):
->   1. **Cross-builder neutrality** (the spec's actual invariant per §2.2): assert `build_dashboard.active_recommendations` ticker order EQUALS `build_hyp_recs_section.active_recommendations` ticker order, given the same DB state. Discriminating: a regression in the Task 3 `_build_active_recommendations` extraction (e.g. dropped a field, swapped sort key) would diverge the two builders' output.
->   2. **Pinned-baseline neutrality**: pin the actual ticker order tuple from the first-green run as the assertion target. Discriminating: any future PR perturbing prioritizer logic, hypothesis registry scoring, or default sort tiebreakers fails the suite.
-> No production code change in this sub-task — both tests are forward-regression guards. Implementer captures the baseline tuple by running the test ONCE under the green fixture and committing the observed value; if running yields a different tuple at a future commit, the test should fail loudly so the diff prompts a deliberate update or a rollback decision.
+> **Sub-task 5.7 — Sort-neutrality regression** (`tests/web/test_view_models/test_hyp_recs_sort_neutrality.py`): seeds 3+ candidates that exercise the prioritizer's tie-breaking. Two binding test shapes (R3-Major-1 + R4-Major-2 Codex fix — determinism alone is weaker than neutrality; first-green-after-edit is weaker than pre-change baseline):
+>   1. **Cross-builder neutrality** (the spec's actual invariant per §2.2): assert `build_dashboard.active_recommendations` ticker order EQUALS `build_hyp_recs_section.active_recommendations` ticker order, given the same DB state. Discriminating: a regression in the Task 3 `_build_active_recommendations` extraction (e.g. dropped a field, swapped sort key) would diverge the two builders' output. (Note: Task 3 already commits a byte-equivalence regression test `test_build_active_recommendations_helper_extracted_matches_build_dashboard` — this sub-task adds a SECOND layer asserting cross-builder equivalence at the rendered tuple level, not just at the construction-helper level.)
+>   2. **Pinned-baseline neutrality**: pin a ticker order tuple captured against the PRE-CHANGE baseline (HEAD `a492b84`, the commit at which this plan's test baseline was pinned), NOT against the first-green-after-edit run. Two acceptable capture protocols (pick whichever is faster for the implementer):
+>      - **Capture-then-write protocol:** at sub-step 5.7 dispatch start, the implementer creates a temporary git worktree at `a492b84` (pre-Task-3 commit), seeds the same fixture there, runs `build_dashboard` against the pre-Task-3 module, records the observed ticker tuple, then writes that tuple as the assertion target in the new sub-task 5.7 test. The worktree is discarded after capture.
+>      - **Trust-byte-equivalence protocol:** since Task 3 is byte-equivalence guarded by its own regression test (`test_build_active_recommendations_helper_extracted_matches_build_dashboard` asserts `helper_result == expected` against `build_dashboard`'s output), the post-Task-3 ticker tuple equals the pre-Task-3 tuple by construction. Capture the tuple from a green Task-5.7 run AFTER verifying Task 3 has shipped + its byte-equivalence test passes; document the protocol choice in the Task 5.7 commit body so future readers know the pinned tuple is rooted in the HEAD `a492b84` baseline.
+>      Discriminating: any future PR perturbing prioritizer logic, hypothesis registry scoring, or default sort tiebreakers fails the suite.
+> No production code change in this sub-task — both tests are forward-regression guards. The implementer commits the captured tuple as the assertion target.
 
 > **Sub-task commit messages (binding):**
 >   - `feat(recommendations): Task 5.1 — sizing-twin discriminating tests`
