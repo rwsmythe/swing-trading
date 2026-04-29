@@ -282,11 +282,6 @@ def test_expand_route_happy_path_returns_partial(seeded_db, monkeypatch):
     assert "Order parameters" in body
     assert "Buy stop:" in body
     assert "Sizing" in body
-    # Take-this-trade button MUST NOT be present at sub-task 5.3 (Task 5.6
-    # inserts it). Discriminating against accidentally landing the button.
-    assert "take-this-trade" not in body, (
-        "Take-this-trade button must not be present at sub-task 5.3"
-    )
 
 
 def test_expand_route_unknown_ticker_returns_404_unavailable_partial(
@@ -488,4 +483,216 @@ def test_expand_route_freshness_footer_includes_finished_ts(
     body = resp.text
     assert "2026-04-29T09:00:00" in body, (
         "freshness footer must render the binding pipeline_run.finished_ts"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task 5.6 — Take-this-trade button (Q8) on expansion.
+# Spec §3.5.6 (layout) + §3.7 D.2 D.3 D.5 (binding contracts).
+# ---------------------------------------------------------------------------
+
+
+def test_expand_route_take_this_trade_button_present(seeded_db, monkeypatch):
+    """Task 5.6 — Take-this-trade button must be present in the expansion
+    render. Discriminating: regression that drops the action-row would fail
+    here."""
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg)
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/hyp-recs/NVDA/expand",
+            headers={"HX-Request": "true"},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    assert "take-this-trade" in body, (
+        "Take-this-trade button (class 'take-this-trade') must be present"
+        " in expansion render"
+    )
+    assert "Take this trade" in body, (
+        "Take-this-trade button must use the canonical label 'Take this trade'"
+    )
+
+
+def test_expand_route_take_this_trade_url_matches_per_row_enter(
+    seeded_db, monkeypatch,
+):
+    """Task 5.6 D.2 (a) — Take-this-trade button's URL MUST match the
+    per-row Enter button's URL. Both fire `/trades/entry/form?ticker=X
+    &origin=hyp-recs`. Discriminating: a regression that diverged the URLs
+    (e.g. different `&origin=` value, different path) fails here."""
+    import re
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg)
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        # Render expansion (Take-this-trade button lives here).
+        expand_resp = client.get(
+            "/hyp-recs/NVDA/expand",
+            headers={"HX-Request": "true"},
+        )
+        # Render dashboard (per-row Enter button lives in the row partial).
+        dash_resp = client.get("/")
+    assert expand_resp.status_code == 200, expand_resp.text
+    assert dash_resp.status_code == 200, dash_resp.text
+
+    # Extract the Take-this-trade button block from the expansion response,
+    # then extract its hx-get URL.
+    take_button_match = re.search(
+        r'<button[^>]*class="[^"]*take-this-trade[^"]*"[^>]*>',
+        expand_resp.text,
+        flags=re.DOTALL,
+    )
+    assert take_button_match is not None, (
+        "Take-this-trade button tag not found in expansion response"
+    )
+    take_url_match = re.search(
+        r'hx-get="([^"]+)"', take_button_match.group(0)
+    )
+    assert take_url_match is not None, (
+        "Take-this-trade button must have hx-get attribute"
+    )
+    take_url = take_url_match.group(1)
+
+    # Extract the per-row Enter button URL for NVDA from the dashboard.
+    # Per-row Enter button has hx-get="/trades/entry/form?ticker=NVDA&origin=hyp-recs"
+    # (Task 5.5). Find ANY hx-get pointing at /trades/entry/form for NVDA in
+    # the hyp-recs section.
+    section_match = re.search(
+        r'<section[^>]*id="hypothesis-recommendations"[^>]*>'
+        r'(.*?)</section>',
+        dash_resp.text,
+        flags=re.DOTALL,
+    )
+    assert section_match is not None, (
+        "hypothesis-recommendations section not found in dashboard"
+    )
+    section_body = section_match.group(1)
+    enter_url_match = re.search(
+        r'hx-get="(/trades/entry/form\?[^"]*ticker=NVDA[^"]*)"',
+        section_body,
+    )
+    assert enter_url_match is not None, (
+        "per-row Enter button URL for NVDA not found in dashboard hyp-recs"
+        " section"
+    )
+    enter_url = enter_url_match.group(1)
+
+    assert take_url == enter_url, (
+        f"Take-this-trade URL must match per-row Enter URL (D.2 (a)).\n"
+        f"  Take-this-trade: {take_url}\n"
+        f"  Per-row Enter:   {enter_url}"
+    )
+
+
+def test_expand_route_take_this_trade_button_has_primary_class(
+    seeded_db, monkeypatch,
+):
+    """Task 5.6 D.3 — Take-this-trade button differentiates from per-row
+    Enter via CSS class `primary`. The button's class attribute must
+    contain both `take-this-trade` and `primary`."""
+    import re
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg)
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/hyp-recs/NVDA/expand",
+            headers={"HX-Request": "true"},
+        )
+    assert resp.status_code == 200, resp.text
+    # Tolerant of class-attribute ordering: extract the class attr's value
+    # from the take-this-trade button tag.
+    button_match = re.search(
+        r'<button[^>]*class="([^"]*take-this-trade[^"]*)"[^>]*>',
+        resp.text,
+        flags=re.DOTALL,
+    )
+    assert button_match is not None, (
+        "Take-this-trade button tag with class attr not found"
+    )
+    class_value = button_match.group(1)
+    classes = class_value.split()
+    assert "take-this-trade" in classes, (
+        f"button class attr must include 'take-this-trade'; got: {class_value}"
+    )
+    assert "primary" in classes, (
+        f"button class attr must include 'primary' (D.3); got: {class_value}"
+    )
+
+
+def test_expand_route_take_this_trade_button_no_stop_propagation(
+    seeded_db, monkeypatch,
+):
+    """Task 5.6 D.5 — Take-this-trade button MUST NOT include
+    `event.stopPropagation` (the row is not a trigger; click bubbling is
+    unnecessary). Discriminating: regression that copies the close-button
+    pattern with stopPropagation onto Take-this-trade fails here."""
+    import re
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg)
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/hyp-recs/NVDA/expand",
+            headers={"HX-Request": "true"},
+        )
+    assert resp.status_code == 200, resp.text
+    # Isolate the take-this-trade <button>...</button> region and assert
+    # `stopPropagation` does NOT appear inside it.
+    button_block_match = re.search(
+        r'<button[^>]*class="[^"]*take-this-trade[^"]*"[^>]*>'
+        r'.*?</button>',
+        resp.text,
+        flags=re.DOTALL,
+    )
+    assert button_block_match is not None, (
+        "Take-this-trade button block not found"
+    )
+    button_block = button_block_match.group(0)
+    assert "stopPropagation" not in button_block, (
+        f"Take-this-trade button must not include stopPropagation (D.5);"
+        f" found in:\n{button_block}"
+    )
+
+
+def test_expand_route_take_this_trade_layout_between_order_and_sizing(
+    seeded_db, monkeypatch,
+):
+    """Task 5.6 spec §3.5.6 layout — the Take-this-trade button must appear
+    BETWEEN the Order parameters group and the Sizing group. Discriminating:
+    if inserted in the wrong section (e.g. AFTER Sizing or BEFORE Order
+    parameters), this ordered-position assertion fails."""
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg)
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/hyp-recs/NVDA/expand",
+            headers={"HX-Request": "true"},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+
+    order_idx = body.find("Order parameters")
+    take_idx = body.find("take-this-trade")
+    sizing_idx = body.find("Sizing")
+
+    assert order_idx >= 0, "'Order parameters' heading not found"
+    assert take_idx >= 0, "'take-this-trade' button not found"
+    assert sizing_idx >= 0, "'Sizing' heading not found"
+
+    assert order_idx < take_idx, (
+        f"Take-this-trade button must appear AFTER 'Order parameters'"
+        f" heading. order_idx={order_idx} take_idx={take_idx}"
+    )
+    assert take_idx < sizing_idx, (
+        f"Take-this-trade button must appear BEFORE 'Sizing' heading."
+        f" take_idx={take_idx} sizing_idx={sizing_idx}"
     )

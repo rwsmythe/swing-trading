@@ -1,11 +1,11 @@
 {#- Expects: expanded (HypRecsExpandedVM)
 
     Sub-task 5.3 (spec §3.5.6) — grouped vertical layout: Order parameters /
-    Sizing / Chart / Context / Freshness footer.
+    Take-this-trade action row / Sizing / Chart / Context / Freshness footer.
 
-    NOTE: the Q8 "Take this trade" primary-action button is intentionally
-    omitted at sub-task 5.3 — Task 5.6 inserts it between Order parameters
-    and Sizing groups (per spec §3.5.6 layout). -#}
+    Task 5.6 inserts the Q8 "Take this trade" primary-action button between
+    the Order parameters group and the Sizing group (per spec §3.5.6 layout
+    + §3.7 D.2/D.3/D.5 binding contracts). -#}
 <tr id="hyp-rec-row-{{ expanded.ticker }}" class="expanded">
   <td colspan="9">
     <button class="close-expanded" type="button"
@@ -25,6 +25,14 @@
                      {% else %}—{% endif %}
           <span class="muted">(framework initial stop)</span></li>
     </ul>
+
+    <p class="action-row">
+      <button type="button" class="take-this-trade primary"
+              hx-get="/trades/entry/form?ticker={{ expanded.ticker }}&origin=hyp-recs"
+              hx-target="closest tr"
+              hx-swap="outerHTML"
+              hx-headers='{"HX-Request": "true"}'>Take this trade</button>
+    </p>
 
     <h4>Sizing</h4>
     <ul class="sizing-twins">
