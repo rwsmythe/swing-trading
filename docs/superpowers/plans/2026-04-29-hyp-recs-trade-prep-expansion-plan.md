@@ -423,7 +423,20 @@ def test_lightning_trigger_unchanged_uses_entry_target(tmp_path: Path):
     assert "$100.00" in body
 ```
 
-> **Test-helper bootstrap.** If `tests/conftest.py` does not export a `minimal_config_for_tests` helper, locate the existing test that constructs a TestClient-compatible `Config` (e.g. `tests/web/test_view_models/test_watchlist.py` line 153 region's `seeded_db` pattern) and inline its config-building helper into this file. The hyp-recs expand-route tests (Task 4 sub-step 4.2) will share the helper — extract it to `tests/web/_hyp_recs_helpers.py` if convenient, or inline at each test file. Prefer inline at this point — extraction is mid-session refactor scope and the dispatch already has scope budget concerns.
+> **Test-helper bootstrap (R3-Major-2 Codex fix).** The plan's `_make_cfg(tmp_path)` calls assume a `tests.conftest.minimal_config_for_tests` helper that does NOT exist. The actual helper in `tests/conftest.py` is the `sample_config(tmp_path)` **fixture** (line 41) — see verification at plan-time:
+>   ```bash
+>   grep -n "^def\|^class\|^@" tests/conftest.py
+>   # → tmp_db, ohlcv_factory, sample_config (NO minimal_config_for_tests)
+>   ```
+> Two binding substitutions for every test in this plan:
+>   1. **Replace `_make_cfg(tmp_path)` calls with the `sample_config` fixture.** Tests should take `sample_config` as a parameter:
+>      ```python
+>      def test_foo(sample_config, tmp_path):  # use sample_config directly
+>          cfg = sample_config
+>          # ... existing test body ...
+>      ```
+>      OR (when an existing test already takes `tmp_path`) reuse `sample_config` and drop the `_make_cfg` call.
+>   2. **Replace `from tests.conftest import minimal_config_for_tests` imports** with NO import (the fixture is auto-discovered by pytest).
 
 > **WatchlistEntry constructor + watchlist table — pseudocode → factory substitution (R2-Major-1 Codex fix).** The actual `WatchlistEntry` dataclass at `swing/data/models.py:130-145` has more required fields than the simplified test snippets in this plan use. Required fields include: `added_date`, `last_qualified_date`, `status`, `qualification_count`, `not_qualified_streak`, `last_data_asof_date`, `last_pivot`, `last_stop`, `missing_criteria`, `notes`. There is NO `added_session` / `removed_session` field; the actual table is `watchlist`, NOT `watchlist_entries`.
 >
@@ -676,51 +689,64 @@ def test_config_web_chase_factor_default_is_one_percent():
 
 
 def test_config_web_chase_factor_no_toml_shadow():
-    """Spec §3.1 — toml-shadowing audit (R1-Major-4 portability fix).
+    """Spec §3.1 — toml-shadowing audit.
 
     Per the 2026-04-29 multi-path-ingestion lesson + the prior aeb2084
-    lesson, the field MUST NOT have a row in any tracked toml file in
-    V1. Phase 5 (configuration page) surfaces all Web overrides
+    lesson, the field MUST NOT have a row in any GIT-TRACKED toml file
+    in V1. Phase 5 (configuration page) surfaces all Web overrides
     together; until then, operators write the value into their local
-    toml as a deliberate opt-in.
+    untracked toml as a deliberate opt-in (NOT scanned by this audit).
 
-    Implemented in pure Python (Path.rglob) rather than a shell-out to
-    `grep` so the test is portable across Windows/Unix and does not
-    depend on external PATH state. Scans tracked toml files in the
-    repo root + swing/ tree (intentionally excludes the developer's
-    local-untracked .copowers / .tmp areas which are noise for this
-    audit).
+    R1-Major-4 + R3-Minor-1 (Codex) — implemented in pure Python rather
+    than shelling out to `grep` (portable Win/Unix; no PATH dependency)
+    AND scoped strictly to git-tracked files via `git ls-files` (a
+    developer's local untracked `swing.config.toml` override is NOT
+    a shadowing concern; the audit catches only what's committed to
+    the repo).
     """
+    import subprocess
     from pathlib import Path
 
     repo_root = Path(__file__).resolve().parents[2]
-    # Scan the canonical config locations; do NOT recurse into .git or
-    # build artifact dirs.
-    scan_dirs = [repo_root, repo_root / "swing", repo_root / "docs"]
+    # Use git ls-files to enumerate tracked toml files. Falls back to
+    # an empty set if git is unavailable (the assertion is then
+    # vacuously true — surface in CI logs that the audit was skipped).
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "*.toml"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pytest.skip("git unavailable; toml-shadowing audit skipped")
+        return
+    tracked_tomls = [
+        repo_root / line.strip()
+        for line in result.stdout.splitlines()
+        if line.strip()
+    ]
     offenders: list[tuple[Path, int, str]] = []
-    for base in scan_dirs:
-        if not base.exists():
+    for tomlfile in tracked_tomls:
+        if not tomlfile.exists():
             continue
-        for tomlfile in base.rglob("*.toml"):
-            # Skip vendor / cache / build dirs.
-            parts = set(tomlfile.parts)
-            if parts & {".git", ".tmp", "node_modules", ".venv", "__pycache__"}:
-                continue
-            try:
-                lines = tomlfile.read_text(encoding="utf-8").splitlines()
-            except (UnicodeDecodeError, OSError):
-                continue
-            for lineno, line in enumerate(lines, start=1):
-                if "chase_factor" in line:
-                    offenders.append((tomlfile, lineno, line))
-    # Filter out matches inside docs/ (the spec + brief documents
-    # discuss chase_factor; those are NOT shadowing).
+        try:
+            lines = tomlfile.read_text(encoding="utf-8").splitlines()
+        except (UnicodeDecodeError, OSError):
+            continue
+        for lineno, line in enumerate(lines, start=1):
+            if "chase_factor" in line:
+                offenders.append((tomlfile, lineno, line))
+    # docs/ matches are in the spec + brief documents; those are NOT
+    # toml shadowing. (No tracked toml under docs/ at plan-time, but
+    # filter defensively.)
     offenders = [
         (p, ln, line) for (p, ln, line) in offenders
         if "docs" not in p.parts
     ]
     assert offenders == [], (
-        "chase_factor must not appear in any tracked toml file outside docs/"
+        "chase_factor must not appear in any GIT-TRACKED toml file"
         " (multi-path-ingestion lesson). Offenders:\n"
         + "\n".join(f"  {p}:{ln}: {line}" for p, ln, line in offenders)
     )
@@ -1217,19 +1243,29 @@ def _seed_hyp_recs_fixture(
                     (eval_id, tk),
                 )
             # Register one minimal hypothesis matching aplus candidates.
-            # NOTE: implementer should locate the existing hypothesis
-            # registry seeding helper used by other dashboard tests
-            # (search tests/ for INSERT INTO hypotheses); the helper at
-            # tests/web/test_view_models/test_dashboard_hypothesis_recommendations.py's
-            # fixture is a known-good template. Inline the SQL here if no
-            # shared helper is exposed.
+            # NOTE: the actual table is `hypothesis_registry` (NOT
+            # `hypotheses`) — verified against
+            # swing/data/migrations/0008_hypothesis_registry.sql.
+            # Implementer should locate the existing seeding helper used
+            # by other dashboard tests:
+            # `grep -rn "INSERT INTO hypothesis_registry" tests/`
+            # (a known-good fixture lives in
+            # tests/web/test_view_models/test_dashboard_hypothesis_recommendations.py).
+            # If no shared helper is available, inline the canonical
+            # INSERT below — column set matches the migration's CREATE
+            # TABLE.
             conn.execute(
-                """INSERT INTO hypotheses
-                   (id, name, target_sample_size, status, criteria,
-                    rationale_template, descriptive_label_template,
-                    tripwire_rule, created_ts)
-                   VALUES (1, 'Test hypothesis', 30, 'active',
-                           '{"buckets":["aplus"]}', '', '', '', '2026-04-29T09:00:00')"""
+                """INSERT INTO hypothesis_registry
+                   (id, name, statement, target_sample_size,
+                    decision_criteria, status,
+                    consecutive_loss_tripwire,
+                    absolute_loss_tripwire_pct, created_at)
+                   VALUES (1, 'Test hypothesis',
+                           'aplus candidates produce R-multiple > 0',
+                           30,
+                           '{"buckets":["aplus"]}',
+                           'active', 5, 0.10,
+                           '2026-04-29T09:00:00')"""
             )
     finally:
         conn.close()
@@ -1624,7 +1660,10 @@ EOF
 >   - Insert `<p class="action-row"><button type="button" class="take-this-trade primary" hx-get="/trades/entry/form?ticker={{ expanded.ticker }}&origin=hyp-recs" hx-target="closest tr" hx-swap="outerHTML" hx-headers='{"HX-Request": "true"}'>Take this trade</button></p>` into `hypothesis_recommendations_expanded.html.j2` between Order parameters and Sizing groups (per spec §3.5.6 layout).
 >   - Tests in `tests/web/test_routes/test_hyp_recs_expand_route.py` assert: Take-this-trade button present in expansion render; URL is `/trades/entry/form?ticker={X}&origin=hyp-recs` (D.2 option (a) — same URL as per-row Enter); class contains `take-this-trade` or `primary` (D.3 visual differentiation); per-row Enter and Take-this-trade share the SAME URL (discriminating-test pair vs an extended-snapshot regression).
 >
-> **Sub-task 5.7 — Sort-neutrality regression** (`tests/web/test_view_models/test_hyp_recs_sort_neutrality.py`): single regression test seeds 3+ candidates that exercise the prioritizer's tie-breaking and asserts `prioritize_recommendations` output is deterministic (calling twice yields the same tuple). Implementer SHOULD strengthen by pinning the actual tuple from a first-green run as the assertion target. No production code change in this sub-task.
+> **Sub-task 5.7 — Sort-neutrality regression** (`tests/web/test_view_models/test_hyp_recs_sort_neutrality.py`): seeds 3+ candidates that exercise the prioritizer's tie-breaking. Two binding test shapes (R3-Major-1 Codex fix — determinism alone is weaker than neutrality):
+>   1. **Cross-builder neutrality** (the spec's actual invariant per §2.2): assert `build_dashboard.active_recommendations` ticker order EQUALS `build_hyp_recs_section.active_recommendations` ticker order, given the same DB state. Discriminating: a regression in the Task 3 `_build_active_recommendations` extraction (e.g. dropped a field, swapped sort key) would diverge the two builders' output.
+>   2. **Pinned-baseline neutrality**: pin the actual ticker order tuple from the first-green run as the assertion target. Discriminating: any future PR perturbing prioritizer logic, hypothesis registry scoring, or default sort tiebreakers fails the suite.
+> No production code change in this sub-task — both tests are forward-regression guards. Implementer captures the baseline tuple by running the test ONCE under the green fixture and committing the observed value; if running yields a different tuple at a future commit, the test should fail loudly so the diff prompts a deliberate update or a rollback decision.
 
 > **Sub-task commit messages (binding):**
 >   - `feat(recommendations): Task 5.1 — sizing-twin discriminating tests`
