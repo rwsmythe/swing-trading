@@ -1,21 +1,40 @@
 """Hyp-recs trade-prep expansion routes.
 
-Spec §3.5.4: GET /hyp-recs/refresh (close-button target / hyp-recs-origin
-entry-form Cancel target).
-Spec §3.5.4: GET /hyp-recs/{ticker}/expand (Task 5; defined here as a
-placeholder docstring at Task 4 stage).
+Spec §3.5.4:
+- `GET /hyp-recs/refresh` — close-button target / hyp-recs-origin entry-form
+  Cancel target. Returns ONLY the freshly-rendered hyp-recs section partial
+  via the scoped `build_hyp_recs_section` builder (R2-Major-2).
+- `GET /hyp-recs/{ticker}/expand` — chevron-button target. Returns the
+  `hypothesis_recommendations_expanded.html.j2` partial when the ticker is
+  in the latest completed pipeline run's candidate set with non-degenerate
+  sizing parameters, OR returns 404 + the
+  `hyp_recs_expand_unavailable.html.j2` partial otherwise.
 
 Both routes are HTMX-driven; under strict OriginGuard the GET routes
 do NOT require HX-Request (only writes do), but the templates expect
 the request to come from the dashboard so they include HTMX-specific
 markup unconditionally.
+
+Row-target swap awareness: an HTMX request whose `HX-Target` matches a
+`hyp-rec-row-*` element MUST receive a `<tr>` fragment on error/404 paths
+(see `swing/web/app.py:_ROW_TARGET_PREFIXES`). The 404 path here returns
+`hyp_recs_expand_unavailable.html.j2` (a `<tr>`); 500s flow through the
+global exception handler which detects the prefix and renders the
+trade_form_error.html.j2 fragment.
 """
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
-from swing.web.view_models.dashboard import build_hyp_recs_section
+from swing.data.db import connect
+from swing.data.repos.cash import list_cash
+from swing.data.repos.trades import list_all_exits
+from swing.trades.equity import current_equity
+from swing.web.view_models.dashboard import (
+    build_hyp_recs_expanded,
+    build_hyp_recs_section,
+)
 
 router = APIRouter()
 
@@ -42,3 +61,54 @@ def hyp_recs_refresh(request: Request):
         "partials/hypothesis_recommendations.html.j2",
         {"vm": section_vm},
     )
+
+
+@router.get("/hyp-recs/{ticker}/expand", response_class=HTMLResponse)
+def hyp_recs_expand(request: Request, ticker: str):
+    """Chevron-target. Renders the per-ticker expansion partial when the
+    ticker has a candidate row + non-degenerate sizing under the latest
+    completed pipeline run; otherwise returns 404 + the unavailable
+    partial.
+
+    Anchor consistency: `build_hyp_recs_expanded` resolves the binding
+    via `latest_completed_pipeline_run` — in-flight rows with
+    `finished_ts IS NULL` cannot win.
+    """
+    cfg = request.app.state.cfg
+    templates = request.app.state.templates
+    ticker_upper = ticker.upper()
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            current_balance = current_equity(
+                starting_equity=cfg.account.starting_equity,
+                exits=list_all_exits(conn),
+                cash_movements=list_cash(conn),
+            )
+            vm = build_hyp_recs_expanded(
+                conn, cfg,
+                ticker=ticker_upper, current_balance=current_balance,
+            )
+            if vm is None:
+                return templates.TemplateResponse(
+                    request,
+                    "partials/hyp_recs_expand_unavailable.html.j2",
+                    {
+                        "ticker": ticker_upper,
+                        "message": (
+                            "Not a current candidate or pivot data missing."
+                        ),
+                    },
+                    status_code=404,
+                )
+            return templates.TemplateResponse(
+                request,
+                "partials/hypothesis_recommendations_expanded.html.j2",
+                {"expanded": vm},
+                status_code=200,
+            )
+    finally:
+        conn.close()
+
+
+__all__ = ["router", "hyp_recs_refresh", "hyp_recs_expand"]

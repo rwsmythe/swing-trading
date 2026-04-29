@@ -34,6 +34,7 @@ _ROW_TARGET_PREFIXES = (
     "exit-form-",         # exit form (replaces open-position row)
     "stop-form-",         # stop-adjust form (replaces open-position row)
     "watchlist-row-",     # watchlist row (Enter-button target; id added in Phase 3c)
+    "hyp-rec-row-",       # hyp-recs row (chevron expand target; spec §3.5.4 R1-Major-2)
 )
 
 

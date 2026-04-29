@@ -1,0 +1,68 @@
+{#- Expects: expanded (HypRecsExpandedVM)
+
+    Sub-task 5.3 (spec §3.5.6) — grouped vertical layout: Order parameters /
+    Sizing / Chart / Context / Freshness footer.
+
+    NOTE: the Q8 "Take this trade" primary-action button is intentionally
+    omitted at sub-task 5.3 — Task 5.6 inserts it between Order parameters
+    and Sizing groups (per spec §3.5.6 layout). -#}
+<tr id="hyp-rec-row-{{ expanded.ticker }}" class="expanded">
+  <td colspan="9">
+    <button class="close-expanded" type="button"
+            hx-get="/hyp-recs/refresh"
+            hx-target="#hypothesis-recommendations" hx-swap="outerHTML"
+            hx-headers='{"HX-Request": "true"}'
+            aria-label="Close expanded row for {{ expanded.ticker }}"
+            title="Close">✕</button>
+    <h3>{{ expanded.ticker }}</h3>
+
+    <h4>Order parameters</h4>
+    <ul class="order-params">
+      <li>Buy stop:  ${{ '%.2f' | format(expanded.buy_stop) }} <span class="muted">(pivot)</span></li>
+      <li>Buy limit: ${{ '%.2f' | format(expanded.buy_limit) }}
+          <span class="muted">(pivot × {{ '%.1f' | format(expanded.chase_factor * 100) }}%)</span></li>
+      <li>Sell stop: {% if expanded.sell_stop is not none %}${{ '%.2f' | format(expanded.sell_stop) }}
+                     {% else %}—{% endif %}
+          <span class="muted">(framework initial stop)</span></li>
+    </ul>
+
+    <h4>Sizing</h4>
+    <ul class="sizing-twins">
+      <li>Risk-based <span class="muted">(eq ${{ '%.0f' | format(expanded.risk_equity) }})</span>:
+        {% if expanded.sizing_risk.feasible %}
+          {{ expanded.sizing_risk.shares }} sh × ${{ '%.2f' | format(expanded.buy_stop) }}
+            = ${{ '%.2f' | format(expanded.sizing_risk.notional) }}
+            <span class="muted">(constraint: {{ expanded.sizing_risk.constraint }})</span>
+        {% else %}
+          infeasible <span class="muted">({{ expanded.sizing_risk.constraint }})</span>
+        {% endif %}
+      </li>
+      <li>Cash-feasible <span class="muted">(eq ${{ '%.0f' | format(expanded.current_balance) }})</span>:
+        {% if expanded.sizing_cash.feasible %}
+          {{ expanded.sizing_cash.shares }} sh × ${{ '%.2f' | format(expanded.buy_stop) }}
+            = ${{ '%.2f' | format(expanded.sizing_cash.notional) }}
+            <span class="muted">(constraint: {{ expanded.sizing_cash.constraint }})</span>
+        {% else %}
+          infeasible <span class="muted">({{ expanded.sizing_cash.constraint }})</span>
+        {% endif %}
+      </li>
+    </ul>
+
+    {% if expanded.chart_reason is none and expanded.data_asof_date %}
+      <img src="/charts/{{ expanded.data_asof_date }}/{{ expanded.ticker }}.png"
+           alt="Chart {{ expanded.ticker }}">
+    {% elif expanded.chart_reason_message %}
+      <div class="chart-unavailable" data-chart-reason="{{ expanded.chart_reason }}">
+        {{ expanded.chart_reason_message }}
+      </div>
+    {% endif %}
+
+    <h4>Context</h4>
+    <p>Sector: {{ expanded.sector or "—" }}</p>
+    <p>Industry: {{ expanded.industry or "—" }}</p>
+
+    {% if expanded.pipeline_finished_at %}
+      <p class="freshness muted">As of pipeline finished {{ expanded.pipeline_finished_at }}</p>
+    {% endif %}
+  </td>
+</tr>

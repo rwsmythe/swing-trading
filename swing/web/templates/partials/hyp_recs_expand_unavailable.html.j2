@@ -1,0 +1,17 @@
+{#- Expects: ticker (str), message (str)
+
+    Sub-task 5.3 (spec §3.5.4 R1-Major-2) — 404 fragment when the requested
+    ticker has no candidate row in the latest completed pipeline run, or
+    when sizing parameters are degenerate. Rendered as a <tr> so HTMX
+    can swap into the original <tbody>; the row-target prefix guard in
+    `swing/web/app.py:_ROW_TARGET_PREFIXES` ensures any 4xx/5xx along the
+    way also produces <tr>-rooted markup. -#}
+<tr id="hyp-rec-row-{{ ticker }}" class="expand-unavailable">
+  <td colspan="9">
+    <span>{{ message }}</span>
+    <button hx-get="/hyp-recs/refresh"
+            hx-target="#hypothesis-recommendations"
+            hx-swap="outerHTML"
+            hx-headers='{"HX-Request": "true"}'>Close</button>
+  </td>
+</tr>
