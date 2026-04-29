@@ -101,21 +101,22 @@ tests/
 Files touched (full list):
 
 - **Production NEW (4):** `swing/web/routes/recommendations.py`, `swing/web/templates/partials/hypothesis_recommendations_row.html.j2`, `swing/web/templates/partials/hypothesis_recommendations_expanded.html.j2`, `swing/web/templates/partials/hyp_recs_expand_unavailable.html.j2`.
-- **Production MODIFY (11):**
+- **Production MODIFY (12):**
   1. `swing/config.py` — one new `Web` field (`chase_factor`).
   2. `swing/web/view_models/dashboard.py` — add `HypRecsExpandedVM` + `build_hyp_recs_expanded` + `HypRecsSectionVM` + `build_hyp_recs_section` + `_build_active_recommendations` shared helper (R2-Major-2). `HypothesisRecommendation` UNCHANGED (per R1-Major-1).
   3. `swing/web/view_models/watchlist.py` — `WatchlistRowVM` gains `current_pivot: float | None = None` (R1-Major-3).
-  4. `swing/web/view_models/trades.py` — `TradeEntryFormVM` gains `origin: Literal["watchlist","hyp-recs"] = "watchlist"`; `build_entry_form_vm` accepts `origin` param + extends candidate-row SELECT to fetch `pivot` + `initial_stop` + falls back to candidate values when `wl_entry` is None (R3-Major-1 + R3-Major-2).
+  4. `swing/web/view_models/trades.py` — `TradeEntryFormVM` gains `origin: Literal["watchlist","hyp-recs"] = "watchlist"` + `pipeline_finished_at: str | None`; `build_entry_form_vm` accepts `origin`, applies anchor-consistency logic per origin (R4-Major-2), extends candidate-row SELECT to fetch `pivot` + `initial_stop`, falls back to candidate values when `wl_entry` is None (R3-Major-1 + R3-Major-2 + R4-Major-2).
   5. `swing/web/routes/watchlist.py` — `/watchlist/{ticker}/row` populates `WatchlistRowVM.current_pivot` from `candidates_by_ticker`.
-  6. `swing/web/routes/trades.py` — entry-form route handler reads `?origin=` query param, whitelist-validates, threads to `build_entry_form_vm` (R3-Major-1).
+  6. `swing/web/routes/trades.py` — GET entry-form handler reads `?origin=` query param (whitelist-validated); POST `/trades/entry` handler reads form-payload `origin`; threads through `_rerender_entry_form_with_error()`, `DuplicateOpenPositionException` re-render, and soft-warn `form_values` (R3-Major-1 + R4-Major-1).
   7. `swing/web/app.py` — register the recommendations router AND extend `_ROW_TARGET_PREFIXES` to include `hyp-rec-row-` (R1-Major-2).
   8. `swing/web/templates/partials/hypothesis_recommendations.html.j2` — chevron leading column + Enter-button trailing column + iterate per-row partial.
-  9. `swing/web/templates/partials/trade_entry_form.html.j2` — parameterize `colspan` + Cancel button `hx-get`/`hx-target` based on `vm.origin` (R3-Major-1).
-  10. `swing/web/templates/partials/watchlist_row.html.j2` — CC pivot bug fix at line 16 (R1-Minor-3 dash sentinel for missing both).
-  11. **TWO parent templates that iterate watchlist rows (R2-Major-1 correction):** `swing/web/templates/partials/watchlist_top5_section.html.j2` (dashboard top-5 path; `dashboard.html.j2:15` includes this section but does NOT iterate rows directly) AND `swing/web/templates/watchlist.html.j2` (standalone watchlist page). Each gains `{% set current_pivot = vm.candidates_by_ticker[w.ticker].pivot if w.ticker in vm.candidates_by_ticker else None %}` immediately before the `{% include "partials/watchlist_row.html.j2" %}`. (Counted as one MODIFY entry but two file edits — finalized at writing-plans dispatch.)
+  9. `swing/web/templates/partials/trade_entry_form.html.j2` — parameterize `colspan` + Cancel button `hx-get`/`hx-target` based on `vm.origin` (R3-Major-1) + hidden `origin` form field (R4-Major-1) + freshness footer when `vm.origin == 'hyp-recs'` (R4-Major-2).
+  10. `swing/web/templates/partials/soft_warn_confirm.html.j2` — hidden `origin` form field + parameterized Cancel button so the soft-warn round-trip preserves the discriminator (R4-Major-1).
+  11. `swing/web/templates/partials/watchlist_row.html.j2` — CC pivot bug fix at line 16 (R1-Minor-3 dash sentinel for missing both).
+  12. **TWO parent templates that iterate watchlist rows (R2-Major-1 correction):** `swing/web/templates/partials/watchlist_top5_section.html.j2` (dashboard top-5 path; `dashboard.html.j2:15` includes this section but does NOT iterate rows directly) AND `swing/web/templates/watchlist.html.j2` (standalone watchlist page). Each gains `{% set current_pivot = vm.candidates_by_ticker[w.ticker].pivot if w.ticker in vm.candidates_by_ticker else None %}` immediately before the `{% include "partials/watchlist_row.html.j2" %}`. (Counted as one MODIFY entry but two file edits — finalized at writing-plans dispatch.)
 - **Test NEW (6):** the six files listed in the `tests/` block.
 
-Total: **21 files** (4 production NEW + 11 production MODIFY + 6 test NEW; the test count expands at writing-plans dispatch as the entry-form-integration tests in §3.8b.2 + §4.3 land). No migrations. No Phase 2 carve-outs (see §5).
+Total: **22 files** (4 production NEW + 12 production MODIFY + 6 test NEW; the test count expands at writing-plans dispatch as the entry-form-integration tests in §3.8b.2-§3.8b.4 + §4.3 land). No migrations. No Phase 2 carve-outs (see §5).
 
 ### 2.2 Design invariants
 
@@ -840,14 +841,76 @@ The `watchlist_entry_target` and `watchlist_initial_stop` hidden inputs (templat
 - `test_hyp_recs_entry_form_on_watchlist_prefers_watchlist_values`: hyp-recs Enter on a ticker that IS on the watchlist with watchlist values DIFFERENT from candidate values; the form prefers watchlist values (preserves existing semantic).
 - `test_origin_param_validation`: GET `/trades/entry/form?ticker=AAPL&origin=javascript:alert(1)` → form renders with origin defaulted to "watchlist" (whitelist validation), NOT the malicious string passed through to the template.
 
-#### 3.8b.3 Plumbing summary
+#### 3.8b.3 `origin` survival across POST round-trips (R4-Major-1)
 
-The Q7+Q8 + R3 resolution adds these to the dispatch's MODIFY list:
-- `swing/web/templates/partials/trade_entry_form.html.j2` — parameterize colspan + Cancel target (R3-Major-1).
-- `swing/web/view_models/trades.py` — `TradeEntryFormVM` gains `origin: Literal["watchlist", "hyp-recs"] = "watchlist"` field; `build_entry_form_vm` accepts `origin` param + falls back to candidate row for `entry_price`, `initial_stop`, target field when `wl_entry` is None (R3-Major-1 + R3-Major-2).
-- `swing/web/routes/trades.py` — entry-form route handler reads `?origin=` query param, validates against whitelist, threads to `build_entry_form_vm`.
+GET-time threading of `origin` is necessary but NOT sufficient. The entry POST flow has multiple re-render paths that pre-date the discriminator and would silently revert to watchlist defaults if `origin` is lost. Spec requires `origin` to be carried as a HIDDEN FORM FIELD and threaded through every re-render path:
 
-These are 3 additional MODIFY files NOT in the original §2.1 file map; updated below in the consolidated map and §9 done criteria.
+- **Hidden form field on `partials/trade_entry_form.html.j2`:**
+  ```jinja
+  <input type="hidden" name="origin" value="{{ vm.origin }}">
+  ```
+  Persists `origin` from the GET-time render through every POST submission.
+
+- **`POST /trades/entry` handler (`swing/web/routes/trades.py`):** reads `origin` from form payload (whitelist-validated; unknown → "watchlist"). Threads to:
+  - `_rerender_entry_form_with_error()` — current implementation rebuilds the VM from `ticker` only; spec requires it to also accept and propagate `origin`.
+  - `DuplicateOpenPositionException` re-render branch — same VM rebuild path; same `origin` propagation.
+  - `soft_warn_confirm.html.j2` `form_values` dict — `origin` MUST be among the keys round-tripped to the confirmation partial. The confirmation partial's hidden inputs include `origin` so that a subsequent confirm-submit POSTs the same value back; on cancel, the partial's Cancel button uses `vm.origin` to choose the right unwind target (`/hyp-recs/refresh` for hyp-recs, `/watchlist/{ticker}/expand` for watchlist).
+
+- **`soft_warn_confirm.html.j2` template:** gains `<input type="hidden" name="origin" value="{{ vm.origin }}">` and parameterizes its Cancel button per the same logic as `trade_entry_form.html.j2:72-74` does post-R3-Major-1.
+
+**Failure mode this closes:** without `origin` survival, an operator clicks Take this trade on a hyp-recs row → form renders correctly with `origin=hyp-recs` → submit triggers a validation error → form re-renders with `origin` lost → form now has colspan=8 and Cancel pointing to `/watchlist/{ticker}/expand` — the operator sees the form layout shift on resubmit, and Cancel teleports them to a watchlist row that's irrelevant (or 404 if ticker isn't on the watchlist). The hidden field + threading discipline closes this regression class.
+
+**Test coverage** (added to §4.3):
+- `test_validation_error_rerender_preserves_origin`: POST `/trades/entry` with `origin=hyp-recs` and a deliberate validation error (e.g., `entry_price=-1`) → response body still contains `colspan="9"` and Cancel `hx-get="/hyp-recs/refresh"`. Discriminating: pre-fix path would render colspan=8 + watchlist Cancel.
+- `test_duplicate_open_position_rerender_preserves_origin`: POST with `origin=hyp-recs` for a ticker that already has an open position → re-render preserves origin.
+- `test_soft_warn_confirm_round_trips_origin`: POST that triggers soft-warn → confirm partial includes hidden `origin=hyp-recs`; confirm-submit threads it back; Cancel from confirm fires `/hyp-recs/refresh`.
+
+#### 3.8b.4 Anchor consistency for off-watchlist candidate fallback (R4-Major-2)
+
+`build_entry_form_vm` currently reads candidate data from TWO different anchors:
+- Chart-pattern classification: `latest_completed_pipeline_run` (`pipeline_runs ORDER BY finished_ts DESC LIMIT 1`).
+- Sector/industry: `latest_evaluation_run_id()` (which can pick a standalone-eval row newer than the latest pipeline-bound eval).
+
+Pre-Q7/Q8, the form was always reached from the watchlist surface, where this anchor split was an existing accepted residual (the `wl_entry`'s frozen target/stop dominated the form's order-related fields, so the candidate-derived sector/industry only contributed metadata). Post-Q7/Q8 the candidate now contributes ORDER-RELATED fields too (entry_price, initial_stop) for off-watchlist tickers — and a mixed-anchor form would show "entry price from eval run N, chart-pattern from pipeline run M" with no disclosure. The hyp-recs expansion uses `latest_completed_pipeline_run` consistently (per §3.5.3 anchor consistency invariant); the entry form must agree with the expansion when the operator just clicked Take this trade.
+
+**Resolution: when `origin=hyp-recs`, bind ALL candidate-derived reads to `latest_completed_pipeline_run`'s `evaluation_run_id`.** The entry form mirrors the hyp-recs expansion's anchor exactly. For `origin=watchlist`, preserve the existing behavior (sector/industry from `latest_evaluation_run_id`; chart-pattern from `latest_completed_pipeline_run`) — backward compat for the watchlist surface.
+
+```python
+def build_entry_form_vm(*, ticker, cfg, cache, executor, origin="watchlist"):
+    ...
+    if origin == "hyp-recs":
+        # Single binding for ALL candidate-derived reads (sector, industry,
+        # pivot, initial_stop) AND chart-pattern classification.
+        binding = latest_completed_pipeline_run(conn)
+        if binding is not None:
+            anchor_eval_id = binding.eval_id
+            anchor_pipeline_run_id = binding.run_id
+        else:
+            anchor_eval_id = None
+            anchor_pipeline_run_id = None
+    else:
+        # origin == "watchlist" — existing behavior (anchor split preserved).
+        anchor_eval_id = latest_evaluation_run_id(conn)
+        anchor_pipeline_run_id = (latest_completed_pipeline_run(conn) or NullBinding).run_id
+    # Chart-pattern + candidate (sector/industry/pivot/initial_stop) reads
+    # use anchor_eval_id and anchor_pipeline_run_id appropriately.
+```
+
+**Visible "as of" disclosure on the form when `origin=hyp-recs`** (mirrors §3.5.6 expansion's freshness signal): the form template gains a freshness footer when `vm.origin == "hyp-recs"` showing `As of pipeline finished {{ vm.pipeline_finished_at }}` — same string the expansion shows. Operator can recognize at-a-glance divergence between expansion and form.
+
+**Test coverage** (added to §4.3):
+- `test_hyp_recs_form_anchor_matches_expansion_anchor`: insert a pipeline_run completing with eval_id N; insert a standalone eval N+1 newer; build the hyp-recs expansion VM and the hyp-recs-origin entry form VM. Both reads bind to eval_id N; their pivot/initial_stop/sector/industry values agree byte-for-byte. Discriminating: pre-fix path (sector/industry from latest_evaluation_run_id) would yield N+1 in the form vs N in the expansion.
+- `test_watchlist_origin_form_preserves_existing_anchor_split`: same fixture; build watchlist-origin entry form. Sector/industry come from N+1 (existing behavior); chart-pattern from N (existing behavior). Backward-compat preserved.
+
+#### 3.8b.5 Plumbing summary
+
+The Q7+Q8 + R3 + R4 resolution adds these to the dispatch's MODIFY list:
+- `swing/web/templates/partials/trade_entry_form.html.j2` — parameterize colspan + Cancel target (R3-Major-1) + hidden `origin` form field (R4-Major-1) + freshness footer when origin=hyp-recs (R4-Major-2).
+- `swing/web/templates/partials/soft_warn_confirm.html.j2` — hidden `origin` form field + parameterized Cancel button (R4-Major-1 round-trip).
+- `swing/web/view_models/trades.py` — `TradeEntryFormVM` gains `origin: Literal["watchlist", "hyp-recs"]` + `pipeline_finished_at: str | None` fields; `build_entry_form_vm` accepts `origin` param + applies anchor-consistency logic per origin (R3-Major-1 + R3-Major-2 + R4-Major-2).
+- `swing/web/routes/trades.py` — GET handler reads `?origin=` query param (whitelist); POST handler reads form-payload `origin`; threads to `_rerender_entry_form_with_error()` and `DuplicateOpenPositionException` re-render; soft-warn `form_values` includes `origin` (R3-Major-1 + R4-Major-1).
+
+These are 4 additional MODIFY files NOT in the original §2.1 file map; updated below in the consolidated map and §9 done criteria.
 
 ### 3.9 CC pivot bug fix (Q-G)
 
@@ -1051,6 +1114,8 @@ Per the brief and the established chart-pattern flag-v1 §6 pattern. Surface the
 - [ ] All test layers green: sizing twins; expansion VM (anchor consistency, degenerate-sizing); route (expand 200 + 404 + chart-scope + 500 row-target-prefix coverage; refresh 200 + scoped-builder isolation; per-row Enter swap; Take-this-trade swap; muscle-memory mirror); template (9-column regression; per-row Enter mirrors watchlist; visual differentiation); CC pivot (3-render-site coverage + dash sentinel + lightning binding preserved).
 - [ ] **Origin-aware entry form (R3-Major-1):** colspan + Cancel target parameterized via `vm.origin`; whitelist-validated query param; hyp-recs-originated forms render colspan=9 + Cancel `hx-get="/hyp-recs/refresh"`; watchlist-originated forms preserve existing colspan=8 + Cancel `hx-get="/watchlist/{ticker}/expand"` behavior.
 - [ ] **Off-watchlist candidate fallback (R3-Major-2):** `build_entry_form_vm` for off-watchlist tickers populates `entry_price` and `initial_stop` from candidate row; on-watchlist tickers preserve existing watchlist-priority semantics.
+- [ ] **Origin survives POST round-trips (R4-Major-1):** hidden form field on entry form + soft-warn confirm; threaded through `_rerender_entry_form_with_error`, duplicate-position re-render, and soft-warn confirm; validation-error and soft-warn round-trip tests confirm survival.
+- [ ] **Anchor consistency for hyp-recs origin (R4-Major-2):** when `origin=hyp-recs`, ALL candidate-derived reads (sector, industry, pivot, initial_stop, chart-pattern) bind to the SAME `latest_completed_pipeline_run` evaluation_run_id — matches the hyp-recs expansion's anchor (§3.5.3); freshness footer "As of pipeline finished <ISO>" present on the form. Watchlist-origin forms preserve existing anchor split for backward compat.
 - [ ] Adversarial Codex review reaches `NO_NEW_CRITICAL_MAJOR`.
 - [ ] No new migration; no new repo function beyond a single optional `get_for_evaluation` accessor (verified at writing-plans).
 - [ ] Toml-shadowing audit recorded clean for `chase_factor` (no row added; phase3e-todo retains the asymmetry note).
