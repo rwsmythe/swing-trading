@@ -523,8 +523,9 @@ def test_expanded_partial_colspan_matches_row(seeded_db, monkeypatch):
     actual <td> count. A mismatch breaks the table layout (cells overflow
     into adjacent columns or leave gaps).
 
-    Compact row has 8 <td> cells (Ticker, Entry date, Entry price, Shares,
-    Current stop, Last, Advisory, Actions). Expanded must use colspan="8".
+    Compact row has 10 <td> cells (Ticker, Entry date, Entry price, Shares,
+    Current stop, Last, Sector, Industry, Advisory, Actions). Expanded must
+    use colspan="10". (Sector + Industry added in Task 9.)
     """
     cfg, cfg_path = seeded_db
     trade_id = _seed_in_scope_trade(cfg, ticker="AAPL")
@@ -538,7 +539,55 @@ def test_expanded_partial_colspan_matches_row(seeded_db, monkeypatch):
         )
     assert r.status_code == 200
     body = r.text
-    assert 'colspan="8"' in body, (
-        "expanded row must use colspan='8' to match the 8-cell compact row; "
+    assert 'colspan="10"' in body, (
+        "expanded row must use colspan='10' to match the 10-cell compact row; "
         f"body excerpt: {body[:200]!r}"
+    )
+
+
+def test_open_positions_row_renders_sector_industry(seeded_db, monkeypatch):
+    """Open positions row renders Sector + Industry from trade.sector / .industry.
+    Sentinel 'OP-Sector-T9' / 'OP-Industry-T9' guards against default-string
+    masks."""
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+    from swing.web.price_cache import PriceCache
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="AAPL", entry_date="2026-04-15",
+                entry_price=180.0, initial_shares=10, initial_stop=170.0,
+                current_stop=170.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None, sector="OP-Sector-T9", industry="OP-Industry-T9",
+            ), event_ts="2026-04-15T09:30:00")
+    finally:
+        conn.close()
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *, deadline_seconds, executor: {},
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/")
+    assert r.status_code == 200
+    body = r.text
+    assert "OP-Sector-T9" in body
+    assert "OP-Industry-T9" in body
+
+
+def test_open_positions_expanded_colspan_matches_new_row_cell_count():
+    """colspan in open_positions_expanded.html.j2 must match the cell count
+    in open_positions_row.html.j2 — was 8, becomes 10 with sector + industry.
+    """
+    from pathlib import Path
+    expanded = Path("swing/web/templates/partials/open_positions_expanded.html.j2").read_text(encoding="utf-8")
+    assert 'colspan="10"' in expanded, (
+        "colspan must be 10 to match open_positions_row.html.j2's 10 cells "
+        "(Ticker, Entry date, Entry price, Shares, Current stop, Last, "
+        "Sector, Industry, Advisory, Actions)."
     )

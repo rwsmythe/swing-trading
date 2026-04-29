@@ -13,11 +13,12 @@
     files must migrate together.
 
     Colspan must match the compact open_positions_row.html.j2 cell count
-    (8 cells: Ticker, Entry date, Entry price, Shares, Current stop, Last,
-    Advisory, Actions). A mismatch breaks the table layout.
+    (10 cells: Ticker, Entry date, Entry price, Shares, Current stop, Last,
+    Sector, Industry, Advisory, Actions). A mismatch breaks the table layout.
+    (Sector + Industry added in Task 9 of the sector/industry capture plan.)
 -#}
 <tr id="open-position-{{ expanded.trade_id }}" class="expanded">
-  <td colspan="8">
+  <td colspan="10">
     <button class="close-expanded"
             type="button"
             onclick="event.stopPropagation()"

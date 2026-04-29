@@ -24,6 +24,8 @@
       {% if row.price_snapshot.is_stale %}<span class="stale">(stale)</span>{% endif %}
     {% else %}—{% endif %}
   </td>
+  <td>{{ row.trade.sector or "—" }}</td>
+  <td>{{ row.trade.industry or "—" }}</td>
   <td>
     {% for s in row.advisories %}
       <div>{{ s.message }}</div>
