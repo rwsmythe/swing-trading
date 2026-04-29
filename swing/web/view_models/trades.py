@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from typing import Literal
 
 from swing.config import Config
 from swing.data.db import connect
@@ -16,6 +17,21 @@ from swing.trades.equity import current_equity
 from swing.trades.exit import ExitReason
 from swing.trades.stop_adjust import stop_adjust_rationale_options
 from swing.web.price_cache import PriceCache
+
+
+_VALID_ORIGINS = ("watchlist", "hyp-recs")
+
+
+def _coerce_origin(raw: str | None) -> Literal["watchlist", "hyp-recs"]:
+    """Whitelist-coerce ?origin= query-param / form-payload value.
+
+    Unknown / missing → 'watchlist' (preserves existing behavior).
+
+    Spec §3.8b.1 R3-Major-1.
+    """
+    if raw in _VALID_ORIGINS:
+        return raw  # type: ignore[return-value]
+    return "watchlist"
 
 
 @dataclass(frozen=True)
@@ -58,10 +74,18 @@ class TradeEntryFormVM:
     # (graceful degradation per brief §5.8).
     sector: str = ""
     industry: str = ""
+    # Spec §3.8b — origin discriminator. Whitelist-validated at the
+    # request boundary by ``_coerce_origin``; unknown values default
+    # to 'watchlist' so existing watchlist callers (no ?origin=) keep
+    # working. Threading: GET ?origin= → build_entry_form_vm → VM
+    # field → template parameterizes colspan + Cancel target. POST
+    # round-trip survival ships in Task 8 via a hidden form field.
+    origin: Literal["watchlist", "hyp-recs"] = "watchlist"
 
 
 def build_entry_form_vm(
     *, ticker: str, cfg: Config, cache: PriceCache, executor,
+    origin: str = "watchlist",
 ) -> TradeEntryFormVM:
     """Build entry-form VM from: watchlist row, live price, open
     positions, equity, and (Phase 5) the chart-pattern classification
@@ -75,6 +99,7 @@ def build_entry_form_vm(
     ``SELECT id, evaluation_run_id`` pattern; the ``id`` IS the
     parent ``pipeline_run_id`` by construction.
     """
+    coerced_origin = _coerce_origin(origin)
     ticker = ticker.upper()
     cls = None
     conn = connect(cfg.paths.db_path)
@@ -198,6 +223,7 @@ def build_entry_form_vm(
         chart_pattern_classification_pipeline_run_id=cp_anchor,
         sector=cand_sector,
         industry=cand_industry,
+        origin=coerced_origin,
     )
 
 

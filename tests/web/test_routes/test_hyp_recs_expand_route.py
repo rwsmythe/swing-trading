@@ -696,3 +696,103 @@ def test_expand_route_take_this_trade_layout_between_order_and_sizing(
         f"Take-this-trade button must appear BEFORE 'Sizing' heading."
         f" take_idx={take_idx} sizing_idx={sizing_idx}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — origin-aware entry-form scaffolding (R3-Major-1).
+# Spec §3.8b.1 — TradeEntryFormVM.origin discriminator, template
+# parameterization (colspan + Cancel target), and GET-handler whitelist
+# coercion.
+# ---------------------------------------------------------------------------
+
+
+def test_entry_form_origin_watchlist_default_renders_colspan_8(
+    seeded_db, monkeypatch,
+):
+    """Pre-existing watchlist Enter callers (no ?origin= param) get the
+    same form as before: colspan=8 + Cancel /watchlist/{ticker}/expand.
+
+    Discriminating: a regression where the template hardcodes
+    colspan=9 unconditionally would break this test (existing
+    watchlist surface unchanged is the requirement).
+    """
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg, tickers=["NVDA"])
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/trades/entry/form?ticker=NVDA",  # NO ?origin=.
+            headers={"HX-Request": "true", "HX-Target": "watchlist-row-NVDA"},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    assert 'colspan="8"' in body, (
+        "watchlist-default origin must render colspan=8 (existing"
+        " behavior unchanged)"
+    )
+    assert "/watchlist/NVDA/expand" in body, (
+        "watchlist-default origin Cancel must target watchlist expand"
+    )
+
+
+def test_entry_form_origin_hyp_recs_renders_colspan_9_and_refresh_cancel(
+    seeded_db, monkeypatch,
+):
+    """Spec §3.8b.1 R3-Major-1 — when ?origin=hyp-recs, form renders
+    colspan=9 + Cancel /hyp-recs/refresh.
+
+    Discriminating: pre-fix path renders colspan=8 + watchlist Cancel
+    regardless of the query param.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg, tickers=["NVDA"])
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/trades/entry/form?ticker=NVDA&origin=hyp-recs",
+            headers={"HX-Request": "true", "HX-Target": "hyp-rec-row-NVDA"},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    assert 'colspan="9"' in body, (
+        "?origin=hyp-recs must render colspan=9 (R3-Major-1)"
+    )
+    assert "/hyp-recs/refresh" in body, (
+        "?origin=hyp-recs Cancel must target /hyp-recs/refresh"
+    )
+
+
+def test_entry_form_origin_query_param_whitelist_validation(
+    seeded_db, monkeypatch,
+):
+    """Spec §3.8b.1 — unknown ?origin= values default to 'watchlist'
+    (whitelist validation; closes URL-injection threat).
+
+    Discriminating: a regression where the template emits the raw
+    query-param value as the Cancel hx-get target would render
+    `hx-get="javascript:alert(1)"` (XSS surface).
+    """
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg, tickers=["NVDA"])
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/trades/entry/form?ticker=NVDA&origin=javascript:alert(1)",
+            headers={"HX-Request": "true", "HX-Target": "watchlist-row-NVDA"},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    # Whitelist coercion → defaults to 'watchlist' → colspan=8 + watchlist Cancel.
+    assert 'colspan="8"' in body
+    assert "/watchlist/NVDA/expand" in body
+    # The malicious string MUST NOT appear in the rendered HTML at all.
+    # Jinja autoescape would escape `<` to `&lt;` even if it leaked, so
+    # assert specifically on the URL-form string the template's
+    # hx-get attribute would emit if the template raw-passes the param.
+    assert "javascript:" not in body, (
+        "whitelist coercion failed; raw query-param value leaked into"
+        " rendered HTML"
+    )

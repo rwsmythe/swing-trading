@@ -1,7 +1,7 @@
 {#- Trade entry form — swaps into a watchlist row.
     Expects: vm (TradeEntryFormVM), error_message (optional str) -#}
 <tr id="entry-form-{{ vm.ticker }}">
-  <td colspan="8">
+  <td colspan="{{ 9 if vm.origin == 'hyp-recs' else 8 }}">
     {% if error_message %}<div class="banner banner-degraded" role="alert">{{ error_message }}</div>{% endif %}
     <form hx-post="/trades/entry"
           hx-target="closest tr" hx-swap="outerHTML"
@@ -69,8 +69,9 @@
       <div>
         <button type="submit">Submit</button>
         <button type="button"
-                hx-get="/watchlist/{{ vm.ticker }}/expand"
-                hx-target="closest tr" hx-swap="outerHTML"
+                hx-get="{{ '/hyp-recs/refresh' if vm.origin == 'hyp-recs' else '/watchlist/' ~ vm.ticker ~ '/expand' }}"
+                hx-target="{{ '#hypothesis-recommendations' if vm.origin == 'hyp-recs' else 'closest tr' }}"
+                hx-swap="outerHTML"
                 hx-headers='{"HX-Request": "true"}'>Cancel</button>
       </div>
     </form>

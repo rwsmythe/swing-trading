@@ -203,12 +203,15 @@ def sizing_hint(
 
 
 @router.get("/trades/entry/form", response_class=HTMLResponse)
-def entry_form(request: Request, ticker: str):
+def entry_form(request: Request, ticker: str, origin: str = "watchlist"):
     cfg = request.app.state.cfg
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
     templates = request.app.state.templates
-    vm = build_entry_form_vm(ticker=ticker, cfg=cfg, cache=cache, executor=executor)
+    vm = build_entry_form_vm(
+        ticker=ticker, cfg=cfg, cache=cache, executor=executor,
+        origin=origin,
+    )
     return templates.TemplateResponse(
         request, "partials/trade_entry_form.html.j2", {"vm": vm},
     )
