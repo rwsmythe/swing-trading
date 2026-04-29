@@ -683,3 +683,76 @@ Items surfaced from the chart-scope policy v2 cycle (spec `c52835f` 4-round Code
 ### Plan-implementation completed (was tracked as deferred; now resolved):
 
 - ~~**Reviewer-checklist hardening for binding contract enforcement.**~~ INCORPORATED into plan Task 10 Step 3 (writing-plans phase R4 Minor 2 fix). Shipped as part of executing-plans Task 10 phase checkpoint.
+
+---
+
+## 2026-04-28 hyp-recs trade-preparation expansion (QUEUED; brainstorm dispatch pending)
+
+Operator surfaced the workflow gap during CC-pivot-mismatch bug triage (2026-04-28): hyp-rec rows are evaluated row-by-row against chart pattern + buy-window proximity before pulling the trigger; current dashboard surface lacks at-a-glance trade-preparation snapshot. Proposal: HTMX click-to-expand on hyp-rec rows showing the full trade-prep view, mirroring the watchlist/open-positions expand pattern but with trade-prep semantics.
+
+Q1 disposition (2026-04-28): pure-trigger discipline conditional on price being inside the buy window — formal version of "wait for pivot, don't chase >1% above" entry-discipline (2026-04-25). The expansion makes "in-window?" check at-a-glance rather than ad-hoc.
+
+**Brainstorm dispatch pattern:** implementer-dispatched (operator preference + brainstorm-pattern threshold met — multiple medium-complexity decisions, cross-surface scope, likely spec ≥500 lines).
+
+### Locked decisions (operator, 2026-04-28; brainstorm uses these as framing input):
+
+1. **Chase factor.** 1% per recorded discipline for V1, but MUST be configurable — not hard-coded. Implementation hooks into the future configuration-page work (separate todo below); for V1 the 1% lives in a config field with a sensible default. Toml-shadowing audit applies (per `aeb2084` lesson) — if a tracked toml override exists at ship time, must update in the same commit OR explicitly accept as operator opt-in.
+2. **Chart in expansion when ticker is out-of-chart-scope.** "Chart unavailable" message reusing the chart-access UX pattern — same behavior as current `/charts/<TICKER>.png` handler when ticker not in chart-scope. NO chart-scope policy change for this dispatch. Operator will give explicit direction if/when chart-scope rules need adjustment.
+3. **Cost-display semantics.** Show two cost numbers: risk-based (using $7,500 floor sizing) AND cash-feasible (capped at actual balance). **Cash-feasible cap uses CURRENT ACCOUNT BALANCE ONLY**, NOT total liquidity (balance + open positions). May add a risk display for both ends in V2; V1 ships shares + total cost for the two cases.
+4. **Lightning icon.** Keep as-is for now. Do NOT hide or strip in this dispatch. Operator may repurpose later (Tier-3 #5 stays open as a separate conversation); the explicit reason is so the icon remains visible as a reminder for that future decision rather than evaporating.
+5. **Cross-surface scope.** Hyp-recs ONLY in this dispatch. Watchlist + open-positions snapshot extensions deferred. (Watchlist's existing expand stays chart-only; open-positions' existing expand stays chart-only.)
+6. **CC pivot bug bundled into this dispatch (Option C).** Watchlist `Pivot` column header currently renders `WatchlistEntry.entry_target` (frozen at add time) under a header that says "Pivot." Fix renders `candidates.pivot` (current eval-run pivot) instead — matches what hyp-recs already does. Cross-surface consistency on what "Pivot" means becomes part of this dispatch's done-criteria. Investigation already complete (survey result captured in this conversation; see CC-pivot-mismatch findings below).
+
+### Snapshot fields to design:
+
+The expansion content should include (V1 scope):
+
+- **Buy stop** = `candidates.pivot` (already in hyp-rec VM)
+- **Buy limit** = pivot × (1 + chase_factor); default 1%, configurable
+- **Sell stop** = framework-computed initial stop (verify field — likely `stop_loss` on candidate row OR computed via existing sizing pipeline)
+- **# shares (risk-based)** = risk-based position size from `compute_shares` (uses max($7,500 floor, balance) per project memory)
+- **# shares (cash-feasible)** = same calc capped at floor(account_balance / pivot) — based on CURRENT BALANCE ONLY, not balance + open positions
+- **Total cost (risk-based)** = risk-based-shares × pivot
+- **Total cost (cash-feasible)** = cash-feasible-shares × pivot
+- **Chart** = inline if ticker in chart-scope; "Chart unavailable" with reason if not (current chart-access UX behavior, no policy change)
+
+### CC pivot mismatch bug (bundled — investigation already complete):
+
+- **Symptom:** Watchlist row for ticker CC shows "$24.13" under "Pivot" column header; hyp-recs table shows "$26.98" for same ticker. Same price ($25.70 stale in both), divergent pivot.
+- **Root cause:** Watchlist row partial at `swing/web/templates/partials/watchlist_row.html.j2:16` renders `w.entry_target` (frozen at add time, immutable) under a column header at `swing/web/templates/partials/watchlist_top5_section.html.j2:4` that says "Pivot." `WatchlistEntry.last_pivot` field exists in the model but is never rendered. Hyp-recs correctly renders `candidates.pivot` from the latest eval run.
+- **NOT mixed-anchor:** Both surfaces bind to the same evaluation_run via `latest_evaluation_run_id`. The 2026-04-25 mixed-anchor closure was anchor-focused and missed cross-surface field-rendering audit.
+- **Fix as part of this dispatch (Option C):** watchlist row partial renders current pivot from candidates dict (joined by ticker, same as hyp-recs does) under "Pivot" header. Header label stays "Pivot," semantics align across both surfaces.
+- **Lightning icon (per Q4):** trigger logic stays bound to `entry_target` unchanged. Fix scope is column-display only (`watchlist_row.html.j2:16`); lightning trigger at `watchlist_row.html.j2:7` is NOT touched. Behavioral consequence: CC's lightning continues firing post-fix (price $25.70 ≥ 0.99 × $24.13 entry_target). **Semantic side-effect operator should be aware of:** column header "Pivot" will render `candidates.pivot` ($26.98) while lightning math uses the unshown `entry_target` ($24.13), so a row may show "lightning fires" without the displayed pivot supporting the math. This is the deliberate cost of preserving lightning behavior (Q4) independently of column-display semantics (Q6). Tier-3 #5 (lightning re-evaluation) remains the venue for revisiting trigger field; this dispatch does NOT touch it.
+
+### New lesson (capture in housekeeping when this dispatch ships):
+
+**Anchor closure surveys must also audit template field rendering, not just query anchors.** The 2026-04-25 mixed-anchor closure verified `MAX(run_ts) FROM evaluation_runs` was gone from the web layer, but did not audit which fields were rendered in templates under shared column names. Same anchor with different rendered fields still produces operator-visible cross-surface divergence (CC pivot mismatch is the canonical example). For future cross-surface consistency reviews: anchor parity AND field-rendering parity are independent audit dimensions.
+
+### Cross-references:
+
+- Tier-3 #5 lightning re-evaluation (`docs/phase3e-todo.md` 2026-04-27 manual-verification findings) — stays separate per operator; expansion redesign supersedes some of its scope but operator wants the lightning visible for now.
+- Configuration-page future feature (separate todo below).
+- Sub-A+ VCP-not-formed hypothesis trade discipline (orchestrator-context 2026-04-25 "Entry discipline for hypothesis trades: wait for pivot").
+- Capital-risk-floor convention (project memory `project_capital_risk_floor.md`) — sizing uses max($7,500, balance); cash-feasibility uses balance only.
+
+---
+
+## 2026-04-28 configuration page for operator-tunable settings (QUEUED; future dispatch)
+
+Operator surfaced 2026-04-28: as small operator-tunable settings accumulate (chase_factor, chart_top_n_watch, risk_pct floor, account balance cap rules, etc.), each currently lives as a Python default + tracked toml override in `swing.config.toml`. Future feature: dashboard configuration page where operator can view + edit these values without manual toml-editing.
+
+**Locked decisions:** none yet — design conversation when operator wants to action this.
+
+**Initial scope candidates (incomplete; operator will refine):**
+
+- Chase factor (V2+ field; will be introduced by hyp-recs trade-preparation expansion above)
+- `chart_top_n_watch` (currently `swing.config.toml` line 93; was 5, raised to 10 post-chart-scope-policy-v2)
+- `risk_pct` (current value lives in config — verify location at design time)
+- `risk_floor` ($7,500 per `project_capital_risk_floor.md`; currently a code constant — needs to surface as config)
+- Pipeline-related settings (cadence, lease wait, etc.) — operator decides scope
+
+**Toml-shadowing audit (binding):** any field surfaced via the config page MUST honor the toml-shadowing lesson (`aeb2084`, 2026-04-28). Read order: config-page write → toml override → Python default. If page writes back to tracked toml file, that's the simplest model; if page writes to a separate user-config file (`~/.swing-config.toml`?) the override-precedence ordering needs explicit design. Pre-flight `grep -rn "<field_name>" .` audit on every field surfaced.
+
+**Cross-references:**
+- toml-shadowing lesson in `docs/orchestrator-context.md` Lessons captured (post-`aeb2084`).
+- `project_capital_risk_floor.md` memory.
