@@ -82,6 +82,10 @@ Operator-locked 2026-04-28. The spec implements these as written; no re-design.
 
 6. **CC pivot bug bundled into this dispatch (Option C).** Watchlist `Pivot` column header currently renders `WatchlistEntry.entry_target` (frozen at add time) under a header that says "Pivot." Fix renders `candidates.pivot` (current eval-run pivot) instead — matches what hyp-recs already does. Cross-surface consistency on what "Pivot" means becomes part of this dispatch's done-criteria. **Lightning trigger logic stays bound to entry_target separately per Q4** — column display semantic change AND lightning trigger field are independent code references; the fix touches column display only.
 
+7. **Per-row Enter button on hyp-recs table.** **Operator decision 2026-04-29.** Each hyp-rec row gains an "Enter" action that navigates to `/trades/entry?ticker={rec.ticker}` — mirroring the existing watchlist Enter button pattern. The pre-fill mechanism uses the existing hypothesis-recommendation pre-fill (commit chain `b24506b → fe270a6`, 2026-04-25), which auto-populates `hypothesis_label`, `chart_pattern_*`, and (post Phase 1, 2026-04-29) `sector` + `industry` on entry-form render. Closes a workflow gap — currently `partials/hypothesis_recommendations.html.j2` is a 7-column read-only table with no in-row action affordance, forcing the operator to navigate manually or scroll down to find the ticker in the watchlist. **Earlier brief drafts mistakenly claimed "the hyp-recs row already has an Enter button" — that was a confusion with the watchlist screenshot; the actual partial verified pre-Q7 has zero `<button>` / `<a>` elements and zero references to `/trades/entry`.**
+
+8. **"Take this trade" action button INSIDE the expansion.** **Operator decision 2026-04-29.** In ADDITION to (not instead of) the per-row Enter button. When the operator expands a row to verify the snapshot, the action button is right there — no need to close the expansion to act. Visual treatment + pre-fill semantics are open brainstorm design questions (see revised §3.D below); the existence of the button is locked.
+
 ---
 
 ## §3 Open design questions for the brainstorm to resolve
@@ -121,17 +125,25 @@ How does the expansion mount?
 
 Brainstorm picks one with rationale.
 
-### D. "Take this trade" action button
+### D. Action-button design (Q7 + Q8 implementation details)
 
-Does the expansion include an action button that pre-fills `/trades/entry?ticker=...`? Or information-only?
+Q7 + Q8 lock that **BOTH** a per-row Enter button on the hyp-recs table AND a "Take this trade" button inside the expansion are in V1 scope. The brainstorm resolves HOW each is implemented:
 
-The hyp-recs row already has an "Enter" button (visible in operator's earlier screenshots). If the expansion adds a redundant action button, that's UX clutter. If it omits one, the operator's flow is "expand → mentally verify → click row's existing Enter button" — extra interaction.
+**D.1 Per-row Enter button styling + structure.** Mirror the watchlist Enter button visually + structurally to maintain operator muscle memory across surfaces? Or differentiate (column placement, button styling) to signal "this is the hypothesis-driven flow"? **Recommendation: mirror watchlist for consistency.** Brainstorm verifies by inspecting `partials/watchlist_row.html.j2` Enter button markup; matches structure unless there's a concrete reason to diverge.
 
-Brainstorm proposes:
-- Information-only expansion (operator uses row's existing Enter button), OR
-- Expansion includes "Take this trade" button that pre-fills the snapshot values into the entry form.
+**D.2 Expansion-internal button: pre-fill semantics.** Two options:
+- **(a) Same query-param mechanism as per-row Enter** — navigates to `/trades/entry?ticker={rec.ticker}`; entry form auto-pre-fills `hypothesis_label`, `chart_pattern_*`, `sector`, `industry` from the existing pre-fill machinery. Snapshot values (`buy_stop`, `sell_stop`, shares, etc.) are NOT carried; entry form re-resolves them at form-render time from the candidate row.
+- **(b) Extended snapshot pre-fill** — expansion-internal button carries `buy_stop`, `buy_limit`, `sell_stop`, shares (risk-based or cash-feasible — see D.2.i below) into the entry form via hidden inputs OR POST body. Entry form pre-populates these fields with the snapshot the operator just visually verified.
 
-If the latter: how does pre-fill work? Current Enter button already pre-fills hypothesis_label + chart_pattern via the existing hypothesis-recommendation pre-fill. Adding buy_stop / buy_limit / sell_stop pre-fill is incremental.
+Tradeoff: **(a) is simpler** (zero new pre-fill plumbing; reuses existing query-param mechanism). **(b) preserves the snapshot the operator just visually verified, eliminating the ToCToU window** between expansion-render-time and entry-form-render-time. Brainstorm picks one with rationale.
+
+**D.2.i** If (b): which shares/cost figure is carried? Risk-based or cash-feasible? Both? Operator decision 2026-04-28 (Q3) stipulated TWO numbers displayed; the entry form's `shares` field is single-value. Recommendation: carry risk-based shares (the standard sizing); operator can manually adjust to cash-feasible if needed. Brainstorm decides.
+
+**D.3 Visual differentiation between per-row Enter and expansion-internal button.** Should they be visually identical (same label "Enter", same styling) or differentiate? E.g., per-row says "Enter" / expansion-internal says "Take this trade" or "Confirm & enter". **Recommendation: differentiate.** The expansion-internal button is the "I just verified the snapshot" affordance; visual distinction reinforces the workflow intent.
+
+**D.4 ToCToU class implication (cross-references §3.K).** If D.2 resolves to (b), the snapshot values are carried via hidden inputs. The entry form's existing snapshot-at-entry-surface pattern (per chart-pattern flag-v1 spec §3.6 + Phase 5 lessons) already handles ToCToU for `chart_pattern_*`; extending to `buy_stop`/`sell_stop`/shares is incremental. If D.2 resolves to (a), the entry form re-resolves at render-time and the operator may see different numbers than what was in the expansion — that's the ToCToU window. Brainstorm specifies which path AND how it interacts with the existing ToCToU pattern. Note the soft-warn confirm round-trip (Phase 5 R1 Major 2 lesson) — if (b), verify hidden inputs survive the soft-warn round-trip; if (a), verify the re-resolution path is consistent.
+
+**D.5 Per-row Enter button accessibility consideration.** Watchlist's row-level click expand pattern means clicking the Enter button on a watchlist row CURRENTLY requires `event.stopPropagation()` (Bug 1 follow-up, 2026-04-25). If the hyp-recs table doesn't have row-click-to-expand (instead, e.g., uses a chevron column per §3.C resolution), the per-row Enter button doesn't need stopPropagation. Cross-coupled with §3.C; brainstorm resolves consistently.
 
 ### E. Chart inline rendering
 
@@ -217,13 +229,14 @@ Operator workflow is desktop browser. Brainstorm explicitly defers mobile/respon
 **The spec produces V1 design covering:**
 1. All snapshot fields enumerated in §3 B (9+ fields).
 2. HTMX expansion mechanics (per §3 C resolution).
-3. Action-button decision (per §3 D resolution).
-4. Chart inline + "Chart unavailable" handling (per §3 E).
-5. Configuration scaffolding for `chase_factor` (per §3 F).
-6. CC pivot bug fix (per §3 G — bundled in this dispatch's scope).
-7. Sector + Industry inclusion (per §3 L recommendation).
-8. Lightning icon rationale (per §3 H).
-9. Discriminating-test discipline + sort-neutrality (per the existing patterns).
+3. **Per-row Enter button on hyp-recs table** (Q7 — mirrors watchlist Enter pattern; pre-fill via existing query-param mechanism).
+4. **"Take this trade" action button inside the expansion** (Q8 — pre-fill semantics resolved per §3.D.2; visual differentiation per §3.D.3; ToCToU per §3.D.4).
+5. Chart inline + "Chart unavailable" handling (per §3 E).
+6. Configuration scaffolding for `chase_factor` (per §3 F).
+7. CC pivot bug fix (per §3 G — bundled in this dispatch's scope).
+8. Sector + Industry inclusion (per §3 L recommendation).
+9. Lightning icon rationale (per §3 H).
+10. Discriminating-test discipline + sort-neutrality (per the existing patterns).
 
 **The spec defines:**
 - File map (which files change in writing-plans phase).
