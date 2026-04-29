@@ -1716,23 +1716,105 @@ EOF
 >
 >      **Step 1 — choose a portable temp path for the baseline worktree.** Use any path the implementer's shell + filesystem accepts (the example below uses bash `${TMPDIR:-$TEMP}` which resolves on Windows/Git-Bash to the user's TEMP dir; PowerShell users can substitute `$env:TEMP\swing-baseline` or any other valid local path). The path MUST be outside the working tree and outside any Drive-synced folder (CLAUDE.md DB-location invariant — same hazard class).
 >
->      **Step 2 — author a non-committed capture helper in the MAIN tree** (do not commit; pre-add to a local-only `.gitignore` if convenient): create `tests/web/test_view_models/_capture_baseline.py` that uses the existing `sample_config` fixture + the same fixture-seed function the sub-task 5.7 test will use, runs `build_dashboard`, prints the ticker tuple to stdout. Concrete shape:
+>      **Step 2 — author a SELF-CONTAINED non-committed capture helper in the MAIN tree** (do not commit; pre-add to a local-only `.gitignore` if convenient). The helper INLINES the seed function so it has no cross-module import dependency on `test_hyp_recs_sort_neutrality.py` (which does NOT exist in the baseline worktree at `a492b84` per R7-Major-1 Codex fix):
 >      ```python
 >      # tests/web/test_view_models/_capture_baseline.py — DO NOT COMMIT.
+>      # Self-contained: inlines the seed function so it runs in BOTH the
+>      # main tree AND the baseline worktree without external imports.
+>      from concurrent.futures import ThreadPoolExecutor
+>
+>      from swing.data.db import connect, ensure_schema
+>      from swing.data.repos.watchlist import upsert_watchlist_entry
+>      from swing.data.models import WatchlistEntry
+>      from swing.web.price_cache import PriceCache
 >      from swing.web.view_models.dashboard import build_dashboard
->      def test_capture(sample_config, tmp_path):
->          # Reuse the SAME seed function sub-task 5.7's test will use:
->          from tests.web.test_view_models.test_hyp_recs_sort_neutrality import (
->              _seed_sort_neutrality_fixture,
+>
+>
+>      def _make_watchlist_entry(*, ticker, entry_target, initial_stop_target, last_close):
+>          return WatchlistEntry(
+>              ticker=ticker, added_date="2026-04-29",
+>              last_qualified_date="2026-04-29", status="watch",
+>              qualification_count=1, not_qualified_streak=0,
+>              last_data_asof_date="2026-04-28",
+>              entry_target=entry_target, initial_stop_target=initial_stop_target,
+>              last_close=last_close, last_pivot=None, last_stop=None,
+>              last_adr_pct=2.0, missing_criteria=None, notes=None,
 >          )
->          _seed_sort_neutrality_fixture(sample_config)
->          # Build a stub cache + executor matching the test's pattern.
->          ...
->          vm = build_dashboard(cfg=sample_config, cache=cache, executor=executor, ohlcv_cache=None)
+>
+>
+>      def _seed(cfg):
+>          """Inlined sort-neutrality seed — duplicates the body the
+>          sub-task 5.7 test's _seed_sort_neutrality_fixture will use,
+>          so this capture script is import-independent."""
+>          ensure_schema(cfg.paths.db_path)
+>          conn = connect(cfg.paths.db_path)
+>          try:
+>              with conn:
+>                  conn.execute(
+>                      """INSERT INTO evaluation_runs
+>                         (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+>                          tickers_evaluated, aplus_count, watch_count, skip_count,
+>                          excluded_count, error_count)
+>                         VALUES ('2026-04-29T09:00:00','2026-04-28','2026-04-29',
+>                                 NULL, 3, 3, 0, 0, 0, 0)"""
+>                  )
+>                  eval_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+>                  conn.execute(
+>                      """INSERT INTO pipeline_runs
+>                         (state, started_ts, finished_ts, action_session_date,
+>                          data_asof_date, evaluation_run_id, charts_status)
+>                         VALUES ('complete','2026-04-29T08:00:00',
+>                                 '2026-04-29T09:00:00','2026-04-29','2026-04-28',?,'ok')""",
+>                      (eval_id,),
+>                  )
+>                  for tk, pivot, stop in [("NVDA", 100.0, 95.0), ("AMD", 200.0, 190.0), ("TSLA", 300.0, 285.0)]:
+>                      upsert_watchlist_entry(conn, _make_watchlist_entry(
+>                          ticker=tk, entry_target=pivot,
+>                          initial_stop_target=stop, last_close=pivot * 0.99,
+>                      ))
+>                      conn.execute(
+>                          """INSERT INTO candidates
+>                             (evaluation_run_id, ticker, bucket, close, pivot,
+>                              initial_stop, adr_pct, tight_streak, pullback_pct,
+>                              prior_trend_pct, rs_rank, rs_return_12w_vs_spy,
+>                              rs_method, pattern_tag, notes, sector, industry)
+>                             VALUES (?, ?, 'aplus', ?, ?, ?, 2.0, 5,
+>                                     NULL, NULL, NULL, NULL, 'fallback_spy',
+>                                     NULL, NULL, 'Technology', 'Semiconductors')""",
+>                          (eval_id, tk, pivot * 0.99, pivot, stop),
+>                      )
+>                  # Hypothesis registry — same canonical INSERT as
+>                  # test_hyp_recs_expand_route.py's _seed_hyp_recs_fixture.
+>                  conn.execute(
+>                      """INSERT INTO hypothesis_registry
+>                         (id, name, statement, target_sample_size,
+>                          decision_criteria, status,
+>                          consecutive_loss_tripwire,
+>                          absolute_loss_tripwire_pct, created_at)
+>                         VALUES (1, 'Test hypothesis',
+>                                 'aplus candidates produce R-multiple > 0',
+>                                 30, '{"buckets":["aplus"]}',
+>                                 'active', 5, 0.10,
+>                                 '2026-04-29T09:00:00')"""
+>                  )
+>          finally:
+>              conn.close()
+>
+>
+>      def test_capture(sample_config):
+>          _seed(sample_config)
+>          cache = PriceCache(...)  # implementer fills using the same pattern
+>                                   # the existing test fixtures use; if a
+>                                   # MagicMock is sufficient, use that.
+>          executor = ThreadPoolExecutor(max_workers=1)
+>          vm = build_dashboard(
+>              cfg=sample_config, cache=cache, executor=executor, ohlcv_cache=None,
+>          )
 >          tickers = tuple(r.ticker for r in vm.active_recommendations)
->          print(f"BASELINE_TUPLE = {tickers!r}")  # noqa: T201
+>          print(f"\nBASELINE_TUPLE = {tickers!r}\n")  # noqa: T201
 >          assert False, "capture-only — never commit"  # force pytest to print the tuple
 >      ```
+>      The seed and assertion shape MUST match what `_seed_sort_neutrality_fixture` will be in the eventual sub-task 5.7 test — the implementer keeps the two seed bodies in lockstep when authoring the actual test in Step 5.
 >
 >      **Step 3 — create the baseline worktree at HEAD `a492b84`** (pre-Task-3 commit):
 >      ```bash
@@ -1748,7 +1830,7 @@ EOF
 >      pip install -e ".[dev,web]"
 >      ```
 >
->      **Step 4 — copy the capture helper INTO the baseline worktree** (the worktree is at pre-Task-3 commit so the new `_seed_sort_neutrality_fixture` does NOT exist there — implementer pastes both the capture helper AND the seed function into the worktree as untracked files). Run `pytest tests/web/test_view_models/_capture_baseline.py::test_capture -v -s` in the baseline worktree; observe the printed `BASELINE_TUPLE = (...)` line + the deliberate `assert False` (the test fails after printing — that's the signal the tuple was captured).
+>      **Step 4 — copy the SELF-CONTAINED capture helper INTO the baseline worktree as an untracked file** (paste `_capture_baseline.py` from the main tree at the same path inside the baseline worktree). Because the helper inlines the seed (no cross-module imports), it works in both trees identically. Run `pytest tests/web/test_view_models/_capture_baseline.py::test_capture -v -s` in the baseline worktree; observe the printed `BASELINE_TUPLE = (...)` line + the deliberate `assert False` (the test fails after printing — that's the signal the tuple was captured).
 >
 >      **Step 5 — back in the main tree, write the captured tuple as the assertion target** in `tests/web/test_view_models/test_hyp_recs_sort_neutrality.py`. Document the captured tuple + the capture-protocol step in the Task 5.7 commit body so future readers can audit the baseline rooting.
 >
