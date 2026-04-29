@@ -456,6 +456,24 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
             if prefilled is not None:
                 hypothesis = prefilled
                 click.echo(f"Pre-filled --hypothesis: {prefilled}")
+
+        # NEW (Task 7): sector/industry candidate-row lookup via the canonical
+        # helper, mirroring the entry-form VM (Task 6) for cross-surface
+        # consistency. Falls back to '' when no eval or ticker absent.
+        from swing.web.view_models.dashboard import latest_evaluation_run_id
+        cli_sector = ""
+        cli_industry = ""
+        sector_eval_id = latest_evaluation_run_id(conn)
+        if sector_eval_id is not None:
+            cand_row = conn.execute(
+                """SELECT sector, industry FROM candidates
+                   WHERE evaluation_run_id = ? AND ticker = ?""",
+                (sector_eval_id, ticker.upper()),
+            ).fetchone()
+            if cand_row is not None:
+                cli_sector = cand_row[0] or ""
+                cli_industry = cand_row[1] or ""
+
         req = EntryRequest(
             ticker=ticker.upper(), entry_date=entry_date, entry_price=entry_price,
             shares=shares, initial_stop=initial_stop,
@@ -471,6 +489,8 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
             chart_pattern_algo=cp_algo,
             chart_pattern_algo_confidence=cp_conf,
             chart_pattern_classification_pipeline_run_id=cp_anchor,
+            sector=cli_sector,
+            industry=cli_industry,
         )
         try:
             result = record_entry(

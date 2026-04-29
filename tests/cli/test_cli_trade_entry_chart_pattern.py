@@ -156,3 +156,126 @@ def test_cli_trade_entry_no_chart_pattern_flag_omitted_works_without_cache(
     assert _read_chart_pattern_columns(cfg, "AAPL") == (
         None, None, None, None,
     )
+
+
+def _seed_candidate_row(
+    db_path, *, eval_id: int, ticker: str,
+    sector: str, industry: str,
+):
+    """Seed one candidates row keyed on the FK-backed eval_id."""
+    from swing.data.db import connect
+    conn = connect(db_path)
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO candidates
+                   (evaluation_run_id, ticker, bucket, close, pivot, initial_stop,
+                    adr_pct, tight_streak, pullback_pct, prior_trend_pct, rs_rank,
+                    rs_return_12w_vs_spy, rs_method, pattern_tag, notes,
+                    sector, industry)
+                   VALUES (?, ?, 'watch', 100.0, 105.0, 95.0,
+                           2.0, 5, NULL, NULL, NULL, NULL, 'fallback_spy',
+                           NULL, NULL, ?, ?)""",
+                (eval_id, ticker, sector, industry),
+            )
+    finally:
+        conn.close()
+
+
+def test_cli_trade_entry_resolves_sector_industry_from_candidate(tmp_path):
+    """`swing trade entry` reads sector + industry from the candidate row
+    via `latest_evaluation_run_id()` (canonical helper used by dashboard
+    + hypothesis pre-fill); persists AS-IS on the trade row. Sentinel
+    'CLI-Sector-T7' / 'CLI-Industry-T7' guards against any default-string
+    mask."""
+    runner, cfg = _setup(tmp_path)
+    db_path = _db_path_for_cfg(cfg)
+    _, eval_id = seed_pipeline_with_classification(
+        db_path, ticker="AAPL", pattern="flag", confidence=0.78,
+    )
+    _seed_candidate_row(
+        db_path, eval_id=eval_id, ticker="AAPL",
+        sector="CLI-Sector-T7", industry="CLI-Industry-T7",
+    )
+    result = runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "AAPL", "--entry-date", "2026-04-26",
+        "--entry-price", "10.0", "--shares", "1", "--initial-stop", "9.0",
+        "--rationale", "aplus-setup",
+    ])
+    assert result.exit_code == 0, result.output
+    from swing.data.db import connect
+    from swing.data.repos.trades import find_any_open_trade
+    conn = connect(db_path)
+    try:
+        t = find_any_open_trade(conn, ticker="AAPL")
+    finally:
+        conn.close()
+    assert t is not None
+    assert t.sector == "CLI-Sector-T7"
+    assert t.industry == "CLI-Industry-T7"
+
+
+def test_cli_trade_entry_evaluation_exists_but_ticker_absent_persists_empty(
+    tmp_path,
+):
+    """Discriminating on the eval-present-but-ticker-absent branch (R2 Codex
+    Major 2 fix). Seed a completed evaluation_run + candidate row for a
+    DIFFERENT ticker so `latest_evaluation_run_id(conn)` returns non-None
+    and the candidate-by-ticker SELECT actually executes — but the lookup
+    misses because AAPL is absent from the seeded run. Persists empty
+    strings via graceful degradation per brief §5.8."""
+    runner, cfg = _setup(tmp_path)
+    db_path = _db_path_for_cfg(cfg)
+    # Seed a completed eval + candidate for OTHER ticker (not AAPL).
+    _, eval_id = seed_pipeline_with_classification(
+        db_path, ticker="OTHER", pattern="flag", confidence=0.5,
+    )
+    _seed_candidate_row(
+        db_path, eval_id=eval_id, ticker="OTHER",
+        sector="OTHER-Sector", industry="OTHER-Industry",
+    )
+    result = runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "AAPL", "--entry-date", "2026-04-26",
+        "--entry-price", "10.0", "--shares", "1", "--initial-stop", "9.0",
+        "--rationale", "aplus-setup",
+    ])
+    assert result.exit_code == 0, result.output
+    from swing.data.db import connect
+    from swing.data.repos.trades import find_any_open_trade
+    conn = connect(db_path)
+    try:
+        t = find_any_open_trade(conn, ticker="AAPL")
+    finally:
+        conn.close()
+    assert t is not None
+    # Eval was found, but AAPL was absent from candidates → empty strings,
+    # NOT the "OTHER-Sector" / "OTHER-Industry" sentinels.
+    assert t.sector == ""
+    assert t.industry == ""
+
+
+def test_cli_trade_entry_no_eval_at_all_persists_empty(tmp_path):
+    """Trivial fallback: no completed pipeline OR standalone eval exists
+    yet. `latest_evaluation_run_id` returns None; the candidate SELECT
+    is skipped; sector/industry persist empty strings."""
+    runner, cfg = _setup(tmp_path)
+    result = runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "AAPL", "--entry-date", "2026-04-26",
+        "--entry-price", "10.0", "--shares", "1", "--initial-stop", "9.0",
+        "--rationale", "aplus-setup",
+    ])
+    assert result.exit_code == 0, result.output
+    from swing.data.db import connect
+    from swing.data.repos.trades import find_any_open_trade
+    db_path = _db_path_for_cfg(cfg)
+    conn = connect(db_path)
+    try:
+        t = find_any_open_trade(conn, ticker="AAPL")
+    finally:
+        conn.close()
+    assert t is not None
+    assert t.sector == ""
+    assert t.industry == ""
