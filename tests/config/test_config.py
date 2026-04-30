@@ -135,3 +135,32 @@ def test_pipeline_config_chart_top_n_watch_default_is_10():
     from swing.config import PipelineConfig
     cfg = PipelineConfig()
     assert cfg.chart_top_n_watch == 10
+
+
+def test_archive_config_defaults_to_5y_trading_days(tmp_path: Path, monkeypatch):
+    """`Config.archive.archive_history_days` defaults to 1260 (5y trading days)
+    when no [archive] section is present in swing.config.toml.
+
+    Discriminating: under the pre-fix tree, `cfg.archive` raises
+    AttributeError. Under a regressed default (e.g., silently 252 or 504),
+    Task 3's helper would truncate the retained history window.
+    """
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    cfg_file = _write_default_toml(tmp_path / "swing.config.toml")
+
+    cfg = load(cfg_file)
+    assert cfg.archive.archive_history_days == 1260
+
+
+def test_archive_config_honors_toml_override(tmp_path: Path, monkeypatch):
+    """If [archive] archive_history_days is set in the toml, it overrides the
+    Python default — matches the dataclass-default-shadowing behavior of all
+    other Config sections (lesson `aeb2084` 2026-04-28)."""
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    cfg_file = _write_default_toml(tmp_path / "swing.config.toml")
+    # Append [archive] override to the existing valid toml.
+    with cfg_file.open("a", encoding="utf-8") as fh:
+        fh.write("\n[archive]\narchive_history_days = 504\n")
+
+    cfg = load(cfg_file)
+    assert cfg.archive.archive_history_days == 504

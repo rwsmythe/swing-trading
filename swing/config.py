@@ -138,6 +138,21 @@ class ClassifierConfig:
 
 
 @dataclass(frozen=True)
+class ArchiveConfig:
+    """Disk-archive retained-history depth for the OHLCV archive
+    (`swing/data/ohlcv_archive.py`). 1260 = 5y trading days; bounds the
+    full-history fetch window invoked by weekly refresh + new-ticker paths.
+
+    Toml-shadowing audit (per locked decision §2.5 of the OHLCV archive
+    consolidation plan): no override should appear in `swing.config.toml`
+    unless the operator explicitly wants a different retention. The
+    `aeb2084` 2026-04-28 lesson is in scope — Python defaults shadow at
+    runtime if a tracked toml override exists.
+    """
+    archive_history_days: int = 1260
+
+
+@dataclass(frozen=True)
 class Web:
     host: str = "127.0.0.1"
     port: int = 8080
@@ -188,6 +203,7 @@ class Config:
     export: ExportConfig
     web: Web = field(default_factory=Web)
     classifier: ClassifierConfig = field(default_factory=ClassifierConfig)
+    archive: ArchiveConfig = field(default_factory=ArchiveConfig)
 
 
 _PROJECT_INTERNAL_PREFIXES = ("data/", "exports/", "reference/")
@@ -264,4 +280,5 @@ def load(config_path: Path) -> Config:
         export=ExportConfig(**raw.get("export", {})),
         web=Web(**raw.get("web", {})),
         classifier=ClassifierConfig(**raw.get("classifier", {})),
+        archive=ArchiveConfig(**raw.get("archive", {})),
     )
