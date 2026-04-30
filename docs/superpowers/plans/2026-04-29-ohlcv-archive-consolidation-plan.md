@@ -46,7 +46,7 @@
   - `swing/web/ohlcv_cache.py:217-246` — `OhlcvCache._fetch_bundle_worker`; calls `ohlcv_mod.fetch_daily_bars(ticker, n_bars=60)`. Constructor takes `cfg: Config` (line 50) — already has access to `cfg.paths.prices_cache_dir` and (after Task 2) `cfg.archive.archive_history_days`.
   - `swing/cli.py:148, 315` and `swing/pipeline/runner.py:146` — `PriceFetcher(cache_dir=cfg.paths.prices_cache_dir)` instantiations. After Task 4 they must also pass `archive_history_days=cfg.archive.archive_history_days` (kwarg-with-default, so the call sites stay valid even if missed; the discriminating compat test catches this).
   - `swing/weather/runner.py:10-15` — `PriceFetcher` consumer. Public API stable; no change required.
-  - `swing.config.toml:12` — `prices_cache_dir = "swing-data/prices-cache"`. At HEAD `a4811f4` (pre-Task-2), `archive_history_days` does not appear in any tracked file (verified by `git ls-files | xargs grep -ln 'archive_history_days' 2>/dev/null` → empty output). Post-plan, hits will appear in the touched source/test/plan files (this is correct); the audit's failure mode is a tracked CONFIG-shaped file (`*.toml`/`*.yaml`/`*.json`/`*.cfg`/`*.ini`) hitting the field name — see Step 7d for the post-plan expectation.
+  - `swing.config.toml:12` — `prices_cache_dir = "swing-data/prices-cache"`. The toml-shadowing audit is scoped to tracked CONFIG-shaped files only (`*.toml` / `*.yaml` / `*.yml` / `*.json` / `*.cfg` / `*.ini`) — at HEAD `a4811f4` and at every plan-task commit the audit must return empty. Source/test/plan-doc files mention `archive_history_days` legitimately (the dispatch brief at `docs/ohlcv-archive-consolidation-writing-plans-brief.md` does too); they are NOT in the audit scope. The audit's failure mode is specifically a tracked toml/yaml/json/cfg/ini file referencing the field name and overriding the Python default at runtime (Codex R3 Major 1 narrowing — without it, the brief and plan docs themselves would false-trigger the audit).
 - **Locked-decision rationale carry-overs:**
   - Atomicity: temp file MUST be created in the same directory as the destination. On Windows with Drive-synced paths plus `$TMP` on a different volume, `os.replace(tmp, final)` raises `OSError: [Errno 18] Invalid cross-device link` (CLAUDE.md). `tempfile.NamedTemporaryFile(dir=cache_dir, delete=False, suffix=".parquet.tmp")` keeps both paths on the same filesystem.
   - yfinance gotchas (CLAUDE.md): the helper uses `yf.download(..., threads=False)` exclusively (NOT `yf.Ticker.history()`). The pipeline path's old `Ticker.history()` call site is REMOVED, so the prior `test_fetch_daily_bars_does_not_pass_threads_kwarg` test is repointed in Task 5 (the equivalent assertion moves to the helper-level test in Task 3). MultiIndex columns are squeezed via `if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)`.
@@ -657,13 +657,16 @@ Expected: ≥1 hit including the just-created Task 1 commit. Cross-plan aliasing
 
 **Discriminating-test sanity check:** A test asserting `cfg.archive.archive_history_days == 1260` would fail under the pre-fix tree (no `archive` attribute → `AttributeError`) AND would fail under a buggy implementation that hard-codes a different default. The 1260 value is load-bearing: `swing.data.ohlcv_archive` (Task 3) consumes it for the `_fetch_full_history` window. If the default were silently 252 (1y) or 504 (2y), Task 3's full-refresh would silently truncate retained history.
 
-- [ ] **Step 2a: Toml-shadowing audit (locked-form, repo-wide tracked files)**
+- [ ] **Step 2a: Toml-shadowing audit (locked-form, tracked config-shaped files)**
 
 ```bash
-git ls-files | xargs grep -ln "archive_history_days" 2>/dev/null
+git ls-files '*.toml' '*.yaml' '*.yml' '*.json' '*.cfg' '*.ini' \
+  | xargs grep -ln "archive_history_days" 2>/dev/null
 ```
 
-Expected: empty output. The `archive_history_days` field name is brand-new; ANY tracked-file hit pre-Task-2 indicates a stale shadow that would replicate the `aeb2084` 2026-04-28 failure mode (operator's production runtime overrode the Python default via a tracked toml/yaml/json). If non-empty, surface in return report and STOP — do NOT proceed without operator triage. Per Codex R1 Major 3: the audit applies to ALL tracked files (every committed config surface), not just `swing.config.toml`.
+Expected: empty output. ANY tracked CONFIG-shaped file hitting `archive_history_days` indicates a stale shadow that would replicate the `aeb2084` 2026-04-28 failure mode (operator's production runtime overrode the Python default via a tracked config). If non-empty, surface in return report and STOP — do NOT proceed without operator triage.
+
+Audit scope rationale (Codex R1 Major 3 → R3 Major 1): the spec calls for a repo-wide `grep -rn "archive_history_days" .` audit; that's correct in spirit (catch shadows on every committed config surface). Naively run, it false-positives on tracked planning docs (the dispatch brief at `docs/ohlcv-archive-consolidation-writing-plans-brief.md` and this plan itself both legitimately mention the field name). Narrowing the file-glob to config-shaped extensions preserves the failure-mode coverage while excluding planning docs.
 
 - [ ] **Step 2b: Locate the existing config test file**
 
@@ -922,8 +925,9 @@ def test_new_ticker_triggers_full_history_fetch(tmp_path, monkeypatch):
     assert recorded_kwargs.get("threads") is False, (
         f"helper did not pass threads=False to yf.download; got {recorded_kwargs}"
     )
-    # Codex R1 Critical 1: full-history start uses calendar-day conversion
-    # (1260 trading days → ~1778 calendar days), NOT raw timedelta(days=1260).
+    # Codex R1 Critical 1 + R2 Critical 1: full-history start uses
+    # calendar-day conversion via the market-calendar ratio (1260 trading
+    # days → 1857 calendar days at default formula), NOT raw timedelta(days=1260).
     from swing.data.ohlcv_archive import _calendar_window_for_trading_days
     expected_full_start = end_date - timedelta(
         days=_calendar_window_for_trading_days(1260)
@@ -1451,7 +1455,7 @@ def read_or_fetch_archive(
 
     if needs_full_refresh:
         # Trading-day retention → calendar-day fetch window with holiday buffer
-        # (Codex R1 Critical 1 resolution): 1260 trading days ≈ 1778 calendar
+        # (Codex R1 Critical 1 + R2 Critical 1 resolution): 1260 trading days ≈ 1857 calendar
         # days; passing 1260 calendar would yield only ~3.45 years.
         full_calendar_days = _calendar_window_for_trading_days(archive_history_days)
         full_start = end_date - timedelta(days=full_calendar_days)
@@ -2342,13 +2346,14 @@ done
 
 Expected: each of Tasks 1-6 has ≥1 commit subject matching its task ID. Cross-plan aliasing (other plans' Task N commits) is expected.
 
-- [ ] **Step 7d: Toml-shadowing audit (final, locked-form)**
+- [ ] **Step 7d: Toml-shadowing audit (final, locked-form, config-shaped scope)**
 
 ```bash
-git ls-files | xargs grep -ln "archive_history_days" 2>/dev/null
+git ls-files '*.toml' '*.yaml' '*.yml' '*.json' '*.cfg' '*.ini' \
+  | xargs grep -ln "archive_history_days" 2>/dev/null
 ```
 
-Expected output: ONLY the files this plan touched (Python source under `swing/`, test files under `tests/`, this plan document). NO toml/yaml/json/cfg/ini hit anywhere — that's the toml-shadowing failure mode we're guarding against (`aeb2084` 2026-04-28 lesson + Codex R1 Major 3). If a tracked config-shaped file references `archive_history_days`, surface in return report.
+Expected: empty output (no tracked toml/yaml/yml/json/cfg/ini file references the field name). That's the toml-shadowing failure mode we're guarding against (`aeb2084` 2026-04-28 lesson + Codex R1 Major 3 + R3 Major 1). If non-empty, surface in return report.
 
 - [ ] **Step 7e: yfinance gotcha compliance check**
 
@@ -2386,7 +2391,7 @@ Operator runs in this order on their machine:
 
 **2. Placeholder scan:** No "TBD", "TODO", "implement later", "fill in details", "appropriate error handling", "Similar to Task N" present. Every step has actual content.
 
-**3. Type consistency:** `read_or_fetch_archive(ticker: str, *, end_date: date, cache_dir: Path, archive_history_days: int) -> pd.DataFrame | None` is the contract used uniformly across Tasks 3, 4, 5, 6. `PriceFetcher.archive_history_days: int = 1260` matches the kwarg name and default in Tasks 2, 4. `ArchiveConfig.archive_history_days` (NOT `archive_history_days`) is the dataclass field name; the field accessor is `cfg.archive.archive_history_days`. Toml audit grep uses `archive_history_days` AND `ohlcv_archive` because the toml override could appear under either name (the audit catches both). Migration script's filename regex matches `[A-Za-z0-9.\-]+` for tickers (covers BRK.B, BF-A).
+**3. Type consistency:** `read_or_fetch_archive(ticker: str, *, end_date: date, cache_dir: Path, archive_history_days: int) -> pd.DataFrame | None` is the contract used uniformly across Tasks 3, 4, 5, 6. `PriceFetcher.archive_history_days: int = 1260` matches the kwarg name and default in Tasks 2, 4. The dataclass + field naming finalized after Codex R1 Major 2: dataclass is `ArchiveConfig` (NOT the rejected `OhlcvArchiveConfig`), field is `archive_history_days` (the locked spec name; NOT the rejected `history_days`), accessor is `cfg.archive.archive_history_days` (NOT the rejected `cfg.ohlcv_archive.history_days`), and toml section is `[archive]` (NOT the rejected `[ohlcv_archive]`). The toml-shadowing audit is scoped to config-shaped tracked files and matches on the literal `archive_history_days` field name (Codex R1 Major 3 + R3 Major 1 narrowing). Migration script's filename regex matches `[A-Za-z0-9.\-]+` for tickers (covers BRK.B, BF-A).
 
 **4. Adversarial-review watch items pre-emptive coverage** (per dispatch brief §7):
 - WI1 (Multi-path coverage): Task 4 (PriceFetcher), Task 5 (pipeline.ohlcv), Task 6 (OhlcvCache cold-start + warm-cache) all have explicit tests.
