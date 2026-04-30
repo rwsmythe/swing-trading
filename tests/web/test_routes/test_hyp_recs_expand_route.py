@@ -256,6 +256,38 @@ def test_refresh_route_renders_drift_equivalent_html_to_full_page(
         f" and refresh-route renders. full={full_cols} refresh={refresh_cols}"
     )
 
+    # Phase 4 (Task 9) — closes Phase 2 R1 Minor 1 advisory.
+    # `<tbody>`-shape check: row count + per-row column count must match
+    # between full-page and refresh renders. NOT byte-equivalence on
+    # data (rows can vary by data); structural shape only.
+    tbody_pattern = re.compile(
+        r'<section[^>]*id="hypothesis-recommendations"[^>]*>'
+        r'.*?<tbody[^>]*>(.*?)</tbody>',
+        flags=re.DOTALL,
+    )
+    full_tbody = tbody_pattern.search(full_resp.text)
+    refresh_tbody = tbody_pattern.search(refresh_resp.text)
+    assert full_tbody is not None and refresh_tbody is not None, (
+        "both renders must contain the hypothesis-recommendations "
+        "section's tbody"
+    )
+
+    # Count rows + cells per row.
+    tr_pattern = re.compile(r"<tr[^>]*>(.*?)</tr>", flags=re.DOTALL)
+    td_pattern = re.compile(r"<td[^>]*>", flags=re.DOTALL)
+    full_rows = tr_pattern.findall(full_tbody.group(1))
+    refresh_rows = tr_pattern.findall(refresh_tbody.group(1))
+    assert len(full_rows) == len(refresh_rows), (
+        f"<tbody> row count drift: full={len(full_rows)} "
+        f"refresh={len(refresh_rows)}"
+    )
+    full_cols_per_row = [len(td_pattern.findall(r)) for r in full_rows]
+    refresh_cols_per_row = [len(td_pattern.findall(r)) for r in refresh_rows]
+    assert full_cols_per_row == refresh_cols_per_row, (
+        f"<tbody> per-row column count drift: full={full_cols_per_row} "
+        f"refresh={refresh_cols_per_row}"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Task 5.3 — GET /hyp-recs/{ticker}/expand route tests.
