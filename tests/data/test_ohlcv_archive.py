@@ -482,3 +482,76 @@ def test_incremental_path_enforces_retention_cap(tmp_path, monkeypatch):
     assert saved.index.min().date() == FIXED_TODAY - timedelta(days=cap - 1), (
         f"oldest bar should have been trimmed; got {saved.index.min().date()}"
     )
+
+
+def test_lowercase_ticker_is_normalized_to_uppercase_filename(tmp_path, monkeypatch):
+    """Codex R2 Major 1 resolution — helper uppercases ticker on entry so all
+    consumers (migration script + OhlcvCache + PriceFetcher) share the same
+    on-disk filename. Without this, a `PriceFetcher.get("aapl", ...)` call
+    would create `aapl.parquet` distinct from the migration's `AAPL.parquet`,
+    silently splitting the cache.
+
+    Discriminating: passes lowercase 'aapl' and asserts on-disk file is
+    `AAPL.parquet`, NOT `aapl.parquet`.
+    """
+    from swing.data import ohlcv_archive as mod
+
+    def fake_download(ticker, **kwargs):
+        return _mk_yf_frame([FIXED_TODAY])
+
+    monkeypatch.setattr(mod.yf, "download", fake_download)
+
+    result = mod.read_or_fetch_archive(
+        "aapl", end_date=FIXED_TODAY, cache_dir=tmp_path, archive_history_days=1260,
+    )
+
+    assert result is not None
+    assert (tmp_path / "AAPL.parquet").exists(), (
+        "lowercase ticker should have been normalized to uppercase filename"
+    )
+    assert (tmp_path / "AAPL.meta.json").exists()
+    # Windows is case-insensitive at the filesystem layer, so `(tmp/'aapl.parquet').exists()`
+    # would return True regardless of the actual stored case. Inspect the directory entry's
+    # actual case via iterdir to verify normalization.
+    parquet_names = sorted(p.name for p in tmp_path.iterdir() if p.suffix == ".parquet")
+    assert parquet_names == ["AAPL.parquet"], (
+        f"expected on-disk filename 'AAPL.parquet'; got {parquet_names} — "
+        f"lowercase-named parquet file leaked through the helper's normalization"
+    )
+
+
+def test_full_refresh_empty_yfinance_falls_back_to_existing_archive(tmp_path, monkeypatch):
+    """Codex R2 Major 2 resolution — weekly refresh fires on an established
+    ticker; yfinance returns empty (transient hiccup). Helper must fall back
+    to the existing archive, NOT return None and blank out usable data.
+    Meta must NOT be updated so the next call retries the refresh.
+
+    Discriminating: returns the existing archive contents, AND asserts meta
+    was NOT bumped to today (next call retries; transient errors recover).
+    """
+    from swing.data import ohlcv_archive as mod
+
+    end_date = FIXED_TODAY
+    archive_dates = [end_date - timedelta(days=i) for i in range(3, 0, -1)]
+    archive = _mk_yf_frame(archive_dates)
+    archive.to_parquet(tmp_path / "AAPL.parquet")
+    stale_meta_date = end_date - timedelta(days=8)  # weekly refresh due
+    (tmp_path / "AAPL.meta.json").write_text(
+        json.dumps({"last_full_refresh_date": stale_meta_date.isoformat()})
+    )
+
+    monkeypatch.setattr(mod.yf, "download", lambda *a, **kw: pd.DataFrame())
+
+    result = mod.read_or_fetch_archive(
+        "AAPL", end_date=end_date, cache_dir=tmp_path, archive_history_days=1260,
+    )
+
+    assert result is not None, "weekly refresh empty yfinance must fall back to archive"
+    assert len(result) == 3, (
+        f"expected 3 archive bars, got {len(result)}"
+    )
+    # Meta NOT updated — next call retries.
+    meta = json.loads((tmp_path / "AAPL.meta.json").read_text())
+    assert meta["last_full_refresh_date"] == stale_meta_date.isoformat(), (
+        "meta should not have been updated on transient empty upstream"
+    )

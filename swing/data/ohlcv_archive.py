@@ -185,6 +185,7 @@ def read_or_fetch_archive(
         None if yfinance returns empty (delisted / invalid ticker / no history).
     """
     cache_dir = Path(cache_dir)
+    ticker = ticker.upper()
     cache_dir.mkdir(parents=True, exist_ok=True)
     parquet_path, meta_path = _archive_paths(cache_dir, ticker)
 
@@ -213,6 +214,12 @@ def read_or_fetch_archive(
         full_start = today - timedelta(days=full_calendar_days)
         fetched = _yf_download_window(ticker, start=full_start, end=today)
         if fetched.empty:
+            # Codex R2 Major 2 — established ticker + transient empty upstream:
+            # do NOT overwrite archive or meta. Fall back to the existing archive
+            # so callers don't see a transient yfinance hiccup as data absence.
+            # Meta stays stale so the next call retries the weekly refresh.
+            if archive is not None and not archive.empty:
+                return archive.loc[archive.index.date <= end_date]
             return None
         fetched = fetched.tail(archive_history_days)
         _write_archive_atomic(parquet_path, fetched)
