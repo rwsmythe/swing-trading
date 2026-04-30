@@ -316,3 +316,102 @@ def test_degraded_mode_short_circuits_only_misses(cfg, monkeypatch):
     assert r["AAPL"].sma10 is not None, "warm AAPL served from cache"
     assert r["MSFT"].sma10 is None, "MSFT miss short-circuited during degraded mode"
     assert fetch_tickers == [], "no fetch should have been attempted during degraded mode"
+
+
+def test_ohlcv_cache_cold_start_hydrates_from_disk_archive(cfg, monkeypatch):
+    """Empty in-memory cache + warm disk archive → bundle hydrates via the
+    archive-aware fetch_daily_bars (Task 5 wrapping). Discriminating: counts
+    helper invocations; verifies bundle SMA values reflect archive content,
+    not yfinance live values."""
+    import json
+    from datetime import date, timedelta
+    from concurrent.futures import ThreadPoolExecutor
+
+    from swing.web.ohlcv_cache import OhlcvCache
+    from swing.data import ohlcv_archive as archive_mod
+    from swing.pipeline import ohlcv as ohlcv_mod
+
+    cache_dir = cfg.paths.prices_cache_dir
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    end_date = date(2026, 4, 28)
+    archive_dates = [end_date - timedelta(days=i) for i in range(60, 0, -1)]
+    archive_df = pd.DataFrame(
+        {
+            "Open": [100.0]*60, "High": [100.0]*60, "Low": [100.0]*60,
+            "Close": [100.0 + i for i in range(60)],
+            "Volume": [1000]*60,
+        },
+        index=pd.to_datetime(archive_dates),
+    )
+    archive_df.to_parquet(cache_dir / "AAPL.parquet")
+    (cache_dir / "AAPL.meta.json").write_text(
+        json.dumps({"last_full_refresh_date": end_date.isoformat()})
+    )
+
+    # Codex R1 Major 4 resolution: pin "today" so the weekly-refresh check
+    # is stable across wallclock advance. Without this, once real today
+    # drifts >7 days past end_date, the helper would enter the
+    # weekly-refresh branch and try to call yfinance live.
+    monkeypatch.setattr(
+        archive_mod, "_last_completed_session_today",
+        lambda: end_date + timedelta(days=1),
+    )
+    # Safety guard: ensure no real network call happens — the worker passes
+    # end_date = action_session_for_run(now()) which is real-today, so the
+    # helper may attempt an incremental gap fetch beyond our archive's
+    # latest_stored. Patch yf.download to return empty so the gap is a no-op.
+    monkeypatch.setattr(archive_mod.yf, "download", lambda *a, **kw: pd.DataFrame())
+
+    helper_calls: list[str] = []
+    real_helper = archive_mod.read_or_fetch_archive
+
+    def counting_helper(ticker, *, end_date, cache_dir, archive_history_days):
+        helper_calls.append(ticker)
+        return real_helper(
+            ticker, end_date=end_date, cache_dir=cache_dir,
+            archive_history_days=archive_history_days,
+        )
+
+    monkeypatch.setattr(ohlcv_mod, "read_or_fetch_archive", counting_helper)
+
+    cache = OhlcvCache(cfg)
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        bundles = cache.get_many_bundles(["AAPL"], deadline_seconds=5.0, executor=ex)
+
+    assert "AAPL" in bundles
+    bundle = bundles["AAPL"]
+    # Discriminating: bundle reflects archive's known Close pattern.
+    # Strip rule may peel off the last bar (date == end_date == today-1
+    # under the pin); confirm previous_close is one of the known values
+    # 158.0 (post-strip) or 159.0 (no strip).
+    assert bundle.previous_close in (158.0, 159.0), (
+        f"cold-start did not hydrate from disk archive; got previous_close={bundle.previous_close}"
+    )
+    assert helper_calls == ["AAPL"]
+
+
+def test_ohlcv_cache_warm_hit_does_not_call_helper(cfg, monkeypatch):
+    """In-memory cache hit → no disk archive read. Discriminating:
+    helper-side fail-loud monkeypatch confirms zero invocations during the
+    second call after a successful warm-up."""
+    from concurrent.futures import ThreadPoolExecutor
+    from swing.web.ohlcv_cache import OhlcvBundle, OhlcvCache
+    from swing.pipeline import ohlcv as ohlcv_mod
+
+    cache = OhlcvCache(cfg)
+    warm_bundle = OhlcvBundle(
+        sma10=10.0, sma20=20.0, sma50=50.0,
+        previous_close=99.0, fetched_at=time.monotonic(),
+    )
+    cache._store["AAPL"] = (warm_bundle, time.monotonic())
+
+    def boom(*args, **kwargs):
+        raise AssertionError("read_or_fetch_archive must NOT be called on a warm hit")
+
+    monkeypatch.setattr(ohlcv_mod, "read_or_fetch_archive", boom)
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        bundles = cache.get_many_bundles(["AAPL"], deadline_seconds=5.0, executor=ex)
+
+    assert bundles["AAPL"].previous_close == 99.0
