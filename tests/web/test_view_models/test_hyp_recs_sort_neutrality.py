@@ -199,3 +199,99 @@ def test_pinned_baseline_neutrality(seeded_db, monkeypatch):
         f"hyp-recs ticker order drifted from pre-Task-3 baseline."
         f" got={tickers!r} expected={BASELINE_TUPLE!r}"
     )
+
+
+# Phase 4 (Task 10) — non-equal-priority discriminator. Closes Phase 2
+# R1 Minor 2 advisory + the sort-coupling-test-vacuousness lesson.
+NON_EQUAL_PRIORITY_TUPLE: tuple[str, ...] = ("ZZZ", "MMM", "AAA")
+
+
+def _seed_non_equal_priority_fixture(cfg: Config) -> None:
+    """Seed 3 A+ candidates with DIFFERENT priority_hint values so the
+    prioritizer's priority_hint comparison drives the order, NOT
+    alphabetical tiebreak.
+
+    Priority-hint-correct order: ZZZ (0.01) < MMM (0.05) < AAA (0.10).
+    Alphabetical order: AAA, MMM, ZZZ — REVERSED. A regression that
+    bypasses priority_hint and falls to alphabetical produces the
+    reversed tuple, which the discriminating assertion catches.
+    """
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+                    tickers_evaluated, aplus_count, watch_count, skip_count,
+                    excluded_count, error_count)
+                   VALUES ('2026-04-29T09:00:00','2026-04-28','2026-04-29',
+                           NULL, 3, 3, 0, 0, 0, 0)"""
+            )
+            eval_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.execute(
+                """INSERT INTO pipeline_runs
+                   (state, started_ts, finished_ts, trigger, lease_token,
+                    action_session_date, data_asof_date, evaluation_run_id,
+                    charts_status)
+                   VALUES ('complete','2026-04-29T08:00:00',
+                           '2026-04-29T09:00:00','scheduled','tok-nep',
+                           '2026-04-29','2026-04-28',?,'ok')""",
+                (eval_id,),
+            )
+            for tk, pivot, close in [
+                ("ZZZ", 100.0, 99.0),
+                ("MMM", 200.0, 190.0),
+                ("AAA", 300.0, 270.0),
+            ]:
+                upsert_watchlist_entry(
+                    conn,
+                    _make_watchlist_entry(
+                        ticker=tk, entry_target=pivot,
+                        initial_stop_target=pivot * 0.95, last_close=close,
+                    ),
+                )
+                conn.execute(
+                    """INSERT INTO candidates
+                       (evaluation_run_id, ticker, bucket, close, pivot,
+                        initial_stop, adr_pct, tight_streak, pullback_pct,
+                        prior_trend_pct, rs_rank, rs_return_12w_vs_spy,
+                        rs_method, pattern_tag, notes, sector, industry)
+                       VALUES (?, ?, 'aplus', ?, ?, ?, 2.0, 5,
+                               NULL, NULL, NULL, NULL, 'fallback_spy',
+                               NULL, NULL, 'Technology', 'Semiconductors')""",
+                    (eval_id, tk, close, pivot, pivot * 0.95),
+                )
+    finally:
+        conn.close()
+
+
+def test_non_equal_priority_sort_order(seeded_db, monkeypatch):
+    """Discriminating: fixture produces DIFFERENT priority_hint values
+    so the prioritizer's priority_hint comparison drives the order,
+    NOT the alphabetical tiebreak. A regression that drops priority_hint
+    from the sort key (or inverts the comparison) would produce
+    alphabetical order ('AAA', 'MMM', 'ZZZ'), which fails the
+    discriminating assertion ('ZZZ', 'MMM', 'AAA')."""
+    from swing.web.view_models.dashboard import build_dashboard
+
+    cfg, _ = seeded_db
+    _seed_non_equal_priority_fixture(cfg)
+    _patch_price_cache(monkeypatch)
+
+    cache = PriceCache(cfg)
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        dash_vm = build_dashboard(
+            cfg=cfg, cache=cache, executor=executor, ohlcv_cache=None,
+        )
+    finally:
+        executor.shutdown(wait=False)
+
+    tickers = tuple(r.ticker for r in dash_vm.active_recommendations)
+    assert tickers == NON_EQUAL_PRIORITY_TUPLE, (
+        f"hyp-recs ticker order must reflect priority_hint ASC "
+        f"(closer-to-pivot first): expected={NON_EQUAL_PRIORITY_TUPLE!r} "
+        f"got={tickers!r}. A regression that falls to alphabetical "
+        f"tiebreak instead of priority_hint produces "
+        f"('AAA', 'MMM', 'ZZZ')."
+    )
