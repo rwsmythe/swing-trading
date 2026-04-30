@@ -191,18 +191,25 @@ class _CountingPriceFetcher:
 
         Mirrors `swing.data.ohlcv_archive.read_or_fetch_archive`'s two-branch
         decision (ohlcv_archive.py:205-241):
-          - weekly-refresh predicate: meta `last_full_refresh_date` < 7 days
-            old AND parquet exists.
-          - incremental-gap predicate: parquet's max index date == today
-            (else helper fetches the gap from yfinance).
+          - weekly-refresh predicate: meta `last_full_refresh_date` is within
+            7 days of the helper's session anchor AND parquet exists.
+          - incremental-gap predicate: parquet's max index date >= helper's
+            session anchor (else the helper fetches the gap from yfinance).
 
-        Codex executing-plans R2 Major 1: the prior version checked only the
-        weekly-refresh predicate, mis-counting weekly-fresh-but-gap-behind
-        archives as hits. Now both predicates must hold.
+        Both predicates use the SAME session anchor as the production helper
+        (`_last_completed_session_today`), NOT wall-clock `date.today()` —
+        on weekends, holidays, or pre-market-close they differ, and using
+        the wrong anchor mis-counts hits/misses (Codex executing-plans R3
+        Major 1). Cross-package import is the cleanest mirror; the symbol
+        is leading-underscore but the alternative — replicating the NYSE
+        calendar logic in research/ — is strictly worse for drift safety.
         """
-        from datetime import date, timedelta
+        from datetime import timedelta
 
         import pandas as pd
+
+        from swing.data.ohlcv_archive import _last_completed_session_today
+        anchor = _last_completed_session_today()
         parquet_path = self.prices_cache_dir / f"{ticker}.parquet"
         meta_path = self.prices_cache_dir / f"{ticker}.meta.json"
         if not parquet_path.exists() or not meta_path.exists():
@@ -212,10 +219,11 @@ class _CountingPriceFetcher:
         except (json.JSONDecodeError, UnicodeDecodeError):
             return False
         try:
+            from datetime import date
             refresh_date = date.fromisoformat(meta.get("last_full_refresh_date", ""))
         except (TypeError, ValueError):
             return False
-        if (date.today() - refresh_date) >= timedelta(
+        if (anchor - refresh_date) >= timedelta(
             days=self._STALENESS_THRESHOLD_DAYS,
         ):
             return False  # weekly-refresh would fire → full fetch
@@ -229,8 +237,8 @@ class _CountingPriceFetcher:
             latest_stored = df.index.max().date()
         except Exception:
             return False
-        # Helper fetches the gap whenever latest_stored < today.
-        return latest_stored >= date.today()
+        # Helper fetches the gap whenever latest_stored < anchor.
+        return latest_stored >= anchor
 
     def get(self, ticker: str, lookback_days: int, *, as_of_date=None):
         if self._archive_is_fresh(ticker):

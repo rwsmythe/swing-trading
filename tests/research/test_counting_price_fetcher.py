@@ -3,17 +3,24 @@
 Phase 3 removed `PriceFetcher._cache_path`. The wrapper now inspects
 the per-ticker archive directory shape (`{TICKER}.parquet` +
 `{TICKER}.meta.json` in `cfg.paths.prices_cache_dir`) to count hits
-vs misses. A meta-stale archive counts as a MISS (the underlying
-helper will re-fetch).
+vs misses, mirroring both branches of `read_or_fetch_archive`'s
+fetch decision (weekly-refresh + incremental-gap) and using the
+helper's session anchor (`_last_completed_session_today`) — NOT
+wall-clock `date.today()` — to stay correct on weekends/holidays.
 
-Discriminating: 3-ticker fixture exercising three states (fresh,
-meta-stale, no-parquet); assertion on exact hits/misses count
-distinguishes the new shape from any path-existence-only counter.
+Fixture exercises four states so the assertion discriminates each
+fetch-trigger axis:
+  - AAPL: fresh meta + parquet max == anchor → hit.
+  - MSFT: stale meta (60 days) → weekly-refresh branch fires → miss.
+  - NVDA: fresh meta + parquet max == anchor - 1 day → incremental-
+    gap branch fires → miss (Codex R2 Major 1 discriminator).
+  - GOOG: no parquet at all → miss.
+Expected: hits=1, misses=3.
 """
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -22,37 +29,45 @@ import pytest
 
 @pytest.fixture
 def archive_dir(tmp_path: Path) -> Path:
+    """Build the 4-ticker fixture against the helper's session anchor.
+
+    Codex executing-plans R3 Major 1: anchor must match
+    `_last_completed_session_today()`, not wall-clock `date.today()`,
+    so the test's hit/miss expectations stay correct on weekends/
+    holidays/pre-market-close. The wrapper-under-test imports the
+    same helper.
+    """
+    from swing.data.ohlcv_archive import _last_completed_session_today
+    anchor = _last_completed_session_today()
     cache_dir = tmp_path / "prices_cache"
     cache_dir.mkdir()
 
-    today = date.today()
-    # AAPL: fresh meta + parquet max == today → true hit.
-    pd.DataFrame({"Close": [100.0]}, index=pd.to_datetime([today])).to_parquet(
+    # AAPL: fresh meta + parquet max == anchor → hit.
+    pd.DataFrame({"Close": [100.0]}, index=pd.to_datetime([anchor])).to_parquet(
         cache_dir / "AAPL.parquet",
     )
     (cache_dir / "AAPL.meta.json").write_text(
-        json.dumps({"last_full_refresh_date": today.isoformat()}),
+        json.dumps({"last_full_refresh_date": anchor.isoformat()}),
     )
-    # MSFT: stale meta (60 days) → weekly-refresh would fire → miss.
-    pd.DataFrame({"Close": [100.0]}, index=pd.to_datetime([today])).to_parquet(
+    # MSFT: stale meta (60 days before anchor) → weekly-refresh fires → miss.
+    pd.DataFrame({"Close": [100.0]}, index=pd.to_datetime([anchor])).to_parquet(
         cache_dir / "MSFT.parquet",
     )
     (cache_dir / "MSFT.meta.json").write_text(
         json.dumps({
-            "last_full_refresh_date": (today - timedelta(days=60)).isoformat(),
+            "last_full_refresh_date": (anchor - timedelta(days=60)).isoformat(),
         }),
     )
-    # NVDA: fresh meta BUT parquet's max index lags today by 1 day →
-    # helper's incremental-gap branch fires → yfinance call → miss.
-    # Codex R2 Major 1 discriminator: the prior wrapper version returned
-    # True for this case (mis-count); current version returns False.
+    # NVDA: fresh meta BUT parquet max == anchor - 1 day → incremental-gap
+    # branch fires → miss (Codex R2 Major 1 discriminator).
     pd.DataFrame(
         {"Close": [100.0]},
-        index=pd.to_datetime([today - timedelta(days=1)]),
+        index=pd.to_datetime([anchor - timedelta(days=1)]),
     ).to_parquet(cache_dir / "NVDA.parquet")
     (cache_dir / "NVDA.meta.json").write_text(
-        json.dumps({"last_full_refresh_date": today.isoformat()}),
+        json.dumps({"last_full_refresh_date": anchor.isoformat()}),
     )
+    # GOOG: no parquet → miss.
     return cache_dir
 
 
