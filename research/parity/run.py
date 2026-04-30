@@ -187,6 +187,20 @@ class _CountingPriceFetcher:
         self.misses = 0
 
     def _archive_is_fresh(self, ticker: str) -> bool:
+        """Hit only when the helper would NOT call yfinance.
+
+        Mirrors `swing.data.ohlcv_archive.read_or_fetch_archive`'s two-branch
+        decision (ohlcv_archive.py:205-241):
+          - weekly-refresh predicate: meta `last_full_refresh_date` < 7 days
+            old AND parquet exists.
+          - incremental-gap predicate: parquet's max index date == today
+            (else helper fetches the gap from yfinance).
+
+        Codex executing-plans R2 Major 1: the prior version checked only the
+        weekly-refresh predicate, mis-counting weekly-fresh-but-gap-behind
+        archives as hits. Now both predicates must hold.
+        """
+        import pandas as pd
         from datetime import date, timedelta
         parquet_path = self.prices_cache_dir / f"{ticker}.parquet"
         meta_path = self.prices_cache_dir / f"{ticker}.meta.json"
@@ -200,10 +214,22 @@ class _CountingPriceFetcher:
             refresh_date = date.fromisoformat(meta.get("last_full_refresh_date", ""))
         except (TypeError, ValueError):
             return False
-        return (
-            (date.today() - refresh_date)
-            < timedelta(days=self._STALENESS_THRESHOLD_DAYS)
-        )
+        if (date.today() - refresh_date) >= timedelta(
+            days=self._STALENESS_THRESHOLD_DAYS,
+        ):
+            return False  # weekly-refresh would fire → full fetch
+        try:
+            df = pd.read_parquet(parquet_path)
+        except Exception:
+            return False
+        if df.empty:
+            return False
+        try:
+            latest_stored = df.index.max().date()
+        except Exception:
+            return False
+        # Helper fetches the gap whenever latest_stored < today.
+        return latest_stored >= date.today()
 
     def get(self, ticker: str, lookback_days: int, *, as_of_date=None):
         if self._archive_is_fresh(ticker):

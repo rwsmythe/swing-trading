@@ -26,12 +26,14 @@ def archive_dir(tmp_path: Path) -> Path:
     cache_dir.mkdir()
 
     today = date.today()
+    # AAPL: fresh meta + parquet max == today → true hit.
     pd.DataFrame({"Close": [100.0]}, index=pd.to_datetime([today])).to_parquet(
         cache_dir / "AAPL.parquet",
     )
     (cache_dir / "AAPL.meta.json").write_text(
         json.dumps({"last_full_refresh_date": today.isoformat()}),
     )
+    # MSFT: stale meta (60 days) → weekly-refresh would fire → miss.
     pd.DataFrame({"Close": [100.0]}, index=pd.to_datetime([today])).to_parquet(
         cache_dir / "MSFT.parquet",
     )
@@ -39,6 +41,17 @@ def archive_dir(tmp_path: Path) -> Path:
         json.dumps({
             "last_full_refresh_date": (today - timedelta(days=60)).isoformat(),
         }),
+    )
+    # NVDA: fresh meta BUT parquet's max index lags today by 1 day →
+    # helper's incremental-gap branch fires → yfinance call → miss.
+    # Codex R2 Major 1 discriminator: the prior wrapper version returned
+    # True for this case (mis-count); current version returns False.
+    pd.DataFrame(
+        {"Close": [100.0]},
+        index=pd.to_datetime([today - timedelta(days=1)]),
+    ).to_parquet(cache_dir / "NVDA.parquet")
+    (cache_dir / "NVDA.meta.json").write_text(
+        json.dumps({"last_full_refresh_date": today.isoformat()}),
     )
     return cache_dir
 
@@ -52,7 +65,9 @@ class _StubInner:
 
 def test_counting_price_fetcher_distinguishes_fresh_stale_missing(archive_dir):
     """Wrapper counts: fresh AAPL = hit; meta-stale MSFT = miss;
-    missing GOOG = miss."""
+    missing GOOG = miss; gap-behind NVDA = miss (Codex R2 Major 1
+    discriminator — the helper's incremental-gap branch fires when
+    latest_stored < today even with fresh meta)."""
     from research.parity.run import _CountingPriceFetcher
 
     inner = _StubInner()
@@ -61,14 +76,17 @@ def test_counting_price_fetcher_distinguishes_fresh_stale_missing(archive_dir):
     wrapper.get("AAPL", 60)
     wrapper.get("MSFT", 60)
     wrapper.get("GOOG", 60)
+    wrapper.get("NVDA", 60)
 
     assert wrapper.hits == 1, (
-        f"Only AAPL has a fresh archive (hits=1 expected); got {wrapper.hits}. "
-        "MSFT meta-stale counts as miss; GOOG no-parquet counts as miss."
+        f"Only AAPL has a fresh archive whose latest_stored == today "
+        f"(hits=1 expected); got {wrapper.hits}. NVDA's fresh-meta-but-"
+        f"gap-behind archive must NOT count as a hit — the helper would "
+        f"call yfinance for the incremental gap."
     )
-    assert wrapper.misses == 2, (
-        f"MSFT (meta-stale) + GOOG (missing) = misses=2 expected; "
-        f"got {wrapper.misses}"
+    assert wrapper.misses == 3, (
+        f"MSFT (meta-stale) + GOOG (missing) + NVDA (gap-behind) = "
+        f"misses=3 expected; got {wrapper.misses}"
     )
 
 
