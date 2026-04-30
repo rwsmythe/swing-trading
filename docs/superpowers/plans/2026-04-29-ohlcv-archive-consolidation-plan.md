@@ -4,7 +4,11 @@
 
 **Goal:** Consolidate the three production OHLCV fetch paths (`PriceFetcher`, `swing.pipeline.ohlcv.fetch_daily_bars`, `OhlcvCache` worker) onto a single per-ticker incremental on-disk archive at `~/swing-data/prices-cache/`, replacing the existing per-as-of-date keying. Cuts per-run yfinance call volume by ~99% for established tickers; provides cold-start hydration for the dashboard SMA cache after `swing web` restart; keeps weekly full-refresh semantics so retroactive split/dividend adjustments still propagate.
 
-**Architecture:** A new shared helper `swing.data.ohlcv_archive.read_or_fetch_archive(ticker, *, end_date, cache_dir, history_days)` is the single source for archive-aware reads; it (1) reads `{TICKER}.parquet` + `{TICKER}.meta.json` sidecar from `cache_dir`; (2) checks freshness against `end_date` and `(today - last_full_refresh_date) >= 7 days` weekly trigger; (3) fetches yfinance only for the gap (incremental) or full history (weekly refresh / new ticker); (4) writes archive + meta atomically (temp file in destination dir → `os.replace`, per CLAUDE.md cross-device-link gotcha); (5) returns the archive DataFrame so each consumer slices what it needs. `PriceFetcher.get` and `fetch_daily_bars` become thin adapters around the helper. `OhlcvCache` inherits archive backing automatically (its worker already calls `fetch_daily_bars`). A standalone migration script `swing.tools.migrate_prices_cache` consolidates the existing 5,521 per-as-of-date files into ~200-300 per-ticker files; operator runs it once before pulling the consumer-refactor commits.
+**Architecture:** A new shared helper `swing.data.ohlcv_archive.read_or_fetch_archive(ticker, *, end_date, cache_dir, archive_history_days)` is the single source for archive-aware reads; it (1) reads `{TICKER}.parquet` + `{TICKER}.meta.json` sidecar from `cache_dir`; (2) checks freshness against `end_date` and `(today - last_full_refresh_date) >= 7 days` weekly trigger; (3) fetches yfinance only for the gap (incremental) or full history (weekly refresh / new ticker); (4) writes archive + meta with per-file atomic-replace (temp file in destination dir → `os.replace`, per CLAUDE.md cross-device-link gotcha); (5) returns the archive DataFrame so each consumer slices what it needs. `PriceFetcher.get` and `fetch_daily_bars` become thin adapters around the helper. `OhlcvCache` inherits archive backing automatically (its worker already calls `fetch_daily_bars`). A standalone migration script `swing.tools.migrate_prices_cache` consolidates the existing 5,521 per-as-of-date files into ~200-300 per-ticker files; operator runs it once before pulling the consumer-refactor commits.
+
+**Cross-file atomicity contract (Codex R1 Major 1 resolution):** `os.replace` is atomic per path, NOT across the parquet/meta pair. A crash between the two replaces leaves a benign skew window: parquet replaced + meta still pointing at prior `last_full_refresh_date`, OR parquet replaced + meta missing entirely. Readers handle both gracefully — missing/corrupted/stale meta triggers a full-refresh on the next call (recoverable; cost is one extra yfinance call). The migration script's resume path (Task 1 idempotency contract) likewise re-unions whatever it finds. This is documented as the V1 contract; readers MUST treat the parquet-meta pair as a coherence-best-effort pair, not a strict invariant. Task 1 + Task 3 each include a discriminating test for the parquet-fresh-meta-missing skew scenario.
+
+**Trading-day vs calendar-day window semantics (Codex R1 Critical 1 resolution):** `archive_history_days` is the locked spec field name AND its semantics are TRADING days (per spec §2.5: "5 years (1260 trading days)"). yfinance's `start`/`end` kwargs are CALENDAR days, so the helper internally converts trading-day retention to a calendar window with holiday buffer: `_calendar_window_for_trading_days(n) = ceil(n * 7 / 5) + 14` calendar days. For default 1260 trading days → 1778 calendar days (~4.87 years), which yields ≥ 1260 trading bars from yfinance with comfortable holiday headroom. The helper passes the calendar-day window to `yf.download` AND truncates the returned DataFrame to the most recent `archive_history_days` rows (in case the calendar window over-fetched). Tests assert the calendar `start` kwarg passed to yfinance equals `end_date - timedelta(days=_calendar_window_for_trading_days(archive_history_days))`, NOT `end_date - timedelta(days=archive_history_days)` — this prevents the silent under-retention failure mode where 1260 calendar days = ~3.45 years instead of 5y.
 
 **Tech Stack:** Python 3.14, pandas, pyarrow (parquet), yfinance ≥1.2 (with `threads=False`, MultiIndex squeeze, and `Ticker.history()` no-`threads=` gotchas honored), pytest.
 
@@ -27,22 +31,22 @@
   2. Cache-coherence policy = read archive → check `(latest_stored_bar_date, last_full_refresh_date)` → incremental gap fetch and/or weekly refresh as required.
   3. Schema = per-ticker parquet (`{TICKER}.parquet`); metadata via sidecar JSON (`{TICKER}.meta.json`). NO SQLite OHLCV table.
   4. Migration strategy = one-time consolidation script, manual operator invocation, backup-first / atomic-replace / delete-old-only-after-write-succeeds.
-  5. Retained history depth = configurable, default 5 years (1260 trading days). Field name `archive_history_days`. Toml-shadowing audit required pre-commit.
+  5. Retained history depth = configurable, default 5 years (1260 trading days). Field name `archive_history_days` (locked literally per spec §2.5 — accessor is `cfg.archive.archive_history_days`, dataclass `ArchiveConfig`). Toml-shadowing audit required pre-commit.
   6. `OhlcvCache` backing = IN SCOPE for V1 (cold-start hydrates from archive via the wrapped `fetch_daily_bars`).
   7. Atomicity = `tempfile.NamedTemporaryFile(dir=archive_dir, delete=False, ...)` → `os.replace(tmp, final)`; never `shutil.move`.
 - **Open-design resolutions (per dispatch brief §3):**
   - **§3.A Metadata encoding:** sidecar JSON `{TICKER}.meta.json` with `{"last_full_refresh_date": "YYYY-MM-DD"}`. Future fields (e.g., last-incremental-fetch timestamp) stay additive on the same JSON shape.
   - **§3.B Archive directory location:** `cfg.paths.prices_cache_dir` (consolidate in place; defaults to `~/swing-data/prices-cache/`). No path-config migration; existing toml field already names this directory. Code comments document that the directory is now an "archive" not a "cache" (TTL-flush semantics removed for stored data). V2 may rename if operator wants.
-  - **§3.C Wrapper signature:** `read_or_fetch_archive(ticker: str, *, end_date: date, cache_dir: Path, history_days: int) -> pd.DataFrame | None`. Returns the full retained archive (≤ `end_date`) for the ticker, or `None` for delisted/invalid (yfinance returns empty). Each consumer slices what it needs (`tail(n_bars)` for the pipeline path; calendar-day slice for `PriceFetcher`). The helper internally uses `yf.download(threads=False, progress=False, auto_adjust=False, actions=False)` for both full-history and incremental fetches; it squeezes MultiIndex columns defensively (yfinance ≥1.2 gotcha).
+  - **§3.C Wrapper signature:** `read_or_fetch_archive(ticker: str, *, end_date: date, cache_dir: Path, archive_history_days: int) -> pd.DataFrame | None`. Returns the full retained archive (≤ `end_date`) for the ticker, or `None` for delisted/invalid (yfinance returns empty). Each consumer slices what it needs (`tail(n_bars)` for the pipeline path; calendar-day slice for `PriceFetcher`). The helper internally uses `yf.download(threads=False, progress=False, auto_adjust=False, actions=False)` for both full-history and incremental fetches; it squeezes MultiIndex columns defensively (yfinance ≥1.2 gotcha). `archive_history_days` is interpreted as trading-day retention; the helper converts to a calendar window (with holiday buffer) for the yfinance call (see Cross-file/trading-day notes in Architecture).
   - **§3.D Test surface:** discriminating tests cover (a) helper unit semantics (cache-empty / cache-fresh / cache-stale-incremental / weekly-refresh / atomic-replace / empty-result / MultiIndex squeeze / `threads=False` propagation); (b) `PriceFetcher` consumer adapter; (c) `fetch_daily_bars` consumer adapter (existing tests in `tests/pipeline/test_ohlcv.py` are repointed to monkeypatch the helper instead of `yf.Ticker`); (d) `OhlcvCache` cold-start hydration + warm-cache precedence; (e) migration script consolidation, idempotency, interruption recovery. Mocked yfinance for unit tests; live yfinance reserved for slow-marked V2 follow-up.
   - **§3.E Test count baseline:** 1314 fast tests at HEAD `a4811f4`.
 - **Source-file shape (verified at HEAD `a4811f4`):**
   - `swing/prices.py:23-85` — `PriceFetcher` dataclass; `_cache_path` (per-as-of-date), `_fetch_from_yf` (uses `yf.download` already), `get`, `clear_cache`. Public API: `get(ticker, lookback_days, *, as_of_date=None) -> pd.DataFrame`.
   - `swing/pipeline/ohlcv.py:18-62` — `fetch_daily_bars(ticker, *, n_bars=60, as_of_date=None) -> pd.DataFrame | None`. Currently calls `yf.Ticker(ticker).history(period='6mo', interval='1d', auto_adjust=False)` directly, then strips in-progress bar against session.
-  - `swing/web/ohlcv_cache.py:217-246` — `OhlcvCache._fetch_bundle_worker`; calls `ohlcv_mod.fetch_daily_bars(ticker, n_bars=60)`. Constructor takes `cfg: Config` (line 50) — already has access to `cfg.paths.prices_cache_dir` and (after Task 2) `cfg.ohlcv_archive.history_days`.
-  - `swing/cli.py:148, 315` and `swing/pipeline/runner.py:146` — `PriceFetcher(cache_dir=cfg.paths.prices_cache_dir)` instantiations. After Task 4 they must also pass `history_days=cfg.ohlcv_archive.history_days` (kwarg-with-default, so the call sites stay valid even if missed; the discriminating compat test catches this).
+  - `swing/web/ohlcv_cache.py:217-246` — `OhlcvCache._fetch_bundle_worker`; calls `ohlcv_mod.fetch_daily_bars(ticker, n_bars=60)`. Constructor takes `cfg: Config` (line 50) — already has access to `cfg.paths.prices_cache_dir` and (after Task 2) `cfg.archive.archive_history_days`.
+  - `swing/cli.py:148, 315` and `swing/pipeline/runner.py:146` — `PriceFetcher(cache_dir=cfg.paths.prices_cache_dir)` instantiations. After Task 4 they must also pass `archive_history_days=cfg.archive.archive_history_days` (kwarg-with-default, so the call sites stay valid even if missed; the discriminating compat test catches this).
   - `swing/weather/runner.py:10-15` — `PriceFetcher` consumer. Public API stable; no change required.
-  - `swing.config.toml:12` — `prices_cache_dir = "swing-data/prices-cache"`. No `archive_history_days` field; toml-shadowing audit (`grep -n "archive_history_days" swing.config.toml`) returns empty.
+  - `swing.config.toml:12` — `prices_cache_dir = "swing-data/prices-cache"`. No `archive_history_days` field anywhere in tracked files; toml-shadowing audit (`git ls-files | xargs grep -l 'archive_history_days' 2>/dev/null`) returns empty.
 - **Locked-decision rationale carry-overs:**
   - Atomicity: temp file MUST be created in the same directory as the destination. On Windows with Drive-synced paths plus `$TMP` on a different volume, `os.replace(tmp, final)` raises `OSError: [Errno 18] Invalid cross-device link` (CLAUDE.md). `tempfile.NamedTemporaryFile(dir=cache_dir, delete=False, suffix=".parquet.tmp")` keeps both paths on the same filesystem.
   - yfinance gotchas (CLAUDE.md): the helper uses `yf.download(..., threads=False)` exclusively (NOT `yf.Ticker.history()`). The pipeline path's old `Ticker.history()` call site is REMOVED, so the prior `test_fetch_daily_bars_does_not_pass_threads_kwarg` test is repointed in Task 5 (the equivalent assertion moves to the helper-level test in Task 3). MultiIndex columns are squeezed via `if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)`.
@@ -63,16 +67,16 @@
 
 **Modify:**
 
-- `swing/config.py` — Task 2 (add `OhlcvArchiveConfig` dataclass, wire `Config.ohlcv_archive` field, default-from-toml).
-- `swing/prices.py` — Task 4 (`PriceFetcher` consumes helper; preserve public `get()` signature; extend `clear_cache` to also delete `*.meta.json` and `*.parquet.tmp` orphans; add `history_days` constructor kwarg with default 1260).
-- `swing/cli.py:148, 315` — Task 4 (pass `history_days=cfg.ohlcv_archive.history_days` to `PriceFetcher`).
+- `swing/config.py` — Task 2 (add `ArchiveConfig` dataclass, wire `Config.archive` field, default-from-toml).
+- `swing/prices.py` — Task 4 (`PriceFetcher` consumes helper; preserve public `get()` signature; extend `clear_cache` to also delete `*.meta.json` and `*.parquet.tmp` orphans; add `archive_history_days` constructor kwarg with default 1260).
+- `swing/cli.py:148, 315` — Task 4 (pass `archive_history_days=cfg.archive.archive_history_days` to `PriceFetcher`).
 - `swing/pipeline/runner.py:146` — Task 4 (same).
-- `swing/pipeline/ohlcv.py` — Task 5 (`fetch_daily_bars` becomes thin adapter; new required kwargs `cache_dir: Path, history_days: int`; preserve `n_bars` + `as_of_date` semantics; preserve strip rule).
-- `swing/web/ohlcv_cache.py:217-246` — Task 6 (worker passes `cache_dir`/`history_days` to `fetch_daily_bars`).
+- `swing/pipeline/ohlcv.py` — Task 5 (`fetch_daily_bars` becomes thin adapter; new required kwargs `cache_dir: Path, archive_history_days: int`; preserve `n_bars` + `as_of_date` semantics; preserve strip rule).
+- `swing/web/ohlcv_cache.py:217-246` — Task 6 (worker passes `cache_dir`/`archive_history_days` to `fetch_daily_bars`).
 - `tests/pipeline/test_ohlcv.py` — Task 5 (existing five `test_fetch_daily_bars_*` tests repointed; the `Ticker.history()` no-`threads=` test is replaced by a helper-level equivalent in Task 3).
 - `tests/web/test_ohlcv_cache.py` — Task 6 (add cold-start hydration test + warm-cache precedence test; existing `monkeypatch.setattr(ohlcv_mod, "fetch_daily_bars", …)` tests continue to work because they replace the function entirely).
-- `tests/test_config.py` — Task 2 (assert `cfg.ohlcv_archive.history_days == 1260` default).
-- `tests/test_prices.py` (or `tests/data/test_prices.py` per repo layout — verify with `git ls-files tests/ | grep -i price` before editing) — Task 4 (replace per-as-of-date cache-key tests with archive-helper-mocked equivalents; preserve API-level behavior tests).
+- `tests/test_config.py` — Task 2 (assert `cfg.archive.archive_history_days == 1260` default).
+- `tests/prices/test_prices.py` (verified at HEAD `a4811f4` via `git ls-files tests/ | grep test_prices.py`) — Task 4 (replace per-as-of-date cache-key tests with archive-helper-mocked equivalents; preserve API-level behavior tests).
 
 **Verification before writing each test:** Use `git ls-files tests/ | grep -i <topic>` (or `Glob "tests/**/test_*<topic>*.py"`) to confirm the canonical test-file path before creating a new test module. The repo's test layout mirrors `swing/`, so `tests/data/test_ohlcv_archive.py` (new file) lives alongside the new `swing/data/ohlcv_archive.py`.
 
@@ -353,6 +357,45 @@ def test_unrelated_files_are_not_touched(tmp_path):
 
     assert (cache / "README.txt").exists()
     assert (cache / "research-notes.parquet").exists()
+
+
+def test_meta_write_failure_rolls_back_archive_and_legacy(tmp_path, monkeypatch):
+    """Codex R1 Major 1 resolution — cross-file atomicity skew bound.
+
+    Scenario: `_consolidate_ticker` succeeds in atomically replacing
+    `{TICKER}.parquet` but the meta `os.replace` then raises (filesystem
+    glitch / disk-full / permissions). The script's exception handler must
+    NOT delete the legacy files (rollback discipline preserves the
+    re-run-converges contract). On re-run, the partial state must converge
+    cleanly.
+    """
+    from swing.tools import migrate_prices_cache as mig
+
+    cache = tmp_path
+    legacy_path = _write_legacy_parquet(
+        cache, "META", 120, date(2026, 4, 25),
+        [(date(2026, 4, 18), 1.0, 1.0, 1.0, 1.0, 1)],
+    )
+
+    real_replace = mig.os.replace
+
+    def crash_on_meta(src, dst):
+        if str(dst).endswith("META.meta.json"):
+            raise OSError("simulated meta-write crash")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(mig.os, "replace", crash_on_meta)
+
+    with pytest.raises(OSError, match="simulated meta-write crash"):
+        mig.run(cache_dir=cache)
+
+    # Legacy file MUST survive — meta-write failure rolls back.
+    assert legacy_path.exists(), (
+        "legacy file deleted before meta-write succeeded — partial-write violation"
+    )
+    # No leftover *.tmp files for either parquet or meta.
+    assert list(cache.glob("*.parquet.tmp")) == []
+    assert list(cache.glob("*.meta.json.tmp")) == []
 ```
 
 - [ ] **Step 1c: Run the tests to confirm failure**
@@ -606,55 +649,55 @@ Expected: ≥1 hit including the just-created Task 1 commit. Cross-plan aliasing
 
 ## Task 2: Config field — `archive_history_days`
 
-**Goal:** Add `OhlcvArchiveConfig` dataclass with `history_days: int = 1260` (5y trading days). Wire `Config.ohlcv_archive` field; defaultable from `raw.get("ohlcv_archive", {})` so the toml file does NOT need a new section. Toml-shadowing audit pre-commit (per locked decision §2.5 and the `aeb2084` lesson).
+**Goal:** Add `ArchiveConfig` dataclass with `archive_history_days: int = 1260` (5y trading days; semantics are trading-day retention — see Architecture for the calendar-day conversion the helper applies). Wire `Config.archive` field; defaultable from `raw.get("archive", {})` so the toml file does NOT need a new section. Toml-shadowing audit pre-commit (per locked decision §2.5 + `aeb2084` lesson + Codex R1 Major 3 resolution).
 
 **Files:**
 - Modify: `swing/config.py` (add dataclass + field + load wiring).
-- Modify: `tests/test_config.py` (or whichever existing test file owns config defaults — verify with `git ls-files tests/ | grep config`).
+- Modify: `tests/config/test_config.py` (verified at HEAD `a4811f4` via `git ls-files tests/ | grep test_config.py`; canonical config-defaults home).
 
-**Discriminating-test sanity check:** A test asserting `cfg.ohlcv_archive.history_days == 1260` would fail under the pre-fix tree (no `ohlcv_archive` attribute → `AttributeError`) AND would fail under a buggy implementation that hard-codes a different default. The 1260 value is load-bearing: `swing.data.ohlcv_archive` (Task 3) consumes it for the `_fetch_full_history` window. If the default were silently 252 (1y) or 504 (2y), Task 3's full-refresh would silently truncate retained history.
+**Discriminating-test sanity check:** A test asserting `cfg.archive.archive_history_days == 1260` would fail under the pre-fix tree (no `archive` attribute → `AttributeError`) AND would fail under a buggy implementation that hard-codes a different default. The 1260 value is load-bearing: `swing.data.ohlcv_archive` (Task 3) consumes it for the `_fetch_full_history` window. If the default were silently 252 (1y) or 504 (2y), Task 3's full-refresh would silently truncate retained history.
 
-- [ ] **Step 2a: Toml-shadowing audit**
+- [ ] **Step 2a: Toml-shadowing audit (locked-form, repo-wide tracked files)**
 
 ```bash
-grep -n "archive_history_days\|ohlcv_archive" swing.config.toml
+git ls-files | xargs grep -ln "archive_history_days" 2>/dev/null
 ```
 
-Expected: empty output. If non-empty, surface in return report and STOP — there's already a toml override that would shadow the new Python default at runtime, replicating the `aeb2084` failure mode (operator's production runtime continued to use the toml-overridden value despite a clean Python default).
+Expected: empty output. The `archive_history_days` field name is brand-new; ANY tracked-file hit pre-Task-2 indicates a stale shadow that would replicate the `aeb2084` 2026-04-28 failure mode (operator's production runtime overrode the Python default via a tracked toml/yaml/json). If non-empty, surface in return report and STOP — do NOT proceed without operator triage. Per Codex R1 Major 3: the audit applies to ALL tracked files (every committed config surface), not just `swing.config.toml`.
 
 - [ ] **Step 2b: Locate the existing config test file**
 
 ```bash
-git ls-files tests/ | xargs grep -l "swing.config\|from swing import config\|cfg.web\.\|paths.prices_cache_dir" 2>/dev/null | head -5
+git ls-files tests/ | grep test_config.py
 ```
 
-Expected: a small handful of test files. Pick the one most clearly owning Config-defaults assertions; if there's no obvious owner, create `tests/test_ohlcv_archive_config.py` (a small focused test module).
+Expected: `tests/config/test_config.py` (verified at plan-authoring time). Open it; locate the existing `_MINIMAL_VALID_TOML` (or equivalent fixture) for adapting in Step 2c.
 
 - [ ] **Step 2c: Write the failing test**
 
-Add to the located test file (or create the new one):
+Add to `tests/config/test_config.py`:
 
 ```python
-def test_ohlcv_archive_config_defaults_to_5y_trading_days(tmp_path):
-    """`Config.ohlcv_archive.history_days` defaults to 1260 (5y trading days)
-    when no [ohlcv_archive] section is present in swing.config.toml.
+def test_archive_config_defaults_to_5y_trading_days(tmp_path):
+    """`Config.archive.archive_history_days` defaults to 1260 (5y trading days)
+    when no [archive] section is present in swing.config.toml.
 
-    Discriminating: under the pre-fix tree, `cfg.ohlcv_archive` raises
+    Discriminating: under the pre-fix tree, `cfg.archive` raises
     AttributeError. Under a regressed default (e.g., silently 252 or 504),
     Task 3's helper would truncate the retained history window.
     """
     from swing.config import load
 
-    # Construct a minimal toml without [ohlcv_archive] to exercise the default.
+    # Construct a minimal toml without [archive] to exercise the default.
     toml_path = tmp_path / "swing.config.toml"
     toml_path.write_text(_MINIMAL_VALID_TOML)  # use whatever fixture pattern other config tests use
 
     cfg = load(toml_path)
-    assert cfg.ohlcv_archive.history_days == 1260
+    assert cfg.archive.archive_history_days == 1260
 
 
-def test_ohlcv_archive_config_honors_toml_override(tmp_path):
-    """If [ohlcv_archive] history_days is set in the toml, it overrides the
+def test_archive_config_honors_toml_override(tmp_path):
+    """If [archive] archive_history_days is set in the toml, it overrides the
     Python default — matches the dataclass-default-shadowing behavior of all
     other Config sections (lesson `aeb2084` 2026-04-28)."""
     from swing.config import load
@@ -662,11 +705,11 @@ def test_ohlcv_archive_config_honors_toml_override(tmp_path):
     toml_path = tmp_path / "swing.config.toml"
     toml_path.write_text(
         _MINIMAL_VALID_TOML
-        + "\n[ohlcv_archive]\nhistory_days = 504\n"
+        + "\n[archive]\narchive_history_days = 504\n"
     )
 
     cfg = load(toml_path)
-    assert cfg.ohlcv_archive.history_days == 504
+    assert cfg.archive.archive_history_days == 504
 ```
 
 If the existing config tests use a shared `_MINIMAL_VALID_TOML` fixture, reuse it; otherwise locate the closest-existing fixture for "valid toml content" and adapt.
@@ -674,20 +717,18 @@ If the existing config tests use a shared `_MINIMAL_VALID_TOML` fixture, reuse i
 - [ ] **Step 2d: Run the tests to confirm failure**
 
 ```bash
-python -m pytest tests/test_config.py::test_ohlcv_archive_config_defaults_to_5y_trading_days tests/test_config.py::test_ohlcv_archive_config_honors_toml_override -v 2>&1 | tail -20
+python -m pytest tests/config/test_config.py::test_archive_config_defaults_to_5y_trading_days tests/config/test_config.py::test_archive_config_honors_toml_override -v 2>&1 | tail -20
 ```
 
-(Adjust path if you created a new test file.)
+Expected: both tests fail with `AttributeError: 'Config' object has no attribute 'archive'`.
 
-Expected: both tests fail with `AttributeError: 'Config' object has no attribute 'ohlcv_archive'`.
-
-- [ ] **Step 2e: Add `OhlcvArchiveConfig` to `swing/config.py`**
+- [ ] **Step 2e: Add `ArchiveConfig` to `swing/config.py`**
 
 Insert just BEFORE the `class Web:` declaration (alphabetical-by-section is not observed in this file; place near the most-related sections):
 
 ```python
 @dataclass(frozen=True)
-class OhlcvArchiveConfig:
+class ArchiveConfig:
     """Disk-archive retained-history depth for the OHLCV archive
     (`swing/data/ohlcv_archive.py`). 1260 = 5y trading days; bounds the
     full-history fetch window invoked by weekly refresh + new-ticker paths.
@@ -698,7 +739,7 @@ class OhlcvArchiveConfig:
     `aeb2084` 2026-04-28 lesson is in scope — Python defaults shadow at
     runtime if a tracked toml override exists.
     """
-    history_days: int = 1260
+    archive_history_days: int = 1260
 ```
 
 Then add to `Config`:
@@ -722,22 +763,20 @@ class Config:
     export: ExportConfig
     web: Web = field(default_factory=Web)
     classifier: ClassifierConfig = field(default_factory=ClassifierConfig)
-    ohlcv_archive: OhlcvArchiveConfig = field(default_factory=OhlcvArchiveConfig)
+    archive: ArchiveConfig = field(default_factory=ArchiveConfig)
 ```
 
 And in `load()` near the end:
 
 ```python
-        ohlcv_archive=OhlcvArchiveConfig(**raw.get("ohlcv_archive", {})),
+        archive=ArchiveConfig(**raw.get("archive", {})),
 ```
 
 - [ ] **Step 2f: Run the tests to confirm pass**
 
 ```bash
-python -m pytest tests/test_config.py -v 2>&1 | tail -20
+python -m pytest tests/config/test_config.py -v 2>&1 | tail -20
 ```
-
-(Adjust path if applicable.)
 
 Expected: both new tests pass; no other config tests regress.
 
@@ -752,7 +791,7 @@ Expected: prior count + 2 = 1323 passed (or close — trust pytest).
 - [ ] **Step 2h: Commit**
 
 ```bash
-git add swing/config.py tests/test_config.py  # or new test file path
+git add swing/config.py tests/config/test_config.py
 git commit -m "feat(config): Task 2 — archive_history_days config field"
 ```
 
@@ -768,7 +807,7 @@ Expected: ≥1 hit including the just-created Task 2 commit.
 
 ## Task 3: Shared archive helper (`swing/data/ohlcv_archive.py`)
 
-**Goal:** `read_or_fetch_archive(ticker, *, end_date, cache_dir, history_days) -> pd.DataFrame | None`. Reads `{TICKER}.parquet` + `{TICKER}.meta.json` sidecar; checks freshness; fetches yfinance only for the gap (incremental) OR full history (weekly refresh / new ticker / corrupted meta); writes archive + meta atomically; returns the archive DataFrame (≤ end_date) or `None` for delisted/invalid tickers.
+**Goal:** `read_or_fetch_archive(ticker, *, end_date, cache_dir, archive_history_days) -> pd.DataFrame | None`. Reads `{TICKER}.parquet` + `{TICKER}.meta.json` sidecar; checks freshness; fetches yfinance only for the gap (incremental) OR full history (weekly refresh / new ticker / corrupted meta); writes archive + meta atomically; returns the archive DataFrame (≤ end_date) or `None` for delisted/invalid tickers.
 
 **Files:**
 - Create: `swing/data/ohlcv_archive.py`.
@@ -869,7 +908,7 @@ def test_new_ticker_triggers_full_history_fetch(tmp_path, monkeypatch):
     end_date = date(2026, 4, 28)
 
     result = mod.read_or_fetch_archive(
-        "AAPL", end_date=end_date, cache_dir=tmp_path, history_days=1260,
+        "AAPL", end_date=end_date, cache_dir=tmp_path, archive_history_days=1260,
     )
 
     assert result is not None
@@ -882,6 +921,18 @@ def test_new_ticker_triggers_full_history_fetch(tmp_path, monkeypatch):
     # yfinance MUST be called with threads=False (CLAUDE.md gotcha).
     assert recorded_kwargs.get("threads") is False, (
         f"helper did not pass threads=False to yf.download; got {recorded_kwargs}"
+    )
+    # Codex R1 Critical 1: full-history start uses calendar-day conversion
+    # (1260 trading days → ~1778 calendar days), NOT raw timedelta(days=1260).
+    from swing.data.ohlcv_archive import _calendar_window_for_trading_days
+    expected_full_start = end_date - timedelta(
+        days=_calendar_window_for_trading_days(1260)
+    )
+    assert recorded_kwargs.get("start") == expected_full_start, (
+        f"full-history start kwarg should be {expected_full_start} "
+        f"(end_date - calendar window for 1260 trading days); "
+        f"got {recorded_kwargs.get('start')} — calendar/trading-day "
+        f"semantic regression"
     )
 
 
@@ -903,7 +954,7 @@ def test_cache_fresh_skips_yfinance(tmp_path, monkeypatch):
     monkeypatch.setattr(mod.yf, "download", boom)
 
     result = mod.read_or_fetch_archive(
-        "AAPL", end_date=end_date, cache_dir=tmp_path, history_days=1260,
+        "AAPL", end_date=end_date, cache_dir=tmp_path, archive_history_days=1260,
     )
     assert result is not None
     assert len(result) == 3
@@ -915,7 +966,7 @@ def test_cache_stale_incremental_fetches_only_the_gap(tmp_path, monkeypatch):
     appended → returns combined DataFrame.
 
     Discriminating: assertion checks yfinance.download's `start` kwarg is
-    equal to (latest_stored + 1 day), NOT (end_date - history_days). A bug
+    equal to (latest_stored + 1 day), NOT (end_date - archive_history_days). A bug
     that fetched full history on every call would also produce a 'has bars'
     result; only the kwarg assertion catches the gap-fetch contract.
     """
@@ -940,7 +991,7 @@ def test_cache_stale_incremental_fetches_only_the_gap(tmp_path, monkeypatch):
     monkeypatch.setattr(mod.yf, "download", fake_download)
 
     result = mod.read_or_fetch_archive(
-        "AAPL", end_date=end_date, cache_dir=tmp_path, history_days=1260,
+        "AAPL", end_date=end_date, cache_dir=tmp_path, archive_history_days=1260,
     )
 
     # Discriminating assertion: gap-fetch (start kwarg = latest+1), NOT full-history.
@@ -958,7 +1009,7 @@ def test_weekly_full_refresh_triggers_when_meta_is_8_days_old(tmp_path, monkeypa
     incremental); archive overwritten; meta updated to today.
 
     Discriminating: assertion checks yfinance.download's `start` kwarg is
-    `end_date - history_days days` (full-window), NOT `latest_stored + 1 day`
+    `end_date - archive_history_days days` (full-window), NOT `latest_stored + 1 day`
     (incremental). Distinguishes weekly-refresh path from incremental path.
     """
     from swing.data import ohlcv_archive as mod
@@ -980,14 +1031,19 @@ def test_weekly_full_refresh_triggers_when_meta_is_8_days_old(tmp_path, monkeypa
     monkeypatch.setattr(mod.yf, "download", fake_download)
 
     mod.read_or_fetch_archive(
-        "AAPL", end_date=end_date, cache_dir=tmp_path, history_days=1260,
+        "AAPL", end_date=end_date, cache_dir=tmp_path, archive_history_days=1260,
     )
 
-    # Discriminating assertion: full-window start, not gap start.
-    expected_start = end_date - timedelta(days=1260)
+    # Discriminating assertion: full-window start uses the trading-day →
+    # calendar-day conversion, NOT raw `archive_history_days` as a calendar
+    # delta. Codex R1 Critical 1: passing `timedelta(days=1260)` would yield
+    # only ~3.45 years instead of the locked 5y retention.
+    from swing.data.ohlcv_archive import _calendar_window_for_trading_days
+    expected_start = end_date - timedelta(days=_calendar_window_for_trading_days(1260))
     assert recorded_kwargs.get("start") == expected_start, (
         f"expected weekly-refresh full-window start={expected_start}, "
-        f"got start={recorded_kwargs.get('start')} — incremental path fired instead"
+        f"got start={recorded_kwargs.get('start')} — incremental path or "
+        f"raw-calendar-days fallback fired instead"
     )
     # Meta updated to today (when the weekly refresh ran), NOT end_date.
     meta = json.loads((tmp_path / "AAPL.meta.json").read_text())
@@ -1022,7 +1078,7 @@ def test_atomic_replace_preserves_prior_archive_under_simulated_crash(tmp_path, 
 
     with pytest.raises(OSError, match="simulated crash"):
         mod.read_or_fetch_archive(
-            "AAPL", end_date=end_date, cache_dir=tmp_path, history_days=1260,
+            "AAPL", end_date=end_date, cache_dir=tmp_path, archive_history_days=1260,
         )
 
     # Prior archive byte-stable: still has Close=99.0 from pre_existing.
@@ -1043,7 +1099,7 @@ def test_empty_yfinance_result_returns_none(tmp_path, monkeypatch):
     monkeypatch.setattr(mod.yf, "download", empty_download)
 
     result = mod.read_or_fetch_archive(
-        "DELISTED", end_date=date(2026, 4, 28), cache_dir=tmp_path, history_days=1260,
+        "DELISTED", end_date=date(2026, 4, 28), cache_dir=tmp_path, archive_history_days=1260,
     )
     assert result is None
     assert not (tmp_path / "DELISTED.parquet").exists()
@@ -1062,7 +1118,7 @@ def test_multiindex_columns_are_squeezed(tmp_path, monkeypatch):
     monkeypatch.setattr(mod.yf, "download", multiindex_download)
 
     result = mod.read_or_fetch_archive(
-        "AAPL", end_date=date(2026, 4, 28), cache_dir=tmp_path, history_days=1260,
+        "AAPL", end_date=date(2026, 4, 28), cache_dir=tmp_path, archive_history_days=1260,
     )
     assert result is not None
     # df['Close'] must be a Series (1-D), not a DataFrame (2-D).
@@ -1091,7 +1147,7 @@ def test_end_date_in_past_returns_archive_slice_up_to_end_date(tmp_path, monkeyp
 
     end_date = archive_end - timedelta(days=4)
     result = mod.read_or_fetch_archive(
-        "AAPL", end_date=end_date, cache_dir=tmp_path, history_days=1260,
+        "AAPL", end_date=end_date, cache_dir=tmp_path, archive_history_days=1260,
     )
     assert result is not None
     assert result.index.max().date() <= end_date, (
@@ -1118,12 +1174,63 @@ def test_corrupted_meta_falls_back_to_full_refresh(tmp_path, monkeypatch):
     monkeypatch.setattr(mod.yf, "download", tracking_download)
 
     result = mod.read_or_fetch_archive(
-        "AAPL", end_date=end_date, cache_dir=tmp_path, history_days=1260,
+        "AAPL", end_date=end_date, cache_dir=tmp_path, archive_history_days=1260,
     )
     assert result is not None
     assert len(fetched) == 1, "corrupted meta should trigger exactly one refresh"
-    # Full-window start (refresh path).
-    assert fetched[0].get("start") == end_date - timedelta(days=1260)
+    # Full-window start uses the trading-day → calendar-day conversion.
+    from swing.data.ohlcv_archive import _calendar_window_for_trading_days
+    assert fetched[0].get("start") == end_date - timedelta(
+        days=_calendar_window_for_trading_days(1260)
+    )
+
+
+def test_parquet_fresh_meta_missing_recovers_via_full_refresh(tmp_path, monkeypatch):
+    """Codex R1 Major 1 resolution — cross-file atomicity skew is benign.
+
+    Scenario: a previous run wrote `{TICKER}.parquet` atomically, then
+    crashed BEFORE writing `{TICKER}.meta.json`. The next read sees a
+    fresh-looking parquet with no meta. Helper's freshness logic must
+    treat 'meta missing' as 'last_full_refresh_date unknown' →
+    needs_full_refresh = True → recovery via a full-history refresh.
+    Cost: one extra yfinance call. Correctness: preserved. Discriminating:
+    asserts the refresh actually fires (NOT a vacuous 'returns data' check).
+    """
+    from swing.data import ohlcv_archive as mod
+
+    end_date = date(2026, 4, 28)
+    archive = _mk_yf_frame([end_date - timedelta(days=1), end_date])
+    archive.to_parquet(tmp_path / "AAPL.parquet")
+    # Deliberately NO meta file — simulates skew after a crash between the
+    # two atomic-replace operations.
+    assert not (tmp_path / "AAPL.meta.json").exists()
+
+    refresh_calls = []
+
+    def tracking_download(ticker, **kwargs):
+        refresh_calls.append(kwargs)
+        return _mk_yf_frame([end_date - timedelta(days=2),
+                             end_date - timedelta(days=1), end_date])
+
+    monkeypatch.setattr(mod.yf, "download", tracking_download)
+
+    result = mod.read_or_fetch_archive(
+        "AAPL", end_date=end_date, cache_dir=tmp_path, archive_history_days=1260,
+    )
+
+    assert result is not None
+    # Discriminating: must have fired a full-history refresh, not silently
+    # treated the parquet as cache-fresh.
+    assert len(refresh_calls) == 1, (
+        "fresh-parquet/missing-meta skew should trigger exactly one refresh; "
+        f"got {len(refresh_calls)} yfinance calls"
+    )
+    from swing.data.ohlcv_archive import _calendar_window_for_trading_days
+    assert refresh_calls[0].get("start") == end_date - timedelta(
+        days=_calendar_window_for_trading_days(1260)
+    ), "full-history start kwarg missing — incremental path fired instead"
+    # Meta now written.
+    assert (tmp_path / "AAPL.meta.json").exists()
 ```
 
 - [ ] **Step 3c: Run tests to confirm failure**
@@ -1150,7 +1257,7 @@ Schema:
   may join (e.g., last-incremental-fetch timestamp).
 
 Coherence policy (per OHLCV archive consolidation plan locked decision §2.2):
-1. New ticker (no archive on disk) → full-history fetch (start = end_date - history_days).
+1. New ticker (no archive on disk) → full-history fetch (start = end_date - archive_history_days).
 2. Weekly full-refresh: if (today - last_full_refresh_date).days >= 7 → full-history fetch.
 3. Otherwise incremental: if latest_stored_bar < end_date → fetch (latest+1, end_date+1).
 4. Else cache hit → return archive slice ≤ end_date with NO yfinance call.
@@ -1244,6 +1351,19 @@ def _squeeze_multiindex(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _calendar_window_for_trading_days(trading_days: int) -> int:
+    """Convert trading-day retention to a calendar-day yfinance window.
+
+    Codex R1 Critical 1 resolution: 1260 trading days is NOT 1260 calendar
+    days (~3.45 years); a 5y retention requires ceil(1260 * 7/5) + 14 ≈ 1778
+    calendar days for yfinance's start kwarg, with the +14 buffer covering
+    holidays and exchange closures. Caller truncates the returned DataFrame
+    to last `trading_days` rows post-fetch.
+    """
+    import math
+    return int(math.ceil(trading_days * 7 / 5)) + 14
+
+
 def _yf_download_window(ticker: str, *, start: date, end: date) -> pd.DataFrame:
     """Wrap yf.download with the project's gotcha-resistant kwargs.
     `start` is inclusive, `end` is exclusive in yfinance — we always pass
@@ -1282,7 +1402,7 @@ def read_or_fetch_archive(
     *,
     end_date: date,
     cache_dir: Path,
-    history_days: int,
+    archive_history_days: int,
 ) -> pd.DataFrame | None:
     """Read the per-ticker archive, refreshing from yfinance as needed,
     return rows ≤ end_date.
@@ -1294,7 +1414,7 @@ def read_or_fetch_archive(
             today's last completed session — the helper does not validate.
         cache_dir: archive directory (typically `cfg.paths.prices_cache_dir`).
             Must already exist.
-        history_days: full-history fetch window (typically `cfg.ohlcv_archive.history_days`).
+        archive_history_days: full-history fetch window (typically `cfg.archive.archive_history_days`).
 
     Returns:
         DataFrame indexed by date with OHLCV columns; rows ≤ end_date.
@@ -1325,10 +1445,17 @@ def read_or_fetch_archive(
     )
 
     if needs_full_refresh:
-        full_start = end_date - timedelta(days=history_days)
+        # Trading-day retention → calendar-day fetch window with holiday buffer
+        # (Codex R1 Critical 1 resolution): 1260 trading days ≈ 1778 calendar
+        # days; passing 1260 calendar would yield only ~3.45 years.
+        full_calendar_days = _calendar_window_for_trading_days(archive_history_days)
+        full_start = end_date - timedelta(days=full_calendar_days)
         fetched = _yf_download_window(ticker, start=full_start, end=end_date)
         if fetched.empty:
             return None
+        # Truncate to most-recent archive_history_days rows in case yfinance
+        # returned more than expected (over-fetch from the calendar buffer).
+        fetched = fetched.tail(archive_history_days)
         _write_archive_atomic(parquet_path, fetched)
         _write_meta_atomic(meta_path, {"last_full_refresh_date": today.isoformat()})
         return fetched.loc[fetched.index.date <= end_date]
@@ -1387,9 +1514,9 @@ Expected: ≥1 hit.
 
 **Files:**
 - Modify: `swing/prices.py`.
-- Modify: `swing/cli.py:148, 315` (pass `history_days=cfg.ohlcv_archive.history_days`).
+- Modify: `swing/cli.py:148, 315` (pass `archive_history_days=cfg.archive.archive_history_days`).
 - Modify: `swing/pipeline/runner.py:146` (same).
-- Modify: `tests/test_prices.py` (or wherever — verify with `git ls-files tests/ | grep -i price`).
+- Modify: `tests/prices/test_prices.py` (verified at HEAD `a4811f4` via `git ls-files tests/ | grep test_prices.py`).
 
 **Discriminating-test sanity check:** A backward-compat test must verify `PriceFetcher.get(ticker, lookback_days)` returns ≤ `lookback_days` calendar-days-back of bars and that bars > `as_of_date` are excluded. A bug that silently dropped the `lookback_days` slice (e.g., always returning the full archive) would pass any "result is non-empty" test; the discriminating assertion checks the date range upper-bound AND the day-count is reasonable for the requested window. Per dispatch brief §7 watch item #6.
 
@@ -1401,7 +1528,7 @@ The cache-miss-propagation test must verify the empty-fetch behavior: under the 
 git ls-files tests/ | xargs grep -l "PriceFetcher\|swing.prices" 2>/dev/null | head
 ```
 
-Expected: a single canonical test file. Likely `tests/test_prices.py` or `tests/data/test_prices.py`. Note its path; the new tests go alongside the existing ones.
+Expected: `tests/prices/test_prices.py` (verified at plan-authoring time). The new tests go alongside the existing ones.
 
 - [ ] **Step 4b: Read the existing test file and mark which tests are PER-AS-OF-DATE-CACHE-INTERNAL (need replacement) vs API-LEVEL (preserve)**
 
@@ -1414,7 +1541,7 @@ Add to the located test file:
 ```python
 def test_pricefetcher_get_consumes_archive_helper(tmp_path, monkeypatch):
     """`PriceFetcher.get` calls `read_or_fetch_archive` with the resolved
-    end_date and the constructor's history_days; returns a DataFrame.
+    end_date and the constructor's archive_history_days; returns a DataFrame.
 
     Discriminating: under a regression that bypassed the helper (e.g.,
     fell back to direct yf.download for missing-archive case), the assertion
@@ -1428,11 +1555,11 @@ def test_pricefetcher_get_consumes_archive_helper(tmp_path, monkeypatch):
 
     recorded: dict = {}
 
-    def fake_helper(ticker, *, end_date, cache_dir, history_days):
+    def fake_helper(ticker, *, end_date, cache_dir, archive_history_days):
         recorded["ticker"] = ticker
         recorded["end_date"] = end_date
         recorded["cache_dir"] = cache_dir
-        recorded["history_days"] = history_days
+        recorded["archive_history_days"] = archive_history_days
         return pd.DataFrame(
             {
                 "Open": [100.0, 101.0],
@@ -1446,13 +1573,13 @@ def test_pricefetcher_get_consumes_archive_helper(tmp_path, monkeypatch):
 
     monkeypatch.setattr("swing.prices.read_or_fetch_archive", fake_helper)
 
-    fetcher = PriceFetcher(cache_dir=tmp_path, history_days=1260)
+    fetcher = PriceFetcher(cache_dir=tmp_path, archive_history_days=1260)
     df = fetcher.get("AAPL", lookback_days=120, as_of_date=date(2026, 4, 28))
 
     assert recorded["ticker"] == "AAPL"
     assert recorded["end_date"] == date(2026, 4, 28)
     assert recorded["cache_dir"] == tmp_path
-    assert recorded["history_days"] == 1260
+    assert recorded["archive_history_days"] == 1260
     assert list(df.columns) == ["Open", "High", "Low", "Close", "Volume"]
 
 
@@ -1478,12 +1605,12 @@ def test_pricefetcher_get_slices_to_lookback_days(tmp_path, monkeypatch):
         index=pd.to_datetime([end_date - timedelta(days=199 - i) for i in range(200)]),
     )
 
-    def fake_helper(ticker, *, end_date, cache_dir, history_days):
+    def fake_helper(ticker, *, end_date, cache_dir, archive_history_days):
         return deep_archive
 
     monkeypatch.setattr("swing.prices.read_or_fetch_archive", fake_helper)
 
-    fetcher = PriceFetcher(cache_dir=tmp_path, history_days=1260)
+    fetcher = PriceFetcher(cache_dir=tmp_path, archive_history_days=1260)
     df = fetcher.get("AAPL", lookback_days=30, as_of_date=end_date)
 
     # All returned rows within lookback window.
@@ -1503,17 +1630,17 @@ def test_pricefetcher_get_raises_on_empty_helper_result(tmp_path, monkeypatch):
 
     monkeypatch.setattr("swing.prices.read_or_fetch_archive", lambda *a, **kw: None)
 
-    fetcher = PriceFetcher(cache_dir=tmp_path, history_days=1260)
+    fetcher = PriceFetcher(cache_dir=tmp_path, archive_history_days=1260)
     with pytest.raises(ValueError, match="No data for"):
         fetcher.get("DELISTED", lookback_days=120, as_of_date=date(2026, 4, 28))
 
 
-def test_pricefetcher_default_history_days_is_5y(tmp_path):
-    """Constructor `history_days` defaults to 1260 when omitted (kwarg-with-default
+def test_pricefetcher_default_archive_history_days_is_5y(tmp_path):
+    """Constructor `archive_history_days` defaults to 1260 when omitted (kwarg-with-default
     preserves backward-compat with existing call sites that don't pass the kwarg)."""
     from swing.prices import PriceFetcher
     fetcher = PriceFetcher(cache_dir=tmp_path)
-    assert fetcher.history_days == 1260
+    assert fetcher.archive_history_days == 1260
 
 
 def test_pricefetcher_clear_cache_removes_meta_and_tmp_files(tmp_path):
@@ -1543,12 +1670,12 @@ If existing internal-cache tests reference the per-as-of-date filename pattern (
 - [ ] **Step 4d: Run tests to confirm failure**
 
 ```bash
-python -m pytest tests/test_prices.py -v 2>&1 | tail -20
+python -m pytest tests/prices/test_prices.py -v 2>&1 | tail -20
 ```
 
 (Adjust path.)
 
-Expected: new tests fail with `AttributeError: 'PriceFetcher' object has no attribute 'history_days'` or `ImportError: cannot import name 'read_or_fetch_archive' from 'swing.prices'`.
+Expected: new tests fail with `AttributeError: 'PriceFetcher' object has no attribute 'archive_history_days'` or `ImportError: cannot import name 'read_or_fetch_archive' from 'swing.prices'`.
 
 - [ ] **Step 4e: Refactor `swing/prices.py`**
 
@@ -1589,12 +1716,12 @@ class PriceFetcher:
     (or last completed NYSE session if as_of_date is None).
 
     `cache_dir` is the archive directory (per-ticker `{TICKER}.parquet` +
-    `{TICKER}.meta.json` sidecar); `history_days` is the full-history fetch
+    `{TICKER}.meta.json` sidecar); `archive_history_days` is the full-history fetch
     depth used by the helper's weekly-refresh / new-ticker paths.
     """
 
     cache_dir: Path
-    history_days: int = 1260
+    archive_history_days: int = 1260
 
     def __post_init__(self) -> None:
         self.cache_dir = Path(self.cache_dir)
@@ -1614,7 +1741,7 @@ class PriceFetcher:
             ticker,
             end_date=effective,
             cache_dir=self.cache_dir,
-            history_days=self.history_days,
+            archive_history_days=self.archive_history_days,
         )
         if df is None or df.empty:
             raise ValueError(f"No data for {ticker}")
@@ -1635,14 +1762,14 @@ class PriceFetcher:
         return count
 ```
 
-- [ ] **Step 4f: Update call sites to pass `history_days`**
+- [ ] **Step 4f: Update call sites to pass `archive_history_days`**
 
 In `swing/cli.py:148`:
 
 ```python
     fetcher = PriceFetcher(
         cache_dir=cfg.paths.prices_cache_dir,
-        history_days=cfg.ohlcv_archive.history_days,
+        archive_history_days=cfg.archive.archive_history_days,
     )
 ```
 
@@ -1653,7 +1780,7 @@ In `swing/pipeline/runner.py:146`:
 ```python
     fetcher = PriceFetcher(
         cache_dir=cfg.paths.prices_cache_dir,
-        history_days=cfg.ohlcv_archive.history_days,
+        archive_history_days=cfg.archive.archive_history_days,
     )
 ```
 
@@ -1662,7 +1789,7 @@ In `swing/pipeline/runner.py:146`:
 - [ ] **Step 4g: Run prices tests to confirm pass**
 
 ```bash
-python -m pytest tests/test_prices.py -v 2>&1 | tail -20
+python -m pytest tests/prices/test_prices.py -v 2>&1 | tail -20
 ```
 
 Expected: all pass.
@@ -1678,7 +1805,7 @@ Expected: prior count + new prices tests = ~1337 passed.
 - [ ] **Step 4i: Commit**
 
 ```bash
-git add swing/prices.py swing/cli.py swing/pipeline/runner.py tests/test_prices.py
+git add swing/prices.py swing/cli.py swing/pipeline/runner.py tests/prices/test_prices.py
 git commit -m "refactor(prices): Task 4 — PriceFetcher consumes archive helper"
 ```
 
@@ -1694,7 +1821,7 @@ Expected: ≥1 hit.
 
 ## Task 5: Wrap `swing/pipeline/ohlcv.py fetch_daily_bars`
 
-**Goal:** `fetch_daily_bars` becomes a thin adapter over `read_or_fetch_archive`. Adds required kwargs `cache_dir: Path, history_days: int` (no defaults; callers must pass). Preserves `n_bars`, `as_of_date`, partial-bar strip semantics. The prior `yf.Ticker(ticker).history(...)` call is REMOVED. The existing `test_fetch_daily_bars_does_not_pass_threads_kwarg` test is REPLACED with a helper-level equivalent (already in Task 3).
+**Goal:** `fetch_daily_bars` becomes a thin adapter over `read_or_fetch_archive`. Adds required kwargs `cache_dir: Path, archive_history_days: int` (no defaults; callers must pass). Preserves `n_bars`, `as_of_date`, partial-bar strip semantics. The prior `yf.Ticker(ticker).history(...)` call is REMOVED. The existing `test_fetch_daily_bars_does_not_pass_threads_kwarg` test is REPLACED with a helper-level equivalent (already in Task 3).
 
 **Files:**
 - Modify: `swing/pipeline/ohlcv.py`.
@@ -1738,7 +1865,7 @@ def test_fetch_daily_bars_strips_in_progress_bar_via_as_of_date(tmp_path, monkey
         index=pd.to_datetime(helper_dates),
     )
 
-    def fake_helper(ticker, *, end_date, cache_dir, history_days):
+    def fake_helper(ticker, *, end_date, cache_dir, archive_history_days):
         assert end_date == as_of
         assert cache_dir == tmp_path
         return helper_frame
@@ -1746,7 +1873,7 @@ def test_fetch_daily_bars_strips_in_progress_bar_via_as_of_date(tmp_path, monkey
     monkeypatch.setattr(mod, "read_or_fetch_archive", fake_helper)
 
     result = mod.fetch_daily_bars(
-        "AAPL", n_bars=5, as_of_date=as_of, cache_dir=tmp_path, history_days=1260,
+        "AAPL", n_bars=5, as_of_date=as_of, cache_dir=tmp_path, archive_history_days=1260,
     )
     assert result is not None
     # Last retained bar's date is STRICTLY before as_of (partial-bar strip).
@@ -1774,7 +1901,7 @@ def test_fetch_daily_bars_retains_last_bar_when_complete(tmp_path, monkeypatch):
                         lambda *a, **kw: helper_frame)
 
     result = mod.fetch_daily_bars(
-        "AAPL", n_bars=5, as_of_date=as_of, cache_dir=tmp_path, history_days=1260,
+        "AAPL", n_bars=5, as_of_date=as_of, cache_dir=tmp_path, archive_history_days=1260,
     )
     assert result is not None
     assert len(result) == 5
@@ -1796,7 +1923,7 @@ def test_fetch_daily_bars_propagates_exception(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="yfinance down"):
         mod.fetch_daily_bars(
             "AAPL", as_of_date=date(2026, 4, 28),
-            cache_dir=tmp_path, history_days=1260,
+            cache_dir=tmp_path, archive_history_days=1260,
         )
 
 
@@ -1810,7 +1937,7 @@ def test_fetch_daily_bars_returns_none_on_empty_helper_result(tmp_path, monkeypa
 
     result = mod.fetch_daily_bars(
         "AAPL", as_of_date=date(2026, 4, 28),
-        cache_dir=tmp_path, history_days=1260,
+        cache_dir=tmp_path, archive_history_days=1260,
     )
     assert result is None
 
@@ -1825,13 +1952,13 @@ def test_fetch_daily_bars_passes_resolved_session_as_end_date(tmp_path, monkeypa
 
     recorded: dict = {}
 
-    def fake_helper(ticker, *, end_date, cache_dir, history_days):
+    def fake_helper(ticker, *, end_date, cache_dir, archive_history_days):
         recorded["end_date"] = end_date
         return pd.DataFrame()  # Empty → fetch_daily_bars returns None
 
     monkeypatch.setattr(mod, "read_or_fetch_archive", fake_helper)
 
-    mod.fetch_daily_bars("AAPL", cache_dir=tmp_path, history_days=1260)
+    mod.fetch_daily_bars("AAPL", cache_dir=tmp_path, archive_history_days=1260)
 
     expected_session = action_session_for_run(datetime.now())
     assert recorded["end_date"] == expected_session, (
@@ -1846,7 +1973,7 @@ def test_fetch_daily_bars_passes_resolved_session_as_end_date(tmp_path, monkeypa
 python -m pytest tests/pipeline/test_ohlcv.py -v 2>&1 | tail -25
 ```
 
-Expected: new tests fail because `fetch_daily_bars` doesn't yet accept `cache_dir`/`history_days` kwargs and doesn't yet consume `read_or_fetch_archive`.
+Expected: new tests fail because `fetch_daily_bars` doesn't yet accept `cache_dir`/`archive_history_days` kwargs and doesn't yet consume `read_or_fetch_archive`.
 
 - [ ] **Step 5d: Refactor `swing/pipeline/ohlcv.py`**
 
@@ -1877,13 +2004,13 @@ def fetch_daily_bars(
     n_bars: int = 60,
     as_of_date: date | None = None,
     cache_dir: Path,
-    history_days: int,
+    archive_history_days: int,
 ) -> pd.DataFrame | None:
     """Fetch up to `n_bars` completed daily bars ≤ as_of_date / session.
 
     Now archive-aware: consults `swing.data.ohlcv_archive.read_or_fetch_archive`
-    instead of calling yfinance directly. Cache_dir + history_days come from
-    config (typically `cfg.paths.prices_cache_dir` + `cfg.ohlcv_archive.history_days`).
+    instead of calling yfinance directly. Cache_dir + archive_history_days come from
+    config (typically `cfg.paths.prices_cache_dir` + `cfg.archive.archive_history_days`).
 
     Strip rule (CLAUDE.md gotcha + spec §3.1): drops the last row iff
     `last_bar.date() >= session`. Defends against in-progress intraday bar
@@ -1895,7 +2022,7 @@ def fetch_daily_bars(
     """
     session = as_of_date or action_session_for_run(datetime.now())
     df = read_or_fetch_archive(
-        ticker, end_date=session, cache_dir=cache_dir, history_days=history_days,
+        ticker, end_date=session, cache_dir=cache_dir, archive_history_days=archive_history_days,
     )
     if df is None or df.empty:
         return None
@@ -1971,15 +2098,15 @@ Expected: ≥1 hit.
 
 ## Task 6: `OhlcvCache` backing — wire kwargs + discriminating multi-path tests
 
-**Goal:** `OhlcvCache._fetch_bundle_worker` passes `cache_dir` and `history_days` to `fetch_daily_bars`. Discriminating tests verify (a) cold-start from disk archive (in-memory cache empty + warm disk archive → bundle hydrates from disk), (b) warm-cache precedence (in-memory hit → no disk read).
+**Goal:** `OhlcvCache._fetch_bundle_worker` passes `cache_dir` and `archive_history_days` to `fetch_daily_bars`. Discriminating tests verify (a) cold-start from disk archive (in-memory cache empty + warm disk archive → bundle hydrates from disk), (b) warm-cache precedence (in-memory hit → no disk read).
 
 **Files:**
-- Modify: `swing/web/ohlcv_cache.py:217-246` (worker passes cache_dir/history_days; cfg accessor on dataclass).
+- Modify: `swing/web/ohlcv_cache.py:217-246` (worker passes cache_dir/archive_history_days; cfg accessor on dataclass).
 - Modify: `tests/web/test_ohlcv_cache.py` (add 2 discriminating tests; existing tests continue to pass since they monkeypatch `fetch_daily_bars` directly and don't care about its signature change as long as the new kwargs default sensibly OR the existing tests' `fake_fetch` accepts them via **kwargs).
 
 **Discriminating-test sanity check:** Per dispatch brief §7 watch item #10. The cold-start test seeds the disk archive (via `read_or_fetch_archive`-callable shape OR via direct file write) with KNOWN bars; the warm-cache test pre-populates `OhlcvCache._store` with a known bundle and asserts `read_or_fetch_archive` is NEVER called. A vacuous "bundle returned" test would pass under either branch even if cold-start always re-fetched yfinance; only the explicit "helper called once for cold start, zero times for warm" assertion distinguishes.
 
-Existing tests at `tests/web/test_ohlcv_cache.py` use `monkeypatch.setattr(ohlcv_mod, "fetch_daily_bars", fake_fetch)` where `fake_fetch` typically has signature `(ticker, *, n_bars=...)`. After Task 5 the real `fetch_daily_bars` requires `cache_dir, history_days` kwargs; the monkeypatched `fake_fetch` must accept them too (via `**kwargs` or explicit kwargs). Either update existing fakes to accept `**kwargs` OR keep them strict and let the worker's call satisfy them — verify in Step 6a.
+Existing tests at `tests/web/test_ohlcv_cache.py` use `monkeypatch.setattr(ohlcv_mod, "fetch_daily_bars", fake_fetch)` where `fake_fetch` typically has signature `(ticker, *, n_bars=...)`. After Task 5 the real `fetch_daily_bars` requires `cache_dir, archive_history_days` kwargs; the monkeypatched `fake_fetch` must accept them too (via `**kwargs` or explicit kwargs). Either update existing fakes to accept `**kwargs` OR keep them strict and let the worker's call satisfy them — verify in Step 6a.
 
 - [ ] **Step 6a: Audit existing tests/web/test_ohlcv_cache.py for fake_fetch signature compatibility**
 
@@ -1987,7 +2114,7 @@ Existing tests at `tests/web/test_ohlcv_cache.py` use `monkeypatch.setattr(ohlcv
 grep -n "def fake_fetch\|def slow_fetch\|def always_fail\|def good_fetch\|def tracking_fetch\|def no_data_fetch\|def mixed_fetch" tests/web/test_ohlcv_cache.py
 ```
 
-For each, examine its signature. If any uses strict kwargs (e.g., `def fake_fetch(ticker, *, n_bars=60)`), it will reject the new `cache_dir=` and `history_days=` from the worker. Quick fix: change every fake's signature to `def fake_fetch(ticker, *, n_bars=60, **_)` to absorb the extra kwargs. This is a mechanical edit; preserve semantics.
+For each, examine its signature. If any uses strict kwargs (e.g., `def fake_fetch(ticker, *, n_bars=60)`), it will reject the new `cache_dir=` and `archive_history_days=` from the worker. Quick fix: change every fake's signature to `def fake_fetch(ticker, *, n_bars=60, **_)` to absorb the extra kwargs. This is a mechanical edit; preserve semantics.
 
 - [ ] **Step 6b: Apply the mechanical signature update to existing fakes**
 
@@ -2019,7 +2146,7 @@ def test_ohlcv_cache_cold_start_hydrates_from_disk_archive(tmp_path, monkeypatch
     from swing.config import Config, Paths, Account, PositionLimits, Risk, VCP, \
         TrendTemplate, RS, ETFExclusion, FocusRanking, NearTriggerConfig, \
         StopAdvisoryConfig, SizingConfig, PipelineConfig, ExportConfig, Web, \
-        ClassifierConfig, OhlcvArchiveConfig
+        ClassifierConfig, ArchiveConfig
     from swing.web.ohlcv_cache import OhlcvCache
     from swing.pipeline import ohlcv as ohlcv_mod
 
@@ -2040,20 +2167,30 @@ def test_ohlcv_cache_cold_start_hydrates_from_disk_archive(tmp_path, monkeypatch
         json.dumps({"last_full_refresh_date": end_date.isoformat()})
     )
 
+    # Codex R1 Major 4 resolution: freeze the helper's "today" so the
+    # weekly-refresh check is stable across wallclock advance. Without this,
+    # once real today drifts > 7 days past end_date the helper would enter
+    # the weekly-refresh branch and try to call yfinance live.
+    from swing.data import ohlcv_archive as archive_mod
+    monkeypatch.setattr(
+        archive_mod, "_last_completed_session_today",
+        lambda: end_date + timedelta(days=1),
+    )
+
     helper_calls: list[str] = []
     real_helper = ohlcv_mod.read_or_fetch_archive
 
-    def counting_helper(ticker, *, end_date, cache_dir, history_days):
+    def counting_helper(ticker, *, end_date, cache_dir, archive_history_days):
         helper_calls.append(ticker)
         return real_helper(
-            ticker, end_date=end_date, cache_dir=cache_dir, history_days=history_days,
+            ticker, end_date=end_date, cache_dir=cache_dir, archive_history_days=archive_history_days,
         )
 
     monkeypatch.setattr(ohlcv_mod, "read_or_fetch_archive", counting_helper)
 
     cfg = _minimal_config_for_ohlcv_cache(
         prices_cache_dir=tmp_path,
-        ohlcv_archive_history_days=1260,
+        archive_history_days=1260,
     )  # see helper at bottom of test file; minimal Config fixture
 
     cache = OhlcvCache(cfg)
@@ -2081,7 +2218,7 @@ def test_ohlcv_cache_warm_hit_does_not_call_helper(tmp_path, monkeypatch):
 
     cfg = _minimal_config_for_ohlcv_cache(
         prices_cache_dir=tmp_path,
-        ohlcv_archive_history_days=1260,
+        archive_history_days=1260,
     )
 
     cache = OhlcvCache(cfg)
@@ -2101,7 +2238,7 @@ def test_ohlcv_cache_warm_hit_does_not_call_helper(tmp_path, monkeypatch):
     assert bundles["AAPL"].previous_close == 99.0
 ```
 
-The `_minimal_config_for_ohlcv_cache` helper builds a Config with the smallest viable shape; if this helper already exists in the test file (it likely does for the existing tests that construct a Config), reuse it and extend it with `ohlcv_archive=OhlcvArchiveConfig(history_days=ohlcv_archive_history_days)`. Otherwise add a small fixture function near the top of the test file.
+The `_minimal_config_for_ohlcv_cache` helper builds a Config with the smallest viable shape; if this helper already exists in the test file (it likely does for the existing tests that construct a Config), reuse it and extend it with `archive=ArchiveConfig(archive_history_days=archive_history_days)`. Otherwise add a small fixture function near the top of the test file.
 
 - [ ] **Step 6d: Run the tests to confirm failure**
 
@@ -2109,9 +2246,9 @@ The `_minimal_config_for_ohlcv_cache` helper builds a Config with the smallest v
 python -m pytest tests/web/test_ohlcv_cache.py::test_ohlcv_cache_cold_start_hydrates_from_disk_archive tests/web/test_ohlcv_cache.py::test_ohlcv_cache_warm_hit_does_not_call_helper -v 2>&1 | tail -20
 ```
 
-Expected: failures because `OhlcvCache._fetch_bundle_worker` doesn't yet pass `cache_dir`/`history_days` to `fetch_daily_bars`.
+Expected: failures because `OhlcvCache._fetch_bundle_worker` doesn't yet pass `cache_dir`/`archive_history_days` to `fetch_daily_bars`.
 
-- [ ] **Step 6e: Wire `cache_dir` and `history_days` through `OhlcvCache._fetch_bundle_worker`**
+- [ ] **Step 6e: Wire `cache_dir` and `archive_history_days` through `OhlcvCache._fetch_bundle_worker`**
 
 Modify `swing/web/ohlcv_cache.py:217-246`:
 
@@ -2128,7 +2265,7 @@ Modify `swing/web/ohlcv_cache.py:217-246`:
                     ticker,
                     n_bars=60,
                     cache_dir=self._cfg.paths.prices_cache_dir,
-                    history_days=self._cfg.ohlcv_archive.history_days,
+                    archive_history_days=self._cfg.archive.archive_history_days,
                 )
             except Exception as exc:
                 log.warning("ohlcv fetch raised for %s: %s", ticker, exc)
@@ -2200,13 +2337,13 @@ done
 
 Expected: each of Tasks 1-6 has ≥1 commit subject matching its task ID. Cross-plan aliasing (other plans' Task N commits) is expected.
 
-- [ ] **Step 7d: Toml-shadowing audit (final)**
+- [ ] **Step 7d: Toml-shadowing audit (final, locked-form)**
 
 ```bash
-grep -n "archive_history_days\|ohlcv_archive" swing.config.toml
+git ls-files | xargs grep -ln "archive_history_days" 2>/dev/null
 ```
 
-Expected: empty output (the field is code-only; toml does not shadow). Per Task 2 step 2a, this should already be clean.
+Expected output: ONLY the files this plan touched (Python source under `swing/`, test files under `tests/`, this plan document). NO toml/yaml/json/cfg/ini hit anywhere — that's the toml-shadowing failure mode we're guarding against (`aeb2084` 2026-04-28 lesson + Codex R1 Major 3). If a tracked config-shaped file references `archive_history_days`, surface in return report.
 
 - [ ] **Step 7e: yfinance gotcha compliance check**
 
@@ -2244,7 +2381,7 @@ Operator runs in this order on their machine:
 
 **2. Placeholder scan:** No "TBD", "TODO", "implement later", "fill in details", "appropriate error handling", "Similar to Task N" present. Every step has actual content.
 
-**3. Type consistency:** `read_or_fetch_archive(ticker: str, *, end_date: date, cache_dir: Path, history_days: int) -> pd.DataFrame | None` is the contract used uniformly across Tasks 3, 4, 5, 6. `PriceFetcher.history_days: int = 1260` matches the kwarg name and default in Tasks 2, 4. `OhlcvArchiveConfig.history_days` (NOT `archive_history_days`) is the dataclass field name; the field accessor is `cfg.ohlcv_archive.history_days`. Toml audit grep uses `archive_history_days` AND `ohlcv_archive` because the toml override could appear under either name (the audit catches both). Migration script's filename regex matches `[A-Za-z0-9.\-]+` for tickers (covers BRK.B, BF-A).
+**3. Type consistency:** `read_or_fetch_archive(ticker: str, *, end_date: date, cache_dir: Path, archive_history_days: int) -> pd.DataFrame | None` is the contract used uniformly across Tasks 3, 4, 5, 6. `PriceFetcher.archive_history_days: int = 1260` matches the kwarg name and default in Tasks 2, 4. `ArchiveConfig.archive_history_days` (NOT `archive_history_days`) is the dataclass field name; the field accessor is `cfg.archive.archive_history_days`. Toml audit grep uses `archive_history_days` AND `ohlcv_archive` because the toml override could appear under either name (the audit catches both). Migration script's filename regex matches `[A-Za-z0-9.\-]+` for tickers (covers BRK.B, BF-A).
 
 **4. Adversarial-review watch items pre-emptive coverage** (per dispatch brief §7):
 - WI1 (Multi-path coverage): Task 4 (PriceFetcher), Task 5 (pipeline.ohlcv), Task 6 (OhlcvCache cold-start + warm-cache) all have explicit tests.
@@ -2252,7 +2389,7 @@ Operator runs in this order on their machine:
 - WI3 (Migration script idempotency): Task 1 has `test_idempotency_clean_state_is_a_noop` AND `test_idempotency_resumes_from_interrupted_run`. Body specifies the contract above the steps.
 - WI4 (yfinance gotchas): Task 3 helper uses `yf.download(threads=False)` exclusively; MultiIndex squeeze test is `test_multiindex_columns_are_squeezed`; `threads=False` propagation test is `test_new_ticker_triggers_full_history_fetch`'s discriminating assertion.
 - WI5 (Cache-coherence semantic correctness): Task 3 has discriminating tests for new-ticker, cache-fresh, cache-stale-incremental, weekly-refresh, end-date-in-past, corrupted-meta — every branch.
-- WI6 (Backward-compat of PriceFetcher API): Task 4 preserves `get(ticker, lookback_days, *, as_of_date=None)` signature; constructor adds `history_days` kwarg-with-default 1260 so existing call sites without the kwarg still work; Task 4 explicitly updates the three call sites (`cli.py:148, 315`; `pipeline/runner.py:146`).
+- WI6 (Backward-compat of PriceFetcher API): Task 4 preserves `get(ticker, lookback_days, *, as_of_date=None)` signature; constructor adds `archive_history_days` kwarg-with-default 1260 so existing call sites without the kwarg still work; Task 4 explicitly updates the three call sites (`cli.py:148, 315`; `pipeline/runner.py:146`).
 - WI7 (Toml-shadowing audit): Task 2 Step 2a + Task 7 Step 7d both run the grep.
 - WI8 (Discriminating-test for migration): Task 1 fixtures use known-content per-as-of-date files with deliberate overlapping dates; assertions verify newer-as_of-wins semantics + legacy deletion.
 - WI9 (Migration interruption recovery): Task 1 `test_atomic_replace_preserves_prior_archive_on_simulated_crash` (mid-rename crash) + `test_idempotency_resumes_from_interrupted_run` (resume from partial state).
@@ -2262,7 +2399,7 @@ Operator runs in this order on their machine:
 - All locked decisions §2.1-2.7 implemented as written. None impossible.
 - All precedent file paths verified (CLAUDE.md, orchestrator-context.md, phase3e-todo.md, swing/prices.py, swing/pipeline/ohlcv.py, swing/web/ohlcv_cache.py, swing/config.py).
 - One judgment-call resolution worth noting: the migration script's "duplicate-date resolution" picks the row from the higher-as_of file (newer yfinance fetch = newer adjustment factor). This is the operator-coherent choice per the corporate-action policy locked in §2.1; documented in Task 1 body.
-- One known limitation surfaced: queries with `as_of_date` deeper than `today - history_days` may return fewer bars than requested (archive doesn't extend backward beyond the configured retention window). V1 callers don't hit this in practice (PriceFetcher typically called with `as_of_date=None` → resolves to today; research-branch parity reproducibility uses its own cache per V1 out-of-scope §5).
+- One known limitation surfaced: queries with `as_of_date` deeper than `today - archive_history_days` may return fewer bars than requested (archive doesn't extend backward beyond the configured retention window). V1 callers don't hit this in practice (PriceFetcher typically called with `as_of_date=None` → resolves to today; research-branch parity reproducibility uses its own cache per V1 out-of-scope §5).
 
 ---
 
