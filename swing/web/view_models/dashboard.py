@@ -641,7 +641,29 @@ def build_dashboard(
             top_recommendations: list = []
             progress_by_id: dict = {}
             target_by_id: dict[int, int] = {}
-            if candidates:
+            # Bug-fix-C (2026-04-29): structurally exclude open-position
+            # tickers from the candidate set BEFORE matching. Mirrors the
+            # filter `build_hyp_recs_section` already does (Task 3
+            # `exclude_tickers` kwarg) so the operator never sees the same
+            # ticker in BOTH the open-positions table AND the hyp-recs
+            # panel — on EITHER the entry_post OOB rebuild path OR the
+            # full-page render path. Without this filter, hard-navigating
+            # to / after a hyp-recs trade re-rendered the just-traded
+            # ticker in the recommendations panel (operator-witnessed
+            # 2026-04-29; Codex R1 Major 1 of the prior dispatch had
+            # flagged this as ACCEPTED-with-rationale).
+            #
+            # Filter at the candidate-set level (not at top_recommendations
+            # post-prioritization) so the matcher / prioritizer never see
+            # excluded tickers — defense in depth against future synthesis
+            # paths that might surface a ticker not present in the
+            # pre-filtered candidate set.
+            open_trade_tickers = {t.ticker.upper() for t in open_trades}
+            hyp_recs_candidates = [
+                c for c in candidates
+                if c.ticker.upper() not in open_trade_tickers
+            ]
+            if hyp_recs_candidates:
                 from swing.data.repos.hypothesis import list_hypotheses
                 from swing.recommendations.hypothesis import (
                     match_candidate_to_hypotheses,
@@ -657,7 +679,7 @@ def build_dashboard(
                     )
                 )
                 all_matches = []
-                for c in candidates:
+                for c in hyp_recs_candidates:
                     all_matches.extend(
                         match_candidate_to_hypotheses(c, registry=registry)
                     )

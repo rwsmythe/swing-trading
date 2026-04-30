@@ -29,7 +29,7 @@ from fastapi.responses import HTMLResponse
 
 from swing.data.db import connect
 from swing.data.repos.cash import list_cash
-from swing.data.repos.trades import list_all_exits
+from swing.data.repos.trades import list_all_exits, list_open_trades
 from swing.trades.equity import current_equity
 from swing.web.view_models.dashboard import (
     build_hyp_recs_expanded,
@@ -55,7 +55,23 @@ def hyp_recs_refresh(request: Request):
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
     templates = request.app.state.templates
-    section_vm = build_hyp_recs_section(cfg=cfg, cache=cache, executor=executor)
+    # Bug-fix-C: thread `exclude_tickers={t.ticker for t in open_trades}`
+    # so the close-button refresh consistently excludes open-position
+    # tickers — same invariant entry_post enforces, same invariant
+    # build_dashboard now enforces. Without this, the close-button refresh
+    # would re-introduce a just-traded ticker into the panel even though
+    # both the entry_post OOB rebuild AND the full /  render correctly
+    # exclude it.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            open_trade_tickers = {t.ticker for t in list_open_trades(conn)}
+    finally:
+        conn.close()
+    section_vm = build_hyp_recs_section(
+        cfg=cfg, cache=cache, executor=executor,
+        exclude_tickers=open_trade_tickers,
+    )
     return templates.TemplateResponse(
         request,
         "partials/hypothesis_recommendations.html.j2",

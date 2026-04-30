@@ -467,3 +467,138 @@ def test_dashboard_vm_active_recommendations_field_default(seeded_db):
         price_source_degraded=False, price_source_degraded_until=None,
     )
     assert vm.active_recommendations == ()
+
+
+# ---------------------------------------------------------------------------
+# Bug-fix-C: build_dashboard's hyp-recs construction must EXCLUDE tickers
+# that already have an open position. The just-shipped Task 3 added
+# `exclude_tickers` to `build_hyp_recs_section`, consumed by entry_post's
+# OOB rebuild path. But `build_dashboard` inlines its own hyp-recs
+# construction (independent of `build_hyp_recs_section`) which had no
+# exclusion. Net effect operator caught in production (2026-04-29): hard-
+# navigating to / after a hyp-recs trade re-rendered the dashboard with
+# the just-traded ticker still in the recommendations panel. Codex R1
+# Major 1 of the prior dispatch flagged this as ACCEPTED-with-rationale;
+# operator-witnessed verification confirmed it as a live production bug.
+# ---------------------------------------------------------------------------
+
+
+def test_dashboard_vm_excludes_open_trade_tickers_from_active_recommendations(
+    seeded_db, monkeypatch,
+):
+    """Bug-fix-C: candidate tickers that already have an OPEN trade must
+    NOT appear in `vm.active_recommendations`. The exclusion must apply on
+    the FULL dashboard render path (GET /), not just the entry_post OOB
+    rebuild path.
+
+    Discriminator: pre-fix, `vm.active_recommendations` contains BOTH
+    AAA (open position) and BBB (no open position). Post-fix, only BBB
+    is present.
+
+    BBB is the witness candidate — its presence verifies the matcher is
+    still firing, so an empty result wouldn't trivially satisfy the
+    assertion.
+    """
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+    from swing.web.price_cache import PriceCache
+    from swing.web.view_models.dashboard import build_dashboard
+
+    cfg, _ = seeded_db
+    _seed_pipeline_with_candidates(cfg, [
+        {"ticker": "AAA", "bucket": "aplus", "close": 99.0, "pivot": 100.0,
+         "stop": 95.0},
+        {"ticker": "BBB", "bucket": "aplus", "close": 99.0, "pivot": 100.0,
+         "stop": 95.0},
+    ])
+    # Open position for AAA — record_entry isn't used here because the
+    # service-layer also archives a watchlist row if present, and we don't
+    # need that side effect. insert_trade_with_event is the lower-level
+    # write that records the trade row + event without touching watchlist.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="AAA", entry_date="2026-04-15",
+                entry_price=98.0, initial_shares=5, initial_stop=93.0,
+                current_stop=93.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+    finally:
+        conn.close()
+    _patched_caches(monkeypatch)
+
+    cache = PriceCache(cfg)
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=None)
+    rec_tickers = {r.ticker for r in vm.active_recommendations}
+    assert "BBB" in rec_tickers, (
+        "BBB (witness candidate, no open position) must be present — "
+        "without it, the exclusion assertion is vacuous (an empty result "
+        f"would trivially satisfy it). Got tickers={rec_tickers!r}"
+    )
+    assert "AAA" not in rec_tickers, (
+        "AAA has an open position; build_dashboard's hyp-recs construction "
+        "must structurally exclude open-position tickers so the operator "
+        "doesn't see the same ticker in BOTH the open-positions table AND "
+        f"the recommendations panel. Got tickers={rec_tickers!r}"
+    )
+
+
+def test_hyp_recs_refresh_route_excludes_open_trade_tickers(
+    seeded_db, monkeypatch,
+):
+    """Bug-fix-C: GET /hyp-recs/refresh must also exclude open-position
+    tickers from the rendered hyp-recs section. Pre-fix the route called
+    `build_hyp_recs_section` without `exclude_tickers`, so the close-
+    button refresh re-introduced a just-traded ticker into the panel.
+
+    Discriminator: pre-fix, response body contains `>AAA<` (the ticker
+    cell text). Post-fix it does not. BBB (witness) confirms the matcher
+    is still firing.
+    """
+    from fastapi.testclient import TestClient
+
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+    from swing.web.app import create_app
+
+    cfg, cfg_path = seeded_db
+    _seed_pipeline_with_candidates(cfg, [
+        {"ticker": "AAA", "bucket": "aplus", "close": 99.0, "pivot": 100.0,
+         "stop": 95.0},
+        {"ticker": "BBB", "bucket": "aplus", "close": 99.0, "pivot": 100.0,
+         "stop": 95.0},
+    ])
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="AAA", entry_date="2026-04-15",
+                entry_price=98.0, initial_shares=5, initial_stop=93.0,
+                current_stop=93.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+    finally:
+        conn.close()
+    _patched_caches(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/hyp-recs/refresh", headers={"HX-Request": "true"})
+    assert r.status_code == 200, f"Got {r.status_code}; body[:500]={r.text[:500]!r}"
+    assert ">BBB<" in r.text, (
+        "BBB (witness candidate) must appear in the refresh-route render — "
+        "otherwise the test is vacuous (empty hyp-recs would trivially "
+        f"satisfy the AAA-absence assertion). Body[:1000]={r.text[:1000]!r}"
+    )
+    assert ">AAA<" not in r.text, (
+        "AAA has an open position; /hyp-recs/refresh must thread "
+        "`exclude_tickers={t.ticker for t in list_open_trades(conn)}` to "
+        "build_hyp_recs_section. Without it, the close-button refresh "
+        "re-introduces just-traded tickers into the panel. "
+        f"Body[:1000]={r.text[:1000]!r}"
+    )
