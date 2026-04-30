@@ -24,7 +24,7 @@ from swing.trades.entry import (
     SoftWarnException, record_entry,
 )
 from swing.trades.equity import current_equity
-from swing.web.view_models.dashboard import build_dashboard, build_hyp_recs_section
+from swing.web.view_models.dashboard import build_dashboard
 from swing.web.view_models.open_positions_row import (
     build_open_positions_expanded,
     build_open_positions_row,
@@ -626,16 +626,17 @@ def entry_post(
     # the next interaction. Always-rebuild ensures cross-section
     # consistency on every successful entry.
     #
-    # The exclusion set is sourced from POST-WRITE state via
-    # `dashboard_vm.open_trades` (build_dashboard already ran AFTER
-    # record_entry), so it includes BOTH the just-traded ticker AND any
-    # pre-existing open positions whose candidate rows are also in the
-    # latest eval. Reading from `dashboard_vm.open_trades` avoids a
-    # redundant DB query and a potential snapshot mismatch (the dashboard
-    # rebuild and the hyp-recs rebuild now share the same open-trade
-    # snapshot). A shortcut `exclude_tickers={ticker.upper()}` would
-    # leak pre-existing open positions into the rebuild (Codex R1 Major 1
-    # discriminator from the prior dispatch).
+    # Render the OOB chunk from `dashboard_vm` directly (R2 Codex review
+    # 2026-04-29 Major 1). `build_dashboard` already ran (line above) AND
+    # already applies the Bug-fix-C exclude-open-positions filter to its
+    # inline hyp-recs construction, so `dashboard_vm.active_recommendations`
+    # is the correct post-write hyp-recs state. Reusing it (instead of a
+    # second `build_hyp_recs_section(...)` call) avoids a redundant DB
+    # snapshot + matcher run + price fetch AFTER `record_entry` has
+    # already committed — narrowing the post-write failure surface so a
+    # transient downstream error cannot flip a successful entry into a
+    # 500 response. Single source of truth for the hyp-recs panel state
+    # within this request.
     #
     # The partial is the SOLE source of the section markup (CLAUDE.md
     # "HTMX OOB-swap partial drift" gotcha) — render it via
@@ -645,14 +646,16 @@ def entry_post(
     # has a valid swap target on the dashboard. On pages that don't
     # carry the target id (e.g., standalone /watchlist), HTMX silently
     # skips the OOB swap — emitting the chunk is harmless there.
-    open_trade_tickers = {t.ticker for t in dashboard_vm.open_trades}
-    hyp_recs_vm = build_hyp_recs_section(
-        cfg=cfg, cache=cache, executor=executor,
-        exclude_tickers=open_trade_tickers,
-    )
+    #
+    # `vm=dashboard_vm` works because the partial reads only
+    # `vm.active_recommendations` — the same field name on both
+    # `DashboardVM` and `HypRecsSectionVM`. Duck-typed VM contract
+    # (CLAUDE.md base-layout VM rule applies only when base.html.j2
+    # dereferences the field; here it's the per-section partial that
+    # consumes the field, with the same shape on both VM types).
     hyp_recs_section_html = templates.get_template(
         "partials/hypothesis_recommendations.html.j2"
-    ).render(request=request, vm=hyp_recs_vm, oob=True)
+    ).render(request=request, vm=dashboard_vm, oob=True)
 
     return HTMLResponse(Markup(
         f'<div id="status-strip" hx-swap-oob="true">{status_strip_html}</div>'

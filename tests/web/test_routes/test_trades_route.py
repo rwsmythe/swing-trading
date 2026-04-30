@@ -2258,6 +2258,15 @@ def test_entry_post_watchlist_origin_success_emits_hyp_recs_oob_swap_for_cross_s
     success MUST emit the hyp-recs OOB marker pair so the dashboard's
     hyp-recs panel stays consistent with the new open-position state.
 
+    Codex R2 Minor 1 (2026-04-29): the marker-presence assertion alone is
+    insufficient — a regression could emit an OOB hyp-recs section while
+    leaving the just-traded ticker stale inside it. Strengthened by
+    seeding the just-traded ticker AS BOTH a watchlist row AND an A+
+    candidate (so it would naturally surface in hyp-recs); plus a
+    witness candidate (`TESTWITNESS`) that's NOT being traded. The OOB
+    section body must contain `>TESTWITNESS<` (witness) and must NOT
+    contain `>TESTWATCH<` (just-traded ticker excluded post-write).
+
     Background. The same ticker can plausibly appear on the watchlist AND
     in the hyp-recs panel simultaneously (both surfaces source from
     candidates + watchlist under the latest eval). Pre-fix, a watchlist-
@@ -2266,11 +2275,6 @@ def test_entry_post_watchlist_origin_success_emits_hyp_recs_oob_swap_for_cross_s
     traded ticker remained visible in the recommendations table on the
     dashboard until the next interaction. Always-rebuild ensures cross-
     section consistency on every successful entry.
-
-    Discriminator: the OOB chunk uses `oob=True` rendering of the
-    hypothesis_recommendations partial, which ALWAYS emits the
-    `<section id="hypothesis-recommendations" hx-swap-oob="true">`
-    element (populated or hidden+empty per the partial's branches).
 
     On pages that don't carry the `#hypothesis-recommendations` target
     (e.g., standalone /watchlist), HTMX silently skips the OOB swap —
@@ -2286,6 +2290,10 @@ def test_entry_post_watchlist_origin_success_emits_hyp_recs_oob_swap_for_cross_s
     from swing.web.price_cache import PriceCache, PriceSnapshot
 
     cfg, cfg_path = seeded_db
+    # Seed the watchlist row + the same ticker AND a witness as A+
+    # candidates so the matcher would surface BOTH in hyp-recs absent
+    # exclusion. Post-write, the just-traded ticker must be excluded;
+    # the witness must remain.
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
@@ -2298,6 +2306,24 @@ def test_entry_post_watchlist_origin_success_emits_hyp_recs_oob_swap_for_cross_s
                 last_close=180.0, last_pivot=181.0, last_stop=170.0,
                 last_adr_pct=2.5, missing_criteria=None, notes=None,
             ))
+            cur = conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date,
+                    finviz_csv_path, tickers_evaluated, aplus_count,
+                    watch_count, skip_count, excluded_count, error_count,
+                    rs_universe_version, rs_universe_hash)
+                   VALUES (?, ?, ?, NULL, 2, 2, 0, 0, 0, 0, 'v1', 'h1')""",
+                ("2026-04-29T09:00:00", "2026-04-28", "2026-04-29"),
+            )
+            eval_id = int(cur.lastrowid)
+            for ticker in ("TESTWATCH", "TESTWITNESS"):
+                conn.execute(
+                    """INSERT INTO candidates
+                       (evaluation_run_id, ticker, bucket, close, pivot,
+                        initial_stop, rs_method)
+                       VALUES (?, ?, 'aplus', 180.0, 181.0, 170.0, 'universe')""",
+                    (eval_id, ticker),
+                )
     finally:
         conn.close()
     monkeypatch.setattr(
@@ -2335,10 +2361,38 @@ def test_entry_post_watchlist_origin_success_emits_hyp_recs_oob_swap_for_cross_s
     assert pattern.search(r.text) is not None, (
         "Watchlist-origin POST MUST emit the hyp-recs OOB marker pair so "
         "the dashboard's hyp-recs panel rebuilds consistently with the new "
-        "open-position state. Without this, watchlist-origin entry of a "
-        "ticker that appears in both watchlist AND hyp-recs leaves the "
-        "hyp-recs panel STALE on the dashboard. "
+        "open-position state. "
         f"Body[:1000]={r.text[:1000]!r}"
+    )
+    # Extract the OOB section body and assert the semantic invariant:
+    # witness present, just-traded ticker absent.
+    section_match = re.search(
+        r'<section[^>]*id="hypothesis-recommendations"[^>]*hx-swap-oob="true"[^>]*>'
+        r'(?P<body>.*?)</section>',
+        r.text, re.DOTALL | re.IGNORECASE,
+    )
+    if section_match is None:
+        section_match = re.search(
+            r'<section[^>]*hx-swap-oob="true"[^>]*id="hypothesis-recommendations"[^>]*>'
+            r'(?P<body>.*?)</section>',
+            r.text, re.DOTALL | re.IGNORECASE,
+        )
+    assert section_match is not None, (
+        f"OOB hyp-recs section not found. Body[:1500]={r.text[:1500]!r}"
+    )
+    section_body = section_match.group("body")
+    assert ">TESTWITNESS<" in section_body, (
+        "TESTWITNESS (untraded A+ candidate) must appear in the OOB "
+        "rebuild — without it, the test is vacuous (an empty hyp-recs "
+        "section would trivially satisfy the just-traded-absence "
+        f"assertion). Section body[:500]={section_body[:500]!r}"
+    )
+    assert ">TESTWATCH<" not in section_body, (
+        "TESTWATCH (just-traded) must NOT leak into the OOB rebuild on "
+        "watchlist-origin entry. The exclusion set on the watchlist-"
+        "origin success path must include the just-traded ticker even "
+        "though origin != 'hyp-recs'. "
+        f"Section body[:500]={section_body[:500]!r}"
     )
 
 
