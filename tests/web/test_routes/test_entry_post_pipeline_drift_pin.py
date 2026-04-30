@@ -1,23 +1,29 @@
-"""Behavior-pin test: cross-fragment drift in entry_post when a pipeline_run
-completes between record_entry and build_dashboard.
+"""Behavior-pin test: post-record-commit rebuild rebinds to latest pipeline_run.
 
 Phase 2 R1 Minor 2 advisory; Phase 4 cleanup-remainder Task 12. NOT a fix —
 this test pins the CURRENT behavior so a future fix dispatch makes the
 test FAIL deliberately and updates the assertion.
 
-Mechanism: `record_entry` (Connection A) commits the trade row. After
-A commits, `build_dashboard` (Connection B) opens a NEW connection to
-read state for the OOB rebuild chunks (status_strip, open_positions,
-watchlist_top5, hyp_recs). If a NEW completed pipeline_run lands
-between A.commit and B.open, the dashboard reads against the newer
-run's state — even though record_entry's trade row binds to the older
-run's chart-pattern classification.
+Codex executing-plans R1 Major 3 scope clarification: the original
+"cross-fragment drift" framing was over-strong. The route renders all
+OOB fragments from a SINGLE `dashboard_vm` (one build_dashboard call,
+one connection-snapshot), so OOB chunks among themselves are
+internally consistent by construction. The actual drift is between
+the persisted trade row (whose chart-pattern snapshot was captured at
+form-render time, before record_entry committed) and the rebuilt OOB
+sections (built from a connection opened AFTER record_entry's commit).
+This test pins ONLY the rebuild side: when a new pipeline_run completes
+between record_entry's commit and build_dashboard's connection open,
+the rebuilt sections reflect the NEW pipeline_run.
 
-Pin: the rebuilt OOB hyp-recs section reflects the LATER pipeline's
-candidate set (the drift). A future fix that pins the rebuild to the
-SAME PipelineRunBinding the form-render captured would change the
-rebuilt section's content; this test fails deliberately and the fix
-dispatch updates the assertion.
+Pinning the trade-row-vs-rebuild divergence in a single test would
+require seeding a chart-pattern classification under P1, asserting
+the persisted trade row binds to it, AND asserting OOB sections show
+P2 — strictly more involved scenario, deferred. The current test
+captures the rebuild-binding behavior alone, which is the load-bearing
+half of the drift. A future fix that pins the rebuild to a request-
+entry-time PipelineRunBinding flips the assertion; the fix dispatch
+updates this test (and may add the trade-row assertion).
 """
 from __future__ import annotations
 

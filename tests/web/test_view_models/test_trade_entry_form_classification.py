@@ -267,3 +267,14 @@ def test_build_entry_form_vm_pipeline_bound_in_standalone_eval_only_state(
         f"completed pipeline_run exists. Got {vm.chart_pattern_algo!r}."
     )
     assert vm.chart_pattern_algo_confidence is None
+    # Codex executing-plans R1 Major 2 acknowledgment: this assertion holds
+    # under BOTH the correct helper (latest_completed_pipeline_run → returns
+    # None → site short-circuits) AND a hypothetical mis-migration to
+    # latest_evaluation_run_id (returns standalone eval id → call becomes
+    # `get_classification(pipeline_run_id=<eval_id>)` → no row → algo None).
+    # Same FK-structural-mismatch gap the CLI test explicitly accepts.
+    # Genuine discrimination requires a contrived id-collision confound
+    # (standalone eval id == real pipeline_run id with classification),
+    # which is not a realistic mis-migration threat. The migration is
+    # pinned by the source-level RED-phase test in this file + Task 6's
+    # structural-guard test (centralization invariant).

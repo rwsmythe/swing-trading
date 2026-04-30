@@ -1099,14 +1099,18 @@ def test_build_dashboard_pipeline_bound_consumers_correctly_render_empty_in_stan
     finally:
         executor.shutdown(wait=False)
 
-    # Pipeline-bound contract assertions — covers all three sites
-    # (today_decisions / last_pipeline_ts / stale_banner) per Codex R4 M4.
-    assert vm.today_decisions == [] or vm.today_decisions == (), (
-        f"Pipeline-bound (site 1 / today_decisions): must be empty when "
-        f"no completed pipeline_runs exist. Got: {vm.today_decisions!r}. "
-        f"Mis-migration here would source recommendations from the "
-        f"standalone eval — wrong contract."
-    )
+    # Pipeline-bound contract assertions — sites 2 + 3 only.
+    # Codex executing-plans R1 Major 1: site 1 (today_decisions) is NOT a
+    # strictly pipeline-bound surface — `list_for_session(conn, action_session,
+    # evaluation_run_id=None)` falls back to a DATE-ONLY filter on
+    # `daily_recommendations` (see swing/data/repos/recommendations.py:62-72).
+    # Task 2 preserved this pre-migration behavior; the plan's "pipeline-bound"
+    # framing for site 1 was over-strong. The site STILL benefits from
+    # centralization (id-DESC tiebreaker; future-proof against re-introducing
+    # a mixed-anchor inline query), but its no-completed-pipeline behavior is
+    # date-only fallback, not "empty". Source-level RED-phase test +
+    # Task 6 structural-guard pin the migration; the strict pipeline-bound
+    # contract is enforced for last_pipeline_ts / stale_banner only.
     assert vm.status_strip.last_pipeline_ts is None, (
         f"Pipeline-bound (site 2 / last_pipeline_ts): must be None when "
         f"no completed pipeline_runs exist (even though a standalone eval "
