@@ -2251,14 +2251,32 @@ def test_entry_post_hyp_recs_origin_success_exclusion_set_from_post_write_state(
     )
 
 
-def test_entry_post_watchlist_origin_success_does_not_emit_hyp_recs_oob_swap(
+def test_entry_post_watchlist_origin_success_emits_hyp_recs_oob_swap_for_cross_section_consistency(
     seeded_db, monkeypatch,
 ):
-    """Task 5 inverse: POST origin=watchlist success → response body does
-    NOT carry the colocated `id="hypothesis-recommendations"` +
-    `hx-swap-oob="true"` marker pair. The hyp-recs OOB swap is gated on
-    `origin_coerced == 'hyp-recs'`; watchlist trades leave the panel
-    untouched.
+    """Codex R1 Major 1 (2026-04-29 pure-OOB review): POST origin=watchlist
+    success MUST emit the hyp-recs OOB marker pair so the dashboard's
+    hyp-recs panel stays consistent with the new open-position state.
+
+    Background. The same ticker can plausibly appear on the watchlist AND
+    in the hyp-recs panel simultaneously (both surfaces source from
+    candidates + watchlist under the latest eval). Pre-fix, a watchlist-
+    origin entry that traded such a ticker updated open-positions +
+    watchlist correctly but left the hyp-recs panel STALE — the just-
+    traded ticker remained visible in the recommendations table on the
+    dashboard until the next interaction. Always-rebuild ensures cross-
+    section consistency on every successful entry.
+
+    Discriminator: the OOB chunk uses `oob=True` rendering of the
+    hypothesis_recommendations partial, which ALWAYS emits the
+    `<section id="hypothesis-recommendations" hx-swap-oob="true">`
+    element (populated or hidden+empty per the partial's branches).
+
+    On pages that don't carry the `#hypothesis-recommendations` target
+    (e.g., standalone /watchlist), HTMX silently skips the OOB swap —
+    emitting the chunk is harmless there. The dashboard is the primary
+    consumer; cross-section consistency on the dashboard is the
+    invariant under test.
     """
     import re
     from datetime import datetime
@@ -2314,9 +2332,13 @@ def test_entry_post_watchlist_origin_success_does_not_emit_hyp_recs_oob_swap(
         r'|<section[^>]*\bhx-swap-oob="true"[^>]*\bid="hypothesis-recommendations"',
         re.IGNORECASE,
     )
-    assert pattern.search(r.text) is None, (
-        "Watchlist-origin POST must NOT emit the hyp-recs OOB marker pair. "
-        "The hyp-recs panel rebuild is gated on origin=hyp-recs only."
+    assert pattern.search(r.text) is not None, (
+        "Watchlist-origin POST MUST emit the hyp-recs OOB marker pair so "
+        "the dashboard's hyp-recs panel rebuilds consistently with the new "
+        "open-position state. Without this, watchlist-origin entry of a "
+        "ticker that appears in both watchlist AND hyp-recs leaves the "
+        "hyp-recs panel STALE on the dashboard. "
+        f"Body[:1000]={r.text[:1000]!r}"
     )
 
 

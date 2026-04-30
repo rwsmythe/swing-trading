@@ -614,15 +614,26 @@ def entry_post(
         "partials/watchlist_top5_section.html.j2"
     ).render(request=request, vm=dashboard_vm)
 
-    # On origin=hyp-recs success, emit an OOB swap of
-    # `#hypothesis-recommendations` so (a) the form's `<tr>` (in the
-    # hyp-recs tbody) gets replaced as the section is rebuilt, and (b) the
-    # just-traded ticker is removed from the recommendations panel. The
-    # exclusion set is sourced from POST-WRITE state via
-    # `list_open_trades(conn)` AFTER `record_entry` persisted the new
-    # trade row, so it includes BOTH the just-traded ticker AND any
+    # Emit the `#hypothesis-recommendations` OOB rebuild on EVERY origin
+    # (R1 Codex review of the pure-OOB architecture, 2026-04-29). The
+    # prior gating on `origin_coerced == "hyp-recs"` was unsound: the
+    # SAME ticker can plausibly appear on the watchlist AND in hyp-recs
+    # simultaneously (both surfaces source from candidates + watchlist
+    # under the latest eval). A watchlist-origin entry that traded such
+    # a ticker would update open-positions + watchlist correctly but
+    # leave the hyp-recs panel STALE — the just-traded ticker would
+    # remain visible in the recommendations table on the dashboard until
+    # the next interaction. Always-rebuild ensures cross-section
+    # consistency on every successful entry.
+    #
+    # The exclusion set is sourced from POST-WRITE state via
+    # `dashboard_vm.open_trades` (build_dashboard already ran AFTER
+    # record_entry), so it includes BOTH the just-traded ticker AND any
     # pre-existing open positions whose candidate rows are also in the
-    # latest eval. A shortcut `exclude_tickers={ticker.upper()}` would
+    # latest eval. Reading from `dashboard_vm.open_trades` avoids a
+    # redundant DB query and a potential snapshot mismatch (the dashboard
+    # rebuild and the hyp-recs rebuild now share the same open-trade
+    # snapshot). A shortcut `exclude_tickers={ticker.upper()}` would
     # leak pre-existing open positions into the rebuild (Codex R1 Major 1
     # discriminator from the prior dispatch).
     #
@@ -631,22 +642,17 @@ def entry_post(
     # `.render(..., oob=True)`. The `oob=True` branch ALWAYS emits the
     # `#hypothesis-recommendations` element (with `hx-swap-oob="true"`),
     # even when the rebuild surfaces zero recommendations, so HTMX always
-    # has a valid swap target.
-    hyp_recs_section_html = ""
-    if origin_coerced == "hyp-recs":
-        conn = connect(cfg.paths.db_path)
-        try:
-            with conn:
-                open_trade_tickers = {t.ticker for t in list_open_trades(conn)}
-        finally:
-            conn.close()
-        hyp_recs_vm = build_hyp_recs_section(
-            cfg=cfg, cache=cache, executor=executor,
-            exclude_tickers=open_trade_tickers,
-        )
-        hyp_recs_section_html = templates.get_template(
-            "partials/hypothesis_recommendations.html.j2"
-        ).render(request=request, vm=hyp_recs_vm, oob=True)
+    # has a valid swap target on the dashboard. On pages that don't
+    # carry the target id (e.g., standalone /watchlist), HTMX silently
+    # skips the OOB swap — emitting the chunk is harmless there.
+    open_trade_tickers = {t.ticker for t in dashboard_vm.open_trades}
+    hyp_recs_vm = build_hyp_recs_section(
+        cfg=cfg, cache=cache, executor=executor,
+        exclude_tickers=open_trade_tickers,
+    )
+    hyp_recs_section_html = templates.get_template(
+        "partials/hypothesis_recommendations.html.j2"
+    ).render(request=request, vm=hyp_recs_vm, oob=True)
 
     return HTMLResponse(Markup(
         f'<div id="status-strip" hx-swap-oob="true">{status_strip_html}</div>'
