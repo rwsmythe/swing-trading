@@ -992,3 +992,127 @@ def test_status_strip_template_unrealized_line_absent_when_no_open(
     acct_end = body.index('id="open-risk-tile"')
     acct_html = body[acct_start:acct_end]
     assert "Unrealized:" not in acct_html
+
+
+def test_dashboard_source_contains_zero_inline_pipeline_runs_state_queries():
+    """Phase 4 Task 2: source-level discriminator for the migration.
+
+    The 3 inline `pipeline_runs WHERE state='complete'` queries in
+    build_dashboard's body (today_decisions, last_pipeline_ts,
+    stale_banner) MUST be replaced by `latest_completed_pipeline_run`
+    consumption. The discriminator inspects the production source
+    file directly: zero matches post-migration; three matches pre-
+    migration → failing.
+
+    NOT a runtime-helper-capture test (Codex R2 M1: build_dashboard
+    already invokes the helper for chart-pattern at dashboard.py:456,
+    so runtime capture cannot distinguish "migrated" from "not
+    migrated"). Source-level inspection is unambiguous and fails-loud
+    if any of the 3 target sites is left inline.
+
+    NOTE on the `state` query at dashboard.py's last_pipeline_state
+    site (started_ts DESC, no state filter): this site is INTENTIONALLY
+    NOT migrated per §"Brief vs reality" item 1. The regex below
+    matches only `WHERE state='complete'`; the `last_pipeline_state`
+    inline query does NOT match (it has no `WHERE state` filter).
+    """
+    import re
+
+    INLINE_PATTERN = re.compile(  # noqa: N806 — module-level constant style
+        r"FROM\s+pipeline_runs(?:\s+(?:AS\s+)?\w+)?\s+WHERE\s+state\s*=\s*'complete'",
+        re.IGNORECASE,
+    )
+    swing_root = Path(__file__).resolve().parents[3]
+    text = (swing_root / "swing" / "web" / "view_models" / "dashboard.py").read_text(
+        encoding="utf-8",
+    )
+    # Implementer deviation (Phase 4 Task 2): plan's regex as-written also
+    # catches the `latest_evaluation_run_id` helper (defined at module
+    # level, BEFORE build_dashboard). That helper is intentionally retained
+    # — it has a different contract (with-standalone-eval fallback) and is
+    # consumed by CLI surfaces. Scope the source-level discriminator to
+    # text starting at `def build_dashboard(` so the test asserts ONLY on
+    # the 3 build_dashboard inline-query sites the plan migrates.
+    build_dashboard_offset = text.index("def build_dashboard(")
+    body = text[build_dashboard_offset:]
+    matches = list(INLINE_PATTERN.finditer(body))
+    line_numbers = [
+        body[: m.start()].count("\n") + 1
+        + text[:build_dashboard_offset].count("\n")
+        for m in matches
+    ]
+    assert matches == [], (
+        f"build_dashboard must consume `latest_completed_pipeline_run` "
+        f"instead of inline `pipeline_runs WHERE state='complete'` "
+        f"queries. Inline queries still present at lines: {line_numbers}. "
+        "Migrate today_decisions / last_pipeline_ts / stale_banner sites "
+        "to consume the binding."
+    )
+
+
+def test_build_dashboard_pipeline_bound_consumers_correctly_render_empty_in_standalone_eval_only_state(  # noqa: E501
+    seeded_db, monkeypatch,
+):
+    """Brief §3.C per-site discriminator. Standalone-eval-only state: zero
+    completed pipeline_runs, one standalone eval. Pipeline-bound consumers
+    (today_decisions, last_pipeline_ts, stale_banner) MUST render empty/
+    None — they correctly consume `latest_completed_pipeline_run` (which
+    returns None in this state). A mis-migration that accidentally
+    consumed `latest_evaluation_run_id` (with-fallback) would render
+    standalone-eval data here → fails the contract assertion.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from swing.data.db import connect
+    from swing.web.price_cache import PriceCache
+    from swing.web.view_models.dashboard import build_dashboard
+
+    cfg, _ = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            # Standalone eval ONLY — NO pipeline_run row.
+            conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+                    tickers_evaluated, aplus_count, watch_count, skip_count,
+                    excluded_count, error_count)
+                   VALUES ('2026-04-29T09:00:00','2026-04-28','2026-04-29',
+                           NULL, 0, 0, 0, 0, 0, 0)"""
+            )
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *, deadline_seconds, executor: {},
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+
+    cache = PriceCache(cfg)
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        vm = build_dashboard(
+            cfg=cfg, cache=cache, executor=executor, ohlcv_cache=None,
+        )
+    finally:
+        executor.shutdown(wait=False)
+
+    # Pipeline-bound contract assertions — covers all three sites
+    # (today_decisions / last_pipeline_ts / stale_banner) per Codex R4 M4.
+    assert vm.today_decisions == [] or vm.today_decisions == (), (
+        f"Pipeline-bound (site 1 / today_decisions): must be empty when "
+        f"no completed pipeline_runs exist. Got: {vm.today_decisions!r}. "
+        f"Mis-migration here would source recommendations from the "
+        f"standalone eval — wrong contract."
+    )
+    assert vm.status_strip.last_pipeline_ts is None, (
+        f"Pipeline-bound (site 2 / last_pipeline_ts): must be None when "
+        f"no completed pipeline_runs exist (even though a standalone eval "
+        f"is present). Got: {vm.status_strip.last_pipeline_ts!r}."
+    )
+    assert vm.stale_banner is None, (
+        "Pipeline-bound (site 3 / stale_banner): must be None when no "
+        "completed pipeline_runs exist."
+    )

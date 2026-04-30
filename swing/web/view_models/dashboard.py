@@ -545,24 +545,19 @@ def build_dashboard(
     try:
         with conn:  # atomic read snapshot across all queries
             open_trades = list_open_trades(conn)
-            # Tranche C T4 (Bug 7): bind today_decisions to the pipeline's
-            # OWN eval via pipeline_runs.evaluation_run_id when populated.
-            # Eliminates the mixed-anchor inconsistency where today_decisions
-            # could show a ticker that the chart-scope resolver reported as
-            # out-of-scope (because chart-scope already binds via the FK).
-            # Legacy NULL-FK rows fall back to the pre-T4 date-only filter
-            # so older runs still render today_decisions.
-            pipeline_eval_row = conn.execute(
-                """SELECT id, evaluation_run_id FROM pipeline_runs
-                   WHERE state = 'complete'
-                   ORDER BY finished_ts DESC LIMIT 1"""
-            ).fetchone()
-            pipeline_run_id = (
-                pipeline_eval_row[0] if pipeline_eval_row else None
-            )
-            pipeline_eval_id = (
-                pipeline_eval_row[1] if pipeline_eval_row else None
-            )
+            # Phase 4 (Task 2): consume the shared latest_completed_pipeline_run
+            # helper for today_decisions / last_pipeline_ts / stale_banner.
+            # Pipeline-bound contract: when no completed pipeline_runs exist,
+            # all three sites correctly degrade (recs empty; last_pipeline_ts
+            # None; banner None). Bug-7 family closure: id DESC tiebreaker
+            # is now centralized in the helper.
+            binding = latest_completed_pipeline_run(conn)
+            if binding is not None:
+                pipeline_run_id = binding.run_id
+                pipeline_eval_id = binding.evaluation_run_id
+            else:
+                pipeline_run_id = None
+                pipeline_eval_id = None
             recs = list_for_session(
                 conn, action_session, evaluation_run_id=pipeline_eval_id,
             )
@@ -588,31 +583,30 @@ def build_dashboard(
             # Latest pipeline run — two independent reads so an in-flight run
             # (finished_ts IS NULL) doesn't mask the last-known-good completion.
             # `last_pipeline_ts` = most-recent COMPLETED run's finished_ts
-            #                      (when we last had a successful data refresh).
+            #                      (now sourced from the binding above).
             # `last_pipeline_state` = state of the most-recent-started row
             #                      (so operators see 'running'/'failed' live).
-            ts_row = conn.execute(
-                """SELECT finished_ts FROM pipeline_runs
-                   WHERE state = 'complete'
-                   ORDER BY finished_ts DESC LIMIT 1"""
-            ).fetchone()
-            last_pipeline_ts = ts_row[0] if ts_row else None
+            #                      DELIBERATELY a separate inline query —
+            #                      `started_ts DESC` (no state filter) is
+            #                      the in-flight-state surface; the
+            #                      structural-guard test (Task 6) recognizes
+            #                      this exception by ORDER BY shape.
+            last_pipeline_ts = binding.finished_ts if binding else None
             state_row = conn.execute(
                 """SELECT state FROM pipeline_runs
                    ORDER BY started_ts DESC LIMIT 1"""
             ).fetchone()
             last_pipeline_state = state_row[0] if state_row else None
             # Stale banner: most recent complete run's action_session < today's action_session.
-            row = conn.execute(
-                """SELECT action_session_date FROM pipeline_runs
-                   WHERE state='complete'
-                   ORDER BY finished_ts DESC LIMIT 1"""
-            ).fetchone()
             stale_banner = None
-            if row is not None and row[0] < action_session:
+            if (
+                binding is not None
+                and binding.action_session_date < action_session
+            ):
                 stale_banner = (
-                    f"Last pipeline session: {row[0]} — decisions below are for session "
-                    f"{action_session}. Run pipeline for the current session."
+                    f"Last pipeline session: {binding.action_session_date} —"
+                    f" decisions below are for session {action_session}."
+                    f" Run pipeline for the current session."
                 )
             # Tranche C T4 follow-up (adversarial review Major 2): bind
             # candidates_by_ticker (and the flag_tags it feeds) to the SAME
