@@ -84,12 +84,12 @@ def test_new_ticker_triggers_full_history_fetch(tmp_path, monkeypatch):
         f"got {recorded_kwargs}"
     )
     from swing.data.ohlcv_archive import _calendar_window_for_trading_days
-    expected_full_start = end_date - timedelta(
+    expected_full_start = FIXED_TODAY - timedelta(
         days=_calendar_window_for_trading_days(1260)
     )
     assert recorded_kwargs.get("start") == expected_full_start, (
         f"full-history start kwarg should be {expected_full_start} "
-        f"(end_date - calendar window for 1260 trading days); "
+        f"(FIXED_TODAY - calendar window for 1260 trading days); "
         f"got {recorded_kwargs.get('start')} — calendar/trading-day "
         f"semantic regression"
     )
@@ -101,7 +101,11 @@ def test_cache_fresh_skips_yfinance(tmp_path, monkeypatch):
     from swing.data import ohlcv_archive as mod
 
     end_date = date(2026, 4, 28)
-    archive = _mk_yf_frame([end_date - timedelta(days=2), end_date - timedelta(days=1), end_date])
+    archive = _mk_yf_frame([
+        FIXED_TODAY - timedelta(days=2),
+        FIXED_TODAY - timedelta(days=1),
+        FIXED_TODAY,
+    ])
     archive.to_parquet(tmp_path / "AAPL.parquet")
     (tmp_path / "AAPL.meta.json").write_text(
         json.dumps({"last_full_refresh_date": (end_date - timedelta(days=3)).isoformat()})
@@ -116,7 +120,8 @@ def test_cache_fresh_skips_yfinance(tmp_path, monkeypatch):
         "AAPL", end_date=end_date, cache_dir=tmp_path, archive_history_days=1260,
     )
     assert result is not None
-    assert len(result) == 3
+    # Archive has [4-27, 4-28, 4-29]; end_date=4-28 slice → [4-27, 4-28] = 2 bars.
+    assert len(result) == 2
 
 
 def test_cache_stale_incremental_fetches_only_the_gap(tmp_path, monkeypatch):
@@ -202,7 +207,7 @@ def test_weekly_full_refresh_triggers_when_meta_is_8_days_old(tmp_path, monkeypa
     )
 
     from swing.data.ohlcv_archive import _calendar_window_for_trading_days
-    expected_start = end_date - timedelta(days=_calendar_window_for_trading_days(1260))
+    expected_start = FIXED_TODAY - timedelta(days=_calendar_window_for_trading_days(1260))
     assert recorded_kwargs.get("start") == expected_start, (
         f"expected weekly-refresh full-window start={expected_start}, "
         f"got start={recorded_kwargs.get('start')} — incremental path or "
@@ -292,7 +297,7 @@ def test_end_date_in_past_returns_archive_slice_up_to_end_date(tmp_path, monkeyp
     rows past end_date."""
     from swing.data import ohlcv_archive as mod
 
-    archive_end = date(2026, 4, 28)
+    archive_end = FIXED_TODAY  # 2026-04-29; archive must cover today so no gap fetch.
     archive = _mk_yf_frame([archive_end - timedelta(days=i) for i in range(10)])
     archive.to_parquet(tmp_path / "AAPL.parquet")
     (tmp_path / "AAPL.meta.json").write_text(
@@ -338,7 +343,7 @@ def test_corrupted_meta_falls_back_to_full_refresh(tmp_path, monkeypatch):
     assert result is not None
     assert len(fetched) == 1, "corrupted meta should trigger exactly one refresh"
     from swing.data.ohlcv_archive import _calendar_window_for_trading_days
-    assert fetched[0].get("start") == end_date - timedelta(
+    assert fetched[0].get("start") == FIXED_TODAY - timedelta(
         days=_calendar_window_for_trading_days(1260)
     )
 
@@ -380,7 +385,100 @@ def test_parquet_fresh_meta_missing_recovers_via_full_refresh(tmp_path, monkeypa
         f"got {len(refresh_calls)} yfinance calls"
     )
     from swing.data.ohlcv_archive import _calendar_window_for_trading_days
-    assert refresh_calls[0].get("start") == end_date - timedelta(
+    assert refresh_calls[0].get("start") == FIXED_TODAY - timedelta(
         days=_calendar_window_for_trading_days(1260)
     ), "full-history start kwarg missing — incremental path fired instead"
     assert (tmp_path / "AAPL.meta.json").exists()
+
+
+def test_historical_end_date_does_not_truncate_archive_on_full_refresh(tmp_path, monkeypatch):
+    """Codex R1 Major 1 resolution — full-refresh path must always fetch up to
+    today (last_completed_session), NEVER up to caller's historical end_date.
+    Otherwise a backdated PriceFetcher.get(as_of_date=...) call could overwrite
+    the archive with truncated history.
+
+    Discriminating: passes a historical end_date AND empty archive (forcing
+    full refresh) and asserts the recorded yfinance start/end are anchored at
+    FIXED_TODAY, not the historical end_date.
+    """
+    from swing.data import ohlcv_archive as mod
+    from swing.data.ohlcv_archive import _calendar_window_for_trading_days
+
+    historical_end = date(2025, 6, 1)
+    recorded_kwargs: dict = {}
+
+    def fake_download(ticker, **kwargs):
+        recorded_kwargs.update(kwargs)
+        return _mk_yf_frame([
+            FIXED_TODAY - timedelta(days=2),
+            FIXED_TODAY - timedelta(days=1),
+            FIXED_TODAY,
+        ])
+
+    monkeypatch.setattr(mod.yf, "download", fake_download)
+
+    result = mod.read_or_fetch_archive(
+        "AAPL", end_date=historical_end, cache_dir=tmp_path,
+        archive_history_days=1260,
+    )
+
+    # Discriminating: fetch end is today, NOT the historical end_date.
+    # _yf_download_window adds +1 day to make end exclusive, so the recorded
+    # `end` kwarg is FIXED_TODAY + 1 day.
+    assert recorded_kwargs.get("end") == FIXED_TODAY + timedelta(days=1), (
+        f"helper fetched up to caller's historical end_date instead of today; "
+        f"got end={recorded_kwargs.get('end')}, expected {FIXED_TODAY + timedelta(days=1)}"
+    )
+    assert recorded_kwargs.get("start") == FIXED_TODAY - timedelta(
+        days=_calendar_window_for_trading_days(1260)
+    )
+    # Return value sliced to historical end_date — but archive on disk has
+    # today's bars too.
+    assert result is not None
+    saved = pd.read_parquet(tmp_path / "AAPL.parquet")
+    assert FIXED_TODAY in [d.date() for d in saved.index]
+
+
+def test_incremental_path_enforces_retention_cap(tmp_path, monkeypatch):
+    """Codex R1 Major 2 resolution — incremental path must enforce
+    archive_history_days. Otherwise active tickers grow unbounded over
+    years of operation.
+
+    Discriminating: seed archive with EXACTLY archive_history_days bars
+    extending up to (today - 1). Trigger incremental gap (1 day) and assert
+    the on-disk archive is still EXACTLY archive_history_days bars (oldest
+    bar dropped, today's bar appended).
+    """
+    from swing.data import ohlcv_archive as mod
+
+    cap = 100  # small cap to test trim
+    # Seed archive with `cap` bars ending at FIXED_TODAY - 1 day
+    archive_dates = [FIXED_TODAY - timedelta(days=i) for i in range(1, cap + 1)]
+    archive_dates.reverse()  # oldest first
+    archive = _mk_yf_frame(archive_dates)
+    archive.to_parquet(tmp_path / "AAPL.parquet")
+    (tmp_path / "AAPL.meta.json").write_text(
+        json.dumps({"last_full_refresh_date": (FIXED_TODAY - timedelta(days=1)).isoformat()})
+    )
+
+    def fake_download(ticker, **kwargs):
+        # Gap fetch returns just FIXED_TODAY's bar.
+        return _mk_yf_frame([FIXED_TODAY])
+
+    monkeypatch.setattr(mod.yf, "download", fake_download)
+
+    mod.read_or_fetch_archive(
+        "AAPL", end_date=FIXED_TODAY, cache_dir=tmp_path, archive_history_days=cap,
+    )
+
+    saved = pd.read_parquet(tmp_path / "AAPL.parquet")
+    assert len(saved) == cap, (
+        f"incremental path did not enforce retention cap; "
+        f"saved has {len(saved)} bars, expected {cap}"
+    )
+    # Newest bar is FIXED_TODAY (gap appended).
+    assert saved.index.max().date() == FIXED_TODAY
+    # Oldest bar dropped (was FIXED_TODAY - cap days; now FIXED_TODAY - cap + 1 days).
+    assert saved.index.min().date() == FIXED_TODAY - timedelta(days=cap - 1), (
+        f"oldest bar should have been trimmed; got {saved.index.min().date()}"
+    )

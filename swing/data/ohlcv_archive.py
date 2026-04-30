@@ -11,13 +11,16 @@ Schema:
   may join (e.g., last-incremental-fetch timestamp).
 
 Coherence policy (per OHLCV archive consolidation plan locked decision §2.2):
-1. New ticker (no archive on disk) → full-history fetch (start = end_date -
-   `_calendar_window_for_trading_days(archive_history_days)`; the helper
-   post-trims to last `archive_history_days` rows).
+1. New ticker (no archive on disk) → full-history fetch (start = today -
+   `_calendar_window_for_trading_days(archive_history_days)`; end = today
+   (`_last_completed_session_today`); the helper post-trims to last
+   `archive_history_days` rows).
 2. Weekly full-refresh: if (today - last_full_refresh_date).days >= 7 →
    full-history fetch.
-3. Otherwise incremental: if latest_stored_bar < end_date → fetch
-   (latest+1, end_date+1).
+3. Otherwise incremental: if latest_stored_bar < today → fetch
+   (latest+1, today). Caller's end_date controls the return slice ONLY,
+   never the fetch upper bound — so historical callers never truncate the
+   archive.
 4. Else cache hit → return archive slice ≤ end_date with NO yfinance call.
 
 Atomicity: all writes go to a `tempfile.NamedTemporaryFile`-style temp file
@@ -168,9 +171,10 @@ def read_or_fetch_archive(
 
     Args:
         ticker: ticker symbol; used as the archive filename stem.
-        end_date: caller's window end (inclusive); typically the most-recent
-            completed NYSE session. Caller must NOT pass dates past
-            today's last completed session — the helper does not validate.
+        end_date: caller's window end (inclusive). Used ONLY for the return
+            slice — the on-disk archive always extends to
+            `_last_completed_session_today()` regardless. Historical callers
+            receive a slice; they do not truncate the archive.
         cache_dir: archive directory (typically `cfg.paths.prices_cache_dir`).
             Must already exist.
         archive_history_days: full-history fetch window (typically
@@ -206,8 +210,8 @@ def read_or_fetch_archive(
 
     if needs_full_refresh:
         full_calendar_days = _calendar_window_for_trading_days(archive_history_days)
-        full_start = end_date - timedelta(days=full_calendar_days)
-        fetched = _yf_download_window(ticker, start=full_start, end=end_date)
+        full_start = today - timedelta(days=full_calendar_days)
+        fetched = _yf_download_window(ticker, start=full_start, end=today)
         if fetched.empty:
             return None
         fetched = fetched.tail(archive_history_days)
@@ -217,12 +221,13 @@ def read_or_fetch_archive(
 
     assert archive is not None
     latest_stored: date = archive.index.max().date()
-    if latest_stored < end_date:
+    if latest_stored < today:
         gap_start = latest_stored + timedelta(days=1)
-        gap = _yf_download_window(ticker, start=gap_start, end=end_date)
+        gap = _yf_download_window(ticker, start=gap_start, end=today)
         if not gap.empty:
             combined = pd.concat([archive, gap])
             combined = combined[~combined.index.duplicated(keep="last")].sort_index()
+            combined = combined.tail(archive_history_days)
             _write_archive_atomic(parquet_path, combined)
             archive = combined
 
