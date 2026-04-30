@@ -162,27 +162,55 @@ def _resolve_git_sha() -> str:
 
 class _CountingPriceFetcher:
     """Wraps :class:`swing.prices.PriceFetcher` to expose ``hits``/``misses``
-    counters the manifest reports. The underlying ``PriceFetcher.get`` only
-    distinguishes hit/miss internally by checking ``cache_path.exists()``;
-    this wrapper checks the same predicate AROUND the call without touching
-    swing/. Phase isolation preserved.
+    counters the manifest reports. Phase 3 (2026-04-29) replaced the
+    legacy ``_cache_path``-based counter with the per-ticker archive shape:
+    ``{TICKER}.parquet`` + ``{TICKER}.meta.json`` sidecar in
+    ``cfg.paths.prices_cache_dir``.
+
+    Hit semantics: parquet exists AND meta-staleness predicate (matches
+    ``swing.data.ohlcv_archive``'s weekly-refresh threshold) is fresh.
+    Miss semantics: parquet missing OR meta absent OR meta stale.
+
+    Phase isolation preserved: research-branch code reads ``swing/data/``
+    public symbols only (the staleness predicate, not internal state).
     """
-    def __init__(self, inner) -> None:
+    # Phase 4 Task 7: 7-day threshold mirrors the inlined predicate at
+    # `swing/data/ohlcv_archive.py:205-210` (current HEAD has no public
+    # constant; see plan Step 1 + phase3e-todo.md follow-up). If that
+    # threshold ever changes, this constant MUST be updated in lockstep.
+    _STALENESS_THRESHOLD_DAYS = 7
+
+    def __init__(self, inner, *, prices_cache_dir) -> None:
         self.inner = inner
+        self.prices_cache_dir = Path(prices_cache_dir)
         self.hits = 0
         self.misses = 0
 
+    def _archive_is_fresh(self, ticker: str) -> bool:
+        from datetime import date, timedelta
+        parquet_path = self.prices_cache_dir / f"{ticker}.parquet"
+        meta_path = self.prices_cache_dir / f"{ticker}.meta.json"
+        if not parquet_path.exists() or not meta_path.exists():
+            return False
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return False
+        try:
+            refresh_date = date.fromisoformat(meta.get("last_full_refresh_date", ""))
+        except (TypeError, ValueError):
+            return False
+        return (
+            (date.today() - refresh_date)
+            < timedelta(days=self._STALENESS_THRESHOLD_DAYS)
+        )
+
     def get(self, ticker: str, lookback_days: int, *, as_of_date=None):
-        from swing.prices import _resolve_asof
-        effective = _resolve_asof(as_of_date)
-        cache_path = self.inner._cache_path(ticker, lookback_days, effective)
-        existed = cache_path.exists()
-        df = self.inner.get(ticker, lookback_days, as_of_date=as_of_date)
-        if existed:
+        if self._archive_is_fresh(ticker):
             self.hits += 1
         else:
             self.misses += 1
-        return df
+        return self.inner.get(ticker, lookback_days, as_of_date=as_of_date)
 
 
 def run_parity(
@@ -328,7 +356,10 @@ def main(argv: list[str] | None = None) -> int:
 
     from swing.prices import PriceFetcher
     cache_dir = args.cache_dir if args.cache_dir is not None else cfg.paths.prices_cache_dir
-    fetcher = _CountingPriceFetcher(PriceFetcher(cache_dir=cache_dir))
+    fetcher = _CountingPriceFetcher(
+        PriceFetcher(cache_dir=cache_dir),
+        prices_cache_dir=cache_dir,
+    )
 
     summary = run_parity(
         cfg=cfg, evaluation_run_id=run_id, fetcher=fetcher,

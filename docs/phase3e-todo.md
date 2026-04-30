@@ -892,3 +892,7 @@ Recommendation: **(B)**. Sector capture is a tighter, more bounded scope (just d
 - orchestrator-context.md lines 156-157 (framework-presumes-sector-analysis already in decision-making).
 - `hypothesis_label` and `chart_pattern_*` patterns (snapshot-at-entry-surface frozen-at-entry; existing repo precedent).
 - 2026-04-28 hyp-recs trade-prep expansion section above (sequencing-question dependency).
+
+## 2026-04-30 Phase 4 cleanup-remainder follow-up
+
+- **(2026-04-30 Phase 4 Task 7 follow-up) Promote 7-day staleness threshold to a public constant in `swing/data/ohlcv_archive.py`.** Phase 4 Task 7 inlined a `_STALENESS_THRESHOLD_DAYS = 7` class constant in `research/parity/run.py:_CountingPriceFetcher` because the data-layer's predicate is inlined at line 205-210 with no public symbol; promoting it would have required a `swing/data/` carve-out beyond Phase 4 scope (research-branch rewrite). **Risk:** if the data-layer threshold ever changes from 7, the wrapper's duplicate must be updated in lockstep — easy to miss. Promote when a `swing/data/ohlcv_archive` touch becomes natural (next archive-related dispatch).
