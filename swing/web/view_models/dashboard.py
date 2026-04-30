@@ -326,17 +326,19 @@ def build_hyp_recs_section(
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
-            # Anchor on the latest completed pipeline run's evaluation
-            # — same anchor build_dashboard uses for candidates_by_ticker.
-            pipe_row = conn.execute(
-                """SELECT id, evaluation_run_id FROM pipeline_runs
-                   WHERE state='complete'
-                   ORDER BY finished_ts DESC, id DESC LIMIT 1"""
-            ).fetchone()
-            if pipe_row is None or pipe_row[1] is None:
-                # No completed pipeline yet — return empty section.
+            # Task 2 (R1 M2): consume the shared `latest_evaluation_run_id`
+            # helper so the hyp-recs section anchors on the same eval that
+            # `build_dashboard` binds candidates_by_ticker to. Closes the
+            # divergence between `/` and `/hyp-recs/refresh` under tied
+            # `finished_ts` (helper has `id DESC` tiebreaker per Task 1)
+            # and under standalone-eval-only state (helper falls back to
+            # the most-recent `evaluation_runs` row when no completed
+            # pipeline_runs exist).
+            eval_id = latest_evaluation_run_id(conn)
+            if eval_id is None:
+                # No eval at all (fresh install, no pipeline + no
+                # standalone eval) — empty section.
                 return HypRecsSectionVM(active_recommendations=())
-            eval_id = pipe_row[1]
             candidates = fetch_candidates_for_run(conn, eval_id)
             candidates_by_ticker = {c.ticker: c for c in candidates}
             registry = list_hypotheses(conn)
