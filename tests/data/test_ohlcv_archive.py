@@ -16,11 +16,9 @@ from __future__ import annotations
 
 import json
 from datetime import date, timedelta
-from pathlib import Path
 
 import pandas as pd
 import pytest
-
 
 FIXED_TODAY = date(2026, 4, 29)
 
@@ -82,7 +80,8 @@ def test_new_ticker_triggers_full_history_fetch(tmp_path, monkeypatch):
     meta = json.loads((tmp_path / "AAPL.meta.json").read_text())
     assert meta["last_full_refresh_date"] == FIXED_TODAY.isoformat()
     assert recorded_kwargs.get("threads") is False, (
-        f"helper did not pass threads=False to yf.download; got {recorded_kwargs}"
+        "helper did not pass threads=False to yf.download; "
+        f"got {recorded_kwargs}"
     )
     from swing.data.ohlcv_archive import _calendar_window_for_trading_days
     expected_full_start = end_date - timedelta(
@@ -134,7 +133,11 @@ def test_cache_stale_incremental_fetches_only_the_gap(tmp_path, monkeypatch):
 
     end_date = date(2026, 4, 28)
     latest_stored = end_date - timedelta(days=3)
-    archive_dates = [latest_stored - timedelta(days=2), latest_stored - timedelta(days=1), latest_stored]
+    archive_dates = [
+        latest_stored - timedelta(days=2),
+        latest_stored - timedelta(days=1),
+        latest_stored,
+    ]
     archive = _mk_yf_frame(archive_dates)
     archive.to_parquet(tmp_path / "AAPL.parquet")
     (tmp_path / "AAPL.meta.json").write_text(
@@ -153,10 +156,12 @@ def test_cache_stale_incremental_fetches_only_the_gap(tmp_path, monkeypatch):
     result = mod.read_or_fetch_archive(
         "AAPL", end_date=end_date, cache_dir=tmp_path, archive_history_days=1260,
     )
+    assert result is not None
 
     expected_start = latest_stored + timedelta(days=1)
     assert recorded_kwargs.get("start") == expected_start, (
-        f"expected incremental gap fetch start={expected_start}, got start={recorded_kwargs.get('start')}"
+        f"expected incremental gap fetch start={expected_start}, "
+        f"got start={recorded_kwargs.get('start')}"
     )
     saved = pd.read_parquet(tmp_path / "AAPL.parquet")
     assert len(saved) == 6
