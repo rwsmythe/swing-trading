@@ -444,25 +444,21 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
         # Phase 5 spec §3.6 ToCToU fix — resolve the chart-pattern
         # cache row ONCE at command start (entry-surface). Snapshot
         # then flows through EntryRequest and record_entry persists
-        # AS-IS. Single-round-trip pipeline_run resolution mirroring
-        # build_entry_form_vm and the Phase 4 watchlist pattern: the
-        # ``id`` IS the parent ``pipeline_run_id`` by construction;
-        # no secondary ``WHERE evaluation_run_id = ?`` round-trip.
+        # AS-IS. Phase 4 (Task 4): consume `latest_completed_pipeline_run`
+        # — pipeline-bound contract; chart-pattern resolve only fires
+        # when a completed pipeline exists.
         cp_algo: str | None = None
         cp_conf: float | None = None
         cp_anchor: int | None = None
         cp_evaluated = False
-        pipeline_eval_row = conn.execute(
-            """SELECT id, evaluation_run_id FROM pipeline_runs
-               WHERE state='complete'
-               ORDER BY finished_ts DESC LIMIT 1"""
-        ).fetchone()
-        if pipeline_eval_row is not None and pipeline_eval_row[0] is not None:
+        from swing.web.chart_scope import latest_completed_pipeline_run
+        binding = latest_completed_pipeline_run(conn)
+        if binding is not None and binding.run_id is not None:
             from swing.data.repos.pattern_classifications import (
                 get_classification,
             )
             cls = get_classification(
-                conn, pipeline_run_id=pipeline_eval_row[0],
+                conn, pipeline_run_id=binding.run_id,
                 ticker=ticker.upper(),
             )
             if cls is not None and cls.pattern in ("flag", "none"):

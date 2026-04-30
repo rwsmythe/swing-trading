@@ -178,3 +178,92 @@ def test_entry_form_vm_no_candidate_row_defaults_empty_sector_industry(seeded_db
     )
     assert vm.sector == ""
     assert vm.industry == ""
+
+
+def test_trades_vm_source_contains_zero_inline_pipeline_runs_state_queries():
+    """Phase 4 Task 4 (trades.py site): pre-migration 1 match at line 133 → FAIL;
+    post-migration 0 → PASS."""
+    import re
+    from pathlib import Path
+
+    INLINE_PATTERN = re.compile(  # noqa: N806
+        r"FROM\s+pipeline_runs(?:\s+(?:AS\s+)?\w+)?\s+WHERE\s+state\s*=\s*'complete'",
+        re.IGNORECASE,
+    )
+    swing_root = Path(__file__).resolve().parents[3]
+    text = (swing_root / "swing" / "web" / "view_models" / "trades.py").read_text(
+        encoding="utf-8",
+    )
+    matches = list(INLINE_PATTERN.finditer(text))
+    line_numbers = [text[: m.start()].count("\n") + 1 for m in matches]
+    assert matches == [], (
+        f"build_entry_form_vm must consume `latest_completed_pipeline_run`. "
+        f"Inline queries still present at lines: {line_numbers}."
+    )
+
+
+def test_build_entry_form_vm_pipeline_bound_in_standalone_eval_only_state(
+    seeded_db, monkeypatch,
+):
+    """Brief §3.C: pipeline-bound contract for chart-pattern resolve.
+    Standalone-eval-only state. Expected: chart_pattern_algo is None
+    (no completed pipeline → no classifications). Mis-migration would
+    attempt classification fetch keyed off the standalone eval id —
+    incorrect by contract."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.price_cache import PriceCache
+    from swing.web.view_models.trades import build_entry_form_vm
+
+    cfg, _ = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+                    tickers_evaluated, aplus_count, watch_count, skip_count,
+                    excluded_count, error_count)
+                   VALUES ('2026-04-29T09:00:00','2026-04-28','2026-04-29',
+                           NULL, 0, 0, 0, 0, 0, 0)"""
+            )
+            upsert_watchlist_entry(
+                conn,
+                WatchlistEntry(
+                    ticker="AAPL", added_date="2026-04-29",
+                    last_qualified_date="2026-04-29", status="watch",
+                    qualification_count=1, not_qualified_streak=0,
+                    last_data_asof_date="2026-04-28",
+                    entry_target=100.0, initial_stop_target=95.0,
+                    last_close=99.0, last_pivot=None, last_stop=None,
+                    last_adr_pct=2.0, missing_criteria=None, notes=None,
+                ),
+            )
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *, deadline_seconds, executor: {},
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+
+    cache = PriceCache(cfg)
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        vm = build_entry_form_vm(
+            ticker="AAPL", cfg=cfg, cache=cache, executor=executor,
+            origin="watchlist",
+        )
+    finally:
+        executor.shutdown(wait=False)
+
+    assert vm.chart_pattern_algo is None, (
+        f"Pipeline-bound: chart_pattern_algo must be None when no "
+        f"completed pipeline_run exists. Got {vm.chart_pattern_algo!r}."
+    )
+    assert vm.chart_pattern_algo_confidence is None

@@ -16,6 +16,7 @@ from swing.trades.entry import entry_rationale_options
 from swing.trades.equity import current_equity
 from swing.trades.exit import ExitReason
 from swing.trades.stop_adjust import stop_adjust_rationale_options
+from swing.web.chart_scope import latest_completed_pipeline_run
 from swing.web.price_cache import PriceCache
 
 
@@ -120,29 +121,17 @@ def build_entry_form_vm(
             open_trades = list_open_trades(conn)
             exits = list_all_exits(conn)
             cash_movements = list_cash(conn)
-            # Resolve the latest-completed pipeline_run ONCE: chart-pattern
-            # ALWAYS binds to this row (both origins, existing behavior);
-            # hyp-recs origin ALSO uses this row's evaluation_run_id as
-            # the sector/industry/pivot/initial_stop anchor (Task 9
-            # R4-Major-2 — matches build_hyp_recs_expanded's anchor so
-            # the form does not split anchors across columns).
-            # `id DESC` tiebreaker matches latest_completed_pipeline_run
-            # in chart_scope.py (defends against second-precision
-            # finished_ts collisions on rapid runs).
-            pipeline_eval_row = conn.execute(
-                """SELECT id, evaluation_run_id, finished_ts FROM pipeline_runs
-                   WHERE state = 'complete'
-                   ORDER BY finished_ts DESC, id DESC LIMIT 1"""
-            ).fetchone()
-            pipeline_run_id = (
-                pipeline_eval_row[0] if pipeline_eval_row else None
-            )
-            pipeline_eval_id = (
-                pipeline_eval_row[1] if pipeline_eval_row else None
-            )
-            pipeline_finished_at = (
-                pipeline_eval_row[2] if pipeline_eval_row else None
-            )
+            # Phase 4 (Task 4): consume `latest_completed_pipeline_run`.
+            # Chart-pattern ALWAYS binds to the binding's run_id (both
+            # origins). hyp-recs origin ALSO uses binding.evaluation_run_id
+            # as the sector/industry/pivot/initial_stop anchor (Task 9
+            # R4-Major-2 — matches build_hyp_recs_expanded so the form
+            # does not split anchors across columns). The `id DESC`
+            # tiebreaker is centralized in the helper.
+            binding = latest_completed_pipeline_run(conn)
+            pipeline_run_id = binding.run_id if binding else None
+            pipeline_eval_id = binding.evaluation_run_id if binding else None
+            pipeline_finished_at = binding.finished_ts if binding else None
             if pipeline_run_id is not None:
                 from swing.data.repos.pattern_classifications import (
                     get_classification,

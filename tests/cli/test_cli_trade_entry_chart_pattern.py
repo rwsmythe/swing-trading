@@ -279,3 +279,41 @@ def test_cli_trade_entry_no_eval_at_all_persists_empty(tmp_path):
     assert t is not None
     assert t.sector == ""
     assert t.industry == ""
+
+
+def test_cli_source_contains_zero_inline_pipeline_runs_state_queries():
+    """Phase 4 Task 4 (cli.py site): pre-migration 1 match at line 456 → FAIL;
+    post-migration 0 → PASS."""
+    import re
+    from pathlib import Path
+
+    INLINE_PATTERN = re.compile(  # noqa: N806
+        r"FROM\s+pipeline_runs(?:\s+(?:AS\s+)?\w+)?\s+WHERE\s+state\s*=\s*'complete'",
+        re.IGNORECASE,
+    )
+    test_root = Path(__file__).resolve()
+    while not (test_root / "swing" / "cli.py").exists():
+        if test_root.parent == test_root:
+            raise RuntimeError("Could not locate swing/cli.py from test")
+        test_root = test_root.parent
+    text = (test_root / "swing" / "cli.py").read_text(encoding="utf-8")
+    matches = list(INLINE_PATTERN.finditer(text))
+    line_numbers = [text[: m.start()].count("\n") + 1 for m in matches]
+    assert matches == [], (
+        f"swing/cli.py must consume `latest_completed_pipeline_run` for "
+        f"the chart-pattern resolve. Inline queries still present at "
+        f"lines: {line_numbers}."
+    )
+
+
+# Note (per Codex R5 M2): a CLI-side behavioral standalone-eval-only-
+# state test would be NON-DISCRIMINATING against the wrong-helper
+# failure mode. Mis-migration to `latest_evaluation_run_id` (with-
+# fallback) returns the standalone eval id; the cli-mis-migrated code
+# attempts `get_classification(pipeline_run_id=<standalone_eval_id>)`
+# which returns no rows (the FK-constraint structural mismatch — eval
+# ids don't index pipeline_runs). chart_pattern_algo stays None either
+# way. ACCEPT this gap with rationale: the CLI site's contract is
+# pinned by (a) the source-level test above, (b) Task 6's structural-
+# guard, and (c) the trades-vm behavioral test which exercises the
+# same `latest_completed_pipeline_run` consumption pattern.
