@@ -200,8 +200,9 @@ class _CountingPriceFetcher:
         weekly-refresh predicate, mis-counting weekly-fresh-but-gap-behind
         archives as hits. Now both predicates must hold.
         """
-        import pandas as pd
         from datetime import date, timedelta
+
+        import pandas as pd
         parquet_path = self.prices_cache_dir / f"{ticker}.parquet"
         meta_path = self.prices_cache_dir / f"{ticker}.meta.json"
         if not parquet_path.exists() or not meta_path.exists():
