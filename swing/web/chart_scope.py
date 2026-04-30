@@ -67,12 +67,16 @@ class PipelineRunBinding:
     SAME run, even if a new run completes mid-request. Closes the R2 Major
     drift race surfaced in chart-access UX dispatch (commit `f0d13e8`,
     2026-04-27).
+
+    Phase 4 (this plan, 2026-04-30): action_session_date added so the
+    stale-banner consumer (dashboard.py) can migrate off its inline query.
     """
     run_id: int
     finished_ts: str
     data_asof_date: str
     charts_status: str | None
     evaluation_run_id: int | None
+    action_session_date: str
 
 
 def latest_completed_pipeline_run(conn: sqlite3.Connection) -> PipelineRunBinding | None:
@@ -88,20 +92,29 @@ def latest_completed_pipeline_run(conn: sqlite3.Connection) -> PipelineRunBindin
     against future SELECT column-order drift.
     """
     row = conn.execute(
-        """SELECT id, finished_ts, data_asof_date, charts_status, evaluation_run_id
+        """SELECT id, finished_ts, data_asof_date, charts_status,
+                  evaluation_run_id, action_session_date
            FROM pipeline_runs
            WHERE state = 'complete'
            ORDER BY finished_ts DESC, id DESC LIMIT 1"""
     ).fetchone()
     if row is None:
         return None
-    run_id, finished_ts, data_asof_date, charts_status, evaluation_run_id = row
+    (
+        run_id,
+        finished_ts,
+        data_asof_date,
+        charts_status,
+        evaluation_run_id,
+        action_session_date,
+    ) = row
     return PipelineRunBinding(
         run_id=run_id,
         finished_ts=finished_ts,
         data_asof_date=data_asof_date,
         charts_status=charts_status,
         evaluation_run_id=evaluation_run_id,
+        action_session_date=action_session_date,
     )
 
 

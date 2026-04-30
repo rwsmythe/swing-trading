@@ -225,6 +225,7 @@ def test_charts_redirect_uses_binding_data_asof_not_re_read(seeded_db, monkeypat
         run_id=200, finished_ts="2026-04-01T09:30:00",
         data_asof_date="2026-04-01", charts_status="ok",
         evaluation_run_id=250,
+        action_session_date="2026-04-01",
     )
     monkeypatch.setattr(
         "swing.web.routes.charts.latest_completed_pipeline_run",

@@ -496,6 +496,7 @@ def test_build_open_positions_expanded_uses_binding_not_re_read(
             run_id=300, finished_ts="2026-04-01T09:30:00",
             data_asof_date="2026-04-01", charts_status="ok",
             evaluation_run_id=350,
+            action_session_date="2026-04-01",
         )
         monkeypatch.setattr(
             "swing.web.view_models.open_positions_row.latest_completed_pipeline_run",

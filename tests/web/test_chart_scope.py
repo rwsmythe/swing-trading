@@ -592,6 +592,7 @@ def test_pipeline_run_binding_is_frozen():
     binding = PipelineRunBinding(
         run_id=1, finished_ts="t", data_asof_date="d",
         charts_status="ok", evaluation_run_id=None,
+        action_session_date="d",
     )
     with pytest.raises(dataclasses.FrozenInstanceError):
         binding.run_id = 999  # type: ignore[misc]
@@ -676,6 +677,7 @@ def test_resolve_chart_scope_uses_binding_run_id_not_latest_select(db_conn, tmp_
         run_id=100, finished_ts="2026-04-01T09:30:00",
         data_asof_date="2026-04-01", charts_status="ok",
         evaluation_run_id=50,
+        action_session_date="2026-04-01",
     )
     # AAPL is in-scope ONLY for runN. Pre-fix resolver re-reads
     # pipeline_runs, picks runN+1, finds no AAPL row, returns

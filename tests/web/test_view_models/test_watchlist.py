@@ -410,6 +410,7 @@ def test_build_watchlist_expanded_uses_binding_not_re_read(seeded_db, monkeypatc
         run_id=400, finished_ts="2026-04-01T09:30:00",
         data_asof_date="2026-04-01", charts_status="ok",
         evaluation_run_id=450,
+        action_session_date="2026-04-01",
     )
     monkeypatch.setattr(
         "swing.web.view_models.watchlist.latest_completed_pipeline_run",
