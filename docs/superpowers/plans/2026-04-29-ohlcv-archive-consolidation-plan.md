@@ -1013,8 +1013,12 @@ def test_weekly_full_refresh_triggers_when_meta_is_8_days_old(tmp_path, monkeypa
     incremental); archive overwritten; meta updated to today.
 
     Discriminating: assertion checks yfinance.download's `start` kwarg is
-    `end_date - archive_history_days days` (full-window), NOT `latest_stored + 1 day`
-    (incremental). Distinguishes weekly-refresh path from incremental path.
+    `end_date - _calendar_window_for_trading_days(archive_history_days)` days
+    (full-window via market-calendar-ratio conversion), NOT `latest_stored + 1 day`
+    (incremental) AND NOT raw `timedelta(days=archive_history_days)` (calendar
+    misinterpretation, Codex R1 Critical 1 + R2 Critical 1 failure mode).
+    Distinguishes weekly-refresh path from incremental path AND from the
+    superseded raw-calendar-days heuristic.
     """
     from swing.data import ohlcv_archive as mod
 
@@ -1261,7 +1265,7 @@ Schema:
   may join (e.g., last-incremental-fetch timestamp).
 
 Coherence policy (per OHLCV archive consolidation plan locked decision §2.2):
-1. New ticker (no archive on disk) → full-history fetch (start = end_date - archive_history_days).
+1. New ticker (no archive on disk) → full-history fetch (start = end_date - `_calendar_window_for_trading_days(archive_history_days)`; the helper post-trims to last `archive_history_days` rows).
 2. Weekly full-refresh: if (today - last_full_refresh_date).days >= 7 → full-history fetch.
 3. Otherwise incremental: if latest_stored_bar < end_date → fetch (latest+1, end_date+1).
 4. Else cache hit → return archive slice ≤ end_date with NO yfinance call.
