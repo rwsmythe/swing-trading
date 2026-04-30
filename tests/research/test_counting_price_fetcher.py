@@ -82,7 +82,7 @@ def test_counting_price_fetcher_distinguishes_fresh_stale_missing(archive_dir):
     """Wrapper counts: fresh AAPL = hit; meta-stale MSFT = miss;
     missing GOOG = miss; gap-behind NVDA = miss (Codex R2 Major 1
     discriminator — the helper's incremental-gap branch fires when
-    latest_stored < today even with fresh meta)."""
+    latest_stored < session anchor even with fresh meta)."""
     from research.parity.run import _CountingPriceFetcher
 
     inner = _StubInner()
@@ -94,7 +94,7 @@ def test_counting_price_fetcher_distinguishes_fresh_stale_missing(archive_dir):
     wrapper.get("NVDA", 60)
 
     assert wrapper.hits == 1, (
-        f"Only AAPL has a fresh archive whose latest_stored == today "
+        f"Only AAPL has a fresh archive whose latest_stored == anchor "
         f"(hits=1 expected); got {wrapper.hits}. NVDA's fresh-meta-but-"
         f"gap-behind archive must NOT count as a hit — the helper would "
         f"call yfinance for the incremental gap."
