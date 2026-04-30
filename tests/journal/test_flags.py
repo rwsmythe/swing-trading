@@ -64,3 +64,31 @@ def test_cutting_winners_short_flagged():
     exits = [e for _, e in cases]
     flags = compute_flags(trades=trades, exits=exits, weather_runs=[])
     assert any(f.code == "cutting_winners_short" for f in flags)
+
+
+def test_losers_held_too_long_no_division_by_zero_when_winners_all_same_day():
+    """All winners closed same-day (0 hold-days) -> avg_w == 0 -> guard returns None.
+
+    Pre-fix: compute_flags raised ZeroDivisionError at the detail-string format
+    line (avg_l/avg_w with avg_w=0). Surfaced in production 2026-04-29 when
+    operator's smoke-test trades were entered AND closed same-day at profit.
+
+    Discriminating: setup MUST include >=1 winner with 0 hold-days AND >=1
+    loser with >0 hold-days. If winners had non-zero hold-days OR no losers
+    existed, the bug wouldn't reproduce. Without the guard fix, this test
+    raises ZeroDivisionError; with the guard, it returns flags WITHOUT a
+    losers_held_too_long flag (the ratio is undefined when avg_w=0).
+    """
+    winners = [
+        _trade(1, "WIN1", "2026-04-29", "2026-04-29", pnl=20, r=2.0),
+        _trade(2, "WIN2", "2026-04-29", "2026-04-29", pnl=15, r=1.5),
+    ]
+    loser = _trade(3, "LOSE", "2026-04-25", "2026-04-29", pnl=-10, r=-1.0)
+    trades = [t for t, _ in winners + [loser]]
+    exits = [e for _, e in winners + [loser]]
+
+    flags = compute_flags(trades=trades, exits=exits, weather_runs=[])
+    assert all(f.code != "losers_held_too_long" for f in flags), (
+        "When all winners are same-day (avg_w==0), the losers-held flag "
+        "should NOT be emitted because the loser-vs-winner ratio is undefined."
+    )

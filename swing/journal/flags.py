@@ -70,6 +70,12 @@ def _losers_held_too_long(trades: list[Trade], exits: list[Exit]) -> BehavioralF
         return None
     avg_w = sum(winners_days) / len(winners_days)
     avg_l = sum(losers_days) / len(losers_days)
+    if avg_w == 0:
+        # All winners closed same-day; the loser-vs-winner ratio is undefined.
+        # Surfaced 2026-04-29 by smoke-test trades entered and closed same-day
+        # at profit. Future enhancement (todo: phase3e-todo.md): emit a
+        # dedicated "all winners same-day" flag instead of silent skip.
+        return None
     if avg_l > avg_w * 1.2:
         return BehavioralFlag(
             code="losers_held_too_long",
