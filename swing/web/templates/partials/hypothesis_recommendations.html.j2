@@ -9,9 +9,26 @@
     extracted to `partials/hypothesis_recommendations_row.html.j2` so the
     refresh route, full-page render, and post-close swap-back all flow
     through the same single source of truth (CLAUDE.md HTMX OOB-swap drift
-    gotcha). -#}
+    gotcha).
+
+    Task 4 (hyp-recs success-path fix) — `oob` flag:
+    - oob=False (default, legacy behavior): the section element is emitted
+      ONLY when `vm.active_recommendations` is non-empty.
+    - oob=True: the section element is ALWAYS emitted (even when recs are
+      empty) and carries `hx-swap-oob="true"`. Required by entry_post's
+      success-path response so HTMX has a valid OOB-swap target on
+      `#hypothesis-recommendations` even when the operator just traded
+      their only remaining hyp-rec. The empty-OOB branch drops the
+      `hypothesis-recommendations` class (so no chrome bleeds through CSS)
+      and adds the HTML5 `hidden` global attribute. The populated branch
+      keeps the class so a subsequent OOB swap to a populated section
+      restores full styling.
+
+    Single source of truth — CLAUDE.md "HTMX OOB-swap partial drift" gotcha
+    forbids hand-duplicating this markup at any callsite. -#}
+{%- set oob = oob|default(false) -%}
 {% if vm.active_recommendations %}
-<section id="hypothesis-recommendations" class="hypothesis-recommendations">
+<section id="hypothesis-recommendations" class="hypothesis-recommendations"{% if oob %} hx-swap-oob="true"{% endif %}>
   <h2>Hypothesis-driven recommendations</h2>
   <table class="hypothesis-recommendations">
     <thead>
@@ -34,4 +51,6 @@
     </tbody>
   </table>
 </section>
+{% elif oob %}
+<section id="hypothesis-recommendations" hx-swap-oob="true" hidden></section>
 {% endif %}
