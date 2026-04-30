@@ -85,10 +85,14 @@ def latest_evaluation_run_id(conn) -> int | None:
     while the CLI only looks at pipeline-bound evals, the operator's
     pre-fill silently disagrees with what they were just shown.
     """
+    # `id DESC` is the deterministic tiebreaker on both branches: tied
+    # `finished_ts` (pipeline) or tied `run_ts` (fallback) would otherwise
+    # leave SQLite's ordering unspecified, and downstream surfaces inherit
+    # the non-determinism (Codex R1 M2 + R2 Major 1).
     pipeline_eval_row = conn.execute(
         """SELECT evaluation_run_id FROM pipeline_runs
            WHERE state = 'complete'
-           ORDER BY finished_ts DESC LIMIT 1"""
+           ORDER BY finished_ts DESC, id DESC LIMIT 1"""
     ).fetchone()
     pipeline_eval_id = (
         pipeline_eval_row[0] if pipeline_eval_row else None
@@ -96,7 +100,7 @@ def latest_evaluation_run_id(conn) -> int | None:
     if pipeline_eval_id is not None:
         return pipeline_eval_id
     fallback = conn.execute(
-        "SELECT id FROM evaluation_runs ORDER BY run_ts DESC LIMIT 1"
+        "SELECT id FROM evaluation_runs ORDER BY run_ts DESC, id DESC LIMIT 1"
     ).fetchone()
     return fallback[0] if fallback else None
 
