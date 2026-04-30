@@ -1960,3 +1960,438 @@ def test_post_stop_other_without_notes_rejected(seeded_db):
         )
     assert r.status_code == 400
     assert "notes are required" in r.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Task 5 (R1 M1): entry_post emits #hypothesis-recommendations OOB on
+# origin=hyp-recs success. Closes the production-blocking bug where the
+# just-traded ticker stays visible in the hyp-recs panel after a successful
+# trade and the broken open-positions row briefly lands inside the hyp-recs
+# <tbody>.
+#
+# Sentinel tickers (reserved for this plan; CLAUDE.md "test fixture
+# unambiguity" pattern):
+#   - TESTAPLUS — A+ candidate matched by the migration-seeded
+#                 "A+ baseline" hypothesis; the just-traded ticker.
+#   - TESTPRIOR — already-open position whose candidate row is also in the
+#                 latest eval; discriminates "exclude_set built from
+#                 request.ticker only" (BUG) vs "post-write list_open_trades"
+#                 (CORRECT).
+#   - TESTWATCH — watchlist-origin POST sentinel.
+#
+# These are NEW sentinels (not collision-prone with FOO/BAR/AAPL/NVDA used
+# elsewhere in this file).
+# ---------------------------------------------------------------------------
+
+
+def _t5_seed_hyp_recs_aplus_candidate(cfg, *, ticker: str = "TESTAPLUS") -> int:
+    """Seed an A+ candidate row in a fresh evaluation_runs row (no
+    pipeline_runs row needed — `latest_evaluation_run_id` falls back to the
+    most-recent evaluation_runs row when no completed pipeline_run exists,
+    which keeps the fixture minimal). Returns the new evaluation_run id.
+
+    Mirrors `_seed_standalone_eval_with_aplus_candidate` from
+    tests/web/test_view_models/test_build_hyp_recs_section.py — kept local
+    here to avoid cross-package fixture imports.
+    """
+    from swing.data.db import connect
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            cur = conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date,
+                    finviz_csv_path, tickers_evaluated, aplus_count,
+                    watch_count, skip_count, excluded_count, error_count,
+                    rs_universe_version, rs_universe_hash)
+                   VALUES (?, ?, ?, NULL, 1, 1, 0, 0, 0, 0, 'v1', 'h1')""",
+                ("2026-04-29T09:00:00", "2026-04-28", "2026-04-29"),
+            )
+            eval_id = int(cur.lastrowid)
+            conn.execute(
+                """INSERT INTO candidates
+                   (evaluation_run_id, ticker, bucket, close, pivot,
+                    initial_stop, rs_method)
+                   VALUES (?, ?, 'aplus', 99.0, 100.0, 95.0, 'universe')""",
+                (eval_id, ticker),
+            )
+        return eval_id
+    finally:
+        conn.close()
+
+
+def _t5_seed_extra_aplus_candidate(cfg, *, eval_id: int, ticker: str) -> None:
+    """Append a second A+ candidate row to an existing evaluation_runs row."""
+    from swing.data.db import connect
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO candidates
+                   (evaluation_run_id, ticker, bucket, close, pivot,
+                    initial_stop, rs_method)
+                   VALUES (?, ?, 'aplus', 99.0, 100.0, 95.0, 'universe')""",
+                (eval_id, ticker),
+            )
+    finally:
+        conn.close()
+
+
+def _t5_seed_open_trade(cfg, *, ticker: str) -> None:
+    """Seed an existing open trade. Used to test post-write-state exclusion."""
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker=ticker, entry_date="2026-04-15",
+                entry_price=180.0, initial_shares=5, initial_stop=170.0,
+                current_stop=170.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-04-15T09:30:00")
+    finally:
+        conn.close()
+
+
+def _t5_patch_pricecache_all(monkeypatch, *, price: float = 180.95):
+    """Make PriceCache.get_many return live snapshots for any requested ticker."""
+    from datetime import datetime
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: PriceSnapshot(
+                ticker=t, price=price, asof=datetime.now(),
+                is_stale=False, source="live",
+            ) for t in tickers
+        },
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+
+def test_entry_post_hyp_recs_origin_success_emits_hypothesis_recs_oob_swap(
+    seeded_db, monkeypatch,
+):
+    """Task 5: POST /trades/entry with origin=hyp-recs success → response
+    body MUST contain a #hypothesis-recommendations OOB swap section
+    rendered through the partial.
+
+    Discriminating: pre-fix the response is just primary-row + status-strip
+    OOB + watchlist-top5 OOB; the colocated `id="hypothesis-recommendations"`
+    + `hx-swap-oob="true"` marker is absent.
+    """
+    import re
+
+    cfg, cfg_path = seeded_db
+    _t5_seed_hyp_recs_aplus_candidate(cfg, ticker="TESTAPLUS")
+    _t5_patch_pricecache_all(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data={
+                "ticker": "TESTAPLUS",
+                "entry_date": "2026-04-29",
+                "entry_price": "180.95",
+                "shares": "5",
+                "initial_stop": "170.00",
+                "rationale": "aplus-setup",
+                "origin": "hyp-recs",
+            },
+        )
+    assert r.status_code == 200, (
+        f"Expected 200; got {r.status_code}. Body[:500]={r.text[:500]!r}"
+    )
+    # Pin BOTH the id and the hx-swap-oob attribute on the SAME element
+    # via a regex (id and hx-swap-oob can appear in either order, but they
+    # must be on the SAME tag — that's the OOB-swap target marker).
+    pattern = re.compile(
+        r'<section[^>]*\bid="hypothesis-recommendations"[^>]*\bhx-swap-oob="true"'
+        r'|<section[^>]*\bhx-swap-oob="true"[^>]*\bid="hypothesis-recommendations"',
+        re.IGNORECASE,
+    )
+    assert pattern.search(r.text), (
+        "Response body must contain a <section> tag carrying both "
+        "id=\"hypothesis-recommendations\" AND hx-swap-oob=\"true\". "
+        f"Body[:1000]={r.text[:1000]!r}"
+    )
+
+
+def test_entry_post_hyp_recs_origin_success_excludes_traded_ticker_from_oob(
+    seeded_db, monkeypatch,
+):
+    """Task 5: the OOB-section's body MUST NOT contain the just-traded
+    ticker. The Task 3 `exclude_tickers` kwarg structurally suppresses
+    open-position tickers (which now includes TESTAPLUS post-`record_entry`).
+    """
+    import re
+
+    cfg, cfg_path = seeded_db
+    _t5_seed_hyp_recs_aplus_candidate(cfg, ticker="TESTAPLUS")
+    _t5_patch_pricecache_all(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data={
+                "ticker": "TESTAPLUS",
+                "entry_date": "2026-04-29",
+                "entry_price": "180.95",
+                "shares": "5",
+                "initial_stop": "170.00",
+                "rationale": "aplus-setup",
+                "origin": "hyp-recs",
+            },
+        )
+    assert r.status_code == 200
+    # Extract the OOB hyp-recs section block (greedy until next </section>).
+    section_match = re.search(
+        r'<section[^>]*id="hypothesis-recommendations"[^>]*hx-swap-oob="true"[^>]*>'
+        r'(?P<body>.*?)</section>',
+        r.text, re.DOTALL | re.IGNORECASE,
+    )
+    if section_match is None:
+        # Try the reverse-attribute order.
+        section_match = re.search(
+            r'<section[^>]*hx-swap-oob="true"[^>]*id="hypothesis-recommendations"[^>]*>'
+            r'(?P<body>.*?)</section>',
+            r.text, re.DOTALL | re.IGNORECASE,
+        )
+    assert section_match is not None, (
+        "OOB hyp-recs section not found in response body. "
+        f"Body[:1000]={r.text[:1000]!r}"
+    )
+    section_body = section_match.group("body")
+    # The just-traded ticker must NOT appear as a cell value in the OOB
+    # rebuild. ">TESTAPLUS<" is the canonical cell-text shape; the row
+    # template renders ticker as a plain table cell.
+    assert ">TESTAPLUS<" not in section_body, (
+        "Just-traded ticker TESTAPLUS leaked into the OOB-section body — "
+        "exclude_tickers wiring is broken. "
+        f"Section body[:500]={section_body[:500]!r}"
+    )
+
+
+def test_entry_post_hyp_recs_origin_success_exclusion_set_from_post_write_state(
+    seeded_db, monkeypatch,
+):
+    """Codex R1 Major 1 resolution: the exclusion set MUST be sourced from
+    POST-WRITE state (i.e., `list_open_trades(conn)` AFTER `record_entry`),
+    NOT from `request.ticker` alone.
+
+    Fixture: TESTPRIOR is an existing open position AND a candidate row in
+    the latest eval; TESTAPLUS is a candidate row that the operator now
+    trades. The OOB chunk MUST exclude BOTH:
+      - TESTPRIOR — already-open position (pre-existing).
+      - TESTAPLUS — just-traded position (added by `record_entry`).
+
+    Discriminating: a buggy `exclude_tickers={request.ticker}` shortcut
+    would let TESTPRIOR leak into the OOB chunk; the correct impl reads
+    `list_open_trades(conn)` AFTER `record_entry` so both are filtered.
+    """
+    import re
+
+    cfg, cfg_path = seeded_db
+    eval_id = _t5_seed_hyp_recs_aplus_candidate(cfg, ticker="TESTAPLUS")
+    _t5_seed_extra_aplus_candidate(cfg, eval_id=eval_id, ticker="TESTPRIOR")
+    _t5_seed_open_trade(cfg, ticker="TESTPRIOR")
+    _t5_patch_pricecache_all(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data={
+                "ticker": "TESTAPLUS",
+                "entry_date": "2026-04-29",
+                "entry_price": "180.95",
+                "shares": "5",
+                "initial_stop": "170.00",
+                "rationale": "aplus-setup",
+                "origin": "hyp-recs",
+            },
+        )
+    assert r.status_code == 200
+    # Extract the OOB section body.
+    pattern = re.compile(
+        r'<section[^>]*id="hypothesis-recommendations"[^>]*hx-swap-oob="true"[^>]*>'
+        r'(?P<body>.*?)</section>'
+        r'|<section[^>]*hx-swap-oob="true"[^>]*id="hypothesis-recommendations"[^>]*>'
+        r'(?P<body2>.*?)</section>',
+        re.DOTALL | re.IGNORECASE,
+    )
+    m = pattern.search(r.text)
+    assert m is not None, (
+        f"OOB hyp-recs section not found. Body[:500]={r.text[:500]!r}"
+    )
+    section_body = m.group("body") or m.group("body2") or ""
+    # Both must be absent — exclusion set sourced from post-write
+    # list_open_trades, NOT from request.ticker alone.
+    assert ">TESTAPLUS<" not in section_body, (
+        "TESTAPLUS (just-traded) leaked into OOB rebuild — "
+        "exclude_set should include just-traded ticker via "
+        "list_open_trades(conn) AFTER record_entry."
+    )
+    assert ">TESTPRIOR<" not in section_body, (
+        "TESTPRIOR (pre-existing open position) leaked into OOB rebuild — "
+        "exclude_set MUST be the full open-positions ticker set (post-write), "
+        "not just {request.ticker}. This is the R1 Major 1 discriminator. "
+        f"Section body[:1000]={section_body[:1000]!r}"
+    )
+
+
+def test_entry_post_watchlist_origin_success_does_not_emit_hyp_recs_oob_swap(
+    seeded_db, monkeypatch,
+):
+    """Task 5 inverse: POST origin=watchlist success → response body does
+    NOT carry the colocated `id="hypothesis-recommendations"` +
+    `hx-swap-oob="true"` marker pair. The hyp-recs OOB swap is gated on
+    `origin_coerced == 'hyp-recs'`; watchlist trades leave the panel
+    untouched.
+    """
+    import re
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="TESTWATCH", added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: PriceSnapshot(
+                ticker=t, price=180.95, asof=datetime.now(),
+                is_stale=False, source="live",
+            ) for t in tickers
+        },
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data={
+                "ticker": "TESTWATCH",
+                "entry_date": "2026-04-29",
+                "entry_price": "180.95",
+                "shares": "5",
+                "initial_stop": "170.00",
+                "rationale": "aplus-setup",
+                "origin": "watchlist",
+            },
+        )
+    assert r.status_code == 200
+    pattern = re.compile(
+        r'<section[^>]*\bid="hypothesis-recommendations"[^>]*\bhx-swap-oob="true"'
+        r'|<section[^>]*\bhx-swap-oob="true"[^>]*\bid="hypothesis-recommendations"',
+        re.IGNORECASE,
+    )
+    assert pattern.search(r.text) is None, (
+        "Watchlist-origin POST must NOT emit the hyp-recs OOB marker pair. "
+        "The hyp-recs panel rebuild is gated on origin=hyp-recs only."
+    )
+
+
+def test_entry_post_hyp_recs_origin_error_path_does_not_emit_hyp_recs_oob_swap(
+    seeded_db, monkeypatch,
+):
+    """Task 5 negative: error paths (rationale-validation failure → 400 form
+    re-render) MUST NOT carry the OOB marker pair. The OOB swap fires only
+    on the success path AFTER `record_entry` persists the new trade.
+    """
+    import re
+
+    cfg, cfg_path = seeded_db
+    _t5_seed_hyp_recs_aplus_candidate(cfg, ticker="TESTAPLUS")
+    _t5_patch_pricecache_all(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data={
+                "ticker": "TESTAPLUS",
+                "entry_date": "2026-04-29",
+                "entry_price": "180.95",
+                "shares": "5",
+                "initial_stop": "170.00",
+                # Bogus rationale → enum validation fails before record_entry.
+                "rationale": "definitely-not-a-real-rationale",
+                "origin": "hyp-recs",
+            },
+        )
+    assert r.status_code == 400, (
+        f"Expected 400 (rationale enum-validation failure); got "
+        f"{r.status_code}. Body[:500]={r.text[:500]!r}"
+    )
+    pattern = re.compile(
+        r'<section[^>]*\bid="hypothesis-recommendations"[^>]*\bhx-swap-oob="true"'
+        r'|<section[^>]*\bhx-swap-oob="true"[^>]*\bid="hypothesis-recommendations"',
+        re.IGNORECASE,
+    )
+    assert pattern.search(r.text) is None, (
+        "Error-path response must NOT carry the OOB marker pair — the "
+        "OOB swap is success-path-only."
+    )
+
+
+# Step 7a: structural-guard pytest (Codex R2 Major 2 + R3 Major 1
+# resolution). The hypothesis_recommendations.html.j2 partial is the SOLE
+# source of `<section id="hypothesis-recommendations">` markup; entry_post
+# must consume it via `templates.get_template(...).render(..., oob=True)`,
+# never by hand-duplicating the section element. This guard pins the
+# CLAUDE.md "HTMX OOB-swap partial drift" gotcha at the source level.
+def test_trades_module_contains_no_literal_hyp_recs_section_markup():
+    """Permanent structural guard: swing/web/routes/trades.py source MUST
+    NOT contain literal `<section ... id="hypothesis-recommendations"`
+    markup. The partial is the SOLE source of that markup — entry_post
+    must render it via `templates.get_template(...).render(..., oob=True)`.
+    """
+    import re
+    from pathlib import Path
+
+    import swing.web.routes.trades as trades_module
+
+    source_path = Path(trades_module.__file__)
+    source = source_path.read_text(encoding="utf-8")
+    pattern = re.compile(
+        r'<section[^>]*id="hypothesis-recommendations"',
+        re.IGNORECASE,
+    )
+    matches = pattern.findall(source)
+    assert matches == [], (
+        f"Found {len(matches)} literal hyp-recs `<section>` tag(s) in "
+        f"swing/web/routes/trades.py. The partial is the SOLE source "
+        f"of that markup; entry_post must render it via "
+        f"`templates.get_template(...).render(..., oob=True)` — never "
+        f"hand-duplicate. Matches: {matches!r}"
+    )

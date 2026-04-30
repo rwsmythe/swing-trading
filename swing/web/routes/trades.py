@@ -24,7 +24,7 @@ from swing.trades.entry import (
     SoftWarnException, record_entry,
 )
 from swing.trades.equity import current_equity
-from swing.web.view_models.dashboard import build_dashboard
+from swing.web.view_models.dashboard import build_dashboard, build_hyp_recs_section
 from swing.web.view_models.open_positions_row import (
     build_open_positions_expanded,
     build_open_positions_row,
@@ -599,12 +599,42 @@ def entry_post(
         "partials/watchlist_top5_section.html.j2"
     ).render(request=request, vm=dashboard_vm)
 
+    # Task 5 (R1 M1): on origin=hyp-recs success, emit a third OOB swap of
+    # #hypothesis-recommendations so (a) the broken open-positions row that
+    # briefly lands inside the hyp-recs <tbody> is replaced by a fresh
+    # render, and (b) the just-traded ticker is removed from the
+    # recommendations panel. The exclusion set is sourced from POST-WRITE
+    # state via `open_trades` (already fetched above, AFTER `record_entry`
+    # persisted the new trade row); this includes BOTH the just-traded
+    # ticker AND any pre-existing open positions whose candidate rows are
+    # also in the latest eval. R1 Major 1 discriminator: a shortcut like
+    # `exclude_tickers={ticker.upper()}` would leak pre-existing open
+    # positions into the rebuild.
+    #
+    # The partial is the SOLE source of the section markup (CLAUDE.md
+    # "HTMX OOB-swap partial drift" gotcha) — render it via
+    # `templates.get_template(...).render(..., oob=True)`. The partial's
+    # `oob=True` branch ALWAYS emits the `#hypothesis-recommendations`
+    # element (with `hx-swap-oob="true"`), even when the rebuild surfaces
+    # zero recommendations, so HTMX always has a valid swap target.
+    hyp_recs_section_html = ""
+    if origin_coerced == "hyp-recs":
+        open_trade_tickers = {t.ticker for t in open_trades}
+        hyp_recs_vm = build_hyp_recs_section(
+            cfg=cfg, cache=cache, executor=executor,
+            exclude_tickers=open_trade_tickers,
+        )
+        hyp_recs_section_html = templates.get_template(
+            "partials/hypothesis_recommendations.html.j2"
+        ).render(request=request, vm=hyp_recs_vm, oob=True)
+
     return HTMLResponse(Markup(
         f'{row_html}'
         f'<div id="status-strip" hx-swap-oob="true">{status_strip_html}</div>'
         f'<section id="watchlist-top5" hx-swap-oob="true">'
         f'{watchlist_section_html}'
         f'</section>'
+        f'{hyp_recs_section_html}'
     ))
 
 
