@@ -227,7 +227,12 @@ class OhlcvCache:
         Pure return — does NOT touch self._store (R1 Critical 1)."""
         with self._sema:
             try:
-                bars = ohlcv_mod.fetch_daily_bars(ticker, n_bars=60)
+                bars = ohlcv_mod.fetch_daily_bars(
+                    ticker,
+                    n_bars=60,
+                    cache_dir=self._cfg.paths.prices_cache_dir,
+                    archive_history_days=self._cfg.archive.archive_history_days,
+                )
             except Exception as exc:
                 log.warning("ohlcv fetch raised for %s: %s", ticker, exc)
                 return OhlcvBundle.empty(fetched_at=time.monotonic()), False

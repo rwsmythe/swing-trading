@@ -30,7 +30,7 @@ def test_cache_hit_returns_bundle_without_refetch(cfg, monkeypatch):
 
     calls = {"n": 0}
 
-    def fake_fetch(ticker, *, n_bars=60, as_of_date=None):
+    def fake_fetch(ticker, *, n_bars=60, as_of_date=None, **_):
         calls["n"] += 1
         return _bars([100.0 + i for i in range(50)])
 
@@ -49,7 +49,7 @@ def test_cache_miss_triggers_fetch_and_stores_bundle(cfg, monkeypatch):
     from swing.web.ohlcv_cache import OhlcvCache
     from swing.pipeline import ohlcv as ohlcv_mod
 
-    def fake_fetch(ticker, *, n_bars=60, as_of_date=None):
+    def fake_fetch(ticker, *, n_bars=60, as_of_date=None, **_):
         return _bars([100.0 + i for i in range(50)])
 
     monkeypatch.setattr(ohlcv_mod, "fetch_daily_bars", fake_fetch)
@@ -73,7 +73,7 @@ def test_ttl_expiry_triggers_refetch(cfg, monkeypatch):
     tiny_cfg = _replace(cfg, web=tiny_web)
 
     calls = {"n": 0}
-    def fake_fetch(ticker, *, n_bars=60, as_of_date=None):
+    def fake_fetch(ticker, *, n_bars=60, as_of_date=None, **_):
         calls["n"] += 1
         return _bars([100.0] * 50)
 
@@ -94,7 +94,7 @@ def test_deadline_miss_returns_empty_bundle_and_is_not_cached(cfg, monkeypatch):
 
     call_count = {"n": 0}
 
-    def slow_fetch(ticker, *, n_bars=60, as_of_date=None):
+    def slow_fetch(ticker, *, n_bars=60, as_of_date=None, **_):
         call_count["n"] += 1
         # First call sleeps past the deadline; second call returns immediately.
         if call_count["n"] == 1:
@@ -117,7 +117,7 @@ def test_circuit_breaker_trips_when_failure_fraction_exceeds_half(cfg, monkeypat
     from swing.web.ohlcv_cache import OhlcvCache
     from swing.pipeline import ohlcv as ohlcv_mod
 
-    def always_fail(ticker, *, n_bars=60, as_of_date=None):
+    def always_fail(ticker, *, n_bars=60, as_of_date=None, **_):
         raise RuntimeError("network down")
 
     monkeypatch.setattr(ohlcv_mod, "fetch_daily_bars", always_fail)
@@ -139,7 +139,7 @@ def test_is_degraded_clears_after_cooldown(cfg, monkeypatch):
     fast_web = _replace(cfg.web, circuit_breaker_cooldown_seconds=0)
     fast_cfg = _replace(cfg, web=fast_web)
 
-    def always_fail(ticker, *, n_bars=60, as_of_date=None):
+    def always_fail(ticker, *, n_bars=60, as_of_date=None, **_):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(ohlcv_mod, "fetch_daily_bars", always_fail)
@@ -157,7 +157,7 @@ def test_reset_circuit_breaker_clears_degraded(cfg, monkeypatch):
     from swing.web.ohlcv_cache import OhlcvCache
     from swing.pipeline import ohlcv as ohlcv_mod
 
-    def always_fail(ticker, *, n_bars=60, as_of_date=None):
+    def always_fail(ticker, *, n_bars=60, as_of_date=None, **_):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(ohlcv_mod, "fetch_daily_bars", always_fail)
@@ -177,7 +177,7 @@ def test_empty_bundle_from_bad_ticker_does_not_trip_breaker(cfg, monkeypatch):
     from swing.web.ohlcv_cache import OhlcvCache
     from swing.pipeline import ohlcv as ohlcv_mod
 
-    def no_data_fetch(ticker, *, n_bars=60, as_of_date=None):
+    def no_data_fetch(ticker, *, n_bars=60, as_of_date=None, **_):
         return None  # fetch returned empty result, no exception
 
     monkeypatch.setattr(ohlcv_mod, "fetch_daily_bars", no_data_fetch)
@@ -198,7 +198,7 @@ def test_mixed_window_empty_does_not_mask_real_failure(cfg, monkeypatch):
 
     calls = {"DEAD": 0, "GOOD": 0}
 
-    def mixed_fetch(ticker, *, n_bars=60, as_of_date=None):
+    def mixed_fetch(ticker, *, n_bars=60, as_of_date=None, **_):
         calls[ticker] = calls.get(ticker, 0) + 1
         if ticker == "DEAD":
             return None  # healthy-but-empty (no exception)
@@ -226,7 +226,7 @@ def test_empty_bundle_cached_as_sentinel(cfg, monkeypatch):
 
     calls = {"n": 0}
 
-    def no_data_fetch(ticker, *, n_bars=60, as_of_date=None):
+    def no_data_fetch(ticker, *, n_bars=60, as_of_date=None, **_):
         calls["n"] += 1
         return None
 
@@ -247,7 +247,7 @@ def test_sentinel_hits_do_not_mask_real_failure(cfg, monkeypatch):
     from swing.web.ohlcv_cache import OhlcvCache
     from swing.pipeline import ohlcv as ohlcv_mod
 
-    def mixed_fetch(ticker, *, n_bars=60, as_of_date=None):
+    def mixed_fetch(ticker, *, n_bars=60, as_of_date=None, **_):
         if ticker == "DEAD":
             return None  # healthy-but-empty — caches as sentinel on first call
         raise RuntimeError("source down")  # unhealthy
@@ -271,7 +271,7 @@ def test_degraded_mode_serves_warm_cache(cfg, monkeypatch):
     from swing.web.ohlcv_cache import OhlcvCache, OhlcvBundle
     from swing.pipeline import ohlcv as ohlcv_mod
 
-    def good_fetch(ticker, *, n_bars=60, as_of_date=None):
+    def good_fetch(ticker, *, n_bars=60, as_of_date=None, **_):
         return _bars([100.0 + i for i in range(50)])
 
     monkeypatch.setattr(ohlcv_mod, "fetch_daily_bars", good_fetch)
@@ -298,7 +298,7 @@ def test_degraded_mode_short_circuits_only_misses(cfg, monkeypatch):
 
     fetch_tickers: list[str] = []
 
-    def tracking_fetch(ticker, *, n_bars=60, as_of_date=None):
+    def tracking_fetch(ticker, *, n_bars=60, as_of_date=None, **_):
         fetch_tickers.append(ticker)
         return _bars([100.0 + i for i in range(50)])
 

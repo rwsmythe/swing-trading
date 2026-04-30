@@ -1,59 +1,53 @@
 """Daily-bar fetch + pure SMA math for Phase 3d advisories.
 
-Spec §3.1. `fetch_daily_bars` does the network IO; `compute_smas` and
-`previous_close` are pure transformations over pandas DataFrames and are
-unit-testable without yfinance.
+`fetch_daily_bars` is now a thin adapter over `swing.data.ohlcv_archive.read_or_fetch_archive`
+(per OHLCV archive consolidation plan Task 5). The session-anchored
+partial-bar strip (CLAUDE.md yfinance gotcha) is preserved as belt-and-suspenders.
 """
 from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import date, datetime
+from pathlib import Path
 
 import pandas as pd
-import yfinance as yf
 
+from swing.data.ohlcv_archive import read_or_fetch_archive
 from swing.evaluation.dates import action_session_for_run
 
 
 def fetch_daily_bars(
-    ticker: str, *, n_bars: int = 60, as_of_date: date | None = None,
+    ticker: str,
+    *,
+    n_bars: int = 60,
+    as_of_date: date | None = None,
+    cache_dir: Path,
+    archive_history_days: int,
 ) -> pd.DataFrame | None:
-    """Fetch completed daily bars for `ticker` (spec §3.1).
+    """Fetch up to `n_bars` completed daily bars <= as_of_date / session.
 
-    Returns up to `n_bars` rows of FULLY-COMPLETED daily bars, ending with
-    the most recent completed session. Returns None on empty result (ticker
-    has no data / delisted). Exceptions propagate to the caller so the
-    cache layer can distinguish source-level failure (breaker-relevant,
-    e.g. yfinance down or network error) from per-ticker data absence
-    (not breaker-relevant).
+    Now archive-aware: consults `swing.data.ohlcv_archive.read_or_fetch_archive`
+    instead of calling yfinance directly. `cache_dir` and `archive_history_days`
+    come from config (typically `cfg.paths.prices_cache_dir` +
+    `cfg.archive.archive_history_days`).
 
-    Session-boundary semantics: yfinance's `history(interval='1d')` includes
-    the IN-PROGRESS bar during market hours. We strip it — otherwise
-    `previous_close` would reflect the partial close, turning the
-    "close below MA" rule back into an intraday rule.
+    Strip rule (CLAUDE.md gotcha + spec §3.1): drops the last row iff
+    `last_bar.date() >= session`. Defends against in-progress intraday bar
+    leak even if the helper's archive happens to contain it.
 
-    `as_of_date` resolves against the EXCHANGE SESSION, not the app-local
-    timezone (HST lags ET by 5h). Defaults to
-    `action_session_for_run(datetime.now())` — the project's single source
-    of truth for session-date resolution. Injectable for deterministic tests.
-
-    Strip rule: drop the last row iff `last_bar.date() >= session`.
-
-    Implementation notes:
-      - `period='6mo'` (~126 trading bars) is ample for SMA50 with holiday buffer.
-      - `auto_adjust=False` returns raw bars (see spec §6 for split handling).
-      - `Ticker.history()` does NOT accept `threads=` (that arg is only on
-        `yf.download()`). Concurrency is bounded by app.state.price_fetch_executor.
+    Returns None on empty result (delisted / bad ticker / no data) — the
+    cache layer distinguishes this from raised exceptions (source-level
+    failures, breaker-relevant).
     """
-    df = yf.Ticker(ticker).history(
-        period="6mo",
-        interval="1d",
-        auto_adjust=False,
+    session = as_of_date or action_session_for_run(datetime.now())
+    df = read_or_fetch_archive(
+        ticker,
+        end_date=session,
+        cache_dir=cache_dir,
+        archive_history_days=archive_history_days,
     )
     if df is None or df.empty:
         return None
-    session = as_of_date or action_session_for_run(datetime.now())
-    # yfinance index is timezone-aware Timestamps; compare by .date().
     last_date = df.index[-1].date()
     if last_date >= session:
         df = df.iloc[:-1]
