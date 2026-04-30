@@ -8,7 +8,7 @@
 
 **Cross-file atomicity contract (Codex R1 Major 1 resolution):** `os.replace` is atomic per path, NOT across the parquet/meta pair. A crash between the two replaces leaves a benign skew window: parquet replaced + meta still pointing at prior `last_full_refresh_date`, OR parquet replaced + meta missing entirely. Readers handle both gracefully — missing/corrupted/stale meta triggers a full-refresh on the next call (recoverable; cost is one extra yfinance call). The migration script's resume path (Task 1 idempotency contract) likewise re-unions whatever it finds. This is documented as the V1 contract; readers MUST treat the parquet-meta pair as a coherence-best-effort pair, not a strict invariant. Task 1 + Task 3 each include a discriminating test for the parquet-fresh-meta-missing skew scenario.
 
-**Trading-day vs calendar-day window semantics (Codex R1 Critical 1 resolution):** `archive_history_days` is the locked spec field name AND its semantics are TRADING days (per spec §2.5: "5 years (1260 trading days)"). yfinance's `start`/`end` kwargs are CALENDAR days, so the helper internally converts trading-day retention to a calendar window with holiday buffer: `_calendar_window_for_trading_days(n) = ceil(n * 7 / 5) + 14` calendar days. For default 1260 trading days → 1778 calendar days (~4.87 years), which yields ≥ 1260 trading bars from yfinance with comfortable holiday headroom. The helper passes the calendar-day window to `yf.download` AND truncates the returned DataFrame to the most recent `archive_history_days` rows (in case the calendar window over-fetched). Tests assert the calendar `start` kwarg passed to yfinance equals `end_date - timedelta(days=_calendar_window_for_trading_days(archive_history_days))`, NOT `end_date - timedelta(days=archive_history_days)` — this prevents the silent under-retention failure mode where 1260 calendar days = ~3.45 years instead of 5y.
+**Trading-day vs calendar-day window semantics (Codex R1 Critical 1 + R2 Critical 1 resolution):** `archive_history_days` is the locked spec field name AND its semantics are TRADING days (per spec §2.5: "5 years (1260 trading days)"). yfinance's `start`/`end` kwargs are CALENDAR days. The helper converts trading-day retention to a calendar window using the actual market-calendar ratio: `_calendar_window_for_trading_days(n) = ceil(n * 365.25 / 252) + 30` calendar days. The 365.25/252 ratio reflects ~252 US market trading days per ~365.25 calendar days; the +30 day buffer absorbs multi-year holiday clustering (a naive `n * 7 / 5` heuristic with a 14-day buffer is too tight — 5y of US market history is ~1826 calendar days, not 1778). For default 1260 trading days the formula yields `ceil(1260 * 365.25 / 252) + 30 = 1857` calendar days (~5.08y), which dominates worst-case holiday loss across the full 5y span. Post-fetch, the helper truncates with `.tail(archive_history_days)` so over-fetch from the buffer doesn't bloat the archive. Tests assert the calendar `start` kwarg equals `end_date - timedelta(days=_calendar_window_for_trading_days(archive_history_days))`, NOT `end_date - timedelta(days=archive_history_days)` — this prevents the silent under-retention failure mode where 1260 calendar days = ~3.45 years instead of 5y.
 
 **Tech Stack:** Python 3.14, pandas, pyarrow (parquet), yfinance ≥1.2 (with `threads=False`, MultiIndex squeeze, and `Ticker.history()` no-`threads=` gotchas honored), pytest.
 
@@ -46,7 +46,7 @@
   - `swing/web/ohlcv_cache.py:217-246` — `OhlcvCache._fetch_bundle_worker`; calls `ohlcv_mod.fetch_daily_bars(ticker, n_bars=60)`. Constructor takes `cfg: Config` (line 50) — already has access to `cfg.paths.prices_cache_dir` and (after Task 2) `cfg.archive.archive_history_days`.
   - `swing/cli.py:148, 315` and `swing/pipeline/runner.py:146` — `PriceFetcher(cache_dir=cfg.paths.prices_cache_dir)` instantiations. After Task 4 they must also pass `archive_history_days=cfg.archive.archive_history_days` (kwarg-with-default, so the call sites stay valid even if missed; the discriminating compat test catches this).
   - `swing/weather/runner.py:10-15` — `PriceFetcher` consumer. Public API stable; no change required.
-  - `swing.config.toml:12` — `prices_cache_dir = "swing-data/prices-cache"`. No `archive_history_days` field anywhere in tracked files; toml-shadowing audit (`git ls-files | xargs grep -l 'archive_history_days' 2>/dev/null`) returns empty.
+  - `swing.config.toml:12` — `prices_cache_dir = "swing-data/prices-cache"`. At HEAD `a4811f4` (pre-Task-2), `archive_history_days` does not appear in any tracked file (verified by `git ls-files | xargs grep -ln 'archive_history_days' 2>/dev/null` → empty output). Post-plan, hits will appear in the touched source/test/plan files (this is correct); the audit's failure mode is a tracked CONFIG-shaped file (`*.toml`/`*.yaml`/`*.json`/`*.cfg`/`*.ini`) hitting the field name — see Step 7d for the post-plan expectation.
 - **Locked-decision rationale carry-overs:**
   - Atomicity: temp file MUST be created in the same directory as the destination. On Windows with Drive-synced paths plus `$TMP` on a different volume, `os.replace(tmp, final)` raises `OSError: [Errno 18] Invalid cross-device link` (CLAUDE.md). `tempfile.NamedTemporaryFile(dir=cache_dir, delete=False, suffix=".parquet.tmp")` keeps both paths on the same filesystem.
   - yfinance gotchas (CLAUDE.md): the helper uses `yf.download(..., threads=False)` exclusively (NOT `yf.Ticker.history()`). The pipeline path's old `Ticker.history()` call site is REMOVED, so the prior `test_fetch_daily_bars_does_not_pass_threads_kwarg` test is repointed in Task 5 (the equivalent assertion moves to the helper-level test in Task 3). MultiIndex columns are squeezed via `if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)`.
@@ -75,7 +75,7 @@
 - `swing/web/ohlcv_cache.py:217-246` — Task 6 (worker passes `cache_dir`/`archive_history_days` to `fetch_daily_bars`).
 - `tests/pipeline/test_ohlcv.py` — Task 5 (existing five `test_fetch_daily_bars_*` tests repointed; the `Ticker.history()` no-`threads=` test is replaced by a helper-level equivalent in Task 3).
 - `tests/web/test_ohlcv_cache.py` — Task 6 (add cold-start hydration test + warm-cache precedence test; existing `monkeypatch.setattr(ohlcv_mod, "fetch_daily_bars", …)` tests continue to work because they replace the function entirely).
-- `tests/test_config.py` — Task 2 (assert `cfg.archive.archive_history_days == 1260` default).
+- `tests/config/test_config.py` — Task 2 (assert `cfg.archive.archive_history_days == 1260` default + toml-override honor).
 - `tests/prices/test_prices.py` (verified at HEAD `a4811f4` via `git ls-files tests/ | grep test_prices.py`) — Task 4 (replace per-as-of-date cache-key tests with archive-helper-mocked equivalents; preserve API-level behavior tests).
 
 **Verification before writing each test:** Use `git ls-files tests/ | grep -i <topic>` (or `Glob "tests/**/test_*<topic>*.py"`) to confirm the canonical test-file path before creating a new test module. The repo's test layout mirrors `swing/`, so `tests/data/test_ohlcv_archive.py` (new file) lives alongside the new `swing/data/ohlcv_archive.py`.
@@ -1354,14 +1354,19 @@ def _squeeze_multiindex(df: pd.DataFrame) -> pd.DataFrame:
 def _calendar_window_for_trading_days(trading_days: int) -> int:
     """Convert trading-day retention to a calendar-day yfinance window.
 
-    Codex R1 Critical 1 resolution: 1260 trading days is NOT 1260 calendar
-    days (~3.45 years); a 5y retention requires ceil(1260 * 7/5) + 14 ≈ 1778
-    calendar days for yfinance's start kwarg, with the +14 buffer covering
-    holidays and exchange closures. Caller truncates the returned DataFrame
-    to last `trading_days` rows post-fetch.
+    Codex R1 Critical 1 + R2 Critical 1 resolution: 1260 trading days is
+    NOT 1260 calendar days (~3.45y) AND a `n * 7 / 5 + 14` heuristic is
+    too tight (1778 calendar days < 5y = ~1826 calendar days; multi-year
+    holiday clustering eats more than a 14-day buffer). The locked
+    retention is "5 years" (spec §2.5), so the conversion uses the actual
+    market-calendar ratio: ~252 trading days per ~365.25 calendar days,
+    plus a 30-day buffer for holiday clustering. For default 1260 trading
+    days: ceil(1260 * 365.25 / 252) + 30 = 1857 calendar days (~5.08y).
+    Caller truncates the returned DataFrame to last `trading_days` rows
+    post-fetch so the archive doesn't bloat with the buffer days.
     """
     import math
-    return int(math.ceil(trading_days * 7 / 5)) + 14
+    return int(math.ceil(trading_days * 365.25 / 252)) + 30
 
 
 def _yf_download_window(ticker: str, *, start: date, end: date) -> pd.DataFrame:
