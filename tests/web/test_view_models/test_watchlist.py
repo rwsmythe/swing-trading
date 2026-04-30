@@ -596,3 +596,217 @@ def test_watchlist_expanded_no_sector_industry_when_candidate_none(
     assert "<h4>Classification</h4>" not in body
     assert "Sector:" not in body
     assert "Industry:" not in body
+
+
+def test_watchlist_source_contains_zero_inline_pipeline_runs_state_queries():
+    """Phase 4 Task 3: source-level discriminator covering BOTH sites in
+    watchlist.py (build_watchlist + build_watchlist_row).
+
+    Pre-migration: 2 matches at lines 104 and 191 → FAIL.
+    Post-migration: 0 matches → PASS.
+    """
+    import re
+    from pathlib import Path
+
+    INLINE_PATTERN = re.compile(  # noqa: N806
+        r"FROM\s+pipeline_runs(?:\s+(?:AS\s+)?\w+)?\s+WHERE\s+state\s*=\s*'complete'",
+        re.IGNORECASE,
+    )
+    swing_root = Path(__file__).resolve().parents[3]
+    text = (swing_root / "swing" / "web" / "view_models" / "watchlist.py").read_text(
+        encoding="utf-8",
+    )
+    matches = list(INLINE_PATTERN.finditer(text))
+    line_numbers = [text[: m.start()].count("\n") + 1 for m in matches]
+    assert matches == [], (
+        f"build_watchlist + build_watchlist_row must consume the shared "
+        f"helpers instead of inline `pipeline_runs WHERE state='complete'` "
+        f"queries. Inline queries still present at lines: {line_numbers}."
+    )
+
+
+def test_build_watchlist_dual_contract_in_standalone_eval_only_state(
+    seeded_db, monkeypatch,
+):
+    """Brief §3.C per-site dual-contract discriminator. Standalone-eval-
+    only state. Expected: candidates LOAD from the standalone eval
+    (with-fallback contract via latest_evaluation_run_id); classifications
+    stay EMPTY (pipeline-bound contract via latest_completed_pipeline_run
+    which returns None). Mis-migration that swaps either contract surfaces
+    as a failure.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime
+
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from swing.web.view_models.watchlist import build_watchlist
+
+    cfg, _ = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            cur_e = conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+                    tickers_evaluated, aplus_count, watch_count, skip_count,
+                    excluded_count, error_count)
+                   VALUES ('2026-04-29T09:00:00','2026-04-28','2026-04-29',
+                           NULL, 1, 0, 1, 0, 0, 0)"""
+            )
+            standalone_eval_id = int(cur_e.lastrowid)
+            conn.execute(
+                """INSERT INTO candidates
+                   (evaluation_run_id, ticker, bucket, close, pivot,
+                    initial_stop, adr_pct, tight_streak, pullback_pct,
+                    prior_trend_pct, rs_rank, rs_return_12w_vs_spy,
+                    rs_method, pattern_tag, notes, sector, industry)
+                   VALUES (?, 'AAPL', 'watch', 99.0, 100.0, 95.0, 2.0, 5,
+                           NULL, NULL, NULL, NULL, 'fallback_spy',
+                           NULL, NULL, 'Technology', 'Hardware')""",
+                (standalone_eval_id,),
+            )
+            upsert_watchlist_entry(
+                conn,
+                WatchlistEntry(
+                    ticker="AAPL", added_date="2026-04-29",
+                    last_qualified_date="2026-04-29", status="watch",
+                    qualification_count=1, not_qualified_streak=0,
+                    last_data_asof_date="2026-04-28",
+                    entry_target=100.0, initial_stop_target=95.0,
+                    last_close=99.0, last_pivot=None, last_stop=None,
+                    last_adr_pct=2.0, missing_criteria=None, notes=None,
+                ),
+            )
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *, deadline_seconds, executor: {
+            t: PriceSnapshot(
+                ticker=t, price=99.0, asof=datetime.now(),
+                is_stale=False, source="live",
+            ) for t in tickers
+        },
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+
+    cache = PriceCache(cfg)
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        vm = build_watchlist(cfg=cfg, cache=cache, executor=executor)
+    finally:
+        executor.shutdown(wait=False)
+
+    # With-fallback contract: candidates LOAD from the standalone eval.
+    assert "AAPL" in vm.candidates_by_ticker, (
+        "With-fallback contract violated: candidates must load from the "
+        "standalone eval when no completed pipeline_run exists (via "
+        "`latest_evaluation_run_id`'s fallback). Mis-migration to "
+        "`latest_completed_pipeline_run` (pipeline-bound) would return "
+        "empty here. Got candidates_by_ticker: "
+        f"{list(vm.candidates_by_ticker.keys())!r}"
+    )
+    # Note (per Codex R4 M5): the classifications-side contract
+    # discriminator is enforced via (a) Task 6's structural-guard test
+    # and (b) the source-level RED-phase test in this task (Step 2).
+
+
+def test_build_watchlist_row_with_fallback_contract_in_standalone_eval_only_state(
+    seeded_db, monkeypatch,
+):
+    """Per Codex R5 M1: separate behavioral discriminator for the
+    build_watchlist_row site (route `/watchlist/{ticker}/row`).
+
+    Mirrors the build_watchlist behavioral test: standalone-eval-only
+    state; assert the returned WatchlistRowVM exposes the candidate-
+    anchored field. Discriminator: with the candidates correctly loaded
+    via `latest_evaluation_run_id`, the row's candidate-anchored field
+    has pivot=100.0. Mis-migration to `latest_completed_pipeline_run`
+    (pipeline-bound) returns no candidates → candidate field absent →
+    assertion fails.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime
+
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from swing.web.view_models.watchlist import build_watchlist_row
+
+    cfg, _ = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            cur_e = conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+                    tickers_evaluated, aplus_count, watch_count, skip_count,
+                    excluded_count, error_count)
+                   VALUES ('2026-04-29T09:00:00','2026-04-28','2026-04-29',
+                           NULL, 1, 0, 1, 0, 0, 0)"""
+            )
+            standalone_eval = int(cur_e.lastrowid)
+            conn.execute(
+                """INSERT INTO candidates
+                   (evaluation_run_id, ticker, bucket, close, pivot,
+                    initial_stop, adr_pct, tight_streak, pullback_pct,
+                    prior_trend_pct, rs_rank, rs_return_12w_vs_spy,
+                    rs_method, pattern_tag, notes, sector, industry)
+                   VALUES (?, 'AAPL', 'watch', 99.0, 100.0, 95.0, 2.0, 5,
+                           NULL, NULL, NULL, NULL, 'fallback_spy',
+                           NULL, NULL, 'Technology', 'Hardware')""",
+                (standalone_eval,),
+            )
+            upsert_watchlist_entry(
+                conn,
+                WatchlistEntry(
+                    ticker="AAPL", added_date="2026-04-29",
+                    last_qualified_date="2026-04-29", status="watch",
+                    qualification_count=1, not_qualified_streak=0,
+                    last_data_asof_date="2026-04-28",
+                    entry_target=100.0, initial_stop_target=95.0,
+                    last_close=99.0, last_pivot=None, last_stop=None,
+                    last_adr_pct=2.0, missing_criteria=None, notes=None,
+                ),
+            )
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *, deadline_seconds, executor: {
+            t: PriceSnapshot(
+                ticker=t, price=99.0, asof=datetime.now(),
+                is_stale=False, source="live",
+            ) for t in tickers
+        },
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+
+    cache = PriceCache(cfg)
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        row_vm = build_watchlist_row(
+            cfg=cfg, cache=cache, ticker="AAPL", executor=executor,
+        )
+    finally:
+        executor.shutdown(wait=False)
+
+    assert row_vm is not None
+    candidate_field_present = (
+        getattr(row_vm, "candidates_by_ticker", {}).get("AAPL") is not None
+        or getattr(row_vm, "candidate", None) is not None
+        or getattr(row_vm, "current_pivot", None) == 100.0
+    )
+    assert candidate_field_present, (
+        "With-fallback contract violated for build_watchlist_row: "
+        "candidate must load from the standalone eval. "
+        f"Got VM: {row_vm!r}"
+    )

@@ -24,6 +24,7 @@ from swing.web.view_models.dashboard import (
     _flag_tags,
     _pattern_tags,
     _sort_watchlist,
+    latest_evaluation_run_id,
 )
 
 
@@ -91,46 +92,26 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
             rows = list_active_watchlist(conn)
             # Sort moved BELOW the candidates load: `_sort_watchlist` needs
             # flag_tags (computed from candidates) for the primary key.
-            # Mixed-anchor fix (closes the last surface from the Bug 7 family):
-            # bind candidates_by_ticker (and the flag_tags it feeds) to the
-            # pipeline's OWN eval via pipeline_runs.evaluation_run_id when
-            # populated. Otherwise a post-pipeline standalone `swing eval`
-            # could silently win the MAX(run_ts) race and seed flag tags
-            # from an eval the pipeline did not chart — the same anchor
-            # inconsistency the dashboard fix (commit 1cfc117 Major 2) and
-            # build_watchlist_expanded (commit 4678398) already closed. Falls
-            # back to latest eval only for legacy NULL-FK rows or fresh installs.
-            pipeline_eval_row = conn.execute(
-                """SELECT id, evaluation_run_id FROM pipeline_runs
-                   WHERE state = 'complete'
-                   ORDER BY finished_ts DESC LIMIT 1"""
-            ).fetchone()
-            pipeline_run_id = (
-                pipeline_eval_row[0] if pipeline_eval_row else None
-            )
-            pipeline_eval_id = (
-                pipeline_eval_row[1] if pipeline_eval_row else None
-            )
+            # Phase 4 (Task 3): dual-contract migration. Classifications
+            # bind via `latest_completed_pipeline_run` (pipeline-bound, no
+            # fallback) — no chart-pattern data exists on non-pipeline
+            # evals. Candidates bind via `latest_evaluation_run_id`
+            # (with-fallback to standalone eval) so flag-tag rendering
+            # survives Sunday-evening / fresh-install / NULL-FK states.
+            # Both helpers consume the same `conn`, preserving the
+            # single-transaction read semantics the inline queries had.
+            binding = latest_completed_pipeline_run(conn)
+            pipeline_run_id = binding.run_id if binding else None
+            candidates_eval_id = latest_evaluation_run_id(conn)
             candidates: list[Candidate] = []
-            if pipeline_eval_id is not None:
-                candidates = fetch_candidates_for_run(conn, pipeline_eval_id)
-            else:
-                row = conn.execute(
-                    "SELECT id FROM evaluation_runs ORDER BY run_ts DESC LIMIT 1"
-                ).fetchone()
-                if row is not None:
-                    candidates = fetch_candidates_for_run(conn, row[0])
-            # Bug-7-family anchor discipline (Phase 4 Task 4.3):
-            # classifications bind to pipeline_run_id. Reuse the SAME
-            # most-recent COMPLETE pipeline_run id we already resolved
-            # above; do NOT re-derive via a SELECT id FROM pipeline_runs
-            # WHERE evaluation_run_id = ? lookup, because that
-            # round-trip can race with concurrent pipeline_runs writes
-            # and silently mis-anchor. The resolved id IS the parent of
-            # `pipeline_eval_id` by construction. NO MAX(run_ts) fallback
-            # for classifications — when no completed pipeline exists,
-            # classifications stay empty (legacy NULL-FK eval rows have
-            # no chart-pattern data anyway).
+            if candidates_eval_id is not None:
+                candidates = fetch_candidates_for_run(conn, candidates_eval_id)
+            # Bug-7-family anchor discipline preserved: classifications
+            # bind ONLY to a completed-pipeline `pipeline_run_id`. NO
+            # MAX(run_ts) fallback for classifications — when no
+            # completed pipeline exists, classifications stay empty
+            # (legacy NULL-FK eval rows have no chart-pattern data
+            # anyway).
             if pipeline_run_id is not None:
                 classifications = list_classifications_for_run(
                     conn, pipeline_run_id=pipeline_run_id,
@@ -185,35 +166,21 @@ def build_watchlist_row(
             row = next((r for r in rows if r.ticker == ticker), None)
             if row is None:
                 return None
-            # Bind candidates to the pipeline's own eval (same anchor logic
-            # as build_watchlist) so flag tags don't drift from /watchlist.
-            pipeline_eval_row = conn.execute(
-                """SELECT id, evaluation_run_id FROM pipeline_runs
-                   WHERE state = 'complete'
-                   ORDER BY finished_ts DESC LIMIT 1"""
-            ).fetchone()
-            pipeline_run_id = (
-                pipeline_eval_row[0] if pipeline_eval_row else None
-            )
-            pipeline_eval_id = (
-                pipeline_eval_row[1] if pipeline_eval_row else None
-            )
+            # Phase 4 (Task 3): dual-contract migration mirrors
+            # build_watchlist. Classifications bind via
+            # `latest_completed_pipeline_run` (pipeline-bound, no
+            # fallback). Candidates bind via `latest_evaluation_run_id`
+            # (with-fallback) so the compact-row flag tag matches what
+            # /watchlist renders for the same ticker.
+            binding = latest_completed_pipeline_run(conn)
+            pipeline_run_id = binding.run_id if binding else None
+            candidates_eval_id = latest_evaluation_run_id(conn)
             candidates: list[Candidate] = []
-            if pipeline_eval_id is not None:
-                candidates = fetch_candidates_for_run(conn, pipeline_eval_id)
-            else:
-                fallback = conn.execute(
-                    "SELECT id FROM evaluation_runs ORDER BY run_ts DESC LIMIT 1"
-                ).fetchone()
-                if fallback is not None:
-                    candidates = fetch_candidates_for_run(conn, fallback[0])
-            # Phase 4 Task 4.4: classification lookup for the compact row,
-            # bound to the same `pipeline_run_id` as build_watchlist.
-            # Inside the same `with conn:` block (plan note: refactor scope
-            # so the new query is inside the same transaction). We reuse
-            # `_pattern_tags` rather than `get_classification` so the
-            # threshold + format logic is identical to the full watchlist
-            # path — single source of truth for the rendered string.
+            if candidates_eval_id is not None:
+                candidates = fetch_candidates_for_run(conn, candidates_eval_id)
+            # Classification lookup bound to the pipeline run (no
+            # fallback). Reuse `_pattern_tags` so threshold + format
+            # logic stays identical to the full watchlist path.
             row_classifications = {}
             if pipeline_run_id is not None:
                 row_classifications = list_classifications_for_run(
