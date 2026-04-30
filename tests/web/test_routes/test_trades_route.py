@@ -2395,3 +2395,216 @@ def test_trades_module_contains_no_literal_hyp_recs_section_markup():
         f"`templates.get_template(...).render(..., oob=True)` — never "
         f"hand-duplicate. Matches: {matches!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Bug-fix-AB: entry_post response uses pure-OOB architecture (no <tr> primary
+# content). Investigation 2026-04-29 confirmed empirically (DevTools capture)
+# that a leading <tr id="open-position-..."> in the response triggers HTMX's
+# `makeFragment` to wrap the whole response in a synthetic <table><tbody> for
+# parsing. HTML5 nested-table parsing rules then DROP the <table>s inside the
+# OOB <section id="watchlist-top5"> and <section id="hypothesis-recommendations">
+# chunks, leaving the operator with empty section bodies (Bug B). The same
+# response architecture also fails to deliver the new row to #open-positions
+# (Bug A — primary swap targets `closest tr`, which is in the source tbody,
+# not in #open-positions).
+#
+# Fix: entry_post emits the new open-position row via OOB swap into
+# #open-positions (mirroring partials/prices_refresh_container.html.j2's
+# pattern), and emits no <tr> at fragment root. Both bugs resolved by one
+# architectural change.
+# ---------------------------------------------------------------------------
+
+
+def test_entry_post_response_does_not_lead_with_tr_primary_content(
+    seeded_db, monkeypatch,
+):
+    """Bug A+B fix: response body MUST NOT lead with `<tr id="open-position-`.
+
+    Pre-fix the response leads with `<tr id="open-position-{trade_id}">` as
+    primary content; HTMX's `makeFragment` detects the leading <tr> and wraps
+    the whole response in a synthetic <table><tbody> for parsing, which
+    triggers HTML5 nested-table parse rules that strip <table>s from the OOB
+    <section> chunks (DevTools-confirmed mechanism for Bug B).
+
+    Post-fix the response is pure OOB — no <tr> at fragment root.
+
+    Discriminator: the FIRST 80 characters of the response body must NOT
+    contain `<tr id="open-position-` (that pattern is the production-bug
+    signature that triggers the HTMX fragment-parsing pathology).
+    """
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="BUGAB", added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: PriceSnapshot(
+                ticker=t, price=180.95, asof=datetime.now(),
+                is_stale=False, source="live",
+            ) for t in tickers
+        },
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data={
+                "ticker": "BUGAB",
+                "entry_date": "2026-04-29",
+                "entry_price": "180.95",
+                "shares": "5",
+                "initial_stop": "170.00",
+                "rationale": "aplus-setup",
+                "origin": "watchlist",
+            },
+        )
+    assert r.status_code == 200, (
+        f"Got {r.status_code}; body[:500]={r.text[:500]!r}"
+    )
+    # Body should not start with the bug-signature <tr> primary content.
+    # Strip leading whitespace before the check; the response may indent
+    # but the first non-whitespace element MUST be an OOB element, never
+    # a <tr id="open-position-...">.
+    leading = r.text.lstrip()[:80]
+    assert "<tr id=\"open-position-" not in leading, (
+        "Bug A+B fix regressed: response leads with primary <tr> content. "
+        "This triggers HTMX's makeFragment <table>-wrap pathology which "
+        "DROPS <table>s from OOB <section> chunks during browser-side "
+        "parse (Bug B), AND fails to deliver the new row to #open-positions "
+        "(Bug A — primary swap lands in source tbody, not #open-positions). "
+        f"Leading body: {leading!r}"
+    )
+
+
+def test_entry_post_response_delivers_new_row_via_open_positions_oob(
+    seeded_db, monkeypatch,
+):
+    """Bug A fix: response MUST contain an OOB swap targeting #open-positions
+    that includes the newly-created trade's row. Without this, the new row
+    never reaches the open-positions table — only a hard-refresh re-renders
+    the dashboard from list_open_trades.
+
+    Discriminator: the response body must contain
+    `<div id="open-positions" hx-swap-oob="true">` with the new row's id
+    (`open-position-{trade_id}`) inside that div's content.
+
+    Pre-fix the response has NO `id="open-positions"` OOB chunk; the new row
+    lives only as primary content (which lands in the source tbody and gets
+    nuked by the watchlist/hyp-recs OOB rebuild).
+
+    The OOB target uses the same id (`open-positions`) and template
+    (`partials/open_positions.html.j2`) as
+    `partials/prices_refresh_container.html.j2` — single source of truth
+    per CLAUDE.md "HTMX OOB-swap partial drift" gotcha.
+    """
+    import re
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="BUGAB", added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: PriceSnapshot(
+                ticker=t, price=180.95, asof=datetime.now(),
+                is_stale=False, source="live",
+            ) for t in tickers
+        },
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data={
+                "ticker": "BUGAB",
+                "entry_date": "2026-04-29",
+                "entry_price": "180.95",
+                "shares": "5",
+                "initial_stop": "170.00",
+                "rationale": "aplus-setup",
+                "origin": "watchlist",
+            },
+        )
+    assert r.status_code == 200
+    # Pin id + hx-swap-oob colocated on the SAME element (either order).
+    div_pattern = re.compile(
+        r'<div[^>]*\bid="open-positions"[^>]*\bhx-swap-oob="true"'
+        r'|<div[^>]*\bhx-swap-oob="true"[^>]*\bid="open-positions"',
+        re.IGNORECASE,
+    )
+    assert div_pattern.search(r.text), (
+        "Bug A fix missing: response must contain "
+        '`<div id="open-positions" hx-swap-oob="true">` so the new row '
+        "actually reaches the open-positions table. Without this OOB "
+        "chunk, the new row lives only as primary content which lands in "
+        "the source tbody and gets nuked by the watchlist/hyp-recs OOB "
+        f"rebuild. Body[:1000]={r.text[:1000]!r}"
+    )
+    # Extract the OOB div body and verify the new row id is inside it.
+    section_match = re.search(
+        r'<div[^>]*id="open-positions"[^>]*hx-swap-oob="true"[^>]*>'
+        r'(?P<body>.*?)</div>\s*(?:<section|<div|$)',
+        r.text, re.DOTALL | re.IGNORECASE,
+    )
+    if section_match is None:
+        section_match = re.search(
+            r'<div[^>]*hx-swap-oob="true"[^>]*id="open-positions"[^>]*>'
+            r'(?P<body>.*?)</div>\s*(?:<section|<div|$)',
+            r.text, re.DOTALL | re.IGNORECASE,
+        )
+    assert section_match is not None, (
+        f"Could not extract #open-positions OOB body. "
+        f"Body[:1500]={r.text[:1500]!r}"
+    )
+    oob_body = section_match.group("body")
+    assert "open-position-" in oob_body, (
+        "The #open-positions OOB chunk must contain the newly-created "
+        "trade's row (`id=\"open-position-{trade_id}\"`). "
+        f"OOB body[:500]={oob_body[:500]!r}"
+    )
+    assert ">BUGAB<" in oob_body, (
+        "The #open-positions OOB chunk must contain the new ticker text "
+        f"`>BUGAB<`. OOB body[:500]={oob_body[:500]!r}"
+    )

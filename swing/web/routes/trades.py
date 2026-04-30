@@ -379,7 +379,12 @@ def entry_post(
     conn = connect(cfg.paths.db_path)
     try:
         try:
-            result = record_entry(
+            # Bug-fix-AB: result.trade_id is no longer needed — the
+            # dashboard rebuild's open_positions partial picks the new row
+            # up via list_open_trades. Soft-warn / duplicate / hard-cap /
+            # ValueError paths raise to the except blocks below; the
+            # success path returns into the OOB-only response below.
+            record_entry(
                 conn, req,
                 soft_warn=cfg.position_limits.soft_warn_open,
                 hard_cap=cfg.position_limits.hard_cap_open,
@@ -565,61 +570,76 @@ def entry_post(
     finally:
         conn.close()
 
-    # Two-call rebuild (spec §4.3 step 6).
-    # a) Primary row.
-    conn = connect(cfg.paths.db_path)
-    try:
-        with conn:
-            open_trades = list_open_trades(conn)
-    finally:
-        conn.close()
-    new_trade = next(t for t in open_trades if t.id == result.trade_id)
-    row_vm = build_open_positions_row(
-        trade=new_trade, cfg=cfg, cache=cache,
-        ohlcv_cache=request.app.state.ohlcv_cache, executor=executor,
-    )
-
-    # b) Dashboard rebuild — source for OOB fragments.
+    # Bug-fix-AB (2026-04-29): pure-OOB response architecture.
+    #
+    # Background. The prior architecture emitted the new open-position
+    # `<tr>` as PRIMARY content (no `hx-swap-oob`) plus OOB chunks for
+    # `#status-strip`, `#watchlist-top5`, and (on hyp-recs origin)
+    # `#hypothesis-recommendations`. Two production-confirmed bugs:
+    #
+    #   Bug A: the form's `hx-target="closest tr" hx-swap="outerHTML"`
+    #     directs HTMX to replace the form's `<tr>` (in the SOURCE tbody —
+    #     watchlist or hyp-recs). The new open-position row briefly lands
+    #     in that source tbody, then OOB rebuilds nuke it. Nothing in the
+    #     response targets `#open-positions`, so the open-positions table
+    #     never updates without a hard refresh.
+    #
+    #   Bug B: a leading `<tr>` in the response triggers HTMX's
+    #     `makeFragment` to wrap the whole response in a synthetic
+    #     `<table><tbody>` for parsing. HTML5 nested-table parse rules
+    #     then DROP the `<table>`s inside the OOB `<section>` chunks
+    #     during the browser-side fragment parse. Operator's DevTools
+    #     capture (2026-04-29) confirmed `htmx:oobAfterSwap` fires for
+    #     `#watchlist-top5` but the post-swap DOM contains only the `<h2>`
+    #     heading — the `<table>` and rows vanished at parse time.
+    #
+    # Fix. Make the response purely OOB: NO `<tr>` at fragment root.
+    # The new row reaches `#open-positions` via an OOB swap that mirrors
+    # `partials/prices_refresh_container.html.j2`'s pattern. Primary swap
+    # content is empty; HTMX's `makeFragment` does not wrap-in-`<table>`;
+    # foster-parenting/nested-table-stripping does not fire; OOB chunks
+    # parse and apply cleanly. The form's `<tr>` (in the source tbody)
+    # disappears as a side-effect of the watchlist-top5 / hyp-recs OOB
+    # rebuild that replaces its containing section.
     dashboard_vm = build_dashboard(cfg=cfg, cache=cache, executor=executor,
                                    ohlcv_cache=request.app.state.ohlcv_cache)
 
-    # Render response: primary row + #status-strip OOB + #watchlist-top5 OOB.
-    # R3 Major 2 + Minor 1 fix: render the watchlist-top5 region via a shared
-    # partial (watchlist_top5_section.html.j2) so the POST-success OOB fragment
-    # and the dashboard page render identically — heading, table, "Show all"
-    # link, all column headers. Single source of truth eliminates the drift
-    # risk R3 flagged. Status-strip similarly uses its existing 3a partial.
-    row_html = templates.get_template("partials/open_positions_row.html.j2").render(
-        request=request, row=row_vm,
-    )
     status_strip_html = templates.get_template("partials/status_strip.html.j2").render(
         request=request, vm=dashboard_vm,
     )
+    open_positions_html = templates.get_template(
+        "partials/open_positions.html.j2"
+    ).render(request=request, vm=dashboard_vm)
     watchlist_section_html = templates.get_template(
         "partials/watchlist_top5_section.html.j2"
     ).render(request=request, vm=dashboard_vm)
 
-    # Task 5 (R1 M1): on origin=hyp-recs success, emit a third OOB swap of
-    # #hypothesis-recommendations so (a) the broken open-positions row that
-    # briefly lands inside the hyp-recs <tbody> is replaced by a fresh
-    # render, and (b) the just-traded ticker is removed from the
-    # recommendations panel. The exclusion set is sourced from POST-WRITE
-    # state via `open_trades` (already fetched above, AFTER `record_entry`
-    # persisted the new trade row); this includes BOTH the just-traded
-    # ticker AND any pre-existing open positions whose candidate rows are
-    # also in the latest eval. R1 Major 1 discriminator: a shortcut like
-    # `exclude_tickers={ticker.upper()}` would leak pre-existing open
-    # positions into the rebuild.
+    # On origin=hyp-recs success, emit an OOB swap of
+    # `#hypothesis-recommendations` so (a) the form's `<tr>` (in the
+    # hyp-recs tbody) gets replaced as the section is rebuilt, and (b) the
+    # just-traded ticker is removed from the recommendations panel. The
+    # exclusion set is sourced from POST-WRITE state via
+    # `list_open_trades(conn)` AFTER `record_entry` persisted the new
+    # trade row, so it includes BOTH the just-traded ticker AND any
+    # pre-existing open positions whose candidate rows are also in the
+    # latest eval. A shortcut `exclude_tickers={ticker.upper()}` would
+    # leak pre-existing open positions into the rebuild (Codex R1 Major 1
+    # discriminator from the prior dispatch).
     #
     # The partial is the SOLE source of the section markup (CLAUDE.md
     # "HTMX OOB-swap partial drift" gotcha) — render it via
-    # `templates.get_template(...).render(..., oob=True)`. The partial's
-    # `oob=True` branch ALWAYS emits the `#hypothesis-recommendations`
-    # element (with `hx-swap-oob="true"`), even when the rebuild surfaces
-    # zero recommendations, so HTMX always has a valid swap target.
+    # `.render(..., oob=True)`. The `oob=True` branch ALWAYS emits the
+    # `#hypothesis-recommendations` element (with `hx-swap-oob="true"`),
+    # even when the rebuild surfaces zero recommendations, so HTMX always
+    # has a valid swap target.
     hyp_recs_section_html = ""
     if origin_coerced == "hyp-recs":
-        open_trade_tickers = {t.ticker for t in open_trades}
+        conn = connect(cfg.paths.db_path)
+        try:
+            with conn:
+                open_trade_tickers = {t.ticker for t in list_open_trades(conn)}
+        finally:
+            conn.close()
         hyp_recs_vm = build_hyp_recs_section(
             cfg=cfg, cache=cache, executor=executor,
             exclude_tickers=open_trade_tickers,
@@ -629,8 +649,10 @@ def entry_post(
         ).render(request=request, vm=hyp_recs_vm, oob=True)
 
     return HTMLResponse(Markup(
-        f'{row_html}'
         f'<div id="status-strip" hx-swap-oob="true">{status_strip_html}</div>'
+        f'<div id="open-positions" hx-swap-oob="true">'
+        f'{open_positions_html}'
+        f'</div>'
         f'<section id="watchlist-top5" hx-swap-oob="true">'
         f'{watchlist_section_html}'
         f'</section>'
