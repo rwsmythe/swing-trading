@@ -602,7 +602,7 @@ Expected: at least one line ending in `Task 3 — build_hyp_recs_section gains e
 - Modify: `swing/web/templates/partials/hypothesis_recommendations.html.j2` — branch on `oob` flag (default False).
 - Test: a partial-render test that uses Jinja's environment directly (or a thin pytest fixture that loads the templates dir). If the test layout doesn't have a partial-render test file, locate the closest existing example with `Glob "tests/web/templates/**"` or `Grep -rn "templates.get_template" tests/`. Otherwise, add the partial-render assertion as part of Task 5's route-level test (entry_post response body contains the OOB-section markup) — that route-level assertion alone is discriminating enough.
 
-**Empty-state UX inside `oob=True` wrapper (Codex R1 Minor 1 + R2 Minor 1 resolution):** When `oob=True` AND `vm.active_recommendations` is empty, the partial emits `<section id="hypothesis-recommendations" hx-swap-oob="true" hidden>` (note: WITHOUT the `class="hypothesis-recommendations"` styling AND WITH the HTML5 `hidden` global attribute) — no heading, no table, no placeholder text. **This is intentional:** HTMX needs the OOB target element to exist (so the swap fires and removes the broken open-positions row that briefly landed inside the prior section's `<tbody>`); but rendering the heading "Hypothesis-driven recommendations" above an empty container would be misleading UX (the operator just traded their only remaining hyp-rec — there are no recommendations to surface). The `hidden` attribute structurally maps to `display: none` per the HTML5 spec, guaranteeing zero visible chrome regardless of whether the project's CSS adds margin/padding/border to `<section>` elements (Codex R2 Minor 1 was concerned that an empty `<section>` could still inherit visible spacing from default UA styles; `hidden` defends against that across all browsers). The class attribute is also dropped on the empty branch since there are no descendants to style and the class is what could pull in any project-specific decoration. **Trade-off accepted:** under `oob=False`, the section still vanishes on empty (preserves current full-page UX); under `oob=True`, an invisible-but-DOM-present `<section hidden>` lingers. This is harmless — subsequent OOB swaps continue to find the target; the next `/hyp-recs/refresh` (full-section render with `oob=False`) restores the full vanish-on-empty behavior since `outerHTML` swap replaces the element with whatever the partial emits (empty string when empty).
+**Empty-state UX inside `oob=True` wrapper (Codex R1 Minor 1 + R2 Minor 1 + R3 Minor 1 resolution):** When `oob=True` AND `vm.active_recommendations` is empty, the partial emits `<section id="hypothesis-recommendations" hx-swap-oob="true" hidden>` — note: WITHOUT the `class="hypothesis-recommendations"` styling AND WITH the HTML5 `hidden` global attribute — and no heading, table, or placeholder text. The class drop on the empty branch is INTENTIONAL and SAFE because: (1) at HEAD, no JS or CSS selector outside the partial itself relies on `.hypothesis-recommendations` existing alongside `#hypothesis-recommendations` (verifiable via `Grep -rn "\.hypothesis-recommendations" swing/web/static/ swing/web/templates/`); (2) the class only carries visual styling that is meaningless when the section is empty; (3) the populated branch (with `class="hypothesis-recommendations"`) replaces the empty `<section hidden>` on the next OOB swap, restoring all chrome. **This is intentional:** HTMX needs the OOB target element to exist (so the swap fires and removes the broken open-positions row that briefly landed inside the prior section's `<tbody>`); but rendering the heading "Hypothesis-driven recommendations" above an empty container would be misleading UX (the operator just traded their only remaining hyp-rec — there are no recommendations to surface). The `hidden` attribute structurally maps to `display: none` per the HTML5 spec, guaranteeing zero visible chrome regardless of whether the project's CSS adds margin/padding/border to `<section>` elements (Codex R2 Minor 1 was concerned that an empty `<section>` could still inherit visible spacing from default UA styles; `hidden` defends against that across all browsers). The class attribute is also dropped on the empty branch since there are no descendants to style and the class is what could pull in any project-specific decoration. **Trade-off accepted:** under `oob=False`, the section still vanishes on empty (preserves current full-page UX); under `oob=True`, an invisible-but-DOM-present `<section hidden>` lingers. This is harmless — subsequent OOB swaps continue to find the target; the next `/hyp-recs/refresh` (full-section render with `oob=False`) restores the full vanish-on-empty behavior since `outerHTML` swap replaces the element with whatever the partial emits (empty string when empty).
 
 **Discriminating-test sanity check:** Two assertions: (a) render with `oob=True` AND empty `active_recommendations` produces output containing `<section id="hypothesis-recommendations" hx-swap-oob="true">` — pre-fix, an empty rec list emits nothing, so the assertion fails; (b) render with `oob=False` AND empty `active_recommendations` produces empty output — preserves existing full-page-render behavior. Both assertions together are discriminating: a naive "always emit section" implementation would pass (a) but break (b).
 
@@ -680,7 +680,48 @@ def test_partial_oob_true_populated_recs_emits_section_and_rows(env):
     assert 'id="hypothesis-recommendations"' in rendered
     assert 'hx-swap-oob="true"' in rendered
     assert "TESTAPLUS" in rendered
+
+
+def test_partial_oob_true_populated_recs_omits_hidden_attr_and_keeps_class(env):
+    """Codex R3 Major 2: the empty→populated transition. After an empty
+    OOB swap left `<section id="..." hidden></section>` in the DOM, a
+    subsequent populated OOB swap must replace that node with one that
+    has the styling class restored AND the `hidden` attribute removed.
+    The partial's populated branch is the source of truth — verifying it
+    does NOT carry `hidden` AND DOES carry `class="hypothesis-recommendations"`
+    is the minimal contract that prevents transition stickiness.
+    """
+    from swing.web.view_models.dashboard import HypothesisRecommendation
+    template = env.get_template("partials/hypothesis_recommendations.html.j2")
+    rec = HypothesisRecommendation(
+        ticker="TESTAPLUS", current_price=27.10, hypothesis_id=1,
+        hypothesis_name="A+ baseline", hypothesis_progress_n=2,
+        hypothesis_progress_target=10, tripwire_fired=False,
+        tripwire_reason=None, suggested_label="A+ baseline — TESTAPLUS",
+        pivot_price=26.98,
+    )
+    vm = HypRecsSectionVM(active_recommendations=(rec,))
+    rendered = template.render(vm=vm, oob=True)
+    # `hidden` MUST be absent from a populated render — extracting the
+    # opening tag explicitly so a stray `hidden` inside row content (e.g.
+    # an `aria-hidden`) doesn't false-trip the assertion.
+    section_open = re.search(
+        r'<section[^>]*id="hypothesis-recommendations"[^>]*>',
+        rendered,
+    )
+    assert section_open is not None
+    open_tag = section_open.group(0)
+    assert " hidden" not in open_tag, (
+        "Populated render must NOT carry `hidden` — empty-to-populated "
+        "transition would leave the section invisible."
+    )
+    assert 'class="hypothesis-recommendations"' in open_tag, (
+        "Populated render must restore the styling class so the section "
+        "renders with project chrome (heading spacing, table styles)."
+    )
 ```
+
+Add `import re` to the test module's imports if not present.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -755,7 +796,7 @@ Expected: all three tests PASS.
 
 Run: `python -m pytest -m "not slow" -q 2>&1 | tail -5`
 
-Expected: ~1302 passed (1294 baseline + 1 [Task 1] + 2 [Task 2] + 1 [Task 3] + 3 [Task 4]), 1 skipped, 8 deselected. **Special check:** the existing route test for `/hyp-recs/refresh` MUST still pass (it renders without `oob`, so the default-false branch preserves behavior). If it fails, the `oob|default(false)` resolution may need an explicit `is defined` check — investigate before proceeding.
+Expected: ~1303 passed (1294 baseline + 1 [Task 1] + 2 [Task 2] + 1 [Task 3] + 3 [Task 4]), 1 skipped, 8 deselected. **Special check:** the existing route test for `/hyp-recs/refresh` MUST still pass (it renders without `oob`, so the default-false branch preserves behavior). If it fails, the `oob|default(false)` resolution may need an explicit `is defined` check — investigate before proceeding.
 
 - [ ] **Step 6: Commit**
 
@@ -1074,7 +1115,7 @@ Expected: all five tests PASS.
 
 Run: `python -m pytest -m "not slow" -q 2>&1 | tail -5`
 
-Expected: ~1307 passed (1294 baseline + 1 [Task 1] + 2 [Task 2] + 1 [Task 3] + 3 [Task 4] + 5 [Task 5]), 1 skipped, 8 deselected. Trust pytest output — count drift is acceptable.
+Expected: ~1309 passed (1294 baseline + 1 [Task 1] + 2 [Task 2] + 1 [Task 3] + 3 [Task 4] + 5 [Task 5]), 1 skipped, 8 deselected. Trust pytest output — count drift is acceptable.
 
 - [ ] **Step 6: Commit**
 
@@ -1091,18 +1132,49 @@ git log -E --pretty='%s' --grep='^[a-z]+\([a-z]+\): Task 5' | head -5
 
 Expected: at least one line ending in `Task 5 — entry_post emits #hypothesis-recommendations OOB on origin=hyp-recs`.
 
-- [ ] **Step 7a: Structural-guard grep against hand-duplicated OOB markup (Codex R2 Major 2 resolution)**
+- [ ] **Step 7a: Structural-guard pytest assertion against hand-duplicated OOB markup (Codex R2 Major 2 + R3 Major 1 resolution)**
 
 The CLAUDE.md "HTMX OOB-swap partial drift" gotcha is enforced at the source level by ensuring `swing/web/routes/trades.py` contains NO literal `<section id="hypothesis-recommendations"` markup — the partial is the SOLE source of that markup, consumed via `templates.get_template(...).render(...)`. A hand-duplicated section in trades.py would render visually correct but would silently drift when the partial evolves (the exact failure class of the prior watchlist incident in CLAUDE.md).
 
-Run:
-```bash
-grep -nE '<section[^>]*id="hypothesis-recommendations"' swing/web/routes/trades.py | wc -l
+Implemented as a permanent pytest test (cross-platform; lives in the test suite at `tests/web/routes/test_trades_entry.py` next to the integration tests). Pure Python file-read; no shell dependency.
+
+```python
+import re
+from pathlib import Path
+
+import swing.web.routes.trades as trades_module
+
+
+def test_trades_module_contains_no_literal_hyp_recs_section_markup():
+    """Codex R2 Major 2 + R3 Major 1: structural guard against
+    hand-duplicated OOB section markup in entry_post. The
+    `hypothesis_recommendations.html.j2` partial is the SOLE source of
+    `<section id="hypothesis-recommendations">` markup; entry_post must
+    consume it via templates.get_template(...).render(...). A literal
+    section-tag string in trades.py would render correctly today but
+    drift silently when the partial evolves (CLAUDE.md HTMX OOB drift
+    gotcha). This test is the structural enforcement.
+    """
+    source_path = Path(trades_module.__file__)
+    source = source_path.read_text(encoding="utf-8")
+    pattern = re.compile(
+        r'<section[^>]*id="hypothesis-recommendations"',
+        re.IGNORECASE,
+    )
+    matches = pattern.findall(source)
+    assert matches == [], (
+        f"Found {len(matches)} literal hyp-recs `<section>` tag(s) in "
+        f"swing/web/routes/trades.py. The partial "
+        f"`partials/hypothesis_recommendations.html.j2` is the SOLE source "
+        f"of that markup; entry_post must render it via "
+        f"`templates.get_template(...).render(..., oob=True)` — never "
+        f"hand-duplicate. Matches: {matches!r}"
+    )
 ```
 
-Expected output: `0`. If non-zero, the implementer hand-duplicated the section markup instead of routing through the partial — refactor to use `templates.get_template("partials/hypothesis_recommendations.html.j2").render(..., vm=section_vm, oob=True)` and rerun.
+Run: `python -m pytest tests/web/routes/test_trades_entry.py::test_trades_module_contains_no_literal_hyp_recs_section_markup -v`
 
-This guard runs at every commit time and at executing-plans review time. Append to the executing-plans return-report checklist for the orchestrator's R1 review.
+Expected: PASS at every commit. The test is platform-agnostic and replaces the originally-considered shell `grep` step.
 
 - [ ] **Step 8: Manual smoke verification (frontend changes — per CLAUDE.md UI-changes rule)**
 
