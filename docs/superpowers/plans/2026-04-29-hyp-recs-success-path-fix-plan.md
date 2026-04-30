@@ -721,7 +721,7 @@ Expected: at least one line ending in `Task 4 — hypothesis_recommendations par
 
 5. **Hyp-recs origin error path → no `#hypothesis-recommendations` OOB swap.** A POST that triggers an error path (rationale validation failure, duplicate position, etc.) for origin=hyp-recs returns the existing form re-render unchanged — the response body must NOT contain the OOB-swap marker. Discriminating: protects against accidentally re-rendering the hyp-recs section on an error response that the operator's HTMX target (`closest tr`) would then mis-swap.
 
-- [ ] **Step 1: Write the four failing tests**
+- [ ] **Step 1: Write the five failing tests**
 
 Open the existing entry_post test file. Add (preserving its existing fixtures and TestClient lifespan setup):
 
@@ -1050,7 +1050,7 @@ If any step misbehaves, surface in the executing-plans return report — do NOT 
 - §3 A. Helper name + signature → resolved: `latest_evaluation_run_id(conn) -> int | None`, the existing helper. Documented in Pre-flight context.
 - §3 B. `id DESC` tiebreaker preservation → Task 1.
 - §3 C. Standalone-eval fallback policy → preserved (Task 2 inherits the existing 2-step fallback by routing through `latest_evaluation_run_id`).
-- §3 D. Test surface for R1 M1 (4 discriminating tests) → Task 5 four-test bundle.
+- §3 D. Test surface for R1 M1 (5 discriminating tests, including Codex R1 Major 1 post-write-state discriminator) → Task 5 five-test bundle.
 - §3 E. Test surface for R1 M2 → Task 1 (`id DESC`), Task 2 (standalone-eval fallback).
 - §3 F. Discriminating-test discipline (sentinel pair) → `TESTAPLUS` ticker reserved across Tasks 2–5; CC-pivot sentinel pair (FOO/BAR @ $24.13/$26.98) explicitly NOT reused for these tests.
 - §4 Acceptance criteria 1–9 → Per-task TDD ✓, discriminating-test sanity-check sentence ✓, sequential single-subagent ✓, observable-verification grep step ✓, 4-tier flat numbering ✓, R1 M2 helper extraction first ✓, R1 M1 fix tasks second ✓, test count baseline pinned ✓, plan output target path ✓.
