@@ -242,3 +242,57 @@ def test_build_hyp_recs_section_and_build_dashboard_share_anchor_under_tied_fini
     # And specifically: the higher-id row wins (Task 1's `id DESC`).
     assert "TESTAPLUS" in section_tickers
     assert "TESTOTHER" not in section_tickers
+
+
+def test_build_hyp_recs_section_excludes_specified_tickers(
+    seeded_db, monkeypatch,
+):
+    """Task 3: `exclude_tickers` kwarg structurally suppresses listed
+    tickers from the recommendations output, even when their candidate
+    row is still in the latest evaluation run.
+
+    Discriminating: pre-Task-3, the kwarg doesn't exist (TypeError on
+    call); a pure signature-only addition without filter wiring would
+    accept the call but still surface TESTAPLUS in the recommendations.
+    Both halves are required:
+      - sanity baseline: without the kwarg, TESTAPLUS DOES appear;
+      - filtered: with `exclude_tickers=("TESTAPLUS",)`, it does NOT.
+    """
+    from swing.web.view_models.dashboard import build_hyp_recs_section
+
+    cfg, _ = seeded_db
+    _seed_standalone_eval_with_aplus_candidate(cfg, ticker="TESTAPLUS")
+    _patch_price_cache(monkeypatch)
+
+    cache = PriceCache(cfg)
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        # Sanity baseline: without exclude_tickers, TESTAPLUS appears.
+        baseline_vm = build_hyp_recs_section(
+            cfg=cfg, cache=cache, executor=executor,
+        )
+        baseline_tickers = [
+            r.ticker for r in baseline_vm.active_recommendations
+        ]
+        assert "TESTAPLUS" in baseline_tickers, (
+            "Sanity baseline failed: TESTAPLUS should appear in the "
+            "section without exclude_tickers. The discriminating value "
+            "of the filtered assertion below depends on this. "
+            f"Got tickers={baseline_tickers!r}"
+        )
+
+        # Filtered: with exclude_tickers, TESTAPLUS is suppressed.
+        filtered_vm = build_hyp_recs_section(
+            cfg=cfg, cache=cache, executor=executor,
+            exclude_tickers=("TESTAPLUS",),
+        )
+    finally:
+        executor.shutdown(wait=False)
+
+    filtered_tickers = [
+        r.ticker for r in filtered_vm.active_recommendations
+    ]
+    assert "TESTAPLUS" not in filtered_tickers, (
+        "exclude_tickers kwarg should structurally suppress TESTAPLUS "
+        f"from the recommendations. Got tickers={filtered_tickers!r}"
+    )

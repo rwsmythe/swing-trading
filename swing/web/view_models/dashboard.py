@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Mapping
+from typing import Iterable, Mapping
 
 from swing.config import Config
 from swing.data.db import connect
@@ -303,6 +303,7 @@ class HypRecsSectionVM:
 
 def build_hyp_recs_section(
     *, cfg: Config, cache: PriceCache, executor,
+    exclude_tickers: Iterable[str] = (),
 ) -> HypRecsSectionVM:
     """Refresh-route VM builder. Resolves ONLY the data needed for the
     hyp-recs section: candidates_by_ticker (for pivot_price), prices for
@@ -340,6 +341,18 @@ def build_hyp_recs_section(
                 # standalone eval) — empty section.
                 return HypRecsSectionVM(active_recommendations=())
             candidates = fetch_candidates_for_run(conn, eval_id)
+            # Task 3 (R1 M1 prereq): structurally exclude tickers (open
+            # positions, including the just-traded one when called from
+            # entry_post). Filter the candidate set before matching so the
+            # prices/matchers/prioritizer never see them; the post-filter
+            # below the matcher loop is defense-in-depth. .upper() on both
+            # sides keeps the kwarg lenient (caller can pass mixed-case)
+            # while tolerating any candidate-side casing drift.
+            exclude_set = {t.upper() for t in exclude_tickers}
+            if exclude_set:
+                candidates = [
+                    c for c in candidates if c.ticker.upper() not in exclude_set
+                ]
             candidates_by_ticker = {c.ticker: c for c in candidates}
             registry = list_hypotheses(conn)
             target_by_id = {h.id: h.target_sample_size for h in registry}
@@ -358,6 +371,14 @@ def build_hyp_recs_section(
                 all_matches, registry=registry, progress=progress_summaries,
             )
             top_recommendations = list(prioritized[:_RECOMMENDATIONS_TOP_N])
+            # Defense-in-depth: filter again after prioritization in case
+            # the matcher chain ever surfaces a ticker not present in the
+            # pre-filtered candidate set (e.g., future synthesis paths).
+            if exclude_set:
+                top_recommendations = [
+                    r for r in top_recommendations
+                    if r.candidate_ticker.upper() not in exclude_set
+                ]
     finally:
         conn.close()
     recommended_tickers = sorted(
