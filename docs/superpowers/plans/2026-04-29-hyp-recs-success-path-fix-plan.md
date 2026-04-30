@@ -314,11 +314,74 @@ Run: `python -m pytest tests/web/view_models/<file>.py::test_build_hyp_recs_sect
 
 Expected: PASS.
 
+- [ ] **Step 4a: Add the shared-anchor behavior-equivalence test (Codex R1 Major 2 resolution)**
+
+The R1 M2 fix's whole point is "both consumers must anchor the same way." Per Codex R1 Major 2, add a test that exercises BOTH `build_dashboard` and `build_hyp_recs_section` against the SAME seeded fixture and asserts they bind to the same `evaluation_run_id` (i.e. same candidate set drives the recommendations both code paths produce). Append to the same test file:
+
+```python
+def test_build_hyp_recs_section_and_build_dashboard_share_anchor_under_tied_finished_ts(
+    tmp_path,
+):
+    """Codex R1 Major 2: under tied `finished_ts` between two completed
+    pipeline_runs rows (same divergence trigger Task 1's tiebreaker
+    closes), both consumers must resolve to the SAME evaluation_run_id.
+
+    Discriminating: pre-Task-2, build_hyp_recs_section's inline query
+    might return the lower-id row's evaluation_run_id while build_dashboard
+    (which routes through latest_evaluation_run_id) returns the higher
+    after Task 1. Post-refactor, both share latest_evaluation_run_id and
+    therefore resolve identically. The assertion checks that the SET of
+    recommended tickers from both code paths is identical (a stronger
+    invariant than just matching evaluation_run_id integers, because it
+    also catches accidental divergence in how each consumer translates
+    the eval id into candidates).
+    """
+    from swing.web.price_cache import PriceCache
+    from swing.web.view_models.dashboard import (
+        build_dashboard, build_hyp_recs_section,
+    )
+
+    db_path = tmp_path / "swing.db"
+    # Seed: two completed pipeline_runs with identical finished_ts; the
+    # higher-id row's eval has TESTAPLUS as a candidate, the lower-id
+    # row's eval does NOT. Pre-Task-1, the inline query in
+    # build_hyp_recs_section could return either row → divergence; post-
+    # Task-1 + Task-2, both consumers route through latest_evaluation_run_id
+    # which deterministically returns the higher-id row's eval.
+    _seed_two_complete_pipeline_runs_tied_finished_ts(
+        db_path,
+        higher_id_eval_candidate_ticker="TESTAPLUS",
+        lower_id_eval_candidate_ticker="TESTOTHER",
+    )
+    cfg = _build_test_config(db_path=db_path, starting_equity=10_000.0)
+    cache = PriceCache(...)  # existing fixture
+
+    section = build_hyp_recs_section(cfg=cfg, cache=cache, executor=None)
+    dashboard = build_dashboard(cfg=cfg, cache=cache, executor=None)
+
+    section_tickers = {r.ticker for r in section.active_recommendations}
+    dashboard_tickers = {r.ticker for r in dashboard.active_recommendations}
+
+    assert section_tickers == dashboard_tickers, (
+        f"Anchor divergence: build_hyp_recs_section saw {section_tickers}, "
+        f"build_dashboard saw {dashboard_tickers}. Both must resolve to "
+        f"the same evaluation_run_id and therefore surface the same "
+        f"recommendations under tied finished_ts."
+    )
+    # And specifically: the higher-id row wins.
+    assert "TESTAPLUS" in section_tickers
+    assert "TESTOTHER" not in section_tickers
+```
+
+Run: `python -m pytest tests/web/view_models/<file>.py::test_build_hyp_recs_section_and_build_dashboard_share_anchor_under_tied_finished_ts -v`
+
+Expected: PASS post-Task-1+Task-2 implementation. If FAIL, the helper extraction is incomplete or `build_dashboard` is consulting a different anchor (e.g. its inline `pipeline_eval_row` query at lines 528-538) — surface and resolve before committing.
+
 - [ ] **Step 5: Run the full fast suite to verify no regressions**
 
 Run: `python -m pytest -m "not slow" -q 2>&1 | tail -5`
 
-Expected: 1296 passed (1294 baseline + Task 1 + Task 2), 1 skipped, 8 deselected.
+Expected: 1297 passed (1294 baseline + 1 [Task 1] + 2 [Task 2: fallback + shared-anchor]), 1 skipped, 8 deselected.
 
 If a pre-existing test for `build_hyp_recs_section` asserted empty-on-no-pipeline state (i.e. the negative behavior we just changed), it may now FAIL. Inspect the failure: if the prior assertion was the "pre-fix bug behavior" frozen as a regression test, the test needs updating to assert the new fallback behavior. Surface in the commit message.
 
@@ -449,7 +512,7 @@ Expected: PASS.
 
 Run: `python -m pytest -m "not slow" -q 2>&1 | tail -5`
 
-Expected: 1297 passed, 1 skipped, 8 deselected.
+Expected: ~1298 passed, 1 skipped, 8 deselected. Trust pytest output — count drift is acceptable.
 
 - [ ] **Step 6: Commit**
 
@@ -475,6 +538,8 @@ Expected: at least one line ending in `Task 3 — build_hyp_recs_section gains e
 **Files:**
 - Modify: `swing/web/templates/partials/hypothesis_recommendations.html.j2` — branch on `oob` flag (default False).
 - Test: a partial-render test that uses Jinja's environment directly (or a thin pytest fixture that loads the templates dir). If the test layout doesn't have a partial-render test file, locate the closest existing example with `Glob "tests/web/templates/**"` or `Grep -rn "templates.get_template" tests/`. Otherwise, add the partial-render assertion as part of Task 5's route-level test (entry_post response body contains the OOB-section markup) — that route-level assertion alone is discriminating enough.
+
+**Empty-state UX inside `oob=True` wrapper (Codex R1 Minor 1 resolution):** When `oob=True` AND `vm.active_recommendations` is empty, the partial emits an EMPTY `<section id="hypothesis-recommendations" hx-swap-oob="true">` — no heading, no table, no placeholder text. **This is intentional:** HTMX needs the OOB target element to exist (so the swap fires and removes the broken open-positions row that briefly landed inside the prior section's `<tbody>`); but rendering the heading "Hypothesis-driven recommendations" above an empty container would be misleading UX (the operator just traded their only remaining hyp-rec — there are no recommendations to surface). The empty `<section>` is invisible (no padding/margin contributed by an empty element under the existing CSS class). Operators see the panel cleanly disappear, which mirrors the full-page-render behavior when `vm.active_recommendations` is empty (current `{% if %}` guard suppresses the section entirely on the first page load). **Trade-off accepted:** under `oob=False`, the section still vanishes on empty (preserves current full-page UX); under `oob=True`, an invisible-but-DOM-present `<section>` lingers. This is harmless — subsequent OOB swaps continue to find the target; the next `/hyp-recs/refresh` (full-section render with `oob=False`) restores the full vanish-on-empty behavior since `outerHTML` swap replaces the element with whatever the partial emits (empty string when empty).
 
 **Discriminating-test sanity check:** Two assertions: (a) render with `oob=True` AND empty `active_recommendations` produces output containing `<section id="hypothesis-recommendations" hx-swap-oob="true">` — pre-fix, an empty rec list emits nothing, so the assertion fails; (b) render with `oob=False` AND empty `active_recommendations` produces empty output — preserves existing full-page-render behavior. Both assertions together are discriminating: a naive "always emit section" implementation would pass (a) but break (b).
 
@@ -617,7 +682,7 @@ Expected: all three tests PASS.
 
 Run: `python -m pytest -m "not slow" -q 2>&1 | tail -5`
 
-Expected: 1300 passed (1294 baseline + Tasks 1–3 + 3 new partial tests), 1 skipped, 8 deselected. **Special check:** the existing route test for `/hyp-recs/refresh` MUST still pass (it renders without `oob`, so the default-false branch preserves behavior). If it fails, the `oob|default(false)` resolution may need an explicit `is defined` check — investigate before proceeding.
+Expected: ~1301 passed (1294 baseline + 1 [Task 1] + 2 [Task 2] + 1 [Task 3] + 3 [Task 4]), 1 skipped, 8 deselected. **Special check:** the existing route test for `/hyp-recs/refresh` MUST still pass (it renders without `oob`, so the default-false branch preserves behavior). If it fails, the `oob|default(false)` resolution may need an explicit `is defined` check — investigate before proceeding.
 
 - [ ] **Step 6: Commit**
 
@@ -644,15 +709,17 @@ Expected: at least one line ending in `Task 4 — hypothesis_recommendations par
 - Modify: `swing/web/routes/trades.py` — `entry_post` success-path response (lines 568-608). Build `section_html` conditional on `origin_coerced == "hyp-recs"` and append to the response body.
 - Test: existing test file for entry_post POST behavior. Locate via `Grep -rn "POST /trades/entry\|test_post_entry\|entry_post" tests/`. The most likely candidate is `tests/web/routes/test_trades_entry.py` or a similarly-named file.
 
-**Discriminating-test sanity checks** (4 separate tests; per dispatch brief §3.D):
+**Discriminating-test sanity checks** (5 separate tests; per dispatch brief §3.D + Codex R1 Major 1 resolution):
 
 1. **Hyp-recs origin success → OOB swap present.** Pre-fix, the response body contains the primary row + status-strip + watchlist OOB only. Post-fix, the body additionally contains `id="hypothesis-recommendations"` AND `hx-swap-oob="true"` colocated within the same element. Discriminating: a vacuous test (e.g., asserting only `"hypothesis-recommendations" in body`) would pass spuriously because `partials/trade_entry_form.html.j2` references `/hyp-recs/refresh` for hyp-recs origin's Cancel target — verify by asserting the `hx-swap-oob="true"` marker (which only appears in the OOB-rendered partial) on the SAME element as `id="hypothesis-recommendations"`.
 
 2. **Hyp-recs origin success → just-traded ticker absent from OOB chunk.** The fixture seeds `TESTAPLUS` as a hyp-rec; the POST trades it. Post-fix, the OOB chunk's substring containing `id="hypothesis-recommendations"` does NOT contain `>TESTAPLUS<` (the `<td>` cell renders the ticker as bare text). Discriminating: pre-Task-3 (kwarg absent), the rebuild would include TESTAPLUS even though it's now an open position — assertion fails. Post-Task-3 with `exclude_tickers` plumbed by entry_post → TESTAPLUS absent.
 
-3. **Watchlist origin success → no OOB swap of `#hypothesis-recommendations`.** The same POST against origin=watchlist returns the existing 3-fragment response. Post-fix, the body must NOT contain `id="hypothesis-recommendations"` AND `hx-swap-oob="true"` colocated. Discriminating: catches a regression where the OOB swap unconditionally fires regardless of origin (would be a silent over-refresh of an unrelated panel from a watchlist trade).
+3. **Hyp-recs origin success → exclusion set is sourced from POST-WRITE state (Codex R1 Major 1 resolution).** Two open positions before the POST: ticker `TESTPRIOR` (existing) plus a candidate row for `TESTPRIOR` in the latest pipeline run's eval (so `TESTPRIOR` would naturally appear in hyp-recs without any filter). The POST adds `TESTAPLUS` (also a hyp-rec). Post-fix, the OOB chunk excludes BOTH `TESTAPLUS` (just-traded) AND `TESTPRIOR` (already-open). Discriminating: a buggy implementation that uses `exclude_tickers={request_ticker}` only (a shortcut sourcing from the POST body, NOT from `list_open_trades` post-write) would still surface `TESTPRIOR` in the OOB chunk. The correct implementation reads `list_open_trades(conn)` AFTER `record_entry` returns, so the exclusion set contains every open-position ticker post-write. This is the brief §5 watch item 7 ("write trade first, then rebuild section") proven by behavior, not by code-shape inspection.
 
-4. **Hyp-recs origin error path → no `#hypothesis-recommendations` OOB swap.** A POST that triggers an error path (rationale validation failure, duplicate position, etc.) for origin=hyp-recs returns the existing form re-render unchanged — the response body must NOT contain the OOB-swap marker. Discriminating: protects against accidentally re-rendering the hyp-recs section on an error response that the operator's HTMX target (`closest tr`) would then mis-swap.
+4. **Watchlist origin success → no OOB swap of `#hypothesis-recommendations`.** The same POST against origin=watchlist returns the existing 3-fragment response. Post-fix, the body must NOT contain `id="hypothesis-recommendations"` AND `hx-swap-oob="true"` colocated. Discriminating: catches a regression where the OOB swap unconditionally fires regardless of origin (would be a silent over-refresh of an unrelated panel from a watchlist trade).
+
+5. **Hyp-recs origin error path → no `#hypothesis-recommendations` OOB swap.** A POST that triggers an error path (rationale validation failure, duplicate position, etc.) for origin=hyp-recs returns the existing form re-render unchanged — the response body must NOT contain the OOB-swap marker. Discriminating: protects against accidentally re-rendering the hyp-recs section on an error response that the operator's HTMX target (`closest tr`) would then mis-swap.
 
 - [ ] **Step 1: Write the four failing tests**
 
@@ -694,6 +761,59 @@ def test_entry_post_hyp_recs_origin_success_emits_hypothesis_recs_oob_swap(
     assert pat.search(body), (
         f"Expected OOB swap of #hypothesis-recommendations in response body. "
         f"Got: {body[:400]}"
+    )
+
+
+def test_entry_post_hyp_recs_origin_success_exclusion_set_from_post_write_state(
+    client, seed_hyp_recs_with_prior_open_position_fixture,
+):
+    """Codex R1 Major 1 (post-write-state discriminator): the OOB
+    rebuild's exclude_tickers must be sourced from list_open_trades
+    AFTER record_entry persists the new trade, so it contains every open-
+    position ticker — not just the request-body ticker.
+
+    Fixture: seeds TESTPRIOR as an existing open position (pre-test) AND
+    seeds a candidate row for TESTPRIOR in the latest pipeline run's
+    evaluation so the matcher would surface it as a hyp-rec without any
+    filter. Plus seeds TESTAPLUS as a hyp-rec candidate (the ticker the
+    test will trade).
+
+    Discriminating: a buggy `exclude_tickers={request_ticker}` shortcut
+    would filter only TESTAPLUS and let TESTPRIOR leak through. The
+    correct implementation reads list_open_trades(conn) AFTER record_entry
+    returns, so both TESTAPLUS (just-traded) AND TESTPRIOR (already-open)
+    are excluded.
+    """
+    response = client.post(
+        "/trades/entry",
+        data={
+            "ticker": "TESTAPLUS", "entry_date": "2026-04-29",
+            "entry_price": "27.10", "shares": "10", "initial_stop": "26.50",
+            "rationale": "hypothesis", "notes": "test entry",
+            "sector": "Technology", "industry": "Software",
+            "origin": "hyp-recs",
+        },
+        headers={"HX-Request": "true"},
+    )
+    assert response.status_code == 200
+    body = response.text
+    import re
+    section_match = re.search(
+        r'<section[^>]*id="hypothesis-recommendations"[^>]*hx-swap-oob="true"[^>]*>'
+        r'(?P<inner>.*?)</section>',
+        body, re.DOTALL,
+    )
+    assert section_match, "OOB section block missing from response"
+    inner = section_match.group("inner")
+    assert ">TESTAPLUS<" not in inner, (
+        "Just-traded TESTAPLUS leaked into OOB rebuild — exclude_tickers "
+        "did not include the post-write open positions."
+    )
+    assert ">TESTPRIOR<" not in inner, (
+        "Pre-existing open position TESTPRIOR leaked into OOB rebuild — "
+        "exclude_tickers was sourced from request ticker only, not from "
+        "list_open_trades(conn) post-record_entry. This is the brief §5 "
+        "watch item 7 'write trade first, then rebuild' violation."
     )
 
 
@@ -804,6 +924,7 @@ def test_entry_post_hyp_recs_origin_error_path_does_not_emit_hyp_recs_oob_swap(
 
 Fixture notes:
 - `seed_hyp_recs_with_traded_ticker_fixture`: seeds a completed `pipeline_runs` row + matching `evaluation_runs` + an A+ candidate row for `TESTAPLUS` (so the matcher surfaces it as a hyp-rec) + the active hypothesis registry. Re-uses Task 2/3 fixture builders. Seeds an opening cash movement so `current_equity > 0` (sizing-hint feasibility upstream of the request).
+- `seed_hyp_recs_with_prior_open_position_fixture`: extends the above with an additional open-position trade row for `TESTPRIOR` plus a matching `candidates` row for `TESTPRIOR` in the same eval. Both `TESTAPLUS` and `TESTPRIOR` are A+ candidates pre-test; the open-position status of `TESTPRIOR` is the only thing that should make it absent from the OOB chunk. Used by the post-write-state discriminator test (Codex R1 Major 1 resolution).
 - `seed_watchlist_with_traded_ticker_fixture`: similar but seeds `TESTWATCH` as a watchlist row, no hyp-rec match required.
 - TestClient lifespan: must use `with TestClient(app) as client:` per CLAUDE.md (exercises `app.state.price_fetch_executor`).
 
@@ -811,9 +932,9 @@ If a canonical fixture exists for the prior dispatch's hyp-recs round-trip tests
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `python -m pytest tests/web/routes/test_trades_entry.py -k "hyp_recs_origin_success_emits or hyp_recs_origin_success_excludes or watchlist_origin_success_does_not or hyp_recs_origin_error_path" -v`
+Run: `python -m pytest tests/web/routes/test_trades_entry.py -k "hyp_recs_origin_success_emits or hyp_recs_origin_success_exclusion_set or hyp_recs_origin_success_excludes or watchlist_origin_success_does_not or hyp_recs_origin_error_path" -v`
 
-Expected: tests 1, 2 FAIL (no OOB swap emitted pre-fix); test 3 PASSES (current watchlist-origin behavior already excludes the swap); test 4 PASSES (error-path already returns form re-render unchanged). Tests 3 and 4 are regression guards — they should pass at every step including pre-fix.
+Expected: tests 1, 2, 3 FAIL (no OOB swap emitted pre-fix; the post-write-state discriminator additionally fails because exclude_tickers isn't wired); test 4 PASSES (current watchlist-origin behavior already excludes the swap); test 5 PASSES (error-path already returns form re-render unchanged). Tests 4 and 5 are regression guards — they should pass at every step including pre-fix.
 
 - [ ] **Step 3: Implement the OOB-swap wiring in entry_post**
 
@@ -870,17 +991,17 @@ Update the response return (lines 602-608) to include the new chunk:
 
 Note: the partial RENDERS its own `<section id="hypothesis-recommendations" hx-swap-oob="true">` outer element when `oob=True`, so we do NOT wrap it again here (unlike `#watchlist-top5` whose partial is heading+table only). String-appending the rendered partial is correct.
 
-- [ ] **Step 4: Run the four tests to verify they pass**
+- [ ] **Step 4: Run the five tests to verify they pass**
 
-Run: `python -m pytest tests/web/routes/test_trades_entry.py -k "hyp_recs_origin_success_emits or hyp_recs_origin_success_excludes or watchlist_origin_success_does_not or hyp_recs_origin_error_path" -v`
+Run: `python -m pytest tests/web/routes/test_trades_entry.py -k "hyp_recs_origin_success_emits or hyp_recs_origin_success_exclusion_set or hyp_recs_origin_success_excludes or watchlist_origin_success_does_not or hyp_recs_origin_error_path" -v`
 
-Expected: all four tests PASS.
+Expected: all five tests PASS.
 
 - [ ] **Step 5: Run the full fast suite**
 
 Run: `python -m pytest -m "not slow" -q 2>&1 | tail -5`
 
-Expected: 1304 passed (1294 baseline + 1 [Task 1] + 1 [Task 2] + 1 [Task 3] + 3 [Task 4] + 4 [Task 5]), 1 skipped, 8 deselected. Trust pytest output — count drift is acceptable.
+Expected: ~1306 passed (1294 baseline + 1 [Task 1] + 2 [Task 2] + 1 [Task 3] + 3 [Task 4] + 5 [Task 5]), 1 skipped, 8 deselected. Trust pytest output — count drift is acceptable.
 
 - [ ] **Step 6: Commit**
 
@@ -914,6 +1035,7 @@ In the browser:
    - Status-strip and watchlist-top5 update as before.
 4. Repeat with an "expansion 'Take this trade'" submission (per dispatch brief §5 watch item 6 — multi-path-ingestion).
 5. Repeat once with a watchlist-origin entry to confirm hyp-recs panel does NOT refresh on watchlist trades (existing behavior preserved).
+6. **URL `ticker=` direct-entry surface (Codex R1 Minor 2 resolution).** Per dispatch brief §5 watch item 6, entry_post is reachable via direct navigation to `/trades/entry/form?ticker={TICKER}` without `&origin=hyp-recs`. The default origin is `"watchlist"` in this case (per `entry_form` handler at `swing/web/routes/trades.py:213-225`). The hyp-recs OOB swap MUST NOT fire on this path because `origin_coerced != "hyp-recs"`. Smoke: navigate to `/trades/entry/form?ticker=TESTAPLUS` (no origin), submit the resulting form, confirm hyp-recs panel is NOT refreshed (matches the watchlist-origin behavior). This case is structurally covered by Test 4 (watchlist origin success → no OOB swap) since the URL path defaults origin to "watchlist"; the manual smoke step is defense-in-depth verification that the default actually flows through to entry_post's `origin_coerced` resolution.
 
 If any step misbehaves, surface in the executing-plans return report — do NOT silently expand scope.
 
