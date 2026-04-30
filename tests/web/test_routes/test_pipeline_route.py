@@ -772,3 +772,113 @@ def test_csv_upload_size_over_limit_returns_413(test_cfg, seeded_db):
     assert r.status_code == 413
     assert 'id="csv-upload-section"' in r.text
     assert "too large" in r.text.lower()
+
+
+def test_pipeline_route_source_contains_zero_inline_pipeline_runs_state_queries():
+    """Phase 4 Task 5 (routes/pipeline.py site): pre-migration 1 match at
+    line 316 → FAIL; post-migration 0 → PASS."""
+    import re
+    from pathlib import Path
+
+    INLINE_PATTERN = re.compile(  # noqa: N806
+        r"FROM\s+pipeline_runs(?:\s+(?:AS\s+)?\w+)?\s+WHERE\s+state\s*=\s*'complete'",
+        re.IGNORECASE,
+    )
+    test_root = Path(__file__).resolve()
+    while not (test_root / "swing" / "web" / "routes" / "pipeline.py").exists():
+        if test_root.parent == test_root:
+            raise RuntimeError("Could not locate swing/web/routes/pipeline.py")
+        test_root = test_root.parent
+    text = (test_root / "swing" / "web" / "routes" / "pipeline.py").read_text(
+        encoding="utf-8",
+    )
+    matches = list(INLINE_PATTERN.finditer(text))
+    line_numbers = [text[: m.start()].count("\n") + 1 for m in matches]
+    assert matches == [], (
+        f"/prices/refresh must consume `latest_evaluation_run_id`. "
+        f"Inline queries still present at lines: {line_numbers}."
+    )
+
+
+def test_prices_refresh_with_fallback_contract_in_standalone_eval_only_state(
+    seeded_db, monkeypatch,
+):
+    """Brief §3.C: with-fallback contract for /prices/refresh top-5 prewarm.
+
+    Standalone-eval-only state with 6 watchlist rows; only ZZZ has an A+
+    candidate row. Sort by tag count DESC: ZZZ wins; top-5 includes ZZZ.
+    Mis-migration to pipeline-bound returns zero candidates → all 6
+    tickers tied at 0 tags → alphabetical sort → top-5 = [AAA, BBB,
+    CCC, DDD, EEE]; ZZZ excluded.
+    """
+    from fastapi.testclient import TestClient
+
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.app import create_app
+    from swing.web.price_cache import PriceCache
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            cur_e = conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+                    tickers_evaluated, aplus_count, watch_count, skip_count,
+                    excluded_count, error_count)
+                   VALUES ('2026-04-29T09:00:00','2026-04-28','2026-04-29',
+                           NULL, 1, 0, 1, 0, 0, 0)"""
+            )
+            standalone_eval = int(cur_e.lastrowid)
+            for tk in ("AAA", "BBB", "CCC", "DDD", "EEE", "ZZZ"):
+                upsert_watchlist_entry(
+                    conn,
+                    WatchlistEntry(
+                        ticker=tk, added_date="2026-04-29",
+                        last_qualified_date="2026-04-29", status="watch",
+                        qualification_count=1, not_qualified_streak=0,
+                        last_data_asof_date="2026-04-28",
+                        entry_target=100.0, initial_stop_target=95.0,
+                        last_close=99.0, last_pivot=None, last_stop=None,
+                        last_adr_pct=2.0, missing_criteria=None, notes=None,
+                    ),
+                )
+            conn.execute(
+                """INSERT INTO candidates
+                   (evaluation_run_id, ticker, bucket, close, pivot,
+                    initial_stop, adr_pct, tight_streak, pullback_pct,
+                    prior_trend_pct, rs_rank, rs_return_12w_vs_spy,
+                    rs_method, pattern_tag, notes, sector, industry)
+                   VALUES (?, 'ZZZ', 'aplus', 99.0, 100.0, 95.0, 2.0, 5,
+                           NULL, NULL, NULL, NULL, 'fallback_spy',
+                           NULL, NULL, 'Technology', 'Hardware')""",
+                (standalone_eval,),
+            )
+    finally:
+        conn.close()
+
+    refresh_all_arg: list = []
+
+    def capturing_refresh_all(self, tickers):
+        refresh_all_arg.extend(tickers)
+
+    monkeypatch.setattr(PriceCache, "refresh_all", capturing_refresh_all)
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *, deadline_seconds, executor: {},
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+    monkeypatch.setattr(PriceCache, "reset_circuit_breaker", lambda self: None)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        client.post("/prices/refresh", headers={"HX-Request": "true"})
+
+    assert "ZZZ" in refresh_all_arg, (
+        f"With-fallback contract violated: /prices/refresh top-5 prewarm "
+        f"must include the A+ candidate ticker (ZZZ) from the standalone "
+        f"eval. refresh_all received: {refresh_all_arg!r}"
+    )

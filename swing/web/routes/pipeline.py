@@ -312,23 +312,14 @@ def prices_refresh(request: Request):
     try:
         open_trade_tickers = {t.ticker for t in list_open_trades(conn)}
         watch_rows = list_active_watchlist(conn)
-        pipeline_eval_row = conn.execute(
-            """SELECT evaluation_run_id FROM pipeline_runs
-               WHERE state = 'complete'
-               ORDER BY finished_ts DESC LIMIT 1"""
-        ).fetchone()
-        pipeline_eval_id = (
-            pipeline_eval_row[0] if pipeline_eval_row else None
-        )
+        # Phase 4 (Task 5): with-fallback contract via latest_evaluation_run_id.
+        # Preserves Sunday-evening / fresh-install behavior where a standalone
+        # eval may exist without a completed pipeline_run.
+        from swing.web.view_models.dashboard import latest_evaluation_run_id
+        candidates_eval_id = latest_evaluation_run_id(conn)
         candidates = []
-        if pipeline_eval_id is not None:
-            candidates = fetch_candidates_for_run(conn, pipeline_eval_id)
-        else:
-            fallback = conn.execute(
-                "SELECT id FROM evaluation_runs ORDER BY run_ts DESC LIMIT 1"
-            ).fetchone()
-            if fallback is not None:
-                candidates = fetch_candidates_for_run(conn, fallback[0])
+        if candidates_eval_id is not None:
+            candidates = fetch_candidates_for_run(conn, candidates_eval_id)
     finally:
         conn.close()
     flag_tags = _flag_tags({c.ticker: c for c in candidates})
