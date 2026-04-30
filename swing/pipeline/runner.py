@@ -143,7 +143,10 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
     hb = Heartbeat(lease=lease, interval_seconds=cfg.pipeline.heartbeat_interval_seconds)
     hb.start()
 
-    fetcher = PriceFetcher(cache_dir=cfg.paths.prices_cache_dir)
+    fetcher = PriceFetcher(
+        cache_dir=cfg.paths.prices_cache_dir,
+        archive_history_days=cfg.archive.archive_history_days,
+    )
     eval_run_id = 0
     try:
         # Finviz selection/validation under the lease.

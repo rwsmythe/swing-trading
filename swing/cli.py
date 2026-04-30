@@ -145,7 +145,10 @@ def eval_cmd(ctx: click.Context, csv_path: str, as_of_date_str: str | None) -> N
     universe = load_universe(cfg.paths.rs_universe_path)
     universe_hash = universe_version_hash(cfg.paths.rs_universe_path)
 
-    fetcher = PriceFetcher(cache_dir=cfg.paths.prices_cache_dir)
+    fetcher = PriceFetcher(
+        cache_dir=cfg.paths.prices_cache_dir,
+        archive_history_days=cfg.archive.archive_history_days,
+    )
 
     # 3. Fetch SPY benchmark
     spy_return = 0.0
@@ -312,7 +315,10 @@ def weather_cmd(ctx: click.Context, ticker: str, as_of_date_str: str | None) -> 
     from swing.weather.runner import run_weather
 
     cfg = ctx.obj["config"]
-    fetcher = PriceFetcher(cache_dir=cfg.paths.prices_cache_dir)
+    fetcher = PriceFetcher(
+        cache_dir=cfg.paths.prices_cache_dir,
+        archive_history_days=cfg.archive.archive_history_days,
+    )
     run_ts = _dt.now().isoformat(timespec="seconds")
     as_of = _date.fromisoformat(as_of_date_str) if as_of_date_str else None
 
