@@ -55,12 +55,12 @@ Sequential single-subagent execution; no parallel-collision risk (per dispatch b
 
 ---
 
-## Task 1: Add `id DESC` tiebreaker to `latest_evaluation_run_id`
+## Task 1: Add `id DESC` tiebreaker to BOTH branches of `latest_evaluation_run_id`
 
-**Goal:** Strict refinement of `latest_evaluation_run_id`'s pipeline-bound branch — adds `id DESC` as a deterministic secondary sort key so two `pipeline_runs` rows with identical `finished_ts` resolve to the higher-id row. Closes Codex R1 M2's "tied `finished_ts` could diverge" concern at the helper level. Existing callers that don't tie on `finished_ts` see no behavior change.
+**Goal:** Strict refinement of `latest_evaluation_run_id` — adds `id DESC` as a deterministic secondary sort key on BOTH the pipeline-bound branch (primary sort: `finished_ts`) AND the standalone-eval fallback branch (primary sort: `run_ts`). Two rows tied on the primary sort key resolve to the higher-id row. Closes Codex R1 M2's "tied `finished_ts` could diverge" concern at the helper level AND closes Codex R2 Major 1's parallel concern: the helper contract is "shared helper with 2-step fallback" — both steps must be deterministic, otherwise downstream consumers (`build_hyp_recs_section`, `build_dashboard` after Task 2) inherit a half-deterministic anchor. Existing callers that don't tie on either key see no behavior change.
 
 **Files:**
-- Modify: `swing/web/view_models/dashboard.py:88-92` — pipeline-bound query in `latest_evaluation_run_id`.
+- Modify: `swing/web/view_models/dashboard.py:88-92` (pipeline-bound query) AND `swing/web/view_models/dashboard.py:98-100` (standalone-eval fallback query) in `latest_evaluation_run_id`.
 - Test: existing test file for `latest_evaluation_run_id` (locate with `Glob "tests/web/**/test_*dashboard*.py"` or `Grep -rn "latest_evaluation_run_id"` under `tests/`); if no dedicated file exists, use the closest existing file that already imports `latest_evaluation_run_id` for fixture reuse.
 
 **Discriminating-test sanity check:** The new test would fail if the implementation never adds `id DESC` to the query — under tied `finished_ts`, SQLite's row order is unspecified and the original query may return either row. The test pins two `pipeline_runs` rows to the SAME `finished_ts` and asserts the helper returns the row with the HIGHER `id`. Without the `id DESC` clause, this assertion is non-deterministic (passes intermittently); with the clause, it passes every run.
@@ -149,11 +149,54 @@ Run: `python -m pytest tests/web/view_models/<file>.py::test_latest_evaluation_r
 
 Expected: PASS or FAIL non-deterministically depending on SQLite's tied-key ordering. If it passes by coincidence, swap the insert order of the two pipeline_runs rows (insert id=101 first, then id=100) to force a pre-fix failure. The test must be DETERMINISTICALLY failing pre-fix. Adjust insert order until pre-fix is FAIL.
 
-- [ ] **Step 4: Implement `id DESC` tiebreaker**
+- [ ] **Step 3a: Write the failing fallback-branch tiebreaker test (Codex R2 Major 1 resolution)**
 
-Edit `swing/web/view_models/dashboard.py:88-92`:
+Add a parallel test for the standalone-eval fallback branch — two `evaluation_runs` with identical `run_ts` and NO `pipeline_runs` rows:
 
-Before:
+```python
+@pytest.fixture
+def conn_with_two_evaluation_runs_same_run_ts(tmp_path):
+    """Two evaluation_runs rows with identical run_ts; no pipeline_runs.
+    Helper falls back to the standalone-eval branch (per latest_evaluation_run_id
+    2-step fallback contract). Higher-id eval must win deterministically.
+    """
+    db_path = tmp_path / "swing.db"
+    conn = connect(db_path)
+    conn.execute(
+        "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, action_session_date) "
+        "VALUES (50, '2026-04-29T09:00:00', '2026-04-28', '2026-04-29')"
+    )
+    conn.execute(
+        "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, action_session_date) "
+        "VALUES (51, '2026-04-29T09:00:00', '2026-04-28', '2026-04-29')"
+    )
+    conn.commit()
+    yield conn
+    conn.close()
+
+
+def test_latest_evaluation_run_id_fallback_id_desc_tiebreaker(
+    conn_with_two_evaluation_runs_same_run_ts,
+):
+    """Codex R2 Major 1: standalone-eval fallback branch must also be
+    deterministic under tied run_ts. Both branches of the 2-step fallback
+    need `id DESC` for the helper's contract to be honest.
+    """
+    result = latest_evaluation_run_id(
+        conn_with_two_evaluation_runs_same_run_ts,
+    )
+    assert result == 51
+```
+
+Run: `python -m pytest tests/web/view_models/<file>.py::test_latest_evaluation_run_id_fallback_id_desc_tiebreaker -v`
+
+Expected: FAIL or non-deterministic PASS pre-fix (depending on SQLite's tied-key ordering). If a coincidental PASS, swap insert order (insert id=51 first, then id=50) so SQLite's last-insert-wins-or-loses pattern flips and the assertion DETERMINISTICALLY fails pre-fix.
+
+- [ ] **Step 4: Implement `id DESC` tiebreaker on BOTH branches**
+
+Edit `swing/web/view_models/dashboard.py:88-92` (pipeline-bound) AND `swing/web/view_models/dashboard.py:98-100` (standalone-eval fallback).
+
+Pipeline-bound branch — Before:
 ```python
     pipeline_eval_row = conn.execute(
         """SELECT evaluation_run_id FROM pipeline_runs
@@ -162,7 +205,7 @@ Before:
     ).fetchone()
 ```
 
-After:
+Pipeline-bound branch — After:
 ```python
     # Codex R1 M2 follow-up (Task 1): `id DESC` tiebreaker defends against
     # second-precision `finished_ts` collisions on rapid runs. Mirrors the
@@ -174,23 +217,43 @@ After:
     ).fetchone()
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+Standalone-eval fallback branch — Before:
+```python
+    fallback = conn.execute(
+        "SELECT id FROM evaluation_runs ORDER BY run_ts DESC LIMIT 1"
+    ).fetchone()
+    return fallback[0] if fallback else None
+```
 
-Run: `python -m pytest tests/web/view_models/<file>.py::test_latest_evaluation_run_id_id_desc_tiebreaker -v`
+Standalone-eval fallback branch — After:
+```python
+    # Codex R2 Major 1 (Task 1): symmetric `id DESC` tiebreaker on the
+    # standalone-eval fallback branch — both steps of the 2-step fallback
+    # must be deterministic so consumers (build_hyp_recs_section after
+    # Task 2; build_dashboard) inherit a fully deterministic anchor.
+    fallback = conn.execute(
+        "SELECT id FROM evaluation_runs ORDER BY run_ts DESC, id DESC LIMIT 1"
+    ).fetchone()
+    return fallback[0] if fallback else None
+```
 
-Expected: PASS.
+- [ ] **Step 5: Run both tests to verify they pass**
+
+Run: `python -m pytest tests/web/view_models/<file>.py -k "id_desc_tiebreaker or fallback_id_desc_tiebreaker" -v`
+
+Expected: BOTH PASS.
 
 - [ ] **Step 6: Run the full fast suite to verify no regressions**
 
 Run: `python -m pytest -m "not slow" -q 2>&1 | tail -5`
 
-Expected: 1295 passed (1294 baseline + 1 new test), 1 skipped, 8 deselected.
+Expected: ~1296 passed (1294 baseline + 2 new tests), 1 skipped, 8 deselected.
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add swing/web/view_models/dashboard.py tests/web/view_models/<file>.py
-git commit -m "feat(web): Task 1 — id DESC tiebreaker on latest_evaluation_run_id"
+git commit -m "feat(web): Task 1 — id DESC tiebreaker on both branches of latest_evaluation_run_id"
 ```
 
 - [ ] **Step 8: Observable-verification**
@@ -381,7 +444,7 @@ Expected: PASS post-Task-1+Task-2 implementation. If FAIL, the helper extraction
 
 Run: `python -m pytest -m "not slow" -q 2>&1 | tail -5`
 
-Expected: 1297 passed (1294 baseline + 1 [Task 1] + 2 [Task 2: fallback + shared-anchor]), 1 skipped, 8 deselected.
+Expected: ~1298 passed (1294 baseline + 2 [Task 1: pipeline-bound + standalone-eval tiebreakers] + 2 [Task 2: fallback + shared-anchor]), 1 skipped, 8 deselected.
 
 If a pre-existing test for `build_hyp_recs_section` asserted empty-on-no-pipeline state (i.e. the negative behavior we just changed), it may now FAIL. Inspect the failure: if the prior assertion was the "pre-fix bug behavior" frozen as a regression test, the test needs updating to assert the new fallback behavior. Surface in the commit message.
 
@@ -512,7 +575,7 @@ Expected: PASS.
 
 Run: `python -m pytest -m "not slow" -q 2>&1 | tail -5`
 
-Expected: ~1298 passed, 1 skipped, 8 deselected. Trust pytest output — count drift is acceptable.
+Expected: ~1299 passed, 1 skipped, 8 deselected. Trust pytest output — count drift is acceptable.
 
 - [ ] **Step 6: Commit**
 
@@ -539,7 +602,7 @@ Expected: at least one line ending in `Task 3 — build_hyp_recs_section gains e
 - Modify: `swing/web/templates/partials/hypothesis_recommendations.html.j2` — branch on `oob` flag (default False).
 - Test: a partial-render test that uses Jinja's environment directly (or a thin pytest fixture that loads the templates dir). If the test layout doesn't have a partial-render test file, locate the closest existing example with `Glob "tests/web/templates/**"` or `Grep -rn "templates.get_template" tests/`. Otherwise, add the partial-render assertion as part of Task 5's route-level test (entry_post response body contains the OOB-section markup) — that route-level assertion alone is discriminating enough.
 
-**Empty-state UX inside `oob=True` wrapper (Codex R1 Minor 1 resolution):** When `oob=True` AND `vm.active_recommendations` is empty, the partial emits an EMPTY `<section id="hypothesis-recommendations" hx-swap-oob="true">` — no heading, no table, no placeholder text. **This is intentional:** HTMX needs the OOB target element to exist (so the swap fires and removes the broken open-positions row that briefly landed inside the prior section's `<tbody>`); but rendering the heading "Hypothesis-driven recommendations" above an empty container would be misleading UX (the operator just traded their only remaining hyp-rec — there are no recommendations to surface). The empty `<section>` is invisible (no padding/margin contributed by an empty element under the existing CSS class). Operators see the panel cleanly disappear, which mirrors the full-page-render behavior when `vm.active_recommendations` is empty (current `{% if %}` guard suppresses the section entirely on the first page load). **Trade-off accepted:** under `oob=False`, the section still vanishes on empty (preserves current full-page UX); under `oob=True`, an invisible-but-DOM-present `<section>` lingers. This is harmless — subsequent OOB swaps continue to find the target; the next `/hyp-recs/refresh` (full-section render with `oob=False`) restores the full vanish-on-empty behavior since `outerHTML` swap replaces the element with whatever the partial emits (empty string when empty).
+**Empty-state UX inside `oob=True` wrapper (Codex R1 Minor 1 + R2 Minor 1 resolution):** When `oob=True` AND `vm.active_recommendations` is empty, the partial emits `<section id="hypothesis-recommendations" hx-swap-oob="true" hidden>` (note: WITHOUT the `class="hypothesis-recommendations"` styling AND WITH the HTML5 `hidden` global attribute) — no heading, no table, no placeholder text. **This is intentional:** HTMX needs the OOB target element to exist (so the swap fires and removes the broken open-positions row that briefly landed inside the prior section's `<tbody>`); but rendering the heading "Hypothesis-driven recommendations" above an empty container would be misleading UX (the operator just traded their only remaining hyp-rec — there are no recommendations to surface). The `hidden` attribute structurally maps to `display: none` per the HTML5 spec, guaranteeing zero visible chrome regardless of whether the project's CSS adds margin/padding/border to `<section>` elements (Codex R2 Minor 1 was concerned that an empty `<section>` could still inherit visible spacing from default UA styles; `hidden` defends against that across all browsers). The class attribute is also dropped on the empty branch since there are no descendants to style and the class is what could pull in any project-specific decoration. **Trade-off accepted:** under `oob=False`, the section still vanishes on empty (preserves current full-page UX); under `oob=True`, an invisible-but-DOM-present `<section hidden>` lingers. This is harmless — subsequent OOB swaps continue to find the target; the next `/hyp-recs/refresh` (full-section render with `oob=False`) restores the full vanish-on-empty behavior since `outerHTML` swap replaces the element with whatever the partial emits (empty string when empty).
 
 **Discriminating-test sanity check:** Two assertions: (a) render with `oob=True` AND empty `active_recommendations` produces output containing `<section id="hypothesis-recommendations" hx-swap-oob="true">` — pre-fix, an empty rec list emits nothing, so the assertion fails; (b) render with `oob=False` AND empty `active_recommendations` produces empty output — preserves existing full-page-render behavior. Both assertions together are discriminating: a naive "always emit section" implementation would pass (a) but break (b).
 
@@ -566,16 +629,26 @@ def env():
     )
 
 
-def test_partial_oob_true_empty_recs_emits_section(env):
+def test_partial_oob_true_empty_recs_emits_hidden_section(env):
     """oob=True + empty recs → emits <section id="hypothesis-recommendations"
-    hx-swap-oob="true"> with empty inner content. Required so HTMX has a
-    valid OOB target even when the operator just traded their only hyp-rec.
+    hx-swap-oob="true" hidden> with empty inner content. Required so HTMX
+    has a valid OOB target even when the operator just traded their only
+    hyp-rec; `hidden` ensures no visible chrome (R2 Minor 1).
     """
     template = env.get_template("partials/hypothesis_recommendations.html.j2")
     vm = HypRecsSectionVM(active_recommendations=())
     rendered = template.render(vm=vm, oob=True)
     assert 'id="hypothesis-recommendations"' in rendered
     assert 'hx-swap-oob="true"' in rendered
+    assert ' hidden' in rendered, (
+        "Empty oob=True render must include the HTML5 `hidden` attribute "
+        "so the section element contributes zero visible chrome."
+    )
+    # And the heading/table MUST be absent so an OOB-swap-only operator
+    # doesn't see a stale 'Hypothesis-driven recommendations' header above
+    # a blank container.
+    assert '<h2>' not in rendered
+    assert '<table' not in rendered
 
 
 def test_partial_oob_false_empty_recs_emits_nothing(env):
@@ -637,9 +710,8 @@ Edit `swing/web/templates/partials/hypothesis_recommendations.html.j2`. The new 
     swap partial drift" gotcha forbids hand-duplicating this markup at any
     callsite. -#}
 {%- set oob = oob|default(false) -%}
-{% if oob or vm.active_recommendations %}
+{% if vm.active_recommendations %}
 <section id="hypothesis-recommendations" class="hypothesis-recommendations"{% if oob %} hx-swap-oob="true"{% endif %}>
-  {%- if vm.active_recommendations %}
   <h2>Hypothesis-driven recommendations</h2>
   <table class="hypothesis-recommendations">
     <thead>
@@ -661,8 +733,9 @@ Edit `swing/web/templates/partials/hypothesis_recommendations.html.j2`. The new 
       {% endfor %}
     </tbody>
   </table>
-  {%- endif %}
 </section>
+{% elif oob %}
+<section id="hypothesis-recommendations" hx-swap-oob="true" hidden></section>
 {% endif %}
 ```
 
@@ -682,7 +755,7 @@ Expected: all three tests PASS.
 
 Run: `python -m pytest -m "not slow" -q 2>&1 | tail -5`
 
-Expected: ~1301 passed (1294 baseline + 1 [Task 1] + 2 [Task 2] + 1 [Task 3] + 3 [Task 4]), 1 skipped, 8 deselected. **Special check:** the existing route test for `/hyp-recs/refresh` MUST still pass (it renders without `oob`, so the default-false branch preserves behavior). If it fails, the `oob|default(false)` resolution may need an explicit `is defined` check — investigate before proceeding.
+Expected: ~1302 passed (1294 baseline + 1 [Task 1] + 2 [Task 2] + 1 [Task 3] + 3 [Task 4]), 1 skipped, 8 deselected. **Special check:** the existing route test for `/hyp-recs/refresh` MUST still pass (it renders without `oob`, so the default-false branch preserves behavior). If it fails, the `oob|default(false)` resolution may need an explicit `is defined` check — investigate before proceeding.
 
 - [ ] **Step 6: Commit**
 
@@ -1001,7 +1074,7 @@ Expected: all five tests PASS.
 
 Run: `python -m pytest -m "not slow" -q 2>&1 | tail -5`
 
-Expected: ~1306 passed (1294 baseline + 1 [Task 1] + 2 [Task 2] + 1 [Task 3] + 3 [Task 4] + 5 [Task 5]), 1 skipped, 8 deselected. Trust pytest output — count drift is acceptable.
+Expected: ~1307 passed (1294 baseline + 1 [Task 1] + 2 [Task 2] + 1 [Task 3] + 3 [Task 4] + 5 [Task 5]), 1 skipped, 8 deselected. Trust pytest output — count drift is acceptable.
 
 - [ ] **Step 6: Commit**
 
@@ -1017,6 +1090,19 @@ git log -E --pretty='%s' --grep='^[a-z]+\([a-z]+\): Task 5' | head -5
 ```
 
 Expected: at least one line ending in `Task 5 — entry_post emits #hypothesis-recommendations OOB on origin=hyp-recs`.
+
+- [ ] **Step 7a: Structural-guard grep against hand-duplicated OOB markup (Codex R2 Major 2 resolution)**
+
+The CLAUDE.md "HTMX OOB-swap partial drift" gotcha is enforced at the source level by ensuring `swing/web/routes/trades.py` contains NO literal `<section id="hypothesis-recommendations"` markup — the partial is the SOLE source of that markup, consumed via `templates.get_template(...).render(...)`. A hand-duplicated section in trades.py would render visually correct but would silently drift when the partial evolves (the exact failure class of the prior watchlist incident in CLAUDE.md).
+
+Run:
+```bash
+grep -nE '<section[^>]*id="hypothesis-recommendations"' swing/web/routes/trades.py | wc -l
+```
+
+Expected output: `0`. If non-zero, the implementer hand-duplicated the section markup instead of routing through the partial — refactor to use `templates.get_template("partials/hypothesis_recommendations.html.j2").render(..., vm=section_vm, oob=True)` and rerun.
+
+This guard runs at every commit time and at executing-plans review time. Append to the executing-plans return-report checklist for the orchestrator's R1 review.
 
 - [ ] **Step 8: Manual smoke verification (frontend changes — per CLAUDE.md UI-changes rule)**
 
