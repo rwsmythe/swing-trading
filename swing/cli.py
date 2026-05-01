@@ -17,6 +17,7 @@ from swing.evaluation.dates import action_session_for_run, last_completed_sessio
 from swing.evaluation.evaluator import evaluate_batch
 from swing.evaluation.rs import load_universe, universe_version_hash
 from swing.prices import PriceFetcher
+from swing.recommendations.hypothesis_prefill import lookup_active_recommendation_label
 
 
 @click.group()
@@ -336,65 +337,6 @@ def trade_group() -> None:
     """Trade lifecycle: entry, exit, list, stop adjust, advisory."""
 
 
-def _lookup_active_recommendation_label(
-    conn, *, ticker: str, starting_equity: float,
-) -> str | None:
-    """Return the suggested hypothesis label for `ticker` from the latest
-    completed pipeline run's active hypothesis match, or None if there is
-    no run / no candidate / no match.
-
-    Frontend brief §4.3 + §0: the matcher's suggested_label_descriptive
-    starts with the canonical hypothesis name (case-insensitive). Passing
-    it through unchanged preserves that prefix so future tripwire/progress
-    aggregation attributes the trade correctly. Determinism: the matcher
-    + prioritizer + per-ticker dedup are pure functions on (registry,
-    candidates, progress), so re-running the same lookup yields the same
-    label — needed by the brief §5 watch item on pre-fill stability.
-    """
-    from swing.data.repos.candidates import fetch_candidates_for_run
-    from swing.data.repos.hypothesis import list_hypotheses
-    from swing.recommendations.hypothesis import (
-        match_candidate_to_hypotheses,
-        prioritize_recommendations,
-    )
-    from swing.web.view_models.dashboard import (
-        build_recommendation_progress,
-        latest_evaluation_run_id,
-    )
-
-    # Cross-surface consistency (adversarial review R1 Major 1): use the
-    # SAME evaluation_run id the dashboard binds candidates to. If the
-    # operator sees a recommendation on the dashboard, the CLI must be
-    # able to pre-fill from it — and vice versa.
-    eval_id = latest_evaluation_run_id(conn)
-    if eval_id is None:
-        return None
-    candidates = fetch_candidates_for_run(conn, eval_id)
-    cand = next((c for c in candidates if c.ticker == ticker), None)
-    if cand is None:
-        return None
-
-    registry = list_hypotheses(conn)
-    matches = match_candidate_to_hypotheses(cand, registry=registry)
-    if not matches:
-        return None
-
-    # Reuse the prioritizer so the CLI's choice mirrors the dashboard's
-    # most-prominent recommendation for this ticker — operator sees ONE
-    # canonical pre-fill regardless of which surface they came from. The
-    # equity guard inside `build_recommendation_progress` keeps the
-    # tripwire compute honest under degenerate config (R1 Major 2).
-    _, progress_summaries = build_recommendation_progress(
-        conn, registry, starting_equity=starting_equity,
-    )
-    prioritized = prioritize_recommendations(
-        matches, registry=registry, progress=progress_summaries,
-    )
-    if not prioritized:
-        return None
-    return prioritized[0].suggested_label_descriptive
-
-
 @trade_group.command("entry")
 @click.option("--ticker", required=True)
 @click.option("--entry-date", required=True, help="YYYY-MM-DD")
@@ -488,7 +430,7 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
         # the flag was omitted, which is the only branch that triggers
         # pre-fill.
         if hypothesis is None:
-            prefilled = _lookup_active_recommendation_label(
+            prefilled = lookup_active_recommendation_label(
                 conn, ticker=ticker.upper(),
                 starting_equity=cfg.account.starting_equity,
             )
