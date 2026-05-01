@@ -253,6 +253,13 @@ def entry_post(
     # bare cURL) keep working.
     sector: str = Form(""),
     industry: str = Form(""),
+    # Phase 4.5 — hypothesis_label snapshot from hidden form field
+    # populated by build_entry_form_vm at form-render time (snapshot-
+    # at-entry-surface ToCToU pattern). Default "" so existing form
+    # submitters (CLI tests; bare cURL) keep working. Empty-string is
+    # coerced to None at the EntryRequest construction site below;
+    # record_entry's canonicalize_hypothesis_label persists NULL.
+    hypothesis_label: str = Form(""),
     # Task 8 (R4-Major-1) — origin discriminator survives POST round-trips.
     # The hidden form field emitted by trade_entry_form.html.j2 carries the
     # value resolved at form-render time. Default 'watchlist' preserves
@@ -368,6 +375,11 @@ def entry_post(
         notes=notes,
         rationale=rationale,
         event_ts=datetime.now().isoformat(timespec="seconds"),
+        # Phase 4.5 — empty-string-to-None coercion at the route boundary.
+        # record_entry's canonicalize_hypothesis_label also handles
+        # empty/whitespace-only → None, but explicit boundary coercion
+        # documents the contract.
+        hypothesis_label=hypothesis_label or None,
         chart_pattern_operator=cp_operator_value,
         chart_pattern_algo=cp_algo_value,
         chart_pattern_algo_confidence=cp_conf_value,
@@ -439,6 +451,16 @@ def entry_post(
                 # these keys auto-emits hidden inputs.
                 "sector": sector,
                 "industry": industry,
+                # Phase 4.5 — hypothesis_label must round-trip through
+                # the soft-warn confirm so the force=true resubmit
+                # persists the SAME label the operator saw at first
+                # submit. Without this entry, soft_warn_confirm.html.j2
+                # would emit no hidden input for the field, the second
+                # POST's hypothesis_label would default to "", and the
+                # persisted Trade.hypothesis_label would be NULL —
+                # silently dropping the snapshot. Multi-path-data-
+                # ingestion lesson 2026-04-29.
+                "hypothesis_label": hypothesis_label,
                 # Task 8 (R4-Major-1) — origin must round-trip through the
                 # soft-warn confirm so (a) the force=true resubmit's POST
                 # carries origin back; (b) the confirm partial's colspan +
