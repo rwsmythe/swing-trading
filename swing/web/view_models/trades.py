@@ -91,6 +91,15 @@ class TradeEntryFormVM:
     # so the footer must NOT imply live-price freshness. None for
     # watchlist origin (no footer rendered).
     pipeline_finished_at: str | None = None
+    # Phase 4.5 — Hypothesis recommendation label resolved at form-render
+    # time via swing.recommendations.hypothesis_prefill. Snapshot-at-
+    # entry-surface (ToCToU fix per spec §3.6 / Phase 5 lesson): the
+    # value flows through a hidden form field to the POST handler and
+    # persists AS-IS via record_entry's canonicalize_hypothesis_label
+    # boundary. None when the ticker has no active recommendation in
+    # the latest evaluation run — template renders "(none)" display
+    # and emits an empty hidden input value.
+    hypothesis_label: str | None = None
 
 
 def build_entry_form_vm(
@@ -173,6 +182,21 @@ def build_entry_form_vm(
                     cand_industry = cand_row[1] or ""
                     cand_pivot = cand_row[2]
                     cand_initial_stop = cand_row[3]
+            # Phase 4.5 — resolve active hypothesis recommendation label
+            # at form-render (snapshot-at-entry-surface). Same matcher
+            # chain the CLI uses (swing/cli.py:trade_entry_cmd via the
+            # extracted helper) — cross-surface consistency: dashboard
+            # recommendation, CLI prefill, and form prefill all converge
+            # on the same suggested label. None when the ticker has no
+            # active recommendation; template renders "(none)" + empty
+            # hidden input value.
+            from swing.recommendations.hypothesis_prefill import (
+                lookup_active_recommendation_label,
+            )
+            resolved_hypothesis_label = lookup_active_recommendation_label(
+                conn, ticker=ticker,
+                starting_equity=cfg.account.starting_equity,
+            )
     finally:
         conn.close()
 
@@ -280,6 +304,7 @@ def build_entry_form_vm(
         pipeline_finished_at=(
             pipeline_finished_at if coerced_origin == "hyp-recs" else None
         ),
+        hypothesis_label=resolved_hypothesis_label,
     )
 
 
