@@ -602,3 +602,79 @@ def test_hyp_recs_refresh_route_excludes_open_trade_tickers(
         "re-introduces just-traded tickers into the panel. "
         f"Body[:1000]={r.text[:1000]!r}"
     )
+
+
+def test_dashboard_recommendation_exposes_in_flight_count(seeded_db, monkeypatch):
+    """Per-hypothesis in-flight count surfaces on each HypothesisRecommendation
+    so the dashboard can render '1/5 closed (+2 in flight)' style decoration.
+
+    Discriminator: candidate FOO matches Sub-A+ VCP-not-formed (watch +
+    tightness fail). Two OPEN trades with prefix-matching labels exist for
+    DHC + CC (DIFFERENT tickers from FOO so they aren't structurally
+    excluded by Bug-fix-C). The recommendation row for FOO must report
+    hypothesis_in_flight_n=2. With the new field unwired, the value would
+    be 0 (default).
+    """
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+    from swing.web.price_cache import PriceCache
+    from swing.web.view_models.dashboard import build_dashboard
+
+    cfg, _ = seeded_db
+    _seed_pipeline_with_candidates(cfg, [
+        {"ticker": "FOO", "bucket": "watch", "close": 99.0, "pivot": 100.0,
+         "stop": 95.0,
+         "criteria": [("tightness", "fail")]},
+    ])
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="DHC", entry_date="2026-04-27",
+                entry_price=7.58, initial_shares=39, initial_stop=7.00,
+                current_stop=7.00, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+                hypothesis_label=(
+                    "sub-A+ VCP-not-formed test (proximity_20ma + tightness fails)"
+                ),
+            ), event_ts="2026-04-27T09:30:00")
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="CC", entry_date="2026-04-30",
+                entry_price=26.97, initial_shares=5, initial_stop=24.00,
+                current_stop=24.00, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+                hypothesis_label=(
+                    "Sub-A+ VCP-not-formed (watch); failed: proximity_20ma, tightness"
+                ),
+            ), event_ts="2026-04-30T09:30:00")
+    finally:
+        conn.close()
+    _patched_caches(monkeypatch)
+
+    cache = PriceCache(cfg)
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=None)
+    foo = next(
+        (r for r in vm.active_recommendations if r.ticker == "FOO"), None,
+    )
+    assert foo is not None, (
+        "FOO (witness candidate, no open position) must surface in "
+        "active_recommendations — without it, the in-flight assertion is "
+        f"vacuous. Got tickers={[r.ticker for r in vm.active_recommendations]!r}"
+    )
+    assert foo.hypothesis_name == "Sub-A+ VCP-not-formed", (
+        f"FOO should match Sub-A+ VCP-not-formed; got {foo.hypothesis_name!r}"
+    )
+    assert foo.hypothesis_progress_n == 0, (
+        f"closed-trade count is 0 (no closed trades seeded); "
+        f"got {foo.hypothesis_progress_n}"
+    )
+    assert foo.hypothesis_in_flight_n == 2, (
+        "DHC + CC are both open with prefix-matching labels; in-flight "
+        f"must report 2. Got {foo.hypothesis_in_flight_n}. If this is 0, "
+        "_build_active_recommendations did not plumb in_flight_sample from "
+        "progress_by_id; if this is the wrong count, the journal-stats "
+        "compute fn is not counting open-prefix-matchers correctly."
+    )

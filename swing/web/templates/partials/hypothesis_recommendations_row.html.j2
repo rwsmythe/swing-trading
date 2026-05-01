@@ -22,7 +22,7 @@
   <td>{% if rec.current_price is not none %}${{ "%.2f"|format(rec.current_price) }}{% else %}—{% endif %}</td>
   <td>{% if rec.pivot_price is not none %}${{ "%.2f"|format(rec.pivot_price) }}{% else %}—{% endif %}</td>
   <td>{{ rec.hypothesis_name }}</td>
-  <td>{{ rec.hypothesis_progress_n }} / {{ rec.hypothesis_progress_target }}</td>
+  <td>{{ rec.hypothesis_progress_n }} / {{ rec.hypothesis_progress_target }}{% if rec.hypothesis_in_flight_n %} (+{{ rec.hypothesis_in_flight_n }} in flight){% endif %}</td>
   <td>{% if rec.tripwire_fired %}<strong>FIRED</strong>: {{ rec.tripwire_reason or "" }}{% else %}—{% endif %}</td>
   <td title="{{ rec.suggested_label }}">{{ rec.suggested_label[:60] }}{% if rec.suggested_label|length > 60 %}…{% endif %}</td>
   <td><button type="button"

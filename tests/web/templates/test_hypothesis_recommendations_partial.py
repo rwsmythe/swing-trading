@@ -32,7 +32,9 @@ def _render(vm: HypRecsSectionVM, **ctx) -> str:
     return template.render(vm=vm, **ctx)
 
 
-def _make_rec(ticker: str = "AAPL") -> HypothesisRecommendation:
+def _make_rec(
+    ticker: str = "AAPL", *, in_flight: int = 0,
+) -> HypothesisRecommendation:
     return HypothesisRecommendation(
         ticker=ticker,
         current_price=180.50,
@@ -44,6 +46,7 @@ def _make_rec(ticker: str = "AAPL") -> HypothesisRecommendation:
         tripwire_reason=None,
         suggested_label="A+ baseline candidate",
         pivot_price=181.00,
+        hypothesis_in_flight_n=in_flight,
     )
 
 
@@ -77,6 +80,34 @@ def test_partial_oob_true_populated_recs_emits_section_and_rows():
     assert 'hx-swap-oob="true"' in out
     # Row content reaches the output (ticker rendered by the row partial).
     assert "AAPL" in out
+
+
+def test_partial_renders_in_flight_decoration_when_nonzero():
+    """When `hypothesis_in_flight_n > 0`, the row's progress cell renders
+    `N/T (+K in flight)` so the operator sees both closed-evidence count
+    and open-position attribution.
+
+    Discriminator: with in_flight=2 the row contains '(+2 in flight)';
+    without the template change, only 'N/T' renders and the assertion
+    fails. Tests that the new VM field actually flows into the row
+    template (not just that the dataclass holds the value)."""
+    vm = HypRecsSectionVM(active_recommendations=(_make_rec("AAPL", in_flight=2),))
+    out = _render(vm)
+    assert "(+2 in flight)" in out, (
+        f"row template must render '(+N in flight)' decoration when "
+        f"hypothesis_in_flight_n > 0. Body[:1000]={out[:1000]!r}"
+    )
+
+
+def test_partial_omits_in_flight_decoration_when_zero():
+    """When `hypothesis_in_flight_n == 0`, the row renders only `N/T`
+    (no decoration). Avoids visual noise like '(+0 in flight)'."""
+    vm = HypRecsSectionVM(active_recommendations=(_make_rec("AAPL", in_flight=0),))
+    out = _render(vm)
+    assert "in flight" not in out, (
+        "row template must omit the in-flight decoration when count is "
+        f"zero. Body[:1000]={out[:1000]!r}"
+    )
 
 
 def test_partial_oob_true_populated_recs_omits_hidden_attr_and_keeps_class():

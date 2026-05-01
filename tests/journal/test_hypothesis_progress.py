@@ -46,6 +46,17 @@ def _add_closed(conn, *, ticker, entry_date, label, r_multiple, realized_pnl,
     return tid
 
 
+def _add_open(conn, *, ticker, entry_date, label, shares=100, entry_price=10.0):
+    """Insert an open trade (no exit). Used to test in-flight count."""
+    trade = Trade(
+        id=None, ticker=ticker, entry_date=entry_date, entry_price=entry_price,
+        initial_shares=shares, initial_stop=9.0, current_stop=9.0,
+        status="open", watchlist_entry_target=None, watchlist_initial_stop=None,
+        notes=None, hypothesis_label=label,
+    )
+    return insert_trade_with_event(conn, trade, event_ts=f"{entry_date}T09:30:00")
+
+
 def test_breakdown_has_one_row_per_hypothesis(tmp_db: Path):
     conn = _setup(tmp_db)
     try:
@@ -123,6 +134,52 @@ def test_breakdown_tripwire_label_when_streak_fires(tmp_db: Path):
         assert sub.consecutive_max_loss_streak == 3
 
 
+    finally:
+        conn.close()
+
+
+def test_breakdown_in_flight_counts_open_prefix_matching_trades(tmp_db: Path):
+    """Open trades whose hypothesis_label prefix-matches a hypothesis name
+    contribute to in_flight_sample (display-only) but NOT current_sample
+    (which requires realized R-multiple = closed)."""
+    conn = _setup(tmp_db)
+    try:
+        with conn:
+            # Two open prefix-matchers for Sub-A+ VCP-not-formed.
+            _add_open(
+                conn, ticker="DHC", entry_date="2026-04-27",
+                label="sub-A+ VCP-not-formed test (proximity_20ma + tightness fails)",
+            )
+            _add_open(
+                conn, ticker="CC", entry_date="2026-04-30",
+                label="Sub-A+ VCP-not-formed (watch); failed: proximity_20ma, tightness",
+            )
+            # One open trade with NULL label — must not contribute anywhere.
+            _add_open(
+                conn, ticker="UNK", entry_date="2026-04-30", label=None,
+            )
+        rows = compute_hypothesis_progress_breakdown(
+            conn, starting_equity=7500.0,
+        )
+        sub = next(r for r in rows if r.name == "Sub-A+ VCP-not-formed")
+        # Discriminator: in_flight is the open-prefix-matching count;
+        # current_sample stays at 0 because no closed trades exist. If
+        # the new field were misnamed or never populated by the compute
+        # fn, this assertion fails.
+        assert sub.current_sample == 0, (
+            f"current_sample should remain 0 (no closed trades); got {sub.current_sample}"
+        )
+        assert sub.in_flight_sample == 2, (
+            f"in_flight_sample should count 2 open prefix-matchers (DHC, CC); "
+            f"got {sub.in_flight_sample}"
+        )
+        # Other hypotheses see 0 (no prefix-match) — confirms no cross-attribution.
+        for r in rows:
+            if r.name != "Sub-A+ VCP-not-formed":
+                assert r.in_flight_sample == 0, (
+                    f"hypothesis {r.name!r} in_flight should be 0; "
+                    f"got {r.in_flight_sample}"
+                )
     finally:
         conn.close()
 

@@ -229,6 +229,13 @@ class HypothesisProgress:
     absolute_tripwire_fired: bool
     tripwire_fired: bool
     consecutive_loss_tripwire_threshold: int
+    # Display-only count of OPEN trades whose hypothesis_label prefix-matches
+    # this hypothesis. Does NOT count toward `current_sample` (which is
+    # closed-trade evidence) or any tripwire arithmetic — open trades have
+    # no realized R-multiple. Surfaces on the dashboard as "(+K in flight)"
+    # decoration so the operator can see in-flight attribution. Default 0
+    # for hand-constructed sites that omit the kwarg.
+    in_flight_sample: int = 0
 
 
 def compute_hypothesis_progress_breakdown(
@@ -246,7 +253,11 @@ def compute_hypothesis_progress_breakdown(
     # `swing.journal.stats` import time (the journal stats module is
     # used in many test fixtures that don't need DB access).
     from swing.data.repos.hypothesis import list_hypotheses
-    from swing.data.repos.trades import list_all_exits, list_closed_trades
+    from swing.data.repos.trades import (
+        list_all_exits,
+        list_closed_trades,
+        list_open_trades,
+    )
     from swing.recommendations.hypothesis import (
         _label_matches_hypothesis,
         compute_tripwire_status,
@@ -254,6 +265,7 @@ def compute_hypothesis_progress_breakdown(
 
     hypotheses = list_hypotheses(conn)
     closed = list_closed_trades(conn)
+    open_trades = list_open_trades(conn)
     exits_by_trade: dict[int, list[Exit]] = {}
     for e in list_all_exits(conn):
         exits_by_trade.setdefault(e.trade_id, []).append(e)
@@ -265,6 +277,10 @@ def compute_hypothesis_progress_breakdown(
             if _label_matches_hypothesis(t.hypothesis_label, h.name)
         ]
         n = len(matched)
+        in_flight = sum(
+            1 for t in open_trades
+            if _label_matches_hypothesis(t.hypothesis_label, h.name)
+        )
         if n > 0:
             rs = []
             for t in matched:
@@ -305,6 +321,7 @@ def compute_hypothesis_progress_breakdown(
             absolute_tripwire_fired=tw.absolute_tripwire_fired,
             tripwire_fired=tw.any_tripwire_fired,
             consecutive_loss_tripwire_threshold=h.consecutive_loss_tripwire,
+            in_flight_sample=in_flight,
         ))
     return rows
 

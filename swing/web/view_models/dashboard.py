@@ -193,6 +193,11 @@ class HypothesisRecommendation:
     # by name so on-screen column order is independent of dataclass order.
     # (Adversarial review R1 Major 1.)
     pivot_price: float | None = None
+    # Display-only count of OPEN trades whose hypothesis_label prefix-matches
+    # this hypothesis. Sourced from `HypothesisProgress.in_flight_sample`
+    # (closed-vs-open distinction lives in journal-stats compute fn). Default
+    # 0 preserves any hand-constructed test sites that omit the kwarg.
+    hypothesis_in_flight_n: int = 0
 
 
 # Top-N cap for the dashboard recommendations panel. Pinned as a module
@@ -284,6 +289,10 @@ def _build_active_recommendations(
                 progress_by_id.get(r.hypothesis_id),
             ),
             suggested_label=r.suggested_label_descriptive,
+            hypothesis_in_flight_n=(
+                progress_by_id[r.hypothesis_id].in_flight_sample
+                if r.hypothesis_id in progress_by_id else 0
+            ),
         )
         for r in top_recommendations
     )
