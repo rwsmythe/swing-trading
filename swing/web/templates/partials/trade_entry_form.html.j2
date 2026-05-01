@@ -52,6 +52,10 @@
         <span>{{ vm.industry or "—" }}</span>
         <input type="hidden" name="industry" value="{{ vm.industry }}">
       </div>
+      <div><label>Hypothesis:</label>
+        <span>{{ vm.hypothesis_label or "(none)" }}</span>
+        <input type="hidden" name="hypothesis_label" value="{{ vm.hypothesis_label or '' }}">
+      </div>
       <div><label>Rationale &#9733;</label>
         <select name="rationale" required
                 onchange="var h=this.form.querySelector('.rationale-other-hint'); if(h){h.style.display=(this.value==='other')?'inline':'none';}">

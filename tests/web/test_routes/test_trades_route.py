@@ -2684,3 +2684,118 @@ def test_entry_post_response_delivers_new_row_via_open_positions_oob(
         "The #open-positions OOB chunk must contain the new ticker text "
         f"`>BUGAB<`. OOB body[:500]={oob_body[:500]!r}"
     )
+
+
+# Phase 4.5 — hypothesis_label template render tests.
+
+def _seed_aplus_pipeline_for_route_test(db_path, ticker: str) -> None:
+    """Same seed pattern as tests/web/test_view_models/test_trade_entry_form_hypothesis.py."""
+    from swing.data.db import connect
+    conn = connect(db_path)
+    try:
+        with conn:
+            cur = conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+                    tickers_evaluated, aplus_count, watch_count, skip_count,
+                    excluded_count, error_count,
+                    rs_universe_version, rs_universe_hash)
+                   VALUES (?, ?, ?, NULL, 1, 1, 0, 0, 0, 0, 'v1', 'h1')""",
+                ("2026-04-17T21:49:00", "2026-04-17", "2026-04-20"),
+            )
+            eval_id = cur.lastrowid
+            conn.execute(
+                """INSERT INTO candidates (evaluation_run_id, ticker, bucket,
+                   close, pivot, initial_stop, rs_method)
+                   VALUES (?, ?, 'aplus', 180.0, 181.0, 170.0, 'universe')""",
+                (eval_id, ticker),
+            )
+            conn.execute(
+                """INSERT INTO pipeline_runs
+                   (started_ts, finished_ts, trigger, data_asof_date,
+                    action_session_date, state, lease_token,
+                    evaluation_run_id)
+                   VALUES ('2026-04-17T21:49:00', '2026-04-17T21:55:00',
+                           'scheduled', '2026-04-17', '2026-04-20',
+                           'complete', 'tok', ?)""",
+                (eval_id,),
+            )
+    finally:
+        conn.close()
+
+
+def test_entry_form_renders_exact_hypothesis_label_in_hidden_input(
+    seeded_db, monkeypatch,
+):
+    """Discriminating (per Codex R1 Major 3): GET /trades/entry/form?ticker=AAPL
+    renders the hypothesis_label hidden input with EXACTLY the matcher's
+    canonical output `"A+ baseline (aplus)"` — full label string, not
+    a prefix.
+
+    Sanity: if the template row is missing entirely, the hidden-input
+    substring assertion fails. If the template emits the wrong field
+    (e.g. `vm.hypothesis_label_short` if such a field were ever added),
+    the exact-value substring fails.
+    """
+    from fastapi.testclient import TestClient
+    from swing.web.app import create_app
+    from swing.web.price_cache import PriceCache
+
+    cfg, cfg_path = seeded_db
+    _seed_aplus_pipeline_for_route_test(cfg.paths.db_path, ticker="AAPL")
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {})
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=AAPL")
+    assert r.status_code == 200
+    assert 'name="hypothesis_label"' in r.text, (
+        "template must render the hypothesis_label hidden input"
+    )
+    # Exact-value substring assertion. The matcher emits
+    # "A+ baseline (aplus)" verbatim for the seed fixture; the template
+    # must emit it verbatim into the hidden-input value attribute.
+    assert 'name="hypothesis_label" value="A+ baseline (aplus)"' in r.text, (
+        "hidden input must carry exact matcher label "
+        f'"A+ baseline (aplus)"; response excerpt: {r.text[:500]!r}'
+    )
+    # Visible read-only display row also carries the exact label.
+    assert ">A+ baseline (aplus)<" in r.text, (
+        "visible display row must show the exact matcher label "
+        "(in a span between > and <)"
+    )
+
+
+def test_entry_form_renders_none_display_when_label_unresolved(
+    seeded_db, monkeypatch,
+):
+    """Degenerate: GET form for a ticker with no candidate row renders
+    `(none)` in the read-only display + an empty value="" hidden input.
+
+    Sanity: if the template uses `vm.hypothesis_label` directly without
+    the `or "(none)"` filter, this assertion would fail (Jinja would
+    emit `None`-as-empty-string, not the literal `(none)` token).
+    """
+    from fastapi.testclient import TestClient
+    from swing.web.app import create_app
+    from swing.web.price_cache import PriceCache
+
+    cfg, cfg_path = seeded_db
+    # No candidate seeded for ZZZ — vm.hypothesis_label resolves to None.
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {})
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=ZZZ")
+    assert r.status_code == 200
+    assert 'name="hypothesis_label"' in r.text
+    # Empty hidden-input value when label is None.
+    assert 'name="hypothesis_label" value=""' in r.text, (
+        "unresolved label must produce empty hidden-input value"
+    )
+    # Visible read-only display falls back to "(none)".
+    assert "(none)" in r.text, (
+        "template must render (none) display when vm.hypothesis_label is None"
+    )
