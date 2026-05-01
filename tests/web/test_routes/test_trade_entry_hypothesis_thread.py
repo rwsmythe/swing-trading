@@ -19,9 +19,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from swing.data.db import connect
-from swing.data.models import Trade, WatchlistEntry
+from swing.data.models import Trade
 from swing.data.repos.trades import insert_trade_with_event
-from swing.data.repos.watchlist import upsert_watchlist_entry
 from swing.web.app import create_app
 from swing.web.price_cache import PriceCache, PriceSnapshot
 
