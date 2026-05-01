@@ -102,15 +102,37 @@ def _parse_tos_amount(raw: str) -> float:
 
 
 def extract_cash_movements(rows: Iterable[dict]) -> list[CashMovement]:
+    """Extract deposits/withdrawals from the Cash Balance section.
+
+    Skips:
+      - empty TYPE (e.g., the TOTAL row at the bottom)
+      - BAL (start-of-day balance line)
+      - TRD (trade settlement — already tracked via Account Trade History
+        → trades table; importing it here double-decrements cash. Surfaced
+        2026-04-30 against the 4/30 Schwab/TOS export where a CC purchase
+        appeared as a -$134.85 row under TYPE=TRD).
+
+    Note: this is a denylist, not an allowlist. Future TOS TYPE codes
+    that are also non-cash-flow events (and aren't TRD/BAL) would
+    silently misclassify here. Allowlist hardening deferred until
+    additional drift surfaces — keeps known cash types (DEP, WD, CRC,
+    INT, DIV, JNL, FEE, ADJ, etc.) flowing through as before without
+    risk of silently dropping a legitimate cash movement.
+    """
     out: list[CashMovement] = []
     for row in rows:
         ttype = (row.get("TYPE") or "").strip()
-        if ttype in ("", "BAL"):
+        if ttype in ("", "BAL", "TRD"):
             continue
         amount = _parse_tos_amount(row.get("AMOUNT", ""))
         if amount == 0.0:
             continue
-        ref_raw = (row.get("REF #") or "").strip().strip('"').replace("=", "")
+        # TOS REF #s arrive in Excel-style "force-as-text" form, e.g.
+        # `="1006193131983"`. Strip the `=` sigil first, then any
+        # surrounding quotes — order matters: the prior `.strip('"')`
+        # before `.replace("=", "")` left the leading quote intact
+        # because `=` was at the boundary instead of `"`.
+        ref_raw = (row.get("REF #") or "").strip().strip("=").strip('"')
         ref = ref_raw or None
         kind = "deposit" if amount > 0 else "withdraw"
         out.append(CashMovement(

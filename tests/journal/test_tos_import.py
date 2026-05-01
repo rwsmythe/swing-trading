@@ -33,6 +33,49 @@ def test_extract_cash_movements_handles_amount_formats():
     assert withdraw.amount == 100.0
 
 
+def test_extract_cash_movements_skips_trade_rows_and_accepts_crc():
+    """TOS exports include trade settlements in the Cash Balance section as
+    negative-amount rows with TYPE='TRD'. These must NOT be classified as
+    cash movements — the trade is already tracked via the Account Trade
+    History section + the trades table; importing it here would
+    double-decrement equity (operator-surfaced 2026-04-30 against the
+    4/30 statement importing the CC purchase as a withdrawal).
+
+    Discriminator: with the bug present, a TRD row's negative amount
+    classifies as 'withdraw' and shows up in the extracted list
+    alongside the legitimate CRC (cash-receipt / transfer-in) deposit.
+    With the fix, only the CRC row imports.
+
+    Real-world fixture shape — mirrors the 9-column header the operator's
+    Schwab/TOS export emits (Misc Fees + Commissions & Fees columns
+    present), unlike the simpler 7-column synthetic fixture. If
+    extract_cash_movements grew column-position sensitivity (instead of
+    DictReader name-keyed access), this test would catch the regression.
+    """
+    csv_text = (
+        "Cash Balance\n"
+        "\n"
+        "DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE\n"
+        "4/29/26,19:00:00,BAL,,Cash balance at start of day 30.04 CST,,,,1002.39\n"
+        '4/30/26,06:18:31,TRD,="1006193131983",BOT +5 CC @26.9699,,,-134.85,867.54\n'
+        '4/29/26,20:49:54,CRC,="117872135649","Tfr from external bank 100.0 US$",,,100.00,967.54\n'
+    )
+    sections = parse_tos_export(csv_text)
+    movements = list(extract_cash_movements(sections["Cash Balance"]))
+    # Exactly the CRC deposit; TRD must be filtered.
+    assert len(movements) == 1, (
+        f"expected 1 movement (CRC deposit only); got {len(movements)}: "
+        f"{[(m.kind, m.amount, m.note) for m in movements]}. With the bug "
+        f"present, the TRD row's -$134.85 amount classifies as a "
+        f"$134.85 withdrawal, doubling the cash-flow record (the trade "
+        f"is also tracked via Account Trade History → trades table)."
+    )
+    m = movements[0]
+    assert m.kind == "deposit", f"expected deposit (CRC transfer-in); got {m.kind!r}"
+    assert m.amount == 100.0, f"expected 100.00; got {m.amount}"
+    assert m.ref == "117872135649", f"expected CRC ref; got {m.ref!r}"
+
+
 def test_extract_stock_fills_filters_options():
     text = FIXTURE.read_text(encoding="utf-8")
     sections = parse_tos_export(text)
