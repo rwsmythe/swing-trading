@@ -131,7 +131,29 @@ $candidates | Format-Table Name, Reason -AutoSize
 # Pattern matches known scratch-naming conventions. Defense-in-depth against
 # the discovery passes accidentally flagging a legitimate directory whose
 # ACL state is anomalous for unrelated reasons.
-$scratchPattern = '^(\.tmp[-_]|\.pytest[-_](tmp|temp)|tmp[-_]|task\d+_pytest|phase\d+basetemp|pytest_temp|ptemp$)'
+#
+# Recognized patterns:
+#   - .tmp                  (plain top-level temp dir; e.g., from CodexSandbox pytest)
+#   - .tmp-foo, .tmp_foo    (pytest tmp variants)
+#   - .pytest-tmp, .pytest_tmp, .pytest-temp, .pytest_temp
+#   - tmp-foo, tmp_foo
+#   - task<digits>_pytest
+#   - phase<digits>basetemp
+#   - pytest_temp
+#   - ptemp
+#   - .config-overrides-*   (Phase 5 first-attempt rogue test artifacts;
+#                            tempfile.mkdtemp(dir=Path.cwd()) from a non-plan test)
+#   - .codex-pytest-*       (Codex CLI sandbox pytest scratch dirs)
+#   - pytest-run-*          (alternate pytest scratch naming)
+#
+# Out of scope (do NOT extend allowlist for these):
+#   - .worktrees/<branch>/  Orphaned worktree subdirs after `git worktree remove`
+#                           failure. These are owned by the operator user (rwsmy)
+#                           and the cleanup blocker is FILE-HANDLE persistence,
+#                           not ACL/ownership. Use elevated `Remove-Item -Recurse
+#                           -Force .worktrees/<branch>` directly after confirming
+#                           no active worktree (`git worktree list`).
+$scratchPattern = '^(\.tmp([-_].*|$)|\.pytest[-_](tmp|temp)|tmp[-_]|task\d+_pytest|phase\d+basetemp|pytest_temp|ptemp$|\.config-overrides-|\.codex-pytest-|pytest-run-)'
 
 $safe = @($candidates | Where-Object { $_.Name -match $scratchPattern })
 $rejected = @($candidates | Where-Object { $_.Name -notmatch $scratchPattern })
