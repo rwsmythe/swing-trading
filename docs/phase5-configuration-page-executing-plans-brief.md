@@ -6,7 +6,7 @@
 
 **Expected duration:** ~4-7 hours — less than the original ~6-10 hour estimate because Tasks 1.0/1.1/1.2/2.0 are already landed (4 of ~11 task groups complete; ~25 of ~75 new tests already in place at HEAD `e42f5be`).
 
-**Dispatch type:** `copowers:executing-plans` (wraps `superpowers:subagent-driven-development` + adversarial Codex review) **WITH MANDATORY WORKTREE ISOLATION** (per §0 Skill posture below).
+**Dispatch type:** **Direct invocation of `superpowers:subagent-driven-development` followed by `copowers:adversarial-critic`** (NOT the `copowers:executing-plans` wrapper, which bundles both phases in one call without marker-file management between them). Worktree isolation + global PreToolUse Codex-blocking hook both in effect — see §0 Skill posture for the 7-step workflow.
 
 ---
 
@@ -30,11 +30,13 @@ Read these in order before executing:
    - §"Currently in-flight work" — Phase 5 row + paragraph reflect the partial-execution + revert state.
    - §"Binding conventions" — 4-tier commit-message convention; subject-only ERE grep observable verification (`git log -E --pretty='%s' --grep='^[a-z]+\([a-z]+\): Task X.Y'`); ruff baseline 91; no-amend; no Claude footer.
    - §"Anti-patterns to avoid".
-   - §"Lessons captured" — the **most-recent four** are this dispatch's predecessors and direct context:
+   - §"Lessons captured" — the **most-recent six** are this dispatch's predecessors and direct context:
      - Brief-speculation discipline (verify assertions empirically; the plan already corrected the brief's stale field-path claims — read plan §A and §C for the canonical paths).
      - New-VM existing-field inheritance (`ConfigPageVM` must include all base-layout-dereferenced fields with safe defaults).
-     - **Subagent self-collision can extend across multiple intervening tasks; worktree isolation is the documented escalation when task-partitioning + observable-verification prove insufficient** (Phase 5 first-attempt incident — directly motivates the worktree-isolation requirement in §0 Skill posture below).
+     - **Subagent self-collision can extend across multiple intervening tasks; worktree isolation is the documented escalation when task-partitioning + observable-verification prove insufficient** (Phase 5 first-attempt incident — motivates Step 1 worktree requirement).
      - **Don't infer "external interference" from circumstantial machine-state evidence without operator confirmation** (orchestrator triage discipline).
+     - **Off-spec Codex per-task invocation by subagents during executing-plans dispatch is a real failure mode; mitigation is a global PreToolUse hook gated by a marker file** (motivates Steps 2 + 4 of §0 — touch marker before subagent-driven-development; rm marker before adversarial-critic).
+     - **Orchestrator briefs MUST NOT exclude documented skill requirements without explicit operator authorization + rationale** (the original Phase 5 brief excluded worktree-isolation despite `subagent-driven-development` requiring it; revised brief restores compliance).
 
 5. **`swing/config.py`** — review the per-request read implementation that landed in Task 1.2 (commit `0b85046`); `apply_overrides(base_cfg) -> Config` returns a NEW Config via `dataclasses.replace`. Task 2.1 wires it into all 27 cfg-reader sites + `swing/pipeline/__init__.py:run_pipeline(...)` wrapper.
 
@@ -52,13 +54,35 @@ If any file path above doesn't resolve, verify via `Glob`/`Grep` before executin
 
 ---
 
-## §0 Skill posture
+## §0 Skill posture (7-step workflow — execute in order)
 
-- **INVOKE FIRST:** **`superpowers:using-git-worktrees`** — create an isolated worktree for this dispatch BEFORE any Task 2.1 work. This is BINDING per the operator's 2026-05-01 escalation decision following the first-attempt subagent self-collision. The dispatch executes entirely within the worktree; merge to `main` at end-of-dispatch via fast-forward (or PR if the operator prefers).
-- **INVOKE** `copowers:executing-plans` (within the worktree) — wraps `superpowers:subagent-driven-development` with adversarial Codex review (2-5 rounds typical).
-- **DO NOT INVOKE** `superpowers:brainstorming` / `copowers:brainstorming` — design is locked in the plan + brief.
+The first-attempt incident surfaced TWO independent failure modes: (1) subagent self-collision within `subagent-driven-development`, and (2) subagents invoking Codex per-task off-spec (Codex review is documented as orchestrator-only at end-of-dispatch). Workflow below addresses both: worktree isolation contains (1); a global PreToolUse hook (`~/.claude/hooks/block-copowers-during-subagent.sh`, registered in `~/.claude/settings.json`) physically blocks (2) when a marker file is present.
+
+**Step 1 — Create isolated worktree.** INVOKE `superpowers:using-git-worktrees` to create an isolated worktree on a branch (e.g., `phase5-config-page-redispatch`) from base `e42f5be`. All work commits onto the worktree branch. This is REQUIRED per `superpowers:subagent-driven-development` skill docs (line 268-269).
+
+**Step 2 — Activate the Codex-blocking marker.** From within the worktree: `touch .copowers-subagent-active`. This activates the global PreToolUse hook which will block any subagent invocation of `copowers:adversarial-critic`, `copowers:review`, `mcp__plugin_copowers_codex__codex`, or `mcp__plugin_copowers_codex__codex-reply` with a clear error message. Hook is harness-level and cannot be bypassed by subagent reasoning.
+
+**Step 3 — Invoke subagent-driven-development DIRECTLY** (NOT via the `copowers:executing-plans` wrapper). The wrapper bundles subagent-driven-development + Codex review in one call without marker-file management between them. We invoke the components separately to manage the marker:
+
+- **INVOKE** `superpowers:subagent-driven-development` and execute Tasks 2.1 onward per the plan. Subagents will physically be unable to invoke Codex/copowers review while the marker is active.
+- **DO NOT INVOKE** `copowers:executing-plans` — it bundles both phases.
+- **DO NOT INVOKE** `copowers:adversarial-critic`, `copowers:review`, `mcp__plugin_copowers_codex__codex`, or `mcp__plugin_copowers_codex__codex-reply` from within subagent dispatches. The hook will block these; the explicit prohibition here is belt-and-suspenders.
+- **DO NOT INVOKE** `superpowers:brainstorming` / `copowers:brainstorming` — design is locked.
 - **DO NOT INVOKE** `copowers:writing-plans` — plan is locked at HEAD `e8c6396`. If you find a plan task is impossible to implement as written, STOP and surface in the return report; do NOT silently re-plan.
-- **DO** invoke adversarial Codex review per `copowers:executing-plans` standard cycle. Iterate to `NO_NEW_CRITICAL_MAJOR`. Encourage internal-Codex pre-emption (commit message qualifier `(internal)` per 4-tier convention) before invoking the orchestrator-Codex round.
+
+**Step 4 — Remove marker.** After all subagent-driven-development tasks complete + final code reviewer approves: `rm .copowers-subagent-active`. Verify: `ls .copowers-subagent-active` → `No such file`.
+
+**Step 5 — Invoke Codex adversarial review.** INVOKE `copowers:adversarial-critic` directly with the following context (per `copowers:executing-plans` Step 5 documented contract):
+- `PHASE`: `executing-plans`
+- `SPEC_PATH`: `docs/phase5-configuration-page-writing-plans-brief.md` (the brief that drove the plan; per copowers convention this is the spec)
+- `PLAN_PATH`: `docs/superpowers/plans/2026-05-01-configuration-page-plan.md`
+- `BASELINE_SHA`: `e42f5be` (the partial-execution baseline; review covers Tasks 2.1 onward only)
+
+Iterate Codex rounds to `NO_NEW_CRITICAL_MAJOR`. Encourage internal-Codex pre-emption (commit message qualifier `(internal)` per 4-tier convention) before invoking the orchestrator-Codex round.
+
+**Step 6 — Operator-witnessed verification gate** (BINDING; see §7).
+
+**Step 7 — Prepare worktree merge to `main`.** Surface the merge command + worktree cleanup in the return report; the operator executes the merge after final review.
 
 ---
 
@@ -119,8 +143,9 @@ Execute the plan task list at `docs/superpowers/plans/2026-05-01-configuration-p
 
 ## §4 Binding conventions
 
-- **Worktree isolation:** all work commits within the dispatch's isolated worktree (per §0 Skill posture). The worktree's branch is the integration branch; merge to `main` at end-of-dispatch via fast-forward (or PR if the operator prefers). DO NOT commit directly to the operator's primary `main` branch from within this dispatch.
+- **Worktree isolation:** all work commits within the dispatch's isolated worktree (per §0 Skill posture Step 1). The worktree's branch is the integration branch; merge to `main` at end-of-dispatch via fast-forward (or PR if the operator prefers). DO NOT commit directly to the operator's primary `main` branch from within this dispatch.
 - **Branch (within worktree):** the worktree branch (created via `superpowers:using-git-worktrees` at dispatch start). All work commits onto this branch.
+- **Marker-file management for Codex blocking:** the global PreToolUse hook at `~/.claude/hooks/block-copowers-during-subagent.sh` (registered in `~/.claude/settings.json`) physically blocks subagent invocations of `copowers:adversarial-critic`, `copowers:review`, `mcp__plugin_copowers_codex__codex`, and `mcp__plugin_copowers_codex__codex-reply` when `.copowers-subagent-active` exists at project root. Orchestrator MUST: (a) `touch .copowers-subagent-active` BEFORE invoking `superpowers:subagent-driven-development` (Step 2 of §0); (b) `rm .copowers-subagent-active` AFTER all subagent tasks complete + before invoking `copowers:adversarial-critic` (Step 4 of §0). Forgetting (a) re-opens the off-spec Codex invocation surface. Forgetting (b) makes the orchestrator-side Codex review fail with the BLOCKED error.
 - **Commits:** conventional 4-tier convention per orchestrator-context "Binding conventions":
   - Task implementation: `feat(<area>): Task X.Y — <subject>` (e.g., `feat(config): Task 2.1 — wire apply_overrides at all route + pipeline cfg readers`).
   - Codex review-fix: `fix(<area>): Codex R<N> <severity> <id> — <subject>`.
@@ -236,7 +261,8 @@ Produce as final message:
 
 ## §9 If you get stuck
 
-- **If `superpowers:using-git-worktrees` invocation fails** (Windows ACL state, disk space, branch name collision): STOP. Surface in the return report. Do NOT proceed without worktree isolation — the operator's 2026-05-01 escalation decision makes this binding.
+- **If `superpowers:using-git-worktrees` invocation fails** (Windows ACL state, disk space, branch name collision): STOP. Surface in the return report. Do NOT proceed without worktree isolation — `superpowers:subagent-driven-development` documents worktrees as REQUIRED.
+- **If a tool invocation returns `BLOCKED: Skill(copowers:...)` or `BLOCKED: mcp__plugin_copowers_codex__...`**: that's the global PreToolUse hook firing as designed. The marker file `.copowers-subagent-active` is present. If you are a subagent: do not retry; the per-task Codex review surface is intentionally closed. If you are the orchestrator and all subagent tasks are complete: `rm .copowers-subagent-active` then re-invoke. If you are the orchestrator and tasks are NOT complete: do NOT remove the marker; you should not be invoking Codex yet.
 - **If a plan task is impossible to implement as written** (e.g., cfg refactor scope blows up beyond plan's 27 site enumeration): STOP. Surface in the return report under "Plan ambiguities surfaced." Do NOT silently re-design or re-scope.
 - **If a landed task's API appears wrong** (e.g., `get_field_source` returning unexpected source values): STOP. Surface in the return report under "Landed-task defects surfaced." Do NOT rewrite the landed file. The operator decides whether to fix-forward in this dispatch (with explicit re-authorization) or revert + amend the plan.
 - **If `swing/config.py` import-time caching is more entrenched than the plan's 27-site count suggests** (e.g., consumer modules cache `cfg.<field>` at module load that the plan missed): surface as Codex watch-item #3 explicitly; if scope exceeds 1 dispatch, BAIL and request operator escalation. Operator preference is "limited accessor at the 3 V1 fields with documented residual risk" — extending residual-risk acceptance is reasonable.
@@ -248,4 +274,4 @@ Produce as final message:
 
 ---
 
-**End of brief (revised 2026-05-01 to incorporate worktree isolation + partial-execution starting point).**
+**End of brief (revised 2026-05-01: incorporates worktree isolation + partial-execution starting point + global Codex-blocking PreToolUse hook + marker-file workflow + direct invocation of subagent-driven-development and adversarial-critic instead of the bundled `copowers:executing-plans` wrapper).**
