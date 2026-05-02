@@ -1,0 +1,37 @@
+{% extends "base.html.j2" %}
+{% block content %}
+<h1>Configuration</h1>
+{% if vm.saved %}
+  <div class="banner success">Saved.</div>
+{% endif %}
+<form method="post" action="/config" id="config-form"
+      hx-post="/config" hx-target="#config-form-result" hx-swap="innerHTML"
+      hx-headers='{"HX-Request": "true"}'>
+  {% for row in vm.rows %}
+    <div class="config-row">
+      <label for="{{ row.path }}">
+        {{ row.label }}
+        <small class="muted">({{ row.path }})</small>
+      </label>
+      <p class="description">{{ row.description }}</p>
+      <input
+        type="number"
+        id="{{ row.path }}"
+        name="{{ row.path }}"
+        value="{{ row.current_value }}"
+        {% if row.input_kind == 'int' %}step="1"{% else %}step="0.001"{% endif %}
+      />
+      <span class="default-value">default: {{ row.default_value }}</span>
+      <span class="source-badge source-{{ row.source }}">{{ row.source }}</span>
+    </div>
+  {% endfor %}
+  <button type="submit">Save</button>
+</form>
+<div id="config-form-result"></div>
+
+{% for row in vm.rows %}
+  <form method="post" action="/config/reset/{{ row.path }}" class="reset-form">
+    <button type="submit" class="reset-btn">Reset {{ row.label }}</button>
+  </form>
+{% endfor %}
+{% endblock %}

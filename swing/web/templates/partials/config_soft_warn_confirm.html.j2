@@ -1,0 +1,29 @@
+{#- Soft-warn confirmation fragment for /config.
+    Mirrors swing/web/templates/partials/soft_warn_confirm.html.j2 pattern,
+    BUT root element is <div> not <tr> (CLAUDE.md HTMX <tr>-leading
+    makeFragment pathology — config form is NOT inside a <table>).
+
+    form_values round-trip per spec §3.6 + multi-path-ingestion lesson:
+    every key in form_values rides along as hidden input on the
+    force=true resubmit so the originally-typed values persist
+    AS-IS (NOT re-fetched from current user-config).
+-#}
+<div class="banner warn" role="alert">
+  <strong>Confirm: values exceed the typical range.</strong>
+  <ul>
+    {% for w in warnings %}
+      <li>{{ w.message }}</li>
+    {% endfor %}
+  </ul>
+  <form hx-post="/config" hx-target="#config-form-result" hx-swap="innerHTML"
+        hx-headers='{"HX-Request": "true"}'>
+    {% for key, value in form_values.items() %}
+      <input type="hidden" name="{{ key }}" value="{{ value }}">
+    {% endfor %}
+    <input type="hidden" name="force" value="true">
+    <button type="submit">Submit anyway</button>
+  </form>
+  {#- Codex R1 Major 4 — Cancel is a plain full-page navigation, NOT an
+      HTMX hx-get. -#}
+  <a class="btn btn-secondary" href="/config" role="button">Cancel</a>
+</div>
