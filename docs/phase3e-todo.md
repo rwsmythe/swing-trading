@@ -756,23 +756,25 @@ The expansion content should include (V1 scope):
 
 ---
 
-## 2026-04-28 configuration page for operator-tunable settings (QUEUED; future dispatch)
+## 2026-04-28 configuration page for operator-tunable settings (BRIEF + PLAN SHIPPED 2026-05-01; executing-plans dispatch pending)
 
 Operator surfaced 2026-04-28: as small operator-tunable settings accumulate (chase_factor, chart_top_n_watch, risk_pct floor, account balance cap rules, etc.), each currently lives as a Python default + tracked toml override in `swing.config.toml`. Future feature: dashboard configuration page where operator can view + edit these values without manual toml-editing.
 
-**Locked decisions:** none yet — design conversation when operator wants to action this.
+**Locked decisions** (operator + orchestrator 2026-05-01): see `docs/phase5-configuration-page-writing-plans-brief.md` §2 — separate user-config file at `%USERPROFILE%/swing-data/user-config.toml`; precedence default → tracked toml → user-config → page-write; per-request read; dedicated `/config` page; CLI parity (`swing config show|set|reset`); 3 V1 fields.
 
-**Initial scope candidates (incomplete; operator will refine):**
+**V1 field set (3 fields; canonical paths from plan §A consumer audit, NOT the speculative paths in the brief):**
 
-- Chase factor (V2+ field; will be introduced by hyp-recs trade-preparation expansion above)
-- `chart_top_n_watch` (currently `swing.config.toml` line 93; was 5, raised to 10 post-chart-scope-policy-v2)
-- `risk_pct` (current value lives in config — verify location at design time)
-- `risk_floor` ($7,500 per `project_capital_risk_floor.md`; currently a code constant — needs to surface as config)
-- Pipeline-related settings (cadence, lease wait, etc.) — operator decides scope
+- `cfg.web.chase_factor` (default `0.01`; consumed at 2 sites — hyp-recs trade-prep expansion view-model). NOT top-level as the brief originally speculated.
+- `cfg.pipeline.chart_top_n_watch` (default `10`; consumed at 7 sites). NOT under `web.` as the brief originally speculated.
+- `cfg.account.risk_equity_floor` (default `7500.0`; **already** present in tracked `swing.config.toml:22`; consumed at 3 production sites — `swing/pipeline/runner.py:424`, `:558`, `swing/web/view_models/dashboard.py:496`). Brief's "currently a code constant" assertion was WRONG; Task 0a became a no-op.
 
-**Toml-shadowing audit (binding):** any field surfaced via the config page MUST honor the toml-shadowing lesson (`aeb2084`, 2026-04-28). Read order: config-page write → toml override → Python default. If page writes back to tracked toml file, that's the simplest model; if page writes to a separate user-config file (`~/.swing-config.toml`?) the override-precedence ordering needs explicit design. Pre-flight `grep -rn "<field_name>" .` audit on every field surfaced.
+**Toml-shadowing audit (binding):** any field surfaced via the config page MUST honor the toml-shadowing lesson (`aeb2084`, 2026-04-28). Read order resolved 2026-05-01: Python default → tracked `swing.config.toml` → user-config.toml → page-write (which writes user-config.toml). User-config strictly overrides tracked-toml per-field. Pre-flight `grep -rn "<field_name>" .` audit on every field surfaced (canonicalized into plan §C).
+
+**Future field additions:** small per-field follow-ups — V1 infrastructure ships ready for them. Candidates surveyed but explicitly NOT V1: `risk_pct`, `pipeline_lease_wait_seconds`, `current_balance`, advisory thresholds (10MA / 20MA / etc.), other `cfg.web.*` settings.
 
 **Cross-references:**
+- Brief: `docs/phase5-configuration-page-writing-plans-brief.md` (commit `3fde496`).
+- Plan: `docs/superpowers/plans/2026-05-01-configuration-page-plan.md` (HEAD `e8c6396`; ~75 new tests planned; 5 Codex rounds → NO_NEW_CRITICAL_MAJOR).
 - toml-shadowing lesson in `docs/orchestrator-context.md` Lessons captured (post-`aeb2084`).
 - `project_capital_risk_floor.md` memory.
 
