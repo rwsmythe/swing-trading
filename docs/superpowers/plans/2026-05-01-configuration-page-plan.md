@@ -438,6 +438,46 @@ def test_write_backs_up_malformed_existing_file(
     )
 
 
+def test_write_backs_up_malformed_twice_without_collision(
+    isolated_user_config: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """Codex R4 Major 1 — two malformed-recovery saves at the same
+    timestamp must each preserve their backup. Without the collision
+    counter, the second os.replace would clobber the first backup,
+    silently losing the earlier malformed snapshot.
+
+    Discriminating-test: monkeypatch datetime.now() to return a fixed
+    value, then perform two malformed-recovery saves with DIFFERENT
+    broken contents. Assert two distinct backup files survive (one with
+    the counter suffix), each holding its respective broken content.
+    """
+    from datetime import datetime as _dt
+    import swing.config_user as cu
+
+    fixed_moment = _dt(2026, 5, 1, 12, 0, 0)
+
+    class _FrozenClock:
+        @staticmethod
+        def now():
+            return fixed_moment
+
+    monkeypatch.setattr(cu, "_dt", _FrozenClock)
+
+    # First malformed-recovery
+    isolated_user_config.write_text("first broken [[[", encoding="utf-8")
+    write_user_overrides({"web": {"chase_factor": 0.02}})
+    # Second malformed-recovery (same fixed moment)
+    isolated_user_config.write_text("second broken ]]]", encoding="utf-8")
+    write_user_overrides({"web": {"chase_factor": 0.03}})
+
+    backups = sorted(
+        isolated_user_config.parent.glob("user-config.malformed-*.toml")
+    )
+    assert len(backups) == 2, f"expected 2 distinct backups, got {backups}"
+    contents = {b.read_text(encoding="utf-8") for b in backups}
+    assert contents == {"first broken [[[", "second broken ]]]"}
+
+
 def test_write_does_not_back_up_well_formed_existing_file(
     isolated_user_config: Path,
 ):
@@ -473,6 +513,7 @@ import logging
 import os
 import sys
 import tempfile
+from datetime import datetime as _dt   # module-level so tests can monkeypatch (Codex R4 M1)
 from pathlib import Path
 from typing import Any
 
@@ -522,20 +563,32 @@ def _existing_file_is_malformed(path: Path) -> bool:
 
 
 def write_user_overrides(overrides: dict[str, Any]) -> None:
-    from datetime import datetime as _dt
     path = get_user_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Codex R3 Major 1 — auto-backup a malformed existing file BEFORE
-    # overwriting it. Without this guard, the load-returns-empty contract
-    # would silently destroy operator hand-edits on the next save: load()
-    # returns {} for a malformed file → deepcopy({}) is empty → write
-    # would replace the broken-but-recoverable file with the validated
-    # write payload, irrevocably losing whatever the operator typed.
-    # Backup filename includes a timestamp so multiple malformed-recovery
-    # cycles don't clobber each other.
+    # Codex R3 Major 1 + Codex R4 Major 1 — auto-backup a malformed
+    # existing file BEFORE overwriting it. Without this guard, the
+    # load-returns-empty contract would silently destroy operator
+    # hand-edits on the next save: load() returns {} for a malformed
+    # file → deepcopy({}) is empty → write would replace the broken-
+    # but-recoverable file with the validated write payload,
+    # irrevocably losing whatever the operator typed.
+    #
+    # Backup filename uses microsecond resolution (%f) AND a collision
+    # counter: %f gives uniqueness for any realistic operator workflow
+    # (no two manual saves complete in the same microsecond), and the
+    # counter loop covers the corner case of a frozen clock or coarsened
+    # filesystem timestamp (testable via monkeypatch). Without the
+    # counter, two same-second/same-microsecond recoveries would clobber
+    # the earlier backup.
     if _existing_file_is_malformed(path):
-        ts = _dt.now().strftime("%Y%m%dT%H%M%S")
+        ts = _dt.now().strftime("%Y%m%dT%H%M%S_%f")
         backup = path.with_name(f"user-config.malformed-{ts}.toml")
+        counter = 0
+        while backup.exists():
+            counter += 1
+            backup = path.with_name(
+                f"user-config.malformed-{ts}_{counter}.toml"
+            )
         os.replace(path, backup)  # atomic same-dir rename
         log.warning(
             "user-config malformed; backed up to %s before overwrite", backup,
