@@ -2,7 +2,7 @@
 
 **Audience:** Future orchestrator-role Claude sessions for the Swing Trading project. Also useful as a reference when the current orchestrator's context window is compacted.
 **Purpose:** Provide enough context to bootstrap an orchestrator role without re-reading conversation history. Not a complete project spec — pointers to authoritative sources are throughout.
-**Last updated:** 2026-04-30 (Phase 4 cleanup-remainder executing-plans shipped to main `4cfe1a9` — 17 commits + 5 Codex rounds + R5 verification clean; Bug 7 mixed-anchor family DURABLY closed via two-helper-per-contract pattern + structural-guard invariant test; 13-phase ZERO-rogue track record; 1341→1366 fast tests; plan-text-contract-over-stating + additive-dataclass-refactor-cost lessons captured; orchestrator handoff prepared for context-limit approach)
+**Last updated:** 2026-05-02 (Phase 5 configuration page SHIPPED to main `3a4195c` after worktree-isolated re-dispatch; 1381→1472 fast tests; 6 new lessons captured this cycle including extended-time-window subagent self-collision + orchestrator triage discipline + brief-speculation discipline + new-VM existing-field inheritance + HTMX HX-Request/HX-Redirect browser-only failure surface + worktree+editable-install verify-command gotcha; global PreToolUse Codex-blocking hook installed at `~/.claude/hooks/`; marker-file workflow + worktree-isolation now standing pattern for executing-plans dispatches; orchestrator handoff prepared)
 
 ---
 
@@ -77,7 +77,7 @@ Full detail: `reference/Future Work/QuantEcon/2026-04-24-quant-econ-companion-tr
 
 > **This section decays fastest. Update on every meaningful change.**
 
-**As of 2026-04-30 (end of Phase 4; orchestrator handoff prepared for context-limit approach):**
+**As of 2026-05-02 (end of Phase 5; orchestrator handoff prepared):**
 
 **Post-2026-04-28 6-phase operator sequence — current status:**
 
@@ -96,7 +96,7 @@ Full detail: `reference/Future Work/QuantEcon/2026-04-24-quant-econ-companion-tr
 | 6 | Post-trade review surface (journal v1.2 sub-bundle: Mistake_Tags + Process Grade + mistake_cost_R / lucky_violation_R + Review_Log) | QUEUED 2026-05-01; MEDIUM (~2 dispatches); cheapest highest-value journal-v1.2 piece |
 | 7-9 | Trade lifecycle state-machine + Fills + Daily_Management + Risk_Policy entity + reconciliation-depth | GATED on Phase 6 evaluation; LARGE |
 
-**14-phase ZERO-rogue track record. 1381 fast tests at HEAD `b31fa61` (1 skipped — Phase 7 operator-only fixture test).**
+**15-phase track record (14 ZERO-rogue + Phase 5 with rogue + recovery via `git reset --hard` + force-push + worktree-isolated re-dispatch). 1472 fast tests at HEAD `b2d0b5c` (1 skipped — Phase 7 operator-only fixture test).**
 
 **Phase 4.5 — hypothesis_label web-form gap (shipped + verified).** Brief `ec93af2`; plan `719c35e`; executing-plans chain `f2df573..f9a07bf` (5 commits: Tasks 1-4 + R1 minor 2 import cleanup). Codex 3 rounds → NO_NEW_CRITICAL_MAJOR (R1: 0/2/2 — both M ACCEPTED with §2.4 + sector-industry-precedent rationale; 1 minor fixed; R2: 0/1/1 — major ACCEPTED helper byte-identical + chain coverage; R3: 0/0/1 advisory). Helper extracted to `swing/recommendations/hypothesis_prefill.py:lookup_active_recommendation_label` (public; CLI + web-VM consumers; 6 existing CLI prefill tests still pass). Multi-path data ingestion audit closed: 4 writers to `trades.hypothesis_label` (CLI; web routes NEW; `swing/trades/entry.py` canonicalize boundary; `swing/data/repos/trades.py` repo writer). Operator-witnessed verification confirmed 2026-04-30: hypothesis row renders correctly on `/trades/entry/form`; hidden input carries matcher's label; KALV smoke-test trade auto-filled correctly. Advisory follow-up (R3 minor 1): no end-to-end GET→extract-fragment→POST→assert-DB happy-path test; current coverage pins the seams via snapshot-trust (POST→DB) + GET-form template assertions (GET→hidden input) separately. Defer.
 
@@ -129,7 +129,7 @@ Full detail: `reference/Future Work/QuantEcon/2026-04-24-quant-econ-companion-tr
 
 **Active orchestrator-side housekeeping (cosmetic; not blocking):**
 
-- `cleanup-locked-scratch-dirs.ps1` still pending elevated PowerShell execution. Cosmetic warning noise on `git status`; not blocking. Script committed at `f637db4` (2026-04-28).
+- (none currently — `cleanup-locked-scratch-dirs.ps1` was extended 2026-05-02 (`b2d0b5c`) to recognize Codex-sandbox naming patterns + executed by operator; orphaned `.worktrees/phase5-config-page-redispatch/` also cleaned up manually 2026-05-02. Working tree is clean except `?? future/` untracked dir holding the journal-v1.2 research artifacts that drove the Phase 6-9 mapping.)
 
 **Ad-hoc DB cleanups this session:**
 
@@ -320,6 +320,8 @@ These come from CLAUDE.md but are restated here because you'll be drafting brief
 - **Tests:** `python -m pytest -m "not slow" -q` is the fast suite; must stay green. Slow suite (`-m slow`) is network-dependent; don't require it for routine validation.
 - **Ruff:** `ruff check swing/` baseline is 98 errors (pre-existing as of 2026-05-02; was 91 pre-Phase-5; was 81 pre-Phase-7; drift between is pre-existing in legacy code OR ruff-version drift across pip upgrades, NOT introduced by recent dispatches — Phase 5 first-attempt return report flagged the +7 drift and orchestrator empirically verified at HEAD `0c5fa8a` pre-merge that the +7 was already present without any Phase 5 code). Briefs forbid introducing new violations; don't try to fix the baseline incidentally.
 - **Adversarial review** on code-shipping sessions is mandatory (standing convention).
+- **Executing-plans dispatch convention (formalized 2026-05-02 post-Phase-5).** Direct invocation of `superpowers:subagent-driven-development` followed by `copowers:adversarial-critic` (NOT the `copowers:executing-plans` wrapper, which bundles both phases without marker-file management between them). Workflow: (1) `superpowers:using-git-worktrees` to create isolated worktree (REQUIRED per `subagent-driven-development` skill docs); (2) `touch .copowers-subagent-active` to activate the global PreToolUse Codex-blocking hook (`~/.claude/hooks/block-copowers-during-subagent.sh`, registered in `~/.claude/settings.json`) which physically prevents subagents from invoking `copowers:adversarial-critic`, `copowers:review`, or `mcp__plugin_copowers_codex__codex*`; (3) invoke `superpowers:subagent-driven-development` to execute tasks; (4) `rm .copowers-subagent-active` after all tasks complete; (5) invoke `copowers:adversarial-critic` directly with PHASE/SPEC_PATH/PLAN_PATH/BASELINE_SHA; (6) operator-witnessed verification gate; (7) merge worktree to main. Hook is global (active for ALL Claude Code sessions across ALL projects on this machine); subagents physically cannot bypass. See `docs/phase5-configuration-page-executing-plans-brief.md` (`671451f`+, revised) as the canonical brief template for this workflow.
+- **Worktree + editable-install verify-command (formalized 2026-05-02 post-Phase-5).** When a worktree-isolated dispatch needs runtime/browser verification via a CLI entry point (e.g., `swing web`), the verify-command MUST point at the worktree's package, not the editable-install path. PowerShell: `$env:PYTHONPATH = "."; python -m swing.cli web` from inside the worktree dir. Bash: `PYTHONPATH=. python -m swing.cli web`. Pytest is not affected (cwd-based discovery); CLI entry points ARE affected (editable-install resolver). Specify in any brief that uses worktrees + needs runtime verification.
 
 ---
 
