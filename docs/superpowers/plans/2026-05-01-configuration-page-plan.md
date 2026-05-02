@@ -22,6 +22,8 @@ These are findings from the §0 file survey that diverge from the brief's pre-su
 6. **Existing `tests/web/test_config_web.py::test_config_web_chase_factor_no_toml_shadow` is now obsolete.** It explicitly states "until [Phase 5], operators write the value into their local untracked toml" — Phase 5 IS this dispatch. The audit's invariant ("chase_factor must NOT appear in any GIT-TRACKED toml file") is no longer the policy: tracked toml is now an explicit precedence layer per locked decision §2.2, AND user-config overrides on top of it. Task 2.0 below replaces this test with a positive override-precedence test asserting user-config beats tracked toml beats default.
 7. **Task 7: Static nav link only.** Surveyed `swing/web/templates/base.html.j2` — the nav block is hardcoded `<a>` tags with no VM dereference. Adding `<a href="/config">Config</a>` requires NO new field on any of the 5 base-layout VMs. The CLAUDE.md "5-VM rule" does not apply.
 
+8. **Web-vs-CLI parity (intentional V1 divergence).** (Codex R2 Major 1.) The web `POST /config` uses MERGE semantics: an unchanged-value submit is a no-op (preserves source-fidelity per Critical 1). The CLI `swing config set` writes UNCONDITIONALLY on every invocation (CLI users expect their explicit command to "do something"; idempotent-no-write would surprise scripted callers). **Consequence:** the corner case "operator wants to LOCK a V1 field at the registry default value WHILE that field's current source is `default`" is reachable via CLI (`swing config set web.chase_factor 0.01`) but NOT via the web form (typing `0.01` into a default-source row is a no-op). Operators who need to lock-at-default-from-default use the CLI for that one case; web users who want to lock typically arrive from a `tracked` source (where typing the registry default DOES diverge from current effective value, so it WILL write per merge invariant (b)). **Surface divergence is documented + accepted for V1.** A future V2 dispatch may add an explicit "Lock as override" checkbox per row to close this gap; it is NOT required for V1's three fields where the corner case has no operational urgency. The plan's "CLI + web validation parity" claim (Codex watch-item #7) covers VALIDATION (single FIELD_REGISTRY) only, NOT save-write semantics.
+
 ---
 
 ## §B — File map (creations / modifications)
@@ -307,6 +309,31 @@ def test_round_trip_multiple_sections(isolated_user_config: Path):
     }
     write_user_overrides(payload)
     assert load_user_overrides() == payload
+
+
+def test_toml_text_repr_float_and_int(isolated_user_config: Path):
+    """Text-level check: tomli_w must emit canonical float/int repr.
+
+    Codex R1 Major 4: round-trip tests don't catch textual drift like
+    '15.0' for int or '0.020' for float. Assert the raw file bytes directly.
+    """
+    write_user_overrides({
+        "account": {"risk_equity_floor": 10000.0},
+        "pipeline": {"chart_top_n_watch": 15},
+        "web": {"chase_factor": 0.02},
+    })
+    raw = isolated_user_config.read_text(encoding="utf-8")
+    assert "risk_equity_floor = 10000.0" in raw   # float stays float
+    assert "chart_top_n_watch = 15" in raw         # int NOT 15.0
+    assert "chase_factor = 0.02" in raw            # NOT 0.020
+
+def test_toml_empty_section_omitted(isolated_user_config: Path):
+    """Section tables emitted ONLY when at least one key is present."""
+    write_user_overrides({"web": {"chase_factor": 0.02}})
+    raw = isolated_user_config.read_text(encoding="utf-8")
+    assert "[web]" in raw
+    assert "[account]" not in raw
+    assert "[pipeline]" not in raw
 
 
 def test_write_creates_directory_if_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -737,7 +764,7 @@ def get_field_source(base_cfg: Config, field_path: str) -> Literal["default", "t
 python -m pytest tests/config_overrides/ -v
 ```
 
-Expected: all PASS — but `get_field_source` imports `FIELD_REGISTRY` which doesn't exist yet. Plan task ordering: Task 2 ships the registry; until then, mark `test_get_field_source_*` tests as `xfail` OR ship a stub registry inline in this commit and replace in Task 2. CHOICE: ship a stub registry (3 tuples, no validation rules, default values only) inline in `config_overrides.py` and have Task 2 (`config_validation.py`) re-export from there to avoid double-source.
+Expected: all PASS — but `get_field_source` imports `FIELD_REGISTRY` which doesn't exist yet. Plan task ordering: Task 2 ships the registry; until then, mark `test_get_field_source_*` tests as `xfail` OR ship a stub registry inline in this commit and replace in Task 2. CHOICE: ship a stub `_DEFAULTS` dict inline in `config_overrides.py` for Task 1.2 only — this is TRANSITIONAL SCAFFOLDING. Task 3.0 (config_validation.py) MUST remove the stub and replace the `get_field_source` FIELD_REGISTRY lookup with a direct import. See Task 3.0 Step 5 for the explicit removal step.
 
 Adjust the implementation: define `_DEFAULTS = {"web.chase_factor": 0.01, "pipeline.chart_top_n_watch": 10, "account.risk_equity_floor": 7500.0}` at module top, drop the FIELD_REGISTRY import. Task 2 wires the registry to import these as the source-of-truth defaults.
 
@@ -760,6 +787,17 @@ _DEFAULTS: dict[str, Any] = {
 ```
 
 Re-run tests.
+
+**IMPORTANT — transitional stub removal in Task 3.0:**
+After Task 3.0 ships `FIELD_REGISTRY`, add an explicit removal step to Task 3.0:
+(a) Delete `_DEFAULTS` from `config_overrides.py`,
+(b) Replace the last two lines of `get_field_source` (`return "tracked" if base_value != _DEFAULTS[field_path] else "default"`) with:
+```python
+    from swing.config_validation import FIELD_REGISTRY
+    spec = next(s for s in FIELD_REGISTRY if s.path == field_path)
+    return "tracked" if base_value != spec.default else "default"
+```
+This closes the dual-source risk (Codex R1 Major 2).
 
 - [ ] **Step 5: Commit**
 
@@ -1354,46 +1392,25 @@ python -m pytest tests/config_validation/ -v
 
 Expected: ~18 PASS (12 boundary + coercion + validate_all).
 
-- [ ] **Step 5: Eliminate `_DEFAULTS` duplication in `swing/config_overrides.py` (Codex R1 Major 2)**
-
-Task 1.2 introduced a stopgap `_DEFAULTS` dict to break a bootstrap cycle. Now that `swing.config_validation.FIELD_REGISTRY` exists, `config_overrides.py` MUST import the single authoritative default map from the registry — keeping two parallel default sources is the "validation registry duplication" risk explicitly called out by Codex watch-item #12 and Codex R1 Major 2.
+- [ ] **Step 4b: Remove transitional `_DEFAULTS` stub from `config_overrides.py` (Codex R1 Major 2 resolution)**
 
 Edit `swing/config_overrides.py`:
-
+1. Delete the `_DEFAULTS: dict[str, Any] = { ... }` block (3 lines).
+2. Replace the last two lines of `get_field_source` with:
 ```python
-# DELETE the _DEFAULTS dict (the entire 4-line block at module top added in Task 1.2).
-# REPLACE the get_field_source body's last 4 lines:
-#
-#     section, key = field_path.split(".")
-#     section_obj = getattr(base_cfg, section)
-#     base_value = getattr(section_obj, key)
-#     return "tracked" if base_value != _DEFAULTS[field_path] else "default"
-#
-# WITH:
-def get_field_source(base_cfg: Config, field_path: str) -> Literal["default", "tracked", "override"]:
-    if field_path not in _V1_PATHS:
-        raise ValueError(f"unknown field_path: {field_path}")
-    overrides = load_user_overrides()
-    if not isinstance(_get(overrides, field_path), _Missing):
-        return "override"
-    from swing.config_validation import get_spec  # local import — avoid cycle at module load
-    spec = get_spec(field_path)
-    section, key = field_path.split(".")
-    base_value = getattr(getattr(base_cfg, section), key)
+    from swing.config_validation import FIELD_REGISTRY
+    spec = next(s for s in FIELD_REGISTRY if s.path == field_path)
     return "tracked" if base_value != spec.default else "default"
 ```
+3. Remove `from typing import Any` if it becomes unused after deleting `_DEFAULTS`.
 
-The local-import of `get_spec` keeps the import graph acyclic (config_validation imports nothing from config_overrides). Discriminating-test: re-run the existing source-introspection tests from Task 1.2 — they MUST still pass against the registry-backed implementation.
-
-- [ ] **Step 6: Re-run config_overrides tests to confirm migration is clean**
-
+Run:
 ```bash
 python -m pytest tests/config_overrides/ tests/config_validation/ -v
 ```
+Expected: all PASS (no circular import; `config_validation` imports nothing from `config_overrides`; `config_overrides` imports from `config_validation` only inside `get_field_source`).
 
-Expected: all PASS — no regression. Both modules now share `FIELD_REGISTRY` as the single source of truth for defaults.
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add swing/config_validation.py swing/config_overrides.py tests/config_validation/
@@ -1722,6 +1739,27 @@ def test_post_reset_deletes_field(client: TestClient):
     assert load_user_overrides() == {}
 
 
+def test_post_reset_all_three_dotted_paths_accepted(client: TestClient):
+    """Routing test matrix: Starlette path converter captures dots.
+
+    Codex R1 Major 5: must verify all three actual dotted field paths
+    are accepted end-to-end, not just one example.
+    """
+    for field_path in (
+        "web.chase_factor",
+        "pipeline.chart_top_n_watch",
+        "account.risk_equity_floor",
+    ):
+        write_user_overrides({
+            field_path.split(".")[0]: {field_path.split(".")[1]: 999},
+        })
+        r = client.post(
+            f"/config/reset/{field_path}",
+            follow_redirects=False,
+        )
+        assert r.status_code == 303, f"Expected 303 for {field_path}, got {r.status_code}"
+
+
 def test_cancel_link_is_plain_anchor_not_htmx(client: TestClient):
     """Codex R1 Major 4 — confirm fragment's Cancel must be a plain <a href>
     that triggers full-page navigation. NOT an hx-get (which would swap a
@@ -1812,6 +1850,34 @@ def test_post_preserves_unknown_user_config_keys(
     assert saved["web"]["chase_factor"] == 0.030
     assert saved["risk"] == {"max_risk_pct": 0.01}, (
         "unknown user-config keys must survive V1 saves"
+    )
+
+
+def test_post_preserves_top_level_scalar_unknown_key(
+    client: TestClient,
+):
+    """Codex R2 Major 2 — deepcopy preservation must NOT assume every
+    top-level value is a section table.
+
+    Discriminating-test: hand-add a top-level scalar to user-config (TOML
+    permits this) and verify a V1 page save preserves it. A naive
+    one-level dict-comp `{section: dict(table) for ...}` would crash with
+    a TypeError when iterating dict() over a non-dict value.
+    """
+    write_user_overrides({
+        "web": {"chase_factor": 0.025},
+        "experimental_flag": True,           # top-level scalar (operator-added)
+    })
+    r = client.post("/config", data={
+        "web.chase_factor": "0.030",
+        "pipeline.chart_top_n_watch": "10",
+        "account.risk_equity_floor": "7500.0",
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    saved = load_user_overrides()
+    assert saved["web"]["chase_factor"] == 0.030
+    assert saved["experimental_flag"] is True, (
+        "top-level scalar keys must survive V1 saves (Codex R2 M2)"
     )
 
 
@@ -1929,11 +1995,15 @@ async def config_save(request: Request):
     # no-op per (a); the operator can use the CLI `swing config set` (which
     # writes unconditionally on operator-typed input) for the corner case
     # of locking-at-default-from-default.
+    import copy as _copy
     base_cfg = request.app.state.cfg
     eff_cfg = apply_overrides(base_cfg)
-    new_overrides: dict[str, dict] = {
-        section: dict(table) for section, table in load_user_overrides().items()
-    }  # deep-copy current state — preserves unknown V2 keys per (c)
+    # Codex R2 Major 2 — `copy.deepcopy` (NOT a one-level dict comprehension)
+    # so unknown user-config keys at ANY nesting level survive — including
+    # hypothetical top-level scalars (e.g. `experimental_flag = true` at the
+    # user-config root) and nested tables under future V2 sections. The
+    # one-level dict-comp pattern would have crashed on a top-level scalar.
+    new_overrides: dict = _copy.deepcopy(load_user_overrides())
     for spec in FIELD_REGISTRY:
         section, key = spec.path.split(".")
         submitted = coerce_value(spec.path, payload[spec.path])
@@ -2596,7 +2666,7 @@ No commit required for Task 7 — verification-only. Plan author reports finding
 
 **Placeholder scan:** No `TBD`, no `implement later`, no `similar to Task N`. Every code block is concrete. Every test body is actual code.
 
-**Type consistency:** `FIELD_REGISTRY` in Task 3.0 → consumed by `config_overrides.get_field_source` (Task 1.2 with stub `_DEFAULTS` until Task 3.0 lands; Task 3.0 keeps the stub or imports from registry). `apply_overrides` returns `Config`; consumed by `build_config_vm` (Task 4.0) + `config_page` route (Task 4.1) + `cli_config show` (Task 6.0) — all expect `Config`. `ValidationResult.hard_errors: list[ValidationError]` consumed by route in Task 4.1 (`{"errors": result.hard_errors}`) and CLI in Task 6.0 (`for err in result.hard_errors: ...`). Names match.
+**Type consistency:** `FIELD_REGISTRY` in Task 3.0 → consumed by `config_overrides.get_field_source` via local-import of `swing.config_validation.get_spec` (the transitional `_DEFAULTS` stub introduced in Task 1.2 is REMOVED in Task 3.0 Step 5; single source of truth post-Task-3.0 is the registry). `apply_overrides` returns `Config`; consumed by `build_config_vm` (Task 4.0) + `config_page` route (Task 4.1) + `cli_config show` (Task 6.0) — all expect `Config`. `ValidationResult.hard_errors: list[ValidationError]` consumed by route in Task 4.1 (`{"errors": result.hard_errors}`) and CLI in Task 6.0 (`for err in result.hard_errors: ...`). Names match.
 
 ---
 
