@@ -15,6 +15,7 @@ from typing import Annotated
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse
 
+from swing.config_overrides import apply_overrides
 from swing.data.db import connect
 from swing.data.repos.candidates import fetch_candidates_for_run
 from swing.data.repos.pipeline import find_active_run, find_run, force_clear
@@ -36,7 +37,7 @@ log = logging.getLogger(__name__)
 
 @router.get("/pipeline", response_class=HTMLResponse)
 def pipeline_page(request: Request):
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     ohlcv_degraded = request.app.state.ohlcv_cache.is_degraded()      # NEW
     vm = build_pipeline(cfg=cfg, ohlcv_degraded=ohlcv_degraded)       # NEW kwarg
     return request.app.state.templates.TemplateResponse(
@@ -46,7 +47,7 @@ def pipeline_page(request: Request):
 
 @router.post("/pipeline/run", response_class=HTMLResponse)
 def pipeline_run(request: Request):
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     cfg_path = request.app.state.cfg_path
     templates = request.app.state.templates
 
@@ -181,7 +182,7 @@ def pipeline_run(request: Request):
 
 @router.get("/pipeline/status/{run_id}", response_class=HTMLResponse)
 def pipeline_status(request: Request, run_id: int):
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     templates = request.app.state.templates
     conn = connect(cfg.paths.db_path)
     try:
@@ -201,7 +202,7 @@ def pipeline_status(request: Request, run_id: int):
 def stale_run_card(request: Request, run_id: int):
     """Render the fresh stale-run card for an eligible run. Used by the Cancel
     button on the force-clear confirm fragment (reverts the swap)."""
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     templates = request.app.state.templates
     conn = connect(cfg.paths.db_path)
     try:
@@ -221,7 +222,7 @@ def stale_run_card(request: Request, run_id: int):
 @router.get("/pipeline/force-clear/{run_id}/confirm", response_class=HTMLResponse)
 def force_clear_confirm(request: Request, run_id: int):
     """Render the 2-step confirm fragment for an eligible stale run (spec §3.1)."""
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     templates = request.app.state.templates
     conn = connect(cfg.paths.db_path)
     try:
@@ -247,7 +248,7 @@ def force_clear_post(request: Request, run_id: int):
     transitioned to 'force_cleared' (guards against a concurrent writer that
     raced our UPDATE with a different state value — 409 fragment in that case).
     """
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     templates = request.app.state.templates
     iso_ts = datetime.now().isoformat(timespec="seconds")
 
@@ -293,7 +294,7 @@ def force_clear_post(request: Request, run_id: int):
 
 @router.post("/prices/refresh", response_class=HTMLResponse)
 def prices_refresh(request: Request):
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
     templates = request.app.state.templates
@@ -378,7 +379,7 @@ def _sanitize_filename(raw: str | None) -> str | None:
 async def csv_upload(request: Request, csv: Annotated[UploadFile, File(...)]):
     """Upload a finviz CSV to the inbox. Validate schema + sanitize filename +
     atomically replace any existing same-name file. Spec §3.1 / §4.1."""
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     templates = request.app.state.templates
     max_bytes = cfg.web.csv_upload_max_bytes
 

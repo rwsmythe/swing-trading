@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
+from swing.config_overrides import apply_overrides
 from swing.web.view_models.dashboard import build_dashboard
 
 router = APIRouter()
@@ -11,7 +12,7 @@ router = APIRouter()
 
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request):
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
     ohlcv_cache = request.app.state.ohlcv_cache
     executor = request.app.state.price_fetch_executor

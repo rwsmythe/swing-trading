@@ -11,6 +11,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from markupsafe import Markup
 
+from swing.config_overrides import apply_overrides
 from swing.data.db import connect
 from swing.data.repos.cash import list_cash
 from swing.data.repos.trades import get_trade, list_all_exits, list_open_trades
@@ -160,7 +161,7 @@ def sizing_hint(
       - Any unexpected exception → caught, logged WARNING, dim fallback fragment.
     """
     templates = request.app.state.templates
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     entry = _parse_optional_float(entry_price)
     stop = _parse_optional_float(initial_stop)
 
@@ -212,7 +213,7 @@ def sizing_hint(
 
 @router.get("/trades/entry/form", response_class=HTMLResponse)
 def entry_form(request: Request, ticker: str, origin: str = "watchlist"):
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
     templates = request.app.state.templates
@@ -268,7 +269,7 @@ def entry_post(
     # tampered POSTs (XSS / open-redirect into the rendered Cancel target).
     origin: str = Form("watchlist"),
 ):
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
     templates = request.app.state.templates
@@ -693,7 +694,7 @@ def entry_post(
 
 @router.get("/trades/{trade_id}/exit/form", response_class=HTMLResponse)
 def exit_form(request: Request, trade_id: int):
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
     templates = request.app.state.templates
@@ -715,7 +716,7 @@ def exit_post(
     reason: str = Form(...),
     notes: str | None = Form(None),
 ):
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
     templates = request.app.state.templates
@@ -799,7 +800,7 @@ def exit_post(
 
 @router.get("/trades/{trade_id}/stop/form", response_class=HTMLResponse)
 def stop_form(request: Request, trade_id: int):
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     templates = request.app.state.templates
     vm = build_stop_form_vm(trade_id=trade_id, cfg=cfg)
     if vm is None:
@@ -812,7 +813,7 @@ def stop_form(request: Request, trade_id: int):
 @router.get("/trades/{trade_id}/cancel", response_class=HTMLResponse)
 def trade_cancel(request: Request, trade_id: int):
     """Return the normal open-position row (no form). Used by Cancel buttons."""
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
     templates = request.app.state.templates
@@ -842,7 +843,7 @@ def stop_post(
     notes: str | None = Form(None),
     force: str | None = Form(None),
 ):
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
     templates = request.app.state.templates
@@ -933,7 +934,7 @@ def open_position_expand(request: Request, trade_id: int):
     """Render the open-positions expanded fragment for `trade_id`. 404 when
     the trade does not exist OR is not currently open (closed trades must
     not display the open-positions UI)."""
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     templates = request.app.state.templates
     conn = connect(cfg.paths.db_path)
     try:
@@ -960,7 +961,7 @@ def open_position_row(request: Request, trade_id: int):
     the close button on an expanded row to swap back to the compact state
     without a full page reload. Mirrors /watchlist/<ticker>/row contract:
     404 on unknown/closed trade, 200 + <tr> body on success."""
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
     templates = request.app.state.templates

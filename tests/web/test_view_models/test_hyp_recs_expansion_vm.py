@@ -1,4 +1,5 @@
 """Task 5.2 — `HypRecsExpandedVM` + `build_hyp_recs_expanded` helper.
+Plus Task 2.1 — apply_overrides chase_factor reaches buy_limit (override path).
 
 Spec §3.5.2 + §3.5.3. The helper resolves a per-ticker hyp-recs expansion VM:
 candidate (pivot, stop, sector/industry) from the latest COMPLETED pipeline
@@ -437,3 +438,60 @@ def test_initial_stop_none_returns_none(seeded_db):
         conn.close()
 
     assert vm is None
+
+
+# ---------------------------------------------------------------------------
+# Task 2.1 — apply_overrides chase_factor override threads through to
+# build_hyp_recs_expanded.buy_limit.
+#
+# This is the unit-level safety harness for the route-level wiring change:
+# every web route now reads `cfg = apply_overrides(request.app.state.cfg)`.
+# We prove the discriminator (chase_factor 0.01 → 0.025 yields buy_limit
+# 101.0 → 102.5 for pivot=100) at the VM layer that the routes call into.
+# Pre-fix path: route reads raw state.cfg → buy_limit = 100*(1+0.01) = 101.0.
+# Post-fix path: route reads apply_overrides(state.cfg) → 100*(1+0.025) = 102.5.
+# This test exercises the post-fix code path directly via apply_overrides().
+# ---------------------------------------------------------------------------
+def test_apply_overrides_chase_factor_propagates_to_buy_limit(
+    seeded_db, tmp_path, monkeypatch,
+):
+    import pytest
+    from swing.config_overrides import apply_overrides
+    from swing.config_user import write_user_overrides
+    from swing.web.view_models.dashboard import build_hyp_recs_expanded
+
+    cfg, _ = seeded_db
+    # Isolate USERPROFILE/HOME to the test's tmp_path/home — the seeded_db
+    # fixture already created this directory via _minimal_config().
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    # Sanity: base cfg defaults to chase_factor=0.01 (101.0 buy_limit).
+    assert cfg.web.chase_factor == 0.01
+
+    # Write a user-config override for chase_factor=0.025.
+    write_user_overrides({"web": {"chase_factor": 0.025}})
+
+    # Apply overrides (mirroring the route-level wiring change).
+    effective_cfg = apply_overrides(cfg)
+    assert effective_cfg.web.chase_factor == 0.025
+
+    _seed_complete_pipeline(effective_cfg, candidates=[
+        {"ticker": "AAPL", "pivot": 100.0, "initial_stop": 95.0},
+    ])
+    conn = connect(effective_cfg.paths.db_path)
+    try:
+        vm = build_hyp_recs_expanded(
+            conn, effective_cfg, ticker="AAPL", current_balance=10_000.0,
+        )
+    finally:
+        conn.close()
+
+    assert vm is not None
+    # Discriminating: pre-wiring (raw cfg) yields buy_limit=101.0;
+    # post-wiring (apply_overrides) yields buy_limit=102.5.
+    # pytest.approx absorbs IEEE-754 float-rep noise (1.025 isn't exact).
+    assert vm.chase_factor == 0.025
+    assert vm.buy_limit == pytest.approx(102.5)
+    # Also explicitly distinguish from the no-override default (101.0).
+    assert vm.buy_limit != pytest.approx(101.0)
