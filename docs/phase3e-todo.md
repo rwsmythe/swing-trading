@@ -756,7 +756,7 @@ The expansion content should include (V1 scope):
 
 ---
 
-## 2026-04-28 configuration page for operator-tunable settings (BRIEF + PLAN + Tasks 1.0/1.1/1.2/2.0 SHIPPED 2026-05-01 at `e42f5be`; re-dispatch with worktree isolation pending)
+## 2026-04-28 configuration page for operator-tunable settings — **SHIPPED 2026-05-02 at `3a4195c`**
 
 Operator surfaced 2026-04-28: as small operator-tunable settings accumulate (chase_factor, chart_top_n_watch, risk_pct floor, account balance cap rules, etc.), each currently lives as a Python default + tracked toml override in `swing.config.toml`. Future feature: dashboard configuration page where operator can view + edit these values without manual toml-editing.
 
@@ -772,9 +772,19 @@ Operator surfaced 2026-04-28: as small operator-tunable settings accumulate (cha
 
 **Future field additions:** small per-field follow-ups — V1 infrastructure ships ready for them. Candidates surveyed but explicitly NOT V1: `risk_pct`, `pipeline_lease_wait_seconds`, `current_balance`, advisory thresholds (10MA / 20MA / etc.), other `cfg.web.*` settings.
 
-**Executing-plans first attempt** (commit chain `dff70ca..2278e97`, 2026-05-01): landed Tasks 1.0/1.1/1.2/2.0 plan-aligned (`dff70ca`, `db1bf0f`, `0b85046`, `e42f5be`); fifth commit `2278e97` was a rogue Task 1.2 rewrite (overwrote landed plan-aligned `swing/config_overrides.py` with a non-plan API; absorbed Task 2.1 wiring under wrong subject; created non-plan test file with `Path.cwd()` mkdtemp pattern yielding 66 ACL-locked `.config-overrides-*` dirs at repo root). Diagnosed as extended-time-window subagent self-collision within `subagent-driven-development` (NOT external interference; 9:47 min between duplicate Task 1.2 commits with intervening Task 2.0 commit). Reverted via `git reset --hard e42f5be` + `git push --force-with-lease origin main`. Re-dispatch from Task 2.1 onward queued with **worktree isolation** (`superpowers:using-git-worktrees`) per the documented escalation path. Revised brief at `docs/phase5-configuration-page-executing-plans-brief.md` (`671451f`).
+**Executing-plans first attempt** (commit chain `dff70ca..2278e97`, 2026-05-01): landed Tasks 1.0/1.1/1.2/2.0 plan-aligned (`dff70ca`, `db1bf0f`, `0b85046`, `e42f5be`); fifth commit `2278e97` was a rogue Task 1.2 rewrite (overwrote landed plan-aligned `swing/config_overrides.py` with a non-plan API; absorbed Task 2.1 wiring under wrong subject; created non-plan test file with `Path.cwd()` mkdtemp pattern yielding 66 ACL-locked `.config-overrides-*` dirs at repo root). Diagnosed as extended-time-window subagent self-collision within `subagent-driven-development` (NOT external interference; 9:47 min between duplicate Task 1.2 commits with intervening Task 2.0 commit). Reverted via `git reset --hard e42f5be` + `git push --force-with-lease origin main`.
 
-**Cleanup deferred:** 66 ACL-locked `.config-overrides-*` directories at repo root require elevated PowerShell; bundle with the existing `cleanup-locked-scratch-dirs.ps1` operational housekeeping item.
+**Executing-plans re-dispatch (2026-05-02):** worktree-isolated on `phase5-config-page-redispatch` branch with global PreToolUse Codex-blocking hook + marker-file workflow. 7 commits onto branch (`f86eafd..4d3174d`); 2 Codex rounds → NO_NEW_CRITICAL_MAJOR; operator-witnessed 6-step browser gate PASS. Merged via `git merge --no-ff` at `3a4195c` (4 docs commits ahead of base prevented fast-forward). 1381 → 1472 fast tests (+91, exceeds the +75 plan estimate). Browser-gate workaround: PowerShell prefix `$env:PYTHONPATH = "."; python -m swing.cli web` to overcome editable-install-vs-worktree path mismatch.
+
+**V1 follow-ups (out-of-scope discoveries from re-dispatch return report; OPEN):**
+
+- **CSS gap on new config-page surfaces.** `.banner.warn`, `.banner.error`, `.btn`, `.btn-secondary` classes referenced in `swing/web/templates/config.html.j2` + `partials/config_hard_refuse.html.j2` + `partials/config_soft_warn_confirm.html.j2` may not be defined in `swing/web/static/app.css`. Page is functional; banners may render as plain text instead of styled. Cosmetic polish ticket.
+- **`ConfigPageVM.session_date` inconsistency.** Uses `date.today().isoformat()` instead of `action_session_for_run(datetime.now())` like other base-layout VMs. Cosmetic — affects topbar date display only on weekends/holidays/HST. Fix would touch landed Task 4.0 file (Watch item #12 prohibited within-dispatch); now post-merge it's safe to fix.
+- **Route-layer integration smoke gap.** Task 2.1 override-applied test exercises the VM helper directly (not via TestClient round-trip). The 26 route-wiring sites are grep-verifiable; future task could add a TestClient-based smoke that POSTs/GETs one of the patched routes after writing user-config to assert the rendered response reflects the override. Not blocking V1 ship.
+- **Schema-valid wrong-type user-config crashes `_get`.** R1 Minor 1 advisory. V2 hardening: add `isinstance(section_obj, dict)` guard. Surfaces as visible 500 (not silent corruption); operator hand-edit error scope only.
+- **Lost-update race across two browser tabs** (R1 Major 3 ACCEPTED). Single-operator scope per CLAUDE.md + brief §3.2; two-tab race operationally implausible. V2 may add file locking if multi-user surface ever emerges.
+
+**Cleanup deferred (operational housekeeping; bundled):** 66 ACL-locked `.config-overrides-*` dirs + `.codex-pytest-6681924b-*` dir + `.tmp` + `.tmp_pytest` + `pytest-run-*` dir + `.worktrees/phase5-config-page-redispatch/` (worktree branch + git registration removed; directory removal blocked by file handles when tested 2026-05-02). All owned by `AughtSevernIII\CodexSandboxOffline` per the dry-run output. `cleanup-locked-scratch-dirs.ps1` allowlist extended 2026-05-02 to recognize the new patterns; needs operator-elevated PowerShell to execute.
 
 **Cross-references:**
 - Brief (writing-plans): `docs/phase5-configuration-page-writing-plans-brief.md` (commit `3fde496`).
