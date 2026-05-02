@@ -404,6 +404,55 @@ def test_delete_field_no_op_when_absent(isolated_user_config: Path):
     write_user_overrides({"web": {"chase_factor": 0.02}})
     delete_user_override("account.risk_equity_floor")  # not present
     assert load_user_overrides() == {"web": {"chase_factor": 0.02}}
+
+
+def test_write_backs_up_malformed_existing_file(
+    isolated_user_config: Path, caplog: pytest.LogCaptureFixture,
+):
+    """Codex R3 Major 1 — auto-backup malformed file before overwrite.
+
+    Discriminating-test: pre-populate user-config with broken TOML, write
+    a valid override, then assert:
+      (a) the new payload is at user-config.toml,
+      (b) the broken content is preserved at user-config.malformed-*.toml,
+      (c) a WARNING was logged.
+
+    Pre-fix behavior (no guard): the malformed file is silently replaced
+    with no recovery path; this test fails.
+    Post-fix behavior: backup file exists with original broken content;
+    this test passes.
+    """
+    isolated_user_config.write_text(
+        "this is = not valid [[[ toml", encoding="utf-8",
+    )
+    original_broken = isolated_user_config.read_text(encoding="utf-8")
+    with caplog.at_level("WARNING"):
+        write_user_overrides({"web": {"chase_factor": 0.02}})
+    assert load_user_overrides() == {"web": {"chase_factor": 0.02}}
+    backups = list(isolated_user_config.parent.glob("user-config.malformed-*.toml"))
+    assert len(backups) == 1, f"expected 1 backup, got {backups}"
+    assert backups[0].read_text(encoding="utf-8") == original_broken
+    assert any(
+        "malformed" in r.message.lower() and "backed up" in r.message.lower()
+        for r in caplog.records
+    )
+
+
+def test_write_does_not_back_up_well_formed_existing_file(
+    isolated_user_config: Path,
+):
+    """Codex R3 Major 1 — backup only fires for malformed files.
+
+    Negative-discriminator: a well-formed existing file is replaced via
+    the normal atomic-replace path (no .malformed-* artifact). Without
+    this guard, every save would generate a backup file, polluting the
+    config dir.
+    """
+    write_user_overrides({"web": {"chase_factor": 0.015}})  # well-formed
+    write_user_overrides({"web": {"chase_factor": 0.025}})  # overwrite
+    backups = list(isolated_user_config.parent.glob("user-config.malformed-*.toml"))
+    assert backups == []
+    assert load_user_overrides() == {"web": {"chase_factor": 0.025}}
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -456,9 +505,41 @@ def load_user_overrides() -> dict[str, Any]:
         return {}
 
 
+def _existing_file_is_malformed(path: Path) -> bool:
+    """True iff the file exists but cannot be parsed as TOML.
+    Codex R3 Major 1 — used to gate auto-backup before overwrite so an
+    operator's hand-edits in a syntax-broken user-config aren't silently
+    lost on the next save.
+    """
+    if not path.exists():
+        return False
+    try:
+        with open(path, "rb") as f:
+            tomllib.load(f)
+        return False
+    except (tomllib.TOMLDecodeError, OSError):
+        return True
+
+
 def write_user_overrides(overrides: dict[str, Any]) -> None:
+    from datetime import datetime as _dt
     path = get_user_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Codex R3 Major 1 — auto-backup a malformed existing file BEFORE
+    # overwriting it. Without this guard, the load-returns-empty contract
+    # would silently destroy operator hand-edits on the next save: load()
+    # returns {} for a malformed file → deepcopy({}) is empty → write
+    # would replace the broken-but-recoverable file with the validated
+    # write payload, irrevocably losing whatever the operator typed.
+    # Backup filename includes a timestamp so multiple malformed-recovery
+    # cycles don't clobber each other.
+    if _existing_file_is_malformed(path):
+        ts = _dt.now().strftime("%Y%m%dT%H%M%S")
+        backup = path.with_name(f"user-config.malformed-{ts}.toml")
+        os.replace(path, backup)  # atomic same-dir rename
+        log.warning(
+            "user-config malformed; backed up to %s before overwrite", backup,
+        )
     # tempfile.NamedTemporaryFile(dir=path.parent, ...) — same filesystem as
     # destination, so os.replace is atomic at the filesystem-rename level on
     # Windows + POSIX. Cross-device-link gotcha (CLAUDE.md): NEVER use the
