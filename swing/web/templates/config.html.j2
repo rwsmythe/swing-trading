@@ -30,7 +30,10 @@
 <div id="config-form-result"></div>
 
 {% for row in vm.rows %}
-  <form method="post" action="/config/reset/{{ row.path }}" class="reset-form">
+  <form method="post" action="/config/reset/{{ row.path }}"
+        hx-post="/config/reset/{{ row.path }}"
+        hx-headers='{"HX-Request": "true"}'
+        class="reset-form">
     <button type="submit" class="reset-btn">Reset {{ row.label }}</button>
   </form>
 {% endfor %}

@@ -45,13 +45,56 @@ def test_post_happy_path_writes_and_redirects(client: TestClient):
         "pipeline.chart_top_n_watch": "20",
         "account.risk_equity_floor": "10000.0",
     }, headers={"HX-Request": "true"}, follow_redirects=False)
-    assert r.status_code == 303
-    assert r.headers["location"].startswith("/config")
+    # Codex R1 Major 2 — HTMX success path uses 204 + HX-Redirect, not 303.
+    assert r.status_code == 204
+    assert r.headers["HX-Redirect"] == "/config?saved=1"
     assert load_user_overrides() == {
         "web": {"chase_factor": 0.015},
         "pipeline": {"chart_top_n_watch": 20},
         "account": {"risk_equity_floor": 10000.0},
     }
+
+
+def test_save_redirect_helper_non_htmx_returns_303():
+    """Unit test: _save_redirect_response branches on HX-Request header.
+
+    Discriminating-test for Codex R1 Major 2 — verifies BOTH branches of the
+    helper. Cannot exercise the non-HTMX branch through TestClient because
+    OriginGuard strict mode (`swing/web/app.py:177`) rejects unsafe-method
+    requests without HX-Request before they reach the route. Direct unit
+    test fills that coverage gap.
+    """
+    from starlette.requests import Request
+
+    from swing.web.routes.config import _save_redirect_response
+
+    def _mk_request(headers_list: list[tuple[bytes, bytes]]) -> Request:
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "headers": headers_list,
+            "path": "/config",
+            "query_string": b"",
+        }
+        return Request(scope)
+
+    # HTMX path → 204 + HX-Redirect
+    htmx_resp = _save_redirect_response(
+        _mk_request([(b"hx-request", b"true")]),
+    )
+    assert htmx_resp.status_code == 204
+    assert htmx_resp.headers["HX-Redirect"] == "/config?saved=1"
+
+    # Non-HTMX path → 303 redirect (browser without JS, curl)
+    plain_resp = _save_redirect_response(_mk_request([]))
+    assert plain_resp.status_code == 303
+    assert plain_resp.headers["location"] == "/config?saved=1"
+
+    # Case-insensitivity: HX-Request="TRUE" still HTMX path
+    upper_resp = _save_redirect_response(
+        _mk_request([(b"hx-request", b"TRUE")]),
+    )
+    assert upper_resp.status_code == 204
 
 
 def test_post_hard_refuse_returns_error_fragment_no_write(client: TestClient):
@@ -114,7 +157,8 @@ def test_post_force_true_persists_soft_warn_value(client: TestClient):
         headers={"HX-Request": "true"},
         follow_redirects=False,
     )
-    assert r.status_code == 303
+    assert r.status_code == 204
+    assert r.headers["HX-Redirect"] == "/config?saved=1"
     assert load_user_overrides() == {
         "web": {"chase_factor": 0.05},
         "pipeline": {"chart_top_n_watch": 20},
@@ -129,7 +173,8 @@ def test_post_reset_deletes_field(client: TestClient):
         headers={"HX-Request": "true"},
         follow_redirects=False,
     )
-    assert r.status_code == 303
+    assert r.status_code == 204
+    assert r.headers["HX-Redirect"] == "/config?saved=1"
     assert load_user_overrides() == {}
 
 
@@ -152,7 +197,8 @@ def test_post_reset_all_three_dotted_paths_accepted(client: TestClient):
             headers={"HX-Request": "true"},
             follow_redirects=False,
         )
-        assert r.status_code == 303, f"Expected 303 for {field_path}, got {r.status_code}"
+        assert r.status_code == 204, f"Expected 204 for {field_path}, got {r.status_code}"
+        assert r.headers["HX-Redirect"] == "/config?saved=1"
 
 
 def test_cancel_link_is_plain_anchor_not_htmx(client: TestClient):
@@ -215,7 +261,8 @@ def test_post_unchanged_submit_does_not_create_overrides(client: TestClient):
         "pipeline.chart_top_n_watch": "10",    # == registry default == current effective
         "account.risk_equity_floor": "5000.0", # == current effective (tracked, fixture sets 5000)
     }, headers={"HX-Request": "true"}, follow_redirects=False)
-    assert r.status_code == 303
+    assert r.status_code == 204
+    assert r.headers["HX-Redirect"] == "/config?saved=1"
     assert load_user_overrides() == {}
 
 
@@ -231,7 +278,8 @@ def test_post_changed_one_field_does_not_lock_others(client: TestClient):
         "pipeline.chart_top_n_watch": "10",    # unchanged (default == effective)
         "account.risk_equity_floor": "5000.0", # unchanged (current effective)
     }, headers={"HX-Request": "true"}, follow_redirects=False)
-    assert r.status_code == 303
+    assert r.status_code == 204
+    assert r.headers["HX-Redirect"] == "/config?saved=1"
     assert load_user_overrides() == {"web": {"chase_factor": 0.015}}
     # chart_top_n_watch source='default'; risk_equity_floor source='tracked';
     # web.chase_factor source='override'. Page must show >=1 default badge
@@ -259,7 +307,8 @@ def test_post_preserves_unknown_user_config_keys(
         "account.risk_equity_floor": "5000.0",
         "force": "true",
     }, headers={"HX-Request": "true"}, follow_redirects=False)
-    assert r.status_code == 303
+    assert r.status_code == 204
+    assert r.headers["HX-Redirect"] == "/config?saved=1"
     saved = load_user_overrides()
     assert saved["web"]["chase_factor"] == 0.030
     assert saved["risk"] == {"max_risk_pct": 0.01}, (
@@ -288,7 +337,8 @@ def test_post_preserves_top_level_scalar_unknown_key(
         "account.risk_equity_floor": "5000.0",
         "force": "true",   # 0.030 > 0.02 soft-warn ceiling; force-bypass to reach write
     }, headers={"HX-Request": "true"}, follow_redirects=False)
-    assert r.status_code == 303
+    assert r.status_code == 204
+    assert r.headers["HX-Redirect"] == "/config?saved=1"
     saved = load_user_overrides()
     assert saved["web"]["chase_factor"] == 0.030
     assert saved["experimental_flag"] is True, (
