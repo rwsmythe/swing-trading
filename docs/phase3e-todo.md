@@ -756,7 +756,7 @@ The expansion content should include (V1 scope):
 
 ---
 
-## 2026-04-28 configuration page for operator-tunable settings (BRIEF + PLAN SHIPPED 2026-05-01; executing-plans dispatch pending)
+## 2026-04-28 configuration page for operator-tunable settings (BRIEF + PLAN + Tasks 1.0/1.1/1.2/2.0 SHIPPED 2026-05-01 at `e42f5be`; re-dispatch with worktree isolation pending)
 
 Operator surfaced 2026-04-28: as small operator-tunable settings accumulate (chase_factor, chart_top_n_watch, risk_pct floor, account balance cap rules, etc.), each currently lives as a Python default + tracked toml override in `swing.config.toml`. Future feature: dashboard configuration page where operator can view + edit these values without manual toml-editing.
 
@@ -772,10 +772,16 @@ Operator surfaced 2026-04-28: as small operator-tunable settings accumulate (cha
 
 **Future field additions:** small per-field follow-ups — V1 infrastructure ships ready for them. Candidates surveyed but explicitly NOT V1: `risk_pct`, `pipeline_lease_wait_seconds`, `current_balance`, advisory thresholds (10MA / 20MA / etc.), other `cfg.web.*` settings.
 
+**Executing-plans first attempt** (commit chain `dff70ca..2278e97`, 2026-05-01): landed Tasks 1.0/1.1/1.2/2.0 plan-aligned (`dff70ca`, `db1bf0f`, `0b85046`, `e42f5be`); fifth commit `2278e97` was a rogue Task 1.2 rewrite (overwrote landed plan-aligned `swing/config_overrides.py` with a non-plan API; absorbed Task 2.1 wiring under wrong subject; created non-plan test file with `Path.cwd()` mkdtemp pattern yielding 66 ACL-locked `.config-overrides-*` dirs at repo root). Diagnosed as extended-time-window subagent self-collision within `subagent-driven-development` (NOT external interference; 9:47 min between duplicate Task 1.2 commits with intervening Task 2.0 commit). Reverted via `git reset --hard e42f5be` + `git push --force-with-lease origin main`. Re-dispatch from Task 2.1 onward queued with **worktree isolation** (`superpowers:using-git-worktrees`) per the documented escalation path. Revised brief at `docs/phase5-configuration-page-executing-plans-brief.md` (`671451f`).
+
+**Cleanup deferred:** 66 ACL-locked `.config-overrides-*` directories at repo root require elevated PowerShell; bundle with the existing `cleanup-locked-scratch-dirs.ps1` operational housekeeping item.
+
 **Cross-references:**
-- Brief: `docs/phase5-configuration-page-writing-plans-brief.md` (commit `3fde496`).
+- Brief (writing-plans): `docs/phase5-configuration-page-writing-plans-brief.md` (commit `3fde496`).
 - Plan: `docs/superpowers/plans/2026-05-01-configuration-page-plan.md` (HEAD `e8c6396`; ~75 new tests planned; 5 Codex rounds → NO_NEW_CRITICAL_MAJOR).
+- Brief (executing-plans, REVISED): `docs/phase5-configuration-page-executing-plans-brief.md` (`671451f`; worktree isolation + Task 2.1+ starting point).
 - toml-shadowing lesson in `docs/orchestrator-context.md` Lessons captured (post-`aeb2084`).
+- Subagent self-collision lessons in `docs/orchestrator-context.md` Lessons captured (chart-pattern Phase 2 tight-window 2026-04-26; Phase 5 extended-window 2026-05-01).
 - `project_capital_risk_floor.md` memory.
 
 ---
