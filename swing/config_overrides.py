@@ -18,16 +18,6 @@ from swing.config_user import load_user_overrides
 _V1_PATHS = ("web.chase_factor", "pipeline.chart_top_n_watch", "account.risk_equity_floor")
 
 
-# TRANSITIONAL STUB — removed in Task 3.0 when FIELD_REGISTRY ships.
-# Codex R1 Major 2 — single source of truth for defaults must be FIELD_REGISTRY;
-# Task 3.0 Step 4b explicitly REMOVES this stub.
-_DEFAULTS: dict[str, Any] = {
-    "web.chase_factor": 0.01,
-    "pipeline.chart_top_n_watch": 10,
-    "account.risk_equity_floor": 7500.0,
-}
-
-
 class _Missing:
     """Sentinel — distinguishes 'absent' from 'present and None'."""
 
@@ -77,7 +67,9 @@ def get_field_source(base_cfg: Config, field_path: str) -> Literal["default", "t
     overrides = load_user_overrides()
     if not isinstance(_get(overrides, field_path), _Missing):
         return "override"
+    from swing.config_validation import FIELD_REGISTRY
+    spec = next(s for s in FIELD_REGISTRY if s.path == field_path)
     section, key = field_path.split(".")
     section_obj = getattr(base_cfg, section)
     base_value = getattr(section_obj, key)
-    return "tracked" if base_value != _DEFAULTS[field_path] else "default"
+    return "tracked" if base_value != spec.default else "default"
