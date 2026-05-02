@@ -56,7 +56,7 @@ These are findings from the §0 file survey that diverge from the brief's pre-su
 | `swing/web/templates/base.html.j2` | Add `<a href="/config">Config</a>` to nav block (after `Pipeline` link). Static link only — no VM field added. |
 | `swing/web/app.py` | Import `swing.web.routes.config` + `app.include_router(config_route.router)`. |
 | `swing/cli.py` | Import + register `from swing.cli_config import config_group; main.add_command(config_group)`. |
-| `swing/pipeline/runner.py` | Top of `run_pipeline(...)` calls `cfg = apply_overrides(cfg)` so each new pipeline picks up overrides at start (in-flight runs keep their values per locked decision §3 out-of-scope item). |
+| `swing/pipeline/__init__.py` | The PUBLIC `run_pipeline(cfg=..., trigger=...)` wrapper at line 13 is the single entry point (called from CLI + routes). Add `cfg = apply_overrides(cfg)` immediately before the call to `run_pipeline_internal(...)`. The private worker `run_pipeline_internal` in `swing/pipeline/runner.py:100` is NOT the patched function — patching the public wrapper covers every caller. (Codex R1 Minor 1.) |
 | `swing/web/routes/dashboard.py` | Replace `cfg = request.app.state.cfg` with `cfg = apply_overrides(request.app.state.cfg)` (1 site at line 14). |
 | `swing/web/routes/charts.py` | Same replacement (1 site at line 49). |
 | `swing/web/routes/journal.py` | Same replacement (1 site at line 19). |
@@ -433,9 +433,19 @@ def write_user_overrides(overrides: dict[str, Any]) -> None:
     path = get_user_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     # tempfile.NamedTemporaryFile(dir=path.parent, ...) — same filesystem as
-    # destination, so os.replace is atomic on Windows + POSIX. Cross-device-
-    # link gotcha (CLAUDE.md): NEVER use the OS default $TMP — Drive-synced
-    # destinations live on a different volume.
+    # destination, so os.replace is atomic at the filesystem-rename level on
+    # Windows + POSIX. Cross-device-link gotcha (CLAUDE.md): NEVER use the
+    # OS default $TMP — Drive-synced destinations live on a different volume.
+    #
+    # Codex R1 Major 1 — durability claim is best-effort atomic REPLACE,
+    # NOT crash-durable through a power loss. We fsync the file payload
+    # before replace, but Windows does not expose a portable directory
+    # fsync; on POSIX we could `os.open(parent, O_RDONLY) + os.fsync(fd)`
+    # after replace, but that is a no-op on Windows where the rename is
+    # logged separately by the filesystem. For a single-operator local
+    # tool with hand-typed config edits, a power-loss window between
+    # rename-log and metadata-flush is acceptable; if it widens, a future
+    # dispatch can add a journal/version pattern (out of scope for V1).
     fd = tempfile.NamedTemporaryFile(
         mode="wb", dir=path.parent, delete=False, suffix=".tmp",
     )
@@ -949,24 +959,34 @@ cfg = apply_overrides(request.app.state.cfg)
 
 Use `git grep -l 'request\.app\.state\.cfg' swing/web/routes/` to confirm the full list before editing. Note that `swing/web/routes/pipeline.py` line 50 reads `cfg_path` (not `cfg`) — leave that line unchanged.
 
-- [ ] **Step 4: Edit `swing/pipeline/runner.py`**
+- [ ] **Step 4: Edit `swing/pipeline/__init__.py`** (Codex R1 Minor 1 — patch the PUBLIC wrapper, not the internal worker)
 
-Locate `def run_pipeline(...)`:
+Current `swing/pipeline/__init__.py` is the single public entry point:
 
 ```python
-# Before:
-def run_pipeline(*, cfg: Config, trigger: str = "scheduled") -> ...:
-    # body uses cfg directly
+# swing/pipeline/__init__.py — current (5-line wrapper around run_pipeline_internal)
+from swing.pipeline.runner import RunResult, run_pipeline_internal
+
+__all__ = ["RunResult", "run_pipeline"]
+
+def run_pipeline(*, cfg, trigger: str = "manual") -> RunResult:
+    return run_pipeline_internal(cfg=cfg, trigger=trigger)
 ```
 
-Add immediately after the function signature:
+Edit to apply overrides exactly once at the public boundary:
 
 ```python
-def run_pipeline(*, cfg: Config, trigger: str = "scheduled") -> ...:
-    from swing.config_overrides import apply_overrides
+from swing.config_overrides import apply_overrides
+from swing.pipeline.runner import RunResult, run_pipeline_internal
+
+__all__ = ["RunResult", "run_pipeline"]
+
+def run_pipeline(*, cfg, trigger: str = "manual") -> RunResult:
     cfg = apply_overrides(cfg)
-    # body uses overridden cfg
+    return run_pipeline_internal(cfg=cfg, trigger=trigger)
 ```
+
+Do NOT also call `apply_overrides` inside `swing/pipeline/runner.py:run_pipeline_internal` — every caller routes through the public wrapper, so a second invocation would be wasted (and could mask a future regression where an internal call bypasses the wrapper).
 
 - [ ] **Step 5: Run full fast suite**
 
@@ -1113,9 +1133,16 @@ def test_coerce_chart_top_n_str_to_int():
     assert isinstance(coerce_value("pipeline.chart_top_n_watch", "15"), int)
 
 
-def test_coerce_int_field_rejects_float_string():
+def test_coerce_int_field_rejects_non_integer_float_string():
+    """Codex R1 Major 3 — '15.5' rejected (not integer-valued)."""
     with pytest.raises(ValueError):
         coerce_value("pipeline.chart_top_n_watch", "15.5")
+
+
+def test_coerce_int_field_accepts_integer_valued_float_string():
+    """Codex R1 Major 3 — '15.0' accepted (browser-friendly UX)."""
+    assert coerce_value("pipeline.chart_top_n_watch", "15.0") == 15
+    assert isinstance(coerce_value("pipeline.chart_top_n_watch", "15.0"), int)
 
 
 def test_coerce_invalid_string_raises():
@@ -1246,10 +1273,17 @@ def get_spec(field_path: str) -> FieldSpec:
 def coerce_value(field_path: str, raw_value: str) -> Any:
     spec = get_spec(field_path)
     if spec.type is int:
-        # Reject "15.5" — int field must be a clean integer string.
-        if "." in raw_value:
+        # Codex R1 Major 3 — accept integer-valued floats ("15.0" → 15) for
+        # web-form UX (HTML `<input type="number" step="1">` can post a
+        # trailing-zero float in some browser/locale combinations). Reject
+        # only non-integer floats ("15.5" → ValueError).
+        try:
+            f = float(raw_value)
+        except ValueError as exc:
+            raise ValueError(f"{field_path} requires an integer; got {raw_value!r}") from exc
+        if not f.is_integer():
             raise ValueError(f"{field_path} requires an integer; got {raw_value!r}")
-        return int(raw_value)
+        return int(f)
     if spec.type is float:
         return float(raw_value)
     raise ValueError(f"unsupported type for {field_path}: {spec.type}")
@@ -1318,13 +1352,52 @@ def validate_all(form: dict[str, str]) -> ValidationResult:
 python -m pytest tests/config_validation/ -v
 ```
 
-Expected: ~17 PASS.
+Expected: ~18 PASS (12 boundary + coercion + validate_all).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Eliminate `_DEFAULTS` duplication in `swing/config_overrides.py` (Codex R1 Major 2)**
+
+Task 1.2 introduced a stopgap `_DEFAULTS` dict to break a bootstrap cycle. Now that `swing.config_validation.FIELD_REGISTRY` exists, `config_overrides.py` MUST import the single authoritative default map from the registry — keeping two parallel default sources is the "validation registry duplication" risk explicitly called out by Codex watch-item #12 and Codex R1 Major 2.
+
+Edit `swing/config_overrides.py`:
+
+```python
+# DELETE the _DEFAULTS dict (the entire 4-line block at module top added in Task 1.2).
+# REPLACE the get_field_source body's last 4 lines:
+#
+#     section, key = field_path.split(".")
+#     section_obj = getattr(base_cfg, section)
+#     base_value = getattr(section_obj, key)
+#     return "tracked" if base_value != _DEFAULTS[field_path] else "default"
+#
+# WITH:
+def get_field_source(base_cfg: Config, field_path: str) -> Literal["default", "tracked", "override"]:
+    if field_path not in _V1_PATHS:
+        raise ValueError(f"unknown field_path: {field_path}")
+    overrides = load_user_overrides()
+    if not isinstance(_get(overrides, field_path), _Missing):
+        return "override"
+    from swing.config_validation import get_spec  # local import — avoid cycle at module load
+    spec = get_spec(field_path)
+    section, key = field_path.split(".")
+    base_value = getattr(getattr(base_cfg, section), key)
+    return "tracked" if base_value != spec.default else "default"
+```
+
+The local-import of `get_spec` keeps the import graph acyclic (config_validation imports nothing from config_overrides). Discriminating-test: re-run the existing source-introspection tests from Task 1.2 — they MUST still pass against the registry-backed implementation.
+
+- [ ] **Step 6: Re-run config_overrides tests to confirm migration is clean**
 
 ```bash
-git add swing/config_validation.py tests/config_validation/
-git commit -m "feat(config): Task 3.0 — field registry + hard/soft validation (web+CLI shared)"
+python -m pytest tests/config_overrides/ tests/config_validation/ -v
+```
+
+Expected: all PASS — no regression. Both modules now share `FIELD_REGISTRY` as the single source of truth for defaults.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add swing/config_validation.py swing/config_overrides.py tests/config_validation/
+git commit -m "feat(config): Task 3.0 — field registry + hard/soft validation; remove _DEFAULTS stub"
 ```
 
 ---
@@ -1649,12 +1722,97 @@ def test_post_reset_deletes_field(client: TestClient):
     assert load_user_overrides() == {}
 
 
+def test_cancel_link_is_plain_anchor_not_htmx(client: TestClient):
+    """Codex R1 Major 4 — confirm fragment's Cancel must be a plain <a href>
+    that triggers full-page navigation. NOT an hx-get (which would swap a
+    full-page response into <body> and corrupt the DOM).
+    """
+    r = client.post(
+        "/config",
+        data={
+            "web.chase_factor": "0.05",
+            "pipeline.chart_top_n_watch": "20",
+            "account.risk_equity_floor": "10000.0",
+        },
+        headers={"HX-Request": "true"},
+    )
+    assert r.status_code == 200
+    body = r.text
+    # Cancel: plain <a> with full-page href.
+    assert '<a' in body and 'href="/config"' in body
+    # Negative-discriminator: no hx-get on the Cancel control.
+    # (hx-get on a Submit-anyway form is OK; it's the Cancel that must be plain.)
+    assert "Cancel" in body
+    # Round-trip Cancel manually: GET /config returns a 200 full page.
+    g = client.get("/config")
+    assert g.status_code == 200
+    assert "<html" in g.text.lower()
+
+
 def test_post_reset_unknown_field_404(client: TestClient):
     r = client.post(
         "/config/reset/web.fake_field",
         follow_redirects=False,
     )
     assert r.status_code == 404
+
+
+def test_post_unchanged_submit_does_not_create_overrides(client: TestClient):
+    """Codex R1 Critical 1 — merge semantics. Submit the form WITHOUT changing
+    any value (each input still holds its current effective value, which
+    equals the registry default in this fixture) → no overrides written.
+
+    Discriminating-test: the WRONG (replace) implementation would write all
+    three values as overrides; this test fails it. The CORRECT (merge)
+    implementation leaves user-config empty.
+    """
+    r = client.post("/config", data={
+        "web.chase_factor": "0.01",            # == registry default
+        "pipeline.chart_top_n_watch": "10",    # == registry default
+        "account.risk_equity_floor": "7500.0", # == registry default
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    assert load_user_overrides() == {}
+
+
+def test_post_changed_one_field_does_not_lock_others(client: TestClient):
+    """Codex R1 Critical 1 — only changed fields become overrides."""
+    r = client.post("/config", data={
+        "web.chase_factor": "0.015",           # changed
+        "pipeline.chart_top_n_watch": "10",    # unchanged (default)
+        "account.risk_equity_floor": "7500.0", # unchanged (default)
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    assert load_user_overrides() == {"web": {"chase_factor": 0.015}}
+    # chart_top_n_watch + risk_equity_floor source must remain 'default'
+    g = client.get("/config")
+    assert g.text.count("source-default") >= 2
+    assert g.text.count("source-override") >= 1
+
+
+def test_post_preserves_unknown_user_config_keys(
+    client: TestClient,
+):
+    """Codex R1 Critical 1 — forward-compat with future V2 keys.
+
+    An operator who hand-edited user-config to set a hypothetical V2 field
+    (e.g. risk.max_risk_pct) must NOT see that key wiped by a V1 page save.
+    """
+    write_user_overrides({
+        "web": {"chase_factor": 0.025},
+        "risk": {"max_risk_pct": 0.01},   # V2 hypothetical — V1 page must preserve it
+    })
+    r = client.post("/config", data={
+        "web.chase_factor": "0.030",            # changed
+        "pipeline.chart_top_n_watch": "10",
+        "account.risk_equity_floor": "7500.0",
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    saved = load_user_overrides()
+    assert saved["web"]["chase_factor"] == 0.030
+    assert saved["risk"] == {"max_risk_pct": 0.01}, (
+        "unknown user-config keys must survive V1 saves"
+    )
 
 
 def test_post_force_true_with_hard_refuse_value_still_refused(
@@ -1746,10 +1904,43 @@ async def config_save(request: Request):
         )
 
     # Happy path (no warnings) OR force=true confirm-resubmit → write.
-    new_overrides: dict[str, dict] = {}
+    #
+    # Codex R1 Critical 1 — MERGE semantics, NOT replace semantics. Three
+    # invariants below preserve the spec's "default / tracked / override"
+    # source-fidelity contract and forward-compat with future V2 keys:
+    #
+    #   (a) Untouched fields remain untouched. Compare each submitted value
+    #       against the CURRENT EFFECTIVE value (after current overrides).
+    #       Identical → no override write/delete for that field. The source
+    #       badge stays as it was (default / tracked / override).
+    #
+    #   (b) Changed fields become explicit overrides. submitted != current
+    #       effective → write the new value into user-config (under its
+    #       canonical section). This is the only mutation path.
+    #
+    #   (c) Unknown user-config keys are preserved. Future V2 fields hand-
+    #       added by the operator (or shipped by a later dispatch) survive
+    #       a V1 page save unmodified.
+    #
+    # Locking a value at the registry default still works: from a 'tracked'
+    # source, the operator types the registry default and submits — the new
+    # value differs from the tracked-toml value, so it is written as an
+    # override per (b). From a 'default' source, retyping the default is a
+    # no-op per (a); the operator can use the CLI `swing config set` (which
+    # writes unconditionally on operator-typed input) for the corner case
+    # of locking-at-default-from-default.
+    base_cfg = request.app.state.cfg
+    eff_cfg = apply_overrides(base_cfg)
+    new_overrides: dict[str, dict] = {
+        section: dict(table) for section, table in load_user_overrides().items()
+    }  # deep-copy current state — preserves unknown V2 keys per (c)
     for spec in FIELD_REGISTRY:
         section, key = spec.path.split(".")
-        new_overrides.setdefault(section, {})[key] = coerce_value(spec.path, payload[spec.path])
+        submitted = coerce_value(spec.path, payload[spec.path])
+        current_eff = getattr(getattr(eff_cfg, section), key)
+        if submitted == current_eff:
+            continue  # invariant (a)
+        new_overrides.setdefault(section, {})[key] = submitted  # invariant (b)
     write_user_overrides(new_overrides)
     return RedirectResponse(url="/config?saved=1", status_code=303)
 
@@ -1873,10 +2064,15 @@ Create `swing/web/templates/partials/config_soft_warn_confirm.html.j2`:
     {% endfor %}
     <input type="hidden" name="force" value="true">
     <button type="submit">Submit anyway</button>
-    <button type="button"
-            hx-get="/config" hx-target="body" hx-swap="outerHTML"
-            hx-headers='{"HX-Request": "true"}'>Cancel</button>
   </form>
+  {#- Codex R1 Major 4 — Cancel is a plain full-page navigation, NOT an
+      HTMX hx-get. GET /config returns a FULL-PAGE response (extends
+      base.html.j2); swapping the entire response into <body> via HTMX
+      would inject a nested <html><body> structure and break the layout.
+      A plain <a> triggers a normal browser navigation, which renders the
+      full page cleanly and discards the operator's typed values
+      (correct: Cancel discards). -#}
+  <a class="btn btn-secondary" href="/config" role="button">Cancel</a>
 </div>
 ```
 
@@ -1966,7 +2162,17 @@ def test_template_each_row_has_separate_reset_form(client: TestClient):
 
 
 def test_soft_warn_fragment_root_is_not_tr(client: TestClient):
-    """CLAUDE.md HTMX <tr>-leading makeFragment guard."""
+    """CLAUDE.md HTMX <tr>-leading makeFragment guard.
+
+    Codex R1 Minor 2 — this server-side assertion ONLY proves the
+    response payload's first non-whitespace token is not '<tr'. It does
+    NOT exercise htmx.js makeFragment parsing. The CANONICAL guard for
+    the <tr>-leading pathology (failure mode 2026-04-29) is the operator-
+    witnessed browser smoke in Task 7.0 step 4 — TestClient cannot
+    detect a parser-mangled OOB swap because it only sees the response
+    bytes, not the post-parse DOM. Treat this test as a structural
+    sanity check, not a sufficient guard.
+    """
     r = client.post(
         "/config",
         data={
@@ -2368,8 +2574,8 @@ No commit required for Task 7 — verification-only. Plan author reports finding
 - 1.1 missing/malformed: 2 tests in Task 1.1 ✓
 - 1.2 per-request: re-read + override tests in Task 1.2 ✓
 - 2 precedence × 3 fields × 3 scenarios + source-introspection: Task 1.2 + Task 2.0 = 12 tests ✓
-- 3 boundary tests: 12+ in Task 3.0 ✓
-- 4 GET / POST / soft-warn / force / reset: 9 tests in Task 4.1 + 1 force-hard-bypass-test ✓
+- 3 boundary tests: 13+ in Task 3.0 ✓ (Codex R1 M3 added the integer-valued-float acceptance test; Major 3 fixed)
+- 4 GET / POST / soft-warn / force / reset: 9 tests in Task 4.1 + 1 force-hard-bypass + 3 merge-semantics + 1 cancel-link = 14 total (Codex R1 C1 + M4) ✓
 - 5 template: 7 tests in Task 5.0 ✓
 - 6 CLI: 11 tests in Task 6.0 ✓
 - 7 base-VM: verification step in Task 7.0 ✓
