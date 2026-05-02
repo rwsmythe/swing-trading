@@ -8,6 +8,7 @@ from pathlib import Path
 import click
 import pandas as pd
 
+from swing.cli_config import config_group
 from swing.config import load as load_config
 from swing.data.db import connect, ensure_schema
 from swing.data.models import Candidate, EvaluationRun
@@ -29,6 +30,9 @@ def main(ctx: click.Context, config_path: str) -> None:
     ctx.ensure_object(dict)
     ctx.obj["config"] = load_config(Path(config_path))
     ctx.obj["config_path"] = Path(config_path)
+
+
+main.add_command(config_group)
 
 
 @main.command("db-migrate")

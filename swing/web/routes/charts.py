@@ -18,6 +18,7 @@ import html
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from swing.config_overrides import apply_overrides
 from swing.data.db import connect
 from swing.web.chart_scope import (
     CHART_REASON_MESSAGES,
@@ -46,7 +47,7 @@ def charts_redirect(request: Request, ticker: str):
     facing reason message when the chart is unavailable.
     """
     ticker_upper = ticker.upper()
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
 
     redirect_date: str | None = None
     reason: str | None = None

@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
+from swing.config_overrides import apply_overrides
 from swing.web.view_models.watchlist import (
     build_watchlist,
     build_watchlist_expanded,
@@ -15,7 +16,7 @@ router = APIRouter()
 
 @router.get("/watchlist", response_class=HTMLResponse)
 def watchlist_page(request: Request):
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
     vm = build_watchlist(cfg=cfg, cache=cache, executor=executor)
@@ -33,7 +34,7 @@ def watchlist_row(request: Request, ticker: str):
     with /expand. Returns 404 when the ticker is not on the active
     watchlist — same contract as /expand.
     """
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
     row_vm = build_watchlist_row(
@@ -55,7 +56,7 @@ def watchlist_row(request: Request, ticker: str):
 
 @router.get("/watchlist/{ticker}/expand", response_class=HTMLResponse)
 def watchlist_expand(request: Request, ticker: str):
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
     expanded = build_watchlist_expanded(

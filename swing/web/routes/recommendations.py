@@ -27,6 +27,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
+from swing.config_overrides import apply_overrides
 from swing.data.db import connect
 from swing.data.repos.cash import list_cash
 from swing.data.repos.trades import list_all_exits, list_open_trades
@@ -51,7 +52,7 @@ def hyp_recs_refresh(request: Request):
     their full-page-render snapshot. Inherent to the partial-swap UX
     and the intentional V1 trade.
     """
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
     templates = request.app.state.templates
@@ -90,7 +91,7 @@ def hyp_recs_expand(request: Request, ticker: str):
     via `latest_completed_pipeline_run` — in-flight rows with
     `finished_ts IS NULL` cannot win.
     """
-    cfg = request.app.state.cfg
+    cfg = apply_overrides(request.app.state.cfg)
     templates = request.app.state.templates
     ticker_upper = ticker.upper()
     conn = connect(cfg.paths.db_path)

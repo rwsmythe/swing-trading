@@ -1,0 +1,8 @@
+<div class="banner error" role="alert">
+  <strong>Cannot save — invalid values.</strong>
+  <ul>
+    {% for err in errors %}
+      <li>{{ err.message }}</li>
+    {% endfor %}
+  </ul>
+</div>
