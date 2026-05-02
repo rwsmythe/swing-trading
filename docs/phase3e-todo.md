@@ -925,3 +925,114 @@ Single brainstorm-skip writing-plans dispatch covering all three gaps; one schem
 - `swing/journal/tos_import.py:_SECTION_LABELS` (parsed sections; extend for Equities + others).
 - 2026-04-30 TRD-as-withdrawal fix (`c9159c7`) — same module; same operator-surfaced via 4/30 export.
 - `tests/fixtures/tos/synthetic-tos.csv` — current synthetic fixture only covers entry+exit fills + DEP/WD cash flow. Bundle dispatch should extend it.
+
+## 2026-05-01 Journal v1.2 incorporation (Phases 6-9)
+
+Sourced from operator-commissioned research at `future/swing_trading_journal_ai_ingestion_v1.2.md` (and the v1.0 → v1.1 → v1.2 evolution chain at `future/swing_trading_journal_*.md`). v1.2 is a discretionary-trader's journal spec; OUR platform is a framework-research-loop. The phases below adopt v1.2's discipline scaffold WHERE it adds value over our existing infrastructure, modify it WHERE its assumptions conflict with our framework-driven flow, and DROP elements we don't need (pyramiding, Setup_Playbook as DB rows, Screen_Definitions versioning).
+
+**Umbrella sequencing decision (operator 2026-05-01):** Decompose into four phases by value × independence; ship Phase 6 first as the cheapest highest-value piece, re-evaluate before committing to Phase 7's larger schema disruption.
+
+### Cross-cutting framing (applies to all four phases):
+
+- **v1.2 assumes self-rated quality scoring.** Drop self-rated components that the pipeline asserts (valid setup, regime supportive, sector supportive). Keep operator-only fields (emotional_state, confidence_score, manual override-of-doctrine).
+- **v1.2 assumes operator-composed thesis.** Adapt to "thesis = pipeline bucket + criteria tags + hypothesis_label" + operator-added context (why_now, invalidation_condition).
+- **v1.2's `trade_origin` enum** maps onto our actual ingestion paths: `pipeline_aplus`, `pipeline_watch_hyp_recs`, `pipeline_watch_manual`, `manual_off_pipeline` (4-value, NOT v1.2's 7-value discretionary enum).
+- **Setup_Playbook as DB entity:** DROP. Our setups are encoded in `swing/evaluation/scoring.py` + `criteria.py`; v1.2's setup_id maps to our `hypothesis_id` + doctrine layer.
+- **Screen_Definitions versioning:** DROP. `finviz_schema.py` is git-versioned; explicit screen-version entity adds friction without value.
+- **Pyramiding R-views (R_initial / R_effective / R_campaign):** DROP. Operator at $7,500 capital, 5 concurrent, no pyramiding plan.
+- **Drawdown circuit breaker:** v1.2 defaults this opt-in disabled; align (do not enable by default).
+
+### Phase 6 — Post-trade review surface (NEXT after Phase 5)
+
+**Bundle:** Mistake_Tags + Process Grade A-F + `mistake_cost_R` / `lucky_violation_R` + `lesson_learned` + Review_Log cadence skeleton.
+
+**Why first:** Highest-value piece; ships independently of state-machine work; closes a real gap (operator memory + ad-hoc review today is the only behavioral discipline measurement). Cheap and additive — touches the post-close path only, no schema disruption to open-trade flow.
+
+**Scope:**
+- New schema migration: `mistake_tags TEXT` (JSON-list) + `process_grade TEXT (A/B/C/D/F)` + `entry_grade` + `management_grade` + `exit_grade` + `disqualifying_process_violation BOOLEAN` + `mistake_cost_R REAL` + `lucky_violation_R REAL` + `mistake_cost_confidence TEXT (high/medium/low)` + `lesson_learned TEXT` + `reviewed_at DATETIME` on `trades`. All nullable until reviewed.
+- New `Review_Log` entity: `review_id, review_type (daily/weekly/monthly/quarterly), period_start, period_end, scheduled_date, completed_date, skipped, duration_minutes, n_trades_reviewed, total_mistake_cost_R, total_lucky_violation_R, primary_lesson, next_period_focus`. Cadence compliance dashboard surface.
+- Mistake_Tags taxonomy from v1.2 §7.10: 5 categories (entry / risk / management / psychology / reconciliation) + `none_observed`. Adopted nearly as-is; this is sound classification work the operator shouldn't re-derive.
+- Process Grade computation per v1.2 §9.2: weighted (entry 0.40 / management 0.35 / exit 0.25) with disqualifying floor (any-stage-F → F; disqualifying_process_violation → max D).
+- `swing trade review <trade_id>` CLI command + web `/trades/<id>/review` form. Required at close + within 7 days (configurable).
+
+**Estimated dispatches:** 2 (one for the schema + repo + CLI; one for the web form + dashboard surface). Brainstorm-skip viable; copowers:writing-plans direct.
+
+**Cross-references:**
+- `future/swing_trading_journal_ai_ingestion_v1.2.md` §7.10 (Mistake_Tags), §7.11 (Review_Log), §9.2 (Process Grade), §8.8 (Mistake Cost / Lucky Violation), §10.4 (Post-Trade Review workflow).
+- Existing primitive precursor: `swing trade analyze <trade_id>` (Phase 3e 2026-04-25) — manual case-study output. Phase 6 upgrades this to structured + persisted.
+- Existing audit-log: `trade_events` — keep distinct from Review_Log (events are state changes; reviews are aggregations).
+
+### Phase 7 — Trade lifecycle state machine + Fills first-class (gated on Phase 6 evaluation)
+
+**Bundle:** v1.2 state machine (`planned → triggered → entered → managing → partial_exited → closed → reviewed → canceled`) + Fills as canonical execution log + `pre_trade_locked_at` immutability + thesis/why_now/invalidation/premortem fields.
+
+**Why second:** Foundational for Phase 8 + 9 but LARGE. Schema migration touches every trade-write path (CLI entry, web entry, hyp-recs entry, exit, stop adjust). Worth it only if Phase 6 surfaces evidence that lifecycle discipline is the next bottleneck.
+
+**Scope:**
+- New `state ENUM` column on `trades` replacing the binary `status open/closed`. State-aware required-field validation per v1.2 §5.1.
+- New `fills` table replacing the trade-row-entry + exits-table dual-source: `fill_id, trade_id, fill_datetime, action ENUM (entry/add/trim/exit/stop/cover), quantity, price, order_type, reason, rule_based, fees, manual_entry_confidence, reconciliation_status, tos_match_id`. Existing entry+exits data migrated.
+- `pre_trade_locked_at DATETIME` on `trades`; pre-trade fields (thesis, why_now, invalidation, premortem, planned_entry, initial_stop, planned_position_size, emotional_state) become read-only on first fill. Edit requires audit-log entry (already partially served by `trade_events`).
+- Premortem fields (technical / market-sector / execution failure reasons; minimum 3) per v1.2 §3.3.
+- Thesis fields per v1.2 §7.5.
+- Pre-trade gate trim: portfolio_heat check, consecutive_loss_pause check (mostly already served by hard_cap + soft_warn), emotional_state-logged check. Skip checks redundant with pipeline.
+
+**Estimated dispatches:** 4-6 (schema migration + Fills migration + state-machine wiring across CLI / web / pipeline + per-state validation + tests). Brainstorming dispatch needed (lots of design decisions).
+
+**Cross-references:**
+- `future/swing_trading_journal_ai_ingestion_v1.2.md` §5 (state machine), §7.5 (Trade_Log), §7.6 (Fills), §10.2 (Pre-Trade Lock).
+- Existing entry-form architecture: `swing/web/view_models/trades.py` + `swing/web/routes/trades.py` (Phase 4.5 `f9a07bf`).
+
+### Phase 8 — Daily_Management + MFE/MAE precision (gated on Phase 7)
+
+**Bundle:** Daily_Management snapshot/event_log + per-day MFE/MAE computation via OHLCV cache + precision-flag hierarchy.
+
+**Scope:**
+- New `daily_management_records` table: `management_record_id, trade_id, record_type (daily_snapshot/event_log), review_date, current_price, current_stop, open_R_effective, portfolio_heat_contribution_dollars, MFE_to_date_R, MAE_to_date_R, thesis_status` + event_log additional fields (prior_stop, stop_changed, stop_change_reason, action_taken, emotional_state, rule_violation_suspected).
+- MFE/MAE precision per v1.2 §8.6: `intraday_exact / intraday_estimated / daily_approximate`. We have OHLCV cache → daily_approximate ships immediately; intraday_estimated when intraday data sourced.
+- Web dashboard tile: per-open-trade MFE/MAE-to-date.
+
+**Estimated dispatches:** 2-3.
+
+**Cross-references:**
+- `future/swing_trading_journal_ai_ingestion_v1.2.md` §7.7 (Daily_Management), §8.6 (MFE/MAE), §10.3 (In-Trade Review workflow).
+- Existing OHLCV cache: `swing/data/ohlcv_archive.py` (Phase 3 OHLCV consolidation; 696 tickers consolidated 2026-04-30).
+- Existing advisory infrastructure: `swing/trades/advisory.py` (Phase 3d SMA-aware advisories) — extends naturally.
+
+### Phase 9 — Risk_Policy entity + reconciliation depth (subsumes 2026-04-30 TOS bundle)
+
+**Bundle:** Lift `swing.config` risk fields to versioned DB Risk_Policy entity + integrate the queued TOS-reconciliation-depth bundle (close-fill price mismatch + stop-order reconciliation + position-qty reconciliation) into a structured Reconciliation_Run / Reconciliation_Discrepancy framework.
+
+**Scope:**
+- New `risk_policy` table: `policy_id, effective_from, effective_to, is_active, max_account_risk_per_trade_pct, max_concurrent_positions, max_portfolio_heat_pct, max_sector_concentration_positions, consecutive_losses_pause_threshold, drawdown_circuit_breaker_enabled` (default false). Existing `swing.config.toml` values become the seed of policy_id=1.
+- New `reconciliation_runs` + `reconciliation_discrepancies` tables. Existing `tos_import` reconcile flow refactors to write Reconciliation_Run rows + Discrepancy rows for each mismatch (close-price, stop, position-qty, cash). Material-to-review semantics: discrepancies on reviewed trades reopen the review.
+- Subsumes the standalone "2026-04-30 TOS reconciliation depth follow-ups (BUNDLED)" entry above — when Phase 9 ships, the queued bundle's three gaps (close-price + stop + position-qty) ship as part of Phase 9, not as a separate dispatch.
+
+**Estimated dispatches:** 3-4.
+
+**Cross-references:**
+- `future/swing_trading_journal_ai_ingestion_v1.2.md` §7.8 (Risk_Policy), §7.9 (Reconciliation_Log), §10.5 (Reconciliation Workflow).
+- This document's "2026-04-30 TOS reconciliation depth follow-ups (BUNDLED)" entry above.
+- Existing config: `swing/config.py` + `swing.config.toml`.
+- Existing TOS import: `swing/journal/tos_import.py`.
+
+### Sequencing alternatives (for future re-evaluation):
+
+- **(A) Phase 6 only, defer 7-9 indefinitely.** Operator stops journal extension at the cheapest piece. Acceptable if Phase 6 turns out sufficient.
+- **(B) Phase 6 + 9, defer 7 + 8.** "Journal Lite" — post-trade review + risk policy + reconciliation depth. Skips state-machine + Daily_Management.
+- **(C) Full sequence 6 → 7 → 8 → 9.** Multi-month commitment to full v1.2 equivalence.
+- **(D) Defer all of v1.2 until first hypothesis closure.** Per orchestrator-context lesson: "the actually-urgent next move is operational — take hypothesis-tagged trades, accumulate evidence." If journal-discipline-measurement isn't bottlenecking the loop today, defer engagement until a hypothesis closes and "did the framework work?" requires deeper retrospective tooling.
+
+Recommendation: **(A) ship Phase 6, then re-evaluate.** Re-evaluation criteria: does Phase 6's post-trade review surface produce the structured behavioral data the operator wants? If yes + state-machine discipline becomes a real bottleneck (e.g., partial_exited tracking matters for evidence aggregation), proceed to 7. If no, hold at Phase 6.
+
+### Modification rationale (why we don't adopt v1.2 verbatim):
+
+v1.2 was authored agnostic of our platform. Several design choices encode discretionary-trader assumptions that don't fit our framework-research-loop:
+
+| v1.2 assumption | Why it doesn't fit | Our adaptation |
+|---|---|---|
+| Trader independently composes thesis per trade | Our framework asserts thesis via bucket + criteria + hypothesis_label | Keep thesis as text field but auto-pre-fill from candidate row + hypothesis matcher; operator adds context |
+| Self-rated `pre_trade_quality_score` 0-10 | Pipeline already computes A+/watch/skip + criteria pass/fail; self-rating duplicates and conflicts | Drop self-rated framework components; keep emotional_state, confidence_score, manual override |
+| Setup_Playbook as DB rows with status active/pilot/paused/retired | Our setups are encoded in `swing/evaluation/`; trader doesn't manage setups as data | DROP; reference hypothesis_id when setup-attribution needed |
+| Pyramiding R_views | Operator at $7,500 capital with 5 concurrent doesn't pyramid | DROP indefinitely |
+| `trade_origin` 7-value discretionary enum | Our ingestion is pipeline-driven (4 paths) | 4-value pipeline-aware enum: `pipeline_aplus`, `pipeline_watch_hyp_recs`, `pipeline_watch_manual`, `manual_off_pipeline` |
+| Drawdown circuit breaker | v1.2 default opt-in disabled (matches our caution) | Align: opt-in disabled by default |
