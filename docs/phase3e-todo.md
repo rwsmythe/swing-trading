@@ -1,7 +1,6 @@
-# Phase 3e — Known Gaps & Follow-ups
+# Cross-Phase Operational Backlog
 
-Backlog captured at the end of the Phase 3d walkthrough. Not a commitment, just
-a trackable list. Prioritize before starting a Phase 3e spec cycle.
+> **Filename note (2026-05-01):** this file is named `phase3e-todo.md` for historical reasons (it was created at the end of the Phase 3d walkthrough as the Phase 3e backlog). It has since accumulated cross-phase items (Phase 4 / 4.5 / 6-9 + standalone bundles + Tier-3 deferrals + research-branch followups). The filename is preserved to keep ~46 cross-references in shipped briefs valid; the canonical title is "Cross-Phase Operational Backlog." Not a commitment, just a trackable list.
 
 ---
 
