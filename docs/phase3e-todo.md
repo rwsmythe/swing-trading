@@ -897,9 +897,9 @@ Recommendation: **(B)**. Sector capture is a tighter, more bounded scope (just d
 
 - **(2026-04-30 Phase 4 Task 7 follow-up) Promote 7-day staleness threshold to a public constant in `swing/data/ohlcv_archive.py`.** Phase 4 Task 7 inlined a `_STALENESS_THRESHOLD_DAYS = 7` class constant in `research/parity/run.py:_CountingPriceFetcher` because the data-layer's predicate is inlined at line 205-210 with no public symbol; promoting it would have required a `swing/data/` carve-out beyond Phase 4 scope (research-branch rewrite). **Risk:** if the data-layer threshold ever changes from 7, the wrapper's duplicate must be updated in lockstep — easy to miss. Promote when a `swing/data/ohlcv_archive` touch becomes natural (next archive-related dispatch).
 
-## 2026-04-30 TOS reconciliation depth follow-ups
+## 2026-04-30 TOS reconciliation depth follow-ups (BUNDLED — single dispatch)
 
-Surfaced after operator dry-ran + reconciled the 4/30 Schwab/TOS export against the production DB. Current `reconcile_tos` only verifies a SUBSET of the disagreement surface; three concrete gaps where TOS-vs-DB drift would pass reconciliation silently. Each is independent; pick up as separate small dispatches when the operator wants tighter reconciliation guarantees.
+Surfaced after operator dry-ran + reconciled the 4/30 Schwab/TOS export against the production DB. Current `reconcile_tos` only verifies a SUBSET of the disagreement surface; three concrete gaps where TOS-vs-DB drift would pass reconciliation silently. **Operator decision 2026-05-01: bundle all three as a single dispatch ("real reconciliation depth").** Estimated half-day; not orchestrator-blocking; pick up when operator-prioritized vs Phase 5 / Tier-3 #6 / chart-scope-v3.
 
 ### What `reconcile_tos` verifies today (audit-trail anchor):
 
@@ -916,11 +916,12 @@ Surfaced after operator dry-ran + reconciled the 4/30 Schwab/TOS export against 
 
 - **(3) Position-level holdings reconciliation against `Equities` section.** TOS lists current open quantities per ticker (e.g., operator's 4/30 CSV shows `CC +5` and `DHC +39`). DB's `list_open_trades` should agree, factoring partial exits. Add `Equities` to `_SECTION_LABELS` + an extractor + a new report category `position_mismatches: list[(ticker, db_qty, tos_qty)]`. Catches "TOS shows 5 shares CC; DB shows 0 shares CC" (or vice versa) — most likely cause is an unrecorded partial exit OR a missed entry. ~1-2 hr including parser + tests. **Test:** seed open trade with 5 shares + 0 exits; pass TOS CSV showing only 3 shares for that ticker; assert mismatch surfaces.
 
-### Sequencing recommendation:
+### Bundle dispatch shape (when scoped):
 
-(1) is the cheapest and most-symmetric fix — tighten the existing price-comparison contract to cover both directions. (2) and (3) are larger; sequence after the operator hits a real disagreement that current reconciliation missed. Cross-reference: `tests/fixtures/tos/synthetic-tos.csv` only includes entry+exit fills + DEP/WD cash flow; doesn't exercise stop reconciliation OR position-level qty reconciliation. Real-world reproducer (operator's 4/30 Schwab/TOS export) is the stronger fixture base for these.
+Single brainstorm-skip writing-plans dispatch covering all three gaps; one schema-free implementation across `swing/journal/tos_import.py` + `tests/journal/test_tos_import.py`. Real-world fixture base: operator's 4/30 Schwab/TOS export at `thinkorswim/2026-04-30-AccountStatement.csv` exercises stops + Equities; pair with synthetic permutations for edge cases (qty mismatch, price mismatch, missing stop, ticker-not-in-DB). Per-gap tasks roughly: Task 1 close-fill price-mismatch (cheapest symmetric fix); Task 2 Order-History parser + stop reconciliation; Task 3 Equities-section parser + position-qty reconciliation; Task 4 CLI report integration (display the new mismatch categories). Done criteria includes operator-witnessed dry-run against the 4/30 CSV showing all three new categories surface zero mismatches (production DB is correctly reconciled today; the new checks should confirm the existing matched state, not flag false positives).
 
 ### Cross-references:
 - `swing/journal/tos_import.py:reconcile_tos` (current verification surface).
 - `swing/journal/tos_import.py:_SECTION_LABELS` (parsed sections; extend for Equities + others).
-- 2026-04-30 TRD-as-withdrawal fix (`c9159c7`) — same module; same operator-surfaced via 4/30 export. Bundling all three TODOs together would be a "real reconciliation depth" dispatch, ~half-day.
+- 2026-04-30 TRD-as-withdrawal fix (`c9159c7`) — same module; same operator-surfaced via 4/30 export.
+- `tests/fixtures/tos/synthetic-tos.csv` — current synthetic fixture only covers entry+exit fills + DEP/WD cash flow. Bundle dispatch should extend it.
