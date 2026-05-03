@@ -1,6 +1,6 @@
 # Swing Trading — Claude Code Context
 
-Personal swing-trading tool (Disciplined Swing Trader + Minervini SEPA). Active ground-up refactor. Phase 3d shipped (SMA-aware advisories). End-to-end walkthrough validated the full operator loop; numerous post-walkthrough fixes landed on `main`. Hypothesis-investigation engine operational as of 2026-04-25 (4-hypothesis frozen plan v0.1 + dashboard recommendations + CLI pre-fill + tripwire + journal-review aggregation). **969 fast tests green** (as of 2026-04-25 post-hypothesis-engine + analyze + backup batch). Phase 3e backlog in `docs/phase3e-todo.md`. Daily routine in `docs/cycle-checklist.md`. Orchestrator-role context for fresh sessions in `docs/orchestrator-context.md`.
+Personal swing-trading tool (Disciplined Swing Trader + Minervini SEPA). Active ground-up refactor. Phase 5 shipped 2026-05-02 (configuration page; merge `3a4195c`); Phase 6 (post-trade review surface) queued. End-to-end walkthrough validated the full operator loop; numerous post-walkthrough fixes landed on `main`. Hypothesis-investigation engine operational as of 2026-04-25. **1472 fast tests green** (as of 2026-05-02 at HEAD `b2d0b5c`). Cross-phase backlog in `docs/phase3e-todo.md`. Daily routine in `docs/cycle-checklist.md`. Orchestrator-role context for fresh sessions in `docs/orchestrator-context.md`.
 
 ## Quick Start
 
@@ -8,7 +8,7 @@ Personal swing-trading tool (Disciplined Swing Trader + Minervini SEPA). Active 
 pip install -e ".[dev,web]"
 swing --help                         # CLI: trade, journal, pipeline, web, finviz, etc.
 swing web                            # FastAPI + HTMX dashboard on 127.0.0.1:8080
-python -m pytest -m "not slow" -q    # fast suite (974 tests as of 2026-04-25, ~40-50s)
+python -m pytest -m "not slow" -q    # fast suite (~1472 tests as of 2026-05-02, ~40-50s)
 python -m pytest -m slow             # pipeline/yfinance e2e (minutes, needs network)
 ruff check swing/
 ```
@@ -48,8 +48,8 @@ Older strategy documents are archived at `reference/Future Work/archive/`.
 ## Invariants
 
 - **DB location:** `%USERPROFILE%/swing-data/swing.db` — **outside** the Drive dir (hard invariant; Drive syncing corrupts SQLite).
-- **Phase isolation:** during Phase 3 work, `swing/trades/` and `swing/data/` are consumed read-only unless the current-phase spec explicitly scopes a Phase 2 carve-out (3c touched `update_stop_with_event`; 3d touched `advisory.py`).
-- **Current baseline:** 504 fast tests green on `main`.
+- **Phase isolation:** `swing/trades/` and `swing/data/` are consumed read-only unless the current-phase spec explicitly scopes a carve-out (historical: 3c touched `update_stop_with_event`; 3d touched `advisory.py`; 5 added `config_overrides.py`). Default posture for new phases remains read-only.
+- **Current baseline:** 1472 fast tests green on `main` (HEAD `b2d0b5c`, 2026-05-02).
 
 ## Conventions
 
