@@ -78,7 +78,10 @@ def db_backup(ctx: click.Context, force: bool) -> None:
     older weekly snapshots are pruned to the 12 most-recent (~3 months).
     """
     from swing.data.backup import (
-        compute_backup_destination, do_backup, prune_old_backups, should_backup,
+        compute_backup_destination,
+        do_backup,
+        prune_old_backups,
+        should_backup,
     )
 
     cfg = ctx.obj["config"]
@@ -315,7 +318,9 @@ def eval_cmd(ctx: click.Context, csv_path: str, as_of_date_str: str | None) -> N
 @click.pass_context
 def weather_cmd(ctx: click.Context, ticker: str, as_of_date_str: str | None) -> None:
     """Classify market weather and persist to weather_runs."""
-    from datetime import date as _date, datetime as _dt
+    from datetime import date as _date
+    from datetime import datetime as _dt
+
     from swing.prices import PriceFetcher
     from swing.weather.runner import run_weather
 
@@ -374,10 +379,14 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
                     hypothesis, chart_pattern_operator, force):
     """Record a trade entry."""
     from datetime import datetime as _dt
+
     from swing.data.db import connect
     from swing.trades.entry import (
-        EntryRequest, record_entry,
-        SoftWarnException, HardCapException, DuplicateOpenPositionException,
+        DuplicateOpenPositionException,
+        EntryRequest,
+        HardCapException,
+        SoftWarnException,
+        record_entry,
     )
 
     # T4: --notes required when --rationale=other (parity with web form).
@@ -514,6 +523,7 @@ def trade_exit_cmd(ctx, trade_id, exit_date, exit_price, shares, reason, notes):
     context.
     """
     from datetime import datetime as _dt
+
     from swing.data.db import connect
     from swing.trades.exit import ExitReason, ExitRequest, record_exit
 
@@ -543,9 +553,12 @@ def trade_exit_cmd(ctx, trade_id, exit_date, exit_price, shares, reason, notes):
 def trade_list_cmd(ctx, show_all):
     """List open (or all) trades."""
     from collections import defaultdict
+
     from swing.data.db import connect
     from swing.data.repos.trades import (
-        list_open_trades, list_closed_trades, list_all_exits,
+        list_all_exits,
+        list_closed_trades,
+        list_open_trades,
     )
 
     cfg = ctx.obj["config"]
@@ -592,8 +605,9 @@ def trade_list_cmd(ctx, show_all):
 def trade_stop_adjust_cmd(ctx, trade_id, new_stop, rationale, notes, force):
     """Adjust the stop on an open trade. Refuses to lower without --force."""
     from datetime import datetime as _dt
+
     from swing.data.db import connect
-    from swing.trades.stop_adjust import StopAdjustRequest, adjust_stop, StopRegressionError
+    from swing.trades.stop_adjust import StopAdjustRequest, StopRegressionError, adjust_stop
 
     # T5: --notes required when --rationale=other (parity with web form).
     if rationale == "other" and not (notes and notes.strip()):
@@ -629,6 +643,7 @@ def trade_advisory_cmd(ctx, trade_id, current_price, sma10, sma20, sma50,
                         previous_close, weather, as_of_date):
     """Print stop-advisory suggestions for an open trade."""
     from datetime import date as _date
+
     from swing.data.db import connect
     from swing.data.repos.trades import get_trade
     from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
@@ -934,12 +949,16 @@ def trade_review_cmd(
       `swing trade review --trade-id N --entry-grade A ...`  → record a review.
     """
     import json
-    from datetime import date as _date, datetime as _dt
+    from datetime import date as _date
+    from datetime import datetime as _dt
+
     from swing.data.db import connect
     from swing.data.repos.review_log import list_unreviewed_closed_trades
     from swing.data.repos.trades import get_trade, update_trade_review_fields
     from swing.trades.review import (
-        canonicalize_mistake_tags, compute_process_grade, validate_mistake_tags,
+        canonicalize_mistake_tags,
+        compute_process_grade,
+        validate_mistake_tags,
     )
 
     cfg = ctx.obj["config"]
@@ -1002,7 +1021,7 @@ def trade_review_cmd(
         try:
             validate_mistake_tags(canonical_tags)
         except ValueError as exc:
-            raise click.ClickException(str(exc))
+            raise click.ClickException(str(exc)) from exc
 
         process_grade = compute_process_grade(
             entry=entry_grade, management=management_grade, exit_=exit_grade,
@@ -1061,9 +1080,11 @@ def review_complete_cmd(
     NOT supply aggregates; complete_review_atomic owns the transaction.
     """
     from datetime import date as _date
+
     from swing.data.db import connect
     from swing.data.repos.review_log import (
-        complete_review_atomic, list_pending,
+        complete_review_atomic,
+        list_pending,
     )
 
     cfg = ctx.obj["config"]
@@ -1123,9 +1144,10 @@ def journal_group() -> None:
 def journal_review_cmd(ctx, period, today):
     """Compute and print journal stats + behavioral flags."""
     from datetime import date as _date
+
     from swing.data.db import connect
     from swing.data.repos.cash import list_cash
-    from swing.data.repos.trades import list_closed_trades, list_open_trades, list_all_exits
+    from swing.data.repos.trades import list_all_exits, list_closed_trades, list_open_trades
     from swing.journal.flags import compute_flags
     from swing.journal.stats import (
         compute_hypothesis_breakdown,
@@ -1249,6 +1271,7 @@ def journal_cash_cmd(ctx, deposit, withdraw, date_str, ref, note):
 def tos_import_cmd(ctx, csv_path, dry_run, auto_confirm):
     """Reconcile a TOS Account Statement CSV against the journal."""
     from pathlib import Path as _Path
+
     from swing.data.db import connect
     from swing.data.repos.cash import insert_cash
     from swing.journal.tos_import import reconcile_tos
@@ -1355,6 +1378,7 @@ def pipeline_force_clear_cmd(ctx, run_id, reason, bypass_staleness_check):
     heartbeat thread outlived the main loop).
     """
     from datetime import datetime as _dt
+
     from swing.data.repos.pipeline import find_run, force_clear
     from swing.pipeline.staleness import is_stale_eligible
 
@@ -1548,6 +1572,7 @@ def hypothesis_update_cmd(ctx: click.Context, hypothesis_id: int,
       closed-target-met -> (terminal — no reopen via CLI)
     """
     from datetime import datetime as _dt
+
     from swing.data.db import connect
     from swing.data.repos.hypothesis import (
         HypothesisStatusTransitionError,

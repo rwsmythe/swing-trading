@@ -15,23 +15,33 @@ from swing.config_overrides import apply_overrides
 from swing.data.db import connect
 from swing.data.repos.cash import list_cash
 from swing.data.repos.trades import get_trade, list_all_exits, list_open_trades
-from swing.trades.exit import ExitReason, ExitRequest, record_exit
-from swing.trades.stop_adjust import (
-    StopAdjustRationale, StopAdjustRequest, StopRegressionError, adjust_stop,
-)
-from swing.recommendations.sizing import compute_shares, SizingResult
+from swing.recommendations.sizing import SizingResult, compute_shares
 from swing.trades.entry import (
-    EntryRationale, EntryRequest, HardCapException, DuplicateOpenPositionException,
-    SoftWarnException, record_entry,
+    DuplicateOpenPositionException,
+    EntryRationale,
+    EntryRequest,
+    HardCapException,
+    SoftWarnException,
+    record_entry,
 )
 from swing.trades.equity import current_equity
+from swing.trades.exit import ExitReason, ExitRequest, record_exit
+from swing.trades.stop_adjust import (
+    StopAdjustRationale,
+    StopAdjustRequest,
+    StopRegressionError,
+    adjust_stop,
+)
 from swing.web.view_models.dashboard import build_dashboard
 from swing.web.view_models.open_positions_row import (
     build_open_positions_expanded,
     build_open_positions_row,
 )
 from swing.web.view_models.trades import (
-    _coerce_origin, build_entry_form_vm, build_exit_form_vm, build_stop_form_vm,
+    _coerce_origin,
+    build_entry_form_vm,
+    build_exit_form_vm,
+    build_stop_form_vm,
 )
 
 log = logging.getLogger(__name__)
@@ -984,9 +994,9 @@ def review_post(
     exit_grade: str = Form(...),
     lesson_learned: str = Form(...),
     disqualifying_process_violation: str | None = Form(None),
-    realized_R_if_plan_followed: float | None = Form(None),
+    realized_R_if_plan_followed: float | None = Form(None),  # noqa: N803
     mistake_cost_confidence: str = Form(""),
-    mistake_tags: list[str] = Form(default=[]),
+    mistake_tags: list[str] = Form(default=[]),  # noqa: B008
 ):
     """Phase 6: persist a post-trade review.
 
@@ -995,13 +1005,17 @@ def review_post(
     """
     import json
     from datetime import datetime as _dt
+
     from fastapi.responses import Response
+
     from swing.data.db import connect
     from swing.data.repos.trades import (
-        get_trade, update_trade_review_fields,
+        get_trade,
+        update_trade_review_fields,
     )
     from swing.trades.review import (
-        canonicalize_mistake_tags, compute_process_grade,
+        canonicalize_mistake_tags,
+        compute_process_grade,
         validate_mistake_tags,
     )
 
@@ -1107,7 +1121,9 @@ def cadence_complete_post(
     next_period_focus: str = Form(...),
 ):
     from datetime import date as _date
+
     from fastapi.responses import Response
+
     from swing.data.repos.review_log import complete_review_atomic, get
     cfg = apply_overrides(request.app.state.cfg)
     conn = connect(cfg.paths.db_path)

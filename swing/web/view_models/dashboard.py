@@ -9,8 +9,8 @@ from typing import Iterable, Mapping
 from swing.config import Config
 from swing.data.db import connect
 from swing.data.models import Candidate, Trade, WatchlistEntry, WeatherRun
-from swing.data.repos.cash import list_cash
 from swing.data.repos.candidates import fetch_candidates_for_run
+from swing.data.repos.cash import list_cash
 from swing.data.repos.pattern_classifications import (
     list_classifications_for_run,
 )
@@ -130,6 +130,7 @@ def build_recommendation_progress(
     behavior intact.
     """
     from dataclasses import replace
+
     from swing.journal.stats import compute_hypothesis_progress_breakdown
     from swing.recommendations.hypothesis import HypothesisProgressSummary
 
@@ -905,6 +906,7 @@ def build_dashboard(
     # Separate connection (outside the main read snapshot) so this
     # additive query block does not lengthen the critical-path transaction.
     from datetime import date as _date
+
     from swing.data.repos.review_log import count_needs_review, list_recent
 
     conn2 = connect(cfg.paths.db_path)

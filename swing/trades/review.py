@@ -127,7 +127,7 @@ def compute_process_grade(
 
 # ---- Cost / Lucky / R helpers (v1.2 §8.4 + §8.8 + §8.9) ----
 
-def compute_actual_realized_R_effective(
+def compute_actual_realized_R_effective(  # noqa: N802
     trade: Trade, exits: list[Exit],
 ) -> float:
     """Share-weighted realized R for `trade` per v1.2 §8.4.
@@ -143,9 +143,9 @@ def compute_actual_realized_R_effective(
     return total
 
 
-def compute_mistake_cost_R(
-    *, realized_R_if_plan_followed: float | None,
-    actual_realized_R_effective: float,
+def compute_mistake_cost_R(  # noqa: N802
+    *, realized_R_if_plan_followed: float | None,  # noqa: N803
+    actual_realized_R_effective: float,  # noqa: N803
 ) -> float:
     """v1.2 §8.8: max(0, plan - actual). Never netted with lucky."""
     if realized_R_if_plan_followed is None:
@@ -153,9 +153,9 @@ def compute_mistake_cost_R(
     return max(0.0, realized_R_if_plan_followed - actual_realized_R_effective)
 
 
-def compute_lucky_violation_R(
-    *, realized_R_if_plan_followed: float | None,
-    actual_realized_R_effective: float,
+def compute_lucky_violation_R(  # noqa: N802
+    *, realized_R_if_plan_followed: float | None,  # noqa: N803
+    actual_realized_R_effective: float,  # noqa: N803
 ) -> float:
     """v1.2 §8.8: max(0, actual - plan). Never netted with cost."""
     if realized_R_if_plan_followed is None:
@@ -179,7 +179,7 @@ def compute_profit_factor(
     return gross_wins / abs(gross_losses)
 
 
-def compute_max_drawdown_R(
+def compute_max_drawdown_R(  # noqa: N802
     closed_trades: list[Trade], exits: list[Exit],
 ) -> float:
     """Maximum peak-to-trough drawdown over the closed-date-ordered cumulative

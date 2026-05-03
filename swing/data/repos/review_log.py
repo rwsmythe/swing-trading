@@ -17,7 +17,6 @@ from datetime import date, timedelta
 
 from swing.data.models import ReviewLog, Trade
 
-
 # review_log column order per migration 0013 (for positional row access):
 # 0  review_id
 # 1  review_type
@@ -141,8 +140,8 @@ def complete_review_atomic(
 
         # Step 3: compute aggregates via compute_stats:
         stats = compute_stats(trades=period_trades, exits=all_exits)
-        net_R = stats.total_r
-        expectancy_R = stats.expectancy_r
+        net_R = stats.total_r  # noqa: N806
+        expectancy_R = stats.expectancy_r  # noqa: N806
         win_rate = stats.win_rate
         avg_win = stats.avg_win_r
         avg_loss = stats.avg_loss_r

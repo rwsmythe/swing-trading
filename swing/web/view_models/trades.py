@@ -9,7 +9,12 @@ from swing.config import Config
 from swing.data.db import connect
 from swing.data.models import ReviewLog, Trade
 from swing.data.repos.cash import list_cash
-from swing.data.repos.trades import get_trade, list_all_exits, list_exits_for_trade, list_open_trades
+from swing.data.repos.trades import (
+    get_trade,
+    list_all_exits,
+    list_exits_for_trade,
+    list_open_trades,
+)
 from swing.data.repos.watchlist import list_active_watchlist
 from swing.recommendations.sizing import compute_shares
 from swing.trades.entry import entry_rationale_options
@@ -18,7 +23,6 @@ from swing.trades.exit import ExitReason
 from swing.trades.stop_adjust import stop_adjust_rationale_options
 from swing.web.chart_scope import latest_completed_pipeline_run
 from swing.web.price_cache import PriceCache
-
 
 _VALID_ORIGINS = ("watchlist", "hyp-recs")
 
@@ -391,7 +395,7 @@ def build_stop_form_vm(*, trade_id: int, cfg: Config) -> TradeStopFormVM | None:
 @dataclass(frozen=True)
 class ReviewVM:
     trade: Trade
-    actual_realized_R_effective: float
+    actual_realized_R_effective: float  # noqa: N815
 
     # Mistake_Tags vocabulary surfaced for form rendering:
     mistake_tag_categories: dict[str, tuple[str, ...]]
@@ -416,7 +420,8 @@ def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
     or already reviewed (V1 single-review-per-trade per brief §3.2).
     """
     from swing.trades.review import (
-        DISQUALIFYING_VIOLATIONS, MISTAKE_TAGS,
+        DISQUALIFYING_VIOLATIONS,
+        MISTAKE_TAGS,
         compute_actual_realized_R_effective,
     )
 
@@ -466,6 +471,7 @@ class ReviewsPendingVM:
 
 def build_reviews_pending_vm(*, cfg: Config) -> ReviewsPendingVM:
     from datetime import date as _date
+
     from swing.data.repos.review_log import list_unreviewed_closed_trades
     conn = connect(cfg.paths.db_path)
     try:
@@ -491,6 +497,7 @@ def build_cadence_complete_vm(*, review_id: int, cfg: Config) -> CadenceComplete
             return None
         # Pre-render the count of closed trades in the period (helper text):
         from datetime import date as _date
+
         from swing.data.repos.trades import list_all_exits, list_closed_trades
         closed = list_closed_trades(conn)
         all_exits = list_all_exits(conn)
