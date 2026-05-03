@@ -1,0 +1,5 @@
+{% if vm.needs_review_count and vm.needs_review_count > 0 %}
+<a href="/reviews/pending" class="needs-review-badge">
+  Needs review ({{ vm.needs_review_count }})
+</a>
+{% endif %}

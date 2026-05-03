@@ -209,6 +209,24 @@ _RECOMMENDATIONS_TOP_N = 10
 
 
 @dataclass(frozen=True)
+class CadenceCardVM:
+    """Display VM for one cadence-type review card (daily/weekly/monthly).
+
+    Phase 6 Task 13: consumed by partials/cadence_cards.html.j2.
+    `is_pending` is True when completed_date is None (pre-created but not
+    yet completed). `scheduled_date` is always populated (set at
+    insert_pre_create time); `completed_date` is None until the operator
+    runs `swing review complete`.
+    """
+    cadence_type: str        # 'daily' | 'weekly' | 'monthly'
+    scheduled_date: str
+    completed_date: str | None
+    period_start: str
+    period_end: str
+    is_pending: bool
+
+
+@dataclass(frozen=True)
 class DashboardVM:
     generated_at: str
     session_date: str
@@ -243,6 +261,13 @@ class DashboardVM:
     # consuming VMs (DashboardVM + WatchlistVM) — other base-layout VMs
     # (PipelineVM, JournalVM, PageErrorVM) need not propagate.
     pattern_tags: Mapping[str, str] = field(default_factory=dict)
+    # Phase 6 Task 13: needs-review badge + cadence cards.
+    # Default 0 / None so any ad-hoc VM construction (tests, fixtures outside
+    # the phase-6 test files) remains valid without supplying these fields.
+    needs_review_count: int = 0
+    daily_card: CadenceCardVM | None = None
+    weekly_card: CadenceCardVM | None = None
+    monthly_card: CadenceCardVM | None = None
 
 
 def _build_active_recommendations(
@@ -876,6 +901,38 @@ def build_dashboard(
         target_by_id=target_by_id,
     )
 
+    # Phase 6 Task 13: needs-review badge + cadence cards.
+    # Separate connection (outside the main read snapshot) so this
+    # additive query block does not lengthen the critical-path transaction.
+    from datetime import date as _date
+    from swing.data.repos.review_log import count_needs_review, list_recent
+
+    conn2 = connect(cfg.paths.db_path)
+    try:
+        with conn2:
+            needs_review = count_needs_review(
+                conn2,
+                window_days=cfg.review.review_window_days,
+                today_iso=_date.today().isoformat(),
+            )
+            cadence_cards: dict[str, CadenceCardVM | None] = {}
+            for cadence in ("daily", "weekly", "monthly"):
+                recent = list_recent(conn2, review_type=cadence, limit=1)
+                if recent:
+                    row = recent[0]
+                    cadence_cards[cadence] = CadenceCardVM(
+                        cadence_type=cadence,
+                        scheduled_date=row.scheduled_date,
+                        completed_date=row.completed_date,
+                        period_start=row.period_start,
+                        period_end=row.period_end,
+                        is_pending=row.completed_date is None,
+                    )
+                else:
+                    cadence_cards[cadence] = None
+    finally:
+        conn2.close()
+
     degraded_until = cache.degraded_until()
     return DashboardVM(
         generated_at=now.isoformat(timespec="seconds"),
@@ -902,6 +959,10 @@ def build_dashboard(
         open_trade_rows=open_trade_rows,
         active_recommendations=active_recommendations,
         pattern_tags=pattern_tags,
+        needs_review_count=needs_review,
+        daily_card=cadence_cards["daily"],
+        weekly_card=cadence_cards["weekly"],
+        monthly_card=cadence_cards["monthly"],
     )
 
 

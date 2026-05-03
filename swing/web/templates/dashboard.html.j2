@@ -1,6 +1,7 @@
 {#- swing/web/templates/dashboard.html.j2 -#}
 {% extends "base.html.j2" %}
 {% block content %}
+  {% include "partials/needs_review_badge.html.j2" %}
   <div id="status-strip">
     {% include "partials/status_strip.html.j2" %}
   </div>
@@ -19,4 +20,5 @@
     Prices {{ vm.prices_generated_at }}
     <button hx-post="/prices/refresh" hx-swap="none" hx-headers='{"HX-Request": "true"}'>Refresh now</button>
   </footer>
+  {% include "partials/cadence_cards.html.j2" %}
 {% endblock %}

@@ -1,0 +1,17 @@
+<section class="cadence-cards">
+  {% for cadence_label, card in [("Daily", vm.daily_card), ("Weekly", vm.weekly_card), ("Monthly", vm.monthly_card)] %}
+    <article class="cadence-card cadence-card-{{ cadence_label|lower }}">
+      <h3>{{ cadence_label }}</h3>
+      {% if card is none %}
+        <p>No reviews yet.</p>
+      {% else %}
+        <p>Period: {{ card.period_start }} &ndash; {{ card.period_end }}</p>
+        {% if card.is_pending %}
+          <p>Scheduled: {{ card.scheduled_date }} (pending)</p>
+        {% else %}
+          <p>Completed: {{ card.completed_date }}</p>
+        {% endif %}
+      {% endif %}
+    </article>
+  {% endfor %}
+</section>
