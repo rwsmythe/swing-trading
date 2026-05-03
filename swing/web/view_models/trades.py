@@ -386,3 +386,55 @@ def build_stop_form_vm(*, trade_id: int, cfg: Config) -> TradeStopFormVM | None:
         trade=trade, current_stop=trade.current_stop, suggested_stops=(),
         rationale_options=stop_adjust_rationale_options(),
     )
+
+
+@dataclass(frozen=True)
+class ReviewVM:
+    trade: Trade
+    actual_realized_R_effective: float
+
+    # Mistake_Tags vocabulary surfaced for form rendering:
+    mistake_tag_categories: dict[str, tuple[str, ...]]
+
+    # Disqualifying-violations reference list for form helper text:
+    disqualifying_violations_reference: tuple[str, ...]
+
+    # Per-grade label list (A..F):
+    grade_choices: tuple[str, ...] = ("A", "B", "C", "D", "F")
+
+    # Phase 5 lesson — base.html.j2 dereferences these. New page VMs MUST
+    # carry safe defaults (5-VM existing-fields rule; brief §6.2 watch item 8).
+    session_date: str = ""
+    stale_banner: str = ""
+    price_source_degraded: bool = False
+    price_source_degraded_until: str | None = None
+    ohlcv_source_degraded: bool = False
+
+
+def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
+    """Build the review-page VM. Returns None if trade not found, not closed,
+    or already reviewed (V1 single-review-per-trade per brief §3.2).
+    """
+    from swing.trades.review import (
+        DISQUALIFYING_VIOLATIONS, MISTAKE_TAGS,
+        compute_actual_realized_R_effective,
+    )
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            trade = get_trade(conn, trade_id)
+            if trade is None or trade.status != "closed":
+                return None
+            if trade.reviewed_at is not None:
+                return None  # V1: single-review-per-trade
+            exits = list_exits_for_trade(conn, trade_id)
+    finally:
+        conn.close()
+    actual_r = compute_actual_realized_R_effective(trade, list(exits))
+    return ReviewVM(
+        trade=trade,
+        actual_realized_R_effective=actual_r,
+        mistake_tag_categories=MISTAKE_TAGS,
+        disqualifying_violations_reference=DISQUALIFYING_VIOLATIONS,
+    )
