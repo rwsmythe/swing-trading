@@ -200,6 +200,75 @@ def test_post_review_unknown_mistake_tag_renders_400_with_form(
     assert 'name="lesson_learned"' in r.text
 
 
+@pytest.fixture
+def test_app_with_2_overdue(tmp_path: Path):
+    """FastAPI app with 2 closed trades whose exits were >7 days ago, reviewed_at IS NULL."""
+    from dataclasses import replace as dc_replace
+    from swing.config import load
+    from swing.data.db import connect, ensure_schema
+    from swing.data.models import Exit, Trade
+    from swing.data.repos.trades import insert_exit_with_event, insert_trade_with_event
+    from swing.web.app import create_app
+
+    db_path = tmp_path / "phase6.db"
+    ensure_schema(db_path).close()
+    conn = connect(db_path)
+    with conn:
+        t1 = insert_trade_with_event(
+            conn,
+            Trade(
+                id=None, ticker="T1", entry_date="2026-04-01",
+                entry_price=10.0, initial_shares=10, initial_stop=9.0,
+                current_stop=9.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ),
+            event_ts="2026-04-01T09:30:00",
+        )
+        insert_exit_with_event(
+            conn,
+            Exit(
+                id=None, trade_id=t1, exit_date="2026-04-01",
+                exit_price=11.0, shares=10, reason="manual",
+                realized_pnl=10.0, r_multiple=1.0, notes=None,
+            ),
+            event_ts="2026-04-01T09:30:00",
+        )
+        t2 = insert_trade_with_event(
+            conn,
+            Trade(
+                id=None, ticker="T2", entry_date="2026-04-05",
+                entry_price=20.0, initial_shares=5, initial_stop=18.0,
+                current_stop=18.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ),
+            event_ts="2026-04-05T09:30:00",
+        )
+        insert_exit_with_event(
+            conn,
+            Exit(
+                id=None, trade_id=t2, exit_date="2026-04-05",
+                exit_price=22.0, shares=5, reason="manual",
+                realized_pnl=10.0, r_multiple=1.0, notes=None,
+            ),
+            event_ts="2026-04-05T09:30:00",
+        )
+    conn.close()
+
+    base_cfg = load(Path("swing.config.toml"))
+    cfg = dc_replace(base_cfg, paths=dc_replace(base_cfg.paths, db_path=db_path))
+    return create_app(cfg)
+
+
+def test_get_reviews_pending_lists_overdue_trades(test_app_with_2_overdue):
+    with TestClient(test_app_with_2_overdue) as client:
+        r = client.get("/reviews/pending")
+    assert r.status_code == 200
+    assert "T1" in r.text
+    assert "T2" in r.text
+
+
 def test_post_review_canonicalizes_mistake_tags(test_app_closed_trade) -> None:
     """Brief §6.2 watch item 2: NFC + dedup + sort at persistence boundary."""
     with TestClient(test_app_closed_trade) as client:

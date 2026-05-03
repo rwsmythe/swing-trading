@@ -1069,6 +1069,20 @@ def review_post(
     return Response(status_code=204, headers={"HX-Redirect": "/trades"})
 
 
+@router.get("/reviews/pending", response_class=HTMLResponse)
+def reviews_pending(request: Request):
+    """Phase 6: list closed-and-unreviewed trades whose final exit was at
+    least `cfg.review.review_window_days` ago. Linked from the dashboard
+    'Needs review (N)' badge."""
+    cfg = apply_overrides(request.app.state.cfg)
+    templates = request.app.state.templates
+    from swing.web.view_models.trades import build_reviews_pending_vm
+    vm = build_reviews_pending_vm(cfg=cfg)
+    return templates.TemplateResponse(
+        request, "reviews_pending.html.j2", {"vm": vm},
+    )
+
+
 @router.get("/reviews/{review_id}/complete", response_class=HTMLResponse)
 def cadence_complete_form(request: Request, review_id: int):
     cfg = apply_overrides(request.app.state.cfg)

@@ -452,6 +452,35 @@ class CadenceCompleteVM:
     ohlcv_source_degraded: bool = False
 
 
+@dataclass(frozen=True)
+class ReviewsPendingVM:
+    trades: tuple[Trade, ...]
+    window_days: int
+    # 5-VM existing-fields safe defaults:
+    session_date: str = ""
+    stale_banner: str = ""
+    price_source_degraded: bool = False
+    price_source_degraded_until: str | None = None
+    ohlcv_source_degraded: bool = False
+
+
+def build_reviews_pending_vm(*, cfg: Config) -> ReviewsPendingVM:
+    from datetime import date as _date
+    from swing.data.repos.review_log import list_unreviewed_closed_trades
+    conn = connect(cfg.paths.db_path)
+    try:
+        trades = list_unreviewed_closed_trades(
+            conn, window_days=cfg.review.review_window_days,
+            today_iso=_date.today().isoformat(),
+        )
+    finally:
+        conn.close()
+    return ReviewsPendingVM(
+        trades=tuple(trades),
+        window_days=cfg.review.review_window_days,
+    )
+
+
 def build_cadence_complete_vm(*, review_id: int, cfg: Config) -> CadenceCompleteVM | None:
     """Returns None for unknown review or already-completed review (404 in route)."""
     from swing.data.repos.review_log import get
