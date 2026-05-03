@@ -61,3 +61,48 @@ class TestCanonicalizeMistakeTags:
 
     def test_empty_list_returns_empty(self) -> None:
         assert canonicalize_mistake_tags([]) == []
+
+
+from swing.trades.review import compute_process_grade
+
+
+class TestComputeProcessGrade:
+    """Parameterized table covering F-floor, disqualifying-D, weighted boundaries."""
+
+    @pytest.mark.parametrize(
+        "entry,management,exit_,disqualifying,expected",
+        [
+            # F-floor: any single F → F regardless of other stages
+            ("A", "A", "F", False, "F"),
+            ("A", "F", "A", False, "F"),
+            ("F", "A", "A", False, "F"),
+            ("F", "F", "F", False, "F"),
+            # F-floor beats disqualifying-D cap (F is harder)
+            ("A", "A", "F", True, "F"),
+            ("F", "A", "A", True, "F"),
+            # Disqualifying-D cap with no F stages
+            ("A", "A", "A", True, "D"),
+            ("B", "B", "B", True, "D"),
+            ("C", "C", "C", True, "D"),
+            ("D", "D", "D", True, "D"),
+            # Weighted-numeric boundaries (no F, no disqualifying)
+            ("A", "A", "A", False, "A"),  # weighted = 4.0 → A
+            ("A", "B", "B", False, "B"),  # weighted = 0.40*4 + 0.35*3 + 0.25*3 = 3.40 → B
+            ("B", "B", "B", False, "B"),  # weighted = 3.0 → B
+            ("B", "C", "B", False, "C"),  # weighted = 0.40*3 + 0.35*2 + 0.25*3 = 2.65 → C
+            ("C", "C", "C", False, "C"),  # weighted = 2.0 → C
+            ("D", "D", "D", False, "D"),  # weighted = 1.0 → D
+            # B/B/A: 0.40*3 + 0.35*3 + 0.25*4 = 1.20 + 1.05 + 1.00 = 3.25 → B
+            ("B", "B", "A", False, "B"),
+            # A/B/A: 0.40*4 + 0.35*3 + 0.25*4 = 1.60 + 1.05 + 1.00 = 3.65 → A
+            ("A", "B", "A", False, "A"),
+        ],
+    )
+    def test_process_grade_table(
+        self, entry: str, management: str, exit_: str,
+        disqualifying: bool, expected: str,
+    ) -> None:
+        assert compute_process_grade(
+            entry=entry, management=management, exit_=exit_,
+            disqualifying=disqualifying,
+        ) == expected

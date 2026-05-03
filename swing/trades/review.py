@@ -69,3 +69,53 @@ def canonicalize_mistake_tags(tags: list[str]) -> list[str]:
         if t.strip()
     })
     return canonical
+
+
+# ---- Process Grade (v1.2 §9.2 verbatim) ----
+
+STAGE_GRADE_NUMERIC: dict[str, int] = {"A": 4, "B": 3, "C": 2, "D": 1, "F": 0}
+WEIGHTS: dict[str, float] = {"entry": 0.40, "management": 0.35, "exit": 0.25}
+DISQUALIFYING_VIOLATIONS: tuple[str, ...] = (
+    "no_stop", "oversized_beyond_policy", "no_valid_setup", "revenge_trade",
+    "circuit_breaker_override", "held_after_invalidation_without_rule_basis",
+    "moved_stop_away_materially_increasing_risk",
+)
+
+
+def compute_process_grade(
+    *, entry: str, management: str, exit_: str, disqualifying: bool,
+) -> str:
+    """Return overall process grade per v1.2 §9.2.
+
+    Order of evaluation:
+      1. Floor rule: any stage = 'F' → 'F'.
+      2. Cap rule: disqualifying=True → max D (or F when weighted < 1.00).
+      3. Otherwise: weighted avg → grade per numeric_to_grade boundaries.
+    """
+    if (entry not in STAGE_GRADE_NUMERIC
+            or management not in STAGE_GRADE_NUMERIC
+            or exit_ not in STAGE_GRADE_NUMERIC):
+        raise ValueError(
+            f"stage grades must be one of {sorted(STAGE_GRADE_NUMERIC)}; "
+            f"got entry={entry!r}, management={management!r}, exit_={exit_!r}"
+        )
+    if entry == "F" or management == "F" or exit_ == "F":
+        return "F"
+    weighted = (
+        WEIGHTS["entry"] * STAGE_GRADE_NUMERIC[entry]
+        + WEIGHTS["management"] * STAGE_GRADE_NUMERIC[management]
+        + WEIGHTS["exit"] * STAGE_GRADE_NUMERIC[exit_]
+    )
+    if disqualifying:
+        if weighted < 1.00:
+            return "F"
+        return "D"
+    if weighted >= 3.50:
+        return "A"
+    if weighted >= 2.75:
+        return "B"
+    if weighted >= 2.00:
+        return "C"
+    if weighted >= 1.00:
+        return "D"
+    return "F"
