@@ -98,3 +98,8 @@ size_cap_kb = 500
 retain_markdown_sibling = true              # set false after 20 clean runs + sign-off
 retention_days = 90
 archive_compression_format = "zip"
+
+[review]
+# Phase 6 cadence-review tunable. Days since trade close before the
+# dashboard "needs review" badge counts the trade. Default 7.
+review_window_days = 7

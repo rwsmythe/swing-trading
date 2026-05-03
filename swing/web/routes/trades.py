@@ -1069,6 +1069,56 @@ def review_post(
     return Response(status_code=204, headers={"HX-Redirect": "/trades"})
 
 
+@router.get("/reviews/{review_id}/complete", response_class=HTMLResponse)
+def cadence_complete_form(request: Request, review_id: int):
+    cfg = apply_overrides(request.app.state.cfg)
+    templates = request.app.state.templates
+    from swing.web.view_models.trades import build_cadence_complete_vm
+    vm = build_cadence_complete_vm(review_id=review_id, cfg=cfg)
+    if vm is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Review #{review_id} not found or already completed",
+        )
+    return templates.TemplateResponse(
+        request, "cadence_complete.html.j2", {"vm": vm},
+    )
+
+
+@router.post("/reviews/{review_id}/complete")
+def cadence_complete_post(
+    request: Request, review_id: int,
+    duration_minutes: int = Form(...),
+    primary_lesson: str = Form(...),
+    next_period_focus: str = Form(...),
+):
+    from datetime import date as _date
+    from fastapi.responses import Response
+    from swing.data.repos.review_log import complete_review_atomic, get
+    cfg = apply_overrides(request.app.state.cfg)
+    conn = connect(cfg.paths.db_path)
+    try:
+        review = get(conn, review_id)
+        if review is None:
+            raise HTTPException(status_code=404)
+        if review.completed_date is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Review already completed",
+            )
+        complete_review_atomic(
+            conn, review_id=review_id,
+            completed_date=_date.today().isoformat(),
+            duration_minutes=duration_minutes,
+            primary_lesson=primary_lesson,
+            next_period_focus=next_period_focus,
+        )
+    finally:
+        conn.close()
+    # 204 + HX-Redirect to dashboard so cadence card flips to "completed":
+    return Response(status_code=204, headers={"HX-Redirect": "/"})
+
+
 @router.get("/trades/open/{trade_id}/row", response_class=HTMLResponse)
 def open_position_row(request: Request, trade_id: int):
     """Return the compact open-positions row partial for `trade_id`. Used by

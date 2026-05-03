@@ -1,0 +1,17 @@
+<form method="post" action="/reviews/{{ vm.review.review_id }}/complete"
+      hx-post="/reviews/{{ vm.review.review_id }}/complete"
+      hx-headers='{"HX-Request": "true"}'>
+  <label>
+    Duration (minutes)
+    <input type="number" name="duration_minutes" required min="1">
+  </label>
+  <label>
+    Primary lesson
+    <textarea name="primary_lesson" required rows="3"></textarea>
+  </label>
+  <label>
+    Next-period focus
+    <textarea name="next_period_focus" required rows="3"></textarea>
+  </label>
+  <button type="submit">Mark complete + freeze aggregates</button>
+</form>

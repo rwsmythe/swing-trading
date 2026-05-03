@@ -943,8 +943,7 @@ def trade_review_cmd(
     )
 
     cfg = ctx.obj["config"]
-    # Task 12b will add cfg.review.review_window_days; until then, use default 7.
-    effective_window_days = window_days if window_days is not None else 7
+    effective_window_days = window_days if window_days is not None else cfg.review.review_window_days
 
     # ---- LIST MODE ----
     if list_mode:
@@ -1033,6 +1032,82 @@ def trade_review_cmd(
         f"Review recorded for trade #{trade_id} ({trade.ticker}). "
         f"Process grade: {process_grade}."
     )
+
+
+@main.group("review")
+def review_group() -> None:
+    """Phase 6: cadence review (daily / weekly / monthly Review_Log completion)."""
+
+
+@review_group.command("complete")
+@click.option("--list", "list_mode", is_flag=True,
+              help="List pending Review_Log rows (completed_date IS NULL) and exit.")
+@click.option("--review-id", type=int, default=None,
+              help="REQUIRED unless --list is set.")
+@click.option("--duration-minutes", type=int, default=None,
+              help="REQUIRED unless --list. Operator-self-reported review duration.")
+@click.option("--primary-lesson", default=None,
+              help="REQUIRED unless --list. The single most important lesson.")
+@click.option("--next-period-focus", default=None,
+              help="REQUIRED unless --list. What to focus on next period.")
+@click.pass_context
+def review_complete_cmd(
+    ctx, list_mode, review_id, duration_minutes, primary_lesson,
+    next_period_focus,
+):
+    """Mark a Review_Log row complete + freeze aggregates atomically.
+
+    Atomic compute-and-freeze per brief §6.2 watch item 3 — caller does
+    NOT supply aggregates; complete_review_atomic owns the transaction.
+    """
+    from datetime import date as _date
+    from swing.data.db import connect
+    from swing.data.repos.review_log import (
+        complete_review_atomic, list_pending,
+    )
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        if list_mode:
+            pending = list_pending(conn)
+            if not pending:
+                click.echo("No pending cadence reviews.")
+                return
+            click.echo("Pending cadence reviews:")
+            for r in pending:
+                click.echo(
+                    f"  #{r.review_id} {r.review_type} "
+                    f"{r.period_start}..{r.period_end} "
+                    f"scheduled={r.scheduled_date}"
+                )
+            return
+
+        missing = []
+        if review_id is None:
+            missing.append("--review-id")
+        if duration_minutes is None:
+            missing.append("--duration-minutes")
+        if not primary_lesson or not primary_lesson.strip():
+            missing.append("--primary-lesson")
+        if not next_period_focus or not next_period_focus.strip():
+            missing.append("--next-period-focus")
+        if missing:
+            raise click.UsageError(
+                f"Missing required args (or pass --list to enter list mode): "
+                f"{', '.join(missing)}"
+            )
+
+        complete_review_atomic(
+            conn, review_id=review_id,
+            completed_date=_date.today().isoformat(),
+            duration_minutes=duration_minutes,
+            primary_lesson=primary_lesson,
+            next_period_focus=next_period_focus,
+        )
+    finally:
+        conn.close()
+    click.echo(f"Review #{review_id} marked complete + aggregates frozen.")
 
 
 @main.group("journal")

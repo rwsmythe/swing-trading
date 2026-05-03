@@ -211,3 +211,11 @@ class TestListRecent:
         # Most-recent first by created_at:
         assert rows[0].period_start == "2026-04-30"
         assert rows[1].period_start == "2026-04-29"
+
+
+def test_review_config_default_window_days_is_7() -> None:
+    """Brief §2.6 — `cfg.review.review_window_days` default = 7."""
+    from pathlib import Path
+    from swing.config import load
+    cfg = load(Path("swing.config.toml"))
+    assert cfg.review.review_window_days == 7

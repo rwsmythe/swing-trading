@@ -7,7 +7,7 @@ from typing import Literal
 
 from swing.config import Config
 from swing.data.db import connect
-from swing.data.models import Trade
+from swing.data.models import ReviewLog, Trade
 from swing.data.repos.cash import list_cash
 from swing.data.repos.trades import get_trade, list_all_exits, list_exits_for_trade, list_open_trades
 from swing.data.repos.watchlist import list_active_watchlist
@@ -438,3 +438,43 @@ def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
         mistake_tag_categories=MISTAKE_TAGS,
         disqualifying_violations_reference=DISQUALIFYING_VIOLATIONS,
     )
+
+
+@dataclass(frozen=True)
+class CadenceCompleteVM:
+    review: ReviewLog
+    n_closed_trades_in_period: int
+    # 5-VM existing-fields safe defaults:
+    session_date: str = ""
+    stale_banner: str = ""
+    price_source_degraded: bool = False
+    price_source_degraded_until: str | None = None
+    ohlcv_source_degraded: bool = False
+
+
+def build_cadence_complete_vm(*, review_id: int, cfg: Config) -> CadenceCompleteVM | None:
+    """Returns None for unknown review or already-completed review (404 in route)."""
+    from swing.data.repos.review_log import get
+    conn = connect(cfg.paths.db_path)
+    try:
+        review = get(conn, review_id)
+        if review is None or review.completed_date is not None:
+            return None
+        # Pre-render the count of closed trades in the period (helper text):
+        from datetime import date as _date
+        from swing.data.repos.trades import list_all_exits, list_closed_trades
+        closed = list_closed_trades(conn)
+        all_exits = list_all_exits(conn)
+        ps = _date.fromisoformat(review.period_start)
+        pe = _date.fromisoformat(review.period_end)
+        n = 0
+        for t in closed:
+            relevant = [
+                _date.fromisoformat(e.exit_date) for e in all_exits
+                if e.trade_id == t.id
+            ]
+            if relevant and ps <= max(relevant) <= pe:
+                n += 1
+    finally:
+        conn.close()
+    return CadenceCompleteVM(review=review, n_closed_trades_in_period=n)
