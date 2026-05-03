@@ -28,6 +28,10 @@ These are findings from the §0 empirical audit that diverge from the brief's pr
 
 7. **Trade row count in production DB at brief-draft time:** 3 trades total (VIR closed; DHC + CC open). Phase 6 reviews can be exercised on VIR end-to-end starting day-1 of executing-plans dispatch.
 
+8. **Cadence-period anchor: `last_completed_session(now)` (semantic-fit substitute for the brief's literal `action_session_for_run(now)`).** Brief §2.9 + §0 #5 + §6.2 watch item 5 specify `action_session_for_run(datetime.now())` as the cadence anchor. Empirical audit reveals `action_session_for_run` returns the NEXT (forward-looking) session ([swing/evaluation/dates.py:43-65](../../swing/evaluation/dates.py#L43-L65)), while the cadence step needs the LAST COMPLETED session as the daily-period bound. The two helpers share the SAME NYSE-calendar + tz infrastructure ([swing/evaluation/dates.py:21-65](../../swing/evaluation/dates.py#L21-L65)) — both honor the brief's binding constraint ("MUST use this, not `date.today()`" — i.e., timezone-aware NYSE-calendar discipline). On any normal trading day, `_NYSE.previous_session(action_session_for_run(now)) == last_completed_session(now)` — they are semantically equivalent for the prior-period bound. The plan uses `last_completed_session(now)` because: (a) it's the direct semantic fit (cadence period = last completed session, not next); (b) it doesn't require importing `_NYSE` (private module symbol) into `swing/trades/review.py` across a non-carve-out boundary. **Orchestrator pre-approval status:** the §A.1 compute_stats defection was explicitly pre-approved by the dispatching orchestrator; this anchor substitution is captured here as a NEW defection awaiting orchestrator concurrence. Surfaced in return report §8 as open-question. Implementation proceeds with `last_completed_session(now)` pending orchestrator confirmation.
+
+9. **Cadence-completion surface IS in scope (CRITICAL R1 fix).** Round-1 adversarial review surfaced that pre-creating Review_Log rows without an operator path to mark them `completed_date` + freeze aggregates leaves the cadence cards permanently in "pending" state and renders the "review revisit shows correct frozen aggregates" verification gate (§K Step 2.6) unachievable. The cadence-completion service IS REQUIRED for V1 functionality. New Task 11b adds: (a) repo-layer atomic compute-and-freeze (`complete_review_atomic` — owns trade selection + aggregate computation + UPDATE inside one transaction); (b) CLI `swing review complete --review-id <id> --duration-minutes <n> --primary-lesson "..." --next-period-focus "..."`; (c) GET /reviews/{review_id}/complete form + POST handler with HX-Redirect on success. This addition is consistent with brief §3.1 ("Pipeline-runner cadence pre-create step") + §2.5 ("Aggregates computed via `swing/journal/stats.py:compute_stats` infrastructure; persisted on the Review_Log row at the moment of review completion") — the brief implies a completion path; it just doesn't enumerate one explicitly. Surfaced in return report §3 as a brief-completeness finding.
+
 ---
 
 ## §B — File map
@@ -37,7 +41,7 @@ These are findings from the §0 empirical audit that diverge from the brief's pr
 | Path | Responsibility |
 |---|---|
 | `swing/data/migrations/0013_phase6_post_trade_review.sql` | 10 nullable trade-row columns + new `review_log` table + indices + `UPDATE schema_version SET version = 13`. |
-| `swing/data/repos/review_log.py` | Public API: `insert_pre_create(conn, *, review_type, period_start, period_end, scheduled_date) -> int|None` (idempotent — returns `None` if row exists for unique key, else new id); `complete_review(conn, *, review_id, completed_date, duration_minutes, n_trades_reviewed, primary_lesson, next_period_focus, total_mistake_cost_R, total_lucky_violation_R, aggregates: dict) -> None` (single transaction; freezes aggregates); `get(conn, review_id) -> ReviewLog | None`; `list_for_cadence(conn, review_type) -> list[ReviewLog]`; `list_recent(conn, *, review_type, limit=1) -> list[ReviewLog]`; `list_unreviewed_closed_trades(conn, *, window_days, today_iso) -> list[Trade]`; `count_needs_review(conn, *, window_days, today_iso) -> int`. |
+| `swing/data/repos/review_log.py` | Public API: `insert_pre_create(conn, *, review_type, period_start, period_end, scheduled_date) -> int|None` (idempotent — returns `None` if row exists for unique key, else new id); `complete_review_atomic(conn, *, review_id, completed_date, duration_minutes, primary_lesson, next_period_focus) -> None` (single BEGIN IMMEDIATE transaction owning trade selection + compute_stats + augmentation helpers + UPDATE — addresses R1 Major 1 torn-snapshot risk); `get(conn, review_id) -> ReviewLog | None`; `list_pending(conn, *, review_type=None) -> list[ReviewLog]` (rows with `completed_date IS NULL`, ordered by `period_end DESC`); `list_recent(conn, *, review_type, limit=1) -> list[ReviewLog]` (ordered by `period_end DESC` — addresses R1 Minor 2 backfill-ordering risk; latest BUSINESS PERIOD, not latest INSERT); `list_unreviewed_closed_trades(conn, *, window_days, today_iso) -> list[Trade]`; `count_needs_review(conn, *, window_days, today_iso) -> int`. |
 | `swing/trades/review.py` | Public API: `MISTAKE_TAGS: dict[str, tuple[str, ...]]` (6 categories; 34 tags total per v1.2 §7.10); `DISQUALIFYING_VIOLATIONS: tuple[str, ...]` (7 entries per v1.2 §9.2); `STAGE_GRADE_NUMERIC: dict[str, int]`; `validate_mistake_tags(tags: list[str]) -> None` (raises `ValueError` on unknown tag, mixed-category-with-none_observed, etc.); `canonicalize_mistake_tags(tags: list[str]) -> list[str]` (NFC normalize, strip, dedup, sort — per JSON-list canonicalization-at-persistence-boundary lesson); `compute_process_grade(*, entry: str, management: str, exit_: str, disqualifying: bool) -> str` (returns 'A'..'F' per v1.2 §9.2); `compute_mistake_cost_R(*, realized_R_if_plan_followed: float | None, actual_realized_R_effective: float) -> float`; `compute_lucky_violation_R(*, realized_R_if_plan_followed: float | None, actual_realized_R_effective: float) -> float`; `compute_actual_realized_R_effective(trade: Trade, exits: list[Exit]) -> float` (mirrors `_trade_r` semantic); `compute_profit_factor(closed_trades: list[Trade], exits: list[Exit]) -> float | None`; `compute_max_drawdown_R(closed_trades: list[Trade], exits: list[Exit]) -> float`; `SOFT_WARN_REVIEW_DUE_MESSAGE: str` (shared constant for web + CLI close paths). |
 | `swing/web/templates/review.html.j2` | Full review-form page extending `base.html.j2`. |
 | `swing/web/templates/partials/review_form.html.j2` | The form fragment (also embedded in the full page; reused by GET re-render on hard-refuse / soft-warn). `<form>`-rooted, NOT `<tr>`-rooted (per `<tr>`-leading makeFragment lesson). |
@@ -45,6 +49,10 @@ These are findings from the §0 empirical audit that diverge from the brief's pr
 | `swing/web/templates/partials/needs_review_badge.html.j2` | Dashboard "needs review" badge partial. Renders when count > 0; emits empty fragment when count == 0 (consumer template includes always; partial decides whether to show). |
 | `swing/web/templates/partials/cadence_cards.html.j2` | Dashboard cadence-cards section partial. Renders 3 cards (daily/weekly/monthly). |
 | `swing/web/templates/reviews_pending.html.j2` | Full page extending `base.html.j2` for the `/reviews/pending` list view (badge link target). |
+| `swing/web/templates/cadence_complete.html.j2` | Full page extending `base.html.j2` for the `/reviews/{id}/complete` form (R1 Critical 1). |
+| `swing/web/templates/partials/cadence_complete_form.html.j2` | The cadence-completion form fragment. `<form>`-rooted; `hx-headers='{"HX-Request": "true"}'`; success-path response = 204 + HX-Redirect. |
+| `tests/web/test_cadence_complete_route.py` | Route-level integration tests for cadence completion (GET, POST, HX-Redirect, atomic-freeze). |
+| `tests/cli/test_review_complete_cli.py` | Click runner integration tests for `swing review complete` (R1 Critical 1). |
 | `tests/data/test_migration_0013.py` | Round-trip test for the 10 trade columns + review_log table CRUD + unique-index enforcement. |
 | `tests/data/test_review_log_repo.py` | review_log repo tests (insert idempotence, complete, get, list_recent, count_needs_review). |
 | `tests/trades/test_review_helpers.py` | Pure-helper tests for review.py (Mistake_Tags vocab, validate, canonicalize, process grade parameterized table, cost/violation, profit_factor, max_drawdown_R). |
@@ -63,12 +71,13 @@ These are findings from the §0 empirical audit that diverge from the brief's pr
 |---|---|
 | `swing/data/models.py` | Extend `Trade` dataclass with 10 nullable fields (default `None`) + add new `ReviewLog` dataclass. |
 | `swing/data/repos/trades.py` | Extend `insert_trade_with_event` (add 10 columns to INSERT — all NULL at insert time; review-completion uses `update_trade_review_fields`) + new `update_trade_review_fields(conn, trade_id, *, reviewed_at, mistake_tags_json, entry_grade, management_grade, exit_grade, process_grade, disqualifying_process_violation, realized_R_if_plan_followed, mistake_cost_confidence, lesson_learned)` + extend SELECT * column list in `_row_to_trade` (or whatever the row mapper is) to populate the 10 new fields. |
-| `swing/cli.py` | Add `@trade_group.command("review")` and `@trade_group.command("review-list")` after the existing `entry`/`exit` commands. Modify `trade_exit_cmd` to emit soft-warn message via `click.echo` when final exit closes the trade. |
+| `swing/cli.py` | Add `@trade_group.command("review")` after the existing `entry`/`exit` commands. The `review` command supports BOTH per-trade-review mode (operator supplies `--trade-id` + grades + lesson) AND list-mode (operator passes `--list` flag, all other args optional, command prints pending-review list and exits) per brief §3.1 (R1 Major 2 fix — preserves the locked spec contract `swing trade review --list`). Add new top-level `@main.group("review")` group with `@review_group.command("complete")` for cadence-completion (R1 Critical 1). Modify `trade_exit_cmd` to emit soft-warn message via `click.echo` when final exit closes the trade. |
 | `swing/web/routes/trades.py` | Add `GET /trades/{trade_id}/review` and `POST /trades/{trade_id}/review` handlers (mirror entry-form pattern; HX-Redirect on success per Phase 5 lesson). Modify `exit_post` to surface soft-warn message when `result.fully_closed` is True. |
-| `swing/web/view_models/trades.py` | Add `ReviewVM` dataclass + `build_review_vm(*, trade_id, cfg) -> ReviewVM | None`. Inherit existing 5 base-layout fields with safe defaults. |
+| `swing/web/view_models/trades.py` | Add `ReviewVM` dataclass + `build_review_vm(*, trade_id, cfg) -> ReviewVM | None`. Add `ReviewsPendingVM` dataclass + `build_reviews_pending_vm(*, cfg) -> ReviewsPendingVM`. Add `CadenceCompleteVM` dataclass + `build_cadence_complete_vm(*, review_id, cfg) -> CadenceCompleteVM | None`. All three VMs inherit existing 5 base-layout fields with safe defaults. (R1 Critical 1 + R1 Minor 1 fixes.) |
 | `swing/web/view_models/dashboard.py` | Add `needs_review_count` + cadence-card fields (`daily_card`, `weekly_card`, `monthly_card` as `CadenceCardVM` dataclass) to `DashboardVM`. Extend `build_dashboard` to populate them. |
 | `swing/web/templates/dashboard.html.j2` | Include `partials/needs_review_badge.html.j2` and `partials/cadence_cards.html.j2`. |
-| `swing/web/app.py` | No new router (review routes piggyback on existing `swing.web.routes.trades` module's router). Add `/reviews/pending` GET handler — separate route OR extend existing module. Default: extend existing trades router with the listing endpoint, keeping module count stable. |
+| `swing/web/app.py` | No edits expected. Review routes (`/trades/{id}/review`, `/reviews/pending`, `/reviews/{id}/complete`) all piggyback on the existing `swing.web.routes.trades` router. If a future route module split is justified, capture as a separate dispatch — Phase 6 default keeps module count stable. (R1 Minor 1 ownership-drift fix.) |
+| `swing/config.py` | Add new `ReviewConfig` section dataclass with `review_window_days: int = 7` field. Add `review: ReviewConfig` to the top-level `Config` dataclass. Mirrors Phase 5's `cfg.web.chase_factor` pattern. (R1 Major 3 missing-config fix.) |
 | `swing/pipeline/runner.py` | Add `_step_review_log_cadence(*, cfg, lease)` function (idempotent; logs but does NOT raise on errors); call it AFTER `lease.step("complete")` line so it's outside the primary value chain (cadence is auxiliary; export is the value emission). |
 | `swing/trades/exit.py` | Add `final_exit_closed_trade: bool` flag on the result type returned by `record_exit` (exposes whether THIS exit was the final one). The flag is necessary so soft-warn surfaces deterministically from BOTH web and CLI close paths. |
 
@@ -418,9 +427,9 @@ For each pre-designated watch item, the plan task that pre-empts it:
 |---|---|---|
 | 1 | Multi-path data ingestion full-path audit | Task 11 (review service entry-point) — single repo write path; CLI + web both call it. |
 | 2 | JSON-list canonicalization-at-persistence-boundary | Task 3 (`canonicalize_mistake_tags` helper) + Task 11 (repo write calls it). |
-| 3 | Snapshot-semantic transaction isolation | Task 6 (review_log repo `complete_review` wraps in `with conn:` BEGIN/COMMIT). |
+| 3 | Snapshot-semantic transaction isolation | Task 6 (review_log repo `complete_review_atomic` OWNS trade selection + aggregate computation + UPDATE inside ONE BEGIN IMMEDIATE transaction; caller-supplied aggregates are NOT permitted — R1 Major 1 fix). |
 | 4 | Operator-facing message strings from multiple paths must match | Task 9 (`SOFT_WARN_REVIEW_DUE_MESSAGE` constant in review.py; CLI + web both import). |
-| 5 | Helper-internal anchoring of side-effecting boundaries | Task 7 (cadence step anchors on `last_completed_session(datetime.now())` IN the function; caller cannot supply as-of). |
+| 5 | Helper-internal anchoring of side-effecting boundaries | Task 7 (cadence step anchors on `last_completed_session(datetime.now())` IN the function — semantic-fit substitute for brief's literal `action_session_for_run`; both share the same NYSE-calendar + tz infrastructure; see plan §A.8 for orchestrator-pending defection rationale). Caller cannot supply as-of-date. |
 | 6 | HTMX HX-Request + HX-Redirect | Task 12 (POST handler returns 204 + HX-Redirect; review_form template includes `hx-headers='{"HX-Request": "true"}'`). |
 | 7 | HTMX `<tr>`-leading makeFragment pathology | Task 11 (review_form partial is `<form>`-rooted, NOT `<tr>`-rooted). |
 | 8 | New-VM existing-field inheritance (5-VM rule complement) | Task 10 (ReviewVM has all 5 base-layout existing fields with safe defaults). |
@@ -1501,10 +1510,31 @@ class TestInsertPreCreate:
         assert r1 is not None and r2 is not None
 
 
-class TestCompleteReview:
-    def test_freezes_aggregates_in_single_transaction(
+class TestCompleteReviewAtomic:
+    def test_atomic_freezes_computed_aggregates(
         self, conn: sqlite3.Connection,
     ) -> None:
+        # Seed: closed trade in the daily period
+        with conn:
+            t1 = insert_trade_with_event(
+                conn, Trade(
+                    id=None, ticker="VIR", entry_date="2026-04-29",
+                    entry_price=10.0, initial_shares=10, initial_stop=9.0,
+                    current_stop=9.0, status="closed",
+                    watchlist_entry_target=None, watchlist_initial_stop=None,
+                    notes=None,
+                ),
+                event_ts="2026-04-29T09:30:00",
+            )
+            insert_exit_with_event(
+                conn, Exit(
+                    id=None, trade_id=t1, exit_date="2026-04-30",
+                    exit_price=12.0, shares=10, reason="manual",
+                    realized_pnl=20.0, r_multiple=2.0, notes=None,
+                ),
+                event_ts="2026-04-30T09:30:00",
+            )
+        # Pre-create + atomic complete:
         with conn:
             review_id = insert_pre_create(
                 conn, review_type="daily",
@@ -1512,34 +1542,48 @@ class TestCompleteReview:
                 scheduled_date="2026-05-01",
             )
         assert review_id is not None
-        complete_review(
+        # complete_review_atomic OWNS the compute → write pipeline.
+        # Brief §6.2 watch item 3: caller does NOT supply aggregates.
+        from swing.data.repos.review_log import complete_review_atomic
+        complete_review_atomic(
             conn, review_id=review_id,
             completed_date="2026-05-02",
             duration_minutes=15,
-            n_trades_reviewed=3,
             primary_lesson="Wait for the breakout.",
             next_period_focus="Tighten entries on volume confirmation.",
-            total_mistake_cost_R=1.5,
-            total_lucky_violation_R=0.0,
-            aggregates={
-                "net_R_effective": 2.0,
-                "expectancy_R_effective": 0.67,
-                "win_rate": 0.67,
-                "avg_win_R": 1.5,
-                "avg_loss_R": -1.0,
-                "profit_factor": 3.0,
-                "max_drawdown_R": 0.5,
-            },
         )
         row = get(conn, review_id)
         assert row is not None
         assert row.completed_date == "2026-05-02"
         assert row.duration_minutes == 15
-        assert row.n_trades_reviewed == 3
-        assert row.total_mistake_cost_R == pytest.approx(1.5)
+        assert row.primary_lesson == "Wait for the breakout."
+        assert row.next_period_focus.startswith("Tighten")
+        # n_trades_reviewed + total_*_R + 7 aggregates were computed inside
+        # the transaction by reading closed trades in (period_start, period_end]
+        # via compute_stats + review.py augmentation helpers:
+        assert row.n_trades_reviewed == 1
         assert row.net_R_effective == pytest.approx(2.0)
-        assert row.profit_factor == pytest.approx(3.0)
-        assert row.max_drawdown_R == pytest.approx(0.5)
+        assert row.win_rate == pytest.approx(1.0)
+        assert row.profit_factor is None  # no losses
+
+    def test_atomic_blocks_late_writer(
+        self, conn: sqlite3.Connection,
+    ) -> None:
+        """A trade close concurrent with complete_review_atomic must not be
+        seen by the freeze (transaction isolation).
+
+        Implementation: open a SECOND connection, hold a write transaction
+        on it (but NOT commit), then call complete_review_atomic on the
+        primary connection. Verify the primary completes by reading from
+        its own snapshot. The second connection's pending insert is NOT
+        visible to the primary (READ COMMITTED equivalent in SQLite WAL
+        mode; or fully serialized in journal mode).
+        """
+        # Plan author: this test exercises SQLite's transaction isolation.
+        # See swing/data/db.py for the connect() factory's PRAGMA settings.
+        # If WAL mode is on, snapshot isolation applies. If journal mode,
+        # writers block but readers see committed state.
+        ...  # implementer flesh-out per the project's existing transaction tests
 
 
 class TestCountNeedsReview:
@@ -1675,36 +1719,103 @@ def insert_pre_create(
         raise
 
 
-def complete_review(
+def complete_review_atomic(
     conn: sqlite3.Connection,
     *,
     review_id: int,
     completed_date: str,
     duration_minutes: int,
-    n_trades_reviewed: int,
     primary_lesson: str,
     next_period_focus: str,
-    total_mistake_cost_R: float,
-    total_lucky_violation_R: float,
-    aggregates: dict[str, float | None],
 ) -> None:
-    """Mark review complete + persist all 7 aggregates frozen on the row.
+    """Mark review complete + freeze all aggregates atomically.
 
-    Single transaction (BEGIN IMMEDIATE) so a concurrent trade close mid-write
-    cannot tear the snapshot. Brief §6.2 watch item 3.
+    Single BEGIN IMMEDIATE transaction OWNS:
+      1. Read the review_log row to get (review_type, period_start, period_end).
+      2. Select closed trades whose final exit date falls in [period_start, period_end].
+      3. Compute aggregates via swing.journal.stats.compute_stats (5 fields)
+         + swing.trades.review.compute_profit_factor + compute_max_drawdown_R
+         (2 fields).
+      4. Compute total_mistake_cost_R + total_lucky_violation_R via
+         swing.trades.review.compute_mistake_cost_R + compute_lucky_violation_R
+         summed over the period's closed trades (trades without
+         realized_R_if_plan_followed contribute 0 to both).
+      5. UPDATE the review_log row with completed_date + duration_minutes +
+         primary_lesson + next_period_focus + n_trades_reviewed + total_*_R +
+         all 7 aggregates.
+
+    Brief §6.2 watch item 3: a trade close concurrent with this function
+    cannot tear the snapshot — the BEGIN IMMEDIATE acquires SQLite's
+    RESERVED lock immediately, so any concurrent writer either blocks
+    behind us or already committed before us (we read the post-commit
+    state in step 2).
+
+    Caller does NOT supply aggregates — they are computed INSIDE the
+    transaction (R1 Major 1 fix vs. earlier draft API).
     """
-    expected_aggregate_keys = {
-        "net_R_effective", "expectancy_R_effective", "win_rate",
-        "avg_win_R", "avg_loss_R", "profit_factor", "max_drawdown_R",
-    }
-    if set(aggregates) != expected_aggregate_keys:
-        missing = expected_aggregate_keys - set(aggregates)
-        extra = set(aggregates) - expected_aggregate_keys
-        raise ValueError(
-            f"aggregates dict must have exactly the 7 review-log aggregate "
-            f"keys; missing={sorted(missing)!r}, extra={sorted(extra)!r}"
-        )
-    with conn:  # BEGIN/COMMIT bracket
+    from swing.data.repos.trades import list_all_exits, list_closed_trades
+    from swing.journal.stats import compute_stats
+    from swing.trades.review import (
+        compute_actual_realized_R_effective, compute_lucky_violation_R,
+        compute_max_drawdown_R, compute_mistake_cost_R, compute_profit_factor,
+    )
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # Step 1: read the period from review_log:
+        row = conn.execute(
+            """SELECT period_start, period_end FROM review_log
+               WHERE review_id = ?""",
+            (review_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"review_log row #{review_id} not found")
+        period_start, period_end = row[0], row[1]
+
+        # Step 2: select closed trades whose final exit_date in [start, end]:
+        all_closed = list_closed_trades(conn)
+        all_exits = list_all_exits(conn)
+        # Filter to period:
+        from datetime import date as _date
+        ps = _date.fromisoformat(period_start)
+        pe = _date.fromisoformat(period_end)
+        period_trades = []
+        for t in all_closed:
+            relevant = [
+                _date.fromisoformat(e.exit_date) for e in all_exits
+                if e.trade_id == t.id
+            ]
+            if not relevant:
+                continue
+            close_date = max(relevant)
+            if ps <= close_date <= pe:
+                period_trades.append(t)
+
+        # Step 3: compute aggregates:
+        stats = compute_stats(trades=period_trades, exits=all_exits)
+        net_R = stats.total_r
+        expectancy_R = stats.expectancy_r
+        win_rate = stats.win_rate
+        avg_win = stats.avg_win_r
+        avg_loss = stats.avg_loss_r
+        profit_factor = compute_profit_factor(period_trades, list(all_exits))
+        max_dd = compute_max_drawdown_R(period_trades, list(all_exits))
+
+        # Step 4: total_mistake_cost_R + total_lucky_violation_R per-trade sum:
+        total_cost = 0.0
+        total_lucky = 0.0
+        for t in period_trades:
+            actual = compute_actual_realized_R_effective(t, list(all_exits))
+            total_cost += compute_mistake_cost_R(
+                realized_R_if_plan_followed=t.realized_R_if_plan_followed,
+                actual_realized_R_effective=actual,
+            )
+            total_lucky += compute_lucky_violation_R(
+                realized_R_if_plan_followed=t.realized_R_if_plan_followed,
+                actual_realized_R_effective=actual,
+            )
+
+        # Step 5: UPDATE the review_log row:
         conn.execute(
             """
             UPDATE review_log SET
@@ -1725,19 +1836,17 @@ def complete_review(
             WHERE review_id = ?
             """,
             (
-                completed_date, duration_minutes, n_trades_reviewed,
+                completed_date, duration_minutes, len(period_trades),
                 primary_lesson, next_period_focus,
-                total_mistake_cost_R, total_lucky_violation_R,
-                aggregates["net_R_effective"],
-                aggregates["expectancy_R_effective"],
-                aggregates["win_rate"],
-                aggregates["avg_win_R"],
-                aggregates["avg_loss_R"],
-                aggregates["profit_factor"],
-                aggregates["max_drawdown_R"],
-                review_id,
+                total_cost, total_lucky,
+                net_R, expectancy_R, win_rate, avg_win, avg_loss,
+                profit_factor, max_dd, review_id,
             ),
         )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def get(conn: sqlite3.Connection, review_id: int) -> ReviewLog | None:
@@ -1752,13 +1861,47 @@ def get(conn: sqlite3.Connection, review_id: int) -> ReviewLog | None:
 def list_recent(
     conn: sqlite3.Connection, *, review_type: str, limit: int = 1,
 ) -> list[ReviewLog]:
+    """Most recent rows by BUSINESS PERIOD, not by INSERT TIME.
+
+    R1 Minor 2 fix: a backfilled cadence row (e.g., operator manually
+    inserts a missed weekly review) would jump to the top under
+    `ORDER BY created_at DESC` even though its period_end is older than
+    the current latest cadence. Order by period_end DESC + scheduled_date
+    DESC (tiebreaker for same-period entries) so the dashboard cards
+    surface the operator's CURRENT cadence, not the most-recently-typed
+    backfill.
+    """
     rows = conn.execute(
         """SELECT * FROM review_log
            WHERE review_type = ?
-           ORDER BY created_at DESC
+           ORDER BY period_end DESC, scheduled_date DESC
            LIMIT ?""",
         (review_type, limit),
     ).fetchall()
+    return [_row_to_review_log(r) for r in rows]
+
+
+def list_pending(
+    conn: sqlite3.Connection, *, review_type: str | None = None,
+) -> list[ReviewLog]:
+    """Pre-created cadence rows whose `completed_date IS NULL`.
+
+    Used by the cadence-completion CLI (`swing review complete --list`) and
+    the /reviews/pending list view to surface what the operator owes.
+    """
+    if review_type is None:
+        rows = conn.execute(
+            """SELECT * FROM review_log
+               WHERE completed_date IS NULL
+               ORDER BY period_end DESC""",
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT * FROM review_log
+               WHERE completed_date IS NULL AND review_type = ?
+               ORDER BY period_end DESC""",
+            (review_type,),
+        ).fetchall()
     return [_row_to_review_log(r) for r in rows]
 
 
@@ -1910,42 +2053,111 @@ class TestPeriodHelpers:
 
 
 class TestStepReviewLogCadence:
+    """Unit tests for _step_review_log_cadence using a real lease in a tmp DB.
+
+    Pattern mirrors the existing tests/pipeline/test_runner.py harness:
+    acquire a real lease via swing.pipeline.lease.acquire_lease, run the
+    step, then release. The lease's fenced_write contract is exercised
+    end-to-end (not mocked).
+    """
+
     @pytest.fixture
-    def conn_path(self, tmp_path: Path) -> Path:
+    def lease_and_conn_factory(self, tmp_path: Path):
+        from swing.data.db import connect as _connect
+        from swing.pipeline.lease import acquire_lease
+
         db_path = tmp_path / "phase6.db"
-        conn = connect(db_path)
-        conn.close()
-        return db_path
+        # Initialize schema (apply migrations 0001..0013):
+        c = _connect(db_path)
+        c.close()
+
+        def make() -> tuple:
+            lease = acquire_lease(
+                db_path=db_path, trigger="manual",
+                data_asof_date="2026-04-30",
+                action_session_date="2026-05-01",
+                block_threshold_seconds=60,
+                finviz_csv_path=None,
+                rs_universe_version=None,
+                rs_universe_hash=None,
+            )
+            return lease, db_path
+        return make
 
     def test_creates_three_cadence_rows_first_call(
-        self, conn_path: Path,
+        self, lease_and_conn_factory,
     ) -> None:
+        from swing.data.db import connect as _connect
         from swing.pipeline.runner import _step_review_log_cadence
-        # _step_review_log_cadence reads/writes via a passed-in lease object;
-        # for this unit test, build a minimal harness that mirrors fenced_write
-        # behavior. Plan author: define a `_FakeLease` test fixture that yields
-        # a connection from `with lease.fenced_write() as conn:` and verifies
-        # the step's write-path under simulated lease conditions.
-        # Test post-call: 3 rows exist (daily/weekly/monthly).
-        ...  # Plan author fills in based on actual lease shape.
+        lease, db_path = lease_and_conn_factory()
+        try:
+            _step_review_log_cadence(cfg=_make_test_cfg(db_path), lease=lease)
+        finally:
+            lease.release(state="complete")
+        c = _connect(db_path)
+        n = c.execute("SELECT COUNT(*) FROM review_log").fetchone()[0]
+        c.close()
+        assert n == 3  # daily + weekly + monthly
 
     def test_idempotent_second_call_creates_no_new_rows(
-        self, conn_path: Path,
+        self, lease_and_conn_factory,
     ) -> None:
-        # Run the step TWICE on same `now`. After the second call, count
-        # remains at 3 (one per cadence). Brief §6.2 watch item 11.
-        ...
+        from swing.data.db import connect as _connect
+        from swing.pipeline.runner import _step_review_log_cadence
+        for _ in range(2):
+            lease, db_path = lease_and_conn_factory()
+            try:
+                _step_review_log_cadence(
+                    cfg=_make_test_cfg(db_path), lease=lease,
+                )
+            finally:
+                lease.release(state="complete")
+        c = _connect(db_path)
+        n = c.execute("SELECT COUNT(*) FROM review_log").fetchone()[0]
+        c.close()
+        assert n == 3  # idempotent — second call adds zero rows
 
     def test_step_errors_log_warning_but_do_not_raise(
-        self, conn_path: Path, caplog: pytest.LogCaptureFixture,
+        self, lease_and_conn_factory, caplog, monkeypatch,
     ) -> None:
-        # Force an internal error (e.g., monkey-patch insert_pre_create to
-        # raise sqlite3.OperationalError). Verify the step logs a WARNING
-        # and returns None (no exception bubbled).
-        ...
-```
+        """Force an OperationalError inside insert_pre_create; assert the
+        step logs WARNING and returns None (no exception)."""
+        import sqlite3 as _sqlite3
+        from swing.pipeline.runner import _step_review_log_cadence
+        # Wrap insert_pre_create to raise after first write:
+        from swing.data.repos import review_log as _rl
+        call_count = {"n": 0}
+        original = _rl.insert_pre_create
+        def boom(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] >= 2:
+                raise _sqlite3.OperationalError("simulated")
+            return original(*args, **kwargs)
+        monkeypatch.setattr(_rl, "insert_pre_create", boom)
+        lease, db_path = lease_and_conn_factory()
+        try:
+            # The step must NOT raise even when the inner call boom-fires:
+            _step_review_log_cadence(
+                cfg=_make_test_cfg(db_path), lease=lease,
+            )
+        finally:
+            lease.release(state="complete")
+        # Plan author: the run_pipeline_internal caller wraps _step_review_log_cadence
+        # in `try/except Exception as exc: log.warning(...)`, so even if the
+        # step does raise, the wrapper catches. This test asserts the step
+        # ITSELF tolerates the inner failure — verify the actual implementation
+        # propagates appropriately. If the step is wrapped in try/except inside
+        # run_pipeline_internal but NOT inside _step_review_log_cadence, this
+        # test asserts the expected raise; adjust per implementation choice.
 
-**Plan author note:** the `_FakeLease` shape depends on the existing `swing/pipeline/runner.py:Lease` API surface. Inspect [swing/pipeline/lease.py](../../swing/pipeline/lease.py) and [swing/pipeline/runner.py:130-138](../../swing/pipeline/runner.py#L130-L138) (acquire_lease + fenced_write usage). Test should construct a real lease in a tmp DB, OR a minimal duck-type. Reference the `_step_evaluate` test pattern in `tests/pipeline/test_runner.py` for the convention.
+
+def _make_test_cfg(db_path: Path):
+    """Lightweight Config for cadence-step tests."""
+    from swing.config import Config, ReviewConfig
+    from dataclasses import replace as dc_replace
+    cfg = Config()  # default constructor
+    cfg = dc_replace(cfg, paths=dc_replace(cfg.paths, db_path=db_path))
+    return cfg
 
 - [ ] **Step 2: Run failing tests**
 
@@ -2041,11 +2253,13 @@ git add swing/trades/review.py swing/pipeline/runner.py tests/pipeline/test_revi
 git commit -m "feat(phase6): Task 7 — pipeline _step_review_log_cadence + period helpers"
 ```
 
-### Task 8: CLI `swing trade review` + `swing trade review-list`
+### Task 8: CLI `swing trade review` (with `--list` flag) — R1 Major 2 fix
 
 **Files:**
-- Modify: `swing/cli.py` (add 2 new commands in trade_group)
+- Modify: `swing/cli.py` (add 1 dual-mode command in trade_group)
 - Create: `tests/cli/test_trade_review_cli.py`
+
+**R1 Major 2 contract preservation:** brief §3.1 specifies `swing trade review <trade_id>` AND `swing trade review --list`. Implementation uses a SINGLE `@trade_group.command("review")` function with: (a) `--list` as `is_flag=True` with early-return behavior; (b) `--trade-id`, grade flags, and `--lesson-learned` as `required=False` (validated post-hoc, ONLY in the non-list path). Click does not natively support "required-only-in-non-list-mode"; we simulate via post-parse validation in the function body that raises `click.UsageError` if `--list` is absent AND any required field is missing.
 
 - [ ] **Step 1: Write failing tests for the CLI commands**
 
@@ -2132,9 +2346,13 @@ db_path = "{populated_db.as_posix()}"
     assert "breakout" in row[6]
 
 
-def test_review_list_shows_pending_trades(
+def test_review_list_flag_shows_pending_trades(
     populated_db: Path, tmp_path: Path,
 ) -> None:
+    """R1 Major 2: brief §3.1 contract is `swing trade review --list`.
+
+    Single command with `--list` flag, NOT a separate `review-list` subcommand.
+    """
     config_toml = tmp_path / "config.toml"
     config_toml.write_text(f"""
 [paths]
@@ -2143,10 +2361,27 @@ db_path = "{populated_db.as_posix()}"
     runner = CliRunner()
     result = runner.invoke(main, [
         "--config", str(config_toml),
-        "trade", "review-list",
+        "trade", "review", "--list",
     ])
     assert result.exit_code == 0
-    assert "VIR" in result.output  # the inaugural trade is pending review
+    assert "VIR" in result.output
+
+
+def test_review_without_trade_id_or_list_flag_errors(
+    populated_db: Path, tmp_path: Path,
+) -> None:
+    """Missing `--trade-id` AND missing `--list` flag → UsageError."""
+    config_toml = tmp_path / "config.toml"
+    config_toml.write_text(f"""
+[paths]
+db_path = "{populated_db.as_posix()}"
+""")
+    runner = CliRunner()
+    result = runner.invoke(main, [
+        "--config", str(config_toml), "trade", "review",
+    ])
+    assert result.exit_code != 0
+    assert "trade-id" in result.output.lower() or "list" in result.output.lower()
 
 
 def test_review_unknown_mistake_tag_rejected(
@@ -2181,18 +2416,25 @@ Modify [swing/cli.py:339-498](../../swing/cli.py#L339-L498). Append to `trade_gr
 
 ```python
 @trade_group.command("review")
-@click.option("--trade-id", type=int, required=True)
+@click.option("--list", "list_mode", is_flag=True,
+              help="List closed trades pending review and exit. "
+                   "When set, all other args are ignored.")
+@click.option("--window-days", type=int, default=None,
+              help="Threshold in days since close (used with --list). "
+                   "Defaults to cfg.review.review_window_days.")
+@click.option("--trade-id", type=int, default=None,
+              help="REQUIRED unless --list is set.")
 @click.option(
     "--mistake-tags", multiple=True,
     help="Repeatable. e.g., --mistake-tags CHASED --mistake-tags FOMO. "
          "Use 'none_observed' if no mistakes (must NOT be combined with others).",
 )
 @click.option("--entry-grade", type=click.Choice(["A", "B", "C", "D", "F"]),
-              required=True)
+              default=None, help="REQUIRED unless --list is set.")
 @click.option("--management-grade", type=click.Choice(["A", "B", "C", "D", "F"]),
-              required=True)
+              default=None, help="REQUIRED unless --list is set.")
 @click.option("--exit-grade", type=click.Choice(["A", "B", "C", "D", "F"]),
-              required=True)
+              default=None, help="REQUIRED unless --list is set.")
 @click.option("--disqualifying-process-violation", is_flag=True,
               help="Set if any of the 7 v1.2 §9.2 disqualifying violations occurred. "
                    "Caps process_grade at D.")
@@ -2201,27 +2443,77 @@ Modify [swing/cli.py:339-498](../../swing/cli.py#L339-L498). Append to `trade_gr
               help="Counterfactual R if the original plan had been followed. Optional.")
 @click.option("--mistake-cost-confidence",
               type=click.Choice(["high", "medium", "low"]), default=None)
-@click.option("--lesson-learned", required=True,
-              help="Free-text reflection on the trade outcome.")
+@click.option("--lesson-learned", default=None,
+              help="REQUIRED unless --list is set. Free-text reflection.")
 @click.pass_context
 def trade_review_cmd(
-    ctx, trade_id, mistake_tags, entry_grade, management_grade, exit_grade,
+    ctx, list_mode, window_days, trade_id, mistake_tags,
+    entry_grade, management_grade, exit_grade,
     disqualifying_process_violation, realized_r_if_plan_followed,
     mistake_cost_confidence, lesson_learned,
 ):
-    """Record a post-trade review (Phase 6)."""
+    """Post-trade review (Phase 6).
+
+    Two modes:
+      `swing trade review --list`  → print pending-review trades and exit.
+      `swing trade review --trade-id N --entry-grade A ...`  → record a review.
+    """
     import json
-    from datetime import datetime as _dt
+    from datetime import date as _date, datetime as _dt
     from swing.data.db import connect
+    from swing.data.repos.review_log import list_unreviewed_closed_trades
     from swing.data.repos.trades import (
-        get_trade, list_exits_for_trade, update_trade_review_fields,
+        get_trade, update_trade_review_fields,
     )
     from swing.trades.review import (
-        canonicalize_mistake_tags, compute_actual_realized_R_effective,
-        compute_process_grade, validate_mistake_tags,
+        canonicalize_mistake_tags, compute_process_grade,
+        validate_mistake_tags,
     )
 
     cfg = ctx.obj["config"]
+    effective_window_days = (
+        window_days if window_days is not None
+        else cfg.review.review_window_days
+    )
+
+    # ---- LIST MODE ----
+    if list_mode:
+        conn = connect(cfg.paths.db_path)
+        try:
+            trades = list_unreviewed_closed_trades(
+                conn, window_days=effective_window_days,
+                today_iso=_date.today().isoformat(),
+            )
+        finally:
+            conn.close()
+        if not trades:
+            click.echo("No trades pending review.")
+            return
+        click.echo(
+            f"Trades pending review (closed >= {effective_window_days} days ago):"
+        )
+        for t in trades:
+            click.echo(f"  #{t.id} {t.ticker} entry={t.entry_date}")
+        return
+
+    # ---- REVIEW MODE — validate required args ----
+    missing = []
+    if trade_id is None:
+        missing.append("--trade-id")
+    if entry_grade is None:
+        missing.append("--entry-grade")
+    if management_grade is None:
+        missing.append("--management-grade")
+    if exit_grade is None:
+        missing.append("--exit-grade")
+    if not lesson_learned or not lesson_learned.strip():
+        missing.append("--lesson-learned")
+    if missing:
+        raise click.UsageError(
+            f"Missing required args (or pass --list to enter list mode): "
+            f"{', '.join(missing)}"
+        )
+
     conn = connect(cfg.paths.db_path)
     try:
         trade = get_trade(conn, trade_id)
@@ -2269,34 +2561,6 @@ def trade_review_cmd(
         f"Review recorded for trade #{trade_id} ({trade.ticker}). "
         f"Process grade: {process_grade}."
     )
-
-
-@trade_group.command("review-list")
-@click.option("--window-days", type=int, default=7,
-              help="Threshold in days since close. Default 7.")
-@click.pass_context
-def trade_review_list_cmd(ctx, window_days):
-    """List closed trades pending review (closed_date older than window_days)."""
-    from datetime import date as _date
-    from swing.data.db import connect
-    from swing.data.repos.review_log import list_unreviewed_closed_trades
-
-    cfg = ctx.obj["config"]
-    conn = connect(cfg.paths.db_path)
-    try:
-        trades = list_unreviewed_closed_trades(
-            conn, window_days=window_days,
-            today_iso=_date.today().isoformat(),
-        )
-    finally:
-        conn.close()
-
-    if not trades:
-        click.echo("No trades pending review.")
-        return
-    click.echo(f"Trades pending review (closed >= {window_days} days ago):")
-    for t in trades:
-        click.echo(f"  #{t.id} {t.ticker} entry={t.entry_date}")
 ```
 
 - [ ] **Step 4: Run tests to confirm they pass**
@@ -2480,14 +2744,60 @@ from swing.web.view_models.trades import ReviewVM, build_review_vm
 
 
 @pytest.fixture
-def populated_db(tmp_path: Path) -> Path:
-    # Plan author: shape mirrors Task 6's fixture (closed trade present).
-    ...
+def populated_db_cfg(tmp_path: Path):
+    """Fixture: tmp DB seeded with one closed trade (id=1) + one open
+    (id=2). Returns a Config bound to the tmp DB so build_review_vm has
+    a real cfg.paths.db_path to read from.
+    """
+    from dataclasses import replace as dc_replace
+    from swing.config import Config
+    from swing.data.db import connect
+    from swing.data.models import Exit, Trade
+    from swing.data.repos.trades import (
+        insert_exit_with_event, insert_trade_with_event,
+    )
+    db_path = tmp_path / "phase6.db"
+    conn = connect(db_path)
+    with conn:
+        # Closed trade
+        t1 = insert_trade_with_event(
+            conn, Trade(
+                id=None, ticker="VIR", entry_date="2026-04-20",
+                entry_price=10.0, initial_shares=10, initial_stop=9.0,
+                current_stop=9.0, status="closed",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ),
+            event_ts="2026-04-20T09:30:00",
+        )
+        insert_exit_with_event(
+            conn, Exit(
+                id=None, trade_id=t1, exit_date="2026-04-25",
+                exit_price=11.5, shares=10, reason="manual",
+                realized_pnl=15.0, r_multiple=1.5, notes=None,
+            ),
+            event_ts="2026-04-25T09:30:00",
+        )
+        # Open trade
+        insert_trade_with_event(
+            conn, Trade(
+                id=None, ticker="DHC", entry_date="2026-04-27",
+                entry_price=7.58, initial_shares=39, initial_stop=7.30,
+                current_stop=7.30, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ),
+            event_ts="2026-04-27T09:30:00",
+        )
+    conn.close()
+    cfg = Config()
+    cfg = dc_replace(cfg, paths=dc_replace(cfg.paths, db_path=db_path))
+    return cfg
 
 
-def test_review_vm_has_5_existing_base_layout_fields(populated_db: Path) -> None:
+def test_review_vm_has_5_existing_base_layout_fields(populated_db_cfg) -> None:
     """Brief §6.2 watch item 8: ReviewVM must inherit existing base.html.j2 fields."""
-    vm = build_review_vm(trade_id=1, cfg=load_config(...))
+    vm = build_review_vm(trade_id=1, cfg=populated_db_cfg)
     assert vm is not None
     # Existing base-layout fields with safe defaults:
     assert hasattr(vm, "session_date")
@@ -2497,19 +2807,33 @@ def test_review_vm_has_5_existing_base_layout_fields(populated_db: Path) -> None
     assert hasattr(vm, "ohlcv_source_degraded")
 
 
-def test_review_vm_for_open_trade_returns_none(populated_db: Path) -> None:
-    # Insert an open trade with id=2 in the fixture; assert build_review_vm
-    # returns None for it.
-    vm = build_review_vm(trade_id=2, cfg=load_config(...))
-    assert vm is None  # cannot review an open trade
+def test_review_vm_for_open_trade_returns_none(populated_db_cfg) -> None:
+    """Trade #2 is open (DHC); cannot review."""
+    vm = build_review_vm(trade_id=2, cfg=populated_db_cfg)
+    assert vm is None
 
 
-def test_review_vm_rejects_already_reviewed(populated_db: Path) -> None:
-    # Mark trade 1 reviewed; assert subsequent build_review_vm returns
-    # None or sets a `is_already_reviewed` flag — plan author chooses
-    # interface (the spec defers V1 single-review-per-trade to direct DB
-    # edit per brief §3.2). Default: return None for already-reviewed.
-    ...
+def test_review_vm_rejects_already_reviewed(populated_db_cfg) -> None:
+    """V1 single-review-per-trade per brief §3.2."""
+    from datetime import datetime as _dt
+    from swing.data.db import connect
+    from swing.data.repos.trades import update_trade_review_fields
+    # Mark trade 1 reviewed:
+    conn = connect(populated_db_cfg.paths.db_path)
+    with conn:
+        update_trade_review_fields(
+            conn, trade_id=1,
+            reviewed_at=_dt.now().isoformat(timespec="seconds"),
+            mistake_tags_json='["none_observed"]',
+            entry_grade="A", management_grade="A", exit_grade="A",
+            process_grade="A", disqualifying_process_violation=False,
+            realized_R_if_plan_followed=None,
+            mistake_cost_confidence="",
+            lesson_learned="Test review.",
+        )
+    conn.close()
+    vm = build_review_vm(trade_id=1, cfg=populated_db_cfg)
+    assert vm is None  # already reviewed → 404 in the GET handler
 ```
 
 - [ ] **Step 2: Run failing tests**
@@ -2960,6 +3284,380 @@ git add swing/web/routes/trades.py tests/web/test_review_route.py
 git commit -m "feat(phase6): Task 12 — POST /trades/{id}/review (HX-Redirect on success)"
 ```
 
+### Task 12b: `cfg.review.review_window_days` + cadence-completion CLI + cadence-completion web (R1 Critical 1 + R1 Major 3 fix)
+
+**Files:**
+- Modify: `swing/config.py` (new `ReviewConfig` section + `review: ReviewConfig` field on top-level `Config`)
+- Modify: `swing.config.toml` (add `[review]` section with `review_window_days = 7`)
+- Modify: `swing/cli.py` (add new `@main.group("review")` + `@review_group.command("complete")`)
+- Modify: `swing/web/routes/trades.py` (add `GET /reviews/{review_id}/complete` + `POST /reviews/{review_id}/complete`)
+- Modify: `swing/web/view_models/trades.py` (add `CadenceCompleteVM` + `build_cadence_complete_vm`)
+- Create: `swing/web/templates/cadence_complete.html.j2`
+- Create: `swing/web/templates/partials/cadence_complete_form.html.j2`
+- Create: `tests/cli/test_review_complete_cli.py`
+- Create: `tests/web/test_cadence_complete_route.py`
+
+- [ ] **Step 1: Write failing tests for `cfg.review.review_window_days` defaulting to 7**
+
+```python
+# Append to tests/data/test_review_log_repo.py:
+
+def test_review_config_default_window_days_is_7() -> None:
+    """Brief §2.6 — `cfg.review.review_window_days` default = 7."""
+    from swing.config import load_config
+    cfg = load_config()
+    assert cfg.review.review_window_days == 7
+```
+
+- [ ] **Step 2: Add `ReviewConfig` to `swing/config.py`**
+
+Append to `swing/config.py`:
+
+```python
+@dataclass(frozen=True)
+class ReviewConfig:
+    """Phase 6 post-trade review tunables. V1 surfaces only the cadence
+    review window. V2 may add more (cadence calendar policy, etc.)."""
+    review_window_days: int = 7
+```
+
+Add `review: ReviewConfig` to the top-level `Config` dataclass (with default `field(default_factory=ReviewConfig)`).
+
+- [ ] **Step 3: Write failing tests for `swing review complete` CLI**
+
+```python
+# tests/cli/test_review_complete_cli.py
+"""CLI tests for `swing review complete --review-id <id> --primary-lesson "..."`."""
+import pytest
+from click.testing import CliRunner
+
+from swing.cli import main
+
+
+def test_review_complete_freezes_aggregates(populated_db_with_pending_daily, tmp_path):
+    """Atomic completion: closed trades in the period are computed
+    and frozen on the row.
+    """
+    config_toml = tmp_path / "config.toml"
+    config_toml.write_text(f"""
+[paths]
+db_path = "{populated_db_with_pending_daily.as_posix()}"
+""")
+    runner = CliRunner()
+    result = runner.invoke(main, [
+        "--config", str(config_toml),
+        "review", "complete",
+        "--review-id", "1",
+        "--duration-minutes", "12",
+        "--primary-lesson", "Inaugural review.",
+        "--next-period-focus", "Same setup.",
+    ])
+    assert result.exit_code == 0, result.output
+
+    # Verify freeze: re-read the row, assert completed_date + aggregates
+    # populated; n_trades_reviewed > 0.
+    from swing.data.db import connect
+    conn = connect(populated_db_with_pending_daily)
+    row = conn.execute(
+        """SELECT completed_date, primary_lesson, n_trades_reviewed,
+                  net_R_effective, profit_factor
+           FROM review_log WHERE review_id = 1"""
+    ).fetchone()
+    conn.close()
+    assert row[0] is not None  # completed_date set
+    assert "Inaugural" in row[1]
+    assert row[2] >= 1
+
+
+def test_review_complete_list_mode_shows_pending(populated_db_with_pending_daily, tmp_path):
+    config_toml = tmp_path / "config.toml"
+    config_toml.write_text(f"""
+[paths]
+db_path = "{populated_db_with_pending_daily.as_posix()}"
+""")
+    runner = CliRunner()
+    result = runner.invoke(main, [
+        "--config", str(config_toml),
+        "review", "complete", "--list",
+    ])
+    assert result.exit_code == 0
+    assert "daily" in result.output.lower()
+```
+
+- [ ] **Step 4: Implement `swing review complete` CLI**
+
+Append to `swing/cli.py` (NEW top-level group, NOT under `trade_group`):
+
+```python
+@main.group("review")
+def review_group() -> None:
+    """Phase 6: cadence review (daily / weekly / monthly Review_Log completion)."""
+
+
+@review_group.command("complete")
+@click.option("--list", "list_mode", is_flag=True,
+              help="List pending Review_Log rows (completed_date IS NULL) and exit.")
+@click.option("--review-id", type=int, default=None,
+              help="REQUIRED unless --list is set.")
+@click.option("--duration-minutes", type=int, default=None,
+              help="REQUIRED unless --list. Operator-self-reported review duration.")
+@click.option("--primary-lesson", default=None,
+              help="REQUIRED unless --list. The single most important lesson.")
+@click.option("--next-period-focus", default=None,
+              help="REQUIRED unless --list. What to focus on next period.")
+@click.pass_context
+def review_complete_cmd(
+    ctx, list_mode, review_id, duration_minutes, primary_lesson,
+    next_period_focus,
+):
+    """Mark a Review_Log row complete + freeze aggregates atomically.
+
+    Atomic compute-and-freeze per brief §6.2 watch item 3 — caller does
+    NOT supply aggregates; complete_review_atomic owns the transaction.
+    """
+    from datetime import date as _date
+    from swing.data.db import connect
+    from swing.data.repos.review_log import (
+        complete_review_atomic, list_pending,
+    )
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        if list_mode:
+            pending = list_pending(conn)
+            if not pending:
+                click.echo("No pending cadence reviews.")
+                return
+            click.echo("Pending cadence reviews:")
+            for r in pending:
+                click.echo(
+                    f"  #{r.review_id} {r.review_type} "
+                    f"{r.period_start}..{r.period_end} "
+                    f"scheduled={r.scheduled_date}"
+                )
+            return
+
+        missing = []
+        if review_id is None:
+            missing.append("--review-id")
+        if duration_minutes is None:
+            missing.append("--duration-minutes")
+        if not primary_lesson or not primary_lesson.strip():
+            missing.append("--primary-lesson")
+        if not next_period_focus or not next_period_focus.strip():
+            missing.append("--next-period-focus")
+        if missing:
+            raise click.UsageError(
+                f"Missing required args (or pass --list to enter list mode): "
+                f"{', '.join(missing)}"
+            )
+
+        complete_review_atomic(
+            conn, review_id=review_id,
+            completed_date=_date.today().isoformat(),
+            duration_minutes=duration_minutes,
+            primary_lesson=primary_lesson,
+            next_period_focus=next_period_focus,
+        )
+    finally:
+        conn.close()
+    click.echo(f"Review #{review_id} marked complete + aggregates frozen.")
+```
+
+- [ ] **Step 5: Write failing tests for the cadence-completion web route**
+
+```python
+# tests/web/test_cadence_complete_route.py
+"""Cadence-completion web route tests (R1 Critical 1)."""
+from fastapi.testclient import TestClient
+
+
+def test_get_cadence_complete_form(test_app_with_pending_daily):
+    with TestClient(test_app_with_pending_daily) as client:
+        r = client.get("/reviews/1/complete")
+    assert r.status_code == 200
+    assert "primary_lesson" in r.text
+    assert "next_period_focus" in r.text
+    assert "duration_minutes" in r.text
+
+
+def test_post_cadence_complete_returns_204_with_hx_redirect(
+    test_app_with_pending_daily,
+):
+    with TestClient(test_app_with_pending_daily) as client:
+        r = client.post(
+            "/reviews/1/complete",
+            data={
+                "duration_minutes": "12",
+                "primary_lesson": "Inaugural.",
+                "next_period_focus": "Same setup.",
+            },
+            headers={"HX-Request": "true"},
+            follow_redirects=False,
+        )
+    assert r.status_code == 204
+    assert r.headers.get("HX-Redirect") == "/"
+
+
+def test_get_cadence_complete_404_for_unknown_review(test_app_with_pending_daily):
+    with TestClient(test_app_with_pending_daily) as client:
+        r = client.get("/reviews/9999/complete")
+    assert r.status_code == 404
+
+
+def test_get_cadence_complete_404_for_already_completed(test_app_with_completed_daily):
+    with TestClient(test_app_with_completed_daily) as client:
+        r = client.get("/reviews/1/complete")
+    assert r.status_code == 404
+```
+
+- [ ] **Step 6: Implement web handlers + VM + templates**
+
+Append to `swing/web/view_models/trades.py`:
+
+```python
+@dataclass(frozen=True)
+class CadenceCompleteVM:
+    review: ReviewLog
+    n_closed_trades_in_period: int
+    # 5-VM existing-fields safe defaults:
+    session_date: str = ""
+    stale_banner: str = ""
+    price_source_degraded: bool = False
+    price_source_degraded_until: str | None = None
+    ohlcv_source_degraded: bool = False
+
+
+def build_cadence_complete_vm(*, review_id: int, cfg: Config) -> CadenceCompleteVM | None:
+    """Returns None for unknown review or already-completed review (404 in route)."""
+    from swing.data.repos.review_log import get
+    conn = connect(cfg.paths.db_path)
+    try:
+        review = get(conn, review_id)
+        if review is None or review.completed_date is not None:
+            return None
+        # Pre-render the count of closed trades in the period (helper text):
+        from datetime import date as _date
+        from swing.data.repos.trades import list_all_exits, list_closed_trades
+        closed = list_closed_trades(conn)
+        all_exits = list_all_exits(conn)
+        ps = _date.fromisoformat(review.period_start)
+        pe = _date.fromisoformat(review.period_end)
+        n = 0
+        for t in closed:
+            relevant = [
+                _date.fromisoformat(e.exit_date) for e in all_exits
+                if e.trade_id == t.id
+            ]
+            if relevant and ps <= max(relevant) <= pe:
+                n += 1
+    finally:
+        conn.close()
+    return CadenceCompleteVM(review=review, n_closed_trades_in_period=n)
+```
+
+Append to `swing/web/routes/trades.py`:
+
+```python
+@router.get("/reviews/{review_id}/complete", response_class=HTMLResponse)
+def cadence_complete_form(request: Request, review_id: int):
+    cfg = apply_overrides(request.app.state.cfg)
+    templates = request.app.state.templates
+    from swing.web.view_models.trades import build_cadence_complete_vm
+    vm = build_cadence_complete_vm(review_id=review_id, cfg=cfg)
+    if vm is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Review #{review_id} not found or already completed",
+        )
+    return templates.TemplateResponse(
+        request, "cadence_complete.html.j2", {"vm": vm},
+    )
+
+
+@router.post("/reviews/{review_id}/complete")
+def cadence_complete_post(
+    request: Request, review_id: int,
+    duration_minutes: int = Form(...),
+    primary_lesson: str = Form(...),
+    next_period_focus: str = Form(...),
+):
+    from datetime import date as _date
+    from fastapi.responses import Response
+    from swing.data.repos.review_log import complete_review_atomic, get
+    cfg = apply_overrides(request.app.state.cfg)
+    conn = connect(cfg.paths.db_path)
+    try:
+        review = get(conn, review_id)
+        if review is None:
+            raise HTTPException(status_code=404)
+        if review.completed_date is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Review already completed",
+            )
+        complete_review_atomic(
+            conn, review_id=review_id,
+            completed_date=_date.today().isoformat(),
+            duration_minutes=duration_minutes,
+            primary_lesson=primary_lesson,
+            next_period_focus=next_period_focus,
+        )
+    finally:
+        conn.close()
+    # 204 + HX-Redirect to dashboard so cadence card flips to "completed":
+    return Response(status_code=204, headers={"HX-Redirect": "/"})
+```
+
+Create `swing/web/templates/cadence_complete.html.j2`:
+
+```jinja
+{% extends "base.html.j2" %}
+{% block title %}Complete {{ vm.review.review_type }} review{% endblock %}
+{% block content %}
+<h1>Complete {{ vm.review.review_type|capitalize }} review</h1>
+<p>Period: {{ vm.review.period_start }} – {{ vm.review.period_end }}</p>
+<p>{{ vm.n_closed_trades_in_period }} trade{{ "s" if vm.n_closed_trades_in_period != 1 else "" }}
+   closed in this period.</p>
+{% include "partials/cadence_complete_form.html.j2" %}
+{% endblock %}
+```
+
+Create `swing/web/templates/partials/cadence_complete_form.html.j2`:
+
+```jinja
+<form method="post" action="/reviews/{{ vm.review.review_id }}/complete"
+      hx-post="/reviews/{{ vm.review.review_id }}/complete"
+      hx-headers='{"HX-Request": "true"}'>
+  <label>
+    Duration (minutes)
+    <input type="number" name="duration_minutes" required min="1">
+  </label>
+  <label>
+    Primary lesson
+    <textarea name="primary_lesson" required rows="3"></textarea>
+  </label>
+  <label>
+    Next-period focus
+    <textarea name="next_period_focus" required rows="3"></textarea>
+  </label>
+  <button type="submit">Mark complete + freeze aggregates</button>
+</form>
+```
+
+- [ ] **Step 7: Run all Task 12b tests**
+
+Run: `python -m pytest tests/cli/test_review_complete_cli.py tests/web/test_cadence_complete_route.py -v`
+Expected: all PASS.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add swing/config.py swing.config.toml swing/cli.py swing/web/routes/trades.py swing/web/view_models/trades.py swing/web/templates/cadence_complete.html.j2 swing/web/templates/partials/cadence_complete_form.html.j2 tests/cli/test_review_complete_cli.py tests/web/test_cadence_complete_route.py
+git commit -m "feat(phase6): Task 12b — cadence-completion CLI + web (R1 Critical 1 + Major 3 fix)"
+```
+
 ### Task 13: DashboardVM extensions + needs-review badge + cadence cards
 
 **Files:**
@@ -3039,7 +3737,7 @@ from swing.data.repos.review_log import count_needs_review, list_recent
 
 with connect(cfg.paths.db_path) as conn:
     needs_review = count_needs_review(
-        conn, window_days=7,
+        conn, window_days=cfg.review.review_window_days,
         today_iso=_date.today().isoformat(),
     )
     cadence_cards: dict[str, CadenceCardVM | None] = {}
@@ -3264,25 +3962,46 @@ Append to [swing/web/routes/trades.py](../../swing/web/routes/trades.py):
 @router.get("/reviews/pending", response_class=HTMLResponse)
 def reviews_pending(request: Request):
     """Phase 6: list closed-and-unreviewed trades whose final exit was at
-    least `cfg.review.review_window_days` ago (default 7). Linked from the
-    dashboard 'Needs review (N)' badge."""
-    from datetime import date as _date
-    from swing.data.repos.review_log import list_unreviewed_closed_trades
+    least `cfg.review.review_window_days` ago. Linked from the dashboard
+    'Needs review (N)' badge."""
     cfg = apply_overrides(request.app.state.cfg)
     templates = request.app.state.templates
+    from swing.web.view_models.trades import build_reviews_pending_vm
+    vm = build_reviews_pending_vm(cfg=cfg)
+    return templates.TemplateResponse(
+        request, "reviews_pending.html.j2", {"vm": vm},
+    )
+```
+
+Add `ReviewsPendingVM` + `build_reviews_pending_vm` to `swing/web/view_models/trades.py`:
+
+```python
+@dataclass(frozen=True)
+class ReviewsPendingVM:
+    trades: tuple[Trade, ...]
+    window_days: int
+    # 5-VM existing-fields safe defaults:
+    session_date: str = ""
+    stale_banner: str = ""
+    price_source_degraded: bool = False
+    price_source_degraded_until: str | None = None
+    ohlcv_source_degraded: bool = False
+
+
+def build_reviews_pending_vm(*, cfg: Config) -> ReviewsPendingVM:
+    from datetime import date as _date
+    from swing.data.repos.review_log import list_unreviewed_closed_trades
     conn = connect(cfg.paths.db_path)
     try:
-        # Plan author: cfg.review.review_window_days default = 7 (per locked
-        # decision §2.6). Surface in config when Phase 6 V2 ships; for V1,
-        # hardcode the constant.
         trades = list_unreviewed_closed_trades(
-            conn, window_days=7,
+            conn, window_days=cfg.review.review_window_days,
             today_iso=_date.today().isoformat(),
         )
     finally:
         conn.close()
-    return templates.TemplateResponse(
-        request, "reviews_pending.html.j2", {"trades": trades},
+    return ReviewsPendingVM(
+        trades=tuple(trades),
+        window_days=cfg.review.review_window_days,
     )
 ```
 
@@ -3293,11 +4012,12 @@ Create `swing/web/templates/reviews_pending.html.j2`:
 {% block title %}Pending reviews{% endblock %}
 {% block content %}
 <h1>Trades pending review</h1>
-{% if not trades %}
+<p>Closed at least {{ vm.window_days }} day{{ "s" if vm.window_days != 1 else "" }} ago.</p>
+{% if not vm.trades %}
 <p>No trades pending review.</p>
 {% else %}
 <ul>
-  {% for t in trades %}
+  {% for t in vm.trades %}
   <li>
     <a href="/trades/{{ t.id }}/review">#{{ t.id }} — {{ t.ticker }}</a>
     (entry {{ t.entry_date }} @ ${{ "%.2f"|format(t.entry_price) }})
@@ -3307,8 +4027,6 @@ Create `swing/web/templates/reviews_pending.html.j2`:
 {% endif %}
 {% endblock %}
 ```
-
-Plan author: ensure `base.html.j2`'s 5-field VM expectation is satisfied — the simple `{trades}` context dict won't have `vm.session_date` etc. **Resolution:** wrap `trades` in a `ReviewsPendingVM` dataclass with the 5 base-layout fields (or pass a `vm=ReviewsPendingVM(trades=trades, session_date=..., ...)`). See task 10 for the same pattern.
 
 - [ ] **Step 4: Run tests to confirm they pass**
 
@@ -3365,7 +4083,11 @@ This step is BLOCKING for Phase 6 done-criteria. The operator (or executing-impl
    - DB row has all 10 review fields populated.
    - Trade no longer appears in `/reviews/pending`.
 
-6. **Review revisit shows correct frozen aggregates.** After completing one review, navigate to dashboard. The cadence card for the period containing this trade should show the aggregates (e.g., n_trades_reviewed > 0). Close another trade in the same period. Reload dashboard. Verify the cadence card aggregates DID NOT change (frozen-at-completion).
+6. **Review revisit shows correct frozen aggregates.** After per-trade review on VIR, run the cadence-completion path: visit `/reviews/{id}/complete` for the daily Review_Log row covering VIR's close date (or invoke `swing review complete --review-id <id> --duration-minutes 10 --primary-lesson "Inaugural" --next-period-focus "Same setup"`). Verify:
+   - Form renders correctly with period range + closed-trade count.
+   - Submit redirects to `/` (dashboard).
+   - Cadence card for "daily" flips from PENDING → COMPLETED with the period's aggregates frozen on the row.
+   - Close another trade in the same period (or simulate via DB edit). Reload dashboard. Verify the cadence card aggregates DID NOT change (frozen-at-completion atomic R1 Major 1 fix).
 
 If ANY of the 6 verifications fail, the dispatch is BLOCKED until fixed. Capture the failure in the return report §3.
 
@@ -3406,7 +4128,7 @@ The branch `phase6-post-trade-review` is ready for the orchestrator's merge step
 ## §K — Done criteria (cross-checked against brief §7)
 
 - [x] Plan committed to `docs/superpowers/plans/2026-05-02-phase6-post-trade-review-plan.md` with conventional-commit message.
-- [x] Plan structure follows §G guidance (schema-first slice Tasks 1-9; web slice Tasks 10-14; verification Task 15).
+- [x] Plan structure follows §G guidance (schema-first slice Tasks 1-9; web slice Tasks 10-12 + 12b + 13-14; verification Task 15). Task 12b added in R1 to ship cadence-completion (CLI + web + atomic-freeze).
 - [x] Every locked decision in brief §2 is reflected in a plan task:
   - §2.1 cross-cutting drops/defers: respected (no playbook entity, no quality scoring, no pyramiding R-views, no trade_origin enum, no thesis/why_now/etc., circuit breaker default-disabled aligned).
   - §2.2 Mistake_Tags taxonomy: Task 3.
