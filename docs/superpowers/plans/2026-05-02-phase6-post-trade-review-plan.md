@@ -78,7 +78,7 @@ These are findings from the §0 empirical audit that diverge from the brief's pr
 | `swing/web/templates/dashboard.html.j2` | Include `partials/needs_review_badge.html.j2` and `partials/cadence_cards.html.j2`. |
 | `swing/web/app.py` | No edits expected. Review routes (`/trades/{id}/review`, `/reviews/pending`, `/reviews/{id}/complete`) all piggyback on the existing `swing.web.routes.trades` router. If a future route module split is justified, capture as a separate dispatch — Phase 6 default keeps module count stable. (R1 Minor 1 ownership-drift fix.) |
 | `swing/config.py` | Add new `ReviewConfig` section dataclass with `review_window_days: int = 7` field. Add `review: ReviewConfig` to the top-level `Config` dataclass. Mirrors Phase 5's `cfg.web.chase_factor` pattern. (R1 Major 3 missing-config fix.) |
-| `swing/pipeline/runner.py` | Add `_step_review_log_cadence(*, cfg, lease)` function (idempotent; logs but does NOT raise on errors); call it AFTER `lease.step("complete")` line so it's outside the primary value chain (cadence is auxiliary; export is the value emission). |
+| `swing/pipeline/runner.py` | Add `_step_review_log_cadence(*, lease)` function (no `cfg` param — `lease.fenced_write()` already provides the cfg-bound DB connection; R3 Major 1 fix). Function is idempotent. Internally does NOT swallow exceptions; the `run_pipeline_internal` caller wraps it in try/except `log.warning(...)` so the cadence is auxiliary (export is the primary value emission). Call site lands AFTER `lease.step("complete")`. |
 | `swing/trades/exit.py` | Add `final_exit_closed_trade: bool` flag on the result type returned by `record_exit` (exposes whether THIS exit was the final one). The flag is necessary so soft-warn surfaces deterministically from BOTH web and CLI close paths. |
 
 ---
@@ -2792,9 +2792,16 @@ def populated_db_cfg(tmp_path: Path):
     """Fixture: tmp DB seeded with one closed trade (id=1) + one open
     (id=2). Returns a Config bound to the tmp DB so build_review_vm has
     a real cfg.paths.db_path to read from.
+
+    Construction strategy: load the project's tracked swing.config.toml
+    via swing.config.load() (which has all required sections populated
+    correctly) and use dataclasses.replace to point db_path at the tmp
+    DB. Mirrors the test_app_half_exited fixture pattern (Task 9). Direct
+    Config(...) construction is NOT possible — Config has many required
+    fields and is not zero-arg constructible. (R4 Major 1 fix.)
     """
     from dataclasses import replace as dc_replace
-    from swing.config import Config
+    from swing.config import load
     from swing.data.db import connect
     from swing.data.models import Exit, Trade
     from swing.data.repos.trades import (
@@ -2834,8 +2841,8 @@ def populated_db_cfg(tmp_path: Path):
             event_ts="2026-04-27T09:30:00",
         )
     conn.close()
-    cfg = Config()
-    cfg = dc_replace(cfg, paths=dc_replace(cfg.paths, db_path=db_path))
+    base_cfg = load(Path("swing.config.toml"))
+    cfg = dc_replace(base_cfg, paths=dc_replace(base_cfg.paths, db_path=db_path))
     return cfg
 
 
