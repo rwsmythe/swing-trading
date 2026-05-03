@@ -14,6 +14,9 @@ parameterized inputs.
 from __future__ import annotations
 
 import unicodedata
+from datetime import date
+
+from swing.data.models import Exit, Trade
 
 # ---- Mistake_Tags vocabulary (v1.2 §7.10 verbatim) ----
 
@@ -119,3 +122,95 @@ def compute_process_grade(
     if weighted >= 1.00:
         return "D"
     return "F"
+
+
+# ---- Cost / Lucky / R helpers (v1.2 §8.4 + §8.8 + §8.9) ----
+
+def compute_actual_realized_R_effective(
+    trade: Trade, exits: list[Exit],
+) -> float:
+    """Share-weighted realized R for `trade` per v1.2 §8.4.
+
+    Mirror of swing.journal.stats._trade_r — same formula. Re-implemented
+    here per the journal/-read-only carve-out (plan §A.1).
+    """
+    total = 0.0
+    for e in exits:
+        if e.trade_id != trade.id:
+            continue
+        total += e.r_multiple * (e.shares / trade.initial_shares)
+    return total
+
+
+def compute_mistake_cost_R(
+    *, realized_R_if_plan_followed: float | None,
+    actual_realized_R_effective: float,
+) -> float:
+    """v1.2 §8.8: max(0, plan - actual). Never netted with lucky."""
+    if realized_R_if_plan_followed is None:
+        return 0.0
+    return max(0.0, realized_R_if_plan_followed - actual_realized_R_effective)
+
+
+def compute_lucky_violation_R(
+    *, realized_R_if_plan_followed: float | None,
+    actual_realized_R_effective: float,
+) -> float:
+    """v1.2 §8.8: max(0, actual - plan). Never netted with cost."""
+    if realized_R_if_plan_followed is None:
+        return 0.0
+    return max(0.0, actual_realized_R_effective - realized_R_if_plan_followed)
+
+
+def compute_profit_factor(
+    closed_trades: list[Trade], exits: list[Exit],
+) -> float | None:
+    """v1.2 §8.9: sum(R where > 0) / abs(sum(R where < 0)).
+
+    Returns None when there are no losses (denominator zero). Returns 0.0 when
+    there are no wins but there are losses.
+    """
+    rs = [compute_actual_realized_R_effective(t, exits) for t in closed_trades]
+    gross_wins = sum(r for r in rs if r > 0)
+    gross_losses = sum(r for r in rs if r < 0)
+    if gross_losses == 0:
+        return None
+    return gross_wins / abs(gross_losses)
+
+
+def compute_max_drawdown_R(
+    closed_trades: list[Trade], exits: list[Exit],
+) -> float:
+    """Maximum peak-to-trough drawdown over the closed-date-ordered cumulative
+    R-series. Returned as a non-negative magnitude. Returns 0.0 for empty
+    input or no drawdown.
+    """
+    if not closed_trades:
+        return 0.0
+    decorated = sorted(
+        ((t, compute_actual_realized_R_effective(t, exits),
+          _trade_closed_date_for_review(t, exits))
+         for t in closed_trades),
+        key=lambda x: x[2] or date.min,
+    )
+    cumulative = 0.0
+    peak = 0.0
+    max_drawdown = 0.0
+    for _t, r, _cd in decorated:
+        cumulative += r
+        if cumulative > peak:
+            peak = cumulative
+        drawdown = peak - cumulative
+        if drawdown > max_drawdown:
+            max_drawdown = drawdown
+    return max_drawdown
+
+
+def _trade_closed_date_for_review(trade: Trade, exits: list[Exit]) -> date | None:
+    """Mirror of swing.journal.stats._trade_closed_date — same formula.
+    Re-implemented per journal/-read-only carve-out (plan §A.1).
+    """
+    if trade.status != "closed":
+        return None
+    relevant = [e.exit_date for e in exits if e.trade_id == trade.id]
+    return max(date.fromisoformat(d) for d in relevant) if relevant else None
