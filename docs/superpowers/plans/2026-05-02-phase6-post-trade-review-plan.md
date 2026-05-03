@@ -1566,24 +1566,16 @@ class TestCompleteReviewAtomic:
         assert row.win_rate == pytest.approx(1.0)
         assert row.profit_factor is None  # no losses
 
-    def test_atomic_blocks_late_writer(
-        self, conn: sqlite3.Connection,
-    ) -> None:
-        """A trade close concurrent with complete_review_atomic must not be
-        seen by the freeze (transaction isolation).
-
-        Implementation: open a SECOND connection, hold a write transaction
-        on it (but NOT commit), then call complete_review_atomic on the
-        primary connection. Verify the primary completes by reading from
-        its own snapshot. The second connection's pending insert is NOT
-        visible to the primary (READ COMMITTED equivalent in SQLite WAL
-        mode; or fully serialized in journal mode).
-        """
-        # Plan author: this test exercises SQLite's transaction isolation.
-        # See swing/data/db.py for the connect() factory's PRAGMA settings.
-        # If WAL mode is on, snapshot isolation applies. If journal mode,
-        # writers block but readers see committed state.
-        ...  # implementer flesh-out per the project's existing transaction tests
+    # NOTE: a separate concurrent-writer transaction-isolation test is
+    # NOT included here because the integration test in Task 14
+    # (test_review_aggregates_frozen_when_more_trades_close) already
+    # exercises the operational invariant — a trade close AFTER
+    # complete_review_atomic does not mutate the row's frozen state.
+    # SQLite's BEGIN IMMEDIATE acquires the RESERVED lock immediately,
+    # so concurrent writers either commit before us (visible in our
+    # SELECT inside the transaction) or block until we COMMIT (not
+    # visible). Both branches preserve the snapshot — there is no
+    # additional discriminating power from a multi-connection unit test.
 
 
 class TestCountNeedsReview:
@@ -1886,8 +1878,12 @@ def list_pending(
 ) -> list[ReviewLog]:
     """Pre-created cadence rows whose `completed_date IS NULL`.
 
-    Used by the cadence-completion CLI (`swing review complete --list`) and
-    the /reviews/pending list view to surface what the operator owes.
+    Used ONLY by the cadence-completion CLI (`swing review complete --list`)
+    and a future cadence-pending dashboard surface (V2). NOT used by the
+    `/reviews/pending` route — that route surfaces unreviewed CLOSED TRADES
+    (different entity) via `list_unreviewed_closed_trades`. The two
+    "pending" concepts are unrelated; see file-map docstring for the
+    explicit semantic split. (R2 Minor 2 + R3 Minor 1 clarification.)
     """
     if review_type is None:
         rows = conn.execute(
@@ -2091,7 +2087,7 @@ class TestStepReviewLogCadence:
         from swing.pipeline.runner import _step_review_log_cadence
         lease, db_path = lease_and_conn_factory()
         try:
-            _step_review_log_cadence(cfg=_make_test_cfg(db_path), lease=lease)
+            _step_review_log_cadence(lease=lease)
         finally:
             lease.release(state="complete")
         c = _connect(db_path)
@@ -2107,9 +2103,7 @@ class TestStepReviewLogCadence:
         for _ in range(2):
             lease, db_path = lease_and_conn_factory()
             try:
-                _step_review_log_cadence(
-                    cfg=_make_test_cfg(db_path), lease=lease,
-                )
+                _step_review_log_cadence(lease=lease)
             finally:
                 lease.release(state="complete")
         c = _connect(db_path)
@@ -2117,47 +2111,39 @@ class TestStepReviewLogCadence:
         c.close()
         assert n == 3  # idempotent — second call adds zero rows
 
-    def test_step_errors_log_warning_but_do_not_raise(
-        self, lease_and_conn_factory, caplog, monkeypatch,
+    def test_step_does_not_propagate_internal_errors(
+        self, lease_and_conn_factory, monkeypatch,
     ) -> None:
-        """Force an OperationalError inside insert_pre_create; assert the
-        step logs WARNING and returns None (no exception)."""
+        """When insert_pre_create raises mid-loop, the cadence step must
+        propagate the exception (per the implementation that does NOT
+        catch internally — the run_pipeline_internal wrapper logs+continues).
+
+        This test asserts the IMPLEMENTATION'S contract — the function does
+        NOT swallow exceptions; the WRAPPER does. Brief §6.2 watch item 13
+        is satisfied at the WRAPPER layer (run_pipeline_internal try/except
+        log.warning), not inside _step_review_log_cadence.
+        """
         import sqlite3 as _sqlite3
-        from swing.pipeline.runner import _step_review_log_cadence
-        # Wrap insert_pre_create to raise after first write:
         from swing.data.repos import review_log as _rl
+        from swing.pipeline.runner import _step_review_log_cadence
+
         call_count = {"n": 0}
         original = _rl.insert_pre_create
+
         def boom(*args, **kwargs):
             call_count["n"] += 1
             if call_count["n"] >= 2:
-                raise _sqlite3.OperationalError("simulated")
+                raise _sqlite3.OperationalError("simulated mid-loop failure")
             return original(*args, **kwargs)
+
         monkeypatch.setattr(_rl, "insert_pre_create", boom)
+
         lease, db_path = lease_and_conn_factory()
         try:
-            # The step must NOT raise even when the inner call boom-fires:
-            _step_review_log_cadence(
-                cfg=_make_test_cfg(db_path), lease=lease,
-            )
+            with pytest.raises(_sqlite3.OperationalError):
+                _step_review_log_cadence(lease=lease)
         finally:
             lease.release(state="complete")
-        # Plan author: the run_pipeline_internal caller wraps _step_review_log_cadence
-        # in `try/except Exception as exc: log.warning(...)`, so even if the
-        # step does raise, the wrapper catches. This test asserts the step
-        # ITSELF tolerates the inner failure — verify the actual implementation
-        # propagates appropriately. If the step is wrapped in try/except inside
-        # run_pipeline_internal but NOT inside _step_review_log_cadence, this
-        # test asserts the expected raise; adjust per implementation choice.
-
-
-def _make_test_cfg(db_path: Path):
-    """Lightweight Config for cadence-step tests."""
-    from swing.config import Config, ReviewConfig
-    from dataclasses import replace as dc_replace
-    cfg = Config()  # default constructor
-    cfg = dc_replace(cfg, paths=dc_replace(cfg.paths, db_path=db_path))
-    return cfg
 
 - [ ] **Step 2: Run failing tests**
 
@@ -2200,7 +2186,7 @@ Insert AFTER `_step_export` (around line 850) — plan author verifies anchor by
 # In run_pipeline_internal, after `lease.step("complete")` and before
 # `lease.release(state="complete")`:
 try:
-    _step_review_log_cadence(cfg=cfg, lease=lease)
+    _step_review_log_cadence(lease=lease)
 except Exception as exc:
     # Cadence pre-create is auxiliary — its failure must NOT roll back the
     # primary value chain (briefing emission). Log + continue. Brief §6.2
@@ -2208,7 +2194,7 @@ except Exception as exc:
     log.warning("review_log cadence step failed (continuing): %s", exc)
 
 
-def _step_review_log_cadence(*, cfg: Config, lease: Lease) -> None:
+def _step_review_log_cadence(*, lease: Lease) -> None:
     """Idempotent: pre-create one Review_Log row per cadence (daily/weekly/
     monthly) for the prior period, anchored on `last_completed_session(
     datetime.now())`. Quarterly + circuit_breaker schema-supported but no
@@ -2216,6 +2202,10 @@ def _step_review_log_cadence(*, cfg: Config, lease: Lease) -> None:
 
     Anchor is helper-internal — caller cannot supply an as-of-date that
     controls which prior period rows are created (brief §6.2 watch item 5).
+
+    No `cfg` parameter: the function uses `lease.fenced_write()` for the DB
+    connection (already cfg-bound at lease-acquire time) — passing cfg would
+    duplicate state. R3 Major 1 fix.
     """
     from datetime import datetime as _dt
     from swing.data.repos.review_log import insert_pre_create
@@ -2606,26 +2596,80 @@ def test_soft_warn_message_constant_includes_review_due_text() -> None:
     assert "7 days" in SOFT_WARN_REVIEW_DUE_MESSAGE
 
 
+@pytest.fixture
+def half_exited_trade_db(tmp_path: Path) -> Path:
+    """Tmp DB with one open trade (10 shares total, 5 already exited).
+    The remaining 5-share exit closes the trade → soft-warn surfaces.
+    """
+    from swing.data.db import connect
+    from swing.data.models import Exit, Trade
+    from swing.data.repos.trades import (
+        insert_exit_with_event, insert_trade_with_event,
+    )
+    db_path = tmp_path / "phase6.db"
+    conn = connect(db_path)
+    with conn:
+        trade_id = insert_trade_with_event(
+            conn, Trade(
+                id=None, ticker="VIR", entry_date="2026-04-20",
+                entry_price=10.0, initial_shares=10, initial_stop=9.0,
+                current_stop=9.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ),
+            event_ts="2026-04-20T09:30:00",
+        )
+        # First partial exit: 5 of 10 shares — trade stays open
+        insert_exit_with_event(
+            conn, Exit(
+                id=None, trade_id=trade_id, exit_date="2026-04-25",
+                exit_price=11.5, shares=5, reason="partial",
+                realized_pnl=7.5, r_multiple=1.5, notes=None,
+            ),
+            event_ts="2026-04-25T09:30:00",
+        )
+    conn.close()
+    return db_path
+
+
 def test_cli_exit_emits_soft_warn_when_final_exit_closes_trade(
-    populated_db, tmp_path,  # fixtures from Task 8 test file or shared conftest
+    half_exited_trade_db: Path, tmp_path: Path,
 ) -> None:
-    # Plan author: shape of fixture depends on existing test conventions.
-    # The trade is partially-exited with 5 of 10 shares; this command exits
-    # the remaining 5 → final close → soft-warn surfaces.
+    """Final-exit-closes-trade path: CLI emits SOFT_WARN_REVIEW_DUE_MESSAGE."""
+    config_toml = tmp_path / "config.toml"
+    config_toml.write_text(f"""
+[paths]
+db_path = "{half_exited_trade_db.as_posix()}"
+""")
     runner = CliRunner()
     result = runner.invoke(main, [
-        "--config", str(...),
+        "--config", str(config_toml),
         "trade", "exit",
         "--trade-id", "1", "--exit-date", "2026-05-02",
         "--exit-price", "12.0", "--shares", "5", "--reason", "manual",
     ])
+    assert result.exit_code == 0, result.output
     assert SOFT_WARN_REVIEW_DUE_MESSAGE in result.output
 
 
-def test_web_exit_post_surfaces_soft_warn_partial_when_final_exit_closes(
-    test_app_with_partial_exit,  # Plan author: builds app + DB + half-exited trade
+@pytest.fixture
+def test_app_half_exited(half_exited_trade_db: Path):
+    """FastAPI app bound to the half-exited DB fixture."""
+    from dataclasses import replace as dc_replace
+    from swing.config import load
+    from swing.web.app import create_app
+    # Load the project's swing.config.toml as a baseline, then point db_path
+    # at the half-exited fixture:
+    base_cfg = load(Path("swing.config.toml"))
+    cfg = dc_replace(base_cfg, paths=dc_replace(base_cfg.paths, db_path=half_exited_trade_db))
+    app = create_app(cfg)
+    return app
+
+
+def test_web_exit_post_surfaces_soft_warn_when_final_exit_closes(
+    test_app_half_exited,
 ) -> None:
-    with TestClient(test_app_with_partial_exit) as client:
+    with TestClient(test_app_half_exited) as client:
         response = client.post(
             "/trades/1/exit",
             data={
