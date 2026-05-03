@@ -219,6 +219,14 @@ def _trade_closed_date_for_review(trade: Trade, exits: list[Exit]) -> date | Non
 
 # ---- Cadence-period boundary helpers (locked decision §2.7) ----
 
+# ---- Soft-warn message constant (shared between web + CLI close paths) ----
+
+SOFT_WARN_REVIEW_DUE_MESSAGE: str = (
+    "Review due within 7 days. Run `swing trade review --trade-id <id>` "
+    "or visit /trades/<id>/review."
+)
+
+
 def compute_daily_period(now: datetime) -> tuple[date, date]:
     session = last_completed_session(now)
     return session, session

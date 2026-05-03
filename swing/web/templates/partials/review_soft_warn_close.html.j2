@@ -1,0 +1,13 @@
+{# Soft-warn at trade close. <div>-rooted (NOT <tr>) per CLAUDE.md gotcha. Browser-only
+   failure mode covered by template tests + operator-witnessed verification (Task 15). #}
+<div role="status" class="banner banner-soft-warn">
+  <p>Review due within 7 days.</p>
+  <p>
+    <a href="/trades/{{ trade_id }}/review"
+       hx-get="/trades/{{ trade_id }}/review"
+       hx-target="body"
+       hx-headers='{"HX-Request": "true"}'>Review now</a>
+    &middot;
+    <a href="#" onclick="document.getElementById('trade-close-soft-warn').innerHTML=''; return false;">Dismiss</a>
+  </p>
+</div>
