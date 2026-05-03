@@ -962,24 +962,22 @@ def trade_review_cmd(
     )
 
     cfg = ctx.obj["config"]
-    effective_window_days = window_days if window_days is not None else cfg.review.review_window_days
 
     # ---- LIST MODE ----
     if list_mode:
         conn = connect(cfg.paths.db_path)
         try:
+            # Spec §3.1: list-view shows ALL closed-unreviewed (window_days=None).
+            # The badge (count_needs_review) keeps using window_days; that's separate.
             trades = list_unreviewed_closed_trades(
-                conn, window_days=effective_window_days,
-                today_iso=_date.today().isoformat(),
+                conn, window_days=None, today_iso=None,
             )
         finally:
             conn.close()
         if not trades:
             click.echo("No trades pending review.")
             return
-        click.echo(
-            f"Trades pending review (closed >= {effective_window_days} days ago):"
-        )
+        click.echo("Trades pending review (all closed trades awaiting review):")
         for t in trades:
             click.echo(f"  #{t.id} {t.ticker} entry={t.entry_date}")
         return

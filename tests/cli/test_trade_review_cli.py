@@ -156,3 +156,81 @@ def test_review_unknown_mistake_tag_rejected(tmp_path: Path) -> None:
     ])
     assert result.exit_code != 0
     assert "unknown mistake tag" in result.output.lower()
+
+
+def _seed_recently_closed_trade(db_path: Path) -> int:
+    """Seed a trade closed YESTERDAY (within the 7-day window). Returns trade_id."""
+    from datetime import date, timedelta
+    conn = ensure_schema(db_path)
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    try:
+        with conn:
+            trade_id = insert_trade_with_event(
+                conn,
+                Trade(
+                    id=None,
+                    ticker="RECENT",
+                    entry_date="2026-04-01",
+                    entry_price=10.0,
+                    initial_shares=10,
+                    initial_stop=9.0,
+                    current_stop=9.0,
+                    status="open",
+                    watchlist_entry_target=None,
+                    watchlist_initial_stop=None,
+                    notes=None,
+                ),
+                event_ts="2026-04-01T09:30:00",
+            )
+            insert_exit_with_event(
+                conn,
+                Exit(
+                    id=None,
+                    trade_id=trade_id,
+                    exit_date=yesterday,
+                    exit_price=11.5,
+                    shares=10,
+                    reason="manual",
+                    realized_pnl=15.0,
+                    r_multiple=1.5,
+                    notes=None,
+                ),
+                event_ts=f"{yesterday}T09:30:00",
+            )
+    finally:
+        conn.close()
+    return trade_id
+
+
+def test_review_list_shows_recently_closed_trades(tmp_path: Path) -> None:
+    """Major 1: --list shows ALL closed-unreviewed, including trades within the window."""
+    runner, cfg, db_path = _setup(tmp_path)
+    _seed_recently_closed_trade(db_path)  # trade closed yesterday (within 7-day window)
+
+    result = runner.invoke(main, [
+        "--config", str(cfg),
+        "trade", "review", "--list",
+    ])
+    assert result.exit_code == 0, result.output
+    # A trade closed yesterday must appear in the list even though it's within the window:
+    assert "RECENT" in result.output
+
+
+def test_review_empty_mistake_tags_rejected(tmp_path: Path) -> None:
+    """Major 2: empty mistake_tags must be rejected — operator must use 'none_observed'."""
+    runner, cfg, db_path = _setup(tmp_path)
+    trade_id = _seed_closed_trade(db_path)
+
+    result = runner.invoke(main, [
+        "--config", str(cfg),
+        "trade", "review",
+        "--trade-id", str(trade_id),
+        # No --mistake-tags at all
+        "--entry-grade", "A",
+        "--management-grade", "A",
+        "--exit-grade", "A",
+        "--lesson-learned", "n/a",
+    ])
+    assert result.exit_code != 0
+    output_lower = result.output.lower()
+    assert "mistake" in output_lower or "tag" in output_lower

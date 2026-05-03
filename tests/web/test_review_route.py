@@ -269,6 +269,75 @@ def test_get_reviews_pending_lists_overdue_trades(test_app_with_2_overdue):
     assert "T2" in r.text
 
 
+@pytest.fixture
+def test_app_with_recently_closed(tmp_path: Path):
+    """FastAPI app with 1 closed trade whose exit was YESTERDAY (within the 7-day window)."""
+    from datetime import date, timedelta
+    from dataclasses import replace as dc_replace
+    from swing.config import load
+    from swing.data.db import connect, ensure_schema
+    from swing.data.models import Exit, Trade
+    from swing.data.repos.trades import insert_exit_with_event, insert_trade_with_event
+    from swing.web.app import create_app
+
+    db_path = tmp_path / "phase6.db"
+    ensure_schema(db_path).close()
+    conn = connect(db_path)
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    with conn:
+        t1 = insert_trade_with_event(
+            conn,
+            Trade(
+                id=None, ticker="RECENT", entry_date="2026-04-01",
+                entry_price=10.0, initial_shares=10, initial_stop=9.0,
+                current_stop=9.0, status="open",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ),
+            event_ts="2026-04-01T09:30:00",
+        )
+        insert_exit_with_event(
+            conn,
+            Exit(
+                id=None, trade_id=t1, exit_date=yesterday,
+                exit_price=11.0, shares=10, reason="manual",
+                realized_pnl=10.0, r_multiple=1.0, notes=None,
+            ),
+            event_ts=f"{yesterday}T09:30:00",
+        )
+    conn.close()
+
+    base_cfg = load(Path("swing.config.toml"))
+    cfg = dc_replace(base_cfg, paths=dc_replace(base_cfg.paths, db_path=db_path))
+    return create_app(cfg)
+
+
+def test_get_reviews_pending_lists_all_unreviewed_including_recent(
+    test_app_with_recently_closed,
+) -> None:
+    """Major 1: /reviews/pending lists ALL closed-unreviewed, including within window."""
+    with TestClient(test_app_with_recently_closed) as client:
+        r = client.get("/reviews/pending")
+    assert r.status_code == 200
+    assert "RECENT" in r.text  # must appear even though closed only yesterday
+
+
+def test_post_review_empty_mistake_tags_renders_400(test_app_closed_trade) -> None:
+    """Major 2: empty mistake_tags list must be rejected with 400."""
+    with TestClient(test_app_closed_trade) as client:
+        r = client.post(
+            "/trades/1/review",
+            data={
+                "entry_grade": "A", "management_grade": "A", "exit_grade": "A",
+                # mistake_tags intentionally omitted (empty)
+                "lesson_learned": "n/a",
+            },
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 400
+    assert "mistake" in r.text.lower() or "tag" in r.text.lower()
+
+
 def test_post_review_canonicalizes_mistake_tags(test_app_closed_trade) -> None:
     """Brief §6.2 watch item 2: NFC + dedup + sort at persistence boundary."""
     with TestClient(test_app_closed_trade) as client:

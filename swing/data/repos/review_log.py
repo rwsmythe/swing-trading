@@ -268,10 +268,20 @@ def list_pending(
 
 
 def list_unreviewed_closed_trades(
-    conn: sqlite3.Connection, *, window_days: int, today_iso: str,
+    conn: sqlite3.Connection,
+    *,
+    window_days: int | None,
+    today_iso: str | None,
 ) -> list[Trade]:
-    """Return closed trades whose final exit date <= today - window_days AND
-    whose ``reviewed_at IS NULL``.
+    """Return closed trades whose ``reviewed_at IS NULL``.
+
+    When ``window_days`` is ``None`` (list-view mode, spec §3.1): ALL
+    closed-unreviewed trades are returned regardless of close-date age.
+
+    When ``window_days`` is an int (badge mode, spec §2.6): only trades
+    whose final exit date is at least ``window_days`` days before
+    ``today_iso`` are returned.  ``today_iso`` is required when
+    ``window_days`` is not ``None``.
 
     Uses the option (a) approach: call existing repo helpers
     (``list_closed_trades`` + ``list_all_exits``) and derive the close-date
@@ -285,8 +295,17 @@ def list_unreviewed_closed_trades(
 
     all_closed = list_closed_trades(conn)
     all_exits = list_all_exits(conn)
-    today = date.fromisoformat(today_iso)
-    cutoff = today - timedelta(days=window_days)
+
+    # Compute cutoff only when the window filter is active.
+    if window_days is not None:
+        assert today_iso is not None, (
+            "today_iso is required when window_days is not None"
+        )
+        today = date.fromisoformat(today_iso)
+        cutoff: date | None = today - timedelta(days=window_days)
+    else:
+        cutoff = None
+
     out: list[Trade] = []
     for t in all_closed:
         if t.reviewed_at is not None:
@@ -299,8 +318,9 @@ def list_unreviewed_closed_trades(
         if not relevant:
             continue
         close_date = max(relevant)
-        if close_date <= cutoff:
-            out.append(t)
+        if cutoff is not None and close_date > cutoff:
+            continue
+        out.append(t)
     return out
 
 

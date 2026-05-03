@@ -219,3 +219,120 @@ def test_review_config_default_window_days_is_7() -> None:
     from swing.config import load
     cfg = load(Path("swing.config.toml"))
     assert cfg.review.review_window_days == 7
+
+
+class TestListUnreviewedClosedTradesWindowNone:
+    """Major 1: list-view shows ALL closed-unreviewed when window_days=None."""
+
+    def _seed_closed_trade(
+        self,
+        conn: sqlite3.Connection,
+        ticker: str,
+        entry_date: str,
+        exit_date: str,
+    ) -> int:
+        trade_id = insert_trade_with_event(
+            conn,
+            Trade(
+                id=None,
+                ticker=ticker,
+                entry_date=entry_date,
+                entry_price=10.0,
+                initial_shares=10,
+                initial_stop=9.0,
+                current_stop=9.0,
+                status="open",
+                watchlist_entry_target=None,
+                watchlist_initial_stop=None,
+                notes=None,
+            ),
+            event_ts=f"{entry_date}T09:30:00",
+        )
+        from swing.data.models import Exit
+        insert_exit_with_event(
+            conn,
+            Exit(
+                id=None,
+                trade_id=trade_id,
+                exit_date=exit_date,
+                exit_price=11.0,
+                shares=10,
+                reason="manual",
+                realized_pnl=10.0,
+                r_multiple=1.0,
+                notes=None,
+            ),
+            event_ts=f"{exit_date}T09:30:00",
+        )
+        return trade_id
+
+    def test_no_window_returns_all_closed_unreviewed(
+        self, conn: sqlite3.Connection,
+    ) -> None:
+        """window_days=None: ALL closed-unreviewed returned regardless of age."""
+        with conn:
+            self._seed_closed_trade(conn, "OLD", "2026-03-01", "2026-04-25")  # 30+ days old
+            self._seed_closed_trade(conn, "NEW", "2026-04-30", "2026-05-01")  # yesterday
+        result = list_unreviewed_closed_trades(conn, window_days=None, today_iso=None)
+        tickers = {t.ticker for t in result}
+        assert len(result) == 2
+        assert "OLD" in tickers
+        assert "NEW" in tickers
+
+    def test_window_7_excludes_recent(self, conn: sqlite3.Connection) -> None:
+        """window_days=7, today=2026-05-02: only the 30-day-old trade qualifies."""
+        with conn:
+            self._seed_closed_trade(conn, "OLD", "2026-03-01", "2026-04-25")  # 7+ days old
+            self._seed_closed_trade(conn, "NEW", "2026-04-30", "2026-05-01")  # 1 day old
+        result = list_unreviewed_closed_trades(conn, window_days=7, today_iso="2026-05-02")
+        assert len(result) == 1
+        assert result[0].ticker == "OLD"
+
+
+class TestCompleteReviewValidation:
+    """Major 3: repo-layer required-if-completed enforcement."""
+
+    def test_rejects_zero_duration(self, conn: sqlite3.Connection) -> None:
+        with conn:
+            review_id = insert_pre_create(
+                conn, review_type="daily",
+                period_start="2026-04-30", period_end="2026-04-30",
+                scheduled_date="2026-05-01",
+            )
+        with pytest.raises(ValueError, match="duration"):
+            from swing.data.repos.review_log import complete_review_atomic
+            complete_review_atomic(
+                conn, review_id=review_id,
+                completed_date="2026-05-02", duration_minutes=0,
+                primary_lesson="x", next_period_focus="y",
+            )
+
+    def test_rejects_blank_lesson(self, conn: sqlite3.Connection) -> None:
+        with conn:
+            review_id = insert_pre_create(
+                conn, review_type="daily",
+                period_start="2026-04-30", period_end="2026-04-30",
+                scheduled_date="2026-05-01",
+            )
+        with pytest.raises(ValueError, match="primary_lesson"):
+            from swing.data.repos.review_log import complete_review_atomic
+            complete_review_atomic(
+                conn, review_id=review_id,
+                completed_date="2026-05-02", duration_minutes=10,
+                primary_lesson="   ", next_period_focus="y",
+            )
+
+    def test_rejects_blank_next_period_focus(self, conn: sqlite3.Connection) -> None:
+        with conn:
+            review_id = insert_pre_create(
+                conn, review_type="daily",
+                period_start="2026-04-30", period_end="2026-04-30",
+                scheduled_date="2026-05-01",
+            )
+        with pytest.raises(ValueError, match="next_period_focus"):
+            from swing.data.repos.review_log import complete_review_atomic
+            complete_review_atomic(
+                conn, review_id=review_id,
+                completed_date="2026-05-02", duration_minutes=10,
+                primary_lesson="Good lesson.", next_period_focus="",
+            )

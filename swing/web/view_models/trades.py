@@ -470,14 +470,14 @@ class ReviewsPendingVM:
 
 
 def build_reviews_pending_vm(*, cfg: Config) -> ReviewsPendingVM:
-    from datetime import date as _date
-
     from swing.data.repos.review_log import list_unreviewed_closed_trades
     conn = connect(cfg.paths.db_path)
     try:
+        # Spec §3.1: list-view shows ALL closed-unreviewed (window_days=None).
+        # Spec §2.6: the BADGE uses window_days (count_needs_review); that path
+        # is unaffected.
         trades = list_unreviewed_closed_trades(
-            conn, window_days=cfg.review.review_window_days,
-            today_iso=_date.today().isoformat(),
+            conn, window_days=None, today_iso=None,
         )
     finally:
         conn.close()

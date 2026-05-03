@@ -2,7 +2,7 @@
 {% block title %}Pending reviews{% endblock %}
 {% block content %}
 <h1>Trades pending review</h1>
-<p>Closed at least {{ vm.window_days }} day{{ "s" if vm.window_days != 1 else "" }} ago.</p>
+<p>All closed trades awaiting review.</p>
 {% if not vm.trades %}
 <p>No trades pending review.</p>
 {% else %}
