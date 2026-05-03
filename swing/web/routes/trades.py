@@ -1025,6 +1025,24 @@ def review_post(
     disq = (disqualifying_process_violation or "").lower() == "true"
 
     canonical_tags = canonicalize_mistake_tags(list(mistake_tags))
+    if not canonical_tags:
+        from swing.web.view_models.trades import build_review_vm
+        vm = build_review_vm(trade_id=trade_id, cfg=cfg)
+        empty_tags_msg = (
+            "At least one mistake tag is required "
+            "(select 'none_observed' if no mistakes observed)"
+        )
+        if vm is None:
+            return templates.TemplateResponse(
+                request, "partials/trade_form_error.html.j2",
+                {"error_message": empty_tags_msg},
+                status_code=400,
+            )
+        return templates.TemplateResponse(
+            request, "partials/review_form.html.j2",
+            {"vm": vm, "error_message": empty_tags_msg},
+            status_code=400,
+        )
     try:
         validate_mistake_tags(canonical_tags)
     except ValueError as exc:

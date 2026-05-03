@@ -1016,6 +1016,10 @@ def trade_review_cmd(
             )
 
         canonical_tags = canonicalize_mistake_tags(list(mistake_tags))
+        if not canonical_tags:
+            raise click.UsageError(
+                "--mistake-tags is required (use 'none_observed' if no mistakes observed)"
+            )
         try:
             validate_mistake_tags(canonical_tags)
         except ValueError as exc:
