@@ -435,7 +435,7 @@ def update_trade_review_fields(
     """UPDATE the 10 review fields atomically. Caller wraps in `with conn:`.
     All 10 fields written together — partial-state review rows are not valid.
     mistake_tags_json must be canonicalized by caller."""
-    conn.execute(
+    cur = conn.execute(
         """
         UPDATE trades SET
             reviewed_at = ?,
@@ -456,3 +456,5 @@ def update_trade_review_fields(
          realized_R_if_plan_followed, mistake_cost_confidence,
          lesson_learned, trade_id),
     )
+    if cur.rowcount == 0:
+        raise ValueError(f"update_trade_review_fields: no trade with id={trade_id}")

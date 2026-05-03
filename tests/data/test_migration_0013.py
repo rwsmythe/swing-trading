@@ -109,6 +109,22 @@ def test_trade_dataclass_has_ten_review_fields_with_none_default() -> None:
     assert t.lesson_learned is None
 
 
+def test_update_trade_review_fields_raises_on_unknown_id(conn: sqlite3.Connection) -> None:
+    """Silent no-op on missing trade_id is data loss; must raise."""
+    with pytest.raises(ValueError, match="no trade with id=99999"):
+        with conn:
+            update_trade_review_fields(
+                conn, trade_id=99999,
+                reviewed_at="2026-05-02T10:00:00",
+                mistake_tags_json='["CHASED"]',
+                entry_grade="C", management_grade="B", exit_grade="B",
+                process_grade="C", disqualifying_process_violation=False,
+                realized_R_if_plan_followed=2.0,
+                mistake_cost_confidence="medium",
+                lesson_learned="x",
+            )
+
+
 def test_update_trade_review_fields_round_trip(conn: sqlite3.Connection) -> None:
     with conn:
         trade_id = insert_trade_with_event(
