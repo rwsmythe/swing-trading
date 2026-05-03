@@ -959,6 +959,23 @@ def open_position_expand(request: Request, trade_id: int):
     )
 
 
+@router.get("/trades/{trade_id}/review", response_class=HTMLResponse)
+def review_form_page(request: Request, trade_id: int):
+    """Phase 6: post-trade review form page."""
+    cfg = apply_overrides(request.app.state.cfg)
+    templates = request.app.state.templates
+    from swing.web.view_models.trades import build_review_vm
+    vm = build_review_vm(trade_id=trade_id, cfg=cfg)
+    if vm is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Trade #{trade_id} not found, not closed, or already reviewed",
+        )
+    return templates.TemplateResponse(
+        request, "review.html.j2", {"vm": vm},
+    )
+
+
 @router.get("/trades/open/{trade_id}/row", response_class=HTMLResponse)
 def open_position_row(request: Request, trade_id: int):
     """Return the compact open-positions row partial for `trade_id`. Used by

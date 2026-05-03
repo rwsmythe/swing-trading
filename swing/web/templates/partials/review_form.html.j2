@@ -1,0 +1,73 @@
+{# Phase 6 review form. <form>-rooted (NOT <tr>-rooted); leading-<tr> would
+   trigger htmx.js makeFragment table-wrap pathology (CLAUDE.md gotcha,
+   2026-04-29). HX-Request header explicitly propagated for OriginGuard
+   strict-mode (brief §6.2 watch item 6). #}
+<form method="post" action="/trades/{{ vm.trade.id }}/review"
+      hx-post="/trades/{{ vm.trade.id }}/review"
+      hx-headers='{"HX-Request": "true"}'>
+
+  <fieldset>
+    <legend>Stage grades</legend>
+    {% for stage in ["entry", "management", "exit"] %}
+      <label>
+        {{ stage|capitalize }} grade
+        <select name="{{ stage }}_grade" required>
+          {% for g in vm.grade_choices %}
+            <option value="{{ g }}">{{ g }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    {% endfor %}
+    <label>
+      <input type="checkbox" name="disqualifying_process_violation" value="true">
+      Disqualifying process violation occurred (caps grade at D — see below)
+    </label>
+    <details>
+      <summary>v1.2 §9.2 disqualifying violations (reference)</summary>
+      <ul>
+        {% for v in vm.disqualifying_violations_reference %}
+          <li>{{ v }}</li>
+        {% endfor %}
+      </ul>
+    </details>
+  </fieldset>
+
+  <fieldset>
+    <legend>Mistake tags</legend>
+    {% for category, tags in vm.mistake_tag_categories.items() %}
+      <p><strong>{{ category|capitalize }}</strong></p>
+      {% for tag in tags %}
+        <label>
+          <input type="checkbox" name="mistake_tags" value="{{ tag }}">
+          {{ tag }}
+        </label>
+      {% endfor %}
+    {% endfor %}
+  </fieldset>
+
+  <fieldset>
+    <legend>Counterfactual (optional)</legend>
+    <label>
+      Realized R if plan followed
+      <input type="number" name="realized_R_if_plan_followed" step="any">
+    </label>
+    <label>
+      Mistake-cost confidence
+      <select name="mistake_cost_confidence">
+        <option value="">— select —</option>
+        <option value="high">High</option>
+        <option value="medium">Medium</option>
+        <option value="low">Low</option>
+      </select>
+    </label>
+    <p><small>What R would you have realized if you'd followed your original
+       plan exactly? (Phase 7 will auto-derive this from Fills.)</small></p>
+  </fieldset>
+
+  <fieldset>
+    <legend>Lesson learned (required)</legend>
+    <textarea name="lesson_learned" rows="4" required></textarea>
+  </fieldset>
+
+  <button type="submit">Submit review</button>
+</form>

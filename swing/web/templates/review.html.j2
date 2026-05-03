@@ -1,0 +1,8 @@
+{% extends "base.html.j2" %}
+{% block title %}Review trade #{{ vm.trade.id }} — {{ vm.trade.ticker }}{% endblock %}
+{% block content %}
+<h1>Post-trade review: {{ vm.trade.ticker }} (#{{ vm.trade.id }})</h1>
+<p>Entry {{ vm.trade.entry_date }} @ ${{ "%.2f"|format(vm.trade.entry_price) }};
+   actual realized R = {{ "%.2f"|format(vm.actual_realized_R_effective) }}</p>
+{% include "partials/review_form.html.j2" %}
+{% endblock %}
