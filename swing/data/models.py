@@ -98,7 +98,7 @@ class Trade:
     exit_grade: str | None = None
     process_grade: str | None = None
     disqualifying_process_violation: bool | None = None
-    realized_R_if_plan_followed: float | None = None
+    realized_R_if_plan_followed: float | None = None  # noqa: N815
     mistake_cost_confidence: str | None = None
     lesson_learned: str | None = None
 
@@ -318,15 +318,15 @@ class ReviewLog:
     skipped: bool
     duration_minutes: int | None
     n_trades_reviewed: int
-    total_mistake_cost_R: float
-    total_lucky_violation_R: float
+    total_mistake_cost_R: float  # noqa: N815
+    total_lucky_violation_R: float  # noqa: N815
     primary_lesson: str | None
     next_period_focus: str | None
     created_at: str
-    net_R_effective: float | None = None
-    expectancy_R_effective: float | None = None
+    net_R_effective: float | None = None  # noqa: N815
+    expectancy_R_effective: float | None = None  # noqa: N815
     win_rate: float | None = None
-    avg_win_R: float | None = None
-    avg_loss_R: float | None = None
+    avg_win_R: float | None = None  # noqa: N815
+    avg_loss_R: float | None = None  # noqa: N815
     profit_factor: float | None = None
-    max_drawdown_R: float | None = None
+    max_drawdown_R: float | None = None  # noqa: N815
