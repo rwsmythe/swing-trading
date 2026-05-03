@@ -887,6 +887,151 @@ def _render_trade_analysis(a) -> list[str]:
     return lines
 
 
+@trade_group.command("review")
+@click.option("--list", "list_mode", is_flag=True,
+              help="List closed trades pending review and exit. "
+                   "When set, all other args are ignored.")
+@click.option("--window-days", type=int, default=None,
+              help="Threshold in days since close (used with --list). "
+                   "Defaults to 7.")
+@click.option("--trade-id", type=int, default=None,
+              help="REQUIRED unless --list is set.")
+@click.option(
+    "--mistake-tags", multiple=True,
+    help="Repeatable. e.g., --mistake-tags CHASED --mistake-tags FOMO. "
+         "Use 'none_observed' if no mistakes (must NOT be combined with others).",
+)
+@click.option("--entry-grade", type=click.Choice(["A", "B", "C", "D", "F"]),
+              default=None, help="REQUIRED unless --list is set.")
+@click.option("--management-grade", type=click.Choice(["A", "B", "C", "D", "F"]),
+              default=None, help="REQUIRED unless --list is set.")
+@click.option("--exit-grade", type=click.Choice(["A", "B", "C", "D", "F"]),
+              default=None, help="REQUIRED unless --list is set.")
+@click.option("--disqualifying-process-violation", is_flag=True,
+              help="Set if any of the 7 v1.2 §9.2 disqualifying violations occurred. "
+                   "Caps process_grade at D.")
+@click.option("--realized-r-if-plan-followed", "realized_r_if_plan_followed",
+              type=float, default=None,
+              help="Counterfactual R if the original plan had been followed. Optional.")
+@click.option("--mistake-cost-confidence",
+              type=click.Choice(["high", "medium", "low"]), default=None)
+@click.option("--lesson-learned", default=None,
+              help="REQUIRED unless --list is set. Free-text reflection.")
+@click.pass_context
+def trade_review_cmd(
+    ctx, list_mode, window_days, trade_id, mistake_tags,
+    entry_grade, management_grade, exit_grade,
+    disqualifying_process_violation, realized_r_if_plan_followed,
+    mistake_cost_confidence, lesson_learned,
+):
+    """Post-trade review (Phase 6).
+
+    Two modes:
+      `swing trade review --list`  → print pending-review trades and exit.
+      `swing trade review --trade-id N --entry-grade A ...`  → record a review.
+    """
+    import json
+    from datetime import date as _date, datetime as _dt
+    from swing.data.db import connect
+    from swing.data.repos.review_log import list_unreviewed_closed_trades
+    from swing.data.repos.trades import get_trade, update_trade_review_fields
+    from swing.trades.review import (
+        canonicalize_mistake_tags, compute_process_grade, validate_mistake_tags,
+    )
+
+    cfg = ctx.obj["config"]
+    # Task 12b will add cfg.review.review_window_days; until then, use default 7.
+    effective_window_days = window_days if window_days is not None else 7
+
+    # ---- LIST MODE ----
+    if list_mode:
+        conn = connect(cfg.paths.db_path)
+        try:
+            trades = list_unreviewed_closed_trades(
+                conn, window_days=effective_window_days,
+                today_iso=_date.today().isoformat(),
+            )
+        finally:
+            conn.close()
+        if not trades:
+            click.echo("No trades pending review.")
+            return
+        click.echo(
+            f"Trades pending review (closed >= {effective_window_days} days ago):"
+        )
+        for t in trades:
+            click.echo(f"  #{t.id} {t.ticker} entry={t.entry_date}")
+        return
+
+    # ---- REVIEW MODE — validate required args ----
+    missing = []
+    if trade_id is None:
+        missing.append("--trade-id")
+    if entry_grade is None:
+        missing.append("--entry-grade")
+    if management_grade is None:
+        missing.append("--management-grade")
+    if exit_grade is None:
+        missing.append("--exit-grade")
+    if not lesson_learned or not lesson_learned.strip():
+        missing.append("--lesson-learned")
+    if missing:
+        raise click.UsageError(
+            f"Missing required args (or pass --list to enter list mode): "
+            f"{', '.join(missing)}"
+        )
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        trade = get_trade(conn, trade_id)
+        if trade is None:
+            raise click.ClickException(f"Trade #{trade_id} not found")
+        if trade.status != "closed":
+            raise click.ClickException(
+                f"Trade #{trade_id} is not closed; cannot review"
+            )
+        if trade.reviewed_at is not None:
+            raise click.ClickException(
+                f"Trade #{trade_id} already reviewed at {trade.reviewed_at}; "
+                f"V1 supports single-review only"
+            )
+
+        canonical_tags = canonicalize_mistake_tags(list(mistake_tags))
+        try:
+            validate_mistake_tags(canonical_tags)
+        except ValueError as exc:
+            raise click.ClickException(str(exc))
+
+        process_grade = compute_process_grade(
+            entry=entry_grade, management=management_grade, exit_=exit_grade,
+            disqualifying=disqualifying_process_violation,
+        )
+
+        with conn:
+            update_trade_review_fields(
+                conn, trade_id=trade_id,
+                reviewed_at=_dt.now().isoformat(timespec="seconds"),
+                mistake_tags_json=json.dumps(canonical_tags),
+                entry_grade=entry_grade,
+                management_grade=management_grade,
+                exit_grade=exit_grade,
+                process_grade=process_grade,
+                disqualifying_process_violation=disqualifying_process_violation,
+                realized_R_if_plan_followed=realized_r_if_plan_followed,
+                # Column is nullable; empty string fails the CHECK constraint.
+                # Pass None when operator did not specify --mistake-cost-confidence.
+                mistake_cost_confidence=mistake_cost_confidence or None,
+                lesson_learned=lesson_learned,
+            )
+    finally:
+        conn.close()
+
+    click.echo(
+        f"Review recorded for trade #{trade_id} ({trade.ticker}). "
+        f"Process grade: {process_grade}."
+    )
+
+
 @main.group("journal")
 def journal_group() -> None:
     """Review stats + record cash movements."""
