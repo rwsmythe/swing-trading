@@ -41,7 +41,7 @@ These are findings from the §0 empirical audit that diverge from the brief's pr
 | Path | Responsibility |
 |---|---|
 | `swing/data/migrations/0013_phase6_post_trade_review.sql` | 10 nullable trade-row columns + new `review_log` table + indices + `UPDATE schema_version SET version = 13`. |
-| `swing/data/repos/review_log.py` | Public API: `insert_pre_create(conn, *, review_type, period_start, period_end, scheduled_date) -> int|None` (idempotent — returns `None` if row exists for unique key, else new id); `complete_review_atomic(conn, *, review_id, completed_date, duration_minutes, primary_lesson, next_period_focus) -> None` (single BEGIN IMMEDIATE transaction owning trade selection + compute_stats + augmentation helpers + UPDATE — addresses R1 Major 1 torn-snapshot risk); `get(conn, review_id) -> ReviewLog | None`; `list_pending(conn, *, review_type=None) -> list[ReviewLog]` (rows with `completed_date IS NULL`, ordered by `period_end DESC`); `list_recent(conn, *, review_type, limit=1) -> list[ReviewLog]` (ordered by `period_end DESC` — addresses R1 Minor 2 backfill-ordering risk; latest BUSINESS PERIOD, not latest INSERT); `list_unreviewed_closed_trades(conn, *, window_days, today_iso) -> list[Trade]`; `count_needs_review(conn, *, window_days, today_iso) -> int`. |
+| `swing/data/repos/review_log.py` | Public API. **TWO distinct concepts** — DO NOT confuse them: (1) PENDING CADENCE REVIEWS (`review_log` rows where `completed_date IS NULL`) feed the cadence-cards "needs completion" surface and the `swing review complete --list` CLI; (2) UNREVIEWED CLOSED TRADES (rows in `trades` where `status='closed'` AND `reviewed_at IS NULL`) feed the dashboard "Needs review (N)" badge and `/reviews/pending` list view + `swing trade review --list`. They are unrelated entities — the cadence row is the operator's REFLECTION on a period; the trade row is a SINGLE TRADE awaiting per-trade review. The `/reviews/pending` route name overloads "pending" — it shows TRADE pending review, not CADENCE pending review. (R2 Minor 2 clarification.) Public API: `insert_pre_create(conn, *, review_type, period_start, period_end, scheduled_date) -> int|None` (idempotent); `complete_review_atomic(conn, *, review_id, completed_date, duration_minutes, primary_lesson, next_period_focus) -> None` (atomic compute-and-freeze; R1 Major 1 fix); `get(conn, review_id) -> ReviewLog | None`; `list_pending(conn, *, review_type=None) -> list[ReviewLog]` (PENDING CADENCE; rows with `completed_date IS NULL`, ordered by `period_end DESC`; feeds `swing review complete --list`); `list_recent(conn, *, review_type, limit=1) -> list[ReviewLog]` (ordered by `period_end DESC` — R1 Minor 2 fix); `list_unreviewed_closed_trades(conn, *, window_days, today_iso) -> list[Trade]` (UNREVIEWED CLOSED TRADES; feeds `/reviews/pending` route + `swing trade review --list`); `count_needs_review(conn, *, window_days, today_iso) -> int`. |
 | `swing/trades/review.py` | Public API: `MISTAKE_TAGS: dict[str, tuple[str, ...]]` (6 categories; 34 tags total per v1.2 §7.10); `DISQUALIFYING_VIOLATIONS: tuple[str, ...]` (7 entries per v1.2 §9.2); `STAGE_GRADE_NUMERIC: dict[str, int]`; `validate_mistake_tags(tags: list[str]) -> None` (raises `ValueError` on unknown tag, mixed-category-with-none_observed, etc.); `canonicalize_mistake_tags(tags: list[str]) -> list[str]` (NFC normalize, strip, dedup, sort — per JSON-list canonicalization-at-persistence-boundary lesson); `compute_process_grade(*, entry: str, management: str, exit_: str, disqualifying: bool) -> str` (returns 'A'..'F' per v1.2 §9.2); `compute_mistake_cost_R(*, realized_R_if_plan_followed: float | None, actual_realized_R_effective: float) -> float`; `compute_lucky_violation_R(*, realized_R_if_plan_followed: float | None, actual_realized_R_effective: float) -> float`; `compute_actual_realized_R_effective(trade: Trade, exits: list[Exit]) -> float` (mirrors `_trade_r` semantic); `compute_profit_factor(closed_trades: list[Trade], exits: list[Exit]) -> float | None`; `compute_max_drawdown_R(closed_trades: list[Trade], exits: list[Exit]) -> float`; `SOFT_WARN_REVIEW_DUE_MESSAGE: str` (shared constant for web + CLI close paths). |
 | `swing/web/templates/review.html.j2` | Full review-form page extending `base.html.j2`. |
 | `swing/web/templates/partials/review_form.html.j2` | The form fragment (also embedded in the full page; reused by GET re-render on hard-refuse / soft-warn). `<form>`-rooted, NOT `<tr>`-rooted (per `<tr>`-leading makeFragment lesson). |
@@ -57,7 +57,7 @@ These are findings from the §0 empirical audit that diverge from the brief's pr
 | `tests/data/test_review_log_repo.py` | review_log repo tests (insert idempotence, complete, get, list_recent, count_needs_review). |
 | `tests/trades/test_review_helpers.py` | Pure-helper tests for review.py (Mistake_Tags vocab, validate, canonicalize, process grade parameterized table, cost/violation, profit_factor, max_drawdown_R). |
 | `tests/pipeline/test_review_log_cadence_step.py` | `_step_review_log_cadence` tests (idempotence, anchor on `last_completed_session`, error-tolerant). |
-| `tests/cli/test_trade_review_cli.py` | Click runner integration tests for `swing trade review` + `swing trade review-list`. |
+| `tests/cli/test_trade_review_cli.py` | Click runner integration tests for `swing trade review` (per-trade review mode) AND `swing trade review --list` (list mode); single-command dual-mode per brief §3.1. |
 | `tests/web/test_review_route.py` | Route-level integration tests (GET form, POST submit, HX-Redirect, hard-refuse rerender, repo-write side-effect). |
 | `tests/web/test_review_template.py` | Template-render tests (5-VM existing-field inheritance, makeFragment-safe response shape). |
 | `tests/web/test_dashboard_needs_review_badge.py` | DashboardVM `needs_review_count` integration + badge render tests. |
@@ -2572,7 +2572,7 @@ Expected: all PASS.
 
 ```bash
 git add swing/cli.py tests/cli/test_trade_review_cli.py
-git commit -m "feat(phase6): Task 8 — CLI swing trade review + review-list"
+git commit -m "feat(phase6): Task 8 — CLI swing trade review (with --list flag)"
 ```
 
 ### Task 9: Soft-warn at trade close (web + CLI)
@@ -3309,19 +3309,52 @@ def test_review_config_default_window_days_is_7() -> None:
     assert cfg.review.review_window_days == 7
 ```
 
-- [ ] **Step 2: Add `ReviewConfig` to `swing/config.py`**
+- [ ] **Step 2: Add `ReviewConfig` to `swing/config.py` AND wire the loader (R2 Major 1 fix)**
 
-Append to `swing/config.py`:
+Inspect [swing/config.py:228-300](../../swing/config.py#L228) — `def load(config_path: Path) -> Config:` constructs `Config(...)` with explicit kwargs. Adding a new field requires THREE coordinated edits:
+
+(a) Add a new `ReviewConfig` dataclass alongside the other section dataclasses (e.g., near `Web` at line 155):
 
 ```python
 @dataclass(frozen=True)
 class ReviewConfig:
     """Phase 6 post-trade review tunables. V1 surfaces only the cadence
-    review window. V2 may add more (cadence calendar policy, etc.)."""
+    review window. V2 may add cadence calendar policy, etc.
+
+    Toml-shadowing rule: section is OPTIONAL in swing.config.toml — when
+    absent, dataclass defaults apply (matches the `archive` / `classifier`
+    pattern; opposite of `paths` / `account` which are REQUIRED sections).
+    """
     review_window_days: int = 7
 ```
 
-Add `review: ReviewConfig` to the top-level `Config` dataclass (with default `field(default_factory=ReviewConfig)`).
+(b) Add `review: ReviewConfig = field(default_factory=ReviewConfig)` to the `Config` dataclass after the existing `archive: ArchiveConfig = field(default_factory=ArchiveConfig)` line (around line 206).
+
+(c) Update the `Config(...)` constructor call in `load()` to populate the field. The pattern for OPTIONAL sections (mirroring `web`, `classifier`, `archive`) is to pass `**raw.get("review", {})`:
+
+```python
+# In load(), inside the Config(...) constructor call, append:
+review=ReviewConfig(**raw.get("review", {})),
+```
+
+This means: if `[review]` section exists in toml, its keys override the defaults; if absent, the dataclass defaults apply.
+
+(d) Audit any DIRECT `Config(...)` constructor calls in tests/helpers/fixtures (R2 Major 1 follow-through). Run:
+
+```bash
+grep -rn "Config(" swing/ tests/ | grep -v "ConfigRevision\|@" | head
+```
+
+For each direct `Config(...)` call (e.g., test fixtures that build a Config without going through `load()`), add `review=ReviewConfig()` (or omit the kwarg entirely if `field(default_factory=ReviewConfig)` is set — Python's frozen dataclass semantics make this work). Update test fixtures only as needed to keep the fast suite green.
+
+Add to swing.config.toml (the tracked default toml):
+
+```toml
+[review]
+# Phase 6 cadence-review tunable. Days since trade close before the
+# dashboard "needs review" badge counts the trade. Default 7.
+review_window_days = 7
+```
 
 - [ ] **Step 3: Write failing tests for `swing review complete` CLI**
 
@@ -3848,20 +3881,23 @@ import pytest
 from swing.data.db import connect
 from swing.data.models import Exit, Trade
 from swing.data.repos.review_log import (
-    complete_review, get, insert_pre_create,
+    complete_review_atomic, get, insert_pre_create,
 )
 from swing.data.repos.trades import insert_exit_with_event, insert_trade_with_event
-from swing.trades.review import (
-    compute_actual_realized_R_effective, compute_max_drawdown_R,
-    compute_profit_factor,
-)
 
 
 def test_review_aggregates_frozen_when_more_trades_close(tmp_path: Path) -> None:
+    """R1 Major 1 + R2 Major 2: complete_review_atomic OWNS the freeze.
+
+    Pre-condition: 1 closed trade in period.
+    Action 1: complete_review_atomic — reads + computes + writes atomically.
+    Action 2: close another trade IN THE SAME PERIOD.
+    Post-condition: re-fetched review_log row aggregates UNCHANGED.
+    """
     db_path = tmp_path / "phase6.db"
     conn = connect(db_path)
     try:
-        # Seed: one closed trade with R=+1.0
+        # Seed: one closed trade with share-weighted R=+1.0 in 2026-04-15:
         with conn:
             t1 = insert_trade_with_event(
                 conn, Trade(
@@ -3889,27 +3925,24 @@ def test_review_aggregates_frozen_when_more_trades_close(tmp_path: Path) -> None
                 scheduled_date="2026-04-16",
             )
         assert review_id is not None
-        # Complete the review with aggregates frozen at the t1-only state:
-        complete_review(
+        # complete_review_atomic OWNS the trade-selection + compute + UPDATE
+        # inside a single BEGIN IMMEDIATE transaction. The row is now frozen.
+        complete_review_atomic(
             conn, review_id=review_id,
             completed_date="2026-04-16",
             duration_minutes=10,
-            n_trades_reviewed=1,
             primary_lesson="Inaugural trade.",
             next_period_focus="Same setup.",
-            total_mistake_cost_R=0.0,
-            total_lucky_violation_R=0.0,
-            aggregates={
-                "net_R_effective": 1.0,
-                "expectancy_R_effective": 1.0,
-                "win_rate": 1.0,
-                "avg_win_R": 1.0,
-                "avg_loss_R": 0.0,
-                "profit_factor": None,  # no losses
-                "max_drawdown_R": 0.0,
-            },
         )
-        # NOW close another trade in the same period AND beyond:
+        # Verify the frozen state shows 1 trade with net_R = 1.0:
+        row = get(conn, review_id)
+        assert row is not None
+        assert row.n_trades_reviewed == 1
+        assert row.net_R_effective == pytest.approx(1.0)
+        assert row.win_rate == pytest.approx(1.0)
+        assert row.profit_factor is None  # no losses
+
+        # NOW close another trade in the same period (2026-04-15):
         with conn:
             t2 = insert_trade_with_event(
                 conn, Trade(
@@ -3929,12 +3962,13 @@ def test_review_aggregates_frozen_when_more_trades_close(tmp_path: Path) -> None
                 ),
                 event_ts="2026-04-15T09:30:00",
             )
-        # Re-fetch the review_log row → aggregates MUST be unchanged:
-        row = get(conn, review_id)
-        assert row is not None
-        assert row.net_R_effective == pytest.approx(1.0)  # NOT 2.0
-        assert row.n_trades_reviewed == 1  # NOT 2
-        assert row.profit_factor is None
+        # Re-fetch the review_log row → aggregates MUST be unchanged
+        # (frozen-at-completion; subsequent trade closes do not mutate the row):
+        row2 = get(conn, review_id)
+        assert row2 is not None
+        assert row2.net_R_effective == pytest.approx(1.0)  # NOT 2.0
+        assert row2.n_trades_reviewed == 1                  # NOT 2
+        assert row2.profit_factor is None
     finally:
         conn.close()
 ```
