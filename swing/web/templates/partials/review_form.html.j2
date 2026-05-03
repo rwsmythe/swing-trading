@@ -2,6 +2,9 @@
    trigger htmx.js makeFragment table-wrap pathology (CLAUDE.md gotcha,
    2026-04-29). HX-Request header explicitly propagated for OriginGuard
    strict-mode (brief §6.2 watch item 6). #}
+{% if error_message %}
+<p class="form-error" role="alert">{{ error_message }}</p>
+{% endif %}
 <form method="post" action="/trades/{{ vm.trade.id }}/review"
       hx-post="/trades/{{ vm.trade.id }}/review"
       hx-headers='{"HX-Request": "true"}'>

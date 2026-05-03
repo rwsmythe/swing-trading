@@ -157,3 +157,72 @@ def test_get_review_page_404_for_already_reviewed(test_app_reviewed_trade) -> No
     with TestClient(test_app_reviewed_trade) as client:
         r = client.get("/trades/1/review")
     assert r.status_code == 404
+
+
+def test_post_review_persists_and_returns_204_with_hx_redirect(
+    test_app_closed_trade,
+) -> None:
+    with TestClient(test_app_closed_trade) as client:
+        r = client.post(
+            "/trades/1/review",
+            data={
+                "entry_grade": "C", "management_grade": "B", "exit_grade": "B",
+                "disqualifying_process_violation": "false",
+                "mistake_tags": ["CHASED"],
+                "realized_R_if_plan_followed": "2.0",
+                "mistake_cost_confidence": "medium",
+                "lesson_learned": "Wait for the breakout.",
+            },
+            headers={"HX-Request": "true"},
+            follow_redirects=False,
+        )
+    # Brief §6.2 watch item 6: success-path = 204 + HX-Redirect (NOT 303 swap).
+    assert r.status_code == 204
+    assert r.headers.get("HX-Redirect") == "/trades"
+
+
+def test_post_review_unknown_mistake_tag_renders_400_with_form(
+    test_app_closed_trade,
+) -> None:
+    with TestClient(test_app_closed_trade) as client:
+        r = client.post(
+            "/trades/1/review",
+            data={
+                "entry_grade": "A", "management_grade": "A", "exit_grade": "A",
+                "mistake_tags": ["NOT_REAL"],
+                "lesson_learned": "n/a",
+            },
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 400
+    assert "unknown mistake tag" in r.text.lower()
+    # Form re-rendered (preserved values + error banner):
+    assert 'name="lesson_learned"' in r.text
+
+
+def test_post_review_canonicalizes_mistake_tags(test_app_closed_trade) -> None:
+    """Brief §6.2 watch item 2: NFC + dedup + sort at persistence boundary."""
+    with TestClient(test_app_closed_trade) as client:
+        r = client.post(
+            "/trades/1/review",
+            data={
+                "entry_grade": "A", "management_grade": "A", "exit_grade": "A",
+                "mistake_tags": ["FOMO", "CHASED", "FOMO"],  # dup
+                "lesson_learned": "n/a",
+            },
+            headers={"HX-Request": "true"},
+            follow_redirects=False,
+        )
+    assert r.status_code == 204
+    # Verify DB has canonicalized JSON:
+    import json
+    from swing.data.db import connect
+    # Pull db path from test fixture
+    db_path = test_app_closed_trade.state.cfg.paths.db_path
+    conn = connect(db_path)
+    row = conn.execute(
+        "SELECT mistake_tags FROM trades WHERE id = 1"
+    ).fetchone()
+    conn.close()
+    tags = json.loads(row[0])
+    assert tags == ["CHASED", "FOMO"]  # sorted, deduped

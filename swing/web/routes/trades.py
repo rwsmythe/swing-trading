@@ -976,6 +976,99 @@ def review_form_page(request: Request, trade_id: int):
     )
 
 
+@router.post("/trades/{trade_id}/review")
+def review_post(
+    request: Request, trade_id: int,
+    entry_grade: str = Form(...),
+    management_grade: str = Form(...),
+    exit_grade: str = Form(...),
+    lesson_learned: str = Form(...),
+    disqualifying_process_violation: str | None = Form(None),
+    realized_R_if_plan_followed: float | None = Form(None),
+    mistake_cost_confidence: str = Form(""),
+    mistake_tags: list[str] = Form(default=[]),
+):
+    """Phase 6: persist a post-trade review.
+
+    Success: 204 + HX-Redirect: /trades (browser re-navigates via htmx.js;
+    NOT a 303 swap — Phase 5 lesson, brief §6.2 watch item 6).
+    """
+    import json
+    from datetime import datetime as _dt
+    from fastapi.responses import Response
+    from swing.data.db import connect
+    from swing.data.repos.trades import (
+        get_trade, update_trade_review_fields,
+    )
+    from swing.trades.review import (
+        canonicalize_mistake_tags, compute_process_grade,
+        validate_mistake_tags,
+    )
+
+    cfg = apply_overrides(request.app.state.cfg)
+    templates = request.app.state.templates
+
+    disq = (disqualifying_process_violation or "").lower() == "true"
+
+    canonical_tags = canonicalize_mistake_tags(list(mistake_tags))
+    try:
+        validate_mistake_tags(canonical_tags)
+    except ValueError as exc:
+        from swing.web.view_models.trades import build_review_vm
+        vm = build_review_vm(trade_id=trade_id, cfg=cfg)
+        if vm is None:
+            return templates.TemplateResponse(
+                request, "partials/trade_form_error.html.j2",
+                {"error_message": str(exc)},
+                status_code=400,
+            )
+        return templates.TemplateResponse(
+            request, "partials/review_form.html.j2",
+            {"vm": vm, "error_message": str(exc)},
+            status_code=400,
+        )
+
+    try:
+        process_grade = compute_process_grade(
+            entry=entry_grade, management=management_grade, exit_=exit_grade,
+            disqualifying=disq,
+        )
+    except ValueError as exc:
+        return templates.TemplateResponse(
+            request, "partials/trade_form_error.html.j2",
+            {"error_message": str(exc)},
+            status_code=400,
+        )
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        trade = get_trade(conn, trade_id)
+        if trade is None or trade.status != "closed":
+            raise HTTPException(status_code=404)
+        if trade.reviewed_at is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Trade already reviewed; V1 supports single-review only",
+            )
+        with conn:
+            update_trade_review_fields(
+                conn, trade_id=trade_id,
+                reviewed_at=_dt.now().isoformat(timespec="seconds"),
+                mistake_tags_json=json.dumps(canonical_tags),
+                entry_grade=entry_grade,
+                management_grade=management_grade,
+                exit_grade=exit_grade,
+                process_grade=process_grade,
+                disqualifying_process_violation=disq,
+                realized_R_if_plan_followed=realized_R_if_plan_followed,
+                mistake_cost_confidence=mistake_cost_confidence or None,
+                lesson_learned=lesson_learned,
+            )
+    finally:
+        conn.close()
+    return Response(status_code=204, headers={"HX-Redirect": "/trades"})
+
+
 @router.get("/trades/open/{trade_id}/row", response_class=HTMLResponse)
 def open_position_row(request: Request, trade_id: int):
     """Return the compact open-positions row partial for `trade_id`. Used by
