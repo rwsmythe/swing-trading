@@ -14,9 +14,10 @@ parameterized inputs.
 from __future__ import annotations
 
 import unicodedata
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from swing.data.models import Exit, Trade
+from swing.evaluation.dates import last_completed_session
 
 # ---- Mistake_Tags vocabulary (v1.2 §7.10 verbatim) ----
 
@@ -214,3 +215,26 @@ def _trade_closed_date_for_review(trade: Trade, exits: list[Exit]) -> date | Non
         return None
     relevant = [e.exit_date for e in exits if e.trade_id == trade.id]
     return max(date.fromisoformat(d) for d in relevant) if relevant else None
+
+
+# ---- Cadence-period boundary helpers (locked decision §2.7) ----
+
+def compute_daily_period(now: datetime) -> tuple[date, date]:
+    session = last_completed_session(now)
+    return session, session
+
+
+def compute_weekly_period(now: datetime) -> tuple[date, date]:
+    today = last_completed_session(now)
+    this_monday = today - timedelta(days=today.weekday())
+    prior_monday = this_monday - timedelta(days=7)
+    prior_friday = prior_monday + timedelta(days=4)
+    return prior_monday, prior_friday
+
+
+def compute_monthly_period(now: datetime) -> tuple[date, date]:
+    today = last_completed_session(now)
+    first_of_this_month = today.replace(day=1)
+    last_of_prior = first_of_this_month - timedelta(days=1)
+    first_of_prior = last_of_prior.replace(day=1)
+    return first_of_prior, last_of_prior

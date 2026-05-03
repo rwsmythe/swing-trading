@@ -293,6 +293,13 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 lease.status(export_status="failed")
 
             lease.step("complete")
+            try:
+                _step_review_log_cadence(lease=lease)
+            except Exception as exc:
+                # Cadence pre-create is auxiliary — its failure must NOT roll back the
+                # primary value chain (briefing emission). Log + continue. Brief §6.2
+                # watch item 13.
+                log.warning("review_log cadence step failed (continuing): %s", exc)
             lease.release(state="complete")
         except LeaseRevoked as exc:
             # Force-cleared mid-run. The pipeline_runs row has already moved to
@@ -854,3 +861,40 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
         exports_dir=cfg.paths.exports_dir,
         retention_days=cfg.export.retention_days,
     )
+
+
+def _step_review_log_cadence(*, lease: Lease) -> None:
+    """Idempotent: pre-create one Review_Log row per cadence (daily/weekly/
+    monthly) for the prior period, anchored on `last_completed_session(
+    datetime.now())`. Quarterly + circuit_breaker schema-supported but no
+    pre-create in V1 (locked decision §2.7).
+
+    Anchor is helper-internal — caller cannot supply an as-of-date that
+    controls which prior period rows are created (brief §6.2 watch item 5).
+
+    No `cfg` parameter: the function uses `lease.fenced_write()` for the DB
+    connection (already cfg-bound at lease-acquire time) — passing cfg would
+    duplicate state. R3 Major 1 fix.
+    """
+    from datetime import datetime as _dt, timedelta as _td
+    from swing.data.repos.review_log import insert_pre_create
+    from swing.trades.review import (
+        compute_daily_period, compute_monthly_period, compute_weekly_period,
+    )
+
+    now = _dt.now()
+    cadence_periods: list[tuple[str, _date, _date]] = [
+        ("daily", *compute_daily_period(now)),
+        ("weekly", *compute_weekly_period(now)),
+        ("monthly", *compute_monthly_period(now)),
+    ]
+    with lease.fenced_write() as conn:
+        for review_type, p_start, p_end in cadence_periods:
+            scheduled = (p_end + _td(days=1)).isoformat()
+            insert_pre_create(
+                conn,
+                review_type=review_type,
+                period_start=p_start.isoformat(),
+                period_end=p_end.isoformat(),
+                scheduled_date=scheduled,
+            )
