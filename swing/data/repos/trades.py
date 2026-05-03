@@ -353,7 +353,11 @@ def find_open_trade_by_match(
     conn: sqlite3.Connection, *, ticker: str, entry_date: str,
     initial_shares: int | None = None,
 ) -> Trade | None:
-    """For TOS reconciliation. Strict match on (ticker, entry_date, shares); fuzzy on (ticker, entry_date) if shares is None."""
+    """For TOS reconciliation.
+
+    Strict match on (ticker, entry_date, shares); fuzzy on (ticker, entry_date)
+    if shares is None.
+    """
     if initial_shares is not None:
         row = conn.execute(
             """
@@ -427,14 +431,15 @@ def update_trade_review_fields(
     management_grade: str,
     exit_grade: str,
     process_grade: str,
-    disqualifying_process_violation: bool,
-    realized_R_if_plan_followed: float | None,
+    disqualifying_process_violation: bool | None,
+    realized_R_if_plan_followed: float | None,  # noqa: N803
     mistake_cost_confidence: str,
     lesson_learned: str,
 ) -> None:
     """UPDATE the 10 review fields atomically. Caller wraps in `with conn:`.
     All 10 fields written together — partial-state review rows are not valid.
-    mistake_tags_json must be canonicalized by caller."""
+    mistake_tags_json must be canonicalized by caller.
+    Missing trade_id raises ValueError."""
     cur = conn.execute(
         """
         UPDATE trades SET
@@ -452,9 +457,10 @@ def update_trade_review_fields(
         """,
         (reviewed_at, mistake_tags_json, entry_grade, management_grade,
          exit_grade, process_grade,
-         1 if disqualifying_process_violation else 0,
+         (None if disqualifying_process_violation is None
+          else (1 if disqualifying_process_violation else 0)),
          realized_R_if_plan_followed, mistake_cost_confidence,
          lesson_learned, trade_id),
     )
     if cur.rowcount == 0:
-        raise ValueError(f"update_trade_review_fields: no trade with id={trade_id}")
+        raise ValueError(f"trade {trade_id} not found")

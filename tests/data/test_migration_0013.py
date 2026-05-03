@@ -111,21 +111,28 @@ def test_trade_dataclass_has_ten_review_fields_with_none_default() -> None:
 
 def test_update_trade_review_fields_raises_on_unknown_id(conn: sqlite3.Connection) -> None:
     """Silent no-op on missing trade_id is data loss; must raise."""
-    with pytest.raises(ValueError, match="no trade with id=99999"):
-        with conn:
-            update_trade_review_fields(
-                conn, trade_id=99999,
-                reviewed_at="2026-05-02T10:00:00",
-                mistake_tags_json='["CHASED"]',
-                entry_grade="C", management_grade="B", exit_grade="B",
-                process_grade="C", disqualifying_process_violation=False,
-                realized_R_if_plan_followed=2.0,
-                mistake_cost_confidence="medium",
-                lesson_learned="x",
-            )
+    with pytest.raises(ValueError, match="trade 99999 not found"), conn:
+        update_trade_review_fields(
+            conn, trade_id=99999,
+            reviewed_at="2026-05-02T10:00:00",
+            mistake_tags_json='["CHASED"]',
+            entry_grade="C", management_grade="B", exit_grade="B",
+            process_grade="C", disqualifying_process_violation=False,
+            realized_R_if_plan_followed=2.0,
+            mistake_cost_confidence="medium",
+            lesson_learned="x",
+        )
 
 
-def test_update_trade_review_fields_round_trip(conn: sqlite3.Connection) -> None:
+@pytest.mark.parametrize(
+    ("disqualifying_process_violation", "expected_stored"),
+    [(False, False), (True, True), (None, None)],
+)
+def test_update_trade_review_fields_round_trip(
+    conn: sqlite3.Connection,
+    disqualifying_process_violation: bool | None,
+    expected_stored: bool | None,
+) -> None:
     with conn:
         trade_id = insert_trade_with_event(
             conn,
@@ -142,7 +149,8 @@ def test_update_trade_review_fields_round_trip(conn: sqlite3.Connection) -> None
             reviewed_at="2026-05-02T10:00:00",
             mistake_tags_json='["CHASED"]',
             entry_grade="C", management_grade="B", exit_grade="B",
-            process_grade="C", disqualifying_process_violation=False,
+            process_grade="C",
+            disqualifying_process_violation=disqualifying_process_violation,
             realized_R_if_plan_followed=2.0,
             mistake_cost_confidence="medium",
             lesson_learned="Wait for the breakout, not the build-up.",
@@ -155,7 +163,7 @@ def test_update_trade_review_fields_round_trip(conn: sqlite3.Connection) -> None
     assert t.management_grade == "B"
     assert t.exit_grade == "B"
     assert t.process_grade == "C"
-    assert t.disqualifying_process_violation is False
+    assert t.disqualifying_process_violation is expected_stored
     assert t.realized_R_if_plan_followed == 2.0
     assert t.mistake_cost_confidence == "medium"
     assert t.lesson_learned == "Wait for the breakout, not the build-up."
