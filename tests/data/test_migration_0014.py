@@ -287,3 +287,69 @@ def test_preservation_invariant_notes_merged(tmp_path):
         "target hit | early bias good",
         "2026-04-05T16:00:00",
     )
+
+
+def test_in_flight_migration_vir_dhc_cc_you(tmp_path):
+    """Spec §12.3: production-shape fixture migrates VIR + DHC + CC + YOU
+    correctly.
+
+    NOTE: this fixture mirrors the production DB shape verified at
+    empirical audit time (HEAD aa2dd60 → eba1625, 2026-05-04). YOU was
+    added 2026-05-04 between writing-plans dispatch (251cc35) and Sub-A
+    dispatch — operator-confirmed FIRM trade_origin = pipeline_aplus per
+    spec §10.4.
+    """
+    from swing.data.db import run_migrations
+
+    trades = [
+        # VIR: closed + reviewed (Phase 6 review surface populated
+        # reviewed_at).
+        (1, "VIR", "2026-04-20", 11.30, 2, 8.26, 8.26, "closed"),
+        # DHC: open since 2026-04-27, $7.58 × 39, initial_stop 6.56.
+        (2, "DHC", "2026-04-27", 7.58, 39, 6.56, 7.28, "open"),
+        # CC: open since 2026-04-30, $26.97 × 5.
+        (3, "CC", "2026-04-30", 26.97, 5, 20.51, 20.51, "open"),
+        # YOU: open since 2026-05-04, $56.29 × 2 (4th trade entered between
+        # writing-plans dispatch and Sub-A dispatch; A+ entry; bucket=aplus).
+        (4, "YOU", "2026-05-04", 56.29, 2, 45.38, 45.38, "open"),
+    ]
+    exits_data = [
+        # VIR's single full exit at -0.33R (per production DB).
+        (1, 1, "2026-04-24", 10.30, 2, "stop-hit", -2.0,
+         -0.32894736842105254, None),
+    ]
+    conn, _ = _seed_v13_with_trades_and_exits(tmp_path, trades, exits_data)
+    # Phase 6: VIR was reviewed; mark reviewed_at to drive state='reviewed'.
+    conn.execute(
+        "UPDATE trades SET reviewed_at = '2026-05-04T10:00:00' WHERE id = 1"
+    )
+    conn.commit()
+
+    run_migrations(conn, target_version=14, backup_dir=tmp_path)
+
+    # Verify per-trade state assignment.
+    rows = conn.execute(
+        "SELECT ticker, state, current_size, current_avg_cost, "
+        "last_fill_at, trade_origin, pre_trade_locked_at "
+        "FROM trades ORDER BY id"
+    ).fetchall()
+    vir, dhc, cc, you = rows
+    assert vir == ("VIR", "reviewed", 0.0,  11.30, "2026-04-24T16:00:00",
+                   "manual_off_pipeline",     "2026-04-20T16:00:00")
+    assert dhc == ("DHC", "managing", 39.0, 7.58,  "2026-04-27T16:00:00",
+                   "pipeline_watch_hyp_recs", "2026-04-27T16:00:00")
+    assert cc  == ("CC",  "managing", 5.0,  26.97, "2026-04-30T16:00:00",
+                   "pipeline_watch_hyp_recs", "2026-04-30T16:00:00")
+    assert you == ("YOU", "managing", 2.0,  56.29, "2026-05-04T16:00:00",
+                   "pipeline_aplus",          "2026-05-04T16:00:00")
+
+    # Verify fills row count = #trades + #exits = 4 + 1 = 5.
+    fill_count = conn.execute("SELECT COUNT(*) FROM fills").fetchone()[0]
+    assert fill_count == 5
+
+    # Verify VIR's pre-trade fields persist NULL (legacy migration backfill).
+    row = conn.execute(
+        "SELECT thesis, premortem_technical, emotional_state_pre_trade "
+        "FROM trades WHERE ticker='VIR'"
+    ).fetchone()
+    assert row == (None, None, None)
