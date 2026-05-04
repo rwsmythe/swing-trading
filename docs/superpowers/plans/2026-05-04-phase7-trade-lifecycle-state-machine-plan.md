@@ -293,7 +293,7 @@ Default posture: read-only on `swing/data/` + `swing/trades/`. Phase 7 carve-out
 
 ### §3.9 Total surface
 
-~38 files (37 from spec §15 + new `state_badge.html.j2` partial + new `test_migration_runner_backup.py`). Phase 6 was ~25; Phase 7 is materially larger because of the cross-cutting `status`→`state` rewrite + Fills introduction.
+~45 files (37 from spec §15 + new `state_badge.html.j2` partial + new `test_migration_runner_backup.py`). Phase 6 was ~25; Phase 7 is materially larger because of the cross-cutting `status`→`state` rewrite + Fills introduction.
 
 ---
 
@@ -3751,6 +3751,8 @@ async def post_entry_form(request, ...):
 
 **Canonical HX-Redirect target: `GET /trades/{trade_id}`** (renders trade detail page). MUST be registered in `swing/web/routes/trades.py` AS PART OF THIS TASK if not already present. Per CLAUDE.md gotcha 2026-05-04 (Phase 6 I3 HX-Redirect-target-unrouted): do NOT emit a redirect to a path that doesn't resolve.
 
+**Test fixture note:** the C.3 tests below use the standard project pattern: `client = TestClient(app)` (with lifespan via `with TestClient(app) as client:` per CLAUDE.md TestClient lifespan note); the `conn` for direct DB-shape assertions comes from the same `tmp_path` SQLite path the test fixture uses (`conn = sqlite3.connect(tmp_path / "test.db")` after the test client's `record_entry` flow has committed). Implementer aligns to whichever fixture pattern the existing `tests/web/test_routes/test_trades_route.py` already uses to avoid divergence.
+
 Tests gate this with TWO discriminating assertions:
 
 ```python
@@ -4121,7 +4123,7 @@ Sub-A T0 covers 8 fixture-using files identified at empirical-audit time. Sub-B 
   - Test fixture refactor scope (Sub-A T0 + Sub-B T6 + Sub-C as-touched).
   - DHC + CC trade_origin verification (Sub-A T2 migration UPDATE uses operator-confirmed FIRM `pipeline_watch_hyp_recs`).
 - [ ] Plan organizes tasks into 3 sub-dispatch groups with clean boundaries (§4–§6).
-- [ ] Plan enumerates the carve-out file list (§3; ~38 files).
+- [ ] Plan enumerates the carve-out file list (§3; ~45 files).
 - [ ] Plan includes the per-call-site `status`→state predicate rewrite mapping (§2.1).
 - [ ] Plan includes the 4-fixture preservation invariant test gate (Sub-A T9).
 - [ ] Plan includes the state-machine all-transition-paths matrix (Sub-A T5; 25 cells).
@@ -4158,7 +4160,7 @@ The writing-plans dispatch's final report to the orchestrator follows the brief'
 - `COMMITS: <initial> → <final>`
 - `ADVERSARIAL ROUNDS: <N>; FINAL VERDICT: NO_NEW_CRITICAL_MAJOR`
 - Key plan decisions resolutions (vocabulary, predicate rewrite, sub-dispatch decomposition, test count band, fixture refactor scope, DHC+CC origin)
-- Carve-out summary (~38 files)
+- Carve-out summary (~45 files)
 - Per-call-site predicate rewrite summary (12 prod files + 13 test-corpus categories)
 - Adversarial findings with disposition (per round)
 - Lessons worth capturing (process insights from plan-authoring)
