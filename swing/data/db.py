@@ -218,7 +218,16 @@ def _phase7_backup_gate(
     re-raise as ``MigrationBackupRequiredException`` so callers refuse to
     migrate; the source DB is unmodified.
     """
-    if target_version < 14 or current_version >= 14:
+    # Gate fires only when current_version == 13 (the only state with real
+    # production data to back up; fresh installs (current=0) and mid-walk
+    # states from v3-seeded tests don't need backup — the migration walk
+    # passes through v13→v14 within the same run_migrations call and the
+    # intermediate v13 state is transient).
+    if (
+        target_version < 14
+        or current_version >= 14
+        or current_version < 13
+    ):
         return
     src_path = _resolve_main_db_path(conn)
     if src_path is None:

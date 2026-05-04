@@ -123,3 +123,70 @@ def test_run_migrations_refuses_when_backup_path_unwritable(tmp_path):
         assert cur.fetchone()[0] == 13  # unchanged
     finally:
         conn.close()
+
+
+def test_ensure_schema_fresh_db_succeeds_at_v14(tmp_path):
+    """A brand-new install (fresh empty DB file) walks 0001->0014 without
+    firing the backup gate. The gate is for upgrading existing v13 data;
+    a fresh DB has no data to lose.
+
+    Regression: A.2 EXPECTED_SCHEMA_VERSION bump initially fired the gate
+    on fresh installs, raising MigrationBackupRequiredException. Code-review
+    I1 tightened the gate to current_version == 13 only.
+    """
+    from swing.data.db import EXPECTED_SCHEMA_VERSION, ensure_schema
+    db = tmp_path / "fresh.db"
+    conn = ensure_schema(db)
+    cur = conn.execute("SELECT version FROM schema_version")
+    assert cur.fetchone()[0] == EXPECTED_SCHEMA_VERSION  # 14
+    # Sanity: no spurious backup file in the same directory.
+    backup_files = list(tmp_path.glob("swing-pre-phase7-migration-*.db"))
+    assert backup_files == [], f"unexpected backup file(s): {backup_files}"
+    conn.close()
+
+
+def test_run_migrations_skips_gate_when_current_below_13(tmp_path):
+    """Mid-walk states (current_version < 13) skip the gate; the walk passes
+    through v13->v14 cleanly without backing up the transient v3/v5/etc state.
+
+    Discriminating: would FAIL pre-fix because current=0 < 13 < target=14
+    triggered the gate.
+    """
+    db = tmp_path / "midwalk.db"
+    conn = sqlite3.connect(db)
+    try:
+        # current_version = 0 (no schema_version table); target = 14.
+        run_migrations(conn, target_version=14, backup_dir=tmp_path)
+        cur = conn.execute("SELECT version FROM schema_version")
+        assert cur.fetchone()[0] == 14
+        backup_files = list(tmp_path.glob("swing-pre-phase7-migration-*.db"))
+        assert backup_files == [], (
+            f"gate fired but should have skipped: {backup_files}"
+        )
+    finally:
+        conn.close()
+
+
+def test_run_migrations_fires_gate_when_current_eq_13(tmp_path):
+    """v13 -> v14 upgrade DOES fire the gate (existing data; backup before
+    table-rebuild). The successfully-created backup file is left in
+    backup_dir; the upgrade succeeds.
+
+    Discriminating: would FAIL post-fix if condition was over-tightened to
+    current >= 14, never firing the gate.
+    """
+    db = tmp_path / "upgrade.db"
+    conn = sqlite3.connect(db)
+    try:
+        run_migrations(conn, target_version=13)
+        # Now current = 13.
+        backup_dir = tmp_path / "backups"
+        run_migrations(conn, target_version=14, backup_dir=backup_dir)
+        cur = conn.execute("SELECT version FROM schema_version")
+        assert cur.fetchone()[0] == 14
+        backup_files = list(backup_dir.glob("swing-pre-phase7-migration-*.db"))
+        assert len(backup_files) == 1, (
+            f"expected 1 backup file; got {backup_files}"
+        )
+    finally:
+        conn.close()
