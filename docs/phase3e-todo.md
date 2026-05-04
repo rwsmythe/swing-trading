@@ -1190,3 +1190,46 @@ Operator-surfaced 2026-05-04. Three concurrent uses of the official Charles Schw
 - `swing.config.toml` + Phase 5 user-config infrastructure (`cfg.integrations.schwab` section).
 - 2026-05-04 Finviz API integration entry above (shared `swing/integrations/` namespace + secrets-management approach).
 - Schwabdev unofficial Python wrapper: https://github.com/tylerebowers/Schwabdev (candidate library; see V1 sketch + design question 1).
+
+---
+
+## 2026-05-04 Handoff document growth — structural separation + retention discipline (QUEUED; tripwire-gated)
+
+Operator-surfaced 2026-05-04 during Phase 7 brainstorm dispatch prep. The fresh-orchestrator handoff pattern (start a new conversation instance before each major iteration to minimize accumulated tool-result noise) loses leverage as the persisted handoff documents themselves grow.
+
+### Problem
+
+`docs/orchestrator-context.md` (~71k tokens) and `docs/phase3e-todo.md` (~65k tokens) accrete monotonically — lessons captured, recent decisions, in-flight prose, SHIPPED items. Fresh-orchestrator bootstrap currently consumes ~200-250k tokens to load context (the two accreting docs + `CLAUDE.md` + system prompt + initial `git status`/`git log`). Growth rate ~30-50k tokens/phase. Beyond a threshold, bootstrap consumes enough of the working window that the savings vs continuing a long conversation are largely defeated.
+
+### Trigger
+
+Fire the project when total bootstrap consumption (after a fresh orchestrator reads `docs/orchestrator-context.md` + `docs/phase3e-todo.md` + `CLAUDE.md` + runs `git status` + `git log --oneline -20`) exceeds **300k tokens** (~30% of Opus 1M window). Measured by the orchestrator's reported context utilization after standard bootstrap (e.g., `/cost` or equivalent context-check). Below threshold: bank the observation, defer.
+
+Operator-paced verification: any fresh orchestrator can sanity-check bootstrap consumption against this trigger; if exceeded, surface to operator as project-readiness signal.
+
+### Recommended approach (subject to re-evaluation when triggered)
+
+1. **Structural separation (one-time refactor; dominant cost).** Split each accreting doc into `*-active` + `*-archive`:
+   - `orchestrator-context-active.md` (current state, immediate next moves, currently-binding framings — capped) + `orchestrator-context-archive.md` (historical narrative, older captured lessons, superseded decisions).
+   - `phase3e-todo-active.md` (open backlog) + `phase3e-todo-archive.md` (SHIPPED items + closed entries).
+   - Bootstrap discipline: fresh orchestrator reads only `-active` files; archive is searchable on demand via grep / Read.
+2. **Light retention discipline (ongoing; minor curation cost).**
+   - SHIPPED items in `phase3e-todo.md` move to archive when the next phase ships (one-phase cooldown).
+   - "Lessons captured" caps at last ~30 entries; older lessons promote to `CLAUDE.md` (when durable code-failure prevention) or archive (when process-only).
+   - "Recent decisions and framings" entries that have been superseded migrate to archive.
+
+### Out-of-scope alternatives considered
+
+- Pure compression (replace prose with terse cross-refs to per-phase briefs) — sacrifices "everything in one file" without structural clarity benefit.
+- Bootstrap-discipline change alone (cap reading without splitting) — discipline-failure risk; silent recurrence.
+- Tooling-based auto-summary script (regenerate snapshot from git log + DB) — premature; structural separation is simpler and lower-maintenance.
+
+### Estimated effort
+
+1 dispatch — one-time refactor (split docs, write the cross-reference scaffolding, populate active vs archive) + write the retention-discipline rules into `orchestrator-context-active.md` as a maintenance section. Probably writing-plans-skip viable; copowers:executing-plans direct.
+
+### Cross-references
+
+- `docs/orchestrator-context.md` §"Lessons captured" + §"Currently in-flight work" (especially the per-phase prose paragraphs) + §"Recent decisions and framings" — three highest-velocity growth surfaces.
+- `docs/phase3e-todo.md` — entire file; SHIPPED items 3e.1 / 3e.3 / 3e.4 / 3e.5 (2026-04-26) still inline a week later, illustrating the cooldown-archival opportunity.
+- This entry's tripwire mechanism is itself a precedent for trigger-gated backlog items (vs always-active or operator-paced-deferred). If useful, document the pattern in `orchestrator-context.md` after first activation.
