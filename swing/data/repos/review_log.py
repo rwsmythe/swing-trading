@@ -109,6 +109,21 @@ def complete_review_atomic(
         compute_profit_factor,
     )
 
+    # Spec §2.5: required-if-completed fields enforced at repo layer so that
+    # direct callers (not just CLI/web) cannot bypass validation.
+    if duration_minutes is None or duration_minutes <= 0:
+        raise ValueError(
+            "complete_review_atomic: duration_minutes must be positive"
+        )
+    if not primary_lesson or not primary_lesson.strip():
+        raise ValueError(
+            "complete_review_atomic: primary_lesson is required"
+        )
+    if not next_period_focus or not next_period_focus.strip():
+        raise ValueError(
+            "complete_review_atomic: next_period_focus is required"
+        )
+
     conn.execute("BEGIN IMMEDIATE")
     try:
         # Step 1: read the period from review_log:
