@@ -999,7 +999,15 @@ Sourced from operator-commissioned research at `future/swing_trading_journal_ai_
 - Executing-plans brief: `docs/phase6-post-trade-review-executing-plans-brief.md` (`a7c4bda`).
 - Ad-hoc DB cleanups: 2026-05-04 SPY test entries removed (`swing-pre-spy-cleanup-20260504T022932.db`); see orchestrator-context.md.
 
-### Phase 7 — Trade lifecycle state machine + Fills first-class (BRAINSTORM SHIPPED 2026-05-04; writing-plans dispatch operator-paced)
+### Phase 7 — Trade lifecycle state machine + Fills first-class (BRAINSTORM + PLAN SHIPPED 2026-05-04; Sub-A executing-plans BLOCKED on vocabulary operator-confirm)
+
+**Plan-shipped status** (2026-05-04): plan at `docs/superpowers/plans/2026-05-04-phase7-trade-lifecycle-state-machine-plan.md` (commits `18bb35e..251cc35`; 4172 lines; 4 Codex rounds → NO_NEW_CRITICAL_MAJOR with 13 substantive findings + 2 advisory). Writing-plans dispatch brief at `docs/phase7-trade-lifecycle-state-machine-writing-plans-brief.md` (`3f7d5c1`). Plan organizes into 3 sub-dispatches (Sub-A schema/repos/state — 11 tasks, ~87 tests; Sub-B services/CLI — 9 tasks, ~50 tests; Sub-C web/UX — 8 tasks, ~50-60 tests). Default ordering serial A→B→C; B+C parallelizable post-Sub-A merge if scheduling pressure justifies. Total expected new fast tests: +150-250 wide band (per Phase 6 lesson "test-count-projections-bias-high"). Carve-out refined from spec's ~37 to plan's ~45 files (plan-time empirical-audit discovery + cross-cutting test-fixture refactor scope).
+
+**Sub-A pre-conditions (binding):**
+1. Vocabulary operator-confirm (catalyst-9 / emotional_state-8 / event_type-7 — values embedded in migration 0014 CHECK enums; see plan §1).
+2. Production DB backup verified to off-Drive path before migration.
+3. Main at BASELINE_SHA `251cc35` with full fast suite green.
+4. Marker-file Codex-blocking workflow per binding convention 2026-05-02.
 
 **Brainstorm-shipped status:** 3 Codex rounds → NO_NEW_CRITICAL_MAJOR. Spec at `docs/superpowers/specs/2026-05-04-phase7-trade-lifecycle-state-machine-design.md` (commits `2c5fd34` initial → `c926f01` 3-round revisions). Brainstorm dispatch brief at `docs/phase7-trade-lifecycle-state-machine-brainstorm-brief.md` (`db6727d` + `9e4a761` hard-conflict-escape addition).
 
