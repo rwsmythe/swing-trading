@@ -11,12 +11,26 @@ from click.testing import CliRunner
 from fastapi.testclient import TestClient
 
 from swing.cli import main
-from swing.trades.review import SOFT_WARN_REVIEW_DUE_MESSAGE
+from swing.trades.review import SOFT_WARN_REVIEW_DUE_MESSAGE, soft_warn_review_due_message
 
 
 def test_soft_warn_message_constant_includes_review_due_text() -> None:
     assert "Review" in SOFT_WARN_REVIEW_DUE_MESSAGE
     assert "7 days" in SOFT_WARN_REVIEW_DUE_MESSAGE
+
+
+def test_soft_warn_review_due_message_function_uses_cfg_window_days() -> None:
+    """Minor 1: soft_warn_review_due_message(n) uses n, not hardcoded 7."""
+    msg_7 = soft_warn_review_due_message(7)
+    assert "7 days" in msg_7
+    assert "Review" in msg_7
+
+    msg_14 = soft_warn_review_due_message(14)
+    assert "14 days" in msg_14
+    assert "7 days" not in msg_14
+
+    # The constant is the default-7 alias
+    assert SOFT_WARN_REVIEW_DUE_MESSAGE == soft_warn_review_due_message(7)
 
 
 @pytest.fixture

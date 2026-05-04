@@ -543,8 +543,8 @@ def trade_exit_cmd(ctx, trade_id, exit_date, exit_price, shares, reason, notes):
     closed = " (FULL CLOSE)" if result.fully_closed else ""
     click.echo(f"Exit {result.exit_id}: ${result.realized_pnl:+.2f} ({result.r_multiple:+.2f}R){closed}")
     if result.fully_closed:
-        from swing.trades.review import SOFT_WARN_REVIEW_DUE_MESSAGE
-        click.echo(SOFT_WARN_REVIEW_DUE_MESSAGE)
+        from swing.trades.review import soft_warn_review_due_message
+        click.echo(soft_warn_review_due_message(cfg.review.review_window_days))
 
 
 @trade_group.command("list")

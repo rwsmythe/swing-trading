@@ -219,12 +219,25 @@ def _trade_closed_date_for_review(trade: Trade, exits: list[Exit]) -> date | Non
 
 # ---- Cadence-period boundary helpers (locked decision §2.7) ----
 
-# ---- Soft-warn message constant (shared between web + CLI close paths) ----
+# ---- Soft-warn message (shared between web + CLI close paths) ----
 
-SOFT_WARN_REVIEW_DUE_MESSAGE: str = (
-    "Review due within 7 days. Run `swing trade review --trade-id <id>` "
-    "or visit /trades/<id>/review."
-)
+
+def soft_warn_review_due_message(window_days: int = 7) -> str:
+    """Compose the close-path soft-warn message with the cfg-driven window.
+
+    Codex R1 Minor 1: window_days was hardcoded to 7 in the constant, which
+    drifts from cfg.review.review_window_days if the operator changes the
+    config. Callers should pass cfg.review.review_window_days.
+    """
+    return (
+        f"Review due within {window_days} days. "
+        f"Run `swing trade review --trade-id <id>` "
+        f"or visit /trades/<id>/review."
+    )
+
+
+# Default-7 alias retained for backwards-compatibility (e.g., test imports).
+SOFT_WARN_REVIEW_DUE_MESSAGE: str = soft_warn_review_due_message(7)
 
 
 def compute_daily_period(now: datetime) -> tuple[date, date]:

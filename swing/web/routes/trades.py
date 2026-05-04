@@ -786,7 +786,11 @@ def exit_post(
         # Primary target: empty/hidden stub so the row disappears.
         soft_warn_html = templates.get_template(
             "partials/review_soft_warn_close.html.j2"
-        ).render(request=request, trade_id=trade_id)
+        ).render(
+            request=request,
+            trade_id=trade_id,
+            window_days=cfg.review.review_window_days,
+        )
         return HTMLResponse(Markup(
             f'<tr id="open-position-{trade_id}" style="display:none"></tr>'
             f'<div id="status-strip" hx-swap-oob="true">{status_strip_html}</div>'
