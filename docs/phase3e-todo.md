@@ -959,7 +959,7 @@ Sourced from operator-commissioned research at `future/swing_trading_journal_ai_
 - **Pyramiding R-views (R_initial / R_effective / R_campaign):** DROP. Operator at $7,500 capital, 5 concurrent, no pyramiding plan.
 - **Drawdown circuit breaker:** v1.2 defaults this opt-in disabled; align (do not enable by default).
 
-### Phase 6 — Post-trade review surface (NEXT after Phase 5)
+### Phase 6 — Post-trade review surface — **SHIPPED 2026-05-04 at `51c79ed`**
 
 **Bundle:** Mistake_Tags + Process Grade A-F + `mistake_cost_R` / `lucky_violation_R` + `lesson_learned` + Review_Log cadence skeleton.
 
@@ -974,10 +974,30 @@ Sourced from operator-commissioned research at `future/swing_trading_journal_ai_
 
 **Estimated dispatches:** 2 (one for the schema + repo + CLI; one for the web form + dashboard surface). Brainstorm-skip viable; copowers:writing-plans direct.
 
+**Actually shipped as:** single executing-plans dispatch on worktree branch `phase6-post-trade-review` (not split). 24 commits (16 task-impl + 1 code-review I2 + 4 R1 Codex fixes + 1 R2 Codex minor + 1 mid-verification I3 fix). 2 Codex rounds → NO_NEW_CRITICAL_MAJOR. Operator-witnessed 6-surface browser gate PASS. Test count 1472 → 1587 (+115 vs plan's +30-45 estimate; ~3x due to Codex compound-ROI on discriminating-test-discipline). Ruff 98 → 80 (incidental cleanup). 0 rogue commits — first all-clean executing-plans dispatch since Phase 4.
+
+**V1 follow-ups (out-of-scope discoveries from executing-plans return + operator-witnessed verification gate; OPEN):**
+
+- **Cadence card lacks clickable "Complete review" link.** Operator-witnessed gate finding 2026-05-04. Cadence cards at `swing/web/templates/partials/cadence_cards.html.j2` render period + scheduled/completed status but have NO link to the completion form. Operator navigated via direct URL (`/reviews/{review_id}/complete`) for verification. Cosmetic UX gap; non-blocking. Fix: add `<a href="/reviews/{{ card.review_id }}/complete">Complete review</a>` when `card.is_pending`.
+- **Completion route 404s for already-completed Review_Logs (no read-only view).** Operator-witnessed gate finding 2026-05-04. `GET /reviews/{id}/complete` at `swing/web/routes/trades.py:1126` explicitly checks completion state and returns 404 with `"Review #N not found or already completed"`. Operator could not revisit completed Review_Log via UI to verify frozen aggregates (verification done via direct DB query instead). Fix options: (a) modify the existing GET handler to render read-only view for completed rows, OR (b) add new `GET /reviews/{id}` route for read-only display.
+- **`ReviewsPendingVM.window_days` field stale after Codex R1 Major 1 fix.** Codex R2 Minor 3 ACCEPTED-with-rationale 2026-05-04. R1 Major 1 fix changed `/reviews/pending` list view from "overdue only" to "ALL closed unreviewed" semantic; the `window_days` field is no longer rendered on the page but still carried on the VM. Future cleanup: drop the field OR re-purpose for "highlight trades older than the badge threshold" UI surface.
+- **Migration head-version test consolidation needed.** Phase 6 Task 1 code-review finding 2026-05-04 (pre-existing structural debt amplified by every schema bump). `tests/data/test_migration_0010_trade_chart_pattern.py` has hard-coded `assert version == 13` inside a migration-0010-specific test; same inline assertion exists in other migration-specific tests. Each schema bump requires retroactive updates across multiple test files (Phase 6 had to update 3). Fix: extract head-version assertions into a single `tests/data/test_expected_schema_version_is_current` test and drop the in-line versions from migration-specific tests.
+- **Soft-warn dismiss-link uses raw onclick.** Phase 6 review_soft_warn_close partial uses `onclick="..."` for the dismiss action (existing project pattern; not Phase 6's introduction). Flag for future HTMX-everywhere migration when the project's JS posture solidifies.
+- **HX-Redirect target route must be verified to exist (test pattern strengthening).** Operator-witnessed gate found Phase 6 review POST emitted `HX-Redirect: /trades` but no `GET /trades` route was registered (fixed inline as code-review I3 to `/reviews/pending`). Future tests for HX-Redirect-emitting handlers should either (a) assert target route is registered in app's route table (e.g., `assert any(r.path == target for r in app.routes)`), OR (b) follow the redirect with a second TestClient call and assert 200. Add to writing-plans phase as checklist item for any HX-Redirect-emitting handler.
+
+**Process-meta items captured (out-of-scope for Phase 6 V1 follow-up; informational):**
+
+- **Copowers session state file convention doesn't share across worktrees of the same repo.** Implementer return-report observation 2026-05-04. Convention uses `sha256(repo_root_path)[:12]` for the session-state filename at `/tmp/.copowers-session-<hash>.json`; worktree paths produce different hashes than main paths, so each worktree gets its own session state file. Could be improved with `git rev-parse --git-common-dir` for shared state across worktrees of the same repo. Upstream improvement note for the copowers plugin; not Phase 6 work.
+- **Subagent monthly usage limits forced 2 completions to orchestrator-session fallback.** Implementer return-report observation 2026-05-04. Two subagent dispatches hit "monthly usage limit" mid-task (one during ruff cleanup, one during Codex R1 fixes); implementer completed those workflows directly from the orchestrator session with the same end-state. Resource-awareness flag for org-budget if dispatching again soon.
+
 **Cross-references:**
 - `future/swing_trading_journal_ai_ingestion_v1.2.md` §7.10 (Mistake_Tags), §7.11 (Review_Log), §9.2 (Process Grade), §8.8 (Mistake Cost / Lucky Violation), §10.4 (Post-Trade Review workflow).
 - Existing primitive precursor: `swing trade analyze <trade_id>` (Phase 3e 2026-04-25) — manual case-study output. Phase 6 upgrades this to structured + persisted.
 - Existing audit-log: `trade_events` — keep distinct from Review_Log (events are state changes; reviews are aggregations).
+- Writing-plans brief: `docs/phase6-post-trade-review-writing-plans-brief.md` (`441e22a`).
+- Plan: `docs/superpowers/plans/2026-05-02-phase6-post-trade-review-plan.md` (commit chain `1be4622..e976d64`; 5 Codex rounds → NO_NEW_CRITICAL_MAJOR).
+- Executing-plans brief: `docs/phase6-post-trade-review-executing-plans-brief.md` (`a7c4bda`).
+- Ad-hoc DB cleanups: 2026-05-04 SPY test entries removed (`swing-pre-spy-cleanup-20260504T022932.db`); see orchestrator-context.md.
 
 ### Phase 7 — Trade lifecycle state machine + Fills first-class (gated on Phase 6 evaluation)
 
