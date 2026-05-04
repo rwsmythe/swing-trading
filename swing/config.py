@@ -153,6 +153,18 @@ class ArchiveConfig:
 
 
 @dataclass(frozen=True)
+class ReviewConfig:
+    """Phase 6 post-trade review tunables. V1 surfaces only the cadence
+    review window. V2 may add cadence calendar policy, etc.
+
+    Toml-shadowing rule: section is OPTIONAL in swing.config.toml — when
+    absent, dataclass defaults apply (matches the `archive` / `classifier`
+    pattern; opposite of `paths` / `account` which are REQUIRED sections).
+    """
+    review_window_days: int = 7
+
+
+@dataclass(frozen=True)
 class Web:
     host: str = "127.0.0.1"
     port: int = 8080
@@ -204,6 +216,7 @@ class Config:
     web: Web = field(default_factory=Web)
     classifier: ClassifierConfig = field(default_factory=ClassifierConfig)
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
+    review: ReviewConfig = field(default_factory=ReviewConfig)
 
 
 _PROJECT_INTERNAL_PREFIXES = ("data/", "exports/", "reference/")
@@ -281,4 +294,5 @@ def load(config_path: Path) -> Config:
         web=Web(**raw.get("web", {})),
         classifier=ClassifierConfig(**raw.get("classifier", {})),
         archive=ArchiveConfig(**raw.get("archive", {})),
+        review=ReviewConfig(**raw.get("review", {})),
     )

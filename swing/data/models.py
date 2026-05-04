@@ -90,6 +90,17 @@ class Trade:
     # at form/CLI render time and persists AS-IS via record_entry.
     sector: str = ""
     industry: str = ""
+    # Phase 6 (migration 0013) — review surface fields.
+    reviewed_at: str | None = None
+    mistake_tags: str | None = None
+    entry_grade: str | None = None
+    management_grade: str | None = None
+    exit_grade: str | None = None
+    process_grade: str | None = None
+    disqualifying_process_violation: bool | None = None
+    realized_R_if_plan_followed: float | None = None  # noqa: N815
+    mistake_cost_confidence: str | None = None
+    lesson_learned: str | None = None
 
 
 @dataclass(frozen=True)
@@ -292,3 +303,30 @@ class PipelinePatternClassification:
     flag_start_date: date | None
     flag_end_date: date | None
     computed_at: str
+
+
+@dataclass(frozen=True)
+class ReviewLog:
+    """One row of the review_log table (migration 0013).
+    Slim 14 + 7 persisted aggregates per Phase 6 locked decision §2.5."""
+    review_id: int | None
+    review_type: str  # daily/weekly/monthly/quarterly/circuit_breaker
+    period_start: str
+    period_end: str
+    scheduled_date: str
+    completed_date: str | None
+    skipped: bool
+    duration_minutes: int | None
+    n_trades_reviewed: int
+    total_mistake_cost_R: float  # noqa: N815
+    total_lucky_violation_R: float  # noqa: N815
+    primary_lesson: str | None
+    next_period_focus: str | None
+    created_at: str
+    net_R_effective: float | None = None  # noqa: N815
+    expectancy_R_effective: float | None = None  # noqa: N815
+    win_rate: float | None = None
+    avg_win_R: float | None = None  # noqa: N815
+    avg_loss_R: float | None = None  # noqa: N815
+    profit_factor: float | None = None
+    max_drawdown_R: float | None = None  # noqa: N815

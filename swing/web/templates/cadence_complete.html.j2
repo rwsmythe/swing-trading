@@ -1,0 +1,9 @@
+{% extends "base.html.j2" %}
+{% block title %}Complete {{ vm.review.review_type }} review{% endblock %}
+{% block content %}
+<h1>Complete {{ vm.review.review_type|capitalize }} review</h1>
+<p>Period: {{ vm.review.period_start }} – {{ vm.review.period_end }}</p>
+<p>{{ vm.n_closed_trades_in_period }} trade{{ "s" if vm.n_closed_trades_in_period != 1 else "" }}
+   closed in this period.</p>
+{% include "partials/cadence_complete_form.html.j2" %}
+{% endblock %}

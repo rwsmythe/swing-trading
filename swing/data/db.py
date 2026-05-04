@@ -7,7 +7,8 @@ from pathlib import Path
 # pipeline_pattern_classifications + trade chart_pattern columns (migrations 0009 + 0010)
 # chart_targets source taxonomy expansion (migration 0011)
 # sector + industry columns on candidates + trades (migration 0012)
-EXPECTED_SCHEMA_VERSION = 12
+# post-trade review surface: 10 trade fields + review_log table (migration 0013)
+EXPECTED_SCHEMA_VERSION = 13
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 

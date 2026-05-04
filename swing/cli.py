@@ -78,7 +78,10 @@ def db_backup(ctx: click.Context, force: bool) -> None:
     older weekly snapshots are pruned to the 12 most-recent (~3 months).
     """
     from swing.data.backup import (
-        compute_backup_destination, do_backup, prune_old_backups, should_backup,
+        compute_backup_destination,
+        do_backup,
+        prune_old_backups,
+        should_backup,
     )
 
     cfg = ctx.obj["config"]
@@ -315,7 +318,9 @@ def eval_cmd(ctx: click.Context, csv_path: str, as_of_date_str: str | None) -> N
 @click.pass_context
 def weather_cmd(ctx: click.Context, ticker: str, as_of_date_str: str | None) -> None:
     """Classify market weather and persist to weather_runs."""
-    from datetime import date as _date, datetime as _dt
+    from datetime import date as _date
+    from datetime import datetime as _dt
+
     from swing.prices import PriceFetcher
     from swing.weather.runner import run_weather
 
@@ -374,10 +379,14 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
                     hypothesis, chart_pattern_operator, force):
     """Record a trade entry."""
     from datetime import datetime as _dt
+
     from swing.data.db import connect
     from swing.trades.entry import (
-        EntryRequest, record_entry,
-        SoftWarnException, HardCapException, DuplicateOpenPositionException,
+        DuplicateOpenPositionException,
+        EntryRequest,
+        HardCapException,
+        SoftWarnException,
+        record_entry,
     )
 
     # T4: --notes required when --rationale=other (parity with web form).
@@ -514,6 +523,7 @@ def trade_exit_cmd(ctx, trade_id, exit_date, exit_price, shares, reason, notes):
     context.
     """
     from datetime import datetime as _dt
+
     from swing.data.db import connect
     from swing.trades.exit import ExitReason, ExitRequest, record_exit
 
@@ -532,6 +542,9 @@ def trade_exit_cmd(ctx, trade_id, exit_date, exit_price, shares, reason, notes):
         conn.close()
     closed = " (FULL CLOSE)" if result.fully_closed else ""
     click.echo(f"Exit {result.exit_id}: ${result.realized_pnl:+.2f} ({result.r_multiple:+.2f}R){closed}")
+    if result.fully_closed:
+        from swing.trades.review import soft_warn_review_due_message
+        click.echo(soft_warn_review_due_message(cfg.review.review_window_days))
 
 
 @trade_group.command("list")
@@ -540,9 +553,12 @@ def trade_exit_cmd(ctx, trade_id, exit_date, exit_price, shares, reason, notes):
 def trade_list_cmd(ctx, show_all):
     """List open (or all) trades."""
     from collections import defaultdict
+
     from swing.data.db import connect
     from swing.data.repos.trades import (
-        list_open_trades, list_closed_trades, list_all_exits,
+        list_all_exits,
+        list_closed_trades,
+        list_open_trades,
     )
 
     cfg = ctx.obj["config"]
@@ -589,8 +605,9 @@ def trade_list_cmd(ctx, show_all):
 def trade_stop_adjust_cmd(ctx, trade_id, new_stop, rationale, notes, force):
     """Adjust the stop on an open trade. Refuses to lower without --force."""
     from datetime import datetime as _dt
+
     from swing.data.db import connect
-    from swing.trades.stop_adjust import StopAdjustRequest, adjust_stop, StopRegressionError
+    from swing.trades.stop_adjust import StopAdjustRequest, StopRegressionError, adjust_stop
 
     # T5: --notes required when --rationale=other (parity with web form).
     if rationale == "other" and not (notes and notes.strip()):
@@ -626,6 +643,7 @@ def trade_advisory_cmd(ctx, trade_id, current_price, sma10, sma20, sma50,
                         previous_close, weather, as_of_date):
     """Print stop-advisory suggestions for an open trade."""
     from datetime import date as _date
+
     from swing.data.db import connect
     from swing.data.repos.trades import get_trade
     from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
@@ -887,6 +905,234 @@ def _render_trade_analysis(a) -> list[str]:
     return lines
 
 
+@trade_group.command("review")
+@click.option("--list", "list_mode", is_flag=True,
+              help="List closed trades pending review and exit. "
+                   "When set, all other args are ignored.")
+@click.option("--window-days", type=int, default=None,
+              help="Threshold in days since close (used with --list). "
+                   "Defaults to 7.")
+@click.option("--trade-id", type=int, default=None,
+              help="REQUIRED unless --list is set.")
+@click.option(
+    "--mistake-tags", multiple=True,
+    help="Repeatable. e.g., --mistake-tags CHASED --mistake-tags FOMO. "
+         "Use 'none_observed' if no mistakes (must NOT be combined with others).",
+)
+@click.option("--entry-grade", type=click.Choice(["A", "B", "C", "D", "F"]),
+              default=None, help="REQUIRED unless --list is set.")
+@click.option("--management-grade", type=click.Choice(["A", "B", "C", "D", "F"]),
+              default=None, help="REQUIRED unless --list is set.")
+@click.option("--exit-grade", type=click.Choice(["A", "B", "C", "D", "F"]),
+              default=None, help="REQUIRED unless --list is set.")
+@click.option("--disqualifying-process-violation", is_flag=True,
+              help="Set if any of the 7 v1.2 §9.2 disqualifying violations occurred. "
+                   "Caps process_grade at D.")
+@click.option("--realized-r-if-plan-followed", "realized_r_if_plan_followed",
+              type=float, default=None,
+              help="Counterfactual R if the original plan had been followed. Optional.")
+@click.option("--mistake-cost-confidence",
+              type=click.Choice(["high", "medium", "low"]), default=None)
+@click.option("--lesson-learned", default=None,
+              help="REQUIRED unless --list is set. Free-text reflection.")
+@click.pass_context
+def trade_review_cmd(
+    ctx, list_mode, window_days, trade_id, mistake_tags,
+    entry_grade, management_grade, exit_grade,
+    disqualifying_process_violation, realized_r_if_plan_followed,
+    mistake_cost_confidence, lesson_learned,
+):
+    """Post-trade review (Phase 6).
+
+    Two modes:
+      `swing trade review --list`  → print pending-review trades and exit.
+      `swing trade review --trade-id N --entry-grade A ...`  → record a review.
+    """
+    import json
+    from datetime import date as _date
+    from datetime import datetime as _dt
+
+    from swing.data.db import connect
+    from swing.data.repos.review_log import list_unreviewed_closed_trades
+    from swing.data.repos.trades import get_trade, update_trade_review_fields
+    from swing.trades.review import (
+        canonicalize_mistake_tags,
+        compute_process_grade,
+        validate_mistake_tags,
+    )
+
+    cfg = ctx.obj["config"]
+
+    # ---- LIST MODE ----
+    if list_mode:
+        conn = connect(cfg.paths.db_path)
+        try:
+            # Spec §3.1: list-view shows ALL closed-unreviewed (window_days=None).
+            # The badge (count_needs_review) keeps using window_days; that's separate.
+            trades = list_unreviewed_closed_trades(
+                conn, window_days=None, today_iso=None,
+            )
+        finally:
+            conn.close()
+        if not trades:
+            click.echo("No trades pending review.")
+            return
+        click.echo("Trades pending review (all closed trades awaiting review):")
+        for t in trades:
+            click.echo(f"  #{t.id} {t.ticker} entry={t.entry_date}")
+        return
+
+    # ---- REVIEW MODE — validate required args ----
+    missing = []
+    if trade_id is None:
+        missing.append("--trade-id")
+    if entry_grade is None:
+        missing.append("--entry-grade")
+    if management_grade is None:
+        missing.append("--management-grade")
+    if exit_grade is None:
+        missing.append("--exit-grade")
+    if not lesson_learned or not lesson_learned.strip():
+        missing.append("--lesson-learned")
+    if missing:
+        raise click.UsageError(
+            f"Missing required args (or pass --list to enter list mode): "
+            f"{', '.join(missing)}"
+        )
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        trade = get_trade(conn, trade_id)
+        if trade is None:
+            raise click.ClickException(f"Trade #{trade_id} not found")
+        if trade.status != "closed":
+            raise click.ClickException(
+                f"Trade #{trade_id} is not closed; cannot review"
+            )
+        if trade.reviewed_at is not None:
+            raise click.ClickException(
+                f"Trade #{trade_id} already reviewed at {trade.reviewed_at}; "
+                f"V1 supports single-review only"
+            )
+
+        canonical_tags = canonicalize_mistake_tags(list(mistake_tags))
+        if not canonical_tags:
+            raise click.UsageError(
+                "--mistake-tags is required (use 'none_observed' if no mistakes observed)"
+            )
+        try:
+            validate_mistake_tags(canonical_tags)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+        process_grade = compute_process_grade(
+            entry=entry_grade, management=management_grade, exit_=exit_grade,
+            disqualifying=disqualifying_process_violation,
+        )
+
+        with conn:
+            update_trade_review_fields(
+                conn, trade_id=trade_id,
+                reviewed_at=_dt.now().isoformat(timespec="seconds"),
+                mistake_tags_json=json.dumps(canonical_tags),
+                entry_grade=entry_grade,
+                management_grade=management_grade,
+                exit_grade=exit_grade,
+                process_grade=process_grade,
+                disqualifying_process_violation=disqualifying_process_violation,
+                realized_R_if_plan_followed=realized_r_if_plan_followed,
+                # Column is nullable; empty string fails the CHECK constraint.
+                # Pass None when operator did not specify --mistake-cost-confidence.
+                mistake_cost_confidence=mistake_cost_confidence or None,
+                lesson_learned=lesson_learned,
+            )
+    finally:
+        conn.close()
+
+    click.echo(
+        f"Review recorded for trade #{trade_id} ({trade.ticker}). "
+        f"Process grade: {process_grade}."
+    )
+
+
+@main.group("review")
+def review_group() -> None:
+    """Phase 6: cadence review (daily / weekly / monthly Review_Log completion)."""
+
+
+@review_group.command("complete")
+@click.option("--list", "list_mode", is_flag=True,
+              help="List pending Review_Log rows (completed_date IS NULL) and exit.")
+@click.option("--review-id", type=int, default=None,
+              help="REQUIRED unless --list is set.")
+@click.option("--duration-minutes", type=int, default=None,
+              help="REQUIRED unless --list. Operator-self-reported review duration.")
+@click.option("--primary-lesson", default=None,
+              help="REQUIRED unless --list. The single most important lesson.")
+@click.option("--next-period-focus", default=None,
+              help="REQUIRED unless --list. What to focus on next period.")
+@click.pass_context
+def review_complete_cmd(
+    ctx, list_mode, review_id, duration_minutes, primary_lesson,
+    next_period_focus,
+):
+    """Mark a Review_Log row complete + freeze aggregates atomically.
+
+    Atomic compute-and-freeze per brief §6.2 watch item 3 — caller does
+    NOT supply aggregates; complete_review_atomic owns the transaction.
+    """
+    from datetime import date as _date
+
+    from swing.data.db import connect
+    from swing.data.repos.review_log import (
+        complete_review_atomic,
+        list_pending,
+    )
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        if list_mode:
+            pending = list_pending(conn)
+            if not pending:
+                click.echo("No pending cadence reviews.")
+                return
+            click.echo("Pending cadence reviews:")
+            for r in pending:
+                click.echo(
+                    f"  #{r.review_id} {r.review_type} "
+                    f"{r.period_start}..{r.period_end} "
+                    f"scheduled={r.scheduled_date}"
+                )
+            return
+
+        missing = []
+        if review_id is None:
+            missing.append("--review-id")
+        if duration_minutes is None:
+            missing.append("--duration-minutes")
+        if not primary_lesson or not primary_lesson.strip():
+            missing.append("--primary-lesson")
+        if not next_period_focus or not next_period_focus.strip():
+            missing.append("--next-period-focus")
+        if missing:
+            raise click.UsageError(
+                f"Missing required args (or pass --list to enter list mode): "
+                f"{', '.join(missing)}"
+            )
+
+        complete_review_atomic(
+            conn, review_id=review_id,
+            completed_date=_date.today().isoformat(),
+            duration_minutes=duration_minutes,
+            primary_lesson=primary_lesson,
+            next_period_focus=next_period_focus,
+        )
+    finally:
+        conn.close()
+    click.echo(f"Review #{review_id} marked complete + aggregates frozen.")
+
+
 @main.group("journal")
 def journal_group() -> None:
     """Review stats + record cash movements."""
@@ -900,9 +1146,10 @@ def journal_group() -> None:
 def journal_review_cmd(ctx, period, today):
     """Compute and print journal stats + behavioral flags."""
     from datetime import date as _date
+
     from swing.data.db import connect
     from swing.data.repos.cash import list_cash
-    from swing.data.repos.trades import list_closed_trades, list_open_trades, list_all_exits
+    from swing.data.repos.trades import list_all_exits, list_closed_trades, list_open_trades
     from swing.journal.flags import compute_flags
     from swing.journal.stats import (
         compute_hypothesis_breakdown,
@@ -1026,6 +1273,7 @@ def journal_cash_cmd(ctx, deposit, withdraw, date_str, ref, note):
 def tos_import_cmd(ctx, csv_path, dry_run, auto_confirm):
     """Reconcile a TOS Account Statement CSV against the journal."""
     from pathlib import Path as _Path
+
     from swing.data.db import connect
     from swing.data.repos.cash import insert_cash
     from swing.journal.tos_import import reconcile_tos
@@ -1132,6 +1380,7 @@ def pipeline_force_clear_cmd(ctx, run_id, reason, bypass_staleness_check):
     heartbeat thread outlived the main loop).
     """
     from datetime import datetime as _dt
+
     from swing.data.repos.pipeline import find_run, force_clear
     from swing.pipeline.staleness import is_stale_eligible
 
@@ -1325,6 +1574,7 @@ def hypothesis_update_cmd(ctx: click.Context, hypothesis_id: int,
       closed-target-met -> (terminal — no reopen via CLI)
     """
     from datetime import datetime as _dt
+
     from swing.data.db import connect
     from swing.data.repos.hypothesis import (
         HypothesisStatusTransitionError,

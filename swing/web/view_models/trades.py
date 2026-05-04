@@ -7,9 +7,14 @@ from typing import Literal
 
 from swing.config import Config
 from swing.data.db import connect
-from swing.data.models import Trade
+from swing.data.models import ReviewLog, Trade
 from swing.data.repos.cash import list_cash
-from swing.data.repos.trades import get_trade, list_all_exits, list_exits_for_trade, list_open_trades
+from swing.data.repos.trades import (
+    get_trade,
+    list_all_exits,
+    list_exits_for_trade,
+    list_open_trades,
+)
 from swing.data.repos.watchlist import list_active_watchlist
 from swing.recommendations.sizing import compute_shares
 from swing.trades.entry import entry_rationale_options
@@ -18,7 +23,6 @@ from swing.trades.exit import ExitReason
 from swing.trades.stop_adjust import stop_adjust_rationale_options
 from swing.web.chart_scope import latest_completed_pipeline_run
 from swing.web.price_cache import PriceCache
-
 
 _VALID_ORIGINS = ("watchlist", "hyp-recs")
 
@@ -386,3 +390,127 @@ def build_stop_form_vm(*, trade_id: int, cfg: Config) -> TradeStopFormVM | None:
         trade=trade, current_stop=trade.current_stop, suggested_stops=(),
         rationale_options=stop_adjust_rationale_options(),
     )
+
+
+@dataclass(frozen=True)
+class ReviewVM:
+    trade: Trade
+    actual_realized_R_effective: float  # noqa: N815
+
+    # Mistake_Tags vocabulary surfaced for form rendering:
+    mistake_tag_categories: dict[str, tuple[str, ...]]
+
+    # Disqualifying-violations reference list for form helper text:
+    disqualifying_violations_reference: tuple[str, ...]
+
+    # Per-grade label list (A..F):
+    grade_choices: tuple[str, ...] = ("A", "B", "C", "D", "F")
+
+    # Phase 5 lesson — base.html.j2 dereferences these. New page VMs MUST
+    # carry safe defaults (5-VM existing-fields rule; brief §6.2 watch item 8).
+    session_date: str = ""
+    stale_banner: str = ""
+    price_source_degraded: bool = False
+    price_source_degraded_until: str | None = None
+    ohlcv_source_degraded: bool = False
+
+
+def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
+    """Build the review-page VM. Returns None if trade not found, not closed,
+    or already reviewed (V1 single-review-per-trade per brief §3.2).
+    """
+    from swing.trades.review import (
+        DISQUALIFYING_VIOLATIONS,
+        MISTAKE_TAGS,
+        compute_actual_realized_R_effective,
+    )
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            trade = get_trade(conn, trade_id)
+            if trade is None or trade.status != "closed":
+                return None
+            if trade.reviewed_at is not None:
+                return None  # V1: single-review-per-trade
+            exits = list_exits_for_trade(conn, trade_id)
+    finally:
+        conn.close()
+    actual_r = compute_actual_realized_R_effective(trade, list(exits))
+    return ReviewVM(
+        trade=trade,
+        actual_realized_R_effective=actual_r,
+        mistake_tag_categories=MISTAKE_TAGS,
+        disqualifying_violations_reference=DISQUALIFYING_VIOLATIONS,
+    )
+
+
+@dataclass(frozen=True)
+class CadenceCompleteVM:
+    review: ReviewLog
+    n_closed_trades_in_period: int
+    # 5-VM existing-fields safe defaults:
+    session_date: str = ""
+    stale_banner: str = ""
+    price_source_degraded: bool = False
+    price_source_degraded_until: str | None = None
+    ohlcv_source_degraded: bool = False
+
+
+@dataclass(frozen=True)
+class ReviewsPendingVM:
+    trades: tuple[Trade, ...]
+    window_days: int
+    # 5-VM existing-fields safe defaults:
+    session_date: str = ""
+    stale_banner: str = ""
+    price_source_degraded: bool = False
+    price_source_degraded_until: str | None = None
+    ohlcv_source_degraded: bool = False
+
+
+def build_reviews_pending_vm(*, cfg: Config) -> ReviewsPendingVM:
+    from swing.data.repos.review_log import list_unreviewed_closed_trades
+    conn = connect(cfg.paths.db_path)
+    try:
+        # Spec §3.1: list-view shows ALL closed-unreviewed (window_days=None).
+        # Spec §2.6: the BADGE uses window_days (count_needs_review); that path
+        # is unaffected.
+        trades = list_unreviewed_closed_trades(
+            conn, window_days=None, today_iso=None,
+        )
+    finally:
+        conn.close()
+    return ReviewsPendingVM(
+        trades=tuple(trades),
+        window_days=cfg.review.review_window_days,
+    )
+
+
+def build_cadence_complete_vm(*, review_id: int, cfg: Config) -> CadenceCompleteVM | None:
+    """Returns None for unknown review or already-completed review (404 in route)."""
+    from swing.data.repos.review_log import get
+    conn = connect(cfg.paths.db_path)
+    try:
+        review = get(conn, review_id)
+        if review is None or review.completed_date is not None:
+            return None
+        # Pre-render the count of closed trades in the period (helper text):
+        from datetime import date as _date
+
+        from swing.data.repos.trades import list_all_exits, list_closed_trades
+        closed = list_closed_trades(conn)
+        all_exits = list_all_exits(conn)
+        ps = _date.fromisoformat(review.period_start)
+        pe = _date.fromisoformat(review.period_end)
+        n = 0
+        for t in closed:
+            relevant = [
+                _date.fromisoformat(e.exit_date) for e in all_exits
+                if e.trade_id == t.id
+            ]
+            if relevant and ps <= max(relevant) <= pe:
+                n += 1
+    finally:
+        conn.close()
+    return CadenceCompleteVM(review=review, n_closed_trades_in_period=n)

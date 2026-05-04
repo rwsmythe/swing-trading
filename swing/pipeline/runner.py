@@ -6,7 +6,8 @@ import logging
 import sqlite3
 import time
 from dataclasses import dataclass
-from datetime import date as _date, datetime as _dt
+from datetime import date as _date
+from datetime import datetime as _dt
 from pathlib import Path
 
 from swing.config import Config
@@ -14,30 +15,37 @@ from swing.data.backup import do_backup, prune_old_backups, should_backup
 from swing.data.db import connect
 from swing.data.models import Candidate, EvaluationRun
 from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
+from swing.data.repos.cash import list_cash
+from swing.data.repos.pattern_classifications import insert_classification
 from swing.data.repos.pipeline import (
-    LeaseRevoked, insert_chart_target, set_evaluation_run_id,
+    LeaseRevoked,
+    insert_chart_target,
+    set_evaluation_run_id,
     update_chart_target_status,
 )
-from swing.data.repos.pattern_classifications import insert_classification
 from swing.data.repos.recommendations import upsert_recommendation
-from swing.data.repos.trades import list_open_trades, list_all_exits
-from swing.data.repos.cash import list_cash
+from swing.data.repos.trades import list_all_exits, list_open_trades
 from swing.data.repos.watchlist import (
-    archive_watchlist_entry, list_active_watchlist, upsert_watchlist_entry,
+    archive_watchlist_entry,
+    list_active_watchlist,
+    upsert_watchlist_entry,
 )
 from swing.data.repos.weather import get_latest_for_date
 from swing.evaluation.context import BatchContext, CandidateContext, MarketContext
 from swing.evaluation.dates import action_session_for_run, last_completed_session
 from swing.evaluation.evaluator import evaluate_batch
 from swing.evaluation.patterns.flag_classifier import (
-    FlagClassificationResult, classify_flag,
+    FlagClassificationResult,
+    classify_flag,
 )
 from swing.evaluation.rs import load_universe, universe_version_hash
 from swing.pipeline.finviz_schema import reject_csv, validate_csv
-from swing.pipeline.finviz_select import select_csv, NoFilesError, AmbiguousInboxError
+from swing.pipeline.finviz_select import AmbiguousInboxError, NoFilesError, select_csv
 from swing.pipeline.heartbeat import Heartbeat
 from swing.pipeline.lease import (
-    Lease, acquire_lease, ConcurrentRunBlocked,
+    ConcurrentRunBlocked,
+    Lease,
+    acquire_lease,
 )
 from swing.pipeline.recovery import sweep_stale_artifacts
 from swing.pipeline.staging import StagingDir, promote_staging
@@ -45,7 +53,9 @@ from swing.prices import PriceFetcher
 from swing.recommendations.build import BuildContext, build_recommendations
 from swing.rendering.briefing import BriefingInputs, build_briefing_view_model
 from swing.rendering.charts import (
-    ChartingUnavailable, PatternOverlay, render_chart,
+    ChartingUnavailable,
+    PatternOverlay,
+    render_chart,
 )
 from swing.rendering.exporter import export_briefing
 from swing.trades.equity import current_equity, sizing_equity
@@ -188,9 +198,9 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
         try:
             lease.step("weather")
             try:
-                from swing.weather.classifier import classify_weather
                 from swing.data.models import WeatherRun
                 from swing.data.repos.weather import upsert_weather_run
+                from swing.weather.classifier import classify_weather
                 ohlcv = fetcher.get(
                     cfg.rs.benchmark_ticker, lookback_days=180, as_of_date=None,
                 )
@@ -293,6 +303,13 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 lease.status(export_status="failed")
 
             lease.step("complete")
+            try:
+                _step_review_log_cadence(lease=lease)
+            except Exception as exc:
+                # Cadence pre-create is auxiliary — its failure must NOT roll back the
+                # primary value chain (briefing emission). Log + continue. Brief §6.2
+                # watch item 13.
+                log.warning("review_log cadence step failed (continuing): %s", exc)
             lease.release(state="complete")
         except LeaseRevoked as exc:
             # Force-cleared mid-run. The pipeline_runs row has already moved to
@@ -854,3 +871,44 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
         exports_dir=cfg.paths.exports_dir,
         retention_days=cfg.export.retention_days,
     )
+
+
+def _step_review_log_cadence(*, lease: Lease) -> None:
+    """Idempotent: pre-create one Review_Log row per cadence (daily/weekly/
+    monthly) for the prior period, anchored on `last_completed_session(
+    datetime.now())`. Quarterly + circuit_breaker schema-supported but no
+    pre-create in V1 (locked decision §2.7).
+
+    Anchor is helper-internal — caller cannot supply an as-of-date that
+    controls which prior period rows are created (brief §6.2 watch item 5).
+
+    No `cfg` parameter: the function uses `lease.fenced_write()` for the DB
+    connection (already cfg-bound at lease-acquire time) — passing cfg would
+    duplicate state. R3 Major 1 fix.
+    """
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+
+    from swing.data.repos.review_log import insert_pre_create
+    from swing.trades.review import (
+        compute_daily_period,
+        compute_monthly_period,
+        compute_weekly_period,
+    )
+
+    now = _dt.now()
+    cadence_periods: list[tuple[str, _date, _date]] = [
+        ("daily", *compute_daily_period(now)),
+        ("weekly", *compute_weekly_period(now)),
+        ("monthly", *compute_monthly_period(now)),
+    ]
+    with lease.fenced_write() as conn:
+        for review_type, p_start, p_end in cadence_periods:
+            scheduled = (p_end + _td(days=1)).isoformat()
+            insert_pre_create(
+                conn,
+                review_type=review_type,
+                period_start=p_start.isoformat(),
+                period_end=p_end.isoformat(),
+                scheduled_date=scheduled,
+            )

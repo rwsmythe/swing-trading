@@ -1,0 +1,18 @@
+{% extends "base.html.j2" %}
+{% block title %}Pending reviews{% endblock %}
+{% block content %}
+<h1>Trades pending review</h1>
+<p>All closed trades awaiting review.</p>
+{% if not vm.trades %}
+<p>No trades pending review.</p>
+{% else %}
+<ul>
+  {% for t in vm.trades %}
+  <li>
+    <a href="/trades/{{ t.id }}/review">#{{ t.id }} — {{ t.ticker }}</a>
+    (entry {{ t.entry_date }} @ ${{ "%.2f"|format(t.entry_price) }})
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

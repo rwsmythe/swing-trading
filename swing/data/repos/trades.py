@@ -199,7 +199,10 @@ def get_trade(conn: sqlite3.Connection, trade_id: int) -> Trade | None:
                watchlist_initial_stop, notes, hypothesis_label,
                chart_pattern_algo, chart_pattern_algo_confidence,
                chart_pattern_operator, chart_pattern_classification_pipeline_run_id,
-               sector, industry
+               sector, industry,
+               reviewed_at, mistake_tags, entry_grade, management_grade,
+               exit_grade, process_grade, disqualifying_process_violation,
+               realized_R_if_plan_followed, mistake_cost_confidence, lesson_learned
         FROM trades WHERE id = ?
         """,
         (trade_id,),
@@ -215,7 +218,10 @@ def list_open_trades(conn: sqlite3.Connection) -> list[Trade]:
                watchlist_initial_stop, notes, hypothesis_label,
                chart_pattern_algo, chart_pattern_algo_confidence,
                chart_pattern_operator, chart_pattern_classification_pipeline_run_id,
-               sector, industry
+               sector, industry,
+               reviewed_at, mistake_tags, entry_grade, management_grade,
+               exit_grade, process_grade, disqualifying_process_violation,
+               realized_R_if_plan_followed, mistake_cost_confidence, lesson_learned
         FROM trades WHERE status='open' ORDER BY entry_date, ticker
         """,
     ).fetchall()
@@ -233,7 +239,10 @@ def list_closed_trades(
                    t.watchlist_initial_stop, t.notes, t.hypothesis_label,
                    t.chart_pattern_algo, t.chart_pattern_algo_confidence,
                    t.chart_pattern_operator, t.chart_pattern_classification_pipeline_run_id,
-                   t.sector, t.industry
+                   t.sector, t.industry,
+                   t.reviewed_at, t.mistake_tags, t.entry_grade, t.management_grade,
+                   t.exit_grade, t.process_grade, t.disqualifying_process_violation,
+                   t.realized_R_if_plan_followed, t.mistake_cost_confidence, t.lesson_learned
             FROM trades t
             WHERE t.status='closed'
               AND EXISTS (SELECT 1 FROM exits e WHERE e.trade_id=t.id AND e.exit_date >= ?)
@@ -249,7 +258,10 @@ def list_closed_trades(
                    watchlist_initial_stop, notes, hypothesis_label,
                    chart_pattern_algo, chart_pattern_algo_confidence,
                    chart_pattern_operator, chart_pattern_classification_pipeline_run_id,
-                   sector, industry
+                   sector, industry,
+                   reviewed_at, mistake_tags, entry_grade, management_grade,
+                   exit_grade, process_grade, disqualifying_process_violation,
+                   realized_R_if_plan_followed, mistake_cost_confidence, lesson_learned
             FROM trades WHERE status='closed' ORDER BY entry_date DESC, ticker
             """,
         ).fetchall()
@@ -325,7 +337,10 @@ def find_any_open_trade(
                watchlist_initial_stop, notes, hypothesis_label,
                chart_pattern_algo, chart_pattern_algo_confidence,
                chart_pattern_operator, chart_pattern_classification_pipeline_run_id,
-               sector, industry
+               sector, industry,
+               reviewed_at, mistake_tags, entry_grade, management_grade,
+               exit_grade, process_grade, disqualifying_process_violation,
+               realized_R_if_plan_followed, mistake_cost_confidence, lesson_learned
         FROM trades WHERE ticker=? AND status='open'
         ORDER BY entry_date ASC LIMIT 1
         """,
@@ -338,7 +353,11 @@ def find_open_trade_by_match(
     conn: sqlite3.Connection, *, ticker: str, entry_date: str,
     initial_shares: int | None = None,
 ) -> Trade | None:
-    """For TOS reconciliation. Strict match on (ticker, entry_date, shares); fuzzy on (ticker, entry_date) if shares is None."""
+    """For TOS reconciliation.
+
+    Strict match on (ticker, entry_date, shares); fuzzy on (ticker, entry_date)
+    if shares is None.
+    """
     if initial_shares is not None:
         row = conn.execute(
             """
@@ -347,7 +366,10 @@ def find_open_trade_by_match(
                    watchlist_initial_stop, notes, hypothesis_label,
                    chart_pattern_algo, chart_pattern_algo_confidence,
                    chart_pattern_operator, chart_pattern_classification_pipeline_run_id,
-                   sector, industry
+                   sector, industry,
+                   reviewed_at, mistake_tags, entry_grade, management_grade,
+                   exit_grade, process_grade, disqualifying_process_violation,
+                   realized_R_if_plan_followed, mistake_cost_confidence, lesson_learned
             FROM trades WHERE ticker=? AND entry_date=? AND initial_shares=? AND status='open'
             LIMIT 1
             """,
@@ -361,7 +383,10 @@ def find_open_trade_by_match(
                    watchlist_initial_stop, notes, hypothesis_label,
                    chart_pattern_algo, chart_pattern_algo_confidence,
                    chart_pattern_operator, chart_pattern_classification_pipeline_run_id,
-                   sector, industry
+                   sector, industry,
+                   reviewed_at, mistake_tags, entry_grade, management_grade,
+                   exit_grade, process_grade, disqualifying_process_violation,
+                   realized_R_if_plan_followed, mistake_cost_confidence, lesson_learned
             FROM trades WHERE ticker=? AND entry_date=? AND status='open'
             LIMIT 1
             """,
@@ -371,6 +396,7 @@ def find_open_trade_by_match(
 
 
 def _row_to_trade(row: tuple) -> Trade:
+    dpv = row[24]  # disqualifying_process_violation: SQLite INTEGER → bool | None
     return Trade(
         id=row[0], ticker=row[1], entry_date=row[2], entry_price=row[3],
         initial_shares=row[4], initial_stop=row[5], current_stop=row[6],
@@ -382,4 +408,59 @@ def _row_to_trade(row: tuple) -> Trade:
         chart_pattern_operator=row[14],
         chart_pattern_classification_pipeline_run_id=row[15],
         sector=row[16], industry=row[17],
+        reviewed_at=row[18],
+        mistake_tags=row[19],
+        entry_grade=row[20],
+        management_grade=row[21],
+        exit_grade=row[22],
+        process_grade=row[23],
+        disqualifying_process_violation=bool(dpv) if dpv is not None else None,
+        realized_R_if_plan_followed=row[25],
+        mistake_cost_confidence=row[26],
+        lesson_learned=row[27],
     )
+
+
+def update_trade_review_fields(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+    reviewed_at: str,
+    mistake_tags_json: str,
+    entry_grade: str,
+    management_grade: str,
+    exit_grade: str,
+    process_grade: str,
+    disqualifying_process_violation: bool | None,
+    realized_R_if_plan_followed: float | None,  # noqa: N803
+    mistake_cost_confidence: str,
+    lesson_learned: str,
+) -> None:
+    """UPDATE the 10 review fields atomically. Caller wraps in `with conn:`.
+    All 10 fields written together — partial-state review rows are not valid.
+    mistake_tags_json must be canonicalized by caller.
+    Missing trade_id raises ValueError."""
+    cur = conn.execute(
+        """
+        UPDATE trades SET
+            reviewed_at = ?,
+            mistake_tags = ?,
+            entry_grade = ?,
+            management_grade = ?,
+            exit_grade = ?,
+            process_grade = ?,
+            disqualifying_process_violation = ?,
+            realized_R_if_plan_followed = ?,
+            mistake_cost_confidence = ?,
+            lesson_learned = ?
+        WHERE id = ?
+        """,
+        (reviewed_at, mistake_tags_json, entry_grade, management_grade,
+         exit_grade, process_grade,
+         (None if disqualifying_process_violation is None
+          else (1 if disqualifying_process_violation else 0)),
+         realized_R_if_plan_followed, mistake_cost_confidence,
+         lesson_learned, trade_id),
+    )
+    if cur.rowcount == 0:
+        raise ValueError(f"trade {trade_id} not found")

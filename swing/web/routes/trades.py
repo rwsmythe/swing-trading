@@ -15,23 +15,33 @@ from swing.config_overrides import apply_overrides
 from swing.data.db import connect
 from swing.data.repos.cash import list_cash
 from swing.data.repos.trades import get_trade, list_all_exits, list_open_trades
-from swing.trades.exit import ExitReason, ExitRequest, record_exit
-from swing.trades.stop_adjust import (
-    StopAdjustRationale, StopAdjustRequest, StopRegressionError, adjust_stop,
-)
-from swing.recommendations.sizing import compute_shares, SizingResult
+from swing.recommendations.sizing import SizingResult, compute_shares
 from swing.trades.entry import (
-    EntryRationale, EntryRequest, HardCapException, DuplicateOpenPositionException,
-    SoftWarnException, record_entry,
+    DuplicateOpenPositionException,
+    EntryRationale,
+    EntryRequest,
+    HardCapException,
+    SoftWarnException,
+    record_entry,
 )
 from swing.trades.equity import current_equity
+from swing.trades.exit import ExitReason, ExitRequest, record_exit
+from swing.trades.stop_adjust import (
+    StopAdjustRationale,
+    StopAdjustRequest,
+    StopRegressionError,
+    adjust_stop,
+)
 from swing.web.view_models.dashboard import build_dashboard
 from swing.web.view_models.open_positions_row import (
     build_open_positions_expanded,
     build_open_positions_row,
 )
 from swing.web.view_models.trades import (
-    _coerce_origin, build_entry_form_vm, build_exit_form_vm, build_stop_form_vm,
+    _coerce_origin,
+    build_entry_form_vm,
+    build_exit_form_vm,
+    build_stop_form_vm,
 )
 
 log = logging.getLogger(__name__)
@@ -774,9 +784,17 @@ def exit_post(
 
     if result.fully_closed:
         # Primary target: empty/hidden stub so the row disappears.
+        soft_warn_html = templates.get_template(
+            "partials/review_soft_warn_close.html.j2"
+        ).render(
+            request=request,
+            trade_id=trade_id,
+            window_days=cfg.review.review_window_days,
+        )
         return HTMLResponse(Markup(
             f'<tr id="open-position-{trade_id}" style="display:none"></tr>'
             f'<div id="status-strip" hx-swap-oob="true">{status_strip_html}</div>'
+            f'<div id="trade-close-soft-warn" hx-swap-oob="true">{soft_warn_html}</div>'
         ))
 
     # Partial: re-render the row.
@@ -953,6 +971,212 @@ def open_position_expand(request: Request, trade_id: int):
         request, "partials/open_positions_expanded.html.j2",
         {"expanded": expanded},
     )
+
+
+@router.get("/trades/{trade_id}/review", response_class=HTMLResponse)
+def review_form_page(request: Request, trade_id: int):
+    """Phase 6: post-trade review form page."""
+    cfg = apply_overrides(request.app.state.cfg)
+    templates = request.app.state.templates
+    from swing.web.view_models.trades import build_review_vm
+    vm = build_review_vm(trade_id=trade_id, cfg=cfg)
+    if vm is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Trade #{trade_id} not found, not closed, or already reviewed",
+        )
+    return templates.TemplateResponse(
+        request, "review.html.j2", {"vm": vm},
+    )
+
+
+@router.post("/trades/{trade_id}/review")
+def review_post(
+    request: Request, trade_id: int,
+    entry_grade: str = Form(...),
+    management_grade: str = Form(...),
+    exit_grade: str = Form(...),
+    lesson_learned: str = Form(...),
+    disqualifying_process_violation: str | None = Form(None),
+    realized_R_if_plan_followed: float | None = Form(None),  # noqa: N803
+    mistake_cost_confidence: str = Form(""),
+    mistake_tags: list[str] = Form(default=[]),  # noqa: B008
+):
+    """Phase 6: persist a post-trade review.
+
+    Success: 204 + HX-Redirect: /reviews/pending (browser re-navigates via htmx.js;
+    NOT a 303 swap — Phase 5 lesson, brief §6.2 watch item 6).
+    """
+    import json
+    from datetime import datetime as _dt
+
+    from fastapi.responses import Response
+
+    from swing.data.db import connect
+    from swing.data.repos.trades import (
+        get_trade,
+        update_trade_review_fields,
+    )
+    from swing.trades.review import (
+        canonicalize_mistake_tags,
+        compute_process_grade,
+        validate_mistake_tags,
+    )
+
+    cfg = apply_overrides(request.app.state.cfg)
+    templates = request.app.state.templates
+
+    disq = (disqualifying_process_violation or "").lower() == "true"
+
+    canonical_tags = canonicalize_mistake_tags(list(mistake_tags))
+    if not canonical_tags:
+        from swing.web.view_models.trades import build_review_vm
+        vm = build_review_vm(trade_id=trade_id, cfg=cfg)
+        empty_tags_msg = (
+            "At least one mistake tag is required "
+            "(select 'none_observed' if no mistakes observed)"
+        )
+        if vm is None:
+            return templates.TemplateResponse(
+                request, "partials/trade_form_error.html.j2",
+                {"error_message": empty_tags_msg},
+                status_code=400,
+            )
+        return templates.TemplateResponse(
+            request, "partials/review_form.html.j2",
+            {"vm": vm, "error_message": empty_tags_msg},
+            status_code=400,
+        )
+    try:
+        validate_mistake_tags(canonical_tags)
+    except ValueError as exc:
+        from swing.web.view_models.trades import build_review_vm
+        vm = build_review_vm(trade_id=trade_id, cfg=cfg)
+        if vm is None:
+            return templates.TemplateResponse(
+                request, "partials/trade_form_error.html.j2",
+                {"error_message": str(exc)},
+                status_code=400,
+            )
+        return templates.TemplateResponse(
+            request, "partials/review_form.html.j2",
+            {"vm": vm, "error_message": str(exc)},
+            status_code=400,
+        )
+
+    try:
+        process_grade = compute_process_grade(
+            entry=entry_grade, management=management_grade, exit_=exit_grade,
+            disqualifying=disq,
+        )
+    except ValueError as exc:
+        return templates.TemplateResponse(
+            request, "partials/trade_form_error.html.j2",
+            {"error_message": str(exc)},
+            status_code=400,
+        )
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        trade = get_trade(conn, trade_id)
+        if trade is None or trade.status != "closed":
+            raise HTTPException(status_code=404)
+        if trade.reviewed_at is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Trade already reviewed; V1 supports single-review only",
+            )
+        with conn:
+            update_trade_review_fields(
+                conn, trade_id=trade_id,
+                reviewed_at=_dt.now().isoformat(timespec="seconds"),
+                mistake_tags_json=json.dumps(canonical_tags),
+                entry_grade=entry_grade,
+                management_grade=management_grade,
+                exit_grade=exit_grade,
+                process_grade=process_grade,
+                disqualifying_process_violation=disq,
+                realized_R_if_plan_followed=realized_R_if_plan_followed,
+                mistake_cost_confidence=mistake_cost_confidence or None,
+                lesson_learned=lesson_learned,
+            )
+    finally:
+        conn.close()
+    # code-review I3 (operator-witnessed S5): /trades is unrouted — htmx.js
+    # honors the HX-Redirect header but the browser then 404s. Land on
+    # /reviews/pending instead: workflow-natural ("after reviewing, see
+    # what's still pending") and the route exists.
+    return Response(status_code=204, headers={"HX-Redirect": "/reviews/pending"})
+
+
+@router.get("/reviews/pending", response_class=HTMLResponse)
+def reviews_pending(request: Request):
+    """Phase 6: list ALL closed-and-unreviewed trades.
+
+    Linked from the dashboard 'Needs review (N)' badge. The badge itself
+    counts only trades closed >= cfg.review.review_window_days ago, but
+    this list view shows every closed-unreviewed trade so the operator
+    can review fresh trades early. (Codex R1 Major 1 + R2 Minor 1.)
+    """
+    cfg = apply_overrides(request.app.state.cfg)
+    templates = request.app.state.templates
+    from swing.web.view_models.trades import build_reviews_pending_vm
+    vm = build_reviews_pending_vm(cfg=cfg)
+    return templates.TemplateResponse(
+        request, "reviews_pending.html.j2", {"vm": vm},
+    )
+
+
+@router.get("/reviews/{review_id}/complete", response_class=HTMLResponse)
+def cadence_complete_form(request: Request, review_id: int):
+    cfg = apply_overrides(request.app.state.cfg)
+    templates = request.app.state.templates
+    from swing.web.view_models.trades import build_cadence_complete_vm
+    vm = build_cadence_complete_vm(review_id=review_id, cfg=cfg)
+    if vm is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Review #{review_id} not found or already completed",
+        )
+    return templates.TemplateResponse(
+        request, "cadence_complete.html.j2", {"vm": vm},
+    )
+
+
+@router.post("/reviews/{review_id}/complete")
+def cadence_complete_post(
+    request: Request, review_id: int,
+    duration_minutes: int = Form(...),
+    primary_lesson: str = Form(...),
+    next_period_focus: str = Form(...),
+):
+    from datetime import date as _date
+
+    from fastapi.responses import Response
+
+    from swing.data.repos.review_log import complete_review_atomic, get
+    cfg = apply_overrides(request.app.state.cfg)
+    conn = connect(cfg.paths.db_path)
+    try:
+        review = get(conn, review_id)
+        if review is None:
+            raise HTTPException(status_code=404)
+        if review.completed_date is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Review already completed",
+            )
+        complete_review_atomic(
+            conn, review_id=review_id,
+            completed_date=_date.today().isoformat(),
+            duration_minutes=duration_minutes,
+            primary_lesson=primary_lesson,
+            next_period_focus=next_period_focus,
+        )
+    finally:
+        conn.close()
+    # 204 + HX-Redirect to dashboard so cadence card flips to "completed":
+    return Response(status_code=204, headers={"HX-Redirect": "/"})
 
 
 @router.get("/trades/open/{trade_id}/row", response_class=HTMLResponse)
