@@ -151,7 +151,14 @@ Per spec §5.2, the rewrite is NOT uniform substitution. Each call site classifi
 | `swing/data/repos/trades.py` | 117 | `INSERT INTO exits (...)` inside `insert_exit_with_event` | Function deletion (NOT a status-rewrite site) | The entire `insert_exit_with_event` function is removed in A.6 (Sub-B T4 exit service routes through `swing/data/repos/fills.py`'s `insert_fill_with_event` instead). Spec §5.1's enumeration listed line 117 over-broadly; it does not reference `status`, only the now-dropped `exits` table. No status predicate to rewrite at this line. |
 | `swing/data/repos/trades.py` | 144 | `UPDATE trades SET status='closed' WHERE id = ?` | Write path | DELETE this line entirely. State transition via `state_transition(conn, trade_id, 'closed', ...)` from `swing/trades/state.py` (Sub-A T7). The exit service in Sub-B will call the state service. |
 | `swing/data/repos/trades.py` | 156 (docstring), 165 | `WHERE id = ? AND status = 'open'` (atomic guard in `update_stop_with_event`) | Active-trade predicate | `WHERE id = ? AND state IN ('entered','managing','partial_exited')`. The stop-adjust service in Sub-B will additionally route through state service for `entered → managing` first-stop trigger. |
-| `swing/data/repos/trades.py` | 225, 238, 247, 265, 344, 373, 390 | various SQL queries; classify per spec §5.2 categories | Mixed | Plan task A.6 reads each line, classifies, rewrites. Most are active-trade; some are closed-or-reviewed (journal-style aggregates). |
+| `swing/data/repos/trades.py` | 225 | `WHERE status='open' ORDER BY entry_date, ticker` (`list_open_trades` predicate) | Active-trade | `WHERE state IN ('entered','managing','partial_exited')` |
+| `swing/data/repos/trades.py` | 238, 256, 336, 365, 382 | `t.status` / `status` in SELECT column lists (read paths) | Read-path projection | Drop `status` from col list; add `state` + 21 new Phase 7 cols (mechanical rewrite). |
+| `swing/data/repos/trades.py` | 247 | `WHERE t.status='closed' AND EXISTS (SELECT 1 FROM exits ...)` (`list_closed_trades` since-date branch) | Closed-or-reviewed (+ exits→fills) | `WHERE t.state IN ('closed','reviewed') AND EXISTS (SELECT 1 FROM fills f WHERE f.trade_id=t.id AND f.action != 'entry' AND f.fill_datetime >= ?)`. Note the EXISTS subquery also migrates from `exits` → `fills` (Sub-A T4 → T6 dependency). |
+| `swing/data/repos/trades.py` | 265 | `WHERE status='closed' ORDER BY entry_date DESC, ticker` (`list_closed_trades` no-since-date branch) | Closed-or-reviewed | `WHERE state IN ('closed','reviewed')` |
+| `swing/data/repos/trades.py` | 344 | `WHERE ticker=? AND status='open' ORDER BY entry_date ASC LIMIT 1` (`find_any_open_trade`) | Active-trade | `WHERE ticker=? AND state IN ('entered','managing','partial_exited')` |
+| `swing/data/repos/trades.py` | 373 | `WHERE ticker=? AND entry_date=? AND initial_shares=? AND status='open'` (`find_open_trade_by_match` strict) | Active-trade | `WHERE ticker=? AND entry_date=? AND initial_shares=? AND state IN ('entered','managing','partial_exited')` |
+| `swing/data/repos/trades.py` | 390 | `WHERE ticker=? AND entry_date=? AND status='open' LIMIT 1` (`find_open_trade_by_match` fuzzy) | Active-trade | `WHERE ticker=? AND entry_date=? AND state IN ('entered','managing','partial_exited')` |
+| `swing/data/repos/trades.py` | 271–299 | `list_exits_for_trade` + `list_all_exits` functions | Function deletion | Both functions deleted in A.6; callers (web view models, journal/tos_import) migrate to fills repo helpers (`list_fills_for_trade(conn, trade_id)` filtered to `action != 'entry'` for the analogue of `list_exits_for_trade`). |
 | `swing/data/db.py` | 20 (migration 0004 docstring) | docstring mentions `status='open'` partial-index | Display (docs) | Update docstring to `state IN ('entered','managing','partial_exited')`. |
 | `swing/data/db.py` | 42, 52, 58, 62 | Migration 0004 helper duplicate-`status='open'` check; helper still callable by runtime code in current code-path | Active-trade predicate | **Rewrite per spec §5.3** to use `state IN ('entered','managing','partial_exited')`. Sub-A T1 owns the rewrite (alongside the backup-discipline additions). The 0004 migration SQL itself is historical and unchanged; only the docstring at line 20 + the runtime helper body at lines 42/52/58/62 are rewritten. Runtime call sites in `record_entry`'s duplicate-check route through `list_open_trades(conn)` (Sub-A T6 rewrites that to use `state`). |
 | `swing/trades/entry.py` | 197 | `Trade(..., status="open", ...)` dataclass construction | Write path | Remove `status="open"`; the `Trade` dataclass drops the field (Sub-A T2). The state value `'entered'` is set by `record_entry()`'s atomic INSERT (Sub-B T1). |
@@ -163,7 +170,9 @@ Per spec §5.2, the rewrite is NOT uniform substitution. Each call site classifi
 | `swing/cli.py` | 588 | CLI display `f"{t.status:<8}"` | Display | Replace with `f"{t.state:<14}"` (state strings up to 14 chars: `partial_exited`). (Sub-B T7.) |
 | `swing/cli.py` | 1008 | `if trade.status != "closed":` (review-CLI precondition) | Closed-but-not-reviewed | `if trade.state != "closed":` — same semantics as `swing/trades/review.py:214`. MUST reject `state='reviewed'` (already-reviewed trades; terminal per spec §3.2). The naïve `state not in ('closed','reviewed')` would let already-reviewed trades through review again — DO NOT use that form. (Sub-B T7.) |
 | `swing/web/routes/trades.py` | 844, 1082, 1198 | Route preconditions | Active-trade | `state IN ('entered','managing','partial_exited')`. (Sub-C T7.) |
-| `swing/web/view_models/trades.py` | 331, 385, 432 | VM filter predicates | Active-trade (most) | Verify per-line at task time. (Sub-C T1.) |
+| `swing/web/view_models/trades.py` | 331 | `if trade is None or trade.status != "open":` (TradeExitFormVM precondition in `build_exit_form_vm`) | Active-trade | `if trade is None or trade.state not in ("entered","managing","partial_exited"):`. (Sub-C T1.) |
+| `swing/web/view_models/trades.py` | 385 | `if trade is None or trade.status != "open":` (TradeStopFormVM precondition in `build_stop_form_vm`) | Active-trade | `if trade is None or trade.state not in ("entered","managing","partial_exited"):`. (Sub-C T1.) |
+| `swing/web/view_models/trades.py` | 432 | `if trade is None or trade.status != "closed":` (ReviewVM precondition in `build_review_vm`) | Closed-but-not-reviewed | `if trade is None or trade.state != "closed":` — same single-state check as `swing/trades/review.py:214` and `swing/cli.py:1008`. The existing `if trade.reviewed_at is not None: return None` check at line 434 becomes redundant after the state predicate (state='reviewed' is rejected by `!= "closed"`); keep for now (defensive) and remove only if Sub-C T1 reviewer agrees. Also at lines 333 + 436: `list_exits_for_trade(conn, trade_id)` migrates to `list_fills_for_trade(conn, trade_id)` filtered to non-entry actions (after Sub-A T4 lands fills repo). (Sub-C T1.) |
 | `swing/web/view_models/open_positions_row.py` | 181 | Open-positions row VM filter | Active-trade | (Sub-C T2.) |
 | `swing/web/templates/journal.html.j2` | 34 | `{{ t.status }}` | Display | `{{ t.state_badge }}` (per-state badge label) or `{{ t.state }}` if compact display preferred — see Sub-C T6 for badge component. |
 
@@ -250,6 +259,8 @@ Default posture: read-only on `swing/data/` + `swing/trades/`. Phase 7 carve-out
 
 | File | Add/Mod | Sub-dispatch | Justification |
 |---|---|---|---|
+| `tests/data/test_fixture_builders.py` | NEW | Sub-A T0 (modified in T3) | Dedicated home for fixture-behavior tests — moved out of conftest.py per pytest convention; covers `make_trade` default-state behavior and the dual-field A.0→A.3 transition window. |
+| `tests/data/test_models_phase7.py` | NEW | Sub-A T3 | Trade dataclass shape assertions (status dropped; state + 21 new fields present); Fill dataclass shape; Exit dataclass removal. |
 | `tests/data/test_migration_0014.py` | NEW | Sub-A T9 + T10 | Migration safety: 4 preservation invariant fixtures + VIR/DHC/CC in-flight migration assertions. |
 | `tests/data/test_migration_runner_backup.py` | NEW | Sub-A T1 | Backup-before-migrate runner test gates: backup created; integrity check passes; corrupted backup → `MigrationBackupRequiredException`; missing expected table → exception. |
 | `tests/data/test_fills_repo.py` | NEW | Sub-A T4 | `insert_fill_with_event`, `_recompute_aggregates`, `get_authoritative_entry_fill` correctness; aggregate-consistency invariant test. |
@@ -2243,7 +2254,7 @@ def list_open_trades(conn: sqlite3.Connection) -> list[Trade]:
 python -m pytest -m "not slow" -q
 ```
 
-Expected: full suite back to GREEN. Test count = baseline + (T0 + T1 + T2 + T3 + T4 + T5 contributions: 2 + 4 + 1 + 3 + 6 + 32 = 48). Target: 1635.
+Expected: full suite back to GREEN. Test count = baseline + (T0 + T1 + T2 + T3 + T4 + T5 + T6 contributions: 2 + 6 + 1 + 3 + 6 + 42 + 3 = 63). Target: 1650 fast tests at end of T6 (Sub-A binding green gate). T7-T10 add a further 24 to reach the Sub-A summary's 87-test total = 1674.
 
 - [ ] **Step 6: Commit.**
 
@@ -3398,7 +3409,7 @@ click.echo(
 )
 ```
 
-For line 1008: read context at task time, classify per §2.1, rewrite.
+For line 1008 (per §2.1 classification = closed-but-not-reviewed): rewrite `if trade.status != "closed":` → `if trade.state != "closed":`. The naïve `state not in ('closed','reviewed')` form is forbidden — would let already-reviewed trades through review again. Same single-state-only check as `swing/trades/review.py:214` and `swing/web/view_models/trades.py:432`.
 
 Commit: `refactor(cli): B.7 — status→state predicate + display rewrites`.
 
@@ -3794,7 +3805,7 @@ Commit: `feat(web): C.4 — entry form 7 sectioned fieldset blocks`.
 ```python
 def test_trade_detail_shows_pre_trade_section_for_phase7_trade(client):
     # Seed a trade with phase 7 fields populated.
-    response = client.get(f"/trades/{trade_id}/detail")
+    response = client.get(f"/trades/{trade_id}")
     text = response.text
     assert "Pre-Trade Decision" in text
     assert "🔒" in text or "locked-at" in text
@@ -3804,14 +3815,14 @@ def test_trade_detail_shows_pre_trade_section_for_phase7_trade(client):
 def test_trade_detail_hides_pre_trade_section_for_legacy_null(client):
     """Legacy trades (premortem_technical IS NULL) hide the section per spec §11.4."""
     legacy_trade_id = _seed_legacy_trade(state="reviewed", premortem_technical=None)
-    response = client.get(f"/trades/{legacy_trade_id}/detail")
+    response = client.get(f"/trades/{legacy_trade_id}")
     text = response.text
     assert "Pre-Trade Decision" not in text
 
 
 def test_trade_detail_renders_audit_log(client):
     # Seed a trade with a pre_trade_edit trade_events row.
-    response = client.get(f"/trades/{trade_id}/detail")
+    response = client.get(f"/trades/{trade_id}")
     text = response.text
     assert "Audit Log" in text or "edit history" in text.lower()
 ```
@@ -3987,7 +3998,7 @@ Commit: `feat(web): C.8 — pre-trade gate consistent rendering at 3 entry surfa
 
 - **Total Sub-C tasks:** 8.
 - **Total expected new tests:** ~50-60.
-- **Sub-C binding gate:** full fast suite GREEN; operator-witnessed browser verification of (a) entry form renders 7 fieldsets; (b) submitting incomplete form re-renders with field-level highlights; (c) successful submit creates trade with state='entered' and HX-Redirects to detail; (d) trade detail shows Pre-Trade Decision section with lock indicator + audit log placeholder; (e) journal + dashboard show state badges per row; (f) hyp-recs Take-this-trade flow round-trips through gate consistently.
+- **Sub-C binding gate:** full fast suite GREEN; operator-witnessed browser verification of (a) entry form renders 7 fieldsets; (b) submitting incomplete form re-renders with field-level highlights; (c) successful submit creates trade with state='entered' and HX-Redirects to canonical `/trades/{trade_id}` GET (NOT `/trades/{id}/detail` — see C.3 canonical-target lock); (d) trade detail page shows Pre-Trade Decision section with lock indicator + audit log placeholder; (e) journal + dashboard show state badges per row; (f) hyp-recs Take-this-trade flow round-trips through gate consistently.
 - **Adversarial Codex review:** 2-4 rounds expected.
 
 ---
