@@ -115,7 +115,7 @@ def test_soft_warn_loop_end_to_end(seeded_db, monkeypatch):
                 insert_trade_with_event(conn, Trade(
                     id=None, ticker=ticker, entry_date="2026-04-15",
                     entry_price=100.0, initial_shares=1, initial_stop=90.0,
-                    current_stop=90.0, status="open", state="entered",
+                    current_stop=90.0, state="entered",
                     watchlist_entry_target=None, watchlist_initial_stop=None,
                     notes=None,
                 ), event_ts=f"2026-04-15T09:{30 + i}:00")
@@ -195,7 +195,7 @@ def test_stop_adjust_end_to_end(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open", state="entered",
+                current_stop=860.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")

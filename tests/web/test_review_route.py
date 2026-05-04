@@ -24,7 +24,7 @@ def test_app_closed_trade(tmp_path: Path):
             Trade(
                 id=None, ticker="VIR", entry_date="2026-04-20",
                 entry_price=10.0, initial_shares=10, initial_stop=9.0,
-                current_stop=9.0, status="open", state="entered",
+                current_stop=9.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ),
@@ -65,7 +65,7 @@ def test_app_open_trade(tmp_path: Path):
             Trade(
                 id=None, ticker="DHC", entry_date="2026-04-27",
                 entry_price=7.58, initial_shares=39, initial_stop=7.30,
-                current_stop=7.30, status="open", state="entered",
+                current_stop=7.30, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ),
@@ -101,7 +101,7 @@ def test_app_reviewed_trade(tmp_path: Path):
             Trade(
                 id=None, ticker="VIR", entry_date="2026-04-20",
                 entry_price=10.0, initial_shares=10, initial_stop=9.0,
-                current_stop=9.0, status="open", state="entered",
+                current_stop=9.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ),
@@ -221,7 +221,7 @@ def test_app_with_2_overdue(tmp_path: Path):
             Trade(
                 id=None, ticker="T1", entry_date="2026-04-01",
                 entry_price=10.0, initial_shares=10, initial_stop=9.0,
-                current_stop=9.0, status="open", state="entered",
+                current_stop=9.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ),
@@ -241,7 +241,7 @@ def test_app_with_2_overdue(tmp_path: Path):
             Trade(
                 id=None, ticker="T2", entry_date="2026-04-05",
                 entry_price=20.0, initial_shares=5, initial_stop=18.0,
-                current_stop=18.0, status="open", state="entered",
+                current_stop=18.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ),
@@ -292,7 +292,7 @@ def test_app_with_recently_closed(tmp_path: Path):
             Trade(
                 id=None, ticker="RECENT", entry_date="2026-04-01",
                 entry_price=10.0, initial_shares=10, initial_stop=9.0,
-                current_stop=9.0, status="open", state="entered",
+                current_stop=9.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ),

@@ -41,7 +41,7 @@ def populated_db_with_pending_daily(tmp_path: Path) -> Path:
                 Trade(
                     id=None, ticker="VIR", entry_date="2026-04-29",
                     entry_price=10.0, initial_shares=10, initial_stop=9.0,
-                    current_stop=9.0, status="open", state="entered",
+                    current_stop=9.0, state="entered",
                     watchlist_entry_target=None, watchlist_initial_stop=None,
                     notes=None,
                 ),

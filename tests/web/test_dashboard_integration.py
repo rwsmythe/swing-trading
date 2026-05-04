@@ -107,7 +107,7 @@ def _seed_open_trade_direct(cfg, *, ticker: str, entry_price: float, shares: int
                 id=None, ticker=ticker, entry_date="2026-04-15",
                 entry_price=entry_price, initial_shares=shares,
                 initial_stop=entry_price * 0.95, current_stop=entry_price * 0.95,
-                status="open", state="entered", watchlist_entry_target=None,
+                state="entered", watchlist_entry_target=None,
                 watchlist_initial_stop=None, notes=None,
             )
             return insert_trade_with_event(conn, trade, event_ts="2026-04-15T09:30:00")

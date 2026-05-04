@@ -11,7 +11,7 @@ from swing.data.models import (
 def test_models_instantiate():
     t = Trade(id=None, ticker="AAPL", entry_date="2026-04-15", entry_price=180.0,
               initial_shares=10, initial_stop=170.0, current_stop=170.0,
-              status="open", state="entered", watchlist_entry_target=181.0,
+              state="entered", watchlist_entry_target=181.0,
               watchlist_initial_stop=170.0, notes=None)
     assert t.ticker == "AAPL" and t.status == "open"
 

@@ -179,7 +179,7 @@ def test_build_open_positions_expanded_closed_trade_returns_none(seeded_db):
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
-            trade_id = _insert_open_trade(conn, ticker="AAPL", status="closed")
+            trade_id = _insert_open_trade(conn, ticker="AAPL")
         vm = build_open_positions_expanded(conn=conn, cfg=cfg, trade_id=trade_id)
     finally:
         conn.close()
@@ -250,7 +250,7 @@ def test_expand_route_closed_trade_404(seeded_db, monkeypatch):
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
-            trade_id = _insert_open_trade(conn, ticker="AAPL", status="closed")
+            trade_id = _insert_open_trade(conn, ticker="AAPL")
     finally:
         conn.close()
     _patch_price_cache(monkeypatch)
@@ -479,7 +479,7 @@ def test_build_open_positions_expanded_uses_binding_not_re_read(
             trade = Trade(
                 id=None, ticker="AAPL", entry_date="2026-04-01",
                 entry_price=100.0, initial_shares=10, initial_stop=95.0,
-                current_stop=95.0, status="open", state="entered",
+                current_stop=95.0, state="entered",
                 watchlist_entry_target=100.0,
                 watchlist_initial_stop=95.0,
                 notes=None,
@@ -605,7 +605,7 @@ def test_open_positions_row_renders_sector_industry(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="AAPL", entry_date="2026-04-15",
                 entry_price=180.0, initial_shares=10, initial_stop=170.0,
-                current_stop=170.0, status="open", state="entered",
+                current_stop=170.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None, sector="OP-Sector-T9", industry="OP-Industry-T9",
             ), event_ts="2026-04-15T09:30:00")

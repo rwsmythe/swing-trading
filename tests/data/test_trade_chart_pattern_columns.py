@@ -9,7 +9,7 @@ def _make_trade(**over) -> Trade:
     base = dict(
         id=None, ticker="AAPL", entry_date="2026-04-26",
         entry_price=10.0, initial_shares=1, initial_stop=9.0,
-        current_stop=9.0, status="open", state="entered",
+        current_stop=9.0, state="entered",
         watchlist_entry_target=None, watchlist_initial_stop=None,
         notes=None,
     )

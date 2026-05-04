@@ -34,7 +34,7 @@ def _add_open_trade(conn, *, ticker: str, entry_date: str, label: str | None,
     trade = Trade(
         id=None, ticker=ticker, entry_date=entry_date, entry_price=entry_price,
         initial_shares=shares, initial_stop=initial_stop, current_stop=initial_stop,
-        status="open", state="entered", watchlist_entry_target=None, watchlist_initial_stop=None,
+        state="entered", watchlist_entry_target=None, watchlist_initial_stop=None,
         notes=None, hypothesis_label=label,
     )
     return insert_trade_with_event(

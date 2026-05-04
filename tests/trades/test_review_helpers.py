@@ -71,13 +71,12 @@ from swing.trades.review import (
 )
 
 
-def _make_trade(*, id_: int, status: str = "closed",
-                state: str = "closed",
+def _make_trade(*, id_: int, state: str = "closed",
                 initial_shares: int = 10) -> Trade:
     return Trade(
         id=id_, ticker=f"T{id_}", entry_date="2026-01-01",
         entry_price=10.0, initial_shares=initial_shares, initial_stop=9.0,
-        current_stop=9.0, status=status, state=state,
+        current_stop=9.0, state=state,
         watchlist_entry_target=None, watchlist_initial_stop=None, notes=None,
     )
 

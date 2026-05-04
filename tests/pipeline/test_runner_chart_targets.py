@@ -433,7 +433,7 @@ def _seed_open_trade(
         id=None, ticker=ticker, entry_date="2026-04-15",
         entry_price=entry_price, initial_shares=10,
         initial_stop=current_stop, current_stop=current_stop,
-        status="open", state="entered", watchlist_entry_target=None,
+        state="entered", watchlist_entry_target=None,
         watchlist_initial_stop=None, notes=None,
     )
     with conn:
@@ -874,7 +874,7 @@ def test_step_evaluate_held_position_not_in_csv_persists_empty_sector_industry(
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="HELD", entry_date="2026-04-10",
                 entry_price=50.0, initial_shares=10, initial_stop=45.0,
-                current_stop=45.0, status="open", state="entered",
+                current_stop=45.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-10T09:30:00")

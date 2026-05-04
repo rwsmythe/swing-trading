@@ -11,18 +11,15 @@ from swing.journal.stats import (
 
 
 def _trade(tid: int, ticker: str, entry: float = 100.0, stop: float = 95.0,
-           shares: int = 10, status: str = "closed",
-           state: str | None = None,
+           shares: int = 10, state: str = "closed",
            hypothesis_label: str | None = None) -> Trade:
-    # State derives from status default unless overridden so callers passing
-    # only status="open" (open-trade exclusion test on line 128) still get the
-    # right state mapping per Phase 7 plan §3 (open→entered, closed→closed).
-    if state is None:
-        state = "entered" if status == "open" else "closed"
+    # T3: Trade no longer has status; state is required. Default 'closed' since
+    # most callers in this file produce closed trades for stats analysis. The
+    # explicit open-trade exclusion test (line 128) overrides via state="entered".
     return Trade(
         id=tid, ticker=ticker, entry_date="2026-04-15", entry_price=entry,
         initial_shares=shares, initial_stop=stop, current_stop=stop,
-        status=status, state=state, watchlist_entry_target=None,
+        state=state, watchlist_entry_target=None,
         watchlist_initial_stop=None, notes=None,
         hypothesis_label=hypothesis_label,
     )
@@ -125,7 +122,7 @@ def test_hypothesis_breakdown_no_label_only():
     trades = [
         _trade(1, "AAA"),
         _trade(2, "BBB"),
-        _trade(3, "CCC", status="open", state="entered"),  # open — must NOT appear
+        _trade(3, "CCC", state="entered"),  # open — must NOT appear
     ]
     exits = [
         _exit(1, exit_date="2026-04-10", price=110.0, shares=10, rps=5.0),  # +$100

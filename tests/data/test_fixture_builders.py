@@ -23,10 +23,9 @@ def test_make_trade_closed_explicit():
     assert t.state == "closed"
 
 
-def test_make_trade_status_alongside_state_in_A0_window():
-    """During the A.0–A.3 window, Trade exposes BOTH status and state.
-    A.3 will drop status; this test will be MODIFIED in A.3 to assert
-    `not hasattr(t, 'status')`."""
+def test_make_trade_drops_status_attr():
+    """T3 dropped status from Trade. The canonical make_trade builder must
+    not require or expose status."""
     t = make_trade(ticker="TEST", state="entered")
-    assert hasattr(t, "status")  # still present during A.0
+    assert not hasattr(t, "status")
     assert hasattr(t, "state")

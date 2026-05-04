@@ -9,7 +9,7 @@ def _trade(tid: int, ticker: str, entry_date: str, exit_date: str,
            pnl: float = 0.0, r: float = 0.0) -> tuple[Trade, Exit]:
     t = Trade(id=tid, ticker=ticker, entry_date=entry_date,
               entry_price=100.0, initial_shares=10, initial_stop=95.0,
-              current_stop=95.0, status="closed", state="closed",
+              current_stop=95.0, state="closed",
               watchlist_entry_target=None, watchlist_initial_stop=None, notes=None)
     e = Exit(id=tid, trade_id=tid, exit_date=exit_date, exit_price=100.0 + pnl/10,
              shares=10, reason="target", realized_pnl=pnl, r_multiple=r, notes=None)

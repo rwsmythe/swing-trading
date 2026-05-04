@@ -12,7 +12,7 @@ def _mk_trade(id_=42, ticker="AAPL", stop=170.0) -> Trade:
     return Trade(
         id=id_, ticker=ticker, entry_date="2026-04-15",
         entry_price=180.0, initial_shares=5, initial_stop=170.0,
-        current_stop=stop, status="open", state="entered",
+        current_stop=stop, state="entered",
         watchlist_entry_target=None, watchlist_initial_stop=None,
         notes=None,
     )
@@ -66,7 +66,7 @@ def test_build_open_positions_row_single_row(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="AAPL", entry_date="2026-04-15",
                 entry_price=180.0, initial_shares=10, initial_stop=170.0,
-                current_stop=170.0, status="open", state="entered",
+                current_stop=170.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -110,7 +110,7 @@ def test_build_open_positions_row_reduces_remaining_shares_for_prior_exits(seede
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="AAPL", entry_date="2026-04-15",
                 entry_price=180.0, initial_shares=10, initial_stop=170.0,
-                current_stop=170.0, status="open", state="entered",
+                current_stop=170.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -156,7 +156,7 @@ def test_build_open_positions_row_plumbs_ohlcv_bundle(
     trade = Trade(
         id=1, ticker="AAPL", entry_date="2026-04-15", entry_price=180.0,
         initial_shares=10, initial_stop=170.0, current_stop=170.0,
-        status="open", state="entered", watchlist_entry_target=None, watchlist_initial_stop=None,
+        state="entered", watchlist_entry_target=None, watchlist_initial_stop=None,
         notes=None,
     )
 

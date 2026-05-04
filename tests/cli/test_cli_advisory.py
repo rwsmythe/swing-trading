@@ -36,7 +36,7 @@ def test_trade_advisory_accepts_sma50_and_previous_close(tmp_path: Path):
                 id=None, ticker="AAPL", entry_date="2026-04-15",
                 entry_price=180.0, initial_shares=10,
                 initial_stop=170.0, current_stop=170.0,
-                status="open", state="entered", watchlist_entry_target=None,
+                state="entered", watchlist_entry_target=None,
                 watchlist_initial_stop=None, notes=None,
             )
             tid = insert_trade_with_event(conn, trade, event_ts="2026-04-15T09:30:00")

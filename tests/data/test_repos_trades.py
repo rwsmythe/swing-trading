@@ -38,7 +38,7 @@ def _trade(ticker: str = "AAPL") -> Trade:
     return Trade(
         id=None, ticker=ticker, entry_date="2026-04-15", entry_price=180.0,
         initial_shares=10, initial_stop=170.0, current_stop=170.0,
-        status="open", state="entered", watchlist_entry_target=181.0,
+        state="entered", watchlist_entry_target=181.0,
         watchlist_initial_stop=170.0, notes="VCP entry",
     )
 
@@ -103,7 +103,7 @@ def test_insert_trade_persists_hypothesis_label(tmp_path: Path):
         labeled = Trade(
             id=None, ticker="HYPO", entry_date="2026-04-25", entry_price=50.0,
             initial_shares=4, initial_stop=45.0, current_stop=45.0,
-            status="open", state="entered", watchlist_entry_target=None,
+            state="entered", watchlist_entry_target=None,
             watchlist_initial_stop=None, notes=None,
             hypothesis_label="A+ except risk_feasibility, smaller position",
         )
@@ -391,7 +391,7 @@ def test_trade_sector_industry_roundtrip_all_select_paths(tmp_path):
             trade_id = insert_trade_with_event(conn, Trade(
                 id=None, ticker="ZZZE", entry_date="2026-04-28",
                 entry_price=100.0, initial_shares=10,
-                initial_stop=95.0, current_stop=95.0, status="open", state="entered",
+                initial_stop=95.0, current_stop=95.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None, hypothesis_label=None,
                 sector="Energy", industry="Oil & Gas E&P",
@@ -451,7 +451,7 @@ def test_trade_default_sector_industry_empty():
     t = Trade(
         id=None, ticker="DFLT", entry_date="2026-04-28",
         entry_price=100.0, initial_shares=10,
-        initial_stop=95.0, current_stop=95.0, status="open", state="entered",
+        initial_stop=95.0, current_stop=95.0, state="entered",
         watchlist_entry_target=None, watchlist_initial_stop=None,
         notes=None,
     )

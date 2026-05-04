@@ -29,7 +29,7 @@ def test_app_with_2_overdue_unreviewed_closed(tmp_path: Path):
             Trade(
                 id=None, ticker="AAA", entry_date="2026-04-01",
                 entry_price=10.0, initial_shares=10, initial_stop=9.0,
-                current_stop=9.0, status="open", state="entered",
+                current_stop=9.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ),
@@ -50,7 +50,7 @@ def test_app_with_2_overdue_unreviewed_closed(tmp_path: Path):
             Trade(
                 id=None, ticker="BBB", entry_date="2026-04-05",
                 entry_price=20.0, initial_shares=5, initial_stop=18.0,
-                current_stop=18.0, status="open", state="entered",
+                current_stop=18.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ),
@@ -92,7 +92,7 @@ def test_app_only_open_trades(tmp_path: Path):
             Trade(
                 id=None, ticker="CCC", entry_date="2026-04-28",
                 entry_price=15.0, initial_shares=8, initial_stop=14.0,
-                current_stop=14.0, status="open", state="entered",
+                current_stop=14.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ),

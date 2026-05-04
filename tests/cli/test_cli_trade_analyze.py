@@ -75,7 +75,7 @@ def _seed_vir_like_trade(cfg_path: Path) -> int:
         trade = Trade(
             id=None, ticker="VIR", entry_date="2026-04-20",
             entry_price=11.30, initial_shares=2, initial_stop=8.26,
-            current_stop=8.26, status="open", state="entered",
+            current_stop=8.26, state="entered",
             watchlist_entry_target=10.76, watchlist_initial_stop=8.26,
             notes="trade test",
             hypothesis_label="sub-A+ VCP-not-formed test",
@@ -106,7 +106,7 @@ def _seed_manual_trade(cfg_path: Path, *, hypothesis: str | None = None) -> int:
         trade = Trade(
             id=None, ticker="ZZZ", entry_date="2026-04-20",
             entry_price=50.0, initial_shares=10, initial_stop=45.0,
-            current_stop=45.0, status="open", state="entered",
+            current_stop=45.0, state="entered",
             watchlist_entry_target=None, watchlist_initial_stop=None,
             notes=None, hypothesis_label=hypothesis,
         )
@@ -186,7 +186,7 @@ def test_analyze_renders_partial_exit_open_trade_with_ongoing_duration(tmp_path:
         trade = Trade(
             id=None, ticker="AAA", entry_date="2026-04-15",
             entry_price=100.0, initial_shares=10, initial_stop=95.0,
-            current_stop=95.0, status="open", state="entered",
+            current_stop=95.0, state="entered",
             watchlist_entry_target=None, watchlist_initial_stop=None,
             notes=None, hypothesis_label=None,
         )

@@ -99,7 +99,7 @@ def _trade(
     trade = Trade(
         id=None, ticker=ticker, entry_date=entry_date, entry_price=entry_price,
         initial_shares=shares, initial_stop=initial_stop,
-        current_stop=initial_stop, status="open", state="entered",
+        current_stop=initial_stop, state="entered",
         watchlist_entry_target=watchlist_target,
         watchlist_initial_stop=initial_stop, notes=notes,
         hypothesis_label=hypothesis_label,
