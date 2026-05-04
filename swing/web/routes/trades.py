@@ -1004,7 +1004,7 @@ def review_post(
 ):
     """Phase 6: persist a post-trade review.
 
-    Success: 204 + HX-Redirect: /trades (browser re-navigates via htmx.js;
+    Success: 204 + HX-Redirect: /reviews/pending (browser re-navigates via htmx.js;
     NOT a 303 swap — Phase 5 lesson, brief §6.2 watch item 6).
     """
     import json
@@ -1102,7 +1102,11 @@ def review_post(
             )
     finally:
         conn.close()
-    return Response(status_code=204, headers={"HX-Redirect": "/trades"})
+    # code-review I3 (operator-witnessed S5): /trades is unrouted — htmx.js
+    # honors the HX-Redirect header but the browser then 404s. Land on
+    # /reviews/pending instead: workflow-natural ("after reviewing, see
+    # what's still pending") and the route exists.
+    return Response(status_code=204, headers={"HX-Redirect": "/reviews/pending"})
 
 
 @router.get("/reviews/pending", response_class=HTMLResponse)

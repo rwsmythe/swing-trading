@@ -178,7 +178,9 @@ def test_post_review_persists_and_returns_204_with_hx_redirect(
         )
     # Brief §6.2 watch item 6: success-path = 204 + HX-Redirect (NOT 303 swap).
     assert r.status_code == 204
-    assert r.headers.get("HX-Redirect") == "/trades"
+    # code-review I3 (operator-witnessed S5): /trades was unrouted; landing
+    # on /reviews/pending is workflow-natural and the route exists.
+    assert r.headers.get("HX-Redirect") == "/reviews/pending"
 
 
 def test_post_review_unknown_mistake_tag_renders_400_with_form(
