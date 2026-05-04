@@ -148,12 +148,12 @@ Per spec §5.2, the rewrite is NOT uniform substitution. Each call site classifi
 |---|---|---|---|---|
 | `swing/data/repos/trades.py` | 60 (INSERT col list), 66, 69 | `INSERT INTO trades(... status, ...) VALUES (..., ?, ...)` with `trade.status` | Write path | Remove `status` from INSERT; INSERT `state` instead with value `'entered'` (Sub-A T6 + Sub-B T1). |
 | `swing/data/repos/trades.py` | 98–104 (`get_trade` SELECT) | `SELECT ... status, ...` | Read path; display | Replace `status` with `state` in SELECT col list; `Trade` dataclass loses `status`, gains `state`. |
-| `swing/data/repos/trades.py` | 117 | not present in initial 200-line read; verify exact line at task time | TBD-by-call-site | Plan task A.6 reads file, classifies. |
+| `swing/data/repos/trades.py` | 117 | `INSERT INTO exits (...)` inside `insert_exit_with_event` | Function deletion (NOT a status-rewrite site) | The entire `insert_exit_with_event` function is removed in A.6 (Sub-B T4 exit service routes through `swing/data/repos/fills.py`'s `insert_fill_with_event` instead). Spec §5.1's enumeration listed line 117 over-broadly; it does not reference `status`, only the now-dropped `exits` table. No status predicate to rewrite at this line. |
 | `swing/data/repos/trades.py` | 144 | `UPDATE trades SET status='closed' WHERE id = ?` | Write path | DELETE this line entirely. State transition via `state_transition(conn, trade_id, 'closed', ...)` from `swing/trades/state.py` (Sub-A T7). The exit service in Sub-B will call the state service. |
 | `swing/data/repos/trades.py` | 156 (docstring), 165 | `WHERE id = ? AND status = 'open'` (atomic guard in `update_stop_with_event`) | Active-trade predicate | `WHERE id = ? AND state IN ('entered','managing','partial_exited')`. The stop-adjust service in Sub-B will additionally route through state service for `entered → managing` first-stop trigger. |
 | `swing/data/repos/trades.py` | 225, 238, 247, 265, 344, 373, 390 | various SQL queries; classify per spec §5.2 categories | Mixed | Plan task A.6 reads each line, classifies, rewrites. Most are active-trade; some are closed-or-reviewed (journal-style aggregates). |
 | `swing/data/db.py` | 20 (migration 0004 docstring) | docstring mentions `status='open'` partial-index | Display (docs) | Update docstring to `state IN ('entered','managing','partial_exited')`. |
-| `swing/data/db.py` | 42, 52, 58, 62 | Migration 0004 helper duplicate-`status='open'` check (now redundant since migration 0014 recreates the partial unique index against `state`) | Active-trade predicate | Migration 0004 helper is historical; keep as-is (it ran once long ago). The runtime duplicate check in `record_entry` uses `list_open_trades(conn)` which Sub-A T6 rewrites against `state`. |
+| `swing/data/db.py` | 42, 52, 58, 62 | Migration 0004 helper duplicate-`status='open'` check; helper still callable by runtime code in current code-path | Active-trade predicate | **Rewrite per spec §5.3** to use `state IN ('entered','managing','partial_exited')`. Sub-A T1 owns the rewrite (alongside the backup-discipline additions). The 0004 migration SQL itself is historical and unchanged; only the docstring at line 20 + the runtime helper body at lines 42/52/58/62 are rewritten. Runtime call sites in `record_entry`'s duplicate-check route through `list_open_trades(conn)` (Sub-A T6 rewrites that to use `state`). |
 | `swing/trades/entry.py` | 197 | `Trade(..., status="open", ...)` dataclass construction | Write path | Remove `status="open"`; the `Trade` dataclass drops the field (Sub-A T2). The state value `'entered'` is set by `record_entry()`'s atomic INSERT (Sub-B T1). |
 | `swing/trades/review.py` | 214 | `if trade.status != "closed":` (Phase 6 review precondition) | Closed-but-not-reviewed | `if trade.state != "closed":` — must reject `state='reviewed'` (already reviewed, terminal). The naïve `state not in ('closed','reviewed')` would let already-reviewed trades through review again — DO NOT use that form. (Sub-B T6.) |
 | `swing/journal/stats.py` | 47, 96, 179 | Closed-trade aggregation predicates | Closed-or-reviewed | `WHERE state IN ('closed','reviewed')` (or Python equivalent on Trade objects). (Sub-B T9.) |
@@ -161,7 +161,7 @@ Per spec §5.2, the rewrite is NOT uniform substitution. Each call site classifi
 | `swing/journal/analyze.py` | 242 | Analyze output passes `trade.status` for display | Display | Pass `trade.state`; downstream display layer formats per-state badge. (Sub-B T9.) |
 | `swing/journal/tos_import.py` | 287, 318 | `WHERE t.status='closed'` SQL | Closed-or-reviewed | `WHERE t.state IN ('closed','reviewed')`. (Sub-B T9.) Also: lines 257, 316 read from `exits` table; rewrite to read from `fills` repo helpers (`list_fills_for_trade()` filtering `action IN ('trim','exit','stop')`). |
 | `swing/cli.py` | 588 | CLI display `f"{t.status:<8}"` | Display | Replace with `f"{t.state:<14}"` (state strings up to 14 chars: `partial_exited`). (Sub-B T7.) |
-| `swing/cli.py` | 1008 | CLI status check (review-CLI?) | Closed-but-not-reviewed or active-trade — verify at task time | Plan task B.7 reads file, classifies, rewrites. |
+| `swing/cli.py` | 1008 | `if trade.status != "closed":` (review-CLI precondition) | Closed-but-not-reviewed | `if trade.state != "closed":` — same semantics as `swing/trades/review.py:214`. MUST reject `state='reviewed'` (already-reviewed trades; terminal per spec §3.2). The naïve `state not in ('closed','reviewed')` would let already-reviewed trades through review again — DO NOT use that form. (Sub-B T7.) |
 | `swing/web/routes/trades.py` | 844, 1082, 1198 | Route preconditions | Active-trade | `state IN ('entered','managing','partial_exited')`. (Sub-C T7.) |
 | `swing/web/view_models/trades.py` | 331, 385, 432 | VM filter predicates | Active-trade (most) | Verify per-line at task time. (Sub-C T1.) |
 | `swing/web/view_models/open_positions_row.py` | 181 | Open-positions row VM filter | Active-trade | (Sub-C T2.) |
@@ -171,7 +171,7 @@ Per spec §5.2, the rewrite is NOT uniform substitution. Each call site classifi
 
 Test files that set `status="open"` / `status="closed"` directly on Trade fixtures or assert on `trade.status` need rewriting to `state="entered"` (or appropriate state per fixture intent) and `trade.state`. Bundle the rewrites into:
 
-- **Sub-A T0 fixture refactor** updates the canonical trade-fixture builder + every direct `Trade(...)` construction in `tests/data/`, `tests/pipeline/`, `tests/research/`. Identified files (from spec §5.1 + grep at audit time): `tests/data/test_repos_trades.py`, `tests/data/test_db_v3.py`, `tests/pipeline/test_runner.py`, `tests/pipeline/test_runner_chart_targets.py`, `tests/cli/test_cli_advisory.py`, `tests/cli/test_cli_trade_analyze.py`, `tests/research/parity/test_fetcher.py`, `tests/trades/test_equity.py`.
+- **Sub-A T0 fixture refactor** updates the canonical trade-fixture builder + every direct `Trade(...)` construction in `tests/data/`, `tests/pipeline/`, `tests/research/`. Identified files (from spec §5.1 + grep at audit time): `tests/data/test_repos_trades.py`, `tests/data/test_db_v3.py`, `tests/data/test_models.py` (line 11–16: dataclass-instantiation smoke; constructs `Trade(..., status="open", ...)` and asserts `t.status == "open"`), `tests/pipeline/test_runner.py`, `tests/pipeline/test_runner_chart_targets.py`, `tests/cli/test_cli_advisory.py`, `tests/cli/test_cli_trade_analyze.py`, `tests/research/parity/test_fetcher.py`, `tests/trades/test_equity.py`. Sub-A T0's empirical-audit refresh (per §2.3) re-runs the grep at dispatch time and bundles any new hits into the same task.
 - **Sub-A T9** (migration safety tests) covers VIR/DHC/CC fixture migration to `state` correctly.
 - **Sub-B T6** (review service refactor) updates `tests/cli/test_review_complete_cli.py`, `tests/cli/test_trade_review_cli.py`, `tests/web/test_review_route.py`, `tests/web/test_review_template.py`, `tests/web/test_dashboard_needs_review_badge.py` for the `state == 'closed'` predicate.
 - **Sub-B T8** (CLI option expansion) updates `tests/cli/test_cli_trade.py`.
@@ -196,7 +196,7 @@ Default posture: read-only on `swing/data/` + `swing/trades/`. Phase 7 carve-out
 |---|---|---|---|
 | `swing/data/migrations/0014_phase7_state_machine_and_fills.sql` | NEW | Sub-A T2 | Single transactional migration: rebuild `trades` (drop `status`, add `state` + ~21 cols), create `fills`, drop `exits`, expand `trade_events.event_type` enum. |
 | `swing/data/models.py` | MOD | Sub-A T3 | Drop `status` field from `Trade`; add ~21 new fields; add new `Fill` dataclass; remove `Exit` dataclass. |
-| `swing/data/db.py` | MOD | Sub-A T1 + T2 | Add `BackupBeforeMigrationException`; add `_create_pre_migration_backup()` runner helper using `Connection.backup()`; add 4 integrity checks; bump `EXPECTED_SCHEMA_VERSION` 13 → 14. Also update migration-0004 docstring (line 20) to reflect partial-index now keyed on `state`. |
+| `swing/data/db.py` | MOD | Sub-A T1 + T2 | Add `MigrationBackupRequiredException`; add `_create_pre_migration_backup()` runner helper using `Connection.backup()`; add 4 integrity checks; bump `EXPECTED_SCHEMA_VERSION` 13 → 14. Also update migration-0004 docstring (line 20) to reflect partial-index now keyed on `state`. |
 
 ### §3.2 Repo layer
 
@@ -259,8 +259,8 @@ Default posture: read-only on `swing/data/` + `swing/trades/`. Phase 7 carve-out
 | `tests/trades/test_entry.py` | MOD | Sub-B T1, T2, T3 | `MissingPreTradeFieldsException` per missing field; `trade_origin` derivation wired correctly; first entry-fill creation; `pre_trade_locked_at` correctness; force-bypass NOT honored for missing-fields. |
 | `tests/trades/test_exit.py` | MOD | Sub-B T4 | Trim vs exit branching; state transition; aggregate recompute. |
 | `tests/trades/test_stop_adjust.py` | MOD | Sub-B T5 | State-predicate gating (rejects stop on `closed`/`reviewed`); first-stop `entered → managing` trigger. |
-| `tests/web/test_routes_trades.py` | MOD | Sub-C T3, T7, T8 | Form-validation rejection; pre-trade-detail render; state badge render. |
-| `tests/web/test_view_models_trades.py` | MOD | Sub-C T1 | State + 18 pre-trade VM fields; state_badge_label correctness; has_pre_trade_data toggle. |
+| `tests/web/test_routes/test_trades_route.py` | MOD | Sub-C T3, T7, T8 | Form-validation rejection; pre-trade-detail render; state badge render. |
+| `tests/web/test_view_models/test_trades.py` | MOD | Sub-C T1 | State + 18 pre-trade VM fields; state_badge_label correctness; has_pre_trade_data toggle. |
 | `tests/cli/test_cli_trade.py` | MOD | Sub-B T8 | New CLI options + interactive prompts. |
 | `tests/journal/test_*.py` (5 files per §2.2) | MOD | Sub-B T9 | Replace status predicates with state predicates per spec §5.2 categories. |
 | Existing trade-fixture builder tests (8 files per §2.2) | MOD | Sub-A T0 | Update fixtures to use `state="entered"` (or appropriate state) instead of `status="open"`. |
@@ -288,6 +288,7 @@ Default posture: read-only on `swing/data/` + `swing/trades/`. Phase 7 carve-out
 **Files:**
 - Modify: `tests/data/test_repos_trades.py` (Trade(...) constructions)
 - Modify: `tests/data/test_db_v3.py`
+- Modify: `tests/data/test_models.py` (dataclass-instantiation smoke; lines 11–16)
 - Modify: `tests/pipeline/test_runner.py`
 - Modify: `tests/pipeline/test_runner_chart_targets.py`
 - Modify: `tests/cli/test_cli_advisory.py`
@@ -295,6 +296,7 @@ Default posture: read-only on `swing/data/` + `swing/trades/`. Phase 7 carve-out
 - Modify: `tests/research/parity/test_fetcher.py`
 - Modify: `tests/trades/test_equity.py`
 - Modify: `tests/conftest.py` (or wherever the canonical `make_trade` builder lives — verify by grep at task time)
+- Create: `tests/data/test_fixture_builders.py` — dedicated home for the new fixture-behavior tests (NOT in conftest.py; conftest is support code, not a test module — pytest conventions forbid test functions there)
 
 **Goal:** all existing trade-fixture builders + every direct `Trade(...)` construction in the test corpus shifts to use `state` instead of `status`. This task gates downstream tasks because Sub-A T3 (models.py) drops the `status` field; existing tests would fail at import time without this refactor.
 
@@ -326,30 +328,43 @@ State-value mapping per fixture-intent:
 - Tests asserting "reviewed" → `state="reviewed"`.
 - Tests covering `partial_exited` semantics → `state="partial_exited"` (rare in current corpus).
 
-- [ ] **Step 3: Write a single failing test that asserts the new fixture builder API.**
+- [ ] **Step 3: Write the failing fixture-builder behavior tests in a dedicated test file.**
 
 ```python
-# tests/conftest.py or tests/data/test_repos_trades.py
+# tests/data/test_fixture_builders.py — NEW (NOT conftest.py; conftest is support code)
+from tests.conftest import make_trade  # adjust import path to the actual canonical builder
+
+
 def test_make_trade_default_state_entered():
-    """Default fixture state is 'entered' — covers the common 'open trade' test case."""
+    """Default fixture state is 'entered' — covers the common 'open trade' test case
+    that previously used status='open'."""
     t = make_trade(ticker="TEST")
     assert t.state == "entered"
-    # status field is dropped; accessing it should raise AttributeError
-    assert not hasattr(t, "status")
+    # NOTE: t.status still exists during A.0 (kept alongside state). The
+    # `not hasattr(t, "status")` assertion lives in A.3 once Trade drops
+    # the status field.
 
 
 def test_make_trade_closed_explicit():
     t = make_trade(ticker="TEST", state="closed")
     assert t.state == "closed"
+
+
+def test_make_trade_status_alongside_state_in_A0_window():
+    """During the A.0–A.3 window, Trade has BOTH status and state. A.3 drops
+    status; this test will be MODIFIED in A.3 to assert `not hasattr`."""
+    t = make_trade(ticker="TEST", state="entered")
+    assert hasattr(t, "status")  # still present during A.0
+    assert hasattr(t, "state")
 ```
 
 - [ ] **Step 4: Run the test — should fail.**
 
 ```bash
-python -m pytest tests/conftest.py::test_make_trade_default_state_entered -v
+python -m pytest tests/data/test_fixture_builders.py -v
 ```
 
-Expected: FAIL — either `make_trade()` still has `status=` parameter (TypeError on `state=`) or `Trade` still has `status` field (so `hasattr(t, "status")` is True).
+Expected: FAIL — `make_trade()` still has only `status=` parameter; passing `state=` raises TypeError.
 
 - [ ] **Step 5: Update fixture builders + every direct `Trade(...)` construction.**
 
@@ -403,7 +418,7 @@ EOF
 - Modify: `swing/data/db.py` — add `_create_pre_migration_backup()`, `_verify_backup_integrity()`, `MigrationBackupRequiredException`. Wire into `run_migrations()`.
 - Test: `tests/data/test_migration_runner_backup.py` (NEW).
 
-**Goal:** before applying migration to schema_version 14, create a backup via `Connection.backup()` (NOT `shutil.copy2`) and run 2 binding integrity checks (PRAGMA integrity_check + expected-table set). Refuse migration if backup fails.
+**Goal:** before applying migration to schema_version 14, create a backup via `Connection.backup()` (NOT `shutil.copy2`) and run 4 binding integrity checks (PRAGMA integrity_check + expected-table set). Refuse migration if backup fails.
 
 Per spec §12.1: SQLite-native ONLY; size advisory NOT a hard gate.
 
@@ -467,6 +482,43 @@ def test_backup_missing_expected_table_raises(tmp_path):
         _verify_backup_integrity(backup_path, expected_tables={"trades", "exits", "trade_events", "schema_version"})
 
 
+def test_backup_zero_size_file_raises(tmp_path):
+    """Discriminating: explicit check for the 'non-empty' integrity gate.
+    A zero-byte backup file (e.g., truncated mid-write) is rejected even if
+    the file exists."""
+    src = tmp_path / "src.db"
+    _seed_v13_db(src)
+    backup_path = tmp_path / "swing-pre-phase7-migration-empty.db"
+    backup_path.write_bytes(b"")  # zero bytes
+    with pytest.raises(MigrationBackupRequiredException, match="empty"):
+        _verify_backup_integrity(
+            backup_path,
+            expected_tables={"trades", "exits", "trade_events", "schema_version"},
+        )
+
+
+def test_backup_integrity_check_returns_non_ok_raises(tmp_path):
+    """Discriminating: an SQLite file that opens cleanly but reports corruption
+    on PRAGMA integrity_check is rejected (page-level corruption / broken
+    indices / FK issues — what integrity_check is for). Simulated by writing
+    garbage bytes to a SQLite file mid-page; in practice we just write a
+    malformed page header to trigger non-ok return."""
+    src = tmp_path / "src.db"
+    _seed_v13_db(src)
+    backup_path = _create_pre_migration_backup(src, dest_dir=tmp_path)
+    # Corrupt page 2 of the backup (page 1 is the SQLite header; page 2 is
+    # the schema page — corrupting it makes integrity_check fail without
+    # making sqlite3.connect itself raise).
+    with open(backup_path, "r+b") as f:
+        f.seek(4096)  # default page size
+        f.write(b"\xff" * 64)
+    with pytest.raises(MigrationBackupRequiredException, match="integrity_check"):
+        _verify_backup_integrity(
+            backup_path,
+            expected_tables={"trades", "exits", "trade_events", "schema_version"},
+        )
+
+
 def test_run_migrations_refuses_when_backup_path_unwritable(tmp_path, monkeypatch):
     """If the backup destination is unwritable, run_migrations refuses to migrate."""
     src = tmp_path / "src.db"
@@ -528,27 +580,38 @@ def _create_pre_migration_backup(
 def _verify_backup_integrity(
     backup_path: Path, *, expected_tables: set[str],
 ) -> None:
-    """Run 2 binding integrity checks; raise on failure.
+    """Run 4 binding integrity checks per spec §12.1; raise on any failure.
 
-    Checks (per spec §12.1):
-      1. File exists + non-empty.
-      2. PRAGMA integrity_check returns 'ok'.
-      3. sqlite_master contains all expected tables.
-
-    Size threshold relative to source is advisory only (VACUUM INTO can
-    legitimately compact); not used as a hard gate.
+    Checks (each independent + separately tested):
+      1. File exists at backup path.
+      2. File is non-empty (size > 0). Size threshold relative to source is
+         advisory only — VACUUM INTO can legitimately compact; do NOT use a
+         percentage-of-source heuristic as a hard gate (would yield false
+         negatives on healthy backups).
+      3. PRAGMA integrity_check returns exactly 'ok' (page-level corruption,
+         broken indices, FK issues all surface here — authoritative integrity
+         check per spec).
+      4. sqlite_master contains the expected table set.
     """
-    if not backup_path.exists() or backup_path.stat().st_size == 0:
+    # 1. File exists.
+    if not backup_path.exists():
         raise MigrationBackupRequiredException(
-            f"backup file missing or empty: {backup_path}"
+            f"backup file missing: {backup_path}"
+        )
+    # 2. File non-empty.
+    if backup_path.stat().st_size == 0:
+        raise MigrationBackupRequiredException(
+            f"backup file empty: {backup_path}"
         )
     conn = sqlite3.connect(backup_path)
     try:
+        # 3. PRAGMA integrity_check.
         result = conn.execute("PRAGMA integrity_check").fetchone()
         if result is None or result[0] != "ok":
             raise MigrationBackupRequiredException(
                 f"PRAGMA integrity_check failed on backup: {result}"
             )
+        # 4. Expected-table-set.
         rows = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()
@@ -630,9 +693,9 @@ EOF
 )"
 ```
 
-**Acceptance:** 4 new tests pass; runner refuses on backup failure; source DB untouched; ruff clean.
+**Acceptance:** 6 new tests pass; runner refuses on backup failure; source DB untouched; ruff clean. Migration-0004 helper (`swing/data/db.py:42,52,58,62`) rewritten per spec §5.3 to use `state IN ('entered','managing','partial_exited')`.
 
-**Expected new tests:** 4.
+**Expected new tests:** 6.
 
 ---
 
@@ -1080,6 +1143,16 @@ The full-suite-green gate at end of T6 is binding for Sub-A merge to main. T7–
 **Goal:** Trade dataclass loses `status`, gains `state` + 21 new pre-trade fields. New Fill dataclass mirrors fills schema. Exit dataclass removed (and any imports of it become dead code; T6 cleans up).
 
 - [ ] **Step 1: Write a failing test asserting the new dataclass shape.**
+
+Per A.0 deferred assertion: this is where `Trade` drops `status` entirely. Update `tests/data/test_fixture_builders.py:test_make_trade_status_alongside_state_in_A0_window` simultaneously to assert `not hasattr(t, "status")` (the assertion deferred from A.0). Rename the test function in the same commit:
+
+```python
+# tests/data/test_fixture_builders.py — modify in this task
+def test_make_trade_drops_status_attr():
+    t = make_trade(ticker="TEST", state="entered")
+    assert not hasattr(t, "status")
+    assert hasattr(t, "state")
+```
 
 ```python
 # tests/data/test_models_phase7.py — NEW
@@ -1710,9 +1783,33 @@ def test_validate_for_operation_transition_reviewed_requires_phase6_fields():
     for required in (
         "reviewed_at", "mistake_tags",
         "entry_grade", "management_grade", "exit_grade", "process_grade",
+        "disqualifying_process_violation",
+        "realized_R_if_plan_followed",
+        "mistake_cost_confidence",
         "lesson_learned",
     ):
         assert required in missing
+
+
+@pytest.mark.parametrize("missing_field", [
+    "reviewed_at", "mistake_tags",
+    "entry_grade", "management_grade", "exit_grade", "process_grade",
+    "disqualifying_process_violation",
+    "realized_R_if_plan_followed",
+    "mistake_cost_confidence",
+    "lesson_learned",
+])
+def test_transition_reviewed_per_field_discriminator(missing_field):
+    """Discriminating per-field test: each Phase 6 review field, removed individually,
+    surfaces in the missing list. Catches an OPERATION_REQUIRED_FIELDS tuple that
+    silently omits any one of these (regression that would let an incomplete review
+    transition through to state='reviewed')."""
+    req = {f: "x" for f in OPERATION_REQUIRED_FIELDS["transition_reviewed"]}
+    req["disqualifying_process_violation"] = 0
+    req["realized_R_if_plan_followed"] = 0.0
+    del req[missing_field]
+    missing = validate_for_operation(req, op="transition_reviewed", current_state="closed")
+    assert missing_field in missing
 
 
 def test_state_transition_writes_trade_events_audit_row(tmp_path):
@@ -1792,6 +1889,9 @@ OPERATION_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "transition_reviewed": (
         "reviewed_at", "mistake_tags",
         "entry_grade", "management_grade", "exit_grade", "process_grade",
+        "disqualifying_process_violation",
+        "realized_R_if_plan_followed",
+        "mistake_cost_confidence",
         "lesson_learned",
     ),
 }
@@ -1937,9 +2037,9 @@ EOF
 )"
 ```
 
-**Acceptance:** 32 new tests pass; matrix complete; ruff clean.
+**Acceptance:** 42 new tests pass; matrix complete; per-operation required-field discriminators in place for `transition_reviewed`'s 10 fields; ruff clean.
 
-**Expected new tests:** 32.
+**Expected new tests:** 42.
 
 ---
 
@@ -2560,48 +2660,71 @@ def test_preservation_invariant_singleton_exit(tmp_path):
 
 
 def test_preservation_invariant_multi_exit_different_dates(tmp_path):
-    """Trade with 3 exits across 3 dates totaling initial_shares."""
+    """Trade with 3 exits across 3 dates totaling initial_shares.
+
+    Asserts full backfilled fills row contents (action, quantity, price, reason,
+    fill_datetime) per spec §4.4.1 binding: each row's structured contents are
+    proven, not just the action sequence."""
     trades = [
         (1, "BBB", "2026-04-01", 100.0, 30, 95.0, 95.0, "closed"),
     ]
     exits_data = [
-        (1, 1, "2026-04-05", 105.0, 10, "trim-1", 50.0, 1.0, None),
-        (2, 1, "2026-04-10", 110.0, 10, "trim-2", 100.0, 2.0, None),
-        (3, 1, "2026-04-15", 115.0, 10, "exit-final", 150.0, 3.0, None),
+        (1, 1, "2026-04-05", 105.0, 10, "trim-1",     50.0, 1.0, None),
+        (2, 1, "2026-04-10", 110.0, 10, "trim-2",    100.0, 2.0, None),
+        (3, 1, "2026-04-15", 115.0, 10, "exit-final",150.0, 3.0, None),
     ]
     conn, db = _seed_v13_with_trades_and_exits(tmp_path, trades, exits_data)
     run_migrations(conn, target_version=14, backup_dir=tmp_path)
     fills = conn.execute(
-        "SELECT action, quantity, fill_datetime FROM fills "
-        "WHERE trade_id = 1 AND action != 'entry' ORDER BY fill_datetime ASC"
+        "SELECT action, quantity, price, reason, fill_datetime "
+        "FROM fills WHERE trade_id = 1 AND action != 'entry' "
+        "ORDER BY fill_datetime ASC, fill_id ASC"
     ).fetchall()
-    actions = [f[0] for f in fills]
-    assert actions == ["trim", "trim", "exit"]
+    assert fills == [
+        ("trim", 10.0, 105.0, "trim-1",     "2026-04-05T16:00:00"),
+        ("trim", 10.0, 110.0, "trim-2",     "2026-04-10T16:00:00"),
+        ("exit", 10.0, 115.0, "exit-final", "2026-04-15T16:00:00"),
+    ]
+    # Per-row realized_pnl preservation invariant (computed via derived_metrics).
+    for stored, fill in zip(exits_data, fills):
+        stored_pnl = stored[6]
+        computed_pnl = realized_pnl(entry_price=100.0, exit_price=fill[2], quantity=fill[1])
+        assert math.isclose(stored_pnl, computed_pnl, abs_tol=1e-6)
 
 
 def test_preservation_invariant_same_date_multi_exit(tmp_path):
-    """Trade with 3 exits on same date totaling initial_shares —
-    deterministic ordering by id ASC drives action assignment."""
+    """Trade with 3 exits on same date totaling initial_shares — deterministic
+    ordering by (exit_date ASC, id ASC) drives action assignment.
+
+    Asserts full row contents in id-ASC order: backfill SQL's tie-break on
+    `id ASC` for same-date rows is the discriminator."""
     trades = [
         (1, "CCC", "2026-04-01", 50.0, 30, 47.0, 47.0, "closed"),
     ]
     exits_data = [
         (1, 1, "2026-04-05", 52.0, 10, "trim-A", 20.0, 0.67, None),
-        (2, 1, "2026-04-05", 53.0, 10, "trim-B", 30.0, 1.0, None),
+        (2, 1, "2026-04-05", 53.0, 10, "trim-B", 30.0, 1.0,  None),
         (3, 1, "2026-04-05", 54.0, 10, "exit-C", 40.0, 1.33, None),
     ]
     conn, db = _seed_v13_with_trades_and_exits(tmp_path, trades, exits_data)
     run_migrations(conn, target_version=14, backup_dir=tmp_path)
     fills = conn.execute(
-        "SELECT action, quantity, price FROM fills "
-        "WHERE trade_id = 1 AND action != 'entry' ORDER BY fill_id ASC"
+        "SELECT action, quantity, price, reason, fill_datetime "
+        "FROM fills WHERE trade_id = 1 AND action != 'entry' "
+        "ORDER BY fill_id ASC"
     ).fetchall()
-    actions = [f[0] for f in fills]
-    assert actions == ["trim", "trim", "exit"]
+    assert fills == [
+        ("trim", 10.0, 52.0, "trim-A", "2026-04-05T16:00:00"),
+        ("trim", 10.0, 53.0, "trim-B", "2026-04-05T16:00:00"),
+        ("exit", 10.0, 54.0, "exit-C", "2026-04-05T16:00:00"),
+    ]
 
 
 def test_preservation_invariant_notes_merged(tmp_path):
-    """Exit row with notes; post-migration, fill.reason combines reason + ' | ' + notes."""
+    """Exit row with non-empty notes; post-migration, fill.reason = reason + ' | ' + notes.
+
+    Asserts ALL row fields (action, quantity, price, reason, fill_datetime) — not
+    just the merged reason — to prove the migration backfill writes a complete row."""
     trades = [
         (1, "DDD", "2026-04-01", 20.0, 100, 19.0, 19.0, "closed"),
     ]
@@ -2611,9 +2734,14 @@ def test_preservation_invariant_notes_merged(tmp_path):
     conn, db = _seed_v13_with_trades_and_exits(tmp_path, trades, exits_data)
     run_migrations(conn, target_version=14, backup_dir=tmp_path)
     row = conn.execute(
-        "SELECT reason FROM fills WHERE trade_id = 1 AND action = 'exit'"
+        "SELECT action, quantity, price, reason, fill_datetime "
+        "FROM fills WHERE trade_id = 1 AND action = 'exit'"
     ).fetchone()
-    assert row[0] == "target hit | early bias good"
+    assert row == (
+        "exit", 100.0, 22.0,
+        "target hit | early bias good",
+        "2026-04-05T16:00:00",
+    )
 ```
 
 - [ ] **Step 2: Run tests — assert they pass.**
@@ -2742,10 +2870,10 @@ EOF
 ### Sub-A acceptance summary
 
 - **Total Sub-A tasks:** 11 (T0–T10).
-- **Total expected new tests:** 2 + 4 + 1 + 3 + 6 + 32 + 3 + 14 + 5 + 4 + 1 = **75 new fast tests** (Sub-A baseline + 75 = 1662 fast tests).
+- **Total expected new tests:** 2 + 6 + 1 + 3 + 6 + 42 + 3 + 14 + 5 + 4 + 1 = **87 new fast tests** (Sub-A baseline + 87 = 1674 fast tests).
 - **Sub-A binding gate:** full fast suite GREEN at end of T6; T7-T10 add coverage on top.
 - **Adversarial Codex review** runs after Sub-A merge; expect 2-4 rounds.
-- **Operator-witnessed verification gate** for Sub-A: pytest pass + ruff clean + manual `swing trade entry` smoke (verify Trade dataclass round-trips through CLI display); migration backup file present in `~/swing-data/`.
+- **Operator-witnessed verification gate** for Sub-A: pytest pass + ruff clean; migration backup file present in `~/swing-data/`; production DB at `schema_version=14` after `run_migrations()` invocation; spot-check `SELECT state, current_size, current_avg_cost, last_fill_at, trade_origin FROM trades` returns the values from spec §12.3 for VIR/DHC/CC. **No CLI entry smoke at Sub-A** — `swing trade entry` doesn't gain Phase 7 fields until Sub-B T8; CLI smoke is Sub-B's verification gate.
 
 ---
 
@@ -3530,8 +3658,13 @@ async def post_entry_form(request, ...):
             emotional_state_pre_trade=_canonicalize_emotional_states(form.getlist("emotional_state_pre_trade")),
         )
         result = record_entry(conn, req, soft_warn=..., hard_cap=..., force=False)
-        # Success: HX-Redirect to /trades/{id}/detail
-        return Response(status_code=204, headers={"HX-Redirect": f"/trades/{result.trade_id}"})
+        # Success: HX-Redirect to /trades/{id} (canonical trade-detail GET).
+        # If the route doesn't exist on entry to this task, T3 ALSO registers
+        # `GET /trades/{trade_id}` rendering trades/detail.html.j2 (covered in
+        # the Sub-C T5 detail-template task — wire the route in T3, populate
+        # the template body in T5).
+        target_url = f"/trades/{result.trade_id}"
+        return Response(status_code=204, headers={"HX-Redirect": target_url})
     except MissingPreTradeFieldsException as exc:
         # Re-render form with draft + field-level error markers.
         return TemplateResponse(request, "trades/entry_form.html.j2", {
@@ -3539,13 +3672,37 @@ async def post_entry_form(request, ...):
         })
 ```
 
-HX-Redirect target: `/trades/{id}/detail` MUST be a registered route (CLAUDE.md gotcha 2026-05-04). Verify at task time:
+**Canonical HX-Redirect target: `GET /trades/{trade_id}`** (renders trade detail page). MUST be registered in `swing/web/routes/trades.py` AS PART OF THIS TASK if not already present. Per CLAUDE.md gotcha 2026-05-04 (Phase 6 I3 HX-Redirect-target-unrouted): do NOT emit a redirect to a path that doesn't resolve.
+
+Tests gate this with TWO discriminating assertions:
 
 ```python
 def test_hx_redirect_target_route_registered(client):
-    """Phase 6 gotcha: HX-Redirect target must be in app.routes."""
-    target_paths = {r.path for r in client.app.routes if hasattr(r, "path")}
-    assert any(p.startswith("/trades/") and "detail" in p for p in target_paths)
+    """Phase 6 gotcha: HX-Redirect target must be in app.routes.
+    Discriminating: a regression that emits /trades/{id}/detail (or any other
+    path) without registering it would silently 404 the operator's browser
+    while TestClient assertions on the entry-POST status pass.
+    """
+    target_paths = {getattr(r, "path", None) for r in client.app.routes}
+    # Starlette path templates use `{trade_id}`; assert the templated form
+    # is registered, not an arbitrary substring match.
+    assert "/trades/{trade_id}" in target_paths
+
+
+def test_entry_post_hx_redirect_target_resolves(client):
+    """Follow the HX-Redirect target with a second TestClient call and
+    assert the GET returns 200 — proves the entire round-trip resolves,
+    not just header format. Per CLAUDE.md gotcha (Phase 6 I3): TestClient
+    does not auto-follow HX-Redirect; explicit follow needed."""
+    response = client.post("/trades/entry/form", data={...all 18 fields...})
+    assert response.status_code == 204
+    target = response.headers["HX-Redirect"]
+    # Exact format check: `/trades/<integer>` (no `/detail` suffix; canonical).
+    import re
+    assert re.fullmatch(r"^/trades/\d+$", target)
+    # Follow and verify resolution.
+    follow = client.get(target)
+    assert follow.status_code == 200
 ```
 
 Commit: `feat(web): C.3 — entry form route handles 18 Phase 7 fields + gate rejection`.
@@ -3841,9 +3998,9 @@ Commit: `feat(web): C.8 — pre-trade gate consistent rendering at 3 entry surfa
 
 | Sub-dispatch | New tests | Cumulative |
 |---|---|---|
-| Sub-A | 75 | baseline + 75 = 1662 |
-| Sub-B | ~50 | ~1712 |
-| Sub-C | ~50-60 | ~1762-1772 |
+| Sub-A | 87 | baseline + 87 = 1674 |
+| Sub-B | ~50 | ~1724 |
+| Sub-C | ~50-60 | ~1774-1784 |
 
 **Plan estimate band:** **+150–250 new fast tests** (matches spec §14.8). Wide band acknowledged per Phase 6 lesson `test-count-projections-bias-high`. Surplus over plan estimate is acceptable IF discriminating-test discipline holds; NOT acceptable if vacuous parameterization inflates count.
 
@@ -3891,7 +4048,7 @@ Sub-A T0 covers 8 fixture-using files identified at empirical-audit time. Sub-B 
 - [ ] Plan includes the per-call-site `status`→state predicate rewrite mapping (§2.1).
 - [ ] Plan includes the 4-fixture preservation invariant test gate (Sub-A T9).
 - [ ] Plan includes the state-machine all-transition-paths matrix (Sub-A T5; 25 cells).
-- [ ] Plan includes the migration runner discipline section (Sub-A T1; SQLite-native backup + 2 binding integrity checks).
+- [ ] Plan includes the migration runner discipline section (Sub-A T1; SQLite-native backup + 4 binding integrity checks).
 - [ ] Plan includes the in-flight migration backfill specification (Sub-A T10 with VIR/DHC/CC).
 - [ ] Plan includes the vocabulary operator-confirm checkpoint mechanism (§1.4).
 - [ ] Plan total expected new fast tests stated (§7.1; +150-250 wide band).
