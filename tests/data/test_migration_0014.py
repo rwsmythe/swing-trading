@@ -5,8 +5,15 @@ VIR/DHC/CC/YOU migration tests land in T10.
 """
 from __future__ import annotations
 
+import math
 import sqlite3
 from pathlib import Path
+
+from swing.trades.derived_metrics import (
+    initial_risk_per_share,
+    r_multiple,
+    realized_pnl,
+)
 
 
 def _seed_v13_db(path: Path) -> sqlite3.Connection:
@@ -121,3 +128,162 @@ def test_migration_0014_idempotent(tmp_path):
     run_migrations(conn, target_version=14, backup_dir=tmp_path)
     cur = conn.execute("SELECT version FROM schema_version")
     assert cur.fetchone()[0] == 14
+
+
+def _seed_v13_with_trades_and_exits(tmp_path, trade_specs, exit_specs):
+    """Build a v13 DB seeded with the given trades + exits (legacy schema).
+
+    trade_specs format (8-tuple):
+      (id, ticker, entry_date, entry_price, initial_shares,
+       initial_stop, current_stop, status)
+    exit_specs format (9-tuple):
+      (id, trade_id, exit_date, exit_price, shares, reason,
+       realized_pnl, r_multiple, notes)
+    """
+    from swing.data.db import run_migrations
+    db = tmp_path / "test.db"
+    conn = sqlite3.connect(db)
+    run_migrations(conn, target_version=13)
+    for spec in trade_specs:
+        conn.execute(
+            "INSERT INTO trades (id, ticker, entry_date, entry_price, "
+            "initial_shares, initial_stop, current_stop, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            spec,
+        )
+    for spec in exit_specs:
+        conn.execute(
+            "INSERT INTO exits (id, trade_id, exit_date, exit_price, "
+            "shares, reason, realized_pnl, r_multiple, notes) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            spec,
+        )
+    conn.commit()
+    return conn, db
+
+
+def test_preservation_invariant_singleton_exit(tmp_path):
+    """One trade with one full exit (mirrors VIR shape).
+
+    Per spec §4.4.1 binding: assert post-migration fills row contents +
+    realized_pnl/r_multiple via T8 formulas match pre-migration stored values.
+    """
+    from swing.data.db import run_migrations
+    trades = [
+        (1, "AAA", "2026-04-20", 11.30, 2, 8.26, 8.26, "closed"),
+    ]
+    exits_data = [
+        (1, 1, "2026-04-24", 10.30, 2, "stop-hit", -2.0,
+         -0.32894736842105254, None),
+    ]
+    conn, _ = _seed_v13_with_trades_and_exits(tmp_path, trades, exits_data)
+    run_migrations(conn, target_version=14, backup_dir=tmp_path)
+    fills = conn.execute(
+        "SELECT action, quantity, price, reason, fill_datetime "
+        "FROM fills ORDER BY fill_datetime ASC, fill_id ASC"
+    ).fetchall()
+    assert len(fills) == 2  # 1 entry + 1 exit
+    assert fills[0] == ("entry", 2.0, 11.30, None, "2026-04-20T16:00:00")
+    assert fills[1] == ("exit", 2.0, 10.30, "stop-hit", "2026-04-24T16:00:00")
+
+    # Re-compute realized_pnl + r_multiple via T8 derived_metrics; assert
+    # preservation.
+    pnl = realized_pnl(entry_price=11.30, exit_price=10.30, quantity=2.0)
+    risk = initial_risk_per_share(entry_price=11.30, initial_stop=8.26)
+    r = r_multiple(realized_pnl=pnl, initial_risk_per_share=risk, quantity=2.0)
+    assert math.isclose(pnl, -2.0, abs_tol=1e-9)
+    assert math.isclose(r, -0.32894736842105254, abs_tol=1e-12)
+
+
+def test_preservation_invariant_multi_exit_different_dates(tmp_path):
+    """Trade with 3 exits across 3 dates totaling initial_shares.
+
+    Asserts full backfilled fills row contents (action, quantity, price,
+    reason, fill_datetime) per spec §4.4.1: each row's structured contents
+    are proven, not just the action sequence."""
+    from swing.data.db import run_migrations
+    trades = [
+        (1, "BBB", "2026-04-01", 100.0, 30, 95.0, 95.0, "closed"),
+    ]
+    exits_data = [
+        (1, 1, "2026-04-05", 105.0, 10, "trim-1",      50.0, 1.0, None),
+        (2, 1, "2026-04-10", 110.0, 10, "trim-2",     100.0, 2.0, None),
+        (3, 1, "2026-04-15", 115.0, 10, "exit-final", 150.0, 3.0, None),
+    ]
+    conn, _ = _seed_v13_with_trades_and_exits(tmp_path, trades, exits_data)
+    run_migrations(conn, target_version=14, backup_dir=tmp_path)
+    fills = conn.execute(
+        "SELECT action, quantity, price, reason, fill_datetime "
+        "FROM fills WHERE trade_id = 1 AND action != 'entry' "
+        "ORDER BY fill_datetime ASC, fill_id ASC"
+    ).fetchall()
+    assert fills == [
+        ("trim", 10.0, 105.0, "trim-1",     "2026-04-05T16:00:00"),
+        ("trim", 10.0, 110.0, "trim-2",     "2026-04-10T16:00:00"),
+        ("exit", 10.0, 115.0, "exit-final", "2026-04-15T16:00:00"),
+    ]
+    # Per-row realized_pnl preservation (computed via derived_metrics).
+    for stored, fill in zip(exits_data, fills, strict=True):
+        stored_pnl = stored[6]
+        computed_pnl = realized_pnl(
+            entry_price=100.0, exit_price=fill[2], quantity=fill[1]
+        )
+        assert math.isclose(stored_pnl, computed_pnl, abs_tol=1e-9)
+
+
+def test_preservation_invariant_same_date_multi_exit(tmp_path):
+    """Trade with 3 exits on same date totaling initial_shares —
+    deterministic ordering by (exit_date ASC, id ASC) drives action
+    assignment.
+
+    Asserts full row contents in id-ASC order: backfill SQL's tie-break on
+    `id ASC` for same-date rows is the discriminator."""
+    from swing.data.db import run_migrations
+    trades = [
+        (1, "CCC", "2026-04-01", 50.0, 30, 47.0, 47.0, "closed"),
+    ]
+    exits_data = [
+        (1, 1, "2026-04-05", 52.0, 10, "trim-A", 20.0, 0.67, None),
+        (2, 1, "2026-04-05", 53.0, 10, "trim-B", 30.0, 1.0,  None),
+        (3, 1, "2026-04-05", 54.0, 10, "exit-C", 40.0, 1.33, None),
+    ]
+    conn, _ = _seed_v13_with_trades_and_exits(tmp_path, trades, exits_data)
+    run_migrations(conn, target_version=14, backup_dir=tmp_path)
+    fills = conn.execute(
+        "SELECT action, quantity, price, reason, fill_datetime "
+        "FROM fills WHERE trade_id = 1 AND action != 'entry' "
+        "ORDER BY fill_id ASC"
+    ).fetchall()
+    assert fills == [
+        ("trim", 10.0, 52.0, "trim-A", "2026-04-05T16:00:00"),
+        ("trim", 10.0, 53.0, "trim-B", "2026-04-05T16:00:00"),
+        ("exit", 10.0, 54.0, "exit-C", "2026-04-05T16:00:00"),
+    ]
+
+
+def test_preservation_invariant_notes_merged(tmp_path):
+    """Exit row with non-empty notes; post-migration, fill.reason =
+    reason + ' | ' + notes.
+
+    Asserts ALL row fields (action, quantity, price, reason, fill_datetime)
+    — not just the merged reason — to prove the migration backfill writes a
+    complete row."""
+    from swing.data.db import run_migrations
+    trades = [
+        (1, "DDD", "2026-04-01", 20.0, 100, 19.0, 19.0, "closed"),
+    ]
+    exits_data = [
+        (1, 1, "2026-04-05", 22.0, 100, "target hit", 200.0, 2.0,
+         "early bias good"),
+    ]
+    conn, _ = _seed_v13_with_trades_and_exits(tmp_path, trades, exits_data)
+    run_migrations(conn, target_version=14, backup_dir=tmp_path)
+    row = conn.execute(
+        "SELECT action, quantity, price, reason, fill_datetime "
+        "FROM fills WHERE trade_id = 1 AND action = 'exit'"
+    ).fetchone()
+    assert row == (
+        "exit", 100.0, 22.0,
+        "target hit | early bias good",
+        "2026-04-05T16:00:00",
+    )
