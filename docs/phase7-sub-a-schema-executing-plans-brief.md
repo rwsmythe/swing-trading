@@ -54,13 +54,13 @@ Read these in order before executing:
    ```python
    import sqlite3, os
    conn = sqlite3.connect(os.path.expanduser("~/swing-data/swing.db"))
-   for ticker in ('VIR', 'DHC', 'CC'):
+   for ticker in ('VIR', 'DHC', 'CC', 'YOU'):
        trade = conn.execute("SELECT id, ticker, status, entry_date, entry_price, initial_shares, hypothesis_label FROM trades WHERE ticker = ?", (ticker,)).fetchone()
        print(f'{ticker}: {trade}')
    print('exits:', conn.execute("SELECT * FROM exits").fetchall())
    print('schema_version:', conn.execute("SELECT * FROM schema_version").fetchall())
    ```
-   Confirm 3 trades (VIR closed; DHC + CC open) + 1 exit (VIR's) + schema_version=13 (post-Phase-6). If state diverges, STOP and surface in return report — plan T10 migration UPDATE depends on these exact values.
+   Confirm **4 trades** (VIR closed+reviewed; DHC + CC + YOU open) + 1 exit (VIR's) + schema_version=13 (post-Phase-6). **Update 2026-05-04 (post-writing-plans / pre-Sub-A):** operator entered a 4th trade YOU between writing-plans dispatch and Sub-A dispatch — a hypothesis-1 (A+ baseline) entry on 2026-05-04. T10 fixture + migration UPDATEs adjusted in lockstep per plan's "re-verify at task time" NOTE. If state diverges from this 4-trade expected (e.g., 5 trades, exits added, schema != 13), STOP and surface in return report — plan T10 migration UPDATE depends on these exact values.
 
 8. **`swing/data/migrations/`** — confirm next migration is `0014_*.sql` (last is `0013_phase6_post_trade_review.sql`); plan Task A.2 ships the single 0014 migration with all schema changes in one transaction.
 
@@ -149,10 +149,11 @@ Notable Sub-A-relevant locked decisions (NOT exhaustive — read spec + plan):
 - **Multi-entry-fill authoritative selector** (spec §4.3.1): `ORDER BY fill_datetime ASC, fill_id ASC LIMIT 1`. V1 service-layer constraint is single entry fill; the trade-level reader contract pre-locked.
 - **Aggregate denormalization on `trades`:** `current_size REAL NOT NULL` + `current_avg_cost REAL` + `last_fill_at TEXT`. Recomputed by `swing/data/repos/fills.py:insert_fill_with_event` after every fill insert.
 - **Operation-contextual validation** (spec §3.5.1): `entry_create` enforces full required set; `transition_managing/partial_exited/closed` triggers suffice; `transition_reviewed` enforces Phase 6 review-completion fields only; legacy rows exempt by NULLABLE schema.
-- **VIR/DHC/CC migration FIRM values** per plan §4 T10:
-  - VIR: `state='reviewed'`, `pre_trade_locked_at='<entry_date>T16:00:00'`, `trade_origin='manual_off_pipeline'`.
+- **VIR/DHC/CC/YOU migration FIRM values** per plan §4 T10 (4 trades — YOU added 2026-05-04 between writing-plans and Sub-A dispatch):
+  - VIR: `state='reviewed'`, `pre_trade_locked_at='2026-04-20T16:00:00'`, `trade_origin='manual_off_pipeline'`.
   - DHC: `state='managing'`, `pre_trade_locked_at='2026-04-27T16:00:00'`, `trade_origin='pipeline_watch_hyp_recs'`.
   - CC: `state='managing'`, `pre_trade_locked_at='2026-04-30T16:00:00'`, `trade_origin='pipeline_watch_hyp_recs'`.
+  - YOU: `state='managing'`, `pre_trade_locked_at='2026-05-04T16:00:00'`, `trade_origin='pipeline_aplus'` (ticker YOU; entry 2026-05-04 @ $56.29 × 2 shares; bucket=`aplus` confirmed in candidates table action_session 2026-05-04 + present in daily_recommendations as `today_decision`; rationale='aplus-setup' in trade_events; hypothesis_label='A+ baseline (aplus)').
 - **Worktree isolation: REQUIRED.** Per binding convention 2026-05-02. Plan §0 specifies setup; this brief reiterates §0 Step 1.
 - **No-main-commits-during-in-flight-dispatch** (lesson 2026-05-04). Orchestrator holds main edits while this dispatch is in-flight; exception only for verified-non-overlapping pure-docs edits with operator awareness.
 

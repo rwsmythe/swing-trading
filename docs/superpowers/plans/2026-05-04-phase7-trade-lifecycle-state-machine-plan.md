@@ -269,7 +269,7 @@ Default posture: read-only on `swing/data/` + `swing/trades/`. Phase 7 carve-out
 |---|---|---|---|
 | `tests/data/test_fixture_builders.py` | NEW | Sub-A T0 (modified in T3) | Dedicated home for fixture-behavior tests — moved out of conftest.py per pytest convention; covers `make_trade` default-state behavior and the dual-field A.0→A.3 transition window. |
 | `tests/data/test_models_phase7.py` | NEW | Sub-A T3 | Trade dataclass shape assertions (status dropped; state + 21 new fields present); Fill dataclass shape; Exit dataclass removal. |
-| `tests/data/test_migration_0014.py` | NEW | Sub-A T9 + T10 | Migration safety: 4 preservation invariant fixtures + VIR/DHC/CC in-flight migration assertions. |
+| `tests/data/test_migration_0014.py` | NEW | Sub-A T9 + T10 | Migration safety: 4 preservation invariant fixtures + VIR/DHC/CC/YOU in-flight migration assertions. |
 | `tests/data/test_migration_runner_backup.py` | NEW | Sub-A T1 | Backup-before-migrate runner test gates: backup created; integrity check passes; corrupted backup → `MigrationBackupRequiredException`; missing expected table → exception. |
 | `tests/data/test_fills_repo.py` | NEW | Sub-A T4 | `insert_fill_with_event`, `_recompute_aggregates`, `get_authoritative_entry_fill` correctness; aggregate-consistency invariant test. |
 | `tests/trades/test_state.py` | NEW | Sub-A T5 | 25-cell transition matrix (5 allowed + 20 rejected); `validate_for_operation` per-operation correctness; per-operation required-field tests. |
@@ -1153,7 +1153,7 @@ Final Sub-A ordering:
 - T7: origin service (NEW; isolated).
 - T8: derived_metrics service (NEW; isolated).
 - T9: migration safety tests — 4 preservation invariant fixtures.
-- T10: in-flight migration tests — VIR/DHC/CC.
+- T10: in-flight migration tests — VIR/DHC/CC/YOU.
 
 The full-suite-green gate at end of T6 is binding for Sub-A merge to main. T7–T10 add coverage on top.
 
@@ -2799,21 +2799,23 @@ EOF
 
 ---
 
-### Task A.10: In-flight migration backfill — VIR/DHC/CC
+### Task A.10: In-flight migration backfill — VIR/DHC/CC/YOU
 
 **Files:**
 - Modify: `tests/data/test_migration_0014.py` (additions)
 
-**Goal:** spec §12.3 binding test — production-shape fixture migrating to expected (state, fills count, aggregate denorms, trade_origin) per the VIR/DHC/CC table.
+**Goal:** spec §12.3 binding test — production-shape fixture migrating to expected (state, fills count, aggregate denorms, trade_origin) per the VIR/DHC/CC/YOU table.
+
+**Update 2026-05-04 (post-writing-plans, pre-Sub-A dispatch):** operator entered a 4th trade YOU between writing-plans dispatch (251cc35) and Sub-A dispatch — a hypothesis-1 (A+ baseline) entry on 2026-05-04 (ticker YOU; $56.29 × 2 shares; stop $45.38; bucket=`aplus`; rationale='aplus-setup'; daily_recommendations recommendation='today_decision'). FIRM trade_origin = `pipeline_aplus` per spec §10.4. Fixture + assertions extended in lockstep per the plan's "re-verify at task time" NOTE.
 
 - [ ] **Step 1: Write the in-flight migration test.**
 
 ```python
-def test_in_flight_migration_vir_dhc_cc(tmp_path):
-    """Spec §12.3: production-shape fixture migrates VIR + DHC + CC correctly.
+def test_in_flight_migration_vir_dhc_cc_you(tmp_path):
+    """Spec §12.3: production-shape fixture migrates VIR + DHC + CC + YOU correctly.
 
     NOTE: this fixture mirrors the production DB shape verified at empirical
-    audit time (HEAD `db6727d`, 2026-05-04). Implementer re-verifies
+    audit time (HEAD `aa2dd60`, 2026-05-04). Implementer re-verifies
     production state at task time before locking the migration UPDATE
     statements; if production state has drifted, fixture + UPDATEs adjust
     in lockstep before commit.
@@ -2825,6 +2827,9 @@ def test_in_flight_migration_vir_dhc_cc(tmp_path):
         (2, "DHC", "2026-04-27", 7.58, 39, 7.20, 7.20, "open"),
         # CC: open since 2026-04-30, $26.97 × 5.
         (3, "CC", "2026-04-30", 26.97, 5, 25.50, 25.50, "open"),
+        # YOU: open since 2026-05-04, $56.29 × 2 (4th trade entered between
+        # writing-plans dispatch and Sub-A dispatch; A+ entry; bucket=aplus).
+        (4, "YOU", "2026-05-04", 56.29, 2, 45.38, 45.38, "open"),
     ]
     exits_data = [
         # VIR's single full exit at -0.33R (per production DB).
@@ -2842,17 +2847,19 @@ def test_in_flight_migration_vir_dhc_cc(tmp_path):
         "SELECT ticker, state, current_size, current_avg_cost, last_fill_at, "
         "trade_origin, pre_trade_locked_at FROM trades ORDER BY id"
     ).fetchall()
-    vir, dhc, cc = rows
+    vir, dhc, cc, you = rows
     assert vir == ("VIR", "reviewed", 0.0, 11.34, "2026-04-24T16:00:00",
                    "manual_off_pipeline", "2026-04-20T16:00:00")
     assert dhc == ("DHC", "managing", 39.0, 7.58, "2026-04-27T16:00:00",
                    "pipeline_watch_hyp_recs", "2026-04-27T16:00:00")
     assert cc  == ("CC",  "managing", 5.0,  26.97, "2026-04-30T16:00:00",
                    "pipeline_watch_hyp_recs", "2026-04-30T16:00:00")
+    assert you == ("YOU", "managing", 2.0,  56.29, "2026-05-04T16:00:00",
+                   "pipeline_aplus", "2026-05-04T16:00:00")
 
-    # Verify fills row count = #trades + #exits = 3 + 1 = 4.
+    # Verify fills row count = #trades + #exits = 4 + 1 = 5.
     fill_count = conn.execute("SELECT COUNT(*) FROM fills").fetchone()[0]
-    assert fill_count == 4
+    assert fill_count == 5
 
     # Verify VIR's pre-trade fields persist NULL.
     row = conn.execute(
@@ -2874,12 +2881,13 @@ Expected: PASS.
 ```bash
 git add tests/data/test_migration_0014.py
 git commit -m "$(cat <<'EOF'
-test(data): A.10 — in-flight migration test for VIR/DHC/CC
+test(data): A.10 — in-flight migration test for VIR/DHC/CC/YOU
 
 Production-shape fixture verifies spec §12.3 backfill: VIR → reviewed,
-DHC → managing, CC → managing; current_size/current_avg_cost/last_fill_at
+DHC + CC + YOU → managing; current_size/current_avg_cost/last_fill_at
 populated from fills aggregates; trade_origin assigned per operator-
-confirmed FIRM values.
+confirmed FIRM values (VIR=manual_off_pipeline; DHC + CC=pipeline_watch_
+hyp_recs; YOU=pipeline_aplus).
 
 Implementer re-verifies production state at task time; fixture +
 migration UPDATE statements adjust in lockstep if drift detected.
@@ -4091,7 +4099,7 @@ For every test, the implementer MUST answer "would this test fail if the impleme
 
 Specific discriminators called out:
 - **Migration safety (T9):** 4-fixture preservation invariant — each fixture exercises a distinct migration risk dimension (singleton, multi-date, same-date deterministic ordering, notes-merged).
-- **Migration in-flight (T10):** VIR/DHC/CC backfill values are EXACT (not "is closed" — but `state == 'reviewed'` for VIR specifically; not "has fills" — but `current_size == 0.0` for VIR exactly).
+- **Migration in-flight (T10):** VIR/DHC/CC/YOU backfill values are EXACT (not "is closed" — but `state == 'reviewed'` for VIR specifically; not "has fills" — but `current_size == 0.0` for VIR exactly; YOU added 2026-05-04 between writing-plans and Sub-A dispatch with `trade_origin='pipeline_aplus'` FIRM).
 - **State machine (A.5):** parameterized 25-cell matrix; each cell asserts ALLOW or REJECT exactly once (not parameterized over an over-broad "every transition is enforced" predicate).
 - **Validate-for-operation (A.5):** parameterized over per-operation required-field tuple; each field's missing-rejection tests that the validator returns the SPECIFIC field name in the missing list (not just "raises").
 - **Origin (A.7):** parameterized 11 (bucket × entry_path) cells + ticker-absent + pipeline-not-completed + yesterday-fallback edge cases.
@@ -4130,7 +4138,7 @@ Sub-A T0 covers 8 fixture-using files identified at empirical-audit time. Sub-B 
 - [ ] Plan includes the 4-fixture preservation invariant test gate (Sub-A T9).
 - [ ] Plan includes the state-machine all-transition-paths matrix (Sub-A T5; 25 cells).
 - [ ] Plan includes the migration runner discipline section (Sub-A T1; SQLite-native backup + 4 binding integrity checks).
-- [ ] Plan includes the in-flight migration backfill specification (Sub-A T10 with VIR/DHC/CC).
+- [ ] Plan includes the in-flight migration backfill specification (Sub-A T10 with VIR/DHC/CC/YOU; YOU added 2026-05-04 post-plan-approval).
 - [ ] Plan includes the vocabulary operator-confirm checkpoint mechanism (§1.4).
 - [ ] Plan total expected new fast tests stated (§7.1; +150-250 wide band).
 - [ ] Plan specifies worktree isolation + marker-file Codex-blocking workflow per sub-dispatch (§0.2).
