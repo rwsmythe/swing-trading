@@ -1,4 +1,11 @@
-"""Trades repo round-trip. Every trades mutation must also write a trade_events row in same txn."""
+"""Trades repo round-trip. Every trades mutation must also write a trade_events row in same txn.
+
+Phase 7 (T6) — `Exit` dataclass removed; `exits` table dropped. Tests that previously
+relied on `insert_exit_with_event(conn, Exit(...), ...)` now insert fills directly via
+the (Sub-A T4) `fills` table; `list_exits_for_trade` is the fills-backed shim that
+preserves caller surface for Sub-B/Sub-C callers until those phases rewrite. Tests for
+`status` field round-trip rewritten to assert on `state` field.
+"""
 from __future__ import annotations
 
 import json
@@ -7,12 +14,18 @@ from pathlib import Path
 
 import pytest
 
-from swing.data.db import ensure_schema
-from swing.data.models import Trade, Exit, TradeEvent
+from swing.data.db import ensure_schema, run_migrations
+from swing.data.models import Trade, TradeEvent
 from swing.data.repos.trades import (
-    insert_trade_with_event, insert_exit_with_event, update_stop_with_event,
-    list_open_trades, list_exits_for_trade, list_events_for_trade,
+    find_any_open_trade,
+    find_open_trade_by_match,
     get_trade,
+    insert_trade_with_event,
+    list_closed_trades,
+    list_events_for_trade,
+    list_exits_for_trade,
+    list_open_trades,
+    update_stop_with_event,
 )
 
 
@@ -40,7 +53,30 @@ def _trade(ticker: str = "AAPL") -> Trade:
         initial_shares=10, initial_stop=170.0, current_stop=170.0,
         state="entered", watchlist_entry_target=181.0,
         watchlist_initial_stop=170.0, notes="VCP entry",
+        trade_origin="manual_off_pipeline",
+        pre_trade_locked_at="2026-04-15T16:00:00",
     )
+
+
+def _insert_fill(
+    conn: sqlite3.Connection, *, trade_id: int, action: str,
+    fill_datetime: str, quantity: float, price: float, reason: str | None = None,
+) -> int:
+    """Test helper — direct INSERT into fills bypassing the (yet-unbuilt) fills repo.
+
+    Sub-A T4 will introduce `swing/data/repos/fills.py:insert_fill_with_event`;
+    until then, this helper is the only fills-INSERT path used by T6's tests.
+    """
+    cur = conn.execute(
+        """
+        INSERT INTO fills
+            (trade_id, fill_datetime, action, quantity, price, reason,
+             reconciliation_status)
+        VALUES (?, ?, ?, ?, ?, ?, 'unreconciled')
+        """,
+        (trade_id, fill_datetime, action, quantity, price, reason),
+    )
+    return int(cur.lastrowid)
 
 
 def test_insert_trade_writes_entry_event(tmp_path: Path):
@@ -65,37 +101,6 @@ def test_insert_trade_writes_entry_event(tmp_path: Path):
         conn.close()
 
 
-def test_insert_exit_writes_event_and_flips_status_when_full(tmp_path: Path):
-    conn = ensure_schema(tmp_path / "swing.db")
-    try:
-        with conn:
-            tid = insert_trade_with_event(conn, _trade(), event_ts="2026-04-15T09:30:00")
-        # Partial first
-        with conn:
-            insert_exit_with_event(
-                conn, Exit(id=None, trade_id=tid, exit_date="2026-04-18",
-                           exit_price=185.0, shares=5, reason="partial",
-                           realized_pnl=25.0, r_multiple=0.5, notes=None),
-                event_ts="2026-04-18T15:00:00", rationale="trim half",
-            )
-        assert get_trade(conn, tid).status == "open"  # still open
-
-        # Remainder closes
-        with conn:
-            insert_exit_with_event(
-                conn, Exit(id=None, trade_id=tid, exit_date="2026-04-22",
-                           exit_price=190.0, shares=5, reason="target",
-                           realized_pnl=50.0, r_multiple=1.0, notes=None),
-                event_ts="2026-04-22T15:30:00", rationale="hit pivot+10%",
-            )
-        assert get_trade(conn, tid).status == "closed"
-
-        events = list_events_for_trade(conn, tid)
-        assert [e.event_type for e in events] == ["entry", "exit", "exit"]
-    finally:
-        conn.close()
-
-
 def test_insert_trade_persists_hypothesis_label(tmp_path: Path):
     """Brief §4.3: hypothesis_label round-trips through insert + get_trade."""
     conn = ensure_schema(tmp_path / "swing.db")
@@ -106,6 +111,8 @@ def test_insert_trade_persists_hypothesis_label(tmp_path: Path):
             state="entered", watchlist_entry_target=None,
             watchlist_initial_stop=None, notes=None,
             hypothesis_label="A+ except risk_feasibility, smaller position",
+            trade_origin="manual_off_pipeline",
+            pre_trade_locked_at="2026-04-25T16:00:00",
         )
         with conn:
             tid = insert_trade_with_event(conn, labeled, event_ts="2026-04-25T09:30:00")
@@ -192,24 +199,6 @@ def test_update_stop_notes_default_none_preserves_backcompat(tmp_path: Path):
         conn.close()
 
 
-def test_overfill_exit_raises(tmp_path: Path):
-    """Trying to exit more shares than remain raises before any write."""
-    conn = ensure_schema(tmp_path / "swing.db")
-    try:
-        with conn:
-            tid = insert_trade_with_event(conn, _trade(), event_ts="2026-04-15T09:30:00")
-        with pytest.raises(ValueError, match="exceeds remaining"):
-            with conn:
-                insert_exit_with_event(
-                    conn, Exit(id=None, trade_id=tid, exit_date="2026-04-18",
-                               exit_price=185.0, shares=100, reason="manual",
-                               realized_pnl=500.0, r_multiple=5.0, notes=None),
-                    event_ts="2026-04-18T15:00:00",
-                )
-    finally:
-        conn.close()
-
-
 def test_list_open_trades(tmp_path: Path):
     conn = ensure_schema(tmp_path / "swing.db")
     try:
@@ -249,44 +238,13 @@ def test_trade_event_atomicity_rolls_back_on_failure(tmp_path: Path):
         conn.close()
 
 
-def test_exit_atomicity_rolls_back_on_failure(tmp_path: Path):
-    """Same invariant for exits: failure in the 'exit' event insert must roll
-    back the exits INSERT + the trades status update.
-    """
-    db = tmp_path / "swing.db"
-    ensure_schema(db).close()
-    conn = sqlite3.connect(str(db), factory=_FailingConnection)
-    try:
-        conn.execute("PRAGMA foreign_keys = ON")
-        # Seed a trade first (no failure trigger set)
-        with conn:
-            tid = insert_trade_with_event(conn, _trade(), event_ts="2026-04-15T09:30:00")
-
-        # Now arm the failure trigger to match ONLY the exit event INSERT.
-        # The repo's exit-event SQL has the literal `'exit'` (with quotes) in it.
-        conn.fail_on_sql_substring = "'exit'"
-
-        with pytest.raises(sqlite3.OperationalError):
-            with conn:
-                insert_exit_with_event(
-                    conn, Exit(id=None, trade_id=tid, exit_date="2026-04-18",
-                               exit_price=185.0, shares=5, reason="partial",
-                               realized_pnl=25.0, r_multiple=0.5, notes=None),
-                    event_ts="2026-04-18T15:00:00",
-                )
-
-        conn.fail_on_sql_substring = ""
-        assert get_trade(conn, tid).status == "open"
-        assert list_exits_for_trade(conn, tid) == []
-        events = list_events_for_trade(conn, tid)
-        # Only the original 'entry' event, no 'exit' event
-        assert [e.event_type for e in events] == ["entry"]
-    finally:
-        conn.close()
-
-
 def test_update_stop_with_event_rejects_closed_trade():
-    """Spec §4.4: closed trade → ValueError, no row mutation, no event insert."""
+    """Spec §4.4: closed trade → ValueError, no row mutation, no event insert.
+
+    Phase 7 T6: state-based predicate (state IN ('entered','managing','partial_exited'))
+    replaces the legacy status='open' guard. Closing a trade is simulated by
+    UPDATE state='closed'.
+    """
     from swing.data.db import connect, ensure_schema
     from swing.data.repos.trades import (
         insert_trade_with_event, update_stop_with_event,
@@ -306,7 +264,7 @@ def test_update_stop_with_event_rejects_closed_trade():
                 )
                 # Mark the trade closed (simulates post-exit state transition).
                 conn.execute(
-                    "UPDATE trades SET status='closed' WHERE id = ?", (tid,),
+                    "UPDATE trades SET state='closed' WHERE id = ?", (tid,),
                 )
 
             # Attempt stop-adjust on the closed trade.
@@ -373,17 +331,11 @@ def test_update_stop_with_event_rejects_missing_trade():
 def test_trade_sector_industry_roundtrip_all_select_paths(tmp_path):
     """Trade with sector + industry roundtrips through ALL FIVE repo SELECT
     paths. Each path hand-rolls its column list — missing one path while
-    fixing the others is the recurring repo-SELECT-coverage bug."""
-    from swing.data.db import ensure_schema
-    from swing.data.models import Trade
-    from swing.data.repos.trades import (
-        find_any_open_trade,
-        find_open_trade_by_match,
-        get_trade,
-        insert_trade_with_event,
-        list_closed_trades,
-        list_open_trades,
-    )
+    fixing the others is the recurring repo-SELECT-coverage bug.
+
+    Phase 7 T6: list_closed_trades since-date branch now queries fills (not
+    exits); seed via direct fills INSERT.
+    """
     db_path = tmp_path / "swing.db"
     conn = ensure_schema(db_path)
     try:
@@ -395,6 +347,8 @@ def test_trade_sector_industry_roundtrip_all_select_paths(tmp_path):
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None, hypothesis_label=None,
                 sector="Energy", industry="Oil & Gas E&P",
+                trade_origin="manual_off_pipeline",
+                pre_trade_locked_at="2026-04-28T16:00:00",
             ), event_ts="2026-04-28T00:00:00")
         # Path 1: get_trade
         t1 = get_trade(conn, trade_id)
@@ -417,25 +371,22 @@ def test_trade_sector_industry_roundtrip_all_select_paths(tmp_path):
             conn, ticker="ZZZE", entry_date="2026-04-28", initial_shares=None,
         )
         assert t5 is not None and t5.industry == "Oil & Gas E&P"
-        # Path 4: list_closed_trades — close the trade first.
+        # Path 4: list_closed_trades — close the trade first (state='closed').
         with conn:
             conn.execute(
-                "UPDATE trades SET status='closed' WHERE id=?", (trade_id,),
+                "UPDATE trades SET state='closed' WHERE id=?", (trade_id,),
             )
         closed_all = list_closed_trades(conn)
         assert any(
             t.ticker == "ZZZE" and t.sector == "Energy" and
             t.industry == "Oil & Gas E&P" for t in closed_all
         )
-        # Path 4b: list_closed_trades with since_date branch (requires an
-        # exits row to satisfy the EXISTS subquery; insert directly).
+        # Path 4b: list_closed_trades with since_date branch — now queries fills.
         with conn:
-            conn.execute(
-                """INSERT INTO exits
-                   (trade_id, exit_date, exit_price, shares, reason,
-                    realized_pnl, r_multiple, notes)
-                   VALUES (?, '2026-04-28', 100.0, 10, 'manual', 0.0, 0.0, NULL)""",
-                (trade_id,),
+            _insert_fill(
+                conn, trade_id=trade_id, action="exit",
+                fill_datetime="2026-04-28T16:00:00",
+                quantity=10.0, price=100.0, reason="manual",
             )
         closed_since = list_closed_trades(conn, since_date="2026-04-01")
         assert any(
@@ -447,13 +398,196 @@ def test_trade_sector_industry_roundtrip_all_select_paths(tmp_path):
 
 def test_trade_default_sector_industry_empty():
     """Trade constructed without sector/industry uses '' defaults."""
-    from swing.data.models import Trade
     t = Trade(
         id=None, ticker="DFLT", entry_date="2026-04-28",
         entry_price=100.0, initial_shares=10,
         initial_stop=95.0, current_stop=95.0, state="entered",
         watchlist_entry_target=None, watchlist_initial_stop=None,
         notes=None,
+        trade_origin="manual_off_pipeline",
+        pre_trade_locked_at="2026-04-28T16:00:00",
     )
     assert t.sector == ""
     assert t.industry == ""
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 T6 — three new discriminating tests for the binding green gate.
+# ---------------------------------------------------------------------------
+
+
+def _seed_v14(tmp_path: Path) -> sqlite3.Connection:
+    """Open a fresh DB and migrate to v14 directly via run_migrations."""
+    db = tmp_path / "test.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("PRAGMA foreign_keys=ON")
+    run_migrations(conn, target_version=14, backup_dir=tmp_path)
+    return conn
+
+
+def _seed_trade_at_state(
+    conn: sqlite3.Connection, *, ticker: str, state: str,
+) -> int:
+    """Insert a trade row through the repo, then UPDATE state directly.
+
+    The repo's INSERT writes whatever `Trade.state` says, but the CHECK
+    constraint enforces the 5-element enum. To exercise tests that need
+    arbitrary post-creation states (e.g. 'managing','partial_exited',
+    'closed','reviewed') we seed at 'entered' (Phase-7 entry-state) and then
+    UPDATE state directly.
+    """
+    trade = Trade(
+        id=None, ticker=ticker, entry_date="2026-05-01",
+        entry_price=10.0, initial_shares=100, initial_stop=9.0,
+        current_stop=9.0, state="entered",
+        watchlist_entry_target=None, watchlist_initial_stop=None, notes=None,
+        trade_origin="manual_off_pipeline",
+        pre_trade_locked_at="2026-05-01T16:00:00",
+    )
+    with conn:
+        trade_id = insert_trade_with_event(
+            conn, trade, event_ts="2026-05-01T16:00:00",
+        )
+        if state != "entered":
+            conn.execute("UPDATE trades SET state=? WHERE id=?", (state, trade_id))
+    return trade_id
+
+
+def test_get_trade_returns_state_not_status(tmp_path: Path):
+    """T6 discriminating: get_trade returns Trade with .state attr.
+
+    Pre-fix (status-only schema): get_trade SELECT'd `status`; trade.status
+    would be "open" and accessing trade.state would raise AttributeError.
+    Post-fix (state schema, T6): trade.state is the enum field; status no
+    longer a Trade attribute.
+    """
+    conn = _seed_v14(tmp_path)
+    try:
+        trade_id = _seed_trade_at_state(conn, ticker="TST", state="entered")
+        trade = get_trade(conn, trade_id)
+        assert trade is not None
+        assert trade.state == "entered"
+        # Discriminating against the wrong rewrite: Trade dataclass must not
+        # carry a `status` attribute post-T3.
+        assert not hasattr(trade, "status")
+    finally:
+        conn.close()
+
+
+def test_list_open_trades_filters_by_state_set(tmp_path: Path):
+    """T6 discriminating: list_open_trades returns the 3 active states only.
+
+    Seeds 5 trades at distinct states (entered, managing, partial_exited,
+    closed, reviewed). Pre-fix predicate (status='open') would select 0 rows
+    or raise OperationalError. Post-fix predicate
+    (state IN ('entered','managing','partial_exited')) selects exactly
+    {AAA, BBB, CCC}.
+    """
+    conn = _seed_v14(tmp_path)
+    try:
+        _seed_trade_at_state(conn, ticker="AAA", state="entered")
+        _seed_trade_at_state(conn, ticker="BBB", state="managing")
+        _seed_trade_at_state(conn, ticker="CCC", state="partial_exited")
+        _seed_trade_at_state(conn, ticker="DDD", state="closed")
+        _seed_trade_at_state(conn, ticker="EEE", state="reviewed")
+        open_trades = list_open_trades(conn)
+        tickers = {t.ticker for t in open_trades}
+        assert tickers == {"AAA", "BBB", "CCC"}
+    finally:
+        conn.close()
+
+
+def test_insert_trade_no_longer_writes_status_column(tmp_path: Path):
+    """T6 discriminating: schema lacks `status` column; INSERT succeeds.
+
+    Pre-fix INSERT col list contained `status` → would raise
+    sqlite3.OperationalError ("table trades has no column named status").
+    Post-fix INSERT col list omits `status` → INSERT succeeds.
+    """
+    conn = _seed_v14(tmp_path)
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(trades)")}
+        assert "status" not in cols
+        # And the new state column IS present (sanity).
+        assert "state" in cols
+        trade_id = _seed_trade_at_state(conn, ticker="TST", state="entered")
+        assert trade_id > 0
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 T6 — list_exits_for_trade fills-backed shim coverage.
+# ---------------------------------------------------------------------------
+
+
+def test_list_exits_for_trade_shim_returns_fills_as_exitlike_rows(tmp_path: Path):
+    """T6 shim: list_exits_for_trade returns fills-backed Exit-shape rows.
+
+    The shim preserves caller surface (`.exit_date`, `.exit_price`, `.shares`,
+    `.reason`, `.realized_pnl`, `.r_multiple`, `.notes`) so Sub-B/Sub-C
+    callers continue to work until they migrate to fills repo helpers.
+    """
+    conn = _seed_v14(tmp_path)
+    try:
+        tid = _seed_trade_at_state(conn, ticker="EXT", state="managing")
+        # Insert a 'trim' fill (50 shares at 12.0) and an 'exit' fill (50 at 14.0).
+        with conn:
+            _insert_fill(
+                conn, trade_id=tid, action="trim",
+                fill_datetime="2026-05-02T16:00:00",
+                quantity=50.0, price=12.0, reason="partial",
+            )
+            _insert_fill(
+                conn, trade_id=tid, action="exit",
+                fill_datetime="2026-05-03T16:00:00",
+                quantity=50.0, price=14.0, reason="target",
+            )
+        rows = list_exits_for_trade(conn, tid)
+        assert len(rows) == 2
+        # Sorted by fill_datetime ASC.
+        assert rows[0].exit_date == "2026-05-02"
+        assert rows[0].exit_price == 12.0
+        assert rows[0].shares == 50
+        assert rows[0].reason == "partial"
+        # realized_pnl = (12.0 - 10.0) * 50 = 100.0
+        assert rows[0].realized_pnl == 100.0
+        # risk_per_share = 10 - 9 = 1.0; r_multiple = 100 / (1.0 * 50) = 2.0
+        assert rows[0].r_multiple == 2.0
+        # Second row.
+        assert rows[1].exit_date == "2026-05-03"
+        assert rows[1].exit_price == 14.0
+        assert rows[1].shares == 50
+        assert rows[1].reason == "target"
+        # realized_pnl = (14.0 - 10.0) * 50 = 200.0; r_multiple = 200 / 50 = 4.0
+        assert rows[1].realized_pnl == 200.0
+        assert rows[1].r_multiple == 4.0
+    finally:
+        conn.close()
+
+
+def test_list_exits_for_trade_excludes_entry_fills(tmp_path: Path):
+    """T6 shim: entry fills (action='entry', backfilled by migration 0014) are NOT
+    returned as 'exits'."""
+    conn = _seed_v14(tmp_path)
+    try:
+        tid = _seed_trade_at_state(conn, ticker="ENT", state="entered")
+        # _seed_trade_at_state goes via repo INSERT — that does NOT write a fills
+        # row by itself (Sub-A T4's fills repo will). Add an explicit entry fill
+        # to verify the shim filters action='entry'.
+        with conn:
+            _insert_fill(
+                conn, trade_id=tid, action="entry",
+                fill_datetime="2026-05-01T16:00:00",
+                quantity=100.0, price=10.0, reason=None,
+            )
+            _insert_fill(
+                conn, trade_id=tid, action="exit",
+                fill_datetime="2026-05-04T16:00:00",
+                quantity=100.0, price=11.0, reason="target",
+            )
+        rows = list_exits_for_trade(conn, tid)
+        assert len(rows) == 1, f"shim must filter action='entry'; got {rows}"
+        assert rows[0].exit_price == 11.0
+    finally:
+        conn.close()
