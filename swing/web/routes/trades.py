@@ -1107,9 +1107,13 @@ def review_post(
 
 @router.get("/reviews/pending", response_class=HTMLResponse)
 def reviews_pending(request: Request):
-    """Phase 6: list closed-and-unreviewed trades whose final exit was at
-    least `cfg.review.review_window_days` ago. Linked from the dashboard
-    'Needs review (N)' badge."""
+    """Phase 6: list ALL closed-and-unreviewed trades.
+
+    Linked from the dashboard 'Needs review (N)' badge. The badge itself
+    counts only trades closed >= cfg.review.review_window_days ago, but
+    this list view shows every closed-unreviewed trade so the operator
+    can review fresh trades early. (Codex R1 Major 1 + R2 Minor 1.)
+    """
     cfg = apply_overrides(request.app.state.cfg)
     templates = request.app.state.templates
     from swing.web.view_models.trades import build_reviews_pending_vm
