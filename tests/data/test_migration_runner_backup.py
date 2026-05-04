@@ -15,7 +15,6 @@ from swing.data.db import (
     MigrationBackupRequiredException,
     _create_pre_migration_backup,
     _verify_backup_integrity,
-    ensure_schema,
     run_migrations,
 )
 
@@ -23,10 +22,15 @@ from swing.data.db import (
 def _seed_v13_db(path: Path) -> None:
     """Build a schema-version-13 DB with the expected table set populated.
 
-    Uses ensure_schema (which applies 0001-0013) — the public path for
-    bringing a fresh file up to current EXPECTED_SCHEMA_VERSION (13)."""
-    conn = ensure_schema(path)
-    conn.close()
+    Uses run_migrations with target_version=13 directly. The original A.1
+    helper used ensure_schema, but that path defaults to EXPECTED_SCHEMA_VERSION
+    which is 14 post-T2 — invoking the backup gate on a fresh empty file. The
+    explicit-target form bypasses the gate (gate only fires for target>=14)."""
+    conn = sqlite3.connect(path)
+    try:
+        run_migrations(conn, target_version=13)
+    finally:
+        conn.close()
 
 
 def test_backup_creates_file_via_sqlite_native(tmp_path):

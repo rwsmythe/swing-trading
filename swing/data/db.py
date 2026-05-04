@@ -9,7 +9,8 @@ from pathlib import Path
 # chart_targets source taxonomy expansion (migration 0011)
 # sector + industry columns on candidates + trades (migration 0012)
 # post-trade review surface: 10 trade fields + review_log table (migration 0013)
-EXPECTED_SCHEMA_VERSION = 13
+# phase 7 state machine + fills first-class (migration 0014)
+EXPECTED_SCHEMA_VERSION = 14
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 # Phase 7 backup gate (spec §12.1): when migrating to schema_version >= 14,
