@@ -189,7 +189,13 @@ Test files that set `status="open"` / `status="closed"` directly on Trade fixtur
 
 ### §2.3 Empirical-audit refresh at sub-dispatch dispatch time
 
-Before each sub-dispatch begins, the dispatched subagent re-runs the grep enumeration `grep -rn "trades.status\|t\.status\|status='open'\|status='closed'\|status = 'open'\|status = 'closed'" swing/ tests/` against the worktree's BASELINE_SHA, and reconciles the hit list with §2.1 + §2.2 above. Discrepancies (new hits since plan-write; line-number drift) are addressed in the dispatch's first task before substantive work.
+Before each sub-dispatch begins, the dispatched subagent re-runs the grep enumeration against the worktree's BASELINE_SHA and reconciles the hit list with §2.1 + §2.2 above. Use this **broadened** grep pattern to cover SQL forms, attribute access, and dataclass-construction forms:
+
+```bash
+grep -rn -E "trades\\.status|t\\.status|trade\\.status|status\\s*=\\s*['\"]open['\"]|status\\s*=\\s*['\"]closed['\"]|\\.status\\s*[!=<>]+\\s*['\"](open|closed)['\"]|status=['\"](open|closed)['\"]" swing/ tests/
+```
+
+This captures (a) `trades.status` SQL column refs, (b) `t.status` / `trade.status` Python attribute reads (the predicate-comparison form that §2.1 previously missed for `swing/cli.py:1008`, `swing/web/view_models/trades.py:331/385/432`, `swing/trades/review.py:214`, `swing/web/routes/trades.py:844/1082/1198`), and (c) `status="open"` / `status="closed"` dataclass / kwarg forms. Discrepancies (new hits since plan-write; line-number drift) are addressed in the dispatch's first task before substantive work.
 
 The grep-based discovery is mechanical; no judgment call required at sub-dispatch time. Adversarial review of the executing-plans diff verifies completeness.
 
@@ -270,8 +276,13 @@ Default posture: read-only on `swing/data/` + `swing/trades/`. Phase 7 carve-out
 | `tests/trades/test_entry.py` | MOD | Sub-B T1, T2, T3 | `MissingPreTradeFieldsException` per missing field; `trade_origin` derivation wired correctly; first entry-fill creation; `pre_trade_locked_at` correctness; force-bypass NOT honored for missing-fields. |
 | `tests/trades/test_exit.py` | MOD | Sub-B T4 | Trim vs exit branching; state transition; aggregate recompute. |
 | `tests/trades/test_stop_adjust.py` | MOD | Sub-B T5 | State-predicate gating (rejects stop on `closed`/`reviewed`); first-stop `entered → managing` trigger. |
-| `tests/web/test_routes/test_trades_route.py` | MOD | Sub-C T3, T7, T8 | Form-validation rejection; pre-trade-detail render; state badge render. |
+| `tests/web/test_routes/test_trades_route.py` | MOD | Sub-C T3, T7, T8 | Form-validation rejection; pre-trade-detail render; state badge render; HX-Redirect target route + follow-up GET assertion. |
 | `tests/web/test_view_models/test_trades.py` | MOD | Sub-C T1 | State + 18 pre-trade VM fields; state_badge_label correctness; has_pre_trade_data toggle. |
+| `tests/web/test_view_models/test_open_positions_row.py` | MOD | Sub-C T2 | Open-positions row VM filter (state predicate) + state_badge_label coverage. |
+| `tests/web/test_dashboard_integration.py` | MOD | Sub-C T6 | Dashboard-level state-badge render integration via shared partial. |
+| `tests/web/test_view_models/test_dashboard.py` | MOD | Sub-C T1 + T6 | Dashboard VM gains state-badge surface; verify base-layout VM no-regression (no new dereferenced field). |
+| `tests/web/test_dashboard_needs_review_badge.py` | MOD | Sub-B T6 | Phase 6 needs-review badge precondition uses `state == 'closed'`; rejects `state == 'reviewed'`. |
+| `tests/web/test_review_template.py`, `tests/web/test_review_route.py`, `tests/web/test_cadence_complete_route.py` | MOD | Sub-B T6 | Phase 6 review-surface fixtures shift to `state="closed"`; review-completion path exercised against state transition closed → reviewed. |
 | `tests/cli/test_cli_trade.py` | MOD | Sub-B T8 | New CLI options + interactive prompts. |
 | `tests/journal/test_*.py` (5 files per §2.2) | MOD | Sub-B T9 | Replace status predicates with state predicates per spec §5.2 categories. |
 | Existing trade-fixture builder tests (8 files per §2.2) | MOD | Sub-A T0 | Update fixtures to use `state="entered"` (or appropriate state) instead of `status="open"`. |
@@ -3632,22 +3643,77 @@ def test_entry_form_post_complete_creates_trade_with_state_entered(client):
     response = client.post("/trades/entry/form", data={
         # all 18 fields populated
     })
-    assert response.status_code == 303 or response.headers.get("HX-Redirect")
+    # Per CLAUDE.md gotcha 2026-05-02 (Phase 5 R1 M2): the success-path response
+    # for HTMX POST is 204 + HX-Redirect (NOT 303 — htmx.js swallows 303
+    # transparently and the swap target receives nothing). Strict 204 assertion
+    # is the discriminating form.
+    assert response.status_code == 204
+    assert response.headers["HX-Redirect"]
     # Verify trade row exists with state='entered' + first entry-fill.
 
 
-def test_entry_form_catalyst_empty_persists_null_not_empty_string(client):
-    """CLAUDE.md gotcha: nullable CHECK enum with form fallback uses or None."""
-    # POST with catalyst='' (not selected)
+def test_entry_form_catalyst_other_description_empty_persists_null(client):
+    """CLAUDE.md gotcha 2026-05-04 (Phase 6 deviation #3): nullable + CHECK enum
+    with form fallback uses `or None`, NOT `or ""`. Empty string fails CHECK;
+    NULL is accepted.
+
+    Discriminating field: `catalyst_other_description` is NULLABLE TEXT; only
+    required-when-gated (i.e., when `catalyst='other'`). If operator submits
+    catalyst='technical_only' (the gating flag is NOT 'other'), the
+    catalyst_other_description input is unfilled → form code MUST persist NULL,
+    not empty string. The wrong code path (`or ""`) would not trigger any
+    visible failure here because the column lacks a CHECK enum on its values
+    (it's free-text); HOWEVER the test validates the persistence shape directly:
+    """
     response = client.post("/trades/entry/form", data={
-        # ... all required fields except catalyst ='' ...
+        "ticker": "TST", "entry_price": 10.0, "shares": 100, "initial_stop": 9.0,
+        "thesis": "test", "why_now": "test", "invalidation_condition": "test",
+        "expected_scenario": "test",
+        "premortem_technical": "p1", "premortem_market_sector": "p2",
+        "premortem_execution": "p3",
+        "event_risk_present": "0", "gap_risk_present": "0",
+        "emotional_state_pre_trade": "calm",
+        "manual_entry_confidence": "normal",
+        "market_regime": "Bullish",
+        "catalyst": "technical_only",  # gating flag is NOT 'other'
+        "catalyst_other_description": "",  # form input unfilled
     })
-    # If catalyst was required → expect rejection.
-    # The discriminating test: a NULLABLE column would persist NULL (CHECK passes);
-    # the wrong code path with `or ""` would fail CHECK and 500.
-    # In Phase 7, catalyst IS required for entry-create; this test is illustrative
-    # for any other nullable+CHECK column (e.g., catalyst_other_description when
-    # catalyst != 'other' — should persist NULL, not empty string).
+    assert response.status_code == 204
+    # Persisted value MUST be NULL, not "".
+    row = conn.execute(
+        "SELECT catalyst_other_description FROM trades WHERE ticker='TST'"
+    ).fetchone()
+    assert row[0] is None  # NOT ""
+
+
+def test_entry_form_event_handling_when_no_event_persists_null(client):
+    """Same discriminating gotcha applied to a nullable+CHECK enum column.
+
+    `event_handling` is NULLABLE TEXT with CHECK in (5 values). When
+    event_risk_present=0, the form's event_handling input is irrelevant and
+    submitted as empty string. The form code MUST persist NULL (CHECK
+    constraint accepts NULL) — `or ""` would write empty string and fail
+    the CHECK with sqlite3.IntegrityError, surfacing as a 500 to the operator.
+    """
+    response = client.post("/trades/entry/form", data={
+        "ticker": "TST2", "entry_price": 10.0, "shares": 100, "initial_stop": 9.0,
+        "thesis": "test", "why_now": "test", "invalidation_condition": "test",
+        "expected_scenario": "test",
+        "premortem_technical": "p1", "premortem_market_sector": "p2",
+        "premortem_execution": "p3",
+        "event_risk_present": "0",  # gating flag = 0
+        "event_handling": "",  # form input unfilled
+        "gap_risk_present": "0",
+        "emotional_state_pre_trade": "calm",
+        "manual_entry_confidence": "normal",
+        "market_regime": "Bullish",
+        "catalyst": "technical_only",
+    })
+    assert response.status_code == 204  # NOT 500 (would be 500 if `or ""` used)
+    row = conn.execute(
+        "SELECT event_handling FROM trades WHERE ticker='TST2'"
+    ).fetchone()
+    assert row[0] is None  # NOT ""
 ```
 
 - [ ] **Step 2-5: Implement, run, commit.**
