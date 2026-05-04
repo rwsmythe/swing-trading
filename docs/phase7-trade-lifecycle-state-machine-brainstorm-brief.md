@@ -76,6 +76,8 @@ The journal-v1.2 spec was authored agnostic of our platform. Several v1.2 design
 
 The following decisions were made before this dispatch, in the orchestrator thread or in the binding source documents. The brainstorm must respect them. If the operator brings them up during brainstorm, acknowledge they're settled and refocus on the open design questions.
 
+**Hard-conflict escape:** if a locked decision genuinely blocks Phase 7 implementation (not merely creates tension — actually blocks), pause the brainstorm, send an interim outbrief describing the conflict, and standby for an orchestrator path-forward brief. This is the only relitigation channel; surfacing the conflict in the final return report is too late.
+
 ### Sequencing locks
 
 1. **Phase 7 scope is state machine + Fills + pre_trade_locked_at + premortem + thesis + pre-trade gate trim.** NOT Daily_Management (Phase 8). NOT Risk_Policy DB entity (Phase 9). NOT Reconciliation_Run / Reconciliation_Discrepancy (Phase 9). NOT MFE/MAE precision (Phase 8). NOT drawdown circuit breaker activation (Phase 9 — it stays opt-in disabled).
@@ -367,7 +369,7 @@ TEST COUNT IMPACT (rough):
 ## §8 If you get stuck
 
 - **If a design question can't be resolved with the operator,** capture both options in the spec with explicit "DEFERRED — operator decision required" status and the decision-point (e.g., "resolve before writing-plans dispatch"). Don't force a decision the operator hasn't made.
-- **If a locked constraint conflicts with what the brainstorm reveals as necessary,** STOP. Do NOT relitigate in brainstorm. Surface the conflict in your return report under "OPEN QUESTIONS FOR ORCHESTRATOR" and let the orchestrator handle it.
+- **If a locked constraint genuinely blocks Phase 7 implementation,** invoke the §2 hard-conflict escape: pause, send an interim outbrief describing the conflict, standby for an orchestrator path-forward brief. Do NOT defer the conflict to the final return report; do NOT relitigate in brainstorm.
 - **If Codex review surfaces a finding that contradicts a locked constraint,** apply receiving-code-review discipline (verify before agreeing). If the finding is correct AND the constraint is wrong, surface to orchestrator. If the finding is wrong, document why it's rejected with rationale.
 - **If pre-existing code surprises you** (e.g., entry service does something different than this brief describes), trust what you observe over what the docs say. Surface the doc/code drift in the return report.
 - **If you find an obvious schema simplification** that wasn't anticipated (e.g., the existing `trade_events` table already covers what `pre_trade_edit_audit` would do), propose it — but make it visible to operator decision before committing to spec.
