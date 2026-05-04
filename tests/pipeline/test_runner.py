@@ -159,7 +159,7 @@ def test_runner_refreshes_close_for_open_trade_not_in_finviz(
                 conn, Trade(
                     id=None, ticker="VIR", entry_date="2026-04-15",
                     entry_price=10.5, initial_shares=100, initial_stop=9.5,
-                    current_stop=9.5, status="open",
+                    current_stop=9.5, status="open", state="entered",
                     watchlist_entry_target=None, watchlist_initial_stop=None,
                     notes=None,
                 ), event_ts="2026-04-15T09:30:00",

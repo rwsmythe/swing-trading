@@ -53,7 +53,7 @@ def _seed_for_dashboard(cfg) -> None:
                 Trade(
                     id=None, ticker="AAPL", entry_date="2026-04-15",
                     entry_price=180.0, initial_shares=5, initial_stop=170.0,
-                    current_stop=170.0, status="open",
+                    current_stop=170.0, status="open", state="entered",
                     watchlist_entry_target=None, watchlist_initial_stop=None,
                     notes=None,
                 ),
@@ -251,7 +251,7 @@ def _seed_open_trade_direct(cfg, *, ticker: str, entry_price: float, shares: int
                 id=None, ticker=ticker, entry_date="2026-04-15",
                 entry_price=entry_price, initial_shares=shares,
                 initial_stop=entry_price * 0.95, current_stop=entry_price * 0.95,
-                status="open", watchlist_entry_target=None,
+                status="open", state="entered", watchlist_entry_target=None,
                 watchlist_initial_stop=None, notes=None,
             )
             return insert_trade_with_event(conn, trade, event_ts="2026-04-15T09:30:00")
@@ -803,7 +803,7 @@ def test_status_strip_unrealized_pnl_partial_priced(seeded_db, monkeypatch):
                 Trade(
                     id=None, ticker="MSFT", entry_date="2026-04-15",
                     entry_price=300.0, initial_shares=2, initial_stop=290.0,
-                    current_stop=290.0, status="open",
+                    current_stop=290.0, status="open", state="entered",
                     watchlist_entry_target=None, watchlist_initial_stop=None,
                     notes=None,
                 ),
@@ -909,7 +909,7 @@ def test_status_strip_template_unrealized_line_partial_priced(
                 Trade(
                     id=None, ticker="MSFT", entry_date="2026-04-15",
                     entry_price=300.0, initial_shares=2, initial_stop=290.0,
-                    current_stop=290.0, status="open",
+                    current_stop=290.0, status="open", state="entered",
                     watchlist_entry_target=None, watchlist_initial_stop=None,
                     notes=None,
                 ),

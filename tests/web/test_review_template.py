@@ -35,7 +35,7 @@ def populated_db_cfg(tmp_path: Path):
             conn, Trade(
                 id=None, ticker="VIR", entry_date="2026-04-20",
                 entry_price=10.0, initial_shares=10, initial_stop=9.0,
-                current_stop=9.0, status="open",
+                current_stop=9.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ),
@@ -54,7 +54,7 @@ def populated_db_cfg(tmp_path: Path):
             conn, Trade(
                 id=None, ticker="DHC", entry_date="2026-04-27",
                 entry_price=7.58, initial_shares=39, initial_stop=7.30,
-                current_stop=7.30, status="open",
+                current_stop=7.30, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ),

@@ -94,6 +94,7 @@ def test_trade_dataclass_has_ten_review_fields_with_none_default() -> None:
     t = Trade(
         id=None, ticker="TEST", entry_date="2026-04-01", entry_price=10.0,
         initial_shares=10, initial_stop=9.0, current_stop=9.0, status="closed",
+        state="closed",
         watchlist_entry_target=None, watchlist_initial_stop=None, notes=None,
     )
     # All 10 review fields default to None:
@@ -139,6 +140,7 @@ def test_update_trade_review_fields_round_trip(
             Trade(
                 id=None, ticker="VIR", entry_date="2026-04-01", entry_price=10.0,
                 initial_shares=10, initial_stop=9.0, current_stop=9.0, status="closed",
+                state="closed",
                 watchlist_entry_target=None, watchlist_initial_stop=None, notes=None,
             ),
             event_ts="2026-04-01T09:30:00",

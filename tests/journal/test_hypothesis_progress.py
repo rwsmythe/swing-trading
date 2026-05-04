@@ -31,7 +31,7 @@ def _add_closed(conn, *, ticker, entry_date, label, r_multiple, realized_pnl,
     trade = Trade(
         id=None, ticker=ticker, entry_date=entry_date, entry_price=entry_price,
         initial_shares=shares, initial_stop=9.0, current_stop=9.0,
-        status="open", watchlist_entry_target=None, watchlist_initial_stop=None,
+        status="open", state="entered", watchlist_entry_target=None, watchlist_initial_stop=None,
         notes=None, hypothesis_label=label,
     )
     tid = insert_trade_with_event(conn, trade, event_ts=f"{entry_date}T09:30:00")
@@ -51,7 +51,7 @@ def _add_open(conn, *, ticker, entry_date, label, shares=100, entry_price=10.0):
     trade = Trade(
         id=None, ticker=ticker, entry_date=entry_date, entry_price=entry_price,
         initial_shares=shares, initial_stop=9.0, current_stop=9.0,
-        status="open", watchlist_entry_target=None, watchlist_initial_stop=None,
+        status="open", state="entered", watchlist_entry_target=None, watchlist_initial_stop=None,
         notes=None, hypothesis_label=label,
     )
     return insert_trade_with_event(conn, trade, event_ts=f"{entry_date}T09:30:00")

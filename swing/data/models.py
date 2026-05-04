@@ -66,7 +66,12 @@ class Trade:
     initial_shares: int
     initial_stop: float
     current_stop: float
-    status: str  # 'open' | 'closed'
+    status: str  # 'open' | 'closed' — A.0–A.3 transition window; A.3 drops this field.
+    # Phase 7 Sub-A T0 — pre-position the lifecycle state field alongside the
+    # legacy status column. Default 'entered' is the active-trade analogue of
+    # status='open'. Both fields coexist during the A.0–A.3 window; A.3 (Sub-A
+    # T3) drops `status` from the dataclass. Migration 0014 will populate the
+    # state column on existing rows.
     watchlist_entry_target: float | None
     watchlist_initial_stop: float | None
     notes: str | None
@@ -75,6 +80,14 @@ class Trade:
     # research-study pre-registration. Default None preserves existing call
     # sites that construct Trade(...) without the new field. Migration 0007.
     hypothesis_label: str | None = None
+    # Phase 7 Sub-A T0 — lifecycle state field, pre-positioned alongside
+    # legacy `status` (declared above as required, no default). Default
+    # 'entered' is the active-trade analogue of status='open'; mapped per
+    # plan §3 fixture-intent table (open→entered, closed→closed,
+    # closed+reviewed_at→reviewed). Both fields coexist during the A.0–A.3
+    # transition window; A.3 (Sub-A T3) drops `status`. Migration 0014 will
+    # populate the state column on existing DB rows.
+    state: str = "entered"
     # Chart pattern columns (migration 0010). All four NULL unless the
     # pipeline classification step ran for this ticker's pipeline run.
     # chart_pattern_operator is operator override (free-text, see spec §3.2.2).

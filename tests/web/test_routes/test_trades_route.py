@@ -262,7 +262,7 @@ def test_post_entry_soft_warn_2step(seeded_db, monkeypatch):
                 insert_trade_with_event(conn, Trade(
                     id=None, ticker=t, entry_date="2026-04-15",
                     entry_price=100.0, initial_shares=1, initial_stop=90.0,
-                    current_stop=90.0, status="open",
+                    current_stop=90.0, status="open", state="entered",
                     watchlist_entry_target=None, watchlist_initial_stop=None,
                     notes=None,
                 ), event_ts=f"2026-04-15T09:{30+i}:00")
@@ -324,7 +324,7 @@ def test_post_entry_hard_cap_error(seeded_db, monkeypatch):
                 insert_trade_with_event(conn, Trade(
                     id=None, ticker=t, entry_date="2026-04-15",
                     entry_price=100.0, initial_shares=1, initial_stop=90.0,
-                    current_stop=90.0, status="open",
+                    current_stop=90.0, status="open", state="entered",
                     watchlist_entry_target=None, watchlist_initial_stop=None,
                     notes=None,
                 ), event_ts=f"2026-04-15T09:{30+i}:00")
@@ -363,7 +363,7 @@ def test_post_entry_duplicate_error(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="AAPL", entry_date="2026-04-15",
                 entry_price=180.0, initial_shares=5, initial_stop=170.0,
-                current_stop=170.0, status="open",
+                current_stop=170.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -400,7 +400,7 @@ def test_get_exit_form_renders(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -463,7 +463,7 @@ def test_post_exit_full_close_removes_row(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -510,7 +510,7 @@ def test_post_exit_partial_updates_row(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=10, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -553,7 +553,7 @@ def test_post_exit_shares_too_many_400(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -586,7 +586,7 @@ def test_get_stop_form_renders(seeded_db):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -618,7 +618,7 @@ def test_post_stop_adjust_success(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -662,7 +662,7 @@ def test_post_stop_persists_notes_field(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -712,7 +712,7 @@ def test_get_stop_form_includes_notes_textarea(seeded_db):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -741,7 +741,7 @@ def test_post_stop_regression_400_with_updated_current(seeded_db):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=900.0, status="open",  # someone already trailed to BE
+                current_stop=900.0, status="open", state="entered",  # someone already trailed to BE
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -776,7 +776,7 @@ def test_get_trade_cancel_returns_normal_row(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -814,7 +814,7 @@ def test_post_exit_shares_too_many_renders_form_with_updated_max(seeded_db, monk
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -853,7 +853,7 @@ def test_post_stop_regression_renders_form_with_updated_current(seeded_db):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=900.0, status="open",
+                current_stop=900.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -917,7 +917,7 @@ def test_post_entry_duplicate_renders_form_preserved(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="AAPL", entry_date="2026-04-15",
                 entry_price=180.0, initial_shares=5, initial_stop=170.0,
-                current_stop=170.0, status="open",
+                current_stop=170.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -1243,7 +1243,7 @@ def test_post_entry_duplicate_sizing_hint_not_lying(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="AAPL", entry_date="2026-04-15",
                 entry_price=180.0, initial_shares=5, initial_stop=170.0,
-                current_stop=170.0, status="open",
+                current_stop=170.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -1292,7 +1292,7 @@ def test_post_stop_for_actually_closed_trade_returns_404_fragment(seeded_db):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -1353,7 +1353,7 @@ def test_post_exit_shares_too_many_is_single_tr_no_orphan(seeded_db, monkeypatch
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -1641,7 +1641,7 @@ def test_get_stop_form_renders_rationale_select_with_seven_options(seeded_db):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -1680,7 +1680,7 @@ def test_post_stop_unknown_rationale_rejected(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -1726,7 +1726,7 @@ def test_exit_form_has_no_rationale_input(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -1765,7 +1765,7 @@ def test_post_exit_writes_reason_value_as_rationale(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -1817,7 +1817,7 @@ def test_get_stop_form_renders_force_checkbox_unchecked(seeded_db):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -1856,7 +1856,7 @@ def test_post_stop_regression_preserves_typed_fields(seeded_db):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=890.0, status="open",
+                current_stop=890.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -1903,7 +1903,7 @@ def test_post_stop_with_force_checkbox_regression_succeeds(seeded_db):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=890.0, status="open",
+                current_stop=890.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -1944,7 +1944,7 @@ def test_post_stop_other_without_notes_rejected(seeded_db):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -2051,7 +2051,7 @@ def _t5_seed_open_trade(cfg, *, ticker: str) -> None:
             insert_trade_with_event(conn, Trade(
                 id=None, ticker=ticker, entry_date="2026-04-15",
                 entry_price=180.0, initial_shares=5, initial_stop=170.0,
-                current_stop=170.0, status="open",
+                current_stop=170.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")

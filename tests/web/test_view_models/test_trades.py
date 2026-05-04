@@ -68,7 +68,7 @@ def test_build_exit_form_vm_shape(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -109,7 +109,7 @@ def test_build_stop_form_vm_shape(seeded_db):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, status="open", state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")

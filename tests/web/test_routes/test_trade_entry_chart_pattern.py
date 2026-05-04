@@ -541,7 +541,7 @@ def test_soft_warn_confirm_round_trip_preserves_chart_pattern_snapshot(
                 insert_trade_with_event(conn, Trade(
                     id=None, ticker=t, entry_date="2026-04-15",
                     entry_price=100.0, initial_shares=1, initial_stop=90.0,
-                    current_stop=90.0, status="open",
+                    current_stop=90.0, status="open", state="entered",
                     watchlist_entry_target=None, watchlist_initial_stop=None,
                     notes=None,
                 ), event_ts=f"2026-04-15T09:{30+i}:00")
@@ -634,7 +634,7 @@ def test_soft_warn_confirm_other_operator_roundtrip(seeded_db, monkeypatch):
                 insert_trade_with_event(conn, Trade(
                     id=None, ticker=t, entry_date="2026-04-15",
                     entry_price=100.0, initial_shares=1, initial_stop=90.0,
-                    current_stop=90.0, status="open",
+                    current_stop=90.0, status="open", state="entered",
                     watchlist_entry_target=None, watchlist_initial_stop=None,
                     notes=None,
                 ), event_ts=f"2026-04-15T09:{30+i}:00")
@@ -729,7 +729,7 @@ def test_post_entry_soft_warn_confirm_preserves_sector_industry(
                 insert_trade_with_event(conn, Trade(
                     id=None, ticker=tk, entry_date="2026-04-20",
                     entry_price=100.0, initial_shares=1, initial_stop=95.0,
-                    current_stop=95.0, status="open",
+                    current_stop=95.0, status="open", state="entered",
                     watchlist_entry_target=None, watchlist_initial_stop=None,
                     notes=None,
                 ), event_ts=f"2026-04-20T09:30:0{i}")

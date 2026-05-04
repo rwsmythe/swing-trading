@@ -6,6 +6,48 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from swing.data.models import Trade
+
+
+def make_trade(
+    *,
+    id: int | None = None,
+    ticker: str = "AAA",
+    entry_date: str = "2026-01-01",
+    entry_price: float = 10.0,
+    initial_shares: int = 100,
+    initial_stop: float = 9.0,
+    current_stop: float = 9.0,
+    status: str = "open",
+    state: str = "entered",
+    watchlist_entry_target: float | None = None,
+    watchlist_initial_stop: float | None = None,
+    notes: str | None = None,
+    **overrides,
+) -> Trade:
+    """Canonical Trade fixture builder for the test corpus.
+
+    Phase 7 Sub-A T0 introduced this builder. Both `status` and `state` are
+    accepted as kwargs during the A.0–A.3 dual-field transition window; T3
+    drops `status` from the Trade dataclass and the canonical signature
+    will be updated to remove it.
+    """
+    return Trade(
+        id=id,
+        ticker=ticker,
+        entry_date=entry_date,
+        entry_price=entry_price,
+        initial_shares=initial_shares,
+        initial_stop=initial_stop,
+        current_stop=current_stop,
+        status=status,
+        state=state,
+        watchlist_entry_target=watchlist_entry_target,
+        watchlist_initial_stop=watchlist_initial_stop,
+        notes=notes,
+        **overrides,
+    )
+
 
 @pytest.fixture
 def tmp_db(tmp_path: Path) -> Path:

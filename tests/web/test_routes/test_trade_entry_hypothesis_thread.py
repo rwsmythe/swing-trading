@@ -245,7 +245,7 @@ def test_post_entry_soft_warn_round_trip_via_fragment_faithful_resubmit(
                         id=None, ticker=t, entry_date="2026-04-10",
                         entry_price=100.0, initial_shares=1,
                         initial_stop=90.0, current_stop=90.0,
-                        status="open",
+                        status="open", state="entered",
                         watchlist_entry_target=None,
                         watchlist_initial_stop=None,
                         notes=None,
