@@ -1220,6 +1220,33 @@ Operator-surfaced 2026-05-04. Three concurrent uses of the official Charles Schw
 
 ---
 
+## 2026-05-04 Worktree cleanup script: pytest-of-rwsmy ACL-lock pattern recurrence check (TRIGGER-GATED)
+
+**Trigger:** AFTER Phase 7 ships (all 3 sub-dispatches A/B/C merged to main). At that point, attempt to cleanup `.worktrees/phase7-sub-a-schema/`, `.worktrees/phase7-sub-b-services/`, `.worktrees/phase7-sub-c-web/`. If any of them surface the same `.tmp/pytest-of-rwsmy/` ACL-lock pattern that Phase 5 + Phase 6 hit, the issue is durable across phases and the cleanup script needs a permanent extension.
+
+**Background.** Phase 5's `.worktrees/phase5-config-page-redispatch/` and Phase 6's `.worktrees/phase6-post-trade-review/` both left orphaned on-disk directories after `git worktree remove` failed with `Permission denied on .tmp/pytest-of-rwsmy/` — Windows ACL inheritance from the pytest subprocess's tmp dir. The 2026-05-02 `cleanup-locked-scratch-dirs.ps1` extension added Codex-sandbox naming patterns but does NOT match `pytest-of-rwsmy/`. Phase 6 cleanup attempt 2026-05-04 (`takeown /F ... /R /D Y` + `icacls ... /reset /T /C /Q` + `Remove-Item -Recurse -Force`) succeeded on 1196/1198 files but 2 files in `.tmp/pytest-of-rwsmy/` remained ACL-locked.
+
+**Why deferred to post-Phase-7:** Phase 7 has 3 worktrees (Sub-A/B/C). After all 3 ship, we have 5 data points (Phases 4 + 5 + 6 + Phase 7 sub-dispatches) on whether this is recurring. If Sub-A/B/C all hit it, the pattern is durable + the cleanup script needs the extension. If only some hit it, the pattern correlates with something other than just Windows ACL inheritance (test runner state? subagent isolation?) and a deeper investigation is warranted before the script extension.
+
+**V1 scope (when triggered):**
+1. Document the recurrence count post-Phase-7 (how many of A/B/C hit the lock; commands attempted; success rate per cleanup approach).
+2. Extend `cleanup-locked-scratch-dirs.ps1` to handle `.tmp/pytest-of-rwsmy/**` patterns: ownership transfer + ACL reset + retry-with-elevation if still locked.
+3. Add a corresponding gotcha entry to CLAUDE.md (Windows-section): pytest tmp-dir ACL-inheritance breaking worktree cleanup.
+4. Verify the script handles all 3 Phase 7 sub-dispatch worktrees in actual mode (not just DryRun).
+
+**Out-of-scope:**
+- Modifying pytest's tmp-dir creation behavior (upstream concern; would need pytest config change).
+- Eliminating the `.tmp` dir creation in worktrees entirely (pytest needs it for parallel-test scratch).
+- Investigating WHY Windows ACL inheritance produces immutable subdirs (deep Windows-internals work; not productive).
+
+**Cross-references:**
+- `docs/orchestrator-context.md` §"Active orchestrator-side housekeeping" — Phase 6 cleanup state recorded.
+- `cleanup-locked-scratch-dirs.ps1` (project root) — current script; needs `.tmp/pytest-of-rwsmy/` pattern addition.
+- Phase 5 cleanup pattern recurrence (orchestrator-context lessons captured 2026-05-02).
+- Phase 6 cleanup partial-success record (orchestrator-context "Active orchestrator-side housekeeping" 2026-05-04).
+
+---
+
 ## 2026-05-04 Handoff document growth — structural separation + retention discipline (QUEUED; tripwire-gated)
 
 Operator-surfaced 2026-05-04 during Phase 7 brainstorm dispatch prep. The fresh-orchestrator handoff pattern (start a new conversation instance before each major iteration to minimize accumulated tool-result noise) loses leverage as the persisted handoff documents themselves grow.
