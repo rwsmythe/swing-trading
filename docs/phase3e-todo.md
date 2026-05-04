@@ -999,24 +999,43 @@ Sourced from operator-commissioned research at `future/swing_trading_journal_ai_
 - Executing-plans brief: `docs/phase6-post-trade-review-executing-plans-brief.md` (`a7c4bda`).
 - Ad-hoc DB cleanups: 2026-05-04 SPY test entries removed (`swing-pre-spy-cleanup-20260504T022932.db`); see orchestrator-context.md.
 
-### Phase 7 — Trade lifecycle state machine + Fills first-class (gated on Phase 6 evaluation)
+### Phase 7 — Trade lifecycle state machine + Fills first-class (BRAINSTORM SHIPPED 2026-05-04; writing-plans dispatch operator-paced)
 
-**Bundle:** v1.2 state machine (`planned → triggered → entered → managing → partial_exited → closed → reviewed → canceled`) + Fills as canonical execution log + `pre_trade_locked_at` immutability + thesis/why_now/invalidation/premortem fields.
+**Brainstorm-shipped status:** 3 Codex rounds → NO_NEW_CRITICAL_MAJOR. Spec at `docs/superpowers/specs/2026-05-04-phase7-trade-lifecycle-state-machine-design.md` (commits `2c5fd34` initial → `c926f01` 3-round revisions). Brainstorm dispatch brief at `docs/phase7-trade-lifecycle-state-machine-brainstorm-brief.md` (`db6727d` + `9e4a761` hard-conflict-escape addition).
 
-**Why second:** Foundational for Phase 8 + 9 but LARGE. Schema migration touches every trade-write path (CLI entry, web entry, hyp-recs entry, exit, stop adjust). Worth it only if Phase 6 surfaces evidence that lifecycle discipline is the next bottleneck.
+**Locked design decisions (from spec; do NOT relitigate at writing-plans):**
+- **5-state minimal:** `entered → managing → partial_exited → closed → reviewed`. NO `planned/triggered/canceled` — `watchlist + watchlist_archive` already serves "plan and abandon." Cheap A→B expansion preserved via table-driven required-fields validator.
+- **Unidirectional graph:** no `partial_exited → managing` (no pyramiding per locked constraint). Same-day stop-out = `entered → managing → closed` atomic double-transition.
+- **`status` DROPPED entirely** (12 production files + 43 test files identified; full enumeration deferred to plan). 4 operation-specific predicate categories: active-trade / closed-but-not-reviewed / closed-or-reviewed / write-paths. Migration 0004 partial unique index recreated against new state predicate.
+- **Fills replaces exits:** 4-action enum (`entry/trim/exit/stop`; drops `cover/add`). 1:1 backfill with `ORDER BY exit_date ASC, id ASC` deterministic ordering + 4-fixture preservation invariant test gate.
+- **Aggregate denormalization on `trades`:** `current_size REAL NOT NULL`, `current_avg_cost`, `last_fill_at` — recomputed by fills-write service after every insert (single-write-path consistency).
+- **`pre_trade_locked_at`:** set atomically at first `action='entry'` fill. V1 ships READ-ONLY display + audit visible; edit UI deferred to V2 (schema fully supports).
+- **Premortem schema:** 3 named NULLABLE TEXT columns (technical/market_sector/execution) + 1 optional. Min-1-per-category enforced at app layer.
+- **Thesis fields:** 18 KEPT + 12 DROPPED (per-field rationale in spec). All schema-NULLABLE; app-layer enforces non-empty for new entries; legacy NULL persists.
+- **Pre-trade gate:** existing checks preserved + new `MissingPreTradeFieldsException` (NOT force-bypassable). Phase 9 deferred: portfolio_heat / consecutive_loss / drawdown_breaker.
+- **trade_origin derivation:** 5-bucket × 4-entry-path → 4-value enum; `EntryPath` enum on `EntryRequest`; frozen-at-entry per `hypothesis_label` precedent.
 
-**Scope:**
-- New `state ENUM` column on `trades` replacing the binary `status open/closed`. State-aware required-field validation per v1.2 §5.1.
-- New `fills` table replacing the trade-row-entry + exits-table dual-source: `fill_id, trade_id, fill_datetime, action ENUM (entry/add/trim/exit/stop/cover), quantity, price, order_type, reason, rule_based, fees, manual_entry_confidence, reconciliation_status, tos_match_id`. Existing entry+exits data migrated.
-- `pre_trade_locked_at DATETIME` on `trades`; pre-trade fields (thesis, why_now, invalidation, premortem, planned_entry, initial_stop, planned_position_size, emotional_state) become read-only on first fill. Edit requires audit-log entry (already partially served by `trade_events`).
-- Premortem fields (technical / market-sector / execution failure reasons; minimum 3) per v1.2 §3.3.
-- Thesis fields per v1.2 §7.5.
-- Pre-trade gate trim: portfolio_heat check, consecutive_loss_pause check (mostly already served by hard_cap + soft_warn), emotional_state-logged check. Skip checks redundant with pipeline.
+**Operation-contextual validation** (added Codex R1 fix): `entry_create` enforces full required set; `transition_managing/partial_exited/closed` triggers suffice; `transition_reviewed` uses Phase 6 review-completion fields only; legacy rows exempt by NULLABLE schema.
 
-**Estimated dispatches:** 4-6 (schema migration + Fills migration + state-machine wiring across CLI / web / pipeline + per-state validation + tests). Brainstorming dispatch needed (lots of design decisions).
+**In-flight migration plan (verify at writing-plans dispatch):**
+- VIR (closed+reviewed): `state='reviewed'`, `pre_trade_locked_at = entry_date+T16:00:00`, `trade_origin='manual_off_pipeline'` (pre-engine), 1 entry-fill + 1 exit-fill backfilled.
+- DHC (open 2026-04-27, $7.58×39): `state='managing'`, `pre_trade_locked_at='2026-04-27T16:00:00'`, `trade_origin='pipeline_watch_hyp_recs'` (BEST-GUESS — empirical: candidates row at action_session 2026-04-27 had bucket=`watch`; trade_events shows `rationale='other'` which doesn't disambiguate hyp-recs vs manual web form; defaulting to hyp-recs since Phase 4.5 had just shipped and Take-this-trade was operator's primary entry path), 1 entry-fill, current_size=39.
+- CC (open 2026-04-30, $26.97×5): `state='managing'`, `pre_trade_locked_at='2026-04-30T16:00:00'`, `trade_origin='pipeline_watch_hyp_recs'` (FIRM — phase3e-todo entry "Entry form stop-value populated incorrectly during CC entry... Take-this-trade button on hyp-recs expansion" confirms entry path), 1 entry-fill, current_size=5.
+
+**Phase carve-out (~37 files; full enumeration in spec §15):** schema/data 0014.sql NEW + models.py + db.py MOD; repos trades.py MOD + fills.py NEW; services state.py NEW + entry/exit/stop_adjust/review.py MOD + origin.py NEW + derived_metrics.py NEW; web routes/trades.py + 2 view_models + 3 templates MOD; CLI MOD; journal carve-out (stats/flags/analyze/tos_import.py predicate rewrites — no schema-shape work); 4 NEW + 7 MOD test files.
+
+**Open questions for writing-plans dispatch:**
+- DHC trade_origin best-guess weak — operator may have direct recall of CLI vs web vs Take-this-trade entry path (orchestrator could not disambiguate from `trade_events.payload_json` alone; both DHC + CC have `rationale='other'`). If operator confirms otherwise, plan adjusts migration UPDATE.
+- Vocabulary lists sketched (catalyst 9 / emotional_state 8 / event_type 7 values) committed as recommendations; final operator-confirm at writing-plans spec-review checkpoint.
+
+**Estimated implementation dispatches (post-writing-plans):** 2-3 executing-plans sub-dispatches (Sub-A schema+repos+state-machine; Sub-B services+CLI; Sub-C web) + 1 verification dispatch. Total 4-6 downstream of brainstorm.
+
+**Test count band (rough; per Phase 6 lesson "test-count-projections-bias-high"):** +150-250 fast tests (wide band; parameterization decisions affect raw count).
 
 **Cross-references:**
 - `future/swing_trading_journal_ai_ingestion_v1.2.md` §5 (state machine), §7.5 (Trade_Log), §7.6 (Fills), §10.2 (Pre-Trade Lock).
+- Spec: `docs/superpowers/specs/2026-05-04-phase7-trade-lifecycle-state-machine-design.md`.
+- Brainstorm brief: `docs/phase7-trade-lifecycle-state-machine-brainstorm-brief.md`.
 - Existing entry-form architecture: `swing/web/view_models/trades.py` + `swing/web/routes/trades.py` (Phase 4.5 `f9a07bf`).
 
 ### Phase 8 — Daily_Management + MFE/MAE precision (gated on Phase 7)
