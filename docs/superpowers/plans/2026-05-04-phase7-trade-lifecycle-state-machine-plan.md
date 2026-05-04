@@ -55,6 +55,8 @@ Before each sub-dispatch begins:
 
 ## §1 Vocabulary lists — operator-confirm checkpoint
 
+> **CONFIRMED 2026-05-04** (operator reply: "vocab confirmed"): catalyst-9, emotional_state-8, event_type-7 lists below are adopted as-recommended. Migration 0014 in Sub-A embeds these exact values in CHECK enums. Sub-A executing-plans dispatch unblocked.
+
 Three CHECK-enum vocabularies must be locked **before Sub-A executing-plans dispatch begins** (the migration SQL embeds them; changing values mid-implementation requires another migration). Plan recommends final values; operator confirms via single-message reply before Sub-A dispatch is commissioned.
 
 **This checkpoint does NOT gate plan-approval.** The writing-plans skill's plan-review proceeds unblocked. The vocabulary checkpoint runs as a separate operator-confirm step between plan-approval and Sub-A executing-plans dispatch commissioning.
