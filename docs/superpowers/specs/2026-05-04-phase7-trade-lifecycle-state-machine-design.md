@@ -119,7 +119,8 @@ REQUIRED_FIELDS_BY_STATE: dict[str, tuple[str, ...]] = {
         "thesis", "why_now", "invalidation_condition", "expected_scenario",
         "premortem_technical", "premortem_market_sector", "premortem_execution",
         "event_risk_present", "gap_risk_present",
-        "emotional_state_pre_trade", "manual_entry_confidence",
+        "emotional_state_pre_trade",
+        # manual_entry_confidence lives on fills (entry-action row) only — see §8.1
         "market_regime", "catalyst",
         # Conditionally required (validator inspects flag fields):
         # event_handling required if event_risk_present=1
@@ -137,6 +138,67 @@ REQUIRED_FIELDS_BY_STATE: dict[str, tuple[str, ...]] = {
 ```
 
 **Design property — additive expansion to additional states is non-breaking:** adding a future `planned` state (option B in cluster A) requires only adding a new key to this dict + adding the value to the DB CHECK enum (table-rebuild migration); no existing state semantics change. This is binding for the implementation — the validator must not hardcode `if state == 'entered'` checks.
+
+### §3.5.1 Validation enforcement is operation-contextual (NOT a retroactive invariant)
+
+The `REQUIRED_FIELDS_BY_STATE` map is descriptive of the *target state's data shape for newly-created or newly-transitioning rows under Phase 7 discipline*. It is **NOT** a retroactive invariant on existing rows. Specifically:
+
+- **`record_entry()` (new-trade INSERT path):** Validates the FULL `entered` required-field set. Rejects with `MissingPreTradeFieldsException` if any required field is missing. This is the only operation that requires the complete pre-trade decision-field set.
+- **State transitions on existing trades:** Validate ONLY the **delta fields** required by the target state beyond the current state. E.g., `managing → partial_exited` transition only requires "at least one trim/exit fill exists" (the delta); it does NOT re-validate `thesis`, `premortem_*`, etc. (which were validated at entry-creation time, or are NULL for legacy rows).
+- **`closed → reviewed` transition:** Validates only the Phase 6 review-completion fields (`reviewed_at`, `mistake_tags`, grades, `lesson_learned`). Pre-trade fields are not re-validated.
+- **Legacy rows (pre-Phase-7 trades migrated by 0014):** Schema is NULLABLE on all new pre-trade fields, allowing legacy NULL values to persist. No retroactive validation. Display layer renders NULL pre-trade fields per §11.4 (hide for legacy).
+
+This contextual-enforcement rule is binding for the implementation. The validator API:
+
+```python
+def validate_for_operation(
+    req: Mapping[str, Any],
+    *,
+    op: Literal["entry_create", "transition_managing", "transition_partial_exited",
+                "transition_closed", "transition_reviewed"],
+    current_state: str | None = None,
+) -> list[str]:
+    """Returns missing-field names for the given operation; empty list if valid."""
+```
+
+**Per-operation required-field map (binding — exact field set per operation, not just per target state):**
+
+```python
+OPERATION_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
+    "entry_create": (
+        # Full entered required set: ticker, entry_date, entry_price, initial_shares,
+        # initial_stop, trade_origin, pre_trade_locked_at, thesis, why_now,
+        # invalidation_condition, expected_scenario, premortem_technical,
+        # premortem_market_sector, premortem_execution, event_risk_present,
+        # gap_risk_present, emotional_state_pre_trade, market_regime, catalyst.
+        # Plus the entry-action fill's manual_entry_confidence.
+        # Conditional fields (event_handling/event_type/event_date if event_risk_present=1;
+        # gap_risk_handling if gap_risk_present=1; catalyst_other_description if catalyst='other')
+        # validated by the inspect-flag-then-require helper.
+    ),
+    "transition_managing": (
+        # No new operator-input fields required. Trigger event (stop_adjust OR
+        # first non-entry fill) is the precondition; operator state is sufficient.
+    ),
+    "transition_partial_exited": (
+        # Trim-action fill must exist with quantity > 0 and post-fill current_size > 0.
+        # No new operator-input fields beyond the fill itself.
+    ),
+    "transition_closed": (
+        # Exit-action fill must bring current_size to 0. No new operator-input fields.
+    ),
+    "transition_reviewed": (
+        # Phase 6 review-completion fields:
+        # reviewed_at, mistake_tags, entry_grade, management_grade, exit_grade,
+        # process_grade, disqualifying_process_violation, lesson_learned.
+        # Plus: realized_R_if_plan_followed, mistake_cost_confidence (Phase 6 fields).
+    ),
+}
+```
+
+The validator's `op` parameter selects the exact required-field set; no operation falls back to "validate everything for the target state." Each operation's required-field set is documented and tested independently. Drift between write paths is impossible because all paths converge on `validate_for_operation()`.
+
+**Consequence for in-flight migration:** VIR/DHC/CC migrate to `reviewed`/`managing`/`managing` with NULL pre-trade fields. They are valid because (a) schema permits NULL on those columns, and (b) state transitions on these legacy rows (DHC/CC future stop-adjusts, exits, reviews) only validate delta fields per the operation map above, not pre-trade fields. The legacy NULL pre-trade fields persist forever (no operator backfill required).
 
 ---
 
@@ -182,12 +244,34 @@ CREATE INDEX ix_fills_action ON fills(trade_id, action);
 
 | Action | Meaning |
 |---|---|
-| `entry` | Position-opening fill. Exactly one per trade (the first fill). Sets `pre_trade_locked_at`. |
+| `entry` | Position-opening fill. **V1 service-layer constraint: exactly one entry-action fill per trade** (synthesized from operator's single Submit). Sets `pre_trade_locked_at`. |
 | `trim` | Partial exit fill; net position remains > 0 after fill. |
 | `exit` | Full or final-partial exit fill; net position reaches 0 after fill. |
 | `stop` | Stop-loss-triggered exit fill. Subtype of `exit` semantically; preserved as a separate action so reconciliation + analytics can distinguish stop-hits from discretionary exits. |
 
 **Boundary between `trim` and `exit`:** if the fill brings `current_size` to 0, action is `exit` (or `stop`); otherwise `trim`. The fills-write service computes this from per-trade fill aggregation; operator declares intent at submit time and the service can verify.
+
+**Single-entry-fill is a V1 service-layer constraint, NOT a schema constraint.** The fills schema does NOT enforce uniqueness on `(trade_id, action='entry')`. Aggregate denorm formulas (§4.6) handle multi-entry-fill case correctly via sum semantics. Phase 9 reconciliation may relax the V1 constraint to support broker-side split entries (multiple `action='entry'` fills per trade) without any schema migration — only the entry service and `pre_trade_locked_at` semantics need extending. Phase 7 V1 simplification: operator's single `record_entry()` call → single entry-fill; broker-split-fill modeling deferred. This is a deliberate scope trim, NOT a permanent restriction.
+
+### §4.3.1 Authoritative entry-fill selector (multi-entry-fill ready)
+
+For trade-level reads of fields that physically live on the entry-action fill row (currently only `manual_entry_confidence` per §8.1; future Phase 9 extensions may add others), the **authoritative entry-fill** is selected by:
+
+```sql
+SELECT * FROM fills
+WHERE trade_id = ? AND action = 'entry'
+ORDER BY fill_datetime ASC, fill_id ASC
+LIMIT 1
+```
+
+**Rule: first entry-fill by `(fill_datetime ASC, fill_id ASC)` is authoritative for trade-level frozen pre-trade reads.** Same deterministic-ordering pattern as §4.4 migration ordering. This rule:
+
+- Survives V1 (one entry-fill → unambiguous).
+- Survives Phase 9 multi-entry-fill expansion (first fill captures the operator's pre-trade decision context; later split-fills inherit the trade-level frozen attribution).
+- Is implemented in the trade-detail VM helper / repo function `get_authoritative_entry_fill(conn, trade_id) -> Fill | None`.
+- Test fixture (binding): synthetic 3-entry-fill trade asserts `get_authoritative_entry_fill()` returns the row with min `(fill_datetime, fill_id)`.
+
+This pre-empts the multi-entry-fill ambiguity Codex flagged: trade-level reads remain deterministic regardless of how many entry-action fills exist.
 
 ### §4.4 exits → fills field mapping (migration backfill)
 
@@ -203,9 +287,26 @@ CREATE INDEX ix_fills_action ON fills(trade_id, action);
 | `r_multiple` | (NOT STORED) | Computed-on-read: `realized_pnl / (initial_risk_per_share * quantity)`. |
 | `notes` | `reason` (concatenated) | If `notes` non-empty, append to `reason` with separator `' | '`. |
 
-**Action derivation for migration:** for each existing exits row, compute `cumulative_exited_after_this_row` per trade. If `cumulative_exited == initial_shares` AND no later exits exist for this trade → `action='exit'`. Else → `action='trim'`. `action='stop'` not auto-derived (no signal in legacy `exits.reason` reliable enough); legacy stop-out rows persist as `exit` with the original reason text preserved.
+**Action derivation for migration (with deterministic ordering):** for each trade, iterate the trade's existing `exits` rows ordered by `(exit_date ASC, id ASC)` — the `id ASC` tie-break is binding for same-date multiple exits. Compute `cumulative_exited_after_this_row`. The row that brings `cumulative_exited` to `initial_shares` (and has no later exits for this trade in the ordering) → `action='exit'`. All earlier rows for the trade → `action='trim'`. `action='stop'` is NOT auto-derived (legacy `exits.reason` is free text and unreliable as a stop-classifier); legacy stop-out rows persist as `action='exit'` with the original `reason` text preserved (no information loss — the operator's original reason text is retained, just the structured action-classification is forward-only).
+
+**Test coverage required:** at least one test fixture exercises a same-date multi-exit case to confirm deterministic ordering (e.g., 3-row exits sequence on same date, total = initial_shares → row 1 + row 2 = trim, row 3 = exit).
 
 **Realized PnL / R-multiple computation helpers:** new module `swing/trades/derived_metrics.py` (or extend existing analytic helper) provides pure functions consuming Trade + per-fill data; existing `exits.realized_pnl` consumers migrate to call these helpers. Spec lists callers in §15.
+
+### §4.4.1 Preservation invariant (binding test gate)
+
+For every legacy `exits` row migrated, the post-migration computed `(realized_pnl, r_multiple)` MUST equal the pre-migration stored values within float tolerance (default 1e-6).
+
+**Migration test fixtures (binding — single-row test is insufficient):** the test must exercise the full risk surface, not just the easy singleton case. Plan dispatch implements at minimum:
+
+1. **Singleton-exit fixture** (mirrors VIR): one trade with one full-exit row. Asserts (realized_pnl, r_multiple) preserved.
+2. **Multi-exit-different-dates fixture:** synthetic trade with 3 exits across 3 different dates totaling initial_shares. Asserts each row's (realized_pnl, r_multiple) preserved + correct trim/exit action assignment (rows 1–2 = trim, row 3 = exit).
+3. **Same-date-multi-exit fixture:** synthetic trade with 3 exits on the same date totaling initial_shares. Asserts deterministic ordering (`ORDER BY exit_date ASC, id ASC`) drives correct action assignment + (realized_pnl, r_multiple) preserved per row.
+4. **Notes-merged fixture:** synthetic trade with one exit row whose `notes` field is non-empty. Asserts the post-migration `fills.reason` contains both the original `reason` and `notes` separated by `' | '` (exact format).
+
+Pre-migration: capture `(realized_pnl, r_multiple)` for ALL rows in each fixture. Run migration 0014. Post-migration: compute via `derived_metrics.py` helpers. Assert per-row equality within tolerance.
+
+This converts "lossless data" framing into "lossless semantics with regression gate covering the full migration risk surface." Computed-on-read formulas must remain mathematically equivalent to the legacy stored values; any future formula change requires a corresponding migration that recomputes + re-asserts.
 
 ### §4.5 trades.entry_* — frozen-at-first-fill cache
 
@@ -220,7 +321,7 @@ Three new columns updated by the fills-write service after every fill insert:
 | Column | Type | Computation |
 |---|---|---|
 | `current_size` | REAL NOT NULL DEFAULT 0 | `sum(entry quantities) - sum(trim/exit/stop quantities)` |
-| `current_avg_cost` | REAL | weighted-avg of entry+add fills (in V1 with no `add`, equals entry_price) |
+| `current_avg_cost` | REAL | **V1: equals `entry_price`** (one entry-fill per trade, no `add` action; see §4.3 V1 constraint). Future phases that introduce add-action fills will recompute as weighted-avg of entry-action quantities. |
 | `last_fill_at` | TEXT | `max(fills.fill_datetime)` for this trade |
 
 **Update path:** `swing/data/repos/fills.py` `_recompute_aggregates(conn, trade_id)` is called after every fill INSERT. Single write path = consistency invariant.
@@ -264,12 +365,38 @@ Verified at spec-write 2026-05-04 against HEAD `db6727d`. Plan-time refresh requ
 - Test fixture builders setting `status="open"` / `"closed"` directly.
 - Phase 6 review tests checking pre-state of closed trades (preserve semantics via `state IN ('closed','reviewed')`).
 
-### §5.2 Rewrite pattern per call site
+**Rationale for plan-time test enumeration (deferral is intentional + bounded):** the 43 test files are identified by grep (`status='open'` / `status='closed'` / `t.status` / `trade.status` / `trades.status`); the rewrite pattern is uniform per §5.2 (4 operation-specific predicate categories). Plan-time enumeration is mechanical, not exploratory — every grep-hit gets classified into one of the 4 predicate categories and rewritten accordingly. Spec-time exhaustive listing of all 43 files would inflate the spec without informational gain; the binding commitment is "every grep-hit gets reviewed at plan time" and the writing-plans dispatch's adversarial review will verify completeness against a fresh grep at HEAD-at-plan-time. No `Trade.status` Python attribute survives Phase 7 — the dataclass field is dropped (per §15 models.py MOD), forcing every consumer to migrate.
 
-- **Read predicates (Python):** `trade.status == "open"` → `trade.state in ("entered","managing","partial_exited")`. `trade.status != "closed"` → `trade.state not in ("closed","reviewed")`.
-- **Read predicates (SQL):** `WHERE status='open'` → `WHERE state IN ('entered','managing','partial_exited')`. `WHERE status='closed'` → `WHERE state IN ('closed','reviewed')`.
-- **Write paths:** `UPDATE trades SET status='closed'` → state-transition service emits `state='closed'` (via `swing/trades/state.py` single write path).
-- **Display:** `{{ t.status }}` in templates → `{{ t.state }}` (or per-state badge per §11.3).
+### §5.2 Rewrite pattern per call site (operation-specific predicates)
+
+The rewrite is NOT a uniform `status='X'` → `state IN (...)` substitution. Each call site must be reviewed for its operation-specific semantic:
+
+**Active-trade predicates** (i.e., "is this trade currently open?"):
+
+- `trade.status == "open"` → `trade.state in ("entered", "managing", "partial_exited")`.
+- `trade.status != "closed"` → `trade.state in ("entered", "managing", "partial_exited")` (semantically identical to the above; same set).
+- `WHERE status='open'` → `WHERE state IN ('entered','managing','partial_exited')`.
+
+**Closed-but-not-reviewed predicates** (i.e., "is this trade ready for review?"):
+
+- For Phase 6 review precondition (`swing/trades/review.py:214`): `trade.status != "closed"` (which previously meant "reject if not closed") → `trade.state != "closed"` (reject if state isn't exactly `'closed'`). The Phase 6 review service must reject `state='reviewed'` trades (already reviewed; terminal per §3.2). The naïve rewrite `state not in ('closed','reviewed')` would INCORRECTLY allow already-reviewed trades through. Use `state == 'closed'` (only).
+- For "is this trade closed AND awaiting review" stats: `WHERE state='closed'`.
+
+**Closed-or-reviewed predicates** (i.e., "is this trade history-ready?"):
+
+- For journal/stats aggregations counting all completed trades: `trade.status == "closed"` → `trade.state in ("closed", "reviewed")`.
+- `WHERE status='closed'` (in stats SQL) → `WHERE state IN ('closed','reviewed')`.
+
+**Write paths:**
+
+- `UPDATE trades SET status='closed'` → eliminated; state-transition service emits `state='closed'` via `swing/trades/state.py` single write path.
+- `Trade(...)` dataclass construction with `status="open"` → `state="entered"`.
+
+**Display:**
+
+- `{{ t.status }}` in templates → `{{ t.state }}` (or per-state badge per §11.3).
+
+**Plan-time review (binding):** writing-plans dispatch must classify each enumerated call site (§5.1) into one of the four operation-specific predicate categories above and pick the correct rewrite. Some call sites may need restructuring beyond simple predicate substitution (e.g., a function that returned `status` for downstream filtering may need to return `state` directly + caller adjusts).
 
 ### §5.3 Migration 0004 helper compatibility
 
@@ -305,7 +432,7 @@ Same semantics; preserves the at-most-one-open-trade-per-ticker invariant under 
 
 All pre-trade decision fields are frozen at `pre_trade_locked_at`. The locked set:
 
-- **NEW Phase 7 fields:** `thesis`, `why_now`, `expected_scenario`, `invalidation_condition`, `premortem_technical`, `premortem_market_sector`, `premortem_execution`, `premortem_additional`, `event_risk_present`, `event_handling`, `event_type`, `event_date`, `gap_risk_present`, `gap_risk_handling`, `emotional_state_pre_trade`, `manual_entry_confidence`, `market_regime`, `catalyst`, `catalyst_other_description`, `trade_origin`.
+- **NEW Phase 7 fields:** `thesis`, `why_now`, `expected_scenario`, `invalidation_condition`, `premortem_technical`, `premortem_market_sector`, `premortem_execution`, `premortem_additional`, `event_risk_present`, `event_handling`, `event_type`, `event_date`, `gap_risk_present`, `gap_risk_handling`, `emotional_state_pre_trade`, `market_regime`, `catalyst`, `catalyst_other_description`, `trade_origin`. Plus `manual_entry_confidence` on the entry-action fill row (lock semantics extend to that fill).
 - **Cached first-fill snapshot:** `entry_date`, `entry_price`, `initial_shares`, `initial_stop`.
 - **Existing already-frozen fields (precedent):** `hypothesis_label`, `chart_pattern_algo`, `chart_pattern_algo_confidence`, `chart_pattern_operator`, `chart_pattern_classification_pipeline_run_id`, `sector`, `industry`. Phase 7 formalizes the lock semantics these already followed by precedent.
 
@@ -406,14 +533,17 @@ All NULLABLE in schema (legacy migration → NULL); app-layer entry service enfo
 | `gap_risk_present` | INTEGER (0/1) | yes | |
 | `gap_risk_handling` | TEXT (CHECK enum) | yes | Values: `accept`, `reduce_size`, `tight_stop`, `exit_before_close`, `not_applicable`. |
 | `emotional_state_pre_trade` | TEXT (JSON-list) | yes | Vocabulary: `calm`, `confident`, `anxious`, `fomo`, `revenge`, `hopeful`, `doubtful`, `distracted`. (Spec-review confirms vocabulary.) Validation + canonicalization helpers mirror Phase 6 mistake_tags pattern. |
-| `manual_entry_confidence` | TEXT (CHECK enum) | yes | Values: `high`, `normal`, `low`. |
 | `market_regime` | TEXT (CHECK enum) | yes | Values: `Bullish`, `Caution`, `Bearish` (matches existing `weather_runs.status`). Captures operator's planning-time self-assessed regime; may differ from system-computed weather. |
 | `catalyst` | TEXT (CHECK enum) | yes | Values: `earnings_driven`, `guidance_change`, `corporate_action`, `sector_rotation`, `macro_event`, `sympathy_move`, `product_news`, `technical_only`, `other`. (Trimmed from v1.2 §4.6's 13 values; spec-review confirms vocabulary.) |
 | `catalyst_other_description` | TEXT | conditional (if `catalyst='other'`) | |
 | `trade_origin` | TEXT (CHECK 4-value enum) | yes | Per §10. |
 | `pre_trade_locked_at` | TEXT (ISO datetime) | yes | Per §6. |
 
-**`... or None` discipline:** every nullable text + CHECK enum column above (event_handling, event_type, gap_risk_handling, manual_entry_confidence, market_regime, catalyst, trade_origin) MUST use `value = form_value or None` (NOT `or ""`) in form-input fallback paths. Empty string fails the CHECK constraint; NULL is accepted. Per CLAUDE.md gotcha (2026-05-04 Phase 6 deviation #3 mistake_cost_confidence collision).
+**`... or None` discipline:** every nullable text + CHECK enum column above (event_handling, event_type, gap_risk_handling, market_regime, catalyst, trade_origin) MUST use `value = form_value or None` (NOT `or ""`) in form-input fallback paths. Empty string fails the CHECK constraint; NULL is accepted. Per CLAUDE.md gotcha (2026-05-04 Phase 6 deviation #3 mistake_cost_confidence collision). Same rule applies to `manual_entry_confidence` on the fills row (see §4.2).
+
+**Single source of truth for `manual_entry_confidence`:** the column lives on `fills` ONLY (per §4.2 schema), NOT on `trades`. Trade-level "operator confidence at entry" is read from the **authoritative entry-action fill** per §4.3.1 selector below. This eliminates any drift risk between separate `trades.manual_entry_confidence` and `fills.manual_entry_confidence` columns.
+
+**Mutation model — fills are NOT append-only; they are mutable through the same edit-after-lock audit path as locked trade-row fields.** "Append-only" framing is incorrect and dropped: fills rows can be mutated by the audited edit path (writing the new value AND recording the field/old/new/reason in a `trade_events` row with `event_type='pre_trade_edit'`). This matches the trade-row pre-trade-fields mutation discipline exactly (no DB triggers; app-layer single-write-path; lint/test polices direct UPDATEs). The fill row itself updates AND the audit trail captures the edit; readers always see the current value by reading the fill row directly (no overlay/replay required). Edit-after-lock UI deferred to V2 per §6.5; V1 escape valve = direct DB edit + manual `trade_events` row insertion.
 
 ### §8.2 DROPPED fields (with rationale)
 
@@ -585,7 +715,7 @@ Trade-detail page gains a "Pre-Trade Decision" section above the existing positi
 
 - All new pre-trade fields rendered read-only with a lock icon + `pre_trade_locked_at` timestamp.
 - Audit-log read-display: `trade_events` rows with `event_type='pre_trade_edit'` rendered chronologically.
-- Legacy NULL handling: trades where `premortem_technical IS NULL` show "(legacy — no pre-trade data)" placeholder OR hide the section entirely; spec-review chooses (operator preference). Recommendation: hide the section entirely for legacy.
+- **Legacy NULL handling (resolved):** trades where `premortem_technical IS NULL` **hide the Pre-Trade Decision section entirely** in the trade-detail view. (Empty placeholder text was considered but rejected — visually clutters the trade page without informational value; the operator already knows VIR/DHC/CC predate Phase 7.) The trade-detail VM exposes a boolean `vm.has_pre_trade_data` (computed as `premortem_technical IS NOT NULL`) gating the section's render.
 
 **V1 explicitly does NOT ship the edit-after-lock UI.** Schema fully supports edit-after-lock (per §6.4); UI ships in a future phase. Operator-only escape valve in V1: direct DB edit + manual `trade_events` row insertion.
 
@@ -602,9 +732,29 @@ Trade-detail page gains a "Pre-Trade Decision" section above the existing positi
 
 ## §12 In-flight migration plan (VIR / DHC / CC)
 
-### §12.1 Pre-migration safety
+### §12.1 Pre-migration safety (operationalized)
 
-Backup: `swing-pre-phase7-migration-<ISO-timestamp>.db` snapshot before migration runs. Project precedent.
+The backup is binding AND **operationalized in the migration runner** (Python code), NOT in the SQL migration file (which cannot create files). Migration runner discipline (lives in `swing/data/db.py` `run_migrations()` or equivalent):
+
+1. Detect pending migration to schema_version 14.
+2. Resolve backup target path: `<DB_DIR>/swing-pre-phase7-migration-<ISO-timestamp>.db`.
+3. Acquire exclusive write lock on the source DB (or assert no concurrent writer) for the duration of the snapshot.
+4. **Use SQLite-native consistent-backup ONLY** — either `VACUUM INTO '<backup_path>'` SQL command OR Python `sqlite3.Connection.backup(<dest_conn>)` API. **`shutil.copy2()` is NOT acceptable** because filesystem-level copy of a live SQLite DB can yield a torn snapshot if any writer touches the file mid-copy; only SQLite-native methods guarantee transactional consistency.
+5. Verify backup integrity (binding, all four checks):
+   - File exists at backup path.
+   - File is non-empty (size > 0). Size threshold relative to source is **advisory only** (`VACUUM INTO` legitimately produces smaller files due to compaction of free pages / fragmentation); do NOT use a percentage-of-source heuristic as a hard gate, as it produces false negatives on healthy backups.
+   - Open backup with read-only sqlite3 connection.
+   - Run `PRAGMA integrity_check` on backup; assert result is exactly `'ok'` (this is the authoritative integrity check — page-level corruption, broken indices, foreign-key issues all surface here).
+   - Run `SELECT name FROM sqlite_master WHERE type='table'` on backup; assert expected table set is present (at minimum: `trades`, `exits`, `trade_events`, `pipeline_runs`, `weather_runs`, `candidates`, `evaluation_runs`, `daily_recommendations`, `watchlist`, `cash_movements`, `review_log`, `schema_version`). Optionally also assert `PRAGMA page_count > 0` for an additional non-emptiness signal.
+6. ONLY THEN execute migration 0014 SQL within `BEGIN TRANSACTION; COMMIT;`.
+7. If ANY of steps 3–5 fails, **REFUSE to run migration 0014** and raise `MigrationBackupRequiredException`. The DB remains at schema_version 13.
+
+Migration runner test gates (binding):
+- `run_migrations()` invoked when backup creation fails (e.g., destination path unwritable) → raises `MigrationBackupRequiredException` BEFORE touching the source DB.
+- `run_migrations()` invoked when `PRAGMA integrity_check` returns non-`ok` on the backup → raises `MigrationBackupRequiredException`.
+- `run_migrations()` invoked when an expected table is missing from the backup → raises `MigrationBackupRequiredException`.
+
+Spec writing-plans dispatch operationalizes the exact runner code; the discipline (backup-precedes-migration; SQLite-native; integrity-check-passes; refuse-on-failure) is binding.
 
 ### §12.2 State derivation rule (general; covers legacy + future imports)
 
@@ -645,7 +795,7 @@ Spec records best-guess values; plan can refine.
 
 ### §12.5 Display semantics for legacy NULL pre-trade fields
 
-Trade-detail view: NULL pre-trade fields → "(legacy — no pre-trade data)" placeholder OR section hidden entirely (operator preference at spec-review). Phase 6 review surface continues to function (review path operates on outcome + mistake_tags; VIR's existing review precedent confirms).
+Trade-detail view: NULL pre-trade fields → **the entire Pre-Trade Decision section is hidden** (per §11.4 resolved). VM gates render via `vm.has_pre_trade_data` (computed as `premortem_technical IS NOT NULL`). Phase 6 review surface continues to function unchanged on legacy trades (review path operates on outcome + mistake_tags; VIR's existing review precedent confirms).
 
 ---
 
@@ -894,7 +1044,7 @@ These items have a recommended value but require operator final confirmation:
 - **Catalyst enum vocabulary (§8.1):** 9-value trim from v1.2 §4.6's 13 values. Confirm the 9 values cover operator's actual workflow.
 - **Emotional state vocabulary (§8.1):** 8-value sketch (calm, confident, anxious, fomo, revenge, hopeful, doubtful, distracted). Confirm coverage.
 - **Event type vocabulary (§8.1):** 7-value sketch (earnings, fed_meeting, cpi_release, economic_data, product_announcement, legal_ruling, other). Confirm coverage.
-- **Legacy trade-detail display:** show "(legacy — no pre-trade data)" placeholder, OR hide the section entirely. Recommendation: hide entirely.
+- ~~Legacy trade-detail display: placeholder vs hide.~~ **RESOLVED in adversarial review round 1: hide entirely** (per §11.4 + §12.5).
 - **DHC + CC trade_origin verification (§12.4):** best-guess `pipeline_watch_hyp_recs`. Empirical verification at writing-plans dispatch may adjust.
 
 If any of these lands a decision that materially affects schema or service-layer scope, the change re-enters the spec before the writing-plans dispatch.
