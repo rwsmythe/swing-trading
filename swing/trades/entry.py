@@ -6,7 +6,8 @@ import unicodedata
 from dataclasses import dataclass
 from enum import Enum
 
-from swing.data.models import Trade, WatchlistArchiveEntry
+from swing.data.models import Fill, Trade, WatchlistArchiveEntry
+from swing.data.repos.fills import insert_fill_with_event
 from swing.data.repos.trades import insert_trade_with_event, list_open_trades
 from swing.data.repos.watchlist import (
     archive_watchlist_entry, get_watchlist_entry,
@@ -320,6 +321,26 @@ def record_entry(
         with conn:
             trade_id = insert_trade_with_event(
                 conn, trade, event_ts=req.event_ts, rationale=req.rationale,
+            )
+            # Phase 7 Sub-B B.3 — atomic first entry-fill insert in the
+            # SAME transaction as the trade row. The fill's
+            # _recompute_aggregates updates trades.current_size,
+            # current_avg_cost, last_fill_at to authoritative values
+            # (fixing the R2 Minor 1 transient half-state that B.1's
+            # docstring on insert_trade_with_event warns OTHER callers
+            # about — record_entry now satisfies that contract).
+            insert_fill_with_event(
+                conn,
+                Fill(
+                    fill_id=None, trade_id=trade_id,
+                    fill_datetime=req.event_ts,
+                    action="entry",
+                    quantity=float(req.shares),
+                    price=req.entry_price,
+                    manual_entry_confidence=req.manual_entry_confidence,
+                ),
+                event_ts=req.event_ts,
+                rationale=req.rationale,
             )
             wl = get_watchlist_entry(conn, req.ticker)
             if wl is not None:

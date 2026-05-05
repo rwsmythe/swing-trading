@@ -8,6 +8,7 @@ import pytest
 
 from swing.data.db import ensure_schema, run_migrations
 from swing.data.models import Trade, WatchlistEntry
+from swing.data.repos.fills import list_fills_for_trade
 from swing.data.repos.trades import get_trade, list_open_trades
 from swing.data.repos.watchlist import get_watchlist_entry, upsert_watchlist_entry
 from swing.trades.entry import (
@@ -615,6 +616,72 @@ def test_record_entry_persists_sector_industry_as_is(tmp_path):
         assert t.industry == "Pharmaceuticals"
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-B B.3 — atomic INSERT trade + first entry-fill +
+# pre_trade_locked_at. After B.3, record_entry inserts the trades row AND
+# the first entry-action fill in a single transaction; the fill's
+# _recompute_aggregates populates trades.current_size, current_avg_cost,
+# last_fill_at; pre_trade_locked_at is set to req.event_ts.
+# ---------------------------------------------------------------------------
+
+
+def test_record_entry_writes_first_entry_fill_atomically(tmp_path):
+    """B.3: trade INSERT + entry-fill INSERT in same transaction."""
+    conn = _seed_v14(tmp_path)
+    req = _full_req()
+    result = record_entry(conn, req, soft_warn=10, hard_cap=20, force=False)
+    fills = list_fills_for_trade(conn, result.trade_id)
+    assert len(fills) == 1
+    assert fills[0].action == "entry"
+    assert fills[0].quantity == 100.0
+    assert fills[0].price == 10.0
+    assert fills[0].fill_datetime == "2026-05-04T16:00:00"
+    assert fills[0].manual_entry_confidence == "normal"
+    trade = get_trade(conn, result.trade_id)
+    assert trade.pre_trade_locked_at == "2026-05-04T16:00:00"
+    assert trade.state == "entered"
+    assert trade.current_size == 100.0
+
+
+def test_record_entry_aggregate_recompute_after_fill(tmp_path):
+    """B.3 + Sub-A T4 _recompute_aggregates: trade.current_avg_cost
+    populated from entry fill price; last_fill_at populated from fill
+    datetime."""
+    conn = _seed_v14(tmp_path)
+    req = _full_req(entry_price=12.5, shares=80, initial_stop=11.0)
+    result = record_entry(conn, req, soft_warn=10, hard_cap=20, force=False)
+    trade = get_trade(conn, result.trade_id)
+    assert trade.current_size == 80.0
+    assert trade.current_avg_cost == 12.5
+    assert trade.last_fill_at == req.event_ts
+
+
+def test_record_entry_atomic_rollback_on_fill_failure(tmp_path, monkeypatch):
+    """B.3 atomic guarantee: if the fill insert raises, the trade INSERT
+    also rolls back — no orphaned trade row with current_size=0 / NULL
+    aggregates is left behind. Validates that record_entry wraps BOTH
+    inserts in the same `with conn:` block (single transaction)."""
+    from swing.trades import entry as entry_module
+
+    conn = _seed_v14(tmp_path)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated fill insert failure")
+
+    monkeypatch.setattr(entry_module, "insert_fill_with_event", _boom)
+
+    req = _full_req()
+    with pytest.raises(RuntimeError, match="simulated fill insert failure"):
+        record_entry(conn, req, soft_warn=10, hard_cap=20, force=False)
+
+    # Trade row was rolled back — no orphaned row.
+    rows = conn.execute("SELECT COUNT(*) FROM trades").fetchone()
+    assert rows[0] == 0
+    # And no fills row either.
+    fill_rows = conn.execute("SELECT COUNT(*) FROM fills").fetchone()
+    assert fill_rows[0] == 0
 
 
 def test_entry_request_default_sector_industry_empty():
