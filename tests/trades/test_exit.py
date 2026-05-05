@@ -438,3 +438,79 @@ def test_record_exit_empty_notes_omits_note_event(tmp_path: Path):
         )
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Codex R2 Major 1 regression guard — exit_date format validation.
+# ---------------------------------------------------------------------------
+
+
+def test_record_exit_rejects_malformed_exit_date_with_t(tmp_path: Path):
+    """Codex R2 M1: exit_date containing 'T' but not a parseable ISO
+    datetime must raise ValueError BEFORE any fill is INSERTed.
+
+    Pre-fix: any string with 'T' was passed through verbatim, so
+    'YYYY-MM-DDTNOT_A_TIME' silently stored as garbage and broke
+    substr-date matching downstream.
+    Post-fix: datetime.fromisoformat raises; record_exit re-raises with
+    a clear message; no fill row, no audit row written.
+    """
+    conn = _seed_v14(tmp_path)
+    try:
+        trade_id = _seed_active_trade(
+            conn, ticker="BAD", state="managing", current_size=10.0,
+        )
+        with pytest.raises(ValueError, match="not a valid ISO datetime"):
+            record_exit(conn, ExitRequest(
+                trade_id=trade_id, exit_date="2026-05-02TNOT_A_TIME",
+                exit_price=11.0, shares=10, reason=ExitReason.TARGET,
+                notes=None, rationale="malformed", event_ts="2026-05-04T12:00:00",
+            ))
+        # Discriminating: no fill or note row should exist for this trade
+        # beyond the seed entry-fill (which the helper inserted).
+        n_non_entry_fills = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE trade_id=? AND action != 'entry'",
+            (trade_id,),
+        ).fetchone()[0]
+        assert n_non_entry_fills == 0
+    finally:
+        conn.close()
+
+
+def test_record_exit_rejects_malformed_date_only_input(tmp_path: Path):
+    """Codex R2 M1: exit_date without 'T' must parse as YYYY-MM-DD
+    (date.fromisoformat); '2026-13-99' must raise."""
+    conn = _seed_v14(tmp_path)
+    try:
+        trade_id = _seed_active_trade(
+            conn, ticker="BAD2", state="managing", current_size=10.0,
+        )
+        with pytest.raises(ValueError, match="YYYY-MM-DD"):
+            record_exit(conn, ExitRequest(
+                trade_id=trade_id, exit_date="2026-13-99",
+                exit_price=11.0, shares=10, reason=ExitReason.TARGET,
+                notes=None, rationale="bad month", event_ts="2026-05-04T12:00:00",
+            ))
+    finally:
+        conn.close()
+
+
+def test_record_exit_accepts_valid_iso_datetime_with_seconds(tmp_path: Path):
+    """Codex R2 M1: a properly-formed ISO datetime with seconds AND
+    microseconds round-trips unchanged."""
+    conn = _seed_v14(tmp_path)
+    try:
+        trade_id = _seed_active_trade(
+            conn, ticker="ISO", state="managing", current_size=10.0,
+        )
+        record_exit(conn, ExitRequest(
+            trade_id=trade_id, exit_date="2026-05-03T13:45:30.123456",
+            exit_price=11.0, shares=10, reason=ExitReason.TARGET,
+            notes=None, rationale="iso usec", event_ts="2026-05-04T12:00:00",
+        ))
+        from swing.data.repos.fills import list_fills_for_trade
+        fills = list_fills_for_trade(conn, trade_id)
+        exit_fill = next(f for f in fills if f.action != "entry")
+        assert exit_fill.fill_datetime == "2026-05-03T13:45:30.123456"
+    finally:
+        conn.close()

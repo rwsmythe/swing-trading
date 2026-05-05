@@ -4,11 +4,10 @@ Phase 7 Sub-B B.6 fixture migration: legacy ``Exit(...)``+``insert_exit_with_eve
 seeding rewritten to ``Fill(action='exit')``+``insert_fill_with_event``. The
 ``Exit`` dataclass is a stub post Sub-A T3 and raises on construction.
 
-The whole module is skipped: ``complete_review_atomic`` aggregates closed-trade
-stats via ``swing.journal.stats`` and ``swing.trades.review`` helpers that
-still walk the ``Exit`` shape and read ``trade.status``. Sub-B Task B.9
-(journal-layer rewrite) restores those code paths to the fills surface and
-unskips this file.
+Module unskipped at end of B.9 (Codex R1 Major 3 / R2 Minor 1 docstring fix).
+B.9's journal-layer rewrite migrated ``swing.journal.stats`` +
+``swing.trades.review`` helpers to the fills surface, restoring the
+``complete_review_atomic`` aggregate path that this module exercises.
 """
 import pytest
 from pathlib import Path

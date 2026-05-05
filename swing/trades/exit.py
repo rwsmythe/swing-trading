@@ -73,6 +73,37 @@ class ExitResult:
     fully_closed: bool
 
 
+def _normalize_exit_date_to_iso(raw: str) -> str:
+    """Validate + canonicalize ``req.exit_date`` to ISO-8601 datetime form.
+
+    Codex R2 Major 1 — accepts ``YYYY-MM-DD`` (synthesizes NYSE close
+    ``T16:00:00``) or full ISO datetime ``YYYY-MM-DDTHH:MM[:SS][.ffffff]``.
+    Anything else raises ``ValueError`` BEFORE the fill is INSERTed,
+    keeping ``fills.fill_datetime`` invariant: every stored value is a
+    parseable ISO datetime so ``substr(f.fill_datetime, 1, 10)`` (used by
+    ``tos_import._find_unclaimed_recorded_exit``) always yields a real
+    YYYY-MM-DD prefix and lexicographic ordering matches chronology.
+    """
+    from datetime import date, datetime
+    if not isinstance(raw, str) or not raw:
+        raise ValueError(f"exit_date must be a non-empty string; got {raw!r}")
+    if "T" in raw:
+        try:
+            datetime.fromisoformat(raw)
+        except ValueError as exc:
+            raise ValueError(
+                f"exit_date {raw!r} contains 'T' but is not a valid ISO datetime"
+            ) from exc
+        return raw
+    try:
+        date.fromisoformat(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"exit_date {raw!r} is not a valid YYYY-MM-DD or ISO datetime"
+        ) from exc
+    return f"{raw}T16:00:00"
+
+
 def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
     """Write an exit/trim/stop fill and drive the state machine.
 
@@ -123,12 +154,12 @@ def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
     # CLI sends event_ts=now, so an exit recorded for a past session would
     # otherwise land at today's clock-time and break tos_import reconciliation
     # (substr(f.fill_datetime, 1, 10) match) + journal close-date aggregation.
-    # If exit_date is already a full ISO datetime ("YYYY-MM-DDTHH:MM:SS"), use
-    # as-is; otherwise synthesize NYSE-close time (16:00:00) for the date.
-    fill_datetime = (
-        req.exit_date if "T" in req.exit_date
-        else f"{req.exit_date}T16:00:00"
-    )
+    # Codex R2 Major 1: validate the exit_date format before persisting.
+    # Pre-R2 the helper trusted any string containing "T" as ISO datetime,
+    # so "2026-05-02TNOT_A_TIME" silently stored as garbage and broke
+    # downstream substr-date matching. Now: parse strictly via fromisoformat
+    # for both YYYY-MM-DD and YYYY-MM-DDTHH:MM[:SS] forms; reject otherwise.
+    fill_datetime = _normalize_exit_date_to_iso(req.exit_date)
     fill = Fill(
         fill_id=None,
         trade_id=req.trade_id,
