@@ -23,7 +23,6 @@ from swing.data.repos.trades import (
     insert_trade_with_event,
     list_closed_trades,
     list_events_for_trade,
-    list_exits_for_trade,
     list_open_trades,
     update_stop_with_event,
 )
@@ -517,77 +516,9 @@ def test_insert_trade_no_longer_writes_status_column(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# Phase 7 T6 — list_exits_for_trade fills-backed shim coverage.
+# Phase 7 T6 shim-coverage tests for `list_exits_for_trade` were DELETED in
+# C.13 — the shim itself is removed in C.14, and its behavior is exercised via
+# the canonical `list_fills_for_trade` repo (see tests/data/test_repos_fills.py)
+# plus the fills-action filter is tested at the consumer layer (web view
+# models, journal helpers).
 # ---------------------------------------------------------------------------
-
-
-def test_list_exits_for_trade_shim_returns_fills_as_exitlike_rows(tmp_path: Path):
-    """T6 shim: list_exits_for_trade returns fills-backed Exit-shape rows.
-
-    The shim preserves caller surface (`.exit_date`, `.exit_price`, `.shares`,
-    `.reason`, `.realized_pnl`, `.r_multiple`, `.notes`) so Sub-B/Sub-C
-    callers continue to work until they migrate to fills repo helpers.
-    """
-    conn = _seed_v14(tmp_path)
-    try:
-        tid = _seed_trade_at_state(conn, ticker="EXT", state="managing")
-        # Insert a 'trim' fill (50 shares at 12.0) and an 'exit' fill (50 at 14.0).
-        with conn:
-            _insert_fill(
-                conn, trade_id=tid, action="trim",
-                fill_datetime="2026-05-02T16:00:00",
-                quantity=50.0, price=12.0, reason="partial",
-            )
-            _insert_fill(
-                conn, trade_id=tid, action="exit",
-                fill_datetime="2026-05-03T16:00:00",
-                quantity=50.0, price=14.0, reason="target",
-            )
-        rows = list_exits_for_trade(conn, tid)
-        assert len(rows) == 2
-        # Sorted by fill_datetime ASC.
-        assert rows[0].exit_date == "2026-05-02"
-        assert rows[0].exit_price == 12.0
-        assert rows[0].shares == 50
-        assert rows[0].reason == "partial"
-        # realized_pnl = (12.0 - 10.0) * 50 = 100.0
-        assert rows[0].realized_pnl == 100.0
-        # risk_per_share = 10 - 9 = 1.0; r_multiple = 100 / (1.0 * 50) = 2.0
-        assert rows[0].r_multiple == 2.0
-        # Second row.
-        assert rows[1].exit_date == "2026-05-03"
-        assert rows[1].exit_price == 14.0
-        assert rows[1].shares == 50
-        assert rows[1].reason == "target"
-        # realized_pnl = (14.0 - 10.0) * 50 = 200.0; r_multiple = 200 / 50 = 4.0
-        assert rows[1].realized_pnl == 200.0
-        assert rows[1].r_multiple == 4.0
-    finally:
-        conn.close()
-
-
-def test_list_exits_for_trade_excludes_entry_fills(tmp_path: Path):
-    """T6 shim: entry fills (action='entry', backfilled by migration 0014) are NOT
-    returned as 'exits'."""
-    conn = _seed_v14(tmp_path)
-    try:
-        tid = _seed_trade_at_state(conn, ticker="ENT", state="entered")
-        # _seed_trade_at_state goes via repo INSERT — that does NOT write a fills
-        # row by itself (Sub-A T4's fills repo will). Add an explicit entry fill
-        # to verify the shim filters action='entry'.
-        with conn:
-            _insert_fill(
-                conn, trade_id=tid, action="entry",
-                fill_datetime="2026-05-01T16:00:00",
-                quantity=100.0, price=10.0, reason=None,
-            )
-            _insert_fill(
-                conn, trade_id=tid, action="exit",
-                fill_datetime="2026-05-04T16:00:00",
-                quantity=100.0, price=11.0, reason="target",
-            )
-        rows = list_exits_for_trade(conn, tid)
-        assert len(rows) == 1, f"shim must filter action='entry'; got {rows}"
-        assert rows[0].exit_price == 11.0
-    finally:
-        conn.close()

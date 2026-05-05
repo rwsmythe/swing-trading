@@ -1,12 +1,69 @@
 """Shared pytest fixtures."""
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
-from swing.data.models import Trade
+from swing.data.models import Fill, Trade
+
+
+def insert_exit_fill(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+    exit_date: str,
+    exit_price: float,
+    shares: int,
+    reason: str | None = None,
+    fill_datetime: str | None = None,
+    action: str = "exit",
+    close_trade: bool = True,
+    notes: str | None = None,  # noqa: ARG001 — accepted for legacy-call shape compat
+    realized_pnl: float | None = None,  # noqa: ARG001 — recomputed by repo, not stored
+    r_multiple: float | None = None,  # noqa: ARG001 — recomputed by repo, not stored
+) -> int:
+    """Test helper: insert a Fill (action='exit'/'trim'/'stop') replacing legacy `Exit(...)`.
+
+    Phase 7 Sub-C C.13 — many tests previously did:
+        insert_exit_with_event(conn, Exit(id=None, trade_id=..., exit_date=...,
+            exit_price=..., shares=..., reason=..., realized_pnl=..., r_multiple=...,
+            notes=None), event_ts=...)
+    The Exit dataclass was removed (Sub-A T3 stub raises) and `insert_exit_with_event`
+    raises post-Sub-A. This helper takes the same arguments and routes them via the
+    canonical fills repo. `realized_pnl` and `r_multiple` arguments are accepted
+    (so call sites stay readable) but ignored — those values are derived from the
+    fill at read time by the legacy shim or the consumer-side migration.
+    """
+    from swing.data.repos.fills import insert_fill_with_event
+
+    if fill_datetime is None:
+        fill_datetime = f"{exit_date}T16:00:00"
+    fill = Fill(
+        fill_id=None,
+        trade_id=trade_id,
+        fill_datetime=fill_datetime,
+        action=action,
+        quantity=float(shares),
+        price=float(exit_price),
+        reason=reason,
+        rule_based=None,
+        fees=None,
+        manual_entry_confidence=None,
+    )
+    fill_id = insert_fill_with_event(
+        conn, fill, event_ts=fill_datetime, rationale=None,
+    )
+    if close_trade and action == "exit":
+        # Mirror production exit-service behavior: a full exit closes the trade.
+        # We don't go through the state-machine helper because tests seed trades
+        # in arbitrary states (entered/managing/partial_exited); just set state.
+        conn.execute(
+            "UPDATE trades SET state = 'closed' WHERE id = ?", (trade_id,),
+        )
+    return fill_id
 
 
 def make_trade(

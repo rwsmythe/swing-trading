@@ -1,24 +1,36 @@
 """Behavioral flags: caution-market, losers-held-too-long, cutting-winners-short."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from swing.data.models import Trade, WeatherRun
-# B.9: Exit dataclass removed (Phase 7). Use the fills-backed `_ExitLikeRow`
-# NamedTuple shim — it matches the attribute surface the flags rules consume
-# duck-typed. Sub-C T1 deletes the shim once all callers migrate.
-from swing.data.repos.trades import _ExitLikeRow
 from swing.journal.flags import compute_flags, BehavioralFlag
+
+
+# C.13: Local Exit-shape adapter — mirrors the in-prod per-module _ExitShape
+# pattern (C.1/C.9/C.10/C.11/C.12). flags.py consumes ExitLike duck-typed:
+# (.trade_id, .exit_date, .shares, .r_multiple, .realized_pnl).
+@dataclass(frozen=True)
+class _ExitShape:
+    trade_id: int
+    exit_date: str
+    exit_price: float
+    shares: int
+    reason: str | None
+    realized_pnl: float | None
+    r_multiple: float | None
 
 
 def _trade(tid: int, ticker: str, entry_date: str, exit_date: str,
            pnl: float = 0.0, r: float = 0.0,
-           state: str = "closed") -> tuple[Trade, _ExitLikeRow]:
+           state: str = "closed") -> tuple[Trade, _ExitShape]:
     t = Trade(id=tid, ticker=ticker, entry_date=entry_date,
               entry_price=100.0, initial_shares=10, initial_stop=95.0,
               current_stop=95.0, state=state,
               watchlist_entry_target=None, watchlist_initial_stop=None, notes=None)
-    e = _ExitLikeRow(
+    e = _ExitShape(
         trade_id=tid, exit_date=exit_date, exit_price=100.0 + pnl/10,
-        shares=10, reason="target", realized_pnl=pnl, r_multiple=r, notes=None,
+        shares=10, reason="target", realized_pnl=pnl, r_multiple=r,
     )
     return t, e
 

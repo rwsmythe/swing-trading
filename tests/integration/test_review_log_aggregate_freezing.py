@@ -7,11 +7,12 @@ from pathlib import Path
 import pytest
 
 from swing.data.db import connect, ensure_schema
-from swing.data.models import Exit, Trade
+from swing.data.models import Trade
 from swing.data.repos.review_log import (
     complete_review_atomic, get, insert_pre_create,
 )
-from swing.data.repos.trades import insert_exit_with_event, insert_trade_with_event
+from swing.data.repos.trades import insert_trade_with_event
+from tests.conftest import insert_exit_fill
 
 
 def test_review_aggregates_frozen_when_more_trades_close(tmp_path: Path) -> None:
@@ -39,13 +40,10 @@ def test_review_aggregates_frozen_when_more_trades_close(tmp_path: Path) -> None
                 ),
                 event_ts="2026-04-01T09:30:00",
             )
-            insert_exit_with_event(
-                conn, Exit(
-                    id=None, trade_id=t1, exit_date="2026-04-15",
-                    exit_price=11.0, shares=10, reason="manual",
-                    realized_pnl=10.0, r_multiple=1.0, notes=None,
-                ),
-                event_ts="2026-04-15T09:30:00",
+            insert_exit_fill(
+                conn, trade_id=t1, exit_date="2026-04-15",
+                exit_price=11.0, shares=10, reason="manual",
+                fill_datetime="2026-04-15T09:30:00",
             )
         with conn:
             review_id = insert_pre_create(
@@ -80,13 +78,10 @@ def test_review_aggregates_frozen_when_more_trades_close(tmp_path: Path) -> None
                 ),
                 event_ts="2026-04-10T09:30:00",
             )
-            insert_exit_with_event(
-                conn, Exit(
-                    id=None, trade_id=t2, exit_date="2026-04-15",
-                    exit_price=22.0, shares=5, reason="manual",
-                    realized_pnl=10.0, r_multiple=1.0, notes=None,
-                ),
-                event_ts="2026-04-15T09:30:00",
+            insert_exit_fill(
+                conn, trade_id=t2, exit_date="2026-04-15",
+                exit_price=22.0, shares=5, reason="manual",
+                fill_datetime="2026-04-15T09:30:00",
             )
         # Re-fetch — aggregates MUST be unchanged (frozen):
         row2 = get(conn, review_id)

@@ -66,10 +66,13 @@ def test_trades_table_has_hypothesis_label_column(tmp_db: Path):
         assert col[2].upper() == "TEXT"
         assert col[3] == 0  # NOT NULL == 0 → nullable
         # NULL insert is allowed (existing-call-site preservation):
+        # Phase 7 Sub-A migration 0014: `status` dropped, replaced with `state`;
+        # `trade_origin` + `pre_trade_locked_at` added NOT NULL.
         conn.execute(
             "INSERT INTO trades (ticker, entry_date, entry_price, initial_shares, "
-            "initial_stop, current_stop, status) "
-            "VALUES ('XYZ', '2026-04-25', 10.0, 1, 9.0, 9.0, 'open')"
+            "initial_stop, current_stop, state, trade_origin, pre_trade_locked_at) "
+            "VALUES ('XYZ', '2026-04-25', 10.0, 1, 9.0, 9.0, 'entered', "
+            "'manual_off_pipeline', '2026-04-25T16:00:00')"
         )
         row = conn.execute(
             "SELECT hypothesis_label FROM trades WHERE ticker='XYZ'"

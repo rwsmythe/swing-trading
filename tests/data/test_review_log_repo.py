@@ -6,12 +6,13 @@ from pathlib import Path
 import pytest
 
 from swing.data.db import ensure_schema
-from swing.data.models import Exit, Trade
+from swing.data.models import Trade
 from swing.data.repos.review_log import (
     complete_review, count_needs_review, get, insert_pre_create,
     list_recent, list_unreviewed_closed_trades,
 )
-from swing.data.repos.trades import insert_exit_with_event, insert_trade_with_event
+from swing.data.repos.trades import insert_trade_with_event
+from tests.conftest import insert_exit_fill
 
 
 @pytest.fixture
@@ -83,13 +84,10 @@ class TestCompleteReviewAtomic:
                 ),
                 event_ts="2026-04-29T09:30:00",
             )
-            insert_exit_with_event(
-                conn, Exit(
-                    id=None, trade_id=t1, exit_date="2026-04-30",
-                    exit_price=12.0, shares=10, reason="manual",
-                    realized_pnl=20.0, r_multiple=2.0, notes=None,
-                ),
-                event_ts="2026-04-30T09:30:00",
+            insert_exit_fill(
+                conn, trade_id=t1, exit_date="2026-04-30",
+                exit_price=12.0, shares=10, reason="manual",
+                fill_datetime="2026-04-30T09:30:00",
             )
         # Pre-create + atomic complete:
         with conn:
@@ -154,13 +152,10 @@ class TestCountNeedsReview:
                 ),
                 event_ts="2026-03-01T09:30:00",
             )
-            insert_exit_with_event(
-                conn, Exit(
-                    id=None, trade_id=t1, exit_date="2026-04-01",
-                    exit_price=11.0, shares=10, reason="manual",
-                    realized_pnl=10.0, r_multiple=1.0, notes=None,
-                ),
-                event_ts="2026-04-01T09:30:00",
+            insert_exit_fill(
+                conn, trade_id=t1, exit_date="2026-04-01",
+                exit_price=11.0, shares=10, reason="manual",
+                fill_datetime="2026-04-01T09:30:00",
             )
             t2 = insert_trade_with_event(
                 conn, Trade(
@@ -172,13 +167,10 @@ class TestCountNeedsReview:
                 ),
                 event_ts="2026-04-01T09:30:00",
             )
-            insert_exit_with_event(
-                conn, Exit(
-                    id=None, trade_id=t2, exit_date="2026-05-01",
-                    exit_price=11.0, shares=10, reason="manual",
-                    realized_pnl=10.0, r_multiple=1.0, notes=None,
-                ),
-                event_ts="2026-05-01T09:30:00",
+            insert_exit_fill(
+                conn, trade_id=t2, exit_date="2026-05-01",
+                exit_price=11.0, shares=10, reason="manual",
+                fill_datetime="2026-05-01T09:30:00",
             )
         # Mark t3 as reviewed:
         # (t3 not actually inserted here; testing the closed/unreviewed-only filter
@@ -248,21 +240,14 @@ class TestListUnreviewedClosedTradesWindowNone:
             ),
             event_ts=f"{entry_date}T09:30:00",
         )
-        from swing.data.models import Exit
-        insert_exit_with_event(
+        insert_exit_fill(
             conn,
-            Exit(
-                id=None,
-                trade_id=trade_id,
-                exit_date=exit_date,
-                exit_price=11.0,
-                shares=10,
-                reason="manual",
-                realized_pnl=10.0,
-                r_multiple=1.0,
-                notes=None,
-            ),
-            event_ts=f"{exit_date}T09:30:00",
+            trade_id=trade_id,
+            exit_date=exit_date,
+            exit_price=11.0,
+            shares=10,
+            reason="manual",
+            fill_datetime=f"{exit_date}T09:30:00",
         )
         return trade_id
 

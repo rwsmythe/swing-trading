@@ -4,14 +4,12 @@ from __future__ import annotations
 import pytest
 
 from swing.data.models import Trade
-# B.9: Exit dataclass removed (Phase 7). Use the fills-backed `_ExitLikeRow`
-# NamedTuple shim — it matches the attribute surface (trade_id, exit_date,
-# shares, realized_pnl, r_multiple) that compute_stats/_trade_r/_trade_pnl
-# consume duck-typed. Sub-C T1 deletes the shim once all callers migrate.
-from swing.data.repos.trades import _ExitLikeRow
+# C.13: Exit dataclass + `_ExitLikeRow` shim removed. compute_stats consumes
+# the journal-internal `_ExitShape` dataclass directly (mirrors the in-prod
+# `_list_all_exitshape_via_fills` adapter from C.10/C.11).
 from swing.journal.stats import (
-    HypothesisBucket, JournalStats, compute_hypothesis_breakdown, compute_stats,
-    period_filter, _trade_closed_date,
+    HypothesisBucket, JournalStats, _ExitShape, compute_hypothesis_breakdown,
+    compute_stats, period_filter, _trade_closed_date,
 )
 
 
@@ -31,13 +29,13 @@ def _trade(tid: int, ticker: str, entry: float = 100.0, stop: float = 95.0,
 
 
 def _exit(tid: int, *, exit_date: str, price: float, shares: int,
-          rps: float, reason: str = "target") -> _ExitLikeRow:
+          rps: float, reason: str = "target") -> _ExitShape:
     pnl = shares * (price - 100.0)
     r = (price - 100.0) / rps if rps > 0 else 0.0
-    return _ExitLikeRow(
+    return _ExitShape(
         trade_id=tid, exit_date=exit_date, exit_price=price,
         shares=shares, reason=reason, realized_pnl=pnl,
-        r_multiple=r, notes=None,
+        r_multiple=r,
     )
 
 

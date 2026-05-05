@@ -14,16 +14,14 @@ from pathlib import Path
 import pytest
 
 from swing.data.db import ensure_schema
-from swing.data.models import Exit, Trade
+from swing.data.models import Trade
 from swing.data.repos.hypothesis import list_hypotheses
-from swing.data.repos.trades import (
-    insert_exit_with_event,
-    insert_trade_with_event,
-)
+from swing.data.repos.trades import insert_trade_with_event
 from swing.recommendations.hypothesis import (
     TripwireStatus,
     compute_tripwire_status,
 )
+from tests.conftest import insert_exit_fill
 
 
 def _setup(tmp_db: Path):
@@ -46,13 +44,43 @@ def _add_open_trade(conn, *, ticker: str, entry_date: str, label: str | None,
 
 def _close_trade_with_r(conn, trade_id: int, *, exit_date: str,
                         r_multiple: float, realized_pnl: float,
-                        shares: int = 100, exit_price: float = 9.0):
-    e = Exit(
-        id=None, trade_id=trade_id, exit_date=exit_date, exit_price=exit_price,
-        shares=shares, reason="stop-hit", realized_pnl=realized_pnl,
-        r_multiple=r_multiple, notes=None,
-    )
-    insert_exit_with_event(conn, e, event_ts=f"{exit_date}T16:00:00")
+                        shares: int = 100, exit_price: float | None = None):
+    # C.13: realized_pnl + r_multiple are derived from (Trade row, Fill) at
+    # read time (per swing/journal/stats.py + swing/data/repos/review_log.py
+    # _list_all_exitshape_via_fills). Old code stored explicit r_multiple +
+    # realized_pnl on the Exit row; the new path RECOMPUTES from
+    # (entry_price, fill_price, quantity).
+    #
+    # We must construct test data so BOTH cumulative_loss (= realized_pnl)
+    # AND r_multiple (drives consecutive_max_loss_streak) come out as the
+    # caller intended. We do that by:
+    #   1. Picking exit_price so (exit - entry) * shares == realized_pnl
+    #   2. UPDATEing the trade's initial_stop so risk_per_share derives the
+    #      requested r_multiple from that exit_price (rps = pnl/(r*shares)).
+    if exit_price is None:
+        entry_price = float(conn.execute(
+            "SELECT entry_price FROM trades WHERE id = ?", (trade_id,),
+        ).fetchone()[0])
+        # exit_price drives realized_pnl
+        delta_per_share = realized_pnl / shares
+        exit_price = entry_price + delta_per_share
+        # Adjust initial_stop so r_multiple matches the caller's intent.
+        # For r != 0: rps = pnl / (r * shares); initial_stop = entry - rps.
+        # For r == 0 (winners can be 0 in some sequences): leave stop alone.
+        if r_multiple != 0 and shares != 0:
+            rps = realized_pnl / (r_multiple * shares)
+            new_initial_stop = entry_price - rps
+            conn.execute(
+                "UPDATE trades SET initial_stop = ? WHERE id = ?",
+                (new_initial_stop, trade_id),
+            )
+    with conn:
+        insert_exit_fill(
+            conn, trade_id=trade_id, exit_date=exit_date,
+            exit_price=exit_price, shares=shares,
+            reason="stop-hit" if r_multiple <= 0 else "target",
+            fill_datetime=f"{exit_date}T16:00:00",
+        )
 
 
 def _hyp(conn, name: str):
@@ -97,7 +125,7 @@ def test_single_loss_does_not_fire(tmp_db: Path):
         assert status.current_sample == 1
         # -0.33R does NOT count as a max-loss (tripwire pattern is r ≤ -1)
         assert status.consecutive_max_loss_streak == 0
-        assert status.cumulative_loss == -2.0
+        assert status.cumulative_loss == pytest.approx(-2.0)
         assert status.any_tripwire_fired is False
     finally:
         conn.close()
@@ -186,7 +214,7 @@ def test_absolute_loss_tripwire_fires(tmp_db: Path):
         status = compute_tripwire_status(
             conn, hypothesis_id=h.id, starting_equity=7500.0,
         )
-        assert status.cumulative_loss == -400.0
+        assert status.cumulative_loss == pytest.approx(-400.0)
         assert status.absolute_tripwire_fired is True
         # No -1R streak → consecutive tripwire stays clean
         assert status.consecutive_tripwire_fired is False
@@ -269,7 +297,7 @@ def test_label_match_is_case_insensitive_prefix(tmp_db: Path):
             conn, hypothesis_id=h.id, starting_equity=7500.0,
         )
         assert status.current_sample == 1
-        assert status.cumulative_loss == -2.0
+        assert status.cumulative_loss == pytest.approx(-2.0)
     finally:
         conn.close()
 
