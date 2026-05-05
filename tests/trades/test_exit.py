@@ -1,68 +1,273 @@
-"""Trade exit service — computes pnl + R then writes via repo."""
+"""Trade exit service tests — fills + state transition (Phase 7 Sub-B B.4)."""
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
 
-from swing.data.db import ensure_schema
-from swing.data.repos.trades import (
-    get_trade, list_exits_for_trade, list_events_for_trade,
-)
-from swing.trades.entry import EntryRequest, record_entry
-from swing.trades.exit import ExitRequest, record_exit, ExitReason
+from swing.data.db import run_migrations
+from swing.data.models import Fill, Trade
+from swing.data.repos.fills import insert_fill_with_event, list_fills_for_trade
+from swing.data.repos.trades import get_trade, insert_trade_with_event
+from swing.trades.exit import ExitReason, ExitRequest, record_exit
 
 
-def _seed(conn, ticker: str = "AAPL") -> int:
-    req = EntryRequest(
-        ticker=ticker, entry_date="2026-04-15", entry_price=180.0,
-        shares=10, initial_stop=170.0, watchlist_entry_target=None,
-        watchlist_initial_stop=None, notes=None, rationale="entry",
-        event_ts="2026-04-15T09:30:00",
+def _seed_v14(tmp_path: Path) -> sqlite3.Connection:
+    """Open a fresh DB and migrate to v14 (Phase 7 schema baseline)."""
+    db = tmp_path / "swing.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("PRAGMA foreign_keys=ON")
+    run_migrations(conn, target_version=14, backup_dir=tmp_path)
+    return conn
+
+
+def _seed_active_trade(
+    conn: sqlite3.Connection, *,
+    ticker: str = "TST",
+    state: str = "managing",
+    current_size: float = 100.0,
+    entry_price: float = 10.0,
+    initial_stop: float = 9.0,
+    event_ts: str = "2026-05-04T16:00:00",
+) -> int:
+    """Seed a trade row + entry fill so ``current_size`` denorm is correct.
+
+    ``record_entry`` (Sub-B B.1) now enforces a pre-trade validation gate that
+    rejects the legacy minimal request used by these tests; we bypass it by
+    going straight through ``insert_trade_with_event`` + entry-fill INSERT,
+    then UPDATE state if the test wants a non-entered start state.
+    """
+    trade = Trade(
+        id=None, ticker=ticker, entry_date="2026-05-04",
+        entry_price=entry_price, initial_shares=int(current_size),
+        initial_stop=initial_stop, current_stop=initial_stop,
+        state="entered",
+        watchlist_entry_target=None, watchlist_initial_stop=None, notes=None,
+        trade_origin="manual_off_pipeline",
+        pre_trade_locked_at=event_ts,
     )
-    return record_entry(conn, req, soft_warn=10, hard_cap=10, force=False).trade_id
+    with conn:
+        trade_id = insert_trade_with_event(
+            conn, trade, event_ts=event_ts, rationale="seed",
+        )
+        insert_fill_with_event(
+            conn,
+            Fill(
+                fill_id=None, trade_id=trade_id,
+                fill_datetime=event_ts, action="entry",
+                quantity=float(current_size), price=entry_price,
+            ),
+            event_ts=event_ts,
+        )
+        if state != "entered":
+            conn.execute(
+                "UPDATE trades SET state=? WHERE id=?", (state, trade_id),
+            )
+    return trade_id
 
 
-def test_full_exit_flips_status_and_computes_r(tmp_path: Path):
-    conn = ensure_schema(tmp_path / "swing.db")
+# ---------------------------------------------------------------------------
+# Plan §5 B.4 — six new discriminating tests.
+# ---------------------------------------------------------------------------
+
+
+def test_record_exit_partial_writes_trim_fill_and_transitions_to_partial_exited(
+    tmp_path: Path,
+):
+    conn = _seed_v14(tmp_path)
     try:
-        tid = _seed(conn)
+        trade_id = _seed_active_trade(
+            conn, ticker="TST", state="managing", current_size=100.0,
+        )
+        record_exit(conn, ExitRequest(
+            trade_id=trade_id, exit_date="2026-05-05", exit_price=11.0,
+            shares=40, reason=ExitReason.TARGET, notes=None, rationale="trim",
+            event_ts="2026-05-05T16:00:00",
+        ))
+        fills = list_fills_for_trade(conn, trade_id)
+        actions = [f.action for f in fills]
+        assert "trim" in actions
+        trade = get_trade(conn, trade_id)
+        assert trade is not None
+        assert trade.state == "partial_exited"
+        assert trade.current_size == 60.0
+    finally:
+        conn.close()
+
+
+def test_record_exit_full_writes_exit_fill_and_transitions_to_closed(
+    tmp_path: Path,
+):
+    conn = _seed_v14(tmp_path)
+    try:
+        trade_id = _seed_active_trade(
+            conn, ticker="TST", state="managing", current_size=100.0,
+        )
+        record_exit(conn, ExitRequest(
+            trade_id=trade_id, exit_date="2026-05-05", exit_price=11.0,
+            shares=100, reason=ExitReason.TARGET, notes=None,
+            rationale="full exit", event_ts="2026-05-05T16:00:00",
+        ))
+        fills = list_fills_for_trade(conn, trade_id)
+        actions = [f.action for f in fills]
+        assert "exit" in actions
+        trade = get_trade(conn, trade_id)
+        assert trade is not None
+        assert trade.state == "closed"
+        assert trade.current_size == 0.0
+    finally:
+        conn.close()
+
+
+def test_record_exit_stop_hit_uses_stop_action(tmp_path: Path):
+    conn = _seed_v14(tmp_path)
+    try:
+        trade_id = _seed_active_trade(
+            conn, ticker="TST", state="managing", current_size=100.0,
+        )
+        record_exit(conn, ExitRequest(
+            trade_id=trade_id, exit_date="2026-05-05", exit_price=8.5,
+            shares=100, reason=ExitReason.STOP_HIT, notes=None,
+            rationale="stop", event_ts="2026-05-05T16:00:00",
+        ))
+        fills = list_fills_for_trade(conn, trade_id)
+        stop_fill = next(f for f in fills if f.action == "stop")
+        assert stop_fill.quantity == 100.0
+    finally:
+        conn.close()
+
+
+def test_record_exit_same_day_stop_out_double_transitions(tmp_path: Path):
+    """Spec §3.3: entered → managing → closed must be an atomic double-step.
+
+    Discriminator: a naive single-step entered→closed call would raise
+    InvalidStateTransition (not in ALLOWED_TRANSITIONS). Passing requires the
+    service to issue both transitions in the same ``with conn:`` block.
+    """
+    conn = _seed_v14(tmp_path)
+    try:
+        trade_id = _seed_active_trade(
+            conn, ticker="TST", state="entered", current_size=100.0,
+        )
+        record_exit(conn, ExitRequest(
+            trade_id=trade_id, exit_date="2026-05-05", exit_price=8.5,
+            shares=100, reason=ExitReason.STOP_HIT, notes=None,
+            rationale="stop", event_ts="2026-05-05T16:00:00",
+        ))
+        trade = get_trade(conn, trade_id)
+        assert trade is not None
+        assert trade.state == "closed"
+        assert trade.current_size == 0.0
+    finally:
+        conn.close()
+
+
+def test_record_exit_rejects_terminal_state(tmp_path: Path):
+    """Closed/reviewed are terminal; record_exit must raise."""
+    conn = _seed_v14(tmp_path)
+    try:
+        trade_id = _seed_active_trade(
+            conn, ticker="TST", state="closed", current_size=100.0,
+        )
+        with pytest.raises(ValueError, match="not active"):
+            record_exit(conn, ExitRequest(
+                trade_id=trade_id, exit_date="2026-05-05", exit_price=11.0,
+                shares=10, reason=ExitReason.MANUAL, notes=None,
+                rationale="x", event_ts="2026-05-05T16:00:00",
+            ))
+    finally:
+        conn.close()
+
+
+def test_record_exit_partial_from_entered_steps_through_managing(
+    tmp_path: Path,
+):
+    """Partial exit straight off 'entered' must double-step to 'partial_exited'.
+
+    Discriminator: single-step entered→partial_exited is not allowed; the
+    service must issue entered→managing→partial_exited in one transaction.
+    """
+    conn = _seed_v14(tmp_path)
+    try:
+        trade_id = _seed_active_trade(
+            conn, ticker="TST", state="entered", current_size=100.0,
+        )
+        record_exit(conn, ExitRequest(
+            trade_id=trade_id, exit_date="2026-05-05", exit_price=11.0,
+            shares=30, reason=ExitReason.TARGET, notes=None,
+            rationale="early trim", event_ts="2026-05-05T16:00:00",
+        ))
+        trade = get_trade(conn, trade_id)
+        assert trade is not None
+        assert trade.state == "partial_exited"
+        assert trade.current_size == 70.0
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Legacy tests (rewritten for B.4): fill-based ledger + state semantics.
+# ---------------------------------------------------------------------------
+
+
+def test_full_exit_transitions_state_to_closed_and_computes_r(tmp_path: Path):
+    """Full exit at 2R closes the trade and returns realized_pnl + r_multiple."""
+    conn = _seed_v14(tmp_path)
+    try:
+        trade_id = _seed_active_trade(
+            conn, ticker="AAPL", state="managing", current_size=10.0,
+            entry_price=180.0, initial_stop=170.0,
+        )
         result = record_exit(conn, ExitRequest(
-            trade_id=tid, exit_date="2026-04-22", exit_price=200.0,
+            trade_id=trade_id, exit_date="2026-04-22", exit_price=200.0,
             shares=10, reason=ExitReason.TARGET, notes=None,
             rationale="target hit", event_ts="2026-04-22T15:30:00",
         ))
         assert result.realized_pnl == pytest.approx(200.0)
         assert result.r_multiple == pytest.approx(2.0)
         assert result.fully_closed is True
-        assert get_trade(conn, tid).status == "closed"
+        trade = get_trade(conn, trade_id)
+        assert trade is not None
+        assert trade.state == "closed"
     finally:
         conn.close()
 
 
 def test_partial_exit_keeps_open(tmp_path: Path):
-    conn = ensure_schema(tmp_path / "swing.db")
+    """Partial trim leaves remaining size and transitions to partial_exited."""
+    conn = _seed_v14(tmp_path)
     try:
-        tid = _seed(conn)
+        trade_id = _seed_active_trade(
+            conn, ticker="AAPL", state="managing", current_size=10.0,
+            entry_price=180.0, initial_stop=170.0,
+        )
         result = record_exit(conn, ExitRequest(
-            trade_id=tid, exit_date="2026-04-18", exit_price=185.0,
+            trade_id=trade_id, exit_date="2026-04-18", exit_price=185.0,
             shares=5, reason=ExitReason.MANUAL, notes=None,
             rationale="trim", event_ts="2026-04-18T15:00:00",
         ))
         assert result.fully_closed is False
-        assert get_trade(conn, tid).status == "open"
         assert result.r_multiple == pytest.approx(0.5)
         assert result.realized_pnl == pytest.approx(25.0)
+        trade = get_trade(conn, trade_id)
+        assert trade is not None
+        assert trade.state == "partial_exited"
+        assert trade.current_size == 5.0
     finally:
         conn.close()
 
 
 def test_exit_loss(tmp_path: Path):
-    conn = ensure_schema(tmp_path / "swing.db")
+    """Stop-out at -1R returns negative pnl + -1.0 R."""
+    conn = _seed_v14(tmp_path)
     try:
-        tid = _seed(conn)
+        trade_id = _seed_active_trade(
+            conn, ticker="AAPL", state="managing", current_size=10.0,
+            entry_price=180.0, initial_stop=170.0,
+        )
         result = record_exit(conn, ExitRequest(
-            trade_id=tid, exit_date="2026-04-18", exit_price=170.0,
+            trade_id=trade_id, exit_date="2026-04-18", exit_price=170.0,
             shares=10, reason=ExitReason.STOP_HIT, notes=None,
             rationale="stopped", event_ts="2026-04-18T15:00:00",
         ))
@@ -73,12 +278,16 @@ def test_exit_loss(tmp_path: Path):
 
 
 def test_overfill_raises(tmp_path: Path):
-    conn = ensure_schema(tmp_path / "swing.db")
+    """Exit shares > current_size must raise ValueError."""
+    conn = _seed_v14(tmp_path)
     try:
-        tid = _seed(conn)
+        trade_id = _seed_active_trade(
+            conn, ticker="AAPL", state="managing", current_size=10.0,
+            entry_price=180.0, initial_stop=170.0,
+        )
         with pytest.raises(ValueError, match="exceeds remaining"):
             record_exit(conn, ExitRequest(
-                trade_id=tid, exit_date="2026-04-18", exit_price=185.0,
+                trade_id=trade_id, exit_date="2026-04-18", exit_price=185.0,
                 shares=11, reason=ExitReason.MANUAL, notes=None,
                 rationale="overfill", event_ts="2026-04-18T15:00:00",
             ))
@@ -87,12 +296,16 @@ def test_overfill_raises(tmp_path: Path):
 
 
 def test_invalid_reason_raises(tmp_path: Path):
-    conn = ensure_schema(tmp_path / "swing.db")
+    """Non-ExitReason reason argument must raise ValueError."""
+    conn = _seed_v14(tmp_path)
     try:
-        tid = _seed(conn)
+        trade_id = _seed_active_trade(
+            conn, ticker="AAPL", state="managing", current_size=10.0,
+            entry_price=180.0, initial_stop=170.0,
+        )
         with pytest.raises(ValueError):
             record_exit(conn, ExitRequest(
-                trade_id=tid, exit_date="2026-04-18", exit_price=185.0,
+                trade_id=trade_id, exit_date="2026-04-18", exit_price=185.0,
                 shares=5, reason="invalid_reason",  # type: ignore[arg-type]
                 notes=None, rationale="x", event_ts="2026-04-18T15:00:00",
             ))
