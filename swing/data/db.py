@@ -75,14 +75,39 @@ def _apply_migration(conn: sqlite3.Connection, sql_path: Path) -> None:
     would leave the production DB at an undefined version with no clean
     forward path. Wrap execution in try/except to guarantee rollback on
     failure; re-raise so run_migrations() abort behavior is preserved.
+
+    Hotfix 2026-05-05 (Sub-C integration layer; Sub-A territory exception
+    authorized per chained-branch posture): toggle foreign_keys=OFF before
+    executescript + restore prior value after. Migration 0014's step 10
+    (CREATE-COPY-DROP-RENAME on trades) triggers ON DELETE CASCADE on
+    fills.trade_id + trade_events.trade_id when foreign_keys=ON, wiping
+    the just-populated fills table (5 rows) AND the audit-log trade_events
+    (11 rows in production) during the table rebuild. Sub-A T10 test passed
+    because the test fixture's connection had foreign_keys=OFF (sqlite3's
+    default for fresh connections); production has foreign_keys=ON
+    (db.ensure_schema sets it explicitly). Per SQLite docs §11.2, table-
+    rebuild migrations should disable foreign_keys for the duration. Apply
+    the fix at the runner level so all current + future migrations inherit
+    the discipline.
+
+    PRAGMA foreign_keys is a no-op inside an active transaction. The PRAGMA
+    must be set when no transaction is open; sqlite3.Connection.executescript
+    issues an implicit COMMIT before running its script, so the connection
+    is in autocommit mode at the moment of the PRAGMA call.
     """
     sql = sql_path.read_text(encoding="utf-8")
+    prior_fk = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+    conn.execute("PRAGMA foreign_keys=OFF")
     try:
         conn.executescript(sql)
         conn.commit()
     except Exception:
         conn.rollback()
         raise
+    finally:
+        conn.execute(
+            "PRAGMA foreign_keys=ON" if prior_fk else "PRAGMA foreign_keys=OFF"
+        )
 
 
 def _preflight_migration_0004(conn: sqlite3.Connection) -> None:

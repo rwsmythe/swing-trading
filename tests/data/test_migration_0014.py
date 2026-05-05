@@ -353,3 +353,102 @@ def test_in_flight_migration_vir_dhc_cc_you(tmp_path):
         "FROM trades WHERE ticker='VIR'"
     ).fetchone()
     assert row == (None, None, None)
+
+
+def test_migration_0014_preserves_fills_and_trade_events_under_foreign_keys_on(tmp_path):
+    """Hotfix regression: with PRAGMA foreign_keys=ON (production setting),
+    migration 0014's table-rebuild step (DROP TABLE trades) must NOT cascade-
+    delete the just-populated fills + pre-existing trade_events.
+
+    Pre-hotfix root cause: step 10's DROP TABLE trades (during the CREATE-COPY-
+    DROP-RENAME rebuild) triggers ON DELETE CASCADE on fills.trade_id and
+    trade_events.trade_id when foreign_keys=ON. Production wiped 5 fills (4
+    entry-fills synthesized in step 2 + 1 exit-fill from step 3) AND all 11
+    trade_events audit-log rows during the rebuild.
+
+    Sub-A T10 test passed because its fixture connection had foreign_keys=OFF
+    (sqlite3 default for fresh connections); the test couldn't discriminate
+    "fills/trade_events preserved under FK enforcement" from "fills/trade_events
+    preserved because CASCADE didn't fire." Production's ensure_schema sets
+    foreign_keys=ON explicitly, so the cascade fired in production.
+
+    Hotfix lands in `swing/data/db.py:_apply_migration` — toggles
+    foreign_keys=OFF before executescript + restores prior value after. Per
+    SQLite docs §11.2, table-rebuild migrations should disable FK enforcement
+    for the duration. Applies to all current + future migrations through the
+    runner.
+
+    Discriminating shape: this test sets foreign_keys=ON BEFORE the migration.
+    Pre-hotfix: post-migration fills count == 0, trade_events count == 0
+    (cascade wiped both). Post-hotfix: fills count == 2 (1 entry + 1 exit),
+    trade_events count == 2 (preserved through table-rebuild).
+    """
+    from swing.data.db import run_migrations
+
+    trades = [(1, "VIR", "2026-04-20", 11.30, 2, 10.30, 10.30, "closed")]
+    exits_data = [(1, 1, "2026-04-24", 10.30, 2, "stop-hit", -2.0, -1.0, None)]
+    conn, db = _seed_v13_with_trades_and_exits(tmp_path, trades, exits_data)
+
+    # Seed audit-log entries — Sub-A T10 fixture didn't have these, which is
+    # why production loss of 11 trade_events rows wasn't caught at test time.
+    conn.executemany(
+        "INSERT INTO trade_events (trade_id, ts, event_type, payload_json, "
+        "rationale, notes) VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            (1, "2026-04-20T06:58:55", "entry", "{}", "Other", None),
+            (1, "2026-04-24T04:52:23", "exit", "{}", "Stop hit, auto-sell", None),
+        ],
+    )
+    # Mark VIR reviewed so step 5's state-backfill assigns 'reviewed' (matches
+    # the production-equivalent state for the in-flight trade).
+    conn.execute(
+        "UPDATE trades SET reviewed_at = '2026-05-04T10:00:00' WHERE id = 1"
+    )
+    conn.commit()
+
+    # Production-equivalent FK enforcement (db.ensure_schema sets this ON).
+    conn.execute("PRAGMA foreign_keys=ON")
+    assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+
+    run_migrations(conn, target_version=14, backup_dir=tmp_path)
+
+    # Discriminating asserts: data preserved across step-10 trades-rebuild.
+    fill_count = conn.execute("SELECT COUNT(*) FROM fills").fetchone()[0]
+    assert fill_count == 2, (
+        f"Expected 2 fills (1 entry + 1 exit) preserved across trades-rebuild; "
+        f"got {fill_count}. Pre-hotfix value would be 0 due to CASCADE on DROP TABLE."
+    )
+
+    event_count = conn.execute("SELECT COUNT(*) FROM trade_events").fetchone()[0]
+    assert event_count == 2, (
+        f"Expected 2 trade_events preserved across trades-rebuild; got "
+        f"{event_count}. Pre-hotfix value would be 0 due to CASCADE on DROP TABLE."
+    )
+
+    # Verify the runner restored foreign_keys=ON after migration (the hotfix
+    # toggles OFF for the duration; restore is part of the contract).
+    assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1, (
+        "Hotfix runner must restore prior foreign_keys value (ON in this test) "
+        "after migration completes."
+    )
+
+
+def test_migration_runner_preserves_foreign_keys_off_state(tmp_path):
+    """Companion to the FK-on regression: when caller sets foreign_keys=OFF
+    before migration, runner must NOT silently re-enable it. Hotfix's restore
+    semantics: save prior value + restore exactly that value (don't assume ON).
+    """
+    from swing.data.db import run_migrations
+
+    db = tmp_path / "test_fk_off.db"
+    conn = sqlite3.connect(db)
+    conn.execute("PRAGMA foreign_keys=OFF")
+    assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 0
+
+    run_migrations(conn, target_version=14, backup_dir=tmp_path)
+
+    # Runner must have restored the prior OFF value, not silently set ON.
+    assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 0, (
+        "Hotfix runner must restore prior foreign_keys value (OFF in this test) "
+        "after migration completes; must NOT silently force ON."
+    )
