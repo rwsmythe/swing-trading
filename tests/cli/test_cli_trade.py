@@ -18,6 +18,26 @@ def _setup(tmp_path: Path):
     return runner, cfg
 
 
+# Phase 7 Sub-B B.8 — minimal pre-trade-field flag set required by the
+# entry-create validator (`OPERATION_REQUIRED_FIELDS["entry_create"]` +
+# conditional rules). Helper keeps legacy tests focused on what they
+# actually assert (rationale taxonomy, exit/stop-adjust semantics, etc.)
+# without each test repeating 18 flags.
+_PRE_TRADE_OK_FLAGS: tuple[str, ...] = (
+    "--thesis", "Setup meets criteria",
+    "--why-now", "Trigger today",
+    "--invalidation", "Close below stop",
+    "--expected-scenario", "Run to target",
+    "--premortem-technical", "Stop hits on weak hold",
+    "--premortem-market-sector", "Sector rolls over",
+    "--premortem-execution", "Slippage on entry",
+    "--emotional-state", "calm",
+    "--manual-entry-confidence", "normal",
+    "--market-regime", "Bullish",
+    "--catalyst", "technical_only",
+)
+
+
 def test_trade_entry_then_list(tmp_path: Path):
     runner, cfg = _setup(tmp_path)
     result = runner.invoke(main, [
@@ -25,6 +45,7 @@ def test_trade_entry_then_list(tmp_path: Path):
         "--ticker", "AAPL", "--entry-date", "2026-04-15",
         "--entry-price", "180.0", "--shares", "5",
         "--initial-stop", "170.0", "--rationale", "vcp-breakout",
+        *_PRE_TRADE_OK_FLAGS,
     ])
     assert result.exit_code == 0, result.output
     assert "trade id" in result.output.lower() or "entered" in result.output.lower()
@@ -60,6 +81,7 @@ def test_trade_entry_without_hypothesis_flag_stores_null(tmp_path: Path):
         "--ticker", "BBB", "--entry-date", "2026-04-15",
         "--entry-price", "100.0", "--shares", "1",
         "--initial-stop", "90.0", "--rationale", "vcp-breakout",
+        *_PRE_TRADE_OK_FLAGS,
     ])
     assert result.exit_code == 0, result.output
     assert _read_hypothesis_label(cfg, "BBB") is None
@@ -74,6 +96,7 @@ def test_trade_entry_with_hypothesis_flag_stores_label(tmp_path: Path):
         "--entry-price", "100.0", "--shares", "1",
         "--initial-stop", "90.0", "--rationale", "vcp-breakout",
         "--hypothesis", "Sub-A+ candidate meeting TT + price threshold",
+        *_PRE_TRADE_OK_FLAGS,
     ])
     assert result.exit_code == 0, result.output
     assert _read_hypothesis_label(cfg, "CCC") == \
@@ -90,6 +113,7 @@ def test_trade_list_shows_remaining_shares_after_partial_exit(tmp_path: Path):
         "--ticker", "VIR", "--entry-date", "2026-04-20",
         "--entry-price", "10.76", "--shares", "2",
         "--initial-stop", "8.26", "--rationale", "near-trigger-breakout",
+        *_PRE_TRADE_OK_FLAGS,
     ])
     runner.invoke(main, [
         "--config", str(cfg), "trade", "exit",
@@ -105,9 +129,11 @@ def test_trade_list_shows_remaining_shares_after_partial_exit(tmp_path: Path):
     vir_lines = [ln for ln in result.output.splitlines() if "VIR" in ln]
     assert len(vir_lines) == 1, f"expected 1 VIR row, got {vir_lines}"
     row = vir_lines[0]
-    # The shares column is the token immediately before "open".
+    # B.7 column rewrite: the rightmost column is now the lifecycle state
+    # ('partial_exited' after a partial exit, formerly 'open'). The shares
+    # column is the token immediately before that state.
     parts = row.split()
-    sh_idx = parts.index("open") - 1
+    sh_idx = parts.index("partial_exited") - 1
     assert parts[sh_idx] == "1", (
         f"trade list showed {parts[sh_idx]} shares after partial exit; "
         f"expected 1. full row: {row!r}"
@@ -121,6 +147,7 @@ def test_trade_exit(tmp_path: Path):
         "--ticker", "AAPL", "--entry-date", "2026-04-15",
         "--entry-price", "180.0", "--shares", "5",
         "--initial-stop", "170.0", "--rationale", "aplus-setup",
+        *_PRE_TRADE_OK_FLAGS,
     ])
     result = runner.invoke(main, [
         "--config", str(cfg), "trade", "exit",
@@ -139,6 +166,7 @@ def test_trade_stop_adjust_blocked_when_lowering(tmp_path: Path):
         "--ticker", "AAPL", "--entry-date", "2026-04-15",
         "--entry-price", "180.0", "--shares", "5",
         "--initial-stop", "170.0", "--rationale", "aplus-setup",
+        *_PRE_TRADE_OK_FLAGS,
     ])
     result = runner.invoke(main, [
         "--config", str(cfg), "trade", "stop-adjust",
@@ -157,6 +185,7 @@ def test_trade_stop_adjust_persists_notes(tmp_path: Path):
         "--ticker", "AAPL", "--entry-date", "2026-04-15",
         "--entry-price", "180.0", "--shares", "5",
         "--initial-stop", "170.0", "--rationale", "aplus-setup",
+        *_PRE_TRADE_OK_FLAGS,
     ])
     result = runner.invoke(main, [
         "--config", str(cfg), "trade", "stop-adjust",
@@ -222,6 +251,7 @@ def test_trade_entry_cli_other_requires_notes(tmp_path: Path):
         "--entry-price", "180.0", "--shares", "5",
         "--initial-stop", "170.0", "--rationale", "other",
         "--notes", "unclassified — spec-break test",
+        *_PRE_TRADE_OK_FLAGS,
     ])
     assert good.exit_code == 0, good.output
 
@@ -239,6 +269,7 @@ def test_trade_stop_adjust_cli_rejects_invalid_rationale(tmp_path: Path):
         "--ticker", "AAPL", "--entry-date", "2026-04-15",
         "--entry-price", "180.0", "--shares", "5",
         "--initial-stop", "170.0", "--rationale", "aplus-setup",
+        *_PRE_TRADE_OK_FLAGS,
     ])
     result = runner.invoke(main, [
         "--config", str(cfg), "trade", "stop-adjust",
@@ -259,6 +290,7 @@ def test_trade_stop_adjust_cli_other_requires_notes(tmp_path: Path):
         "--ticker", "AAPL", "--entry-date", "2026-04-15",
         "--entry-price", "180.0", "--shares", "5",
         "--initial-stop", "170.0", "--rationale", "aplus-setup",
+        *_PRE_TRADE_OK_FLAGS,
     ])
     bad = runner.invoke(main, [
         "--config", str(cfg), "trade", "stop-adjust",
@@ -288,6 +320,7 @@ def test_trade_exit_cli_rejects_rationale_option(tmp_path: Path):
         "--ticker", "AAPL", "--entry-date", "2026-04-15",
         "--entry-price", "180.0", "--shares", "5",
         "--initial-stop", "170.0", "--rationale", "aplus-setup",
+        *_PRE_TRADE_OK_FLAGS,
     ])
     result = runner.invoke(main, [
         "--config", str(cfg), "trade", "exit",
@@ -369,6 +402,7 @@ def test_trade_exit_cli_persists_reason_as_rationale(tmp_path: Path):
         "--ticker", "AAPL", "--entry-date", "2026-04-15",
         "--entry-price", "180.0", "--shares", "5",
         "--initial-stop", "170.0", "--rationale", "aplus-setup",
+        *_PRE_TRADE_OK_FLAGS,
     ])
     result = runner.invoke(main, [
         "--config", str(cfg), "trade", "exit",
@@ -389,3 +423,193 @@ def test_trade_exit_cli_persists_reason_as_rationale(tmp_path: Path):
     finally:
         conn.close()
     assert exit_ev.rationale == "target"
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-B B.8 — CLI new entry options for 18 pre-trade fields
+# ---------------------------------------------------------------------------
+
+
+def _entry_args_minus(*omit: str) -> list[str]:
+    """Return _PRE_TRADE_OK_FLAGS as a list with the given flag(s) (and their
+    associated value tokens) removed. Used by tests that need to exercise the
+    "missing field" gate without re-typing the full 18-flag set."""
+    flags = list(_PRE_TRADE_OK_FLAGS)
+    out: list[str] = []
+    i = 0
+    while i < len(flags):
+        if flags[i] in omit:
+            # skip the flag + its value
+            i += 2
+            continue
+        out.append(flags[i])
+        out.append(flags[i + 1])
+        i += 2
+    return out
+
+
+def test_cli_trade_entry_rejects_missing_thesis(tmp_path: Path):
+    """B.8: CLI entry without --thesis exits non-zero with the missing flag
+    surfaced in stderr/output. The validator's MissingPreTradeFieldsException
+    is translated to a click.UsageError with the operator-facing flag name."""
+    runner, cfg = _setup(tmp_path)
+    result = runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "TST", "--entry-date", "2026-04-15",
+        "--entry-price", "10.0", "--shares", "1",
+        "--initial-stop", "9.0", "--rationale", "vcp-breakout",
+        *_entry_args_minus("--thesis"),
+    ])
+    assert result.exit_code != 0, result.output
+    assert "--thesis" in result.output, result.output
+
+
+def test_cli_trade_entry_succeeds_with_all_pre_trade_fields(tmp_path: Path):
+    """B.8: CLI entry with the full 18+1 Phase 7 flag set succeeds and
+    persists every pre-trade field on the trades row."""
+    import tomllib
+    from swing.data.db import connect
+
+    runner, cfg = _setup(tmp_path)
+    result = runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "DDD", "--entry-date", "2026-04-15",
+        "--entry-price", "100.0", "--shares", "3",
+        "--initial-stop", "90.0", "--rationale", "vcp-breakout",
+        "--entry-path", "cli_manual",
+        *_PRE_TRADE_OK_FLAGS,
+    ])
+    assert result.exit_code == 0, result.output
+
+    cfg_data = tomllib.loads(Path(cfg).read_text())
+    db_path = Path(cfg_data["paths"]["db_path"])
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            """SELECT id, thesis, why_now, invalidation_condition,
+                      expected_scenario, premortem_technical,
+                      premortem_market_sector, premortem_execution,
+                      market_regime, catalyst,
+                      emotional_state_pre_trade, event_risk_present,
+                      gap_risk_present, trade_origin
+               FROM trades WHERE ticker = 'DDD'""",
+        ).fetchone()
+        # manual_entry_confidence is a fills-table column (B.3 atomic
+        # entry-fill insert); read it from the entry fill row.
+        fill_row = conn.execute(
+            "SELECT manual_entry_confidence FROM fills "
+            "WHERE trade_id = ? AND action = 'entry'",
+            (row[0],),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    (_id, thesis, why_now, inv, exp_sc, pm_t, pm_ms, pm_e,
+     regime, cat, emo, ev_r, gap_r, origin) = row
+    assert thesis == "Setup meets criteria"
+    assert why_now == "Trigger today"
+    assert inv == "Close below stop"
+    assert exp_sc == "Run to target"
+    assert pm_t == "Stop hits on weak hold"
+    assert pm_ms == "Sector rolls over"
+    assert pm_e == "Slippage on entry"
+    assert regime == "Bullish"
+    assert cat == "technical_only"
+    assert emo == '["calm"]'
+    assert ev_r == 0
+    assert gap_r == 0
+    # entry_path 'cli_manual' off-pipeline → trade_origin
+    # 'manual_off_pipeline' (per derive_trade_origin fallback).
+    assert origin in ("manual_off_pipeline", "cli_manual")
+    assert fill_row is not None
+    assert fill_row[0] == "normal"
+
+
+def test_cli_trade_entry_emotional_state_multiple_flags(tmp_path: Path):
+    """B.8: --emotional-state can be repeated; the CLI persists the click
+    multiple-tuple as a JSON-list TEXT (matching the Trade dataclass field
+    convention)."""
+    import tomllib
+    from swing.data.db import connect
+
+    runner, cfg = _setup(tmp_path)
+    # Use the no-emotion-state baseline + manually-supplied multi-flag.
+    args = _entry_args_minus("--emotional-state")
+    result = runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "EEE", "--entry-date", "2026-04-15",
+        "--entry-price", "100.0", "--shares", "1",
+        "--initial-stop", "90.0", "--rationale", "vcp-breakout",
+        *args,
+        "--emotional-state", "calm",
+        "--emotional-state", "confident",
+    ])
+    assert result.exit_code == 0, result.output
+
+    cfg_data = tomllib.loads(Path(cfg).read_text())
+    db_path = Path(cfg_data["paths"]["db_path"])
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT emotional_state_pre_trade FROM trades WHERE ticker = 'EEE'",
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row[0] == '["calm", "confident"]'
+
+
+def test_cli_trade_entry_event_risk_yes_requires_handling_type_date(
+    tmp_path: Path,
+):
+    """B.8: --event-risk yes without --event-handling/--event-type/--event-date
+    fails with all three missing flags surfaced in the error."""
+    runner, cfg = _setup(tmp_path)
+    result = runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "FFF", "--entry-date", "2026-04-15",
+        "--entry-price", "100.0", "--shares", "1",
+        "--initial-stop", "90.0", "--rationale", "vcp-breakout",
+        *_PRE_TRADE_OK_FLAGS,
+        "--event-risk", "yes",
+        # deliberately omit --event-handling/--event-type/--event-date
+    ])
+    assert result.exit_code != 0, result.output
+    out = result.output
+    assert "--event-handling" in out, out
+    assert "--event-type" in out, out
+    assert "--event-date" in out, out
+
+
+def test_cli_trade_entry_catalyst_other_requires_description(tmp_path: Path):
+    """B.8: --catalyst other without --catalyst-other-description fails with
+    that flag surfaced in the error (conditional-rule enforcement)."""
+    runner, cfg = _setup(tmp_path)
+    args = _entry_args_minus("--catalyst")
+    result = runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "GGG", "--entry-date", "2026-04-15",
+        "--entry-price", "100.0", "--shares", "1",
+        "--initial-stop", "90.0", "--rationale", "vcp-breakout",
+        *args,
+        "--catalyst", "other",
+        # deliberately omit --catalyst-other-description
+    ])
+    assert result.exit_code != 0, result.output
+    assert "--catalyst-other-description" in result.output, result.output
+
+
+def test_cli_trade_entry_force_does_NOT_bypass_pre_trade_gate(tmp_path: Path):
+    """B.8: --force does NOT bypass MissingPreTradeFieldsException (spec §9.3:
+    pre-trade gate is non-bypassable; --force only bypasses soft-warn cap)."""
+    runner, cfg = _setup(tmp_path)
+    result = runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "HHH", "--entry-date", "2026-04-15",
+        "--entry-price", "100.0", "--shares", "1",
+        "--initial-stop", "90.0", "--rationale", "vcp-breakout",
+        "--force",
+        *_entry_args_minus("--thesis"),
+    ])
+    assert result.exit_code != 0, result.output
+    assert "--thesis" in result.output, result.output

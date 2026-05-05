@@ -372,12 +372,103 @@ def trade_group() -> None:
                    "spec §3.6 — canonicalized at persistence). Refused "
                    "if the ticker has no cached classification (V1 "
                    "cached-only; manual fallback deferred to V2).")
+# Phase 7 Sub-B B.8 — 18 pre-trade fields + entry_path discriminator.
+# All non-required at click level; the validator (record_entry's
+# pre-trade gate) is the single source of truth for required-field
+# enforcement. MissingPreTradeFieldsException is caught below and
+# re-raised as click.UsageError with operator-actionable flag names.
+@click.option("--entry-path",
+              type=click.Choice([
+                  "aplus_today_decision", "hyp_recs_button",
+                  "manual_web_form", "cli_manual",
+              ]),
+              default="cli_manual",
+              help="Entry-path origin discriminator (Phase 7 §10).")
+@click.option("--thesis", default=None,
+              help="Pre-trade thesis (required).")
+@click.option("--why-now", default=None,
+              help="Why-now trigger (required).")
+@click.option("--invalidation", default=None,
+              help="Invalidation condition (required).")
+@click.option("--expected-scenario", default=None,
+              help="Expected scenario (required).")
+@click.option("--premortem-technical", default=None,
+              help="Pre-mortem: technical failure mode (required).")
+@click.option("--premortem-market-sector", default=None,
+              help="Pre-mortem: market/sector failure mode (required).")
+@click.option("--premortem-execution", default=None,
+              help="Pre-mortem: execution failure mode (required).")
+@click.option("--premortem-additional", default=None,
+              help="Pre-mortem: additional notes (optional).")
+@click.option("--event-risk", type=click.Choice(["yes", "no"]),
+              default="no",
+              help="Known event risk (earnings, fed, etc.) before exit?")
+@click.option("--event-handling",
+              type=click.Choice([
+                  "avoid_event", "hold_through", "reduce_before",
+                  "exit_before", "not_applicable",
+              ]),
+              default=None,
+              help="How to handle the event (required if --event-risk yes).")
+@click.option("--event-type",
+              type=click.Choice([
+                  "earnings", "fed_meeting", "cpi_release",
+                  "economic_data", "product_announcement",
+                  "legal_ruling", "other",
+              ]),
+              default=None,
+              help="Event type (required if --event-risk yes).")
+@click.option("--event-date", default=None,
+              help="Event date YYYY-MM-DD (required if --event-risk yes).")
+@click.option("--gap-risk", type=click.Choice(["yes", "no"]),
+              default="no",
+              help="Material overnight-gap risk?")
+@click.option("--gap-risk-handling",
+              type=click.Choice([
+                  "accept", "reduce_size", "tight_stop",
+                  "exit_before_close", "not_applicable",
+              ]),
+              default=None,
+              help="Gap-risk handling (required if --gap-risk yes).")
+@click.option("--emotional-state", multiple=True,
+              type=click.Choice([
+                  "calm", "confident", "anxious", "fomo", "revenge",
+                  "hopeful", "doubtful", "distracted",
+              ]),
+              help="Pre-trade emotional state (one or more; required).")
+@click.option("--manual-entry-confidence",
+              type=click.Choice(["high", "normal", "low"]),
+              default=None,
+              help="Manual-entry confidence (required).")
+@click.option("--market-regime",
+              type=click.Choice(["Bullish", "Caution", "Bearish"]),
+              default=None,
+              help="Market regime at entry (required).")
+@click.option("--catalyst",
+              type=click.Choice([
+                  "earnings_driven", "guidance_change", "corporate_action",
+                  "sector_rotation", "macro_event", "sympathy_move",
+                  "product_news", "technical_only", "other",
+              ]),
+              default=None,
+              help="Catalyst class (required).")
+@click.option("--catalyst-other-description", default=None,
+              help="Catalyst description (required if --catalyst other).")
 @click.option("--force", is_flag=True, help="Bypass soft-warn cap (still subject to hard cap)")
 @click.pass_context
 def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
                     watchlist_target, watchlist_stop, rationale, notes,
-                    hypothesis, chart_pattern_operator, force):
+                    hypothesis, chart_pattern_operator,
+                    entry_path, thesis, why_now, invalidation,
+                    expected_scenario, premortem_technical,
+                    premortem_market_sector, premortem_execution,
+                    premortem_additional, event_risk, event_handling,
+                    event_type, event_date, gap_risk, gap_risk_handling,
+                    emotional_state, manual_entry_confidence,
+                    market_regime, catalyst, catalyst_other_description,
+                    force):
     """Record a trade entry."""
+    import json as _json
     from datetime import datetime as _dt
 
     from swing.data.db import connect
@@ -385,9 +476,11 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
         DuplicateOpenPositionException,
         EntryRequest,
         HardCapException,
+        MissingPreTradeFieldsException,
         SoftWarnException,
         record_entry,
     )
+    from swing.trades.origin import EntryPath
 
     # T4: --notes required when --rationale=other (parity with web form).
     if rationale == "other" and not (notes and notes.strip()):
@@ -468,6 +561,13 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
                 cli_sector = cand_row[0] or ""
                 cli_industry = cand_row[1] or ""
 
+        # Phase 7 Sub-B B.8 — convert click-string inputs to EntryRequest
+        # value types: yes/no -> int (0|1), tuple -> JSON-list TEXT, path
+        # string -> EntryPath enum. Defaults: event/gap risk default to 0
+        # (operator must consciously opt in to either risk).
+        emotional_state_json = (
+            _json.dumps(list(emotional_state)) if emotional_state else None
+        )
         req = EntryRequest(
             ticker=ticker.upper(), entry_date=entry_date, entry_price=entry_price,
             shares=shares, initial_stop=initial_stop,
@@ -485,6 +585,26 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
             chart_pattern_classification_pipeline_run_id=cp_anchor,
             sector=cli_sector,
             industry=cli_industry,
+            entry_path=EntryPath(entry_path),
+            thesis=thesis,
+            why_now=why_now,
+            invalidation_condition=invalidation,
+            expected_scenario=expected_scenario,
+            premortem_technical=premortem_technical,
+            premortem_market_sector=premortem_market_sector,
+            premortem_execution=premortem_execution,
+            premortem_additional=premortem_additional,
+            event_risk_present=1 if event_risk == "yes" else 0,
+            event_handling=event_handling,
+            event_type=event_type,
+            event_date=event_date,
+            gap_risk_present=1 if gap_risk == "yes" else 0,
+            gap_risk_handling=gap_risk_handling,
+            emotional_state_pre_trade=emotional_state_json,
+            market_regime=market_regime,
+            catalyst=catalyst,
+            catalyst_other_description=catalyst_other_description,
+            manual_entry_confidence=manual_entry_confidence,
         )
         try:
             result = record_entry(
@@ -493,6 +613,36 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
                 hard_cap=cfg.position_limits.hard_cap_open,
                 force=force,
             )
+        except MissingPreTradeFieldsException as exc:
+            # B.8: structured-exception → click.UsageError mapping.
+            # Source-of-truth for required fields lives in
+            # swing.trades.state.OPERATION_REQUIRED_FIELDS; this layer
+            # only translates field names back to operator-facing flags.
+            flag_map = {
+                "thesis": "--thesis",
+                "why_now": "--why-now",
+                "invalidation_condition": "--invalidation",
+                "expected_scenario": "--expected-scenario",
+                "premortem_technical": "--premortem-technical",
+                "premortem_market_sector": "--premortem-market-sector",
+                "premortem_execution": "--premortem-execution",
+                "emotional_state_pre_trade": "--emotional-state (one or more)",
+                "market_regime": "--market-regime",
+                "catalyst": "--catalyst",
+                "manual_entry_confidence": "--manual-entry-confidence",
+                "event_handling": "--event-handling",
+                "event_type": "--event-type",
+                "event_date": "--event-date",
+                "gap_risk_handling": "--gap-risk-handling",
+                "catalyst_other_description": "--catalyst-other-description",
+            }
+            flags = [
+                flag_map.get(f, f"--{f.replace('_', '-')}")
+                for f in exc.missing_fields
+            ]
+            raise click.UsageError(
+                f"Missing required pre-trade fields: {', '.join(flags)}"
+            ) from exc
         except (SoftWarnException, HardCapException, DuplicateOpenPositionException) as exc:
             raise click.ClickException(str(exc))
     finally:
