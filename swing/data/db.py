@@ -65,9 +65,24 @@ class MigrationBackupRequiredException(RuntimeError):  # noqa: N818  -- name fix
 
 
 def _apply_migration(conn: sqlite3.Connection, sql_path: Path) -> None:
+    """Apply a migration SQL script atomically; rollback on any failure.
+
+    sqlite3.Connection.executescript() leaves the in-script transaction open
+    if a statement fails mid-script — without explicit rollback, a caller that
+    catches the exception can later commit() the partial state and persist a
+    half-applied migration. Phase 7's 0014 migration is large + invasive
+    (table rebuilds, FK cascade, multi-step backfill); a half-applied state
+    would leave the production DB at an undefined version with no clean
+    forward path. Wrap execution in try/except to guarantee rollback on
+    failure; re-raise so run_migrations() abort behavior is preserved.
+    """
     sql = sql_path.read_text(encoding="utf-8")
-    conn.executescript(sql)
-    conn.commit()
+    try:
+        conn.executescript(sql)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def _preflight_migration_0004(conn: sqlite3.Connection) -> None:

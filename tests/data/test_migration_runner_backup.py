@@ -190,3 +190,53 @@ def test_run_migrations_fires_gate_when_current_eq_13(tmp_path):
         )
     finally:
         conn.close()
+
+
+def test_apply_migration_rolls_back_on_partial_failure(tmp_path):
+    """If a migration script fails partway, _apply_migration must rollback so
+    no partial DDL/DML is left in an open transaction.
+
+    Codex R1 Major 3 regression: pre-fix _apply_migration ran executescript()
+    + commit() with no try/except. SQLite leaves the transaction open after a
+    statement failure mid-script; without explicit rollback, a caller that
+    catches the exception and later issues conn.commit() (e.g., a retry path)
+    would persist partial DDL. Phase 7's 0014 migration is large + invasive,
+    so a half-applied state would leave the DB at an undefined version with
+    no clean forward path.
+
+    Discriminating assertion: after the failure, the partial table created
+    by the first DDL statement must NOT exist (rolled back) and the
+    connection must NOT be in an open transaction.
+    """
+    from swing.data.db import _apply_migration, run_migrations
+
+    db = tmp_path / "test.db"
+    conn = sqlite3.connect(db)
+    try:
+        run_migrations(conn, target_version=13)
+        bad_sql = tmp_path / "bad_migration.sql"
+        bad_sql.write_text(
+            "BEGIN TRANSACTION;\n"
+            "CREATE TABLE _phase7_rollback_probe (id INTEGER PRIMARY KEY);\n"
+            "INSERT INTO _phase7_rollback_probe (id) VALUES (1);\n"
+            "-- Force a failure: syntax error / unknown table reference.\n"
+            "INSERT INTO _phase7_nonexistent_table (x) VALUES (1);\n"
+            "COMMIT;\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(sqlite3.OperationalError):
+            _apply_migration(conn, bad_sql)
+        # Discriminator: partial DDL must be rolled back.
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE name='_phase7_rollback_probe'"
+        ).fetchall()
+        assert rows == [], (
+            "Partial DDL must be rolled back; _phase7_rollback_probe should "
+            "not exist post-failure"
+        )
+        # Connection must not be left in an open transaction.
+        assert not conn.in_transaction, (
+            "Connection must not be in an open transaction after rollback"
+        )
+    finally:
+        conn.close()
