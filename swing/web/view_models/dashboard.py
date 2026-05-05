@@ -572,6 +572,7 @@ def build_dashboard(
         OpenPositionsRowVM,
         _open_positions_row_vm,
     )
+    from swing.web.view_models.trades import STATE_BADGE_LABELS
 
     now = datetime.now()
     action_session = action_session_for_run(now).isoformat()
@@ -809,6 +810,7 @@ def build_dashboard(
             price_snapshot=snap,
             remaining_shares=remaining,
             advisories=advisories_tuple,
+            state_badge_label=STATE_BADGE_LABELS.get(t.state, t.state),
         )
         open_trade_rows[t.id] = row_vm
         # Legacy mappings — kept for backward compat with any external consumer.
