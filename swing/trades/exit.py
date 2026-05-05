@@ -21,7 +21,7 @@ from enum import Enum
 
 from swing.data.models import Fill
 from swing.data.repos.fills import insert_fill_with_event
-from swing.data.repos.trades import get_trade
+from swing.data.repos.trades import add_note_event, get_trade
 from swing.trades.derived_metrics import (
     initial_risk_per_share as compute_initial_risk_per_share,
 )
@@ -118,10 +118,21 @@ def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
     else:
         action = "exit"
 
+    # Codex R1 Major 1: fill_datetime must reflect when the EXIT happened
+    # (req.exit_date), not when the operator typed the command (req.event_ts).
+    # CLI sends event_ts=now, so an exit recorded for a past session would
+    # otherwise land at today's clock-time and break tos_import reconciliation
+    # (substr(f.fill_datetime, 1, 10) match) + journal close-date aggregation.
+    # If exit_date is already a full ISO datetime ("YYYY-MM-DDTHH:MM:SS"), use
+    # as-is; otherwise synthesize NYSE-close time (16:00:00) for the date.
+    fill_datetime = (
+        req.exit_date if "T" in req.exit_date
+        else f"{req.exit_date}T16:00:00"
+    )
     fill = Fill(
         fill_id=None,
         trade_id=req.trade_id,
-        fill_datetime=req.event_ts,
+        fill_datetime=fill_datetime,
         action=action,
         quantity=float(req.shares),
         price=float(req.exit_price),
@@ -132,6 +143,15 @@ def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
         fill_id = insert_fill_with_event(
             conn, fill, event_ts=req.event_ts, rationale=req.rationale,
         )
+        # Codex R1 Major 2: req.notes was silently dropped post-Phase-7. The
+        # legacy Exit dataclass had a notes column; fills schema does not.
+        # Persist operator notes via a parallel 'note' trade_event so the
+        # information survives the data-model migration.
+        if req.notes is not None and req.notes.strip():
+            add_note_event(
+                conn, trade_id=req.trade_id, event_ts=req.event_ts,
+                note=req.notes.strip(), rationale=req.rationale,
+            )
         # Drive state transition by (current_state, new_size). Spec §3.3:
         # same-day stop-out from 'entered' MUST step through 'managing' —
         # entered→closed is not in ALLOWED_TRANSITIONS. The double-step is

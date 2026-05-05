@@ -311,3 +311,130 @@ def test_invalid_reason_raises(tmp_path: Path):
             ))
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Codex R1 Major 1 + 2 regression guards — late-recorded exit + notes preservation.
+# ---------------------------------------------------------------------------
+
+
+def test_record_exit_uses_exit_date_for_fill_datetime_not_event_ts(tmp_path: Path):
+    """Codex R1 M1: an exit recorded after-the-fact (operator types it
+    days later) must persist fill_datetime keyed to req.exit_date, not the
+    command's event_ts. Otherwise tos_import substr-date matching breaks
+    and journal close-date aggregation lands the trade on the wrong day.
+
+    Pre-fix: fill_datetime = req.event_ts (today's clock-time).
+    Post-fix: fill_datetime = f"{req.exit_date}T16:00:00" (NYSE close).
+    """
+    conn = _seed_v14(tmp_path)
+    try:
+        trade_id = _seed_active_trade(
+            conn, ticker="LATE", state="managing", current_size=10.0,
+        )
+        # Exit was 2 days ago; operator records it now.
+        record_exit(conn, ExitRequest(
+            trade_id=trade_id, exit_date="2026-05-02", exit_price=11.0,
+            shares=10, reason=ExitReason.TARGET, notes=None,
+            rationale="late record", event_ts="2026-05-04T12:34:56",
+        ))
+        from swing.data.repos.fills import list_fills_for_trade
+        fills = list_fills_for_trade(conn, trade_id)
+        exit_fill = next(f for f in fills if f.action != "entry")
+        assert exit_fill.fill_datetime.startswith("2026-05-02"), (
+            f"fill_datetime must reflect exit_date 2026-05-02, "
+            f"got {exit_fill.fill_datetime!r}"
+        )
+        assert exit_fill.fill_datetime == "2026-05-02T16:00:00"
+    finally:
+        conn.close()
+
+
+def test_record_exit_passes_exit_datetime_through_when_iso_provided(tmp_path: Path):
+    """Codex R1 M1: when caller provides a full ISO datetime as exit_date,
+    use it as-is (don't double-append T16:00:00)."""
+    conn = _seed_v14(tmp_path)
+    try:
+        trade_id = _seed_active_trade(
+            conn, ticker="PRE", state="managing", current_size=10.0,
+        )
+        record_exit(conn, ExitRequest(
+            trade_id=trade_id, exit_date="2026-05-03T13:45:30",
+            exit_price=11.0, shares=10, reason=ExitReason.TARGET, notes=None,
+            rationale="iso datetime", event_ts="2026-05-04T12:00:00",
+        ))
+        from swing.data.repos.fills import list_fills_for_trade
+        fills = list_fills_for_trade(conn, trade_id)
+        exit_fill = next(f for f in fills if f.action != "entry")
+        assert exit_fill.fill_datetime == "2026-05-03T13:45:30"
+    finally:
+        conn.close()
+
+
+def test_record_exit_persists_notes_to_trade_events(tmp_path: Path):
+    """Codex R1 M2: req.notes must NOT be silently dropped. Persist via
+    a 'note' trade_events row parallel to the fill+state writes.
+
+    Pre-fix: notes=req.notes flowed into ExitRequest but record_exit ignored
+    it (fills schema has no notes column; insert_fill_with_event has no
+    notes parameter).
+    Post-fix: a separate add_note_event call lands the operator notes
+    inside the same with-conn block.
+    """
+    conn = _seed_v14(tmp_path)
+    try:
+        trade_id = _seed_active_trade(
+            conn, ticker="NOTE", state="managing", current_size=10.0,
+        )
+        record_exit(conn, ExitRequest(
+            trade_id=trade_id, exit_date="2026-05-05", exit_price=11.0,
+            shares=10, reason=ExitReason.TARGET,
+            notes="Hit overhead supply zone; took the win.",
+            rationale="target", event_ts="2026-05-05T16:00:00",
+        ))
+        rows = conn.execute(
+            """SELECT event_type, payload_json FROM trade_events
+               WHERE trade_id=? AND event_type='note'
+               ORDER BY id""",
+            (trade_id,),
+        ).fetchall()
+        assert len(rows) >= 1, "expected at least one 'note' trade_event"
+        notes_row = next(
+            r for r in rows
+            if "Hit overhead supply zone" in (r[1] or "")
+        )
+        assert notes_row is not None
+
+
+    finally:
+        conn.close()
+
+
+def test_record_exit_empty_notes_omits_note_event(tmp_path: Path):
+    """Codex R1 M2: empty/whitespace notes should NOT trigger a phantom
+    'note' event row (avoids cluttering trade_events with empty payloads)."""
+    conn = _seed_v14(tmp_path)
+    try:
+        trade_id = _seed_active_trade(
+            conn, ticker="EMPT", state="managing", current_size=10.0,
+        )
+        record_exit(conn, ExitRequest(
+            trade_id=trade_id, exit_date="2026-05-05", exit_price=11.0,
+            shares=10, reason=ExitReason.TARGET, notes="   ",
+            rationale="target", event_ts="2026-05-05T16:00:00",
+        ))
+        # State-transition 'note' rows have payload_json containing 'from_state'.
+        # An operator-supplied empty-notes row would have a payload that does
+        # NOT contain 'from_state' (it'd be the bare {"note": "..."} shape from
+        # add_note_event). Discriminating: zero such rows post-fix.
+        operator_note_rows = conn.execute(
+            """SELECT payload_json FROM trade_events WHERE trade_id=?
+               AND event_type='note' AND payload_json NOT LIKE '%from_state%'""",
+            (trade_id,),
+        ).fetchall()
+        assert len(operator_note_rows) == 0, (
+            f"empty/whitespace notes should NOT add an operator-notes row; "
+            f"got {operator_note_rows!r}"
+        )
+    finally:
+        conn.close()
