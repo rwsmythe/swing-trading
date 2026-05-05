@@ -3534,3 +3534,255 @@ def test_c4_entry_form_post_missing_thesis_preserves_catalyst_select(
         f"on re-render; not found. Pre-C.4 (banner-only re-render) had no "
         f"<select> at all — test discriminates."
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-C C.5 — GET /trades/{trade_id} canonical trade-detail page.
+# ---------------------------------------------------------------------------
+
+
+def _c5_seed_phase7_trade(
+    cfg, *, ticker: str, state: str = "entered",
+    premortem_technical: str | None = "False breakout below pivot.",
+    thesis: str = "Trend continuation post-VCP base.",
+    market_regime: str = "Bullish",
+    catalyst: str = "technical_only",
+    trade_origin: str = "pipeline_watch_manual",
+    pre_trade_locked_at: str = "2026-04-15T16:00:00",
+) -> int:
+    """Seed a Phase 7 trade with the 18 pre-trade fields populated.
+
+    Bypasses ``record_entry`` because that path requires PriceCache and a
+    watchlist row; tests just need a row in the ``trades`` table for the
+    GET route to render. Returns the new trade_id.
+    """
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            tid = insert_trade_with_event(conn, Trade(
+                id=None, ticker=ticker, entry_date="2026-04-15",
+                entry_price=100.0, initial_shares=10, initial_stop=90.0,
+                current_stop=90.0, state=state,
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+                trade_origin=trade_origin,
+                pre_trade_locked_at=pre_trade_locked_at,
+                current_size=10.0,
+                thesis=thesis,
+                why_now="Volume contraction tightening.",
+                invalidation_condition="Close below initial stop ends thesis.",
+                expected_scenario="+15% target over 4-6 weeks.",
+                premortem_technical=premortem_technical,
+                premortem_market_sector="Sector rotation.",
+                premortem_execution="Slippage on thin pre-market fill.",
+                event_risk_present=0,
+                gap_risk_present=0,
+                emotional_state_pre_trade='["calm"]',
+                market_regime=market_regime,
+                catalyst=catalyst,
+            ), event_ts="2026-04-15T16:00:00")
+    finally:
+        conn.close()
+    return tid
+
+
+def _c5_seed_legacy_trade(
+    cfg, *, ticker: str, state: str = "entered",
+) -> int:
+    """Seed a legacy (pre-Phase-7) trade where the 18 pre-trade fields are
+    NULL. Discriminating: spec §11.4 requires the Pre-Trade Decision section
+    to be HIDDEN on legacy rows.
+    """
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            tid = insert_trade_with_event(conn, Trade(
+                id=None, ticker=ticker, entry_date="2026-04-15",
+                entry_price=100.0, initial_shares=10, initial_stop=90.0,
+                current_stop=90.0, state=state,
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+                trade_origin="manual_off_pipeline",
+                pre_trade_locked_at="2026-04-15T16:00:00",
+                current_size=10.0,
+                # All 18 pre-trade fields default to None on the dataclass —
+                # leaving them unset persists NULL in the trades row.
+            ), event_ts="2026-04-15T16:00:00")
+    finally:
+        conn.close()
+    return tid
+
+
+def test_c5_trade_detail_route_renders_for_existing_trade(seeded_db):
+    """GET /trades/{id} → 200 + ticker shown."""
+    cfg, cfg_path = seeded_db
+    tid = _c5_seed_phase7_trade(cfg, ticker="C5OK")
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{tid}")
+    assert r.status_code == 200, (
+        f"GET /trades/{tid} must return 200; got {r.status_code}: "
+        f"{r.text[:300]!r}"
+    )
+    assert "C5OK" in r.text
+    # Trade #N header must appear:
+    assert f"#{tid}" in r.text
+
+
+def test_c5_trade_detail_route_404_for_nonexistent(seeded_db):
+    """Unknown trade_id → 404 (not 500)."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/99999")
+    assert r.status_code == 404
+
+
+def test_c5_trade_detail_shows_pre_trade_section_for_phase7_trade(seeded_db):
+    """premortem_technical IS NOT NULL → Pre-Trade Decision section RENDERED.
+
+    Discriminating: pre-C.5 the route + template don't exist; even if a
+    bare summary page were stubbed without the {% if has_pre_trade_data %}
+    guard for an empty section, this test would still fail because the
+    template must echo the operator's typed thesis and lock indicator.
+    """
+    cfg, cfg_path = seeded_db
+    tid = _c5_seed_phase7_trade(
+        cfg, ticker="C5PT",
+        thesis="my-thesis-text-C5",
+        premortem_technical="risk-A",
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{tid}")
+    assert r.status_code == 200
+    text = r.text
+    assert "Pre-Trade Decision" in text
+    assert "my-thesis-text-C5" in text
+    # Lock indicator (icon entity OR text):
+    assert "&#128274;" in text or "Locked at" in text
+
+
+def test_c5_trade_detail_hides_pre_trade_section_for_legacy_null(seeded_db):
+    """Spec §11.4: premortem_technical IS NULL → section HIDDEN entirely.
+
+    Discriminating: legacy trades pre-Phase-7 have NULL premortem_technical
+    and the operator should NOT see an empty/placeholder section. Under a
+    buggy template (no {% if vm.has_pre_trade_data %} guard), the section
+    would render with empty <dd> elements and "Pre-Trade Decision" would
+    appear in the response.
+    """
+    cfg, cfg_path = seeded_db
+    tid = _c5_seed_legacy_trade(cfg, ticker="C5LEG")
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{tid}")
+    assert r.status_code == 200
+    text = r.text
+    assert "Pre-Trade Decision" not in text, (
+        "Legacy trade (premortem_technical IS NULL) must HIDE the "
+        "Pre-Trade Decision section entirely (spec §11.4). Found the "
+        "section heading in response — has_pre_trade_data guard missing "
+        "or bypassed."
+    )
+
+
+def test_c5_trade_detail_renders_audit_log_empty_state(seeded_db):
+    """V1 has no edit-after-lock UI → audit_entries is empty → empty-state
+    message rendered (not omitted)."""
+    cfg, cfg_path = seeded_db
+    tid = _c5_seed_phase7_trade(cfg, ticker="C5AUD")
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{tid}")
+    assert r.status_code == 200
+    text = r.text
+    # Audit-log section header rendered (gated on has_pre_trade_data, which
+    # is True for this seeded row).
+    assert "Audit log" in text, (
+        "Audit-log header must render even when no edits exist (spec §11.4)"
+    )
+    # Empty-state message present:
+    assert "No edits since lock." in text
+
+
+def test_c5_trade_detail_state_badge_rendered(seeded_db):
+    """Phase 7 state badge visible at top of detail page."""
+    cfg, cfg_path = seeded_db
+    tid = _c5_seed_phase7_trade(cfg, ticker="C5BDG", state="managing")
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{tid}")
+    assert r.status_code == 200
+    text = r.text
+    # Either the CSS class with the state, or the human label, or both:
+    assert 'class="state-badge state-managing"' in text or "Managing" in text
+
+
+def test_c5_trade_detail_route_does_not_shadow_existing_subroutes(
+    seeded_db, monkeypatch,
+):
+    """Discriminating: registering /trades/{trade_id} after the more-specific
+    routes (entry/form, exit/form, stop/form, expand, review) prevents URL-
+    pattern shadowing. Pre-fix order check: if /trades/{trade_id} were
+    registered FIRST, FastAPI would match /trades/entry/form to trade_detail
+    with trade_id="entry" → 422 (int conversion fails) or wrong route →
+    test fails.
+    """
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C5SDW")
+    _c3_patch_pricecache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=C5SDW")
+    assert r.status_code == 200, (
+        f"GET /trades/entry/form must STILL resolve to entry_form (not "
+        f"shadowed by /trades/{{trade_id}}); got status {r.status_code}, "
+        f"text {r.text[:300]!r}"
+    )
+    # Form fieldsets render — proves /trades/entry/form did NOT route to
+    # the trade-detail handler (which would render an entirely different
+    # page without the form ticker):
+    assert "C5SDW" in r.text
+    assert 'name="thesis"' in r.text  # form-only field, not in detail page
+
+
+def test_c5_trade_detail_renders_all_5_base_layout_safe_defaults(seeded_db):
+    """Defensive: TradeDetailVM must carry the 5 base-layout safe defaults
+    (CLAUDE.md base-layout VM rule — session_date, stale_banner,
+    price_source_degraded, price_source_degraded_until, ohlcv_source_degraded).
+    Without them, base.html.j2's {% if vm.foo %} dereferences raise
+    UndefinedError → 500. This test discriminates by hitting a route whose
+    template extends base.html.j2; a successful 200 means the base layout
+    rendered without UndefinedError on any of the 5 fields.
+    """
+    cfg, cfg_path = seeded_db
+    tid = _c5_seed_phase7_trade(cfg, ticker="C5BSE")
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{tid}")
+    # If any of the 5 safe defaults were missing, Jinja would raise
+    # UndefinedError at render time and the response would be 500.
+    assert r.status_code == 200, (
+        f"GET /trades/{tid} must return 200; a 500 here means a base-layout "
+        f"VM field is missing on TradeDetailVM (CLAUDE.md base-layout rule). "
+        f"Got: {r.text[:300]!r}"
+    )
+    # Also check the topbar nav links rendered (proves base.html.j2 ran to
+    # completion, not just the {% block content %} body):
+    assert "Dashboard" in r.text
+    assert "Watchlist" in r.text

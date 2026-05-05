@@ -1,0 +1,83 @@
+{#- swing/web/templates/trades/detail.html.j2 -#}
+{#- Phase 7 Sub-C C.5 — canonical trade-detail page.
+
+  Renders:
+    - top-of-page header + state badge
+    - trade summary (entry/stop/origin)
+    - Pre-Trade Decision section gated on `vm.has_pre_trade_data`
+      (legacy NULL handling per spec §11.4)
+    - audit log of `trade_events` rows with event_type='pre_trade_edit'
+
+  Position-management actions (exit / stop / review) remain on the
+  dashboard's open-positions row in V1; this read-only summary page is
+  reachable by direct navigation (operator types /trades/{id}) and by
+  future "view detail" links.
+-#}
+{% extends "base.html.j2" %}
+{% block content %}
+<h1>{{ vm.trade.ticker }} — Trade #{{ vm.trade.id }}</h1>
+
+<div class="trade-state">
+  State: <span class="state-badge state-{{ vm.state }}">{{ vm.state_badge_label }}</span>
+</div>
+
+<dl class="trade-summary">
+  <dt>Entry date</dt><dd>{{ vm.trade.entry_date }}</dd>
+  <dt>Entry price</dt><dd>${{ "%.2f"|format(vm.trade.entry_price) }}</dd>
+  <dt>Initial shares</dt><dd>{{ vm.trade.initial_shares }}</dd>
+  <dt>Initial stop</dt><dd>${{ "%.2f"|format(vm.trade.initial_stop) }}</dd>
+  <dt>Current stop</dt><dd>${{ "%.2f"|format(vm.trade.current_stop) }}</dd>
+  <dt>Trade origin</dt><dd>{{ vm.trade_origin }}</dd>
+</dl>
+
+{% if vm.has_pre_trade_data %}
+  <section class="pre-trade-decision">
+    <h2>Pre-Trade Decision
+      <span class="lock-icon" title="Locked at {{ vm.pre_trade_locked_at }}">&#128274;</span>
+      <span class="locked-at">Locked at {{ vm.pre_trade_locked_at }}</span>
+    </h2>
+    <dl>
+      <dt>Thesis</dt><dd>{{ vm.thesis }}</dd>
+      <dt>Why now</dt><dd>{{ vm.why_now }}</dd>
+      <dt>Invalidation condition</dt><dd>{{ vm.invalidation_condition }}</dd>
+      <dt>Expected scenario</dt><dd>{{ vm.expected_scenario }}</dd>
+      <dt>Premortem &mdash; technical</dt><dd>{{ vm.premortem_technical }}</dd>
+      <dt>Premortem &mdash; market/sector</dt><dd>{{ vm.premortem_market_sector }}</dd>
+      <dt>Premortem &mdash; execution</dt><dd>{{ vm.premortem_execution }}</dd>
+      {% if vm.premortem_additional %}<dt>Premortem &mdash; additional</dt><dd>{{ vm.premortem_additional }}</dd>{% endif %}
+      <dt>Event risk present</dt><dd>{{ "Yes" if vm.event_risk_present else "No" }}</dd>
+      {% if vm.event_risk_present %}
+        {% if vm.event_handling %}<dt>Event handling</dt><dd>{{ vm.event_handling }}</dd>{% endif %}
+        {% if vm.event_type %}<dt>Event type</dt><dd>{{ vm.event_type }}</dd>{% endif %}
+        {% if vm.event_date %}<dt>Event date</dt><dd>{{ vm.event_date }}</dd>{% endif %}
+      {% endif %}
+      <dt>Gap risk present</dt><dd>{{ "Yes" if vm.gap_risk_present else "No" }}</dd>
+      {% if vm.gap_risk_present and vm.gap_risk_handling %}<dt>Gap risk handling</dt><dd>{{ vm.gap_risk_handling }}</dd>{% endif %}
+      <dt>Emotional state</dt><dd>{{ vm.emotional_state_pre_trade }}</dd>
+      {% if vm.manual_entry_confidence %}<dt>Manual entry confidence</dt><dd>{{ vm.manual_entry_confidence }}</dd>{% endif %}
+      <dt>Market regime</dt><dd>{{ vm.market_regime }}</dd>
+      <dt>Catalyst</dt><dd>{{ vm.catalyst }}{% if vm.catalyst_other_description %} &mdash; {{ vm.catalyst_other_description }}{% endif %}</dd>
+    </dl>
+
+    <h3>Audit log (pre-trade edits)</h3>
+    {% if vm.audit_entries %}
+      <ul class="audit-log">
+        {% for entry in vm.audit_entries %}
+          <li>
+            <time>{{ entry.ts }}</time>:
+            <strong>{{ entry.field }}</strong> changed from "{{ entry.old_value }}" to "{{ entry.new_value }}"
+            {% if entry.reason %} &mdash; reason: {{ entry.reason }}{% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="audit-log-empty"><em>No edits since lock.</em></p>
+    {% endif %}
+  </section>
+{% endif %}
+
+{# Position management section TBD — currently rendered via dashboard partials.
+   Phase 7 V1 detail page is read-only summary + Pre-Trade Decision; full
+   position-management surface (exit/stop/review buttons) deferred to V2 or
+   handled via the existing trade-action routes triggered from the dashboard. #}
+{% endblock %}

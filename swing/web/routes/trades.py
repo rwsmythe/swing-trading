@@ -44,6 +44,7 @@ from swing.web.view_models.trades import (
     build_entry_form_vm,
     build_exit_form_vm,
     build_stop_form_vm,
+    build_trade_detail_vm,
 )
 
 log = logging.getLogger(__name__)
@@ -1344,4 +1345,31 @@ def open_position_row(request: Request, trade_id: int):
     )
     return templates.TemplateResponse(
         request, "partials/open_positions_row.html.j2", {"row": row_vm},
+    )
+
+
+# Phase 7 Sub-C C.5 — canonical trade-detail page. REGISTERED LAST so the
+# bare `/trades/{trade_id}` path-template wildcard does NOT shadow the more
+# specific `/trades/entry/form`, `/trades/{trade_id}/exit`, etc. routes
+# above. FastAPI/Starlette matches in registration order; the literal
+# `entry` segment in /trades/entry/form is matched before this route's
+# `{trade_id}` parameter sees the request.
+@router.get("/trades/{trade_id}", response_class=HTMLResponse)
+def trade_detail(request: Request, trade_id: int):
+    """Phase 7 — canonical trade-detail page.
+
+    Renders the Pre-Trade Decision section (gated on
+    ``vm.has_pre_trade_data``), the audit log of pre-trade edits, and a
+    read-only summary of the trade. Position-management actions remain on
+    the dashboard's open-positions row in V1.
+    """
+    cfg = apply_overrides(request.app.state.cfg)
+    templates = request.app.state.templates
+    vm = build_trade_detail_vm(trade_id=trade_id, cfg=cfg)
+    if vm is None:
+        raise HTTPException(
+            status_code=404, detail=f"Trade #{trade_id} not found",
+        )
+    return templates.TemplateResponse(
+        request, "trades/detail.html.j2", {"vm": vm},
     )
