@@ -514,3 +514,38 @@ def test_record_exit_accepts_valid_iso_datetime_with_seconds(tmp_path: Path):
         assert exit_fill.fill_datetime == "2026-05-03T13:45:30.123456"
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Codex R3 Major 1 regression guard — tz-aware datetimes break ordering.
+# ---------------------------------------------------------------------------
+
+
+def test_record_exit_rejects_timezone_aware_iso_datetime(tmp_path: Path):
+    """Codex R3 M1: tz-aware ISO datetimes break the lexicographic-ordering
+    invariant that fills.py ORDER BY fill_datetime relies on (an offset-
+    bearing string like '2026-05-03T13:45:30+05:00' sorts AFTER naive
+    '2026-05-03T09:00:00' despite being earlier in absolute time).
+    Reject the input before persisting.
+
+    Discriminator: pre-fix this string round-tripped silently and broke
+    chronological ordering. Post-fix raises ValueError; no fill written.
+    """
+    conn = _seed_v14(tmp_path)
+    try:
+        trade_id = _seed_active_trade(
+            conn, ticker="TZ", state="managing", current_size=10.0,
+        )
+        with pytest.raises(ValueError, match="timezone-aware"):
+            record_exit(conn, ExitRequest(
+                trade_id=trade_id, exit_date="2026-05-03T13:45:30+05:00",
+                exit_price=11.0, shares=10, reason=ExitReason.TARGET,
+                notes=None, rationale="tz", event_ts="2026-05-04T12:00:00",
+            ))
+        n_non_entry_fills = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE trade_id=? AND action != 'entry'",
+            (trade_id,),
+        ).fetchone()[0]
+        assert n_non_entry_fills == 0
+    finally:
+        conn.close()

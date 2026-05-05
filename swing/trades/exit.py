@@ -89,11 +89,24 @@ def _normalize_exit_date_to_iso(raw: str) -> str:
         raise ValueError(f"exit_date must be a non-empty string; got {raw!r}")
     if "T" in raw:
         try:
-            datetime.fromisoformat(raw)
+            parsed = datetime.fromisoformat(raw)
         except ValueError as exc:
             raise ValueError(
                 f"exit_date {raw!r} contains 'T' but is not a valid ISO datetime"
             ) from exc
+        # Codex R3 Major 1: reject tz-aware datetimes. Storing offset-bearing
+        # values would break the lexicographic-ordering invariant that
+        # fills.py:list_fills_for_trade ORDER BY relies on (e.g.,
+        # "2026-05-03T13:45:30+05:00" sorts AFTER "2026-05-03T09:00:00"
+        # despite being earlier in absolute time), and tos_import's
+        # substr(fill_datetime, 1, 10) date prefix becomes ambiguous.
+        # Phase 7 stores naive datetimes throughout (event_ts,
+        # pre_trade_locked_at all naive); enforce the convention here.
+        if parsed.tzinfo is not None:
+            raise ValueError(
+                f"exit_date {raw!r} is timezone-aware; Phase 7 stores naive "
+                f"ISO datetimes — strip the offset before persisting"
+            )
         return raw
     try:
         date.fromisoformat(raw)
