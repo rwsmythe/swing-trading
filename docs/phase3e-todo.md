@@ -999,15 +999,36 @@ Sourced from operator-commissioned research at `future/swing_trading_journal_ai_
 - Executing-plans brief: `docs/phase6-post-trade-review-executing-plans-brief.md` (`a7c4bda`).
 - Ad-hoc DB cleanups: 2026-05-04 SPY test entries removed (`swing-pre-spy-cleanup-20260504T022932.db`); see orchestrator-context.md.
 
-### Phase 7 — Trade lifecycle state machine + Fills first-class (BRAINSTORM + PLAN SHIPPED 2026-05-04; Sub-A executing-plans BLOCKED on vocabulary operator-confirm)
+### Phase 7 — Trade lifecycle state machine + Fills first-class (Sub-A SHIPPED on worktree 2026-05-04; Sub-B + Sub-C chained from Sub-A)
 
-**Plan-shipped status** (2026-05-04): plan at `docs/superpowers/plans/2026-05-04-phase7-trade-lifecycle-state-machine-plan.md` (commits `18bb35e..251cc35`; 4172 lines; 4 Codex rounds → NO_NEW_CRITICAL_MAJOR with 13 substantive findings + 2 advisory). Writing-plans dispatch brief at `docs/phase7-trade-lifecycle-state-machine-writing-plans-brief.md` (`3f7d5c1`). Plan organizes into 3 sub-dispatches (Sub-A schema/repos/state — 11 tasks, ~87 tests; Sub-B services/CLI — 9 tasks, ~50 tests; Sub-C web/UX — 8 tasks, ~50-60 tests). Default ordering serial A→B→C; B+C parallelizable post-Sub-A merge if scheduling pressure justifies. Total expected new fast tests: +150-250 wide band (per Phase 6 lesson "test-count-projections-bias-high"). Carve-out refined from spec's ~37 to plan's ~45 files (plan-time empirical-audit discovery + cross-cutting test-fixture refactor scope).
+**Sub-A SHIPPED** 2026-05-04 on worktree branch `phase7-sub-a-schema` (HEAD `78c7005`; baseline `eba1625`; 14 commits = 11 task + 2 code-review fix + 1 Codex fix; 2 Codex rounds → NO_NEW_CRITICAL_MAJOR). Migration 0014 verified working on production-shape fixture (VIR/DHC/CC/YOU FIRM values reproduced exactly); 4 preservation invariant fixtures green; backup-runner discipline operationalized with 4 integrity checks + rollback-on-partial-failure. Test delta: +102 new tests (vs ~+87 plan estimate) but 217 failed + 20 errors remain across Sub-B/Sub-C territory (web view models, journal predicate rewrites, exit/stop_adjust/review services, CLI predicate rewrites — see binding-green-gate-vs-carve-out conflict below). Ruff baseline preserved at 80.
 
-**Sub-A pre-conditions (binding):**
-1. Vocabulary operator-confirm (catalyst-9 / emotional_state-8 / event_type-7 — values embedded in migration 0014 CHECK enums; see plan §1).
-2. Production DB backup verified to off-Drive path before migration.
-3. Main at BASELINE_SHA `251cc35` with full fast suite green.
-4. Marker-file Codex-blocking workflow per binding convention 2026-05-02.
+**Chained-branch posture decision** (operator 2026-05-04): Sub-A's binding green gate at T6 was structurally impossible given plan §3 carve-out assigning predicate rewrites to Sub-B/Sub-C. Implementer surfaced the conflict; operator chose option (a) — Sub-A NOT merged to main; Sub-B + Sub-C dispatch from chained worktree branches based on Sub-A; integration `git merge --no-ff phase7-sub-c-web` to main only after Sub-C ships full suite green. **Production DB stays at v13 throughout** (no migration triggered until merge); operator's trade workflows (DHC/CC/YOU stop-adjusts, exits, reviews) continue working unaffected. Lesson captured in orchestrator-context lessons-captured 2026-05-04.
+
+**Sub-B pre-conditions (binding for next dispatch):**
+1. **BASELINE_SHA = `78c7005`** (Sub-A worktree HEAD, NOT main HEAD).
+2. **Worktree branch `phase7-sub-b-services`** based on `phase7-sub-a-schema` (chained branch; will inherit Sub-A's 14 commits).
+3. **Sub-B's done criteria gate is partial-suite-green**: Sub-A-owned + Sub-B-owned tests GREEN; Sub-C-owned tests (web view models, templates) may stay RED until Sub-C ships. NOT full-suite-green at end of Sub-B.
+4. **Shim removal trigger**: Sub-B T4 (exit service rewrite) begins shim deletion — `_ExitLikeRow` / `Exit` stub / `insert_exit_with_event` stub progressively removed as journal/cli consumers migrate; full deletion completes at Sub-C T1 (web view models — final consumer).
+5. **R2 Minor 1 deferral**: Sub-B T1 wires the atomic trade+entry-fill+pre_trade_locked_at flow at the entry-service call site + adds defensive docstring on `insert_trade_with_event` warning callers to follow up with entry-fill insert.
+6. **Vocabulary already locked** (no operator-confirm checkpoint for Sub-B; CHECK enums embedded in 0014).
+7. **Main during Sub-B + Sub-C window**: docs-only edits permitted (operator-aware); no `swing/` or `tests/` touches that could conflict with the chained branches.
+
+**Sub-C pre-conditions (binding for future dispatch after Sub-B):**
+1. **BASELINE_SHA = Sub-B worktree HEAD** (chained from `phase7-sub-b-services`).
+2. **Worktree branch `phase7-sub-c-web`** based on `phase7-sub-b-services`.
+3. **Sub-C's done criteria gate is FULL-SUITE-GREEN** (this is the integration gate; restoring main to green via the final merge).
+4. **Shim deletion completes at Sub-C T1** (web view models — final consumer).
+5. **Operator-witnessed browser verification gate is BINDING for Sub-C end** (per Phase 7 binding convention; HTMX-driven UX cannot be verified by TestClient alone).
+6. **Final integration merge after Sub-C ships green**: `git checkout main && git merge --no-ff phase7-sub-c-web -m "Merge phase7-sub-c-web into main: Phase 7 (Sub-A + Sub-B + Sub-C integrated)"`. Brings all 3 sub-dispatches' work in single merge commit. Production DB triggers 0014 migration on first `swing` invocation post-merge (backup-runner discipline applies).
+
+**Plan-shipped status** (2026-05-04, historical): plan at `docs/superpowers/plans/2026-05-04-phase7-trade-lifecycle-state-machine-plan.md` (commits `18bb35e..251cc35`; 4172 lines; 4 Codex rounds → NO_NEW_CRITICAL_MAJOR with 13 substantive findings + 2 advisory). Writing-plans dispatch brief at `docs/phase7-trade-lifecycle-state-machine-writing-plans-brief.md` (`3f7d5c1`). Plan organizes into 3 sub-dispatches (Sub-A schema/repos/state — 11 tasks; Sub-B services/CLI — 9 tasks; Sub-C web/UX — 8 tasks). Carve-out ~45 files. Total expected new fast tests: +150-250 wide band.
+
+**Sub-A pre-conditions** (historical; SATISFIED at dispatch time):
+1. ✅ Vocabulary operator-confirm (catalyst-9 / emotional_state-8 / event_type-7 — confirmed 2026-05-04).
+2. ✅ Production DB backup verified to off-Drive path before migration.
+3. ✅ Main at BASELINE_SHA `aa2dd60` with full fast suite green at dispatch start.
+4. ✅ Marker-file Codex-blocking workflow per binding convention 2026-05-02.
 
 **Brainstorm-shipped status:** 3 Codex rounds → NO_NEW_CRITICAL_MAJOR. Spec at `docs/superpowers/specs/2026-05-04-phase7-trade-lifecycle-state-machine-design.md` (commits `2c5fd34` initial → `c926f01` 3-round revisions). Brainstorm dispatch brief at `docs/phase7-trade-lifecycle-state-machine-brainstorm-brief.md` (`db6727d` + `9e4a761` hard-conflict-escape addition).
 
