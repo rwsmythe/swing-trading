@@ -3,9 +3,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 
-from swing.data.models import Exit, Trade, WeatherRun
+from swing.data.models import Trade, WeatherRun
+
+# C.12: ``Exit`` import moved under TYPE_CHECKING — the legacy dataclass
+# is no longer constructed or runtime-introspected from this module, but
+# function signatures below still reference ``Exit`` as a structural hint
+# (``list[Exit]`` / ``Iterable[Exit]``). Under PEP 563 (``from __future__
+# import annotations``) annotations are stored as strings; the
+# TYPE_CHECKING guard tells ruff/mypy to resolve ``Exit`` for static
+# analysis without pulling the dataclass at runtime. Consumers pass
+# duck-typed ExitLike-shape objects (the per-module ``_ExitShape``
+# adapters from C.1/C.9/C.10/C.11/C.12) which expose ``.r_multiple``,
+# ``.shares``, ``.trade_id``, ``.exit_date`` — all the behavioral-flag
+# helpers require.
+if TYPE_CHECKING:
+    from swing.data.models import Exit  # noqa: F401
 
 
 @dataclass(frozen=True)

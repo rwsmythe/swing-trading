@@ -619,3 +619,84 @@ def test_analyze_does_not_mutate_db(tmp_path):
         for t in tables
     }
     assert before_counts == after_counts
+
+
+# --- Phase 7 C.12: analyze_trade consumes fills via _ExitShape ---------------
+
+
+def test_c12_analyze_trade_consumes_fills_for_exit_rows(tmp_path):
+    """C.12: analyze_trade builds ExitDisplay rows from the fills repo
+    (via the local _ExitShape adapter), NOT from the legacy
+    list_exits_for_trade shim.
+
+    Discriminating: under buggy unmigrated code that still calls
+    list_exits_for_trade, analyze_trade would AttributeError after C.14
+    deletes the shim. Forward-protective — also asserts the derived-metric
+    math matches the migrated path so a subtle field drift between
+    _ExitShape construction and the shim is caught here.
+    """
+    conn = _conn(tmp_path)
+    tid = _trade(
+        conn, ticker="MIG", entry_date="2026-04-15",
+        entry_price=100.0, shares=10, initial_stop=95.0,
+    )
+    # Single full exit at +2R: pnl = (110-100)*10 = 100; rps = 5;
+    # r_multiple = 100 / (5*10) = 2.0
+    _exit(
+        conn, trade_id=tid, exit_date="2026-04-22", exit_price=110.0,
+        shares=10, reason="target", realized_pnl=100.0, r_multiple=2.0,
+    )
+
+    a = analyze_trade(conn, tid)
+    assert len(a.exits) == 1
+    e = a.exits[0]
+    assert e.exit_date == "2026-04-22"
+    assert e.shares == 10
+    assert e.exit_price == pytest.approx(110.0)
+    assert e.reason == "target"
+    assert e.realized_pnl == pytest.approx(100.0)
+    assert e.r_multiple == pytest.approx(2.0)
+
+    # Verify migration target: importing analyze does NOT pull
+    # list_exits_for_trade as a module attribute (forward-protective
+    # against C.14 deletion of the shim).
+    import swing.journal.analyze as _analyze_mod
+    assert not hasattr(_analyze_mod, "list_exits_for_trade"), (
+        "analyze.py must not retain list_exits_for_trade at module level "
+        "post-C.12 — C.14 will delete the shim and the import would break."
+    )
+
+
+def test_c12_analyze_trade_excludes_entry_fills_from_exits(tmp_path):
+    """C.12: the action != 'entry' filter ensures the synthetic entry-fill
+    written by insert_trade_with_event does NOT surface as an exit.
+
+    Discriminating: under buggy code missing the action != 'entry' filter,
+    the entry fill (action='entry') would appear in result.exits, giving
+    len(a.exits) == 2 (entry-fill + exit-fill) instead of 1.
+    """
+    conn = _conn(tmp_path)
+    tid = _trade(
+        conn, ticker="ENT", entry_date="2026-04-15",
+        entry_price=100.0, shares=10, initial_stop=95.0,
+    )
+    # Sanity: an entry fill exists in the DB (created by _trade helper).
+    entry_fill_count = conn.execute(
+        "SELECT COUNT(*) FROM fills WHERE trade_id=? AND action='entry'",
+        (tid,),
+    ).fetchone()[0]
+    assert entry_fill_count == 1
+
+    # One trim — analyze should see exactly that one as an exit row.
+    _exit(
+        conn, trade_id=tid, exit_date="2026-04-18", exit_price=105.0,
+        shares=4, reason="trim", realized_pnl=20.0, r_multiple=1.0,
+    )
+
+    a = analyze_trade(conn, tid)
+    assert len(a.exits) == 1, (
+        f"expected exactly 1 exit row (the trim); got {len(a.exits)} — "
+        "entry fill leaking into exits indicates missing action!='entry' filter"
+    )
+    assert a.exits[0].reason == "trim"
+    assert a.exits[0].shares == 4
