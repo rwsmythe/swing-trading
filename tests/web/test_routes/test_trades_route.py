@@ -2799,3 +2799,411 @@ def test_entry_form_renders_none_display_when_label_unresolved(
     assert "(none)" in r.text, (
         "template must render (none) display when vm.hypothesis_label is None"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-C C.3 — entry route handles 18 pre-trade fields + gate rejection.
+#
+# Plan §6 C.3. The route accepts 18 new Form() parameters covering the spec
+# §1 / §3.5.1 pre-trade required fields. POSTs supplying all 18 succeed via
+# the existing OOB-swap pattern; POSTs missing any required field raise
+# MissingPreTradeFieldsException at the service layer and the catch path
+# re-renders a 400 row-shaped error fragment naming the missing fields
+# (instead of escaping as a generic 500). Nullable+CHECK columns persist
+# NULL (not "") via `... or None` per CLAUDE.md gotcha 2026-05-04.
+# ---------------------------------------------------------------------------
+
+
+def _c3_seed_watchlist(cfg, *, ticker: str) -> None:
+    """Helper: seed an active watchlist row so build_entry_form_vm + the
+    record_entry watchlist-archive branch both have something to read."""
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker=ticker, added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+
+
+def _c3_all_18_fields(*, ticker: str) -> dict:
+    """Return a POST data dict for /trades/entry that satisfies all 18 Phase
+    7 pre-trade required fields. Tests parameterize off this via dict
+    update/pop to construct discriminating payloads.
+
+    event_risk_present=0 / gap_risk_present=0 keep the conditional rules
+    inert (no event_handling/event_type/event_date/gap_risk_handling
+    required); catalyst='technical_only' keeps the catalyst-other gate inert.
+    """
+    return {
+        "ticker": ticker,
+        "entry_date": "2026-04-29",
+        "entry_price": "180.95",
+        "shares": "5",
+        "initial_stop": "170.00",
+        "rationale": "aplus-setup",
+        # 18 pre-trade fields:
+        "thesis": "Trend continuation post-VCP base.",
+        "why_now": "Volume contraction tightening; pivot just cleared.",
+        "invalidation_condition": "Close below initial stop ends thesis.",
+        "expected_scenario": "+15% target over 4-6 weeks.",
+        "premortem_technical": "False breakout / shakeout below pivot.",
+        "premortem_market_sector": "Sector rotation away from tech.",
+        "premortem_execution": "Slippage on thin pre-market fill.",
+        "premortem_additional": "",  # optional
+        "event_risk_present": "0",
+        "gap_risk_present": "0",
+        "emotional_state_pre_trade": "calm",
+        "manual_entry_confidence": "normal",
+        "market_regime": "Bullish",
+        "catalyst": "technical_only",
+    }
+
+
+def _c3_patch_pricecache(monkeypatch, *, price: float = 180.95) -> None:
+    """Monkeypatch PriceCache so tests don't hit yfinance."""
+    from datetime import datetime
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: PriceSnapshot(
+                ticker=t, price=price, asof=datetime.now(),
+                is_stale=False, source="live",
+            ) for t in tickers
+        },
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+
+def test_entry_post_with_all_18_pre_trade_fields_creates_trade(
+    seeded_db, monkeypatch,
+):
+    """C.3: POST with all 18 pre-trade fields populated → success.
+
+    Discriminating: pre-C.3 the route did not pass the 18 fields to
+    EntryRequest, so record_entry's MissingPreTradeFieldsException would
+    fire even when the form supplied them — silent field drop. Post-fix
+    the trade row persists with state='entered' AND the pre-trade columns
+    populated AS-IS.
+    """
+    from swing.data.db import connect
+
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C3OK")
+    _c3_patch_pricecache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data=_c3_all_18_fields(ticker="C3OK"),
+        )
+    assert r.status_code == 200, (
+        f"happy path must succeed (200 OOB-swap response). Got "
+        f"{r.status_code}: {r.text[:300]!r}"
+    )
+    # Trade row created with state='entered' (not legacy 'managing').
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT state, thesis, market_regime, catalyst, "
+            "       event_risk_present, gap_risk_present "
+            "FROM trades WHERE ticker = ?",
+            ("C3OK",),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None, "trade row must exist after successful POST"
+    assert row[0] == "entered", (
+        f"freshly recorded Phase 7 trade must persist state='entered'; "
+        f"got {row[0]!r}. Sub-A's legacy-data shim defaults legacy "
+        f"unmigrated rows to 'managing' — but record_entry's atomic "
+        f"INSERT path must persist 'entered'."
+    )
+    # Pre-trade fields persisted AS-IS (not silently dropped).
+    assert row[1] == "Trend continuation post-VCP base."
+    assert row[2] == "Bullish"
+    assert row[3] == "technical_only"
+    assert row[4] == 0
+    assert row[5] == 0
+
+
+def test_entry_post_missing_thesis_returns_400_with_field_name(
+    seeded_db, monkeypatch,
+):
+    """C.3 gate-rejection: POST missing thesis → 400 + error names 'thesis'.
+
+    Discriminating: under buggy code (no MissingPreTradeFieldsException
+    catch), the exception escapes to the global 500 handler — status_code
+    would be 500, not 400. Post-fix: 400 + the missing-field name appears
+    in the rendered banner.
+    """
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C3MISS")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C3MISS")
+    data.pop("thesis")  # deliberately omit a required field
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data=data,
+        )
+    assert r.status_code == 400, (
+        f"missing required field must yield 400 (not 500 from uncaught "
+        f"exception). Got {r.status_code}: {r.text[:300]!r}"
+    )
+    assert "thesis" in r.text, (
+        "error banner must name the missing field 'thesis' so the "
+        "operator knows what to fix"
+    )
+    assert "missing required pre-trade fields" in r.text.lower(), (
+        "banner must use the canonical missing-fields message format"
+    )
+
+
+def test_entry_post_event_handling_empty_string_persists_null(
+    seeded_db, monkeypatch,
+):
+    """C.3 `... or None` discriminating test for nullable+CHECK columns.
+
+    CLAUDE.md gotcha 2026-05-04: form-input fallback for a nullable
+    column with a CHECK enum constraint must use `... or None`, NOT
+    `... or ""` — empty string is rejected by the CHECK at INSERT time
+    (sqlite3.IntegrityError → 500); NULL is accepted.
+
+    Setup: event_risk_present=0 (no event present), so the conditional
+    rule does NOT require event_handling. The form posts an empty
+    'event_handling' input (typical browser behavior for an unfilled
+    nullable text input). Buggy code (`event_handling or ""`) would
+    INSERT '' which trips the CHECK enum and 500s. Correct code
+    (`event_handling or None`) persists NULL.
+
+    Post-fix expectation: 200 + persisted column IS NULL.
+    """
+    from swing.data.db import connect
+
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C3NULL")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C3NULL")
+    data["event_handling"] = ""  # empty form input on a nullable+CHECK col
+    data["event_type"] = ""
+    data["event_date"] = ""
+    data["gap_risk_handling"] = ""
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data=data,
+        )
+    assert r.status_code == 200, (
+        f"empty nullable+CHECK form input must persist NULL (not '') so "
+        f"the CHECK enum doesn't fail. Got {r.status_code}: "
+        f"{r.text[:300]!r}"
+    )
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT event_handling, event_type, event_date, gap_risk_handling "
+            "FROM trades WHERE ticker = ?",
+            ("C3NULL",),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] is None, f"event_handling must persist NULL, got {row[0]!r}"
+    assert row[1] is None, f"event_type must persist NULL, got {row[1]!r}"
+    assert row[2] is None, f"event_date must persist NULL, got {row[2]!r}"
+    assert row[3] is None, (
+        f"gap_risk_handling must persist NULL, got {row[3]!r}"
+    )
+
+
+def test_entry_post_catalyst_other_description_empty_persists_null(
+    seeded_db, monkeypatch,
+):
+    """C.3 sibling discriminating test: free-text companion field also
+    persists NULL (not '') from an empty form input.
+
+    catalyst_other_description has no CHECK enum (free text), but the
+    persistence-shape contract is the same: empty input → NULL row, not
+    empty-string row. Otherwise the conditional rule
+    `catalyst='other' → catalyst_other_description required` would
+    silently accept '' as 'present' on a future tightening.
+    """
+    from swing.data.db import connect
+
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C3CDN")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C3CDN")
+    # catalyst != 'other' so no requirement; form input still posts as ''.
+    data["catalyst_other_description"] = ""
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data=data,
+        )
+    assert r.status_code == 200, (
+        f"happy path with empty free-text field must succeed; got "
+        f"{r.status_code}: {r.text[:300]!r}"
+    )
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT catalyst_other_description FROM trades WHERE ticker = ?",
+            ("C3CDN",),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] is None, (
+        f"catalyst_other_description must persist NULL (not ''), got "
+        f"{row[0]!r}"
+    )
+
+
+def test_entry_post_missing_multiple_fields_lists_all_in_banner(
+    seeded_db, monkeypatch,
+):
+    """C.3: when multiple fields are missing, the error banner names ALL
+    of them (not just the first). Discriminating: a buggy implementation
+    that returned only `exc.missing_fields[0]` would pass thesis-only
+    tests but fail this one.
+    """
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C3MULTI")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C3MULTI")
+    data.pop("thesis")
+    data.pop("why_now")
+    data.pop("market_regime")
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data=data,
+        )
+    assert r.status_code == 400
+    body_lower = r.text.lower()
+    for field in ("thesis", "why_now", "market_regime"):
+        assert field in body_lower, (
+            f"banner must name missing field {field!r}; got {r.text[:500]!r}"
+        )
+
+
+def test_entry_post_event_risk_present_1_requires_event_handling(
+    seeded_db, monkeypatch,
+):
+    """C.3 conditional rule: event_risk_present=1 promotes event_handling,
+    event_type, event_date to required. Submitting event_risk_present=1
+    with empty event_* fields → 400 listing the conditionally-required
+    deps (validator's _CONDITIONAL_FIELD_RULES).
+
+    Discriminating: a buggy route that swallowed the conditional gate
+    (only checked the always-required set) would 200 here while
+    persisting state='entered' with NULL event_handling — silently
+    accepting an event-present trade with no event-handling plan.
+    """
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C3EVT")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C3EVT")
+    data["event_risk_present"] = "1"
+    # Leave event_handling / event_type / event_date as ''.
+    data["event_handling"] = ""
+    data["event_type"] = ""
+    data["event_date"] = ""
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data=data,
+        )
+    assert r.status_code == 400, (
+        f"event_risk_present=1 with missing event_* fields must be "
+        f"rejected. Got {r.status_code}: {r.text[:300]!r}"
+    )
+    body_lower = r.text.lower()
+    assert "event_handling" in body_lower
+    assert "event_type" in body_lower
+    assert "event_date" in body_lower
+
+
+def test_entry_post_emotional_state_multi_select_persists_json_list(
+    seeded_db, monkeypatch,
+):
+    """C.3: emotional_state_pre_trade is a multi-select (HTML
+    `<select multiple>`); the route receives it as a list and JSON-
+    encodes for persistence. Matches the CLI shape (swing/cli.py uses
+    `_json.dumps(list(emotional_state))`).
+
+    Discriminating: a buggy route that posted only the first value (or
+    just the comma-joined string) would persist
+    '"calm"' or '"calm,confident"' instead of '["calm","confident"]'.
+    """
+    import json
+    from swing.data.db import connect
+
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C3EMO")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C3EMO")
+    # Replace the single-value default with a list; httpx serializes
+    # list values as repeated form keys, which FastAPI binds to
+    # `list[str] | None = Form(None)`.
+    data["emotional_state_pre_trade"] = ["calm", "confident"]
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data=data,
+        )
+    assert r.status_code == 200, (
+        f"multi-select happy path must succeed; got {r.status_code}: "
+        f"{r.text[:300]!r}"
+    )
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT emotional_state_pre_trade FROM trades WHERE ticker = ?",
+            ("C3EMO",),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    persisted = json.loads(row[0])
+    assert persisted == ["calm", "confident"], (
+        f"multi-select values must persist as JSON list, got {row[0]!r}"
+    )

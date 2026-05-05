@@ -21,11 +21,13 @@ from swing.trades.entry import (
     EntryRationale,
     EntryRequest,
     HardCapException,
+    MissingPreTradeFieldsException,
     SoftWarnException,
     record_entry,
 )
 from swing.trades.equity import current_equity
 from swing.trades.exit import ExitReason, ExitRequest, record_exit
+from swing.trades.origin import EntryPath
 from swing.trades.stop_adjust import (
     StopAdjustRationale,
     StopAdjustRequest,
@@ -278,6 +280,36 @@ def entry_post(
     # the field. Whitelist-coerced via _coerce_origin to defend against
     # tampered POSTs (XSS / open-redirect into the rendered Cancel target).
     origin: str = Form("watchlist"),
+    # Phase 7 Sub-C C.3 — 18 pre-trade required fields (spec §1, §3.5.1).
+    # All `Form(None)` so legacy callers (existing tests, bare cURL) keep
+    # working until C.4 wires the operator-facing fieldset; the
+    # MissingPreTradeFieldsException catch path below re-renders a
+    # banner-only error fragment when any required field is missing.
+    # Nullable+CHECK columns persist via `... or None` (per CLAUDE.md
+    # gotcha 2026-05-04 — empty string would fail the CHECK enum).
+    thesis: str | None = Form(None),
+    why_now: str | None = Form(None),
+    invalidation_condition: str | None = Form(None),
+    expected_scenario: str | None = Form(None),
+    premortem_technical: str | None = Form(None),
+    premortem_market_sector: str | None = Form(None),
+    premortem_execution: str | None = Form(None),
+    premortem_additional: str | None = Form(None),
+    event_risk_present: int | None = Form(None),
+    event_handling: str | None = Form(None),
+    event_type: str | None = Form(None),
+    event_date: str | None = Form(None),
+    gap_risk_present: int | None = Form(None),
+    gap_risk_handling: str | None = Form(None),
+    # Multi-select: HTML `<select multiple name="emotional_state_pre_trade">`
+    # posts repeated keys; FastAPI binds these to a list. JSON-encoded at
+    # the EntryRequest construction site (matches CLI's
+    # `_json.dumps(list(emotional_state))` pattern in swing/cli.py).
+    emotional_state_pre_trade: list[str] | None = Form(None),  # noqa: B008
+    market_regime: str | None = Form(None),
+    catalyst: str | None = Form(None),
+    catalyst_other_description: str | None = Form(None),
+    manual_entry_confidence: str | None = Form(None),
 ):
     cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
@@ -375,6 +407,18 @@ def entry_post(
             origin=origin_coerced,
         )
 
+    # Phase 7 Sub-C C.3 — emotional_state_pre_trade JSON-encoding.
+    # Matches CLI's `_json.dumps(list(emotional_state))` (swing/cli.py).
+    # Empty list / None → None so the validator's required-field check
+    # fires (NULL is treated as missing). Drops empty strings so a
+    # bare-cURL POST submitting "emotional_state_pre_trade=" doesn't
+    # encode `[""]` and dodge the gate.
+    import json as _json
+    emo_clean = [
+        s for s in (emotional_state_pre_trade or []) if s and s.strip()
+    ]
+    emo_json: str | None = _json.dumps(emo_clean) if emo_clean else None
+
     req = EntryRequest(
         ticker=ticker.upper(),
         entry_date=entry_date,
@@ -397,6 +441,31 @@ def entry_post(
         chart_pattern_classification_pipeline_run_id=cp_anchor_value,
         sector=sector,
         industry=industry,
+        # Phase 7 Sub-C C.3 — 18 pre-trade required fields.
+        # ``or None`` coerces empty form strings to NULL so nullable+CHECK
+        # columns don't trip CHECK constraint failures at INSERT time
+        # (CLAUDE.md gotcha 2026-05-04 — Phase 6 mistake_cost_confidence).
+        # Web entries always come from the manual entry form.
+        entry_path=EntryPath.MANUAL_WEB_FORM,
+        thesis=thesis or None,
+        why_now=why_now or None,
+        invalidation_condition=invalidation_condition or None,
+        expected_scenario=expected_scenario or None,
+        premortem_technical=premortem_technical or None,
+        premortem_market_sector=premortem_market_sector or None,
+        premortem_execution=premortem_execution or None,
+        premortem_additional=premortem_additional or None,
+        event_risk_present=event_risk_present,
+        event_handling=event_handling or None,
+        event_type=event_type or None,
+        event_date=event_date or None,
+        gap_risk_present=gap_risk_present,
+        gap_risk_handling=gap_risk_handling or None,
+        emotional_state_pre_trade=emo_json,
+        market_regime=market_regime or None,
+        catalyst=catalyst or None,
+        catalyst_other_description=catalyst_other_description or None,
+        manual_entry_confidence=manual_entry_confidence or None,
     )
 
     conn = connect(cfg.paths.db_path)
@@ -412,6 +481,26 @@ def entry_post(
                 soft_warn=cfg.position_limits.soft_warn_open,
                 hard_cap=cfg.position_limits.hard_cap_open,
                 force=(force == "true"),
+            )
+        except MissingPreTradeFieldsException as exc:
+            # Phase 7 Sub-C C.3 — non-bypassable pre-trade required-field
+            # gate (spec §9.3). Re-render a row-shaped error fragment so
+            # the form's `hx-target="closest tr"` swap places the banner
+            # in place of the form row (consistent with hard-cap /
+            # ValueError paths). The actual fieldset rendering + per-
+            # field error markers land in C.4; for C.3 we just plumb the
+            # missing-fields list into the error message + context so
+            # the catch path doesn't escape as 500.
+            return templates.TemplateResponse(
+                request, "partials/trade_form_error.html.j2",
+                {
+                    "error_message": (
+                        "Missing required pre-trade fields: "
+                        + ", ".join(exc.missing_fields)
+                    ),
+                    "missing_fields": list(exc.missing_fields),
+                },
+                status_code=400,
             )
         except SoftWarnException:
             # First submit at soft cap — render the 2-step confirm fragment.
