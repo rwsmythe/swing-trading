@@ -5,23 +5,13 @@ count_needs_review() and the badge partial renders/hides correctly.
 
 Phase 7 Sub-B B.6 fixture migration: legacy ``Exit(...)``+``insert_exit_with_event``
 seeding rewritten to ``Fill(action='exit')``+``insert_fill_with_event``. The
-``Exit`` dataclass is a stub post Sub-A T3 and raises on construction.
-
-The whole module is skipped: dashboard view-model construction reads
-``trade.status`` (dropped in Sub-A T6), so post-fixture-migration the runtime
-hits ``AttributeError``. Sub-C Task T1 rewrites the dashboard view models
-and unskips this file.
+``Exit`` dataclass was deleted in Sub-C C.14; dashboard view models now use
+``trade.state`` per Sub-C C.7. Module unskipped post-Sub-C C.7.
 """
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-
-pytestmark = pytest.mark.skip(
-    reason="Sub-B B.6: fixture migrated to fills shape; dashboard VM still "
-    "references trade.status — unskip when Sub-C T1 rewrites the dashboard "
-    "view models."
-)
 
 
 @pytest.fixture
