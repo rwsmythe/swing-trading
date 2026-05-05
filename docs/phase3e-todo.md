@@ -999,7 +999,34 @@ Sourced from operator-commissioned research at `future/swing_trading_journal_ai_
 - Executing-plans brief: `docs/phase6-post-trade-review-executing-plans-brief.md` (`a7c4bda`).
 - Ad-hoc DB cleanups: 2026-05-04 SPY test entries removed (`swing-pre-spy-cleanup-20260504T022932.db`); see orchestrator-context.md.
 
-### Phase 7 — Trade lifecycle state machine + Fills first-class (Sub-A SHIPPED on worktree 2026-05-04; Sub-B + Sub-C chained from Sub-A)
+### Phase 7 — Trade lifecycle state machine + Fills first-class (ALL SUB-DISPATCHES SHIPPED on chained worktrees 2026-05-04/05; operator-witnessed browser gate PENDING before integration merge)
+
+**Sub-C SHIPPED** 2026-05-05 on chained worktree `phase7-sub-c-web` (HEAD `b867f00`; baseline `71ddb95`; 24 commits = 17 task-anchored + 7 fix/test polish; 3 Codex rounds → NO_NEW_CRITICAL_MAJOR; suite 1605→1873 passed [+268 net; ~112 truly new + 156 transitioned from RED/errored/skipped → GREEN]; ZERO failed + ZERO errored + 1 skipped (operator-task-gated); ruff baseline 79→78). Final shim deletion at C.14 (Exit class + list_all_exits + list_exits_for_trade + insert_exit_with_event + _ExitLikeRow). Extended scope per operator COA B included web extended consumers + 5 out-of-Phase-7 module migrations (review_log, pipeline, recommendations/hypothesis, equity, review) + CLI list migration + journal aggregation migration + 4 test-fixture migration commits (C.13a-d). One C.3 plan deviation surfaced transparently: kept existing OOB-swap success-path pattern (200 + dashboard chunks) instead of plan sketch's "204 + HX-Redirect" — preserved operator UX + ~20 existing tests; lesson captured. Production bug surfaced + fixed during C.13: soft-warn confirm fragment was missing 18 Phase 7 pre-trade fields (commit `eebb0e6`).
+
+**Operator-witnessed browser verification gate PENDING (FINAL binding step before merge).** 11 surfaces enumerated in executing-plans brief §6 (entry form 7 fieldsets / HTMX submit + HX-Request propagation / success-path / exit form / stop-adjust / review form / state badges 5 colors / dashboard state-aware filtering / dashboard "needs review" badge / cadence cards / no-regressions). Operator runs `swing web` against worktree using `$env:PYTHONPATH = "."; python -m swing.cli web` per editable-install convention; reports PASS/FAIL per surface.
+
+**After gate PASS: integration merge protocol.**
+```bash
+cd c:/Users/rwsmy/swing-trading
+git checkout main
+git pull
+git merge --no-ff phase7-sub-c-web -m "Merge phase7-sub-c-web into main: Phase 7 (Sub-A + Sub-B + Sub-C integrated)"
+git push
+```
+Single merge brings all 53 commits in (Sub-A 14 + Sub-B 15 + Sub-C 24). Production DB triggers 0014 migration on first post-merge `swing` invocation; backup-runner discipline auto-fires (Sub-A T1 wired the 4 integrity checks); 4 production trades (VIR/DHC/CC/YOU) backfilled per Sub-A T10 FIRM values.
+
+**Worktree cleanup (operator-paced post-merge):**
+```bash
+git worktree remove .worktrees/phase7-sub-c-web
+git worktree remove .worktrees/phase7-sub-b-services
+git worktree remove .worktrees/phase7-sub-a-schema
+git branch -d phase7-sub-c-web phase7-sub-b-services phase7-sub-a-schema
+```
+If `.tmp/pytest-of-rwsmy/` ACL-locks block removal: trigger-gated entry below at "2026-05-04 Worktree cleanup script: pytest-of-rwsmy ACL-lock pattern recurrence check" applies — 3 worktree-cleanup data points from Phase 7 inform whether cleanup-script extension is warranted.
+
+---
+
+#### Sub-A SHIPPED status (historical)
 
 **Sub-A SHIPPED** 2026-05-04 on worktree branch `phase7-sub-a-schema` (HEAD `78c7005`; baseline `eba1625`; 14 commits = 11 task + 2 code-review fix + 1 Codex fix; 2 Codex rounds → NO_NEW_CRITICAL_MAJOR). Migration 0014 verified working on production-shape fixture (VIR/DHC/CC/YOU FIRM values reproduced exactly); 4 preservation invariant fixtures green; backup-runner discipline operationalized with 4 integrity checks + rollback-on-partial-failure. Test delta: +102 new tests (vs ~+87 plan estimate) but 217 failed + 20 errors remain across Sub-B/Sub-C territory (web view models, journal predicate rewrites, exit/stop_adjust/review services, CLI predicate rewrites — see binding-green-gate-vs-carve-out conflict below). Ruff baseline preserved at 80.
 
@@ -1259,6 +1286,44 @@ Operator-surfaced 2026-05-04. Three concurrent uses of the official Charles Schw
 - `swing.config.toml` + Phase 5 user-config infrastructure (`cfg.integrations.schwab` section).
 - 2026-05-04 Finviz API integration entry above (shared `swing/integrations/` namespace + secrets-management approach).
 - Schwabdev unofficial Python wrapper: https://github.com/tylerebowers/Schwabdev (candidate library; see V1 sketch + design question 1).
+
+---
+
+## 2026-05-05 Sector/industry tamper vector hardening (BACKLOG; low-stakes)
+
+**Surfaced 2026-05-05 by Phase 7 Sub-C Codex R3 Minor 2** (accepted-deferred per operator triage). Sub-C C.3 entry route hardened the chart_pattern_algo + classification_pipeline_run_id round-trip with route-layer enum + FK existence + cache-content match validation (Codex R1 M1 + R2 M1 fixes). The sector + industry hidden-form snapshots have NO analogous server-side cache/content validation — a forged form POST could persist arbitrary sector/industry strings.
+
+**Why low-stakes:** sector + industry are descriptive metadata only; they do NOT feed gating logic, A+ identification, hypothesis attribution, or trade-decision algorithms (per spec §11.3 + observations across `swing/evaluation/`). Compromising them produces wrong dashboard labels but does not corrupt correctness-critical paths.
+
+**Why worth fixing eventually:** same fix pattern as chart_pattern hardening (route-layer Finviz CSV existence check; reject if (ticker, action_session) snapshot doesn't match cached value). Cleanup pass during a future hardening sprint OR if sector/industry promote to gating logic (e.g., sector concentration limits — Phase 9 Risk_Policy territory).
+
+**Estimated effort if triggered:** 1-2 hours (mirror the chart_pattern route-layer pattern at the trades entry route + corresponding test).
+
+**Cross-references:**
+- Phase 7 Sub-C return report 2026-05-05 (Codex R3 Minor 2 accepted-deferred).
+- `swing/web/routes/trades.py` chart_pattern hardening (commits `117dc97` + `2b9d6f3`) — fix-pattern template.
+- Phase 9 Risk_Policy entity (potential trigger if sector concentration limits ship).
+
+---
+
+## 2026-05-05 Fill.quantity fractional-share forward-compat (BACKLOG; gated on fractional-share feature)
+
+**Surfaced 2026-05-05 by Phase 7 Sub-C Codex R1 Major 3** (accepted-with-rationale per operator triage). `Fill.quantity` is REAL in schema (Sub-A migration 0014); ~7 modules currently truncate to int via `_ExitShape` adapters because all current production code paths produce integer-share fills (`compute_shares()` returns int; CLI/web/trim/exit all submit `shares: int`). Forward-compat concern: when fractional-share trading lands, the int truncation across 7 modules becomes a bug surface.
+
+**Trigger:** future feature work introducing fractional-share trading. Most likely path: Schwab API integration Phase B (broker fills can be fractional in modern broker APIs) OR an explicit operator decision to trade fractional shares.
+
+**V1 scope when triggered:**
+1. Audit the 7 modules with `_ExitShape` int-truncation (enumerated in code comment at `swing/web/view_models/trades.py:_ExitShape` declaration per Sub-C R1 M3 ACCEPTED-with-rationale).
+2. Refactor each consumer to handle REAL `quantity` correctly (display formatting; aggregation arithmetic; CLI parsing; web form input).
+3. Update `compute_shares()` to optionally return float when fractional flag set.
+4. Add Fractional-share-specific test coverage.
+
+**Estimated effort if triggered:** 3-5 hours (mechanical type widening across 7 modules + format polish + tests).
+
+**Cross-references:**
+- Phase 7 Sub-C return report 2026-05-05 (Codex R1 Major 3 accepted-with-rationale).
+- `swing/web/view_models/trades.py:_ExitShape` declaration — code comment enumerates the 7 affected modules.
+- Schwab API integration Phase B (`docs/phase3e-todo.md` 2026-05-04 entry) — likely activation trigger.
 
 ---
 
