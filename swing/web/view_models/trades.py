@@ -15,7 +15,6 @@ from swing.data.repos.fills import (
 )
 from swing.data.repos.trades import (
     get_trade,
-    list_all_exits,
     list_open_trades,
 )
 from swing.data.repos.watchlist import list_active_watchlist
@@ -105,6 +104,36 @@ def _fill_to_exit_like(fill: Fill, trade: Trade) -> _ExitShape:
         realized_pnl=pnl,
         r_multiple=rmult,
     )
+
+
+def _list_all_exitshape_via_fills(conn) -> list[_ExitShape]:
+    """C.10 migration helper: produces the ExitLike collection that
+    ``list_all_exits(conn)`` previously returned, but sourced from fills
+    filtered to non-entry actions. Mirrors the C.9 helpers in
+    ``view_models/dashboard.py`` and ``view_models/journal.py``; the
+    adapter dies in a future cleanup phase when ``equity.py`` refactors
+    to consume Fill directly.
+    """
+    from swing.data.repos.fills import list_all_fills
+    from swing.data.repos.trades import list_closed_trades
+
+    trades_by_id: dict[int, Trade] = {}
+    for t in list_open_trades(conn):
+        if t.id is not None:
+            trades_by_id[t.id] = t
+    for t in list_closed_trades(conn):
+        if t.id is not None:
+            trades_by_id[t.id] = t
+
+    out: list[_ExitShape] = []
+    for f in list_all_fills(conn):
+        if f.action == "entry":
+            continue
+        trade = trades_by_id.get(f.trade_id)
+        if trade is None:
+            continue  # orphan fill — skip (parent trade missing)
+        out.append(_fill_to_exit_like(f, trade))
+    return out
 
 
 @dataclass(frozen=True)
@@ -267,9 +296,10 @@ def build_entry_form_vm(
             wl = list_active_watchlist(conn)
             wl_entry = next((w for w in wl if w.ticker == ticker), None)
             open_trades = list_open_trades(conn)
-            # C.10: migrates with equity.py refactor (legacy shim retained
-            # so current_equity keeps working without touching equity.py).
-            exits = list_all_exits(conn)
+            # C.10: migrated off ``list_all_exits`` shim. ``current_equity``
+            # consumes ExitLike-shape duck-typed input; the local helper
+            # adapts non-entry fills via the C.9/C.10 _ExitShape pattern.
+            exits = _list_all_exitshape_via_fills(conn)
             cash_movements = list_cash(conn)
             # Phase 4 (Task 4): consume `latest_completed_pipeline_run`.
             # Chart-pattern ALWAYS binds to the binding's run_id (both
@@ -653,12 +683,12 @@ def build_cadence_complete_vm(*, review_id: int, cfg: Config) -> CadenceComplete
         # Pre-render the count of closed trades in the period (helper text):
         from datetime import date as _date
 
-        # C.10: migrates with equity.py refactor (legacy shim retained
-        # so the closed-trades-in-period count keeps working without
-        # touching the period-aggregation helpers).
-        from swing.data.repos.trades import list_all_exits, list_closed_trades
+        # C.10: migrated off ``list_all_exits``. The closed-trades-in-period
+        # count walks the local _ExitShape adapter list (same exit_date /
+        # trade_id surface).
+        from swing.data.repos.trades import list_closed_trades
         closed = list_closed_trades(conn)
-        all_exits = list_all_exits(conn)
+        all_exits = _list_all_exitshape_via_fills(conn)
         ps = _date.fromisoformat(review.period_start)
         pe = _date.fromisoformat(review.period_end)
         n = 0

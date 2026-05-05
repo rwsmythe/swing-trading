@@ -336,3 +336,117 @@ class TestCompleteReviewValidation:
                 completed_date="2026-05-02", duration_minutes=10,
                 primary_lesson="Good lesson.", next_period_focus="",
             )
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-C C.10 — review_log repo migrates the two list_all_exits
+# sites (complete_review_atomic step 2 + list_unreviewed_closed_trades)
+# onto a local _list_all_exitshape_via_fills helper. Discriminating
+# regression tests use fills (not the broken legacy Exit constructor)
+# to seed closed-trade data, so they exercise the migration directly.
+# ---------------------------------------------------------------------------
+
+
+def _seed_closed_trade_via_fills(
+    conn: sqlite3.Connection, *, ticker: str,
+    entry_date: str, exit_date: str,
+    entry_price: float = 10.0, exit_price: float = 11.0,
+    shares: int = 10, initial_stop: float = 9.0,
+) -> int:
+    """Seed a closed trade via insert_trade_with_event + insert_fill_with_event.
+
+    Mirrors the legacy _seed_closed_trade helper above, but uses the
+    fills-repo path so it works under Phase 7 (where the legacy Exit
+    constructor raises RuntimeError).
+    """
+    from swing.data.models import Fill
+    from swing.data.repos.fills import insert_fill_with_event
+
+    trade_id = insert_trade_with_event(
+        conn,
+        Trade(
+            id=None, ticker=ticker, entry_date=entry_date,
+            entry_price=entry_price, initial_shares=shares,
+            initial_stop=initial_stop, current_stop=initial_stop,
+            state="entered", watchlist_entry_target=None,
+            watchlist_initial_stop=None, notes=None,
+        ),
+        event_ts=f"{entry_date}T09:30:00",
+    )
+    insert_fill_with_event(
+        conn,
+        Fill(
+            fill_id=None, trade_id=trade_id,
+            fill_datetime=f"{exit_date}T16:00:00",
+            action="exit", quantity=shares, price=exit_price,
+            reason="manual",
+        ),
+        event_ts=f"{exit_date}T16:00:00",
+    )
+    conn.execute(
+        "UPDATE trades SET state='closed' WHERE id=?", (trade_id,),
+    )
+    return trade_id
+
+
+def test_c10_list_unreviewed_closed_trades_consumes_fills(
+    conn: sqlite3.Connection,
+) -> None:
+    """C.10: list_unreviewed_closed_trades sources exits via the local
+    _list_all_exitshape_via_fills helper.
+
+    Discriminating: seed two closed-via-fills trades (one in the window,
+    one outside). Window-7 mode at today=2026-05-10 should return only
+    the OLD ticker. If the migration helper returned empty (no fills
+    surfaced), the function would return zero trades because it filters
+    on relevant exit dates from the helper output.
+    """
+    with conn:
+        _seed_closed_trade_via_fills(
+            conn, ticker="OLD",
+            entry_date="2026-03-01", exit_date="2026-04-25",
+        )  # 15 days old at today=2026-05-10 (>= 7-day window)
+        _seed_closed_trade_via_fills(
+            conn, ticker="NEW",
+            entry_date="2026-04-30", exit_date="2026-05-08",
+        )  # 2 days old (< 7-day window)
+    result = list_unreviewed_closed_trades(
+        conn, window_days=7, today_iso="2026-05-10",
+    )
+    tickers = {t.ticker for t in result}
+    assert "OLD" in tickers, (
+        "C.10 list_unreviewed_closed_trades should see the OLD trade's "
+        "exit fill via the migrated helper. If the assertion fails, the "
+        "helper likely returned empty (no exit_date data → no trade "
+        "qualifies)."
+    )
+    assert "NEW" not in tickers
+
+
+def test_c10_list_all_exitshape_via_fills_helper_filters_entries(
+    conn: sqlite3.Connection,
+) -> None:
+    """C.10 review_log helper test: assert exactly one non-entry shape per
+    trade-with-one-explicit-exit-fill. The synthetic entry fill written by
+    insert_trade_with_event must NOT surface."""
+    from swing.data.repos.review_log import _list_all_exitshape_via_fills
+
+    with conn:
+        _seed_closed_trade_via_fills(
+            conn, ticker="DISCR",
+            entry_date="2026-04-01", exit_date="2026-04-15",
+            entry_price=100.0, exit_price=110.0, shares=10,
+            initial_stop=95.0,
+        )
+    shapes = _list_all_exitshape_via_fills(conn)
+    assert len(shapes) == 1, (
+        f"Adapter returned {len(shapes)} shapes; expected exactly 1 "
+        f"(the explicit exit fill — entry fill must be filtered)."
+    )
+    s = shapes[0]
+    assert s.exit_date == "2026-04-15"
+    assert s.shares == 10
+    # realized_pnl = (110 - 100) * 10 = 100
+    assert s.realized_pnl == pytest.approx(100.0)
+    # rps = 100 - 95 = 5; r = 100 / (5 * 10) = 2.0
+    assert s.r_multiple == pytest.approx(2.0)

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from swing.data.db import ensure_schema
 from swing.data.models import Exit, Trade
 from swing.data.repos.hypothesis import list_hypotheses
@@ -369,5 +371,65 @@ def test_open_trade_does_not_count_toward_sample(tmp_db: Path):
             conn, hypothesis_id=h.id, starting_equity=7500.0,
         )
         assert status.current_sample == 0
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-C C.10 — recommendations/hypothesis.py migrates the
+# list_all_exits site onto a local _list_all_exitshape_via_fills helper.
+# Discriminating: seed a closed trade via fills (not via the broken
+# legacy Exit constructor); verify the tripwire compute sees the exit.
+# ---------------------------------------------------------------------------
+
+
+def test_c10_compute_tripwire_status_consumes_fills(tmp_db: Path) -> None:
+    """C.10: compute_tripwire_status must source closed-trade exits via the
+    local _list_all_exitshape_via_fills helper sourced from non-entry
+    fills. Seeds a single closed losing trade via insert_fill_with_event
+    + UPDATE state='closed', then asserts current_sample == 1 and
+    cumulative_loss reflects the seeded realized PnL.
+
+    Discriminating against (a) helper returning empty (current_sample==0)
+    and (b) helper leaking entry fills (current_sample would be 2 because
+    the synthetic entry fill auto-written by insert_trade_with_event
+    would surface as an extra exit-shape).
+    """
+    from swing.data.models import Fill
+    from swing.data.repos.fills import insert_fill_with_event
+
+    conn = _setup(tmp_db)
+    try:
+        h = _hyp(conn, "Sub-A+ VCP-not-formed")
+        with conn:
+            tid = _add_open_trade(
+                conn, ticker="ABC", entry_date="2026-04-01",
+                label="Sub-A+ VCP-not-formed",
+                entry_price=10.0, initial_stop=9.0, shares=100,
+            )
+            # Stop-out exit at $9 (loss = -$1/sh × 100 sh = -$100, R = -1.0).
+            insert_fill_with_event(
+                conn,
+                Fill(
+                    fill_id=None, trade_id=tid,
+                    fill_datetime="2026-04-02T16:00:00",
+                    action="exit", quantity=100, price=9.0,
+                    reason="stop-hit",
+                ),
+                event_ts="2026-04-02T16:00:00",
+            )
+            conn.execute(
+                "UPDATE trades SET state='closed' WHERE id=?", (tid,),
+            )
+        status = compute_tripwire_status(
+            conn, hypothesis_id=h.id, starting_equity=7500.0,
+        )
+        assert status.current_sample == 1, (
+            f"compute_tripwire_status should see exactly 1 closed-trade "
+            f"sample after the C.10 migration. Got {status.current_sample}; "
+            f"if 0, the migration helper returned empty (no fills surfaced)."
+        )
+        # Realized loss = (9 - 10) * 100 = -100.
+        assert status.cumulative_loss == pytest.approx(-100.0)
     finally:
         conn.close()

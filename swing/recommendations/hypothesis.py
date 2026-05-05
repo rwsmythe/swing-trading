@@ -30,7 +30,86 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import Iterable
 
-from swing.data.models import Candidate, HypothesisRegistryEntry
+from swing.data.models import Candidate, HypothesisRegistryEntry, Trade
+
+
+# C.10 migration helper (was: list_all_exits shim from repos/trades.py).
+# Local _ExitShape adapter mirroring the per-module pattern in web view
+# models + review_log + pipeline runner. Dies in the future cleanup phase
+# when equity.py refactors to consume Fill directly.
+@dataclass(frozen=True)
+class _ExitShape:
+    trade_id: int
+    exit_date: str
+    exit_price: float
+    shares: int
+    reason: str | None
+    realized_pnl: float | None
+    r_multiple: float | None
+
+
+def _list_all_exitshape_via_fills(
+    conn: sqlite3.Connection,
+) -> list[_ExitShape]:
+    """C.10: ExitLike collection sourced from fills (action != 'entry').
+    Per-fill realized_pnl + r_multiple derive on the fly via
+    ``swing.trades.derived_metrics`` — single source of math truth.
+    """
+    from swing.data.repos.fills import list_all_fills
+    from swing.data.repos.trades import (
+        list_closed_trades,
+        list_open_trades,
+    )
+    from swing.trades.derived_metrics import (
+        initial_risk_per_share,
+        r_multiple,
+        realized_pnl,
+    )
+
+    trades_by_id: dict[int, Trade] = {}
+    for t in list_open_trades(conn):
+        if t.id is not None:
+            trades_by_id[t.id] = t
+    for t in list_closed_trades(conn):
+        if t.id is not None:
+            trades_by_id[t.id] = t
+
+    out: list[_ExitShape] = []
+    for f in list_all_fills(conn):
+        if f.action == "entry":
+            continue
+        trade = trades_by_id.get(f.trade_id)
+        if trade is None:
+            continue
+        rps = initial_risk_per_share(
+            entry_price=trade.entry_price,
+            initial_stop=trade.initial_stop,
+        )
+        pnl = realized_pnl(
+            entry_price=trade.entry_price, exit_price=f.price,
+            quantity=f.quantity,
+        )
+        if rps == 0 or f.quantity == 0:
+            rmult: float | None = None
+        else:
+            rmult = r_multiple(
+                realized_pnl=pnl, initial_risk_per_share=rps,
+                quantity=f.quantity,
+            )
+        exit_date = (
+            f.fill_datetime.split("T")[0]
+            if "T" in f.fill_datetime else f.fill_datetime
+        )
+        out.append(_ExitShape(
+            trade_id=f.trade_id,
+            exit_date=exit_date,
+            exit_price=float(f.price),
+            shares=int(f.quantity),
+            reason=f.reason,
+            realized_pnl=pnl,
+            r_multiple=rmult,
+        ))
+    return out
 
 
 # Frozen at Finviz-pool study D1 (research/studies/finviz-pool-binding-
@@ -383,7 +462,7 @@ def compute_tripwire_status(
     # Local import keeps the module DB-agnostic at import time so the
     # matcher / prioritizer tests don't pull in repo modules.
     from swing.data.repos.hypothesis import get_hypothesis
-    from swing.data.repos.trades import list_all_exits, list_closed_trades
+    from swing.data.repos.trades import list_closed_trades
 
     h = get_hypothesis(conn, hypothesis_id)
     if h is None:
@@ -394,8 +473,11 @@ def compute_tripwire_status(
         t for t in closed
         if _label_matches_hypothesis(t.hypothesis_label, h.name)
     ]
+    # C.10: migrated off ``list_all_exits`` shim. The local helper sources
+    # ExitLike rows from non-entry fills, deriving realized_pnl/r_multiple
+    # via swing.trades.derived_metrics.
     exits_by_trade: dict[int, list] = {}
-    for e in list_all_exits(conn):
+    for e in _list_all_exitshape_via_fills(conn):
         exits_by_trade.setdefault(e.trade_id, []).append(e)
 
     def _r_for(trade) -> float:

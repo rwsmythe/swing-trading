@@ -4327,3 +4327,95 @@ def test_c8_recommendations_route_exposes_no_post_entry_handler():
         "watchlist and hyp-recs origins. Found POST handler — re-evaluate "
         "C.8's consistency tests."
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-C C.10 — sizing-hint route migrates the C.1-deferred
+# list_all_exits site onto _list_all_exitshape_via_fills (imported from
+# the view-models layer). Discriminating: with realized PnL seeded via
+# non-entry fills, the sizing hint reflects the larger equity.
+# ---------------------------------------------------------------------------
+
+
+def test_c10_sizing_hint_consumes_fills_for_equity(seeded_db):
+    """C.10: GET /trades/entry/sizing-hint computes equity through the
+    C.10 view_models/trades._list_all_exitshape_via_fills helper.
+    Discriminating against (a) helper not threaded through (would still
+    see baseline equity from cfg.account.starting_equity and the floor)
+    and (b) helper returning empty (equity = starting_equity, smaller
+    suggested shares).
+
+    Uses entry=10, stop=9 so rps=$1 → shares = floor(equity*risk_pct/$1).
+    With test config (starting=$1200, max_risk_pct=0.005), baseline equity
+    yields ~6 shares. After seeding $20k of realized PnL via a non-entry
+    fill, equity grows to ~$21,200; max_risk_dollars = ~$106; shares =
+    ~106. So the post-fill response should mention significantly more
+    shares than the baseline.
+    """
+    from swing.data.db import connect
+    from swing.data.models import Fill, Trade
+    from swing.data.repos.fills import insert_fill_with_event
+    from swing.data.repos.trades import insert_trade_with_event
+
+    cfg, cfg_path = seeded_db
+
+    # Baseline call — no realized PnL.
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        baseline = client.get(
+            "/trades/entry/sizing-hint?entry_price=10.0&initial_stop=9.0"
+        )
+    assert baseline.status_code == 200
+    baseline_text = baseline.text
+
+    # Seed a closed trade with $20k realized PnL via non-entry fill.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            trade_id = insert_trade_with_event(
+                conn,
+                Trade(
+                    id=None, ticker="ZZZ", entry_date="2026-04-15",
+                    entry_price=100.0, initial_shares=200,
+                    initial_stop=90.0, current_stop=90.0,
+                    state="entered",
+                    watchlist_entry_target=None,
+                    watchlist_initial_stop=None, notes=None,
+                ),
+                event_ts="2026-04-15T09:30:00",
+            )
+            insert_fill_with_event(
+                conn,
+                Fill(
+                    fill_id=None, trade_id=trade_id,
+                    fill_datetime="2026-04-29T16:00:00",
+                    action="exit", quantity=200, price=200.0,
+                    reason="target",
+                ),
+                event_ts="2026-04-29T16:00:00",
+            )
+            conn.execute(
+                "UPDATE trades SET state='closed' WHERE id=?",
+                (trade_id,),
+            )
+    finally:
+        conn.close()
+
+    # Post-PnL call.
+    app2 = create_app(cfg, cfg_path)
+    with TestClient(app2) as client:
+        after = client.get(
+            "/trades/entry/sizing-hint?entry_price=10.0&initial_stop=9.0"
+        )
+    assert after.status_code == 200
+    # The response shape includes the suggested shares; assert it grew.
+    # Both responses are 200 with a numbers fragment; the cheap discriminator
+    # is "the response text changed" (different shares produces different
+    # output).
+    assert after.text != baseline_text, (
+        "C.10 sizing-hint route equity computation should reflect a "
+        "$20k realized-PnL exit fill. Baseline and post-fill response "
+        "are identical, suggesting the route did not see the new fill — "
+        "the migration helper may have returned empty. Baseline text:\n"
+        f"{baseline_text!r}\nAfter:\n{after.text!r}"
+    )

@@ -1,9 +1,23 @@
 """Pure functions: equity, R-multiple, position sizing helpers (legacy parity)."""
 from __future__ import annotations
 
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 
-from swing.data.models import CashMovement, Exit, Trade
+from swing.data.models import CashMovement, Trade
+
+# C.10: ``Exit`` import moved under TYPE_CHECKING — the legacy dataclass
+# is no longer constructed or runtime-introspected from this module, but
+# function signatures below still reference ``Exit`` as a structural hint
+# (``Iterable[Exit]``). Under PEP 563 (``from __future__ import
+# annotations``) annotations are stored as strings; the TYPE_CHECKING
+# guard tells ruff/mypy to resolve ``Exit`` for static analysis without
+# pulling the dataclass at runtime. Consumers pass duck-typed ExitLike-
+# shape objects (the ``_ExitShape`` adapter pattern from C.1/C.9/C.10)
+# which expose ``.realized_pnl``, ``.shares``, ``.trade_id`` — all that
+# ``current_equity`` / ``shares_remaining`` / ``total_current_risk``
+# require.
+if TYPE_CHECKING:
+    from swing.data.models import Exit  # noqa: F401
 
 
 def net_cash_movements(cash_movements: Iterable[CashMovement]) -> float:

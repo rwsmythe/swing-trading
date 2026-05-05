@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
+
 from swing.data.db import connect
 from swing.data.models import WatchlistEntry
 from swing.data.repos.watchlist import upsert_watchlist_entry
@@ -565,3 +567,182 @@ def test_list_all_fills_returns_all_trades(seeded_db):
         "2026-05-02T16:00:00",
         "2026-05-03T16:00:00",
     ]
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-C C.10 — view_models/trades.py migrates the two C.1-deferred
+# list_all_exits sites (build_entry_form_vm equity computation +
+# build_cadence_complete_vm closed-trades-in-period count) onto the local
+# _list_all_exitshape_via_fills helper. Discriminating against (a) helper
+# leaking entry fills (would over-count); (b) helper returning empty
+# (would zero out aggregates).
+# ---------------------------------------------------------------------------
+
+
+def test_c10_list_all_exitshape_via_fills_filters_entry_fills(seeded_db):
+    """C.10 view_models/trades.py helper test: directly inspect the helper's
+    output and assert exactly one non-entry shape per seeded trade with
+    one explicit exit fill.
+    """
+    from swing.data.db import connect
+    from swing.web.view_models.trades import _list_all_exitshape_via_fills
+
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(
+        cfg, ticker="MSFT", state="managing",
+        initial_shares=100, entry_price=100.0, initial_stop=90.0,
+    )
+    # Synthetic entry fill is auto-written by insert_trade_with_event;
+    # add an explicit exit fill on top of it.
+    _seed_fill(
+        cfg, trade_id=trade_id, action="exit", quantity=40, price=120.0,
+        fill_datetime="2026-05-04T16:00:00", reason="trim",
+    )
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        shapes = _list_all_exitshape_via_fills(conn)
+    finally:
+        conn.close()
+
+    assert len(shapes) == 1, (
+        f"Adapter returned {len(shapes)} shapes; expected exactly 1 "
+        f"(the explicit exit fill — entry fill must be filtered)."
+    )
+    shape = shapes[0]
+    assert shape.trade_id == trade_id
+    assert shape.shares == 40
+    assert shape.exit_price == 120.0
+    assert shape.exit_date == "2026-05-04"
+    # realized_pnl = (120 - 100) * 40 = 800
+    assert shape.realized_pnl == pytest.approx(800.0)
+    # rps = 100 - 90 = 10; r = 800 / (10 * 40) = 2.0
+    assert shape.r_multiple == pytest.approx(2.0)
+
+
+def test_c10_build_entry_form_vm_equity_uses_fills(
+    seeded_db, monkeypatch,
+):
+    """C.10 deferred site: build_entry_form_vm computes equity through
+    _list_all_exitshape_via_fills (which sources non-entry fills) rather
+    than the legacy list_all_exits shim.
+
+    Discriminating: seed a closed trade with a SUBSTANTIAL realized PnL
+    that materially changes the suggested_shares output of compute_shares
+    (vs. baseline starting_equity-only equity). compute_shares' shares =
+    min(shares_by_risk, shares_by_cap) is monotone in equity, so a
+    larger equity yields larger or equal shares. Asserting
+    suggested_shares is strictly greater than the no-PnL baseline proves
+    the helper threaded realized-PnL into the equity computation.
+
+    If the helper returned empty (un-migrated bug class), suggested_shares
+    would equal the no-PnL baseline.
+    """
+    from swing.web.view_models.trades import build_entry_form_vm
+
+    cfg, _ = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="AMZN", added_date="2026-04-20",
+                last_qualified_date="2026-04-20", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-20",
+                entry_target=100.0, initial_stop_target=90.0,
+                last_close=100.0, last_pivot=100.0, last_stop=90.0,
+                last_adr_pct=2.0, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+
+    cache, executor = _make_price_cache(cfg, "AMZN", 100.0)
+
+    # Baseline VM (no closed trades → no realized PnL):
+    baseline_vm = build_entry_form_vm(
+        ticker="AMZN", cfg=cfg, cache=cache, executor=executor,
+    )
+    assert baseline_vm is not None
+    baseline_shares = baseline_vm.suggested_shares
+
+    # Seed a closed trade with a SUBSTANTIAL realized PnL (>>> floor).
+    trade_id = _seed_phase7_trade(
+        cfg, ticker="GOOG", state="closed",
+        initial_shares=200, entry_price=100.0, initial_stop=90.0,
+    )
+    _seed_fill(
+        cfg, trade_id=trade_id, action="exit", quantity=200, price=200.0,
+        fill_datetime="2026-04-29T16:00:00", reason="target",
+    )
+
+    # With 200 * (200 - 100) = $20k realized PnL added, equity is now
+    # well above the $7.5k floor — compute_shares (which uses real equity,
+    # NOT the floor) should yield strictly larger shares.
+    after_vm = build_entry_form_vm(
+        ticker="AMZN", cfg=cfg, cache=cache, executor=executor,
+    )
+    assert after_vm is not None
+    assert after_vm.suggested_shares > baseline_shares, (
+        f"build_entry_form_vm suggested_shares should rise after seeding "
+        f"$20k of realized PnL via non-entry exit fills. baseline="
+        f"{baseline_shares}, after={after_vm.suggested_shares}. If equal, "
+        f"the C.10 _list_all_exitshape_via_fills helper returned empty "
+        f"(equity unchanged from starting_equity)."
+    )
+
+
+def test_c10_build_cadence_complete_vm_consumes_fills(seeded_db):
+    """C.10 deferred site: build_cadence_complete_vm uses
+    _list_all_exitshape_via_fills for the closed-trades-in-period count.
+
+    Discriminating: seed two closed trades with explicit exit fills, one
+    in-period and one out-of-period. The VM's n_closed_trades_in_period
+    must match the in-period count (1). If the helper leaked entry fills
+    the count would still be 1 (entries don't have exit_date in the
+    period span window) — but if the helper returned an empty list, the
+    count would be 0.
+    """
+    from swing.data.db import connect as _connect
+    from swing.data.repos.review_log import insert_pre_create
+    from swing.web.view_models.trades import build_cadence_complete_vm
+
+    cfg, _ = seeded_db
+    # Pre-create a daily review row for 2026-05-04.
+    conn = _connect(cfg.paths.db_path)
+    try:
+        with conn:
+            review_id = insert_pre_create(
+                conn, review_type="daily",
+                period_start="2026-05-04", period_end="2026-05-04",
+                scheduled_date="2026-05-05",
+            )
+    finally:
+        conn.close()
+    assert review_id is not None
+
+    # In-period closed trade.
+    in_trade = _seed_phase7_trade(
+        cfg, ticker="WMT", state="closed",
+        initial_shares=10, entry_price=100.0, initial_stop=95.0,
+    )
+    _seed_fill(
+        cfg, trade_id=in_trade, action="exit", quantity=10, price=110.0,
+        fill_datetime="2026-05-04T15:30:00", reason="target",
+    )
+    # Out-of-period closed trade (exit before period_start).
+    out_trade = _seed_phase7_trade(
+        cfg, ticker="TGT", state="closed",
+        initial_shares=10, entry_price=100.0, initial_stop=95.0,
+    )
+    _seed_fill(
+        cfg, trade_id=out_trade, action="exit", quantity=10, price=105.0,
+        fill_datetime="2026-05-01T15:30:00", reason="target",
+    )
+
+    vm = build_cadence_complete_vm(cfg=cfg, review_id=review_id)
+    assert vm is not None
+    assert vm.n_closed_trades_in_period == 1, (
+        f"C.10 build_cadence_complete_vm should count exactly 1 "
+        f"in-period closed trade; got {vm.n_closed_trades_in_period}. "
+        f"If 0, the migration helper returned empty (no fills surfaced)."
+    )

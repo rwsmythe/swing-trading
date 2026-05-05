@@ -14,7 +14,7 @@ from markupsafe import Markup
 from swing.config_overrides import apply_overrides
 from swing.data.db import connect
 from swing.data.repos.cash import list_cash
-from swing.data.repos.trades import get_trade, list_all_exits, list_open_trades
+from swing.data.repos.trades import get_trade, list_open_trades
 from swing.recommendations.sizing import SizingResult, compute_shares
 from swing.trades.entry import (
     DuplicateOpenPositionException,
@@ -192,10 +192,16 @@ def sizing_hint(
         )
 
     try:
+        # C.10: routed through the view-model adapter so equity computation
+        # consumes non-entry fills via the shared _ExitShape pattern.
+        from swing.web.view_models.trades import (
+            _list_all_exitshape_via_fills,
+        )
+
         conn = connect(cfg.paths.db_path)
         try:
             with conn:
-                exits = list_all_exits(conn)
+                exits = _list_all_exitshape_via_fills(conn)
                 cash_movements = list_cash(conn)
         finally:
             conn.close()

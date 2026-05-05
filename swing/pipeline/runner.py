@@ -24,7 +24,7 @@ from swing.data.repos.pipeline import (
     update_chart_target_status,
 )
 from swing.data.repos.recommendations import upsert_recommendation
-from swing.data.repos.trades import list_all_exits, list_open_trades
+from swing.data.repos.trades import list_open_trades
 from swing.data.repos.watchlist import (
     archive_watchlist_entry,
     list_active_watchlist,
@@ -62,6 +62,52 @@ from swing.trades.equity import current_equity, sizing_equity
 from swing.watchlist.service import compute_watchlist_changes
 
 log = logging.getLogger(__name__)
+
+
+# C.10 migration helper (was: list_all_exits shim from repos/trades.py).
+# current_equity() is duck-typed on .realized_pnl; we only need a list of
+# objects exposing that attribute. Mirrors the per-module _ExitShape
+# pattern in web view models and review_log; dies in the future cleanup
+# phase when equity.py refactors to consume Fill directly.
+@dataclass(frozen=True)
+class _ExitShape:
+    trade_id: int
+    realized_pnl: float | None
+
+
+def _exits_via_fills_for_equity(
+    conn: sqlite3.Connection,
+) -> list[_ExitShape]:
+    """Return ExitLike-shape rows (action != 'entry' fills) for equity
+    computation. Per-row realized_pnl derives from the parent trade's
+    entry_price via ``swing.trades.derived_metrics`` — single source of
+    math truth.
+    """
+    from swing.data.repos.fills import list_all_fills
+    from swing.data.repos.trades import list_closed_trades
+    from swing.trades.derived_metrics import realized_pnl
+
+    trades_by_id: dict[int, object] = {}
+    for t in list_open_trades(conn):
+        if t.id is not None:
+            trades_by_id[t.id] = t
+    for t in list_closed_trades(conn):
+        if t.id is not None:
+            trades_by_id[t.id] = t
+
+    out: list[_ExitShape] = []
+    for f in list_all_fills(conn):
+        if f.action == "entry":
+            continue
+        trade = trades_by_id.get(f.trade_id)
+        if trade is None:
+            continue
+        pnl = realized_pnl(
+            entry_price=trade.entry_price, exit_price=f.price,
+            quantity=f.quantity,
+        )
+        out.append(_ExitShape(trade_id=f.trade_id, realized_pnl=pnl))
+    return out
 
 
 @dataclass(frozen=True)
@@ -435,7 +481,7 @@ def _step_evaluate(
         sizing_eq = sizing_equity(
             real_equity=current_equity(
                 starting_equity=cfg.account.starting_equity,
-                exits=list_all_exits(eq_conn),
+                exits=_exits_via_fills_for_equity(eq_conn),
                 cash_movements=list_cash(eq_conn),
             ),
             floor=cfg.account.risk_equity_floor,
@@ -568,7 +614,8 @@ def _step_recommendations(*, cfg, eval_run_id: int,
         watchlist = list_active_watchlist(read_conn)
         equity = current_equity(
             starting_equity=cfg.account.starting_equity,
-            exits=list_all_exits(read_conn), cash_movements=list_cash(read_conn),
+            exits=_exits_via_fills_for_equity(read_conn),
+            cash_movements=list_cash(read_conn),
         )
     finally:
         read_conn.close()
@@ -823,7 +870,8 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
         trades = list_open_trades(conn)
         equity = current_equity(
             starting_equity=cfg.account.starting_equity,
-            exits=list_all_exits(conn), cash_movements=list_cash(conn),
+            exits=_exits_via_fills_for_equity(conn),
+            cash_movements=list_cash(conn),
         )
     finally:
         conn.close()

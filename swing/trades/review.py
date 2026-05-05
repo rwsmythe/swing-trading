@@ -16,9 +16,23 @@ from __future__ import annotations
 import sqlite3
 import unicodedata
 from datetime import date, datetime, timedelta
+from typing import TYPE_CHECKING
 
-from swing.data.models import Exit, Trade
+from swing.data.models import Trade
 from swing.data.repos.trades import get_trade, update_trade_review_fields
+
+# C.10: ``Exit`` import moved under TYPE_CHECKING — the legacy dataclass
+# is no longer constructed or runtime-introspected from this module, but
+# function signatures below still reference ``Exit`` as a structural hint
+# (``list[Exit]``). Under PEP 563 (``from __future__ import annotations``)
+# annotations are stored as strings; the TYPE_CHECKING guard tells
+# ruff/mypy to resolve ``Exit`` for static analysis without pulling the
+# dataclass at runtime. Consumers pass duck-typed ExitLike-shape objects
+# (the per-module ``_ExitShape`` adapters from C.1/C.9/C.10) which expose
+# ``.r_multiple``, ``.shares``, ``.trade_id``, ``.exit_date`` — all that
+# the review aggregations require.
+if TYPE_CHECKING:
+    from swing.data.models import Exit  # noqa: F401
 from swing.evaluation.dates import last_completed_session
 from swing.trades.state import state_transition
 
