@@ -21,6 +21,7 @@ from click.testing import CliRunner
 
 from swing.cli import main
 from tests.cli.test_cli_eval import _minimal_config
+from tests.conftest import cli_entry_pre_trade_args
 from tests.web.test_view_models._pattern_classification_seed import (
     seed_pipeline_with_classification,
 )
@@ -86,6 +87,7 @@ def test_cli_trade_entry_chart_pattern_operator_refused_without_cache(tmp_path: 
         "--entry-price", "10.0", "--shares", "1", "--initial-stop", "9.0",
         "--rationale", "aplus-setup",
         "--chart-pattern-operator", "flag",
+        *cli_entry_pre_trade_args(),
     ])
     assert result.exit_code != 0, result.output
     output = result.output or (str(result.exception) if result.exception else "")
@@ -108,6 +110,7 @@ def test_cli_trade_entry_chart_pattern_operator_persists_when_cached(tmp_path: P
         "--entry-price", "10.0", "--shares", "1", "--initial-stop", "9.0",
         "--rationale", "aplus-setup",
         "--chart-pattern-operator", "flag",
+        *cli_entry_pre_trade_args(),
     ])
     assert result.exit_code == 0, result.output
     assert _read_chart_pattern_columns(cfg, "AAPL") == (
@@ -132,6 +135,7 @@ def test_cli_trade_entry_no_chart_pattern_flag_omitted_works_with_cache(
         "--ticker", "AAPL", "--entry-date", "2026-04-26",
         "--entry-price", "10.0", "--shares", "1", "--initial-stop", "9.0",
         "--rationale", "aplus-setup",
+        *cli_entry_pre_trade_args(),
     ])
     assert result.exit_code == 0, result.output
     assert _read_chart_pattern_columns(cfg, "AAPL") == (
@@ -151,6 +155,7 @@ def test_cli_trade_entry_no_chart_pattern_flag_omitted_works_without_cache(
         "--ticker", "AAPL", "--entry-date", "2026-04-26",
         "--entry-price", "10.0", "--shares", "1", "--initial-stop", "9.0",
         "--rationale", "aplus-setup",
+        *cli_entry_pre_trade_args(),
     ])
     assert result.exit_code == 0, result.output
     assert _read_chart_pattern_columns(cfg, "AAPL") == (
@@ -202,6 +207,7 @@ def test_cli_trade_entry_resolves_sector_industry_from_candidate(tmp_path):
         "--ticker", "AAPL", "--entry-date", "2026-04-26",
         "--entry-price", "10.0", "--shares", "1", "--initial-stop", "9.0",
         "--rationale", "aplus-setup",
+        *cli_entry_pre_trade_args(),
     ])
     assert result.exit_code == 0, result.output
     from swing.data.db import connect
@@ -240,6 +246,7 @@ def test_cli_trade_entry_evaluation_exists_but_ticker_absent_persists_empty(
         "--ticker", "AAPL", "--entry-date", "2026-04-26",
         "--entry-price", "10.0", "--shares", "1", "--initial-stop", "9.0",
         "--rationale", "aplus-setup",
+        *cli_entry_pre_trade_args(),
     ])
     assert result.exit_code == 0, result.output
     from swing.data.db import connect
@@ -266,6 +273,7 @@ def test_cli_trade_entry_no_eval_at_all_persists_empty(tmp_path):
         "--ticker", "AAPL", "--entry-date", "2026-04-26",
         "--entry-price", "10.0", "--shares", "1", "--initial-stop", "9.0",
         "--rationale", "aplus-setup",
+        *cli_entry_pre_trade_args(),
     ])
     assert result.exit_code == 0, result.output
     from swing.data.db import connect

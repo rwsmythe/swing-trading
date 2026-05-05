@@ -10,6 +10,33 @@ import pytest
 from swing.data.models import Fill, Trade
 
 
+def cli_entry_pre_trade_args() -> list[str]:
+    """Phase 7 Sub-C C.13: 11 CLI flags satisfying the post-Sub-A pre-trade gate.
+
+    The ``swing trade entry`` command refuses entry unless the operator
+    supplies a non-empty value for each of the 11 required pre-trade fields
+    (Sub-A T6 added the gate). Tests that don't exercise pre-trade-form
+    behavior directly should append this list to their CLI invocation so
+    the gate doesn't fire for unrelated reasons.
+
+    Tests that intentionally OMIT a field to trigger the gate should NOT
+    use this helper (or should pop the relevant flag/value pair).
+    """
+    return [
+        "--thesis", "test-thesis",
+        "--why-now", "test-why-now",
+        "--invalidation", "stop-hit",
+        "--expected-scenario", "win",
+        "--premortem-technical", "tech-risk",
+        "--premortem-market-sector", "market-risk",
+        "--premortem-execution", "execution-risk",
+        "--emotional-state", "calm",
+        "--manual-entry-confidence", "normal",
+        "--market-regime", "Bullish",
+        "--catalyst", "technical_only",
+    ]
+
+
 def insert_exit_fill(
     conn: sqlite3.Connection,
     *,

@@ -3,14 +3,11 @@
 Brief: `docs/trade-analyze-cli-brief.md` §4.2. Tests cover the same branching
 as the compute layer, focused here on the operator-facing rendered text.
 
-Phase 7 Sub-B B.7 fixture-skip note: tests that seed via the legacy
-``Exit(...)`` dataclass + ``insert_exit_with_event`` raise on construction
-post Sub-A T3 (the Exit dataclass is a stub that raises). Migrating the
-fixtures to ``Fill(action='exit')`` would still leave the body of
-``swing.journal.analyze.analyze_trade`` walking the legacy exits surface,
-which is rewritten in Sub-B B.9 (journal-layer rewrite). Same gate pattern
-as ``tests/cli/test_review_complete_cli.py``: skip the affected tests
-collectively with a clear B.9 gate-task reason; unskip when B.9 lands.
+Phase 7 Sub-C C.13b: fixtures migrated off the legacy ``Exit(...)`` dataclass
++ ``insert_exit_with_event`` onto the canonical ``Fill`` repo via the
+``insert_exit_fill`` test helper in ``tests/conftest.py``. analyze_trade now
+walks fills via the per-module ``_ExitShape`` adapter (C.12). All B.7-era
+``@pytest.mark.skip`` markers removed.
 """
 from __future__ import annotations
 
@@ -23,17 +20,11 @@ from click.testing import CliRunner
 
 from swing.cli import main
 from swing.data.db import ensure_schema
-from swing.data.models import Candidate, CriterionResult, EvaluationRun, Exit, Trade
+from swing.data.models import Candidate, CriterionResult, EvaluationRun, Trade
 from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
-from swing.data.repos.trades import insert_exit_with_event, insert_trade_with_event
+from swing.data.repos.trades import insert_trade_with_event
 from tests.cli.test_cli_eval import _minimal_config
-
-_SKIP_REASON = (
-    "Sub-B B.7: fixture seeds via legacy Exit/insert_exit_with_event "
-    "(Exit dataclass raises on construction post Sub-A T3); analyze_trade "
-    "still walks the legacy journal/exit surface — unskip when Sub-B B.9 "
-    "(journal-layer rewrite) lands."
-)
+from tests.conftest import insert_exit_fill
 
 
 def _setup(tmp_path: Path):
@@ -101,14 +92,11 @@ def _seed_vir_like_trade(cfg_path: Path) -> int:
             tid = insert_trade_with_event(
                 conn, trade, event_ts="2026-04-20T09:30:00", rationale=None,
             )
-        ex = Exit(
-            id=None, trade_id=tid, exit_date="2026-04-24", exit_price=10.30,
-            shares=2, reason="stop-hit", realized_pnl=-2.0,
-            r_multiple=-0.32894737, notes=None,
-        )
         with conn:
-            insert_exit_with_event(
-                conn, ex, event_ts="2026-04-24T16:00:00", rationale=None,
+            insert_exit_fill(
+                conn, trade_id=tid, exit_date="2026-04-24",
+                exit_price=10.30, shares=2, reason="stop-hit",
+                fill_datetime="2026-04-24T16:00:00",
             )
         return tid
     finally:
@@ -138,7 +126,6 @@ def _seed_manual_trade(cfg_path: Path, *, hypothesis: str | None = None) -> int:
 # --- happy path: VIR-like trade ----------------------------------------------
 
 
-@pytest.mark.skip(reason=_SKIP_REASON)
 def test_analyze_renders_full_sections_for_vir_like(tmp_path: Path):
     runner, cfg = _setup(tmp_path)
     tid = _seed_vir_like_trade(cfg)
@@ -174,7 +161,6 @@ def test_analyze_renders_full_sections_for_vir_like(tmp_path: Path):
 # --- manually-sourced trade graceful handling --------------------------------
 
 
-@pytest.mark.skip(reason=_SKIP_REASON)
 def test_analyze_renders_manually_sourced_trade(tmp_path: Path):
     runner, cfg = _setup(tmp_path)
     tid = _seed_manual_trade(cfg, hypothesis="manual")
@@ -193,7 +179,6 @@ def test_analyze_renders_manually_sourced_trade(tmp_path: Path):
     assert "Hypothesis: manual" in out
 
 
-@pytest.mark.skip(reason=_SKIP_REASON)
 def test_analyze_renders_partial_exit_open_trade_with_ongoing_duration(tmp_path: Path):
     """Adversarial R2 M2: a partial exit on an open trade must NOT render
     'entry to last exit' duration — the position is still live. The CLI
@@ -214,15 +199,13 @@ def test_analyze_renders_partial_exit_open_trade_with_ongoing_duration(tmp_path:
             tid = insert_trade_with_event(
                 conn, trade, event_ts="2026-04-15T09:30:00", rationale=None,
             )
-        # Partial exit: 4 of 10 shares. Trade remains open.
-        ex = Exit(
-            id=None, trade_id=tid, exit_date="2026-04-18",
-            exit_price=110.0, shares=4, reason="target",
-            realized_pnl=40.0, r_multiple=2.0, notes=None,
-        )
+        # Partial exit: 4 of 10 shares. Trade remains open (close_trade=False).
         with conn:
-            insert_exit_with_event(
-                conn, ex, event_ts="2026-04-18T16:00:00", rationale=None,
+            insert_exit_fill(
+                conn, trade_id=tid, exit_date="2026-04-18",
+                exit_price=110.0, shares=4, reason="target",
+                fill_datetime="2026-04-18T16:00:00",
+                close_trade=False,
             )
     finally:
         conn.close()
@@ -237,7 +220,6 @@ def test_analyze_renders_partial_exit_open_trade_with_ongoing_duration(tmp_path:
     assert "(entry to last exit)" not in out
 
 
-@pytest.mark.skip(reason=_SKIP_REASON)
 def test_analyze_renders_null_hypothesis_label_as_none(tmp_path: Path):
     runner, cfg = _setup(tmp_path)
     tid = _seed_manual_trade(cfg, hypothesis=None)
@@ -247,7 +229,6 @@ def test_analyze_renders_null_hypothesis_label_as_none(tmp_path: Path):
     assert "Hypothesis: (none)" in r.output
 
 
-@pytest.mark.skip(reason=_SKIP_REASON)
 def test_analyze_null_notes_renders_as_none(tmp_path: Path):
     runner, cfg = _setup(tmp_path)
     tid = _seed_manual_trade(cfg, hypothesis=None)
@@ -266,7 +247,6 @@ def test_analyze_missing_trade_exits_nonzero(tmp_path: Path):
     assert "999" in r.output or "not found" in r.output.lower()
 
 
-@pytest.mark.skip(reason=_SKIP_REASON)
 def test_analyze_cli_runs_in_query_only_mode(tmp_path: Path, monkeypatch):
     """Adversarial M2: read-only safety should be technically enforced, not
     just behaviorally trusted. The CLI must set PRAGMA query_only on the
