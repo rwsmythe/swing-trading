@@ -241,14 +241,24 @@ def record_entry(
     req_view["trade_origin"] = derived_origin
     # Codex R4 Major 1: pre_trade_locked_at + first-fill datetime must
     # reflect when the trade actually entered the market (req.entry_date),
-    # not when the operator typed the command (req.event_ts). CLI sends
-    # event_ts=now, so a back-recorded entry would otherwise persist
-    # today's clock-time and break the chronology invariants that journal
-    # aggregation + reconciliation depend on. _normalize_trade_event_date_to_iso
-    # validates strictly (rejects malformed + tz-aware) and synthesizes
-    # NYSE close T16:00:00 for date-only inputs.
+    # not when the operator typed the command (req.event_ts).
+    # Codex R5 Major 1: trades.entry_date column is date-only and downstream
+    # consumers (advisory, journal/flags+analyze, briefing, CLI hold-duration)
+    # call date.fromisoformat(trade.entry_date) directly. So entry_date must
+    # remain YYYY-MM-DD only at the API boundary; reject T-form before
+    # storing. Synthesis of T16:00:00 for fill_datetime / pre_trade_locked_at
+    # happens via the shared helper after the date-only guard.
     from swing.trades.exit import _normalize_trade_event_date_to_iso
-    entry_iso = _normalize_trade_event_date_to_iso(req.entry_date)
+    if "T" in req.entry_date:
+        raise ValueError(
+            f"entry_date {req.entry_date!r} must be YYYY-MM-DD only "
+            f"(not a full ISO datetime); the trades.entry_date column is "
+            f"date-only and downstream consumers (advisory, journal, "
+            f"briefing, CLI hold-duration) call date.fromisoformat on it"
+        )
+    entry_iso = _normalize_trade_event_date_to_iso(
+        req.entry_date, field_name="entry_date",
+    )
     req_view["pre_trade_locked_at"] = entry_iso
     missing = validate_for_operation(req_view, op="entry_create", current_state=None)
     if missing:

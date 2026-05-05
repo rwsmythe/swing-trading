@@ -73,10 +73,10 @@ class ExitResult:
     fully_closed: bool
 
 
-def _normalize_trade_event_date_to_iso(raw: str) -> str:
+def _normalize_trade_event_date_to_iso(raw: str, *, field_name: str = "date") -> str:
     """Validate + canonicalize a trade-event date string to ISO-8601 datetime.
 
-    Codex R2 Major 1 + R3 M1 + R4 M1 — accepts ``YYYY-MM-DD`` (synthesizes
+    Codex R2 M1 + R3 M1 + R4 M1 + R5 m1 — accepts ``YYYY-MM-DD`` (synthesizes
     NYSE close ``T16:00:00``) or naive full ISO datetime
     ``YYYY-MM-DDTHH:MM[:SS][.ffffff]``. Rejects timezone-aware datetimes
     (would break lexicographic-ordering invariant) and malformed strings.
@@ -87,30 +87,32 @@ def _normalize_trade_event_date_to_iso(raw: str) -> str:
     ``tos_import._find_unclaimed_recorded_exit``) always yields a real
     YYYY-MM-DD prefix and lexicographic ordering matches chronology.
 
-    Used by both ``swing.trades.exit.record_exit`` (for ``req.exit_date``)
-    and ``swing.trades.entry.record_entry`` (for ``req.entry_date``).
+    ``field_name`` is woven into error messages so operator-facing
+    validation errors point at the actual offending CLI flag (Codex R5 m1).
+
+    Used by ``swing.trades.exit.record_exit`` (with field_name='exit_date')
+    and ``swing.trades.entry.record_entry`` (with field_name='entry_date',
+    which additionally enforces date-only via a separate guard because
+    trades.entry_date column is date-only and downstream consumers call
+    date.fromisoformat on it).
     """
     from datetime import date, datetime
     if not isinstance(raw, str) or not raw:
-        raise ValueError(f"exit_date must be a non-empty string; got {raw!r}")
+        raise ValueError(f"{field_name} must be a non-empty string; got {raw!r}")
     if "T" in raw:
         try:
             parsed = datetime.fromisoformat(raw)
         except ValueError as exc:
             raise ValueError(
-                f"exit_date {raw!r} contains 'T' but is not a valid ISO datetime"
+                f"{field_name} {raw!r} contains 'T' but is not a valid ISO datetime"
             ) from exc
         # Codex R3 Major 1: reject tz-aware datetimes. Storing offset-bearing
         # values would break the lexicographic-ordering invariant that
-        # fills.py:list_fills_for_trade ORDER BY relies on (e.g.,
-        # "2026-05-03T13:45:30+05:00" sorts AFTER "2026-05-03T09:00:00"
-        # despite being earlier in absolute time), and tos_import's
+        # fills.py:list_fills_for_trade ORDER BY relies on, and tos_import's
         # substr(fill_datetime, 1, 10) date prefix becomes ambiguous.
-        # Phase 7 stores naive datetimes throughout (event_ts,
-        # pre_trade_locked_at all naive); enforce the convention here.
         if parsed.tzinfo is not None:
             raise ValueError(
-                f"exit_date {raw!r} is timezone-aware; Phase 7 stores naive "
+                f"{field_name} {raw!r} is timezone-aware; Phase 7 stores naive "
                 f"ISO datetimes — strip the offset before persisting"
             )
         return raw
@@ -118,7 +120,7 @@ def _normalize_trade_event_date_to_iso(raw: str) -> str:
         date.fromisoformat(raw)
     except ValueError as exc:
         raise ValueError(
-            f"exit_date {raw!r} is not a valid YYYY-MM-DD or ISO datetime"
+            f"{field_name} {raw!r} is not a valid YYYY-MM-DD or ISO datetime"
         ) from exc
     return f"{raw}T16:00:00"
 
@@ -178,7 +180,9 @@ def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
     # so "2026-05-02TNOT_A_TIME" silently stored as garbage and broke
     # downstream substr-date matching. Now: parse strictly via fromisoformat
     # for both YYYY-MM-DD and YYYY-MM-DDTHH:MM[:SS] forms; reject otherwise.
-    fill_datetime = _normalize_trade_event_date_to_iso(req.exit_date)
+    fill_datetime = _normalize_trade_event_date_to_iso(
+        req.exit_date, field_name="exit_date",
+    )
     fill = Fill(
         fill_id=None,
         trade_id=req.trade_id,

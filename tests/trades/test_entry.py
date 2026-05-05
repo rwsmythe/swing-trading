@@ -748,9 +748,44 @@ def test_record_entry_rejects_malformed_entry_date(tmp_path):
 
 
 def test_record_entry_rejects_timezone_aware_entry_date(tmp_path):
-    """Codex R4 M1: tz-aware entry_date breaks the lex-ordering invariant
-    (same as exit side). Reject with the symmetric error message."""
+    """Codex R4 M1 + R5 M1: tz-aware entry_date is rejected. After R5's
+    date-only entry-side guard, the rejection fires earlier on the
+    'must be YYYY-MM-DD only' check before the helper's tz check would,
+    but either way the input is refused before any INSERT."""
     conn = _seed_v14(tmp_path)
     req = _full_req(entry_date="2026-05-01T09:30:00+05:00")
-    with pytest.raises(ValueError, match="timezone-aware"):
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
         record_entry(conn, req, soft_warn=10, hard_cap=20, force=False)
+
+
+def test_record_entry_rejects_full_iso_datetime_entry_date(tmp_path):
+    """Codex R5 M1: trades.entry_date is date-only; full ISO datetime input
+    must be rejected at the API boundary (entry-side guard fires before the
+    shared helper would otherwise synthesize ISO).
+
+    Pre-fix: entry_date='2026-05-01T09:30:00' was accepted by the helper
+    (full ISO branch) and the raw string flowed through to trades.entry_date,
+    where downstream consumers (advisory, journal, briefing, CLI) crash on
+    date.fromisoformat parse failure.
+    Post-fix: rejected with a clear 'must be YYYY-MM-DD' message; no INSERT.
+    """
+    conn = _seed_v14(tmp_path)
+    req = _full_req(entry_date="2026-05-01T09:30:00")
+    with pytest.raises(ValueError, match="must be YYYY-MM-DD only"):
+        record_entry(conn, req, soft_warn=10, hard_cap=20, force=False)
+    n_trades = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+    assert n_trades == 0
+
+
+def test_record_entry_persists_entry_date_as_yyyymmdd(tmp_path):
+    """Codex R5 M1: trades.entry_date stored as YYYY-MM-DD verbatim
+    (date.fromisoformat-parseable) — the ISO-with-T form is reserved for
+    pre_trade_locked_at + fill_datetime synthesis."""
+    from datetime import date
+    conn = _seed_v14(tmp_path)
+    req = _full_req(entry_date="2026-05-01")
+    result = record_entry(conn, req, soft_warn=10, hard_cap=20, force=False)
+    trade = get_trade(conn, result.trade_id)
+    assert trade.entry_date == "2026-05-01"
+    parsed = date.fromisoformat(trade.entry_date)
+    assert parsed.isoformat() == "2026-05-01"
