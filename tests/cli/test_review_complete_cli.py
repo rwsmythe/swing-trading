@@ -17,11 +17,7 @@ from click.testing import CliRunner
 from swing.cli import main
 from tests.cli.test_cli_eval import _minimal_config
 
-pytestmark = pytest.mark.skip(
-    reason="Sub-B B.6: fixture migrated to fills shape; complete_review_atomic "
-    "still walks the Exit-shaped journal/review helpers — unskip when Sub-B "
-    "B.9 (journal-layer rewrite) lands."
-)
+# pytestmark unskipped during Codex R1 verification (B.9 journal rewrites landed)
 
 
 @pytest.fixture
