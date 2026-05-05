@@ -122,3 +122,384 @@ def test_build_stop_form_vm_shape(seeded_db):
     assert vm.trade.ticker == "NVDA"
     assert vm.current_stop == 860.0
     assert vm.suggested_stops == ()  # 3b leaves this empty; 3c populates
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-C T1 — TradeDetailVM, predicate rewrites, fills migration.
+# ---------------------------------------------------------------------------
+
+
+def _seed_phase7_trade(
+    cfg, *, ticker="NVDA", state="entered", initial_shares=100,
+    entry_price=100.0, initial_stop=90.0,
+    premortem_technical=None, reviewed_at=None,
+    pre_trade_locked_at="2026-05-01T16:00:00",
+    trade_origin="manual_off_pipeline",
+    **trade_kwargs,
+) -> int:
+    """Insert a Phase 7 trade with arbitrary state + reviewed_at + pre-trade fields.
+
+    state and reviewed_at are post-set via UPDATE because insert_trade_with_event
+    does not support setting state to anything other than the input Trade.state
+    and reviewed_at is a Phase 6 review-surface field set by review submit.
+    """
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            trade_id = insert_trade_with_event(conn, Trade(
+                id=None, ticker=ticker, entry_date="2026-05-01",
+                entry_price=entry_price, initial_shares=initial_shares,
+                initial_stop=initial_stop, current_stop=initial_stop,
+                state="entered",  # always start at 'entered' for INSERT
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+                trade_origin=trade_origin,
+                pre_trade_locked_at=pre_trade_locked_at,
+                premortem_technical=premortem_technical,
+                **trade_kwargs,
+            ), event_ts="2026-05-01T16:00:00")
+            # Force state + reviewed_at AFTER insert to bypass the legacy
+            # 'entered' default that insert_trade_with_event imposes.
+            if state != "entered":
+                conn.execute(
+                    "UPDATE trades SET state=? WHERE id=?", (state, trade_id),
+                )
+            if reviewed_at is not None:
+                conn.execute(
+                    "UPDATE trades SET reviewed_at=? WHERE id=?",
+                    (reviewed_at, trade_id),
+                )
+        return trade_id
+    finally:
+        conn.close()
+
+
+def _seed_fill(cfg, *, trade_id, action, quantity, price=110.0,
+               fill_datetime="2026-05-02T16:00:00", reason=None):
+    from swing.data.db import connect
+    from swing.data.models import Fill
+    from swing.data.repos.fills import insert_fill_with_event
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_fill_with_event(conn, Fill(
+                fill_id=None, trade_id=trade_id,
+                fill_datetime=fill_datetime, action=action,
+                quantity=quantity, price=price, reason=reason,
+            ), event_ts=fill_datetime)
+    finally:
+        conn.close()
+
+
+def _make_price_cache(cfg, ticker, price):
+    """Return (cache, executor) where get_many returns the given snapshot."""
+    from datetime import datetime as _dt
+
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cache = PriceCache(cfg)
+    snap = PriceSnapshot(
+        ticker=ticker, price=price, asof=_dt.now(),
+        is_stale=False, source="live",
+    )
+
+    def _get_many(tickers, deadline_seconds, *, executor=None):
+        return {t: snap for t in tickers if t == ticker}
+
+    cache.get_many = _get_many  # type: ignore[method-assign]
+    return cache, None
+
+
+# --- TradeDetailVM tests ---------------------------------------------------
+
+def test_trade_detail_vm_state_field_and_badge_label(seeded_db):
+    from swing.web.view_models.trades import build_trade_detail_vm
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(cfg, state="partial_exited")
+    vm = build_trade_detail_vm(trade_id=trade_id, cfg=cfg)
+    assert vm is not None
+    assert vm.state == "partial_exited"
+    assert vm.state_badge_label == "Partial"
+
+
+def test_trade_detail_vm_badge_label_managing(seeded_db):
+    from swing.web.view_models.trades import build_trade_detail_vm
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(cfg, state="managing")
+    vm = build_trade_detail_vm(trade_id=trade_id, cfg=cfg)
+    assert vm.state_badge_label == "Managing"
+
+
+def test_trade_detail_vm_has_pre_trade_data_legacy_null(seeded_db):
+    from swing.web.view_models.trades import build_trade_detail_vm
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(
+        cfg, state="reviewed", premortem_technical=None,
+        reviewed_at="2026-05-04T10:00:00",
+    )
+    vm = build_trade_detail_vm(trade_id=trade_id, cfg=cfg)
+    assert vm.has_pre_trade_data is False
+
+
+def test_trade_detail_vm_has_pre_trade_data_phase7_populated(seeded_db):
+    from swing.web.view_models.trades import build_trade_detail_vm
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(
+        cfg, state="entered", premortem_technical="risk-A",
+    )
+    vm = build_trade_detail_vm(trade_id=trade_id, cfg=cfg)
+    assert vm.has_pre_trade_data is True
+    assert vm.trade.premortem_technical == "risk-A"
+
+
+def test_trade_detail_vm_returns_none_for_missing_trade(seeded_db):
+    from swing.web.view_models.trades import build_trade_detail_vm
+    cfg, _ = seeded_db
+    vm = build_trade_detail_vm(trade_id=99999, cfg=cfg)
+    assert vm is None
+
+
+def test_trade_detail_vm_exposes_trade_origin_and_locked_at(seeded_db):
+    from swing.web.view_models.trades import build_trade_detail_vm
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(
+        cfg, state="entered", trade_origin="pipeline_watch_manual",
+        pre_trade_locked_at="2026-05-03T09:30:00",
+    )
+    vm = build_trade_detail_vm(trade_id=trade_id, cfg=cfg)
+    assert vm.trade_origin == "pipeline_watch_manual"
+    assert vm.pre_trade_locked_at == "2026-05-03T09:30:00"
+
+
+def test_trade_detail_vm_audit_entries_empty_when_no_pre_trade_edits(seeded_db):
+    """V1: no /trades/{id}/edit-pre-trade route exists, so audit list is empty."""
+    from swing.web.view_models.trades import build_trade_detail_vm
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(cfg, state="entered")
+    vm = build_trade_detail_vm(trade_id=trade_id, cfg=cfg)
+    assert vm.audit_entries == ()
+
+
+def test_trade_detail_vm_fills_collected(seeded_db):
+    from swing.web.view_models.trades import build_trade_detail_vm
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(cfg, state="managing", initial_shares=100)
+    _seed_fill(
+        cfg, trade_id=trade_id, action="entry", quantity=100, price=100.0,
+        fill_datetime="2026-05-01T16:00:00",
+    )
+    _seed_fill(
+        cfg, trade_id=trade_id, action="trim", quantity=30, price=110.0,
+        fill_datetime="2026-05-03T16:00:00",
+    )
+    vm = build_trade_detail_vm(trade_id=trade_id, cfg=cfg)
+    assert len(vm.fills) == 2
+    # Sorted ASC by (fill_datetime, fill_id):
+    assert vm.fills[0].action == "entry"
+    assert vm.fills[1].action == "trim"
+
+
+def test_trade_detail_vm_audit_entries_populated_from_pre_trade_edit(seeded_db):
+    """trade_events rows with event_type='pre_trade_edit' surface as AuditEntry tuples.
+
+    V1 has no UI for this; the read path must still work for forward-compat.
+    """
+    import json
+    from swing.data.db import connect
+    from swing.web.view_models.trades import build_trade_detail_vm
+
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(cfg, state="entered")
+    payload = json.dumps({
+        "field": "thesis", "old_value": "old", "new_value": "new",
+    }, sort_keys=True)
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO trade_events
+                   (trade_id, ts, event_type, payload_json, rationale)
+                   VALUES (?, ?, 'pre_trade_edit', ?, ?)""",
+                (trade_id, "2026-05-04T10:00:00", payload, "found typo"),
+            )
+    finally:
+        conn.close()
+    vm = build_trade_detail_vm(trade_id=trade_id, cfg=cfg)
+    assert len(vm.audit_entries) == 1
+    entry = vm.audit_entries[0]
+    assert entry.field == "thesis"
+    assert entry.old_value == "old"
+    assert entry.new_value == "new"
+    assert entry.reason == "found typo"
+
+
+# --- Predicate-rewrite regression tests ------------------------------------
+
+
+def test_build_exit_form_vm_active_trade_predicate_managing(seeded_db, monkeypatch):  # noqa: ARG001
+    """state='managing' is an active state — exit form VM MUST build.
+
+    Discriminating: under the legacy `trade.status != 'open'` predicate this
+    test would fail because the migrated `state` column has no 'open' value.
+    """
+    from swing.web.view_models.trades import build_exit_form_vm
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(cfg, ticker="NVDA", state="managing")
+    cache, executor = _make_price_cache(cfg, "NVDA", 110.0)
+    vm = build_exit_form_vm(
+        trade_id=trade_id, cfg=cfg, cache=cache, executor=executor,
+    )
+    assert vm is not None
+    assert vm.trade.ticker == "NVDA"
+
+
+def test_build_exit_form_vm_active_trade_predicate_partial_exited(seeded_db):
+    from swing.web.view_models.trades import build_exit_form_vm
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(cfg, ticker="NVDA", state="partial_exited")
+    cache, executor = _make_price_cache(cfg, "NVDA", 110.0)
+    vm = build_exit_form_vm(
+        trade_id=trade_id, cfg=cfg, cache=cache, executor=executor,
+    )
+    assert vm is not None
+
+
+def test_build_exit_form_vm_rejects_closed(seeded_db):
+    """state='closed' is not active — exit form rejects."""
+    from swing.web.view_models.trades import build_exit_form_vm
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(cfg, ticker="NVDA", state="closed")
+    cache, executor = _make_price_cache(cfg, "NVDA", 110.0)
+    vm = build_exit_form_vm(
+        trade_id=trade_id, cfg=cfg, cache=cache, executor=executor,
+    )
+    assert vm is None
+
+
+def test_build_exit_form_vm_rejects_reviewed(seeded_db):
+    from swing.web.view_models.trades import build_exit_form_vm
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(cfg, ticker="NVDA", state="reviewed",
+                                  reviewed_at="2026-05-04T10:00:00")
+    cache, executor = _make_price_cache(cfg, "NVDA", 110.0)
+    vm = build_exit_form_vm(
+        trade_id=trade_id, cfg=cfg, cache=cache, executor=executor,
+    )
+    assert vm is None
+
+
+def test_build_stop_form_vm_active_trade_predicate_managing(seeded_db):
+    from swing.web.view_models.trades import build_stop_form_vm
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(cfg, ticker="NVDA", state="managing")
+    vm = build_stop_form_vm(trade_id=trade_id, cfg=cfg)
+    assert vm is not None
+
+
+def test_build_stop_form_vm_rejects_closed(seeded_db):
+    from swing.web.view_models.trades import build_stop_form_vm
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(cfg, ticker="NVDA", state="closed")
+    vm = build_stop_form_vm(trade_id=trade_id, cfg=cfg)
+    assert vm is None
+
+
+def test_build_review_vm_accepts_closed_only(seeded_db):
+    """state='closed' and reviewed_at IS NULL → VM builds."""
+    from swing.web.view_models.trades import build_review_vm
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(
+        cfg, ticker="NVDA", state="closed", reviewed_at=None,
+    )
+    vm = build_review_vm(trade_id=trade_id, cfg=cfg)
+    assert vm is not None
+
+
+def test_build_review_vm_rejects_reviewed_state(seeded_db):
+    """state='reviewed' MUST be rejected (single-review-per-trade).
+
+    Discriminating: a naive `state not in ('closed', 'reviewed')` predicate
+    would let this pass through and re-review an already-reviewed trade.
+    """
+    from swing.web.view_models.trades import build_review_vm
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(
+        cfg, ticker="NVDA", state="reviewed",
+        reviewed_at="2026-05-04T10:00:00",
+    )
+    vm = build_review_vm(trade_id=trade_id, cfg=cfg)
+    assert vm is None
+
+
+def test_build_review_vm_rejects_open_trade(seeded_db):
+    from swing.web.view_models.trades import build_review_vm
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(cfg, ticker="NVDA", state="entered")
+    vm = build_review_vm(trade_id=trade_id, cfg=cfg)
+    assert vm is None
+
+
+# --- Fills migration regression --------------------------------------------
+
+
+def test_build_exit_form_vm_remaining_shares_uses_fill_quantity(seeded_db):
+    """After migrating from list_exits_for_trade to list_fills_for_trade,
+    remaining = initial_shares - sum(non_entry_fill.quantity).
+
+    Discriminating: if the migration mistakenly used Fill.shares (an
+    AttributeError) the test would fail; if it left the legacy shim in
+    place behavior is unchanged but coverage of the new path is added.
+    """
+    from swing.web.view_models.trades import build_exit_form_vm
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(
+        cfg, ticker="NVDA", state="managing", initial_shares=100,
+        entry_price=100.0, initial_stop=90.0,
+    )
+    # Entry fill so aggregates reflect a real execution chain.
+    _seed_fill(
+        cfg, trade_id=trade_id, action="entry", quantity=100, price=100.0,
+        fill_datetime="2026-05-01T16:00:00",
+    )
+    _seed_fill(
+        cfg, trade_id=trade_id, action="trim", quantity=30, price=110.0,
+        fill_datetime="2026-05-03T16:00:00",
+    )
+    cache, executor = _make_price_cache(cfg, "NVDA", 112.0)
+    vm = build_exit_form_vm(
+        trade_id=trade_id, cfg=cfg, cache=cache, executor=executor,
+    )
+    assert vm is not None
+    assert vm.remaining_shares == 70
+
+
+def test_list_all_fills_returns_all_trades(seeded_db):
+    """list_all_fills is the new fills-repo helper introduced for Sub-C."""
+    from swing.data.db import connect
+    from swing.data.repos.fills import list_all_fills
+    cfg, _ = seeded_db
+    t1 = _seed_phase7_trade(cfg, ticker="AAA", state="entered")
+    t2 = _seed_phase7_trade(cfg, ticker="BBB", state="entered")
+    _seed_fill(cfg, trade_id=t1, action="entry", quantity=10, price=10.0,
+               fill_datetime="2026-05-01T16:00:00")
+    _seed_fill(cfg, trade_id=t2, action="entry", quantity=20, price=20.0,
+               fill_datetime="2026-05-02T16:00:00")
+    _seed_fill(cfg, trade_id=t1, action="trim", quantity=5, price=11.0,
+               fill_datetime="2026-05-03T16:00:00")
+    conn = connect(cfg.paths.db_path)
+    try:
+        fills = list_all_fills(conn)
+    finally:
+        conn.close()
+    assert len(fills) == 3
+    # Sorted ASC by (fill_datetime, fill_id):
+    assert [f.fill_datetime for f in fills] == [
+        "2026-05-01T16:00:00",
+        "2026-05-02T16:00:00",
+        "2026-05-03T16:00:00",
+    ]

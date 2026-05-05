@@ -128,3 +128,24 @@ def list_fills_for_trade(
         (trade_id,),
     ).fetchall()
     return [Fill(*r) for r in rows]
+
+
+def list_all_fills(conn: sqlite3.Connection) -> list[Fill]:
+    """All fills across all trades, sorted by (fill_datetime ASC, fill_id ASC).
+
+    Phase 7 Sub-C T1: introduced for web view-model consumers migrating
+    away from the legacy ``list_all_exits`` shim in
+    ``swing.data.repos.trades``. Cross-trade ordering uses the same
+    (fill_datetime, fill_id) key as ``list_fills_for_trade`` for
+    consistency.
+    """
+    rows = conn.execute(
+        """
+        SELECT fill_id, trade_id, fill_datetime, action, quantity, price,
+               reason, rule_based, fees, manual_entry_confidence,
+               reconciliation_status, tos_match_id
+        FROM fills
+        ORDER BY fill_datetime ASC, fill_id ASC
+        """,
+    ).fetchall()
+    return [Fill(*r) for r in rows]

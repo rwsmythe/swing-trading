@@ -1,18 +1,21 @@
 """Trade form view-models + builders for Phase 3b."""
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
 from swing.config import Config
 from swing.data.db import connect
-from swing.data.models import ReviewLog, Trade
+from swing.data.models import Fill, ReviewLog, Trade
 from swing.data.repos.cash import list_cash
+from swing.data.repos.fills import (
+    list_fills_for_trade,
+)
 from swing.data.repos.trades import (
     get_trade,
     list_all_exits,
-    list_exits_for_trade,
     list_open_trades,
 )
 from swing.data.repos.watchlist import list_active_watchlist
@@ -24,7 +27,100 @@ from swing.trades.stop_adjust import stop_adjust_rationale_options
 from swing.web.chart_scope import latest_completed_pipeline_run
 from swing.web.price_cache import PriceCache
 
+# Phase 7 Sub-C T1: Active-trade lifecycle states (exit-form + stop-form
+# preconditions). Mirrors `_ACTIVE_STATES_SQL` in repos/trades.py.
+_ACTIVE_STATES = ("entered", "managing", "partial_exited")
+
+# Phase 7 Sub-C T1 — display labels for the trade-detail page state badge.
+STATE_BADGE_LABELS: dict[str, str] = {
+    "entered": "Entered",
+    "managing": "Managing",
+    "partial_exited": "Partial",
+    "closed": "Closed",
+    "reviewed": "Reviewed",
+}
+
 _VALID_ORIGINS = ("watchlist", "hyp-recs")
+
+
+@dataclass(frozen=True)
+class _ExitShape:
+    """Minimal Exit-attribute surface required by
+    ``compute_actual_realized_R_effective`` (``trade_id``, ``shares``,
+    ``r_multiple``).
+
+    Phase 7 Sub-C T1: the legacy ``Exit`` dataclass is removed in Sub-A;
+    consumers that still need the attribute surface (review math, equity
+    math) reconstruct the missing PnL/R fields on-the-fly via
+    ``swing/trades/derived_metrics.py``. C.10 will refactor equity.py to
+    consume Fill directly; this VM-local adapter survives until then.
+    """
+    trade_id: int
+    exit_date: str
+    exit_price: float
+    shares: int
+    reason: str | None
+    realized_pnl: float | None
+    r_multiple: float | None
+
+
+def _fill_to_exit_like(fill: Fill, trade: Trade) -> _ExitShape:
+    """Convert a non-entry Fill into an Exit-shape adapter for review math.
+
+    ``r_multiple`` math mirrors the
+    ``swing.data.repos.trades._fill_row_to_exitlike`` shim so that callers
+    migrating off the shim see the same numeric output.
+    """
+    from swing.trades.derived_metrics import (
+        initial_risk_per_share,
+        r_multiple,
+        realized_pnl,
+    )
+
+    rps = initial_risk_per_share(
+        entry_price=trade.entry_price, initial_stop=trade.initial_stop,
+    )
+    pnl = realized_pnl(
+        entry_price=trade.entry_price, exit_price=fill.price,
+        quantity=fill.quantity,
+    )
+    rmult: float | None
+    if rps == 0 or fill.quantity == 0:
+        rmult = None
+    else:
+        rmult = r_multiple(
+            realized_pnl=pnl, initial_risk_per_share=rps,
+            quantity=fill.quantity,
+        )
+    exit_date = (
+        fill.fill_datetime.split("T")[0]
+        if "T" in fill.fill_datetime else fill.fill_datetime
+    )
+    return _ExitShape(
+        trade_id=fill.trade_id,
+        exit_date=exit_date,
+        exit_price=float(fill.price),
+        shares=int(fill.quantity),
+        reason=fill.reason,
+        realized_pnl=pnl,
+        r_multiple=rmult,
+    )
+
+
+@dataclass(frozen=True)
+class AuditEntry:
+    """One row of the trade-detail audit log (event_type='pre_trade_edit').
+
+    Phase 7 spec §11.4: rendered chronologically on the trade-detail page
+    when an operator edits a pre-trade decision field via the (currently
+    unimplemented) edit surface. V1 has no UI write path; the read path
+    here is forward-compatible with the planned edit endpoint.
+    """
+    ts: str
+    field: str
+    old_value: str | None
+    new_value: str | None
+    reason: str | None
 
 
 def _coerce_origin(raw: str | None) -> Literal["watchlist", "hyp-recs"]:
@@ -132,6 +228,8 @@ def build_entry_form_vm(
             wl = list_active_watchlist(conn)
             wl_entry = next((w for w in wl if w.ticker == ticker), None)
             open_trades = list_open_trades(conn)
+            # C.10: migrates with equity.py refactor (legacy shim retained
+            # so current_equity keeps working without touching equity.py).
             exits = list_all_exits(conn)
             cash_movements = list_cash(conn)
             # Phase 4 (Task 4): consume `latest_completed_pipeline_run`.
@@ -328,12 +426,18 @@ def build_exit_form_vm(
     try:
         with conn:
             trade = get_trade(conn, trade_id)
-            if trade is None or trade.status != "open":
+            if trade is None or trade.state not in _ACTIVE_STATES:
                 return None
-            exits = list_exits_for_trade(conn, trade_id)
+            # Phase 7 Sub-C T1 — fills repo migration. Drop the
+            # ``list_exits_for_trade`` shim; ``Fill.quantity`` replaces
+            # ``Exit.shares`` (terminology change). Filter ``action='entry'``
+            # so the canonical entry-fill (Sub-A T6 backfill) does not count
+            # against the remaining-shares math.
+            fills = list_fills_for_trade(conn, trade_id)
     finally:
         conn.close()
-    remaining = trade.initial_shares - sum(e.shares for e in exits)
+    non_entry_fills = [f for f in fills if f.action != "entry"]
+    remaining = trade.initial_shares - sum(f.quantity for f in non_entry_fills)
 
     prices = cache.get_many(
         [trade.ticker],
@@ -382,7 +486,7 @@ def build_stop_form_vm(*, trade_id: int, cfg: Config) -> TradeStopFormVM | None:
     try:
         with conn:
             trade = get_trade(conn, trade_id)
-            if trade is None or trade.status != "open":
+            if trade is None or trade.state not in _ACTIVE_STATES:
                 return None
     finally:
         conn.close()
@@ -429,13 +533,25 @@ def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
     try:
         with conn:
             trade = get_trade(conn, trade_id)
-            if trade is None or trade.status != "closed":
+            # Phase 7 Sub-C T1 — Closed-but-not-reviewed predicate. Spec §2.1
+            # reserves the bare ``state == 'closed'`` form for the per-trade
+            # review precondition (NOT ``state in ('closed', 'reviewed')``,
+            # which would re-allow already-reviewed trades through review).
+            if trade is None or trade.state != "closed":
                 return None
             if trade.reviewed_at is not None:
-                return None  # V1: single-review-per-trade
-            exits = list_exits_for_trade(conn, trade_id)
+                return None  # V1: single-review-per-trade (defensive)
+            # Fills repo migration: pull non-entry fills + transform to
+            # Exit-shape rows so ``compute_actual_realized_R_effective``
+            # (which still expects ``e.shares`` / ``e.r_multiple`` /
+            # ``e.trade_id``) keeps working without an equity.py refactor.
+            non_entry_fills = [
+                f for f in list_fills_for_trade(conn, trade_id)
+                if f.action != "entry"
+            ]
     finally:
         conn.close()
+    exits = tuple(_fill_to_exit_like(f, trade) for f in non_entry_fills)
     actual_r = compute_actual_realized_R_effective(trade, list(exits))
     return ReviewVM(
         trade=trade,
@@ -498,6 +614,9 @@ def build_cadence_complete_vm(*, review_id: int, cfg: Config) -> CadenceComplete
         # Pre-render the count of closed trades in the period (helper text):
         from datetime import date as _date
 
+        # C.10: migrates with equity.py refactor (legacy shim retained
+        # so the closed-trades-in-period count keeps working without
+        # touching the period-aggregation helpers).
         from swing.data.repos.trades import list_all_exits, list_closed_trades
         closed = list_closed_trades(conn)
         all_exits = list_all_exits(conn)
@@ -514,3 +633,158 @@ def build_cadence_complete_vm(*, review_id: int, cfg: Config) -> CadenceComplete
     finally:
         conn.close()
     return CadenceCompleteVM(review=review, n_closed_trades_in_period=n)
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-C T1 — Trade-detail page VM. Consumed by the route + template
+# wired up by Sub-C T3/T5. Read-only surface; no write path lives here.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TradeDetailVM:
+    """View-model for the trade-detail page (Phase 7 spec §11.4).
+
+    Wraps a Trade plus its fills + audit-log read so the template can
+    render the new Pre-Trade Decision section, the state badge, and the
+    fills history without re-querying the DB.
+
+    ``has_pre_trade_data`` gates the Pre-Trade Decision section render —
+    legacy rows (pre-Phase-7, ``premortem_technical IS NULL``) hide the
+    section entirely so the operator does not see a sea of empty fields.
+    """
+    trade: Trade
+    state: str
+    state_badge_label: str
+    has_pre_trade_data: bool
+    # 18 + 1 pre-trade-field accessors (spec §11.4 enumeration plus
+    # ``catalyst_other_description`` companion). All passthrough from
+    # ``trade.X`` for template ergonomics; legacy rows surface None.
+    thesis: str | None
+    why_now: str | None
+    invalidation_condition: str | None
+    expected_scenario: str | None
+    premortem_technical: str | None
+    premortem_market_sector: str | None
+    premortem_execution: str | None
+    premortem_additional: str | None
+    event_risk_present: int | None
+    event_handling: str | None
+    event_type: str | None
+    event_date: str | None
+    gap_risk_present: int | None
+    gap_risk_handling: str | None
+    emotional_state_pre_trade: str | None
+    # ``manual_entry_confidence`` lives on Fill (spec §4.3.1); pulled from
+    # the authoritative entry-fill at build time. None when no entry-fill
+    # exists yet (legacy rows; trade migrated without a backfill).
+    manual_entry_confidence: str | None
+    market_regime: str | None
+    catalyst: str | None
+    catalyst_other_description: str | None
+    pre_trade_locked_at: str
+    trade_origin: str
+    audit_entries: tuple[AuditEntry, ...]
+    fills: tuple[Fill, ...]
+    # 5-VM existing-fields safe defaults (CLAUDE.md base-layout VM rule):
+    session_date: str = ""
+    stale_banner: str = ""
+    price_source_degraded: bool = False
+    price_source_degraded_until: str | None = None
+    ohlcv_source_degraded: bool = False
+
+
+def _load_audit_entries(
+    conn, trade_id: int,
+) -> tuple[AuditEntry, ...]:
+    """Read trade_events rows with event_type='pre_trade_edit', sorted ASC by ts.
+
+    Each row's payload_json carries ``field``/``old_value``/``new_value``
+    keys; the rationale column carries the operator-supplied edit reason.
+    Malformed payloads (non-JSON / missing keys) surface as best-effort
+    AuditEntry rows with None fallbacks rather than raising — V1 has no
+    write path, so any rows that exist are operator-injected debug data.
+    """
+    rows = conn.execute(
+        """
+        SELECT ts, payload_json, rationale
+        FROM trade_events
+        WHERE trade_id = ? AND event_type = 'pre_trade_edit'
+        ORDER BY ts ASC, id ASC
+        """,
+        (trade_id,),
+    ).fetchall()
+    out: list[AuditEntry] = []
+    for ts, payload_json, rationale in rows:
+        try:
+            payload = json.loads(payload_json) if payload_json else {}
+        except (TypeError, ValueError):
+            payload = {}
+        out.append(AuditEntry(
+            ts=ts,
+            field=str(payload.get("field", "")),
+            old_value=payload.get("old_value"),
+            new_value=payload.get("new_value"),
+            reason=rationale,
+        ))
+    return tuple(out)
+
+
+def build_trade_detail_vm(
+    *, trade_id: int, cfg: Config,
+) -> TradeDetailVM | None:
+    """Build the trade-detail page VM. Returns None if trade not found.
+
+    Loads trade + fills + pre-trade-edit audit log + (optionally) the
+    authoritative entry-fill's ``manual_entry_confidence`` and assembles
+    the VM. Pure read; no DB writes.
+    """
+    from swing.data.repos.fills import get_authoritative_entry_fill
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            trade = get_trade(conn, trade_id)
+            if trade is None:
+                return None
+            fills = tuple(list_fills_for_trade(conn, trade_id))
+            audit_entries = _load_audit_entries(conn, trade_id)
+            entry_fill = get_authoritative_entry_fill(conn, trade_id)
+    finally:
+        conn.close()
+
+    badge_label = STATE_BADGE_LABELS.get(trade.state, trade.state)
+    has_pre_trade_data = trade.premortem_technical is not None
+    manual_entry_confidence = (
+        entry_fill.manual_entry_confidence if entry_fill is not None else None
+    )
+
+    return TradeDetailVM(
+        trade=trade,
+        state=trade.state,
+        state_badge_label=badge_label,
+        has_pre_trade_data=has_pre_trade_data,
+        thesis=trade.thesis,
+        why_now=trade.why_now,
+        invalidation_condition=trade.invalidation_condition,
+        expected_scenario=trade.expected_scenario,
+        premortem_technical=trade.premortem_technical,
+        premortem_market_sector=trade.premortem_market_sector,
+        premortem_execution=trade.premortem_execution,
+        premortem_additional=trade.premortem_additional,
+        event_risk_present=trade.event_risk_present,
+        event_handling=trade.event_handling,
+        event_type=trade.event_type,
+        event_date=trade.event_date,
+        gap_risk_present=trade.gap_risk_present,
+        gap_risk_handling=trade.gap_risk_handling,
+        emotional_state_pre_trade=trade.emotional_state_pre_trade,
+        manual_entry_confidence=manual_entry_confidence,
+        market_regime=trade.market_regime,
+        catalyst=trade.catalyst,
+        catalyst_other_description=trade.catalyst_other_description,
+        pre_trade_locked_at=trade.pre_trade_locked_at,
+        trade_origin=trade.trade_origin,
+        audit_entries=audit_entries,
+        fills=fills,
+    )
