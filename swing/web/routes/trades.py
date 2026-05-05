@@ -444,12 +444,32 @@ def entry_post(
             origin=origin_coerced,
         )
     if cp_anchor_value is not None:
+        from swing.data.repos.pattern_classifications import get_classification
         _conn = connect(cfg.paths.db_path)
         try:
             _row = _conn.execute(
                 "SELECT 1 FROM pipeline_runs WHERE id = ?",
                 (cp_anchor_value,),
             ).fetchone()
+            # Codex R2 Major 1 — restore the cached-only contract for
+            # tampered POSTs. The FK + enum checks reject obvious tampering
+            # (bogus run_id, algo not in enum). This adds the missing
+            # snapshot-vs-cache match check: the submitted (run_id, ticker)
+            # tuple MUST correspond to a cached classification, otherwise
+            # the snapshot is forged. We deliberately do NOT also assert
+            # cls.pattern == cp_algo_value or cls.confidence == cp_conf_value
+            # — spec §3.6 R2 M3 requires snapshot values flow AS-IS, and a
+            # legit "cache changed during form fill" path would false-reject
+            # under stricter equality checks.
+            _cls_row = (
+                get_classification(
+                    _conn,
+                    pipeline_run_id=cp_anchor_value,
+                    ticker=ticker.upper(),
+                )
+                if _row is not None
+                else None
+            )
         finally:
             _conn.close()
         if _row is None:
@@ -463,6 +483,20 @@ def entry_post(
                     "chart_pattern_classification_pipeline_run_id "
                     f"{cp_anchor_value} does not reference an existing "
                     "pipeline_runs row."
+                ),
+                origin=origin_coerced,
+            )
+        if _cls_row is None:
+            return _rerender_entry_form_with_error(
+                request=request, templates=templates, cfg=cfg, cache=cache,
+                executor=executor, ticker=ticker, entry_date=entry_date,
+                entry_price=entry_price, shares=shares,
+                initial_stop=initial_stop,
+                rationale=rationale, notes=notes,
+                error_message=(
+                    f"chart_pattern snapshot rejected: no cached "
+                    f"classification exists for {ticker.upper()} under "
+                    f"pipeline_runs.id={cp_anchor_value}"
                 ),
                 origin=origin_coerced,
             )
