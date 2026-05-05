@@ -207,16 +207,6 @@ def test_post_entry_persists_NULL_for_non_matching_ticker(
     )
 
 
-@pytest.mark.skip(reason=(
-    "Phase 7 Sub-A added 13 pre-trade form fields to /trades/entry; the "
-    "soft-warn confirm fragment's form_values dict in "
-    "swing/web/routes/trades.py builds the round-trip hidden inputs "
-    "from a hand-curated key list that does NOT include the 13 new "
-    "fields. Operator clicking 'Submit anyway' POSTs without those "
-    "fields → MissingPreTradeFieldsException → 400. Production fix "
-    "required (out of C.13 scope: add the 13 fields to form_values + "
-    "the route POST handler's local kwargs)."
-))
 def test_post_entry_soft_warn_round_trip_via_fragment_faithful_resubmit(
     seeded_db, monkeypatch,
 ):

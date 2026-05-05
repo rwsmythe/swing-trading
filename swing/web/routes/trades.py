@@ -631,6 +631,49 @@ def entry_post(
                 # auto-emits the hidden <input name="origin"> because
                 # 'origin' is not in the banner-only exclusion list.
                 "origin": origin_coerced,
+                # Phase 7 Sub-C C.4 follow-up — the 18 pre-trade fields
+                # must round-trip through the soft-warn confirm fragment
+                # so the force=true resubmit carries them back through.
+                # Without this, the second POST loses the operator's
+                # typed values → MissingPreTradeFieldsException → 400 +
+                # data loss. ``or ""`` is correct here (these are HTML
+                # form values; the route's downstream ``or None`` coerces
+                # empty strings to NULL where columns allow it). The
+                # int-typed event/gap_risk_present fields render as "0"
+                # / "1" / "" so the second POST's ``int | None = Form()``
+                # binding succeeds.
+                "thesis": thesis or "",
+                "why_now": why_now or "",
+                "invalidation_condition": invalidation_condition or "",
+                "expected_scenario": expected_scenario or "",
+                "premortem_technical": premortem_technical or "",
+                "premortem_market_sector": premortem_market_sector or "",
+                "premortem_execution": premortem_execution or "",
+                "premortem_additional": premortem_additional or "",
+                "event_risk_present": (
+                    str(event_risk_present)
+                    if event_risk_present is not None else ""
+                ),
+                "event_handling": event_handling or "",
+                "event_type": event_type or "",
+                "event_date": event_date or "",
+                "gap_risk_present": (
+                    str(gap_risk_present)
+                    if gap_risk_present is not None else ""
+                ),
+                "gap_risk_handling": gap_risk_handling or "",
+                # Multi-select: store as list so the template emits ONE
+                # hidden input per vocabulary value selected. The
+                # soft_warn_confirm.html.j2 special-cases list values to
+                # avoid the str(["calm","focused"]) → "['calm', 'focused']"
+                # round-trip-lossy degenerate case.
+                "emotional_state_pre_trade": list(emo_clean),
+                "manual_entry_confidence": manual_entry_confidence or "",
+                "market_regime": market_regime or "",
+                "catalyst": catalyst or "",
+                "catalyst_other_description": (
+                    catalyst_other_description or ""
+                ),
                 "open_count": actual_open,
                 "soft_warn": cfg.position_limits.soft_warn_open,
                 "hard_cap": cfg.position_limits.hard_cap_open,

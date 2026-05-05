@@ -308,6 +308,259 @@ def test_post_entry_soft_warn_2step(seeded_db, monkeypatch):
         assert "open-position-" in r2.text
 
 
+def _seed_soft_warn_trades_and_watchlist(cfg) -> None:
+    """Seed 4 unrelated open trades (= soft_warn_open default) + AAPL
+    watchlist row so the (5th) AAPL entry trips the soft-warn cap."""
+    from swing.data.db import connect
+    from swing.data.models import Trade, WatchlistEntry
+    from swing.data.repos.trades import insert_trade_with_event
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            for i, t in enumerate(("MSFT", "NVDA", "GOOG", "META")):
+                insert_trade_with_event(conn, Trade(
+                    id=None, ticker=t, entry_date="2026-04-15",
+                    entry_price=100.0, initial_shares=1, initial_stop=90.0,
+                    current_stop=90.0, state="entered",
+                    watchlist_entry_target=None, watchlist_initial_stop=None,
+                    notes=None,
+                ), event_ts=f"2026-04-15T09:{30+i}:00")
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="AAPL", added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+
+
+def test_post_entry_soft_warn_confirm_round_trips_18_pre_trade_fields(
+    seeded_db, monkeypatch,
+):
+    """Phase 7 Sub-C C.4 follow-up regression. Discriminating: under
+    buggy soft-warn confirm (form_values missing the 13+ pre-trade
+    fields), the confirm fragment emits no hidden inputs for thesis /
+    why_now / etc., a fragment-faithful second POST loses those values,
+    and record_entry's MissingPreTradeFieldsException fires (400). Under
+    the fix, the confirm fragment carries every operator-typed
+    pre-trade field; the second POST persists them and the trade row
+    is created (state='entered')."""
+    import re
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    _seed_soft_warn_trades_and_watchlist(cfg)
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: PriceSnapshot(
+                ticker=t, price=180.95, asof=datetime.now(),
+                is_stale=False, source="live",
+            ) for t in tickers
+        })
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    form_data = full_phase7_entry_payload(
+        ticker="AAPL", entry_date="2026-04-18",
+        entry_price="180.95", shares="1", initial_stop="170.00",
+        rationale="aplus-setup",
+        thesis="round-trip-thesis-marker",
+        why_now="round-trip-why-now-marker",
+    )
+    with TestClient(app) as client:
+        # First POST → soft-warn confirm fragment.
+        r1 = client.post(
+            "/trades/entry", headers={"HX-Request": "true"}, data=form_data,
+        )
+        assert r1.status_code == 200, r1.text
+        assert "Soft cap reached" in r1.text
+
+        # Confirm fragment must emit a hidden input for every pre-trade
+        # field. Pin specific markers (thesis, why_now) so the test fails
+        # discriminatingly under the bug — pre-fix, those keys would be
+        # absent from form_values entirely.
+        for name, value in (
+            ("thesis", "round-trip-thesis-marker"),
+            ("why_now", "round-trip-why-now-marker"),
+            ("invalidation_condition", "stop-hit"),
+            ("expected_scenario", "win"),
+            ("premortem_technical", "tech-risk"),
+            ("premortem_market_sector", "market-risk"),
+            ("premortem_execution", "execution-risk"),
+            ("event_risk_present", "0"),
+            ("gap_risk_present", "0"),
+            ("manual_entry_confidence", "normal"),
+            ("market_regime", "Bullish"),
+            ("catalyst", "technical_only"),
+        ):
+            assert (
+                f'name="{name}" value="{value}"' in r1.text
+            ), (
+                f"soft-warn confirm fragment missing hidden input "
+                f'name="{name}" value="{value}"; pre-trade field would '
+                f"be lost on the force=true resubmit"
+            )
+
+        # Fragment-faithful resubmit: parse server-emitted hidden inputs
+        # and POST those (mimicking what a real browser submits when the
+        # operator clicks "Submit anyway"). This is the only way to
+        # exercise the bug — hand-curating the second POST's payload from
+        # the original form_data masks form_values omissions.
+        fragment_inputs = re.findall(
+            r'<input\s+type="hidden"\s+name="([^"]+)"\s+value="([^"]*)"',
+            r1.text,
+        )
+        # Multi-value list fields (emotional_state_pre_trade) MAY emit
+        # multiple inputs; collect as list-of-pairs to preserve repeats.
+        second_post_data: dict[str, object] = {}
+        for k, v in fragment_inputs:
+            if k in second_post_data:
+                existing = second_post_data[k]
+                if isinstance(existing, list):
+                    existing.append(v)
+                else:
+                    second_post_data[k] = [existing, v]
+            else:
+                second_post_data[k] = v
+        r2 = client.post(
+            "/trades/entry", headers={"HX-Request": "true"},
+            data=second_post_data,
+        )
+        assert r2.status_code == 200, r2.text
+        # Success path emits an `open-position-<id>` table row.
+        assert "open-position-" in r2.text, (
+            "force=true resubmit must succeed (state='entered'); "
+            "if 400, MissingPreTradeFieldsException fired → fields lost"
+        )
+
+    # Verify pre-trade values persisted correctly.
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT thesis, why_now, market_regime, catalyst "
+            "FROM trades WHERE ticker = 'AAPL' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None, "AAPL trade row must exist after force=true resubmit"
+    assert row[0] == "round-trip-thesis-marker", (
+        f"thesis must round-trip; got {row[0]!r}"
+    )
+    assert row[1] == "round-trip-why-now-marker", (
+        f"why_now must round-trip; got {row[1]!r}"
+    )
+    assert row[2] == "Bullish", f"market_regime; got {row[2]!r}"
+    assert row[3] == "technical_only", f"catalyst; got {row[3]!r}"
+
+
+def test_post_entry_soft_warn_confirm_emotional_state_multi_value_round_trips(
+    seeded_db, monkeypatch,
+):
+    """Phase 7 Sub-C C.4 follow-up regression. Discriminating multi-
+    select round-trip: emotional_state_pre_trade is a multi-select that
+    arrives as a list[str]. If form_values rendered it via plain
+    {{ value }} (single hidden input), the second POST would receive
+    "['calm', 'focused']" as a single string value → JSON-encoded
+    differently than ["calm", "focused"]. The template's list-special-
+    case must emit ONE hidden input per element so the fragment-faithful
+    resubmit reconstructs the list."""
+    import json
+    import re
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    _seed_soft_warn_trades_and_watchlist(cfg)
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: PriceSnapshot(
+                ticker=t, price=180.95, asof=datetime.now(),
+                is_stale=False, source="live",
+            ) for t in tickers
+        })
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    form_data = full_phase7_entry_payload(
+        ticker="AAPL", entry_date="2026-04-18",
+        entry_price="180.95", shares="1", initial_stop="170.00",
+        rationale="aplus-setup",
+    )
+    # Multi-select values: TestClient encodes a list as repeat form keys
+    # (matches the HTML `<select multiple>` submission shape).
+    form_data["emotional_state_pre_trade"] = ["calm", "focused"]
+    with TestClient(app) as client:
+        r1 = client.post(
+            "/trades/entry", headers={"HX-Request": "true"}, data=form_data,
+        )
+        assert r1.status_code == 200, r1.text
+        assert "Soft cap reached" in r1.text
+        # Both vocabulary values must appear as separate hidden inputs.
+        assert (
+            'name="emotional_state_pre_trade" value="calm"' in r1.text
+        ), "first emotional_state value missing from confirm fragment"
+        assert (
+            'name="emotional_state_pre_trade" value="focused"' in r1.text
+        ), "second emotional_state value missing from confirm fragment"
+        # Critically, the bug-form rendering ("['calm', 'focused']" as a
+        # single value) MUST NOT be present — that would round-trip a
+        # malformed single-string token.
+        assert (
+            "value=\"['calm', 'focused']\"" not in r1.text
+            and 'value="[&#39;calm&#39;, &#39;focused&#39;]"' not in r1.text
+        ), "list-typed value must NOT render as Python repr"
+
+        # Fragment-faithful resubmit (multi-value preserved).
+        pairs = re.findall(
+            r'<input\s+type="hidden"\s+name="([^"]+)"\s+value="([^"]*)"',
+            r1.text,
+        )
+        second_post_data: dict[str, object] = {}
+        for k, v in pairs:
+            if k in second_post_data:
+                existing = second_post_data[k]
+                if isinstance(existing, list):
+                    existing.append(v)
+                else:
+                    second_post_data[k] = [existing, v]
+            else:
+                second_post_data[k] = v
+        # Defensive: emotional_state_pre_trade should be a 2-element list.
+        emo = second_post_data.get("emotional_state_pre_trade")
+        assert emo == ["calm", "focused"], (
+            f"fragment parsing must yield 2-element list; got {emo!r}"
+        )
+        r2 = client.post(
+            "/trades/entry", headers={"HX-Request": "true"},
+            data=second_post_data,
+        )
+        assert r2.status_code == 200, r2.text
+        assert "open-position-" in r2.text
+
+    # Verify persisted JSON list.
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT emotional_state_pre_trade FROM trades "
+            "WHERE ticker = 'AAPL' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    persisted = json.loads(row[0])
+    assert persisted == ["calm", "focused"], (
+        f"persisted emotional_state must be 2-element JSON list; got {persisted!r}"
+    )
+
+
 def test_post_entry_hard_cap_error(seeded_db, monkeypatch):
     """Hard cap reached → 400 trade_form_error fragment, no UI bypass."""
     from datetime import datetime
