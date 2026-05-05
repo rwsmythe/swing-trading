@@ -14,11 +14,16 @@
   future "view detail" links.
 -#}
 {% extends "base.html.j2" %}
+{# Phase 7 Sub-C C.6 — pull the state-badge markup from the shared macro
+   (single source of truth — pre-empts OOB-swap drift). The C.5
+   inline-span rendering is replaced; vm.state_badge_label is no longer
+   needed here because the macro looks up the label from vm.state. #}
+{% from "partials/state_badge.html.j2" import render as state_badge %}
 {% block content %}
 <h1>{{ vm.trade.ticker }} — Trade #{{ vm.trade.id }}</h1>
 
 <div class="trade-state">
-  State: <span class="state-badge state-{{ vm.state }}">{{ vm.state_badge_label }}</span>
+  State: {{ state_badge(vm.state) }}
 </div>
 
 <dl class="trade-summary">

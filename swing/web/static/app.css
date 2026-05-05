@@ -30,3 +30,22 @@ tbody tr:nth-child(even) td { background: #f7f7f7; }
    instead. (Adversarial review R1 Minor 2.) */
 tr.tripwire-fired td { background: #ffe6e6; font-weight: 600; }
 tr.tripwire-fired td:first-child { border-left: 4px solid #c00; }
+
+/* Phase 7 Sub-C C.6 — trade-lifecycle state badge color rules.
+   Rendered by the shared partials/state_badge.html.j2 macro on the
+   journal page (per-row), the dashboard open-positions row (next to
+   ticker), and the trade-detail page (top header). Color choices match
+   Bootstrap 5's contextual badge palette so the visual cues are
+   familiar; see Phase 7 spec §11.5. */
+.state-badge {
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.85em;
+  font-weight: 500;
+  display: inline-block;
+}
+.state-entered { background: #cfe2ff; color: #0a3469; }
+.state-managing { background: #d1e7dd; color: #0f5132; }
+.state-partial_exited { background: #fff3cd; color: #664d03; }
+.state-closed { background: #e2e3e5; color: #41464b; }
+.state-reviewed { background: #cff4fc; color: #055160; }

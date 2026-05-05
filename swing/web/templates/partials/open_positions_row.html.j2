@@ -1,19 +1,27 @@
 {#- Single open-positions row.
     SINGLE contract: expects `row: OpenPositionsRowVM` with fields
       trade (Trade), price_snapshot (PriceSnapshot|None),
-      remaining_shares (int), advisories (tuple[AdvisorySuggestionVM, ...]).
+      remaining_shares (int), advisories (tuple[AdvisorySuggestionVM, ...]),
+      state_badge_label (str — Phase 7 Sub-C C.2).
     No dual-contract / legacy locals branch. All call sites MUST pass `row`.
     Task 13: Exit button added. Adjust stop button appended in Task 15.
     Tier-2 #3: <tr> carries hx-get='/trades/open/<id>/expand' for click-to-
     expand chart-display; Exit/Adjust buttons need event.stopPropagation()
     so a button click doesn't also fire the row's expand binding (Bug-1
-    lesson — see CLAUDE.md HTMX click propagation gotcha). -#}
+    lesson — see CLAUDE.md HTMX click propagation gotcha).
+
+    Phase 7 Sub-C C.6: state badge rendered next to the ticker via the
+    shared partials/state_badge.html.j2 macro (single source of truth —
+    pre-empts OOB-swap drift gotcha; this same partial renders both the
+    full-page dashboard row and OOB-swap responses for entry POST /
+    refresh-now). -#}
+{% from "partials/state_badge.html.j2" import render as state_badge %}
 <tr id="open-position-{{ row.trade.id }}"
     hx-get="/trades/open/{{ row.trade.id }}/expand"
     hx-target="closest tr"
     hx-swap="outerHTML"
     hx-headers='{"HX-Request": "true"}'>
-  <td>{{ row.trade.ticker }}</td>
+  <td>{{ row.trade.ticker }} {{ state_badge(row.trade.state) }}</td>
   <td>{{ row.trade.entry_date }}</td>
   <td>${{ '%.2f' | format(row.trade.entry_price) }}</td>
   <td>{{ row.remaining_shares }} / {{ row.trade.initial_shares }}</td>
