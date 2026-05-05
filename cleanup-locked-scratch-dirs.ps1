@@ -1,16 +1,31 @@
 <#
 .SYNOPSIS
-  Take ownership of and remove pytest/scratch directories that are locked
-  by Codex Sandbox subprocess accounts and inaccessible from regular sessions.
+  Take ownership of and remove pytest/scratch directories AND orphaned
+  worktree dirs that are locked by Codex Sandbox subprocess accounts or
+  pytest-tmpdir ACL inheritance and inaccessible from regular sessions.
 
 .DESCRIPTION
-  Discovers top-level directories under the project root that are either:
-    (a) owned by a CodexSandbox* account (the MCP subprocess identity), or
-    (b) inaccessible (Get-Acl or Get-ChildItem fails with access-denied).
-  Filters those candidates against a scratch-name allowlist as defense-in-depth,
-  then for each surviving directory runs:
+  Discovers two distinct categories of cleanup targets:
+
+  (1) TOP-LEVEL scratch dirs under the project root, either:
+      (a) owned by a CodexSandbox* account (the MCP subprocess identity), or
+      (b) inaccessible (Get-Acl or Get-ChildItem fails with access-denied).
+      Filtered against a scratch-name allowlist as defense-in-depth.
+
+  (2) ORPHANED WORKTREE dirs (added 2026-05-05 per phase3e-todo.md
+      trigger-gated entry; recurrence-trigger fired at Phase 7 cleanup
+      with 5/5 worktrees affected by the .tmp/pytest-of-rwsmy/ ACL-lock
+      pattern). Subdirs of `.worktrees/` whose branch is NOT in
+      `git worktree list` (i.e., `git worktree remove --force` succeeded
+      at deregistering but failed to delete on-disk content). pytest's
+      tmpdir machinery creates `.tmp/pytest-of-rwsmy/` subdirs whose
+      ACL inheritance prevents normal-user delete; same takeown/icacls
+      treatment as category (1) handles it.
+
+  For each surviving target runs:
     takeown /F <path> /R /D Y
-    icacls <path> /grant rwsmy:F /T /C
+    icacls <path> /reset /T /C /Q          # remove restrictive ACLs first
+    icacls <path> /grant <GrantUser>:F /T /C  # explicit grant defense-in-depth
     Remove-Item -Recurse -Force <path>
 
   REQUIRES: elevated PowerShell session (Run as Administrator). The takeown
@@ -31,6 +46,11 @@
   Skip the y/N confirmation prompt before destructive execution. Use with
   caution; intended for scripted re-runs after a verified dry-run.
 
+.PARAMETER SkipWorktrees
+  Skip the orphaned-worktree discovery pass. Default $false (worktrees
+  included). Set $true to scan only top-level scratch dirs (legacy behavior
+  pre-2026-05-05).
+
 .EXAMPLE
   PS C:\> .\cleanup-locked-scratch-dirs.ps1 -DryRun
   # Discover and report; no destructive actions.
@@ -40,12 +60,23 @@
   # Interactive: discover, report, confirm, then clean.
 
 .NOTES
-  Background: Codex MCP subprocess pytest runs leave behind scratch directories
-  owned by sandbox accounts (CodexSandboxOffline, CodexSandboxUsers). The
-  current user (rwsmy) lacks ownership and ACL grants for those directories,
-  so they cannot be deleted from a normal Claude Code or PowerShell session.
+  Background: Two distinct lock-mechanisms produce on-disk dirs that the
+  operator user (rwsmy) cannot delete from a normal session:
+
+  - Codex MCP subprocess pytest runs leave behind scratch directories
+    owned by sandbox accounts (CodexSandboxOffline, CodexSandboxUsers).
+    Original 2026-04-28 motivation.
+
+  - pytest tmpdir machinery inside worktrees creates `.tmp/pytest-of-rwsmy/`
+    subdirs whose ACL inheritance prevents normal-user delete after the
+    pytest run completes. `git worktree remove --force` fails with
+    "Directory not empty"; deregistration succeeds but on-disk dir orphans.
+    Recurrence trigger fired 2026-05-05 (Phases 5 + 6 + Phase 7 Sub-A/B/C
+    all hit the pattern; 5/5 = durable). Worktree-extension landed
+    2026-05-05 per phase3e-todo trigger-gated entry.
+
   This script is the operator-witnessed elevated-cleanup path. See
-  docs/phase3e-todo.md and conversation history (2026-04-28) for full context.
+  docs/phase3e-todo.md and orchestrator-context.md for full context.
 #>
 
 [CmdletBinding(SupportsShouldProcess=$false)]
@@ -53,7 +84,8 @@ param(
   [string]$ProjectRoot = $PSScriptRoot,
   [switch]$DryRun,
   [string]$GrantUser = "$env:USERDOMAIN\$env:USERNAME",
-  [switch]$NoConfirm
+  [switch]$NoConfirm,
+  [switch]$SkipWorktrees
 )
 
 $ErrorActionPreference = 'Stop'
@@ -119,20 +151,74 @@ foreach ($dir in $topLevelDirs) {
   }
 }
 
+# --- Discovery: orphaned worktree subdirs (added 2026-05-05) ---
+# After `git worktree remove --force` fails on `.tmp/pytest-of-rwsmy/` ACL-locked
+# subdirs, the worktree REGISTRATION is removed but the on-disk dir remains.
+# These are operator-owned (rwsmy) AT THE TOP LEVEL but the .tmp/pytest-of-rwsmy/
+# subdir has restrictive permissions from pytest tmpdir ACL inheritance.
+# Recurrence pattern: Phases 5 + 6 + Phase 7 Sub-A/B/C all hit the same lock.
+# 5/5 recurrence rate confirmed durable 2026-05-05; phase3e-todo trigger-gated
+# entry's tripwire fired; this discovery branch is the script extension.
+if (-not $SkipWorktrees) {
+  $worktreesDir = Join-Path $ProjectRoot '.worktrees'
+  if (Test-Path $worktreesDir) {
+    # Get registered worktree paths from git
+    $registeredPaths = @()
+    try {
+      $worktreeListOutput = & git -C $ProjectRoot worktree list 2>&1
+      foreach ($line in $worktreeListOutput) {
+        # Format: "<path>  <sha> [<branch>]" — first whitespace-delimited token is path
+        if ($line -match '^(\S+)\s+[a-f0-9]+\s+\[') {
+          $regPath = $matches[1].Trim()
+          # Normalize to absolute Windows path for comparison
+          try {
+            $registeredPaths += (Resolve-Path -LiteralPath $regPath -ErrorAction Stop).Path
+          } catch {
+            $registeredPaths += $regPath
+          }
+        }
+      }
+    } catch {
+      Write-Warning "git worktree list failed: $($_.Exception.Message). Skipping orphaned-worktree discovery."
+    }
+
+    # Subdirs of .worktrees/ whose absolute path is NOT in the registered set
+    $worktreeSubdirs = Get-ChildItem -LiteralPath $worktreesDir -Directory -Force -ErrorAction SilentlyContinue
+    foreach ($wt in $worktreeSubdirs) {
+      $wtAbs = $wt.FullName
+      $isRegistered = $false
+      foreach ($regPath in $registeredPaths) {
+        if ($wtAbs -ieq $regPath) {  # case-insensitive Windows path equality
+          $isRegistered = $true
+          break
+        }
+      }
+      if (-not $isRegistered) {
+        [void]$candidates.Add([PSCustomObject]@{
+          Name   = ".worktrees/$($wt.Name)"
+          Path   = $wtAbs
+          Reason = "Orphaned worktree (deregistered but on-disk dir remains; pytest-of-rwsmy ACL-lock pattern)"
+        })
+      }
+    }
+  }
+}
+
 if ($candidates.Count -eq 0) {
-  Write-Output "No locked or sandbox-owned scratch directories found. Nothing to clean."
+  Write-Output "No locked or sandbox-owned scratch directories or orphaned worktrees found. Nothing to clean."
   exit 0
 }
 
 Write-Output "Discovered $($candidates.Count) candidate director$(if ($candidates.Count -eq 1) {'y'} else {'ies'}):"
 $candidates | Format-Table Name, Reason -AutoSize
 
-# --- Safety filter: scratch-name allowlist ---
-# Pattern matches known scratch-naming conventions. Defense-in-depth against
-# the discovery passes accidentally flagging a legitimate directory whose
-# ACL state is anomalous for unrelated reasons.
+# --- Safety filter: scratch-name allowlist OR orphaned-worktree path ---
+# Two-track allowlist:
+#   (a) scratch-name pattern for top-level dirs (Codex sandbox + pytest scratch)
+#   (b) `.worktrees/...` prefix for orphaned worktree subdirs (Reason carries
+#       "Orphaned worktree" tag set by the discovery pass above)
 #
-# Recognized patterns:
+# Recognized scratch-name patterns:
 #   - .tmp                  (plain top-level temp dir; e.g., from CodexSandbox pytest)
 #   - .tmp-foo, .tmp_foo    (pytest tmp variants)
 #   - .pytest-tmp, .pytest_tmp, .pytest-temp, .pytest_temp
@@ -146,17 +232,21 @@ $candidates | Format-Table Name, Reason -AutoSize
 #   - .codex-pytest-*       (Codex CLI sandbox pytest scratch dirs)
 #   - pytest-run-*          (alternate pytest scratch naming)
 #
-# Out of scope (do NOT extend allowlist for these):
-#   - .worktrees/<branch>/  Orphaned worktree subdirs after `git worktree remove`
-#                           failure. These are owned by the operator user (rwsmy)
-#                           and the cleanup blocker is FILE-HANDLE persistence,
-#                           not ACL/ownership. Use elevated `Remove-Item -Recurse
-#                           -Force .worktrees/<branch>` directly after confirming
-#                           no active worktree (`git worktree list`).
+# Orphaned-worktree path admission: candidate Reason starts with "Orphaned
+# worktree" AND Name starts with ".worktrees/" — both must hold (defense-in-
+# depth against accidental admission).
 $scratchPattern = '^(\.tmp([-_].*|$)|\.pytest[-_](tmp|temp)|tmp[-_]|task\d+_pytest|phase\d+basetemp|pytest_temp|ptemp$|\.config-overrides-|\.codex-pytest-|pytest-run-)'
 
-$safe = @($candidates | Where-Object { $_.Name -match $scratchPattern })
-$rejected = @($candidates | Where-Object { $_.Name -notmatch $scratchPattern })
+$safe = @($candidates | Where-Object {
+  ($_.Name -match $scratchPattern) -or
+  ($_.Reason -like 'Orphaned worktree*' -and $_.Name -like '.worktrees/*')
+})
+$rejected = @($candidates | Where-Object {
+  -not (
+    ($_.Name -match $scratchPattern) -or
+    ($_.Reason -like 'Orphaned worktree*' -and $_.Name -like '.worktrees/*')
+  )
+})
 
 if ($rejected.Count -gt 0) {
   Write-Warning "REJECTED $($rejected.Count) candidate$(if ($rejected.Count -eq 1) {''} else {'s'}) (does not match scratch-name pattern; will NOT be processed):"
@@ -193,25 +283,39 @@ foreach ($candidate in $safe) {
 
   if ($DryRun) {
     Write-Output "  [DRY-RUN] Would run: takeown /F `"$path`" /R /D Y"
+    Write-Output "  [DRY-RUN] Would run: icacls `"$path`" /reset /T /C /Q"
     Write-Output "  [DRY-RUN] Would run: icacls `"$path`" /grant `"${GrantUser}:F`" /T /C"
     Write-Output "  [DRY-RUN] Would run: Remove-Item -LiteralPath `"$path`" -Recurse -Force"
     continue
   }
 
   try {
-    Write-Output "  [1/3] takeown..."
+    Write-Output "  [1/4] takeown..."
     & takeown /F $path /R /D Y *>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
       throw "takeown returned exit code $LASTEXITCODE"
     }
 
-    Write-Output "  [2/3] icacls grant..."
-    & icacls $path /grant "${GrantUser}:F" /T /C *>&1 | Out-Null
+    # icacls /reset BEFORE /grant: clears restrictive ACLs first (forces
+    # inheritance from parent), then explicit grant adds operator full-control.
+    # Two-step is more aggressive than /grant alone; needed for the deeply-
+    # locked .tmp/pytest-of-rwsmy/ subdirs that resisted /grant-only on
+    # Phase 6 manual cleanup attempt 2026-05-04 (got 1196/1198 success;
+    # 2 files stuck under /grant-only treatment). Verified-empirical
+    # evidence motivates the /reset additional step.
+    Write-Output "  [2/4] icacls reset..."
+    & icacls $path /reset /T /C /Q *>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
-      throw "icacls returned exit code $LASTEXITCODE"
+      throw "icacls /reset returned exit code $LASTEXITCODE"
     }
 
-    Write-Output "  [3/3] Remove-Item..."
+    Write-Output "  [3/4] icacls grant..."
+    & icacls $path /grant "${GrantUser}:F" /T /C *>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      throw "icacls /grant returned exit code $LASTEXITCODE"
+    }
+
+    Write-Output "  [4/4] Remove-Item..."
     Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
 
     Write-Output "  SUCCESS"
