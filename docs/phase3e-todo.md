@@ -1005,14 +1005,34 @@ Sourced from operator-commissioned research at `future/swing_trading_journal_ai_
 
 **Chained-branch posture decision** (operator 2026-05-04): Sub-A's binding green gate at T6 was structurally impossible given plan §3 carve-out assigning predicate rewrites to Sub-B/Sub-C. Implementer surfaced the conflict; operator chose option (a) — Sub-A NOT merged to main; Sub-B + Sub-C dispatch from chained worktree branches based on Sub-A; integration `git merge --no-ff phase7-sub-c-web` to main only after Sub-C ships full suite green. **Production DB stays at v13 throughout** (no migration triggered until merge); operator's trade workflows (DHC/CC/YOU stop-adjusts, exits, reviews) continue working unaffected. Lesson captured in orchestrator-context lessons-captured 2026-05-04.
 
-**Sub-B pre-conditions (binding for next dispatch):**
-1. **BASELINE_SHA = `78c7005`** (Sub-A worktree HEAD, NOT main HEAD).
-2. **Worktree branch `phase7-sub-b-services`** based on `phase7-sub-a-schema` (chained branch; will inherit Sub-A's 14 commits).
-3. **Sub-B's done criteria gate is partial-suite-green**: Sub-A-owned + Sub-B-owned tests GREEN; Sub-C-owned tests (web view models, templates) may stay RED until Sub-C ships. NOT full-suite-green at end of Sub-B.
-4. **Shim removal trigger**: Sub-B T4 (exit service rewrite) begins shim deletion — `_ExitLikeRow` / `Exit` stub / `insert_exit_with_event` stub progressively removed as journal/cli consumers migrate; full deletion completes at Sub-C T1 (web view models — final consumer).
-5. **R2 Minor 1 deferral**: Sub-B T1 wires the atomic trade+entry-fill+pre_trade_locked_at flow at the entry-service call site + adds defensive docstring on `insert_trade_with_event` warning callers to follow up with entry-fill insert.
-6. **Vocabulary already locked** (no operator-confirm checkpoint for Sub-B; CHECK enums embedded in 0014).
-7. **Main during Sub-B + Sub-C window**: docs-only edits permitted (operator-aware); no `swing/` or `tests/` touches that could conflict with the chained branches.
+**Sub-B SHIPPED** 2026-05-04 on chained worktree branch `phase7-sub-b-services` (HEAD `71ddb95`; baseline `78c7005`; 15 commits = 9 task + 6 Codex fix; 6 Codex rounds → NO_NEW_CRITICAL_MAJOR; suite 1450→1605 passed [+155]; 217→130 failed [Sub-B territory closed]; 20→6 errors; ruff baseline 79 [-1 from 80]; zero web modifications; one authorized Sub-A territory exception — 8-line docstring at `swing/data/repos/trades.py:insert_trade_with_event` per R2 Minor 1 deferral). 6-round Codex chain was convergence (datetime canonicalization touched 5 service entry points), NOT thrash — lesson captured.
+
+**Shim removal status (Sub-B partial; full deletion deferred to Sub-C scope decision):**
+- Exit service consumption: DELETED in B.4 (`swing/trades/exit.py` no longer imports Exit/insert_exit_with_event/list_exits_for_trade).
+- `tos_import.py` exits-table reads: MIGRATED to fills repo in B.9.
+- Other shim consumers: ~18 files PRESERVED (web extended + review_log + pipeline + recommendations/hypothesis + journal aggregation + cli list + trades/equity + 3 test fixtures). Full shim deletion blocked on these consumer migrations — see Sub-C scope decision below.
+
+**Sub-C scope decision (operator-paced)** — implementer's open question 2026-05-04: shim full-deletion requires migrating ~18 out-of-original-Sub-C-scope consumer files. Options:
+- (A) Sub-C nominal scope (web only per plan §3); shims remain alive permanently or via future cleanup dispatch.
+- (B) Sub-C extended scope: web migration + shim cleanup sweep + shim deletion in single dispatch (~12-14 tasks; ~4-7 Codex rounds; clean Phase 7 endgame).
+- (C) Sub-C nominal scope ships first; separate Sub-D dispatch handles shim cleanup sweep + deletion.
+Operator decision required before drafting Sub-C brief.
+
+**Sub-C pre-conditions (binding for future dispatch after scope decision):**
+1. **BASELINE_SHA = `71ddb95`** (Sub-B worktree HEAD).
+2. **Worktree branch `phase7-sub-c-web`** based on `phase7-sub-b-services` (chained from Sub-B).
+3. **Sub-C's done criteria gate is FULL-SUITE-GREEN** (this is the integration gate; restoring main to green via the final merge).
+4. **Operator-witnessed browser verification gate is BINDING for Sub-C end** (per Phase 7 binding convention; HTMX-driven UX cannot be verified by TestClient alone).
+5. **Final integration merge after Sub-C ships green**: `git checkout main && git merge --no-ff phase7-sub-c-web -m "Merge phase7-sub-c-web into main: Phase 7 (Sub-A + Sub-B + Sub-C integrated)"`. Brings all 3 sub-dispatches' work in single merge commit. Production DB triggers 0014 migration on first `swing` invocation post-merge (backup-runner discipline applies).
+
+**Sub-B pre-conditions** (historical; SATISFIED at dispatch time):
+1. ✅ BASELINE_SHA = `78c7005` (Sub-A worktree HEAD).
+2. ✅ Worktree branch `phase7-sub-b-services` chained from `phase7-sub-a-schema`.
+3. ✅ Done criteria gate: partial-suite-green met (Sub-A + Sub-B tests GREEN; Sub-C tests stay RED until Sub-C).
+4. ✅ Shim removal partial per implementer constraint (B.4 exit service migrated; full deletion deferred per scope of remaining consumers).
+5. ✅ R2 Minor 1 deferral handled at B.1 (defensive docstring) + B.3 (atomic record_entry flow).
+6. ✅ Vocabulary already locked.
+7. ✅ Main during Sub-B window: only docs-only commits per discipline (operator-aware Sub-B-pre-empt YOU-trade migration `eba1625` was pre-dispatch; no in-flight commits).
 
 **Sub-C pre-conditions (binding for future dispatch after Sub-B):**
 1. **BASELINE_SHA = Sub-B worktree HEAD** (chained from `phase7-sub-b-services`).
@@ -1239,6 +1259,24 @@ Operator-surfaced 2026-05-04. Three concurrent uses of the official Charles Schw
 - `swing.config.toml` + Phase 5 user-config infrastructure (`cfg.integrations.schwab` section).
 - 2026-05-04 Finviz API integration entry above (shared `swing/integrations/` namespace + secrets-management approach).
 - Schwabdev unofficial Python wrapper: https://github.com/tylerebowers/Schwabdev (candidate library; see V1 sketch + design question 1).
+
+---
+
+## 2026-05-04 Future schema migration: trade.entry_date datetime promotion (BACKLOG)
+
+**Surfaced 2026-05-04 by Phase 7 Sub-B Codex R5 finding** (open question 2). Phase 7 keeps `trades.entry_date` as YYYY-MM-DD date-only TEXT column. The B.1 atomic-flow refactor's `_normalize_trade_event_date_to_iso` helper accepts the date-only `entry_date` + synthesizes the `T<HH:MM:SS>` portion for the entry-fill `fill_datetime`. Many downstream consumers call `date.fromisoformat(trade.entry_date)` directly (CLI hold-duration; `swing/journal/{flags,analyze}.py`; `swing/trades/advisory.py`; `swing/pipeline/briefing.py`; `swing/cli.py`).
+
+**Why this is in the backlog:** any future schema migration that wants to promote `trades.entry_date` to ISO datetime (e.g., for sub-second precision; for tz-aware tracking; for richer chronology in research-branch back-tests) would need to migrate every `date.fromisoformat(trade.entry_date)` consumer. Scope is bounded but cross-cutting.
+
+**Trigger:** future phase that has a use case for sub-day entry datetime precision (likely Phase 9 if Schwab API integration ships and broker fill timestamps become canonical) OR research-branch needs (intraday entry timing studies).
+
+**Estimated dispatches if triggered:** 1 brainstorm (operator decides whether to promote vs keep date-only) + 1 writing-plans + 1 executing-plans (consumer audit + migration + per-consumer rewrite + tests).
+
+**Cross-references:**
+- Phase 7 Sub-B return report 2026-05-04 (open question 2).
+- `swing/cli.py`, `swing/journal/flags.py`, `swing/journal/analyze.py`, `swing/trades/advisory.py`, `swing/pipeline/briefing.py` — current consumers of `date.fromisoformat(trade.entry_date)`.
+- Phase 7 Sub-B `_normalize_trade_event_date_to_iso` helper (commits `e6541fe..71ddb95`) — established pattern for trade-chronology canonicalization at service boundary; likely the migration's API surface.
+- 2026-05-04 Schwab API integration entry (Phase B market_data integration may surface intraday-precision needs).
 
 ---
 
