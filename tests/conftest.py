@@ -10,6 +10,37 @@ import pytest
 from swing.data.models import Fill, Trade
 
 
+def insert_trade_with_entry_fill(
+    conn: sqlite3.Connection, trade: Trade, *,
+    event_ts: str, rationale: str | None = None,
+) -> int:
+    """Phase 7 Sub-C C.13: insert_trade_with_event + entry-fill in one txn.
+
+    Per Phase 7 R2 Minor 1 warning on ``insert_trade_with_event``, callers
+    MUST follow with ``insert_fill_with_event(action='entry')`` in the same
+    transaction so ``trades.current_size`` reflects the entry shares.
+    Without this, the exit service's `current_size - shares < 0` guard
+    rejects every exit attempt with a 400. This helper bundles both.
+    """
+    from swing.data.repos.fills import insert_fill_with_event
+    from swing.data.repos.trades import insert_trade_with_event
+
+    trade_id = insert_trade_with_event(
+        conn, trade, event_ts=event_ts, rationale=rationale,
+    )
+    insert_fill_with_event(
+        conn,
+        Fill(
+            fill_id=None, trade_id=trade_id,
+            fill_datetime=event_ts, action="entry",
+            quantity=float(trade.initial_shares),
+            price=float(trade.entry_price),
+        ),
+        event_ts=event_ts,
+    )
+    return trade_id
+
+
 def cli_entry_pre_trade_args() -> list[str]:
     """Phase 7 Sub-C C.13: 11 CLI flags satisfying the post-Sub-A pre-trade gate.
 

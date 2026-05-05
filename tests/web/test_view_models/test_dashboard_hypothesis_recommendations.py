@@ -300,27 +300,42 @@ def test_dashboard_recommendations_preserve_real_sample_count_under_zero_equity(
                            'complete', 'tok', ?)""",
                 (eval_id,),
             )
-            # One closed trade matching the hypothesis prefix; modest loss
-            # well below any absolute threshold.
+            # Phase 7: status → state; trade_origin + pre_trade_locked_at
+            # NOT NULL; exits → fills.
             conn.execute(
                 """INSERT INTO trades
                    (ticker, entry_date, entry_price, initial_shares,
-                    initial_stop, current_stop, status,
+                    initial_stop, current_stop, state, trade_origin,
+                    pre_trade_locked_at, current_size,
                     watchlist_entry_target, watchlist_initial_stop,
                     notes, hypothesis_label)
                    VALUES ('VIR', '2026-04-15', 100.0, 10, 90.0, 90.0,
-                           'closed', NULL, NULL, NULL,
+                           'closed', 'manual_off_pipeline',
+                           '2026-04-15T16:00:00', 0,
+                           NULL, NULL, NULL,
                            'Sub-A+ VCP-not-formed inaugural')""",
             )
             tid = conn.execute(
                 "SELECT id FROM trades WHERE ticker='VIR'"
             ).fetchone()[0]
+            # Entry fill + exit fill (canonical post-Sub-A shape).
             conn.execute(
-                """INSERT INTO exits
-                   (trade_id, exit_date, exit_price, shares, reason,
-                    realized_pnl, r_multiple, notes)
-                   VALUES (?, '2026-04-20', 95.0, 10, 'stop-hit',
-                           -50.0, -0.5, NULL)""",
+                """INSERT INTO fills
+                   (trade_id, fill_datetime, action, quantity, price,
+                    reason, rule_based, fees, manual_entry_confidence,
+                    reconciliation_status, tos_match_id)
+                   VALUES (?, '2026-04-15T09:30:00', 'entry', 10.0, 100.0,
+                           NULL, NULL, NULL, NULL, 'unreconciled', NULL)""",
+                (tid,),
+            )
+            conn.execute(
+                """INSERT INTO fills
+                   (trade_id, fill_datetime, action, quantity, price,
+                    reason, rule_based, fees, manual_entry_confidence,
+                    reconciliation_status, tos_match_id)
+                   VALUES (?, '2026-04-20T16:00:00', 'exit', 10.0, 95.0,
+                           'stop-hit', NULL, NULL, NULL,
+                           'unreconciled', NULL)""",
                 (tid,),
             )
     finally:

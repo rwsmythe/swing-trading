@@ -290,11 +290,9 @@ def test_trade_detail_vm_audit_entries_empty_when_no_pre_trade_edits(seeded_db):
 def test_trade_detail_vm_fills_collected(seeded_db):
     from swing.web.view_models.trades import build_trade_detail_vm
     cfg, _ = seeded_db
+    # tests/web/conftest.py autouse fixture wraps insert_trade_with_event to
+    # ALSO write the entry-fill, so don't seed a second entry-fill here.
     trade_id = _seed_phase7_trade(cfg, state="managing", initial_shares=100)
-    _seed_fill(
-        cfg, trade_id=trade_id, action="entry", quantity=100, price=100.0,
-        fill_datetime="2026-05-01T16:00:00",
-    )
     _seed_fill(
         cfg, trade_id=trade_id, action="trim", quantity=30, price=110.0,
         fill_datetime="2026-05-03T16:00:00",
@@ -547,12 +545,13 @@ def test_list_all_fills_returns_all_trades(seeded_db):
     from swing.data.db import connect
     from swing.data.repos.fills import list_all_fills
     cfg, _ = seeded_db
-    t1 = _seed_phase7_trade(cfg, ticker="AAA", state="entered")
-    t2 = _seed_phase7_trade(cfg, ticker="BBB", state="entered")
-    _seed_fill(cfg, trade_id=t1, action="entry", quantity=10, price=10.0,
-               fill_datetime="2026-05-01T16:00:00")
-    _seed_fill(cfg, trade_id=t2, action="entry", quantity=20, price=20.0,
-               fill_datetime="2026-05-02T16:00:00")
+    # tests/web/conftest.py autouse fixture writes an entry-fill at trade
+    # insert with fill_datetime=event_ts (the trade's pre_trade_locked_at
+    # default '2026-05-01T16:00:00'). Don't redundantly seed entry-fills.
+    t1 = _seed_phase7_trade(cfg, ticker="AAA", state="entered",
+                            initial_shares=10, entry_price=10.0)
+    t2 = _seed_phase7_trade(cfg, ticker="BBB", state="entered",
+                            initial_shares=20, entry_price=20.0)
     _seed_fill(cfg, trade_id=t1, action="trim", quantity=5, price=11.0,
                fill_datetime="2026-05-03T16:00:00")
     conn = connect(cfg.paths.db_path)
@@ -560,13 +559,15 @@ def test_list_all_fills_returns_all_trades(seeded_db):
         fills = list_all_fills(conn)
     finally:
         conn.close()
+    # Both autouse entry-fills + one explicit trim = 3.
     assert len(fills) == 3
-    # Sorted ASC by (fill_datetime, fill_id):
-    assert [f.fill_datetime for f in fills] == [
-        "2026-05-01T16:00:00",
-        "2026-05-02T16:00:00",
-        "2026-05-03T16:00:00",
-    ]
+    # Sorted ASC by (fill_datetime, fill_id). Both autouse entry-fills
+    # have the same fill_datetime ('2026-05-01T16:00:00'); fill_id breaks
+    # ties. The trim is later.
+    assert fills[0].action == "entry"
+    assert fills[1].action == "entry"
+    assert fills[2].action == "trim"
+    assert fills[2].fill_datetime == "2026-05-03T16:00:00"
 
 
 # ---------------------------------------------------------------------------

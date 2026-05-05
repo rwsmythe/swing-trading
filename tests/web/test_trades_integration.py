@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import time
 
+from tests.web.conftest import full_phase7_entry_payload
+
 
 # ---------------------------------------------------------------------------
 # Test 1: entry end-to-end
@@ -64,14 +66,14 @@ def test_entry_end_to_end(seeded_db, monkeypatch):
         r_post = client.post(
             "/trades/entry",
             headers={"HX-Request": "true"},
-            data={
-                "ticker": "AAPL",
-                "entry_date": "2026-04-18",
-                "entry_price": "180.95",
-                "shares": "5",
-                "initial_stop": "170.00",
-                "rationale": "aplus-setup",
-            },
+            data=full_phase7_entry_payload(
+                ticker="AAPL",
+                entry_date="2026-04-18",
+                entry_price="180.95",
+                shares="5",
+                initial_stop="170.00",
+                rationale="aplus-setup",
+            ),
         )
     assert r_post.status_code == 200
     assert "open-position-" in r_post.text
@@ -142,14 +144,14 @@ def test_soft_warn_loop_end_to_end(seeded_db, monkeypatch):
     monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
 
     app = create_app(cfg, cfg_path)
-    form_data = {
-        "ticker": "AAPL",
-        "entry_date": "2026-04-18",
-        "entry_price": "180.95",
-        "shares": "1",
-        "initial_stop": "170.00",
-        "rationale": "aplus-setup",
-    }
+    form_data = full_phase7_entry_payload(
+        ticker="AAPL",
+        entry_date="2026-04-18",
+        entry_price="180.95",
+        shares="1",
+        initial_stop="170.00",
+        rationale="aplus-setup",
+    )
     with TestClient(app) as client:
         # First submit — no force; should receive soft-warn confirm fragment.
         r1 = client.post(

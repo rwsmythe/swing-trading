@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from swing.web.app import create_app
+from tests.web.conftest import full_phase7_entry_payload
 
 
 def test_sizing_hint_happy_path(seeded_db, monkeypatch):
@@ -225,14 +226,14 @@ def test_post_entry_success_emits_row_and_oobs(seeded_db, monkeypatch):
         r = client.post(
             "/trades/entry",
             headers={"HX-Request": "true"},
-            data={
-                "ticker": "AAPL",
-                "entry_date": "2026-04-18",
-                "entry_price": "180.95",
-                "shares": "5",
-                "initial_stop": "170.00",
-                "rationale": "aplus-setup",
-            },
+            data=full_phase7_entry_payload(
+                ticker="AAPL",
+                entry_date="2026-04-18",
+                entry_price="180.95",
+                shares="5",
+                initial_stop="170.00",
+                rationale="aplus-setup",
+            ),
         )
     assert r.status_code == 200
     # Primary target: a new open-position row with id.
@@ -288,11 +289,11 @@ def test_post_entry_soft_warn_2step(seeded_db, monkeypatch):
     monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
 
     app = create_app(cfg, cfg_path)
-    form_data = {
-        "ticker": "AAPL", "entry_date": "2026-04-18",
-        "entry_price": "180.95", "shares": "1", "initial_stop": "170.00",
-        "rationale": "aplus-setup",
-    }
+    form_data = full_phase7_entry_payload(
+        ticker="AAPL", entry_date="2026-04-18",
+        entry_price="180.95", shares="1", initial_stop="170.00",
+        rationale="aplus-setup",
+    )
     with TestClient(app) as client:
         # First submit — no force. Should get soft_warn_confirm fragment.
         r1 = client.post("/trades/entry", headers={"HX-Request": "true"}, data=form_data)
@@ -337,12 +338,12 @@ def test_post_entry_hard_cap_error(seeded_db, monkeypatch):
     with TestClient(app) as client:
         r = client.post(
             "/trades/entry", headers={"HX-Request": "true"},
-            data={
-                "ticker": "AAPL", "entry_date": "2026-04-18",
-                "entry_price": "180.0", "shares": "1",
-                "initial_stop": "170.0", "rationale": "aplus-setup",
-                "force": "true",   # bypass soft-warn; but hard cap still blocks
-            },
+            data=full_phase7_entry_payload(
+                ticker="AAPL", entry_date="2026-04-18",
+                entry_price="180.0", shares="1",
+                initial_stop="170.0", rationale="aplus-setup",
+                force="true",   # bypass soft-warn; but hard cap still blocks
+            ),
         )
     assert r.status_code == 400
     assert "hard cap" in r.text.lower() or "hard_cap" in r.text.lower()
@@ -376,11 +377,11 @@ def test_post_entry_duplicate_error(seeded_db, monkeypatch):
     with TestClient(app) as client:
         r = client.post(
             "/trades/entry", headers={"HX-Request": "true"},
-            data={
-                "ticker": "AAPL", "entry_date": "2026-04-18",
-                "entry_price": "182.0", "shares": "3",
-                "initial_stop": "175.0", "rationale": "aplus-setup",
-            },
+            data=full_phase7_entry_payload(
+                ticker="AAPL", entry_date="2026-04-18",
+                entry_price="182.0", shares="3",
+                initial_stop="175.0", rationale="aplus-setup",
+            ),
         )
     assert r.status_code == 400
     assert "already" in r.text.lower() or "open trade" in r.text.lower()
@@ -534,8 +535,9 @@ def test_post_exit_partial_updates_row(seeded_db, monkeypatch):
         )
     assert r.status_code == 200
     assert f"open-position-{trade.id}" in r.text
-    # Remaining shares: 10 - 3 = 7.
-    assert "7 / 10" in r.text or ">7<" in r.text
+    # Remaining shares: 10 - 3 = 7. Phase 7 fills.quantity is REAL, so
+    # the displayed value is "7.0 / 10".
+    assert "7 / 10" in r.text or "7.0 / 10" in r.text or ">7<" in r.text
 
 
 def test_post_exit_shares_too_many_400(seeded_db, monkeypatch):
@@ -930,11 +932,11 @@ def test_post_entry_duplicate_renders_form_preserved(seeded_db, monkeypatch):
     with TestClient(app) as client:
         r = client.post(
             "/trades/entry", headers={"HX-Request": "true"},
-            data={
-                "ticker": "AAPL", "entry_date": "2026-04-18",
-                "entry_price": "182.0", "shares": "3",
-                "initial_stop": "175.0", "rationale": "aplus-setup",
-            },
+            data=full_phase7_entry_payload(
+                ticker="AAPL", entry_date="2026-04-18",
+                entry_price="182.0", shares="3",
+                initial_stop="175.0", rationale="aplus-setup",
+            ),
         )
     assert r.status_code == 400
     # Banner mentions the duplicate.
@@ -1013,14 +1015,14 @@ def test_post_entry_stop_ge_entry_renders_form_preserved(seeded_db, monkeypatch)
         r = client.post(
             "/trades/entry",
             headers={"HX-Request": "true", "HX-Target": "entry-form-AAPL"},
-            data={
-                "ticker": "AAPL",
-                "entry_date": "2026-04-18",
-                "entry_price": "170.00",
-                "shares": "5",
-                "initial_stop": "170.00",  # stop == entry → ValueError pre-fix
-                "rationale": "aplus-setup",
-            },
+            data=full_phase7_entry_payload(
+                ticker="AAPL",
+                entry_date="2026-04-18",
+                entry_price="170.00",
+                shares="5",
+                initial_stop="170.00",  # stop == entry → ValueError pre-fix
+                rationale="aplus-setup",
+            ),
         )
     # Pre-fix this is 500; post-fix it must be 400 (validation failure shape
     # mirroring DuplicateOpenPositionException).
@@ -1102,14 +1104,14 @@ def test_post_entry_stop_gt_entry_also_caught(seeded_db, monkeypatch):
         r = client.post(
             "/trades/entry",
             headers={"HX-Request": "true", "HX-Target": "entry-form-AAPL"},
-            data={
-                "ticker": "AAPL",
-                "entry_date": "2026-04-18",
-                "entry_price": "170.00",
-                "shares": "5",
-                "initial_stop": "175.00",  # stop > entry
-                "rationale": "aplus-setup",
-            },
+            data=full_phase7_entry_payload(
+                ticker="AAPL",
+                entry_date="2026-04-18",
+                entry_price="170.00",
+                shares="5",
+                initial_stop="175.00",  # stop > entry
+                rationale="aplus-setup",
+            ),
         )
     assert r.status_code == 400
     assert '<tr id="entry-form-AAPL"' in r.text
@@ -1182,14 +1184,14 @@ def test_post_entry_stop_ge_entry_unhandled_value_error_still_500(
         r = client.post(
             "/trades/entry",
             headers={"HX-Request": "true", "HX-Target": "entry-form-AAPL"},
-            data={
-                "ticker": "AAPL",
-                "entry_date": "2026-04-18",
-                "entry_price": "180.00",
-                "shares": "5",
-                "initial_stop": "170.00",   # valid (entry > stop) — passes pre-check
-                "rationale": "aplus-setup",
-            },
+            data=full_phase7_entry_payload(
+                ticker="AAPL",
+                entry_date="2026-04-18",
+                entry_price="180.00",
+                shares="5",
+                initial_stop="170.00",   # valid (entry > stop) — passes pre-check
+                rationale="aplus-setup",
+            ),
         )
     # The pre-check passes; record_entry's synthetic ValueError must NOT be
     # swallowed by an over-broad except — it must surface as 500.
@@ -1261,9 +1263,9 @@ def test_post_entry_duplicate_sizing_hint_not_lying(seeded_db, monkeypatch):
         # User enters an absurdly high share count that server would never suggest.
         r = client.post(
             "/trades/entry", headers={"HX-Request": "true"},
-            data={"ticker": "AAPL", "entry_date": "2026-04-18",
-                  "entry_price": "182.00", "shares": "9999",
-                  "initial_stop": "175.00", "rationale": "aplus-setup"},
+            data=full_phase7_entry_payload(ticker="AAPL", entry_date="2026-04-18",
+                  entry_price="182.00", shares="9999",
+                  initial_stop="175.00", rationale="aplus-setup"),
         )
     assert r.status_code == 400
     # Input value reflects user's attempted entry.
@@ -1327,9 +1329,9 @@ def test_post_trades_without_hx_request_403(test_cfg):
     with TestClient(app) as client:
         r = client.post(
             "/trades/entry",
-            data={"ticker": "AAPL", "entry_date": "2026-04-18",
-                  "entry_price": "180.0", "shares": "1",
-                  "initial_stop": "170.0", "rationale": "aplus-setup"},
+            data=full_phase7_entry_payload(ticker="AAPL", entry_date="2026-04-18",
+                  entry_price="180.0", shares="1",
+                  initial_stop="170.0", rationale="aplus-setup"),
             # NO HX-Request header.
         )
     assert r.status_code == 403
@@ -1486,13 +1488,13 @@ def test_post_entry_unknown_rationale_rejected_with_preserved_fields(
     with TestClient(app) as client:
         r = client.post(
             "/trades/entry", headers={"HX-Request": "true"},
-            data={
-                "ticker": "AAPL", "entry_date": "2026-04-18",
-                "entry_price": "180.95", "shares": "5",
-                "initial_stop": "170.00",
-                "rationale": "VCP entry",       # pre-T4 free-text phrasing
-                "notes": "Keep this on re-render",
-            },
+            data=full_phase7_entry_payload(
+                ticker="AAPL", entry_date="2026-04-18",
+                entry_price="180.95", shares="5",
+                initial_stop="170.00",
+                rationale="VCP entry",       # pre-T4 free-text phrasing
+                notes="Keep this on re-render",
+            ),
         )
     assert r.status_code == 400
     assert "invalid rationale" in r.text.lower()
@@ -1540,16 +1542,19 @@ def test_post_entry_other_without_notes_rejected(seeded_db, monkeypatch):
         })
 
     app = create_app(cfg, cfg_path)
+    payload = full_phase7_entry_payload(
+        ticker="AAPL", entry_date="2026-04-18",
+        entry_price="180.95", shares="5",
+        initial_stop="170.00",
+        rationale="other",
+    )
+    # Test discriminates the "rationale=other ⇒ notes required" guard;
+    # remove the helper's default notes value to trigger it.
+    del payload["notes"]
     with TestClient(app) as client:
         r = client.post(
             "/trades/entry", headers={"HX-Request": "true"},
-            data={
-                "ticker": "AAPL", "entry_date": "2026-04-18",
-                "entry_price": "180.95", "shares": "5",
-                "initial_stop": "170.00",
-                "rationale": "other",
-                # no notes
-            },
+            data=payload,
         )
     assert r.status_code == 400
     assert "notes are required" in r.text.lower()
@@ -1599,13 +1604,13 @@ def test_post_entry_other_with_notes_succeeds(seeded_db, monkeypatch):
     with TestClient(app) as client:
         r = client.post(
             "/trades/entry", headers={"HX-Request": "true"},
-            data={
-                "ticker": "AAPL", "entry_date": "2026-04-18",
-                "entry_price": "180.95", "shares": "5",
-                "initial_stop": "170.00",
-                "rationale": "other",
-                "notes": "post-earnings gap with high ADR",
-            },
+            data=full_phase7_entry_payload(
+                ticker="AAPL", entry_date="2026-04-18",
+                entry_price="180.95", shares="5",
+                initial_stop="170.00",
+                rationale="other",
+                notes="post-earnings gap with high ADR",
+            ),
         )
     assert r.status_code == 200
     assert "open-position-" in r.text
@@ -2097,15 +2102,15 @@ def test_entry_post_hyp_recs_origin_success_emits_hypothesis_recs_oob_swap(
         r = client.post(
             "/trades/entry",
             headers={"HX-Request": "true"},
-            data={
-                "ticker": "TESTAPLUS",
-                "entry_date": "2026-04-29",
-                "entry_price": "180.95",
-                "shares": "5",
-                "initial_stop": "170.00",
-                "rationale": "aplus-setup",
-                "origin": "hyp-recs",
-            },
+            data=full_phase7_entry_payload(
+                ticker="TESTAPLUS",
+                entry_date="2026-04-29",
+                entry_price="180.95",
+                shares="5",
+                initial_stop="170.00",
+                rationale="aplus-setup",
+                origin="hyp-recs",
+            ),
         )
     assert r.status_code == 200, (
         f"Expected 200; got {r.status_code}. Body[:500]={r.text[:500]!r}"
@@ -2143,15 +2148,15 @@ def test_entry_post_hyp_recs_origin_success_excludes_traded_ticker_from_oob(
         r = client.post(
             "/trades/entry",
             headers={"HX-Request": "true"},
-            data={
-                "ticker": "TESTAPLUS",
-                "entry_date": "2026-04-29",
-                "entry_price": "180.95",
-                "shares": "5",
-                "initial_stop": "170.00",
-                "rationale": "aplus-setup",
-                "origin": "hyp-recs",
-            },
+            data=full_phase7_entry_payload(
+                ticker="TESTAPLUS",
+                entry_date="2026-04-29",
+                entry_price="180.95",
+                shares="5",
+                initial_stop="170.00",
+                rationale="aplus-setup",
+                origin="hyp-recs",
+            ),
         )
     assert r.status_code == 200
     # Extract the OOB hyp-recs section block (greedy until next </section>).
@@ -2212,15 +2217,15 @@ def test_entry_post_hyp_recs_origin_success_exclusion_set_from_post_write_state(
         r = client.post(
             "/trades/entry",
             headers={"HX-Request": "true"},
-            data={
-                "ticker": "TESTAPLUS",
-                "entry_date": "2026-04-29",
-                "entry_price": "180.95",
-                "shares": "5",
-                "initial_stop": "170.00",
-                "rationale": "aplus-setup",
-                "origin": "hyp-recs",
-            },
+            data=full_phase7_entry_payload(
+                ticker="TESTAPLUS",
+                entry_date="2026-04-29",
+                entry_price="180.95",
+                shares="5",
+                initial_stop="170.00",
+                rationale="aplus-setup",
+                origin="hyp-recs",
+            ),
         )
     assert r.status_code == 200
     # Extract the OOB section body.
@@ -2342,15 +2347,15 @@ def test_entry_post_watchlist_origin_success_emits_hyp_recs_oob_swap_for_cross_s
         r = client.post(
             "/trades/entry",
             headers={"HX-Request": "true"},
-            data={
-                "ticker": "TESTWATCH",
-                "entry_date": "2026-04-29",
-                "entry_price": "180.95",
-                "shares": "5",
-                "initial_stop": "170.00",
-                "rationale": "aplus-setup",
-                "origin": "watchlist",
-            },
+            data=full_phase7_entry_payload(
+                ticker="TESTWATCH",
+                entry_date="2026-04-29",
+                entry_price="180.95",
+                shares="5",
+                initial_stop="170.00",
+                rationale="aplus-setup",
+                origin="watchlist",
+            ),
         )
     assert r.status_code == 200
     pattern = re.compile(
@@ -2414,16 +2419,16 @@ def test_entry_post_hyp_recs_origin_error_path_does_not_emit_hyp_recs_oob_swap(
         r = client.post(
             "/trades/entry",
             headers={"HX-Request": "true"},
-            data={
-                "ticker": "TESTAPLUS",
-                "entry_date": "2026-04-29",
-                "entry_price": "180.95",
-                "shares": "5",
-                "initial_stop": "170.00",
+            data=full_phase7_entry_payload(
+                ticker="TESTAPLUS",
+                entry_date="2026-04-29",
+                entry_price="180.95",
+                shares="5",
+                initial_stop="170.00",
                 # Bogus rationale → enum validation fails before record_entry.
-                "rationale": "definitely-not-a-real-rationale",
-                "origin": "hyp-recs",
-            },
+                rationale="definitely-not-a-real-rationale",
+                origin="hyp-recs",
+            ),
         )
     assert r.status_code == 400, (
         f"Expected 400 (rationale enum-validation failure); got "
@@ -2546,15 +2551,15 @@ def test_entry_post_response_does_not_lead_with_tr_primary_content(
         r = client.post(
             "/trades/entry",
             headers={"HX-Request": "true"},
-            data={
-                "ticker": "BUGAB",
-                "entry_date": "2026-04-29",
-                "entry_price": "180.95",
-                "shares": "5",
-                "initial_stop": "170.00",
-                "rationale": "aplus-setup",
-                "origin": "watchlist",
-            },
+            data=full_phase7_entry_payload(
+                ticker="BUGAB",
+                entry_date="2026-04-29",
+                entry_price="180.95",
+                shares="5",
+                initial_stop="170.00",
+                rationale="aplus-setup",
+                origin="watchlist",
+            ),
         )
     assert r.status_code == 200, (
         f"Got {r.status_code}; body[:500]={r.text[:500]!r}"
@@ -2633,15 +2638,15 @@ def test_entry_post_response_delivers_new_row_via_open_positions_oob(
         r = client.post(
             "/trades/entry",
             headers={"HX-Request": "true"},
-            data={
-                "ticker": "BUGAB",
-                "entry_date": "2026-04-29",
-                "entry_price": "180.95",
-                "shares": "5",
-                "initial_stop": "170.00",
-                "rationale": "aplus-setup",
-                "origin": "watchlist",
-            },
+            data=full_phase7_entry_payload(
+                ticker="BUGAB",
+                entry_date="2026-04-29",
+                entry_price="180.95",
+                shares="5",
+                initial_stop="170.00",
+                rationale="aplus-setup",
+                origin="watchlist",
+            ),
         )
     assert r.status_code == 200
     # Pin id + hx-swap-oob colocated on the SAME element (either order).
@@ -2680,9 +2685,13 @@ def test_entry_post_response_delivers_new_row_via_open_positions_oob(
         "trade's row (`id=\"open-position-{trade_id}\"`). "
         f"OOB body[:500]={oob_body[:500]!r}"
     )
-    assert ">BUGAB<" in oob_body, (
+    # Phase 7: ticker cell now contains a trailing state-badge span, so
+    # the cell renders as `<td>BUGAB <span class="state-badge...">...`.
+    # Assert the ticker appears in the cell — the state-badge introduction
+    # broke the literal `>BUGAB<` match without changing intent.
+    assert ">BUGAB" in oob_body, (
         "The #open-positions OOB chunk must contain the new ticker text "
-        f"`>BUGAB<`. OOB body[:500]={oob_body[:500]!r}"
+        f"`>BUGAB`. OOB body[:500]={oob_body[:500]!r}"
     )
 
 

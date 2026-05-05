@@ -11,9 +11,10 @@ def test_app_with_pending_daily(tmp_path: Path):
     from dataclasses import replace as dc_replace
     from swing.config import load
     from swing.data.db import connect, ensure_schema
-    from swing.data.models import Exit, Trade
+    from swing.data.models import Trade
     from swing.data.repos.review_log import insert_pre_create
-    from swing.data.repos.trades import insert_exit_with_event, insert_trade_with_event
+    from swing.data.repos.trades import insert_trade_with_event
+    from tests.conftest import insert_exit_fill
     from swing.web.app import create_app
 
     db_path = tmp_path / "phase6.db"
@@ -31,14 +32,10 @@ def test_app_with_pending_daily(tmp_path: Path):
             ),
             event_ts="2026-04-29T09:30:00",
         )
-        insert_exit_with_event(
-            conn,
-            Exit(
-                id=None, trade_id=t1, exit_date="2026-04-30",
-                exit_price=12.0, shares=10, reason="manual",
-                realized_pnl=20.0, r_multiple=2.0, notes=None,
-            ),
-            event_ts="2026-04-30T09:30:00",
+        insert_exit_fill(
+            conn, trade_id=t1, exit_date="2026-04-30",
+            exit_price=12.0, shares=10, reason="manual",
+            fill_datetime="2026-04-30T09:30:00",
         )
         insert_pre_create(
             conn, review_type="daily",
@@ -58,9 +55,10 @@ def test_app_with_completed_daily(tmp_path: Path):
     from dataclasses import replace as dc_replace
     from swing.config import load
     from swing.data.db import connect, ensure_schema
-    from swing.data.models import Exit, Trade
+    from swing.data.models import Trade
     from swing.data.repos.review_log import complete_review_atomic, insert_pre_create
-    from swing.data.repos.trades import insert_exit_with_event, insert_trade_with_event
+    from swing.data.repos.trades import insert_trade_with_event
+    from tests.conftest import insert_exit_fill
     from swing.web.app import create_app
 
     db_path = tmp_path / "phase6.db"
@@ -78,14 +76,10 @@ def test_app_with_completed_daily(tmp_path: Path):
             ),
             event_ts="2026-04-29T09:30:00",
         )
-        insert_exit_with_event(
-            conn,
-            Exit(
-                id=None, trade_id=t1, exit_date="2026-04-30",
-                exit_price=12.0, shares=10, reason="manual",
-                realized_pnl=20.0, r_multiple=2.0, notes=None,
-            ),
-            event_ts="2026-04-30T09:30:00",
+        insert_exit_fill(
+            conn, trade_id=t1, exit_date="2026-04-30",
+            exit_price=12.0, shares=10, reason="manual",
+            fill_datetime="2026-04-30T09:30:00",
         )
         insert_pre_create(
             conn, review_type="daily",

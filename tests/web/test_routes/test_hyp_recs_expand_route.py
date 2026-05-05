@@ -19,6 +19,7 @@ from swing.data.models import WatchlistEntry
 from swing.data.repos.watchlist import upsert_watchlist_entry
 from swing.web.app import create_app
 from swing.web.price_cache import PriceCache, PriceSnapshot
+from tests.web.conftest import full_phase7_entry_payload
 
 
 def _patch_price_cache(monkeypatch):
@@ -1129,15 +1130,15 @@ def test_validation_error_rerender_preserves_origin(seeded_db, monkeypatch):
     with TestClient(app) as client:
         resp = client.post(
             "/trades/entry",
-            data={
-                "ticker": "NVDA",
-                "entry_date": "2026-04-29",
-                "entry_price": "100.00",
-                "shares": "10",
-                "initial_stop": "95.00",
-                "rationale": "invalid_rationale",  # trips _validate_rationale
-                "origin": "hyp-recs",
-            },
+            data=full_phase7_entry_payload(
+                ticker="NVDA",
+                entry_date="2026-04-29",
+                entry_price="100.00",
+                shares="10",
+                initial_stop="95.00",
+                rationale="invalid_rationale",  # trips _validate_rationale
+                origin="hyp-recs",
+            ),
             headers={"HX-Request": "true", "HX-Target": "hyp-rec-row-NVDA"},
         )
     assert resp.status_code == 400, resp.text
@@ -1174,8 +1175,10 @@ def test_duplicate_open_position_rerender_preserves_origin(
             conn.execute(
                 """INSERT INTO trades
                    (ticker, entry_date, entry_price, initial_shares,
-                    initial_stop, current_stop, status)
-                   VALUES ('NVDA','2026-04-28',95.0,10,90.0,90.0,'open')"""
+                    initial_stop, current_stop, state, trade_origin,
+                    pre_trade_locked_at, current_size)
+                   VALUES ('NVDA','2026-04-28',95.0,10,90.0,90.0,'entered',
+                           'manual_off_pipeline','2026-04-28T16:00:00',10.0)"""
             )
     finally:
         conn.close()
@@ -1184,15 +1187,15 @@ def test_duplicate_open_position_rerender_preserves_origin(
     with TestClient(app) as client:
         resp = client.post(
             "/trades/entry",
-            data={
-                "ticker": "NVDA",
-                "entry_date": "2026-04-29",
-                "entry_price": "100.00",
-                "shares": "10",
-                "initial_stop": "95.00",
-                "rationale": "aplus-setup",  # valid rationale
-                "origin": "hyp-recs",
-            },
+            data=full_phase7_entry_payload(
+                ticker="NVDA",
+                entry_date="2026-04-29",
+                entry_price="100.00",
+                shares="10",
+                initial_stop="95.00",
+                rationale="aplus-setup",  # valid rationale
+                origin="hyp-recs",
+            ),
             headers={"HX-Request": "true", "HX-Target": "hyp-rec-row-NVDA"},
         )
     assert resp.status_code == 400, resp.text
@@ -1230,9 +1233,11 @@ def test_soft_warn_confirm_round_trips_origin(seeded_db, monkeypatch):
                 conn.execute(
                     """INSERT INTO trades
                        (ticker, entry_date, entry_price, initial_shares,
-                        initial_stop, current_stop, status)
+                        initial_stop, current_stop, state, trade_origin,
+                        pre_trade_locked_at, current_size)
                        VALUES (?, '2026-04-20', 100.0, 1, 95.0, 95.0,
-                               'open')""",
+                               'entered', 'manual_off_pipeline',
+                               '2026-04-20T16:00:00', 1.0)""",
                     (tk,),
                 )
     finally:
@@ -1242,15 +1247,15 @@ def test_soft_warn_confirm_round_trips_origin(seeded_db, monkeypatch):
     with TestClient(app) as client:
         resp = client.post(
             "/trades/entry",
-            data={
-                "ticker": "NVDA",
-                "entry_date": "2026-04-29",
-                "entry_price": "100.00",
-                "shares": "10",
-                "initial_stop": "95.00",
-                "rationale": "aplus-setup",
-                "origin": "hyp-recs",
-            },
+            data=full_phase7_entry_payload(
+                ticker="NVDA",
+                entry_date="2026-04-29",
+                entry_price="100.00",
+                shares="10",
+                initial_stop="95.00",
+                rationale="aplus-setup",
+                origin="hyp-recs",
+            ),
             headers={"HX-Request": "true", "HX-Target": "hyp-rec-row-NVDA"},
         )
     assert resp.status_code == 200, (
