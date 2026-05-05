@@ -421,6 +421,52 @@ def entry_post(
             origin=origin_coerced,
         )
 
+    # Codex R1 Major 1 (Phase 7 Sub-C) — schema-layer guards that used to
+    # fire at INSERT time were lost when migration 0014 rebuilt the trades
+    # table without the chart_pattern_algo CHECK enum and without enforcing
+    # the FK on chart_pattern_classification_pipeline_run_id. Restore them
+    # at the route boundary so a tampered hidden-form POST renders the
+    # standard 400 + banner instead of either silently persisting a bogus
+    # value or bubbling a generic 500. (Repo-layer
+    # _validate_chart_pattern_invariant only checks NULL/cross-column
+    # shape; it doesn't enforce enum values or FK existence — and Sub-A
+    # owns that file, so app-layer guards live here.)
+    if cp_algo_value is not None and cp_algo_value not in ("flag", "none"):
+        return _rerender_entry_form_with_error(
+            request=request, templates=templates, cfg=cfg, cache=cache,
+            executor=executor, ticker=ticker, entry_date=entry_date,
+            entry_price=entry_price, shares=shares, initial_stop=initial_stop,
+            rationale=rationale, notes=notes,
+            error_message=(
+                f"chart_pattern_algo must be one of 'flag' or 'none'; "
+                f"got {cp_algo_value!r}."
+            ),
+            origin=origin_coerced,
+        )
+    if cp_anchor_value is not None:
+        _conn = connect(cfg.paths.db_path)
+        try:
+            _row = _conn.execute(
+                "SELECT 1 FROM pipeline_runs WHERE id = ?",
+                (cp_anchor_value,),
+            ).fetchone()
+        finally:
+            _conn.close()
+        if _row is None:
+            return _rerender_entry_form_with_error(
+                request=request, templates=templates, cfg=cfg, cache=cache,
+                executor=executor, ticker=ticker, entry_date=entry_date,
+                entry_price=entry_price, shares=shares,
+                initial_stop=initial_stop,
+                rationale=rationale, notes=notes,
+                error_message=(
+                    "chart_pattern_classification_pipeline_run_id "
+                    f"{cp_anchor_value} does not reference an existing "
+                    "pipeline_runs row."
+                ),
+                origin=origin_coerced,
+            )
+
     # Phase 7 Sub-C C.3 — emotional_state_pre_trade JSON-encoding.
     # Matches CLI's `_json.dumps(list(emotional_state))` (swing/cli.py).
     # Empty list / None → None so the validator's required-field check

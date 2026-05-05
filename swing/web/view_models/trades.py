@@ -57,6 +57,19 @@ class _ExitShape:
     trade_id: int
     exit_date: str
     exit_price: float
+    # NOTE: shares is typed `int` here (legacy Exit shape) even though the
+    # underlying Fill.quantity is REAL. Current production paths produce only
+    # integer-share fills (compute_shares() returns int; CLI/web entry +
+    # trim/exit submit shares: int), so the int(fill.quantity) cast in the
+    # adapter (_fill_to_exit_like) does not currently truncate any real
+    # data. Fractional-share support is forward-compat work (see Phase 7
+    # Sub-C Codex R1 Major 3 disposition). When fractional support lands,
+    # replace the int truncation here AND in 6 sibling _ExitShape
+    # adapters (cli.py, journal/stats.py, recommendations/hypothesis.py,
+    # research/parity/fetcher.py, data/repos/review_log.py,
+    # pipeline/runner.py) with float passthrough + audit downstream
+    # consumers (current_equity, compute_actual_realized_R_effective,
+    # journal aggregations).
     shares: int
     reason: str | None
     realized_pnl: float | None
