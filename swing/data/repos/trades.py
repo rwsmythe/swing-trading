@@ -101,6 +101,14 @@ def insert_trade_with_event(
 ) -> int:
     """Insert a trade and an 'entry' trade_event in the same transaction.
     Caller wraps in `with conn:`. Returns the new trade id.
+
+    WARNING (Phase 7 R2 Minor 1): Callers MUST follow this with
+    ``swing.data.repos.fills.insert_fill_with_event`` (action='entry') in
+    the same transaction. Skipping the fill leaves ``trades.current_size``
+    at 0, ``current_avg_cost`` NULL, ``last_fill_at`` NULL — incorrect
+    aggregate denorm state. The canonical atomic flow lives in
+    ``swing.trades.entry.record_entry`` (Sub-B Task B.3); other call sites
+    must replicate the pattern.
     """
     _validate_chart_pattern_invariant(trade)
     cur = conn.execute(

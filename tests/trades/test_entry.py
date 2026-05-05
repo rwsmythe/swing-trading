@@ -1,29 +1,169 @@
 """Trade entry service: caps + per-ticker check + watchlist archival."""
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
 
-from swing.data.db import ensure_schema
+from swing.data.db import ensure_schema, run_migrations
 from swing.data.models import Trade, WatchlistEntry
 from swing.data.repos.trades import get_trade, list_open_trades
 from swing.data.repos.watchlist import get_watchlist_entry, upsert_watchlist_entry
 from swing.trades.entry import (
     EntryRationale, EntryRequest, EntryResult, entry_rationale_options,
+    MissingPreTradeFieldsException,
     record_entry,
     SoftWarnException, HardCapException, DuplicateOpenPositionException,
 )
+from swing.trades.origin import EntryPath
+
+
+def _pretrade_kwargs() -> dict:
+    """Phase 7 Sub-B B.1: spread into any direct EntryRequest construction
+    in legacy tests so the validation gate doesn't reject as missing fields.
+    Spec-compliant defaults satisfying OPERATION_REQUIRED_FIELDS + the
+    conditional rules (event_risk_present=0, gap_risk_present=0, catalyst
+    not 'other'); tests focused on a different concern can opt in/out per
+    case via override kwargs."""
+    return dict(
+        entry_path=EntryPath.MANUAL_WEB_FORM,
+        thesis="bullish on the setup",
+        why_now="VCP completed today",
+        invalidation_condition="break of stop",
+        expected_scenario="20% in 4 weeks",
+        premortem_technical="prior pivot fails",
+        premortem_market_sector="sector breaks",
+        premortem_execution="size too small to matter",
+        event_risk_present=0,
+        event_handling="not_applicable",
+        gap_risk_present=0,
+        gap_risk_handling="not_applicable",
+        emotional_state_pre_trade='["calm","confident"]',
+        market_regime="Bullish",
+        catalyst="technical_only",
+        manual_entry_confidence="normal",
+    )
 
 
 def _req(ticker: str = "AAPL") -> EntryRequest:
+    """Legacy helper, expanded post-Phase-7 B.1 to populate the 18 new
+    pre-trade fields with valid defaults so existing tests stay green
+    after the validation gate lands. Tickers/dates remain parameterizable;
+    the new fields are spec-compliant defaults that satisfy
+    OPERATION_REQUIRED_FIELDS["entry_create"] + conditional rules.
+    """
     return EntryRequest(
         ticker=ticker, entry_date="2026-04-15", entry_price=180.0,
         shares=5, initial_stop=170.0, watchlist_entry_target=None,
         watchlist_initial_stop=None, notes=None,
         rationale=EntryRationale.VCP_BREAKOUT.value,
         event_ts="2026-04-15T09:30:00",
+        entry_path=EntryPath.MANUAL_WEB_FORM,
+        thesis="bullish on the setup",
+        why_now="VCP completed today",
+        invalidation_condition="break of 170.0 stop",
+        expected_scenario="20% in 4 weeks",
+        premortem_technical="prior pivot fails",
+        premortem_market_sector="sector breaks",
+        premortem_execution="size too small to matter",
+        event_risk_present=0,
+        event_handling="not_applicable",
+        gap_risk_present=0,
+        gap_risk_handling="not_applicable",
+        emotional_state_pre_trade='["calm","confident"]',
+        market_regime="Bullish",
+        catalyst="technical_only",
+        manual_entry_confidence="normal",
     )
+
+
+def _seed_v14(tmp_path: Path) -> sqlite3.Connection:
+    """Phase 7 Sub-B B.1 test fixture: schema migrated through migration 0014
+    so the trades table has all 18 new columns with correct CHECK constraints."""
+    db = tmp_path / "test.db"
+    conn = sqlite3.connect(db)
+    run_migrations(conn, target_version=14, backup_dir=tmp_path)
+    return conn
+
+
+def _full_req(**overrides) -> EntryRequest:
+    """Build an EntryRequest with all 18 Phase 7 fields populated."""
+    base = dict(
+        ticker="TST", entry_date="2026-05-04",
+        entry_price=10.0, shares=100, initial_stop=9.0,
+        watchlist_entry_target=None, watchlist_initial_stop=None,
+        notes=None, rationale="vcp-breakout",
+        event_ts="2026-05-04T16:00:00",
+        entry_path=EntryPath.MANUAL_WEB_FORM,
+        thesis="bullish on the setup",
+        why_now="VCP completed today",
+        invalidation_condition="break of 9.0 stop",
+        expected_scenario="20% in 4 weeks",
+        premortem_technical="prior pivot fails",
+        premortem_market_sector="sector breaks",
+        premortem_execution="size too small to matter",
+        event_risk_present=0,
+        event_handling="not_applicable",
+        event_type=None, event_date=None,
+        gap_risk_present=0,
+        gap_risk_handling="not_applicable",
+        emotional_state_pre_trade='["calm","confident"]',
+        market_regime="Bullish",
+        catalyst="technical_only",
+        catalyst_other_description=None,
+        manual_entry_confidence="normal",
+    )
+    base.update(overrides)
+    return EntryRequest(**base)
+
+
+@pytest.mark.parametrize("missing_field", [
+    "thesis", "why_now", "invalidation_condition", "expected_scenario",
+    "premortem_technical", "premortem_market_sector", "premortem_execution",
+    "emotional_state_pre_trade", "market_regime", "catalyst",
+    "manual_entry_confidence",
+])
+def test_record_entry_rejects_missing_required_field(tmp_path, missing_field):
+    conn = _seed_v14(tmp_path)
+    req = _full_req(**{missing_field: None})
+    with pytest.raises(MissingPreTradeFieldsException) as excinfo:
+        record_entry(conn, req, soft_warn=10, hard_cap=20, force=False)
+    assert missing_field in excinfo.value.missing_fields
+
+
+def test_record_entry_event_risk_conditional_required(tmp_path):
+    conn = _seed_v14(tmp_path)
+    req = _full_req(
+        event_risk_present=1, event_handling=None, event_type=None, event_date=None,
+    )
+    with pytest.raises(MissingPreTradeFieldsException) as excinfo:
+        record_entry(conn, req, soft_warn=10, hard_cap=20, force=False)
+    for required in ("event_handling", "event_type", "event_date"):
+        assert required in excinfo.value.missing_fields
+
+
+def test_record_entry_catalyst_other_requires_description(tmp_path):
+    conn = _seed_v14(tmp_path)
+    req = _full_req(catalyst="other", catalyst_other_description=None)
+    with pytest.raises(MissingPreTradeFieldsException) as excinfo:
+        record_entry(conn, req, soft_warn=10, hard_cap=20, force=False)
+    assert "catalyst_other_description" in excinfo.value.missing_fields
+
+
+def test_record_entry_force_does_NOT_bypass_missing_fields(tmp_path):
+    """MissingPreTradeFieldsException is not force-bypassable per spec §9.3."""
+    conn = _seed_v14(tmp_path)
+    req = _full_req(thesis=None)
+    with pytest.raises(MissingPreTradeFieldsException):
+        record_entry(conn, req, soft_warn=10, hard_cap=20, force=True)
+
+
+def test_record_entry_complete_succeeds(tmp_path):
+    conn = _seed_v14(tmp_path)
+    req = _full_req()
+    result = record_entry(conn, req, soft_warn=10, hard_cap=20, force=False)
+    assert result.trade_id > 0
 
 
 def test_entry_rationale_enum_values_match_spec_order():
@@ -75,6 +215,7 @@ def test_entry_persists_hypothesis_label(tmp_path: Path):
             rationale=EntryRationale.OTHER.value,
             event_ts="2026-04-25T09:30:00",
             hypothesis_label="Sub-A+ candidate meeting TT + price threshold",
+            **_pretrade_kwargs(),
         )
         result = record_entry(conn, req, soft_warn=4, hard_cap=6, force=False)
         t = get_trade(conn, result.trade_id)
@@ -114,6 +255,7 @@ def test_entry_canonicalizes_hypothesis_label_at_service_boundary(tmp_path: Path
                 rationale=EntryRationale.OTHER.value,
                 event_ts=f"2026-04-25T09:{i:02d}:00",
                 hypothesis_label=raw,
+                **_pretrade_kwargs(),
             )
             result = record_entry(conn, req, soft_warn=10, hard_cap=10, force=False)
             t = get_trade(conn, result.trade_id)
@@ -145,6 +287,7 @@ def test_entry_canonicalization_strips_format_characters(tmp_path: Path):
                 rationale=EntryRationale.OTHER.value,
                 event_ts=f"2026-04-25T10:{i:02d}:00",
                 hypothesis_label=raw,
+                **_pretrade_kwargs(),
             )
             result = record_entry(conn, req, soft_warn=10, hard_cap=10, force=False)
             t = get_trade(conn, result.trade_id)
@@ -171,6 +314,7 @@ def test_entry_canonicalization_normalizes_unicode_to_nfc(tmp_path: Path):
                 rationale=EntryRationale.OTHER.value,
                 event_ts=f"2026-04-25T11:{i:02d}:00",
                 hypothesis_label=raw,
+                **_pretrade_kwargs(),
             )
             result = record_entry(conn, req, soft_warn=10, hard_cap=10, force=False)
             t = get_trade(conn, result.trade_id)
@@ -192,6 +336,7 @@ def test_entry_blank_hypothesis_label_becomes_null(tmp_path: Path):
             rationale=EntryRationale.OTHER.value,
             event_ts="2026-04-25T09:30:00",
             hypothesis_label="   \t\n  ",
+            **_pretrade_kwargs(),
         )
         result = record_entry(conn, req, soft_warn=4, hard_cap=6, force=False)
         t = get_trade(conn, result.trade_id)
@@ -252,6 +397,7 @@ def test_invalid_stop_above_entry_raises(tmp_path: Path):
             shares=5, initial_stop=185.0, watchlist_entry_target=None,
             watchlist_initial_stop=None, notes=None,
             rationale="bad stop", event_ts="2026-04-15T09:30:00",
+            **_pretrade_kwargs(),
         )
         with pytest.raises(ValueError, match="stop must be < entry"):
             record_entry(conn, bad, soft_warn=4, hard_cap=6, force=False)
@@ -362,6 +508,7 @@ def test_record_entry_persists_sector_industry_as_is(tmp_path):
             notes=None, rationale="aplus-setup",
             event_ts="2026-04-28T00:00:00",
             sector="Healthcare", industry="Pharmaceuticals",
+            **_pretrade_kwargs(),
         )
         result = record_entry(conn, req, soft_warn=999, hard_cap=999, force=False)
         t = get_trade(conn, result.trade_id)
