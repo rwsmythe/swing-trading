@@ -1,15 +1,14 @@
 """Phase 7 dataclass shape regression tests.
 
-Verifies T3 outcomes:
+Verifies T3 + C.14 outcomes:
 - Trade drops status; gains state + ~24 new fields.
 - Fill dataclass mirrors fills schema.
-- Exit dataclass removed (or stub raising RuntimeError; T6 finalizes).
+- Exit dataclass DELETED (C.14): see ``test_phase7_shim_removal`` for
+  the ImportError discriminating regression tests.
 """
 from __future__ import annotations
 
 from dataclasses import fields
-
-import pytest
 
 from swing.data.models import Fill, Trade
 
@@ -43,23 +42,6 @@ def test_fill_dataclass_shape():
     assert field_names == expected
 
 
-def test_exit_dataclass_removed():
-    """Exit dataclass is removed in T3; data migrated to Fill via 0014.
-
-    Stub-form decision: many production modules (`swing/journal/flags.py`,
-    `swing/journal/stats.py`, `swing/trades/exit.py`, `swing/trades/equity.py`,
-    `swing/trades/review.py`, `swing/data/repos/trades.py`) still
-    `from swing.data.models import Exit` at import-time. Removing the symbol
-    cleanly would ImportError at test-collection across many modules,
-    blocking T6's incremental rewrite. Instead T3 leaves a stub class whose
-    constructor raises RuntimeError; T6 owns the consumer rewrites and the
-    final stub deletion.
-    """
-    from swing.data import models as mod
-
-    assert hasattr(mod, "Exit"), "Exit symbol retained as stub for T6 incremental rewrite"
-    with pytest.raises(RuntimeError, match="removed"):
-        mod.Exit(
-            id=None, trade_id=1, exit_date="2026-01-01", exit_price=10.0,
-            shares=1, reason="test", realized_pnl=0.0, r_multiple=0.0, notes=None,
-        )
+# Phase 7 Sub-C C.14: the ``Exit`` dataclass stub was DELETED. The
+# regression test asserting its removal lives in
+# ``tests/data/test_phase7_shim_removal.py`` (ImportError discriminating).

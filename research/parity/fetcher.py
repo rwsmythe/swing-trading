@@ -30,13 +30,93 @@ from pathlib import Path
 import pandas as pd
 
 from swing.config import Config
-from swing.data.models import Candidate
+from swing.data.models import Candidate, Trade
 from swing.data.repos.candidates import fetch_candidates_for_run
 from swing.data.repos.cash import list_cash
-from swing.data.repos.trades import list_all_exits, list_open_trades
+from swing.data.repos.trades import list_open_trades
 from swing.evaluation.context import BatchContext, CandidateContext, MarketContext
 from swing.evaluation.rs import load_universe, universe_version_hash
 from swing.trades.equity import current_equity, sizing_equity
+
+
+# C.14 migration helper (was: list_all_exits shim from repos/trades.py).
+# Mirrors the _ExitShape adapter used in web view models, journal/stats,
+# review_log repo, and pipeline runner — duck-typed Exit-shape over fills
+# filtered to non-entry actions. Dies in a future cleanup phase when
+# equity.py refactors to consume Fill directly.
+@dataclass(frozen=True)
+class _ExitShape:
+    trade_id: int
+    exit_date: str
+    exit_price: float
+    shares: int
+    reason: str | None
+    realized_pnl: float | None
+    r_multiple: float | None
+
+
+def _list_all_exitshape_via_fills(
+    conn: sqlite3.Connection,
+) -> list[_ExitShape]:
+    """C.14 migration: return the ExitLike collection that the
+    deleted ``list_all_exits(conn)`` shim previously returned, sourced
+    from fills (action != 'entry'). Per-fill realized_pnl / r_multiple
+    derive on the fly via ``swing.trades.derived_metrics`` — single
+    source of math truth. Sort matches the legacy shim via
+    ``list_all_fills``'s ``ORDER BY fill_datetime ASC, fill_id ASC``.
+    """
+    from swing.data.repos.fills import list_all_fills
+    from swing.data.repos.trades import list_closed_trades
+    from swing.trades.derived_metrics import (
+        initial_risk_per_share,
+        r_multiple,
+        realized_pnl,
+    )
+
+    trades_by_id: dict[int, Trade] = {}
+    for t in list_open_trades(conn):
+        if t.id is not None:
+            trades_by_id[t.id] = t
+    for t in list_closed_trades(conn):
+        if t.id is not None:
+            trades_by_id[t.id] = t
+
+    out: list[_ExitShape] = []
+    for f in list_all_fills(conn):
+        if f.action == "entry":
+            continue
+        trade = trades_by_id.get(f.trade_id)
+        if trade is None:
+            continue  # orphan fill — skip (parent trade missing)
+        rps = initial_risk_per_share(
+            entry_price=trade.entry_price,
+            initial_stop=trade.initial_stop,
+        )
+        pnl = realized_pnl(
+            entry_price=trade.entry_price, exit_price=f.price,
+            quantity=f.quantity,
+        )
+        if rps == 0 or f.quantity == 0:
+            rmult: float | None = None
+        else:
+            rmult = r_multiple(
+                realized_pnl=pnl, initial_risk_per_share=rps,
+                quantity=f.quantity,
+            )
+        exit_date = (
+            f.fill_datetime.split("T")[0]
+            if "T" in f.fill_datetime else f.fill_datetime
+        )
+        out.append(_ExitShape(
+            trade_id=f.trade_id,
+            exit_date=exit_date,
+            exit_price=float(f.price),
+            shares=int(f.quantity),
+            reason=f.reason,
+            realized_pnl=pnl,
+            r_multiple=rmult,
+        ))
+    return out
 
 log = logging.getLogger(__name__)
 
@@ -144,7 +224,7 @@ def _derive_current_equity(conn: sqlite3.Connection, cfg: Config) -> tuple[float
     """
     real = current_equity(
         starting_equity=cfg.account.starting_equity,
-        exits=list_all_exits(conn),
+        exits=_list_all_exitshape_via_fills(conn),
         cash_movements=list_cash(conn),
     )
     sized = sizing_equity(

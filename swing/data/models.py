@@ -158,23 +158,11 @@ class Fill:
     tos_match_id: str | None = None
 
 
-class Exit:
-    """REMOVED in Phase 7 — data migrated to Fill via migration 0014.
-
-    Stub retained at import-time only because many production modules still
-    `from swing.data.models import Exit` (`swing/journal/flags.py`,
-    `swing/journal/stats.py`, `swing/trades/exit.py`, `swing/trades/equity.py`,
-    `swing/trades/review.py`, `swing/data/repos/trades.py`). Removing the
-    symbol cleanly would ImportError at test-collection across many modules,
-    blocking T6's incremental rewrite. Sub-A T6 owns the consumer rewrites
-    and the final removal of this stub.
-    """
-
-    def __init__(self, *args, **kwargs):
-        raise RuntimeError(
-            "Exit dataclass removed in Phase 7; use Fill instead. "
-            "Constructor called with: " + repr((args, kwargs))
-        )
+# Exit dataclass DELETED in Phase 7 Sub-C C.14. Data lives in Fill (migration
+# 0014). All consumers migrated to per-module ``_list_all_exitshape_via_fills``
+# adapters that wrap ``swing/trades/derived_metrics.py`` (single source of math
+# truth). Importing ``Exit`` from this module now correctly raises ImportError;
+# regression test in ``tests/data/test_phase7_shim_removal.py``.
 
 
 @dataclass(frozen=True)

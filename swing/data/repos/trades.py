@@ -4,7 +4,7 @@ Every mutation of `trades` writes a `trade_events` row in the same transaction.
 This is enforced by exposing only `*_with_event` mutation functions; there is no
 `insert_trade` without `_with_event` companion.
 
-Phase 7 (Sub-A T6) changes:
+Phase 7 (Sub-A T6 + Sub-C C.14) changes:
  - `status` (legacy 'open'|'closed') dropped end-to-end. The `state` column
    (CHECK enum: 'entered'|'managing'|'partial_exited'|'closed'|'reviewed') is
    the lifecycle field.
@@ -13,12 +13,15 @@ Phase 7 (Sub-A T6) changes:
    invalidation_condition, expected_scenario, premortem_*, event_*,
    gap_risk_*, emotional_state_pre_trade, market_regime, catalyst,
    catalyst_other_description).
- - `insert_exit_with_event` REMOVED. Exit data path moves to fills via
-   `swing/data/repos/fills.py` (Sub-A T4).
- - `list_exits_for_trade` + `list_all_exits` SHIMMED on top of fills (return
-   `_ExitLikeRow` NamedTuples preserving the legacy attribute surface). Shim is
-   removable when Sub-B T9 (journal) + Sub-C T1 (web view models) and the other
-   callers cited in plan §2.1 migrate to the fills repo.
+ - `insert_exit_with_event` DELETED (Sub-C C.14). Exit data path lives in
+   `swing/data/repos/fills.py`'s `insert_fill_with_event` (Sub-A T4) plus
+   the state-mutation service in `swing/trades/state.py` (Sub-A T5).
+ - `list_exits_for_trade` + `list_all_exits` + `_ExitLikeRow` DELETED
+   (Sub-C C.14). Consumers source non-entry fills directly via
+   `swing/data/repos/fills.py::list_fills_for_trade` /
+   `list_all_fills` and reconstruct realized_pnl / r_multiple via
+   per-module `_list_all_exitshape_via_fills` adapters that wrap
+   `swing/trades/derived_metrics.py` (single source of math truth).
  - Direct `UPDATE trades SET status='closed'` writes removed; the state-mutation
    service in `swing/trades/state.py` (Sub-A T5) is the sole `state` write path.
 """
@@ -26,7 +29,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import NamedTuple
 
 from swing.data.models import Trade, TradeEvent
 
@@ -181,28 +183,6 @@ def insert_trade_with_event(
     return trade_id
 
 
-def insert_exit_with_event(*args, **kwargs):
-    """[T6 STUB] Phase 7 removes the exits table and this entry point.
-
-    Sub-B T4 (exit service) routes exits through the fills repo's
-    ``insert_fill_with_event`` (Sub-A T4) plus the state-mutation service
-    ``swing.trades.state`` (Sub-A T5). Calling this function is a programming
-    error; it is retained as an importable symbol only because many production
-    modules (`swing/trades/exit.py`, journal/web/cli) and their tests import
-    it at module load time. Removing the symbol cleanly would break test
-    collection across ~9 files and prevent the fast-suite from running until
-    Sub-B/Sub-C land.
-
-    Removed when Sub-B T4 lands the exit-service rewrite (no remaining
-    importer).
-    """
-    raise RuntimeError(
-        "insert_exit_with_event removed in Phase 7 — use the fills repo "
-        "(insert_fill_with_event) + state-transition service. Called with: "
-        f"{args!r} {kwargs!r}"
-    )
-
-
 def update_stop_with_event(
     conn: sqlite3.Connection, *, trade_id: int, new_stop: float,
     event_ts: str, rationale: str | None = None,
@@ -292,133 +272,6 @@ def list_closed_trades(
             "ORDER BY entry_date DESC, ticker"
         ).fetchall()
     return [_row_to_trade(r) for r in rows]
-
-
-# ---------------------------------------------------------------------------
-# Phase 7 T6 fills-backed shim — Exit-shape rows for Sub-B/Sub-C callers
-# ---------------------------------------------------------------------------
-
-
-class _ExitLikeRow(NamedTuple):
-    """Shape-compatible Exit replacement for Sub-B/Sub-C callers.
-
-    Mirrors the legacy `Exit` dataclass attribute surface (`.exit_date`,
-    `.exit_price`, `.shares`, `.reason`, `.realized_pnl`, `.r_multiple`,
-    `.notes`) so existing consumers (web view models, journal, equity math,
-    pipeline runner, recommendations, parity fetcher, equity calculator)
-    keep working until they migrate to the fills repo helpers.
-
-    Removed in tandem with `list_exits_for_trade` + `list_all_exits` once
-    Sub-B T9 (journal) + Sub-C T1 (web view models) + the remaining callers
-    cited in plan §2.1 finish their predicate rewrites.
-    """
-    trade_id: int
-    exit_date: str
-    exit_price: float
-    shares: int
-    reason: str | None
-    realized_pnl: float | None
-    r_multiple: float | None
-    notes: str | None
-
-
-def _fill_row_to_exitlike(
-    fill_row: tuple, *, entry_price: float | None, initial_stop: float | None,
-) -> _ExitLikeRow:
-    """Map a fills row tuple to the Exit-shape NamedTuple.
-
-    fills column order: trade_id, fill_datetime, quantity, price, reason
-    (the SELECT below pins this; do not reorder without updating).
-
-    realized_pnl = (fill_price - entry_price) * quantity (long-only convention,
-    matching the legacy Exit math). r_multiple = realized_pnl / (risk_per_share
-    * quantity) where risk_per_share = entry_price - initial_stop. Both are
-    None if the prerequisites are missing.
-    """
-    trade_id, fill_dt, qty, fill_price, reason = fill_row
-    # exit_date is the YYYY-MM-DD prefix of fill_datetime (which is
-    # ISO-8601 'YYYY-MM-DDTHH:MM:SS' per migration 0014 backfill).
-    exit_date = fill_dt.split("T")[0] if "T" in fill_dt else fill_dt
-    realized_pnl: float | None
-    r_multiple: float | None
-    if entry_price is not None:
-        realized_pnl = (fill_price - entry_price) * qty
-        risk_per_share = (
-            entry_price - initial_stop
-            if initial_stop is not None else None
-        )
-        if risk_per_share is not None and risk_per_share != 0 and qty != 0:
-            r_multiple = realized_pnl / (risk_per_share * qty)
-        else:
-            r_multiple = None
-    else:
-        realized_pnl = None
-        r_multiple = None
-    return _ExitLikeRow(
-        trade_id=trade_id,
-        exit_date=exit_date,
-        exit_price=float(fill_price),
-        shares=int(qty),
-        reason=reason,
-        realized_pnl=realized_pnl,
-        r_multiple=r_multiple,
-        notes=None,  # fills schema has no separate notes column post-Phase-7
-    )
-
-
-def list_exits_for_trade(
-    conn: sqlite3.Connection, trade_id: int,
-) -> list[_ExitLikeRow]:
-    """[T6 SHIM] Phase 7 deprecates the exits table.
-
-    Returns fills-backed Exit-shape rows for Sub-B/Sub-C callers that have
-    not yet migrated. Filters action != 'entry' so the synthetic entry-fill
-    backfilled by migration 0014 does not surface as an exit.
-
-    Removed when Sub-B T9 (journal) + Sub-C T1 (web view models) rewrite
-    their callers to use a fills-repo helper directly.
-    """
-    fill_rows = conn.execute(
-        "SELECT trade_id, fill_datetime, quantity, price, reason "
-        "FROM fills WHERE trade_id = ? AND action != 'entry' "
-        "ORDER BY fill_datetime ASC, fill_id ASC",
-        (trade_id,),
-    ).fetchall()
-    if not fill_rows:
-        return []
-    entry_row = conn.execute(
-        "SELECT entry_price, initial_stop FROM trades WHERE id = ?",
-        (trade_id,),
-    ).fetchone()
-    if entry_row is None:
-        return []
-    entry_price, initial_stop = entry_row
-    return [
-        _fill_row_to_exitlike(r, entry_price=entry_price, initial_stop=initial_stop)
-        for r in fill_rows
-    ]
-
-
-def list_all_exits(conn: sqlite3.Connection) -> list[_ExitLikeRow]:
-    """[T6 SHIM] Same as list_exits_for_trade but across all trades.
-
-    Implementation joins fills→trades to fetch entry_price/initial_stop in a
-    single query (avoiding N+1).
-    """
-    rows = conn.execute(
-        "SELECT f.trade_id, f.fill_datetime, f.quantity, f.price, f.reason, "
-        "       t.entry_price, t.initial_stop "
-        "FROM fills f JOIN trades t ON t.id = f.trade_id "
-        "WHERE f.action != 'entry' "
-        "ORDER BY substr(f.fill_datetime, 1, 10) ASC, f.fill_id ASC"
-    ).fetchall()
-    out: list[_ExitLikeRow] = []
-    for r in rows:
-        fill_tuple = (r[0], r[1], r[2], r[3], r[4])
-        out.append(_fill_row_to_exitlike(
-            fill_tuple, entry_price=r[5], initial_stop=r[6],
-        ))
-    return out
 
 
 def list_events_for_trade(conn: sqlite3.Connection, trade_id: int) -> list[TradeEvent]:

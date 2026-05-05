@@ -16,25 +16,19 @@ from __future__ import annotations
 import sqlite3
 import unicodedata
 from datetime import date, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import Any
 
 from swing.data.models import Trade
 from swing.data.repos.trades import get_trade, update_trade_review_fields
-
-# C.10: ``Exit`` import moved under TYPE_CHECKING — the legacy dataclass
-# is no longer constructed or runtime-introspected from this module, but
-# function signatures below still reference ``Exit`` as a structural hint
-# (``list[Exit]``). Under PEP 563 (``from __future__ import annotations``)
-# annotations are stored as strings; the TYPE_CHECKING guard tells
-# ruff/mypy to resolve ``Exit`` for static analysis without pulling the
-# dataclass at runtime. Consumers pass duck-typed ExitLike-shape objects
-# (the per-module ``_ExitShape`` adapters from C.1/C.9/C.10) which expose
-# ``.r_multiple``, ``.shares``, ``.trade_id``, ``.exit_date`` — all that
-# the review aggregations require.
-if TYPE_CHECKING:
-    from swing.data.models import Exit  # noqa: F401
 from swing.evaluation.dates import last_completed_session
 from swing.trades.state import state_transition
+
+# C.14: ``Exit`` is deleted. Function signatures here use ``ExitLike = Any``
+# for exits parameters — consumers pass duck-typed ExitLike-shape objects
+# (the per-module ``_ExitShape`` adapters from C.1/C.9/C.10/C.14) which
+# expose ``.r_multiple``, ``.shares``, ``.trade_id``, ``.exit_date`` — all
+# that the review aggregations require.
+ExitLike = Any  # Structural duck-type alias for Exit-shape adapter rows.
 
 # ---- Mistake_Tags vocabulary (v1.2 §7.10 verbatim) ----
 
@@ -145,7 +139,7 @@ def compute_process_grade(
 # ---- Cost / Lucky / R helpers (v1.2 §8.4 + §8.8 + §8.9) ----
 
 def compute_actual_realized_R_effective(  # noqa: N802
-    trade: Trade, exits: list[Exit],
+    trade: Trade, exits: list[ExitLike],
 ) -> float:
     """Share-weighted realized R for `trade` per v1.2 §8.4.
 
@@ -181,7 +175,7 @@ def compute_lucky_violation_R(  # noqa: N802
 
 
 def compute_profit_factor(
-    closed_trades: list[Trade], exits: list[Exit],
+    closed_trades: list[Trade], exits: list[ExitLike],
 ) -> float | None:
     """v1.2 §8.9: sum(R where > 0) / abs(sum(R where < 0)).
 
@@ -197,7 +191,7 @@ def compute_profit_factor(
 
 
 def compute_max_drawdown_R(  # noqa: N802
-    closed_trades: list[Trade], exits: list[Exit],
+    closed_trades: list[Trade], exits: list[ExitLike],
 ) -> float:
     """Maximum peak-to-trough drawdown over the closed-date-ordered cumulative
     R-series. Returned as a non-negative magnitude. Returns 0.0 for empty
@@ -224,7 +218,7 @@ def compute_max_drawdown_R(  # noqa: N802
     return max_drawdown
 
 
-def _trade_closed_date_for_review(trade: Trade, exits: list[Exit]) -> date | None:
+def _trade_closed_date_for_review(trade: Trade, exits: list[ExitLike]) -> date | None:
     """Mirror of swing.journal.stats._trade_closed_date — same formula.
     Re-implemented per journal/-read-only carve-out (plan §A.1).
 
@@ -234,11 +228,10 @@ def _trade_closed_date_for_review(trade: Trade, exits: list[Exit]) -> date | Non
     the bare ``state != 'closed'`` form for the per-trade review precondition,
     where 'reviewed' must be REJECTED.
 
-    The body still walks an ``exits`` list (now an ``Exit`` stub that raises
-    on construction post Sub-A T3); body migration to the fills surface is
-    Sub-B T9 (journal-layer rewrite). This commit only fixes the AttributeError
-    on ``trade.status`` so the predicate evaluates cleanly when the helper is
-    eventually called with a fills-shaped argument.
+    The body walks an ``exits`` list of duck-typed ExitLike-shape adapter
+    rows (per-module ``_ExitShape`` adapters wrap fills via
+    ``swing/trades/derived_metrics.py``); the legacy ``Exit`` dataclass is
+    deleted (Sub-C C.14).
     """
     if trade.state not in ("closed", "reviewed"):
         return None
