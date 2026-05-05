@@ -2,25 +2,15 @@
 
 Phase 7 Sub-B B.6 fixture migration: legacy ``Exit(...)``+``insert_exit_with_event``
 seeding rewritten to ``Fill(action='exit')``+``insert_fill_with_event``. The
-``Exit`` dataclass is a stub post Sub-A T3 and raises on construction.
-
-The whole module is skipped: production web code at
-``swing/web/view_models/trades.py:432`` and ``swing/web/routes/trades.py:1082``
-still references ``trade.status`` (dropped from the dataclass in Sub-A T6),
-so post-fixture-migration the runtime hits ``AttributeError``. Sub-C Task T1
-rewrites the web review surface to the new state-aware service and unskips
-this file.
+``Exit`` dataclass was deleted in Sub-C C.14; production web code at
+``swing/web/view_models/trades.py:540`` (was 432) and
+``swing/web/routes/trades.py:1220`` (was 1082) now uses ``trade.state ==
+'closed'`` per Sub-C C.7. Module unskipped post-Sub-C C.7.
 """
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
-
-pytestmark = pytest.mark.skip(
-    reason="Sub-B B.6: fixture migrated to fills shape; web review handler "
-    "still references trade.status — unskip when Sub-C T1 rewrites the web "
-    "review surface."
-)
+import pytest  # noqa: F401  # retained for fixture decorators
 
 
 @pytest.fixture
