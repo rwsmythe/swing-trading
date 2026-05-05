@@ -365,6 +365,10 @@ def record_entry(
                 ),
                 event_ts=req.event_ts,
                 rationale=req.rationale,
+                # Hotfix 2026-05-05 (operator-witnessed gate finding S3):
+                # insert_trade_with_event above already emitted an 'entry'
+                # trade_event row; suppress the duplicate emission here.
+                emit_event=False,
             )
             wl = get_watchlist_entry(conn, req.ticker)
             if wl is not None:

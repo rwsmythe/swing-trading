@@ -445,3 +445,59 @@ def test_post_review_canonicalizes_mistake_tags(test_app_closed_trade) -> None:
     conn.close()
     tags = json.loads(row[0])
     assert tags == ["CHASED", "FOMO"]  # sorted, deduped
+
+
+def test_post_review_transitions_state_closed_to_reviewed(
+    test_app_closed_trade,
+) -> None:
+    """Hotfix regression 2026-05-05: operator-witnessed gate finding S6.
+
+    Phase 7 brainstorm spec §3.5.1 + Sub-B B.6 wired complete_trade_review
+    service which:
+      1. Persists the 10 Phase 6 review fields.
+      2. Transitions trade state ``closed → reviewed``.
+
+    Pre-hotfix: web review POST route called update_trade_review_fields
+    DIRECTLY (Phase 6-style raw repo helper that only does step 1, missing
+    the state transition). Result: review-completed trades stayed in
+    ``state='closed'`` with reviewed_at populated, violating spec §3
+    terminal-state semantics.
+
+    Sub-B return report flagged this as Sub-C T1 territory (commit hist
+    grep: 71ddb95 "complete_trade_review wiring at swing/web/routes/
+    trades.py:1169 (currently calls update_trade_review_fields directly
+    inside its own with conn:; switch to the B.6 service for atomic state
+    transition)"). Sub-C didn't make the switch. Hotfix corrects.
+
+    Discriminating shape: pre-hotfix `state == 'closed'` post-POST (verified
+    by stash + run prior to hotfix application). Post-hotfix: `state ==
+    'reviewed'`.
+    """
+    import sqlite3
+    with TestClient(test_app_closed_trade) as client:
+        r = client.post(
+            "/trades/1/review",
+            data={
+                "entry_grade": "A", "management_grade": "A", "exit_grade": "A",
+                "disqualifying_process_violation": "false",
+                "mistake_tags": ["CHASED"],
+                "realized_R_if_plan_followed": "0.0",
+                "mistake_cost_confidence": "low",
+                "lesson_learned": "test review for state transition.",
+            },
+            headers={"HX-Request": "true"},
+            follow_redirects=False,
+        )
+    assert r.status_code == 204
+    # The discriminating assert: state must transition to 'reviewed'.
+    db_path = test_app_closed_trade.state.cfg.paths.db_path
+    conn = sqlite3.connect(db_path)
+    state_value = conn.execute(
+        "SELECT state FROM trades WHERE id = 1"
+    ).fetchone()[0]
+    conn.close()
+    assert state_value == "reviewed", (
+        f"Expected trade state='reviewed' after review POST; got "
+        f"{state_value!r}. Pre-hotfix value would be 'closed' because the "
+        f"web route bypassed complete_trade_review's state_transition."
+    )

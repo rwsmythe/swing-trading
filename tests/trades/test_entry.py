@@ -789,3 +789,33 @@ def test_record_entry_persists_entry_date_as_yyyymmdd(tmp_path):
     assert trade.entry_date == "2026-05-01"
     parsed = date.fromisoformat(trade.entry_date)
     assert parsed.isoformat() == "2026-05-01"
+
+
+def test_record_entry_emits_exactly_one_entry_event(tmp_path):
+    """Hotfix regression 2026-05-05: operator-witnessed gate finding S3.
+
+    record_entry calls insert_trade_with_event (which writes a trade_events
+    row with event_type='entry') AND insert_fill_with_event (which would
+    ALSO write a trade_events row with event_type='entry' if not suppressed,
+    since fill.action=='entry' maps to audit_event_type='entry'). Pre-hotfix:
+    every record_entry call produced 2 duplicate entry events. Post-hotfix:
+    record_entry passes ``emit_event=False`` to insert_fill_with_event so
+    the second emission is suppressed; exactly 1 entry event remains.
+
+    Discriminating shape: pre-hotfix this test fails with `event_count == 2`
+    (verified by stash + run prior to hotfix application). Post-hotfix:
+    `event_count == 1`.
+    """
+    conn = _seed_v14(tmp_path)
+    req = _full_req()
+    result = record_entry(conn, req, soft_warn=10, hard_cap=20, force=False)
+    entry_events = conn.execute(
+        "SELECT id, ts, event_type, rationale FROM trade_events "
+        "WHERE trade_id = ? AND event_type = 'entry'",
+        (result.trade_id,),
+    ).fetchall()
+    assert len(entry_events) == 1, (
+        f"Expected exactly 1 'entry' trade_event row after record_entry; "
+        f"got {len(entry_events)}: {entry_events}. Pre-hotfix value would be "
+        f"2 (insert_trade_with_event + insert_fill_with_event both emitted)."
+    )

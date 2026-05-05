@@ -1287,12 +1287,10 @@ def review_post(
     from fastapi.responses import Response
 
     from swing.data.db import connect
-    from swing.data.repos.trades import (
-        get_trade,
-        update_trade_review_fields,
-    )
+    from swing.data.repos.trades import get_trade
     from swing.trades.review import (
         canonicalize_mistake_tags,
+        complete_trade_review,
         compute_process_grade,
         validate_mistake_tags,
     )
@@ -1365,20 +1363,31 @@ def review_post(
                 status_code=409,
                 detail="Trade already reviewed; V1 supports single-review only",
             )
-        with conn:
-            update_trade_review_fields(
-                conn, trade_id=trade_id,
-                reviewed_at=_dt.now().isoformat(timespec="seconds"),
-                mistake_tags_json=json.dumps(canonical_tags),
-                entry_grade=entry_grade,
-                management_grade=management_grade,
-                exit_grade=exit_grade,
-                process_grade=process_grade,
-                disqualifying_process_violation=disq,
-                realized_R_if_plan_followed=realized_R_if_plan_followed,
-                mistake_cost_confidence=mistake_cost_confidence or None,
-                lesson_learned=lesson_learned,
-            )
+        # Hotfix 2026-05-05 (operator-witnessed gate finding S6): the prior
+        # implementation called update_trade_review_fields directly inside
+        # `with conn:`, persisting Phase 6 review fields BUT never firing the
+        # `closed → reviewed` state transition that Phase 7 Sub-B B.6 wired
+        # into the complete_trade_review service wrapper. Result: review-
+        # completed trades stayed in `state='closed'` (with reviewed_at
+        # populated), violating spec §3 terminal-state semantics. Sub-B
+        # return report explicitly flagged this Sub-C T1 territory item;
+        # implementation didn't switch. Fix now: route through the service.
+        review_ts = _dt.now().isoformat(timespec="seconds")
+        complete_trade_review(
+            conn, trade_id=trade_id,
+            reviewed_at=review_ts,
+            mistake_tags_json=json.dumps(canonical_tags),
+            entry_grade=entry_grade,
+            management_grade=management_grade,
+            exit_grade=exit_grade,
+            process_grade=process_grade,
+            disqualifying_process_violation=disq,
+            realized_R_if_plan_followed=realized_R_if_plan_followed,
+            mistake_cost_confidence=mistake_cost_confidence or None,
+            lesson_learned=lesson_learned,
+            event_ts=review_ts,
+            rationale=None,
+        )
     finally:
         conn.close()
     # code-review I3 (operator-witnessed S5): /trades is unrouted — htmx.js

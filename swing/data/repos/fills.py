@@ -16,10 +16,21 @@ from swing.data.models import Fill
 def insert_fill_with_event(
     conn: sqlite3.Connection, fill: Fill, *,
     event_ts: str, rationale: str | None = None,
+    emit_event: bool = True,
 ) -> int:
     """Insert a fill, recompute trade aggregates, write a trade_events row.
 
     All in caller's transaction. Returns the new fill_id.
+
+    Hotfix 2026-05-05: ``emit_event`` flag added to suppress the trade_events
+    row for callers that already emitted one. ``record_entry`` calls both
+    ``insert_trade_with_event`` (writes 'entry' event) AND this function
+    (would also write 'entry' event since fill.action=='entry'); operator-
+    witnessed verification gate caught the duplicate ('entry' rows id=12 +
+    id=13 for GPRE entry on 2026-05-05). Pass ``emit_event=False`` from the
+    record_entry atomic flow to suppress the second emission. Other callers
+    (record_exit, etc.) keep the default (True) since their fills are the
+    only event-emitters in their atomic flow.
     """
     cur = conn.execute(
         """
@@ -40,27 +51,28 @@ def insert_fill_with_event(
 
     _recompute_aggregates(conn, fill.trade_id)
 
-    payload = {
-        "action": fill.action,
-        "quantity": fill.quantity,
-        "price": fill.price,
-        "fill_datetime": fill.fill_datetime,
-    }
-    # Map fill action to trade_events.event_type ('entry'/'exit' for now;
-    # 'trim' and 'stop' co-opt 'exit' on the audit row since the existing
-    # trade_events enum doesn't have separate trim/stop values, and we're
-    # not expanding it in 0014 beyond pre_trade_edit).
-    audit_event_type = "entry" if fill.action == "entry" else "exit"
-    conn.execute(
-        """
-        INSERT INTO trade_events (trade_id, ts, event_type, payload_json, rationale)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (
-            fill.trade_id, event_ts, audit_event_type,
-            json.dumps(payload, sort_keys=True), rationale,
-        ),
-    )
+    if emit_event:
+        payload = {
+            "action": fill.action,
+            "quantity": fill.quantity,
+            "price": fill.price,
+            "fill_datetime": fill.fill_datetime,
+        }
+        # Map fill action to trade_events.event_type ('entry'/'exit' for now;
+        # 'trim' and 'stop' co-opt 'exit' on the audit row since the existing
+        # trade_events enum doesn't have separate trim/stop values, and we're
+        # not expanding it in 0014 beyond pre_trade_edit).
+        audit_event_type = "entry" if fill.action == "entry" else "exit"
+        conn.execute(
+            """
+            INSERT INTO trade_events (trade_id, ts, event_type, payload_json, rationale)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                fill.trade_id, event_ts, audit_event_type,
+                json.dumps(payload, sort_keys=True), rationale,
+            ),
+        )
     return fill_id
 
 
