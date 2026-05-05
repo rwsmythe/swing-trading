@@ -165,6 +165,26 @@ class AuditEntry:
     reason: str | None
 
 
+def _decode_emotional_state(raw: str | None) -> tuple[str, ...]:
+    """Decode the JSON-list TEXT stored in trades.emotional_state_pre_trade
+    (spec §1.2 multi-select; entry route writes via json.dumps in
+    swing/web/routes/trades.py + swing/cli.py) to a tuple of strings.
+
+    Returns () for NULL, empty string, or malformed JSON — the template
+    renders an empty cell rather than crashing on storage-format anomalies.
+    Codex R3 Minor 1.
+    """
+    if not raw:
+        return ()
+    try:
+        decoded = json.loads(raw)
+    except (TypeError, ValueError):
+        return ()
+    if not isinstance(decoded, list):
+        return ()
+    return tuple(str(x) for x in decoded if x)
+
+
 def _coerce_origin(raw: str | None) -> Literal["watchlist", "hyp-recs"]:
     """Whitelist-coerce ?origin= query-param / form-payload value.
 
@@ -756,7 +776,11 @@ class TradeDetailVM:
     event_date: str | None
     gap_risk_present: int | None
     gap_risk_handling: str | None
-    emotional_state_pre_trade: str | None
+    # emotional_state_pre_trade is stored as JSON-list TEXT (spec §1.2);
+    # the builder decodes to a tuple of strings so the template can render
+    # operator-friendly text instead of raw JSON-list storage format
+    # (Codex R3 Minor 1). Empty tuple when NULL/empty/malformed-JSON.
+    emotional_state_pre_trade: tuple[str, ...]
     # ``manual_entry_confidence`` lives on Fill (spec §4.3.1); pulled from
     # the authoritative entry-fill at build time. None when no entry-fill
     # exists yet (legacy rows; trade migrated without a backfill).
@@ -860,7 +884,9 @@ def build_trade_detail_vm(
         event_date=trade.event_date,
         gap_risk_present=trade.gap_risk_present,
         gap_risk_handling=trade.gap_risk_handling,
-        emotional_state_pre_trade=trade.emotional_state_pre_trade,
+        emotional_state_pre_trade=_decode_emotional_state(
+            trade.emotional_state_pre_trade,
+        ),
         manual_entry_confidence=manual_entry_confidence,
         market_regime=trade.market_regime,
         catalyst=trade.catalyst,

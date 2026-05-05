@@ -58,7 +58,9 @@
       {% endif %}
       <dt>Gap risk present</dt><dd>{{ "Yes" if vm.gap_risk_present else "No" }}</dd>
       {% if vm.gap_risk_present and vm.gap_risk_handling %}<dt>Gap risk handling</dt><dd>{{ vm.gap_risk_handling }}</dd>{% endif %}
-      <dt>Emotional state</dt><dd>{{ vm.emotional_state_pre_trade }}</dd>
+      {% if vm.emotional_state_pre_trade %}
+        <dt>Emotional state</dt><dd>{{ vm.emotional_state_pre_trade | join(", ") }}</dd>
+      {% endif %}
       {% if vm.manual_entry_confidence %}<dt>Manual entry confidence</dt><dd>{{ vm.manual_entry_confidence }}</dd>{% endif %}
       <dt>Market regime</dt><dd>{{ vm.market_regime }}</dd>
       <dt>Catalyst</dt><dd>{{ vm.catalyst }}{% if vm.catalyst_other_description %} &mdash; {{ vm.catalyst_other_description }}{% endif %}</dd>

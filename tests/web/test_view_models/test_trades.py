@@ -338,6 +338,44 @@ def test_trade_detail_vm_audit_entries_populated_from_pre_trade_edit(seeded_db):
     assert entry.reason == "found typo"
 
 
+def test_trade_detail_vm_emotional_state_decoded_from_json_list(seeded_db):
+    """Codex R3 Minor 1: emotional_state_pre_trade stored as JSON-list TEXT
+    (per spec §1.2 multi-select); VM exposes a tuple of strings so the
+    template can render operator-friendly comma-separated text instead of
+    raw JSON storage format.
+
+    Discriminating: pre-fix the VM passed the raw JSON string through
+    (e.g., `["calm","focused"]`); post-fix the VM decodes to `("calm",
+    "focused")` and the detail template renders "calm, focused".
+    """
+    from swing.web.view_models.trades import build_trade_detail_vm
+
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(
+        cfg, state="entered",
+        premortem_technical="risk-A",
+        emotional_state_pre_trade='["calm","focused"]',
+    )
+    vm = build_trade_detail_vm(trade_id=trade_id, cfg=cfg)
+    assert vm.emotional_state_pre_trade == ("calm", "focused")
+
+
+def test_trade_detail_vm_emotional_state_empty_when_null_or_malformed(seeded_db):
+    """Codex R3 Minor 1: NULL / empty / malformed-JSON storage format
+    decodes to an empty tuple — template renders nothing rather than
+    crashing or leaking storage anomalies."""
+    from swing.web.view_models.trades import build_trade_detail_vm
+
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(
+        cfg, state="entered",
+        premortem_technical="risk-A",
+        emotional_state_pre_trade=None,
+    )
+    vm = build_trade_detail_vm(trade_id=trade_id, cfg=cfg)
+    assert vm.emotional_state_pre_trade == ()
+
+
 # --- Predicate-rewrite regression tests ------------------------------------
 
 
