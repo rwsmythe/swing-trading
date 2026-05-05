@@ -1,6 +1,8 @@
 """Click CLI for swing. Phase 1 subcommands: db-migrate, eval."""
 from __future__ import annotations
 
+import sqlite3
+from dataclasses import dataclass
 from datetime import date as _date
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +21,84 @@ from swing.evaluation.evaluator import evaluate_batch
 from swing.evaluation.rs import load_universe, universe_version_hash
 from swing.prices import PriceFetcher
 from swing.recommendations.hypothesis_prefill import lookup_active_recommendation_label
+
+
+@dataclass(frozen=True)
+class _ExitShape:
+    trade_id: int
+    exit_date: str
+    exit_price: float
+    shares: int
+    reason: str | None
+    realized_pnl: float | None
+    r_multiple: float | None
+
+
+def _list_all_exitshape_via_fills(
+    conn: sqlite3.Connection,
+) -> list[_ExitShape]:
+    """C.11: reconstruct Exit-like rows from non-entry fills.
+
+    Mirrors the per-module ``_ExitShape`` adapter pattern from C.1/C.9/C.10.
+    Migrates the ``swing trade list`` and ``swing journal review`` CLI
+    consumers off the legacy Exit-shim before C.14 deletes it.
+    """
+    from swing.data.models import Trade
+    from swing.data.repos.fills import list_all_fills
+    from swing.data.repos.trades import (
+        list_closed_trades,
+        list_open_trades,
+    )
+    from swing.trades.derived_metrics import (
+        initial_risk_per_share,
+        r_multiple,
+        realized_pnl,
+    )
+
+    trades_by_id: dict[int, Trade] = {}
+    for t in list_open_trades(conn):
+        if t.id is not None:
+            trades_by_id[t.id] = t
+    for t in list_closed_trades(conn):
+        if t.id is not None:
+            trades_by_id[t.id] = t
+
+    out: list[_ExitShape] = []
+    for f in list_all_fills(conn):
+        if f.action == "entry":
+            continue
+        trade = trades_by_id.get(f.trade_id)
+        if trade is None:
+            continue
+        rps = initial_risk_per_share(
+            entry_price=trade.entry_price,
+            initial_stop=trade.initial_stop,
+        )
+        pnl = realized_pnl(
+            entry_price=trade.entry_price, exit_price=f.price,
+            quantity=f.quantity,
+        )
+        if rps == 0 or f.quantity == 0:
+            rmult: float | None = None
+        else:
+            rmult = r_multiple(
+                realized_pnl=pnl, initial_risk_per_share=rps,
+                quantity=f.quantity,
+            )
+        exit_date = (
+            f.fill_datetime.split("T")[0]
+            if "T" in f.fill_datetime else f.fill_datetime
+        )
+        out.append(_ExitShape(
+            trade_id=f.trade_id,
+            exit_date=exit_date,
+            exit_price=float(f.price),
+            shares=int(f.quantity),
+            reason=f.reason,
+            realized_pnl=pnl,
+            r_multiple=rmult,
+        ))
+    return out
 
 
 @click.group()
@@ -706,7 +786,6 @@ def trade_list_cmd(ctx, show_all):
 
     from swing.data.db import connect
     from swing.data.repos.trades import (
-        list_all_exits,
         list_closed_trades,
         list_open_trades,
     )
@@ -721,7 +800,7 @@ def trade_list_cmd(ctx, show_all):
         # web dashboard's `remaining = initial_shares - sum(exits.shares)`
         # pattern so both surfaces agree.
         exits_by_trade: dict[int, list] = defaultdict(list)
-        for e in list_all_exits(conn):
+        for e in _list_all_exitshape_via_fills(conn):
             exits_by_trade[e.trade_id].append(e)
     finally:
         conn.close()
@@ -879,7 +958,7 @@ def _render_trade_analysis(a) -> list[str]:
     header = f"TRADE #{a.trade_id} — {a.ticker}"
     lines.append(header)
     lines.append("=" * len(header))
-    lines.append(f"Status: {a.status}")
+    lines.append(f"Status: {a.state}")
     lines.append(
         f"Entry: {a.entry_date} @ ${a.entry_price:.2f} × "
         f"{a.initial_shares} sh"
@@ -1313,7 +1392,7 @@ def journal_review_cmd(ctx, period, today):
 
     from swing.data.db import connect
     from swing.data.repos.cash import list_cash
-    from swing.data.repos.trades import list_all_exits, list_closed_trades, list_open_trades
+    from swing.data.repos.trades import list_closed_trades, list_open_trades
     from swing.journal.flags import compute_flags
     from swing.journal.stats import (
         compute_hypothesis_breakdown,
@@ -1328,7 +1407,7 @@ def journal_review_cmd(ctx, period, today):
     conn = connect(cfg.paths.db_path)
     try:
         all_trades = list_open_trades(conn) + list_closed_trades(conn)
-        all_exits = list_all_exits(conn)
+        all_exits = _list_all_exitshape_via_fills(conn)
         cash = list_cash(conn)
         weather_rows = conn.execute(
             "SELECT id, run_ts, asof_date, ticker, status, close, sma10, sma20, sma50, "

@@ -66,6 +66,7 @@ class TradeAnalysis:
     initial_shares: int
     initial_stop: float
     current_stop: float
+    state: str
     status: str
     hypothesis_label: str | None
     notes: str | None
@@ -239,12 +240,14 @@ def analyze_trade(conn: sqlite3.Connection, trade_id: int) -> TradeAnalysis:
         initial_shares=trade.initial_shares,
         initial_stop=trade.initial_stop,
         current_stop=trade.current_stop,
-        # Phase 7 B.9: pass trade.state (lifecycle) into the display field.
-        # Downstream display is plain string-rendered, so renaming the source
-        # value suffices; the dataclass field remains `status` for now to
-        # keep the CLI/web display call sites stable until Sub-C T1's full
-        # status→state rename pass.
-        status=trade.state,
+        # C.11: expose raw lifecycle state + derive legacy 'open'/'closed' for
+        # CLI hold-duration branch compatibility (a.status == "open"/"closed").
+        state=trade.state,
+        status=(
+            "open"
+            if trade.state in ("entered", "managing", "partial_exited")
+            else "closed"
+        ),
         hypothesis_label=trade.hypothesis_label,
         notes=trade.notes,
         recommendations=recs,

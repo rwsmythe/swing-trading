@@ -393,6 +393,95 @@ def test_trade_list_shows_state_column_not_status(tmp_path: Path):
     assert " open " not in mmm_lines[0]
 
 
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-C C.11 — list_all_exits → fills migration in CLI
+# ---------------------------------------------------------------------------
+
+
+def test_c11_swing_trade_list_does_not_import_list_all_exits(tmp_path: Path):
+    """C.11: ``swing trade list`` no longer imports ``list_all_exits`` from
+    swing.data.repos.trades; the remaining-shares calculation iterates the
+    fills-derived ``_list_all_exitshape_via_fills`` helper.
+
+    Discriminating: under the unmigrated code path, after C.14 deletes
+    ``list_all_exits`` the ``trade list`` command would ImportError at
+    invocation time. This test forward-protects by verifying the symbol
+    is gone from cli.py source — the C.10 helper name
+    ``_list_all_exitshape_via_fills`` is preserved (different identifier).
+    """
+    import re
+    import inspect
+
+    from swing import cli
+
+    src = inspect.getsource(cli)
+    # Match the bare symbol with word boundaries so the helper
+    # ``_list_all_exitshape_via_fills`` (which contains the substring
+    # `list_all_exit`) does not register as a match.
+    matches = re.findall(r"\blist_all_exits\b", src)
+    assert matches == [], (
+        f"swing/cli.py still references list_all_exits ({len(matches)} hits); "
+        "C.11 migration incomplete. Search for the symbol and replace with "
+        "the local _list_all_exitshape_via_fills helper."
+    )
+
+
+def test_c11_swing_trade_list_shows_remaining_after_partial_exit_via_fills(
+    tmp_path: Path,
+):
+    """C.11: ``swing trade list`` continues to show remaining shares after a
+    partial exit — same operator-facing output as the pre-C.11 shim path,
+    now sourced via fills.
+
+    Discriminating: a buggy migration that walked entry+exit fills together
+    would subtract entry quantity too, showing 0 or negative remaining.
+    """
+    runner, cfg = _setup(tmp_path)
+    runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "PXP", "--entry-date", "2026-04-20",
+        "--entry-price", "10.0", "--shares", "5",
+        "--initial-stop", "8.0", "--rationale", "near-trigger-breakout",
+        *_PRE_TRADE_OK_FLAGS,
+    ])
+    runner.invoke(main, [
+        "--config", str(cfg), "trade", "exit",
+        "--trade-id", "1", "--exit-date", "2026-04-21",
+        "--exit-price", "11.0", "--shares", "2",
+        "--reason", "partial",
+    ])
+    result = runner.invoke(main, ["--config", str(cfg), "trade", "list"])
+    assert result.exit_code == 0, result.output
+    pxp_lines = [ln for ln in result.output.splitlines() if "PXP" in ln]
+    assert len(pxp_lines) == 1, f"expected 1 PXP row, got {pxp_lines}"
+    parts = pxp_lines[0].split()
+    sh_idx = parts.index("partial_exited") - 1
+    assert parts[sh_idx] == "3", (
+        f"trade list showed {parts[sh_idx]} shares after 2-share partial "
+        f"exit; expected 3 remaining (5-2). full row: {pxp_lines[0]!r}"
+    )
+
+
+def test_c11_journal_review_does_not_import_list_all_exits(tmp_path: Path):
+    """C.11: ``swing journal review`` no longer imports ``list_all_exits``;
+    its all_exits collection is sourced from fills via the local helper.
+
+    Discriminating: pre-migration the symbol appeared at the function-local
+    import line; post-migration it must be absent.
+    """
+    import re
+    import inspect
+
+    from swing import cli
+
+    src = inspect.getsource(cli)
+    matches = re.findall(r"\blist_all_exits\b", src)
+    assert matches == [], (
+        f"swing/cli.py still references list_all_exits ({len(matches)} hits); "
+        "applies to both `trade list` and `journal review` paths."
+    )
+
+
 def test_trade_exit_cli_persists_reason_as_rationale(tmp_path: Path):
     """T6: trade_events.rationale after a successful exit equals the reason
     value. Pre-T6 rationale was independent free text from --rationale."""

@@ -399,24 +399,112 @@ def test_missing_trade_raises(tmp_path):
         analyze_trade(conn, 999)
 
 
-# --- Phase 7 B.9: status field surfaces trade.state ---------------------------
+# --- Phase 7 C.11: state surfaced raw + status derived for CLI compat --------
 
 
-def test_analyze_returns_state_string_in_status_field(tmp_path):
-    """B.9 discriminator: TradeAnalysis.status carries trade.state. Pre-fix
-    the source value was `trade.status`, which AttributeErrors after the
-    Phase 7 schema drops the column. Post-fix the field carries the
-    lifecycle state string ('entered'|'managing'|'partial_exited'|
-    'closed'|'reviewed') unchanged.
+def test_c11_trade_analysis_state_carries_raw_phase7_vocab(tmp_path):
+    """C.11: TradeAnalysis.state carries the raw lifecycle string from
+    trade.state (Phase 7 5-state vocab: entered|managing|partial_exited|
+    closed|reviewed). This preserves the operator-facing detail B.9
+    surfaced in the CLI ``Status:`` line.
+
+    Discriminating: a closed-only field would lose 'entered' vs 'managing'
+    distinction. The state field MUST surface the raw string unchanged.
     """
     conn = _conn(tmp_path)
     tid = _trade(conn, ticker="ZZZ", entry_date="2026-04-20",
                  entry_price=50.0, shares=10, initial_stop=45.0)
     a = analyze_trade(conn, tid)
-    # No exits; the trade stays in 'entered'. Status field surfaces it.
-    assert a.status == "entered", (
-        f"expected status='entered' (mirrors trade.state); got {a.status!r}. "
-        "Pre-fix this read trade.status which no longer exists."
+    assert a.state == "entered", (
+        f"expected state='entered' (mirrors trade.state); got {a.state!r}"
+    )
+
+
+def test_c11_trade_analysis_status_derived_open_for_active_states(tmp_path):
+    """C.11: TradeAnalysis.status derives legacy 'open'/'closed' from
+    trade.state for CLI-comparison compatibility. The active states
+    {entered, managing, partial_exited} → 'open'.
+
+    Discriminating: under raw-state assignment status='entered'/'managing'
+    /'partial_exited', the CLI's ``a.status == 'open'`` comparisons would
+    NEVER match → the hold-duration block falls through to the data-anomaly
+    branch even on healthy live trades.
+    """
+    conn = _conn(tmp_path)
+    tid = _trade(conn, ticker="AAA", entry_date="2026-04-20",
+                 entry_price=50.0, shares=10, initial_stop=45.0)
+    # No exits; trade is in 'entered'.
+    a = analyze_trade(conn, tid)
+    assert a.state == "entered"
+    assert a.status == "open", (
+        f"expected derived status='open' for state='entered'; got "
+        f"{a.status!r}. CLI's a.status=='open' comparison depends on this."
+    )
+
+
+def test_c11_trade_analysis_status_partial_exited_is_open(tmp_path):
+    """C.11: state='partial_exited' is active → derived status='open'."""
+    conn = _conn(tmp_path)
+    tid = _trade(conn, ticker="BBB", entry_date="2026-04-20",
+                 entry_price=50.0, shares=10, initial_stop=45.0)
+    # Partial exit — half the shares — leaves the trade in 'managing' or
+    # 'partial_exited' depending on the entry/exit fixture; force the row.
+    with conn:
+        conn.execute(
+            "UPDATE trades SET state='partial_exited' WHERE id=?", (tid,),
+        )
+    a = analyze_trade(conn, tid)
+    assert a.state == "partial_exited"
+    assert a.status == "open"
+
+
+def test_c11_trade_analysis_status_managing_is_open(tmp_path):
+    """C.11: state='managing' is active → derived status='open'."""
+    conn = _conn(tmp_path)
+    tid = _trade(conn, ticker="CCC", entry_date="2026-04-20",
+                 entry_price=50.0, shares=10, initial_stop=45.0)
+    with conn:
+        conn.execute(
+            "UPDATE trades SET state='managing' WHERE id=?", (tid,),
+        )
+    a = analyze_trade(conn, tid)
+    assert a.state == "managing"
+    assert a.status == "open"
+
+
+def test_c11_trade_analysis_status_closed_is_closed(tmp_path):
+    """C.11: state='closed' → derived status='closed'."""
+    conn = _conn(tmp_path)
+    tid = _trade(conn, ticker="DDD", entry_date="2026-04-20",
+                 entry_price=50.0, shares=10, initial_stop=45.0)
+    with conn:
+        conn.execute(
+            "UPDATE trades SET state='closed' WHERE id=?", (tid,),
+        )
+    a = analyze_trade(conn, tid)
+    assert a.state == "closed"
+    assert a.status == "closed"
+
+
+def test_c11_trade_analysis_status_reviewed_is_closed(tmp_path):
+    """C.11: state='reviewed' is closed-or-reviewed → derived status='closed'.
+
+    Discriminating: under raw-state assignment status='reviewed', the CLI's
+    hold-duration ``a.status == 'closed'`` branch would not fire even after
+    the operator completed a post-trade review.
+    """
+    conn = _conn(tmp_path)
+    tid = _trade(conn, ticker="EEE", entry_date="2026-04-20",
+                 entry_price=50.0, shares=10, initial_stop=45.0)
+    with conn:
+        conn.execute(
+            "UPDATE trades SET state='reviewed' WHERE id=?", (tid,),
+        )
+    a = analyze_trade(conn, tid)
+    assert a.state == "reviewed"
+    assert a.status == "closed", (
+        f"expected derived status='closed' for state='reviewed'; got "
+        f"{a.status!r}. CLI's hold-duration branch depends on this."
     )
 
 
