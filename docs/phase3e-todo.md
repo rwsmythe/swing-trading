@@ -1289,20 +1289,26 @@ Operator-surfaced 2026-05-04. Three concurrent uses of the official Charles Schw
 
 ---
 
-## 2026-05-05 Sector/industry tamper vector hardening (BACKLOG; low-stakes)
+## 2026-05-05 Sector/industry tamper vector hardening (BACKLOG; SCHEDULED for Phase 9; low-stakes)
 
-**Surfaced 2026-05-05 by Phase 7 Sub-C Codex R3 Minor 2** (accepted-deferred per operator triage). Sub-C C.3 entry route hardened the chart_pattern_algo + classification_pipeline_run_id round-trip with route-layer enum + FK existence + cache-content match validation (Codex R1 M1 + R2 M1 fixes). The sector + industry hidden-form snapshots have NO analogous server-side cache/content validation — a forged form POST could persist arbitrary sector/industry strings.
+**Surfaced 2026-05-05 by Phase 7 Sub-C Codex R3 Minor 2** (accepted-deferred per operator triage 2026-05-05; **operator-decided Phase 9 inclusion**). Sub-C C.3 entry route hardened the chart_pattern_algo + classification_pipeline_run_id round-trip with route-layer enum + FK existence + cache-content match validation (Codex R1 M1 + R2 M1 fixes). The sector + industry hidden-form snapshots have NO analogous server-side cache/content validation — a forged form POST could persist arbitrary sector/industry strings.
 
-**Why low-stakes:** sector + industry are descriptive metadata only; they do NOT feed gating logic, A+ identification, hypothesis attribution, or trade-decision algorithms (per spec §11.3 + observations across `swing/evaluation/`). Compromising them produces wrong dashboard labels but does not corrupt correctness-critical paths.
+**Why low-stakes (today):** sector + industry are descriptive metadata only; they do NOT feed gating logic, A+ identification, hypothesis attribution, or trade-decision algorithms (per spec §11.3 + observations across `swing/evaluation/`). Compromising them produces wrong dashboard labels but does not corrupt correctness-critical paths.
 
-**Why worth fixing eventually:** same fix pattern as chart_pattern hardening (route-layer Finviz CSV existence check; reject if (ticker, action_session) snapshot doesn't match cached value). Cleanup pass during a future hardening sprint OR if sector/industry promote to gating logic (e.g., sector concentration limits — Phase 9 Risk_Policy territory).
+**Why scheduled for Phase 9:** Phase 9 Risk_Policy entity introduces sector concentration limits (`max_sector_concentration_positions` per v1.2 §7.8). Once sector becomes a gating dimension, the tamper vector becomes correctness-critical — same severity as the chart_pattern_algo concern. Bundling the hardening into Phase 9 aligns the fix with the criticality elevation.
 
-**Estimated effort if triggered:** 1-2 hours (mirror the chart_pattern route-layer pattern at the trades entry route + corresponding test).
+**V1 scope (executed within Phase 9):**
+1. Route-layer Finviz-snapshot existence check at trade entry POST (mirror chart_pattern pattern in `swing/web/routes/trades.py` commits `117dc97` + `2b9d6f3`).
+2. Reject if `(ticker, action_session)` sector/industry snapshot doesn't match cached candidate row.
+3. Same-shape route + test pattern as chart_pattern hardening.
+
+**Estimated effort if triggered:** 1-2 hours (mechanical mirror of chart_pattern route-layer pattern).
 
 **Cross-references:**
-- Phase 7 Sub-C return report 2026-05-05 (Codex R3 Minor 2 accepted-deferred).
+- Phase 7 Sub-C return report 2026-05-05 (Codex R3 Minor 2 accepted-deferred + operator decision to schedule for Phase 9).
 - `swing/web/routes/trades.py` chart_pattern hardening (commits `117dc97` + `2b9d6f3`) — fix-pattern template.
-- Phase 9 Risk_Policy entity (potential trigger if sector concentration limits ship).
+- Phase 9 Risk_Policy entity (sector concentration limits = trigger).
+- v1.2 §7.8 `max_sector_concentration_positions` field.
 
 ---
 
