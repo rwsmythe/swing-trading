@@ -421,10 +421,15 @@ def test_build_review_vm_accepts_closed_only(seeded_db):
 
 
 def test_build_review_vm_rejects_reviewed_state(seeded_db):
-    """state='reviewed' MUST be rejected (single-review-per-trade).
+    """state='reviewed' + reviewed_at set MUST be rejected.
 
-    Discriminating: a naive `state not in ('closed', 'reviewed')` predicate
-    would let this pass through and re-review an already-reviewed trade.
+    Combined-posture coverage: this fixture exercises BOTH the predicate
+    guard (line 540, ``state != 'closed'``) AND the defensive ``reviewed_at
+    is not None`` guard (line 542). Both fire for a real production-shaped
+    already-reviewed row, so vm is None either way. This does NOT
+    discriminate the predicate from the defensive guard — that role belongs
+    to ``test_build_review_vm_rejects_reviewed_state_discriminates_predicate``
+    below, which sets ``reviewed_at=None`` to isolate the predicate.
     """
     from swing.web.view_models.trades import build_review_vm
     cfg, _ = seeded_db
@@ -432,6 +437,63 @@ def test_build_review_vm_rejects_reviewed_state(seeded_db):
         cfg, ticker="NVDA", state="reviewed",
         reviewed_at="2026-05-04T10:00:00",
     )
+    vm = build_review_vm(trade_id=trade_id, cfg=cfg)
+    assert vm is None
+
+
+def test_build_review_vm_rejects_reviewed_state_discriminates_predicate(seeded_db):
+    """Discriminating: state='reviewed' with reviewed_at=None.
+
+    Isolates the predicate (line 540) from the defensive ``reviewed_at``
+    guard (line 542). The fixture creates a deliberately-inconsistent state
+    (``state='reviewed'`` without ``reviewed_at`` — not a real production
+    state, but it exercises the predicate alone).
+
+    Discrimination:
+    - Under the correct predicate ``state != 'closed'``: ``'reviewed' !=
+      'closed'`` is True → guard fires → vm is None. ✅ test passes.
+    - Under the naïve buggy predicate ``state not in ('closed', 'reviewed')``:
+      ``'reviewed' IN {'closed', 'reviewed'}`` is True → ``not in`` is False
+      → guard does NOT fire. AND ``reviewed_at is not None`` is False →
+      defensive guard does NOT fire either. → vm WOULD build → assert fails.
+
+    The combined ``test_build_review_vm_rejects_reviewed_state`` above
+    cannot tell these two predicates apart because its fixture sets
+    ``reviewed_at`` and the defensive guard catches the buggy case.
+    """
+    import sqlite3
+
+    from swing.data.db import connect
+    from swing.web.view_models.trades import build_review_vm
+
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(
+        cfg, ticker="NVDA", state="reviewed", reviewed_at=None,
+    )
+    # Force reviewed_at NULL even if any helper path defaulted it; the
+    # _seed_phase7_trade impl above only writes reviewed_at when truthy,
+    # so this is belt-and-braces against future helper drift.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE trades SET reviewed_at=NULL WHERE id=?", (trade_id,),
+            )
+    finally:
+        conn.close()
+    # Sanity-check the seed actually has reviewed_at IS NULL — if it
+    # doesn't, the test would silently lose its discrimination.
+    conn2 = sqlite3.connect(cfg.paths.db_path)
+    try:
+        row = conn2.execute(
+            "SELECT state, reviewed_at FROM trades WHERE id=?", (trade_id,),
+        ).fetchone()
+    finally:
+        conn2.close()
+    assert row == ("reviewed", None), (
+        f"discriminator fixture invariant violated: got {row!r}"
+    )
+
     vm = build_review_vm(trade_id=trade_id, cfg=cfg)
     assert vm is None
 
