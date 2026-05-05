@@ -1,14 +1,32 @@
 """Equity / R / shares-remaining pure functions (legacy parity)."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pytest
 
-from swing.data.models import CashMovement, Exit, Trade
+from swing.data.models import CashMovement, Trade
 from swing.trades.equity import (
     current_equity, sizing_equity, shares_remaining,
     risk_per_share, r_so_far, net_cash_movements,
     total_current_risk,
 )
+
+
+# C.13: Local Exit-shape adapter — the equity helpers consume ExitLike duck-
+# typed (.trade_id, .shares, .realized_pnl). Mirrors the in-prod _ExitShape
+# pattern (C.10) without depending on the soon-to-be-removed shim.
+@dataclass(frozen=True)
+class Exit:  # noqa: N801 — name preserved for readability of test bodies
+    id: int | None
+    trade_id: int
+    exit_date: str
+    exit_price: float
+    shares: int
+    reason: str | None
+    realized_pnl: float | None
+    r_multiple: float | None
+    notes: str | None
 
 
 def _trade(initial_shares: int = 10) -> Trade:

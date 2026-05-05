@@ -63,12 +63,30 @@ class TestCanonicalizeMistakeTags:
         assert canonicalize_mistake_tags([]) == []
 
 
-from swing.data.models import Exit, Trade
+from dataclasses import dataclass
+
+from swing.data.models import Trade
 from swing.trades.review import (
     compute_actual_realized_R_effective,
     compute_lucky_violation_R, compute_max_drawdown_R, compute_mistake_cost_R,
     compute_profit_factor,
 )
+
+
+# C.13: Local Exit-shape adapter — review helpers consume duck-typed exits
+# (.trade_id, .shares, .r_multiple, .realized_pnl). Mirrors the in-prod
+# _ExitShape pattern (C.10) — independent of the soon-to-be-removed shim.
+@dataclass(frozen=True)
+class Exit:  # noqa: N801 — name preserved for readability of test bodies
+    id: int | None
+    trade_id: int
+    exit_date: str
+    exit_price: float
+    shares: int
+    reason: str | None
+    realized_pnl: float | None
+    r_multiple: float | None
+    notes: str | None
 
 
 def _make_trade(*, id_: int, state: str = "closed",

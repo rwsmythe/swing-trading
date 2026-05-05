@@ -34,6 +34,20 @@ def _seed_pipeline_run(conn: sqlite3.Connection) -> int:
     return int(cur.lastrowid)
 
 
+# Phase 7 Sub-A: 13 EntryRequest fields populated to satisfy the pre-trade
+# required-field gate in record_entry. Tests in this module focus on
+# chart-pattern persistence behavior, NOT pre-trade-gate behavior, so they
+# splat these placeholder values to clear the gate.
+_PRE_TRADE_FIELDS = dict(
+    thesis="t", why_now="w", invalidation_condition="i",
+    expected_scenario="e", premortem_technical="pt",
+    premortem_market_sector="pm", premortem_execution="pe",
+    event_risk_present=0, gap_risk_present=0,
+    emotional_state_pre_trade="calm", market_regime="Bullish",
+    catalyst="technical_only", manual_entry_confidence="normal",
+)
+
+
 def test_record_entry_persists_chart_pattern_snapshot_as_is(tmp_path: Path):
     """ToCToU fix: record_entry persists what's passed in, NOT a fresh
     cache lookup. A pipeline run completing between render and submit
@@ -52,6 +66,7 @@ def test_record_entry_persists_chart_pattern_snapshot_as_is(tmp_path: Path):
             chart_pattern_algo="flag",
             chart_pattern_algo_confidence=0.78,
             chart_pattern_classification_pipeline_run_id=run_id,
+            **_PRE_TRADE_FIELDS,
         )
         result = record_entry(conn, req, soft_warn=10, hard_cap=20, force=False)
         t = get_trade(conn, result.trade_id)
@@ -85,6 +100,7 @@ def test_record_entry_canonicalizes_operator_label(tmp_path: Path):
             chart_pattern_operator="  flag​\t",
             chart_pattern_algo="flag", chart_pattern_algo_confidence=0.78,
             chart_pattern_classification_pipeline_run_id=run_id,
+            **_PRE_TRADE_FIELDS,
         )
         result = record_entry(conn, req, soft_warn=10, hard_cap=20, force=False)
         t = get_trade(conn, result.trade_id)
@@ -115,6 +131,10 @@ def test_record_entry_refuses_invariant_violation_at_record_entry_layer(tmp_path
             chart_pattern_operator=None, chart_pattern_algo="flag",
             chart_pattern_algo_confidence=None,
             chart_pattern_classification_pipeline_run_id=run_id,
+            # Phase 7 Sub-A: pre-trade gate fires BEFORE the
+            # chart_pattern_algo invariant check; populate so the
+            # chart-pattern raise is the discriminating signal.
+            **_PRE_TRADE_FIELDS,
         )
         with pytest.raises(ValueError, match="chart_pattern"):
             record_entry(conn, req, soft_warn=10, hard_cap=20, force=False)
