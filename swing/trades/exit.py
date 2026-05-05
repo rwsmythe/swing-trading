@@ -73,16 +73,22 @@ class ExitResult:
     fully_closed: bool
 
 
-def _normalize_exit_date_to_iso(raw: str) -> str:
-    """Validate + canonicalize ``req.exit_date`` to ISO-8601 datetime form.
+def _normalize_trade_event_date_to_iso(raw: str) -> str:
+    """Validate + canonicalize a trade-event date string to ISO-8601 datetime.
 
-    Codex R2 Major 1 — accepts ``YYYY-MM-DD`` (synthesizes NYSE close
-    ``T16:00:00``) or full ISO datetime ``YYYY-MM-DDTHH:MM[:SS][.ffffff]``.
+    Codex R2 Major 1 + R3 M1 + R4 M1 — accepts ``YYYY-MM-DD`` (synthesizes
+    NYSE close ``T16:00:00``) or naive full ISO datetime
+    ``YYYY-MM-DDTHH:MM[:SS][.ffffff]``. Rejects timezone-aware datetimes
+    (would break lexicographic-ordering invariant) and malformed strings.
     Anything else raises ``ValueError`` BEFORE the fill is INSERTed,
-    keeping ``fills.fill_datetime`` invariant: every stored value is a
-    parseable ISO datetime so ``substr(f.fill_datetime, 1, 10)`` (used by
+    keeping ``fills.fill_datetime`` and ``trades.pre_trade_locked_at``
+    invariant: every stored value is a parseable naive ISO datetime so
+    ``substr(f.fill_datetime, 1, 10)`` (used by
     ``tos_import._find_unclaimed_recorded_exit``) always yields a real
     YYYY-MM-DD prefix and lexicographic ordering matches chronology.
+
+    Used by both ``swing.trades.exit.record_exit`` (for ``req.exit_date``)
+    and ``swing.trades.entry.record_entry`` (for ``req.entry_date``).
     """
     from datetime import date, datetime
     if not isinstance(raw, str) or not raw:
@@ -172,7 +178,7 @@ def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
     # so "2026-05-02TNOT_A_TIME" silently stored as garbage and broke
     # downstream substr-date matching. Now: parse strictly via fromisoformat
     # for both YYYY-MM-DD and YYYY-MM-DDTHH:MM[:SS] forms; reject otherwise.
-    fill_datetime = _normalize_exit_date_to_iso(req.exit_date)
+    fill_datetime = _normalize_trade_event_date_to_iso(req.exit_date)
     fill = Fill(
         fill_id=None,
         trade_id=req.trade_id,

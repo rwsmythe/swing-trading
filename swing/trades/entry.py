@@ -239,7 +239,17 @@ def record_entry(
     }
     req_view["initial_shares"] = req.shares
     req_view["trade_origin"] = derived_origin
-    req_view["pre_trade_locked_at"] = req.event_ts
+    # Codex R4 Major 1: pre_trade_locked_at + first-fill datetime must
+    # reflect when the trade actually entered the market (req.entry_date),
+    # not when the operator typed the command (req.event_ts). CLI sends
+    # event_ts=now, so a back-recorded entry would otherwise persist
+    # today's clock-time and break the chronology invariants that journal
+    # aggregation + reconciliation depend on. _normalize_trade_event_date_to_iso
+    # validates strictly (rejects malformed + tz-aware) and synthesizes
+    # NYSE close T16:00:00 for date-only inputs.
+    from swing.trades.exit import _normalize_trade_event_date_to_iso
+    entry_iso = _normalize_trade_event_date_to_iso(req.entry_date)
+    req_view["pre_trade_locked_at"] = entry_iso
     missing = validate_for_operation(req_view, op="entry_create", current_state=None)
     if missing:
         raise MissingPreTradeFieldsException(missing_fields=missing)
@@ -292,9 +302,11 @@ def record_entry(
         industry=req.industry,
         # Phase 7 lifecycle fields (NOT NULL in schema). `trade_origin`
         # comes from derive_trade_origin (B.2); `pre_trade_locked_at`
-        # remains an interim shim until B.3's atomic insert+fill flow.
+        # comes from entry_date-derived ISO datetime (Codex R4 M1 fix —
+        # was req.event_ts which is the command time, not the actual entry
+        # chronology — back-recorded entries broke aggregation).
         trade_origin=derived_origin,
-        pre_trade_locked_at=req.event_ts,
+        pre_trade_locked_at=entry_iso,
         # Phase 7 pre-trade decision fields — passed through from the request.
         thesis=req.thesis,
         why_now=req.why_now,
@@ -333,7 +345,9 @@ def record_entry(
                 conn,
                 Fill(
                     fill_id=None, trade_id=trade_id,
-                    fill_datetime=req.event_ts,
+                    # Codex R4 M1: fill_datetime keyed to entry_date for
+                    # chronology consistency (matches B.4 exit-side fix).
+                    fill_datetime=entry_iso,
                     action="entry",
                     quantity=float(req.shares),
                     price=req.entry_price,

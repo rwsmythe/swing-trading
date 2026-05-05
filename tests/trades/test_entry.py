@@ -696,3 +696,61 @@ def test_entry_request_default_sector_industry_empty():
     )
     assert req.sector == ""
     assert req.industry == ""
+
+
+# ---------------------------------------------------------------------------
+# Codex R4 Major 1 regression guard — back-recorded entries on entry_date.
+# ---------------------------------------------------------------------------
+
+
+def test_record_entry_uses_entry_date_for_pre_trade_locked_at_and_fill_datetime(
+    tmp_path,
+):
+    """Codex R4 M1: pre_trade_locked_at + first-fill datetime must reflect
+    when the trade actually entered (req.entry_date), NOT when the operator
+    typed the command (req.event_ts).
+
+    Pre-fix: a back-recorded entry (entry_date=2026-05-01, event_ts=now())
+    persisted pre_trade_locked_at and fill_datetime as today's clock-time,
+    breaking entry-side fill ordering and date-based reporting.
+    Post-fix: both fields synthesize "2026-05-01T16:00:00" via the shared
+    _normalize_trade_event_date_to_iso helper.
+    """
+    from swing.data.repos.fills import list_fills_for_trade
+    conn = _seed_v14(tmp_path)
+    req = _full_req(
+        entry_date="2026-05-01",  # back-record (was 2026-05-04)
+        event_ts="2026-05-04T12:34:56",
+    )
+    result = record_entry(conn, req, soft_warn=10, hard_cap=20, force=False)
+    trade = get_trade(conn, result.trade_id)
+    fills = list_fills_for_trade(conn, result.trade_id)
+    assert len(fills) == 1
+    assert fills[0].fill_datetime == "2026-05-01T16:00:00", (
+        f"fill_datetime must reflect entry_date 2026-05-01, "
+        f"got {fills[0].fill_datetime!r}"
+    )
+    assert trade.pre_trade_locked_at == "2026-05-01T16:00:00", (
+        f"pre_trade_locked_at must reflect entry_date 2026-05-01, "
+        f"got {trade.pre_trade_locked_at!r}"
+    )
+
+
+def test_record_entry_rejects_malformed_entry_date(tmp_path):
+    """Codex R4 M1: entry_date must validate before any INSERT. A malformed
+    string like '2026-13-99' raises ValueError; no trade or fill written."""
+    conn = _seed_v14(tmp_path)
+    req = _full_req(entry_date="2026-13-99")
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        record_entry(conn, req, soft_warn=10, hard_cap=20, force=False)
+    n_trades = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+    assert n_trades == 0
+
+
+def test_record_entry_rejects_timezone_aware_entry_date(tmp_path):
+    """Codex R4 M1: tz-aware entry_date breaks the lex-ordering invariant
+    (same as exit side). Reject with the symmetric error message."""
+    conn = _seed_v14(tmp_path)
+    req = _full_req(entry_date="2026-05-01T09:30:00+05:00")
+    with pytest.raises(ValueError, match="timezone-aware"):
+        record_entry(conn, req, soft_warn=10, hard_cap=20, force=False)
