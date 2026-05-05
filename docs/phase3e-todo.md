@@ -999,7 +999,23 @@ Sourced from operator-commissioned research at `future/swing_trading_journal_ai_
 - Executing-plans brief: `docs/phase6-post-trade-review-executing-plans-brief.md` (`a7c4bda`).
 - Ad-hoc DB cleanups: 2026-05-04 SPY test entries removed (`swing-pre-spy-cleanup-20260504T022932.db`); see orchestrator-context.md.
 
-### Phase 7 — Trade lifecycle state machine + Fills first-class (ALL SUB-DISPATCHES SHIPPED on chained worktrees 2026-05-04/05; operator-witnessed browser gate PENDING before integration merge)
+### Phase 7 — Trade lifecycle state machine + Fills first-class (SHIPPED to main 2026-05-05 at `c617777`)
+
+**Phase 7 SHIPPED** to main 2026-05-05 at integration merge `c617777` (single `git merge --no-ff phase7-sub-c-web` brought all 3 sub-dispatches' work in: Sub-A 14 + Sub-B 15 + Sub-C 24 + 2 hotfixes = 56 commits; pushed to origin same day). Production DB at v14 with 4 trades (VIR/DHC/CC/YOU FIRM-backfill values) + 5 fills + 11 trade_events; GPRE test trade cleaned post-gate. Operator-witnessed verification gate: 11/11 surfaces PASS post-hotfix. Worktrees + branches cleaned 2026-05-05 via cleanup-script extension (4-step takeown+icacls/reset+icacls/grant+Remove-Item; resolved Phase 6 leftover too).
+
+**Two hotfixes landed at Sub-C integration layer** (operator-authorized chained-branch posture exception per hard-conflict escape — Sub-A territory mods authorized for these specific cases):
+
+1. **`283d4fa` migration-runner FK CASCADE fix.** Sub-A migration 0014 step 10's `DROP TABLE trades` triggered ON DELETE CASCADE on `fills.trade_id` + `trade_events.trade_id` under production's `foreign_keys=ON`, wiping 5 fills + 11 trade_events during the table-rebuild. Sub-A T9 + T10 tests passed under sqlite3's default `foreign_keys=OFF` so the divergence wasn't caught. Hotfix patched `swing/data/db.py:_apply_migration` to toggle foreign_keys=OFF for the duration (per SQLite docs §11.2). 2 discriminating regression tests added; verified discriminating by stash + run pre-fix (test fails with `fill_count == 0`); post-fix passes. Lessons captured to orchestrator-context.
+
+2. **`5e9981c` operator-gate hotfix bundle.** (a) Entry duplicate trade_events: `record_entry` called both `insert_trade_with_event` AND `insert_fill_with_event`; both auto-emitted `'entry'` audit row; result was 2 duplicate trade_events per entry. Fix: added `emit_event=False` parameter to `insert_fill_with_event`; record_entry suppresses the second emission. (b) Review state transition `closed → reviewed` missing: web review POST at `swing/web/routes/trades.py:1370` called `update_trade_review_fields` directly, bypassing the `complete_trade_review` service that wraps the state_transition. Sub-B return report explicitly flagged this as Sub-C T1 territory; implementation didn't switch. Hotfix routes through complete_trade_review. 2 discriminating regression tests added; both verified discriminating. Lessons captured.
+
+**Findings deferred as backlog** (cosmetic; not blocking; Phase 7 ships without these):
+- State badge per-state colors not differentiated (Sub-C C.5 CSS gap; only text labels render). Backlog.
+- "Needs review" badge predicate uses Phase 6's `reviewed_at IS NULL` rather than Phase 7 brainstorm spec's `state == 'closed'` (plan §2.1 didn't enumerate this badge predicate for rewrite; UX-correct outcome). Backlog.
+
+**Phase 8 + 9 unblocked** — operator decides timing.
+
+**Sub-A SHIPPED status** (historical, pre-merge): Sub-A SHIPPED 2026-05-04 on worktree branch `phase7-sub-a-schema` (HEAD `78c7005`).
 
 **Sub-C SHIPPED** 2026-05-05 on chained worktree `phase7-sub-c-web` (HEAD `b867f00`; baseline `71ddb95`; 24 commits = 17 task-anchored + 7 fix/test polish; 3 Codex rounds → NO_NEW_CRITICAL_MAJOR; suite 1605→1873 passed [+268 net; ~112 truly new + 156 transitioned from RED/errored/skipped → GREEN]; ZERO failed + ZERO errored + 1 skipped (operator-task-gated); ruff baseline 79→78). Final shim deletion at C.14 (Exit class + list_all_exits + list_exits_for_trade + insert_exit_with_event + _ExitLikeRow). Extended scope per operator COA B included web extended consumers + 5 out-of-Phase-7 module migrations (review_log, pipeline, recommendations/hypothesis, equity, review) + CLI list migration + journal aggregation migration + 4 test-fixture migration commits (C.13a-d). One C.3 plan deviation surfaced transparently: kept existing OOB-swap success-path pattern (200 + dashboard chunks) instead of plan sketch's "204 + HX-Redirect" — preserved operator UX + ~20 existing tests; lesson captured. Production bug surfaced + fixed during C.13: soft-warn confirm fragment was missing 18 Phase 7 pre-trade fields (commit `eebb0e6`).
 
@@ -1351,7 +1367,23 @@ Operator-surfaced 2026-05-04. Three concurrent uses of the official Charles Schw
 
 ---
 
-## 2026-05-04 Worktree cleanup script: pytest-of-rwsmy ACL-lock pattern recurrence check (TRIGGER-GATED)
+## 2026-05-04 Worktree cleanup script: pytest-of-rwsmy ACL-lock pattern recurrence check (TRIGGER FIRED + RESOLVED 2026-05-05)
+
+**Trigger fired 2026-05-05** during Phase 7 integration cleanup. Recurrence count: **5/5 worktrees affected** (Phase 5 + Phase 6 + Phase 7 Sub-A + Sub-B + Sub-C). Pattern durably confirmed; script extension landed at commit `5430c1c`.
+
+**Script extension implemented** (`cleanup-locked-scratch-dirs.ps1`):
+1. Added orphaned-worktree discovery branch: reads `.worktrees/` subdirs; parses `git worktree list` to identify orphaned (deregistered-but-on-disk) ones; admits them via two-track allowlist (scratch-name pattern OR `.worktrees/...` path-prefix + Reason-tag).
+2. Strengthened cleanup sequence from 3-step (takeown / icacls grant / Remove-Item) to 4-step (takeown / **icacls /reset /T /C /Q** / icacls grant / Remove-Item). The /reset step forces inheritance from parent before /grant adds explicit operator perms — handles the deeply-locked `.tmp/pytest-of-rwsmy/` subdirs that resisted /grant-only treatment in Phase 6 manual cleanup attempt 2026-05-04 (which got 1196/1198; 2 stuck files remained).
+3. Added `-SkipWorktrees` switch (default $false = include) for backward-compat; legacy callers can opt out.
+4. Updated doc-comment block at top to describe dual-discovery + recurrence-trigger fired note.
+
+**Verified-empirical execution 2026-05-05:** elevated-PS run cleaned **4/4 dirs** (3 Phase 7 worktrees + leftover Phase 6 worktree from prior incomplete manual cleanup). The /reset step resolved Phase 6's 2-stuck-files issue too. `git worktree list` shows only main; `.worktrees/` directory empty post-execution.
+
+**Status: V1 SCOPE COMPLETE.** Future cleanup runs use the extended script. If a NEW lock pattern emerges (different from pytest-of-rwsmy/Codex-sandbox), extend allowlist as needed.
+
+---
+
+## 2026-05-04 Worktree cleanup script: pytest-of-rwsmy ACL-lock pattern recurrence check (HISTORICAL — superseded by 2026-05-05 RESOLVED entry above)
 
 **Trigger:** AFTER Phase 7 ships (all 3 sub-dispatches A/B/C merged to main). At that point, attempt to cleanup `.worktrees/phase7-sub-a-schema/`, `.worktrees/phase7-sub-b-services/`, `.worktrees/phase7-sub-c-web/`. If any of them surface the same `.tmp/pytest-of-rwsmy/` ACL-lock pattern that Phase 5 + Phase 6 hit, the issue is durable across phases and the cleanup script needs a permanent extension.
 

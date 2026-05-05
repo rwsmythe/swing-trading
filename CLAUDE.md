@@ -1,6 +1,6 @@
 # Swing Trading — Claude Code Context
 
-Personal swing-trading tool (Disciplined Swing Trader + Minervini SEPA). Active ground-up refactor. Phase 6 shipped 2026-05-04 (post-trade review surface; merge `51c79ed`); Phase 7 (trade lifecycle state machine + Fills first-class) GATED on operator's evaluation of Phase 6 behavioral data surface. End-to-end walkthrough validated the full operator loop; numerous post-walkthrough fixes landed on `main`. Hypothesis-investigation engine operational as of 2026-04-25. **1587 fast tests green** (as of 2026-05-04 at HEAD `51c79ed`). Cross-phase backlog in `docs/phase3e-todo.md`. Daily routine in `docs/cycle-checklist.md`. Orchestrator-role context for fresh sessions in `docs/orchestrator-context.md`.
+Personal swing-trading tool (Disciplined Swing Trader + Minervini SEPA). Active ground-up refactor. Phase 6 shipped 2026-05-04 (post-trade review surface; merge `51c79ed`); **Phase 7 shipped 2026-05-05** (trade lifecycle state machine + Fills first-class; merge `c617777`; 56 commits across 3 chained sub-dispatches + 2 hotfixes; production DB migrated to schema_version 14 with 4 trades + 5 fills + 11 trade_events). Phase 8 (Daily_Management + MFE/MAE precision) + Phase 9 (Risk_Policy entity + reconciliation depth) unblocked, operator-paced. End-to-end walkthrough validated the full operator loop; numerous post-walkthrough fixes landed on `main`. Hypothesis-investigation engine operational as of 2026-04-25. **~1877 fast tests green** (as of 2026-05-05 post-Phase-7-merge). Cross-phase backlog in `docs/phase3e-todo.md`. Daily routine in `docs/cycle-checklist.md`. Orchestrator-role context for fresh sessions in `docs/orchestrator-context.md`.
 
 ## Quick Start
 
@@ -48,8 +48,8 @@ Older strategy documents are archived at `reference/Future Work/archive/`.
 ## Invariants
 
 - **DB location:** `%USERPROFILE%/swing-data/swing.db` — **outside** the Drive dir (hard invariant; Drive syncing corrupts SQLite).
-- **Phase isolation:** `swing/trades/` and `swing/data/` are consumed read-only unless the current-phase spec explicitly scopes a carve-out (historical: 3c touched `update_stop_with_event`; 3d touched `advisory.py`; 5 added `config_overrides.py`; 6 added `swing/trades/review.py` + `swing/data/repos/review_log.py` + 10 nullable trade-row fields + new `review_log` table). Default posture for new phases remains read-only.
-- **Current baseline:** 1587 fast tests green on `main` (HEAD `51c79ed`, 2026-05-04).
+- **Phase isolation:** `swing/trades/` and `swing/data/` are consumed read-only unless the current-phase spec explicitly scopes a carve-out (historical: 3c touched `update_stop_with_event`; 3d touched `advisory.py`; 5 added `config_overrides.py`; 6 added `swing/trades/review.py` + `swing/data/repos/review_log.py` + 10 nullable trade-row fields + new `review_log` table; **7 introduced state-machine + Fills first-class** with new `swing/trades/state.py` + `origin.py` + `derived_metrics.py` + `swing/data/repos/fills.py` + 28 new trade columns + new `fills` table; status column dropped + exits table dropped + Exit shim deleted). Default posture for new phases remains read-only.
+- **Current baseline:** ~1877 fast tests green on `main` (HEAD `c617777`, 2026-05-05; Phase 7 integration merge).
 
 ## Conventions
 
