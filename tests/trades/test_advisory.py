@@ -18,7 +18,7 @@ def _trade(*, current_stop: float = 170.0, entry: float = 180.0, days: int = 0) 
     return Trade(
         id=1, ticker="AAPL", entry_date=entry_date, entry_price=entry,
         initial_shares=10, initial_stop=170.0, current_stop=current_stop,
-        status="open", watchlist_entry_target=None,
+        state="entered", watchlist_entry_target=None,
         watchlist_initial_stop=None, notes=None,
     )
 

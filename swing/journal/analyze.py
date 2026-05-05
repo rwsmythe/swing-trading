@@ -14,7 +14,32 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from swing.data.repos.trades import get_trade, list_exits_for_trade
+from swing.data.repos.fills import list_fills_for_trade
+from swing.data.repos.trades import get_trade
+from swing.trades.derived_metrics import (
+    initial_risk_per_share,
+    r_multiple,
+    realized_pnl,
+)
+
+
+@dataclass(frozen=True)
+class _ExitShape:
+    """C.12: per-module ExitLike adapter mirroring C.1/C.9/C.10/C.11.
+
+    Reconstructed from non-entry fills so analyze_trade can drop its
+    dependency on the legacy ``list_exits_for_trade`` shim before C.14
+    deletes it. Fields match what the downstream ``ExitDisplay`` loop
+    reads: exit_date / shares / exit_price / reason / realized_pnl /
+    r_multiple.
+    """
+    trade_id: int
+    exit_date: str
+    exit_price: float
+    shares: int
+    reason: str | None
+    realized_pnl: float
+    r_multiple: float
 
 # Buckets that carry no analytical signal for this tool. `excluded` is the
 # bookkeeping bucket used by `_step_evaluate` to keep last-close fresh on
@@ -66,6 +91,7 @@ class TradeAnalysis:
     initial_shares: int
     initial_stop: float
     current_stop: float
+    state: str
     status: str
     hypothesis_label: str | None
     notes: str | None
@@ -197,7 +223,50 @@ def analyze_trade(conn: sqlite3.Connection, trade_id: int) -> TradeAnalysis:
         conn, ticker=trade.ticker, entry_date=trade.entry_date,
     )
 
-    exit_rows = list_exits_for_trade(conn, trade_id)
+    # C.12: build _ExitShape rows from non-entry fills (mirrors the per-
+    # module adapter pattern from C.1/C.9/C.10/C.11). The downstream
+    # ExitDisplay loop reads .exit_date/.shares/.exit_price/.reason/
+    # .realized_pnl/.r_multiple — _ExitShape's fields match exactly.
+    fills = list_fills_for_trade(conn, trade_id)
+    exit_rows: list[_ExitShape] = []
+    for f in fills:
+        if f.action == "entry":
+            continue
+        rps = initial_risk_per_share(
+            entry_price=trade.entry_price,
+            initial_stop=trade.initial_stop,
+        )
+        pnl = realized_pnl(
+            entry_price=trade.entry_price, exit_price=f.price,
+            quantity=f.quantity,
+        )
+        if rps > 0 and f.quantity > 0:
+            rmult = r_multiple(
+                realized_pnl=pnl, initial_risk_per_share=rps,
+                quantity=f.quantity,
+            )
+        else:
+            # Defensive: ExitDisplay.r_multiple is typed `float`, and the
+            # _shares_weighted_r helper multiplies by it. Under the
+            # entry_price > initial_stop invariant enforced by the entry
+            # service, rps > 0 always holds; this branch is a guardrail
+            # only, matching the legacy shim's behaviour (it raised on
+            # zero-risk trades). Use 0.0 to keep ExitDisplay constructible
+            # without crashing analyze on data-anomaly trades.
+            rmult = 0.0
+        exit_date_str = (
+            f.fill_datetime.split("T")[0]
+            if "T" in f.fill_datetime else f.fill_datetime
+        )
+        exit_rows.append(_ExitShape(
+            trade_id=f.trade_id,
+            exit_date=exit_date_str,
+            exit_price=float(f.price),
+            shares=int(f.quantity),
+            reason=f.reason,
+            realized_pnl=pnl,
+            r_multiple=rmult,
+        ))
     exits = tuple(
         ExitDisplay(
             exit_date=e.exit_date, shares=e.shares, exit_price=e.exit_price,
@@ -239,7 +308,14 @@ def analyze_trade(conn: sqlite3.Connection, trade_id: int) -> TradeAnalysis:
         initial_shares=trade.initial_shares,
         initial_stop=trade.initial_stop,
         current_stop=trade.current_stop,
-        status=trade.status,
+        # C.11: expose raw lifecycle state + derive legacy 'open'/'closed' for
+        # CLI hold-duration branch compatibility (a.status == "open"/"closed").
+        state=trade.state,
+        status=(
+            "open"
+            if trade.state in ("entered", "managing", "partial_exited")
+            else "closed"
+        ),
         hypothesis_label=trade.hypothesis_label,
         notes=trade.notes,
         recommendations=recs,

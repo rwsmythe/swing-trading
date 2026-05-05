@@ -273,18 +273,24 @@ def test_htmx_validation_error_trade_path_renders_tr_fragment(test_cfg):
 def test_htmx_handler_uses_hx_target_for_row_prefix(test_cfg, seeded_db):
     """Spec §3.3: HX-Target header determines fragment shape, not URL path.
     A /trades/* endpoint with a non-row HX-Target (e.g. sizing-hint) MUST get
-    the neutral <div> fragment, not a <tr>."""
+    the neutral <div> fragment, not a <tr>.
+
+    Uses /trades/probe/non_row to avoid collision with C.5's
+    /trades/{trade_id} route — the bare {trade_id} matcher would coerce a
+    non-numeric path segment via int validation and return a 422/400 from
+    the validation-error handler before this probe's 404 could fire.
+    """
     from fastapi import HTTPException
     cfg, cfg_path = test_cfg
     app = create_app(cfg, cfg_path)
 
-    @app.get("/trades/_non_row_probe")
+    @app.get("/trades/probe/non_row")
     def _probe():
         raise HTTPException(status_code=404, detail="probe missing")
 
     with TestClient(app) as client:
         r = client.get(
-            "/trades/_non_row_probe",
+            "/trades/probe/non_row",
             headers={"HX-Request": "true", "HX-Target": "sizing-hint"},
         )
     assert r.status_code == 404

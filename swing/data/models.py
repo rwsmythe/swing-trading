@@ -59,6 +59,15 @@ class EvaluationRun:
 
 @dataclass(frozen=True)
 class Trade:
+    """Phase 7 Sub-A T3 — Trade dataclass.
+
+    `status` (legacy 'open'|'closed') is dropped in this task; `state` is now
+    the required lifecycle field ('entered'|'managing'|'partial_exited'|
+    'closed'|'reviewed'). Migration 0014 (Phase 7 T2) drops the corresponding
+    SQL column and adds the 24 fields below. Production consumers
+    (repos.trades, web view models, journal.* etc.) still reference the dropped
+    column and will be rewritten in Sub-A T6.
+    """
     id: int | None
     ticker: str
     entry_date: str
@@ -66,28 +75,21 @@ class Trade:
     initial_shares: int
     initial_stop: float
     current_stop: float
-    status: str  # 'open' | 'closed'
+    state: str  # 'entered'|'managing'|'partial_exited'|'closed'|'reviewed'
     watchlist_entry_target: float | None
     watchlist_initial_stop: float | None
     notes: str | None
     # Operator-frozen pre-trade hypothesis (free-text, optional). Captured at
     # entry time and never mutated — same anti-rationalization discipline as
-    # research-study pre-registration. Default None preserves existing call
-    # sites that construct Trade(...) without the new field. Migration 0007.
+    # research-study pre-registration. Migration 0007.
     hypothesis_label: str | None = None
     # Chart pattern columns (migration 0010). All four NULL unless the
     # pipeline classification step ran for this ticker's pipeline run.
-    # chart_pattern_operator is operator override (free-text, see spec §3.2.2).
     chart_pattern_algo: str | None = None
     chart_pattern_algo_confidence: float | None = None
     chart_pattern_operator: str | None = None
     chart_pattern_classification_pipeline_run_id: int | None = None
-    # Migration 0012 — Finviz Sector + Industry, frozen-at-entry per the
-    # snapshot-at-entry-surface pattern (precedents: hypothesis_label /
-    # 0007; chart_pattern_* / 0010). Defaults to empty string so callers
-    # that don't yet plumb these fields keep working; the entry surface
-    # (web form + CLI) resolves the actual value from the candidate row
-    # at form/CLI render time and persists AS-IS via record_entry.
+    # Migration 0012 — Finviz Sector + Industry, frozen-at-entry.
     sector: str = ""
     industry: str = ""
     # Phase 6 (migration 0013) — review surface fields.
@@ -101,19 +103,66 @@ class Trade:
     realized_R_if_plan_followed: float | None = None  # noqa: N815
     mistake_cost_confidence: str | None = None
     lesson_learned: str | None = None
+    # Phase 7 (migration 0014) — lifecycle fields atomic with `state`.
+    # Schema enforces NOT NULL on trade_origin, pre_trade_locked_at,
+    # current_size; the entry service in Sub-B will set them atomically.
+    # current_avg_cost and last_fill_at are NULLABLE (no fills yet).
+    trade_origin: str = "manual_off_pipeline"
+    pre_trade_locked_at: str = ""
+    current_size: float = 0.0
+    current_avg_cost: float | None = None
+    last_fill_at: str | None = None
+    # Phase 7 (migration 0014) — pre-trade decision fields. All NULLABLE;
+    # legacy rows persist NULL. Captured at entry-form lock time; immutable
+    # afterward.
+    thesis: str | None = None
+    why_now: str | None = None
+    invalidation_condition: str | None = None
+    expected_scenario: str | None = None
+    premortem_technical: str | None = None
+    premortem_market_sector: str | None = None
+    premortem_execution: str | None = None
+    premortem_additional: str | None = None
+    event_risk_present: int | None = None  # 0|1
+    event_handling: str | None = None
+    event_type: str | None = None
+    event_date: str | None = None
+    gap_risk_present: int | None = None  # 0|1
+    gap_risk_handling: str | None = None
+    emotional_state_pre_trade: str | None = None  # JSON-list TEXT
+    market_regime: str | None = None
+    catalyst: str | None = None
+    catalyst_other_description: str | None = None
 
 
 @dataclass(frozen=True)
-class Exit:
-    id: int | None
+class Fill:
+    """Phase 7 Sub-A T3 — Fill dataclass mirroring the fills schema.
+
+    Migration 0014 created `fills` and migrated existing `exits` rows into it
+    (action='exit'). Future entries/trims/stops also write here. The 4-action
+    enum is enforced by SQL CHECK; fee/reason/rule_based/manual_entry_confidence
+    are nullable.
+    """
+    fill_id: int | None
     trade_id: int
-    exit_date: str
-    exit_price: float
-    shares: int
-    reason: str
-    realized_pnl: float
-    r_multiple: float
-    notes: str | None
+    fill_datetime: str  # ISO-8601
+    action: str  # 'entry'|'trim'|'exit'|'stop'
+    quantity: float
+    price: float
+    reason: str | None = None
+    rule_based: int | None = None  # 0|1
+    fees: float | None = None
+    manual_entry_confidence: str | None = None  # 'high'|'normal'|'low'
+    reconciliation_status: str = "unreconciled"
+    tos_match_id: str | None = None
+
+
+# Exit dataclass DELETED in Phase 7 Sub-C C.14. Data lives in Fill (migration
+# 0014). All consumers migrated to per-module ``_list_all_exitshape_via_fills``
+# adapters that wrap ``swing/trades/derived_metrics.py`` (single source of math
+# truth). Importing ``Exit`` from this module now correctly raises ImportError;
+# regression test in ``tests/data/test_phase7_shim_removal.py``.
 
 
 @dataclass(frozen=True)

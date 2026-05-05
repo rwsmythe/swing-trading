@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from swing.web.app import create_app
+from tests.web.conftest import full_phase7_entry_payload
 
 
 def test_sizing_hint_happy_path(seeded_db, monkeypatch):
@@ -225,14 +226,14 @@ def test_post_entry_success_emits_row_and_oobs(seeded_db, monkeypatch):
         r = client.post(
             "/trades/entry",
             headers={"HX-Request": "true"},
-            data={
-                "ticker": "AAPL",
-                "entry_date": "2026-04-18",
-                "entry_price": "180.95",
-                "shares": "5",
-                "initial_stop": "170.00",
-                "rationale": "aplus-setup",
-            },
+            data=full_phase7_entry_payload(
+                ticker="AAPL",
+                entry_date="2026-04-18",
+                entry_price="180.95",
+                shares="5",
+                initial_stop="170.00",
+                rationale="aplus-setup",
+            ),
         )
     assert r.status_code == 200
     # Primary target: a new open-position row with id.
@@ -262,7 +263,7 @@ def test_post_entry_soft_warn_2step(seeded_db, monkeypatch):
                 insert_trade_with_event(conn, Trade(
                     id=None, ticker=t, entry_date="2026-04-15",
                     entry_price=100.0, initial_shares=1, initial_stop=90.0,
-                    current_stop=90.0, status="open",
+                    current_stop=90.0, state="entered",
                     watchlist_entry_target=None, watchlist_initial_stop=None,
                     notes=None,
                 ), event_ts=f"2026-04-15T09:{30+i}:00")
@@ -288,11 +289,11 @@ def test_post_entry_soft_warn_2step(seeded_db, monkeypatch):
     monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
 
     app = create_app(cfg, cfg_path)
-    form_data = {
-        "ticker": "AAPL", "entry_date": "2026-04-18",
-        "entry_price": "180.95", "shares": "1", "initial_stop": "170.00",
-        "rationale": "aplus-setup",
-    }
+    form_data = full_phase7_entry_payload(
+        ticker="AAPL", entry_date="2026-04-18",
+        entry_price="180.95", shares="1", initial_stop="170.00",
+        rationale="aplus-setup",
+    )
     with TestClient(app) as client:
         # First submit — no force. Should get soft_warn_confirm fragment.
         r1 = client.post("/trades/entry", headers={"HX-Request": "true"}, data=form_data)
@@ -305,6 +306,259 @@ def test_post_entry_soft_warn_2step(seeded_db, monkeypatch):
         r2 = client.post("/trades/entry", headers={"HX-Request": "true"}, data=form_data2)
         assert r2.status_code == 200
         assert "open-position-" in r2.text
+
+
+def _seed_soft_warn_trades_and_watchlist(cfg) -> None:
+    """Seed 4 unrelated open trades (= soft_warn_open default) + AAPL
+    watchlist row so the (5th) AAPL entry trips the soft-warn cap."""
+    from swing.data.db import connect
+    from swing.data.models import Trade, WatchlistEntry
+    from swing.data.repos.trades import insert_trade_with_event
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            for i, t in enumerate(("MSFT", "NVDA", "GOOG", "META")):
+                insert_trade_with_event(conn, Trade(
+                    id=None, ticker=t, entry_date="2026-04-15",
+                    entry_price=100.0, initial_shares=1, initial_stop=90.0,
+                    current_stop=90.0, state="entered",
+                    watchlist_entry_target=None, watchlist_initial_stop=None,
+                    notes=None,
+                ), event_ts=f"2026-04-15T09:{30+i}:00")
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="AAPL", added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+
+
+def test_post_entry_soft_warn_confirm_round_trips_18_pre_trade_fields(
+    seeded_db, monkeypatch,
+):
+    """Phase 7 Sub-C C.4 follow-up regression. Discriminating: under
+    buggy soft-warn confirm (form_values missing the 13+ pre-trade
+    fields), the confirm fragment emits no hidden inputs for thesis /
+    why_now / etc., a fragment-faithful second POST loses those values,
+    and record_entry's MissingPreTradeFieldsException fires (400). Under
+    the fix, the confirm fragment carries every operator-typed
+    pre-trade field; the second POST persists them and the trade row
+    is created (state='entered')."""
+    import re
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    _seed_soft_warn_trades_and_watchlist(cfg)
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: PriceSnapshot(
+                ticker=t, price=180.95, asof=datetime.now(),
+                is_stale=False, source="live",
+            ) for t in tickers
+        })
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    form_data = full_phase7_entry_payload(
+        ticker="AAPL", entry_date="2026-04-18",
+        entry_price="180.95", shares="1", initial_stop="170.00",
+        rationale="aplus-setup",
+        thesis="round-trip-thesis-marker",
+        why_now="round-trip-why-now-marker",
+    )
+    with TestClient(app) as client:
+        # First POST → soft-warn confirm fragment.
+        r1 = client.post(
+            "/trades/entry", headers={"HX-Request": "true"}, data=form_data,
+        )
+        assert r1.status_code == 200, r1.text
+        assert "Soft cap reached" in r1.text
+
+        # Confirm fragment must emit a hidden input for every pre-trade
+        # field. Pin specific markers (thesis, why_now) so the test fails
+        # discriminatingly under the bug — pre-fix, those keys would be
+        # absent from form_values entirely.
+        for name, value in (
+            ("thesis", "round-trip-thesis-marker"),
+            ("why_now", "round-trip-why-now-marker"),
+            ("invalidation_condition", "stop-hit"),
+            ("expected_scenario", "win"),
+            ("premortem_technical", "tech-risk"),
+            ("premortem_market_sector", "market-risk"),
+            ("premortem_execution", "execution-risk"),
+            ("event_risk_present", "0"),
+            ("gap_risk_present", "0"),
+            ("manual_entry_confidence", "normal"),
+            ("market_regime", "Bullish"),
+            ("catalyst", "technical_only"),
+        ):
+            assert (
+                f'name="{name}" value="{value}"' in r1.text
+            ), (
+                f"soft-warn confirm fragment missing hidden input "
+                f'name="{name}" value="{value}"; pre-trade field would '
+                f"be lost on the force=true resubmit"
+            )
+
+        # Fragment-faithful resubmit: parse server-emitted hidden inputs
+        # and POST those (mimicking what a real browser submits when the
+        # operator clicks "Submit anyway"). This is the only way to
+        # exercise the bug — hand-curating the second POST's payload from
+        # the original form_data masks form_values omissions.
+        fragment_inputs = re.findall(
+            r'<input\s+type="hidden"\s+name="([^"]+)"\s+value="([^"]*)"',
+            r1.text,
+        )
+        # Multi-value list fields (emotional_state_pre_trade) MAY emit
+        # multiple inputs; collect as list-of-pairs to preserve repeats.
+        second_post_data: dict[str, object] = {}
+        for k, v in fragment_inputs:
+            if k in second_post_data:
+                existing = second_post_data[k]
+                if isinstance(existing, list):
+                    existing.append(v)
+                else:
+                    second_post_data[k] = [existing, v]
+            else:
+                second_post_data[k] = v
+        r2 = client.post(
+            "/trades/entry", headers={"HX-Request": "true"},
+            data=second_post_data,
+        )
+        assert r2.status_code == 200, r2.text
+        # Success path emits an `open-position-<id>` table row.
+        assert "open-position-" in r2.text, (
+            "force=true resubmit must succeed (state='entered'); "
+            "if 400, MissingPreTradeFieldsException fired → fields lost"
+        )
+
+    # Verify pre-trade values persisted correctly.
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT thesis, why_now, market_regime, catalyst "
+            "FROM trades WHERE ticker = 'AAPL' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None, "AAPL trade row must exist after force=true resubmit"
+    assert row[0] == "round-trip-thesis-marker", (
+        f"thesis must round-trip; got {row[0]!r}"
+    )
+    assert row[1] == "round-trip-why-now-marker", (
+        f"why_now must round-trip; got {row[1]!r}"
+    )
+    assert row[2] == "Bullish", f"market_regime; got {row[2]!r}"
+    assert row[3] == "technical_only", f"catalyst; got {row[3]!r}"
+
+
+def test_post_entry_soft_warn_confirm_emotional_state_multi_value_round_trips(
+    seeded_db, monkeypatch,
+):
+    """Phase 7 Sub-C C.4 follow-up regression. Discriminating multi-
+    select round-trip: emotional_state_pre_trade is a multi-select that
+    arrives as a list[str]. If form_values rendered it via plain
+    {{ value }} (single hidden input), the second POST would receive
+    "['calm', 'focused']" as a single string value → JSON-encoded
+    differently than ["calm", "focused"]. The template's list-special-
+    case must emit ONE hidden input per element so the fragment-faithful
+    resubmit reconstructs the list."""
+    import json
+    import re
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    _seed_soft_warn_trades_and_watchlist(cfg)
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: PriceSnapshot(
+                ticker=t, price=180.95, asof=datetime.now(),
+                is_stale=False, source="live",
+            ) for t in tickers
+        })
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    form_data = full_phase7_entry_payload(
+        ticker="AAPL", entry_date="2026-04-18",
+        entry_price="180.95", shares="1", initial_stop="170.00",
+        rationale="aplus-setup",
+    )
+    # Multi-select values: TestClient encodes a list as repeat form keys
+    # (matches the HTML `<select multiple>` submission shape).
+    form_data["emotional_state_pre_trade"] = ["calm", "focused"]
+    with TestClient(app) as client:
+        r1 = client.post(
+            "/trades/entry", headers={"HX-Request": "true"}, data=form_data,
+        )
+        assert r1.status_code == 200, r1.text
+        assert "Soft cap reached" in r1.text
+        # Both vocabulary values must appear as separate hidden inputs.
+        assert (
+            'name="emotional_state_pre_trade" value="calm"' in r1.text
+        ), "first emotional_state value missing from confirm fragment"
+        assert (
+            'name="emotional_state_pre_trade" value="focused"' in r1.text
+        ), "second emotional_state value missing from confirm fragment"
+        # Critically, the bug-form rendering ("['calm', 'focused']" as a
+        # single value) MUST NOT be present — that would round-trip a
+        # malformed single-string token.
+        assert (
+            "value=\"['calm', 'focused']\"" not in r1.text
+            and 'value="[&#39;calm&#39;, &#39;focused&#39;]"' not in r1.text
+        ), "list-typed value must NOT render as Python repr"
+
+        # Fragment-faithful resubmit (multi-value preserved).
+        pairs = re.findall(
+            r'<input\s+type="hidden"\s+name="([^"]+)"\s+value="([^"]*)"',
+            r1.text,
+        )
+        second_post_data: dict[str, object] = {}
+        for k, v in pairs:
+            if k in second_post_data:
+                existing = second_post_data[k]
+                if isinstance(existing, list):
+                    existing.append(v)
+                else:
+                    second_post_data[k] = [existing, v]
+            else:
+                second_post_data[k] = v
+        # Defensive: emotional_state_pre_trade should be a 2-element list.
+        emo = second_post_data.get("emotional_state_pre_trade")
+        assert emo == ["calm", "focused"], (
+            f"fragment parsing must yield 2-element list; got {emo!r}"
+        )
+        r2 = client.post(
+            "/trades/entry", headers={"HX-Request": "true"},
+            data=second_post_data,
+        )
+        assert r2.status_code == 200, r2.text
+        assert "open-position-" in r2.text
+
+    # Verify persisted JSON list.
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT emotional_state_pre_trade FROM trades "
+            "WHERE ticker = 'AAPL' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    persisted = json.loads(row[0])
+    assert persisted == ["calm", "focused"], (
+        f"persisted emotional_state must be 2-element JSON list; got {persisted!r}"
+    )
 
 
 def test_post_entry_hard_cap_error(seeded_db, monkeypatch):
@@ -324,7 +578,7 @@ def test_post_entry_hard_cap_error(seeded_db, monkeypatch):
                 insert_trade_with_event(conn, Trade(
                     id=None, ticker=t, entry_date="2026-04-15",
                     entry_price=100.0, initial_shares=1, initial_stop=90.0,
-                    current_stop=90.0, status="open",
+                    current_stop=90.0, state="entered",
                     watchlist_entry_target=None, watchlist_initial_stop=None,
                     notes=None,
                 ), event_ts=f"2026-04-15T09:{30+i}:00")
@@ -337,12 +591,12 @@ def test_post_entry_hard_cap_error(seeded_db, monkeypatch):
     with TestClient(app) as client:
         r = client.post(
             "/trades/entry", headers={"HX-Request": "true"},
-            data={
-                "ticker": "AAPL", "entry_date": "2026-04-18",
-                "entry_price": "180.0", "shares": "1",
-                "initial_stop": "170.0", "rationale": "aplus-setup",
-                "force": "true",   # bypass soft-warn; but hard cap still blocks
-            },
+            data=full_phase7_entry_payload(
+                ticker="AAPL", entry_date="2026-04-18",
+                entry_price="180.0", shares="1",
+                initial_stop="170.0", rationale="aplus-setup",
+                force="true",   # bypass soft-warn; but hard cap still blocks
+            ),
         )
     assert r.status_code == 400
     assert "hard cap" in r.text.lower() or "hard_cap" in r.text.lower()
@@ -363,7 +617,7 @@ def test_post_entry_duplicate_error(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="AAPL", entry_date="2026-04-15",
                 entry_price=180.0, initial_shares=5, initial_stop=170.0,
-                current_stop=170.0, status="open",
+                current_stop=170.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -376,11 +630,11 @@ def test_post_entry_duplicate_error(seeded_db, monkeypatch):
     with TestClient(app) as client:
         r = client.post(
             "/trades/entry", headers={"HX-Request": "true"},
-            data={
-                "ticker": "AAPL", "entry_date": "2026-04-18",
-                "entry_price": "182.0", "shares": "3",
-                "initial_stop": "175.0", "rationale": "aplus-setup",
-            },
+            data=full_phase7_entry_payload(
+                ticker="AAPL", entry_date="2026-04-18",
+                entry_price="182.0", shares="3",
+                initial_stop="175.0", rationale="aplus-setup",
+            ),
         )
     assert r.status_code == 400
     assert "already" in r.text.lower() or "open trade" in r.text.lower()
@@ -400,7 +654,7 @@ def test_get_exit_form_renders(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -463,7 +717,7 @@ def test_post_exit_full_close_removes_row(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -510,7 +764,7 @@ def test_post_exit_partial_updates_row(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=10, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -534,8 +788,9 @@ def test_post_exit_partial_updates_row(seeded_db, monkeypatch):
         )
     assert r.status_code == 200
     assert f"open-position-{trade.id}" in r.text
-    # Remaining shares: 10 - 3 = 7.
-    assert "7 / 10" in r.text or ">7<" in r.text
+    # Remaining shares: 10 - 3 = 7. Phase 7 fills.quantity is REAL, so
+    # the displayed value is "7.0 / 10".
+    assert "7 / 10" in r.text or "7.0 / 10" in r.text or ">7<" in r.text
 
 
 def test_post_exit_shares_too_many_400(seeded_db, monkeypatch):
@@ -553,7 +808,7 @@ def test_post_exit_shares_too_many_400(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -586,7 +841,7 @@ def test_get_stop_form_renders(seeded_db):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -618,7 +873,7 @@ def test_post_stop_adjust_success(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -662,7 +917,7 @@ def test_post_stop_persists_notes_field(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -712,7 +967,7 @@ def test_get_stop_form_includes_notes_textarea(seeded_db):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -741,7 +996,7 @@ def test_post_stop_regression_400_with_updated_current(seeded_db):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=900.0, status="open",  # someone already trailed to BE
+                current_stop=900.0, state="entered",  # someone already trailed to BE
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -776,7 +1031,7 @@ def test_get_trade_cancel_returns_normal_row(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -814,7 +1069,7 @@ def test_post_exit_shares_too_many_renders_form_with_updated_max(seeded_db, monk
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -853,7 +1108,7 @@ def test_post_stop_regression_renders_form_with_updated_current(seeded_db):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=900.0, status="open",
+                current_stop=900.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -917,7 +1172,7 @@ def test_post_entry_duplicate_renders_form_preserved(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="AAPL", entry_date="2026-04-15",
                 entry_price=180.0, initial_shares=5, initial_stop=170.0,
-                current_stop=170.0, status="open",
+                current_stop=170.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -930,11 +1185,11 @@ def test_post_entry_duplicate_renders_form_preserved(seeded_db, monkeypatch):
     with TestClient(app) as client:
         r = client.post(
             "/trades/entry", headers={"HX-Request": "true"},
-            data={
-                "ticker": "AAPL", "entry_date": "2026-04-18",
-                "entry_price": "182.0", "shares": "3",
-                "initial_stop": "175.0", "rationale": "aplus-setup",
-            },
+            data=full_phase7_entry_payload(
+                ticker="AAPL", entry_date="2026-04-18",
+                entry_price="182.0", shares="3",
+                initial_stop="175.0", rationale="aplus-setup",
+            ),
         )
     assert r.status_code == 400
     # Banner mentions the duplicate.
@@ -1013,14 +1268,14 @@ def test_post_entry_stop_ge_entry_renders_form_preserved(seeded_db, monkeypatch)
         r = client.post(
             "/trades/entry",
             headers={"HX-Request": "true", "HX-Target": "entry-form-AAPL"},
-            data={
-                "ticker": "AAPL",
-                "entry_date": "2026-04-18",
-                "entry_price": "170.00",
-                "shares": "5",
-                "initial_stop": "170.00",  # stop == entry → ValueError pre-fix
-                "rationale": "aplus-setup",
-            },
+            data=full_phase7_entry_payload(
+                ticker="AAPL",
+                entry_date="2026-04-18",
+                entry_price="170.00",
+                shares="5",
+                initial_stop="170.00",  # stop == entry → ValueError pre-fix
+                rationale="aplus-setup",
+            ),
         )
     # Pre-fix this is 500; post-fix it must be 400 (validation failure shape
     # mirroring DuplicateOpenPositionException).
@@ -1102,14 +1357,14 @@ def test_post_entry_stop_gt_entry_also_caught(seeded_db, monkeypatch):
         r = client.post(
             "/trades/entry",
             headers={"HX-Request": "true", "HX-Target": "entry-form-AAPL"},
-            data={
-                "ticker": "AAPL",
-                "entry_date": "2026-04-18",
-                "entry_price": "170.00",
-                "shares": "5",
-                "initial_stop": "175.00",  # stop > entry
-                "rationale": "aplus-setup",
-            },
+            data=full_phase7_entry_payload(
+                ticker="AAPL",
+                entry_date="2026-04-18",
+                entry_price="170.00",
+                shares="5",
+                initial_stop="175.00",  # stop > entry
+                rationale="aplus-setup",
+            ),
         )
     assert r.status_code == 400
     assert '<tr id="entry-form-AAPL"' in r.text
@@ -1182,14 +1437,14 @@ def test_post_entry_stop_ge_entry_unhandled_value_error_still_500(
         r = client.post(
             "/trades/entry",
             headers={"HX-Request": "true", "HX-Target": "entry-form-AAPL"},
-            data={
-                "ticker": "AAPL",
-                "entry_date": "2026-04-18",
-                "entry_price": "180.00",
-                "shares": "5",
-                "initial_stop": "170.00",   # valid (entry > stop) — passes pre-check
-                "rationale": "aplus-setup",
-            },
+            data=full_phase7_entry_payload(
+                ticker="AAPL",
+                entry_date="2026-04-18",
+                entry_price="180.00",
+                shares="5",
+                initial_stop="170.00",   # valid (entry > stop) — passes pre-check
+                rationale="aplus-setup",
+            ),
         )
     # The pre-check passes; record_entry's synthetic ValueError must NOT be
     # swallowed by an over-broad except — it must surface as 500.
@@ -1243,7 +1498,7 @@ def test_post_entry_duplicate_sizing_hint_not_lying(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="AAPL", entry_date="2026-04-15",
                 entry_price=180.0, initial_shares=5, initial_stop=170.0,
-                current_stop=170.0, status="open",
+                current_stop=170.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -1261,9 +1516,9 @@ def test_post_entry_duplicate_sizing_hint_not_lying(seeded_db, monkeypatch):
         # User enters an absurdly high share count that server would never suggest.
         r = client.post(
             "/trades/entry", headers={"HX-Request": "true"},
-            data={"ticker": "AAPL", "entry_date": "2026-04-18",
-                  "entry_price": "182.00", "shares": "9999",
-                  "initial_stop": "175.00", "rationale": "aplus-setup"},
+            data=full_phase7_entry_payload(ticker="AAPL", entry_date="2026-04-18",
+                  entry_price="182.00", shares="9999",
+                  initial_stop="175.00", rationale="aplus-setup"),
         )
     assert r.status_code == 400
     # Input value reflects user's attempted entry.
@@ -1292,7 +1547,7 @@ def test_post_stop_for_actually_closed_trade_returns_404_fragment(seeded_db):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -1327,9 +1582,9 @@ def test_post_trades_without_hx_request_403(test_cfg):
     with TestClient(app) as client:
         r = client.post(
             "/trades/entry",
-            data={"ticker": "AAPL", "entry_date": "2026-04-18",
-                  "entry_price": "180.0", "shares": "1",
-                  "initial_stop": "170.0", "rationale": "aplus-setup"},
+            data=full_phase7_entry_payload(ticker="AAPL", entry_date="2026-04-18",
+                  entry_price="180.0", shares="1",
+                  initial_stop="170.0", rationale="aplus-setup"),
             # NO HX-Request header.
         )
     assert r.status_code == 403
@@ -1353,7 +1608,7 @@ def test_post_exit_shares_too_many_is_single_tr_no_orphan(seeded_db, monkeypatch
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -1486,13 +1741,13 @@ def test_post_entry_unknown_rationale_rejected_with_preserved_fields(
     with TestClient(app) as client:
         r = client.post(
             "/trades/entry", headers={"HX-Request": "true"},
-            data={
-                "ticker": "AAPL", "entry_date": "2026-04-18",
-                "entry_price": "180.95", "shares": "5",
-                "initial_stop": "170.00",
-                "rationale": "VCP entry",       # pre-T4 free-text phrasing
-                "notes": "Keep this on re-render",
-            },
+            data=full_phase7_entry_payload(
+                ticker="AAPL", entry_date="2026-04-18",
+                entry_price="180.95", shares="5",
+                initial_stop="170.00",
+                rationale="VCP entry",       # pre-T4 free-text phrasing
+                notes="Keep this on re-render",
+            ),
         )
     assert r.status_code == 400
     assert "invalid rationale" in r.text.lower()
@@ -1540,16 +1795,19 @@ def test_post_entry_other_without_notes_rejected(seeded_db, monkeypatch):
         })
 
     app = create_app(cfg, cfg_path)
+    payload = full_phase7_entry_payload(
+        ticker="AAPL", entry_date="2026-04-18",
+        entry_price="180.95", shares="5",
+        initial_stop="170.00",
+        rationale="other",
+    )
+    # Test discriminates the "rationale=other ⇒ notes required" guard;
+    # remove the helper's default notes value to trigger it.
+    del payload["notes"]
     with TestClient(app) as client:
         r = client.post(
             "/trades/entry", headers={"HX-Request": "true"},
-            data={
-                "ticker": "AAPL", "entry_date": "2026-04-18",
-                "entry_price": "180.95", "shares": "5",
-                "initial_stop": "170.00",
-                "rationale": "other",
-                # no notes
-            },
+            data=payload,
         )
     assert r.status_code == 400
     assert "notes are required" in r.text.lower()
@@ -1599,13 +1857,13 @@ def test_post_entry_other_with_notes_succeeds(seeded_db, monkeypatch):
     with TestClient(app) as client:
         r = client.post(
             "/trades/entry", headers={"HX-Request": "true"},
-            data={
-                "ticker": "AAPL", "entry_date": "2026-04-18",
-                "entry_price": "180.95", "shares": "5",
-                "initial_stop": "170.00",
-                "rationale": "other",
-                "notes": "post-earnings gap with high ADR",
-            },
+            data=full_phase7_entry_payload(
+                ticker="AAPL", entry_date="2026-04-18",
+                entry_price="180.95", shares="5",
+                initial_stop="170.00",
+                rationale="other",
+                notes="post-earnings gap with high ADR",
+            ),
         )
     assert r.status_code == 200
     assert "open-position-" in r.text
@@ -1641,7 +1899,7 @@ def test_get_stop_form_renders_rationale_select_with_seven_options(seeded_db):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -1680,7 +1938,7 @@ def test_post_stop_unknown_rationale_rejected(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -1726,7 +1984,7 @@ def test_exit_form_has_no_rationale_input(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -1765,7 +2023,7 @@ def test_post_exit_writes_reason_value_as_rationale(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -1817,7 +2075,7 @@ def test_get_stop_form_renders_force_checkbox_unchecked(seeded_db):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -1856,7 +2114,7 @@ def test_post_stop_regression_preserves_typed_fields(seeded_db):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=890.0, status="open",
+                current_stop=890.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -1903,7 +2161,7 @@ def test_post_stop_with_force_checkbox_regression_succeeds(seeded_db):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=890.0, status="open",
+                current_stop=890.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -1944,7 +2202,7 @@ def test_post_stop_other_without_notes_rejected(seeded_db):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="NVDA", entry_date="2026-04-15",
                 entry_price=900.0, initial_shares=5, initial_stop=860.0,
-                current_stop=860.0, status="open",
+                current_stop=860.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -2051,7 +2309,7 @@ def _t5_seed_open_trade(cfg, *, ticker: str) -> None:
             insert_trade_with_event(conn, Trade(
                 id=None, ticker=ticker, entry_date="2026-04-15",
                 entry_price=180.0, initial_shares=5, initial_stop=170.0,
-                current_stop=170.0, status="open",
+                current_stop=170.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -2097,15 +2355,15 @@ def test_entry_post_hyp_recs_origin_success_emits_hypothesis_recs_oob_swap(
         r = client.post(
             "/trades/entry",
             headers={"HX-Request": "true"},
-            data={
-                "ticker": "TESTAPLUS",
-                "entry_date": "2026-04-29",
-                "entry_price": "180.95",
-                "shares": "5",
-                "initial_stop": "170.00",
-                "rationale": "aplus-setup",
-                "origin": "hyp-recs",
-            },
+            data=full_phase7_entry_payload(
+                ticker="TESTAPLUS",
+                entry_date="2026-04-29",
+                entry_price="180.95",
+                shares="5",
+                initial_stop="170.00",
+                rationale="aplus-setup",
+                origin="hyp-recs",
+            ),
         )
     assert r.status_code == 200, (
         f"Expected 200; got {r.status_code}. Body[:500]={r.text[:500]!r}"
@@ -2143,15 +2401,15 @@ def test_entry_post_hyp_recs_origin_success_excludes_traded_ticker_from_oob(
         r = client.post(
             "/trades/entry",
             headers={"HX-Request": "true"},
-            data={
-                "ticker": "TESTAPLUS",
-                "entry_date": "2026-04-29",
-                "entry_price": "180.95",
-                "shares": "5",
-                "initial_stop": "170.00",
-                "rationale": "aplus-setup",
-                "origin": "hyp-recs",
-            },
+            data=full_phase7_entry_payload(
+                ticker="TESTAPLUS",
+                entry_date="2026-04-29",
+                entry_price="180.95",
+                shares="5",
+                initial_stop="170.00",
+                rationale="aplus-setup",
+                origin="hyp-recs",
+            ),
         )
     assert r.status_code == 200
     # Extract the OOB hyp-recs section block (greedy until next </section>).
@@ -2212,15 +2470,15 @@ def test_entry_post_hyp_recs_origin_success_exclusion_set_from_post_write_state(
         r = client.post(
             "/trades/entry",
             headers={"HX-Request": "true"},
-            data={
-                "ticker": "TESTAPLUS",
-                "entry_date": "2026-04-29",
-                "entry_price": "180.95",
-                "shares": "5",
-                "initial_stop": "170.00",
-                "rationale": "aplus-setup",
-                "origin": "hyp-recs",
-            },
+            data=full_phase7_entry_payload(
+                ticker="TESTAPLUS",
+                entry_date="2026-04-29",
+                entry_price="180.95",
+                shares="5",
+                initial_stop="170.00",
+                rationale="aplus-setup",
+                origin="hyp-recs",
+            ),
         )
     assert r.status_code == 200
     # Extract the OOB section body.
@@ -2342,15 +2600,15 @@ def test_entry_post_watchlist_origin_success_emits_hyp_recs_oob_swap_for_cross_s
         r = client.post(
             "/trades/entry",
             headers={"HX-Request": "true"},
-            data={
-                "ticker": "TESTWATCH",
-                "entry_date": "2026-04-29",
-                "entry_price": "180.95",
-                "shares": "5",
-                "initial_stop": "170.00",
-                "rationale": "aplus-setup",
-                "origin": "watchlist",
-            },
+            data=full_phase7_entry_payload(
+                ticker="TESTWATCH",
+                entry_date="2026-04-29",
+                entry_price="180.95",
+                shares="5",
+                initial_stop="170.00",
+                rationale="aplus-setup",
+                origin="watchlist",
+            ),
         )
     assert r.status_code == 200
     pattern = re.compile(
@@ -2414,16 +2672,16 @@ def test_entry_post_hyp_recs_origin_error_path_does_not_emit_hyp_recs_oob_swap(
         r = client.post(
             "/trades/entry",
             headers={"HX-Request": "true"},
-            data={
-                "ticker": "TESTAPLUS",
-                "entry_date": "2026-04-29",
-                "entry_price": "180.95",
-                "shares": "5",
-                "initial_stop": "170.00",
+            data=full_phase7_entry_payload(
+                ticker="TESTAPLUS",
+                entry_date="2026-04-29",
+                entry_price="180.95",
+                shares="5",
+                initial_stop="170.00",
                 # Bogus rationale → enum validation fails before record_entry.
-                "rationale": "definitely-not-a-real-rationale",
-                "origin": "hyp-recs",
-            },
+                rationale="definitely-not-a-real-rationale",
+                origin="hyp-recs",
+            ),
         )
     assert r.status_code == 400, (
         f"Expected 400 (rationale enum-validation failure); got "
@@ -2546,15 +2804,15 @@ def test_entry_post_response_does_not_lead_with_tr_primary_content(
         r = client.post(
             "/trades/entry",
             headers={"HX-Request": "true"},
-            data={
-                "ticker": "BUGAB",
-                "entry_date": "2026-04-29",
-                "entry_price": "180.95",
-                "shares": "5",
-                "initial_stop": "170.00",
-                "rationale": "aplus-setup",
-                "origin": "watchlist",
-            },
+            data=full_phase7_entry_payload(
+                ticker="BUGAB",
+                entry_date="2026-04-29",
+                entry_price="180.95",
+                shares="5",
+                initial_stop="170.00",
+                rationale="aplus-setup",
+                origin="watchlist",
+            ),
         )
     assert r.status_code == 200, (
         f"Got {r.status_code}; body[:500]={r.text[:500]!r}"
@@ -2633,15 +2891,15 @@ def test_entry_post_response_delivers_new_row_via_open_positions_oob(
         r = client.post(
             "/trades/entry",
             headers={"HX-Request": "true"},
-            data={
-                "ticker": "BUGAB",
-                "entry_date": "2026-04-29",
-                "entry_price": "180.95",
-                "shares": "5",
-                "initial_stop": "170.00",
-                "rationale": "aplus-setup",
-                "origin": "watchlist",
-            },
+            data=full_phase7_entry_payload(
+                ticker="BUGAB",
+                entry_date="2026-04-29",
+                entry_price="180.95",
+                shares="5",
+                initial_stop="170.00",
+                rationale="aplus-setup",
+                origin="watchlist",
+            ),
         )
     assert r.status_code == 200
     # Pin id + hx-swap-oob colocated on the SAME element (either order).
@@ -2680,9 +2938,13 @@ def test_entry_post_response_delivers_new_row_via_open_positions_oob(
         "trade's row (`id=\"open-position-{trade_id}\"`). "
         f"OOB body[:500]={oob_body[:500]!r}"
     )
-    assert ">BUGAB<" in oob_body, (
+    # Phase 7: ticker cell now contains a trailing state-badge span, so
+    # the cell renders as `<td>BUGAB <span class="state-badge...">...`.
+    # Assert the ticker appears in the cell — the state-badge introduction
+    # broke the literal `>BUGAB<` match without changing intent.
+    assert ">BUGAB" in oob_body, (
         "The #open-positions OOB chunk must contain the new ticker text "
-        f"`>BUGAB<`. OOB body[:500]={oob_body[:500]!r}"
+        f"`>BUGAB`. OOB body[:500]={oob_body[:500]!r}"
     )
 
 
@@ -2798,4 +3060,1624 @@ def test_entry_form_renders_none_display_when_label_unresolved(
     # Visible read-only display falls back to "(none)".
     assert "(none)" in r.text, (
         "template must render (none) display when vm.hypothesis_label is None"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-C C.3 — entry route handles 18 pre-trade fields + gate rejection.
+#
+# Plan §6 C.3. The route accepts 18 new Form() parameters covering the spec
+# §1 / §3.5.1 pre-trade required fields. POSTs supplying all 18 succeed via
+# the existing OOB-swap pattern; POSTs missing any required field raise
+# MissingPreTradeFieldsException at the service layer and the catch path
+# re-renders a 400 row-shaped error fragment naming the missing fields
+# (instead of escaping as a generic 500). Nullable+CHECK columns persist
+# NULL (not "") via `... or None` per CLAUDE.md gotcha 2026-05-04.
+# ---------------------------------------------------------------------------
+
+
+def _c3_seed_watchlist(cfg, *, ticker: str) -> None:
+    """Helper: seed an active watchlist row so build_entry_form_vm + the
+    record_entry watchlist-archive branch both have something to read."""
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker=ticker, added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+
+
+def _c3_all_18_fields(*, ticker: str) -> dict:
+    """Return a POST data dict for /trades/entry that satisfies all 18 Phase
+    7 pre-trade required fields. Tests parameterize off this via dict
+    update/pop to construct discriminating payloads.
+
+    event_risk_present=0 / gap_risk_present=0 keep the conditional rules
+    inert (no event_handling/event_type/event_date/gap_risk_handling
+    required); catalyst='technical_only' keeps the catalyst-other gate inert.
+    """
+    return {
+        "ticker": ticker,
+        "entry_date": "2026-04-29",
+        "entry_price": "180.95",
+        "shares": "5",
+        "initial_stop": "170.00",
+        "rationale": "aplus-setup",
+        # 18 pre-trade fields:
+        "thesis": "Trend continuation post-VCP base.",
+        "why_now": "Volume contraction tightening; pivot just cleared.",
+        "invalidation_condition": "Close below initial stop ends thesis.",
+        "expected_scenario": "+15% target over 4-6 weeks.",
+        "premortem_technical": "False breakout / shakeout below pivot.",
+        "premortem_market_sector": "Sector rotation away from tech.",
+        "premortem_execution": "Slippage on thin pre-market fill.",
+        "premortem_additional": "",  # optional
+        "event_risk_present": "0",
+        "gap_risk_present": "0",
+        "emotional_state_pre_trade": "calm",
+        "manual_entry_confidence": "normal",
+        "market_regime": "Bullish",
+        "catalyst": "technical_only",
+    }
+
+
+def _c3_patch_pricecache(monkeypatch, *, price: float = 180.95) -> None:
+    """Monkeypatch PriceCache so tests don't hit yfinance."""
+    from datetime import datetime
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: PriceSnapshot(
+                ticker=t, price=price, asof=datetime.now(),
+                is_stale=False, source="live",
+            ) for t in tickers
+        },
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+
+def test_entry_post_with_all_18_pre_trade_fields_creates_trade(
+    seeded_db, monkeypatch,
+):
+    """C.3: POST with all 18 pre-trade fields populated → success.
+
+    Discriminating: pre-C.3 the route did not pass the 18 fields to
+    EntryRequest, so record_entry's MissingPreTradeFieldsException would
+    fire even when the form supplied them — silent field drop. Post-fix
+    the trade row persists with state='entered' AND the pre-trade columns
+    populated AS-IS.
+    """
+    from swing.data.db import connect
+
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C3OK")
+    _c3_patch_pricecache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data=_c3_all_18_fields(ticker="C3OK"),
+        )
+    assert r.status_code == 200, (
+        f"happy path must succeed (200 OOB-swap response). Got "
+        f"{r.status_code}: {r.text[:300]!r}"
+    )
+    # Trade row created with state='entered' (not legacy 'managing').
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT state, thesis, market_regime, catalyst, "
+            "       event_risk_present, gap_risk_present "
+            "FROM trades WHERE ticker = ?",
+            ("C3OK",),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None, "trade row must exist after successful POST"
+    assert row[0] == "entered", (
+        f"freshly recorded Phase 7 trade must persist state='entered'; "
+        f"got {row[0]!r}. Sub-A's legacy-data shim defaults legacy "
+        f"unmigrated rows to 'managing' — but record_entry's atomic "
+        f"INSERT path must persist 'entered'."
+    )
+    # Pre-trade fields persisted AS-IS (not silently dropped).
+    assert row[1] == "Trend continuation post-VCP base."
+    assert row[2] == "Bullish"
+    assert row[3] == "technical_only"
+    assert row[4] == 0
+    assert row[5] == 0
+
+
+def test_entry_post_missing_thesis_returns_400_with_field_name(
+    seeded_db, monkeypatch,
+):
+    """C.3 gate-rejection: POST missing thesis → 400 + error names 'thesis'.
+
+    Discriminating: under buggy code (no MissingPreTradeFieldsException
+    catch), the exception escapes to the global 500 handler — status_code
+    would be 500, not 400. Post-fix: 400 + the missing-field name appears
+    in the rendered banner.
+    """
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C3MISS")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C3MISS")
+    data.pop("thesis")  # deliberately omit a required field
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data=data,
+        )
+    assert r.status_code == 400, (
+        f"missing required field must yield 400 (not 500 from uncaught "
+        f"exception). Got {r.status_code}: {r.text[:300]!r}"
+    )
+    assert "thesis" in r.text, (
+        "error banner must name the missing field 'thesis' so the "
+        "operator knows what to fix"
+    )
+    assert "missing required pre-trade fields" in r.text.lower(), (
+        "banner must use the canonical missing-fields message format"
+    )
+
+
+def test_entry_post_event_handling_empty_string_persists_null(
+    seeded_db, monkeypatch,
+):
+    """C.3 `... or None` discriminating test for nullable+CHECK columns.
+
+    CLAUDE.md gotcha 2026-05-04: form-input fallback for a nullable
+    column with a CHECK enum constraint must use `... or None`, NOT
+    `... or ""` — empty string is rejected by the CHECK at INSERT time
+    (sqlite3.IntegrityError → 500); NULL is accepted.
+
+    Setup: event_risk_present=0 (no event present), so the conditional
+    rule does NOT require event_handling. The form posts an empty
+    'event_handling' input (typical browser behavior for an unfilled
+    nullable text input). Buggy code (`event_handling or ""`) would
+    INSERT '' which trips the CHECK enum and 500s. Correct code
+    (`event_handling or None`) persists NULL.
+
+    Post-fix expectation: 200 + persisted column IS NULL.
+    """
+    from swing.data.db import connect
+
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C3NULL")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C3NULL")
+    data["event_handling"] = ""  # empty form input on a nullable+CHECK col
+    data["event_type"] = ""
+    data["event_date"] = ""
+    data["gap_risk_handling"] = ""
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data=data,
+        )
+    assert r.status_code == 200, (
+        f"empty nullable+CHECK form input must persist NULL (not '') so "
+        f"the CHECK enum doesn't fail. Got {r.status_code}: "
+        f"{r.text[:300]!r}"
+    )
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT event_handling, event_type, event_date, gap_risk_handling "
+            "FROM trades WHERE ticker = ?",
+            ("C3NULL",),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] is None, f"event_handling must persist NULL, got {row[0]!r}"
+    assert row[1] is None, f"event_type must persist NULL, got {row[1]!r}"
+    assert row[2] is None, f"event_date must persist NULL, got {row[2]!r}"
+    assert row[3] is None, (
+        f"gap_risk_handling must persist NULL, got {row[3]!r}"
+    )
+
+
+def test_entry_post_catalyst_other_description_empty_persists_null(
+    seeded_db, monkeypatch,
+):
+    """C.3 sibling discriminating test: free-text companion field also
+    persists NULL (not '') from an empty form input.
+
+    catalyst_other_description has no CHECK enum (free text), but the
+    persistence-shape contract is the same: empty input → NULL row, not
+    empty-string row. Otherwise the conditional rule
+    `catalyst='other' → catalyst_other_description required` would
+    silently accept '' as 'present' on a future tightening.
+    """
+    from swing.data.db import connect
+
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C3CDN")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C3CDN")
+    # catalyst != 'other' so no requirement; form input still posts as ''.
+    data["catalyst_other_description"] = ""
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data=data,
+        )
+    assert r.status_code == 200, (
+        f"happy path with empty free-text field must succeed; got "
+        f"{r.status_code}: {r.text[:300]!r}"
+    )
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT catalyst_other_description FROM trades WHERE ticker = ?",
+            ("C3CDN",),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] is None, (
+        f"catalyst_other_description must persist NULL (not ''), got "
+        f"{row[0]!r}"
+    )
+
+
+def test_entry_post_missing_multiple_fields_lists_all_in_banner(
+    seeded_db, monkeypatch,
+):
+    """C.3: when multiple fields are missing, the error banner names ALL
+    of them (not just the first). Discriminating: a buggy implementation
+    that returned only `exc.missing_fields[0]` would pass thesis-only
+    tests but fail this one.
+    """
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C3MULTI")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C3MULTI")
+    data.pop("thesis")
+    data.pop("why_now")
+    data.pop("market_regime")
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data=data,
+        )
+    assert r.status_code == 400
+    body_lower = r.text.lower()
+    for field in ("thesis", "why_now", "market_regime"):
+        assert field in body_lower, (
+            f"banner must name missing field {field!r}; got {r.text[:500]!r}"
+        )
+
+
+def test_entry_post_event_risk_present_1_requires_event_handling(
+    seeded_db, monkeypatch,
+):
+    """C.3 conditional rule: event_risk_present=1 promotes event_handling,
+    event_type, event_date to required. Submitting event_risk_present=1
+    with empty event_* fields → 400 listing the conditionally-required
+    deps (validator's _CONDITIONAL_FIELD_RULES).
+
+    Discriminating: a buggy route that swallowed the conditional gate
+    (only checked the always-required set) would 200 here while
+    persisting state='entered' with NULL event_handling — silently
+    accepting an event-present trade with no event-handling plan.
+    """
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C3EVT")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C3EVT")
+    data["event_risk_present"] = "1"
+    # Leave event_handling / event_type / event_date as ''.
+    data["event_handling"] = ""
+    data["event_type"] = ""
+    data["event_date"] = ""
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data=data,
+        )
+    assert r.status_code == 400, (
+        f"event_risk_present=1 with missing event_* fields must be "
+        f"rejected. Got {r.status_code}: {r.text[:300]!r}"
+    )
+    body_lower = r.text.lower()
+    assert "event_handling" in body_lower
+    assert "event_type" in body_lower
+    assert "event_date" in body_lower
+
+
+def test_entry_post_emotional_state_multi_select_persists_json_list(
+    seeded_db, monkeypatch,
+):
+    """C.3: emotional_state_pre_trade is a multi-select (HTML
+    `<select multiple>`); the route receives it as a list and JSON-
+    encodes for persistence. Matches the CLI shape (swing/cli.py uses
+    `_json.dumps(list(emotional_state))`).
+
+    Discriminating: a buggy route that posted only the first value (or
+    just the comma-joined string) would persist
+    '"calm"' or '"calm,confident"' instead of '["calm","confident"]'.
+    """
+    import json
+    from swing.data.db import connect
+
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C3EMO")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C3EMO")
+    # Replace the single-value default with a list; httpx serializes
+    # list values as repeated form keys, which FastAPI binds to
+    # `list[str] | None = Form(None)`.
+    data["emotional_state_pre_trade"] = ["calm", "confident"]
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data=data,
+        )
+    assert r.status_code == 200, (
+        f"multi-select happy path must succeed; got {r.status_code}: "
+        f"{r.text[:300]!r}"
+    )
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT emotional_state_pre_trade FROM trades WHERE ticker = ?",
+            ("C3EMO",),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    persisted = json.loads(row[0])
+    assert persisted == ["calm", "confident"], (
+        f"multi-select values must persist as JSON list, got {row[0]!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-C C.4 — entry form 7 sectioned <fieldset> blocks + per-field
+# error markers + draft preservation. Spec §11.1.
+#
+# Discriminating-test discipline: each test must FAIL on the pre-C.4
+# template (single un-sectioned form, no per-field error class plumbing,
+# no `draft_*` preservation for the 18 pre-trade fields). PASS on the
+# post-C.4 template.
+# ---------------------------------------------------------------------------
+
+
+def test_c4_entry_form_renders_7_fieldset_legends(seeded_db, monkeypatch):
+    """All 7 spec §11.1 section legends must appear in the rendered form."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4LG")
+    _c3_patch_pricecache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=C4LG")
+    assert r.status_code == 200
+    text = r.text
+    for legend in (
+        "Position basics",
+        "Setup attribution",
+        "Pre-trade thesis",
+        "Premortem",
+        "Risk acknowledgments",
+        "Operator state",
+        "Notes",
+    ):
+        assert legend in text, (
+            f"Missing fieldset legend {legend!r} in rendered entry form. "
+            f"Spec §11.1 requires 7 sectioned blocks."
+        )
+
+
+def test_c4_entry_form_thesis_textarea_in_section_3(seeded_db, monkeypatch):
+    """`name='thesis'` textarea must appear AFTER 'Pre-trade thesis' legend
+    AND BEFORE 'Premortem' legend (i.e., located in section §3)."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4SEC")
+    _c3_patch_pricecache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=C4SEC")
+    text = r.text
+    legend_pos = text.find("Pre-trade thesis")
+    thesis_pos = text.find('name="thesis"')
+    premortem_pos = text.find("Premortem")
+    assert legend_pos != -1
+    assert thesis_pos != -1
+    assert premortem_pos != -1
+    assert legend_pos < thesis_pos < premortem_pos, (
+        f"`name='thesis'` must render inside section §3 (after 'Pre-trade "
+        f"thesis' legend, before 'Premortem' legend). Got positions: "
+        f"legend={legend_pos}, thesis={thesis_pos}, premortem={premortem_pos}"
+    )
+
+
+def test_c4_entry_form_premortem_renders_all_4_textareas(
+    seeded_db, monkeypatch,
+):
+    """§4 Premortem fieldset renders all 4 textareas (3 required + 1 optional)."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4PM")
+    _c3_patch_pricecache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=C4PM")
+    text = r.text
+    for name in (
+        "premortem_technical", "premortem_market_sector",
+        "premortem_execution", "premortem_additional",
+    ):
+        assert f'name="{name}"' in text, (
+            f"§4 Premortem section must render `name={name!r}` textarea"
+        )
+
+
+def test_c4_entry_form_event_risk_radios_and_handling_select(
+    seeded_db, monkeypatch,
+):
+    """§5 Risk acknowledgments: event_risk_present No/Yes radios +
+    event_handling/event_type/event_date inputs render."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4RSK")
+    _c3_patch_pricecache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=C4RSK")
+    text = r.text
+    # event_risk_present rendered as radio with value="0" and value="1":
+    assert text.count('name="event_risk_present"') == 2, (
+        "event_risk_present must be rendered as a No/Yes radio pair "
+        "(2 inputs); bare-checkbox semantics collide with the "
+        "validator's required-field check."
+    )
+    assert 'name="event_risk_present" value="0"' in text
+    assert 'name="event_risk_present" value="1"' in text
+    # gap_risk_present same shape:
+    assert text.count('name="gap_risk_present"') == 2
+    assert 'name="event_handling"' in text
+    assert 'name="event_type"' in text
+    assert 'name="event_date"' in text
+    assert 'name="gap_risk_handling"' in text
+
+
+def test_c4_entry_form_emotional_state_8_checkboxes(seeded_db, monkeypatch):
+    """§6 Operator state — emotional_state_pre_trade vocabulary has 8
+    values per spec §1.2 (calm/confident/anxious/fomo/revenge/hopeful/
+    doubtful/distracted)."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4EMO")
+    _c3_patch_pricecache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=C4EMO")
+    text = r.text
+    assert text.count('name="emotional_state_pre_trade"') == 8, (
+        f"emotional_state_pre_trade must render 8 checkboxes (one per "
+        f"vocabulary value). Got {text.count('name=\"emotional_state_pre_trade\"')}."
+    )
+    for value in (
+        "calm", "confident", "anxious", "fomo",
+        "revenge", "hopeful", "doubtful", "distracted",
+    ):
+        assert f'value="{value}"' in text, (
+            f"emotional_state vocabulary value {value!r} missing from form"
+        )
+
+
+def test_c4_entry_form_manual_entry_confidence_3_radios(
+    seeded_db, monkeypatch,
+):
+    """§6 Operator state — manual_entry_confidence is 3-radio (high/normal/low)."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4MEC")
+    _c3_patch_pricecache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=C4MEC")
+    text = r.text
+    assert text.count('name="manual_entry_confidence"') == 3
+    for value in ("high", "normal", "low"):
+        # Radio rendered with type=radio + value="high"/"normal"/"low":
+        assert (
+            f'name="manual_entry_confidence" value="{value}"' in text
+        ), f"manual_entry_confidence radio for {value!r} missing"
+
+
+def test_c4_entry_form_market_regime_3_radios(seeded_db, monkeypatch):
+    """§6 Operator state — market_regime 3 radios (Bullish/Caution/Bearish)."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4MR")
+    _c3_patch_pricecache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=C4MR")
+    text = r.text
+    assert text.count('name="market_regime"') == 3
+    for value in ("Bullish", "Caution", "Bearish"):
+        assert (
+            f'name="market_regime" value="{value}"' in text
+        ), f"market_regime radio for {value!r} missing"
+
+
+def test_c4_entry_form_catalyst_select_9_options(seeded_db, monkeypatch):
+    """§6 Operator state — catalyst <select> has 9 vocabulary options
+    matching the migration 0014 CHECK enum."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4CAT")
+    _c3_patch_pricecache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=C4CAT")
+    text = r.text
+    # Vocabulary per migration 0014:
+    for value in (
+        "earnings_driven", "guidance_change", "corporate_action",
+        "sector_rotation", "macro_event", "sympathy_move",
+        "product_news", "technical_only", "other",
+    ):
+        assert f'value="{value}"' in text, (
+            f"catalyst vocabulary value {value!r} missing from <select>. "
+            f"Vocabulary must match migration 0014 CHECK enum."
+        )
+
+
+def test_c4_entry_form_includes_hx_headers_attribute(seeded_db, monkeypatch):
+    """CLAUDE.md gotcha 2026-05-02: HTMX form inside fragment MUST emit
+    `hx-headers='{"HX-Request": "true"}'` so OriginGuard strict-mode
+    accepts the form's POST. TestClient cannot detect a regression here
+    because tests pass HX-Request explicitly; this assertion guards the
+    operator-witnessed browser path."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4HXH")
+    _c3_patch_pricecache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=C4HXH")
+    text = r.text
+    assert "hx-headers=" in text, (
+        "form must emit hx-headers attribute (CLAUDE.md gotcha 2026-05-02)"
+    )
+    assert '"HX-Request"' in text
+    assert '"true"' in text
+
+
+def test_c4_entry_form_post_missing_thesis_marks_field_with_error_class(
+    seeded_db, monkeypatch,
+):
+    """Discriminating: pre-C.4 the MissingPreTradeFieldsException catch
+    rendered `partials/trade_form_error.html.j2` (banner-only); the form
+    didn't re-render at all so no per-field error class could exist.
+    Post-C.4 the catch path re-renders the full form template with
+    `vm.missing_fields` populated; the thesis textarea carries
+    `class="field-error"`.
+    """
+    import re
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4ERR")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C4ERR")
+    data.pop("thesis")
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data=data,
+        )
+    assert r.status_code == 400
+    text = r.text
+    # Locate the thesis textarea opening tag:
+    m = re.search(r'<textarea[^>]*name="thesis"[^>]*>', text)
+    assert m is not None, (
+        f"thesis textarea not found in re-rendered form. Got: {text[:600]!r}"
+    )
+    tag = m.group(0)
+    assert 'class="field-error"' in tag, (
+        f"Missing-thesis re-render must mark the thesis textarea with "
+        f"class='field-error'; got opening tag {tag!r}. Pre-C.4 the catch "
+        f"path returned a banner-only fragment with no form to mark — this "
+        f"test fails on that pre-state."
+    )
+
+
+def test_c4_entry_form_post_missing_thesis_preserves_typed_why_now(
+    seeded_db, monkeypatch,
+):
+    """Discriminating: pre-C.4 the catch path returned the banner-only
+    fragment, losing every typed field. Post-C.4 the operator's typed
+    why_now value round-trips back into the textarea body via
+    `vm.draft_why_now`."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4DRFT")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C4DRFT")
+    data.pop("thesis")
+    sentinel = "OPERATOR_TYPED_WHY_NOW_REASON_C4"
+    data["why_now"] = sentinel
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data=data,
+        )
+    assert r.status_code == 400
+    assert sentinel in r.text, (
+        f"why_now value {sentinel!r} must round-trip back into the "
+        f"re-rendered form via draft_why_now preservation; got "
+        f"text not containing sentinel"
+    )
+
+
+def test_c4_entry_form_post_missing_thesis_preserves_catalyst_select(
+    seeded_db, monkeypatch,
+):
+    """Draft preservation for `<select name='catalyst'>` — selected option
+    must round-trip via the `selected` attribute. Discriminating: a buggy
+    implementation that only preserved textarea bodies would lose the
+    catalyst selection (the operator would have to re-pick).
+    """
+    import re
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4CATD")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C4CATD")
+    data["catalyst"] = "earnings_driven"  # operator picked something specific
+    data.pop("thesis")  # trip the gate
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data=data,
+        )
+    assert r.status_code == 400
+    text = r.text
+    # Match the <option value="earnings_driven" selected>...</option>:
+    m = re.search(
+        r'<option\s+value="earnings_driven"[^>]*\bselected\b',
+        text,
+    )
+    assert m is not None, (
+        f"catalyst='earnings_driven' must round-trip as <option ... selected> "
+        f"on re-render; not found. Pre-C.4 (banner-only re-render) had no "
+        f"<select> at all — test discriminates."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-C C.5 — GET /trades/{trade_id} canonical trade-detail page.
+# ---------------------------------------------------------------------------
+
+
+def _c5_seed_phase7_trade(
+    cfg, *, ticker: str, state: str = "entered",
+    premortem_technical: str | None = "False breakout below pivot.",
+    thesis: str = "Trend continuation post-VCP base.",
+    market_regime: str = "Bullish",
+    catalyst: str = "technical_only",
+    trade_origin: str = "pipeline_watch_manual",
+    pre_trade_locked_at: str = "2026-04-15T16:00:00",
+) -> int:
+    """Seed a Phase 7 trade with the 18 pre-trade fields populated.
+
+    Bypasses ``record_entry`` because that path requires PriceCache and a
+    watchlist row; tests just need a row in the ``trades`` table for the
+    GET route to render. Returns the new trade_id.
+    """
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            tid = insert_trade_with_event(conn, Trade(
+                id=None, ticker=ticker, entry_date="2026-04-15",
+                entry_price=100.0, initial_shares=10, initial_stop=90.0,
+                current_stop=90.0, state=state,
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+                trade_origin=trade_origin,
+                pre_trade_locked_at=pre_trade_locked_at,
+                current_size=10.0,
+                thesis=thesis,
+                why_now="Volume contraction tightening.",
+                invalidation_condition="Close below initial stop ends thesis.",
+                expected_scenario="+15% target over 4-6 weeks.",
+                premortem_technical=premortem_technical,
+                premortem_market_sector="Sector rotation.",
+                premortem_execution="Slippage on thin pre-market fill.",
+                event_risk_present=0,
+                gap_risk_present=0,
+                emotional_state_pre_trade='["calm"]',
+                market_regime=market_regime,
+                catalyst=catalyst,
+            ), event_ts="2026-04-15T16:00:00")
+    finally:
+        conn.close()
+    return tid
+
+
+def _c5_seed_legacy_trade(
+    cfg, *, ticker: str, state: str = "entered",
+) -> int:
+    """Seed a legacy (pre-Phase-7) trade where the 18 pre-trade fields are
+    NULL. Discriminating: spec §11.4 requires the Pre-Trade Decision section
+    to be HIDDEN on legacy rows.
+    """
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            tid = insert_trade_with_event(conn, Trade(
+                id=None, ticker=ticker, entry_date="2026-04-15",
+                entry_price=100.0, initial_shares=10, initial_stop=90.0,
+                current_stop=90.0, state=state,
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+                trade_origin="manual_off_pipeline",
+                pre_trade_locked_at="2026-04-15T16:00:00",
+                current_size=10.0,
+                # All 18 pre-trade fields default to None on the dataclass —
+                # leaving them unset persists NULL in the trades row.
+            ), event_ts="2026-04-15T16:00:00")
+    finally:
+        conn.close()
+    return tid
+
+
+def test_c5_trade_detail_route_renders_for_existing_trade(seeded_db):
+    """GET /trades/{id} → 200 + ticker shown."""
+    cfg, cfg_path = seeded_db
+    tid = _c5_seed_phase7_trade(cfg, ticker="C5OK")
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{tid}")
+    assert r.status_code == 200, (
+        f"GET /trades/{tid} must return 200; got {r.status_code}: "
+        f"{r.text[:300]!r}"
+    )
+    assert "C5OK" in r.text
+    # Trade #N header must appear:
+    assert f"#{tid}" in r.text
+
+
+def test_c5_trade_detail_route_404_for_nonexistent(seeded_db):
+    """Unknown trade_id → 404 (not 500)."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/99999")
+    assert r.status_code == 404
+
+
+def test_c5_trade_detail_shows_pre_trade_section_for_phase7_trade(seeded_db):
+    """premortem_technical IS NOT NULL → Pre-Trade Decision section RENDERED.
+
+    Discriminating: pre-C.5 the route + template don't exist; even if a
+    bare summary page were stubbed without the {% if has_pre_trade_data %}
+    guard for an empty section, this test would still fail because the
+    template must echo the operator's typed thesis and lock indicator.
+    """
+    cfg, cfg_path = seeded_db
+    tid = _c5_seed_phase7_trade(
+        cfg, ticker="C5PT",
+        thesis="my-thesis-text-C5",
+        premortem_technical="risk-A",
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{tid}")
+    assert r.status_code == 200
+    text = r.text
+    assert "Pre-Trade Decision" in text
+    assert "my-thesis-text-C5" in text
+    # Lock indicator (icon entity OR text):
+    assert "&#128274;" in text or "Locked at" in text
+
+
+def test_c5_trade_detail_hides_pre_trade_section_for_legacy_null(seeded_db):
+    """Spec §11.4: premortem_technical IS NULL → section HIDDEN entirely.
+
+    Discriminating: legacy trades pre-Phase-7 have NULL premortem_technical
+    and the operator should NOT see an empty/placeholder section. Under a
+    buggy template (no {% if vm.has_pre_trade_data %} guard), the section
+    would render with empty <dd> elements and "Pre-Trade Decision" would
+    appear in the response.
+    """
+    cfg, cfg_path = seeded_db
+    tid = _c5_seed_legacy_trade(cfg, ticker="C5LEG")
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{tid}")
+    assert r.status_code == 200
+    text = r.text
+    assert "Pre-Trade Decision" not in text, (
+        "Legacy trade (premortem_technical IS NULL) must HIDE the "
+        "Pre-Trade Decision section entirely (spec §11.4). Found the "
+        "section heading in response — has_pre_trade_data guard missing "
+        "or bypassed."
+    )
+
+
+def test_c5_trade_detail_renders_audit_log_empty_state(seeded_db):
+    """V1 has no edit-after-lock UI → audit_entries is empty → empty-state
+    message rendered (not omitted)."""
+    cfg, cfg_path = seeded_db
+    tid = _c5_seed_phase7_trade(cfg, ticker="C5AUD")
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{tid}")
+    assert r.status_code == 200
+    text = r.text
+    # Audit-log section header rendered (gated on has_pre_trade_data, which
+    # is True for this seeded row).
+    assert "Audit log" in text, (
+        "Audit-log header must render even when no edits exist (spec §11.4)"
+    )
+    # Empty-state message present:
+    assert "No edits since lock." in text
+
+
+def test_c5_trade_detail_state_badge_rendered(seeded_db):
+    """Phase 7 state badge visible at top of detail page."""
+    cfg, cfg_path = seeded_db
+    tid = _c5_seed_phase7_trade(cfg, ticker="C5BDG", state="managing")
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{tid}")
+    assert r.status_code == 200
+    text = r.text
+    # Either the CSS class with the state, or the human label, or both:
+    assert 'class="state-badge state-managing"' in text or "Managing" in text
+
+
+def test_c5_trade_detail_route_does_not_shadow_existing_subroutes(
+    seeded_db, monkeypatch,
+):
+    """Discriminating: registering /trades/{trade_id} after the more-specific
+    routes (entry/form, exit/form, stop/form, expand, review) prevents URL-
+    pattern shadowing. Pre-fix order check: if /trades/{trade_id} were
+    registered FIRST, FastAPI would match /trades/entry/form to trade_detail
+    with trade_id="entry" → 422 (int conversion fails) or wrong route →
+    test fails.
+    """
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C5SDW")
+    _c3_patch_pricecache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=C5SDW")
+    assert r.status_code == 200, (
+        f"GET /trades/entry/form must STILL resolve to entry_form (not "
+        f"shadowed by /trades/{{trade_id}}); got status {r.status_code}, "
+        f"text {r.text[:300]!r}"
+    )
+    # Form fieldsets render — proves /trades/entry/form did NOT route to
+    # the trade-detail handler (which would render an entirely different
+    # page without the form ticker):
+    assert "C5SDW" in r.text
+    assert 'name="thesis"' in r.text  # form-only field, not in detail page
+
+
+def test_c5_trade_detail_renders_all_5_base_layout_safe_defaults(seeded_db):
+    """Defensive: TradeDetailVM must carry the 5 base-layout safe defaults
+    (CLAUDE.md base-layout VM rule — session_date, stale_banner,
+    price_source_degraded, price_source_degraded_until, ohlcv_source_degraded).
+    Without them, base.html.j2's {% if vm.foo %} dereferences raise
+    UndefinedError → 500. This test discriminates by hitting a route whose
+    template extends base.html.j2; a successful 200 means the base layout
+    rendered without UndefinedError on any of the 5 fields.
+    """
+    cfg, cfg_path = seeded_db
+    tid = _c5_seed_phase7_trade(cfg, ticker="C5BSE")
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{tid}")
+    # If any of the 5 safe defaults were missing, Jinja would raise
+    # UndefinedError at render time and the response would be 500.
+    assert r.status_code == 200, (
+        f"GET /trades/{tid} must return 200; a 500 here means a base-layout "
+        f"VM field is missing on TradeDetailVM (CLAUDE.md base-layout rule). "
+        f"Got: {r.text[:300]!r}"
+    )
+    # Also check the topbar nav links rendered (proves base.html.j2 ran to
+    # completion, not just the {% block content %} body):
+    assert "Dashboard" in r.text
+    assert "Watchlist" in r.text
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-C C.7 — route state-aware predicate rewrites + base-layout VM
+# no-regression check.
+# ---------------------------------------------------------------------------
+
+
+def _c7_seed_trade(
+    cfg, *, ticker: str, state: str = "entered",
+    reviewed_at: str | None = None,
+) -> int:
+    """Seed a single trade row with a chosen lifecycle state.
+
+    Bypasses ``record_entry`` because tests just need a row in the trades
+    table for route-precondition checks. Returns the new trade_id.
+
+    For state='reviewed' the row is seeded with reviewed_at populated (the
+    Phase 7 schema permits it without a CHECK enforcing the cross-field tie,
+    but we set it for realism + so the predicate-discriminator test is
+    unambiguous).
+    """
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            tid = insert_trade_with_event(conn, Trade(
+                id=None, ticker=ticker, entry_date="2026-04-15",
+                entry_price=100.0, initial_shares=10, initial_stop=90.0,
+                current_stop=90.0, state=state,
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+                trade_origin="manual_off_pipeline",
+                pre_trade_locked_at="2026-04-15T16:00:00",
+                current_size=10.0,
+                reviewed_at=reviewed_at,
+            ), event_ts="2026-04-15T16:00:00")
+    finally:
+        conn.close()
+    return tid
+
+
+# --- Line ~989: trade_cancel GET /trades/{id}/cancel (active-trade) ---
+
+
+def test_c7_cancel_route_managing_state_accepted(seeded_db, monkeypatch):
+    """state='managing' is active — GET /cancel proceeds (200, normal row)."""
+    from datetime import datetime
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    tid = _c7_seed_trade(cfg, ticker="C7CMG", state="managing")
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            "C7CMG": PriceSnapshot(
+                ticker="C7CMG", price=105.0, asof=datetime.now(),
+                is_stale=False, source="live",
+            ),
+        })
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{tid}/cancel",
+                       headers={"HX-Request": "true"})
+    # Pre-fix (status != 'open'): trade.status no longer exists on Phase 7
+    # rows → AttributeError or always-True predicate → 404 or 500. Post-fix:
+    # state in _ACTIVE_STATES → 200.
+    assert r.status_code == 200, (
+        f"managing IS active — cancel route must accept; got {r.status_code} "
+        f"text={r.text[:200]!r}"
+    )
+
+
+def test_c7_cancel_route_partial_exited_state_accepted(
+    seeded_db, monkeypatch,
+):
+    """state='partial_exited' is active — cancel proceeds."""
+    from datetime import datetime
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    tid = _c7_seed_trade(cfg, ticker="C7CPE", state="partial_exited")
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            "C7CPE": PriceSnapshot(
+                ticker="C7CPE", price=105.0, asof=datetime.now(),
+                is_stale=False, source="live",
+            ),
+        })
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{tid}/cancel",
+                       headers={"HX-Request": "true"})
+    assert r.status_code == 200
+
+
+def test_c7_cancel_route_closed_state_rejected(seeded_db):
+    """state='closed' is NOT active — cancel must 404."""
+    cfg, cfg_path = seeded_db
+    tid = _c7_seed_trade(cfg, ticker="C7CCL", state="closed")
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{tid}/cancel",
+                       headers={"HX-Request": "true"})
+    assert r.status_code == 404
+
+
+# --- Line ~1046: stop_post inner trade_check guard (active-trade) ---
+
+
+def test_c7_stop_post_partial_exited_state_accepted(seeded_db):
+    """state='partial_exited' is active — stop POST passes the precondition.
+
+    Discriminating: pre-fix the predicate was ``trade_check.status != 'open'``
+    which would AttributeError on a Phase 7 row (no status column). Post-fix
+    it's ``state not in _ACTIVE_STATES`` and partial_exited IS in the set →
+    guard does NOT fire. The downstream service-layer check accepts a
+    partial_exited trade for stop adjusts; expect 200/400 (not 404).
+    """
+    cfg, cfg_path = seeded_db
+    tid = _c7_seed_trade(cfg, ticker="C7SPE", state="partial_exited")
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{tid}/stop",
+            headers={"HX-Request": "true",
+                     "HX-Target": f"open-position-{tid}"},
+            data={"new_stop": "95.00", "rationale": "manual-trail"},
+        )
+    # Precondition guard must NOT 404 a partial_exited trade.
+    assert r.status_code != 404, (
+        f"partial_exited IS active — stop POST precondition must NOT 404; "
+        f"got {r.status_code} text={r.text[:200]!r}"
+    )
+
+
+def test_c7_stop_post_closed_state_rejected(seeded_db):
+    """state='closed' is NOT active — stop POST returns 404."""
+    cfg, cfg_path = seeded_db
+    tid = _c7_seed_trade(cfg, ticker="C7SCL", state="closed")
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{tid}/stop",
+            headers={"HX-Request": "true",
+                     "HX-Target": f"open-position-{tid}"},
+            data={"new_stop": "95.00", "rationale": "manual-trail"},
+        )
+    assert r.status_code == 404
+
+
+# --- Line ~1227: review_post precondition (closed-but-not-reviewed) ---
+
+
+def test_c7_review_post_closed_state_accepted(seeded_db):
+    """state='closed' (not yet reviewed) — review POST proceeds past 404 guard.
+
+    The handler may still 400 on missing/invalid form fields, or 204 on
+    success, but it must NOT 404 the precondition. Discriminating: pre-fix
+    `trade.status != 'closed'` would AttributeError on Phase 7 rows; post-fix
+    `trade.state != 'closed'` evaluates False (predicate doesn't fire) and
+    the handler proceeds to review-business-logic.
+    """
+    cfg, cfg_path = seeded_db
+    tid = _c7_seed_trade(cfg, ticker="C7RCL", state="closed")
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{tid}/review",
+            headers={"HX-Request": "true"},
+            data={
+                "entry_grade": "A", "management_grade": "A",
+                "exit_grade": "A", "lesson_learned": "Solid entry.",
+                "mistake_tags": "none_observed",
+            },
+        )
+    assert r.status_code != 404, (
+        f"closed-and-unreviewed must pass the 404 precondition guard; "
+        f"got {r.status_code} text={r.text[:200]!r}"
+    )
+
+
+def test_c7_review_post_reviewed_state_rejected(seeded_db):
+    """state='reviewed' MUST 404 the precondition.
+
+    Discriminating: under buggy `state not in ('closed','reviewed')`,
+    'reviewed' IS in the set → predicate False → guard does NOT fire →
+    handler proceeds against an already-reviewed trade. Under correct
+    `state != 'closed'`: 'reviewed' != 'closed' is True → guard fires → 404.
+
+    (Note: even if the precondition were broadened, the handler's later
+    `reviewed_at is not None` check would catch this with a 409 — but that
+    is a defense-in-depth fallback. The PRECONDITION must reject 'reviewed'
+    at the gate to keep the spec contract clean.)
+    """
+    cfg, cfg_path = seeded_db
+    tid = _c7_seed_trade(
+        cfg, ticker="C7RRV", state="reviewed",
+        reviewed_at="2026-04-30T16:00:00",
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{tid}/review",
+            headers={"HX-Request": "true"},
+            data={
+                "entry_grade": "A", "management_grade": "A",
+                "exit_grade": "A", "lesson_learned": "n/a",
+                "mistake_tags": "none_observed",
+            },
+        )
+    assert r.status_code == 404, (
+        f"reviewed state must be rejected by precondition; got "
+        f"{r.status_code} text={r.text[:200]!r}"
+    )
+
+
+def test_c7_review_post_managing_state_rejected(seeded_db):
+    """state='managing' is NOT closed — review POST must 404.
+
+    Sanity case for the closed-but-not-reviewed predicate.
+    """
+    cfg, cfg_path = seeded_db
+    tid = _c7_seed_trade(cfg, ticker="C7RMG", state="managing")
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{tid}/review",
+            headers={"HX-Request": "true"},
+            data={
+                "entry_grade": "A", "management_grade": "A",
+                "exit_grade": "A", "lesson_learned": "n/a",
+                "mistake_tags": "none_observed",
+            },
+        )
+    assert r.status_code == 404
+
+
+# --- Line ~1343: open_position_row GET /trades/open/{id}/row (active) ---
+
+
+def test_c7_open_position_row_managing_accepted(seeded_db, monkeypatch):
+    """state='managing' is active — open-positions row partial returns 200."""
+    from datetime import datetime
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    tid = _c7_seed_trade(cfg, ticker="C7ORM", state="managing")
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            "C7ORM": PriceSnapshot(
+                ticker="C7ORM", price=105.0, asof=datetime.now(),
+                is_stale=False, source="live",
+            ),
+        })
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/open/{tid}/row",
+                       headers={"HX-Request": "true"})
+    assert r.status_code == 200
+
+
+def test_c7_open_position_row_closed_rejected(seeded_db):
+    """state='closed' is NOT active — open-position row endpoint 404s."""
+    cfg, cfg_path = seeded_db
+    tid = _c7_seed_trade(cfg, ticker="C7ORC", state="closed")
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/open/{tid}/row",
+                       headers={"HX-Request": "true"})
+    assert r.status_code == 404
+
+
+# --- Base-layout VM no-regression check (spec §11.5 + plan §6 C.7 step 3) ---
+
+
+def test_c7_base_layout_does_not_dereference_phase7_specific_fields():
+    """Spec §11.5 verification: Phase 7 does NOT add base-layout-dereferenced
+    fields. If a future change starts dereferencing `vm.state` or
+    `vm.has_pre_trade_data` etc. from base.html.j2, EVERY base-layout VM
+    must gain that field — caught by this test failing.
+    """
+    from pathlib import Path
+    base_layout = Path(
+        "swing/web/templates/base.html.j2"
+    ).read_text(encoding="utf-8")
+    for forbidden_attr in (
+        "vm.state",
+        "vm.has_pre_trade_data",
+        "vm.trade_origin",
+        "vm.thesis",
+        "vm.state_badge_label",
+    ):
+        assert forbidden_attr not in base_layout, (
+            f"base.html.j2 dereferences {forbidden_attr!r} — every "
+            f"base-layout VM (DashboardVM, PipelineVM, JournalVM, "
+            f"WatchlistVM, PageErrorVM, ReviewVM, CadenceCompleteVM, "
+            f"ReviewsPendingVM, TradeDetailVM) must gain that field with "
+            f"a safe default."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-C C.8 — pre-trade gate failure rendering consistency across
+# the 3 entry surfaces (web watchlist origin, web hyp-recs origin, CLI).
+#
+# Architecture finding (recorded in commit body): the plan's implementation
+# sketch said "Hyp-recs route (existing route handler in
+# swing/web/routes/recommendations.py — adjust path; this Phase 7 task
+# expands the existing handler)." THIS WAS STALE. There is no POST handler
+# for hyp-recs trade entry in `swing/web/routes/recommendations.py`; the
+# hyp-recs "Take this trade" link navigates to GET
+# `/trades/entry/form?ticker=X&origin=hyp-recs` and the submit POSTs to the
+# SAME `/trades/entry` handler that watchlist origin uses. The `origin`
+# discriminator threads through `_coerce_origin` + `build_entry_form_vm` +
+# `_rerender_entry_form_with_error` (added in Task 8 / R4-Major-1). So the
+# cross-surface "consistency" is structural — both origins go through the
+# same MissingPreTradeFieldsException catch path.
+#
+# C.8's job is therefore to PIN that consistency with discriminating tests.
+# CLI parity is already covered by Sub-B B.8's
+# `test_cli_trade_entry_rejects_missing_thesis`; we add a smoke-pin here
+# that confirms the catalog is complete.
+# ---------------------------------------------------------------------------
+
+
+def test_c8_hyp_recs_origin_missing_thesis_returns_400_same_as_watchlist(
+    seeded_db, monkeypatch,
+):
+    """Cross-surface consistency: hyp-recs origin and watchlist origin
+    must both produce 400 + same canonical missing-fields banner format
+    when MissingPreTradeFieldsException fires.
+
+    Discriminating: under buggy code that diverged on ``origin=hyp-recs``
+    (e.g., dropped the gate, returned 500, or used a different banner
+    template), this test would fail because one of the responses would
+    not match. Because both paths share the SAME
+    `_rerender_entry_form_with_error` helper + 400 status under the
+    current architecture, the test passes.
+    """
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C8X")
+    _t5_seed_hyp_recs_aplus_candidate(cfg, ticker="C8X")
+    _c3_patch_pricecache(monkeypatch)
+
+    data_watchlist = _c3_all_18_fields(ticker="C8X")
+    data_watchlist.pop("thesis")
+    data_watchlist["origin"] = "watchlist"
+
+    data_hyp_recs = _c3_all_18_fields(ticker="C8X")
+    data_hyp_recs.pop("thesis")
+    data_hyp_recs["origin"] = "hyp-recs"
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r_w = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"}, data=data_watchlist,
+        )
+        r_h = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"}, data=data_hyp_recs,
+        )
+
+    # Both surfaces yield 400 (not 500 / 422 / 200):
+    assert r_w.status_code == 400, (
+        f"watchlist-origin missing-thesis must return 400; got "
+        f"{r_w.status_code}: {r_w.text[:300]!r}"
+    )
+    assert r_h.status_code == 400, (
+        f"hyp-recs-origin missing-thesis must return 400; got "
+        f"{r_h.status_code}: {r_h.text[:300]!r}"
+    )
+    # Both surfaces use the canonical banner format (same wording):
+    canonical = "missing required pre-trade fields"
+    assert canonical in r_w.text.lower(), (
+        f"watchlist banner missing canonical phrase {canonical!r}: "
+        f"{r_w.text[:300]!r}"
+    )
+    assert canonical in r_h.text.lower(), (
+        f"hyp-recs banner missing canonical phrase {canonical!r}: "
+        f"{r_h.text[:300]!r}"
+    )
+    # Both surfaces name the missing field by name in the banner:
+    assert "thesis" in r_w.text.lower()
+    assert "thesis" in r_h.text.lower()
+
+
+def test_c8_hyp_recs_origin_missing_thesis_marks_field_with_error_class(
+    seeded_db, monkeypatch,
+):
+    """Cross-surface consistency: hyp-recs origin re-renders the FULL
+    form with the per-field error class on the missing input — same
+    contract as watchlist origin (verified by C.4's
+    test_c4_entry_form_post_missing_thesis_marks_field_with_error_class).
+
+    Discriminating: a regression that branched on origin in the catch path
+    (e.g., banner-only fragment for hyp-recs but full re-render for
+    watchlist) would fail this test. The shared
+    `_rerender_entry_form_with_error` + `build_entry_form_vm(origin=...)`
+    plumbing means both origins traverse the same template.
+    """
+    import re
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C8FE")
+    _t5_seed_hyp_recs_aplus_candidate(cfg, ticker="C8FE")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C8FE")
+    data.pop("thesis")
+    data["origin"] = "hyp-recs"
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"}, data=data,
+        )
+    assert r.status_code == 400
+    m = re.search(r'<textarea[^>]*name="thesis"[^>]*>', r.text)
+    assert m is not None, (
+        f"hyp-recs re-render must contain the thesis textarea (full form "
+        f"re-render, not banner-only). Body[:600]={r.text[:600]!r}"
+    )
+    assert 'class="field-error"' in m.group(0), (
+        f"hyp-recs re-render must mark the thesis textarea with "
+        f"class='field-error' identical to watchlist origin "
+        f"(C.4 contract). Got tag {m.group(0)!r}."
+    )
+
+
+def test_c8_hyp_recs_origin_missing_thesis_preserves_typed_why_now(
+    seeded_db, monkeypatch,
+):
+    """Cross-surface consistency: hyp-recs origin draft preservation
+    (operator's typed why_now round-trips back into the textarea body
+    via `vm.draft_why_now`) — same contract as watchlist origin
+    (C.4 test_c4_entry_form_post_missing_thesis_preserves_typed_why_now).
+
+    Discriminating: a regression that bypassed the dataclass-replace
+    draft-preservation block on the hyp-recs branch would clear typed
+    fields. Architecture today shares the same code path so the
+    operator's typing survives the gate-fail re-render.
+    """
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C8DR")
+    _t5_seed_hyp_recs_aplus_candidate(cfg, ticker="C8DR")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C8DR")
+    data.pop("thesis")
+    sentinel = "OPERATOR_TYPED_WHY_NOW_HYP_RECS_C8"
+    data["why_now"] = sentinel
+    data["origin"] = "hyp-recs"
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"}, data=data,
+        )
+    assert r.status_code == 400
+    assert sentinel in r.text, (
+        f"hyp-recs origin draft-preservation regression: typed why_now "
+        f"value {sentinel!r} did not round-trip back into re-rendered "
+        f"form. Body[:600]={r.text[:600]!r}"
+    )
+
+
+def test_c8_missing_multiple_fields_banner_lists_all_missing(
+    seeded_db, monkeypatch,
+):
+    """Discriminating: under buggy code that reported only the first
+    missing field (e.g., early-return on first `not value` check), only
+    'thesis' would appear in the banner. Correct code enumerates ALL
+    missing fields in the message body; multiple field names appear.
+
+    Pins the consistency principle that the gate's exception payload
+    drives the banner enumeration — important for both surfaces because
+    the operator should fix all missing fields in one round trip rather
+    than discovering them sequentially.
+    """
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C8MM")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C8MM")
+    # Drop 3 distinct fields to discriminate first-only enumeration:
+    data.pop("thesis")
+    data.pop("why_now")
+    data.pop("invalidation_condition")
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"}, data=data,
+        )
+    assert r.status_code == 400
+    text = r.text.lower()
+    # All three missing field names must appear in the response body
+    # (banner OR per-field error markers; both are acceptable since the
+    # full form re-renders with the missing-fields set populated):
+    assert "thesis" in text, (
+        f"missing field 'thesis' must surface; body[:600]={text[:600]!r}"
+    )
+    assert "why_now" in text, (
+        f"missing field 'why_now' must surface (NOT just the first-listed "
+        f"field). Discriminating against early-return-after-first bug. "
+        f"body[:600]={text[:600]!r}"
+    )
+    assert "invalidation_condition" in text, (
+        f"missing field 'invalidation_condition' must surface. "
+        f"body[:600]={text[:600]!r}"
+    )
+
+
+def test_c8_recommendations_route_exposes_no_post_entry_handler():
+    """Architecture pin: hyp-recs trade entry MUST flow through the shared
+    `/trades/entry` POST handler — there must be NO competing POST handler
+    in `swing/web/routes/recommendations.py` that would diverge from the
+    watchlist-origin gate path.
+
+    Discriminating: if a future refactor splits the hyp-recs surface into
+    its own POST handler, the cross-surface consistency contract this
+    task pins becomes load-bearing on TWO handlers staying in sync. This
+    test catches that split at architecture level so the next maintainer
+    is forced to update the consistency tests above (or rejoin the
+    surfaces).
+    """
+    from pathlib import Path
+    src = Path("swing/web/routes/recommendations.py").read_text(encoding="utf-8")
+    # No @router.post decorator targeting an entry path:
+    assert "@router.post" not in src or "/entry" not in src, (
+        "recommendations.py must not register a POST handler for trade "
+        "entry; the shared /trades/entry handler in trades.py owns both "
+        "watchlist and hyp-recs origins. Found POST handler — re-evaluate "
+        "C.8's consistency tests."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-C C.10 — sizing-hint route migrates the C.1-deferred
+# list_all_exits site onto _list_all_exitshape_via_fills (imported from
+# the view-models layer). Discriminating: with realized PnL seeded via
+# non-entry fills, the sizing hint reflects the larger equity.
+# ---------------------------------------------------------------------------
+
+
+def test_c10_sizing_hint_consumes_fills_for_equity(seeded_db):
+    """C.10: GET /trades/entry/sizing-hint computes equity through the
+    C.10 view_models/trades._list_all_exitshape_via_fills helper.
+    Discriminating against (a) helper not threaded through (would still
+    see baseline equity from cfg.account.starting_equity and the floor)
+    and (b) helper returning empty (equity = starting_equity, smaller
+    suggested shares).
+
+    Uses entry=10, stop=9 so rps=$1 → shares = floor(equity*risk_pct/$1).
+    With test config (starting=$1200, max_risk_pct=0.005), baseline equity
+    yields ~6 shares. After seeding $20k of realized PnL via a non-entry
+    fill, equity grows to ~$21,200; max_risk_dollars = ~$106; shares =
+    ~106. So the post-fill response should mention significantly more
+    shares than the baseline.
+    """
+    from swing.data.db import connect
+    from swing.data.models import Fill, Trade
+    from swing.data.repos.fills import insert_fill_with_event
+    from swing.data.repos.trades import insert_trade_with_event
+
+    cfg, cfg_path = seeded_db
+
+    # Baseline call — no realized PnL.
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        baseline = client.get(
+            "/trades/entry/sizing-hint?entry_price=10.0&initial_stop=9.0"
+        )
+    assert baseline.status_code == 200
+    baseline_text = baseline.text
+
+    # Seed a closed trade with $20k realized PnL via non-entry fill.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            trade_id = insert_trade_with_event(
+                conn,
+                Trade(
+                    id=None, ticker="ZZZ", entry_date="2026-04-15",
+                    entry_price=100.0, initial_shares=200,
+                    initial_stop=90.0, current_stop=90.0,
+                    state="entered",
+                    watchlist_entry_target=None,
+                    watchlist_initial_stop=None, notes=None,
+                ),
+                event_ts="2026-04-15T09:30:00",
+            )
+            insert_fill_with_event(
+                conn,
+                Fill(
+                    fill_id=None, trade_id=trade_id,
+                    fill_datetime="2026-04-29T16:00:00",
+                    action="exit", quantity=200, price=200.0,
+                    reason="target",
+                ),
+                event_ts="2026-04-29T16:00:00",
+            )
+            conn.execute(
+                "UPDATE trades SET state='closed' WHERE id=?",
+                (trade_id,),
+            )
+    finally:
+        conn.close()
+
+    # Post-PnL call.
+    app2 = create_app(cfg, cfg_path)
+    with TestClient(app2) as client:
+        after = client.get(
+            "/trades/entry/sizing-hint?entry_price=10.0&initial_stop=9.0"
+        )
+    assert after.status_code == 200
+    # The response shape includes the suggested shares; assert it grew.
+    # Both responses are 200 with a numbers fragment; the cheap discriminator
+    # is "the response text changed" (different shares produces different
+    # output).
+    assert after.text != baseline_text, (
+        "C.10 sizing-hint route equity computation should reflect a "
+        "$20k realized-PnL exit fill. Baseline and post-fill response "
+        "are identical, suggesting the route did not see the new fill — "
+        "the migration helper may have returned empty. Baseline text:\n"
+        f"{baseline_text!r}\nAfter:\n{after.text!r}"
     )

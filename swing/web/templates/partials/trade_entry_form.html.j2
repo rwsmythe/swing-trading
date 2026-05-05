@@ -1,5 +1,18 @@
 {#- Trade entry form — swaps into a watchlist row.
-    Expects: vm (TradeEntryFormVM), error_message (optional str) -#}
+
+    Phase 7 Sub-C C.4: 7 sectioned <fieldset> blocks per spec §11.1
+    (single-page; no JS accordion; operator scrolls). Field-level error
+    markers driven by `vm.missing_fields` (frozenset[str]); draft
+    preservation via `vm.draft_*` fields populated by the route's
+    MissingPreTradeFieldsException catch path.
+
+    Expects:
+      - vm (TradeEntryFormVM) — REQUIRED
+      - error_message (optional str) — banner displayed at top of form td
+-#}
+{%- macro err_class(name) -%}
+{% if name in vm.missing_fields %} class="field-error"{% endif %}
+{%- endmacro -%}
 <tr id="entry-form-{{ vm.ticker }}">
   <td colspan="{{ 9 if vm.origin == 'hyp-recs' else 8 }}">
     {% if error_message %}<div class="banner banner-degraded" role="alert">{{ error_message }}</div>{% endif %}
@@ -8,69 +21,224 @@
           hx-headers='{"HX-Request": "true"}'>
       <input type="hidden" name="ticker" value="{{ vm.ticker }}">
       <input type="hidden" name="origin" value="{{ vm.origin }}">
-      <div><label>Ticker</label>
-        <span>{{ vm.ticker }}</span></div>
-      <div><label>Entry date</label>
-        <input type="date" name="entry_date" value="{{ vm.entry_date }}" required></div>
-      <div><label>Entry price</label>
-        <input type="number" step="0.01" min="0" name="entry_price"
-               value="{{ '%.2f' | format(vm.entry_price) }}" required></div>
-      <div><label>Shares</label>
-        <input type="number" step="1" min="1" name="shares"
-               value="{{ vm.input_shares if vm.input_shares else vm.suggested_shares }}" required>
-        <span id="sizing-hint"
-              hx-get="/trades/entry/sizing-hint"
-              hx-trigger="change from:input[name=entry_price],input[name=initial_stop] delay:200ms"
-              hx-include="closest form"
-              hx-target="this"
-              hx-swap="outerHTML">
-          {% if vm.suggested_shares > 0 %}
-            Suggested max: <strong>{{ vm.suggested_shares }} sh</strong>
-            (~${{ '%.2f' | format(vm.risk_dollars) }} risk =
-            {{ '%.2f' | format(vm.risk_pct) }}%)
-          {% else %}
-            <span class="subtitle">Enter a valid entry price and stop to see sizing</span>
+
+      {#- §1 Position basics -#}
+      <fieldset class="entry-section entry-section-position-basics">
+        <legend>Position basics</legend>
+        <div><label>Ticker</label>
+          <span>{{ vm.ticker }}</span></div>
+        <div><label>Entry date</label>
+          <input type="date" name="entry_date" value="{{ vm.entry_date }}" required></div>
+        <div><label>Entry price</label>
+          <input type="number" step="0.01" min="0" name="entry_price"
+                 value="{{ '%.2f' | format(vm.entry_price) }}" required></div>
+        <div><label>Shares</label>
+          <input type="number" step="1" min="1" name="shares"
+                 value="{{ vm.input_shares if vm.input_shares else vm.suggested_shares }}" required>
+          <span id="sizing-hint"
+                hx-get="/trades/entry/sizing-hint"
+                hx-trigger="change from:input[name=entry_price],input[name=initial_stop] delay:200ms"
+                hx-include="closest form"
+                hx-target="this"
+                hx-swap="outerHTML">
+            {% if vm.suggested_shares > 0 %}
+              Suggested max: <strong>{{ vm.suggested_shares }} sh</strong>
+              (~${{ '%.2f' | format(vm.risk_dollars) }} risk =
+              {{ '%.2f' | format(vm.risk_pct) }}%)
+            {% else %}
+              <span class="subtitle">Enter a valid entry price and stop to see sizing</span>
+            {% endif %}
+          </span></div>
+        <div><label>Initial stop</label>
+          <input type="number" step="0.01" min="0" name="initial_stop"
+                 value="{{ '%.2f' | format(vm.initial_stop) }}" required></div>
+        {% if vm.watchlist_entry_target is not none %}
+        <div><label>Watchlist target</label>
+          <input type="hidden" name="watchlist_target" value="{{ vm.watchlist_entry_target }}">
+          <span>${{ '%.2f' | format(vm.watchlist_entry_target) }}</span></div>
+        {% endif %}
+        {% if vm.watchlist_initial_stop is not none %}
+          <input type="hidden" name="watchlist_stop" value="{{ vm.watchlist_initial_stop }}">
+        {% endif %}
+      </fieldset>
+
+      {#- §2 Setup attribution -#}
+      <fieldset class="entry-section entry-section-setup-attribution">
+        <legend>Setup attribution</legend>
+        {% include "partials/trade_entry_chart_pattern_section.html.j2" %}
+        <div><label>Sector:</label>
+          <span>{{ vm.sector or "—" }}</span>
+          <input type="hidden" name="sector" value="{{ vm.sector }}">
+        </div>
+        <div><label>Industry:</label>
+          <span>{{ vm.industry or "—" }}</span>
+          <input type="hidden" name="industry" value="{{ vm.industry }}">
+        </div>
+        <div><label>Hypothesis:</label>
+          <span>{{ vm.hypothesis_label or "(none)" }}</span>
+          <input type="hidden" name="hypothesis_label" value="{{ vm.hypothesis_label or '' }}">
+        </div>
+        <div><label>Trade origin:</label>
+          {#- Display-only; auto-derived in record_entry. The hidden form
+              field is intentionally NOT emitted — record_entry derives
+              trade_origin from EntryPath + hypothesis_label, so a posted
+              value would be silently overridden. Render as <output> for
+              accessibility per spec §11.1 (display-only). -#}
+          <output class="subtitle">auto-derived</output>
+        </div>
+        <div><label>Rationale &#9733;</label>
+          <select name="rationale" required
+                  onchange="var h=this.form.querySelector('.rationale-other-hint'); if(h){h.style.display=(this.value==='other')?'inline':'none';}">
+            <option value="">(select one)</option>
+            {% for value, label in vm.rationale_options %}
+              <option value="{{ value }}"{% if value == vm.rationale %} selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select></div>
+      </fieldset>
+
+      {#- §3 Pre-trade thesis -#}
+      <fieldset class="entry-section entry-section-thesis">
+        <legend>Pre-trade thesis</legend>
+        <div><label>Thesis</label>
+          <textarea name="thesis"{{ err_class('thesis') }}>{{ vm.draft_thesis }}</textarea></div>
+        <div><label>Why now</label>
+          <textarea name="why_now"{{ err_class('why_now') }}>{{ vm.draft_why_now }}</textarea></div>
+        <div><label>Expected scenario</label>
+          <textarea name="expected_scenario"{{ err_class('expected_scenario') }}>{{ vm.draft_expected_scenario }}</textarea></div>
+        <div><label>Invalidation condition</label>
+          <textarea name="invalidation_condition"{{ err_class('invalidation_condition') }}>{{ vm.draft_invalidation_condition }}</textarea></div>
+      </fieldset>
+
+      {#- §4 Premortem -#}
+      <fieldset class="entry-section entry-section-premortem">
+        <legend>Premortem</legend>
+        <div><label>Technical failure mode</label>
+          <textarea name="premortem_technical"{{ err_class('premortem_technical') }}>{{ vm.draft_premortem_technical }}</textarea></div>
+        <div><label>Market / sector failure mode</label>
+          <textarea name="premortem_market_sector"{{ err_class('premortem_market_sector') }}>{{ vm.draft_premortem_market_sector }}</textarea></div>
+        <div><label>Execution failure mode</label>
+          <textarea name="premortem_execution"{{ err_class('premortem_execution') }}>{{ vm.draft_premortem_execution }}</textarea></div>
+        <div><label>Additional risks (optional)</label>
+          <textarea name="premortem_additional">{{ vm.draft_premortem_additional }}</textarea></div>
+      </fieldset>
+
+      {#- §5 Risk acknowledgments. V1: always-visible if-then conditional
+          inputs (no HTMX progressive disclosure; that's V2). The validator's
+          conditional rule fires if event_risk_present=1 with empty
+          event_handling/event_type/event_date.
+
+          event_risk_present / gap_risk_present rendered as a No/Yes radio
+          pair (NOT a bare checkbox) so the form always posts a value
+          when the operator has made a selection — bare-checkbox semantics
+          (no key sent when unchecked) collide with the validator's
+          required-field check (None == missing). Operator MUST pick one;
+          un-picked = validator-rejected (per spec §3.5.1). -#}
+      <fieldset class="entry-section entry-section-risk">
+        <legend>Risk acknowledgments</legend>
+        <div><label>Event risk present</label>
+          <label><input type="radio" name="event_risk_present" value="0"
+                        {% if vm.draft_event_risk_present == 0 %}checked{% endif %}>
+            No</label>
+          <label><input type="radio" name="event_risk_present" value="1"
+                        {% if vm.draft_event_risk_present == 1 %}checked{% endif %}>
+            Yes</label>
+          {% if 'event_risk_present' in vm.missing_fields %}
+            <span class="field-error subtitle">required</span>
           {% endif %}
-        </span></div>
-      <div><label>Initial stop</label>
-        <input type="number" step="0.01" min="0" name="initial_stop"
-               value="{{ '%.2f' | format(vm.initial_stop) }}" required></div>
-      {% if vm.watchlist_entry_target is not none %}
-      <div><label>Watchlist target</label>
-        <input type="hidden" name="watchlist_target" value="{{ vm.watchlist_entry_target }}">
-        <span>${{ '%.2f' | format(vm.watchlist_entry_target) }}</span></div>
-      {% endif %}
-      {% if vm.watchlist_initial_stop is not none %}
-        <input type="hidden" name="watchlist_stop" value="{{ vm.watchlist_initial_stop }}">
-      {% endif %}
-      {% include "partials/trade_entry_chart_pattern_section.html.j2" %}
-      <div><label>Sector:</label>
-        <span>{{ vm.sector or "—" }}</span>
-        <input type="hidden" name="sector" value="{{ vm.sector }}">
-      </div>
-      <div><label>Industry:</label>
-        <span>{{ vm.industry or "—" }}</span>
-        <input type="hidden" name="industry" value="{{ vm.industry }}">
-      </div>
-      <div><label>Hypothesis:</label>
-        <span>{{ vm.hypothesis_label or "(none)" }}</span>
-        <input type="hidden" name="hypothesis_label" value="{{ vm.hypothesis_label or '' }}">
-      </div>
-      <div><label>Rationale &#9733;</label>
-        <select name="rationale" required
-                onchange="var h=this.form.querySelector('.rationale-other-hint'); if(h){h.style.display=(this.value==='other')?'inline':'none';}">
-          <option value="">(select one)</option>
-          {% for value, label in vm.rationale_options %}
-            <option value="{{ value }}"{% if value == vm.rationale %} selected{% endif %}>{{ label }}</option>
+        </div>
+        <div><label>Event handling</label>
+          <select name="event_handling"{{ err_class('event_handling') }}>
+            <option value="">(none)</option>
+            {% for value in ('avoid_event', 'hold_through', 'reduce_before', 'exit_before', 'not_applicable') %}
+              <option value="{{ value }}"{% if vm.draft_event_handling == value %} selected{% endif %}>{{ value }}</option>
+            {% endfor %}
+          </select></div>
+        <div><label>Event type</label>
+          <select name="event_type"{{ err_class('event_type') }}>
+            <option value="">(none)</option>
+            {% for value in ('earnings', 'fed_meeting', 'cpi_release', 'economic_data', 'product_announcement', 'legal_ruling', 'other') %}
+              <option value="{{ value }}"{% if vm.draft_event_type == value %} selected{% endif %}>{{ value }}</option>
+            {% endfor %}
+          </select></div>
+        <div><label>Event date</label>
+          <input type="date" name="event_date" value="{{ vm.draft_event_date }}"{{ err_class('event_date') }}></div>
+        <div><label>Gap risk present</label>
+          <label><input type="radio" name="gap_risk_present" value="0"
+                        {% if vm.draft_gap_risk_present == 0 %}checked{% endif %}>
+            No</label>
+          <label><input type="radio" name="gap_risk_present" value="1"
+                        {% if vm.draft_gap_risk_present == 1 %}checked{% endif %}>
+            Yes</label>
+          {% if 'gap_risk_present' in vm.missing_fields %}
+            <span class="field-error subtitle">required</span>
+          {% endif %}
+        </div>
+        <div><label>Gap risk handling</label>
+          <select name="gap_risk_handling"{{ err_class('gap_risk_handling') }}>
+            <option value="">(none)</option>
+            {% for value in ('accept', 'reduce_size', 'tight_stop', 'exit_before_close', 'not_applicable') %}
+              <option value="{{ value }}"{% if vm.draft_gap_risk_handling == value %} selected{% endif %}>{{ value }}</option>
+            {% endfor %}
+          </select></div>
+      </fieldset>
+
+      {#- §6 Operator state -#}
+      <fieldset class="entry-section entry-section-operator-state">
+        <legend>Operator state</legend>
+        <div><label>Pre-trade emotional state (multi-select)</label>
+          {% for value in ('calm', 'confident', 'anxious', 'fomo', 'revenge', 'hopeful', 'doubtful', 'distracted') %}
+            <label><input type="checkbox" name="emotional_state_pre_trade" value="{{ value }}"
+                          {% if value in vm.draft_emotional_state_pre_trade %}checked{% endif %}>
+              {{ value }}</label>
           {% endfor %}
-        </select></div>
-      <div><label>Notes
-          <span class="rationale-other-hint subtitle"
-                style="display:{% if vm.rationale == 'other' %}inline{% else %}none{% endif %}">
-            &#9733; required when Rationale = Other
-          </span>
-        </label>
-        <textarea name="notes">{{ vm.notes }}</textarea></div>
+          {% if 'emotional_state_pre_trade' in vm.missing_fields %}
+            <span class="field-error subtitle">required</span>
+          {% endif %}
+        </div>
+        <div><label>Manual entry confidence</label>
+          {% for value in ('high', 'normal', 'low') %}
+            <label><input type="radio" name="manual_entry_confidence" value="{{ value }}"
+                          {% if vm.draft_manual_entry_confidence == value %}checked{% endif %}>
+              {{ value }}</label>
+          {% endfor %}
+          {% if 'manual_entry_confidence' in vm.missing_fields %}
+            <span class="field-error subtitle">required</span>
+          {% endif %}
+        </div>
+        <div><label>Market regime</label>
+          {% for value in ('Bullish', 'Caution', 'Bearish') %}
+            <label><input type="radio" name="market_regime" value="{{ value }}"
+                          {% if vm.draft_market_regime == value %}checked{% endif %}>
+              {{ value }}</label>
+          {% endfor %}
+          {% if 'market_regime' in vm.missing_fields %}
+            <span class="field-error subtitle">required</span>
+          {% endif %}
+        </div>
+        <div><label>Catalyst</label>
+          <select name="catalyst"{{ err_class('catalyst') }}>
+            <option value="">(select one)</option>
+            {% for value in ('technical_only', 'earnings_driven', 'guidance_change', 'corporate_action', 'sector_rotation', 'macro_event', 'sympathy_move', 'product_news', 'other') %}
+              <option value="{{ value }}"{% if vm.draft_catalyst == value %} selected{% endif %}>{{ value }}</option>
+            {% endfor %}
+          </select></div>
+        <div><label>Catalyst details (required if catalyst = other)</label>
+          <input type="text" name="catalyst_other_description"
+                 value="{{ vm.draft_catalyst_other_description }}"{{ err_class('catalyst_other_description') }}></div>
+      </fieldset>
+
+      {#- §7 Notes -#}
+      <fieldset class="entry-section entry-section-notes">
+        <legend>Notes</legend>
+        <div><label>Notes
+            <span class="rationale-other-hint subtitle"
+                  style="display:{% if vm.rationale == 'other' %}inline{% else %}none{% endif %}">
+              &#9733; required when Rationale = Other
+            </span>
+          </label>
+          <textarea name="notes">{{ vm.notes }}</textarea></div>
+      </fieldset>
+
       {% if vm.origin == 'hyp-recs' and vm.pipeline_finished_at %}
         <p class="freshness muted">
           Candidate context as of pipeline finished {{ vm.pipeline_finished_at }}

@@ -39,10 +39,9 @@ def half_exited_trade_db(tmp_path: Path) -> Path:
     The remaining 5-share exit closes the trade → soft-warn surfaces.
     """
     from swing.data.db import connect, ensure_schema
-    from swing.data.models import Exit, Trade
-    from swing.data.repos.trades import (
-        insert_exit_with_event, insert_trade_with_event,
-    )
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+    from tests.conftest import insert_exit_fill
     db_path = tmp_path / "phase6.db"
     ensure_schema(db_path).close()
     conn = connect(db_path)
@@ -51,20 +50,20 @@ def half_exited_trade_db(tmp_path: Path) -> Path:
             conn, Trade(
                 id=None, ticker="VIR", entry_date="2026-04-20",
                 entry_price=10.0, initial_shares=10, initial_stop=9.0,
-                current_stop=9.0, status="open",
+                current_stop=9.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ),
             event_ts="2026-04-20T09:30:00",
         )
-        # First partial exit: 5 of 10 shares — trade stays open
-        insert_exit_with_event(
-            conn, Exit(
-                id=None, trade_id=trade_id, exit_date="2026-04-25",
-                exit_price=11.5, shares=5, reason="partial",
-                realized_pnl=7.5, r_multiple=1.5, notes=None,
-            ),
-            event_ts="2026-04-25T09:30:00",
+        # tests/web/conftest.py autouse fixture patches insert_trade_with_event
+        # to also write the entry-fill, so trade.current_size = 10 here.
+        # First partial exit: 5 of 10 shares — trade stays open.
+        insert_exit_fill(
+            conn, trade_id=trade_id, exit_date="2026-04-25",
+            exit_price=11.5, shares=5, reason="partial",
+            fill_datetime="2026-04-25T09:30:00",
+            close_trade=False,
         )
     conn.close()
     return db_path

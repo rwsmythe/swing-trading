@@ -3,9 +3,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Iterable
+from typing import Any, Iterable
 
-from swing.data.models import Exit, Trade, WeatherRun
+from swing.data.models import Trade, WeatherRun
+
+# C.14: ``Exit`` is deleted. Function signatures here use ``ExitLike = Any``
+# for the exits parameter — consumers pass duck-typed ExitLike-shape objects
+# (the per-module ``_ExitShape`` adapters from C.1/C.9/C.10/C.11/C.12/C.14)
+# which expose ``.r_multiple``, ``.shares``, ``.trade_id``, ``.exit_date`` —
+# all the behavioral-flag helpers require.
+ExitLike = Any  # Structural duck-type alias for Exit-shape adapter rows.
 
 
 @dataclass(frozen=True)
@@ -16,14 +23,14 @@ class BehavioralFlag:
     examples: list[str]
 
 
-def _trade_r_share_weighted(trade: Trade, exits: list[Exit]) -> float:
+def _trade_r_share_weighted(trade: Trade, exits: list[ExitLike]) -> float:
     return sum(
         e.r_multiple * (e.shares / trade.initial_shares)
         for e in exits if e.trade_id == trade.id
     )
 
 
-def _hold_days(trade: Trade, exits: list[Exit]) -> int | None:
+def _hold_days(trade: Trade, exits: list[ExitLike]) -> int | None:
     closes = [e.exit_date for e in exits if e.trade_id == trade.id]
     if not closes:
         return None
@@ -32,11 +39,12 @@ def _hold_days(trade: Trade, exits: list[Exit]) -> int | None:
 
 
 def _caution_market_entries(
-    trades: list[Trade], exits: list[Exit], weather_by_date: dict[str, str],
+    trades: list[Trade], exits: list[ExitLike], weather_by_date: dict[str, str],
 ) -> BehavioralFlag | None:
     bad: list[str] = []
     for t in trades:
-        if t.status != "closed":
+        # Phase 7 B.9: closed-or-reviewed sweeps both terminal lifecycle states.
+        if t.state not in ("closed", "reviewed"):
             continue
         status = weather_by_date.get(t.entry_date, "")
         if status in ("Caution", "Bearish"):
@@ -52,11 +60,12 @@ def _caution_market_entries(
     )
 
 
-def _losers_held_too_long(trades: list[Trade], exits: list[Exit]) -> BehavioralFlag | None:
+def _losers_held_too_long(trades: list[Trade], exits: list[ExitLike]) -> BehavioralFlag | None:
     winners_days: list[int] = []
     losers_days: list[int] = []
     for t in trades:
-        if t.status != "closed":
+        # Phase 7 B.9: closed-or-reviewed sweeps both terminal lifecycle states.
+        if t.state not in ("closed", "reviewed"):
             continue
         d = _hold_days(t, exits)
         if d is None:
@@ -87,10 +96,12 @@ def _losers_held_too_long(trades: list[Trade], exits: list[Exit]) -> BehavioralF
     return None
 
 
-def _cutting_winners_short(trades: list[Trade], exits: list[Exit]) -> BehavioralFlag | None:
+def _cutting_winners_short(trades: list[Trade], exits: list[ExitLike]) -> BehavioralFlag | None:
+    # Phase 7 B.9: closed-or-reviewed sweeps both terminal lifecycle states.
     winners = [
         t for t in trades
-        if t.status == "closed" and _trade_r_share_weighted(t, exits) > 0
+        if t.state in ("closed", "reviewed")
+        and _trade_r_share_weighted(t, exits) > 0
     ]
     if len(winners) < 3:
         return None
@@ -107,7 +118,7 @@ def _cutting_winners_short(trades: list[Trade], exits: list[Exit]) -> Behavioral
 
 
 def compute_flags(
-    *, trades: Iterable[Trade], exits: Iterable[Exit],
+    *, trades: Iterable[Trade], exits: Iterable[ExitLike],
     weather_runs: Iterable[WeatherRun],
 ) -> list[BehavioralFlag]:
     trades_list = list(trades)

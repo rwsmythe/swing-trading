@@ -13,11 +13,22 @@ parameterized inputs.
 """
 from __future__ import annotations
 
+import sqlite3
 import unicodedata
 from datetime import date, datetime, timedelta
+from typing import Any
 
-from swing.data.models import Exit, Trade
+from swing.data.models import Trade
+from swing.data.repos.trades import get_trade, update_trade_review_fields
 from swing.evaluation.dates import last_completed_session
+from swing.trades.state import state_transition
+
+# C.14: ``Exit`` is deleted. Function signatures here use ``ExitLike = Any``
+# for exits parameters — consumers pass duck-typed ExitLike-shape objects
+# (the per-module ``_ExitShape`` adapters from C.1/C.9/C.10/C.14) which
+# expose ``.r_multiple``, ``.shares``, ``.trade_id``, ``.exit_date`` — all
+# that the review aggregations require.
+ExitLike = Any  # Structural duck-type alias for Exit-shape adapter rows.
 
 # ---- Mistake_Tags vocabulary (v1.2 §7.10 verbatim) ----
 
@@ -128,7 +139,7 @@ def compute_process_grade(
 # ---- Cost / Lucky / R helpers (v1.2 §8.4 + §8.8 + §8.9) ----
 
 def compute_actual_realized_R_effective(  # noqa: N802
-    trade: Trade, exits: list[Exit],
+    trade: Trade, exits: list[ExitLike],
 ) -> float:
     """Share-weighted realized R for `trade` per v1.2 §8.4.
 
@@ -164,7 +175,7 @@ def compute_lucky_violation_R(  # noqa: N802
 
 
 def compute_profit_factor(
-    closed_trades: list[Trade], exits: list[Exit],
+    closed_trades: list[Trade], exits: list[ExitLike],
 ) -> float | None:
     """v1.2 §8.9: sum(R where > 0) / abs(sum(R where < 0)).
 
@@ -180,7 +191,7 @@ def compute_profit_factor(
 
 
 def compute_max_drawdown_R(  # noqa: N802
-    closed_trades: list[Trade], exits: list[Exit],
+    closed_trades: list[Trade], exits: list[ExitLike],
 ) -> float:
     """Maximum peak-to-trough drawdown over the closed-date-ordered cumulative
     R-series. Returned as a non-negative magnitude. Returns 0.0 for empty
@@ -207,11 +218,22 @@ def compute_max_drawdown_R(  # noqa: N802
     return max_drawdown
 
 
-def _trade_closed_date_for_review(trade: Trade, exits: list[Exit]) -> date | None:
+def _trade_closed_date_for_review(trade: Trade, exits: list[ExitLike]) -> date | None:
     """Mirror of swing.journal.stats._trade_closed_date — same formula.
     Re-implemented per journal/-read-only carve-out (plan §A.1).
+
+    Phase 7 Sub-B B.6: predicate is closed-or-reviewed because this helper
+    answers "has the trade fully exited?" — both terminal states qualify
+    (a reviewed trade is, by definition, also closed). Spec §2.1 reserves
+    the bare ``state != 'closed'`` form for the per-trade review precondition,
+    where 'reviewed' must be REJECTED.
+
+    The body walks an ``exits`` list of duck-typed ExitLike-shape adapter
+    rows (per-module ``_ExitShape`` adapters wrap fills via
+    ``swing/trades/derived_metrics.py``); the legacy ``Exit`` dataclass is
+    deleted (Sub-C C.14).
     """
-    if trade.status != "closed":
+    if trade.state not in ("closed", "reviewed"):
         return None
     relevant = [e.exit_date for e in exits if e.trade_id == trade.id]
     return max(date.fromisoformat(d) for d in relevant) if relevant else None
@@ -259,3 +281,74 @@ def compute_monthly_period(now: datetime) -> tuple[date, date]:
     last_of_prior = first_of_this_month - timedelta(days=1)
     first_of_prior = last_of_prior.replace(day=1)
     return first_of_prior, last_of_prior
+
+
+def complete_trade_review(
+    conn: sqlite3.Connection,
+    trade_id: int,
+    *,
+    reviewed_at: str,
+    mistake_tags_json: str,
+    entry_grade: str,
+    management_grade: str,
+    exit_grade: str,
+    process_grade: str,
+    disqualifying_process_violation: bool | None,
+    realized_R_if_plan_followed: float | None,  # noqa: N803
+    mistake_cost_confidence: str | None,
+    lesson_learned: str,
+    event_ts: str,
+    rationale: str | None = None,
+) -> None:
+    """Atomic per-trade review completion.
+
+    Phase 7 Sub-B B.6 service-layer wrapper. Validates the trade is in the
+    ``'closed'`` state, then in a single transaction:
+
+      1. Writes the 10 Phase 6 review fields (delegated to
+         ``update_trade_review_fields``).
+      2. Transitions the trade ``closed → reviewed`` (delegated to
+         ``state_transition``).
+
+    Both writes land in the SAME ``with conn:`` block so the row-update and
+    the state-machine audit are atomic — if the state transition raises, the
+    review-fields UPDATE is rolled back too.
+
+    Spec §2.1 (precondition): the trade MUST be in ``'closed'``. Reviewed is
+    REJECTED (single-review-per-trade in V1; an already-reviewed trade is a
+    terminal state). Active states (entered/managing/partial_exited) are also
+    REJECTED — review is post-exit only.
+
+    Callers (CLI Sub-B B.7, web Sub-C T1) replace their direct
+    ``update_trade_review_fields`` invocation with this wrapper to gain the
+    state transition for free.
+    """
+    trade = get_trade(conn, trade_id)
+    if trade is None:
+        raise ValueError(f"trade {trade_id} not found")
+    if trade.state != "closed":
+        raise ValueError(
+            f"trade {trade_id} is not in closed state (state={trade.state!r})"
+        )
+    with conn:
+        update_trade_review_fields(
+            conn,
+            trade_id=trade_id,
+            reviewed_at=reviewed_at,
+            mistake_tags_json=mistake_tags_json,
+            entry_grade=entry_grade,
+            management_grade=management_grade,
+            exit_grade=exit_grade,
+            process_grade=process_grade,
+            disqualifying_process_violation=disqualifying_process_violation,
+            realized_R_if_plan_followed=realized_R_if_plan_followed,
+            mistake_cost_confidence=mistake_cost_confidence,
+            lesson_learned=lesson_learned,
+        )
+        state_transition(
+            conn,
+            trade_id=trade_id,
+            new_state="reviewed",
+            event_ts=event_ts,
+            rationale=rationale,
+        )

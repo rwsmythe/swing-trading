@@ -1,9 +1,16 @@
 """Pure functions: equity, R-multiple, position sizing helpers (legacy parity)."""
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Any, Iterable
 
-from swing.data.models import CashMovement, Exit, Trade
+from swing.data.models import CashMovement, Trade
+
+# C.14: ``Exit`` is deleted. Function signatures here use ``Iterable[Any]``
+# for the exits parameter — consumers pass duck-typed ExitLike-shape objects
+# (the per-module ``_ExitShape`` adapter pattern from C.1/C.9/C.10/C.14)
+# which expose ``.realized_pnl``, ``.shares``, ``.trade_id`` — all that
+# ``current_equity`` / ``shares_remaining`` / ``total_current_risk`` require.
+ExitLike = Any  # Structural duck-type alias for Exit-shape adapter rows.
 
 
 def net_cash_movements(cash_movements: Iterable[CashMovement]) -> float:
@@ -17,7 +24,7 @@ def net_cash_movements(cash_movements: Iterable[CashMovement]) -> float:
 
 
 def current_equity(
-    *, starting_equity: float, exits: Iterable[Exit],
+    *, starting_equity: float, exits: Iterable[ExitLike],
     cash_movements: Iterable[CashMovement],
 ) -> float:
     """starting + realized P&L + net cash. Excludes unrealized P&L."""
@@ -33,7 +40,7 @@ def sizing_equity(*, real_equity: float, floor: float) -> float:
     return real_equity
 
 
-def shares_remaining(trade: Trade, exits: Iterable[Exit]) -> int:
+def shares_remaining(trade: Trade, exits: Iterable[ExitLike]) -> int:
     sold = sum(e.shares for e in exits if e.trade_id == trade.id)
     return trade.initial_shares - sold
 
@@ -51,7 +58,7 @@ def r_so_far(trade: Trade, current_price: float) -> float:
 
 
 def total_current_risk(
-    trades: Iterable[Trade], exits: Iterable[Exit],
+    trades: Iterable[Trade], exits: Iterable[ExitLike],
 ) -> tuple[float, int, bool]:
     """Σ max(0, shares_remaining × (entry_price − current_stop)) across trades.
 

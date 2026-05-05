@@ -1,0 +1,38 @@
+{#- Phase 7 Sub-C C.6 — shared state-badge partial.
+
+    Single source of truth for the trade-lifecycle state badge markup.
+    Pre-empts CLAUDE.md OOB-swap drift gotcha: every render path
+    (full-page render, OOB-swap response, standalone fragment) must go
+    through this same macro so the badge renders byte-identically across
+    surfaces.
+
+    Usage (from a template that already iterates over a Trade or has the
+    state in scope):
+
+        {% from "partials/state_badge.html.j2" import render as state_badge %}
+        {{ state_badge(t.state) }}
+
+    Required argument:
+      - state: str — one of 'entered', 'managing', 'partial_exited',
+                     'closed', 'reviewed'. Unknown values fall back to the
+                     raw state string for the label (CSS class still
+                     `state-<state>` so the unknown surface is visible).
+
+    The label dict here mirrors STATE_BADGE_LABELS in
+    swing/web/view_models/trades.py (canonical Python source). Any change
+    in either location must be mirrored in the other; the duplication is
+    accepted because (a) the labels are stable spec values (Phase 7 spec
+    §11.5), (b) Jinja has no clean access to module-level Python dicts
+    without a globals binding that would couple the renderer to a specific
+    VM module, and (c) consumers without a VM (journal — iterates raw
+    Trade objects) need a label-lookup the macro can do internally. -#}
+{%- macro render(state) -%}
+{%- set _labels = {
+  "entered": "Entered",
+  "managing": "Managing",
+  "partial_exited": "Partial",
+  "closed": "Closed",
+  "reviewed": "Reviewed",
+} -%}
+<span class="state-badge state-{{ state }}">{{ _labels.get(state, state) }}</span>
+{%- endmacro -%}

@@ -18,7 +18,8 @@ from datetime import datetime
 from swing.config import Config
 from swing.data.db import connect
 from swing.data.models import Trade
-from swing.data.repos.trades import get_trade, list_exits_for_trade
+from swing.data.repos.fills import list_fills_for_trade
+from swing.data.repos.trades import get_trade
 from swing.data.repos.weather import get_latest
 from swing.evaluation.dates import action_session_for_run
 from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
@@ -29,6 +30,17 @@ from swing.web.chart_scope import (
 )
 from swing.web.price_cache import PriceCache, PriceSnapshot
 from swing.web.view_models.dashboard import AdvisorySuggestionVM
+from swing.web.view_models.trades import STATE_BADGE_LABELS
+
+# Phase 7 Sub-C T2 — `STATE_BADGE_LABELS` source-of-truth lives at
+# swing/web/view_models/trades.py (declared by C.1); imported above
+# rather than re-declared to avoid drift.
+
+# Phase 7 Sub-C T2 — Active-trade lifecycle states (open-positions
+# fragment + expanded-row VM preconditions). Mirrors `_ACTIVE_STATES_SQL`
+# in repos/trades.py and the `_ACTIVE_STATES` tuple in
+# swing/web/view_models/trades.py (kept locally for module independence).
+_ACTIVE_STATES = ("entered", "managing", "partial_exited")
 
 
 @dataclass(frozen=True)
@@ -37,6 +49,7 @@ class OpenPositionsRowVM:
     price_snapshot: PriceSnapshot | None
     remaining_shares: int
     advisories: tuple[AdvisorySuggestionVM, ...]
+    state_badge_label: str
 
 
 def _open_positions_row_vm(
@@ -44,6 +57,7 @@ def _open_positions_row_vm(
     price_snapshot: PriceSnapshot | None,
     remaining_shares: int,
     advisories: tuple[AdvisorySuggestionVM, ...],
+    state_badge_label: str,
 ) -> OpenPositionsRowVM:
     """Pure render-input assembler. NO I/O. Single source of truth for the
     fields an open-positions row consumes from Jinja."""
@@ -52,6 +66,7 @@ def _open_positions_row_vm(
         price_snapshot=price_snapshot,
         remaining_shares=remaining_shares,
         advisories=advisories,
+        state_badge_label=state_badge_label,
     )
 
 
@@ -68,8 +83,14 @@ def build_open_positions_row(
     set the dashboard would for bullish/caution/bearish or session-boundary
     days.
 
+    Phase 7 Sub-C T2: remaining-shares math now consumes Fill rows
+    (action != 'entry') via `list_fills_for_trade`, replacing the legacy
+    `Exit.shares` summation. Entry fills must be excluded so the entry-fill
+    quantity isn't double-subtracted from `initial_shares`.
+
     Does: cache.get_many([trade.ticker], deadline=..., executor=...);
-          list_exits_for_trade(conn, trade.id) for remaining-shares;
+          list_fills_for_trade(conn, trade.id) for remaining-shares
+            (filtered to action != 'entry');
           get_latest_for_date(conn, action_session, ticker=benchmark) for weather;
           ohlcv_cache.get_many_bundles([trade.ticker], ...) when ohlcv_cache is
           provided (None default keeps existing call sites green until T15);
@@ -106,7 +127,8 @@ def build_open_positions_row(
         conn = connect(cfg.paths.db_path)
     try:
         with conn:
-            exits = list_exits_for_trade(conn, trade.id)
+            fills = list_fills_for_trade(conn, trade.id)
+            non_entry_fills = [f for f in fills if f.action != "entry"]
             # Latest classification for this ticker — weather is keyed by
             # data_asof_date (last completed session), but `action_session`
             # is forward-looking; querying by action_session silently fails
@@ -115,7 +137,9 @@ def build_open_positions_row(
     finally:
         if own_conn:
             conn.close()
-    remaining = trade.initial_shares - sum(e.shares for e in exits)
+    remaining = trade.initial_shares - sum(
+        f.quantity for f in non_entry_fills
+    )
     weather_status = weather.status if weather else "STALE"
 
     advisories: tuple[AdvisorySuggestionVM, ...] = ()
@@ -140,6 +164,7 @@ def build_open_positions_row(
         price_snapshot=snapshot,
         remaining_shares=remaining,
         advisories=advisories,
+        state_badge_label=STATE_BADGE_LABELS.get(trade.state, trade.state),
     )
 
 
@@ -168,8 +193,13 @@ def build_open_positions_expanded(
 
     Returns None when:
       - The trade does not exist, OR
-      - The trade exists but is not currently open (closed trades 404 the
-        route — closed-trade ids must not display open-positions UI).
+      - The trade is not in an active lifecycle state (closed/reviewed
+        trades 404 the route — closed-trade ids must not display
+        open-positions UI).
+
+    Phase 7 Sub-C T2: precondition migrated from the legacy
+    `trade.status != "open"` to `trade.state not in _ACTIVE_STATES`
+    (where active = entered|managing|partial_exited).
 
     Otherwise returns a VM populated with the latest completed pipeline run's
     data_asof_date and the chart_scope-resolved chart-availability tuple.
@@ -178,7 +208,7 @@ def build_open_positions_expanded(
     message instead of a broken /charts URL.
     """
     trade = get_trade(conn, trade_id)
-    if trade is None or trade.status != "open":
+    if trade is None or trade.state not in _ACTIVE_STATES:
         return None
 
     binding = latest_completed_pipeline_run(conn)

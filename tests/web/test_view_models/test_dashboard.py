@@ -53,7 +53,7 @@ def _seed_for_dashboard(cfg) -> None:
                 Trade(
                     id=None, ticker="AAPL", entry_date="2026-04-15",
                     entry_price=180.0, initial_shares=5, initial_stop=170.0,
-                    current_stop=170.0, status="open",
+                    current_stop=170.0, state="entered",
                     watchlist_entry_target=None, watchlist_initial_stop=None,
                     notes=None,
                 ),
@@ -251,7 +251,7 @@ def _seed_open_trade_direct(cfg, *, ticker: str, entry_price: float, shares: int
                 id=None, ticker=ticker, entry_date="2026-04-15",
                 entry_price=entry_price, initial_shares=shares,
                 initial_stop=entry_price * 0.95, current_stop=entry_price * 0.95,
-                status="open", watchlist_entry_target=None,
+                state="entered", watchlist_entry_target=None,
                 watchlist_initial_stop=None, notes=None,
             )
             return insert_trade_with_event(conn, trade, event_ts="2026-04-15T09:30:00")
@@ -803,7 +803,7 @@ def test_status_strip_unrealized_pnl_partial_priced(seeded_db, monkeypatch):
                 Trade(
                     id=None, ticker="MSFT", entry_date="2026-04-15",
                     entry_price=300.0, initial_shares=2, initial_stop=290.0,
-                    current_stop=290.0, status="open",
+                    current_stop=290.0, state="entered",
                     watchlist_entry_target=None, watchlist_initial_stop=None,
                     notes=None,
                 ),
@@ -909,7 +909,7 @@ def test_status_strip_template_unrealized_line_partial_priced(
                 Trade(
                     id=None, ticker="MSFT", entry_date="2026-04-15",
                     entry_price=300.0, initial_shares=2, initial_stop=290.0,
-                    current_stop=290.0, status="open",
+                    current_stop=290.0, state="entered",
                     watchlist_entry_target=None, watchlist_initial_stop=None,
                     notes=None,
                 ),
@@ -1120,3 +1120,145 @@ def test_build_dashboard_pipeline_bound_consumers_correctly_render_empty_in_stan
         "Pipeline-bound (site 3 / stale_banner): must be None when no "
         "completed pipeline_runs exist."
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-C C.9 — dashboard VM consumes fills (non-entry) via local
+# _ExitShape adapter rather than the legacy `list_all_exits` shim.
+# Discriminating: under buggy code that includes entry fills, the equity
+# computation would treat the entry fill as a realized exit and produce a
+# wrong total. Under buggy code that drops the helper entirely, equity
+# would equal starting_equity.
+# ---------------------------------------------------------------------------
+
+
+def test_c9_dashboard_vm_consumes_fills_not_legacy_exits(seeded_db, monkeypatch):
+    """C.9: dashboard equity sources from non-entry fills via the local
+    _ExitShape adapter. Seeds a closed trade with an exit fill at +$10/sh
+    over entry; asserts vm.status_strip.equity reflects the realized PnL.
+
+    Discriminating against buggy code paths:
+      (a) helper drops `action == 'entry'` filter → equity wrong by entry-fill
+          realized math (would treat entry quantity at entry price as
+          additional realized PnL of 0, but entries usually mean the
+          algebra inverts the sign of the realized accumulator).
+      (b) helper returns no exits → equity == starting_equity (no realized
+          PnL applied).
+    """
+    from datetime import datetime
+
+    from swing.data.db import connect
+    from swing.data.models import Fill
+    from swing.data.repos.fills import insert_fill_with_event
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from swing.web.view_models.dashboard import build_dashboard
+
+    cfg, _ = seeded_db
+    # Seed weather + evaluation so dashboard renders cleanly.
+    _seed_for_dashboard(cfg)
+    # The seeded trade is OPEN (state='entered'); we mark it closed and
+    # add an exit fill so realized PnL is visible.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            trade_id = conn.execute(
+                "SELECT id FROM trades WHERE ticker='AAPL'"
+            ).fetchone()[0]
+            # Add an exit fill at entry+$10 for all 5 shares.
+            insert_fill_with_event(
+                conn,
+                Fill(
+                    fill_id=None, trade_id=trade_id,
+                    fill_datetime="2026-04-20T15:30:00",
+                    action="exit", quantity=5, price=190.0, reason="target",
+                ),
+                event_ts="2026-04-20T15:30:00",
+            )
+            # Mark the trade closed so it doesn't show in open-positions.
+            conn.execute(
+                "UPDATE trades SET state='closed' WHERE id=?", (trade_id,),
+            )
+    finally:
+        conn.close()
+
+    cache = PriceCache(cfg)
+    snap = PriceSnapshot(
+        ticker="AAPL", price=190.0, asof=datetime.now(),
+        is_stale=False, source="live",
+    )
+    monkeypatch.setattr(
+        cache, "get_many",
+        lambda tickers, deadline_seconds, *, executor=None: {t: snap for t in tickers},
+    )
+    monkeypatch.setattr(cache, "is_degraded", lambda: False)
+
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=None)
+
+    # Realized PnL = (190 - 180) * 5 = $50 → equity = starting + $50.
+    expected = cfg.account.starting_equity + 50.0
+    assert vm.status_strip.equity == pytest.approx(expected), (
+        f"C.9 dashboard equity should reflect non-entry fill realized PnL. "
+        f"Expected {expected}, got {vm.status_strip.equity}. If this is "
+        f"larger by entry_price * shares, the migration helper failed to "
+        f"filter action='entry' fills."
+    )
+
+
+def test_c9_dashboard_vm_skips_entry_fills_in_exit_adapter(
+    seeded_db, monkeypatch,
+):
+    """C.9 discriminating regression: the migration helper MUST filter
+    fills.action == 'entry'. The seeded trade has a synthetic entry fill
+    (created by `insert_trade_with_event` via the Phase 7 Sub-A path);
+    if the helper does not filter entries, equity would shift by the
+    (entry_price - entry_price)*qty = 0 contribution AND the fill would
+    be counted in remaining-shares grouping, breaking that math.
+
+    This test directly inspects the helper's output to make the failure
+    mode unambiguous (rather than relying on indirect equity drift).
+    """
+    from swing.data.db import connect
+    from swing.data.models import Fill
+    from swing.data.repos.fills import insert_fill_with_event
+    from swing.web.view_models.dashboard import _list_all_exitshape_via_fills
+
+    cfg, _ = seeded_db
+    _seed_for_dashboard(cfg)
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            trade_id = conn.execute(
+                "SELECT id FROM trades WHERE ticker='AAPL'"
+            ).fetchone()[0]
+            # Add an explicit exit fill alongside the synthetic entry fill
+            # that insert_trade_with_event already wrote.
+            insert_fill_with_event(
+                conn,
+                Fill(
+                    fill_id=None, trade_id=trade_id,
+                    fill_datetime="2026-04-20T15:30:00",
+                    action="exit", quantity=2, price=185.0, reason="trim",
+                ),
+                event_ts="2026-04-20T15:30:00",
+            )
+            shapes = _list_all_exitshape_via_fills(conn)
+    finally:
+        conn.close()
+
+    # Exactly ONE non-entry shape — the trim exit.
+    assert len(shapes) == 1, (
+        f"Adapter returned {len(shapes)} shapes; expected exactly 1 "
+        f"(the explicit exit fill — entry fill must be filtered)."
+    )
+    shape = shapes[0]
+    assert shape.shares == 2
+    assert shape.exit_price == 185.0
+    assert shape.exit_date == "2026-04-20", (
+        f"exit_date should be the date prefix of fill_datetime, "
+        f"got {shape.exit_date!r}"
+    )
+    # realized_pnl = (185 - 180) * 2 = 10
+    assert shape.realized_pnl == pytest.approx(10.0)
+    # rps = 180 - 170 = 10; r = 10 / (10 * 2) = 0.5
+    assert shape.r_multiple == pytest.approx(0.5)

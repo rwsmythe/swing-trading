@@ -6,7 +6,85 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Iterable, Literal
 
-from swing.data.models import CashMovement, Exit, Trade
+from swing.data.models import CashMovement, Trade
+
+
+@dataclass(frozen=True)
+class _ExitShape:
+    trade_id: int
+    exit_date: str
+    exit_price: float
+    shares: int
+    reason: str | None
+    realized_pnl: float | None
+    r_multiple: float | None
+
+
+def _list_all_exitshape_via_fills(
+    conn: sqlite3.Connection,
+) -> list[_ExitShape]:
+    """C.11: reconstruct Exit-like rows from non-entry fills.
+
+    Mirrors the per-module ``_ExitShape`` adapter pattern from C.1/C.9/C.10
+    (see ``swing/data/repos/review_log.py``). Migrates the consumer in
+    ``compute_hypothesis_progress_breakdown`` off the ``list_all_exits``
+    shim before C.14 deletes it.
+    """
+    from swing.data.repos.fills import list_all_fills
+    from swing.data.repos.trades import (
+        list_closed_trades,
+        list_open_trades,
+    )
+    from swing.trades.derived_metrics import (
+        initial_risk_per_share,
+        r_multiple,
+        realized_pnl,
+    )
+
+    trades_by_id: dict[int, Trade] = {}
+    for t in list_open_trades(conn):
+        if t.id is not None:
+            trades_by_id[t.id] = t
+    for t in list_closed_trades(conn):
+        if t.id is not None:
+            trades_by_id[t.id] = t
+
+    out: list[_ExitShape] = []
+    for f in list_all_fills(conn):
+        if f.action == "entry":
+            continue
+        trade = trades_by_id.get(f.trade_id)
+        if trade is None:
+            continue
+        rps = initial_risk_per_share(
+            entry_price=trade.entry_price,
+            initial_stop=trade.initial_stop,
+        )
+        pnl = realized_pnl(
+            entry_price=trade.entry_price, exit_price=f.price,
+            quantity=f.quantity,
+        )
+        if rps == 0 or f.quantity == 0:
+            rmult: float | None = None
+        else:
+            rmult = r_multiple(
+                realized_pnl=pnl, initial_risk_per_share=rps,
+                quantity=f.quantity,
+            )
+        exit_date = (
+            f.fill_datetime.split("T")[0]
+            if "T" in f.fill_datetime else f.fill_datetime
+        )
+        out.append(_ExitShape(
+            trade_id=f.trade_id,
+            exit_date=exit_date,
+            exit_price=float(f.price),
+            shares=int(f.quantity),
+            reason=f.reason,
+            realized_pnl=pnl,
+            r_multiple=rmult,
+        ))
+    return out
 
 Period = Literal["week", "month", "quarter", "ytd", "all"]
 
@@ -43,14 +121,17 @@ class JournalStats:
     current_streak_kind: str
 
 
-def _trade_closed_date(trade: Trade, exits: list[Exit]) -> date | None:
-    if trade.status != "closed":
+def _trade_closed_date(trade: Trade, exits: list[_ExitShape]) -> date | None:
+    # Phase 7 B.9: closed-or-reviewed sweeps both terminal lifecycle states.
+    # Reviewed trades are still "closed" for aggregation purposes — the only
+    # difference is whether the operator has completed the post-trade review.
+    if trade.state not in ("closed", "reviewed"):
         return None
     relevant = [e.exit_date for e in exits if e.trade_id == trade.id]
     return max(date.fromisoformat(d) for d in relevant) if relevant else None
 
 
-def _trade_r(trade: Trade, exits: list[Exit]) -> float:
+def _trade_r(trade: Trade, exits: list[_ExitShape]) -> float:
     total = 0.0
     for e in exits:
         if e.trade_id != trade.id:
@@ -59,12 +140,12 @@ def _trade_r(trade: Trade, exits: list[Exit]) -> float:
     return total
 
 
-def _trade_pnl(trade: Trade, exits: list[Exit]) -> float:
+def _trade_pnl(trade: Trade, exits: list[_ExitShape]) -> float:
     return sum(e.realized_pnl for e in exits if e.trade_id == trade.id)
 
 
 def period_filter(
-    trades: Iterable[Trade], exits: Iterable[Exit], *,
+    trades: Iterable[Trade], exits: Iterable[_ExitShape], *,
     period: Period, today: str,
 ) -> list[Trade]:
     if period == "all":
@@ -88,12 +169,13 @@ def period_filter(
 
 
 def compute_stats(
-    *, trades: Iterable[Trade], exits: Iterable[Exit],
+    *, trades: Iterable[Trade], exits: Iterable[_ExitShape],
     cash_movements: Iterable[CashMovement] = (),
 ) -> JournalStats:
     trades_list = list(trades)
     exits_list = list(exits)
-    closed = [t for t in trades_list if t.status == "closed"]
+    # Phase 7 B.9: closed-or-reviewed predicate sweeps both terminal states.
+    closed = [t for t in trades_list if t.state in ("closed", "reviewed")]
 
     if not closed:
         return JournalStats(
@@ -157,7 +239,7 @@ _MIN_TRADES_FOR_WIN_RATE = 3
 
 
 def compute_hypothesis_breakdown(
-    *, trades: Iterable[Trade], exits: Iterable[Exit],
+    *, trades: Iterable[Trade], exits: Iterable[_ExitShape],
 ) -> list[HypothesisBucket]:
     """Group closed trades by `hypothesis_label`; return one bucket per group.
 
@@ -176,7 +258,8 @@ def compute_hypothesis_breakdown(
     `n_trades DESC`, then `label ASC` for stable tie-breaking.
     """
     exits_list = list(exits)
-    closed = [t for t in trades if t.status == "closed"]
+    # Phase 7 B.9: closed-or-reviewed predicate sweeps both terminal states.
+    closed = [t for t in trades if t.state in ("closed", "reviewed")]
 
     groups: dict[str | None, list[Trade]] = {}
     for t in closed:
@@ -254,7 +337,6 @@ def compute_hypothesis_progress_breakdown(
     # used in many test fixtures that don't need DB access).
     from swing.data.repos.hypothesis import list_hypotheses
     from swing.data.repos.trades import (
-        list_all_exits,
         list_closed_trades,
         list_open_trades,
     )
@@ -266,8 +348,8 @@ def compute_hypothesis_progress_breakdown(
     hypotheses = list_hypotheses(conn)
     closed = list_closed_trades(conn)
     open_trades = list_open_trades(conn)
-    exits_by_trade: dict[int, list[Exit]] = {}
-    for e in list_all_exits(conn):
+    exits_by_trade: dict[int, list[_ExitShape]] = {}
+    for e in _list_all_exitshape_via_fills(conn):
         exits_by_trade.setdefault(e.trade_id, []).append(e)
 
     rows: list[HypothesisProgress] = []

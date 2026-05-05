@@ -300,27 +300,42 @@ def test_dashboard_recommendations_preserve_real_sample_count_under_zero_equity(
                            'complete', 'tok', ?)""",
                 (eval_id,),
             )
-            # One closed trade matching the hypothesis prefix; modest loss
-            # well below any absolute threshold.
+            # Phase 7: status → state; trade_origin + pre_trade_locked_at
+            # NOT NULL; exits → fills.
             conn.execute(
                 """INSERT INTO trades
                    (ticker, entry_date, entry_price, initial_shares,
-                    initial_stop, current_stop, status,
+                    initial_stop, current_stop, state, trade_origin,
+                    pre_trade_locked_at, current_size,
                     watchlist_entry_target, watchlist_initial_stop,
                     notes, hypothesis_label)
                    VALUES ('VIR', '2026-04-15', 100.0, 10, 90.0, 90.0,
-                           'closed', NULL, NULL, NULL,
+                           'closed', 'manual_off_pipeline',
+                           '2026-04-15T16:00:00', 0,
+                           NULL, NULL, NULL,
                            'Sub-A+ VCP-not-formed inaugural')""",
             )
             tid = conn.execute(
                 "SELECT id FROM trades WHERE ticker='VIR'"
             ).fetchone()[0]
+            # Entry fill + exit fill (canonical post-Sub-A shape).
             conn.execute(
-                """INSERT INTO exits
-                   (trade_id, exit_date, exit_price, shares, reason,
-                    realized_pnl, r_multiple, notes)
-                   VALUES (?, '2026-04-20', 95.0, 10, 'stop-hit',
-                           -50.0, -0.5, NULL)""",
+                """INSERT INTO fills
+                   (trade_id, fill_datetime, action, quantity, price,
+                    reason, rule_based, fees, manual_entry_confidence,
+                    reconciliation_status, tos_match_id)
+                   VALUES (?, '2026-04-15T09:30:00', 'entry', 10.0, 100.0,
+                           NULL, NULL, NULL, NULL, 'unreconciled', NULL)""",
+                (tid,),
+            )
+            conn.execute(
+                """INSERT INTO fills
+                   (trade_id, fill_datetime, action, quantity, price,
+                    reason, rule_based, fees, manual_entry_confidence,
+                    reconciliation_status, tos_match_id)
+                   VALUES (?, '2026-04-20T16:00:00', 'exit', 10.0, 95.0,
+                           'stop-hit', NULL, NULL, NULL,
+                           'unreconciled', NULL)""",
                 (tid,),
             )
     finally:
@@ -522,7 +537,7 @@ def test_dashboard_vm_excludes_open_trade_tickers_from_active_recommendations(
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="AAA", entry_date="2026-04-15",
                 entry_price=98.0, initial_shares=5, initial_stop=93.0,
-                current_stop=93.0, status="open",
+                current_stop=93.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -578,7 +593,7 @@ def test_hyp_recs_refresh_route_excludes_open_trade_tickers(
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="AAA", entry_date="2026-04-15",
                 entry_price=98.0, initial_shares=5, initial_stop=93.0,
-                current_stop=93.0, status="open",
+                current_stop=93.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
             ), event_ts="2026-04-15T09:30:00")
@@ -633,7 +648,7 @@ def test_dashboard_recommendation_exposes_in_flight_count(seeded_db, monkeypatch
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="DHC", entry_date="2026-04-27",
                 entry_price=7.58, initial_shares=39, initial_stop=7.00,
-                current_stop=7.00, status="open",
+                current_stop=7.00, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
                 hypothesis_label=(
@@ -643,7 +658,7 @@ def test_dashboard_recommendation_exposes_in_flight_count(seeded_db, monkeypatch
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="CC", entry_date="2026-04-30",
                 entry_price=26.97, initial_shares=5, initial_stop=24.00,
-                current_stop=24.00, status="open",
+                current_stop=24.00, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
                 hypothesis_label=(

@@ -1,9 +1,11 @@
 """Equity / R / shares-remaining pure functions (legacy parity)."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pytest
 
-from swing.data.models import CashMovement, Exit, Trade
+from swing.data.models import CashMovement, Trade
 from swing.trades.equity import (
     current_equity, sizing_equity, shares_remaining,
     risk_per_share, r_so_far, net_cash_movements,
@@ -11,11 +13,27 @@ from swing.trades.equity import (
 )
 
 
+# C.13: Local Exit-shape adapter — the equity helpers consume ExitLike duck-
+# typed (.trade_id, .shares, .realized_pnl). Mirrors the in-prod _ExitShape
+# pattern (C.10) without depending on the soon-to-be-removed shim.
+@dataclass(frozen=True)
+class Exit:  # noqa: N801 — name preserved for readability of test bodies
+    id: int | None
+    trade_id: int
+    exit_date: str
+    exit_price: float
+    shares: int
+    reason: str | None
+    realized_pnl: float | None
+    r_multiple: float | None
+    notes: str | None
+
+
 def _trade(initial_shares: int = 10) -> Trade:
     return Trade(
         id=1, ticker="AAPL", entry_date="2026-04-15", entry_price=180.0,
         initial_shares=initial_shares, initial_stop=170.0, current_stop=170.0,
-        status="open", watchlist_entry_target=181.0,
+        state="entered", watchlist_entry_target=181.0,
         watchlist_initial_stop=170.0, notes=None,
     )
 
@@ -69,7 +87,7 @@ def test_risk_per_share():
 def test_risk_per_share_zero_when_stop_above_entry():
     t = Trade(id=1, ticker="AAPL", entry_date="2026-04-15", entry_price=180.0,
               initial_shares=10, initial_stop=200.0, current_stop=200.0,
-              status="open", watchlist_entry_target=None,
+              state="entered", watchlist_entry_target=None,
               watchlist_initial_stop=None, notes=None)
     assert risk_per_share(t) == 0.0
 
@@ -85,7 +103,7 @@ def test_r_so_far_at_2r():
 def test_r_so_far_zero_rps_returns_zero():
     t = Trade(id=1, ticker="AAPL", entry_date="2026-04-15", entry_price=180.0,
               initial_shares=10, initial_stop=180.0, current_stop=180.0,
-              status="open", watchlist_entry_target=None,
+              state="entered", watchlist_entry_target=None,
               watchlist_initial_stop=None, notes=None)
     assert r_so_far(t, current_price=200.0) == 0.0
 
@@ -109,7 +127,7 @@ def _open_trade(
     return Trade(
         id=trade_id, ticker=ticker, entry_date="2026-04-15",
         entry_price=entry, initial_shares=initial_shares, initial_stop=stop,
-        current_stop=stop, status="open",
+        current_stop=stop, state="entered",
         watchlist_entry_target=None, watchlist_initial_stop=None, notes=None,
     )
 

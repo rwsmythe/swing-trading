@@ -2,11 +2,157 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from swing.config import Config, load
 from swing.data.db import ensure_schema
+
+
+def full_phase7_entry_payload(**overrides: Any) -> dict[str, Any]:
+    """Phase 7 Sub-C C.13d: full entry-form payload satisfying the
+    pre-trade gate enforced by the route's MissingPreTradeFieldsException
+    handler.
+
+    EntryRequest carries 18 Phase 7 pre-trade fields (spec §1, §3.5.1):
+    13 always-required at the gate plus 5 conditionally required.
+
+    13 always-required fields (the gate fires when any are missing):
+        thesis, why_now, invalidation_condition, expected_scenario,
+        premortem_technical, premortem_market_sector,
+        premortem_execution, event_risk_present (0|1),
+        gap_risk_present (0|1), emotional_state_pre_trade (JSON-list
+        TEXT or single string), market_regime, catalyst,
+        manual_entry_confidence.
+
+    5 conditionally required (only enforced when a sibling flag is set):
+        event_handling, event_type, event_date — required when
+            event_risk_present == 1.
+        gap_risk_handling — required when gap_risk_present == 1.
+        premortem_additional — optional regardless.
+
+    The default payload sets event_risk_present=0 + gap_risk_present=0
+    so the conditional fields are NOT required; the conditional fields
+    are still populated so a test that flips the flag (via overrides=)
+    automatically satisfies the new requirement without re-listing them.
+
+    Tests that POST `/trades/entry` (or one of its variants like the
+    soft-warn confirm) must use this (or override individual fields) so
+    the gate doesn't fire for unrelated tests. Tests that intentionally
+    OMIT a field (to exercise the gate's error rendering) should pop
+    the relevant key after building the payload:
+
+        data = full_phase7_entry_payload()
+        del data["thesis"]
+        client.post("/trades/entry", data=data)
+    """
+    base: dict[str, Any] = {
+        "ticker": "TST",
+        "entry_date": "2026-05-04",
+        "entry_price": "10.0",
+        "shares": "100",
+        "initial_stop": "9.0",
+        "rationale": "watchlist_breakout",
+        "notes": "test",
+        # 13 always-required pre-trade fields (route gate):
+        "thesis": "test-thesis",
+        "why_now": "test-why-now",
+        "invalidation_condition": "stop-hit",
+        "expected_scenario": "win",
+        "premortem_technical": "tech-risk",
+        "premortem_market_sector": "market-risk",
+        "premortem_execution": "execution-risk",
+        "event_risk_present": "0",
+        "gap_risk_present": "0",
+        "emotional_state_pre_trade": "calm",
+        "manual_entry_confidence": "normal",
+        "market_regime": "Bullish",
+        "catalyst": "technical_only",
+        # 5 conditional pre-trade fields (only enforced when their
+        # sibling flag is set; populated here so tests overriding
+        # event_risk_present/gap_risk_present to "1" satisfy the gate
+        # automatically):
+        "event_handling": "hold_through",
+        "event_type": "earnings",
+        "event_date": "2026-05-15",
+        "gap_risk_handling": "accept",
+        "premortem_additional": "",
+    }
+    base.update(overrides)
+    return base
+
+
+@pytest.fixture(autouse=True)
+def _auto_entry_fill_after_insert_trade(monkeypatch):
+    """Phase 7 Sub-C C.13d: web tests using ``insert_trade_with_event`` directly
+    (not via ``swing.trades.entry.record_entry``) leave ``trades.current_size``
+    at 0, which the exit service's ``current_size - shares < 0`` guard rejects.
+
+    Production-side insert_trade_with_event has a R2 Minor 1 warning saying
+    callers MUST follow with ``insert_fill_with_event(action='entry')`` in
+    the same transaction. The atomic record_entry helper bundles both;
+    direct-repo callers (mostly tests) often skip the fill. Auto-wrapping
+    ``insert_trade_with_event`` here so tests don't have to know.
+
+    Codex R1 Minor 1 (Phase 7 Sub-C) — DOCUMENTED RATIONALE for retaining
+    this fixture instead of refactoring per-test seed helpers:
+
+    The fixture monkeypatches ``insert_trade_with_event`` to also write
+    the entry-fill, which superficially bypasses the documented
+    "trade row without paired entry fill is invalid half-state"
+    contract. The fixture is intentionally a pragmatic transition pattern
+    for the Sub-C dispatch — replicating production's atomic insert+fill
+    flow (enforced by ``record_entry`` in ``swing/trades/entry.py``) for
+    tests that don't go through ``record_entry``. Production-side
+    atomicity is unchanged; this fixture only mirrors it for tests so a
+    direct ``insert_trade_with_event`` call in test fixtures (often used
+    to seed prior open trades for an exit/stop-adjust test) doesn't
+    leave the row in the half-state.
+
+    The cleaner alternative — explicit seed helpers per test that call
+    both inserts directly — is follow-up cleanup work. Until then, the
+    fixture's ``state in (entered/managing/partial_exited)`` guard means
+    tests that legitimately seed closed/reviewed trades skip the
+    auto-fill (which would otherwise corrupt the seed state).
+    """
+    from swing.data.models import Fill
+    from swing.data.repos import fills as fills_repo
+    from swing.data.repos import trades as trades_repo
+
+    real_insert = trades_repo.insert_trade_with_event
+
+    def wrapped(conn, trade, *, event_ts, rationale=None):
+        trade_id = real_insert(
+            conn, trade, event_ts=event_ts, rationale=rationale,
+        )
+        # Only auto-write the entry-fill when the trade is in an active
+        # state (entered/managing/partial_exited). Closed/reviewed seeds
+        # in some tests intentionally skip the fill flow.
+        if trade.state in ("entered", "managing", "partial_exited"):
+            fills_repo.insert_fill_with_event(
+                conn,
+                Fill(
+                    fill_id=None, trade_id=trade_id,
+                    fill_datetime=event_ts, action="entry",
+                    quantity=float(trade.initial_shares),
+                    price=float(trade.entry_price),
+                ),
+                event_ts=event_ts,
+            )
+        return trade_id
+
+    monkeypatch.setattr(trades_repo, "insert_trade_with_event", wrapped)
+    # Also patch the route module's import (FastAPI imported the symbol
+    # by name at module load).
+    try:
+        import swing.web.routes.trades as web_trades_routes
+        if hasattr(web_trades_routes, "insert_trade_with_event"):
+            monkeypatch.setattr(
+                web_trades_routes, "insert_trade_with_event", wrapped,
+            )
+    except ImportError:
+        pass
 
 
 @pytest.fixture

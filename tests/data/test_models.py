@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from swing.data.models import (
-    Trade, Exit, CashMovement, TradeEvent, WatchlistEntry,
+    Trade, Fill, CashMovement, TradeEvent, WatchlistEntry,
     WatchlistArchiveEntry, WeatherRun, DailyRecommendation,
     PipelineRun, ConfigRevision,
 )
@@ -11,13 +11,16 @@ from swing.data.models import (
 def test_models_instantiate():
     t = Trade(id=None, ticker="AAPL", entry_date="2026-04-15", entry_price=180.0,
               initial_shares=10, initial_stop=170.0, current_stop=170.0,
-              status="open", watchlist_entry_target=181.0,
+              state="entered", watchlist_entry_target=181.0,
               watchlist_initial_stop=170.0, notes=None)
-    assert t.ticker == "AAPL" and t.status == "open"
+    # Phase 7 Sub-A T3: `status` removed from Trade dataclass; replaced with
+    # `state` machine. Smoke test now asserts the new field.
+    assert t.ticker == "AAPL" and t.state == "entered"
 
-    e = Exit(id=None, trade_id=1, exit_date="2026-04-20", exit_price=190.0,
-             shares=10, reason="target", realized_pnl=100.0, r_multiple=1.0, notes=None)
-    assert e.r_multiple == 1.0
+    f = Fill(fill_id=None, trade_id=1, fill_datetime="2026-04-20T16:00:00",
+             action="exit", quantity=10.0, price=190.0, reason="target",
+             rule_based=None, fees=None, manual_entry_confidence=None)
+    assert f.action == "exit" and f.quantity == 10.0
 
     cm = CashMovement(id=None, date="2026-04-01", kind="deposit",
                       amount=500.0, ref="DEP-001", note="initial funding")

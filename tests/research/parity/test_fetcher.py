@@ -441,18 +441,31 @@ def test_reconstruct_current_equity_picks_up_realized_pnl_and_deposits(
         universe_hash=real_universe_hash,
         universe_version="2026-04-24-test",
     )
-    # Insert a closed trade with a realized exit so list_all_exits returns it.
+    # Phase 7 Sub-A migration 0014: `status` → `state`; `exits` → `fills`.
+    # Insert a closed trade with a realized fill so list_all_fills returns it.
     conn.execute("""
         INSERT INTO trades (ticker, entry_date, entry_price, initial_shares,
-            initial_stop, current_stop, status,
+            initial_stop, current_stop, state, trade_origin, pre_trade_locked_at,
             watchlist_entry_target, watchlist_initial_stop, notes)
-        VALUES ('AAPL', '2026-03-01', 100.0, 10, 95.0, 95.0, 'closed', NULL, NULL, NULL)
+        VALUES ('AAPL', '2026-03-01', 100.0, 10, 95.0, 95.0, 'closed',
+                'manual_off_pipeline', '2026-03-01T16:00:00',
+                NULL, NULL, NULL)
     """)
     trade_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    # Entry fill (so list_all_fills doesn't reject) + exit fill at +200 P&L.
     conn.execute("""
-        INSERT INTO exits (trade_id, exit_date, exit_price, shares, reason,
-            realized_pnl, r_multiple, notes)
-        VALUES (?, '2026-04-01', 120.0, 10, 'target', 200.0, 4.0, NULL)
+        INSERT INTO fills (trade_id, fill_datetime, action, quantity, price,
+            reason, rule_based, fees, manual_entry_confidence,
+            reconciliation_status, tos_match_id)
+        VALUES (?, '2026-03-01T09:30:00', 'entry', 10.0, 100.0,
+                NULL, NULL, NULL, NULL, 'unreconciled', NULL)
+    """, (trade_id,))
+    conn.execute("""
+        INSERT INTO fills (trade_id, fill_datetime, action, quantity, price,
+            reason, rule_based, fees, manual_entry_confidence,
+            reconciliation_status, tos_match_id)
+        VALUES (?, '2026-04-01T16:00:00', 'exit', 10.0, 120.0,
+                'target', NULL, NULL, NULL, 'unreconciled', NULL)
     """, (trade_id,))
     conn.execute("""
         INSERT INTO cash_movements (date, kind, amount, ref, note)

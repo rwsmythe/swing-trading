@@ -2,6 +2,12 @@
 
 Brief: `docs/trade-analyze-cli-brief.md` §4.2. Tests cover the same branching
 as the compute layer, focused here on the operator-facing rendered text.
+
+Phase 7 Sub-C C.13b: fixtures migrated off the legacy ``Exit(...)`` dataclass
++ ``insert_exit_with_event`` onto the canonical ``Fill`` repo via the
+``insert_exit_fill`` test helper in ``tests/conftest.py``. analyze_trade now
+walks fills via the per-module ``_ExitShape`` adapter (C.12). All B.7-era
+``@pytest.mark.skip`` markers removed.
 """
 from __future__ import annotations
 
@@ -9,14 +15,16 @@ import sqlite3
 import tomllib
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from swing.cli import main
 from swing.data.db import ensure_schema
-from swing.data.models import Candidate, CriterionResult, EvaluationRun, Exit, Trade
+from swing.data.models import Candidate, CriterionResult, EvaluationRun, Trade
 from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
-from swing.data.repos.trades import insert_exit_with_event, insert_trade_with_event
+from swing.data.repos.trades import insert_trade_with_event
 from tests.cli.test_cli_eval import _minimal_config
+from tests.conftest import insert_exit_fill
 
 
 def _setup(tmp_path: Path):
@@ -75,7 +83,7 @@ def _seed_vir_like_trade(cfg_path: Path) -> int:
         trade = Trade(
             id=None, ticker="VIR", entry_date="2026-04-20",
             entry_price=11.30, initial_shares=2, initial_stop=8.26,
-            current_stop=8.26, status="open",
+            current_stop=8.26, state="entered",
             watchlist_entry_target=10.76, watchlist_initial_stop=8.26,
             notes="trade test",
             hypothesis_label="sub-A+ VCP-not-formed test",
@@ -84,14 +92,11 @@ def _seed_vir_like_trade(cfg_path: Path) -> int:
             tid = insert_trade_with_event(
                 conn, trade, event_ts="2026-04-20T09:30:00", rationale=None,
             )
-        ex = Exit(
-            id=None, trade_id=tid, exit_date="2026-04-24", exit_price=10.30,
-            shares=2, reason="stop-hit", realized_pnl=-2.0,
-            r_multiple=-0.32894737, notes=None,
-        )
         with conn:
-            insert_exit_with_event(
-                conn, ex, event_ts="2026-04-24T16:00:00", rationale=None,
+            insert_exit_fill(
+                conn, trade_id=tid, exit_date="2026-04-24",
+                exit_price=10.30, shares=2, reason="stop-hit",
+                fill_datetime="2026-04-24T16:00:00",
             )
         return tid
     finally:
@@ -106,7 +111,7 @@ def _seed_manual_trade(cfg_path: Path, *, hypothesis: str | None = None) -> int:
         trade = Trade(
             id=None, ticker="ZZZ", entry_date="2026-04-20",
             entry_price=50.0, initial_shares=10, initial_stop=45.0,
-            current_stop=45.0, status="open",
+            current_stop=45.0, state="entered",
             watchlist_entry_target=None, watchlist_initial_stop=None,
             notes=None, hypothesis_label=hypothesis,
         )
@@ -186,7 +191,7 @@ def test_analyze_renders_partial_exit_open_trade_with_ongoing_duration(tmp_path:
         trade = Trade(
             id=None, ticker="AAA", entry_date="2026-04-15",
             entry_price=100.0, initial_shares=10, initial_stop=95.0,
-            current_stop=95.0, status="open",
+            current_stop=95.0, state="entered",
             watchlist_entry_target=None, watchlist_initial_stop=None,
             notes=None, hypothesis_label=None,
         )
@@ -194,15 +199,13 @@ def test_analyze_renders_partial_exit_open_trade_with_ongoing_duration(tmp_path:
             tid = insert_trade_with_event(
                 conn, trade, event_ts="2026-04-15T09:30:00", rationale=None,
             )
-        # Partial exit: 4 of 10 shares. Trade remains open.
-        ex = Exit(
-            id=None, trade_id=tid, exit_date="2026-04-18",
-            exit_price=110.0, shares=4, reason="target",
-            realized_pnl=40.0, r_multiple=2.0, notes=None,
-        )
+        # Partial exit: 4 of 10 shares. Trade remains open (close_trade=False).
         with conn:
-            insert_exit_with_event(
-                conn, ex, event_ts="2026-04-18T16:00:00", rationale=None,
+            insert_exit_fill(
+                conn, trade_id=tid, exit_date="2026-04-18",
+                exit_price=110.0, shares=4, reason="target",
+                fill_datetime="2026-04-18T16:00:00",
+                close_trade=False,
             )
     finally:
         conn.close()

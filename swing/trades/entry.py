@@ -6,11 +6,26 @@ import unicodedata
 from dataclasses import dataclass
 from enum import Enum
 
-from swing.data.models import Trade, WatchlistArchiveEntry
+from swing.data.models import Fill, Trade, WatchlistArchiveEntry
+from swing.data.repos.fills import insert_fill_with_event
 from swing.data.repos.trades import insert_trade_with_event, list_open_trades
 from swing.data.repos.watchlist import (
     archive_watchlist_entry, get_watchlist_entry,
 )
+from swing.trades.origin import EntryPath, derive_trade_origin
+from swing.trades.state import (
+    MissingPreTradeFieldsException, validate_for_operation,
+)
+
+# Re-export for callers: ``from swing.trades.entry import
+# MissingPreTradeFieldsException`` mirrors the route/CLI ergonomic pattern
+# used for the other entry-service exceptions (SoftWarnException etc.).
+__all__ = [
+    "EntryRationale", "EntryRequest", "EntryResult",
+    "entry_rationale_options", "record_entry",
+    "SoftWarnException", "HardCapException",
+    "DuplicateOpenPositionException", "MissingPreTradeFieldsException",
+]
 
 
 class EntryRationale(str, Enum):  # noqa: UP042  (match ExitReason's (str, Enum) pattern)
@@ -113,6 +128,30 @@ class EntryRequest:
     # degradation matches the hypothesis_label free-text behavior.
     sector: str = ""
     industry: str = ""
+    # Phase 7 Sub-B B.1 — entry-path origin discriminator + 18 pre-trade
+    # required fields. All `| None = None` defaults so legacy/external call
+    # sites still type-check; the validation gate at record_entry's top
+    # rejects any submission with required fields missing.
+    entry_path: EntryPath = EntryPath.MANUAL_WEB_FORM
+    thesis: str | None = None
+    why_now: str | None = None
+    invalidation_condition: str | None = None
+    expected_scenario: str | None = None
+    premortem_technical: str | None = None
+    premortem_market_sector: str | None = None
+    premortem_execution: str | None = None
+    premortem_additional: str | None = None
+    event_risk_present: int | None = None  # 0|1
+    event_handling: str | None = None
+    event_type: str | None = None
+    event_date: str | None = None
+    gap_risk_present: int | None = None  # 0|1
+    gap_risk_handling: str | None = None
+    emotional_state_pre_trade: str | None = None  # JSON-list TEXT
+    market_regime: str | None = None
+    catalyst: str | None = None
+    catalyst_other_description: str | None = None
+    manual_entry_confidence: str | None = None  # 'high'|'normal'|'low'
 
 
 @dataclass(frozen=True)
@@ -166,6 +205,65 @@ def record_entry(
     conn: sqlite3.Connection, req: EntryRequest, *,
     soft_warn: int, hard_cap: int, force: bool,
 ) -> EntryResult:
+    # Phase 7 Sub-B B.1 — non-bypassable pre-trade required-field gate. Per
+    # spec §9.3, MissingPreTradeFieldsException is NOT force-bypassable; it
+    # fires BEFORE the existing stop / duplicate / cap checks so an operator
+    # can never sneak a partial-state row past the lock by toggling --force.
+    # The validator's required-field set + conditional rules live in
+    # ``swing.trades.state``; this service just calls + raises.
+    #
+    # Note: the validator's "always required" set includes `trade_origin` +
+    # `pre_trade_locked_at`, which the route/CLI layer doesn't populate on
+    # EntryRequest. `pre_trade_locked_at` still uses an interim shim
+    # (event_ts); the canonical atomic insert+fill flow lands at B.3.
+    #
+    # B.2: `trade_origin` is now derived BEFORE validation via the origin
+    # service so the validator and the eventual INSERT see the same value
+    # the row will be persisted with. The 4-value enum returned by
+    # derive_trade_origin always satisfies the validator's required-field
+    # check (non-NULL string), so this preserves the gate-fires-first
+    # discipline regardless of (bucket × entry_path) combo.
+    derived_origin = derive_trade_origin(conn, req.ticker, req.entry_path)
+    req_view: dict = {
+        f: getattr(req, f, None)
+        for f in (
+            "ticker", "entry_date", "entry_price", "initial_stop",
+            "thesis", "why_now", "invalidation_condition", "expected_scenario",
+            "premortem_technical", "premortem_market_sector",
+            "premortem_execution", "event_risk_present", "event_handling",
+            "event_type", "event_date", "gap_risk_present",
+            "gap_risk_handling", "emotional_state_pre_trade",
+            "market_regime", "catalyst", "catalyst_other_description",
+            "manual_entry_confidence",
+        )
+    }
+    req_view["initial_shares"] = req.shares
+    req_view["trade_origin"] = derived_origin
+    # Codex R4 Major 1: pre_trade_locked_at + first-fill datetime must
+    # reflect when the trade actually entered the market (req.entry_date),
+    # not when the operator typed the command (req.event_ts).
+    # Codex R5 Major 1: trades.entry_date column is date-only and downstream
+    # consumers (advisory, journal/flags+analyze, briefing, CLI hold-duration)
+    # call date.fromisoformat(trade.entry_date) directly. So entry_date must
+    # remain YYYY-MM-DD only at the API boundary; reject T-form before
+    # storing. Synthesis of T16:00:00 for fill_datetime / pre_trade_locked_at
+    # happens via the shared helper after the date-only guard.
+    from swing.trades.exit import _normalize_trade_event_date_to_iso
+    if "T" in req.entry_date:
+        raise ValueError(
+            f"entry_date {req.entry_date!r} must be YYYY-MM-DD only "
+            f"(not a full ISO datetime); the trades.entry_date column is "
+            f"date-only and downstream consumers (advisory, journal, "
+            f"briefing, CLI hold-duration) call date.fromisoformat on it"
+        )
+    entry_iso = _normalize_trade_event_date_to_iso(
+        req.entry_date, field_name="entry_date",
+    )
+    req_view["pre_trade_locked_at"] = entry_iso
+    missing = validate_for_operation(req_view, op="entry_create", current_state=None)
+    if missing:
+        raise MissingPreTradeFieldsException(missing_fields=missing)
+
     if req.initial_stop >= req.entry_price:
         raise ValueError(
             f"stop must be < entry; got entry={req.entry_price}, stop={req.initial_stop}"
@@ -194,7 +292,10 @@ def record_entry(
         id=None, ticker=req.ticker, entry_date=req.entry_date,
         entry_price=req.entry_price, initial_shares=req.shares,
         initial_stop=req.initial_stop, current_stop=req.initial_stop,
-        status="open",
+        # Phase 7: state lifecycle replaces the legacy `status` column.
+        # New entries land in 'entered'; the state-mutation service
+        # transitions to 'managing' once the first non-entry fill arrives.
+        state="entered",
         watchlist_entry_target=req.watchlist_entry_target,
         watchlist_initial_stop=req.watchlist_initial_stop,
         notes=req.notes,
@@ -209,6 +310,32 @@ def record_entry(
         chart_pattern_classification_pipeline_run_id=req.chart_pattern_classification_pipeline_run_id,
         sector=req.sector,
         industry=req.industry,
+        # Phase 7 lifecycle fields (NOT NULL in schema). `trade_origin`
+        # comes from derive_trade_origin (B.2); `pre_trade_locked_at`
+        # comes from entry_date-derived ISO datetime (Codex R4 M1 fix —
+        # was req.event_ts which is the command time, not the actual entry
+        # chronology — back-recorded entries broke aggregation).
+        trade_origin=derived_origin,
+        pre_trade_locked_at=entry_iso,
+        # Phase 7 pre-trade decision fields — passed through from the request.
+        thesis=req.thesis,
+        why_now=req.why_now,
+        invalidation_condition=req.invalidation_condition,
+        expected_scenario=req.expected_scenario,
+        premortem_technical=req.premortem_technical,
+        premortem_market_sector=req.premortem_market_sector,
+        premortem_execution=req.premortem_execution,
+        premortem_additional=req.premortem_additional,
+        event_risk_present=req.event_risk_present,
+        event_handling=req.event_handling,
+        event_type=req.event_type,
+        event_date=req.event_date,
+        gap_risk_present=req.gap_risk_present,
+        gap_risk_handling=req.gap_risk_handling,
+        emotional_state_pre_trade=req.emotional_state_pre_trade,
+        market_regime=req.market_regime,
+        catalyst=req.catalyst,
+        catalyst_other_description=req.catalyst_other_description,
     )
 
     archived = False
@@ -216,6 +343,32 @@ def record_entry(
         with conn:
             trade_id = insert_trade_with_event(
                 conn, trade, event_ts=req.event_ts, rationale=req.rationale,
+            )
+            # Phase 7 Sub-B B.3 — atomic first entry-fill insert in the
+            # SAME transaction as the trade row. The fill's
+            # _recompute_aggregates updates trades.current_size,
+            # current_avg_cost, last_fill_at to authoritative values
+            # (fixing the R2 Minor 1 transient half-state that B.1's
+            # docstring on insert_trade_with_event warns OTHER callers
+            # about — record_entry now satisfies that contract).
+            insert_fill_with_event(
+                conn,
+                Fill(
+                    fill_id=None, trade_id=trade_id,
+                    # Codex R4 M1: fill_datetime keyed to entry_date for
+                    # chronology consistency (matches B.4 exit-side fix).
+                    fill_datetime=entry_iso,
+                    action="entry",
+                    quantity=float(req.shares),
+                    price=req.entry_price,
+                    manual_entry_confidence=req.manual_entry_confidence,
+                ),
+                event_ts=req.event_ts,
+                rationale=req.rationale,
+                # Hotfix 2026-05-05 (operator-witnessed gate finding S3):
+                # insert_trade_with_event above already emitted an 'entry'
+                # trade_event row; suppress the duplicate emission here.
+                emit_event=False,
             )
             wl = get_watchlist_entry(conn, req.ticker)
             if wl is not None:

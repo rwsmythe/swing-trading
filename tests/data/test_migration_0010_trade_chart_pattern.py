@@ -13,8 +13,9 @@ def test_migration_0010_adds_four_trade_columns(tmp_path: Path):
         assert "chart_pattern_algo_confidence" in cols
         assert "chart_pattern_operator" in cols
         assert "chart_pattern_classification_pipeline_run_id" in cols
+        # Phase 7 Sub-A migration 0014 advanced schema_version to 14.
         cur = conn.execute("SELECT version FROM schema_version")
-        assert cur.fetchone()[0] == 13
+        assert cur.fetchone()[0] == 14
     finally:
         conn.close()
 
@@ -23,11 +24,13 @@ def test_migration_0010_chart_pattern_algo_check_rejects_invalid_value(tmp_path:
     conn = ensure_schema(tmp_path / "swing.db")
     try:
         with pytest.raises(sqlite3.IntegrityError):
+            # Phase 7 Sub-A migration 0014 dropped `status` and replaced with
+            # `state` (CHECK in {'entered','managing','partial_exited','closed','reviewed'}).
             conn.execute(
                 "INSERT INTO trades (ticker, entry_date, entry_price, "
-                "initial_shares, initial_stop, current_stop, status, "
+                "initial_shares, initial_stop, current_stop, state, "
                 "chart_pattern_algo) VALUES "
-                "('T', '2026-04-26', 10.0, 1, 9.0, 9.0, 'open', 'pennant')"
+                "('T', '2026-04-26', 10.0, 1, 9.0, 9.0, 'entered', 'pennant')"
             )
     finally:
         conn.close()

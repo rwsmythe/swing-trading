@@ -178,15 +178,16 @@ def _post_entry(client, **fields):
     Empty-string values flow through as the form would actually post (the
     HTML form sends ``value=""`` for hidden inputs of None values).
     """
-    base = {
-        "ticker": "AAPL",
-        "entry_date": "2026-04-26",
-        "entry_price": "10.0",
-        "shares": "1",
-        "initial_stop": "9.0",
-        "rationale": "aplus-setup",
-        "notes": "",
-    }
+    from tests.web.conftest import full_phase7_entry_payload
+    base = full_phase7_entry_payload(
+        ticker="AAPL",
+        entry_date="2026-04-26",
+        entry_price="10.0",
+        shares="1",
+        initial_stop="9.0",
+        rationale="aplus-setup",
+        notes="",
+    )
     base.update({k: ("" if v is None else str(v)) for k, v in fields.items()})
     return client.post(
         "/trades/entry", data=base, headers={"HX-Request": "true"},
@@ -388,32 +389,41 @@ def test_post_entry_refuses_operator_override_when_no_cache(seeded_db, monkeypat
 
 # ---------------------------------------------------------------------
 # Codex R1 Major 1 — tampered hidden-form-field POST must NOT 500.
-# I1's existing fix only catches ValueError from the cross-column
-# invariant. SQLite's CHECK on chart_pattern_algo and the FK on
-# chart_pattern_classification_pipeline_run_id raise sqlite3.IntegrityError
-# at INSERT time, which the route currently does not catch — producing a
-# generic HTTP 500 instead of the standard 400 + re-rendered banner.
+# Originally the failure mode was a schema-level CHECK/FK firing as
+# sqlite3.IntegrityError at INSERT time, leaking as HTTP 500. The fix
+# (commit ``117dc97``) moved both guards to the route boundary BEFORE
+# EntryRequest construction:
+#   - Enum check: ``chart_pattern_algo not in ("flag", "none")`` fails
+#     fast and routes to ``_rerender_entry_form_with_error`` (HTTP 400).
+#   - FK existence check: ``SELECT 1 FROM pipeline_runs WHERE id=?``
+#     against ``chart_pattern_classification_pipeline_run_id`` similarly
+#     re-renders with HTTP 400 when the row doesn't exist.
+# Post-fix the rejection path no longer touches IntegrityError /
+# transaction rollback — no INSERT is attempted at all. The 400 banner
+# always references "chart_pattern" via the route's error_message text.
 # ---------------------------------------------------------------------
 
 
 def test_post_entry_with_tampered_algo_value_returns_400_with_error_banner(
     seeded_db, monkeypatch,
 ):
-    """Tampered ``chart_pattern_algo='pennant'`` (value not in the
-    schema CHECK enum) with otherwise-valid fields must NOT bubble a 500.
+    """Tampered ``chart_pattern_algo='pennant'`` (value outside the
+    accepted ``("flag", "none")`` enum) with otherwise-valid fields must
+    NOT bubble a 500.
 
     Cached-only gate accepts the POST because algo + anchor are both
-    non-NULL; cross-column invariant is not violated (algo is non-NULL,
-    confidence is non-NULL, anchor is non-NULL). The CHECK constraint
-    fires at INSERT time and SQLite raises ``sqlite3.IntegrityError``
-    with the column name in the message. Route must catch and re-render
-    with HTTP 400.
+    non-NULL; cross-column invariant is not violated. The route-layer
+    enum check (``chart_pattern_algo not in ("flag", "none")``, restored
+    by commit ``117dc97`` after migration 0014 dropped the schema CHECK)
+    fires BEFORE EntryRequest construction and routes through
+    ``_rerender_entry_form_with_error`` with HTTP 400.
 
-    Discriminating: pre-fix the route catches only ``ValueError`` from
-    the cross-column invariant; an IntegrityError bypasses the catch and
-    becomes 500. Post-fix: the IntegrityError predicate matches the
-    chart_pattern_algo CHECK message and renders the 400 banner. Asserts
-    no trade row inserted (transaction rolled back).
+    Discriminating: pre-fix (no route-layer enum guard) the value flowed
+    through to the dataclass and either silently persisted or surfaced as
+    a 500 from a downstream consumer. Post-fix: the route rejects with
+    400 + banner referencing ``chart_pattern_algo`` BEFORE any INSERT is
+    attempted (no IntegrityError path involved; no transaction rollback
+    needed). Asserts no trade row inserted as a defense-in-depth check.
     """
     cfg, cfg_path = seeded_db
     run_id, _eval_id = seed_pipeline_with_classification(
@@ -454,17 +464,24 @@ def test_post_entry_with_bogus_pipeline_run_id_returns_400_with_error_banner(
     seeded_db, monkeypatch,
 ):
     """Tampered ``chart_pattern_classification_pipeline_run_id=999999``
-    (FK target does not exist) must NOT bubble a 500.
+    (no such ``pipeline_runs.id``) must NOT bubble a 500.
 
     Cached-only gate accepts (algo + anchor both non-NULL); cross-column
-    invariant accepts (algo='flag' + confidence non-NULL). The FK
-    constraint fires at INSERT time and SQLite raises
-    ``sqlite3.IntegrityError("FOREIGN KEY constraint failed")``.
+    invariant accepts (algo='flag' + confidence non-NULL). The
+    route-layer FK existence check (``SELECT 1 FROM pipeline_runs WHERE
+    id = ?``, restored by commit ``117dc97`` after migration 0014 stopped
+    enforcing the FK on the trades column) fires BEFORE EntryRequest
+    construction and routes through ``_rerender_entry_form_with_error``
+    with HTTP 400.
 
-    Discriminating: pre-fix → 500 (IntegrityError unhandled). Post-fix:
-    route's pre-INSERT FK existence check (or IntegrityError catch with
-    chart-pattern predicate) renders the 400 banner. Asserts no trade
-    row inserted.
+    Discriminating: pre-fix (no route-layer FK existence check) the bogus
+    id either silently persisted on the trade row (FK no longer enforced
+    by the schema after 0014) or surfaced as a 500 from a downstream
+    consumer expecting the row to exist. Post-fix: the route rejects with
+    400 + banner referencing ``chart_pattern_classification_pipeline_run_id``
+    BEFORE any INSERT is attempted (no IntegrityError path involved; no
+    transaction rollback needed). Asserts no trade row inserted as a
+    defense-in-depth check.
     """
     cfg, cfg_path = seeded_db
     # NB: do NOT seed any pipeline_runs row; 999999 must not exist.
@@ -493,6 +510,91 @@ def test_post_entry_with_bogus_pipeline_run_id_returns_400_with_error_banner(
     try:
         count = conn.execute(
             "SELECT COUNT(*) FROM trades WHERE ticker='AAPL'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert count == 0
+
+
+def test_post_entry_with_forged_snapshot_for_unclassified_ticker_returns_400(
+    seeded_db, monkeypatch,
+):
+    """Codex R2 Major 1 — a tampered snapshot using a real
+    ``pipeline_runs.id`` but a ticker that has NO cached classification
+    under that run must be rejected with 400.
+
+    Setup: seed a pipeline_runs row + classification for AAPL only.
+    Submit an entry for ticker=``OTHER`` with algo=``flag``,
+    confidence=0.5, anchor=<the seeded run_id>. The route's FK check
+    accepts (run_id is real); the enum check accepts (``flag`` is in the
+    enum); the cross-column invariant accepts (algo + confidence +
+    anchor all non-NULL). Pre-R2 the route persists the forged snapshot
+    silently — the cached-only gate at the route only verifies that
+    algo + anchor are both non-NULL, not that the (run_id, ticker) tuple
+    actually corresponds to a cached row.
+
+    Post-R2 the new snapshot-vs-cache match check
+    (``get_classification(conn, pipeline_run_id=anchor, ticker=ticker)``)
+    rejects with HTTP 400 + banner referencing ``chart_pattern``. No
+    trade row inserted.
+
+    Discriminating: pre-fix the forged POST persists the snapshot
+    silently on the OTHER trade row (FK + enum + invariant all pass).
+    Post-fix: 400 with banner; trade count for OTHER stays at 0.
+
+    NB: the seed helper inserts a watchlist row only for ``AAPL`` (so the
+    refusal-path form re-render can build a VM). We seed an OTHER
+    watchlist row separately so the rejection path's
+    ``_rerender_entry_form_with_error`` doesn't 500 from a missing
+    watchlist VM dependency — the gate we're verifying is the cache
+    match, not the form-rerender plumbing.
+    """
+    cfg, cfg_path = seeded_db
+    run_id, _eval_id = seed_pipeline_with_classification(
+        cfg.paths.db_path, ticker="AAPL", pattern="flag", confidence=0.78,
+    )
+    # Seed an OTHER watchlist row so the form re-render path on rejection
+    # can resolve a watchlist VM without 500'ing on missing seed data.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="OTHER", added_date="2026-04-10",
+                last_qualified_date="2026-04-17", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-04-17",
+                entry_target=181.0, initial_stop_target=170.0,
+                last_close=180.0, last_pivot=181.0, last_stop=170.0,
+                last_adr_pct=2.5, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        # _post_entry's helper builds the base payload via
+        # full_phase7_entry_payload(ticker="AAPL"); we override the ticker
+        # field directly to drive the route at OTHER.
+        resp = _post_entry(
+            client,
+            ticker="OTHER",
+            chart_pattern_algo="flag",
+            chart_pattern_algo_confidence="0.5",
+            chart_pattern_classification_pipeline_run_id=str(run_id),
+            chart_pattern_operator="",  # Accept algo
+        )
+    assert resp.status_code == 400, (
+        f"Expected 400 (snapshot-vs-cache mismatch re-render), got "
+        f"{resp.status_code}. Body[:500]: {resp.text[:500]!r}"
+    )
+    assert "chart_pattern" in resp.text.lower() or "Chart-pattern" in resp.text, (
+        "Response body must reference chart_pattern. "
+        f"Body[:500]: {resp.text[:500]!r}"
+    )
+    conn = connect(cfg.paths.db_path)
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE ticker='OTHER'"
         ).fetchone()[0]
     finally:
         conn.close()
@@ -541,7 +643,7 @@ def test_soft_warn_confirm_round_trip_preserves_chart_pattern_snapshot(
                 insert_trade_with_event(conn, Trade(
                     id=None, ticker=t, entry_date="2026-04-15",
                     entry_price=100.0, initial_shares=1, initial_stop=90.0,
-                    current_stop=90.0, status="open",
+                    current_stop=90.0, state="entered",
                     watchlist_entry_target=None, watchlist_initial_stop=None,
                     notes=None,
                 ), event_ts=f"2026-04-15T09:{30+i}:00")
@@ -634,7 +736,7 @@ def test_soft_warn_confirm_other_operator_roundtrip(seeded_db, monkeypatch):
                 insert_trade_with_event(conn, Trade(
                     id=None, ticker=t, entry_date="2026-04-15",
                     entry_price=100.0, initial_shares=1, initial_stop=90.0,
-                    current_stop=90.0, status="open",
+                    current_stop=90.0, state="entered",
                     watchlist_entry_target=None, watchlist_initial_stop=None,
                     notes=None,
                 ), event_ts=f"2026-04-15T09:{30+i}:00")
@@ -729,7 +831,7 @@ def test_post_entry_soft_warn_confirm_preserves_sector_industry(
                 insert_trade_with_event(conn, Trade(
                     id=None, ticker=tk, entry_date="2026-04-20",
                     entry_price=100.0, initial_shares=1, initial_stop=95.0,
-                    current_stop=95.0, status="open",
+                    current_stop=95.0, state="entered",
                     watchlist_entry_target=None, watchlist_initial_stop=None,
                     notes=None,
                 ), event_ts=f"2026-04-20T09:30:0{i}")

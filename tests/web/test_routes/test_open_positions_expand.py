@@ -61,15 +61,38 @@ def _write_chart(charts_dir: Path, *, date: str, ticker: str) -> Path:
 
 def _insert_open_trade(conn, *, ticker: str, entry_date: str = "2026-04-20",
                        status: str = "open") -> int:
+    """Phase 7 Sub-A migration 0014: `status` dropped → `state`; trade_origin
+    + pre_trade_locked_at NOT NULL; current_size denorm column added. Direct-
+    SQL test seed translates `status='open'` → `state='entered'` (the legacy
+    'open' shape Sub-A fan-mapped onto 'entered' for inaugural trades).
+    """
+    state_value = "entered" if status == "open" else status
+    # Also write an entry-fill so current_size = initial_shares; many
+    # tests subsequently exit shares via record_exit which guards on
+    # current_size — without the fill, the guard would reject the exit
+    # with "exit shares 10 exceeds remaining current_size 0".
     cur = conn.execute(
         """INSERT INTO trades
            (ticker, entry_date, entry_price, initial_shares,
-            initial_stop, current_stop, status,
+            initial_stop, current_stop, state,
+            trade_origin, pre_trade_locked_at, current_size,
             watchlist_entry_target, watchlist_initial_stop, notes)
-           VALUES (?, ?, 100.0, 10, 90.0, 90.0, ?, NULL, NULL, NULL)""",
-        (ticker, entry_date, status),
+           VALUES (?, ?, 100.0, 10, 90.0, 90.0, ?,
+                   'manual_off_pipeline', ?, 10.0,
+                   NULL, NULL, NULL)""",
+        (ticker, entry_date, state_value, f"{entry_date}T16:00:00"),
     )
-    return int(cur.lastrowid)
+    trade_id = int(cur.lastrowid)
+    conn.execute(
+        """INSERT INTO fills
+           (trade_id, fill_datetime, action, quantity, price, reason,
+            rule_based, fees, manual_entry_confidence,
+            reconciliation_status, tos_match_id)
+           VALUES (?, ?, 'entry', 10.0, 100.0, NULL, NULL, NULL, NULL,
+                   'unreconciled', NULL)""",
+        (trade_id, f"{entry_date}T16:00:00"),
+    )
+    return trade_id
 
 
 def _seed_in_scope_trade(cfg, *, ticker: str = "AAPL",
@@ -179,6 +202,9 @@ def test_build_open_positions_expanded_closed_trade_returns_none(seeded_db):
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
+            # Phase 7: pass status='closed' so the helper writes
+            # state='closed' (post-Sub-A schema). The builder rejects
+            # non-active states.
             trade_id = _insert_open_trade(conn, ticker="AAPL", status="closed")
         vm = build_open_positions_expanded(conn=conn, cfg=cfg, trade_id=trade_id)
     finally:
@@ -250,7 +276,9 @@ def test_expand_route_closed_trade_404(seeded_db, monkeypatch):
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
-            trade_id = _insert_open_trade(conn, ticker="AAPL", status="closed")
+            trade_id = _insert_open_trade(
+                conn, ticker="AAPL", status="closed",
+            )
     finally:
         conn.close()
     _patch_price_cache(monkeypatch)
@@ -479,7 +507,7 @@ def test_build_open_positions_expanded_uses_binding_not_re_read(
             trade = Trade(
                 id=None, ticker="AAPL", entry_date="2026-04-01",
                 entry_price=100.0, initial_shares=10, initial_stop=95.0,
-                current_stop=95.0, status="open",
+                current_stop=95.0, state="entered",
                 watchlist_entry_target=100.0,
                 watchlist_initial_stop=95.0,
                 notes=None,
@@ -605,7 +633,7 @@ def test_open_positions_row_renders_sector_industry(seeded_db, monkeypatch):
             insert_trade_with_event(conn, Trade(
                 id=None, ticker="AAPL", entry_date="2026-04-15",
                 entry_price=180.0, initial_shares=10, initial_stop=170.0,
-                current_stop=170.0, status="open",
+                current_stop=170.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None, sector="OP-Sector-T9", industry="OP-Industry-T9",
             ), event_ts="2026-04-15T09:30:00")

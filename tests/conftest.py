@@ -1,10 +1,173 @@
 """Shared pytest fixtures."""
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pandas as pd
 import pytest
+
+from swing.data.models import Fill, Trade
+
+
+def insert_trade_with_entry_fill(
+    conn: sqlite3.Connection, trade: Trade, *,
+    event_ts: str, rationale: str | None = None,
+) -> int:
+    """Phase 7 Sub-C C.13: insert_trade_with_event + entry-fill in one txn.
+
+    Per Phase 7 R2 Minor 1 warning on ``insert_trade_with_event``, callers
+    MUST follow with ``insert_fill_with_event(action='entry')`` in the same
+    transaction so ``trades.current_size`` reflects the entry shares.
+    Without this, the exit service's `current_size - shares < 0` guard
+    rejects every exit attempt with a 400. This helper bundles both.
+    """
+    from swing.data.repos.fills import insert_fill_with_event
+    from swing.data.repos.trades import insert_trade_with_event
+
+    trade_id = insert_trade_with_event(
+        conn, trade, event_ts=event_ts, rationale=rationale,
+    )
+    insert_fill_with_event(
+        conn,
+        Fill(
+            fill_id=None, trade_id=trade_id,
+            fill_datetime=event_ts, action="entry",
+            quantity=float(trade.initial_shares),
+            price=float(trade.entry_price),
+        ),
+        event_ts=event_ts,
+    )
+    return trade_id
+
+
+def cli_entry_pre_trade_args() -> list[str]:
+    """Phase 7 Sub-C C.13: 11 CLI flags satisfying the post-Sub-A pre-trade gate.
+
+    The ``swing trade entry`` command refuses entry unless the operator
+    supplies a non-empty value for each of the 11 required pre-trade fields
+    (Sub-A T6 added the gate). Tests that don't exercise pre-trade-form
+    behavior directly should append this list to their CLI invocation so
+    the gate doesn't fire for unrelated reasons.
+
+    Tests that intentionally OMIT a field to trigger the gate should NOT
+    use this helper (or should pop the relevant flag/value pair).
+    """
+    return [
+        "--thesis", "test-thesis",
+        "--why-now", "test-why-now",
+        "--invalidation", "stop-hit",
+        "--expected-scenario", "win",
+        "--premortem-technical", "tech-risk",
+        "--premortem-market-sector", "market-risk",
+        "--premortem-execution", "execution-risk",
+        "--emotional-state", "calm",
+        "--manual-entry-confidence", "normal",
+        "--market-regime", "Bullish",
+        "--catalyst", "technical_only",
+    ]
+
+
+def insert_exit_fill(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+    exit_date: str,
+    exit_price: float,
+    shares: int,
+    reason: str | None = None,
+    fill_datetime: str | None = None,
+    action: str = "exit",
+    close_trade: bool = True,
+    notes: str | None = None,  # noqa: ARG001 — accepted for legacy-call shape compat
+    realized_pnl: float | None = None,  # noqa: ARG001 — recomputed by repo, not stored
+    r_multiple: float | None = None,  # noqa: ARG001 — recomputed by repo, not stored
+) -> int:
+    """Test helper: insert a Fill (action='exit'/'trim'/'stop') replacing legacy `Exit(...)`.
+
+    Phase 7 Sub-C C.13 — many tests previously did:
+        insert_exit_with_event(conn, Exit(id=None, trade_id=..., exit_date=...,
+            exit_price=..., shares=..., reason=..., realized_pnl=..., r_multiple=...,
+            notes=None), event_ts=...)
+    The Exit dataclass was removed (Sub-A T3 stub raises) and `insert_exit_with_event`
+    raises post-Sub-A. This helper takes the same arguments and routes them via the
+    canonical fills repo. `realized_pnl` and `r_multiple` arguments are accepted
+    (so call sites stay readable) but ignored — those values are derived from the
+    fill at read time by the legacy shim or the consumer-side migration.
+    """
+    from swing.data.repos.fills import insert_fill_with_event
+
+    if fill_datetime is None:
+        fill_datetime = f"{exit_date}T16:00:00"
+    fill = Fill(
+        fill_id=None,
+        trade_id=trade_id,
+        fill_datetime=fill_datetime,
+        action=action,
+        quantity=float(shares),
+        price=float(exit_price),
+        reason=reason,
+        rule_based=None,
+        fees=None,
+        manual_entry_confidence=None,
+    )
+    fill_id = insert_fill_with_event(
+        conn, fill, event_ts=fill_datetime, rationale=None,
+    )
+    if close_trade and action == "exit":
+        # Mirror production exit-service behavior: a full exit closes the trade.
+        # We don't go through the state-machine helper because tests seed trades
+        # in arbitrary states (entered/managing/partial_exited); just set state.
+        conn.execute(
+            "UPDATE trades SET state = 'closed' WHERE id = ?", (trade_id,),
+        )
+    return fill_id
+
+
+def make_trade(
+    *,
+    id: int | None = None,
+    ticker: str = "AAA",
+    entry_date: str = "2026-01-01",
+    entry_price: float = 10.0,
+    initial_shares: int = 100,
+    initial_stop: float = 9.0,
+    current_stop: float = 9.0,
+    state: str = "entered",
+    watchlist_entry_target: float | None = None,
+    watchlist_initial_stop: float | None = None,
+    notes: str | None = None,
+    # Phase 7 lifecycle defaults — provide schema-safe values so dataclass
+    # callers don't have to opt in to the new fields. The entry service in
+    # Sub-B sets these atomically in production; tests that don't exercise
+    # entry-service code rely on these defaults.
+    trade_origin: str = "manual_off_pipeline",
+    pre_trade_locked_at: str = "2026-01-01T16:00:00",
+    **overrides,
+) -> Trade:
+    """Canonical Trade fixture builder for the test corpus.
+
+    Phase 7 Sub-A T0 introduced this builder. T3 dropped `status` from the
+    Trade dataclass; this signature mirrors that change. The 18 pre-trade
+    decision fields default to None via the dataclass; callers can override
+    via `**overrides`.
+    """
+    return Trade(
+        id=id,
+        ticker=ticker,
+        entry_date=entry_date,
+        entry_price=entry_price,
+        initial_shares=initial_shares,
+        initial_stop=initial_stop,
+        current_stop=current_stop,
+        state=state,
+        watchlist_entry_target=watchlist_entry_target,
+        watchlist_initial_stop=watchlist_initial_stop,
+        notes=notes,
+        trade_origin=trade_origin,
+        pre_trade_locked_at=pre_trade_locked_at,
+        **overrides,
+    )
 
 
 @pytest.fixture

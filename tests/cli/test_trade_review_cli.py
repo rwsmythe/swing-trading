@@ -1,17 +1,27 @@
-"""Click integration tests for swing trade review."""
+"""Click integration tests for swing trade review.
+
+Phase 7 Sub-B B.6 fixture migration: legacy ``Exit(...)``+``insert_exit_with_event``
+seeding rewritten to ``Fill(action='exit')``+``insert_fill_with_event`` (the
+``Exit`` dataclass is a stub post Sub-A T3 and raises on construction).
+
+Phase 7 Sub-B B.7 unskip: ``swing/cli.py`` now reads ``trade.state`` (predicate
+``state != 'closed'``) and routes review-completion through
+``complete_trade_review`` so the trade transitions to ``state='reviewed'``
+atomically with the review-fields write.
+"""
 from __future__ import annotations
 
 import json
 import tomllib
 from pathlib import Path
 
-import pytest
 from click.testing import CliRunner
 
 from swing.cli import main
 from swing.data.db import ensure_schema
-from swing.data.models import Exit, Trade
-from swing.data.repos.trades import insert_exit_with_event, insert_trade_with_event
+from swing.data.models import Fill, Trade
+from swing.data.repos.fills import insert_fill_with_event
+from swing.data.repos.trades import insert_trade_with_event
 from tests.cli.test_cli_eval import _minimal_config
 
 
@@ -30,7 +40,7 @@ def _setup(tmp_path: Path):
 
 
 def _seed_closed_trade(db_path: Path) -> int:
-    """Seed a closed VIR trade with one exit. Returns the trade_id."""
+    """Seed a closed VIR trade with entry+exit fills. Returns the trade_id."""
     conn = ensure_schema(db_path)
     try:
         with conn:
@@ -44,28 +54,42 @@ def _seed_closed_trade(db_path: Path) -> int:
                     initial_shares=10,
                     initial_stop=9.0,
                     current_stop=9.0,
-                    status="open",
+                    state="entered",
                     watchlist_entry_target=None,
                     watchlist_initial_stop=None,
                     notes=None,
+                    trade_origin="manual_off_pipeline",
+                    pre_trade_locked_at="2026-04-20T09:30:00",
                 ),
                 event_ts="2026-04-20T09:30:00",
             )
-            insert_exit_with_event(
+            insert_fill_with_event(
                 conn,
-                Exit(
-                    id=None,
+                Fill(
+                    fill_id=None,
                     trade_id=trade_id,
-                    exit_date="2026-04-25",
-                    exit_price=11.5,
-                    shares=10,
-                    reason="manual",
-                    realized_pnl=15.0,
-                    r_multiple=1.5,
-                    notes=None,
+                    fill_datetime="2026-04-20T09:30:00",
+                    action="entry",
+                    quantity=10.0,
+                    price=10.0,
+                ),
+                event_ts="2026-04-20T09:30:00",
+                rationale="seed-entry",
+            )
+            insert_fill_with_event(
+                conn,
+                Fill(
+                    fill_id=None,
+                    trade_id=trade_id,
+                    fill_datetime="2026-04-25T09:30:00",
+                    action="exit",
+                    quantity=10.0,
+                    price=11.5,
                 ),
                 event_ts="2026-04-25T09:30:00",
+                rationale="seed-exit",
             )
+            conn.execute("UPDATE trades SET state = 'closed' WHERE id = ?", (trade_id,))
     finally:
         conn.close()
     return trade_id
@@ -175,28 +199,42 @@ def _seed_recently_closed_trade(db_path: Path) -> int:
                     initial_shares=10,
                     initial_stop=9.0,
                     current_stop=9.0,
-                    status="open",
+                    state="entered",
                     watchlist_entry_target=None,
                     watchlist_initial_stop=None,
                     notes=None,
+                    trade_origin="manual_off_pipeline",
+                    pre_trade_locked_at="2026-04-01T09:30:00",
                 ),
                 event_ts="2026-04-01T09:30:00",
             )
-            insert_exit_with_event(
+            insert_fill_with_event(
                 conn,
-                Exit(
-                    id=None,
+                Fill(
+                    fill_id=None,
                     trade_id=trade_id,
-                    exit_date=yesterday,
-                    exit_price=11.5,
-                    shares=10,
-                    reason="manual",
-                    realized_pnl=15.0,
-                    r_multiple=1.5,
-                    notes=None,
+                    fill_datetime="2026-04-01T09:30:00",
+                    action="entry",
+                    quantity=10.0,
+                    price=10.0,
+                ),
+                event_ts="2026-04-01T09:30:00",
+                rationale="seed-entry",
+            )
+            insert_fill_with_event(
+                conn,
+                Fill(
+                    fill_id=None,
+                    trade_id=trade_id,
+                    fill_datetime=f"{yesterday}T09:30:00",
+                    action="exit",
+                    quantity=10.0,
+                    price=11.5,
                 ),
                 event_ts=f"{yesterday}T09:30:00",
+                rationale="seed-exit",
             )
+            conn.execute("UPDATE trades SET state = 'closed' WHERE id = ?", (trade_id,))
     finally:
         conn.close()
     return trade_id
@@ -234,3 +272,91 @@ def test_review_empty_mistake_tags_rejected(tmp_path: Path) -> None:
     assert result.exit_code != 0
     output_lower = result.output.lower()
     assert "mistake" in output_lower or "tag" in output_lower
+
+
+# ---------------------------------------------------------------------------
+# B.7 — discriminating tests
+# ---------------------------------------------------------------------------
+
+
+def test_review_transitions_state_closed_to_reviewed(tmp_path: Path) -> None:
+    """B.7: review-completion routes through ``complete_trade_review`` so the
+    trade transitions ``closed → reviewed`` atomically with the review-fields
+    write.
+
+    Pre-fix (direct ``update_trade_review_fields``): trades.state stayed
+    ``'closed'`` after review; only ``reviewed_at`` was populated.
+    Post-fix (service-routed): trades.state == ``'reviewed'`` AND a
+    ``state_transition`` row lands in trade_events.
+    """
+    runner, cfg, db_path = _setup(tmp_path)
+    trade_id = _seed_closed_trade(db_path)
+
+    result = runner.invoke(main, [
+        "--config", str(cfg),
+        "trade", "review",
+        "--trade-id", str(trade_id),
+        "--mistake-tags", "none_observed",
+        "--entry-grade", "A",
+        "--management-grade", "A",
+        "--exit-grade", "A",
+        "--lesson-learned", "Followed the plan.",
+    ])
+    assert result.exit_code == 0, result.output
+
+    from swing.data.db import connect
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT state FROM trades WHERE id = ?", (trade_id,),
+        ).fetchone()
+        assert row[0] == "reviewed", (
+            f"trade.state should be 'reviewed' after review-completion; got {row[0]!r}"
+        )
+        # state_transition writes a 'note' event with notes='state_transition closed->reviewed'
+        ev = conn.execute(
+            "SELECT notes FROM trade_events WHERE trade_id = ? "
+            "AND event_type = 'note' "
+            "AND notes LIKE 'state_transition closed->reviewed%'",
+            (trade_id,),
+        ).fetchone()
+        assert ev is not None, (
+            "complete_trade_review should record a state_transition audit event"
+        )
+    finally:
+        conn.close()
+
+
+def test_review_rejects_already_reviewed_trade(tmp_path: Path) -> None:
+    """B.7: cli.py review precondition is ``state != 'closed'`` (NOT
+    ``state not in ('closed', 'reviewed')``). An already-reviewed trade
+    must be rejected.
+
+    Pre-fix (naïve ``state not in ('closed','reviewed')``): would re-review.
+    Post-fix (``state != 'closed'``): raises ClickException.
+    """
+    runner, cfg, db_path = _setup(tmp_path)
+    trade_id = _seed_closed_trade(db_path)
+    # Flip the trade to the reviewed state directly (simulates a prior review).
+    from swing.data.db import connect
+    conn = connect(db_path)
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE trades SET state = 'reviewed' WHERE id = ?", (trade_id,),
+            )
+    finally:
+        conn.close()
+
+    result = runner.invoke(main, [
+        "--config", str(cfg),
+        "trade", "review",
+        "--trade-id", str(trade_id),
+        "--mistake-tags", "none_observed",
+        "--entry-grade", "A",
+        "--management-grade", "A",
+        "--exit-grade", "A",
+        "--lesson-learned", "n/a",
+    ])
+    assert result.exit_code != 0
+    assert "not closed" in result.output.lower()

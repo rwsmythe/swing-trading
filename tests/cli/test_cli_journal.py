@@ -44,6 +44,21 @@ def _record_closed_trade(
         "--ticker", ticker, "--entry-date", entry_date,
         "--entry-price", "100.0", "--shares", "1",
         "--initial-stop", "90.0", "--rationale", "vcp-breakout",
+        # Phase 7 Sub-A T6: 18 pre-trade fields are gated by the entry CLI.
+        # All required for the trade to enter; values chosen to satisfy
+        # CHECK constraints + form-validator without being meaningful in
+        # this journal-review context.
+        "--thesis", "test-thesis",
+        "--why-now", "test-why-now",
+        "--invalidation", "stop-hit",
+        "--expected-scenario", "win",
+        "--premortem-technical", "tech-risk",
+        "--premortem-market-sector", "market-risk",
+        "--premortem-execution", "execution-risk",
+        "--emotional-state", "calm",
+        "--manual-entry-confidence", "normal",
+        "--market-regime", "Bullish",
+        "--catalyst", "technical_only",
     ]
     if hypothesis is not None:
         args += ["--hypothesis", hypothesis]

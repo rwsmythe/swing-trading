@@ -5,7 +5,13 @@ import sqlite3
 from dataclasses import dataclass
 from enum import Enum
 
-from swing.data.repos.trades import get_trade, update_stop_with_event
+from swing.data.repos.trades import (
+    get_trade,
+)
+from swing.data.repos.trades import (
+    update_stop_with_event as repo_update_stop_with_event,
+)
+from swing.trades.state import state_transition
 
 
 class StopAdjustRationale(str, Enum):  # noqa: UP042  (match ExitReason's (str, Enum) pattern)
@@ -77,19 +83,70 @@ class StopAdjustRequest:
     notes: str | None = None
 
 
+def update_stop_with_event(
+    conn: sqlite3.Connection, *,
+    trade_id: int,
+    new_stop: float,
+    event_ts: str,
+    rationale: str | None = None,
+    notes: str | None = None,
+) -> None:
+    """State-aware stop update.
+
+    Rejects terminal/review states and auto-transitions entered trades to
+    managing on the first stop adjustment.
+    """
+    trade = get_trade(conn, trade_id)
+    if trade is None:
+        raise ValueError(f"trade {trade_id} not found")
+    if trade.state not in ("entered", "managing", "partial_exited"):
+        raise ValueError(f"trade {trade_id} is not active (state={trade.state!r})")
+
+    with conn:
+        repo_update_stop_with_event(
+            conn,
+            trade_id=trade_id,
+            new_stop=new_stop,
+            event_ts=event_ts,
+            rationale=rationale,
+            notes=notes,
+        )
+        if trade.state == "entered":
+            state_transition(
+                conn,
+                trade_id=trade_id,
+                new_state="managing",
+                event_ts=event_ts,
+                rationale=rationale,
+            )
+
+
 def adjust_stop(conn: sqlite3.Connection, req: StopAdjustRequest) -> None:
     trade = get_trade(conn, req.trade_id)
     if trade is None:
         raise ValueError(f"trade {req.trade_id} not found")
+    # B.5: active-state guard fires BEFORE the trail-up regression check.
+    # Rationale: trade-state validity is more fundamental than the domain-level
+    # trail-up rule. A closed trade being "lowered" is two errors at once;
+    # surfacing the state error first gives the operator the actionable signal
+    # ("this trade is closed") rather than a misleading regression message.
+    if trade.state not in ("entered", "managing", "partial_exited"):
+        raise ValueError(
+            f"trade {req.trade_id} is not active (state={trade.state!r})"
+        )
     if req.new_stop < trade.current_stop and not req.force:
         raise StopRegressionError(
             f"new stop ${req.new_stop:.2f} < current ${trade.current_stop:.2f}; use force=True"
         )
     if req.new_stop == trade.current_stop:
         return
-    with conn:
-        update_stop_with_event(
-            conn, trade_id=req.trade_id, new_stop=req.new_stop,
-            event_ts=req.event_ts, rationale=req.rationale,
-            notes=req.notes,
-        )
+    # Delegate to the state-aware service: opens its own ``with conn:`` block
+    # for atomic stop-write + entered→managing transition.
+    update_stop_with_event(
+        conn,
+        trade_id=req.trade_id,
+        new_stop=req.new_stop,
+        event_ts=req.event_ts,
+        rationale=req.rationale,
+        notes=req.notes,
+    )

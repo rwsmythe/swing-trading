@@ -159,7 +159,7 @@ def test_runner_refreshes_close_for_open_trade_not_in_finviz(
                 conn, Trade(
                     id=None, ticker="VIR", entry_date="2026-04-15",
                     entry_price=10.5, initial_shares=100, initial_stop=9.5,
-                    current_stop=9.5, status="open",
+                    current_stop=9.5, state="entered",
                     watchlist_entry_target=None, watchlist_initial_stop=None,
                     notes=None,
                 ), event_ts="2026-04-15T09:30:00",
@@ -254,3 +254,66 @@ def test_runner_aborts_on_evaluation_fail(tmp_path: Path, monkeypatch):
         assert run.export_status in (None, "skipped")
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-C C.10 — pipeline/runner.py migrates the three list_all_exits
+# call sites onto the local _exits_via_fills_for_equity helper. Direct
+# helper-level test asserts (a) entry fills are filtered, (b) realized_pnl
+# is derived from the parent trade's entry_price.
+# ---------------------------------------------------------------------------
+
+
+def test_c10_exits_via_fills_for_equity_filters_entry_fills(
+    tmp_path: Path,
+) -> None:
+    """C.10: _exits_via_fills_for_equity returns ExitLike rows for non-
+    entry fills only. The synthetic entry fill written by
+    insert_trade_with_event must NOT surface in the helper output.
+    Discriminating against (a) helper leaking entry fills (would over-
+    count realized PnL) and (b) helper returning empty.
+    """
+    from swing.data.models import Fill, Trade
+    from swing.data.repos.fills import insert_fill_with_event
+    from swing.data.repos.trades import insert_trade_with_event
+    from swing.pipeline.runner import _exits_via_fills_for_equity
+
+    conn = ensure_schema(tmp_path / "phase7_c10.db")
+    try:
+        with conn:
+            tid = insert_trade_with_event(
+                conn,
+                Trade(
+                    id=None, ticker="ABC", entry_date="2026-04-15",
+                    entry_price=100.0, initial_shares=10,
+                    initial_stop=90.0, current_stop=90.0,
+                    state="entered",
+                    watchlist_entry_target=None,
+                    watchlist_initial_stop=None, notes=None,
+                ),
+                event_ts="2026-04-15T09:30:00",
+            )
+            insert_fill_with_event(
+                conn,
+                Fill(
+                    fill_id=None, trade_id=tid,
+                    fill_datetime="2026-04-20T16:00:00",
+                    action="exit", quantity=10, price=110.0,
+                    reason="target",
+                ),
+                event_ts="2026-04-20T16:00:00",
+            )
+            conn.execute(
+                "UPDATE trades SET state='closed' WHERE id=?", (tid,),
+            )
+        shapes = _exits_via_fills_for_equity(conn)
+    finally:
+        conn.close()
+    # Exactly one non-entry shape; realized_pnl = (110 - 100) * 10 = 100.
+    assert len(shapes) == 1, (
+        f"_exits_via_fills_for_equity returned {len(shapes)} rows; "
+        f"expected exactly 1 (the explicit exit fill — synthetic entry "
+        f"fill must be filtered)."
+    )
+    assert shapes[0].trade_id == tid
+    assert shapes[0].realized_pnl == 100.0

@@ -11,17 +11,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from swing.data.db import ensure_schema
-from swing.data.models import Exit, Trade
+from swing.data.models import Trade
 from swing.data.repos.hypothesis import list_hypotheses
-from swing.data.repos.trades import (
-    insert_exit_with_event,
-    insert_trade_with_event,
-)
+from swing.data.repos.trades import insert_trade_with_event
 from swing.recommendations.hypothesis import (
     TripwireStatus,
     compute_tripwire_status,
 )
+from tests.conftest import insert_exit_fill
 
 
 def _setup(tmp_db: Path):
@@ -34,7 +34,7 @@ def _add_open_trade(conn, *, ticker: str, entry_date: str, label: str | None,
     trade = Trade(
         id=None, ticker=ticker, entry_date=entry_date, entry_price=entry_price,
         initial_shares=shares, initial_stop=initial_stop, current_stop=initial_stop,
-        status="open", watchlist_entry_target=None, watchlist_initial_stop=None,
+        state="entered", watchlist_entry_target=None, watchlist_initial_stop=None,
         notes=None, hypothesis_label=label,
     )
     return insert_trade_with_event(
@@ -44,13 +44,43 @@ def _add_open_trade(conn, *, ticker: str, entry_date: str, label: str | None,
 
 def _close_trade_with_r(conn, trade_id: int, *, exit_date: str,
                         r_multiple: float, realized_pnl: float,
-                        shares: int = 100, exit_price: float = 9.0):
-    e = Exit(
-        id=None, trade_id=trade_id, exit_date=exit_date, exit_price=exit_price,
-        shares=shares, reason="stop-hit", realized_pnl=realized_pnl,
-        r_multiple=r_multiple, notes=None,
-    )
-    insert_exit_with_event(conn, e, event_ts=f"{exit_date}T16:00:00")
+                        shares: int = 100, exit_price: float | None = None):
+    # C.13: realized_pnl + r_multiple are derived from (Trade row, Fill) at
+    # read time (per swing/journal/stats.py + swing/data/repos/review_log.py
+    # _list_all_exitshape_via_fills). Old code stored explicit r_multiple +
+    # realized_pnl on the Exit row; the new path RECOMPUTES from
+    # (entry_price, fill_price, quantity).
+    #
+    # We must construct test data so BOTH cumulative_loss (= realized_pnl)
+    # AND r_multiple (drives consecutive_max_loss_streak) come out as the
+    # caller intended. We do that by:
+    #   1. Picking exit_price so (exit - entry) * shares == realized_pnl
+    #   2. UPDATEing the trade's initial_stop so risk_per_share derives the
+    #      requested r_multiple from that exit_price (rps = pnl/(r*shares)).
+    if exit_price is None:
+        entry_price = float(conn.execute(
+            "SELECT entry_price FROM trades WHERE id = ?", (trade_id,),
+        ).fetchone()[0])
+        # exit_price drives realized_pnl
+        delta_per_share = realized_pnl / shares
+        exit_price = entry_price + delta_per_share
+        # Adjust initial_stop so r_multiple matches the caller's intent.
+        # For r != 0: rps = pnl / (r * shares); initial_stop = entry - rps.
+        # For r == 0 (winners can be 0 in some sequences): leave stop alone.
+        if r_multiple != 0 and shares != 0:
+            rps = realized_pnl / (r_multiple * shares)
+            new_initial_stop = entry_price - rps
+            conn.execute(
+                "UPDATE trades SET initial_stop = ? WHERE id = ?",
+                (new_initial_stop, trade_id),
+            )
+    with conn:
+        insert_exit_fill(
+            conn, trade_id=trade_id, exit_date=exit_date,
+            exit_price=exit_price, shares=shares,
+            reason="stop-hit" if r_multiple <= 0 else "target",
+            fill_datetime=f"{exit_date}T16:00:00",
+        )
 
 
 def _hyp(conn, name: str):
@@ -95,7 +125,7 @@ def test_single_loss_does_not_fire(tmp_db: Path):
         assert status.current_sample == 1
         # -0.33R does NOT count as a max-loss (tripwire pattern is r ≤ -1)
         assert status.consecutive_max_loss_streak == 0
-        assert status.cumulative_loss == -2.0
+        assert status.cumulative_loss == pytest.approx(-2.0)
         assert status.any_tripwire_fired is False
     finally:
         conn.close()
@@ -184,7 +214,7 @@ def test_absolute_loss_tripwire_fires(tmp_db: Path):
         status = compute_tripwire_status(
             conn, hypothesis_id=h.id, starting_equity=7500.0,
         )
-        assert status.cumulative_loss == -400.0
+        assert status.cumulative_loss == pytest.approx(-400.0)
         assert status.absolute_tripwire_fired is True
         # No -1R streak → consecutive tripwire stays clean
         assert status.consecutive_tripwire_fired is False
@@ -267,7 +297,7 @@ def test_label_match_is_case_insensitive_prefix(tmp_db: Path):
             conn, hypothesis_id=h.id, starting_equity=7500.0,
         )
         assert status.current_sample == 1
-        assert status.cumulative_loss == -2.0
+        assert status.cumulative_loss == pytest.approx(-2.0)
     finally:
         conn.close()
 
@@ -369,5 +399,65 @@ def test_open_trade_does_not_count_toward_sample(tmp_db: Path):
             conn, hypothesis_id=h.id, starting_equity=7500.0,
         )
         assert status.current_sample == 0
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-C C.10 — recommendations/hypothesis.py migrates the
+# list_all_exits site onto a local _list_all_exitshape_via_fills helper.
+# Discriminating: seed a closed trade via fills (not via the broken
+# legacy Exit constructor); verify the tripwire compute sees the exit.
+# ---------------------------------------------------------------------------
+
+
+def test_c10_compute_tripwire_status_consumes_fills(tmp_db: Path) -> None:
+    """C.10: compute_tripwire_status must source closed-trade exits via the
+    local _list_all_exitshape_via_fills helper sourced from non-entry
+    fills. Seeds a single closed losing trade via insert_fill_with_event
+    + UPDATE state='closed', then asserts current_sample == 1 and
+    cumulative_loss reflects the seeded realized PnL.
+
+    Discriminating against (a) helper returning empty (current_sample==0)
+    and (b) helper leaking entry fills (current_sample would be 2 because
+    the synthetic entry fill auto-written by insert_trade_with_event
+    would surface as an extra exit-shape).
+    """
+    from swing.data.models import Fill
+    from swing.data.repos.fills import insert_fill_with_event
+
+    conn = _setup(tmp_db)
+    try:
+        h = _hyp(conn, "Sub-A+ VCP-not-formed")
+        with conn:
+            tid = _add_open_trade(
+                conn, ticker="ABC", entry_date="2026-04-01",
+                label="Sub-A+ VCP-not-formed",
+                entry_price=10.0, initial_stop=9.0, shares=100,
+            )
+            # Stop-out exit at $9 (loss = -$1/sh × 100 sh = -$100, R = -1.0).
+            insert_fill_with_event(
+                conn,
+                Fill(
+                    fill_id=None, trade_id=tid,
+                    fill_datetime="2026-04-02T16:00:00",
+                    action="exit", quantity=100, price=9.0,
+                    reason="stop-hit",
+                ),
+                event_ts="2026-04-02T16:00:00",
+            )
+            conn.execute(
+                "UPDATE trades SET state='closed' WHERE id=?", (tid,),
+            )
+        status = compute_tripwire_status(
+            conn, hypothesis_id=h.id, starting_equity=7500.0,
+        )
+        assert status.current_sample == 1, (
+            f"compute_tripwire_status should see exactly 1 closed-trade "
+            f"sample after the C.10 migration. Got {status.current_sample}; "
+            f"if 0, the migration helper returned empty (no fills surfaced)."
+        )
+        # Realized loss = (9 - 10) * 100 = -100.
+        assert status.cumulative_loss == pytest.approx(-100.0)
     finally:
         conn.close()

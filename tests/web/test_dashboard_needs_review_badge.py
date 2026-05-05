@@ -2,6 +2,11 @@
 
 Verifies that DashboardVM.needs_review_count is populated from
 count_needs_review() and the badge partial renders/hides correctly.
+
+Phase 7 Sub-B B.6 fixture migration: legacy ``Exit(...)``+``insert_exit_with_event``
+seeding rewritten to ``Fill(action='exit')``+``insert_fill_with_event``. The
+``Exit`` dataclass was deleted in Sub-C C.14; dashboard view models now use
+``trade.state`` per Sub-C C.7. Module unskipped post-Sub-C C.7.
 """
 from pathlib import Path
 
@@ -16,8 +21,9 @@ def test_app_with_2_overdue_unreviewed_closed(tmp_path: Path):
     from dataclasses import replace as dc_replace
     from swing.config import load
     from swing.data.db import connect, ensure_schema
-    from swing.data.models import Exit, Trade
-    from swing.data.repos.trades import insert_exit_with_event, insert_trade_with_event
+    from swing.data.models import Fill, Trade
+    from swing.data.repos.fills import insert_fill_with_event
+    from swing.data.repos.trades import insert_trade_with_event
     from swing.web.app import create_app
 
     db_path = tmp_path / "phase6_badge.db"
@@ -29,42 +35,68 @@ def test_app_with_2_overdue_unreviewed_closed(tmp_path: Path):
             Trade(
                 id=None, ticker="AAA", entry_date="2026-04-01",
                 entry_price=10.0, initial_shares=10, initial_stop=9.0,
-                current_stop=9.0, status="open",
+                current_stop=9.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
+                trade_origin="manual_off_pipeline",
+                pre_trade_locked_at="2026-04-01T09:30:00",
+            ),
+            event_ts="2026-04-01T09:30:00",
+        )
+        insert_fill_with_event(
+            conn,
+            Fill(
+                fill_id=None, trade_id=t1,
+                fill_datetime="2026-04-01T09:30:00",
+                action="entry", quantity=10.0, price=10.0,
             ),
             event_ts="2026-04-01T09:30:00",
         )
         # Exit > 7 days before today (2026-05-02), no reviewed_at
-        insert_exit_with_event(
+        insert_fill_with_event(
             conn,
-            Exit(
-                id=None, trade_id=t1, exit_date="2026-04-20",
-                exit_price=11.0, shares=10, reason="manual",
-                realized_pnl=10.0, r_multiple=1.0, notes=None,
+            Fill(
+                fill_id=None, trade_id=t1,
+                fill_datetime="2026-04-20T16:00:00",
+                action="exit", quantity=10.0, price=11.0,
+                reason="manual",
             ),
             event_ts="2026-04-20T16:00:00",
         )
+        conn.execute("UPDATE trades SET state='closed' WHERE id=?", (t1,))
         t2 = insert_trade_with_event(
             conn,
             Trade(
                 id=None, ticker="BBB", entry_date="2026-04-05",
                 entry_price=20.0, initial_shares=5, initial_stop=18.0,
-                current_stop=18.0, status="open",
+                current_stop=18.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
+                trade_origin="manual_off_pipeline",
+                pre_trade_locked_at="2026-04-05T09:30:00",
             ),
             event_ts="2026-04-05T09:30:00",
         )
-        insert_exit_with_event(
+        insert_fill_with_event(
             conn,
-            Exit(
-                id=None, trade_id=t2, exit_date="2026-04-22",
-                exit_price=22.0, shares=5, reason="manual",
-                realized_pnl=10.0, r_multiple=1.0, notes=None,
+            Fill(
+                fill_id=None, trade_id=t2,
+                fill_datetime="2026-04-05T09:30:00",
+                action="entry", quantity=5.0, price=20.0,
+            ),
+            event_ts="2026-04-05T09:30:00",
+        )
+        insert_fill_with_event(
+            conn,
+            Fill(
+                fill_id=None, trade_id=t2,
+                fill_datetime="2026-04-22T16:00:00",
+                action="exit", quantity=5.0, price=22.0,
+                reason="manual",
             ),
             event_ts="2026-04-22T16:00:00",
         )
+        conn.execute("UPDATE trades SET state='closed' WHERE id=?", (t2,))
     conn.close()
 
     base_cfg = load(Path("swing.config.toml"))
@@ -92,9 +124,11 @@ def test_app_only_open_trades(tmp_path: Path):
             Trade(
                 id=None, ticker="CCC", entry_date="2026-04-28",
                 entry_price=15.0, initial_shares=8, initial_stop=14.0,
-                current_stop=14.0, status="open",
+                current_stop=14.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
+                trade_origin="manual_off_pipeline",
+                pre_trade_locked_at="2026-04-28T09:30:00",
             ),
             event_ts="2026-04-28T09:30:00",
         )

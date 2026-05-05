@@ -30,9 +30,10 @@ def test_migration_0003_creates_all_phase2_tables(tmp_path: Path):
         tables = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()}
+        # Phase 7 Sub-A migration 0014 dropped `exits` and added `fills`.
         for t in (
             "weather_runs", "watchlist", "watchlist_archive",
-            "trades", "exits", "cash_movements", "trade_events",
+            "trades", "fills", "cash_movements", "trade_events",
             "daily_recommendations", "pipeline_runs", "config_revisions",
         ):
             assert t in tables, f"missing table: {t}"
@@ -44,7 +45,10 @@ def test_migration_0003_creates_all_phase2_tables(tmp_path: Path):
         assert "rs_universe_version" in _columns(conn, "pipeline_runs")
         assert "not_qualified_streak" in _columns(conn, "watchlist")
         assert "current_stop" in _columns(conn, "trades")
-        assert "r_multiple" in _columns(conn, "exits")
+        # Phase 7 Sub-A: r_multiple no longer stored on a row; derived from
+        # (entry_price, fill_price, quantity) at read time. Spot-check the
+        # canonical fills column instead.
+        assert "fill_datetime" in _columns(conn, "fills")
         assert "payload_json" in _columns(conn, "trade_events")
 
         # CHECK constraint on bucket already exists from 0001 — verify not regressed
@@ -80,13 +84,22 @@ def test_migration_0004_enforces_one_open_trade_per_ticker(tmp_path: Path):
     db = tmp_path / "swing.db"
     conn = ensure_schema(db)
     try:
+        # Phase 7 Sub-A migration 0014: `status` dropped, replaced with `state`;
+        # `trade_origin` + `pre_trade_locked_at` added NOT NULL. Partial unique
+        # index on open trades was rebuilt against the `state IN (entered,
+        # managing, partial_exited)` predicate (see migration 0014).
+        common_cols = (
+            "ticker, entry_date, entry_price, initial_shares, initial_stop, "
+            "current_stop, state, trade_origin, pre_trade_locked_at, "
+            "watchlist_entry_target, watchlist_initial_stop, notes"
+        )
         # Insert one open trade directly
         conn.execute(
-            """INSERT INTO trades
-               (ticker, entry_date, entry_price, initial_shares, initial_stop,
-                current_stop, status, watchlist_entry_target,
-                watchlist_initial_stop, notes)
-               VALUES (?, ?, ?, ?, ?, ?, 'open', NULL, NULL, NULL)""",
+            f"""INSERT INTO trades
+               ({common_cols})
+               VALUES (?, ?, ?, ?, ?, ?, 'entered',
+                       'manual_off_pipeline', '2026-04-15T16:00:00',
+                       NULL, NULL, NULL)""",
             ("AAPL", "2026-04-15", 180.0, 5, 170.0, 170.0),
         )
         conn.commit()
@@ -94,20 +107,20 @@ def test_migration_0004_enforces_one_open_trade_per_ticker(tmp_path: Path):
         import pytest as _pt
         with _pt.raises(sqlite3.IntegrityError):
             conn.execute(
-                """INSERT INTO trades
-                   (ticker, entry_date, entry_price, initial_shares, initial_stop,
-                    current_stop, status, watchlist_entry_target,
-                    watchlist_initial_stop, notes)
-                   VALUES (?, ?, ?, ?, ?, ?, 'open', NULL, NULL, NULL)""",
+                f"""INSERT INTO trades
+                   ({common_cols})
+                   VALUES (?, ?, ?, ?, ?, ?, 'entered',
+                           'manual_off_pipeline', '2026-04-16T16:00:00',
+                           NULL, NULL, NULL)""",
                 ("AAPL", "2026-04-16", 185.0, 5, 175.0, 175.0),
             )
         # But a CLOSED AAPL is allowed (history)
         conn.execute(
-            """INSERT INTO trades
-               (ticker, entry_date, entry_price, initial_shares, initial_stop,
-                current_stop, status, watchlist_entry_target,
-                watchlist_initial_stop, notes)
-               VALUES (?, ?, ?, ?, ?, ?, 'closed', NULL, NULL, NULL)""",
+            f"""INSERT INTO trades
+               ({common_cols})
+               VALUES (?, ?, ?, ?, ?, ?, 'closed',
+                       'manual_off_pipeline', '2026-04-10T16:00:00',
+                       NULL, NULL, NULL)""",
             ("AAPL", "2026-04-10", 175.0, 5, 165.0, 165.0),
         )
         conn.commit()

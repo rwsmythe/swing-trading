@@ -14,18 +14,20 @@ from markupsafe import Markup
 from swing.config_overrides import apply_overrides
 from swing.data.db import connect
 from swing.data.repos.cash import list_cash
-from swing.data.repos.trades import get_trade, list_all_exits, list_open_trades
+from swing.data.repos.trades import get_trade, list_open_trades
 from swing.recommendations.sizing import SizingResult, compute_shares
 from swing.trades.entry import (
     DuplicateOpenPositionException,
     EntryRationale,
     EntryRequest,
     HardCapException,
+    MissingPreTradeFieldsException,
     SoftWarnException,
     record_entry,
 )
 from swing.trades.equity import current_equity
 from swing.trades.exit import ExitReason, ExitRequest, record_exit
+from swing.trades.origin import EntryPath
 from swing.trades.stop_adjust import (
     StopAdjustRationale,
     StopAdjustRequest,
@@ -42,10 +44,18 @@ from swing.web.view_models.trades import (
     build_entry_form_vm,
     build_exit_form_vm,
     build_stop_form_vm,
+    build_trade_detail_vm,
 )
 
 log = logging.getLogger(__name__)
 router = APIRouter()
+
+# Phase 7 Sub-C C.7 — active-trade lifecycle states (entered/managing/
+# partial_exited). Used by route-level preconditions for write/management
+# endpoints (exit_post, stop_post, cancel, open_position_row). Mirrors
+# `_ACTIVE_STATES_SQL` in repos/trades.py and the same-named tuples in
+# swing/web/view_models/trades.py + open_positions_row.py.
+_ACTIVE_STATES = ("entered", "managing", "partial_exited")
 
 
 def _parse_optional_float(raw: str | None) -> float | None:
@@ -182,10 +192,16 @@ def sizing_hint(
         )
 
     try:
+        # C.10: routed through the view-model adapter so equity computation
+        # consumes non-entry fills via the shared _ExitShape pattern.
+        from swing.web.view_models.trades import (
+            _list_all_exitshape_via_fills,
+        )
+
         conn = connect(cfg.paths.db_path)
         try:
             with conn:
-                exits = list_all_exits(conn)
+                exits = _list_all_exitshape_via_fills(conn)
                 cash_movements = list_cash(conn)
         finally:
             conn.close()
@@ -278,6 +294,36 @@ def entry_post(
     # the field. Whitelist-coerced via _coerce_origin to defend against
     # tampered POSTs (XSS / open-redirect into the rendered Cancel target).
     origin: str = Form("watchlist"),
+    # Phase 7 Sub-C C.3 — 18 pre-trade required fields (spec §1, §3.5.1).
+    # All `Form(None)` so legacy callers (existing tests, bare cURL) keep
+    # working until C.4 wires the operator-facing fieldset; the
+    # MissingPreTradeFieldsException catch path below re-renders a
+    # banner-only error fragment when any required field is missing.
+    # Nullable+CHECK columns persist via `... or None` (per CLAUDE.md
+    # gotcha 2026-05-04 — empty string would fail the CHECK enum).
+    thesis: str | None = Form(None),
+    why_now: str | None = Form(None),
+    invalidation_condition: str | None = Form(None),
+    expected_scenario: str | None = Form(None),
+    premortem_technical: str | None = Form(None),
+    premortem_market_sector: str | None = Form(None),
+    premortem_execution: str | None = Form(None),
+    premortem_additional: str | None = Form(None),
+    event_risk_present: int | None = Form(None),
+    event_handling: str | None = Form(None),
+    event_type: str | None = Form(None),
+    event_date: str | None = Form(None),
+    gap_risk_present: int | None = Form(None),
+    gap_risk_handling: str | None = Form(None),
+    # Multi-select: HTML `<select multiple name="emotional_state_pre_trade">`
+    # posts repeated keys; FastAPI binds these to a list. JSON-encoded at
+    # the EntryRequest construction site (matches CLI's
+    # `_json.dumps(list(emotional_state))` pattern in swing/cli.py).
+    emotional_state_pre_trade: list[str] | None = Form(None),  # noqa: B008
+    market_regime: str | None = Form(None),
+    catalyst: str | None = Form(None),
+    catalyst_other_description: str | None = Form(None),
+    manual_entry_confidence: str | None = Form(None),
 ):
     cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
@@ -375,6 +421,98 @@ def entry_post(
             origin=origin_coerced,
         )
 
+    # Codex R1 Major 1 (Phase 7 Sub-C) — schema-layer guards that used to
+    # fire at INSERT time were lost when migration 0014 rebuilt the trades
+    # table without the chart_pattern_algo CHECK enum and without enforcing
+    # the FK on chart_pattern_classification_pipeline_run_id. Restore them
+    # at the route boundary so a tampered hidden-form POST renders the
+    # standard 400 + banner instead of either silently persisting a bogus
+    # value or bubbling a generic 500. (Repo-layer
+    # _validate_chart_pattern_invariant only checks NULL/cross-column
+    # shape; it doesn't enforce enum values or FK existence — and Sub-A
+    # owns that file, so app-layer guards live here.)
+    if cp_algo_value is not None and cp_algo_value not in ("flag", "none"):
+        return _rerender_entry_form_with_error(
+            request=request, templates=templates, cfg=cfg, cache=cache,
+            executor=executor, ticker=ticker, entry_date=entry_date,
+            entry_price=entry_price, shares=shares, initial_stop=initial_stop,
+            rationale=rationale, notes=notes,
+            error_message=(
+                f"chart_pattern_algo must be one of 'flag' or 'none'; "
+                f"got {cp_algo_value!r}."
+            ),
+            origin=origin_coerced,
+        )
+    if cp_anchor_value is not None:
+        from swing.data.repos.pattern_classifications import get_classification
+        _conn = connect(cfg.paths.db_path)
+        try:
+            _row = _conn.execute(
+                "SELECT 1 FROM pipeline_runs WHERE id = ?",
+                (cp_anchor_value,),
+            ).fetchone()
+            # Codex R2 Major 1 — restore the cached-only contract for
+            # tampered POSTs. The FK + enum checks reject obvious tampering
+            # (bogus run_id, algo not in enum). This adds the missing
+            # snapshot-vs-cache match check: the submitted (run_id, ticker)
+            # tuple MUST correspond to a cached classification, otherwise
+            # the snapshot is forged. We deliberately do NOT also assert
+            # cls.pattern == cp_algo_value or cls.confidence == cp_conf_value
+            # — spec §3.6 R2 M3 requires snapshot values flow AS-IS, and a
+            # legit "cache changed during form fill" path would false-reject
+            # under stricter equality checks.
+            _cls_row = (
+                get_classification(
+                    _conn,
+                    pipeline_run_id=cp_anchor_value,
+                    ticker=ticker.upper(),
+                )
+                if _row is not None
+                else None
+            )
+        finally:
+            _conn.close()
+        if _row is None:
+            return _rerender_entry_form_with_error(
+                request=request, templates=templates, cfg=cfg, cache=cache,
+                executor=executor, ticker=ticker, entry_date=entry_date,
+                entry_price=entry_price, shares=shares,
+                initial_stop=initial_stop,
+                rationale=rationale, notes=notes,
+                error_message=(
+                    "chart_pattern_classification_pipeline_run_id "
+                    f"{cp_anchor_value} does not reference an existing "
+                    "pipeline_runs row."
+                ),
+                origin=origin_coerced,
+            )
+        if _cls_row is None:
+            return _rerender_entry_form_with_error(
+                request=request, templates=templates, cfg=cfg, cache=cache,
+                executor=executor, ticker=ticker, entry_date=entry_date,
+                entry_price=entry_price, shares=shares,
+                initial_stop=initial_stop,
+                rationale=rationale, notes=notes,
+                error_message=(
+                    f"chart_pattern snapshot rejected: no cached "
+                    f"classification exists for {ticker.upper()} under "
+                    f"pipeline_runs.id={cp_anchor_value}"
+                ),
+                origin=origin_coerced,
+            )
+
+    # Phase 7 Sub-C C.3 — emotional_state_pre_trade JSON-encoding.
+    # Matches CLI's `_json.dumps(list(emotional_state))` (swing/cli.py).
+    # Empty list / None → None so the validator's required-field check
+    # fires (NULL is treated as missing). Drops empty strings so a
+    # bare-cURL POST submitting "emotional_state_pre_trade=" doesn't
+    # encode `[""]` and dodge the gate.
+    import json as _json
+    emo_clean = [
+        s for s in (emotional_state_pre_trade or []) if s and s.strip()
+    ]
+    emo_json: str | None = _json.dumps(emo_clean) if emo_clean else None
+
     req = EntryRequest(
         ticker=ticker.upper(),
         entry_date=entry_date,
@@ -397,6 +535,31 @@ def entry_post(
         chart_pattern_classification_pipeline_run_id=cp_anchor_value,
         sector=sector,
         industry=industry,
+        # Phase 7 Sub-C C.3 — 18 pre-trade required fields.
+        # ``or None`` coerces empty form strings to NULL so nullable+CHECK
+        # columns don't trip CHECK constraint failures at INSERT time
+        # (CLAUDE.md gotcha 2026-05-04 — Phase 6 mistake_cost_confidence).
+        # Web entries always come from the manual entry form.
+        entry_path=EntryPath.MANUAL_WEB_FORM,
+        thesis=thesis or None,
+        why_now=why_now or None,
+        invalidation_condition=invalidation_condition or None,
+        expected_scenario=expected_scenario or None,
+        premortem_technical=premortem_technical or None,
+        premortem_market_sector=premortem_market_sector or None,
+        premortem_execution=premortem_execution or None,
+        premortem_additional=premortem_additional or None,
+        event_risk_present=event_risk_present,
+        event_handling=event_handling or None,
+        event_type=event_type or None,
+        event_date=event_date or None,
+        gap_risk_present=gap_risk_present,
+        gap_risk_handling=gap_risk_handling or None,
+        emotional_state_pre_trade=emo_json,
+        market_regime=market_regime or None,
+        catalyst=catalyst or None,
+        catalyst_other_description=catalyst_other_description or None,
+        manual_entry_confidence=manual_entry_confidence or None,
     )
 
     conn = connect(cfg.paths.db_path)
@@ -412,6 +575,74 @@ def entry_post(
                 soft_warn=cfg.position_limits.soft_warn_open,
                 hard_cap=cfg.position_limits.hard_cap_open,
                 force=(force == "true"),
+            )
+        except MissingPreTradeFieldsException as exc:
+            # Phase 7 Sub-C C.4 — non-bypassable pre-trade required-field
+            # gate (spec §9.3). Re-render the FULL entry form fragment
+            # so the operator sees:
+            #   1. an inline banner naming the missing fields,
+            #   2. per-field error class markers on the missing inputs
+            #      (template gates on `{% if name in vm.missing_fields %}`),
+            #   3. their typed values round-tripped via the `draft_*`
+            #      preservation fields (rationale/notes pattern extended
+            #      to the 18 new pre-trade fields).
+            # On `vm is None` (watchlist row vanished between GET and POST),
+            # fall through to the banner-only error fragment — there's no
+            # form context to re-render against.
+            from dataclasses import replace as dc_replace
+            vm = build_entry_form_vm(
+                ticker=ticker.upper(), cfg=cfg, cache=cache,
+                executor=executor, origin=origin_coerced,
+            )
+            error_message = (
+                "Missing required pre-trade fields: "
+                + ", ".join(exc.missing_fields)
+            )
+            if vm is not None:
+                vm = dc_replace(
+                    vm,
+                    entry_date=entry_date,
+                    entry_price=entry_price,
+                    initial_stop=initial_stop,
+                    input_shares=shares,
+                    rationale=rationale,
+                    notes=notes or "",
+                    # 18 pre-trade field draft preservation:
+                    draft_thesis=thesis or "",
+                    draft_why_now=why_now or "",
+                    draft_invalidation_condition=invalidation_condition or "",
+                    draft_expected_scenario=expected_scenario or "",
+                    draft_premortem_technical=premortem_technical or "",
+                    draft_premortem_market_sector=premortem_market_sector or "",
+                    draft_premortem_execution=premortem_execution or "",
+                    draft_premortem_additional=premortem_additional or "",
+                    draft_event_risk_present=event_risk_present,
+                    draft_event_handling=event_handling or "",
+                    draft_event_type=event_type or "",
+                    draft_event_date=event_date or "",
+                    draft_gap_risk_present=gap_risk_present,
+                    draft_gap_risk_handling=gap_risk_handling or "",
+                    draft_emotional_state_pre_trade=tuple(emo_clean),
+                    draft_manual_entry_confidence=manual_entry_confidence or "",
+                    draft_market_regime=market_regime or "",
+                    draft_catalyst=catalyst or "",
+                    draft_catalyst_other_description=(
+                        catalyst_other_description or ""
+                    ),
+                    missing_fields=frozenset(exc.missing_fields),
+                )
+                return templates.TemplateResponse(
+                    request, "partials/trade_entry_form.html.j2",
+                    {"vm": vm, "error_message": error_message},
+                    status_code=400,
+                )
+            return templates.TemplateResponse(
+                request, "partials/trade_form_error.html.j2",
+                {
+                    "error_message": error_message,
+                    "missing_fields": list(exc.missing_fields),
+                },
+                status_code=400,
             )
         except SoftWarnException:
             # First submit at soft cap — render the 2-step confirm fragment.
@@ -480,6 +711,49 @@ def entry_post(
                 # auto-emits the hidden <input name="origin"> because
                 # 'origin' is not in the banner-only exclusion list.
                 "origin": origin_coerced,
+                # Phase 7 Sub-C C.4 follow-up — the 18 pre-trade fields
+                # must round-trip through the soft-warn confirm fragment
+                # so the force=true resubmit carries them back through.
+                # Without this, the second POST loses the operator's
+                # typed values → MissingPreTradeFieldsException → 400 +
+                # data loss. ``or ""`` is correct here (these are HTML
+                # form values; the route's downstream ``or None`` coerces
+                # empty strings to NULL where columns allow it). The
+                # int-typed event/gap_risk_present fields render as "0"
+                # / "1" / "" so the second POST's ``int | None = Form()``
+                # binding succeeds.
+                "thesis": thesis or "",
+                "why_now": why_now or "",
+                "invalidation_condition": invalidation_condition or "",
+                "expected_scenario": expected_scenario or "",
+                "premortem_technical": premortem_technical or "",
+                "premortem_market_sector": premortem_market_sector or "",
+                "premortem_execution": premortem_execution or "",
+                "premortem_additional": premortem_additional or "",
+                "event_risk_present": (
+                    str(event_risk_present)
+                    if event_risk_present is not None else ""
+                ),
+                "event_handling": event_handling or "",
+                "event_type": event_type or "",
+                "event_date": event_date or "",
+                "gap_risk_present": (
+                    str(gap_risk_present)
+                    if gap_risk_present is not None else ""
+                ),
+                "gap_risk_handling": gap_risk_handling or "",
+                # Multi-select: store as list so the template emits ONE
+                # hidden input per vocabulary value selected. The
+                # soft_warn_confirm.html.j2 special-cases list values to
+                # avoid the str(["calm","focused"]) → "['calm', 'focused']"
+                # round-trip-lossy degenerate case.
+                "emotional_state_pre_trade": list(emo_clean),
+                "manual_entry_confidence": manual_entry_confidence or "",
+                "market_regime": market_regime or "",
+                "catalyst": catalyst or "",
+                "catalyst_other_description": (
+                    catalyst_other_description or ""
+                ),
                 "open_count": actual_open,
                 "soft_warn": cfg.position_limits.soft_warn_open,
                 "hard_cap": cfg.position_limits.hard_cap_open,
@@ -841,7 +1115,7 @@ def trade_cancel(request: Request, trade_id: int):
         trade = get_trade(conn, trade_id)
     finally:
         conn.close()
-    if trade is None or trade.status != "open":
+    if trade is None or trade.state not in _ACTIVE_STATES:
         raise HTTPException(status_code=404, detail=f"Trade #{trade_id} not found or not open")
 
     row_vm = build_open_positions_row(
@@ -898,7 +1172,7 @@ def stop_post(
         # Guard: trade must exist and be open before attempting stop adjust.
         # adjust_stop only raises ValueError for not-found, not for closed.
         trade_check = get_trade(conn, trade_id)
-        if trade_check is None or trade_check.status != "open":
+        if trade_check is None or trade_check.state not in _ACTIVE_STATES:
             raise HTTPException(
                 status_code=404,
                 detail=f"Trade #{trade_id} not found or not open",
@@ -1013,12 +1287,10 @@ def review_post(
     from fastapi.responses import Response
 
     from swing.data.db import connect
-    from swing.data.repos.trades import (
-        get_trade,
-        update_trade_review_fields,
-    )
+    from swing.data.repos.trades import get_trade
     from swing.trades.review import (
         canonicalize_mistake_tags,
+        complete_trade_review,
         compute_process_grade,
         validate_mistake_tags,
     )
@@ -1079,27 +1351,43 @@ def review_post(
     conn = connect(cfg.paths.db_path)
     try:
         trade = get_trade(conn, trade_id)
-        if trade is None or trade.status != "closed":
+        # Phase 7 Sub-C C.7: closed-but-not-reviewed precondition. Use the
+        # explicit single-state check rather than `state not in
+        # ("closed","reviewed")` — the latter would re-allow already-reviewed
+        # trades through this guard. Already-reviewed gets caught a few lines
+        # below by the `reviewed_at is not None` 409 branch.
+        if trade is None or trade.state != "closed":
             raise HTTPException(status_code=404)
         if trade.reviewed_at is not None:
             raise HTTPException(
                 status_code=409,
                 detail="Trade already reviewed; V1 supports single-review only",
             )
-        with conn:
-            update_trade_review_fields(
-                conn, trade_id=trade_id,
-                reviewed_at=_dt.now().isoformat(timespec="seconds"),
-                mistake_tags_json=json.dumps(canonical_tags),
-                entry_grade=entry_grade,
-                management_grade=management_grade,
-                exit_grade=exit_grade,
-                process_grade=process_grade,
-                disqualifying_process_violation=disq,
-                realized_R_if_plan_followed=realized_R_if_plan_followed,
-                mistake_cost_confidence=mistake_cost_confidence or None,
-                lesson_learned=lesson_learned,
-            )
+        # Hotfix 2026-05-05 (operator-witnessed gate finding S6): the prior
+        # implementation called update_trade_review_fields directly inside
+        # `with conn:`, persisting Phase 6 review fields BUT never firing the
+        # `closed → reviewed` state transition that Phase 7 Sub-B B.6 wired
+        # into the complete_trade_review service wrapper. Result: review-
+        # completed trades stayed in `state='closed'` (with reviewed_at
+        # populated), violating spec §3 terminal-state semantics. Sub-B
+        # return report explicitly flagged this Sub-C T1 territory item;
+        # implementation didn't switch. Fix now: route through the service.
+        review_ts = _dt.now().isoformat(timespec="seconds")
+        complete_trade_review(
+            conn, trade_id=trade_id,
+            reviewed_at=review_ts,
+            mistake_tags_json=json.dumps(canonical_tags),
+            entry_grade=entry_grade,
+            management_grade=management_grade,
+            exit_grade=exit_grade,
+            process_grade=process_grade,
+            disqualifying_process_violation=disq,
+            realized_R_if_plan_followed=realized_R_if_plan_followed,
+            mistake_cost_confidence=mistake_cost_confidence or None,
+            lesson_learned=lesson_learned,
+            event_ts=review_ts,
+            rationale=None,
+        )
     finally:
         conn.close()
     # code-review I3 (operator-witnessed S5): /trades is unrouted — htmx.js
@@ -1195,7 +1483,7 @@ def open_position_row(request: Request, trade_id: int):
         trade = get_trade(conn, trade_id)
     finally:
         conn.close()
-    if trade is None or trade.status != "open":
+    if trade is None or trade.state not in _ACTIVE_STATES:
         raise HTTPException(
             status_code=404,
             detail=f"Trade #{trade_id} not found or not open",
@@ -1207,4 +1495,31 @@ def open_position_row(request: Request, trade_id: int):
     )
     return templates.TemplateResponse(
         request, "partials/open_positions_row.html.j2", {"row": row_vm},
+    )
+
+
+# Phase 7 Sub-C C.5 — canonical trade-detail page. REGISTERED LAST so the
+# bare `/trades/{trade_id}` path-template wildcard does NOT shadow the more
+# specific `/trades/entry/form`, `/trades/{trade_id}/exit`, etc. routes
+# above. FastAPI/Starlette matches in registration order; the literal
+# `entry` segment in /trades/entry/form is matched before this route's
+# `{trade_id}` parameter sees the request.
+@router.get("/trades/{trade_id}", response_class=HTMLResponse)
+def trade_detail(request: Request, trade_id: int):
+    """Phase 7 — canonical trade-detail page.
+
+    Renders the Pre-Trade Decision section (gated on
+    ``vm.has_pre_trade_data``), the audit log of pre-trade edits, and a
+    read-only summary of the trade. Position-management actions remain on
+    the dashboard's open-positions row in V1.
+    """
+    cfg = apply_overrides(request.app.state.cfg)
+    templates = request.app.state.templates
+    vm = build_trade_detail_vm(trade_id=trade_id, cfg=cfg)
+    if vm is None:
+        raise HTTPException(
+            status_code=404, detail=f"Trade #{trade_id} not found",
+        )
+    return templates.TemplateResponse(
+        request, "trades/detail.html.j2", {"vm": vm},
     )

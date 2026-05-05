@@ -32,6 +32,8 @@ import threading
 
 from fastapi.testclient import TestClient
 
+from tests.web.conftest import full_phase7_entry_payload
+
 
 def _seed_pipeline_run(cfg, *, eval_id: int, finished_ts: str) -> int:
     """Seed a complete pipeline_run row pointing at eval_id."""
@@ -198,15 +200,15 @@ def test_entry_post_oob_rebuild_reflects_pipeline_run_inserted_mid_request(
             r = client.post(
                 "/trades/entry",
                 headers={"HX-Request": "true"},
-                data={
-                    "ticker": "TRADER",
-                    "entry_date": "2026-04-29",
-                    "entry_price": "180.95",
-                    "shares": "5",
-                    "initial_stop": "170.00",
-                    "rationale": "aplus-setup",
-                    "origin": "hyp-recs",
-                },
+                data=full_phase7_entry_payload(
+                    ticker="TRADER",
+                    entry_date="2026-04-29",
+                    entry_price="180.95",
+                    shares="5",
+                    initial_stop="170.00",
+                    rationale="aplus-setup",
+                    origin="hyp-recs",
+                ),
             )
         response_holder["resp"] = r
 

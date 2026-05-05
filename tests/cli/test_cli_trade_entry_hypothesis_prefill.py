@@ -15,6 +15,7 @@ from click.testing import CliRunner
 from swing.cli import main
 from swing.data.db import connect
 from tests.cli.test_cli_eval import _minimal_config
+from tests.conftest import cli_entry_pre_trade_args
 
 
 def _setup(tmp_path):
@@ -90,6 +91,7 @@ def test_entry_pre_fills_hypothesis_from_active_recommendation(tmp_path: Path):
         "--ticker", "AAPL", "--entry-date", "2026-04-15",
         "--entry-price", "180.0", "--shares", "5",
         "--initial-stop", "170.0", "--rationale", "aplus-setup",
+        *cli_entry_pre_trade_args(),
     ])
     assert result.exit_code == 0, result.output
     # Operator-visible signal that pre-fill happened.
@@ -117,6 +119,7 @@ def test_entry_explicit_hypothesis_wins_over_pre_fill(tmp_path: Path):
         "--entry-price", "180.0", "--shares", "5",
         "--initial-stop", "170.0", "--rationale", "aplus-setup",
         "--hypothesis", explicit,
+        *cli_entry_pre_trade_args(),
     ])
     assert result.exit_code == 0, result.output
     # Pre-fill message must NOT appear when explicit override is in play.
@@ -135,6 +138,7 @@ def test_entry_no_recommendation_no_prefill(tmp_path: Path):
         "--ticker", "ZZZ", "--entry-date", "2026-04-15",
         "--entry-price", "100.0", "--shares", "1",
         "--initial-stop", "90.0", "--rationale", "vcp-breakout",
+        *cli_entry_pre_trade_args(),
     ])
     assert result.exit_code == 0, result.output
     assert "Pre-filled --hypothesis" not in result.output
@@ -152,6 +156,7 @@ def test_entry_pre_fill_idempotent_across_re_runs(tmp_path: Path):
         "--ticker", "MSFT", "--entry-date", "2026-04-15",
         "--entry-price", "180.0", "--shares", "5",
         "--initial-stop", "170.0", "--rationale", "aplus-setup",
+        *cli_entry_pre_trade_args(),
     ])
     assert r1.exit_code == 0, r1.output
     line1 = next(
@@ -172,6 +177,7 @@ def test_entry_pre_fill_idempotent_across_re_runs(tmp_path: Path):
         "--ticker", "MSFT", "--entry-date", "2026-04-23",
         "--entry-price", "180.0", "--shares", "5",
         "--initial-stop", "170.0", "--rationale", "aplus-setup",
+        *cli_entry_pre_trade_args(),
     ])
     assert r2.exit_code == 0, r2.output
     line2 = next(
@@ -234,6 +240,7 @@ def test_entry_pre_fill_falls_back_to_standalone_eval_when_no_pipeline_FK(
         "--ticker", "AAPL", "--entry-date", "2026-04-15",
         "--entry-price", "180.0", "--shares", "5",
         "--initial-stop", "170.0", "--rationale", "aplus-setup",
+        *cli_entry_pre_trade_args(),
     ])
     assert result.exit_code == 0, result.output
     # Pre-fill must trigger via the fallback path.
@@ -249,6 +256,7 @@ def test_entry_pre_fill_when_no_pipeline_run_yet(tmp_path: Path):
         "--ticker", "AAPL", "--entry-date", "2026-04-15",
         "--entry-price", "180.0", "--shares", "5",
         "--initial-stop", "170.0", "--rationale", "aplus-setup",
+        *cli_entry_pre_trade_args(),
     ])
     assert result.exit_code == 0, result.output
     assert "Pre-filled --hypothesis" not in result.output

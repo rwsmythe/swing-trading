@@ -1,18 +1,37 @@
 """Behavioral flags: caution-market, losers-held-too-long, cutting-winners-short."""
 from __future__ import annotations
 
-from swing.data.models import Exit, Trade, WeatherRun
+from dataclasses import dataclass
+
+from swing.data.models import Trade, WeatherRun
 from swing.journal.flags import compute_flags, BehavioralFlag
 
 
+# C.13: Local Exit-shape adapter — mirrors the in-prod per-module _ExitShape
+# pattern (C.1/C.9/C.10/C.11/C.12). flags.py consumes ExitLike duck-typed:
+# (.trade_id, .exit_date, .shares, .r_multiple, .realized_pnl).
+@dataclass(frozen=True)
+class _ExitShape:
+    trade_id: int
+    exit_date: str
+    exit_price: float
+    shares: int
+    reason: str | None
+    realized_pnl: float | None
+    r_multiple: float | None
+
+
 def _trade(tid: int, ticker: str, entry_date: str, exit_date: str,
-           pnl: float = 0.0, r: float = 0.0) -> tuple[Trade, Exit]:
+           pnl: float = 0.0, r: float = 0.0,
+           state: str = "closed") -> tuple[Trade, _ExitShape]:
     t = Trade(id=tid, ticker=ticker, entry_date=entry_date,
               entry_price=100.0, initial_shares=10, initial_stop=95.0,
-              current_stop=95.0, status="closed",
+              current_stop=95.0, state=state,
               watchlist_entry_target=None, watchlist_initial_stop=None, notes=None)
-    e = Exit(id=tid, trade_id=tid, exit_date=exit_date, exit_price=100.0 + pnl/10,
-             shares=10, reason="target", realized_pnl=pnl, r_multiple=r, notes=None)
+    e = _ExitShape(
+        trade_id=tid, exit_date=exit_date, exit_price=100.0 + pnl/10,
+        shares=10, reason="target", realized_pnl=pnl, r_multiple=r,
+    )
     return t, e
 
 
@@ -64,6 +83,54 @@ def test_cutting_winners_short_flagged():
     exits = [e for _, e in cases]
     flags = compute_flags(trades=trades, exits=exits, weather_runs=[])
     assert any(f.code == "cutting_winners_short" for f in flags)
+
+
+def test_caution_market_entries_includes_reviewed_trades():
+    """B.9 discriminator: a 'reviewed' (post-review-completed) trade still
+    contributes to the caution-market flag. Pre-fix (state == 'closed' only)
+    a reviewed Caution-day entry was silently dropped, so the flag
+    suppressed when fewer than 2 closed-state entries remained.
+    """
+    # Two entries on Caution/Bearish days — one closed, one reviewed.
+    t1, e1 = _trade(1, "AAPL", "2026-04-10", "2026-04-15", pnl=20, r=2,
+                    state="closed")
+    t2, e2 = _trade(2, "MSFT", "2026-04-11", "2026-04-16", pnl=-10, r=-1,
+                    state="reviewed")
+    weather = [
+        _wr("2026-04-10", "Caution"),
+        _wr("2026-04-11", "Bearish"),
+    ]
+    flags = compute_flags(trades=[t1, t2], exits=[e1, e2], weather_runs=weather)
+    flag = next((f for f in flags if f.code == "caution_market_entries"), None)
+    assert flag is not None, (
+        "reviewed-state trades must count toward caution-market flag; "
+        "pre-fix the predicate dropped them and the flag suppressed below "
+        "the >=2 threshold."
+    )
+
+
+def test_cutting_winners_short_includes_reviewed_winners():
+    """B.9 discriminator: 'reviewed' winners count toward the
+    cutting-winners-short calculation. Pre-fix they were dropped from the
+    `winners` list entirely.
+    """
+    cases = []
+    for i in range(3):
+        cases.append(_trade(i, f"X{i}", "2026-04-10", "2026-04-15",
+                            pnl=5, r=0.5, state="closed"))
+    # Add reviewed winners — they MUST count toward the winners pool. With
+    # 4 winners and >=50% below +1R, the flag fires.
+    for i in range(3, 4):
+        cases.append(_trade(i, f"X{i}", "2026-04-10", "2026-04-15",
+                            pnl=5, r=0.5, state="reviewed"))
+    trades = [t for t, _ in cases]
+    exits = [e for _, e in cases]
+    flags = compute_flags(trades=trades, exits=exits, weather_runs=[])
+    assert any(f.code == "cutting_winners_short" for f in flags), (
+        "reviewed winners must count toward cutting-winners-short; pre-fix "
+        "they were dropped, taking the winner pool below the n>=3 minimum "
+        "or skewing the below-1R fraction."
+    )
 
 
 def test_losers_held_too_long_no_division_by_zero_when_winners_all_same_day():

@@ -1,4 +1,10 @@
 {% extends "base.html.j2" %}
+{# Phase 7 Sub-C C.6 — state badge replaces the legacy bare ``t.status``
+   text column. The macro looks up the per-state display label internally
+   (mirrors STATE_BADGE_LABELS in swing/web/view_models/trades.py), so the
+   journal page does NOT need a per-trade VM to render the badge — Trade
+   objects are passed straight from JournalVM.trades. #}
+{% from "partials/state_badge.html.j2" import render as state_badge %}
 {% block content %}
   <h1>Journal</h1>
   <nav class="period-selector">
@@ -31,7 +37,7 @@
       <thead><tr><th>Ticker</th><th>Entry</th><th>Status</th></tr></thead>
       <tbody>
         {% for t in vm.trades %}
-          <tr><td>{{ t.ticker }}</td><td>{{ t.entry_date }}</td><td>{{ t.status }}</td></tr>
+          <tr><td>{{ t.ticker }}</td><td>{{ t.entry_date }}</td><td>{{ state_badge(t.state) }}</td></tr>
         {% endfor %}
       </tbody>
     </table>
