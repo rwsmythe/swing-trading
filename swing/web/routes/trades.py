@@ -483,21 +483,69 @@ def entry_post(
                 force=(force == "true"),
             )
         except MissingPreTradeFieldsException as exc:
-            # Phase 7 Sub-C C.3 — non-bypassable pre-trade required-field
-            # gate (spec §9.3). Re-render a row-shaped error fragment so
-            # the form's `hx-target="closest tr"` swap places the banner
-            # in place of the form row (consistent with hard-cap /
-            # ValueError paths). The actual fieldset rendering + per-
-            # field error markers land in C.4; for C.3 we just plumb the
-            # missing-fields list into the error message + context so
-            # the catch path doesn't escape as 500.
+            # Phase 7 Sub-C C.4 — non-bypassable pre-trade required-field
+            # gate (spec §9.3). Re-render the FULL entry form fragment
+            # so the operator sees:
+            #   1. an inline banner naming the missing fields,
+            #   2. per-field error class markers on the missing inputs
+            #      (template gates on `{% if name in vm.missing_fields %}`),
+            #   3. their typed values round-tripped via the `draft_*`
+            #      preservation fields (rationale/notes pattern extended
+            #      to the 18 new pre-trade fields).
+            # On `vm is None` (watchlist row vanished between GET and POST),
+            # fall through to the banner-only error fragment — there's no
+            # form context to re-render against.
+            from dataclasses import replace as dc_replace
+            vm = build_entry_form_vm(
+                ticker=ticker.upper(), cfg=cfg, cache=cache,
+                executor=executor, origin=origin_coerced,
+            )
+            error_message = (
+                "Missing required pre-trade fields: "
+                + ", ".join(exc.missing_fields)
+            )
+            if vm is not None:
+                vm = dc_replace(
+                    vm,
+                    entry_date=entry_date,
+                    entry_price=entry_price,
+                    initial_stop=initial_stop,
+                    input_shares=shares,
+                    rationale=rationale,
+                    notes=notes or "",
+                    # 18 pre-trade field draft preservation:
+                    draft_thesis=thesis or "",
+                    draft_why_now=why_now or "",
+                    draft_invalidation_condition=invalidation_condition or "",
+                    draft_expected_scenario=expected_scenario or "",
+                    draft_premortem_technical=premortem_technical or "",
+                    draft_premortem_market_sector=premortem_market_sector or "",
+                    draft_premortem_execution=premortem_execution or "",
+                    draft_premortem_additional=premortem_additional or "",
+                    draft_event_risk_present=event_risk_present,
+                    draft_event_handling=event_handling or "",
+                    draft_event_type=event_type or "",
+                    draft_event_date=event_date or "",
+                    draft_gap_risk_present=gap_risk_present,
+                    draft_gap_risk_handling=gap_risk_handling or "",
+                    draft_emotional_state_pre_trade=tuple(emo_clean),
+                    draft_manual_entry_confidence=manual_entry_confidence or "",
+                    draft_market_regime=market_regime or "",
+                    draft_catalyst=catalyst or "",
+                    draft_catalyst_other_description=(
+                        catalyst_other_description or ""
+                    ),
+                    missing_fields=frozenset(exc.missing_fields),
+                )
+                return templates.TemplateResponse(
+                    request, "partials/trade_entry_form.html.j2",
+                    {"vm": vm, "error_message": error_message},
+                    status_code=400,
+                )
             return templates.TemplateResponse(
                 request, "partials/trade_form_error.html.j2",
                 {
-                    "error_message": (
-                        "Missing required pre-trade fields: "
-                        + ", ".join(exc.missing_fields)
-                    ),
+                    "error_message": error_message,
                     "missing_fields": list(exc.missing_fields),
                 },
                 status_code=400,

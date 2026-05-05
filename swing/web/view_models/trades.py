@@ -200,6 +200,45 @@ class TradeEntryFormVM:
     # the latest evaluation run — template renders "(none)" display
     # and emits an empty hidden input value.
     hypothesis_label: str | None = None
+    # Phase 7 Sub-C C.4 — draft_* preservation fields for the 18 pre-trade
+    # required fields (spec §11.1). Mirrors the rationale/notes
+    # preservation pattern: when the MissingPreTradeFieldsException catch
+    # path re-renders the form, ``dataclasses.replace`` populates these
+    # so the operator's typed values round-trip back into the inputs
+    # (textarea body / input value attr / select selected / checkbox
+    # checked). All default to safe empty values so the GET-form path
+    # renders a clean form (no draft preservation needed there).
+    draft_thesis: str = ""
+    draft_why_now: str = ""
+    draft_invalidation_condition: str = ""
+    draft_expected_scenario: str = ""
+    draft_premortem_technical: str = ""
+    draft_premortem_market_sector: str = ""
+    draft_premortem_execution: str = ""
+    draft_premortem_additional: str = ""
+    # event_risk_present / gap_risk_present arrive as int|None from the
+    # form ("0"/"1" → 0/1; missing → None). Carry through as None so
+    # the template renders neither checkbox checked on a GET.
+    draft_event_risk_present: int | None = None
+    draft_event_handling: str = ""
+    draft_event_type: str = ""
+    draft_event_date: str = ""
+    draft_gap_risk_present: int | None = None
+    draft_gap_risk_handling: str = ""
+    # emotional_state_pre_trade is multi-select; carry the submitted set
+    # as a tuple of strings so the template can ``in`` -test each
+    # checkbox value. Empty tuple = no draft (GET path / first POST).
+    draft_emotional_state_pre_trade: tuple[str, ...] = ()
+    draft_manual_entry_confidence: str = ""
+    draft_market_regime: str = ""
+    draft_catalyst: str = ""
+    draft_catalyst_other_description: str = ""
+    # Phase 7 Sub-C C.4 — per-field error markers. Populated only on the
+    # MissingPreTradeFieldsException re-render path (spec §11.1 + §9.3);
+    # empty frozenset on GET / non-missing-field error paths so the
+    # template never renders an error class on a clean form. The template
+    # tests `{% if 'thesis' in vm.missing_fields %}` per input.
+    missing_fields: frozenset[str] = frozenset()
 
 
 def build_entry_form_vm(

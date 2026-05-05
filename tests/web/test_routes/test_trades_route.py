@@ -3207,3 +3207,330 @@ def test_entry_post_emotional_state_multi_select_persists_json_list(
     assert persisted == ["calm", "confident"], (
         f"multi-select values must persist as JSON list, got {row[0]!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-C C.4 — entry form 7 sectioned <fieldset> blocks + per-field
+# error markers + draft preservation. Spec §11.1.
+#
+# Discriminating-test discipline: each test must FAIL on the pre-C.4
+# template (single un-sectioned form, no per-field error class plumbing,
+# no `draft_*` preservation for the 18 pre-trade fields). PASS on the
+# post-C.4 template.
+# ---------------------------------------------------------------------------
+
+
+def test_c4_entry_form_renders_7_fieldset_legends(seeded_db, monkeypatch):
+    """All 7 spec §11.1 section legends must appear in the rendered form."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4LG")
+    _c3_patch_pricecache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=C4LG")
+    assert r.status_code == 200
+    text = r.text
+    for legend in (
+        "Position basics",
+        "Setup attribution",
+        "Pre-trade thesis",
+        "Premortem",
+        "Risk acknowledgments",
+        "Operator state",
+        "Notes",
+    ):
+        assert legend in text, (
+            f"Missing fieldset legend {legend!r} in rendered entry form. "
+            f"Spec §11.1 requires 7 sectioned blocks."
+        )
+
+
+def test_c4_entry_form_thesis_textarea_in_section_3(seeded_db, monkeypatch):
+    """`name='thesis'` textarea must appear AFTER 'Pre-trade thesis' legend
+    AND BEFORE 'Premortem' legend (i.e., located in section §3)."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4SEC")
+    _c3_patch_pricecache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=C4SEC")
+    text = r.text
+    legend_pos = text.find("Pre-trade thesis")
+    thesis_pos = text.find('name="thesis"')
+    premortem_pos = text.find("Premortem")
+    assert legend_pos != -1
+    assert thesis_pos != -1
+    assert premortem_pos != -1
+    assert legend_pos < thesis_pos < premortem_pos, (
+        f"`name='thesis'` must render inside section §3 (after 'Pre-trade "
+        f"thesis' legend, before 'Premortem' legend). Got positions: "
+        f"legend={legend_pos}, thesis={thesis_pos}, premortem={premortem_pos}"
+    )
+
+
+def test_c4_entry_form_premortem_renders_all_4_textareas(
+    seeded_db, monkeypatch,
+):
+    """§4 Premortem fieldset renders all 4 textareas (3 required + 1 optional)."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4PM")
+    _c3_patch_pricecache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=C4PM")
+    text = r.text
+    for name in (
+        "premortem_technical", "premortem_market_sector",
+        "premortem_execution", "premortem_additional",
+    ):
+        assert f'name="{name}"' in text, (
+            f"§4 Premortem section must render `name={name!r}` textarea"
+        )
+
+
+def test_c4_entry_form_event_risk_radios_and_handling_select(
+    seeded_db, monkeypatch,
+):
+    """§5 Risk acknowledgments: event_risk_present No/Yes radios +
+    event_handling/event_type/event_date inputs render."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4RSK")
+    _c3_patch_pricecache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=C4RSK")
+    text = r.text
+    # event_risk_present rendered as radio with value="0" and value="1":
+    assert text.count('name="event_risk_present"') == 2, (
+        "event_risk_present must be rendered as a No/Yes radio pair "
+        "(2 inputs); bare-checkbox semantics collide with the "
+        "validator's required-field check."
+    )
+    assert 'name="event_risk_present" value="0"' in text
+    assert 'name="event_risk_present" value="1"' in text
+    # gap_risk_present same shape:
+    assert text.count('name="gap_risk_present"') == 2
+    assert 'name="event_handling"' in text
+    assert 'name="event_type"' in text
+    assert 'name="event_date"' in text
+    assert 'name="gap_risk_handling"' in text
+
+
+def test_c4_entry_form_emotional_state_8_checkboxes(seeded_db, monkeypatch):
+    """§6 Operator state — emotional_state_pre_trade vocabulary has 8
+    values per spec §1.2 (calm/confident/anxious/fomo/revenge/hopeful/
+    doubtful/distracted)."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4EMO")
+    _c3_patch_pricecache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=C4EMO")
+    text = r.text
+    assert text.count('name="emotional_state_pre_trade"') == 8, (
+        f"emotional_state_pre_trade must render 8 checkboxes (one per "
+        f"vocabulary value). Got {text.count('name=\"emotional_state_pre_trade\"')}."
+    )
+    for value in (
+        "calm", "confident", "anxious", "fomo",
+        "revenge", "hopeful", "doubtful", "distracted",
+    ):
+        assert f'value="{value}"' in text, (
+            f"emotional_state vocabulary value {value!r} missing from form"
+        )
+
+
+def test_c4_entry_form_manual_entry_confidence_3_radios(
+    seeded_db, monkeypatch,
+):
+    """§6 Operator state — manual_entry_confidence is 3-radio (high/normal/low)."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4MEC")
+    _c3_patch_pricecache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=C4MEC")
+    text = r.text
+    assert text.count('name="manual_entry_confidence"') == 3
+    for value in ("high", "normal", "low"):
+        # Radio rendered with type=radio + value="high"/"normal"/"low":
+        assert (
+            f'name="manual_entry_confidence" value="{value}"' in text
+        ), f"manual_entry_confidence radio for {value!r} missing"
+
+
+def test_c4_entry_form_market_regime_3_radios(seeded_db, monkeypatch):
+    """§6 Operator state — market_regime 3 radios (Bullish/Caution/Bearish)."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4MR")
+    _c3_patch_pricecache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=C4MR")
+    text = r.text
+    assert text.count('name="market_regime"') == 3
+    for value in ("Bullish", "Caution", "Bearish"):
+        assert (
+            f'name="market_regime" value="{value}"' in text
+        ), f"market_regime radio for {value!r} missing"
+
+
+def test_c4_entry_form_catalyst_select_9_options(seeded_db, monkeypatch):
+    """§6 Operator state — catalyst <select> has 9 vocabulary options
+    matching the migration 0014 CHECK enum."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4CAT")
+    _c3_patch_pricecache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=C4CAT")
+    text = r.text
+    # Vocabulary per migration 0014:
+    for value in (
+        "earnings_driven", "guidance_change", "corporate_action",
+        "sector_rotation", "macro_event", "sympathy_move",
+        "product_news", "technical_only", "other",
+    ):
+        assert f'value="{value}"' in text, (
+            f"catalyst vocabulary value {value!r} missing from <select>. "
+            f"Vocabulary must match migration 0014 CHECK enum."
+        )
+
+
+def test_c4_entry_form_includes_hx_headers_attribute(seeded_db, monkeypatch):
+    """CLAUDE.md gotcha 2026-05-02: HTMX form inside fragment MUST emit
+    `hx-headers='{"HX-Request": "true"}'` so OriginGuard strict-mode
+    accepts the form's POST. TestClient cannot detect a regression here
+    because tests pass HX-Request explicitly; this assertion guards the
+    operator-witnessed browser path."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4HXH")
+    _c3_patch_pricecache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=C4HXH")
+    text = r.text
+    assert "hx-headers=" in text, (
+        "form must emit hx-headers attribute (CLAUDE.md gotcha 2026-05-02)"
+    )
+    assert '"HX-Request"' in text
+    assert '"true"' in text
+
+
+def test_c4_entry_form_post_missing_thesis_marks_field_with_error_class(
+    seeded_db, monkeypatch,
+):
+    """Discriminating: pre-C.4 the MissingPreTradeFieldsException catch
+    rendered `partials/trade_form_error.html.j2` (banner-only); the form
+    didn't re-render at all so no per-field error class could exist.
+    Post-C.4 the catch path re-renders the full form template with
+    `vm.missing_fields` populated; the thesis textarea carries
+    `class="field-error"`.
+    """
+    import re
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4ERR")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C4ERR")
+    data.pop("thesis")
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data=data,
+        )
+    assert r.status_code == 400
+    text = r.text
+    # Locate the thesis textarea opening tag:
+    m = re.search(r'<textarea[^>]*name="thesis"[^>]*>', text)
+    assert m is not None, (
+        f"thesis textarea not found in re-rendered form. Got: {text[:600]!r}"
+    )
+    tag = m.group(0)
+    assert 'class="field-error"' in tag, (
+        f"Missing-thesis re-render must mark the thesis textarea with "
+        f"class='field-error'; got opening tag {tag!r}. Pre-C.4 the catch "
+        f"path returned a banner-only fragment with no form to mark — this "
+        f"test fails on that pre-state."
+    )
+
+
+def test_c4_entry_form_post_missing_thesis_preserves_typed_why_now(
+    seeded_db, monkeypatch,
+):
+    """Discriminating: pre-C.4 the catch path returned the banner-only
+    fragment, losing every typed field. Post-C.4 the operator's typed
+    why_now value round-trips back into the textarea body via
+    `vm.draft_why_now`."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4DRFT")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C4DRFT")
+    data.pop("thesis")
+    sentinel = "OPERATOR_TYPED_WHY_NOW_REASON_C4"
+    data["why_now"] = sentinel
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data=data,
+        )
+    assert r.status_code == 400
+    assert sentinel in r.text, (
+        f"why_now value {sentinel!r} must round-trip back into the "
+        f"re-rendered form via draft_why_now preservation; got "
+        f"text not containing sentinel"
+    )
+
+
+def test_c4_entry_form_post_missing_thesis_preserves_catalyst_select(
+    seeded_db, monkeypatch,
+):
+    """Draft preservation for `<select name='catalyst'>` — selected option
+    must round-trip via the `selected` attribute. Discriminating: a buggy
+    implementation that only preserved textarea bodies would lose the
+    catalyst selection (the operator would have to re-pick).
+    """
+    import re
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C4CATD")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C4CATD")
+    data["catalyst"] = "earnings_driven"  # operator picked something specific
+    data.pop("thesis")  # trip the gate
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"},
+            data=data,
+        )
+    assert r.status_code == 400
+    text = r.text
+    # Match the <option value="earnings_driven" selected>...</option>:
+    m = re.search(
+        r'<option\s+value="earnings_driven"[^>]*\bselected\b',
+        text,
+    )
+    assert m is not None, (
+        f"catalyst='earnings_driven' must round-trip as <option ... selected> "
+        f"on re-render; not found. Pre-C.4 (banner-only re-render) had no "
+        f"<select> at all — test discriminates."
+    )
