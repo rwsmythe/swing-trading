@@ -4088,3 +4088,242 @@ def test_c7_base_layout_does_not_dereference_phase7_specific_fields():
             f"ReviewsPendingVM, TradeDetailVM) must gain that field with "
             f"a safe default."
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-C C.8 — pre-trade gate failure rendering consistency across
+# the 3 entry surfaces (web watchlist origin, web hyp-recs origin, CLI).
+#
+# Architecture finding (recorded in commit body): the plan's implementation
+# sketch said "Hyp-recs route (existing route handler in
+# swing/web/routes/recommendations.py — adjust path; this Phase 7 task
+# expands the existing handler)." THIS WAS STALE. There is no POST handler
+# for hyp-recs trade entry in `swing/web/routes/recommendations.py`; the
+# hyp-recs "Take this trade" link navigates to GET
+# `/trades/entry/form?ticker=X&origin=hyp-recs` and the submit POSTs to the
+# SAME `/trades/entry` handler that watchlist origin uses. The `origin`
+# discriminator threads through `_coerce_origin` + `build_entry_form_vm` +
+# `_rerender_entry_form_with_error` (added in Task 8 / R4-Major-1). So the
+# cross-surface "consistency" is structural — both origins go through the
+# same MissingPreTradeFieldsException catch path.
+#
+# C.8's job is therefore to PIN that consistency with discriminating tests.
+# CLI parity is already covered by Sub-B B.8's
+# `test_cli_trade_entry_rejects_missing_thesis`; we add a smoke-pin here
+# that confirms the catalog is complete.
+# ---------------------------------------------------------------------------
+
+
+def test_c8_hyp_recs_origin_missing_thesis_returns_400_same_as_watchlist(
+    seeded_db, monkeypatch,
+):
+    """Cross-surface consistency: hyp-recs origin and watchlist origin
+    must both produce 400 + same canonical missing-fields banner format
+    when MissingPreTradeFieldsException fires.
+
+    Discriminating: under buggy code that diverged on ``origin=hyp-recs``
+    (e.g., dropped the gate, returned 500, or used a different banner
+    template), this test would fail because one of the responses would
+    not match. Because both paths share the SAME
+    `_rerender_entry_form_with_error` helper + 400 status under the
+    current architecture, the test passes.
+    """
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C8X")
+    _t5_seed_hyp_recs_aplus_candidate(cfg, ticker="C8X")
+    _c3_patch_pricecache(monkeypatch)
+
+    data_watchlist = _c3_all_18_fields(ticker="C8X")
+    data_watchlist.pop("thesis")
+    data_watchlist["origin"] = "watchlist"
+
+    data_hyp_recs = _c3_all_18_fields(ticker="C8X")
+    data_hyp_recs.pop("thesis")
+    data_hyp_recs["origin"] = "hyp-recs"
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r_w = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"}, data=data_watchlist,
+        )
+        r_h = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"}, data=data_hyp_recs,
+        )
+
+    # Both surfaces yield 400 (not 500 / 422 / 200):
+    assert r_w.status_code == 400, (
+        f"watchlist-origin missing-thesis must return 400; got "
+        f"{r_w.status_code}: {r_w.text[:300]!r}"
+    )
+    assert r_h.status_code == 400, (
+        f"hyp-recs-origin missing-thesis must return 400; got "
+        f"{r_h.status_code}: {r_h.text[:300]!r}"
+    )
+    # Both surfaces use the canonical banner format (same wording):
+    canonical = "missing required pre-trade fields"
+    assert canonical in r_w.text.lower(), (
+        f"watchlist banner missing canonical phrase {canonical!r}: "
+        f"{r_w.text[:300]!r}"
+    )
+    assert canonical in r_h.text.lower(), (
+        f"hyp-recs banner missing canonical phrase {canonical!r}: "
+        f"{r_h.text[:300]!r}"
+    )
+    # Both surfaces name the missing field by name in the banner:
+    assert "thesis" in r_w.text.lower()
+    assert "thesis" in r_h.text.lower()
+
+
+def test_c8_hyp_recs_origin_missing_thesis_marks_field_with_error_class(
+    seeded_db, monkeypatch,
+):
+    """Cross-surface consistency: hyp-recs origin re-renders the FULL
+    form with the per-field error class on the missing input — same
+    contract as watchlist origin (verified by C.4's
+    test_c4_entry_form_post_missing_thesis_marks_field_with_error_class).
+
+    Discriminating: a regression that branched on origin in the catch path
+    (e.g., banner-only fragment for hyp-recs but full re-render for
+    watchlist) would fail this test. The shared
+    `_rerender_entry_form_with_error` + `build_entry_form_vm(origin=...)`
+    plumbing means both origins traverse the same template.
+    """
+    import re
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C8FE")
+    _t5_seed_hyp_recs_aplus_candidate(cfg, ticker="C8FE")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C8FE")
+    data.pop("thesis")
+    data["origin"] = "hyp-recs"
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"}, data=data,
+        )
+    assert r.status_code == 400
+    m = re.search(r'<textarea[^>]*name="thesis"[^>]*>', r.text)
+    assert m is not None, (
+        f"hyp-recs re-render must contain the thesis textarea (full form "
+        f"re-render, not banner-only). Body[:600]={r.text[:600]!r}"
+    )
+    assert 'class="field-error"' in m.group(0), (
+        f"hyp-recs re-render must mark the thesis textarea with "
+        f"class='field-error' identical to watchlist origin "
+        f"(C.4 contract). Got tag {m.group(0)!r}."
+    )
+
+
+def test_c8_hyp_recs_origin_missing_thesis_preserves_typed_why_now(
+    seeded_db, monkeypatch,
+):
+    """Cross-surface consistency: hyp-recs origin draft preservation
+    (operator's typed why_now round-trips back into the textarea body
+    via `vm.draft_why_now`) — same contract as watchlist origin
+    (C.4 test_c4_entry_form_post_missing_thesis_preserves_typed_why_now).
+
+    Discriminating: a regression that bypassed the dataclass-replace
+    draft-preservation block on the hyp-recs branch would clear typed
+    fields. Architecture today shares the same code path so the
+    operator's typing survives the gate-fail re-render.
+    """
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C8DR")
+    _t5_seed_hyp_recs_aplus_candidate(cfg, ticker="C8DR")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C8DR")
+    data.pop("thesis")
+    sentinel = "OPERATOR_TYPED_WHY_NOW_HYP_RECS_C8"
+    data["why_now"] = sentinel
+    data["origin"] = "hyp-recs"
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"}, data=data,
+        )
+    assert r.status_code == 400
+    assert sentinel in r.text, (
+        f"hyp-recs origin draft-preservation regression: typed why_now "
+        f"value {sentinel!r} did not round-trip back into re-rendered "
+        f"form. Body[:600]={r.text[:600]!r}"
+    )
+
+
+def test_c8_missing_multiple_fields_banner_lists_all_missing(
+    seeded_db, monkeypatch,
+):
+    """Discriminating: under buggy code that reported only the first
+    missing field (e.g., early-return on first `not value` check), only
+    'thesis' would appear in the banner. Correct code enumerates ALL
+    missing fields in the message body; multiple field names appear.
+
+    Pins the consistency principle that the gate's exception payload
+    drives the banner enumeration — important for both surfaces because
+    the operator should fix all missing fields in one round trip rather
+    than discovering them sequentially.
+    """
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="C8MM")
+    _c3_patch_pricecache(monkeypatch)
+
+    data = _c3_all_18_fields(ticker="C8MM")
+    # Drop 3 distinct fields to discriminate first-only enumeration:
+    data.pop("thesis")
+    data.pop("why_now")
+    data.pop("invalidation_condition")
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            headers={"HX-Request": "true"}, data=data,
+        )
+    assert r.status_code == 400
+    text = r.text.lower()
+    # All three missing field names must appear in the response body
+    # (banner OR per-field error markers; both are acceptable since the
+    # full form re-renders with the missing-fields set populated):
+    assert "thesis" in text, (
+        f"missing field 'thesis' must surface; body[:600]={text[:600]!r}"
+    )
+    assert "why_now" in text, (
+        f"missing field 'why_now' must surface (NOT just the first-listed "
+        f"field). Discriminating against early-return-after-first bug. "
+        f"body[:600]={text[:600]!r}"
+    )
+    assert "invalidation_condition" in text, (
+        f"missing field 'invalidation_condition' must surface. "
+        f"body[:600]={text[:600]!r}"
+    )
+
+
+def test_c8_recommendations_route_exposes_no_post_entry_handler():
+    """Architecture pin: hyp-recs trade entry MUST flow through the shared
+    `/trades/entry` POST handler — there must be NO competing POST handler
+    in `swing/web/routes/recommendations.py` that would diverge from the
+    watchlist-origin gate path.
+
+    Discriminating: if a future refactor splits the hyp-recs surface into
+    its own POST handler, the cross-surface consistency contract this
+    task pins becomes load-bearing on TWO handlers staying in sync. This
+    test catches that split at architecture level so the next maintainer
+    is forced to update the consistency tests above (or rejoin the
+    surfaces).
+    """
+    from pathlib import Path
+    src = Path("swing/web/routes/recommendations.py").read_text(encoding="utf-8")
+    # No @router.post decorator targeting an entry path:
+    assert "@router.post" not in src or "/entry" not in src, (
+        "recommendations.py must not register a POST handler for trade "
+        "entry; the shared /trades/entry handler in trades.py owns both "
+        "watchlist and hyp-recs origins. Found POST handler — re-evaluate "
+        "C.8's consistency tests."
+    )
