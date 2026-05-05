@@ -16,9 +16,13 @@ import sqlite3
 import pytest
 
 from swing.data.db import ensure_schema
-from swing.data.models import Candidate, CriterionResult, EvaluationRun, Exit, Trade
+# B.9: Exit dataclass + insert_exit_with_event removed (Phase 7). Tests now
+# go through the fills repo. analyze_trade still consumes the `_ExitLikeRow`
+# shim from list_exits_for_trade — Sub-C T1 deletes the shim.
+from swing.data.models import Candidate, CriterionResult, EvaluationRun, Fill, Trade
 from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
-from swing.data.repos.trades import insert_exit_with_event, insert_trade_with_event
+from swing.data.repos.fills import insert_fill_with_event
+from swing.data.repos.trades import insert_trade_with_event
 from swing.journal.analyze import (
     CriterionResultDisplay,
     RecommendationContext,
@@ -96,6 +100,14 @@ def _trade(
     watchlist_target: float | None = None,
     notes: str | None = None,
 ) -> int:
+    """Seed a trade row + entry-fill so current_size denorm is correct.
+
+    Goes through ``insert_trade_with_event`` + entry-fill INSERT directly
+    (bypassing the entry service's pre-trade-required-fields gate, which
+    these analyze-CLI tests don't exercise). Mirrors the
+    ``tests/trades/test_exit.py::_seed_active_trade`` pattern.
+    """
+    event_ts = f"{entry_date}T09:30:00"
     trade = Trade(
         id=None, ticker=ticker, entry_date=entry_date, entry_price=entry_price,
         initial_shares=shares, initial_stop=initial_stop,
@@ -103,11 +115,23 @@ def _trade(
         watchlist_entry_target=watchlist_target,
         watchlist_initial_stop=initial_stop, notes=notes,
         hypothesis_label=hypothesis_label,
+        trade_origin="manual_off_pipeline",
+        pre_trade_locked_at=event_ts,
     )
     with conn:
-        return insert_trade_with_event(
-            conn, trade, event_ts=f"{entry_date}T09:30:00", rationale=None,
+        trade_id = insert_trade_with_event(
+            conn, trade, event_ts=event_ts, rationale=None,
         )
+        insert_fill_with_event(
+            conn,
+            Fill(
+                fill_id=None, trade_id=trade_id,
+                fill_datetime=event_ts, action="entry",
+                quantity=float(shares), price=entry_price,
+            ),
+            event_ts=event_ts,
+        )
+    return trade_id
 
 
 def _exit(
@@ -115,15 +139,40 @@ def _exit(
     exit_price: float, shares: int, reason: str,
     realized_pnl: float, r_multiple: float,
 ) -> None:
-    exit_row = Exit(
-        id=None, trade_id=trade_id, exit_date=exit_date, exit_price=exit_price,
-        shares=shares, reason=reason, realized_pnl=realized_pnl,
-        r_multiple=r_multiple, notes=None,
-    )
+    """Insert a non-entry fill + transition state when fully exited.
+
+    B.9: the exit service (``swing.trades.exit.record_exit``) is the
+    canonical path, but it requires a typed ExitReason; for the small
+    fixed reason strings these tests use, we go through the fills repo
+    directly + UPDATE state once cumulative non-entry fills cover the
+    initial shares (analogous to the state-machine's full-close branch).
+    Keeps the test surface minimal — analyze_trade reads the resulting
+    rows the same way regardless of which service wrote them.
+    """
+    event_ts = f"{exit_date}T16:00:00"
     with conn:
-        insert_exit_with_event(
-            conn, exit_row, event_ts=f"{exit_date}T16:00:00", rationale=None,
+        insert_fill_with_event(
+            conn,
+            Fill(
+                fill_id=None, trade_id=trade_id,
+                fill_datetime=event_ts, action="exit",
+                quantity=float(shares), price=exit_price, reason=reason,
+            ),
+            event_ts=event_ts,
         )
+        # Mirror the state machine: when cumulative non-entry quantity
+        # equals or exceeds initial_shares, the trade is closed.
+        row = conn.execute(
+            "SELECT initial_shares, "
+            "  COALESCE((SELECT SUM(quantity) FROM fills "
+            "            WHERE trade_id = ? AND action != 'entry'), 0) "
+            "FROM trades WHERE id = ?",
+            (trade_id, trade_id),
+        ).fetchone()
+        if row is not None and row[1] >= row[0]:
+            conn.execute(
+                "UPDATE trades SET state='closed' WHERE id=?", (trade_id,),
+            )
 
 
 # --- core happy path: VIR-like single-rec / closed / loss --------------------
@@ -350,6 +399,27 @@ def test_missing_trade_raises(tmp_path):
         analyze_trade(conn, 999)
 
 
+# --- Phase 7 B.9: status field surfaces trade.state ---------------------------
+
+
+def test_analyze_returns_state_string_in_status_field(tmp_path):
+    """B.9 discriminator: TradeAnalysis.status carries trade.state. Pre-fix
+    the source value was `trade.status`, which AttributeErrors after the
+    Phase 7 schema drops the column. Post-fix the field carries the
+    lifecycle state string ('entered'|'managing'|'partial_exited'|
+    'closed'|'reviewed') unchanged.
+    """
+    conn = _conn(tmp_path)
+    tid = _trade(conn, ticker="ZZZ", entry_date="2026-04-20",
+                 entry_price=50.0, shares=10, initial_stop=45.0)
+    a = analyze_trade(conn, tid)
+    # No exits; the trade stays in 'entered'. Status field surfaces it.
+    assert a.status == "entered", (
+        f"expected status='entered' (mirrors trade.state); got {a.status!r}. "
+        "Pre-fix this read trade.status which no longer exists."
+    )
+
+
 # --- DB read-only safety ------------------------------------------------------
 
 
@@ -412,11 +482,15 @@ def test_malformed_entry_date_raises(tmp_path):
     )
     # Manually insert a trade with a malformed entry_date via raw SQL — the
     # repo would refuse, but production data could in principle have it.
+    # B.9: 'status' column dropped (migration 0014); use 'state' + the
+    # NOT-NULL Phase 7 lifecycle columns.
     with conn:
         conn.execute(
             "INSERT INTO trades (ticker, entry_date, entry_price, "
-            "initial_shares, initial_stop, current_stop, status, notes) "
-            "VALUES ('VIR', 'not-a-date', 11.30, 2, 8.26, 8.26, 'open', NULL)"
+            "initial_shares, initial_stop, current_stop, state, notes, "
+            "trade_origin, pre_trade_locked_at, current_size) "
+            "VALUES ('VIR', 'not-a-date', 11.30, 2, 8.26, 8.26, 'entered', "
+            "NULL, 'manual_off_pipeline', '2026-04-20T09:30:00', 2)"
         )
         tid = conn.execute(
             "SELECT id FROM trades WHERE entry_date='not-a-date'"
@@ -444,15 +518,16 @@ def test_analyze_does_not_mutate_db(tmp_path):
           shares=2, reason="stop-hit", realized_pnl=-2.0,
           r_multiple=-0.32894737)
 
+    # B.9: 'exits' table dropped in migration 0014; replaced by 'fills'.
+    tables = ("trades", "fills", "candidates", "candidate_criteria",
+              "evaluation_runs", "trade_events")
     before_counts = {
         t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-        for t in ("trades", "exits", "candidates", "candidate_criteria",
-                  "evaluation_runs", "trade_events")
+        for t in tables
     }
     analyze_trade(conn, tid)
     after_counts = {
         t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-        for t in ("trades", "exits", "candidates", "candidate_criteria",
-                  "evaluation_runs", "trade_events")
+        for t in tables
     }
     assert before_counts == after_counts

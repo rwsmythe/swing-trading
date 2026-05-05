@@ -10,12 +10,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from swing.data.db import ensure_schema
-from swing.data.models import Exit, Trade
-from swing.data.repos.trades import (
-    insert_exit_with_event,
-    insert_trade_with_event,
-)
+# B.9: Exit dataclass + insert_exit_with_event removed (Phase 7); fills
+# repo is the canonical execution log. Hypothesis progress stats consume
+# the fills-backed _ExitLikeRow shim transparently — Sub-C T1 deletes
+# the shim once the remaining web view models migrate.
+from swing.data.models import Fill, Trade
+from swing.data.repos.fills import insert_fill_with_event
+from swing.data.repos.trades import insert_trade_with_event
 from swing.journal.stats import (
     HypothesisProgress,
     compute_hypothesis_progress_breakdown,
@@ -27,34 +31,77 @@ def _setup(tmp_db: Path):
 
 
 def _add_closed(conn, *, ticker, entry_date, label, r_multiple, realized_pnl,
-                shares=100, entry_price=10.0):
+                shares=100, entry_price=10.0, state="closed"):
+    """Insert trade + entry-fill + exit-fill, then UPDATE state to closed.
+
+    `state` lets the caller seed a 'reviewed' (post-review) terminal trade
+    too; B.9's closed-or-reviewed predicate must sweep both.
+
+    NB: r_multiple/realized_pnl arguments are passed through but the shim
+    re-derives them from fills — the test asserts on the value stored in
+    HypothesisProgress.mean_r_multiple, which the compute fn calculates
+    from the shim, so we make sure the fill price + initial_stop yield the
+    requested r_multiple. With initial_stop=9.0 and entry_price=10.0
+    (risk-per-share = 1.0), exit_price = entry_price + r_multiple gives
+    the right per-share R; quantity scales linearly so the share-weighted
+    R for a single full exit equals the requested r_multiple.
+    """
+    entry_ts = f"{entry_date}T09:30:00"
+    exit_ts = f"{entry_date}T16:00:00"
     trade = Trade(
         id=None, ticker=ticker, entry_date=entry_date, entry_price=entry_price,
         initial_shares=shares, initial_stop=9.0, current_stop=9.0,
         state="entered", watchlist_entry_target=None, watchlist_initial_stop=None,
         notes=None, hypothesis_label=label,
+        trade_origin="manual_off_pipeline",
+        pre_trade_locked_at=entry_ts,
     )
-    tid = insert_trade_with_event(conn, trade, event_ts=f"{entry_date}T09:30:00")
-    insert_exit_with_event(
-        conn, Exit(
-            id=None, trade_id=tid, exit_date=entry_date, exit_price=9.0,
-            shares=shares, reason="stop-hit", realized_pnl=realized_pnl,
-            r_multiple=r_multiple, notes=None,
+    tid = insert_trade_with_event(conn, trade, event_ts=entry_ts)
+    insert_fill_with_event(
+        conn,
+        Fill(
+            fill_id=None, trade_id=tid, fill_datetime=entry_ts,
+            action="entry", quantity=float(shares), price=entry_price,
         ),
-        event_ts=f"{entry_date}T16:00:00",
+        event_ts=entry_ts,
     )
+    # Exit price chosen to reproduce the requested r_multiple under the
+    # shim's recomputation (risk_per_share = entry_price - 9.0 = 1.0).
+    exit_price = entry_price + r_multiple
+    insert_fill_with_event(
+        conn,
+        Fill(
+            fill_id=None, trade_id=tid, fill_datetime=exit_ts,
+            action="exit", quantity=float(shares), price=exit_price,
+            reason="stop-hit",
+        ),
+        event_ts=exit_ts,
+    )
+    conn.execute("UPDATE trades SET state=? WHERE id=?", (state, tid))
     return tid
 
 
 def _add_open(conn, *, ticker, entry_date, label, shares=100, entry_price=10.0):
     """Insert an open trade (no exit). Used to test in-flight count."""
+    entry_ts = f"{entry_date}T09:30:00"
     trade = Trade(
         id=None, ticker=ticker, entry_date=entry_date, entry_price=entry_price,
         initial_shares=shares, initial_stop=9.0, current_stop=9.0,
         state="entered", watchlist_entry_target=None, watchlist_initial_stop=None,
         notes=None, hypothesis_label=label,
+        trade_origin="manual_off_pipeline",
+        pre_trade_locked_at=entry_ts,
     )
-    return insert_trade_with_event(conn, trade, event_ts=f"{entry_date}T09:30:00")
+    tid = insert_trade_with_event(conn, trade, event_ts=entry_ts)
+    insert_fill_with_event(
+        conn,
+        Fill(
+            fill_id=None, trade_id=tid, fill_datetime=entry_ts,
+            action="entry", quantity=float(shares), price=entry_price,
+        ),
+        event_ts=entry_ts,
+    )
+    return tid
 
 
 def test_breakdown_has_one_row_per_hypothesis(tmp_db: Path):
@@ -107,7 +154,9 @@ def test_breakdown_vir_attributed_to_sub_aplus(tmp_db: Path):
         sub = next(r for r in rows if r.name == "Sub-A+ VCP-not-formed")
         assert sub.current_sample == 1
         assert sub.target_sample == 5
-        assert sub.mean_r_multiple == -0.33
+        # B.9: shim recomputes r_multiple from fills; FP arithmetic of
+        # (exit_price - entry_price) / risk_per_share introduces ε noise.
+        assert sub.mean_r_multiple == pytest.approx(-0.33, abs=1e-9)
         # win_rate suppressed when N < 3 (matches existing breakdown's
         # _MIN_TRADES_FOR_WIN_RATE)
         assert sub.win_rate is None
@@ -180,6 +229,38 @@ def test_breakdown_in_flight_counts_open_prefix_matching_trades(tmp_db: Path):
                     f"hypothesis {r.name!r} in_flight should be 0; "
                     f"got {r.in_flight_sample}"
                 )
+    finally:
+        conn.close()
+
+
+def test_breakdown_includes_reviewed_trades_in_current_sample(tmp_db: Path):
+    """B.9 discriminator: a 'reviewed' (post-review-completed) trade
+    counts toward current_sample alongside 'closed'. Pre-fix
+    list_closed_trades returned only state='closed'; reviewed trades
+    silently dropped from hypothesis attribution + win-rate math.
+    """
+    conn = _setup(tmp_db)
+    try:
+        with conn:
+            _add_closed(
+                conn, ticker="AAA", entry_date="2026-04-10",
+                label="Sub-A+ VCP-not-formed test",
+                r_multiple=-0.5, realized_pnl=-50.0, state="closed",
+            )
+            _add_closed(
+                conn, ticker="BBB", entry_date="2026-04-11",
+                label="Sub-A+ VCP-not-formed test",
+                r_multiple=-0.5, realized_pnl=-50.0, state="reviewed",
+            )
+        rows = compute_hypothesis_progress_breakdown(
+            conn, starting_equity=7500.0,
+        )
+        sub = next(r for r in rows if r.name == "Sub-A+ VCP-not-formed")
+        assert sub.current_sample == 2, (
+            f"current_sample must include closed AND reviewed trades; "
+            f"got {sub.current_sample}. Pre-fix the predicate was state == "
+            f"'closed' so the reviewed trade dropped out."
+        )
     finally:
         conn.close()
 

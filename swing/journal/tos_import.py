@@ -253,8 +253,13 @@ def reconcile_tos(
                 if t is None:
                     report.unmatched_close_fills.append(f)
                     continue
+                # Phase 7 B.9: exits table dropped (migration 0014). Sum
+                # quantities of all non-entry fills (trim/exit/stop) — that
+                # equals "shares already sold against this trade" under the
+                # long-only convention.
                 sold_in_db = conn.execute(
-                    "SELECT COALESCE(SUM(shares), 0) FROM exits WHERE trade_id = ?",
+                    "SELECT COALESCE(SUM(quantity), 0) FROM fills "
+                    "WHERE trade_id = ? AND action != 'entry'",
                     (t.id,),
                 ).fetchone()[0]
                 already_allocated = within_batch_alloc.get(t.id or 0, 0)
@@ -281,10 +286,14 @@ def _matches_closed_trade(
     represent trades that NEVER actually occurred, so they must not absorb
     real TOS OPEN fills as already-reconciled (adversarial review Batch 3
     Round 6 Major 1). Any closed trade with a correction note is excluded."""
+    # Phase 7 B.9: status column dropped (migration 0014). closed-or-reviewed
+    # are both terminal lifecycle states; either qualifies an OPEN fill as
+    # already-reconciled against the matching closed trade.
     rows = conn.execute(
         """
         SELECT t.entry_price FROM trades t
-        WHERE t.ticker=? AND t.entry_date=? AND t.initial_shares=? AND t.status='closed'
+        WHERE t.ticker=? AND t.entry_date=? AND t.initial_shares=?
+          AND t.state IN ('closed', 'reviewed')
           AND NOT EXISTS (
             SELECT 1 FROM trade_events te
             WHERE te.trade_id = t.id
@@ -312,10 +321,18 @@ def _find_unclaimed_recorded_exit(
     is treated as already_reconciled; subsequent fills fall through to live
     allocation so a live same-day sale isn't silently swallowed by a stale
     historical match (adversarial review Batch 3 Round 5 Major 2)."""
+    # Phase 7 B.9: exits table dropped — read non-entry fills directly.
+    # `e.exit_date` mapped to YYYY-MM-DD prefix of fills.fill_datetime
+    # (which is ISO-8601 'YYYY-MM-DDTHH:MM:SS' per migration 0014 backfill).
+    # `e.shares`/`e.exit_price` map to fills.quantity/fills.price.
+    # `t.status='closed'` becomes the terminal-state predicate
+    # (closed-or-reviewed) per Sub-B B.7 vocab.
     sql = (
-        "SELECT e.id, e.exit_price FROM exits e "
-        "JOIN trades t ON t.id = e.trade_id "
-        "WHERE t.ticker=? AND e.exit_date=? AND e.shares=? AND t.status='closed' "
+        "SELECT f.fill_id, f.price FROM fills f "
+        "JOIN trades t ON t.id = f.trade_id "
+        "WHERE t.ticker=? AND substr(f.fill_datetime, 1, 10)=? "
+        "  AND f.quantity=? AND f.action != 'entry' "
+        "  AND t.state IN ('closed', 'reviewed') "
         "AND NOT EXISTS ("
         "  SELECT 1 FROM trade_events te "
         "  WHERE te.trade_id = t.id "
@@ -325,11 +342,11 @@ def _find_unclaimed_recorded_exit(
     )
     params: list = [ticker, date, qty]
     if on_or_before_date is not None:
-        sql += " AND e.exit_date <= ?"
+        sql += " AND substr(f.fill_datetime, 1, 10) <= ?"
         params.append(on_or_before_date)
-    for exit_id, exit_price in conn.execute(sql, params).fetchall():
-        if exit_id in claimed:
+    for fill_id, fill_price in conn.execute(sql, params).fetchall():
+        if fill_id in claimed:
             continue
-        if abs(exit_price - price) <= price_tolerance:
-            return exit_id
+        if abs(fill_price - price) <= price_tolerance:
+            return fill_id
     return None

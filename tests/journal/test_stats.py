@@ -3,7 +3,12 @@ from __future__ import annotations
 
 import pytest
 
-from swing.data.models import Exit, Trade
+from swing.data.models import Trade
+# B.9: Exit dataclass removed (Phase 7). Use the fills-backed `_ExitLikeRow`
+# NamedTuple shim — it matches the attribute surface (trade_id, exit_date,
+# shares, realized_pnl, r_multiple) that compute_stats/_trade_r/_trade_pnl
+# consume duck-typed. Sub-C T1 deletes the shim once all callers migrate.
+from swing.data.repos.trades import _ExitLikeRow
 from swing.journal.stats import (
     HypothesisBucket, JournalStats, compute_hypothesis_breakdown, compute_stats,
     period_filter, _trade_closed_date,
@@ -26,12 +31,14 @@ def _trade(tid: int, ticker: str, entry: float = 100.0, stop: float = 95.0,
 
 
 def _exit(tid: int, *, exit_date: str, price: float, shares: int,
-          rps: float, reason: str = "target") -> Exit:
+          rps: float, reason: str = "target") -> _ExitLikeRow:
     pnl = shares * (price - 100.0)
     r = (price - 100.0) / rps if rps > 0 else 0.0
-    return Exit(id=None, trade_id=tid, exit_date=exit_date, exit_price=price,
-                shares=shares, reason=reason, realized_pnl=pnl,
-                r_multiple=r, notes=None)
+    return _ExitLikeRow(
+        trade_id=tid, exit_date=exit_date, exit_price=price,
+        shares=shares, reason=reason, realized_pnl=pnl,
+        r_multiple=r, notes=None,
+    )
 
 
 def test_empty_returns_zeros():
@@ -199,6 +206,60 @@ def test_hypothesis_breakdown_zero_pnl_is_neither_win_nor_loss():
     out = compute_hypothesis_breakdown(trades=trades, exits=exits)
     assert out[0].n_trades == 3
     assert out[0].win_rate == pytest.approx(1.0 / 3.0)
+
+
+# --- Phase 7 B.9 — closed-or-reviewed predicate sweeps both terminal states. -
+
+def test_compute_stats_includes_reviewed_trades():
+    """B.9 discriminator: a 'reviewed' trade contributes to closed-trade
+    stats just like a 'closed' trade. Pre-fix (state == 'closed' only) the
+    reviewed trade was silently dropped, halving n_trades and skewing
+    expectancy. Post-fix it counts.
+    """
+    closed_t = _trade(1, "AAA", state="closed")
+    reviewed_t = _trade(2, "BBB", state="reviewed")
+    open_t = _trade(3, "CCC", state="entered")  # must NOT count
+    exits = [
+        _exit(1, exit_date="2026-04-10", price=110.0, shares=10, rps=5.0),
+        _exit(2, exit_date="2026-04-11", price=110.0, shares=10, rps=5.0),
+    ]
+    s = compute_stats(
+        trades=[closed_t, reviewed_t, open_t], exits=exits, cash_movements=[],
+    )
+    assert s.n_trades == 2  # closed + reviewed; open excluded
+    assert s.n_wins == 2
+    assert s.win_rate == 1.0
+
+
+def test_hypothesis_breakdown_includes_reviewed_trades():
+    """B.9 discriminator: hypothesis breakdown sweeps closed-or-reviewed.
+    Pre-fix (state == 'closed' only) a reviewed trade attributed nowhere.
+    """
+    trades = [
+        _trade(1, "AAA", state="closed", hypothesis_label="alpha"),
+        _trade(2, "BBB", state="reviewed", hypothesis_label="alpha"),
+    ]
+    exits = [
+        _exit(1, exit_date="2026-04-10", price=110.0, shares=10, rps=5.0),
+        _exit(2, exit_date="2026-04-11", price=110.0, shares=10, rps=5.0),
+    ]
+    out = compute_hypothesis_breakdown(trades=trades, exits=exits)
+    assert len(out) == 1
+    assert out[0].label == "alpha"
+    assert out[0].n_trades == 2  # closed + reviewed both counted
+
+
+def test_trade_closed_date_treats_reviewed_as_closed():
+    """B.9 discriminator: _trade_closed_date returns a date for a reviewed
+    trade (terminal). Pre-fix it returned None for state != 'closed', so
+    period_filter dropped reviewed trades from any time-window aggregation.
+    """
+    reviewed = _trade(7, "ZZZ", state="reviewed")
+    exits_list = [_exit(7, exit_date="2026-04-10", price=110.0,
+                        shares=10, rps=5.0)]
+    cd = _trade_closed_date(reviewed, exits_list)
+    assert cd is not None
+    assert cd.isoformat() == "2026-04-10"
 
 
 def test_hypothesis_bucket_is_immutable():

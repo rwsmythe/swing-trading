@@ -44,7 +44,10 @@ class JournalStats:
 
 
 def _trade_closed_date(trade: Trade, exits: list[Exit]) -> date | None:
-    if trade.status != "closed":
+    # Phase 7 B.9: closed-or-reviewed sweeps both terminal lifecycle states.
+    # Reviewed trades are still "closed" for aggregation purposes — the only
+    # difference is whether the operator has completed the post-trade review.
+    if trade.state not in ("closed", "reviewed"):
         return None
     relevant = [e.exit_date for e in exits if e.trade_id == trade.id]
     return max(date.fromisoformat(d) for d in relevant) if relevant else None
@@ -93,7 +96,8 @@ def compute_stats(
 ) -> JournalStats:
     trades_list = list(trades)
     exits_list = list(exits)
-    closed = [t for t in trades_list if t.status == "closed"]
+    # Phase 7 B.9: closed-or-reviewed predicate sweeps both terminal states.
+    closed = [t for t in trades_list if t.state in ("closed", "reviewed")]
 
     if not closed:
         return JournalStats(
@@ -176,7 +180,8 @@ def compute_hypothesis_breakdown(
     `n_trades DESC`, then `label ASC` for stable tie-breaking.
     """
     exits_list = list(exits)
-    closed = [t for t in trades if t.status == "closed"]
+    # Phase 7 B.9: closed-or-reviewed predicate sweeps both terminal states.
+    closed = [t for t in trades if t.state in ("closed", "reviewed")]
 
     groups: dict[str | None, list[Trade]] = {}
     for t in closed:

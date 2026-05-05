@@ -239,7 +239,12 @@ def analyze_trade(conn: sqlite3.Connection, trade_id: int) -> TradeAnalysis:
         initial_shares=trade.initial_shares,
         initial_stop=trade.initial_stop,
         current_stop=trade.current_stop,
-        status=trade.status,
+        # Phase 7 B.9: pass trade.state (lifecycle) into the display field.
+        # Downstream display is plain string-rendered, so renaming the source
+        # value suffices; the dataclass field remains `status` for now to
+        # keep the CLI/web display call sites stable until Sub-C T1's full
+        # status→state rename pass.
+        status=trade.state,
         hypothesis_label=trade.hypothesis_label,
         notes=trade.notes,
         recommendations=recs,

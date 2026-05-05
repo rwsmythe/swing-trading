@@ -36,7 +36,8 @@ def _caution_market_entries(
 ) -> BehavioralFlag | None:
     bad: list[str] = []
     for t in trades:
-        if t.status != "closed":
+        # Phase 7 B.9: closed-or-reviewed sweeps both terminal lifecycle states.
+        if t.state not in ("closed", "reviewed"):
             continue
         status = weather_by_date.get(t.entry_date, "")
         if status in ("Caution", "Bearish"):
@@ -56,7 +57,8 @@ def _losers_held_too_long(trades: list[Trade], exits: list[Exit]) -> BehavioralF
     winners_days: list[int] = []
     losers_days: list[int] = []
     for t in trades:
-        if t.status != "closed":
+        # Phase 7 B.9: closed-or-reviewed sweeps both terminal lifecycle states.
+        if t.state not in ("closed", "reviewed"):
             continue
         d = _hold_days(t, exits)
         if d is None:
@@ -88,9 +90,11 @@ def _losers_held_too_long(trades: list[Trade], exits: list[Exit]) -> BehavioralF
 
 
 def _cutting_winners_short(trades: list[Trade], exits: list[Exit]) -> BehavioralFlag | None:
+    # Phase 7 B.9: closed-or-reviewed sweeps both terminal lifecycle states.
     winners = [
         t for t in trades
-        if t.status == "closed" and _trade_r_share_weighted(t, exits) > 0
+        if t.state in ("closed", "reviewed")
+        and _trade_r_share_weighted(t, exits) > 0
     ]
     if len(winners) < 3:
         return None
