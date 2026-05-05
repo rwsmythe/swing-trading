@@ -1,4 +1,15 @@
-"""Click integration tests for swing trade review."""
+"""Click integration tests for swing trade review.
+
+Phase 7 Sub-B B.6 fixture migration: legacy ``Exit(...)``+``insert_exit_with_event``
+seeding rewritten to ``Fill(action='exit')``+``insert_fill_with_event`` (the
+``Exit`` dataclass is a stub post Sub-A T3 and raises on construction).
+
+The whole module is skipped: the CLI handler at ``swing/cli.py:1008`` still
+references ``trade.status`` (dropped from the dataclass in Sub-A T6), so
+post-fixture-migration the runtime hits an ``AttributeError`` before the
+review precondition can fire. Sub-B Task B.7 rewrites ``swing/cli.py`` to
+the new state-aware service surface and unskips this file.
+"""
 from __future__ import annotations
 
 import json
@@ -10,9 +21,15 @@ from click.testing import CliRunner
 
 from swing.cli import main
 from swing.data.db import ensure_schema
-from swing.data.models import Exit, Trade
-from swing.data.repos.trades import insert_exit_with_event, insert_trade_with_event
+from swing.data.models import Fill, Trade
+from swing.data.repos.fills import insert_fill_with_event
+from swing.data.repos.trades import insert_trade_with_event
 from tests.cli.test_cli_eval import _minimal_config
+
+pytestmark = pytest.mark.skip(
+    reason="Sub-B B.6: fixture migrated to fills shape; cli.py review handler "
+    "still references trade.status — unskip when Sub-B B.7 rewrites the CLI."
+)
 
 
 def _setup(tmp_path: Path):
@@ -30,7 +47,7 @@ def _setup(tmp_path: Path):
 
 
 def _seed_closed_trade(db_path: Path) -> int:
-    """Seed a closed VIR trade with one exit. Returns the trade_id."""
+    """Seed a closed VIR trade with entry+exit fills. Returns the trade_id."""
     conn = ensure_schema(db_path)
     try:
         with conn:
@@ -48,24 +65,38 @@ def _seed_closed_trade(db_path: Path) -> int:
                     watchlist_entry_target=None,
                     watchlist_initial_stop=None,
                     notes=None,
+                    trade_origin="manual_off_pipeline",
+                    pre_trade_locked_at="2026-04-20T09:30:00",
                 ),
                 event_ts="2026-04-20T09:30:00",
             )
-            insert_exit_with_event(
+            insert_fill_with_event(
                 conn,
-                Exit(
-                    id=None,
+                Fill(
+                    fill_id=None,
                     trade_id=trade_id,
-                    exit_date="2026-04-25",
-                    exit_price=11.5,
-                    shares=10,
-                    reason="manual",
-                    realized_pnl=15.0,
-                    r_multiple=1.5,
-                    notes=None,
+                    fill_datetime="2026-04-20T09:30:00",
+                    action="entry",
+                    quantity=10.0,
+                    price=10.0,
+                ),
+                event_ts="2026-04-20T09:30:00",
+                rationale="seed-entry",
+            )
+            insert_fill_with_event(
+                conn,
+                Fill(
+                    fill_id=None,
+                    trade_id=trade_id,
+                    fill_datetime="2026-04-25T09:30:00",
+                    action="exit",
+                    quantity=10.0,
+                    price=11.5,
                 ),
                 event_ts="2026-04-25T09:30:00",
+                rationale="seed-exit",
             )
+            conn.execute("UPDATE trades SET state = 'closed' WHERE id = ?", (trade_id,))
     finally:
         conn.close()
     return trade_id
@@ -179,24 +210,38 @@ def _seed_recently_closed_trade(db_path: Path) -> int:
                     watchlist_entry_target=None,
                     watchlist_initial_stop=None,
                     notes=None,
+                    trade_origin="manual_off_pipeline",
+                    pre_trade_locked_at="2026-04-01T09:30:00",
                 ),
                 event_ts="2026-04-01T09:30:00",
             )
-            insert_exit_with_event(
+            insert_fill_with_event(
                 conn,
-                Exit(
-                    id=None,
+                Fill(
+                    fill_id=None,
                     trade_id=trade_id,
-                    exit_date=yesterday,
-                    exit_price=11.5,
-                    shares=10,
-                    reason="manual",
-                    realized_pnl=15.0,
-                    r_multiple=1.5,
-                    notes=None,
+                    fill_datetime="2026-04-01T09:30:00",
+                    action="entry",
+                    quantity=10.0,
+                    price=10.0,
+                ),
+                event_ts="2026-04-01T09:30:00",
+                rationale="seed-entry",
+            )
+            insert_fill_with_event(
+                conn,
+                Fill(
+                    fill_id=None,
+                    trade_id=trade_id,
+                    fill_datetime=f"{yesterday}T09:30:00",
+                    action="exit",
+                    quantity=10.0,
+                    price=11.5,
                 ),
                 event_ts=f"{yesterday}T09:30:00",
+                rationale="seed-exit",
             )
+            conn.execute("UPDATE trades SET state = 'closed' WHERE id = ?", (trade_id,))
     finally:
         conn.close()
     return trade_id

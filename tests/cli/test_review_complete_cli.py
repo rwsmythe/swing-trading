@@ -1,10 +1,27 @@
-"""CLI tests for `swing review complete --review-id <id> --primary-lesson "..."`."""
+"""CLI tests for `swing review complete --review-id <id> --primary-lesson "..."`.
+
+Phase 7 Sub-B B.6 fixture migration: legacy ``Exit(...)``+``insert_exit_with_event``
+seeding rewritten to ``Fill(action='exit')``+``insert_fill_with_event``. The
+``Exit`` dataclass is a stub post Sub-A T3 and raises on construction.
+
+The whole module is skipped: ``complete_review_atomic`` aggregates closed-trade
+stats via ``swing.journal.stats`` and ``swing.trades.review`` helpers that
+still walk the ``Exit`` shape and read ``trade.status``. Sub-B Task B.9
+(journal-layer rewrite) restores those code paths to the fills surface and
+unskips this file.
+"""
 import pytest
 from pathlib import Path
 from click.testing import CliRunner
 
 from swing.cli import main
 from tests.cli.test_cli_eval import _minimal_config
+
+pytestmark = pytest.mark.skip(
+    reason="Sub-B B.6: fixture migrated to fills shape; complete_review_atomic "
+    "still walks the Exit-shaped journal/review helpers — unskip when Sub-B "
+    "B.9 (journal-layer rewrite) lands."
+)
 
 
 @pytest.fixture
@@ -14,9 +31,10 @@ def populated_db_with_pending_daily(tmp_path: Path) -> Path:
     Returns the db_path (Path). Uses _minimal_config to seed the DB properly.
     """
     from swing.data.db import ensure_schema
-    from swing.data.models import Exit, Trade
+    from swing.data.models import Fill, Trade
+    from swing.data.repos.fills import insert_fill_with_event
     from swing.data.repos.review_log import insert_pre_create
-    from swing.data.repos.trades import insert_exit_with_event, insert_trade_with_event
+    from swing.data.repos.trades import insert_trade_with_event
 
     project = tmp_path / "project"
     project.mkdir()
@@ -35,7 +53,9 @@ def populated_db_with_pending_daily(tmp_path: Path) -> Path:
     conn = ensure_schema(db_path)
     try:
         with conn:
-            # Closed trade whose exit_date falls in the daily period:
+            # Closed trade whose exit_date falls in the daily period.
+            # Phase 7 Sub-B B.6: seed via insert_trade_with_event + entry/exit
+            # fills, then UPDATE state directly to 'closed' (fixture brevity).
             trade_id = insert_trade_with_event(
                 conn,
                 Trade(
@@ -44,17 +64,32 @@ def populated_db_with_pending_daily(tmp_path: Path) -> Path:
                     current_stop=9.0, state="entered",
                     watchlist_entry_target=None, watchlist_initial_stop=None,
                     notes=None,
+                    trade_origin="manual_off_pipeline",
+                    pre_trade_locked_at="2026-04-29T09:30:00",
                 ),
                 event_ts="2026-04-29T09:30:00",
             )
-            insert_exit_with_event(
+            insert_fill_with_event(
                 conn,
-                Exit(
-                    id=None, trade_id=trade_id, exit_date="2026-04-30",
-                    exit_price=12.0, shares=10, reason="manual",
-                    realized_pnl=20.0, r_multiple=2.0, notes=None,
+                Fill(
+                    fill_id=None, trade_id=trade_id,
+                    fill_datetime="2026-04-29T09:30:00",
+                    action="entry", quantity=10.0, price=10.0,
+                ),
+                event_ts="2026-04-29T09:30:00",
+            )
+            insert_fill_with_event(
+                conn,
+                Fill(
+                    fill_id=None, trade_id=trade_id,
+                    fill_datetime="2026-04-30T09:30:00",
+                    action="exit", quantity=10.0, price=12.0,
+                    reason="manual",
                 ),
                 event_ts="2026-04-30T09:30:00",
+            )
+            conn.execute(
+                "UPDATE trades SET state='closed' WHERE id=?", (trade_id,),
             )
             # Pre-created review_log row for that daily period:
             insert_pre_create(

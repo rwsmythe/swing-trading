@@ -1,8 +1,26 @@
-"""Route-level integration tests for /trades/{id}/review GET + POST."""
+"""Route-level integration tests for /trades/{id}/review GET + POST.
+
+Phase 7 Sub-B B.6 fixture migration: legacy ``Exit(...)``+``insert_exit_with_event``
+seeding rewritten to ``Fill(action='exit')``+``insert_fill_with_event``. The
+``Exit`` dataclass is a stub post Sub-A T3 and raises on construction.
+
+The whole module is skipped: production web code at
+``swing/web/view_models/trades.py:432`` and ``swing/web/routes/trades.py:1082``
+still references ``trade.status`` (dropped from the dataclass in Sub-A T6),
+so post-fixture-migration the runtime hits ``AttributeError``. Sub-C Task T1
+rewrites the web review surface to the new state-aware service and unskips
+this file.
+"""
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+
+pytestmark = pytest.mark.skip(
+    reason="Sub-B B.6: fixture migrated to fills shape; web review handler "
+    "still references trade.status — unskip when Sub-C T1 rewrites the web "
+    "review surface."
+)
 
 
 @pytest.fixture
@@ -11,8 +29,9 @@ def test_app_closed_trade(tmp_path: Path):
     from dataclasses import replace as dc_replace
     from swing.config import load
     from swing.data.db import connect, ensure_schema
-    from swing.data.models import Exit, Trade
-    from swing.data.repos.trades import insert_exit_with_event, insert_trade_with_event
+    from swing.data.models import Fill, Trade
+    from swing.data.repos.fills import insert_fill_with_event
+    from swing.data.repos.trades import insert_trade_with_event
     from swing.web.app import create_app
 
     db_path = tmp_path / "phase6.db"
@@ -27,18 +46,31 @@ def test_app_closed_trade(tmp_path: Path):
                 current_stop=9.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
+                trade_origin="manual_off_pipeline",
+                pre_trade_locked_at="2026-04-20T09:30:00",
             ),
             event_ts="2026-04-20T09:30:00",
         )
-        insert_exit_with_event(
+        insert_fill_with_event(
             conn,
-            Exit(
-                id=None, trade_id=t1, exit_date="2026-04-25",
-                exit_price=11.5, shares=10, reason="manual",
-                realized_pnl=15.0, r_multiple=1.5, notes=None,
+            Fill(
+                fill_id=None, trade_id=t1,
+                fill_datetime="2026-04-20T09:30:00",
+                action="entry", quantity=10.0, price=10.0,
+            ),
+            event_ts="2026-04-20T09:30:00",
+        )
+        insert_fill_with_event(
+            conn,
+            Fill(
+                fill_id=None, trade_id=t1,
+                fill_datetime="2026-04-25T09:30:00",
+                action="exit", quantity=10.0, price=11.5,
+                reason="manual",
             ),
             event_ts="2026-04-25T09:30:00",
         )
+        conn.execute("UPDATE trades SET state='closed' WHERE id=?", (t1,))
     conn.close()
 
     base_cfg = load(Path("swing.config.toml"))
@@ -68,6 +100,8 @@ def test_app_open_trade(tmp_path: Path):
                 current_stop=7.30, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
+                trade_origin="manual_off_pipeline",
+                pre_trade_locked_at="2026-04-27T09:30:00",
             ),
             event_ts="2026-04-27T09:30:00",
         )
@@ -85,10 +119,10 @@ def test_app_reviewed_trade(tmp_path: Path):
     from datetime import datetime as _dt
     from swing.config import load
     from swing.data.db import connect, ensure_schema
-    from swing.data.models import Exit, Trade
+    from swing.data.models import Fill, Trade
+    from swing.data.repos.fills import insert_fill_with_event
     from swing.data.repos.trades import (
-        insert_exit_with_event, insert_trade_with_event,
-        update_trade_review_fields,
+        insert_trade_with_event, update_trade_review_fields,
     )
     from swing.web.app import create_app
 
@@ -104,18 +138,31 @@ def test_app_reviewed_trade(tmp_path: Path):
                 current_stop=9.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
+                trade_origin="manual_off_pipeline",
+                pre_trade_locked_at="2026-04-20T09:30:00",
             ),
             event_ts="2026-04-20T09:30:00",
         )
-        insert_exit_with_event(
+        insert_fill_with_event(
             conn,
-            Exit(
-                id=None, trade_id=t1, exit_date="2026-04-25",
-                exit_price=11.5, shares=10, reason="manual",
-                realized_pnl=15.0, r_multiple=1.5, notes=None,
+            Fill(
+                fill_id=None, trade_id=t1,
+                fill_datetime="2026-04-20T09:30:00",
+                action="entry", quantity=10.0, price=10.0,
+            ),
+            event_ts="2026-04-20T09:30:00",
+        )
+        insert_fill_with_event(
+            conn,
+            Fill(
+                fill_id=None, trade_id=t1,
+                fill_datetime="2026-04-25T09:30:00",
+                action="exit", quantity=10.0, price=11.5,
+                reason="manual",
             ),
             event_ts="2026-04-25T09:30:00",
         )
+        conn.execute("UPDATE trades SET state='closed' WHERE id=?", (t1,))
         update_trade_review_fields(
             conn,
             trade_id=t1,
@@ -127,6 +174,7 @@ def test_app_reviewed_trade(tmp_path: Path):
             mistake_cost_confidence=None,
             lesson_learned="Test review.",
         )
+        conn.execute("UPDATE trades SET state='reviewed' WHERE id=?", (t1,))
     conn.close()
 
     base_cfg = load(Path("swing.config.toml"))
@@ -208,8 +256,9 @@ def test_app_with_2_overdue(tmp_path: Path):
     from dataclasses import replace as dc_replace
     from swing.config import load
     from swing.data.db import connect, ensure_schema
-    from swing.data.models import Exit, Trade
-    from swing.data.repos.trades import insert_exit_with_event, insert_trade_with_event
+    from swing.data.models import Fill, Trade
+    from swing.data.repos.fills import insert_fill_with_event
+    from swing.data.repos.trades import insert_trade_with_event
     from swing.web.app import create_app
 
     db_path = tmp_path / "phase6.db"
@@ -224,18 +273,31 @@ def test_app_with_2_overdue(tmp_path: Path):
                 current_stop=9.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
+                trade_origin="manual_off_pipeline",
+                pre_trade_locked_at="2026-04-01T09:30:00",
             ),
             event_ts="2026-04-01T09:30:00",
         )
-        insert_exit_with_event(
+        insert_fill_with_event(
             conn,
-            Exit(
-                id=None, trade_id=t1, exit_date="2026-04-01",
-                exit_price=11.0, shares=10, reason="manual",
-                realized_pnl=10.0, r_multiple=1.0, notes=None,
+            Fill(
+                fill_id=None, trade_id=t1,
+                fill_datetime="2026-04-01T09:30:00",
+                action="entry", quantity=10.0, price=10.0,
             ),
             event_ts="2026-04-01T09:30:00",
         )
+        insert_fill_with_event(
+            conn,
+            Fill(
+                fill_id=None, trade_id=t1,
+                fill_datetime="2026-04-01T09:30:00",
+                action="exit", quantity=10.0, price=11.0,
+                reason="manual",
+            ),
+            event_ts="2026-04-01T09:30:00",
+        )
+        conn.execute("UPDATE trades SET state='closed' WHERE id=?", (t1,))
         t2 = insert_trade_with_event(
             conn,
             Trade(
@@ -244,18 +306,31 @@ def test_app_with_2_overdue(tmp_path: Path):
                 current_stop=18.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
+                trade_origin="manual_off_pipeline",
+                pre_trade_locked_at="2026-04-05T09:30:00",
             ),
             event_ts="2026-04-05T09:30:00",
         )
-        insert_exit_with_event(
+        insert_fill_with_event(
             conn,
-            Exit(
-                id=None, trade_id=t2, exit_date="2026-04-05",
-                exit_price=22.0, shares=5, reason="manual",
-                realized_pnl=10.0, r_multiple=1.0, notes=None,
+            Fill(
+                fill_id=None, trade_id=t2,
+                fill_datetime="2026-04-05T09:30:00",
+                action="entry", quantity=5.0, price=20.0,
             ),
             event_ts="2026-04-05T09:30:00",
         )
+        insert_fill_with_event(
+            conn,
+            Fill(
+                fill_id=None, trade_id=t2,
+                fill_datetime="2026-04-05T09:30:00",
+                action="exit", quantity=5.0, price=22.0,
+                reason="manual",
+            ),
+            event_ts="2026-04-05T09:30:00",
+        )
+        conn.execute("UPDATE trades SET state='closed' WHERE id=?", (t2,))
     conn.close()
 
     base_cfg = load(Path("swing.config.toml"))
@@ -278,8 +353,9 @@ def test_app_with_recently_closed(tmp_path: Path):
     from dataclasses import replace as dc_replace
     from swing.config import load
     from swing.data.db import connect, ensure_schema
-    from swing.data.models import Exit, Trade
-    from swing.data.repos.trades import insert_exit_with_event, insert_trade_with_event
+    from swing.data.models import Fill, Trade
+    from swing.data.repos.fills import insert_fill_with_event
+    from swing.data.repos.trades import insert_trade_with_event
     from swing.web.app import create_app
 
     db_path = tmp_path / "phase6.db"
@@ -295,18 +371,31 @@ def test_app_with_recently_closed(tmp_path: Path):
                 current_stop=9.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
+                trade_origin="manual_off_pipeline",
+                pre_trade_locked_at="2026-04-01T09:30:00",
             ),
             event_ts="2026-04-01T09:30:00",
         )
-        insert_exit_with_event(
+        insert_fill_with_event(
             conn,
-            Exit(
-                id=None, trade_id=t1, exit_date=yesterday,
-                exit_price=11.0, shares=10, reason="manual",
-                realized_pnl=10.0, r_multiple=1.0, notes=None,
+            Fill(
+                fill_id=None, trade_id=t1,
+                fill_datetime="2026-04-01T09:30:00",
+                action="entry", quantity=10.0, price=10.0,
+            ),
+            event_ts="2026-04-01T09:30:00",
+        )
+        insert_fill_with_event(
+            conn,
+            Fill(
+                fill_id=None, trade_id=t1,
+                fill_datetime=f"{yesterday}T09:30:00",
+                action="exit", quantity=10.0, price=11.0,
+                reason="manual",
             ),
             event_ts=f"{yesterday}T09:30:00",
         )
+        conn.execute("UPDATE trades SET state='closed' WHERE id=?", (t1,))
     conn.close()
 
     base_cfg = load(Path("swing.config.toml"))

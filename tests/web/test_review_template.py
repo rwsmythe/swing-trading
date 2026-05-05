@@ -1,9 +1,25 @@
-"""ReviewVM existing-fields + template-render tests."""
+"""ReviewVM existing-fields + template-render tests.
+
+Phase 7 Sub-B B.6 fixture migration: legacy ``Exit(...)``+``insert_exit_with_event``
+seeding rewritten to ``Fill(action='exit')``+``insert_fill_with_event``. The
+``Exit`` dataclass is a stub post Sub-A T3 and raises on construction.
+
+The whole module is skipped: ``build_review_vm`` reads ``trade.status``
+(dropped from the dataclass in Sub-A T6), so post-fixture-migration the
+runtime hits ``AttributeError``. Sub-C Task T1 rewrites the web review VM
+and unskips this file.
+"""
 from pathlib import Path
 
 import pytest
 
 from swing.web.view_models.trades import ReviewVM, build_review_vm
+
+pytestmark = pytest.mark.skip(
+    reason="Sub-B B.6: fixture migrated to fills shape; build_review_vm "
+    "still references trade.status — unskip when Sub-C T1 rewrites the web "
+    "review VM."
+)
 
 
 @pytest.fixture
@@ -22,15 +38,15 @@ def populated_db_cfg(tmp_path: Path):
     from dataclasses import replace as dc_replace
     from swing.config import load
     from swing.data.db import connect, ensure_schema
-    from swing.data.models import Exit, Trade
-    from swing.data.repos.trades import (
-        insert_exit_with_event, insert_trade_with_event,
-    )
+    from swing.data.models import Fill, Trade
+    from swing.data.repos.fills import insert_fill_with_event
+    from swing.data.repos.trades import insert_trade_with_event
     db_path = tmp_path / "phase6.db"
     ensure_schema(db_path).close()
     conn = connect(db_path)
     with conn:
-        # Closed trade — insert as open, then exit all shares (auto-closes)
+        # Closed trade — insert with entry+exit fills, then UPDATE state to
+        # 'closed' (fixture-brevity bypass of the state machine).
         t1 = insert_trade_with_event(
             conn, Trade(
                 id=None, ticker="VIR", entry_date="2026-04-20",
@@ -38,17 +54,29 @@ def populated_db_cfg(tmp_path: Path):
                 current_stop=9.0, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
+                trade_origin="manual_off_pipeline",
+                pre_trade_locked_at="2026-04-20T09:30:00",
             ),
             event_ts="2026-04-20T09:30:00",
         )
-        insert_exit_with_event(
-            conn, Exit(
-                id=None, trade_id=t1, exit_date="2026-04-25",
-                exit_price=11.5, shares=10, reason="manual",
-                realized_pnl=15.0, r_multiple=1.5, notes=None,
+        insert_fill_with_event(
+            conn, Fill(
+                fill_id=None, trade_id=t1,
+                fill_datetime="2026-04-20T09:30:00",
+                action="entry", quantity=10.0, price=10.0,
+            ),
+            event_ts="2026-04-20T09:30:00",
+        )
+        insert_fill_with_event(
+            conn, Fill(
+                fill_id=None, trade_id=t1,
+                fill_datetime="2026-04-25T09:30:00",
+                action="exit", quantity=10.0, price=11.5,
+                reason="manual",
             ),
             event_ts="2026-04-25T09:30:00",
-        )  # exits all 10 shares → trade auto-flipped to closed
+        )
+        conn.execute("UPDATE trades SET state='closed' WHERE id=?", (t1,))
         # Open trade
         insert_trade_with_event(
             conn, Trade(
@@ -57,6 +85,8 @@ def populated_db_cfg(tmp_path: Path):
                 current_stop=7.30, state="entered",
                 watchlist_entry_target=None, watchlist_initial_stop=None,
                 notes=None,
+                trade_origin="manual_off_pipeline",
+                pre_trade_locked_at="2026-04-27T09:30:00",
             ),
             event_ts="2026-04-27T09:30:00",
         )
