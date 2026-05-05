@@ -4,11 +4,10 @@ Phase 7 Sub-B B.6 fixture migration: legacy ``Exit(...)``+``insert_exit_with_eve
 seeding rewritten to ``Fill(action='exit')``+``insert_fill_with_event`` (the
 ``Exit`` dataclass is a stub post Sub-A T3 and raises on construction).
 
-The whole module is skipped: the CLI handler at ``swing/cli.py:1008`` still
-references ``trade.status`` (dropped from the dataclass in Sub-A T6), so
-post-fixture-migration the runtime hits an ``AttributeError`` before the
-review precondition can fire. Sub-B Task B.7 rewrites ``swing/cli.py`` to
-the new state-aware service surface and unskips this file.
+Phase 7 Sub-B B.7 unskip: ``swing/cli.py`` now reads ``trade.state`` (predicate
+``state != 'closed'``) and routes review-completion through
+``complete_trade_review`` so the trade transitions to ``state='reviewed'``
+atomically with the review-fields write.
 """
 from __future__ import annotations
 
@@ -16,7 +15,6 @@ import json
 import tomllib
 from pathlib import Path
 
-import pytest
 from click.testing import CliRunner
 
 from swing.cli import main
@@ -25,11 +23,6 @@ from swing.data.models import Fill, Trade
 from swing.data.repos.fills import insert_fill_with_event
 from swing.data.repos.trades import insert_trade_with_event
 from tests.cli.test_cli_eval import _minimal_config
-
-pytestmark = pytest.mark.skip(
-    reason="Sub-B B.6: fixture migrated to fills shape; cli.py review handler "
-    "still references trade.status — unskip when Sub-B B.7 rewrites the CLI."
-)
 
 
 def _setup(tmp_path: Path):
@@ -279,3 +272,91 @@ def test_review_empty_mistake_tags_rejected(tmp_path: Path) -> None:
     assert result.exit_code != 0
     output_lower = result.output.lower()
     assert "mistake" in output_lower or "tag" in output_lower
+
+
+# ---------------------------------------------------------------------------
+# B.7 — discriminating tests
+# ---------------------------------------------------------------------------
+
+
+def test_review_transitions_state_closed_to_reviewed(tmp_path: Path) -> None:
+    """B.7: review-completion routes through ``complete_trade_review`` so the
+    trade transitions ``closed → reviewed`` atomically with the review-fields
+    write.
+
+    Pre-fix (direct ``update_trade_review_fields``): trades.state stayed
+    ``'closed'`` after review; only ``reviewed_at`` was populated.
+    Post-fix (service-routed): trades.state == ``'reviewed'`` AND a
+    ``state_transition`` row lands in trade_events.
+    """
+    runner, cfg, db_path = _setup(tmp_path)
+    trade_id = _seed_closed_trade(db_path)
+
+    result = runner.invoke(main, [
+        "--config", str(cfg),
+        "trade", "review",
+        "--trade-id", str(trade_id),
+        "--mistake-tags", "none_observed",
+        "--entry-grade", "A",
+        "--management-grade", "A",
+        "--exit-grade", "A",
+        "--lesson-learned", "Followed the plan.",
+    ])
+    assert result.exit_code == 0, result.output
+
+    from swing.data.db import connect
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT state FROM trades WHERE id = ?", (trade_id,),
+        ).fetchone()
+        assert row[0] == "reviewed", (
+            f"trade.state should be 'reviewed' after review-completion; got {row[0]!r}"
+        )
+        # state_transition writes a 'note' event with notes='state_transition closed->reviewed'
+        ev = conn.execute(
+            "SELECT notes FROM trade_events WHERE trade_id = ? "
+            "AND event_type = 'note' "
+            "AND notes LIKE 'state_transition closed->reviewed%'",
+            (trade_id,),
+        ).fetchone()
+        assert ev is not None, (
+            "complete_trade_review should record a state_transition audit event"
+        )
+    finally:
+        conn.close()
+
+
+def test_review_rejects_already_reviewed_trade(tmp_path: Path) -> None:
+    """B.7: cli.py review precondition is ``state != 'closed'`` (NOT
+    ``state not in ('closed', 'reviewed')``). An already-reviewed trade
+    must be rejected.
+
+    Pre-fix (naïve ``state not in ('closed','reviewed')``): would re-review.
+    Post-fix (``state != 'closed'``): raises ClickException.
+    """
+    runner, cfg, db_path = _setup(tmp_path)
+    trade_id = _seed_closed_trade(db_path)
+    # Flip the trade to the reviewed state directly (simulates a prior review).
+    from swing.data.db import connect
+    conn = connect(db_path)
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE trades SET state = 'reviewed' WHERE id = ?", (trade_id,),
+            )
+    finally:
+        conn.close()
+
+    result = runner.invoke(main, [
+        "--config", str(cfg),
+        "trade", "review",
+        "--trade-id", str(trade_id),
+        "--mistake-tags", "none_observed",
+        "--entry-grade", "A",
+        "--management-grade", "A",
+        "--exit-grade", "A",
+        "--lesson-learned", "n/a",
+    ])
+    assert result.exit_code != 0
+    assert "not closed" in result.output.lower()

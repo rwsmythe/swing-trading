@@ -578,14 +578,14 @@ def trade_list_cmd(ctx, show_all):
     if not trades:
         click.echo("(no trades)")
         return
-    click.echo(f"{'ID':>4} {'Ticker':<6} {'Date':<10} {'Entry':>8} {'Stop':>8} {'Sh':>4} {'Status':<8}")
+    click.echo(f"{'ID':>4} {'Ticker':<6} {'Date':<10} {'Entry':>8} {'Stop':>8} {'Sh':>4} {'State':<14}")
     for t in trades:
         remaining = t.initial_shares - sum(
             e.shares for e in exits_by_trade.get(t.id or 0, [])
         )
         click.echo(
             f"{t.id or 0:>4} {t.ticker:<6} {t.entry_date:<10} "
-            f"${t.entry_price:>6.2f} ${t.current_stop:>6.2f} {remaining:>4} {t.status:<8}"
+            f"${t.entry_price:>6.2f} ${t.current_stop:>6.2f} {remaining:>4} {t.state:<14}"
         )
 
 
@@ -954,9 +954,10 @@ def trade_review_cmd(
 
     from swing.data.db import connect
     from swing.data.repos.review_log import list_unreviewed_closed_trades
-    from swing.data.repos.trades import get_trade, update_trade_review_fields
+    from swing.data.repos.trades import get_trade
     from swing.trades.review import (
         canonicalize_mistake_tags,
+        complete_trade_review,
         compute_process_grade,
         validate_mistake_tags,
     )
@@ -1005,9 +1006,16 @@ def trade_review_cmd(
         trade = get_trade(conn, trade_id)
         if trade is None:
             raise click.ClickException(f"Trade #{trade_id} not found")
-        if trade.status != "closed":
+        # B.7: spec §2.1 — precondition is `state == 'closed'` (NOT
+        # `state in ('closed','reviewed')`). The reviewed-state path is
+        # rejected here so an already-reviewed trade cannot be reviewed
+        # twice; the `reviewed_at is not None` check below stays as
+        # belt-and-suspenders for legacy rows that may carry a reviewed_at
+        # timestamp without the corresponding state transition.
+        if trade.state != "closed":
             raise click.ClickException(
-                f"Trade #{trade_id} is not closed; cannot review"
+                f"Trade #{trade_id} is not closed (state={trade.state!r}); "
+                f"cannot review"
             )
         if trade.reviewed_at is not None:
             raise click.ClickException(
@@ -1030,22 +1038,28 @@ def trade_review_cmd(
             disqualifying=disqualifying_process_violation,
         )
 
-        with conn:
-            update_trade_review_fields(
-                conn, trade_id=trade_id,
-                reviewed_at=_dt.now().isoformat(timespec="seconds"),
-                mistake_tags_json=json.dumps(canonical_tags),
-                entry_grade=entry_grade,
-                management_grade=management_grade,
-                exit_grade=exit_grade,
-                process_grade=process_grade,
-                disqualifying_process_violation=disqualifying_process_violation,
-                realized_R_if_plan_followed=realized_r_if_plan_followed,
-                # Column is nullable; empty string fails the CHECK constraint.
-                # Pass None when operator did not specify --mistake-cost-confidence.
-                mistake_cost_confidence=mistake_cost_confidence or None,
-                lesson_learned=lesson_learned,
-            )
+        # B.7: route through `complete_trade_review` service so the review
+        # fields write + state_transition(closed → reviewed) land atomically
+        # in a single transaction. The service opens its own `with conn:`
+        # block (B.6 implementation) so no outer wrapper is needed.
+        reviewed_at = _dt.now().isoformat(timespec="seconds")
+        complete_trade_review(
+            conn, trade_id,
+            reviewed_at=reviewed_at,
+            mistake_tags_json=json.dumps(canonical_tags),
+            entry_grade=entry_grade,
+            management_grade=management_grade,
+            exit_grade=exit_grade,
+            process_grade=process_grade,
+            disqualifying_process_violation=disqualifying_process_violation,
+            realized_R_if_plan_followed=realized_r_if_plan_followed,
+            # Column is nullable; empty string fails the CHECK constraint.
+            # Pass None when operator did not specify --mistake-cost-confidence.
+            mistake_cost_confidence=mistake_cost_confidence or None,
+            lesson_learned=lesson_learned,
+            event_ts=reviewed_at,
+            rationale=None,
+        )
     finally:
         conn.close()
 

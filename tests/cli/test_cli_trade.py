@@ -300,6 +300,66 @@ def test_trade_exit_cli_rejects_rationale_option(tmp_path: Path):
     assert "--rationale" in result.output
 
 
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-B B.7 — display column rewrite (Status → State)
+# ---------------------------------------------------------------------------
+
+
+def test_trade_list_shows_state_column_not_status(tmp_path: Path):
+    """B.7: ``trade list`` header is 'State' (formerly 'Status') and the column
+    renders the lifecycle state ('entered'|'managing'|'partial_exited'|
+    'closed'|'reviewed'), NOT the legacy ('open'|'closed') vocabulary.
+
+    Pre-fix: header showed 'Status'; column showed t.status ('open'/'closed').
+    Post-fix: header shows 'State'; column shows t.state. Width 14 to fit
+    'partial_exited'.
+
+    Seeds via the repo layer to side-step the Sub-B B.1 entry validation gate
+    (the CLI ``trade entry`` requires pre-trade fields the test doesn't
+    provide).
+    """
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+    from swing.config import load as load_cfg
+
+    runner, cfg = _setup(tmp_path)
+    db_path = load_cfg(cfg).paths.db_path
+    conn = connect(db_path)
+    try:
+        with conn:
+            insert_trade_with_event(
+                conn,
+                Trade(
+                    id=None, ticker="MMM", entry_date="2026-04-15",
+                    entry_price=100.0, initial_shares=10,
+                    initial_stop=90.0, current_stop=90.0,
+                    state="managing",
+                    watchlist_entry_target=None,
+                    watchlist_initial_stop=None,
+                    notes=None,
+                ),
+                event_ts="2026-04-15T09:30:00",
+            )
+    finally:
+        conn.close()
+
+    result = runner.invoke(main, ["--config", str(cfg), "trade", "list"])
+    assert result.exit_code == 0, result.output
+    # Header: "State" replaces "Status"
+    assert "State" in result.output, (
+        f"expected 'State' header in trade list; got {result.output!r}"
+    )
+    assert "Status" not in result.output, (
+        f"legacy 'Status' header still present; got {result.output!r}"
+    )
+    # Row: state column shows the lifecycle state, not the legacy 'open' value
+    mmm_lines = [ln for ln in result.output.splitlines() if "MMM" in ln]
+    assert len(mmm_lines) == 1, f"expected 1 MMM row, got {mmm_lines}"
+    assert "managing" in mmm_lines[0]
+    assert " open " not in mmm_lines[0]
+
+
 def test_trade_exit_cli_persists_reason_as_rationale(tmp_path: Path):
     """T6: trade_events.rationale after a successful exit equals the reason
     value. Pre-T6 rationale was independent free text from --rationale."""
