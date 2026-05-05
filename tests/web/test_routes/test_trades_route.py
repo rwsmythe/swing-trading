@@ -3786,3 +3786,305 @@ def test_c5_trade_detail_renders_all_5_base_layout_safe_defaults(seeded_db):
     # completion, not just the {% block content %} body):
     assert "Dashboard" in r.text
     assert "Watchlist" in r.text
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-C C.7 — route state-aware predicate rewrites + base-layout VM
+# no-regression check.
+# ---------------------------------------------------------------------------
+
+
+def _c7_seed_trade(
+    cfg, *, ticker: str, state: str = "entered",
+    reviewed_at: str | None = None,
+) -> int:
+    """Seed a single trade row with a chosen lifecycle state.
+
+    Bypasses ``record_entry`` because tests just need a row in the trades
+    table for route-precondition checks. Returns the new trade_id.
+
+    For state='reviewed' the row is seeded with reviewed_at populated (the
+    Phase 7 schema permits it without a CHECK enforcing the cross-field tie,
+    but we set it for realism + so the predicate-discriminator test is
+    unambiguous).
+    """
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            tid = insert_trade_with_event(conn, Trade(
+                id=None, ticker=ticker, entry_date="2026-04-15",
+                entry_price=100.0, initial_shares=10, initial_stop=90.0,
+                current_stop=90.0, state=state,
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+                trade_origin="manual_off_pipeline",
+                pre_trade_locked_at="2026-04-15T16:00:00",
+                current_size=10.0,
+                reviewed_at=reviewed_at,
+            ), event_ts="2026-04-15T16:00:00")
+    finally:
+        conn.close()
+    return tid
+
+
+# --- Line ~989: trade_cancel GET /trades/{id}/cancel (active-trade) ---
+
+
+def test_c7_cancel_route_managing_state_accepted(seeded_db, monkeypatch):
+    """state='managing' is active — GET /cancel proceeds (200, normal row)."""
+    from datetime import datetime
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    tid = _c7_seed_trade(cfg, ticker="C7CMG", state="managing")
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            "C7CMG": PriceSnapshot(
+                ticker="C7CMG", price=105.0, asof=datetime.now(),
+                is_stale=False, source="live",
+            ),
+        })
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{tid}/cancel",
+                       headers={"HX-Request": "true"})
+    # Pre-fix (status != 'open'): trade.status no longer exists on Phase 7
+    # rows → AttributeError or always-True predicate → 404 or 500. Post-fix:
+    # state in _ACTIVE_STATES → 200.
+    assert r.status_code == 200, (
+        f"managing IS active — cancel route must accept; got {r.status_code} "
+        f"text={r.text[:200]!r}"
+    )
+
+
+def test_c7_cancel_route_partial_exited_state_accepted(
+    seeded_db, monkeypatch,
+):
+    """state='partial_exited' is active — cancel proceeds."""
+    from datetime import datetime
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    tid = _c7_seed_trade(cfg, ticker="C7CPE", state="partial_exited")
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            "C7CPE": PriceSnapshot(
+                ticker="C7CPE", price=105.0, asof=datetime.now(),
+                is_stale=False, source="live",
+            ),
+        })
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{tid}/cancel",
+                       headers={"HX-Request": "true"})
+    assert r.status_code == 200
+
+
+def test_c7_cancel_route_closed_state_rejected(seeded_db):
+    """state='closed' is NOT active — cancel must 404."""
+    cfg, cfg_path = seeded_db
+    tid = _c7_seed_trade(cfg, ticker="C7CCL", state="closed")
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{tid}/cancel",
+                       headers={"HX-Request": "true"})
+    assert r.status_code == 404
+
+
+# --- Line ~1046: stop_post inner trade_check guard (active-trade) ---
+
+
+def test_c7_stop_post_partial_exited_state_accepted(seeded_db):
+    """state='partial_exited' is active — stop POST passes the precondition.
+
+    Discriminating: pre-fix the predicate was ``trade_check.status != 'open'``
+    which would AttributeError on a Phase 7 row (no status column). Post-fix
+    it's ``state not in _ACTIVE_STATES`` and partial_exited IS in the set →
+    guard does NOT fire. The downstream service-layer check accepts a
+    partial_exited trade for stop adjusts; expect 200/400 (not 404).
+    """
+    cfg, cfg_path = seeded_db
+    tid = _c7_seed_trade(cfg, ticker="C7SPE", state="partial_exited")
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{tid}/stop",
+            headers={"HX-Request": "true",
+                     "HX-Target": f"open-position-{tid}"},
+            data={"new_stop": "95.00", "rationale": "manual-trail"},
+        )
+    # Precondition guard must NOT 404 a partial_exited trade.
+    assert r.status_code != 404, (
+        f"partial_exited IS active — stop POST precondition must NOT 404; "
+        f"got {r.status_code} text={r.text[:200]!r}"
+    )
+
+
+def test_c7_stop_post_closed_state_rejected(seeded_db):
+    """state='closed' is NOT active — stop POST returns 404."""
+    cfg, cfg_path = seeded_db
+    tid = _c7_seed_trade(cfg, ticker="C7SCL", state="closed")
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{tid}/stop",
+            headers={"HX-Request": "true",
+                     "HX-Target": f"open-position-{tid}"},
+            data={"new_stop": "95.00", "rationale": "manual-trail"},
+        )
+    assert r.status_code == 404
+
+
+# --- Line ~1227: review_post precondition (closed-but-not-reviewed) ---
+
+
+def test_c7_review_post_closed_state_accepted(seeded_db):
+    """state='closed' (not yet reviewed) — review POST proceeds past 404 guard.
+
+    The handler may still 400 on missing/invalid form fields, or 204 on
+    success, but it must NOT 404 the precondition. Discriminating: pre-fix
+    `trade.status != 'closed'` would AttributeError on Phase 7 rows; post-fix
+    `trade.state != 'closed'` evaluates False (predicate doesn't fire) and
+    the handler proceeds to review-business-logic.
+    """
+    cfg, cfg_path = seeded_db
+    tid = _c7_seed_trade(cfg, ticker="C7RCL", state="closed")
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{tid}/review",
+            headers={"HX-Request": "true"},
+            data={
+                "entry_grade": "A", "management_grade": "A",
+                "exit_grade": "A", "lesson_learned": "Solid entry.",
+                "mistake_tags": "none_observed",
+            },
+        )
+    assert r.status_code != 404, (
+        f"closed-and-unreviewed must pass the 404 precondition guard; "
+        f"got {r.status_code} text={r.text[:200]!r}"
+    )
+
+
+def test_c7_review_post_reviewed_state_rejected(seeded_db):
+    """state='reviewed' MUST 404 the precondition.
+
+    Discriminating: under buggy `state not in ('closed','reviewed')`,
+    'reviewed' IS in the set → predicate False → guard does NOT fire →
+    handler proceeds against an already-reviewed trade. Under correct
+    `state != 'closed'`: 'reviewed' != 'closed' is True → guard fires → 404.
+
+    (Note: even if the precondition were broadened, the handler's later
+    `reviewed_at is not None` check would catch this with a 409 — but that
+    is a defense-in-depth fallback. The PRECONDITION must reject 'reviewed'
+    at the gate to keep the spec contract clean.)
+    """
+    cfg, cfg_path = seeded_db
+    tid = _c7_seed_trade(
+        cfg, ticker="C7RRV", state="reviewed",
+        reviewed_at="2026-04-30T16:00:00",
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{tid}/review",
+            headers={"HX-Request": "true"},
+            data={
+                "entry_grade": "A", "management_grade": "A",
+                "exit_grade": "A", "lesson_learned": "n/a",
+                "mistake_tags": "none_observed",
+            },
+        )
+    assert r.status_code == 404, (
+        f"reviewed state must be rejected by precondition; got "
+        f"{r.status_code} text={r.text[:200]!r}"
+    )
+
+
+def test_c7_review_post_managing_state_rejected(seeded_db):
+    """state='managing' is NOT closed — review POST must 404.
+
+    Sanity case for the closed-but-not-reviewed predicate.
+    """
+    cfg, cfg_path = seeded_db
+    tid = _c7_seed_trade(cfg, ticker="C7RMG", state="managing")
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/trades/{tid}/review",
+            headers={"HX-Request": "true"},
+            data={
+                "entry_grade": "A", "management_grade": "A",
+                "exit_grade": "A", "lesson_learned": "n/a",
+                "mistake_tags": "none_observed",
+            },
+        )
+    assert r.status_code == 404
+
+
+# --- Line ~1343: open_position_row GET /trades/open/{id}/row (active) ---
+
+
+def test_c7_open_position_row_managing_accepted(seeded_db, monkeypatch):
+    """state='managing' is active — open-positions row partial returns 200."""
+    from datetime import datetime
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    tid = _c7_seed_trade(cfg, ticker="C7ORM", state="managing")
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            "C7ORM": PriceSnapshot(
+                ticker="C7ORM", price=105.0, asof=datetime.now(),
+                is_stale=False, source="live",
+            ),
+        })
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/open/{tid}/row",
+                       headers={"HX-Request": "true"})
+    assert r.status_code == 200
+
+
+def test_c7_open_position_row_closed_rejected(seeded_db):
+    """state='closed' is NOT active — open-position row endpoint 404s."""
+    cfg, cfg_path = seeded_db
+    tid = _c7_seed_trade(cfg, ticker="C7ORC", state="closed")
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/open/{tid}/row",
+                       headers={"HX-Request": "true"})
+    assert r.status_code == 404
+
+
+# --- Base-layout VM no-regression check (spec §11.5 + plan §6 C.7 step 3) ---
+
+
+def test_c7_base_layout_does_not_dereference_phase7_specific_fields():
+    """Spec §11.5 verification: Phase 7 does NOT add base-layout-dereferenced
+    fields. If a future change starts dereferencing `vm.state` or
+    `vm.has_pre_trade_data` etc. from base.html.j2, EVERY base-layout VM
+    must gain that field — caught by this test failing.
+    """
+    from pathlib import Path
+    base_layout = Path(
+        "swing/web/templates/base.html.j2"
+    ).read_text(encoding="utf-8")
+    for forbidden_attr in (
+        "vm.state",
+        "vm.has_pre_trade_data",
+        "vm.trade_origin",
+        "vm.thesis",
+        "vm.state_badge_label",
+    ):
+        assert forbidden_attr not in base_layout, (
+            f"base.html.j2 dereferences {forbidden_attr!r} — every "
+            f"base-layout VM (DashboardVM, PipelineVM, JournalVM, "
+            f"WatchlistVM, PageErrorVM, ReviewVM, CadenceCompleteVM, "
+            f"ReviewsPendingVM, TradeDetailVM) must gain that field with "
+            f"a safe default."
+        )

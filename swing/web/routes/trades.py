@@ -50,6 +50,13 @@ from swing.web.view_models.trades import (
 log = logging.getLogger(__name__)
 router = APIRouter()
 
+# Phase 7 Sub-C C.7 — active-trade lifecycle states (entered/managing/
+# partial_exited). Used by route-level preconditions for write/management
+# endpoints (exit_post, stop_post, cancel, open_position_row). Mirrors
+# `_ACTIVE_STATES_SQL` in repos/trades.py and the same-named tuples in
+# swing/web/view_models/trades.py + open_positions_row.py.
+_ACTIVE_STATES = ("entered", "managing", "partial_exited")
+
 
 def _parse_optional_float(raw: str | None) -> float | None:
     if raw is None or raw.strip() == "":
@@ -979,7 +986,7 @@ def trade_cancel(request: Request, trade_id: int):
         trade = get_trade(conn, trade_id)
     finally:
         conn.close()
-    if trade is None or trade.status != "open":
+    if trade is None or trade.state not in _ACTIVE_STATES:
         raise HTTPException(status_code=404, detail=f"Trade #{trade_id} not found or not open")
 
     row_vm = build_open_positions_row(
@@ -1036,7 +1043,7 @@ def stop_post(
         # Guard: trade must exist and be open before attempting stop adjust.
         # adjust_stop only raises ValueError for not-found, not for closed.
         trade_check = get_trade(conn, trade_id)
-        if trade_check is None or trade_check.status != "open":
+        if trade_check is None or trade_check.state not in _ACTIVE_STATES:
             raise HTTPException(
                 status_code=404,
                 detail=f"Trade #{trade_id} not found or not open",
@@ -1217,7 +1224,12 @@ def review_post(
     conn = connect(cfg.paths.db_path)
     try:
         trade = get_trade(conn, trade_id)
-        if trade is None or trade.status != "closed":
+        # Phase 7 Sub-C C.7: closed-but-not-reviewed precondition. Use the
+        # explicit single-state check rather than `state not in
+        # ("closed","reviewed")` — the latter would re-allow already-reviewed
+        # trades through this guard. Already-reviewed gets caught a few lines
+        # below by the `reviewed_at is not None` 409 branch.
+        if trade is None or trade.state != "closed":
             raise HTTPException(status_code=404)
         if trade.reviewed_at is not None:
             raise HTTPException(
@@ -1333,7 +1345,7 @@ def open_position_row(request: Request, trade_id: int):
         trade = get_trade(conn, trade_id)
     finally:
         conn.close()
-    if trade is None or trade.status != "open":
+    if trade is None or trade.state not in _ACTIVE_STATES:
         raise HTTPException(
             status_code=404,
             detail=f"Trade #{trade_id} not found or not open",
