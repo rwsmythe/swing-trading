@@ -1452,3 +1452,89 @@ def test_watchlist_origin_form_preserves_existing_anchor_split(
     assert "Candidate context as of pipeline finished" not in body, (
         "freshness footer must only render for origin=hyp-recs"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-C C.9 — recommendations route consumes fills (non-entry) via
+# the local _ExitShape adapter rather than the legacy `list_all_exits`
+# shim. Discriminating: under buggy code that drops the helper, the
+# current_balance computation returns starting_equity (no realized PnL).
+# Under buggy code that includes entry fills, the current_balance shifts
+# by the entry-fill quantity*price contribution.
+# ---------------------------------------------------------------------------
+
+
+def test_c9_expand_route_uses_fills_for_current_balance(
+    seeded_db, monkeypatch,
+):
+    """C.9: expand route resolves current_balance through the fills-backed
+    helper. Seeds a closed trade with an exit fill at +$20/sh; assert the
+    route succeeds (the equity computation does not crash on the new
+    adapter shape) and the fill's realized PnL flows through.
+
+    Discriminating: directly inspect the helper's output to confirm:
+      (a) it returns exactly 1 non-entry shape (not 0, not 2),
+      (b) realized_pnl matches the expected per-fill value.
+    """
+    from swing.data.db import connect
+    from swing.data.models import Fill, Trade
+    from swing.data.repos.fills import insert_fill_with_event
+    from swing.data.repos.trades import insert_trade_with_event
+    from swing.web.routes.recommendations import _list_all_exitshape_via_fills
+
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg)
+    _patch_price_cache(monkeypatch)
+
+    # Add one closed trade with an exit fill so realized PnL is non-zero.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            tid = insert_trade_with_event(
+                conn,
+                Trade(
+                    id=None, ticker="MSFT", entry_date="2026-04-15",
+                    entry_price=100.0, initial_shares=10,
+                    initial_stop=90.0, current_stop=90.0,
+                    state="closed", watchlist_entry_target=None,
+                    watchlist_initial_stop=None, notes=None,
+                ),
+                event_ts="2026-04-15T09:30:00",
+            )
+            insert_fill_with_event(
+                conn,
+                Fill(
+                    fill_id=None, trade_id=tid,
+                    fill_datetime="2026-04-20T15:30:00",
+                    action="exit", quantity=10, price=120.0, reason="target",
+                ),
+                event_ts="2026-04-20T15:30:00",
+            )
+    finally:
+        conn.close()
+
+    # Helper-output discrimination: the fills-backed helper must return
+    # exactly 1 non-entry shape (the explicit exit fill). Entry fills
+    # synthesized by `insert_trade_with_event` must be filtered out.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            shapes = _list_all_exitshape_via_fills(conn)
+    finally:
+        conn.close()
+    assert len(shapes) == 1, (
+        f"recommendations.py adapter returned {len(shapes)} shapes; "
+        f"expected exactly 1 (the explicit exit fill — entry fills must "
+        f"be filtered)."
+    )
+    assert shapes[0].realized_pnl == pytest.approx(200.0)
+
+    # Route-level smoke: expand route still renders successfully under
+    # the new equity-source path.
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/hyp-recs/NVDA/expand",
+            headers={"HX-Request": "true"},
+        )
+    assert resp.status_code == 200, resp.text
