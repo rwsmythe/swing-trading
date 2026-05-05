@@ -11,7 +11,7 @@ from swing.data.repos.trades import insert_trade_with_event, list_open_trades
 from swing.data.repos.watchlist import (
     archive_watchlist_entry, get_watchlist_entry,
 )
-from swing.trades.origin import EntryPath
+from swing.trades.origin import EntryPath, derive_trade_origin
 from swing.trades.state import (
     MissingPreTradeFieldsException, validate_for_operation,
 )
@@ -213,9 +213,16 @@ def record_entry(
     #
     # Note: the validator's "always required" set includes `trade_origin` +
     # `pre_trade_locked_at`, which the route/CLI layer doesn't populate on
-    # EntryRequest. Inject defaults consistent with B.1's interim behavior
-    # (proper trade-origin derivation lands at B.2; the canonical atomic
-    # insert+fill flow lands at B.3). Once those land, this shim disappears.
+    # EntryRequest. `pre_trade_locked_at` still uses an interim shim
+    # (event_ts); the canonical atomic insert+fill flow lands at B.3.
+    #
+    # B.2: `trade_origin` is now derived BEFORE validation via the origin
+    # service so the validator and the eventual INSERT see the same value
+    # the row will be persisted with. The 4-value enum returned by
+    # derive_trade_origin always satisfies the validator's required-field
+    # check (non-NULL string), so this preserves the gate-fires-first
+    # discipline regardless of (bucket × entry_path) combo.
+    derived_origin = derive_trade_origin(conn, req.ticker, req.entry_path)
     req_view: dict = {
         f: getattr(req, f, None)
         for f in (
@@ -230,7 +237,7 @@ def record_entry(
         )
     }
     req_view["initial_shares"] = req.shares
-    req_view["trade_origin"] = "manual_off_pipeline"
+    req_view["trade_origin"] = derived_origin
     req_view["pre_trade_locked_at"] = req.event_ts
     missing = validate_for_operation(req_view, op="entry_create", current_state=None)
     if missing:
@@ -282,9 +289,10 @@ def record_entry(
         chart_pattern_classification_pipeline_run_id=req.chart_pattern_classification_pipeline_run_id,
         sector=req.sector,
         industry=req.industry,
-        # Phase 7 lifecycle fields (NOT NULL in schema). Interim B.1 defaults;
-        # proper trade_origin derivation lands at B.2, atomic insert+fill at B.3.
-        trade_origin="manual_off_pipeline",
+        # Phase 7 lifecycle fields (NOT NULL in schema). `trade_origin`
+        # comes from derive_trade_origin (B.2); `pre_trade_locked_at`
+        # remains an interim shim until B.3's atomic insert+fill flow.
+        trade_origin=derived_origin,
         pre_trade_locked_at=req.event_ts,
         # Phase 7 pre-trade decision fields — passed through from the request.
         thesis=req.thesis,

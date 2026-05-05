@@ -166,6 +166,104 @@ def test_record_entry_complete_succeeds(tmp_path):
     assert result.trade_id > 0
 
 
+# ---------------------------------------------------------------------------
+# Phase 7 Sub-B B.2 — trade_origin derivation wired into record_entry.
+#
+# Helpers mirror tests/trades/test_origin.py verbatim (column lists + NOT
+# NULL fixtures) so the entry-service tests don't drift from the origin
+# service's own seed pattern. If origin.py's helpers change, update both
+# in lockstep — diverging schemas here are a recurring drift class.
+# ---------------------------------------------------------------------------
+
+
+def _b2_insert_evaluation_run(
+    conn: sqlite3.Connection, *, eval_id: int,
+    run_ts: str = "2026-05-04T08:15:00",
+    data_asof: str = "2026-05-01",
+    action_session: str = "2026-05-04",
+) -> None:
+    conn.execute(
+        "INSERT INTO evaluation_runs "
+        "(id, run_ts, data_asof_date, action_session_date, "
+        " tickers_evaluated, aplus_count, watch_count, skip_count, "
+        " excluded_count, error_count) "
+        "VALUES (?, ?, ?, ?, 1, 0, 0, 0, 0, 0)",
+        (eval_id, run_ts, data_asof, action_session),
+    )
+
+
+def _b2_insert_pipeline_run(
+    conn: sqlite3.Connection, *, run_id: int, eval_run_id: int | None,
+    finished: bool = True,
+    started_ts: str = "2026-05-04T08:00:00",
+    finished_ts: str | None = "2026-05-04T08:30:00",
+    data_asof: str = "2026-05-01",
+    action_session: str = "2026-05-04",
+) -> None:
+    conn.execute(
+        "INSERT INTO pipeline_runs "
+        "(id, started_ts, finished_ts, trigger, data_asof_date, "
+        " action_session_date, state, lease_token, evaluation_run_id) "
+        "VALUES (?, ?, ?, 'manual', ?, ?, ?, ?, ?)",
+        (
+            run_id, started_ts,
+            finished_ts if finished else None,
+            data_asof, action_session,
+            "complete" if finished else "running",
+            f"lease-{run_id}", eval_run_id,
+        ),
+    )
+
+
+def _b2_insert_candidate(
+    conn: sqlite3.Connection, *, ticker: str, bucket: str, eval_run_id: int,
+) -> None:
+    conn.execute(
+        "INSERT INTO candidates "
+        "(evaluation_run_id, ticker, bucket, close, pivot, initial_stop, "
+        " adr_pct, tight_streak, pullback_pct, prior_trend_pct, rs_rank, "
+        " rs_return_12w_vs_spy, rs_method, pattern_tag, notes, sector, "
+        " industry) "
+        "VALUES (?, ?, ?, 10.0, NULL, 9.0, 5.0, 3, 5.0, 30.0, 50, 0.1, "
+        "'universe', 'vcp', NULL, '', '')",
+        (eval_run_id, ticker, bucket),
+    )
+
+
+@pytest.mark.parametrize("bucket,entry_path,expected_origin", [
+    ("aplus", EntryPath.APLUS_TODAY_DECISION, "pipeline_aplus"),
+    ("aplus", EntryPath.MANUAL_WEB_FORM,      "pipeline_aplus"),
+    ("watch", EntryPath.HYP_RECS_BUTTON,      "pipeline_watch_hyp_recs"),
+    ("watch", EntryPath.MANUAL_WEB_FORM,      "pipeline_watch_manual"),
+])
+def test_record_entry_derives_trade_origin(
+    tmp_path, bucket, entry_path, expected_origin,
+):
+    """B.2: record_entry calls derive_trade_origin and persists the result
+    on the trades row, IGNORING any value the caller might have hinted.
+    Parametrize covers all 4 enum values across the bucket × entry_path
+    grid that produce non-default origins."""
+    conn = _seed_v14(tmp_path)
+    with conn:
+        _b2_insert_evaluation_run(conn, eval_id=1)
+        _b2_insert_pipeline_run(conn, run_id=1, eval_run_id=1)
+        _b2_insert_candidate(conn, ticker="TST", bucket=bucket, eval_run_id=1)
+    req = _full_req(entry_path=entry_path)
+    result = record_entry(conn, req, soft_warn=10, hard_cap=20, force=False)
+    trade = get_trade(conn, result.trade_id)
+    assert trade.trade_origin == expected_origin
+
+
+def test_record_entry_off_pipeline_default(tmp_path):
+    """B.2: no completed pipeline run anywhere → trade_origin defaults to
+    'manual_off_pipeline' (the off-pipeline branch of derive_trade_origin)."""
+    conn = _seed_v14(tmp_path)
+    req = _full_req(entry_path=EntryPath.MANUAL_WEB_FORM)
+    result = record_entry(conn, req, soft_warn=10, hard_cap=20, force=False)
+    trade = get_trade(conn, result.trade_id)
+    assert trade.trade_origin == "manual_off_pipeline"
+
+
 def test_entry_rationale_enum_values_match_spec_order():
     """Tranche B-ops T4: EntryRationale enum is the closed taxonomy per
     spec §3 table, in the spec-declared order."""
