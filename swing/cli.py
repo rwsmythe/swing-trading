@@ -1573,8 +1573,12 @@ def pipeline_group() -> None:
 @click.pass_context
 def pipeline_run_cmd(ctx, manual):
     """Run the nightly pipeline."""
+    from swing.config_overrides import apply_overrides
     from swing.pipeline import run_pipeline
-    cfg = ctx.obj["config"]
+    # Apply user-config overrides so sensitive cred fields (Finviz token /
+    # screen_query) propagate when the web layer spawns this CLI subprocess.
+    # Discriminating test for the propagation contract lives in Task 7.
+    cfg = apply_overrides(ctx.obj["config"])
     result = run_pipeline(cfg=cfg, trigger="manual" if manual else "scheduled")
     click.echo(f"Run id {result.run_id}: state={result.state}")
     if result.error_message:
