@@ -64,17 +64,70 @@ def test_swing_finviz_status_empty_state(cli_runner_with_cfg) -> None:
 def test_swing_finviz_fetch_token_missing_friendly_error(
     cli_runner_with_cfg, tmp_path, monkeypatch,
 ) -> None:
-    """Discriminating: missing token -> exit code != 0 + friendly error message.
+    """Discriminating: missing token -> exit code != 0 + friendly error message
+    AND audit row written (Codex R2 Major-1: cross-surface observability —
+    missing-cred CLI failures must show up in `finviz_api_calls` just like
+    pipeline-step failures do).
 
     USERPROFILE/HOME redirected to tmp_path so the operator's real
     user-config.toml (which DOES have a token) doesn't bleed through.
     """
+    from swing.data.repos.finviz_api_calls import list_recent_calls
+
     runner, cfg_path, main = cli_runner_with_cfg
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
     res = runner.invoke(main, ["--config", str(cfg_path), "finviz", "fetch"])
     assert res.exit_code != 0
     assert "token" in res.output.lower() or "screen_query" in res.output.lower()
+
+    # Codex R2 Major-1 discriminator: pre-fix the CLI raised before
+    # `_perform_finviz_fetch_no_lease()`, so no audit row was inserted.
+    # Post-fix the helper runs, writes status='error', and the CLI translates
+    # the row to a friendly Click exception.
+    conn = sqlite3.connect(tmp_path / "swing.db")
+    try:
+        rows = list_recent_calls(conn)
+    finally:
+        conn.close()
+    assert len(rows) == 1, rows
+    assert rows[0].status == "error"
+    assert "token" in (rows[0].error_message or "").lower()
+
+
+def test_swing_finviz_fetch_bare_question_mark_screen_query_friendly_error(
+    cli_runner_with_cfg, tmp_path, monkeypatch,
+) -> None:
+    """Codex R2 Minor-1: a bare '?' (or '?'-only padding) in screen_query
+    canonicalizes to empty after lstrip('?'); must be treated as missing.
+    Pre-fix: `not screen_query` returned False so the URL was built as
+    `?&auth=...` (degenerate). Post-fix: friendly error + audit row.
+    """
+    from swing.data.repos.finviz_api_calls import list_recent_calls
+
+    runner, cfg_path, main = cli_runner_with_cfg
+    user_cfg_dir = tmp_path / "swing-data"
+    user_cfg_dir.mkdir(exist_ok=True)
+    (user_cfg_dir / "user-config.toml").write_text(
+        '[integrations.finviz]\n'
+        'token = "abc"\n'
+        'screen_query = "?"\n'
+    )
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    res = runner.invoke(main, ["--config", str(cfg_path), "finviz", "fetch"])
+    assert res.exit_code != 0
+    assert "screen_query" in res.output.lower()
+
+    conn = sqlite3.connect(tmp_path / "swing.db")
+    try:
+        rows = list_recent_calls(conn)
+    finally:
+        conn.close()
+    assert len(rows) == 1
+    assert rows[0].status == "error"
+    assert "screen_query" in (rows[0].error_message or "").lower()
 
 
 def test_swing_finviz_fetch_friendly_error_when_pipeline_running(

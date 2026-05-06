@@ -1874,19 +1874,14 @@ def finviz_fetch_cmd(ctx: click.Context) -> None:
     from swing.pipeline.runner import _perform_finviz_fetch_no_lease
 
     cfg = apply_overrides(ctx.obj["config"])
-    if not cfg.integrations.finviz.token:
-        raise click.ClickException(
-            "[integrations.finviz] token is missing in user-config "
-            "(%USERPROFILE%/swing-data/user-config.toml)."
-        )
-    if not cfg.integrations.finviz.screen_query:
-        raise click.ClickException(
-            "[integrations.finviz] screen_query is missing in user-config "
-            "(%USERPROFILE%/swing-data/user-config.toml)."
-        )
     conn = connect(cfg.paths.db_path)
     try:
         try:
+            # Codex R2 Major-1: missing-credential failures route through the
+            # shared helper so the audit trail (finviz_api_calls) records them
+            # — same cross-surface observability as the pipeline step. The CLI
+            # then translates a status='error' result into a friendly Click
+            # exception (preserves the operator-facing token-missing message).
             _perform_finviz_fetch_no_lease(cfg=cfg, conn=conn)
         except FinvizPipelineActiveError as exc:
             raise click.ClickException(str(exc)) from exc
@@ -1898,8 +1893,14 @@ def finviz_fetch_cmd(ctx: click.Context) -> None:
                 f"elapsed={r.response_time_ms}ms  "
                 f"signature={(r.signature_hash or '')[:12]}"
             )
-            if r.error_message:
-                click.echo(f"error: {r.error_message}", err=True)
+            if r.status == "error":
+                # Surface the just-written audit row as a friendly CLI failure
+                # so exit_code != 0 + the error_message is visible to the
+                # operator. The audit row remains in the DB for `swing finviz
+                # status` to display later.
+                raise click.ClickException(
+                    r.error_message or "Finviz fetch failed; see swing finviz status."
+                )
     finally:
         conn.close()
 

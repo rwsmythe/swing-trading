@@ -118,16 +118,17 @@ class FinvizClient:
                 "Finviz API token is missing. Set "
                 "[integrations.finviz] token in user-config.toml."
             )
-        if not self._cfg.screen_query:
+        # Canonicalize screen_query: tolerate operator-pasted leading '?' so we
+        # don't emit '??v=...' (Codex R1 Minor-1; plan §E.3 "appends `&auth=`
+        # or prepends `?` if not already present"). Validate AFTER lstrip so
+        # that a bare '?' (or '?'-only padding) is treated as missing
+        # (Codex R2 Minor-1).
+        screen_query = self._cfg.screen_query.lstrip("?")
+        if not screen_query:
             raise FinvizConfigMissingError(
                 "Finviz screen_query is missing. Set "
                 "[integrations.finviz] screen_query in user-config.toml."
             )
-
-        # Canonicalize screen_query: tolerate operator-pasted leading '?' so we
-        # don't emit '??v=...' (Codex R1 Minor-1; plan §E.3 "appends `&auth=`
-        # or prepends `?` if not already present").
-        screen_query = self._cfg.screen_query.lstrip("?")
         url = f"{_BASE_URL}?{screen_query}&auth={self._cfg.token}"
 
         with _suppress_transport_debug_logs():

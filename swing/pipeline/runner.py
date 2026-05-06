@@ -1047,7 +1047,10 @@ def _finviz_fetch_core(cfg) -> dict:
             "signature_hash": None, "rate_limit_remaining": None,
             "error_message": "FinvizConfigMissingError: token is missing",
         }
-    if not fz_cfg.screen_query:
+    # Codex R2 Minor-1: validate AFTER stripping leading '?' so a bare '?'
+    # (or '?'-only padding) is treated as missing — same canonicalization as
+    # FinvizClient.fetch_screen so the surface-vs-helper precheck matches.
+    if not fz_cfg.screen_query.lstrip("?"):
         return {
             "status": "error", "csv_text": None, "csv_path": csv_path,
             "row_count": None, "response_time_ms": 0,
