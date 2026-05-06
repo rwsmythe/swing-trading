@@ -63,15 +63,19 @@ Brief §2.2 implicitly assumed effective cfg propagation but did not enumerate e
 
 **Plan-locked entrypoint convention (binding for V1):**
 
-| Entrypoint | Consumer of `cfg.integrations.finviz` | apply_overrides() responsibility |
-|---|---|---|
-| `swing finviz fetch` (Task 8) | direct (token + screen_query for FinvizClient) | Task 8 step 3: command body calls `apply_overrides(ctx.obj["config"])` BEFORE constructing FinvizClient. |
-| `swing finviz status` (Task 8) | none (reads finviz_api_calls only) | not needed; raw cfg sufficient. |
-| `swing pipeline run` (CLI) | indirect via `_step_finviz_fetch` | The CLI command handler MUST call `apply_overrides(ctx.obj["config"])` and pass the effective cfg into `run_pipeline_internal`. Verify the existing `swing pipeline run` command at executing-plans Task 2.5 time and add the `apply_overrides()` call if absent. |
-| `swing.web.routes.pipeline.POST /pipeline/run` (web) | indirect via `_step_finviz_fetch` | The route handler MUST call `apply_overrides()` before spawning the pipeline subprocess. Verify the existing route at executing-plans Task 2.5 time and add the call if absent. |
-| `_step_finviz_fetch(*, cfg, lease)` (pipeline-internal) | direct | NOT internally — defensive `apply_overrides()` here would cause a silent surprise (different effective cfg than other steps that don't apply). The convention is: caller hands pre-overridden cfg to the runner. |
+The pipeline runs in a SUBPROCESS spawned from the web route (`python -m swing.cli --config <path> pipeline run` per Phase 5 plan + observed at `swing/web/routes/pipeline.py`). The parent process (web request handler) and the child (CLI subprocess) load cfg INDEPENDENTLY from disk; calling `apply_overrides()` in the parent does NOT propagate to the child. **The child-process pipeline-run command (`swing pipeline run` CLI body) is THE binding override point — Codex R2 Major-1 fix.**
+
+| Entrypoint | Process | Consumer of `cfg.integrations.finviz` | apply_overrides() responsibility |
+|---|---|---|---|
+| `swing finviz fetch` (Task 8) | same | direct (token + screen_query for FinvizClient) | Task 8 step 3: command body calls `apply_overrides(ctx.obj["config"])` BEFORE constructing FinvizClient. |
+| `swing finviz status` (Task 8) | same | none (reads finviz_api_calls only) | not needed; raw cfg sufficient. |
+| `swing pipeline run` (CLI) | own / spawned | binding — `_step_finviz_fetch` runs IN THIS PROCESS via `run_pipeline_internal` | **BINDING:** the command body MUST call `apply_overrides(ctx.obj["config"])` and pass the effective cfg into `run_pipeline_internal`. Task 2.5 audits the existing CLI command + adds the call if absent. |
+| `swing.web.routes.pipeline.POST /pipeline/run` (web parent) | parent process | NONE — spawns subprocess with `--config <path>` and does not propagate runtime objects | **NOT a binding override point** for Finviz creds: the subprocess re-loads cfg from disk + applies its own overrides via the CLI binding above. The route MAY apply overrides for parent-process-local checks (e.g., reading `cfg.web.pipeline_lease_wait_seconds`), but that is unrelated to Finviz. |
+| `_step_finviz_fetch(*, cfg, lease)` (pipeline-internal) | child process | direct | NOT internally — defensive `apply_overrides()` here would cause a silent surprise (different effective cfg than other steps that don't apply). The convention is: caller (pipeline-run CLI body) hands pre-overridden cfg to the runner. |
 
 **Defensive guard (Task 2 binding test):** add a discriminating test that asserts `_step_finviz_fetch` reads from the cfg passed in (not from `apply_overrides()` re-loaded inside), so the entrypoint convention is enforced by failing test if a future refactor inverts it.
+
+**Subprocess-cred propagation discriminator (Task 2.5 binding test):** add a test that invokes `swing pipeline run` (Click CliRunner) with a fixture that places `[integrations.finviz] token = "OVERRIDE_TOKEN"` in user-config, monkey-patches `_step_finviz_fetch` to capture the cfg.integrations.finviz.token it receives, and asserts the captured value equals "OVERRIDE_TOKEN". Pre-fix (no apply_overrides in CLI body): captured "". Post-fix (apply_overrides added): captured "OVERRIDE_TOKEN". This test pins the cred-propagation contract durably.
 
 ### A.12 — `requests` / `urllib3` DEBUG-log redaction (Codex R1 Major-2 fix)
 
@@ -106,6 +110,45 @@ Plan Task 10 (token-leak audit) adds a discriminating test that:
 4. Asserts the sentinel token literal is absent from every captured record.
 
 If the suppression helper is missing, the test FAILS with the sentinel found in urllib3 DEBUG output.
+
+### A.13 — File-write / audit-row atomicity: shadow-then-promote pattern (Codex R2 Major-2 fix)
+
+The Round-1 design wrote canonical CSV → fenced-write audit row in two separate steps. Failure mode: lease revocation (force-clear) lands BETWEEN the file rename and the audit-row insert; the canonical CSV remains in the inbox without an `ok` audit row. Next run sees the file → triggers `skipped_manual_override` even though it's actually an API-emitted file mid-failed-run.
+
+**Plan-locked atomicity discipline (binding for Task 6):**
+
+`_step_finviz_fetch` uses a SHADOW filename pattern. The canonical filename is `finvizDDMmmYYYY.csv`; the shadow is `finvizDDMmmYYYY.csv.api-pending`. The flow:
+
+1. Fenced read of prior signature.
+2. Write canonical CSV to **shadow path** `<canonical>.api-pending` (atomic same-dir tmp + os.replace).
+3. **Fenced write** of `finviz_api_calls` row with `status='ok'` (signature_hash populated).
+4. Atomic rename shadow → canonical (`os.replace(shadow, canonical)`).
+5. **On any exception in steps 3-4 (LeaseRevoked, OSError, etc.):** delete the shadow file in a try/finally; the audit row's outcome takes precedence. If the audit row never inserted, the next run's prior_sig lookup is unchanged + retries cleanly.
+
+**File-collision check** (algorithm §H step 2) checks for the **canonical path only**, NOT the shadow. A leftover `.api-pending` file does NOT trigger `skipped_manual_override` (it's an internal artifact, not operator manual data). A discriminating test in Task 6 covers: lease-revocation between step 2 and step 3 → no canonical file remains; subsequent run does NOT see it as a manual override.
+
+**Recovery sweep** (Task 6 binding): on `_step_finviz_fetch` start, before file-collision check, scan `data/finviz-inbox/` for `*.api-pending` files older than 1 hour and delete them. Belt-and-suspenders cleanup for any rare process-kill leak.
+
+### A.14 — CLI vs pipeline concurrency: refuse-while-pipeline-running (Codex R2 Major-3 fix)
+
+`_perform_finviz_fetch_no_lease` (used by `swing finviz fetch` CLI) does NOT acquire the pipeline lease. Without coordination, an operator could run the CLI fetch while a pipeline run is in flight, racing on the canonical CSV target and the `finviz_api_calls` audit table.
+
+**Plan-locked exclusion posture (binding for Task 6 + Task 8):**
+
+`_perform_finviz_fetch_no_lease` queries `pipeline_runs` for any row with `state='running'` BEFORE doing any work. If found, raise a typed exception `FinvizPipelineActiveError` with message:
+
+```
+A pipeline run is currently in flight (run_id=<id>); the standalone Finviz
+fetch is refused to avoid corrupting the inbox or audit log. Wait for the
+run to complete (swing pipeline status) and retry, OR run the fetch as
+part of the pipeline (swing pipeline run).
+```
+
+The CLI surface (Task 8) catches this and emits a friendly `click.ClickException`. The pipeline-internal `_step_finviz_fetch` does NOT need this check — it runs WHILE the lease is held by definition.
+
+This is the V1-simplest cross-surface coordination. V2 hardening (out-of-scope; track for follow-up): unify CLI under the same lease as pipeline OR introduce a separate Finviz-specific advisory lock. V1 is sufficient because operator-triggered CLI fetches are rare + the error message is operator-actionable.
+
+Discriminating test in Task 6 (`tests/cli/test_finviz_commands.py`): seed a `pipeline_runs` row with `state='running'` BEFORE invoking `swing finviz fetch`; assert exit_code != 0; assert output contains "pipeline run is currently in flight".
 
 ### A.7 — Operator's saved-screen identification = `screen_query` opaque string, NOT a numeric `screen_id`
 
@@ -156,7 +199,7 @@ Brief §2.2 line "MAY contain a placeholder `screen_id = ""` and timeout/retry d
 |---|---|
 | `swing/cli.py` | Add new `@main.group("finviz")` subcommand group with `fetch` + `status` commands. |
 | `swing/pipeline/runner.py` | Add `_step_finviz_fetch(*, cfg, lease)` function (uses `lease.fenced_write()` for `finviz_api_calls` inserts). Call site lands BEFORE `_step_evaluate` invocation in `run_pipeline_internal`. Function is error-tolerant: any exception is caught, logged, and a `finviz_api_calls` row with `status='error'` is inserted via `lease.fenced_write()`; pipeline continues to `_step_evaluate`. |
-| `swing/pipeline/runner.py` (additionally) | Add `_perform_finviz_fetch_no_lease(cfg, conn) -> None` helper used by the standalone CLI `swing finviz fetch` (Task 8). Same fetch + normalize + signature + insert logic as `_step_finviz_fetch` but writes through the caller-provided `conn` (no lease — there is no concurrent-pipeline contention since the CLI is operator-triggered + serialized by SQLite's WAL writer locking). The two functions share a `_finviz_fetch_core(cfg, *, signature_lookup, persist_call, write_csv)` private helper to avoid logic drift between pipeline + CLI surfaces. |
+| `swing/pipeline/runner.py` (additionally) | Add `_perform_finviz_fetch_no_lease(*, cfg, conn) -> None` helper used by the standalone CLI `swing finviz fetch` (Task 8). Refuses execution if a pipeline run is currently in flight (plan §A.14 cross-surface concurrency exclusion; raises `FinvizPipelineActiveError`). Same fetch + normalize + signature + persist semantics as `_step_finviz_fetch`. Both functions share `_finviz_fetch_core(cfg)`, `_finviz_persist_csv_shadow`, `_finviz_promote_shadow`, `_finviz_cleanup_stale_shadows` private helpers (plan §A.13 shadow-then-promote atomicity). |
 | `swing/data/db.py` | Bump `EXPECTED_SCHEMA_VERSION` 14 → 15 (single-line edit). |
 | `swing/data/models.py` | Add `FinvizApiCall` dataclass (frozen). |
 | `swing/config.py` | Add `IntegrationsConfig` + `FinvizIntegrationConfig` sub-dataclasses; add `integrations: IntegrationsConfig` to top-level `Config`; load `raw.get("integrations", {})` in `load()`. |
@@ -1107,7 +1150,7 @@ Expected: still 0 failures (cascade is additive; existing tests unaffected becau
 - [ ] **Step 8: Commit.**
 
 ```bash
-git add swing/config.py swing/config_overrides.py swing/config_validation.py \
+git add swing/config.py swing/config_overrides.py \
         swing.config.toml tests/config/test_config_integrations_finviz.py
 git commit -m "feat(finviz-api): cfg cascade for [integrations.finviz] (Task 2)"
 ```
@@ -1380,6 +1423,13 @@ class FinvizRateLimitError(FinvizApiError):
 class FinvizSchemaParityError(RuntimeError):
     """Raised when the API response body cannot be normalized to the canonical
     13-column schema (missing column, excessive rows, etc.)."""
+
+
+class FinvizPipelineActiveError(RuntimeError):
+    """Raised by `_perform_finviz_fetch_no_lease` (CLI surface) when a pipeline
+    run is currently in flight. Plan §A.14 cross-surface concurrency exclusion
+    (Codex R2 Major-3 fix). NOT raised by `_step_finviz_fetch` (pipeline-internal)
+    — that runs WHILE the lease is held by definition."""
 
 
 class FinvizClient:
@@ -1864,9 +1914,10 @@ git commit -m "test(finviz-api): signature-hash discriminating tests (Task 5)"
 
 ```python
 # tests/pipeline/test_step_finviz_fetch.py
+import contextlib
 import sqlite3
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -2062,6 +2113,96 @@ def test_step_finviz_fetch_warns_on_signature_drift(tmp_path: Path, caplog) -> N
         conn.close()
 
 
+def test_step_finviz_fetch_orphan_shadow_cleanup_on_lease_revoke(tmp_path: Path) -> None:
+    """Codex R2 Major-2 fix: lease revocation between shadow-write and audit-row
+    insert MUST NOT leave an orphan canonical CSV. Discriminating: simulate
+    LeaseRevoked from the second fenced_write; assert no canonical CSV remains
+    and no `.api-pending` file remains; subsequent run does NOT trigger
+    skipped_manual_override.
+
+    Pre-fix (no shadow pattern; canonical written eagerly): canonical CSV
+    persists; next run sees it → skipped_manual_override.
+    Post-fix (shadow → promote-after-audit): shadow file deleted in finally;
+    canonical never created on revoke; next run cleanly retries.
+    """
+    from unittest.mock import MagicMock
+    from swing.data.repos.pipeline import LeaseRevoked
+    from swing.pipeline.runner import _step_finviz_fetch
+
+    cfg = _setup_cfg(tmp_path)
+    cfg.paths.finviz_inbox_dir.mkdir(parents=True)
+    db_conn = _setup_db(cfg)
+
+    # Fake lease whose first fenced_write succeeds (signature read), and
+    # whose SECOND fenced_write raises LeaseRevoked (mid-step force-clear).
+    call_count = [0]
+
+    @contextlib.contextmanager
+    def _fenced_write_iter():
+        call_count[0] += 1
+        if call_count[0] == 2:
+            raise LeaseRevoked("simulated revoke between shadow and audit")
+        yield db_conn
+
+    fake_lease = MagicMock()
+    fake_lease.fenced_write = _fenced_write_iter
+
+    with patch(
+        "swing.integrations.finviz_api.requests.get",
+        return_value=MagicMock(
+            status_code=200, headers={},
+            content=(
+                b"No.,Ticker,Sector,Industry,Country,Price,Change,"
+                b"Average Volume,Relative Volume,Average True Range,"
+                b"52-Week High,52-Week Low,Market Cap\n"
+                b"1,AAPL,Tech,Software,USA,100,1%,1000,1,1,200,50,1B\n"
+            ),
+        ),
+    ):
+        with pytest.raises(LeaseRevoked):
+            _step_finviz_fetch(cfg=cfg, lease=fake_lease)
+
+    # Discriminating: NO canonical CSV; NO shadow leftover.
+    canonical_glob = list(cfg.paths.finviz_inbox_dir.glob("finviz*.csv"))
+    assert canonical_glob == [], (
+        f"orphan canonical CSV after lease revoke: {[f.name for f in canonical_glob]}"
+    )
+    shadow_glob = list(cfg.paths.finviz_inbox_dir.glob("*.api-pending"))
+    assert shadow_glob == [], (
+        f"orphan shadow file after lease revoke: {[f.name for f in shadow_glob]}"
+    )
+    db_conn.close()
+
+
+def test_perform_finviz_fetch_no_lease_refuses_when_pipeline_running(tmp_path: Path) -> None:
+    """Codex R2 Major-3 fix: standalone CLI fetch refuses if a pipeline run
+    is in flight. Pre-fix (no check): proceeds, races on inbox + audit log.
+    Post-fix (check): raises FinvizPipelineActiveError.
+    """
+    from swing.integrations.finviz_api import FinvizPipelineActiveError
+    from swing.pipeline.runner import _perform_finviz_fetch_no_lease
+
+    cfg = _setup_cfg(tmp_path)
+    cfg.paths.finviz_inbox_dir.mkdir(parents=True)
+    conn = _setup_db(cfg)
+    try:
+        # Seed an active pipeline run (state='running').
+        conn.execute(
+            "INSERT INTO pipeline_runs (state, started_ts, trigger, "
+            " heartbeat_ts, lease_token) VALUES "
+            "(?, ?, ?, ?, ?)",
+            ("running", "2026-05-05T12:00:00", "test",
+             "2026-05-05T12:00:00", "tok"),
+        )
+        conn.commit()
+
+        with pytest.raises(FinvizPipelineActiveError) as ei:
+            _perform_finviz_fetch_no_lease(cfg=cfg, conn=conn)
+        assert "in flight" in str(ei.value)
+    finally:
+        conn.close()
+
+
 @pytest.mark.vcr(filter_query_parameters=["auth"])
 def test_step_finviz_fetch_no_warn_when_signature_unchanged(tmp_path: Path, caplog) -> None:
     """No drift: prior signature matches → no WARNING."""
@@ -2176,22 +2317,66 @@ def _finviz_fetch_core(cfg) -> dict | None:
         }
 
 
-def _finviz_persist_csv_atomic(csv_path, csv_text: str) -> None:
-    """Atomic same-dir tmp + os.replace per CLAUDE.md cross-device-link gotcha."""
+def _finviz_persist_csv_shadow(csv_path, csv_text: str):
+    """Write CSV to a shadow path '<canonical>.api-pending' atomically.
+    Returns the shadow path for later promotion. Per plan §A.13."""
     import os
     from pathlib import Path as _Path
-    tmp_path = _Path(str(csv_path) + ".tmp")
+    shadow_path = _Path(str(csv_path) + ".api-pending")
+    tmp_path = _Path(str(shadow_path) + ".tmp")
     tmp_path.write_text(csv_text, encoding="utf-8")
-    os.replace(tmp_path, csv_path)
+    os.replace(tmp_path, shadow_path)
+    return shadow_path
+
+
+def _finviz_promote_shadow(shadow_path, canonical_path) -> None:
+    """Atomic rename shadow → canonical."""
+    import os
+    os.replace(shadow_path, canonical_path)
+
+
+def _finviz_cleanup_stale_shadows(inbox_dir) -> None:
+    """Delete '.api-pending' files older than 1 hour. Belt-and-suspenders
+    cleanup for the rare case where a process-kill leaks a shadow."""
+    import time
+    cutoff = time.time() - 3600  # 1 hour
+    if not inbox_dir.exists():
+        return
+    for f in inbox_dir.glob("*.api-pending"):
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+        except OSError:
+            pass
+
+
+def _assert_no_active_pipeline_run(conn) -> None:
+    """Refuse standalone Finviz fetch if a pipeline run is currently running.
+    Plan §A.14 (Codex R2 Major-3 fix). Pipeline-internal _step_finviz_fetch
+    does NOT call this — it runs WHILE the lease is held."""
+    from swing.integrations.finviz_api import FinvizPipelineActiveError
+    row = conn.execute(
+        "SELECT id FROM pipeline_runs WHERE state = 'running' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if row is not None:
+        raise FinvizPipelineActiveError(
+            f"A pipeline run is currently in flight (run_id={row[0]}); "
+            "the standalone Finviz fetch is refused to avoid corrupting "
+            "the inbox or audit log. Wait for the run to complete "
+            "(swing pipeline status) and retry, OR run the fetch as "
+            "part of the pipeline (swing pipeline run)."
+        )
 
 
 def _step_finviz_fetch(*, cfg, lease) -> None:
     """Pipeline step: fetch today's Finviz screen via API.
 
-    Lease-fenced DB writes for consistency with other pipeline steps. Skipped
-    when today's CSV already present (manual override). Error-tolerant: any
-    failure logs + records a `finviz_api_calls` row with status='error' and
-    returns without raising; pipeline continues to `_step_evaluate`.
+    Lease-fenced DB writes for consistency with other pipeline steps + shadow-
+    then-promote file write to make the (CSV-on-disk, audit-row-in-DB) pair
+    atomic under lease revocation (plan §A.13). Error-tolerant: any failure
+    logs + records a `finviz_api_calls` row with status='error' and returns
+    without raising; pipeline continues to `_step_evaluate`.
     """
     from datetime import datetime as _dt
     from swing.data.models import FinvizApiCall
@@ -2199,13 +2384,14 @@ def _step_finviz_fetch(*, cfg, lease) -> None:
         get_latest_signature_hash, insert_call,
     )
 
+    # Recovery sweep for stale .api-pending leftovers.
+    _finviz_cleanup_stale_shadows(cfg.paths.finviz_inbox_dir)
+
     result = _finviz_fetch_core(cfg)
     now_iso = _dt.now().isoformat(timespec="seconds")
     sq = cfg.integrations.finviz.screen_query
+    shadow_path = None
 
-    # Drift detection (read happens lease-aware via lease.fenced_write to keep
-    # signature lookup + insert atomic). For status='ok' we read prior, then
-    # write CSV (filesystem op outside the txn), then insert audit row.
     if result["status"] == "ok":
         with lease.fenced_write() as conn:
             prior_sig = get_latest_signature_hash(conn, screen_query=sq)
@@ -2215,26 +2401,45 @@ def _step_finviz_fetch(*, cfg, lease) -> None:
                 "(%s -> %s); operator may have edited the saved screen.",
                 prior_sig[:12], result["signature_hash"][:12],
             )
-        _finviz_persist_csv_atomic(result["csv_path"], result["csv_text"])
+        # Step 1: shadow write (NOT canonical yet).
+        shadow_path = _finviz_persist_csv_shadow(
+            result["csv_path"], result["csv_text"],
+        )
 
-    with lease.fenced_write() as conn:
-        insert_call(conn, FinvizApiCall(
-            call_id=None, ts=now_iso, screen_query=sq,
-            status=result["status"], row_count=result["row_count"],
-            response_time_ms=result["response_time_ms"],
-            rate_limit_remaining=result["rate_limit_remaining"],
-            signature_hash=result["signature_hash"],
-            error_message=result["error_message"],
-        ))
+    try:
+        # Step 2: lease-fenced audit-row insert. If lease has been revoked
+        # this raises LeaseRevoked → outer try/finally deletes the shadow.
+        with lease.fenced_write() as conn:
+            insert_call(conn, FinvizApiCall(
+                call_id=None, ts=now_iso, screen_query=sq,
+                status=result["status"], row_count=result["row_count"],
+                response_time_ms=result["response_time_ms"],
+                rate_limit_remaining=result["rate_limit_remaining"],
+                signature_hash=result["signature_hash"],
+                error_message=result["error_message"],
+            ))
+        # Step 3: promote shadow → canonical (only after audit row commits).
+        if shadow_path is not None:
+            _finviz_promote_shadow(shadow_path, result["csv_path"])
+            shadow_path = None
+    finally:
+        # Defensive cleanup: if anything between shadow-write and promote
+        # raised, the shadow is orphaned and must be deleted (plan §A.13).
+        if shadow_path is not None and shadow_path.exists():
+            try:
+                shadow_path.unlink()
+            except OSError as _exc:
+                log.warning("failed to clean up Finviz shadow file: %s", _exc)
 
 
 def _perform_finviz_fetch_no_lease(*, cfg, conn) -> None:
     """Standalone (non-pipeline) Finviz fetch — used by `swing finviz fetch` CLI.
 
-    Writes through the caller-provided `conn`. Same fetch + normalize +
-    signature + persist semantics as `_step_finviz_fetch`; differs only
-    in NOT requiring a lease (CLI is operator-triggered + serialized by
-    SQLite's WAL writer locking).
+    Refuses execution if a pipeline run is currently in flight (plan §A.14
+    cross-surface concurrency exclusion). Uses the same shadow-then-promote
+    pattern as `_step_finviz_fetch` to keep (CSV, audit-row) pair atomic.
+
+    Writes through the caller-provided `conn`; CLI surface owns conn-lifecycle.
     """
     from datetime import datetime as _dt
     from swing.data.models import FinvizApiCall
@@ -2242,9 +2447,13 @@ def _perform_finviz_fetch_no_lease(*, cfg, conn) -> None:
         get_latest_signature_hash, insert_call,
     )
 
+    _assert_no_active_pipeline_run(conn)
+    _finviz_cleanup_stale_shadows(cfg.paths.finviz_inbox_dir)
+
     result = _finviz_fetch_core(cfg)
     now_iso = _dt.now().isoformat(timespec="seconds")
     sq = cfg.integrations.finviz.screen_query
+    shadow_path = None
 
     if result["status"] == "ok":
         prior_sig = get_latest_signature_hash(conn, screen_query=sq)
@@ -2254,16 +2463,28 @@ def _perform_finviz_fetch_no_lease(*, cfg, conn) -> None:
                 "(%s -> %s); operator may have edited the saved screen.",
                 prior_sig[:12], result["signature_hash"][:12],
             )
-        _finviz_persist_csv_atomic(result["csv_path"], result["csv_text"])
+        shadow_path = _finviz_persist_csv_shadow(
+            result["csv_path"], result["csv_text"],
+        )
 
-    insert_call(conn, FinvizApiCall(
-        call_id=None, ts=now_iso, screen_query=sq,
-        status=result["status"], row_count=result["row_count"],
-        response_time_ms=result["response_time_ms"],
-        rate_limit_remaining=result["rate_limit_remaining"],
-        signature_hash=result["signature_hash"],
-        error_message=result["error_message"],
-    ))
+    try:
+        insert_call(conn, FinvizApiCall(
+            call_id=None, ts=now_iso, screen_query=sq,
+            status=result["status"], row_count=result["row_count"],
+            response_time_ms=result["response_time_ms"],
+            rate_limit_remaining=result["rate_limit_remaining"],
+            signature_hash=result["signature_hash"],
+            error_message=result["error_message"],
+        ))
+        if shadow_path is not None:
+            _finviz_promote_shadow(shadow_path, result["csv_path"])
+            shadow_path = None
+    finally:
+        if shadow_path is not None and shadow_path.exists():
+            try:
+                shadow_path.unlink()
+            except OSError as _exc:
+                log.warning("failed to clean up Finviz shadow file: %s", _exc)
 ```
 
 - [ ] **Step 4: Add the call site in `run_pipeline_internal`.**
@@ -3012,17 +3233,17 @@ git commit -m "docs(finviz-api): CLAUDE.md gotchas + cycle-checklist update (Tas
 Plan biases high per Phase 6 lesson "Test count projections should bias high":
 
 - Task 1: +6 (2 migration + 4 repo)
-- Task 2: +6 (config cascade + 4 user-config interactions + 1 dataclass-default + 1 R1 regression-2part-paths)
+- Task 2: +7 (config cascade + 4 user-config interactions + 1 dataclass-default + 1 R1 regression-2part-paths + 1 R2 subprocess-cred-propagation)
 - Task 3: +7 (token-missing × 2 + happy-path + normalize-validator + missing-column + excessive-rows + signature-deterministic)
 - Task 4: +6 (500 + 403 + 429-success + 429-give-up + 429-then-429 + network-error)
 - Task 5: +7 (deterministic + column-added + ticker-change + sector-change + 2nd-row-no-change + row-order + column-order-invariant)
-- Task 6: +6 (happy-path + skip-manual + error-on-API-fail + token-missing + drift-warn + no-drift-warn)
+- Task 6: +8 (happy-path + skip-manual + error-on-API-fail + token-missing + drift-warn + no-drift-warn + R2 orphan-shadow-cleanup-on-revoke + R2 cli-refuses-when-pipeline-running)
 - Task 7: +2 (ordering source-text + error-fallback integration)
 - Task 8: +4 (status-empty + status-with-rows + fetch-token-missing + fetch-happy-path)
 - Task 9: +2 slow tests (live happy + signature stable; counted separately)
 - Task 10: +4 (logs + DB row + cassette sweep + R1 urllib3-DEBUG sentinel)
 
-**Fast-test total projection: +48 tests** (range +30 to +60 per brief §6 anticipated band; landing mid-range; +2 added in R1 fixes).
+**Fast-test total projection: +51 tests** (range +30 to +60 per brief §6 anticipated band; landing upper-mid-range; +2 from R1 fixes; +3 from R2 fixes).
 **Slow-test total projection: +2 tests** (live integration test pair).
 
 ---
@@ -3051,4 +3272,4 @@ Plan biases high per Phase 6 lesson "Test count projections should bias high":
 
 **2. Placeholder scan:** none. All discriminating-test pre-fix vs post-fix values are concrete. Task 7's second test is a SCAFFOLD with explicit binding assertion; the executing-plans implementer is REQUIRED to fill it (not skip).
 
-**3. Type consistency:** `FinvizIntegrationConfig` (Task 2) field names match `FinvizClient` consumer (Task 3) — `token`, `screen_query`, `timeout_seconds`. `FinvizApiCall` dataclass (Task 1) field names match `INSERT/SELECT` columns in repo (Task 1) — `call_id, ts, screen_query, status, row_count, response_time_ms, rate_limit_remaining, signature_hash, error_message`. `_step_finviz_fetch` signature (Task 6) takes `cfg, conn` as kwargs; the call site (Task 6 step 4) passes the same shape.
+**3. Type consistency:** `FinvizIntegrationConfig` (Task 2) field names match `FinvizClient` consumer (Task 3) — `token`, `screen_query`, `timeout_seconds`. `FinvizApiCall` dataclass (Task 1) field names match `INSERT/SELECT` columns in repo (Task 1) — `call_id, ts, screen_query, status, row_count, response_time_ms, rate_limit_remaining, signature_hash, error_message`. `_step_finviz_fetch` signature (Task 6) is `(*, cfg, lease)` matching brief §B/§H + Codex R1 M1 fix; `_perform_finviz_fetch_no_lease(*, cfg, conn)` is the sibling CLI surface; both share `_finviz_fetch_core` to avoid logic drift. Pipeline runner call site (Task 6 step 4) passes `cfg=cfg, lease=lease`. CLI body (Task 8) passes `cfg=apply_overrides(...), conn=connect(...)`.
