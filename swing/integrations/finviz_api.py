@@ -124,7 +124,11 @@ class FinvizClient:
                 "[integrations.finviz] screen_query in user-config.toml."
             )
 
-        url = f"{_BASE_URL}?{self._cfg.screen_query}&auth={self._cfg.token}"
+        # Canonicalize screen_query: tolerate operator-pasted leading '?' so we
+        # don't emit '??v=...' (Codex R1 Minor-1; plan §E.3 "appends `&auth=`
+        # or prepends `?` if not already present").
+        screen_query = self._cfg.screen_query.lstrip("?")
+        url = f"{_BASE_URL}?{screen_query}&auth={self._cfg.token}"
 
         with _suppress_transport_debug_logs():
             try:
@@ -172,19 +176,28 @@ class FinvizClient:
 
         Raises FinvizSchemaParityError on column missing OR row count exceeded.
         Sector + Industry preserved verbatim per Q7 lock.
+
+        Tolerates BOM-prefixed bodies (utf-8-sig) and leading blank lines per
+        plan §A.5/§E.4 "first non-blank line is the header" (Codex R1 Major-1).
         """
+        # utf-8-sig strips a leading BOM if present (Excel-style exports).
         try:
-            text = body.decode("utf-8")
+            text = body.decode("utf-8-sig")
         except UnicodeDecodeError as exc:
             raise FinvizSchemaParityError(
                 f"Response body not UTF-8 decodable: {exc}"
             ) from exc
 
         reader = csv.reader(io.StringIO(text))
-        try:
-            header = next(reader)
-        except StopIteration as exc:
-            raise FinvizSchemaParityError("Response body has no header row") from exc
+        # Skip leading blank rows before treating the first non-blank as header.
+        header: list[str] | None = None
+        for row in reader:
+            if not row or all(not c.strip() for c in row):
+                continue
+            header = row
+            break
+        if header is None:
+            raise FinvizSchemaParityError("Response body has no header row")
 
         header_cleaned = [h.strip() for h in header]
         header_set = set(header_cleaned)
@@ -222,12 +235,26 @@ class FinvizClient:
 
         Drift detection: same screen returns same hash; column-set change OR
         first-row-Ticker/Sector/Industry change → different hash.
+
+        Tolerates BOM-prefixed bodies (utf-8-sig) and leading blank lines per
+        plan §A.5/§E.4 "first non-blank line is the header" (Codex R1 Major-1).
+        Same canonicalization as `normalize_to_canonical_csv` so BOM does NOT
+        change the signature for an otherwise-identical response.
         """
-        text = body.decode("utf-8", errors="replace")
-        reader = csv.reader(io.StringIO(text))
+        # utf-8-sig strips a leading BOM if present.
         try:
-            header = next(reader)
-        except StopIteration:
+            text = body.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = body.decode("utf-8", errors="replace")
+        reader = csv.reader(io.StringIO(text))
+        # Skip leading blank rows before treating the first non-blank as header.
+        header: list[str] | None = None
+        for row in reader:
+            if not row or all(not c.strip() for c in row):
+                continue
+            header = row
+            break
+        if header is None:
             return hashlib.sha256(b"<empty>").hexdigest()
         header_cleaned = sorted(h.strip() for h in header)
         first_row: list[str] = []

@@ -1005,7 +1005,25 @@ def _finviz_fetch_core(cfg) -> dict:
     fmt = "%#d" if platform.system() == "Windows" else "%-d"
     date_str = action_session.strftime(f"{fmt}%b%Y")
     csv_path = cfg.paths.finviz_inbox_dir / f"finviz{date_str}.csv"
-    cfg.paths.finviz_inbox_dir.mkdir(parents=True, exist_ok=True)
+
+    # Codex R1 Major-2 fix: inbox-dir creation can fail (PermissionError on
+    # locked-down filesystems; OSError on non-existent parent + read-only mount).
+    # Plan §A.13/§H requires file-write failures to downgrade to status='error'
+    # with an audit row inserted last — same contract as the shadow-write path.
+    # Returning early with status='error' here lets the caller's lease-fenced
+    # audit insert record the failure truthfully rather than escaping as a
+    # generic "programming error" via the outer try/except.
+    try:
+        cfg.paths.finviz_inbox_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        msg = f"{type(exc).__name__}: {exc}"
+        log.warning("Finviz inbox-dir creation failed: %s", msg)
+        return {
+            "status": "error", "csv_text": None, "csv_path": csv_path,
+            "row_count": None, "response_time_ms": 0,
+            "signature_hash": None, "rate_limit_remaining": None,
+            "error_message": msg[:1024],
+        }
 
     if csv_path.exists():
         log.info(

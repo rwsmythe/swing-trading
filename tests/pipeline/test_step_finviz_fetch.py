@@ -401,3 +401,50 @@ def test_step_finviz_fetch_no_warn_when_signature_unchanged(tmp_path: Path, capl
         assert len(drift_warnings) == 0
     finally:
         conn.close()
+
+
+def test_perform_finviz_fetch_no_lease_records_error_on_mkdir_failure(
+    tmp_path: Path,
+) -> None:
+    """Codex R1 Major-2: inbox-dir creation failure (PermissionError, OSError)
+    MUST downgrade to status='error' with an audit row inserted, NOT escape
+    as a generic exception that the outer wrapper logs as a programming error.
+
+    Plan §A.13 / §H requires file-write failures to be downgraded; the audit
+    row is the ground-truth signal. Discriminating pre-fix: mkdir(...) raises
+    OSError → escape → no audit row inserted. Post-fix: caught at the top of
+    `_finviz_fetch_core`; result downgraded; audit row inserted with
+    status='error' and the OSError message in error_message.
+    """
+    from swing.pipeline.runner import _perform_finviz_fetch_no_lease
+
+    cfg = _setup_cfg(tmp_path)
+    # DB exists; inbox dir does NOT exist; we'll patch mkdir to raise.
+    cfg.paths.finviz_inbox_dir.parent.mkdir(parents=True, exist_ok=True)
+    conn = ensure_schema(cfg.paths.db_path)
+    try:
+        # Patch Path.mkdir at the module level so the mkdir call inside
+        # _finviz_fetch_core raises (the only mkdir reached during the test
+        # run after this patch fires).
+        original_mkdir = Path.mkdir
+
+        def _failing_mkdir(self, *args, **kwargs):
+            if self == cfg.paths.finviz_inbox_dir:
+                raise PermissionError("simulated locked filesystem")
+            return original_mkdir(self, *args, **kwargs)
+
+        with patch.object(Path, "mkdir", _failing_mkdir):
+            _perform_finviz_fetch_no_lease(cfg=cfg, conn=conn)
+        rows = list_recent_calls(conn)
+        # Discriminating: audit row exists, status='error', error_message names
+        # PermissionError. Pre-fix: no rows (the helper escaped via OSError
+        # before reaching insert_call).
+        assert len(rows) == 1, rows
+        assert rows[0].status == "error"
+        assert "PermissionError" in (rows[0].error_message or "")
+        assert "simulated locked filesystem" in (rows[0].error_message or "")
+        # Discriminating: no canonical CSV emitted (mkdir failed).
+        # finviz_inbox_dir doesn't exist, so we skip the glob check.
+        assert not cfg.paths.finviz_inbox_dir.exists()
+    finally:
+        conn.close()
