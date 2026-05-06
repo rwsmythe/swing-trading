@@ -45,6 +45,10 @@ def test_swing_finviz_status_lists_recent_calls(cli_runner_with_cfg, tmp_path) -
             rate_limit_remaining=99,
             signature_hash="abc123def456" + "0" * 52, error_message=None,
         ))
+        # code-review I1 (2026-05-06): insert_call no longer commits internally.
+        # Test fixture must commit explicitly so the CliRunner's fresh conn
+        # (opened by `swing finviz status`) sees the seeded row.
+        conn.commit()
     finally:
         conn.close()
     res = runner.invoke(main, ["--config", str(cfg_path), "finviz", "status"])

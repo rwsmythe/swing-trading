@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from swing.data.db import ensure_schema
+from swing.data.db import connect, ensure_schema
 from swing.data.models import FinvizApiCall
 from swing.data.repos.finviz_api_calls import (
     get_latest_signature_hash,
@@ -115,5 +115,43 @@ def test_get_latest_signature_hash_tiebreaks_by_call_id_when_ts_equal(
                 status="ok", signature_hash="NEW")
         # Discriminating post-fix: returns the newer-inserted row's signature.
         assert get_latest_signature_hash(conn, screen_query="v=152") == "NEW"
+    finally:
+        conn.close()
+
+
+def test_insert_call_does_not_commit_internally(tmp_path: Path) -> None:
+    """Discriminating: insert_call must NOT call conn.commit() internally.
+
+    The lease.fenced_write() context manager in swing/pipeline/lease.py owns
+    explicit transaction control via BEGIN IMMEDIATE + COMMIT. If insert_call
+    commits internally, the outer COMMIT raises sqlite3.OperationalError
+    ("cannot commit - no transaction is active") and the subsequent ROLLBACK
+    fails identically — operator-witnessed in S3 of the executing-plans gate
+    (2026-05-06; code-review I1 fix).
+
+    This test mirrors fenced_write's setup (isolation_level=None + explicit
+    BEGIN IMMEDIATE) on a non-fenced path to isolate the repo-level contract.
+    Pre-fix: insert_call's internal `conn.commit()` closes the transaction →
+    the explicit COMMIT below raises. Post-fix: insert_call leaves the
+    transaction open → the explicit COMMIT succeeds.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "swing.db"
+    ensure_schema(db_path).close()
+    conn = connect(db_path)
+    conn.isolation_level = None
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _insert(conn)
+        # Pre-fix raises sqlite3.OperationalError; post-fix succeeds.
+        conn.execute("COMMIT")
+        # Verify row persisted via fresh connection (rules out
+        # read-your-own-writes false positive).
+        with sqlite3.connect(db_path) as fresh:
+            count = fresh.execute(
+                "SELECT COUNT(*) FROM finviz_api_calls"
+            ).fetchone()[0]
+        assert count == 1
     finally:
         conn.close()

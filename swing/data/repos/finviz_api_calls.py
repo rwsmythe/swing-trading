@@ -7,6 +7,16 @@ from swing.data.models import FinvizApiCall
 
 
 def insert_call(conn: sqlite3.Connection, call: FinvizApiCall) -> int:
+    """Insert an audit row. Caller controls transaction scope.
+
+    Must NOT call conn.commit() — the project repo convention is that callers
+    manage transactions explicitly. Inside `lease.fenced_write()` the outer
+    BEGIN IMMEDIATE / COMMIT controls atomicity; an internal commit here
+    would close the transaction prematurely and the outer COMMIT/ROLLBACK
+    would raise sqlite3.OperationalError("cannot commit/rollback - no
+    transaction is active"). Operator-witnessed in S3 of the executing-plans
+    gate (2026-05-06; code-review I1 fix).
+    """
     cur = conn.execute(
         "INSERT INTO finviz_api_calls "
         "(ts, screen_query, status, row_count, response_time_ms, "
@@ -16,7 +26,6 @@ def insert_call(conn: sqlite3.Connection, call: FinvizApiCall) -> int:
          call.response_time_ms, call.rate_limit_remaining,
          call.signature_hash, call.error_message),
     )
-    conn.commit()
     return int(cur.lastrowid)
 
 

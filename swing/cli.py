@@ -1885,6 +1885,13 @@ def finviz_fetch_cmd(ctx: click.Context) -> None:
             _perform_finviz_fetch_no_lease(cfg=cfg, conn=conn)
         except FinvizPipelineActiveError as exc:
             raise click.ClickException(str(exc)) from exc
+        # code-review I1 (2026-05-06): commit the audit row from the CLI body.
+        # insert_call no longer commits internally (broke lease.fenced_write
+        # transaction-control contract on the pipeline path); CLI raw-conn
+        # callers commit explicitly here. Without this, the implicit
+        # transaction would roll back at conn.close() below + the audit row
+        # would be lost.
+        conn.commit()
         recent = list_recent_calls(conn, limit=1)
         if recent:
             r = recent[0]
