@@ -42,16 +42,70 @@ Brief §3.2 deferred quota investigation. No publicly-accessible Finviz Elite do
 
 Synthesized from public knowledge: Finviz Elite's `/export.ashx` endpoint returns a CSV-formatted body with `Content-Type: text/csv` (or `text/plain`; both observed in third-party reports). Plan-author treats Content-Type as advisory: the client parses the body as CSV regardless of declared type, with a single defense-in-depth check that the first non-blank line of the body parses as a CSV header containing AT LEAST the columns `Ticker, Sector, Industry, Country, Price` (subset of the canonical 13 — most-commonly-present + most-likely-to-bind-anti-spoof). If parse fails, raise `FinvizSchemaParityError` (Task 4). Live verification (Task 0.b) confirms.
 
-### A.6 — `swing.config.toml` rolling cascade audit: `cfg.integrations.finviz.token` MUST NOT appear in tracked config
+### A.6 — `swing.config.toml` rolling cascade audit: `cfg.integrations.finviz.{token,screen_query}` are STRIPPED at `load()` time + EXCLUDED from `FIELD_REGISTRY`
 
-Per brief §2.2 + §5 ruff/security discipline. Plan task adding the cfg cascade explicitly:
-1. Adds `IntegrationsConfig` + `FinvizIntegrationConfig` sub-dataclasses to `swing/config.py`.
-2. Adds `integrations: IntegrationsConfig = field(default_factory=IntegrationsConfig)` to top-level `Config`.
-3. Modifies `swing/config.py:load()` to read `raw.get("integrations", {}).get("finviz", {})` and pass through (token defaults to empty string if absent in tracked toml; user-config override populates it).
-4. Updates `swing/config_overrides.py` to apply user-config override for `integrations.finviz.token` and `integrations.finviz.screen_query`.
-5. Audits `Config(...)` direct-construction call sites in tests; adds the new section to each construction.
+Per brief §2.2 + §5 ruff/security discipline + Codex R1 Critical-2 fix. The Phase 5 `FIELD_REGISTRY` (`swing/config_validation.py`) is the binding source of truth for `swing config show|set|reset` (CLI) and `/config` (web). Adding Finviz fields to it would (a) expose token bytes in `swing config show`, (b) require 3-part-path support in many surfaces (`delete_user_override`, `cli_config.config_show/set/reset`, `web/routes/config.py`, `web/view_models/config.py`), and (c) violate the brief's V1 lock that config-page UX surfacing is V2.
 
-Per orchestrator-context lesson `cfg.X 3-edit cascade`, the cascade is explicitly enumerated in Task 2 and referenced as discriminating-test scope.
+**Plan-locked posture for V1 (binding):**
+
+1. **Sub-dataclass + Config field added** (Task 2): `IntegrationsConfig` + `FinvizIntegrationConfig` with `token: str = ""`, `screen_query: str = ""`, `timeout_seconds: int = 30`. Top-level `Config` adds `integrations: IntegrationsConfig = field(default_factory=IntegrationsConfig)`.
+2. **`load()` STRIPS tracked-toml `token` + `screen_query`** (security carve-out): the loader reads `raw.get("integrations", {}).get("finviz", {})` BUT explicitly drops the `token` and `screen_query` keys from the dict before passing to `FinvizIntegrationConfig(...)`. Only `timeout_seconds` survives from tracked toml. **Result:** `cfg.integrations.finviz.token == ""` always after `load()`, regardless of what the tracked toml says.
+3. **`apply_overrides()` is THE source-of-truth** for `token` + `screen_query` in V1: it reads `[integrations.finviz]` from user-config.toml and `replace()`s the cfg. Consumers that need real Finviz creds MUST call `apply_overrides()` first — see §A.11 for the binding entrypoint convention.
+4. **`_get()` is extended to support N-part dotted paths** so `apply_overrides()` can read `integrations.finviz.token`. Other 2-part-path consumers (`delete_user_override`, `cli_config.config_show/set/reset`, `web/routes/config.py`, `web/view_models/config.py`, `get_field_source`) are NOT touched in V1; they continue assuming 2-part paths.
+5. **`FIELD_REGISTRY` is NOT extended in V1.** Finviz fields stay out of `swing config show|set|reset` and out of `/config`. This honors the brief's "config-page UX surfacing is V2" lock + eliminates the token-leak surface area.
+6. **`Config(...)` direct-construction audit:** the new top-level `integrations` field has `default_factory=IntegrationsConfig` so existing test fixtures that omit `integrations=` continue to construct without changes. Discriminating test in Task 2 verifies.
+
+V2 hardening (out-of-scope; track for a follow-up dispatch): masked sensitive-field handling in `swing config show` + 3-part-path support in registry-coupled surfaces; until then, `swing config show` legitimately omits Finviz fields entirely.
+
+### A.11 — Runtime entrypoint convention: callers consume effective cfg via `apply_overrides()` (Codex R1 Critical-1 fix)
+
+Brief §2.2 implicitly assumed effective cfg propagation but did not enumerate entrypoints. Verified via [`swing/cli.py:108`](../../swing/cli.py#L108) — `main()` calls `load_config(...)` and stores the RAW cfg in `ctx.obj["config"]`; `apply_overrides()` is NOT called centrally. Per-consumer responsibility is the existing Phase 5 convention (see [`swing/cli_config.py:35`](../../swing/cli_config.py#L35) `apply_overrides(base_cfg)` + similar in `web/routes/config.py`).
+
+**Plan-locked entrypoint convention (binding for V1):**
+
+| Entrypoint | Consumer of `cfg.integrations.finviz` | apply_overrides() responsibility |
+|---|---|---|
+| `swing finviz fetch` (Task 8) | direct (token + screen_query for FinvizClient) | Task 8 step 3: command body calls `apply_overrides(ctx.obj["config"])` BEFORE constructing FinvizClient. |
+| `swing finviz status` (Task 8) | none (reads finviz_api_calls only) | not needed; raw cfg sufficient. |
+| `swing pipeline run` (CLI) | indirect via `_step_finviz_fetch` | The CLI command handler MUST call `apply_overrides(ctx.obj["config"])` and pass the effective cfg into `run_pipeline_internal`. Verify the existing `swing pipeline run` command at executing-plans Task 2.5 time and add the `apply_overrides()` call if absent. |
+| `swing.web.routes.pipeline.POST /pipeline/run` (web) | indirect via `_step_finviz_fetch` | The route handler MUST call `apply_overrides()` before spawning the pipeline subprocess. Verify the existing route at executing-plans Task 2.5 time and add the call if absent. |
+| `_step_finviz_fetch(*, cfg, lease)` (pipeline-internal) | direct | NOT internally — defensive `apply_overrides()` here would cause a silent surprise (different effective cfg than other steps that don't apply). The convention is: caller hands pre-overridden cfg to the runner. |
+
+**Defensive guard (Task 2 binding test):** add a discriminating test that asserts `_step_finviz_fetch` reads from the cfg passed in (not from `apply_overrides()` re-loaded inside), so the entrypoint convention is enforced by failing test if a future refactor inverts it.
+
+### A.12 — `requests` / `urllib3` DEBUG-log redaction (Codex R1 Major-2 fix)
+
+§E.7 token-redaction discipline did not previously cover lower-level HTTP libraries. Python's `requests` library delegates to `urllib3` for transport; at DEBUG log level, `urllib3.connectionpool` emits log lines that include the full request URL with query string (token bytes). Even if the application logger is at INFO, a future operator-debug session that calls `logging.basicConfig(level=logging.DEBUG)` would leak the token in their terminal/log file.
+
+**Plan-locked defense (Task 3 binding):** `FinvizClient.fetch_screen()` wraps the `requests.get(...)` call in a context manager that bumps `urllib3.connectionpool` + `requests.packages.urllib3.connectionpool` loggers to WARNING for the duration:
+
+```python
+@contextlib.contextmanager
+def _suppress_urllib3_debug() -> Iterator[None]:
+    """Force urllib3 DEBUG logs to WARNING for the duration; restore on exit.
+
+    urllib3.connectionpool's DEBUG log lines include the full request URL
+    (with query string → token). Defense-in-depth complement to the
+    FinvizApiError __str__ contract + cassette filter_query_parameters.
+    """
+    affected = ("urllib3.connectionpool", "requests.packages.urllib3.connectionpool")
+    prior_levels = {name: logging.getLogger(name).level for name in affected}
+    try:
+        for name in affected:
+            logging.getLogger(name).setLevel(logging.WARNING)
+        yield
+    finally:
+        for name, level in prior_levels.items():
+            logging.getLogger(name).setLevel(level)
+```
+
+Plan Task 10 (token-leak audit) adds a discriminating test that:
+1. Calls `logging.basicConfig(level=logging.DEBUG, force=True)`.
+2. Sets `logging.getLogger("urllib3.connectionpool").setLevel(logging.DEBUG)` BEFORE calling `FinvizClient.fetch_screen()`.
+3. Captures all log records via caplog.
+4. Asserts the sentinel token literal is absent from every captured record.
+
+If the suppression helper is missing, the test FAILS with the sentinel found in urllib3 DEBUG output.
 
 ### A.7 — Operator's saved-screen identification = `screen_query` opaque string, NOT a numeric `screen_id`
 
@@ -101,11 +155,12 @@ Brief §2.2 line "MAY contain a placeholder `screen_id = ""` and timeout/retry d
 | Path | Reason |
 |---|---|
 | `swing/cli.py` | Add new `@main.group("finviz")` subcommand group with `fetch` + `status` commands. |
-| `swing/pipeline/runner.py` | Add `_step_finviz_fetch(*, cfg, lease)` function. Call site lands BEFORE `_step_evaluate` invocation in `run_pipeline_internal`. Function is error-tolerant: any exception is caught, logged, and a `finviz_api_calls` row with `status='error'` is inserted; pipeline continues to `_step_evaluate`. |
+| `swing/pipeline/runner.py` | Add `_step_finviz_fetch(*, cfg, lease)` function (uses `lease.fenced_write()` for `finviz_api_calls` inserts). Call site lands BEFORE `_step_evaluate` invocation in `run_pipeline_internal`. Function is error-tolerant: any exception is caught, logged, and a `finviz_api_calls` row with `status='error'` is inserted via `lease.fenced_write()`; pipeline continues to `_step_evaluate`. |
+| `swing/pipeline/runner.py` (additionally) | Add `_perform_finviz_fetch_no_lease(cfg, conn) -> None` helper used by the standalone CLI `swing finviz fetch` (Task 8). Same fetch + normalize + signature + insert logic as `_step_finviz_fetch` but writes through the caller-provided `conn` (no lease — there is no concurrent-pipeline contention since the CLI is operator-triggered + serialized by SQLite's WAL writer locking). The two functions share a `_finviz_fetch_core(cfg, *, signature_lookup, persist_call, write_csv)` private helper to avoid logic drift between pipeline + CLI surfaces. |
 | `swing/data/db.py` | Bump `EXPECTED_SCHEMA_VERSION` 14 → 15 (single-line edit). |
 | `swing/data/models.py` | Add `FinvizApiCall` dataclass (frozen). |
 | `swing/config.py` | Add `IntegrationsConfig` + `FinvizIntegrationConfig` sub-dataclasses; add `integrations: IntegrationsConfig` to top-level `Config`; load `raw.get("integrations", {})` in `load()`. |
-| `swing/config_overrides.py` | Apply user-config override for `integrations.finviz.token` + `integrations.finviz.screen_query`. Extend `_V1_PATHS` tuple. |
+| `swing/config_overrides.py` | Apply user-config override for `integrations.finviz.token` + `integrations.finviz.screen_query`. Extend `_get()` to N-part dotted paths. **`_V1_PATHS` is NOT extended** (Codex R1 Critical-2 fix; Finviz fields stay outside `FIELD_REGISTRY` surface in V1). |
 | `swing.config.toml` | Add `[integrations.finviz]` section with `timeout_seconds = 30` placeholder ONLY. NO `token` row. NO `screen_query` row. |
 | `pyproject.toml` | Add `pytest-recording>=0.13` to `[project.optional-dependencies] dev` extras. |
 | `CLAUDE.md` | Update Finviz inbox section: API path is now primary; manual CSV is fallback. New gotcha: token-in-user-config-not-tracked-toml + cassette-staleness runbook pointer. |
@@ -352,7 +407,7 @@ Update the Finviz inbox section + add new gotchas. Exact text to insert (executi
   4. Edit user-config to invalidate token (e.g., append a typo) → run `swing finviz fetch` → confirm `status='error'`, row_count=NULL, error_message non-empty (and token literal absent).
   5. Restore valid token → run `swing pipeline run` end-to-end → confirm all 7 existing pipeline steps succeed.
 - **Test-suite gate (binding):** `python -m pytest -m "not slow" -q` returns 0 failures, 0 errors. Test count delta projected +30 to +60 fast tests.
-- **Slow-suite spot-check (binding for executing-plans, NOT for CI):** `python -m pytest -m slow tests/integrations/test_finviz_api_live.py -v` against operator's token returns 1 passed (or 1 skipped if operator's token absent; never 1 failed).
+- **Slow-suite spot-check (binding for executing-plans, NOT for CI):** `python -m pytest -m slow tests/integrations/test_finviz_api_live.py -v` against operator's token returns 2 passed (or 2 skipped if operator's token absent; never failed). Task 9 contributes 2 slow tests (live happy-path + signature-stable-within-session).
 - **Ruff baseline gate:** `ruff check swing/` reports ≤ 78 errors (project baseline). Plan introduces 0 new violations.
 
 ---
@@ -369,6 +424,19 @@ Update the Finviz inbox section + add new gotchas. Exact text to insert (executi
 - Read: `docs/superpowers/plans/2026-05-05-finviz-api-integration-plan.md` (this plan)
 - Read: `docs/finviz-api-integration-writing-plans-brief.md`
 - Read (operator-provided one-time): operator's Finviz Elite token + saved-screen-query
+
+**Shell-syntax note (Codex R1 Minor-1 fix):** the bash code-blocks in this plan are POSIX-shell-style (operator runs via gitbash on Windows per CLAUDE.md "Windows + gitbash" section). The implementer MAY equivalently use PowerShell by adapting:
+
+| POSIX | PowerShell |
+|---|---|
+| `export FOO=bar` | `$env:FOO = "bar"` |
+| `/tmp/foo` | `$env:TEMP\foo` |
+| `head -2 file` | `Get-Content file -TotalCount 2` |
+| `tail -1` | `Select-Object -Last 1` |
+| `grep` | `Select-String` |
+| `pip install -e ".[dev,web]"` (zsh) | `pip install -e ".[dev,web]"` (PowerShell — quote escaping varies; use single quotes if needed) |
+
+The Bash tool is also available in the executing-plans environment per CLAUDE.md.
 
 #### Task 0.a — Capture baseline state
 
@@ -757,7 +825,7 @@ git commit -m "feat(finviz-api): migration 0015 + FinvizApiCall + repo (Task 1)"
 
 **Files:**
 - Modify: `swing/config.py` (sub-dataclasses + top-level field + load() pass-through)
-- Modify: `swing/config_overrides.py` (apply user-config override + extend `_V1_PATHS`)
+- Modify: `swing/config_overrides.py` (extend `_get` to N-part paths + add Finviz overrides in `apply_overrides`; `_V1_PATHS` unchanged)
 - Modify: `swing.config.toml` (add `[integrations.finviz]` with `timeout_seconds = 30` only)
 - Create: `tests/config/test_config_integrations_finviz.py`
 
@@ -810,19 +878,31 @@ def test_finviz_integration_tracked_toml_overrides_default_timeout(
     assert cfg.integrations.finviz.screen_query == ""
 
 
-def test_finviz_integration_tracked_toml_does_NOT_carry_token(tmp_path: Path) -> None:
-    """Sensitive fields MUST come from user-config; tracked toml ignored even if set."""
+def test_finviz_integration_tracked_toml_token_STRIPPED_at_load(tmp_path: Path) -> None:
+    """Security carve-out (Codex R1 Major-5 fix): tracked toml MUST NOT
+    deliver a token / screen_query into the cfg. load() strips both keys
+    even if present in tracked toml; only timeout_seconds survives.
+
+    Discriminating pre-fix (naive `FinvizIntegrationConfig(**raw_section)`):
+        cfg.integrations.finviz.token == "TRACKED_TOKEN_LEAK"  # leaks
+    Discriminating post-fix (load() filters keys):
+        cfg.integrations.finviz.token == ""  # stripped
+    """
     cfg_text = (Path("swing.config.toml")).read_text()
-    cfg_text += '\n[integrations.finviz]\ntoken = "TRACKED_TOKEN_LEAK"\n'
+    cfg_text += textwrap.dedent('''
+        [integrations.finviz]
+        token = "TRACKED_TOKEN_LEAK"
+        screen_query = "TRACKED_SCREEN_LEAK"
+        timeout_seconds = 45
+    ''').strip() + "\n"
     cfg_path = tmp_path / "swing.config.toml"
     cfg_path.write_text(cfg_text)
     cfg = load(cfg_path)
-    # Discriminating: load() either accepts the row (cfg.integrations.finviz.token =
-    # "TRACKED_TOKEN_LEAK") OR rejects it (raises). Plan accepts the row at load time
-    # but the user-config override layer is THE single source of truth for runtime;
-    # a hardening V2 could reject. For V1, document + assert behavior is "accept but
-    # don't depend on it." This test pins V1 behavior:
-    assert cfg.integrations.finviz.token == "TRACKED_TOKEN_LEAK"
+    # Post-fix discriminators:
+    assert cfg.integrations.finviz.token == ""  # stripped
+    assert cfg.integrations.finviz.screen_query == ""  # stripped
+    # Non-sensitive timeout passes through.
+    assert cfg.integrations.finviz.timeout_seconds == 45
 
 
 def test_user_config_override_token_and_screen_query(
@@ -900,17 +980,23 @@ class Config:
     integrations: IntegrationsConfig = field(default_factory=IntegrationsConfig)  # NEW
 ```
 
-Modify `load()` to read the section (keep existing required-section check unchanged; new section is optional):
+Modify `load()` to read the section AND STRIP sensitive keys (security carve-out per §A.6 + Codex R1 Critical-2 fix):
 
 ```python
 def load(config_path: Path) -> Config:
     # ... existing code ...
+    raw_finviz = dict(raw.get("integrations", {}).get("finviz", {}))
+    # Sensitive fields MUST come from user-config only; tracked toml may carry
+    # only timeout_seconds. Drop any token / screen_query rows defensively to
+    # eliminate the leak path (Phase 7e plan §A.6).
+    raw_finviz.pop("token", None)
+    raw_finviz.pop("screen_query", None)
     return Config(
         paths=paths,
         # ... existing args ...
         review=ReviewConfig(**raw.get("review", {})),
         integrations=IntegrationsConfig(
-            finviz=FinvizIntegrationConfig(**raw.get("integrations", {}).get("finviz", {})),
+            finviz=FinvizIntegrationConfig(**raw_finviz),
         ),
     )
 ```
@@ -930,16 +1016,7 @@ timeout_seconds = 30
 
 - [ ] **Step 5: Edit `swing/config_overrides.py`.**
 
-Add to `_V1_PATHS`:
-
-```python
-_V1_PATHS = (
-    "web.chase_factor", "pipeline.chart_top_n_watch", "account.risk_equity_floor",
-    "integrations.finviz.token", "integrations.finviz.screen_query",  # NEW
-)
-```
-
-Modify `_get` to support 3-part dotted paths (currently 2-part):
+Per §A.6 + Codex R1 Critical-2 fix: `_V1_PATHS` is NOT extended (Finviz fields are intentionally absent from the registry). Modify `_get` to support N-part dotted paths so `apply_overrides()` can read `integrations.finviz.token` from user-config:
 
 ```python
 def _get(overrides: dict[str, Any], path: str) -> Any | _Missing:
@@ -991,26 +1068,27 @@ def apply_overrides(base_cfg: Config) -> Config:
     )
 ```
 
-Update `get_field_source` to handle the new 3-part paths (the `field_path.split(".")` currently expects 2 parts; bump to handle arbitrary nesting and look up via the same `_get` walk):
+Per §A.6, `_V1_PATHS` and `get_field_source` REMAIN UNCHANGED in V1. Finviz fields are intentionally absent from the registry surface; `apply_overrides()` reads them directly via the now-N-part-aware `_get()`. The 2-part-path assumption in `cli_config.config_show/set/reset`, `delete_user_override`, `web/routes/config.py`, `web/view_models/config.py`, `get_field_source` is preserved.
+
+Discriminating regression test (Task 2 binding) — verifies extending `_get` to N-part paths does NOT break existing 2-part registry consumers:
 
 ```python
-def get_field_source(base_cfg: Config, field_path: str) -> Literal["default", "tracked", "override"]:
-    if field_path not in _V1_PATHS:
-        raise ValueError(f"unknown field_path: {field_path}")
-    overrides = load_user_overrides()
-    if not isinstance(_get(overrides, field_path), _Missing):
-        return "override"
-    from swing.config_validation import FIELD_REGISTRY
-    spec = next(s for s in FIELD_REGISTRY if s.path == field_path)
-    parts = field_path.split(".")
-    cursor: Any = base_cfg
-    for part in parts:
-        cursor = getattr(cursor, part)
-    base_value = cursor
-    return "tracked" if base_value != spec.default else "default"
-```
+def test_existing_2part_path_get_field_source_still_works(
+    monkeypatch, tmp_path,
+) -> None:
+    """Codex R1 Major-4 regression check: extending _get to N-part paths
+    must not break the existing 2-part registry consumers."""
+    from swing.config import load
+    from swing.config_overrides import get_field_source
+    from pathlib import Path as _P
 
-`FIELD_REGISTRY` (in `swing/config_validation.py`) likely needs the two new entries appended; the executing-plans implementer reads its current content + matches the existing pattern. If the registry is the binding source of truth for `swing config show`, both `integrations.finviz.token` and `integrations.finviz.screen_query` should be marked sensitive (omit value when displaying via `swing config show`); see Phase 5 plan for masking precedent.
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # empty user-config dir
+    base_cfg = load(_P("swing.config.toml"))
+    # Discriminating: returns one of {'default','tracked'} (NOT raises).
+    assert get_field_source(base_cfg, "web.chase_factor") in ("default", "tracked")
+    assert get_field_source(base_cfg, "pipeline.chart_top_n_watch") in ("default", "tracked")
+    assert get_field_source(base_cfg, "account.risk_equity_floor") in ("default", "tracked")
+```
 
 - [ ] **Step 6: Run config tests; expect PASS.**
 
@@ -1225,16 +1303,19 @@ drift detection. NO direct DB writes — caller (pipeline step OR CLI) owns
 persistence. NO logging of token bytes, response URL, or response body.
 
 See docs/superpowers/plans/2026-05-05-finviz-api-integration-plan.md §E
-for endpoint reference + §F for the token-redaction discipline.
+for endpoint reference + §F for the token-redaction discipline (incl.
+defense-in-depth urllib3 DEBUG-log suppression per §A.12 / Codex R1 M2).
 """
 from __future__ import annotations
 
+import contextlib
 import csv
 import hashlib
 import io
 import json
 import logging
 import time
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 import requests
@@ -1249,6 +1330,30 @@ log = logging.getLogger(__name__)
 _BASE_URL = "https://elite.finviz.com/export.ashx"
 _MAX_DATA_ROWS = 5000  # safety bound; see plan §E.5
 _RETRY_AFTER_MAX_SECONDS = 30  # wait at most this long on 429 + Retry-After
+
+# Logger names that emit DEBUG-level lines including the full request URL
+# (with `auth=<token>` query param). Suppressed during fetch_screen() per
+# plan §A.12 (Codex R1 Major-2 fix).
+_TRANSPORT_DEBUG_LOGGERS = (
+    "urllib3.connectionpool",
+    "requests.packages.urllib3.connectionpool",
+)
+
+
+@contextlib.contextmanager
+def _suppress_transport_debug_logs() -> Iterator[None]:
+    """Force urllib3 + requests-bundled-urllib3 loggers to WARNING for the
+    duration; restore on exit. Defense-in-depth complement to the
+    FinvizApiError.__str__ contract + cassette filter_query_parameters
+    redaction. See plan §A.12."""
+    prior = {n: logging.getLogger(n).level for n in _TRANSPORT_DEBUG_LOGGERS}
+    try:
+        for n in _TRANSPORT_DEBUG_LOGGERS:
+            logging.getLogger(n).setLevel(logging.WARNING)
+        yield
+    finally:
+        for n, lvl in prior.items():
+            logging.getLogger(n).setLevel(lvl)
 
 
 class FinvizConfigMissingError(RuntimeError):
@@ -1309,12 +1414,13 @@ class FinvizClient:
 
         url = f"{_BASE_URL}?{self._cfg.screen_query}&auth={self._cfg.token}"
 
-        try:
-            response = requests.get(url, timeout=self._cfg.timeout_seconds)
-        except requests.RequestException as exc:
-            # str(exc) on requests.* exceptions can include the URL on some
-            # versions. Wrap explicitly with empty body excerpt.
-            raise FinvizApiError(0, "") from exc
+        with _suppress_transport_debug_logs():
+            try:
+                response = requests.get(url, timeout=self._cfg.timeout_seconds)
+            except requests.RequestException as exc:
+                # str(exc) on requests.* exceptions can include the URL on some
+                # versions. Wrap explicitly with empty body excerpt.
+                raise FinvizApiError(0, "") from exc
 
         if response.status_code == 429:
             retry_after_str = response.headers.get("Retry-After", "")
@@ -1327,10 +1433,11 @@ class FinvizClient:
                     "Finviz API 429 rate-limited; retrying after %ds", retry_after,
                 )
                 time.sleep(retry_after)
-                try:
-                    response = requests.get(url, timeout=self._cfg.timeout_seconds)
-                except requests.RequestException as exc:
-                    raise FinvizApiError(0, "") from exc
+                with _suppress_transport_debug_logs():
+                    try:
+                        response = requests.get(url, timeout=self._cfg.timeout_seconds)
+                    except requests.RequestException as exc:
+                        raise FinvizApiError(0, "") from exc
                 if response.status_code == 429:
                     raise FinvizRateLimitError(429, "")
             else:
@@ -1806,13 +1913,13 @@ def _setup_db(cfg) -> sqlite3.Connection:
 @pytest.mark.vcr(filter_query_parameters=["auth"])
 def test_step_finviz_fetch_writes_csv_and_ok_row(tmp_path: Path) -> None:
     """Happy path: API returns CSV → file written + status='ok' row + signature populated."""
-    from swing.pipeline.runner import _step_finviz_fetch
+    from swing.pipeline.runner import _perform_finviz_fetch_no_lease
 
     cfg = _setup_cfg(tmp_path)
     cfg.paths.finviz_inbox_dir.mkdir(parents=True)
     conn = _setup_db(cfg)
     try:
-        _step_finviz_fetch(cfg=cfg, conn=conn)
+        _perform_finviz_fetch_no_lease(cfg=cfg, conn=conn)
         rows = list_recent_calls(conn)
         assert len(rows) == 1
         # Discriminating: status='ok' (NOT 'error', NOT 'skipped_manual_override').
@@ -1840,7 +1947,7 @@ def test_step_finviz_fetch_skips_when_csv_exists(tmp_path: Path) -> None:
     import platform
 
     from swing.evaluation.dates import action_session_for_run
-    from swing.pipeline.runner import _step_finviz_fetch
+    from swing.pipeline.runner import _perform_finviz_fetch_no_lease
 
     cfg = _setup_cfg(tmp_path)
     cfg.paths.finviz_inbox_dir.mkdir(parents=True)
@@ -1855,7 +1962,7 @@ def test_step_finviz_fetch_skips_when_csv_exists(tmp_path: Path) -> None:
 
     try:
         with patch("swing.integrations.finviz_api.FinvizClient.fetch_screen") as mock_fetch:
-            _step_finviz_fetch(cfg=cfg, conn=conn)
+            _perform_finviz_fetch_no_lease(cfg=cfg, conn=conn)
             # Discriminating: API client was NOT instantiated/called.
             mock_fetch.assert_not_called()
         rows = list_recent_calls(conn)
@@ -1874,7 +1981,7 @@ def test_step_finviz_fetch_skips_when_csv_exists(tmp_path: Path) -> None:
 def test_step_finviz_fetch_records_error_on_api_failure(tmp_path: Path) -> None:
     """Error path: API raises → row='error' inserted; pipeline does NOT raise."""
     from swing.integrations.finviz_api import FinvizApiError
-    from swing.pipeline.runner import _step_finviz_fetch
+    from swing.pipeline.runner import _perform_finviz_fetch_no_lease
 
     cfg = _setup_cfg(tmp_path)
     cfg.paths.finviz_inbox_dir.mkdir(parents=True)
@@ -1884,7 +1991,7 @@ def test_step_finviz_fetch_records_error_on_api_failure(tmp_path: Path) -> None:
             "swing.integrations.finviz_api.FinvizClient.fetch_screen",
             side_effect=FinvizApiError(500, ""),
         ):
-            _step_finviz_fetch(cfg=cfg, conn=conn)
+            _perform_finviz_fetch_no_lease(cfg=cfg, conn=conn)
         rows = list_recent_calls(conn)
         # Discriminating: status='error' (NOT 'ok' — the test would fail under
         # an implementation that swallows + records 'ok').
@@ -1902,14 +2009,14 @@ def test_step_finviz_fetch_records_error_on_api_failure(tmp_path: Path) -> None:
 
 def test_step_finviz_fetch_records_error_when_token_missing(tmp_path: Path) -> None:
     """Config-missing path: token empty → no API call; row='error'."""
-    from swing.pipeline.runner import _step_finviz_fetch
+    from swing.pipeline.runner import _perform_finviz_fetch_no_lease
 
     cfg = _setup_cfg(tmp_path, token="")
     cfg.paths.finviz_inbox_dir.mkdir(parents=True)
     conn = _setup_db(cfg)
     try:
         with patch("swing.integrations.finviz_api.FinvizClient.fetch_screen") as mock_fetch:
-            _step_finviz_fetch(cfg=cfg, conn=conn)
+            _perform_finviz_fetch_no_lease(cfg=cfg, conn=conn)
             mock_fetch.assert_not_called()
         rows = list_recent_calls(conn)
         assert rows[0].status == "error"
@@ -1928,7 +2035,7 @@ def test_step_finviz_fetch_warns_on_signature_drift(tmp_path: Path, caplog) -> N
 
     from swing.data.models import FinvizApiCall
     from swing.data.repos.finviz_api_calls import insert_call
-    from swing.pipeline.runner import _step_finviz_fetch
+    from swing.pipeline.runner import _perform_finviz_fetch_no_lease
 
     cfg = _setup_cfg(tmp_path)
     cfg.paths.finviz_inbox_dir.mkdir(parents=True)
@@ -1944,7 +2051,7 @@ def test_step_finviz_fetch_warns_on_signature_drift(tmp_path: Path, caplog) -> N
         ))
 
         with caplog.at_level(logging.WARNING, logger="swing.pipeline.runner"):
-            _step_finviz_fetch(cfg=cfg, conn=conn)
+            _perform_finviz_fetch_no_lease(cfg=cfg, conn=conn)
         # Discriminating: WARNING fires.
         drift_warnings = [
             r for r in caplog.records
@@ -1962,19 +2069,19 @@ def test_step_finviz_fetch_no_warn_when_signature_unchanged(tmp_path: Path, capl
 
     from swing.data.models import FinvizApiCall
     from swing.data.repos.finviz_api_calls import insert_call
-    from swing.pipeline.runner import _step_finviz_fetch
+    from swing.pipeline.runner import _perform_finviz_fetch_no_lease
 
     cfg = _setup_cfg(tmp_path)
     cfg.paths.finviz_inbox_dir.mkdir(parents=True)
     conn = _setup_db(cfg)
     try:
         # First call to seed; then second call.
-        _step_finviz_fetch(cfg=cfg, conn=conn)
+        _perform_finviz_fetch_no_lease(cfg=cfg, conn=conn)
         # Remove the emitted CSV so the second call goes through API path.
         for f in cfg.paths.finviz_inbox_dir.glob("finviz*.csv"):
             f.unlink()
         with caplog.at_level(logging.WARNING, logger="swing.pipeline.runner"):
-            _step_finviz_fetch(cfg=cfg, conn=conn)
+            _perform_finviz_fetch_no_lease(cfg=cfg, conn=conn)
         # Discriminating: no signature-change warning.
         drift_warnings = [
             r for r in caplog.records
@@ -1991,36 +2098,35 @@ def test_step_finviz_fetch_no_warn_when_signature_unchanged(tmp_path: Path, capl
 python -m pytest tests/pipeline/test_step_finviz_fetch.py -v
 ```
 
-- [ ] **Step 3: Implement `_step_finviz_fetch` in `swing/pipeline/runner.py`.**
+- [ ] **Step 3: Implement the shared core + two surface-specific entrypoints in `swing/pipeline/runner.py`.**
 
-Add (after the `_step_review_log_cadence` definition; the helper is order-independent at module scope):
+Add (after the `_step_review_log_cadence` definition; the helpers are order-independent at module scope). Per Codex R1 Major-1 fix: the pipeline-internal step uses `lease.fenced_write()` for DB writes (consistency with other steps); the standalone CLI uses a raw connection (no lease — operator-triggered, serialized by SQLite WAL writer locking). Both call a single shared core that does the API fetch + normalize + signature, then the surface-specific wrapper persists with its own conn-management strategy.
 
 ```python
-def _step_finviz_fetch(*, cfg, conn) -> None:
-    """Pipeline step: fetch today's Finviz screen via API.
+def _finviz_fetch_core(cfg) -> dict | None:
+    """Shared API fetch + normalize + signature computation.
 
-    Skipped when today's CSV already present (manual override). Error-tolerant:
-    any failure logs + records a `finviz_api_calls` row with status='error' and
-    returns without raising; pipeline continues to `_step_evaluate`, which
-    follows existing empty-inbox semantics if no CSV is written.
+    Returns a dict with keys:
+        ok: bool
+        status: 'ok' | 'error' | 'skipped_manual_override'
+        csv_text: str | None  (canonical 13-column CSV text; None if not written)
+        csv_path: Path        (target path; written by caller on status=='ok')
+        row_count: int | None
+        response_time_ms: int | None
+        signature_hash: str | None
+        rate_limit_remaining: int | None
+        error_message: str | None
+
+    Performs the fetch but does NOT write to DB or filesystem; the caller
+    persists per-surface (lease-fenced for pipeline; raw conn for CLI).
     """
-    import os
-    import platform
-    import time
+    import os, platform, time
     from datetime import datetime as _dt
     from pathlib import Path as _Path
 
-    from swing.data.models import FinvizApiCall
-    from swing.data.repos.finviz_api_calls import (
-        get_latest_signature_hash,
-        insert_call,
-    )
     from swing.integrations.finviz_api import (
-        FinvizApiError,
-        FinvizClient,
-        FinvizConfigMissingError,
-        FinvizRateLimitError,
-        FinvizSchemaParityError,
+        FinvizApiError, FinvizClient, FinvizConfigMissingError,
+        FinvizRateLimitError, FinvizSchemaParityError,
     )
 
     action_session = action_session_for_run(_dt.now())
@@ -2028,21 +2134,18 @@ def _step_finviz_fetch(*, cfg, conn) -> None:
     date_str = action_session.strftime(f"{fmt}%b%Y")
     csv_path = cfg.paths.finviz_inbox_dir / f"finviz{date_str}.csv"
     cfg.paths.finviz_inbox_dir.mkdir(parents=True, exist_ok=True)
-    now_iso = _dt.now().isoformat(timespec="seconds")
 
     if csv_path.exists():
         log.info(
             "Manual CSV present at %s; Finviz API fetch skipped (manual override).",
             csv_path,
         )
-        insert_call(conn, FinvizApiCall(
-            call_id=None, ts=now_iso,
-            screen_query=cfg.integrations.finviz.screen_query,
-            status="skipped_manual_override",
-            row_count=None, response_time_ms=None,
-            rate_limit_remaining=None, signature_hash=None, error_message=None,
-        ))
-        return
+        return {
+            "status": "skipped_manual_override", "csv_text": None,
+            "csv_path": csv_path, "row_count": None,
+            "response_time_ms": None, "signature_hash": None,
+            "rate_limit_remaining": None, "error_message": None,
+        }
 
     start = time.monotonic()
     try:
@@ -2051,31 +2154,13 @@ def _step_finviz_fetch(*, cfg, conn) -> None:
         elapsed_ms = int((time.monotonic() - start) * 1000)
         canonical_text = client.normalize_to_canonical_csv(body)
         sig = client.compute_signature_hash(body)
-        # Drift detection.
-        prior_sig = get_latest_signature_hash(
-            conn, screen_query=cfg.integrations.finviz.screen_query,
-        )
-        if prior_sig is not None and prior_sig != sig:
-            log.warning(
-                "Finviz screen signature changed since prior run "
-                "(%s -> %s); operator may have edited the saved screen.",
-                prior_sig[:12], sig[:12],
-            )
-        # Atomic-write the CSV (same-dir tmp + os.replace per CLAUDE.md gotcha).
-        tmp_path = _Path(str(csv_path) + ".tmp")
-        tmp_path.write_text(canonical_text, encoding="utf-8")
-        os.replace(tmp_path, csv_path)
-        # row_count = canonical newline count - 1 (header).
-        row_count = canonical_text.count("\n") - 1
-
-        insert_call(conn, FinvizApiCall(
-            call_id=None, ts=now_iso,
-            screen_query=cfg.integrations.finviz.screen_query,
-            status="ok", row_count=row_count,
-            response_time_ms=elapsed_ms,
-            rate_limit_remaining=client.last_rate_limit_remaining,
-            signature_hash=sig, error_message=None,
-        ))
+        return {
+            "status": "ok", "csv_text": canonical_text, "csv_path": csv_path,
+            "row_count": canonical_text.count("\n") - 1,
+            "response_time_ms": elapsed_ms, "signature_hash": sig,
+            "rate_limit_remaining": client.last_rate_limit_remaining,
+            "error_message": None,
+        }
     except (
         FinvizConfigMissingError, FinvizApiError, FinvizRateLimitError,
         FinvizSchemaParityError,
@@ -2083,32 +2168,112 @@ def _step_finviz_fetch(*, cfg, conn) -> None:
         elapsed_ms = int((time.monotonic() - start) * 1000)
         msg = f"{type(exc).__name__}: {exc}"
         log.warning("Finviz API fetch failed: %s", msg)
+        return {
+            "status": "error", "csv_text": None, "csv_path": csv_path,
+            "row_count": None, "response_time_ms": elapsed_ms,
+            "signature_hash": None, "rate_limit_remaining": None,
+            "error_message": msg[:1024],
+        }
+
+
+def _finviz_persist_csv_atomic(csv_path, csv_text: str) -> None:
+    """Atomic same-dir tmp + os.replace per CLAUDE.md cross-device-link gotcha."""
+    import os
+    from pathlib import Path as _Path
+    tmp_path = _Path(str(csv_path) + ".tmp")
+    tmp_path.write_text(csv_text, encoding="utf-8")
+    os.replace(tmp_path, csv_path)
+
+
+def _step_finviz_fetch(*, cfg, lease) -> None:
+    """Pipeline step: fetch today's Finviz screen via API.
+
+    Lease-fenced DB writes for consistency with other pipeline steps. Skipped
+    when today's CSV already present (manual override). Error-tolerant: any
+    failure logs + records a `finviz_api_calls` row with status='error' and
+    returns without raising; pipeline continues to `_step_evaluate`.
+    """
+    from datetime import datetime as _dt
+    from swing.data.models import FinvizApiCall
+    from swing.data.repos.finviz_api_calls import (
+        get_latest_signature_hash, insert_call,
+    )
+
+    result = _finviz_fetch_core(cfg)
+    now_iso = _dt.now().isoformat(timespec="seconds")
+    sq = cfg.integrations.finviz.screen_query
+
+    # Drift detection (read happens lease-aware via lease.fenced_write to keep
+    # signature lookup + insert atomic). For status='ok' we read prior, then
+    # write CSV (filesystem op outside the txn), then insert audit row.
+    if result["status"] == "ok":
+        with lease.fenced_write() as conn:
+            prior_sig = get_latest_signature_hash(conn, screen_query=sq)
+        if prior_sig is not None and prior_sig != result["signature_hash"]:
+            log.warning(
+                "Finviz screen signature changed since prior run "
+                "(%s -> %s); operator may have edited the saved screen.",
+                prior_sig[:12], result["signature_hash"][:12],
+            )
+        _finviz_persist_csv_atomic(result["csv_path"], result["csv_text"])
+
+    with lease.fenced_write() as conn:
         insert_call(conn, FinvizApiCall(
-            call_id=None, ts=now_iso,
-            screen_query=cfg.integrations.finviz.screen_query,
-            status="error", row_count=None,
-            response_time_ms=elapsed_ms, rate_limit_remaining=None,
-            signature_hash=None, error_message=msg[:1024],
+            call_id=None, ts=now_iso, screen_query=sq,
+            status=result["status"], row_count=result["row_count"],
+            response_time_ms=result["response_time_ms"],
+            rate_limit_remaining=result["rate_limit_remaining"],
+            signature_hash=result["signature_hash"],
+            error_message=result["error_message"],
         ))
+
+
+def _perform_finviz_fetch_no_lease(*, cfg, conn) -> None:
+    """Standalone (non-pipeline) Finviz fetch — used by `swing finviz fetch` CLI.
+
+    Writes through the caller-provided `conn`. Same fetch + normalize +
+    signature + persist semantics as `_step_finviz_fetch`; differs only
+    in NOT requiring a lease (CLI is operator-triggered + serialized by
+    SQLite's WAL writer locking).
+    """
+    from datetime import datetime as _dt
+    from swing.data.models import FinvizApiCall
+    from swing.data.repos.finviz_api_calls import (
+        get_latest_signature_hash, insert_call,
+    )
+
+    result = _finviz_fetch_core(cfg)
+    now_iso = _dt.now().isoformat(timespec="seconds")
+    sq = cfg.integrations.finviz.screen_query
+
+    if result["status"] == "ok":
+        prior_sig = get_latest_signature_hash(conn, screen_query=sq)
+        if prior_sig is not None and prior_sig != result["signature_hash"]:
+            log.warning(
+                "Finviz screen signature changed since prior run "
+                "(%s -> %s); operator may have edited the saved screen.",
+                prior_sig[:12], result["signature_hash"][:12],
+            )
+        _finviz_persist_csv_atomic(result["csv_path"], result["csv_text"])
+
+    insert_call(conn, FinvizApiCall(
+        call_id=None, ts=now_iso, screen_query=sq,
+        status=result["status"], row_count=result["row_count"],
+        response_time_ms=result["response_time_ms"],
+        rate_limit_remaining=result["rate_limit_remaining"],
+        signature_hash=result["signature_hash"],
+        error_message=result["error_message"],
+    ))
 ```
 
 - [ ] **Step 4: Add the call site in `run_pipeline_internal`.**
 
-Locate the line (in `swing/pipeline/runner.py:run_pipeline_internal`) where `_step_evaluate` is invoked. INSERT BEFORE it:
+Locate the line in `swing/pipeline/runner.py:run_pipeline_internal` where `lease.step("evaluate")` is called (then `_step_evaluate(...)` is invoked). INSERT BEFORE that block:
 
 ```python
             lease.step("finviz_fetch")
             try:
-                # Read-write conn for this step (lease-fenced not required —
-                # this step's writes are confined to finviz_api_calls and the
-                # CSV file; the existing pipeline does NOT compete for the
-                # inbox dir under the lease).
-                _conn = connect(cfg.paths.db_path)
-                try:
-                    _step_finviz_fetch(cfg=cfg, conn=_conn)
-                finally:
-                    _conn.close()
-                lease.status(finviz_fetch_status="ok")
+                _step_finviz_fetch(cfg=cfg, lease=lease)
             except LeaseRevoked:
                 raise
             except Exception as exc:
@@ -2116,26 +2281,9 @@ Locate the line (in `swing/pipeline/runner.py:run_pipeline_internal`) where `_st
                 # programming errors only (KeyError, etc.). Pipeline must
                 # not abort here either — preserve fallback semantics.
                 log.warning("finviz_fetch programming error (continuing): %s", exc)
-                lease.status(finviz_fetch_status="failed")
 ```
 
-NOTE: the `lease.status(finviz_fetch_status=...)` call requires `pipeline_runs` to have a `finviz_fetch_status` column OR the lease.status() helper to accept arbitrary kwargs by routing to a JSON-encoded notes column. **Audit the lease.py + pipeline_runs schema at executing-plans Step 4 time.** If the existing pattern requires a column add, EITHER (a) make the call site purely `log`-based and SKIP `lease.status()` (acceptable; brief explicitly allows existing pipeline_runs to remain unchanged) OR (b) add the column under this task's migration if the schema-gap is small.
-
-**Default posture: SKIP the `lease.status()` calls** if they require schema additions. The brief does NOT require finviz_fetch_status as a `pipeline_runs` column; the source-of-truth is `finviz_api_calls`. Replace the two `lease.status(...)` lines with:
-
-```python
-            lease.step("finviz_fetch")
-            try:
-                _conn = connect(cfg.paths.db_path)
-                try:
-                    _step_finviz_fetch(cfg=cfg, conn=_conn)
-                finally:
-                    _conn.close()
-            except LeaseRevoked:
-                raise
-            except Exception as exc:
-                log.warning("finviz_fetch programming error (continuing): %s", exc)
-```
+The `lease.step("finviz_fetch")` call mirrors the existing `lease.step("weather")` / `lease.step("evaluate")` etc. (verified at [`swing/pipeline/runner.py:245`](../../swing/pipeline/runner.py#L245)). NOTE: the existing `lease.step()` accepts arbitrary step-name strings — verify by reading `swing/pipeline/lease.py` at executing-plans Step 4 time; if the helper is enum-restricted (unlikely per existing usage), either extend the enum or skip the `lease.step` call (the operational signal lives in `finviz_api_calls.status`, NOT `pipeline_runs.step_status`).
 
 - [ ] **Step 5: Run step tests; expect PASS.**
 
@@ -2349,17 +2497,26 @@ def test_swing_finviz_fetch_token_missing_friendly_error(
 def test_swing_finviz_fetch_happy_path_emits_csv_and_persists_row(
     cli_runner_with_cfg, tmp_path, monkeypatch,
 ) -> None:
+    """Discriminating: USERPROFILE/swing-data/user-config.toml is the canonical
+    user-config path (verified at swing/config_user.py:_user_home + get_user_config_path).
+
+    Codex R1 Major-3 fix: prior draft had `tmp_path / "user-data"` + USERPROFILE
+    pointed at tmp_path/user-data/.. — that resolved to tmp_path, so the code
+    looked at tmp_path/swing-data/user-config.toml which DID NOT exist.
+    Correct: write to tmp_path/swing-data/user-config.toml + set USERPROFILE
+    to tmp_path so the resolution lands exactly on the file we wrote.
+    """
     runner, cfg_path, main = cli_runner_with_cfg
     # Override token via user-config.
-    user_cfg_dir = tmp_path / "user-data"
-    user_cfg_dir.mkdir()
+    user_cfg_dir = tmp_path / "swing-data"
+    user_cfg_dir.mkdir(exist_ok=True)
     (user_cfg_dir / "user-config.toml").write_text(
         '[integrations.finviz]\n'
         'token = "test-sentinel-token"\n'
         'screen_query = "v=152&f=cap_largeover"\n'
     )
-    monkeypatch.setenv("USERPROFILE", str(tmp_path / "user-data" / ".."))
-    monkeypatch.setenv("HOME", str(tmp_path / "user-data" / ".."))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
 
     res = runner.invoke(main, ["--config", str(cfg_path), "finviz", "fetch"])
     assert res.exit_code == 0, res.output
@@ -2406,7 +2563,7 @@ def finviz_fetch_cmd(ctx: click.Context) -> None:
     """
     from swing.config_overrides import apply_overrides
     from swing.data.db import connect
-    from swing.pipeline.runner import _step_finviz_fetch
+    from swing.pipeline.runner import _perform_finviz_fetch_no_lease
 
     cfg = apply_overrides(ctx.obj["config"])
     if not cfg.integrations.finviz.token:
@@ -2421,7 +2578,7 @@ def finviz_fetch_cmd(ctx: click.Context) -> None:
         )
     conn = connect(cfg.paths.db_path)
     try:
-        _step_finviz_fetch(cfg=cfg, conn=conn)
+        _perform_finviz_fetch_no_lease(cfg=cfg, conn=conn)
         # Display the just-recorded row.
         from swing.data.repos.finviz_api_calls import list_recent_calls
         recent = list_recent_calls(conn, limit=1)
@@ -2690,6 +2847,56 @@ def test_sentinel_token_absent_from_db_row_on_error_path(tmp_path: Path) -> None
         conn.close()
 
 
+def test_sentinel_token_absent_from_urllib3_debug_logs(caplog) -> None:
+    """Codex R1 Major-2 fix: even with `urllib3.connectionpool` set to DEBUG,
+    the sentinel token must NOT appear in captured log records.
+
+    Discriminating pre-fix (no _suppress_transport_debug_logs context manager):
+        the sentinel WOULD appear in urllib3.connectionpool DEBUG output as
+        part of the full request URL line.
+    Discriminating post-fix (with the context manager):
+        urllib3 DEBUG records are suppressed for the duration of the request;
+        sentinel absent from the captured log corpus.
+    """
+    import requests
+
+    # Force urllib3 logger to DEBUG; the suppression helper inside fetch_screen
+    # must override this for the duration of the call.
+    logging.getLogger("urllib3.connectionpool").setLevel(logging.DEBUG)
+    logging.getLogger("requests.packages.urllib3.connectionpool").setLevel(logging.DEBUG)
+
+    # No real HTTP — patch requests.get to capture the URL it would have logged
+    # (then raise so we exercise the error-path leak surface, where the URL
+    # might have been logged before the exception).
+    captured_urls: list[str] = []
+
+    def _fake_get(url, *a, **kw):
+        captured_urls.append(url)
+        raise requests.ConnectionError("simulated network failure")
+
+    with patch("swing.integrations.finviz_api.requests.get", _fake_get):
+        with caplog.at_level(logging.DEBUG):
+            with pytest.raises(FinvizApiError):
+                _client_with_sentinel().fetch_screen()
+
+    # Sentinel was actually present in the URL the client tried to call
+    # (proving the test is non-vacuous).
+    assert captured_urls, "test setup error: requests.get not invoked"
+    assert _SENTINEL in captured_urls[0], (
+        "test setup error: client did not actually pass token to URL "
+        "(can't validate redaction)"
+    )
+
+    # Discriminating: the sentinel does NOT appear in any captured log record
+    # name, message, OR formatted output.
+    full_log = "\n".join(
+        f"{r.name}: {r.getMessage()}" for r in caplog.records
+    )
+    assert _SENTINEL not in full_log, (
+        f"Token sentinel leaked into log records:\n{full_log[:1000]}"
+    )
+
+
 def test_sentinel_token_absent_from_committed_cassettes() -> None:
     """Cassette sweep: NO committed cassette file may contain the project's
     test-sentinel-token (the recording-time token used in cassette recordings).
@@ -2805,7 +3012,7 @@ git commit -m "docs(finviz-api): CLAUDE.md gotchas + cycle-checklist update (Tas
 Plan biases high per Phase 6 lesson "Test count projections should bias high":
 
 - Task 1: +6 (2 migration + 4 repo)
-- Task 2: +5 (config cascade + 4 user-config interactions + 1 dataclass-default)
+- Task 2: +6 (config cascade + 4 user-config interactions + 1 dataclass-default + 1 R1 regression-2part-paths)
 - Task 3: +7 (token-missing × 2 + happy-path + normalize-validator + missing-column + excessive-rows + signature-deterministic)
 - Task 4: +6 (500 + 403 + 429-success + 429-give-up + 429-then-429 + network-error)
 - Task 5: +7 (deterministic + column-added + ticker-change + sector-change + 2nd-row-no-change + row-order + column-order-invariant)
@@ -2813,9 +3020,9 @@ Plan biases high per Phase 6 lesson "Test count projections should bias high":
 - Task 7: +2 (ordering source-text + error-fallback integration)
 - Task 8: +4 (status-empty + status-with-rows + fetch-token-missing + fetch-happy-path)
 - Task 9: +2 slow tests (live happy + signature stable; counted separately)
-- Task 10: +3 (logs + DB row + cassette sweep)
+- Task 10: +4 (logs + DB row + cassette sweep + R1 urllib3-DEBUG sentinel)
 
-**Fast-test total projection: +46 tests** (range +30 to +60 per brief §6 anticipated band; landing mid-range).
+**Fast-test total projection: +48 tests** (range +30 to +60 per brief §6 anticipated band; landing mid-range; +2 added in R1 fixes).
 **Slow-test total projection: +2 tests** (live integration test pair).
 
 ---
