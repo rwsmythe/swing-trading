@@ -379,3 +379,22 @@ class ReviewLog:
     avg_loss_R: float | None = None  # noqa: N815
     profit_factor: float | None = None
     max_drawdown_R: float | None = None  # noqa: N815
+
+
+@dataclass(frozen=True)
+class FinvizApiCall:
+    """Audit row for one Finviz Elite API fetch attempt.
+
+    `signature_hash` is None for skipped/error rows; populated only on status='ok'.
+    `rate_limit_remaining` is best-effort — Finviz does not document a
+    standardized rate-limit header; absent → None.
+    """
+    call_id: int | None
+    ts: str  # ISO 8601, naive datetime per Phase 7 Sub-B convention
+    screen_query: str
+    status: str  # 'ok' | 'error' | 'skipped_manual_override'
+    row_count: int | None
+    response_time_ms: int | None
+    rate_limit_remaining: int | None
+    signature_hash: str | None
+    error_message: str | None
