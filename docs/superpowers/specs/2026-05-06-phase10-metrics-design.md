@@ -6,7 +6,7 @@
 
 **Brief:** `docs/phase10-metrics-brainstorm-brief.md` (commit `3ad5ea2`).
 
-**Sequencing:** Phase 10 brainstorm runs FIRST (research-only); Phase 8 brainstorm follows + consumes §2.4 capture-needs; Phase 9 brainstorm follows Phase 8; execution order is 8 → 9 → 10. Sample state at write-time: n=2 closed, n=3 open (5 total trades) — metric stability is the binding constraint, not ship velocity.
+**Sequencing:** Phase 10 brainstorm runs FIRST (research-only); Phase 8 brainstorm follows + consumes §6 capture-needs; Phase 9 brainstorm follows Phase 8; execution order is 8 → 9 → 10. Sample state at write-time: n=2 closed, n=3 open (5 total trades) — metric stability is the binding constraint, not ship velocity.
 
 ---
 
@@ -73,6 +73,13 @@ To avoid drift, this spec uses the field names already shipped in the production
 
 **Drawdown sign convention:** drawdowns are always ≤ 0; thresholds in `Risk_Policy` (Phase 9) expressed as negative numbers (per v1.1-alternate F-009).
 
+**Capital-denominator split-policy (R1 M2 + R3 M1 lock):** V1 uses TWO denominators by metric class.
+
+- **Governance / pre-registration metrics** (`cumulative_R_pct_of_capital`, `distance_to_absolute_loss_tripwire`): locked to CONSTANT `capital_floor_constant_dollars = $7,500`. Retroactive shifts when account balance changes would silently re-classify a closed cohort's tripwire-distance — directly undermining the pre-registration discipline §1.3 binds. Phase 9 risk_policy versioning (per §6.2) externalizes this constant with effective_from / effective_to bounds for future locked-period changes.
+- **Operational / live-state metrics** (`current_capital_utilization_pct`, `current_portfolio_heat_pct`, `position_capital_utilization_pct`): SHOULD use `live_capital_denominator_dollars` (actual current account balance) so live-action signals don't distort at scale. **`live_capital_denominator_dollars` is NOT shipped in V1.** These metrics are PROVISIONAL: they fall back to `capital_floor_constant_dollars` until §8.2 resolves to manual-entry capture OR Schwab API Phase A lands `account_equity_snapshots`. While provisional, §4.4 + §4.5 surfaces MUST badge as "PROVISIONAL: $7,500 floor used as live-capital fallback; gated on §8.2 / Phase 9 capture."
+
+`actual_account_balance` is NOT a shipped database field; the user-memory `project_capital_risk_floor` convention `max($7,500, actual_account_balance)` records the operator's mental sizing model only.
+
 ---
 
 ## 3. Metric inventory (DEFINITIONS, not schema)
@@ -119,11 +126,13 @@ Aggregations of §3.1 metrics keyed on `trades.hypothesis_label` joined to `hypo
 | `cohort_expectancy_R` | mean realized_R over cohort closed trades | R | `[derived]` | per-cohort |
 | `consecutive_loss_run` | length of current consecutive-loss streak ending on most-recent closed trade | count | `[shipped]` | per-cohort |
 | `distance_to_loss_tripwire` | `consecutive_loss_tripwire - consecutive_loss_run` | count (≥0) | `[shipped]` | per-cohort |
-| `cumulative_R_pct_of_capital` | sum of cohort realized P&L / capital floor (`max($7,500, actual_balance)`) | proportion | `[shipped]` | per-cohort |
+| `cumulative_R_pct_of_capital` | sum of cohort realized P&L / `capital_floor_constant_dollars` ($7,500 V1 lock per §2 split-policy; NOT `max($7,500, actual_balance)`) | proportion | `[shipped]` | per-cohort |
 | `distance_to_absolute_loss_tripwire` | `absolute_loss_tripwire_pct - abs(min(0, cumulative_R_pct_of_capital))` | proportion (≥0) | `[shipped]` | per-cohort |
 | `cohort_status` | passthrough of `hypothesis_registry.status` (4-value: active / paused / closed-escaped / closed-target-met) | enum | `[shipped]` | per-cohort |
 | `decision_criteria_evaluation` | rendered text from `hypothesis_registry.decision_criteria` paired with current cohort metric values (no automated pass/fail in V1) | text | `[shipped]` | per-cohort |
-| `cohort_status_change_log` | history of `status_changed_at` + `status_change_reason` | timeline | `[shipped]` | per-cohort |
+| `latest_status_change_metadata` | most-recent `status_changed_at` + `status_change_reason` (single transition only — see §6.2 status-history capture-need) | text + timestamp | `[shipped]` | per-cohort |
+
+**Status-history capture limitation (R1 M1):** Migration 0008 stores ONLY the latest `status_changed_at` + `status_change_reason` (single columns, overwritten on each status change). It does NOT retain a history of prior transitions. V1 surfaces the latest transition only. Full transition history requires NEW capture in Phase 9 (`hypothesis_status_history` audit table) — see §6.2.
 
 **Tripwire-distance integrity (brief watch-item 3):** `consecutive_loss_tripwire` and `absolute_loss_tripwire_pct` are migration-locked. The metric reads them from `hypothesis_registry`, never from a settable Risk_Policy field. If Risk_Policy (Phase 9) introduces a settable mirror, the metric MUST source from the migration table, not the Phase 9 mirror.
 
@@ -136,9 +145,11 @@ Compares outcome distributions across the 4 cohorts. Tests the framework's own c
 | `cohort_win_rate_with_CI` | per-cohort win_rate with Wilson CI bounds | proportion + lower/upper | `[derived]` | 4-cohort comparison |
 | `cohort_expectancy_with_CI` | per-cohort expectancy_R with bootstrap-CI bounds (1000 resamples) | R + lower/upper | `[derived]` | 4-cohort comparison |
 | `cohort_relative_to_aplus` | `cohort_expectancy_R / aplus_expectancy_R - 1` | proportion | `[derived]` | per-cohort vs A+ baseline |
-| `classification_quality_flag` | informational: does A+ cohort's lower CI bound exceed Sub-A+ cohort's upper CI bound? | boolean | `[derived]` | framework-wide |
+| `cohort_ci_overlap_descriptor` | descriptive text only: e.g., "A+ CI [lo, hi] vs Sub-A+ CI [lo, hi] — overlap: yes/no" — RENDERED AS TEXT, NOT A BOOLEAN FLAG. Explicitly NOT a between-cohort significance test. | text | `[derived]` | framework-wide |
 
-**No pass/fail rule** is defined on `classification_quality_flag` — it is a research-posture diagnostic. Operator interprets in context. Brief watch-item 4 satisfied: every output is paired with a CI; no point-estimate-only presentation; suppression policy (§5) applies before CI rendering.
+**No automated pass/fail rule (R1 M3):** the prior draft included a `classification_quality_flag` boolean comparing CI overlap as a framework-wide signal — REMOVED because non-overlapping single-sample CIs are NOT a valid between-cohort significance test (the correct test would be paired-difference or chi-square on classification × outcome, requiring per-cohort sample sizes ≥20–30). Surfacing CI overlap as a boolean would invite overinterpretation at our sample size. V1 surfaces the descriptor as text only with explicit caveat; formal between-cohort significance testing is deferred until n≥20 per cohort AND moved out of the dashboard layer into a separate analysis surface.
+
+Brief watch-item 4 satisfied: every output is paired with a CI; no point-estimate-only presentation; suppression policy (§5) applies before CI rendering; no boolean significance flag at our sample.
 
 ### 3.4 Capital-friction metrics (NEW — capture-need-heavy)
 
@@ -147,13 +158,13 @@ Measures the operational constraint the brief calls primary. Most inputs require
 | Metric | Definition | Unit | Inputs | Aggregation |
 |---|---|---|---|---|
 | `risk_feasibility_blocked_rate` | `count(candidates with risk_feasibility=False) / count(candidates with all_other_criteria=True)` per pipeline run | proportion | `[Phase 10+]` per-run aggregate | per-run; multi-run trend |
-| `current_capital_utilization_pct` | `sum(open_position_avg_cost × current_size) / capital_floor` | proportion | `[shipped]` | point-in-time |
-| `current_portfolio_heat_pct` | `sum(portfolio_heat_contribution_dollars) / capital_floor` (per-position contribution from §3.5) | proportion | `[Phase 8]` daily_management_records | point-in-time |
+| `current_capital_utilization_pct` | `sum(open_position_avg_cost × current_size) / live_capital_denominator_dollars` (PROVISIONAL — V1 falls back to `capital_floor_constant_dollars = $7,500` until §8.2 + Phase 9 capture lands; per §2 split-policy) | proportion | `[shipped]` (numerator) + PROVISIONAL fallback denominator | point-in-time |
+| `current_portfolio_heat_pct` | `sum(portfolio_heat_contribution_dollars) / live_capital_denominator_dollars` (PROVISIONAL fallback as above; per-position contribution from §3.5) | proportion | `[Phase 8]` daily_management_records (numerator) + PROVISIONAL fallback denominator | point-in-time |
 | `capital_cycle_time_days` | mean(`closed_trade.last_fill_at - closed_trade.pre_trade_locked_at`) over closed cohort | days | `[shipped]` | cohort mean |
 | `concurrent_open_positions` | count of trades in state ∈ {entered, managing, partial_exited} | count | `[shipped]` | point-in-time |
-| `capital_feasibility_pressure_index` | `risk_feasibility_blocked_rate × current_capital_utilization_pct` (composite indicator) | proportion | `[derived]` | per-run |
+| `capital_feasibility_pressure_index` | `risk_feasibility_blocked_rate × current_capital_utilization_pct` (composite indicator; inherits provisional badge from utilization input) | proportion | `[derived]` | per-run |
 
-`capital_floor = max($7,500, actual_account_balance)` per the user-memory `project_capital_risk_floor` convention.
+**Denominator note for §3.4:** Per §2 split-policy, `current_capital_utilization_pct` + `current_portfolio_heat_pct` are OPERATIONAL/live metrics — their CORRECT denominator is `live_capital_denominator_dollars` (actual current account balance). V1 does NOT have that capture; metrics are PROVISIONAL with $7,500 fallback. Resolution gated on §8.2 + Phase 9 versioning. The constant-lock semantics in §3.2 governance metrics are different — see §2 for the split-policy rationale.
 
 ### 3.5 Maturity-stage metrics (NEW — open-position scope)
 
@@ -164,11 +175,13 @@ Operationally urgent for currently-open trades. Maps each open position to a dis
 | `maturity_stage` | classification: `pre_+1.5R` / `+1.5R_to_+2R` / `≥+2R_trail_eligible` / `closed` | enum | `[Phase 8]` daily_management_records | per-position |
 | `open_MFE_R_to_date` | max favorable excursion since `pre_trade_locked_at`, in R | R | `[Phase 8]` | per-position |
 | `open_MAE_R_to_date` | max adverse excursion since `pre_trade_locked_at`, in R | R | `[Phase 8]` | per-position |
-| `trail_MA_eligibility_flag` | `open_MFE_R_to_date ≥ +2.0R` AND `current_stop < trail_MA_candidate_price` | boolean | `[Phase 8]` | per-position |
-| `position_capital_utilization_pct` | `current_avg_cost × current_size / capital_floor` | proportion | `[shipped]` | per-position |
+| `trail_MA_eligibility_flag` | `open_MFE_R_to_date ≥ +2.0R` AND `current_stop < trail_MA_candidate_price` (where `trail_MA_candidate_price` is the per-position MA reference price computed daily — see §6.1 capture-need; without it the eligibility flag cannot be computed in V1) | boolean | `[Phase 8]` (depends on `trail_MA_candidate_price` capture) | per-position |
+| `position_capital_utilization_pct` | `current_avg_cost × current_size / live_capital_denominator_dollars` (PROVISIONAL; V1 falls back to `capital_floor_constant_dollars = $7,500` per §2 split-policy) | proportion | `[shipped]` (numerator) + PROVISIONAL fallback denominator | per-position |
 | `position_portfolio_heat_contribution_dollars` | `max(0, (current_avg_cost - current_stop) × current_size)` | $ | `[shipped]` | per-position; sums to portfolio-heat |
 
 Stage thresholds (`+1.5R`, `+2.0R`) are anchored on Tier-3 doctrine (brief §1.2) and are NOT operator-configurable in V1. If the trail-MA gating threshold becomes operator-configurable later, version-stamping happens via Risk_Policy (Phase 9).
+
+**R1 M5 — `planned_target_R` and `trail_MA_candidate_price` are NOT shipped.** Both are required by §4.5 maturity-stage surface and §3.5's `trail_MA_eligibility_flag`. Phase 7 explicitly deferred `target_1` / `target_2`-style target storage (per orchestrator-context note); `trail_MA_candidate_price` (the SMA reference for trailing-stop placement, e.g., 10-day or 21-day SMA at session close) was never captured. Both are added to Phase 8 capture-needs in §6.1. Until Phase 8 ships them, §4.5's `trail_MA_eligibility_flag` and `planned_target_R` columns CANNOT be computed — Phase 10 implementation is gated on Phase 8 capture for these specific surface elements (the rest of the maturity-stage view that depends only on shipped fields can ship with Phase 10).
 
 ### 3.6 Identification-vs-trade-funnel metrics (NEW)
 
@@ -191,7 +204,9 @@ Tests the §1.3 framing that sub-A+ trades are evidence-generation. Per-cohort: 
 |---|---|---|---|---|
 | `cohort_doctrine_deviation_class` | classification by hypothesis: A+ baseline = 0; Near-A+ = "missing_proximity_20ma"; Sub-A+ = "missing_tightness_or_vcp_volume_contraction"; Capital-blocked = "smaller_than_standard_position" | enum (4 values) | `[shipped]` `hypothesis_registry.statement` | per-cohort |
 | `cohort_expectancy_relative_to_aplus_pct` | (= `cohort_relative_to_aplus` from §3.3, surfaced here as deviation-outcome lens) | proportion | `[derived]` | per-cohort vs A+ |
-| `cohort_consistency_rate` | proportion of cohort trades with sign-of-realized_R matching the hypothesis prediction (positive for A+/Near-A+/Capital-blocked; negative for Sub-A+) | proportion | `[derived]` | per-cohort |
+| `cohort_decision_criterion_evaluation_text` | rendered text pairing the cohort's `hypothesis_registry.decision_criteria` with the cohort's CURRENT relevant aggregate values (e.g., for A+ baseline: "criterion: Mean R-multiple > 0; lower-bound Wilson CI on win rate > 30% — current: mean R = +0.42, win rate Wilson lower = 18% (n=4)"). NO automated pass/fail. NO per-trade sign matching. | text | `[shipped]` + `[derived]` | per-cohort |
+
+**R1 M4 — `cohort_consistency_rate` removed.** The prior draft included `cohort_consistency_rate` defined as proportion of cohort trades whose sign-of-realized_R matched a per-trade prediction (positive for A+/Near-A+/Capital-blocked; negative for Sub-A+). This conflated cohort-level criteria with per-trade outcomes — a Sub-A+ cohort can validate "Confirm negative mean R-multiple" (the actual decision criterion in migration 0008) with mixed signs, so per-trade sign matching would misclassify supportive evidence as inconsistency. The replacement metric `cohort_decision_criterion_evaluation_text` surfaces the cohort's actual locked criterion alongside the cohort's current matching aggregate values; operator judges, not the metric.
 
 ### 3.8 Process-grade-trend metrics (NEW)
 
@@ -239,7 +254,7 @@ Every metric in §3 must answer: "what action does the operator take based on re
 | Capital-friction (§3.4) | High `risk_feasibility_blocked_rate` + low `aplus_take_rate` together → operator decision to add capital, accept lower take-rate, or revisit position-size formula |
 | Maturity-stage (§3.5) | `trail_MA_eligibility_flag=True` → operator considers stop-trail per Tier-3 #6 doctrine |
 | Identification-vs-trade-funnel (§3.6) | Multi-run divergence trend → see capital-friction action above |
-| Deviation-outcome (§3.7) | Sustained per-cohort consistency rate < 0.5 at sample-target → hypothesis closed-escaped candidate |
+| Deviation-outcome (§3.7) | `cohort_decision_criterion_evaluation_text` reading at sample-target shows current values failing the cohort's own locked criterion → operator-decision input for `hypothesis_registry.status` mutation toward `closed-escaped` |
 | Process-grade-trend (§3.8) | Declining rolling grade → operator focus area for next N trades; mistake-tag clustering analysis |
 
 Metrics that fail this test in §3 inventory: NONE in V1 inventory. All metrics carry an explicit action surface. (Brief watch-item 11 satisfied.)
@@ -260,30 +275,30 @@ For each surface: name + primary axis + composition + sample-size threshold + op
 ### 4.2 Hypothesis-progress card (extends Phase 4.5 already shipped)
 
 - **Primary axis:** per-cohort, all 4 displayed in row.
-- **Composition (§3.2 metrics):** `cohort_n_closed / target_sample_size` progress bar; `cohort_status` badge; `consecutive_loss_run` / `distance_to_loss_tripwire` tripwire indicator; `cumulative_R_pct_of_capital` / `distance_to_absolute_loss_tripwire`; `decision_criteria` text rendered alongside current metric values; `cohort_status_change_log` mini-timeline.
+- **Composition (§3.2 metrics):** `cohort_n_closed / target_sample_size` progress bar; `cohort_status` badge; `consecutive_loss_run` / `distance_to_loss_tripwire` tripwire indicator; `cumulative_R_pct_of_capital` / `distance_to_absolute_loss_tripwire` (denominator $7,500 constant per §2 split-policy); `decision_criteria` text rendered alongside current metric values; `latest_status_change_metadata` (single most-recent transition only — full history requires Phase 9 `hypothesis_status_history` capture per §6.2).
 - **Sample-size threshold:** ALWAYS shown (governance surface; no suppression). Tripwire indicator present from n=1.
 - **Operator-actionability:** primary surface for `hypothesis_registry.status` mutation decision. The CLI mutation requires operator-supplied `status_change_reason` (per migration 0008 schema).
 
 ### 4.3 Tier-comparison view (NEW)
 
 - **Primary axis:** 4 cohorts side-by-side.
-- **Composition (§3.3):** `cohort_win_rate_with_CI` per cohort; `cohort_expectancy_with_CI` per cohort; `cohort_relative_to_aplus` per non-A+ cohort; `classification_quality_flag` framework diagnostic.
-- **Sample-size threshold:** suppress an individual cohort's CI when its n<5; suppress the comparison flag entirely until BOTH A+ and Sub-A+ cohorts have n≥5. Worked example at our current state (n=2 closed total): all CIs suppressed; placeholder text "Insufficient cohort samples (need ≥5 per cohort for CI; current: A+: 0, Sub-A+: 0, ...)".
+- **Composition (§3.3):** `cohort_win_rate_with_CI` per cohort; `cohort_expectancy_with_CI` per cohort; `cohort_relative_to_aplus` per non-A+ cohort; `cohort_ci_overlap_descriptor` (TEXT only — no boolean; per §3.3 R1 M3 lock).
+- **Sample-size threshold:** suppress an individual cohort's CI when its n<5; suppress the `cohort_ci_overlap_descriptor` text entirely until BOTH A+ and Sub-A+ cohorts have n≥5. Worked example at our current state (n=2 closed total): all CIs suppressed; placeholder text "Insufficient cohort samples (need ≥5 per cohort for CI; current: A+: 0, Sub-A+: 0, ...)".
 - **Operator-actionability:** classification calibration check; informs decision-criteria evaluation.
 
 ### 4.4 Capital-friction view (NEW)
 
 - **Primary axis:** point-in-time + multi-run trend.
-- **Composition (§3.4):** current `current_capital_utilization_pct` gauge; current `current_portfolio_heat_pct` gauge; `concurrent_open_positions / 5_max`; multi-run `risk_feasibility_blocked_rate` line; multi-run `capital_feasibility_pressure_index` line; cohort mean `capital_cycle_time_days`.
-- **Sample-size threshold:** point-in-time gauges always shown; multi-run trends require ≥5 runs of post-Phase-10+-capture data; suppress trend until then.
-- **Operator-actionability:** decision surface for capital-add-vs-take-rate-tradeoff.
+- **Composition (§3.4):** current `current_capital_utilization_pct` gauge **[PROVISIONAL — $7,500 fallback denominator until §8.2 + Phase 9 capture; per §2 split-policy]**; current `current_portfolio_heat_pct` gauge **[PROVISIONAL same caveat]**; `concurrent_open_positions / 5_max`; multi-run `risk_feasibility_blocked_rate` line; multi-run `capital_feasibility_pressure_index` line **[PROVISIONAL inherits from utilization]**; cohort mean `capital_cycle_time_days`.
+- **Sample-size threshold:** point-in-time gauges always shown (with PROVISIONAL badge); multi-run trends require ≥5 runs of post-Phase-10+-capture data; suppress trend until then.
+- **Operator-actionability:** decision surface for capital-add-vs-take-rate-tradeoff. PROVISIONAL fallback warning instructs operator that the live ratio is approximate while live-capital capture is pending.
 
 ### 4.5 Maturity-stage view (NEW)
 
 - **Primary axis:** per-open-position.
-- **Composition (§3.5):** position table sorted by `maturity_stage`; columns `ticker / open_MFE_R_to_date / current_stop / planned_target_R / trail_MA_eligibility_flag / position_portfolio_heat_contribution_dollars`. Aggregate: count by `maturity_stage`.
-- **Sample-size threshold:** N/A (per-position, not aggregate).
-- **Operator-actionability:** primary daily-management surface; `trail_MA_eligibility_flag=True` is a discrete operator action prompt.
+- **Composition (§3.5):** position table sorted by `maturity_stage`; columns `ticker / open_MFE_R_to_date / current_stop / planned_target_R [Phase 8 capture-need] / trail_MA_eligibility_flag [Phase 8 capture-need for trail_MA_candidate_price] / position_portfolio_heat_contribution_dollars / position_capital_utilization_pct [PROVISIONAL — $7,500 fallback denominator per §2 split-policy]`. Aggregate: count by `maturity_stage`.
+- **Sample-size threshold:** N/A (per-position, not aggregate). Per-row cells with Phase-8-capture-need columns render placeholder "[Phase 8 capture pending]" until §6.1 captures land.
+- **Operator-actionability:** primary daily-management surface; `trail_MA_eligibility_flag=True` is a discrete operator action prompt (only available post-Phase-8 capture).
 
 ### 4.6 Identification-vs-trade-funnel view (NEW)
 
@@ -295,22 +310,23 @@ For each surface: name + primary axis + composition + sample-size threshold + op
 ### 4.7 Deviation-outcome view (NEW)
 
 - **Primary axis:** per-cohort table.
-- **Composition (§3.7):** `cohort_doctrine_deviation_class` text; `cohort_expectancy_relative_to_aplus_pct` (when both cohorts have n≥5); `cohort_consistency_rate` with CI.
+- **Composition (§3.7):** `cohort_doctrine_deviation_class` text; `cohort_expectancy_relative_to_aplus_pct` (when both cohorts have n≥5); `cohort_decision_criterion_evaluation_text` (per-cohort actual locked-criterion + current matching aggregate values).
 - **Sample-size threshold:** suppress individual cohort row until n≥5; show "n too low" placeholder otherwise.
-- **Operator-actionability:** sustained low consistency rate informs `hypothesis_registry.status` mutation toward `closed-escaped`.
+- **Operator-actionability:** sustained reading where current values fail the cohort's own locked criterion at sample-target informs operator's `hypothesis_registry.status` mutation toward `closed-escaped`.
 
 ### 4.8 Process-grade-trend view (NEW)
 
 - **Primary axis:** rolling-N closed trades (N=10 default).
 - **Composition (§3.8):** line chart of `process_grade_rolling_N`; per-stage breakdown lines (entry / management / exit); `disqualifying_violation_rate_rolling_N` separate annotation; `mistake_cost_R_rolling_N_total` paired secondary axis.
-- **Sample-size threshold:** suppress rolling line until rolling window has ≥5 effective samples; show point markers per closed trade always.
-- **Operator-actionability:** focus-area-of-the-week selection; mistake-tag clustering during weekly/monthly review.
+- **Sample-size threshold (per §5.4 — Class D policy with global confidence floor):** suppress rolling line until rolling window has ≥5 effective samples; show point markers per closed trade always. **Once 5 ≤ effective_n < N=10**, render line + "rolling window not yet at N" badge + "below confidence floor (n<20)" badge. **Once N=10 ≤ effective_n < global_confidence_floor_n=20**, render line at full N + "below confidence floor (n<20)" badge persists. **Once effective_n ≥ 20**, render line + drop confidence-floor warning. The window-fullness signal (line is "live") is INTENTIONALLY decoupled from the statistical-confidence signal (warning badge) per §5.4 R4 M1 lock.
+- **Operator-actionability:** focus-area-of-the-week selection; mistake-tag clustering during weekly/monthly review. While the confidence-floor badge is visible the operator should treat the trend as cadence-tracking (recent direction), NOT as a statistically significant claim about process-quality change.
 
 ### 4.9 Cross-cutting surface conventions
 
 - **Per-cohort drill is universal.** Trade-process card defaults to per-cohort tabs; "all closed trades" view is a non-default toggle. The other views display all cohorts where applicable.
 - **CI rendering is paired with point estimate.** Whenever a CI is computable per §5, it is rendered. Hidden-by-default CI tooltips (per CLAUDE.md JS-test-harness gap awareness) are NOT used; CIs render inline as static text alongside the headline.
 - **Reliability flags render as text badges, not color-only.** Color-only signals fail the JS-test-harness gap discipline.
+- **PROVISIONAL badges render as text badges** alongside the metric value, never as color-only or hover-only states. Operators see the caveat without browser-only behavior.
 - **No client-side compute.** All metric computations happen server-side in view-models. Surfaces are static-rendered HTML with HTMX OOB-swap refresh; no JavaScript logic on metric values. (Brief watch-item 12 satisfied: no runtime JS dependencies in V1 surfaces.)
 - **Operator-witnessed verification gate is BINDING for all new surfaces.** Each Phase 10 surface, on first deploy, requires operator-witnessed browser verification — TestClient passes are necessary but not sufficient (per CLAUDE.md HTMX gotcha catalog). The Phase 10 writing-plans must enumerate this gate per-surface.
 
@@ -318,20 +334,20 @@ For each surface: name + primary axis + composition + sample-size threshold + op
 
 ## 5. Low-sample-size honesty policy (cross-cutting; brief watch-item 2)
 
-A SINGLE policy applies to every metric in §3 and every surface in §4. Three metric classes drive three threshold ladders.
+A SINGLE policy applies to every metric in §3 and every surface in §4. Three metric classes drive three threshold ladders. **Statistical-confidence thresholds are decoupled from cohort-research-target completion** (R3 M2 fix): a Sub-A+ cohort hitting its `target_sample_size = 5` does NOT confer statistical maturity — confidence-warning removal happens at a SEPARATE global threshold (`global_confidence_floor_n = 20`). The two signals serve different purposes: cohort-progress (governance) lives in §3.2 + §4.2; confidence-warning (statistical maturity) lives here.
 
 ### 5.1 Class A — Rate metrics (proportions)
 
-Applies to: `win_rate`, `loss_rate`, `scratch_rate`, `disqualifying_process_violation_rate`, `aplus_take_rate_per_run`, `cohort_consistency_rate`, `mistake_tag_frequency`, `risk_feasibility_blocked_rate`, etc.
+Applies to: `win_rate`, `loss_rate`, `scratch_rate`, `disqualifying_process_violation_rate`, `aplus_take_rate_per_run`, `cohort_win_rate_with_CI` (component of §3.3), `mistake_tag_frequency`, `risk_feasibility_blocked_rate`, etc.
 
 | n | Disposition | Rendering |
 |---|---|---|
 | n < 3 | Suppress | "n too low (need ≥3)" placeholder; no point estimate |
 | 3 ≤ n < 5 | Point-estimate-with-warning | Point estimate rendered; "low confidence (n=3 or 4)" badge inline |
-| 5 ≤ n < target_n | Wilson CI | Point estimate + Wilson [lower, upper] at α=0.05 |
-| n ≥ target_n | Headline + Wilson CI | Same rendering; warning badge dropped |
+| 5 ≤ n < `global_confidence_floor_n` | Wilson CI + warning badge | Point estimate + Wilson [lower, upper] at α=0.05 + "below confidence floor (n<20)" badge |
+| n ≥ `global_confidence_floor_n` | Headline + Wilson CI | Same rendering; warning badge dropped |
 
-`target_n` per cohort = `hypothesis_registry.target_sample_size`. For non-cohort rates (e.g., portfolio-wide `disqualifying_process_violation_rate`): `target_n = 20`.
+`global_confidence_floor_n = 20` for ALL Class-A metrics (cohort or non-cohort). `target_sample_size` per cohort governs §4.2 progress bars, NOT confidence-badge removal in §5. Sub-A+ cohort reaching its target=5 sees the warning badge persist — exactly the conservatism R3 M2 demands.
 
 ### 5.2 Class B — Mean / sum-over-fixed-denominator metrics
 
@@ -341,10 +357,10 @@ Applies to: `expectancy_R`, `avg_win_R`, `avg_loss_R`, `MFE_R`, `MAE_R`, `captur
 |---|---|---|
 | n < 3 | Suppress | "n too low (need ≥3)" placeholder |
 | 3 ≤ n < 5 | Point-estimate-with-warning | Point estimate rendered; "low confidence (n=3 or 4)" badge |
-| 5 ≤ n < 20 | Bootstrap CI (1000 resamples, percentile method, α=0.05) | Point estimate + bootstrap [lower, upper] |
-| n ≥ 20 | Headline + bootstrap CI | Same rendering; warning badge dropped |
+| 5 ≤ n < `global_confidence_floor_n` | Bootstrap CI (1000 resamples, percentile method, α=0.05) + warning badge | Point estimate + bootstrap [lower, upper] + "below confidence floor (n<20)" badge |
+| n ≥ `global_confidence_floor_n` | Headline + bootstrap CI | Same rendering; warning badge dropped |
 
-Bootstrap chosen over normal-approximation because R-distributions are typically heavy-tailed at small n (single-trade R ranges -3 to +5+ R typical), violating normal-approximation assumptions. 1000 resamples is the V1 default; configurable per Phase 9 risk_policy.
+Bootstrap chosen over normal-approximation because R-distributions are typically heavy-tailed at small n (single-trade R ranges -3 to +5+ R typical), violating normal-approximation assumptions. 1000 resamples is the V1 default; configurable per Phase 9 risk_policy. `global_confidence_floor_n = 20` matches Class A.
 
 ### 5.3 Class C — Ratio metrics requiring win-loss diversity
 
@@ -353,8 +369,8 @@ Applies to: `profit_factor`, `payoff_ratio`, `breakeven_win_rate` (deferred per 
 | n | Disposition | Rendering |
 |---|---|---|
 | n < 5 OR <1 win OR <1 loss | Suppress | "Insufficient outcome diversity" placeholder; never +inf or undefined-numeric |
-| 5 ≤ n < 20 (with ≥1 win + ≥1 loss) | Point estimate (no CI in V1) | Numeric value; "interpret with caution" badge inline |
-| n ≥ 20 (with ≥1 win + ≥1 loss) | Headline | Numeric value; warning badge dropped |
+| 5 ≤ n < `global_confidence_floor_n` (with ≥1 win + ≥1 loss) | Point estimate (no CI in V1) + warning | Numeric value; "interpret with caution (n<20)" badge inline |
+| n ≥ `global_confidence_floor_n` (with ≥1 win + ≥1 loss) | Headline | Numeric value; warning badge dropped |
 
 Ratio-CI methods (e.g., Fieller's theorem, log-transform delta method) are V2 deferred — V1 ratio metrics show point estimates above the threshold; suppression is the V1 honesty mechanism.
 
@@ -362,13 +378,16 @@ Ratio-CI methods (e.g., Fieller's theorem, log-transform delta method) are V2 de
 
 Applies to: `process_grade_rolling_N`, `*_rolling_N` per §3.8, `aplus_funnel_30d_trend`.
 
+Class D inherits the §5 decoupling discipline: window-fullness (`effective_n = N`) is a CADENCE signal (the rolling window has enough samples to draw a line), not a STATISTICAL-CONFIDENCE signal. Confidence-warning removal happens at the same `global_confidence_floor_n = 20` as Classes A–C (R4 M1 fix). The default `N = 10` is INTENTIONALLY below the global floor — a 10-trade rolling window is a useful operational cadence for spotting recent-trend shifts even when the underlying sample is statistically immature.
+
 | Effective n in window | Disposition | Rendering |
 |---|---|---|
 | effective_n < 5 | Suppress rolling line; show per-trade points | Line absent; markers visible |
-| 5 ≤ effective_n < N | Render rolling line + window-narrowing badge | Line drawn; "rolling window not yet at N" badge |
-| effective_n = N | Render rolling line at full N | Standard rendering |
+| 5 ≤ effective_n < N | Render rolling line + window-narrowing badge + confidence-floor warning | Line drawn; "rolling window not yet at N" badge + "below confidence floor (n<20)" badge |
+| N ≤ effective_n < `global_confidence_floor_n` | Render rolling line at full N + confidence-floor warning | Line drawn; "below confidence floor (n<20)" badge persists |
+| effective_n ≥ `global_confidence_floor_n` | Render rolling line at full N | Standard rendering; warning badge dropped |
 
-`effective_n` = count of closed trades in the rolling window. Per-trade point markers are always shown regardless of rolling-line state.
+`effective_n` = count of closed trades in the rolling window. Per-trade point markers are always shown regardless of rolling-line state. The confidence-floor warning is the SAME badge used by Classes A–C, so a dashboard reader sees one consistent signal across all metric classes.
 
 ### 5.5 Per-pipeline-run metrics special case
 
@@ -380,7 +399,7 @@ Suppression is rendered as italic placeholder text, not a hidden field. Format: 
 
 ### 5.7 Coverage cross-check (brief watch-item 2)
 
-Every metric in §3 has a class assignment per §5.1–§5.4. Every surface in §4 inherits the class disposition of its constituent metrics. The hypothesis-progress card §4.2 is the lone exception: it is governance, not metric — it always shows regardless of sample size.
+Every metric in §3 has a class assignment per §5.1–§5.4. Every surface in §4 inherits the class disposition of its constituent metrics. The hypothesis-progress card §4.2 is the lone exception: it is governance, not metric — it always shows regardless of sample size. The PROVISIONAL badge on §3.4 + §3.5 live-capital metrics is an additional layer ORTHOGONAL to the §5 confidence badges (a metric can be both PROVISIONAL on data-source AND below confidence floor).
 
 ---
 
@@ -396,14 +415,16 @@ Per-snapshot fields the metrics dashboard needs. Cadence: one row per (open_trad
 - `trail_MA_eligibility_flag` (boolean) — derived but cached per snapshot for query simplicity.
 - `open_MFE_R_to_date` (REAL, R units) — running max of favorable excursion / planned_risk_budget.
 - `open_MAE_R_to_date` (REAL, R units) — running min (or abs of min) of adverse excursion.
-- `position_capital_utilization_pct` (REAL, proportion) — `current_avg_cost × current_size / capital_floor`.
+- `position_capital_utilization_pct` (REAL, proportion) — `current_avg_cost × current_size / live_capital_denominator_dollars` (provisional fallback to `capital_floor_constant_dollars` per §2 split-policy).
 - `position_portfolio_heat_contribution_dollars` (REAL, $) — `max(0, (current_avg_cost - current_stop) × current_size)`.
 - `intraday_high` / `intraday_low` (REAL) — for tomorrow's MFE/MAE compute.
 - `data_asof_session` (TEXT, NYSE session date) — anchor.
+- **`trail_MA_candidate_price` (REAL) — NEW; R1 M5 capture-need.** Per-position SMA reference price used as the trailing-stop candidate. Suggested computation: 10-day or 21-day SMA at session close, operator-configurable per Phase 8 brainstorm decision. Required by §3.5 `trail_MA_eligibility_flag` and §4.5 maturity-stage surface; without it the eligibility flag cannot be computed.
+- **`planned_target_R` (REAL) — NEW; R1 M5 capture-need.** Pre-trade-locked target in R units (e.g., +2R, +3R) the operator planned to hold the trade to. Phase 7 explicitly deferred `target_1` / `target_2`-style target storage; Phase 8 should reconsider whether to capture this as part of `daily_management_records` or as a `pre_trade_locked_at` field on `trades` (open question for Phase 8 brainstorm). Required by §4.5 maturity-stage surface column.
 
-**Cadence:** one row per (trade_id, session_date) per state ∈ {entered, managing, partial_exited}. Daily snapshot; not intraday. State `closed` → final row freezes at `last_fill_at`'s session.
+**Cadence:** one row per (trade_id, session_date) per state ∈ {entered, managing, partial_exited}. Daily snapshot; not intraday. State `closed` → final row freezes at `last_fill_at`'s session. Note `planned_target_R` is per-trade-locked, not per-snapshot — Phase 8 to decide whether it lives on `trades` (one-shot capture at lock) or on `daily_management_records` (snapshot replication for query convenience).
 
-**Phase 8 capture-need cross-check (brief watch-item 6):** every §3 metric whose `Inputs` column lists `[Phase 8]` is covered. Cross-checked: maturity_stage / trail_MA_eligibility / open_MFE_R / open_MAE_R / position_capital_utilization / position_portfolio_heat_contribution. NO §3 metric requires daily-tier capture not in this list. (Watch-item 6 satisfied.)
+**Phase 8 capture-need cross-check (brief watch-item 6):** every §3 metric whose `Inputs` column lists `[Phase 8]` is covered. Cross-checked: maturity_stage / trail_MA_eligibility (now with `trail_MA_candidate_price` capture) / open_MFE_R / open_MAE_R / position_capital_utilization (provisional denominator note) / position_portfolio_heat_contribution / `planned_target_R` (per-trade scope) / `trail_MA_candidate_price` (per-snapshot scope). NO §3 metric requires daily-tier capture not in this list. (Watch-item 6 satisfied after R1 M5 fix.)
 
 ### 6.2 For Phase 9 brainstorm (`risk_policy` + `reconciliation_runs`)
 
@@ -412,8 +433,12 @@ Versioning needs for metric-config:
 - `scratch_epsilon` (REAL, default 0.10R) — per v1.1-alternate F-014. Per-policy-version row; trade resolves the policy effective at `pre_trade_locked_at`. Without versioning, retroactive scratch_epsilon changes would silently re-classify historical wins/losses.
 - `review_lag_threshold_days` (INTEGER, default 7) — per Phase 6 review window default; Phase 9 should externalize to risk_policy.
 - `low_sample_size_thresholds_class_a / class_b / class_c / class_d` — per §5 thresholds. If V1 hardcodes them and V2 externalizes, version-stamping is the migration path.
-- `bootstrap_resample_count` (INTEGER, default 1000) — per §5.2. Same versioning rationale.
+- `global_confidence_floor_n` (INTEGER, default 20 per §5 R3 M2 fix) — externalize so V2 can tighten or loosen the global floor without code change.
+- `bootstrap_resample_count` (INTEGER, default 1000) — per §5.2. Same versioning rationale. **Note:** Phase 9 brainstorm should consider whether this + sample-size threshold knobs belong in `risk_policy` or in a separate `dashboard_methodology_policy` table — they are statistics-methodology settings, not trading-risk policy proper. Captured as Phase 9 internal scope question, not §8 open question.
 - `process_grade_weights_entry / management / exit` (REAL, currently 0.40 / 0.35 / 0.25 per Phase 6) — Phase 6 hardcodes; Phase 9 risk_policy should externalize for forward-compat.
+- **`hypothesis_status_history` audit table — NEW capture-need from R1 M1.** Migration 0008 stores ONLY the latest `status_changed_at` + `status_change_reason` (overwritten on each status change). To support §3.2 `latest_status_change_metadata` evolving into a true transition timeline (operator wants to review the history of why a hypothesis cycled active → paused → active), Phase 9 should land an `hypothesis_status_history` audit table with columns `(hypothesis_id, status, effective_from, effective_to, change_reason, recorded_at)`. Cadence: append-only on each `status` UPDATE. Mirrors v1.1-alternate F-022's `Setup_Status_History` pattern. Until shipped, V1 surfaces only the latest transition.
+- **`account_equity_snapshot_table` capture (per §8.2 open question)** — if operator decides to add manual-entry surface (vs Schwab API Phase A), Phase 9 should version-stamp the entry source (`source ∈ {manual, schwab_api, csv_import}`).
+- **`capital_floor_versioning` capture (per §2 split-policy lock)** — V1 hardcodes `capital_floor_constant_dollars = 7500`. Phase 9 risk_policy versioning should externalize this with effective_from / effective_to so a future change ($7500 → $10000 if account grows) does NOT retroactively shift historical cohort tripwire-distance values. Trade reads should resolve the policy effective at `pre_trade_locked_at`. Critical for the pre-registration discipline §1.3 binds. Distinct from the operational `live_capital_denominator_dollars` capture, which is a separate Phase 9 / §8.2 path.
 
 `reconciliation_runs` discrepancy surface for metrics-data-quality reporting:
 
@@ -425,9 +450,9 @@ Likely capture-needs not in Phase 8/9 scope:
 
 1. **Per-pipeline-run capital-utilization aggregate** (`pipeline_runs_metrics_capital_aggregate`-shaped table OR extend `pipeline_runs` with new columns) — composition: `risk_feasibility_blocked_count` + `aplus_identifications_count` + `watch_identifications_count` + `aplus_taken_count` + `watch_taken_count` + `current_capital_utilization_at_run_start` + `concurrent_open_at_run_start`. Cadence: one row per pipeline_run. Drives §4.4 + §4.6.
 2. **Per-pipeline-run identification-vs-trade-funnel snapshot** — covered by item 1's columns.
-3. **Benchmark series capture** — currently UNCAPTURED. Two location options surfaced as §8.3 open question (extend `ohlcv_archive` for SPY/QQQ vs new `market_context_daily` table). Required for benchmark-relative metrics (§3.9 deferred).
+3. **Benchmark series capture** — currently UNCAPTURED. Two location options surfaced as §8.3 open question (extend `ohlcv_archive` for SPY / QQQ vs new `market_context_daily` table). Required for benchmark-relative metrics (§3.9 deferred).
 4. **Corporate-action handling** — currently UNCAPTURED. Defensive (log only, manual reconcile, no automated adjustment) vs deferred (do nothing in V1) is §8.4 open question.
-5. **Daily account equity capture** — currently UNCAPTURED. Manual entry vs Schwab API Phase A is §8.2 open question. Required for ALL deferred Class B (Sharpe/Sortino/TWR/cumulative-return-pct) metrics.
+5. **Daily account equity capture** — currently UNCAPTURED. Manual entry vs Schwab API Phase A is §8.2 open question. Required for ALL deferred Class B (Sharpe / Sortino / TWR / cumulative-return-pct) metrics AND for resolving the `live_capital_denominator_dollars` PROVISIONAL fallback in §3.4 + §3.5.
 
 ### 6.4 What this brainstorm does NOT propose for Phase 8/9 (creep prevention; brief watch-item 10)
 
@@ -492,11 +517,11 @@ Each unresolved question that requires operator decision before Phase 10 writing
 
 ### 8.2 Daily account equity capture — manual entry vs Schwab API Phase A
 
-**Question:** Should V1 introduce a manual `account_equity_snapshot` capture surface (CLI + web form) so deferred Class B metrics (Sharpe/Sortino/TWR/cumulative-return-pct) can begin sample accumulation? OR should V1 wait for Schwab API Phase A (per `docs/phase3e-todo.md` 2026-05-04 entry)?
+**Question:** Should V1 introduce a manual `account_equity_snapshot` capture surface (CLI + web form) so deferred Class B metrics (Sharpe / Sortino / TWR / cumulative-return-pct) AND the live-capital-denominator PROVISIONAL fallback (§3.4 + §3.5) can resolve? OR should V1 wait for Schwab API Phase A (per `docs/phase3e-todo.md` 2026-05-04 entry)?
 
-**Tradeoff:** Manual entry gates these metrics on operator daily discipline (high error rate; daily-friction increase). Schwab API Phase A is gated on Schwab Developer Portal production-access approval (days-weeks after submission) and a brainstorm + writing-plans + executing-plans cycle. Net delay = 2-4 weeks minimum. Manual entry could begin tomorrow but is unlikely to survive to the n=12-monthly threshold without dropouts.
+**Tradeoff:** Manual entry gates these metrics on operator daily discipline (high error rate; daily-friction increase). Schwab API Phase A is gated on Schwab Developer Portal production-access approval (days–weeks after submission) and a brainstorm + writing-plans + executing-plans cycle. Net delay = 2–4 weeks minimum. Manual entry could begin tomorrow but is unlikely to survive to the n=12-monthly threshold without dropouts. Note: this question is now LARGER than originally stated because it ALSO unlocks the PROVISIONAL fallback for live operational metrics (R3 M1 split-policy), not just deferred Class B metrics.
 
-**Recommendation:** WAIT for Schwab API Phase A. Sharpe/Sortino at our trade cadence won't meet the n=12-monthly threshold for ~12+ months regardless of when capture begins; the API delay does not bind the metric availability date. Phase 10 writing-plans should NOT include manual-entry surface scope. Decision-source: orchestrator + operator decision; cross-reference Phase 7 cadence post-mortem.
+**Recommendation:** WAIT for Schwab API Phase A AS THE PRIMARY PATH, but re-evaluate whether a SHORT-TERM manual-entry surface is worth the friction specifically for the live-capital-denominator metrics (§3.4 + §3.5 PROVISIONAL fallback). If the operator finds the PROVISIONAL fallback misleading at scale, a manual snapshot endpoint costs ~30 minutes-of-design and could resolve the live-capital denominator before Schwab API lands. Phase 10 writing-plans should NOT include manual-entry surface scope by default; flagged for orchestrator decision. Decision-source: orchestrator + operator decision.
 
 ### 8.3 Benchmark series capture location — extend `ohlcv_archive` vs new `market_context_daily`
 
@@ -546,11 +571,18 @@ Phase 10 design (this spec) is RESEARCH-POSTURE. It defines metric semantics + d
 
 ```
 [Phase 8: Daily_Management_Records]
-   captures: maturity_stage, open_MFE_R/MAE_R, position_capital_utilization, position_portfolio_heat_contribution
+   captures: maturity_stage, open_MFE_R/MAE_R, position_capital_utilization,
+             position_portfolio_heat_contribution, trail_MA_candidate_price,
+             planned_target_R (per §6.1 R1 M5 additions)
    ↓
 [Phase 9: Risk_Policy versioning + Reconciliation_Runs]
-   externalizes: scratch_epsilon, review_lag, sample-size thresholds, process_grade_weights
-   captures: reconciliation_runs discrepancy surface
+   externalizes: scratch_epsilon, review_lag, sample-size thresholds,
+                 process_grade_weights, capital_floor_constant_dollars
+                 (per §6.2 R3 M1 split-policy capture-need),
+                 global_confidence_floor_n, bootstrap_resample_count
+   captures: reconciliation_runs discrepancy surface,
+             hypothesis_status_history audit table (per §6.2 R1 M1),
+             optional account_equity_snapshot_table (per §8.2 resolution)
    ↓
 [Phase 10: Metrics dashboard implementation]
    consumes Phase 8 + Phase 9 capture
@@ -569,23 +601,23 @@ Phase 10 writing-plans (when it eventually runs) will carve §3 + §4 into discr
 - [x] **Placeholders:** No "TBD" / "TODO" markers in normative sections.
 - [x] **Internal consistency:** §3 inventory matches §4 surface compositions; §5 policy classes cover every §3 metric; §6 capture-needs match every `[Phase 8]` / `[Phase 9]` / `[Phase 10+]` input tag in §3.
 - [x] **Scope check:** RESEARCH-POSTURE preserved — no schema (no CREATE TABLE / no ALTER), no code (no Python class definitions / no Jinja), no task decomposition. §6.4 explicit creep-prevention.
-- [x] **Ambiguity check:** §5 honesty policy has explicit thresholds + rendering format; no "depends on..." dangling.
+- [x] **Ambiguity check:** §5 honesty policy has explicit thresholds + rendering format; no "depends on..." dangling. §2 + §3.4 split-policy denominator explicit.
 - [x] **Brief watch-item coverage:** all 13 watch items addressed:
   - 1 (cohort primary axis): §3 every metric exposes per-cohort; §4.1 default per-cohort.
-  - 2 (low-sample-size consistency): §5 covers all §3 metrics + all §4 surfaces.
-  - 3 (pre-registration discipline): §3.2 reads tripwire fields from migration-locked source (not Phase 9 mirror).
-  - 4 (tier-comparison stat validity): §3.3 + §4.3 require Wilson CI; §4.3 explicit suppression.
+  - 2 (low-sample-size consistency): §5 covers all §3 metrics + all §4 surfaces with global-confidence-floor decoupled from cohort target.
+  - 3 (pre-registration discipline): §3.2 reads tripwire fields from migration-locked source; capital denominator locked to constant for governance metrics (§2 split-policy).
+  - 4 (tier-comparison stat validity): §3.3 + §4.3 require per-cohort Wilson CI; `cohort_ci_overlap_descriptor` is TEXT-only (no boolean significance flag at our sample); §4.3 explicit suppression until both cohorts n≥5.
   - 5 (mistake-cost formula coverage): §7.2 enumerates 7 outcome cases.
-  - 6 (Phase 8 capture completeness): §6.1 cross-checked against §3 `[Phase 8]` tags.
+  - 6 (Phase 8 capture completeness): §6.1 cross-checked against §3 `[Phase 8]` tags; includes `trail_MA_candidate_price` + `planned_target_R`.
   - 7 (DROP rules applied): §1.3 binding; spot-check no metric depends on Setup_Playbook / pyramiding R-views / self-rated quality / 7-value trade_origin.
   - 8 (v1.1-alternate baseline): §1.3 + §2 vocabulary cite v1.1-alternate; §7 deviation pre-existing in shipped code.
   - 9 (overweighted metrics deprioritized): §3.9 explicit deferral table.
   - 10 (Phase 8/9 coordination): §6.4 explicit creep-prevention.
   - 11 (operator-actionability): §3.10 enumeration table per metric class.
-  - 12 (JS-test-harness gap awareness): §4.9 no client-side compute; static-rendered HTML; reliability flags as text not color-only.
+  - 12 (JS-test-harness gap awareness): §4.9 no client-side compute; static-rendered HTML; reliability flags + PROVISIONAL badges as text not color-only.
   - 13 (capture-needs concreteness): §6.1 + §6.2 + §6.3 list field-name shapes + cadence + rationale.
 - [x] **Single commit landing:** spec is the only artifact for this brainstorm session; no rogue commits.
-- [x] **Line target:** ~700 lines (within 400-700 range; on the upper end given 13 watch-items + 7 open questions to address).
+- [x] **Line target:** ~641 lines (within the brief's 400-700 range after R1-R5 fix integrations).
 
 ---
 
