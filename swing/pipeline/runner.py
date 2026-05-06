@@ -1157,7 +1157,9 @@ def _step_finviz_fetch(*, cfg, lease) -> None:
     _finviz_cleanup_stale_shadows(cfg.paths.finviz_inbox_dir)
     result = _finviz_fetch_core(cfg)
     now_iso = _dt.now().isoformat(timespec="seconds")
-    sq = cfg.integrations.finviz.screen_query
+    # Codex R5: canonicalize for direct runner callers (defense-in-depth
+    # complement to apply_overrides() + fetch_screen() canonicalization).
+    sq = cfg.integrations.finviz.screen_query.lstrip("?")
 
     if result["status"] == "ok":
         shadow_path: Path | None = None
@@ -1217,7 +1219,9 @@ def _perform_finviz_fetch_no_lease(*, cfg, conn: sqlite3.Connection) -> None:
     _finviz_cleanup_stale_shadows(cfg.paths.finviz_inbox_dir)
     result = _finviz_fetch_core(cfg)
     now_iso = _dt.now().isoformat(timespec="seconds")
-    sq = cfg.integrations.finviz.screen_query
+    # Codex R5: canonicalize for direct runner callers (defense-in-depth
+    # complement to apply_overrides() + fetch_screen() canonicalization).
+    sq = cfg.integrations.finviz.screen_query.lstrip("?")
 
     if result["status"] == "ok":
         shadow_path: Path | None = None
