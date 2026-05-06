@@ -72,3 +72,48 @@ def test_get_latest_signature_hash_skips_error_rows(tmp_path: Path) -> None:
         assert get_latest_signature_hash(conn, screen_query="v=152") == "GOOD"
     finally:
         conn.close()
+
+
+def test_list_recent_calls_tiebreaks_by_call_id_when_ts_equal(tmp_path: Path) -> None:
+    """Codex R3 Major-1: audit ts is recorded with second precision; two rows
+    inserted in the same second MUST be returned in deterministic order
+    (newest insert first) so the CLI's just-inserted-row lookup is correct.
+
+    Discriminating pre-fix (ORDER BY ts DESC alone): SQLite is free to return
+    either ordering — the test would be flaky.
+    Discriminating post-fix (ORDER BY ts DESC, call_id DESC): the AUTOINCREMENT
+    call_id strictly increases, so the most-recently inserted row wins.
+    """
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        a = _insert(conn, ts="2026-05-05T12:00:00", signature_hash="A_first")
+        b = _insert(conn, ts="2026-05-05T12:00:00", signature_hash="B_second")
+        c = _insert(conn, ts="2026-05-05T12:00:00", signature_hash="C_third")
+        # Sanity: autoincrement strictly increases.
+        assert a.call_id < b.call_id < c.call_id
+
+        calls = list_recent_calls(conn, limit=10)
+        # Discriminating: order is c -> b -> a (newest insert first).
+        assert [c_.signature_hash for c_ in calls] == [
+            "C_third", "B_second", "A_first",
+        ]
+    finally:
+        conn.close()
+
+
+def test_get_latest_signature_hash_tiebreaks_by_call_id_when_ts_equal(
+    tmp_path: Path,
+) -> None:
+    """Codex R3 Major-1: drift-detection comparison must be against the
+    most-recently inserted row when two rows share a second-precision ts.
+    """
+    conn = ensure_schema(tmp_path / "swing.db")
+    try:
+        _insert(conn, ts="2026-05-05T12:00:00", screen_query="v=152",
+                status="ok", signature_hash="OLD")
+        _insert(conn, ts="2026-05-05T12:00:00", screen_query="v=152",
+                status="ok", signature_hash="NEW")
+        # Discriminating post-fix: returns the newer-inserted row's signature.
+        assert get_latest_signature_hash(conn, screen_query="v=152") == "NEW"
+    finally:
+        conn.close()

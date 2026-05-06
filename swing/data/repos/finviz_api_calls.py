@@ -23,10 +23,18 @@ def insert_call(conn: sqlite3.Connection, call: FinvizApiCall) -> int:
 def list_recent_calls(
     conn: sqlite3.Connection, *, limit: int = 50,
 ) -> list[FinvizApiCall]:
+    """Return the most recent calls ordered newest-first.
+
+    Codex R3 Major-1: tiebreak by `call_id DESC` so two rows that share a
+    second-precision `ts` are returned in deterministic insert order. The
+    audit `ts` is `_dt.now().isoformat(timespec="seconds")`; ties are
+    realistic when the CLI and pipeline run back-to-back, and the CLI
+    surface relies on "latest row" being the row JUST inserted.
+    """
     rows = conn.execute(
         "SELECT call_id, ts, screen_query, status, row_count, response_time_ms, "
         "       rate_limit_remaining, signature_hash, error_message "
-        "FROM finviz_api_calls ORDER BY ts DESC LIMIT ?",
+        "FROM finviz_api_calls ORDER BY ts DESC, call_id DESC LIMIT ?",
         (limit,),
     ).fetchall()
     return [
@@ -47,11 +55,14 @@ def get_latest_signature_hash(
     Drift-detection consumer: it only matters that the LAST KNOWN GOOD signature
     is compared against the new fetch — error/skipped rows have no signature
     and would be a vacuous comparison if returned.
+
+    Codex R3 Major-1: tiebreak by `call_id DESC` so two rows that share a
+    second-precision `ts` are compared deterministically.
     """
     row = conn.execute(
         "SELECT signature_hash FROM finviz_api_calls "
         "WHERE screen_query = ? AND signature_hash IS NOT NULL "
-        "ORDER BY ts DESC LIMIT 1",
+        "ORDER BY ts DESC, call_id DESC LIMIT 1",
         (screen_query,),
     ).fetchone()
     return row[0] if row else None
