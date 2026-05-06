@@ -746,7 +746,7 @@ Recommendation: **(B)**. Sector capture is a tighter, more bounded scope (just d
 - **Subagent monthly usage limits forced 2 completions to orchestrator-session fallback.** Implementer return-report observation 2026-05-04. Two subagent dispatches hit "monthly usage limit" mid-task (one during ruff cleanup, one during Codex R1 fixes); implementer completed those workflows directly from the orchestrator session with the same end-state. Resource-awareness flag for org-budget if dispatching again soon.
 
 **Cross-references:**
-- `future/swing_trading_journal_ai_ingestion_v1.2.md` §7.10 (Mistake_Tags), §7.11 (Review_Log), §9.2 (Process Grade), §8.8 (Mistake Cost / Lucky Violation), §10.4 (Post-Trade Review workflow).
+- `reference/Future Work/Trading Journal/swing_trading_journal_ai_ingestion_v1.2.md` §7.10 (Mistake_Tags), §7.11 (Review_Log), §9.2 (Process Grade), §8.8 (Mistake Cost / Lucky Violation), §10.4 (Post-Trade Review workflow).
 - Existing primitive precursor: `swing trade analyze <trade_id>` (Phase 3e 2026-04-25) — manual case-study output. Phase 6 upgrades this to structured + persisted.
 - Existing audit-log: `trade_events` — keep distinct from Review_Log (events are state changes; reviews are aggregations).
 - Writing-plans brief: `docs/phase6-post-trade-review-writing-plans-brief.md` (`441e22a`).
@@ -885,7 +885,7 @@ Operator decision required before drafting Sub-C brief.
 **Test count band (rough; per Phase 6 lesson "test-count-projections-bias-high"):** +150-250 fast tests (wide band; parameterization decisions affect raw count).
 
 **Cross-references:**
-- `future/swing_trading_journal_ai_ingestion_v1.2.md` §5 (state machine), §7.5 (Trade_Log), §7.6 (Fills), §10.2 (Pre-Trade Lock).
+- `reference/Future Work/Trading Journal/swing_trading_journal_ai_ingestion_v1.2.md` §5 (state machine), §7.5 (Trade_Log), §7.6 (Fills), §10.2 (Pre-Trade Lock).
 - Spec: `docs/superpowers/specs/2026-05-04-phase7-trade-lifecycle-state-machine-design.md`.
 - Brainstorm brief: `docs/phase7-trade-lifecycle-state-machine-brainstorm-brief.md`.
 - Existing entry-form architecture: `swing/web/view_models/trades.py` + `swing/web/routes/trades.py` (Phase 4.5 `f9a07bf`).
