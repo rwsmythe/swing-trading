@@ -1854,5 +1854,98 @@ def hypothesis_update_cmd(ctx: click.Context, hypothesis_id: int,
     )
 
 
+@main.group("finviz")
+def finviz_group() -> None:
+    """Finviz Elite API integration: fetch + status."""
+
+
+@finviz_group.command("fetch")
+@click.pass_context
+def finviz_fetch_cmd(ctx: click.Context) -> None:
+    """Fetch the saved-screen via Finviz Elite API + emit canonical CSV.
+
+    Same file-collision behavior as the pipeline step: if today's CSV is
+    already present in the inbox, fetch is skipped (manual override).
+    """
+    from swing.config_overrides import apply_overrides
+    from swing.data.db import connect
+    from swing.data.repos.finviz_api_calls import list_recent_calls
+    from swing.integrations.finviz_api import FinvizPipelineActiveError
+    from swing.pipeline.runner import _perform_finviz_fetch_no_lease
+
+    cfg = apply_overrides(ctx.obj["config"])
+    if not cfg.integrations.finviz.token:
+        raise click.ClickException(
+            "[integrations.finviz] token is missing in user-config "
+            "(%USERPROFILE%/swing-data/user-config.toml)."
+        )
+    if not cfg.integrations.finviz.screen_query:
+        raise click.ClickException(
+            "[integrations.finviz] screen_query is missing in user-config "
+            "(%USERPROFILE%/swing-data/user-config.toml)."
+        )
+    conn = connect(cfg.paths.db_path)
+    try:
+        try:
+            _perform_finviz_fetch_no_lease(cfg=cfg, conn=conn)
+        except FinvizPipelineActiveError as exc:
+            raise click.ClickException(str(exc)) from exc
+        recent = list_recent_calls(conn, limit=1)
+        if recent:
+            r = recent[0]
+            click.echo(
+                f"status={r.status}  rows={r.row_count}  "
+                f"elapsed={r.response_time_ms}ms  "
+                f"signature={(r.signature_hash or '')[:12]}"
+            )
+            if r.error_message:
+                click.echo(f"error: {r.error_message}", err=True)
+    finally:
+        conn.close()
+
+
+@finviz_group.command("status")
+@click.option(
+    "--limit", type=int, default=10,
+    help="Number of recent calls to show (default: 10).",
+)
+@click.pass_context
+def finviz_status_cmd(ctx: click.Context, limit: int) -> None:
+    """Show recent Finviz API call history (last N rows)."""
+    from swing.data.db import connect
+    from swing.data.repos.finviz_api_calls import list_recent_calls
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        rows = list_recent_calls(conn, limit=limit)
+    finally:
+        conn.close()
+    if not rows:
+        click.echo("No Finviz API calls recorded yet.")
+        return
+    click.echo(
+        f"{'ts':<22} {'status':<26} {'rows':>5} {'elapsed':>9} "
+        f"{'rl_left':>7} {'sig':<12}"
+    )
+    for r in rows:
+        sig = (r.signature_hash or "")[:12].ljust(12)
+        rc = r.row_count if r.row_count is not None else "-"
+        rt = (
+            f"{r.response_time_ms}ms"
+            if r.response_time_ms is not None
+            else "-"
+        )
+        rl = (
+            r.rate_limit_remaining
+            if r.rate_limit_remaining is not None
+            else "-"
+        )
+        click.echo(
+            f"{r.ts:<22} {r.status:<26} "
+            f"{rc!s:>5} {rt:>9} {rl!s:>7} {sig}"
+        )
+
+
 if __name__ == "__main__":  # pragma: no cover
     main()
