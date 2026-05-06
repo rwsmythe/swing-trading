@@ -72,7 +72,12 @@ def apply_overrides(base_cfg: Config) -> Config:
         new_finviz = replace(new_finviz, token=str(fv_token))
     fv_query = _get(overrides, "integrations.finviz.screen_query")
     if not isinstance(fv_query, _Missing):
-        new_finviz = replace(new_finviz, screen_query=str(fv_query))
+        # Codex R4 Major-1: canonicalize at the cfg-load boundary so request
+        # building, audit-row persistence, and signature-history lookups all
+        # see the same form. Otherwise an operator who pastes '?v=152&...'
+        # one day and 'v=152&...' the next forks the audit history under two
+        # `screen_query` keys, defeating drift detection.
+        new_finviz = replace(new_finviz, screen_query=str(fv_query).lstrip("?"))
     if new_finviz is not base_cfg.integrations.finviz:
         new_integrations = replace(base_cfg.integrations, finviz=new_finviz)
 

@@ -97,6 +97,43 @@ def test_config_direct_construction_still_works() -> None:
     assert integrations_field.default_factory is IntegrationsConfig  # type: ignore[comparison-overlap]
 
 
+def test_apply_overrides_canonicalizes_screen_query_leading_question_mark(
+    tmp_path, monkeypatch,
+) -> None:
+    """Codex R4 Major-1: canonicalize screen_query at the cfg-load boundary
+    so request building, audit-row persistence, and signature-history
+    lookups all see the same form.
+
+    Pre-fix: cfg.integrations.finviz.screen_query == '?v=152&f=test' (raw).
+    The runner persisted this string to finviz_api_calls.screen_query AND
+    used it as the lookup key in get_latest_signature_hash; the next-day
+    operator pasting 'v=152&f=test' (no '?') forked the audit history
+    under two screen_query keys.
+
+    Post-fix: cfg.integrations.finviz.screen_query == 'v=152&f=test'
+    (lstrip('?')); both spellings resolve to the same canonical key.
+    """
+    import textwrap as _tw
+    from pathlib import Path as _P
+
+    from swing.config import load
+    from swing.config_overrides import apply_overrides
+
+    user_cfg_dir = tmp_path / "swing-data"
+    user_cfg_dir.mkdir()
+    (user_cfg_dir / "user-config.toml").write_text(_tw.dedent("""
+        [integrations.finviz]
+        token = "abc"
+        screen_query = "?v=152&f=test"
+    """).strip())
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    cfg = apply_overrides(load(_P("swing.config.toml")))
+    assert cfg.integrations.finviz.screen_query == "v=152&f=test"
+    assert cfg.integrations.finviz.token == "abc"
+
+
 def test_existing_2part_path_get_field_source_still_works(
     monkeypatch, tmp_path,
 ) -> None:
