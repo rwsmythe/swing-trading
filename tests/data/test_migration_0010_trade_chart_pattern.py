@@ -13,9 +13,9 @@ def test_migration_0010_adds_four_trade_columns(tmp_path: Path):
         assert "chart_pattern_algo_confidence" in cols
         assert "chart_pattern_operator" in cols
         assert "chart_pattern_classification_pipeline_run_id" in cols
-        # Phase 7 Sub-A migration 0014 advanced schema_version to 14.
+        # ensure_schema walks to HEAD; migration 0015 advanced schema_version to 15.
         cur = conn.execute("SELECT version FROM schema_version")
-        assert cur.fetchone()[0] == 14
+        assert cur.fetchone()[0] == 15
     finally:
         conn.close()
 

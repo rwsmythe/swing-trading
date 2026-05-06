@@ -1,0 +1,54 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.1
+    method: GET
+    uri: https://elite.finviz.com/export.ashx?v=152
+  response:
+    body:
+      string: |
+        No.,Ticker,Sector,Industry,Country,Price,Change,Average Volume,Relative Volume,Average True Range,52-Week High,52-Week Low,Market Cap
+        1,AAPL,Technology,Consumer Electronics,USA,180.50,1.20%,50000000,1.10,2.50,210.00,150.00,2.8T
+        2,MSFT,Technology,Software-Infrastructure,USA,350.25,0.85%,30000000,0.95,4.20,400.00,300.00,2.6T
+        3,GOOGL,Communication Services,Internet Content & Information,USA,140.10,2.10%,25000000,1.30,3.10,160.00,110.00,1.7T
+    headers:
+      Content-Type:
+      - text/csv
+    status:
+      code: 200
+      message: OK
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.1
+    method: GET
+    uri: https://elite.finviz.com/export.ashx?v=152
+  response:
+    body:
+      string: |
+        No.,Ticker,Sector,Industry,Country,Price,Change,Average Volume,Relative Volume,Average True Range,52-Week High,52-Week Low,Market Cap
+        1,AAPL,Technology,Consumer Electronics,USA,180.50,1.20%,50000000,1.10,2.50,210.00,150.00,2.8T
+        2,MSFT,Technology,Software-Infrastructure,USA,350.25,0.85%,30000000,0.95,4.20,400.00,300.00,2.6T
+        3,GOOGL,Communication Services,Internet Content & Information,USA,140.10,2.10%,25000000,1.30,3.10,160.00,110.00,1.7T
+    headers:
+      Content-Type:
+      - text/csv
+    status:
+      code: 200
+      message: OK
+version: 1

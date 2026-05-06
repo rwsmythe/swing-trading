@@ -10,7 +10,8 @@ from pathlib import Path
 # sector + industry columns on candidates + trades (migration 0012)
 # post-trade review surface: 10 trade fields + review_log table (migration 0013)
 # phase 7 state machine + fills first-class (migration 0014)
-EXPECTED_SCHEMA_VERSION = 14
+# finviz_api_calls table (migration 0015)
+EXPECTED_SCHEMA_VERSION = 15
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 # Phase 7 backup gate (spec §12.1): when migrating to schema_version >= 14,

@@ -26,8 +26,17 @@ _MISSING = _Missing()
 
 
 def _get(overrides: dict[str, Any], path: str) -> Any | _Missing:
-    section, key = path.split(".")
-    return overrides.get(section, {}).get(key, _MISSING)
+    """Walk a dotted path through nested dicts. Supports N-part paths
+    (e.g. ``integrations.finviz.token``); preserves 2-part semantics for
+    the existing ``_V1_PATHS`` registry consumers.
+    """
+    parts = path.split(".")
+    cursor: Any = overrides
+    for part in parts:
+        if not isinstance(cursor, dict) or part not in cursor:
+            return _MISSING
+        cursor = cursor[part]
+    return cursor
 
 
 def apply_overrides(base_cfg: Config) -> Config:
@@ -40,6 +49,7 @@ def apply_overrides(base_cfg: Config) -> Config:
     new_web = base_cfg.web
     new_pipeline = base_cfg.pipeline
     new_account = base_cfg.account
+    new_integrations = base_cfg.integrations
 
     cf = _get(overrides, "web.chase_factor")
     if not isinstance(cf, _Missing):
@@ -53,7 +63,31 @@ def apply_overrides(base_cfg: Config) -> Config:
     if not isinstance(ref, _Missing):
         new_account = replace(new_account, risk_equity_floor=float(ref))
 
-    return replace(base_cfg, web=new_web, pipeline=new_pipeline, account=new_account)
+    # integrations.finviz overrides — sensitive fields live in user-config only.
+    # `_V1_PATHS` is intentionally NOT extended here (Phase 7e §A.6 Codex R1
+    # Critical-2 fix); these paths bypass the registry by design.
+    new_finviz = base_cfg.integrations.finviz
+    fv_token = _get(overrides, "integrations.finviz.token")
+    if not isinstance(fv_token, _Missing):
+        new_finviz = replace(new_finviz, token=str(fv_token))
+    fv_query = _get(overrides, "integrations.finviz.screen_query")
+    if not isinstance(fv_query, _Missing):
+        # Codex R4 Major-1: canonicalize at the cfg-load boundary so request
+        # building, audit-row persistence, and signature-history lookups all
+        # see the same form. Otherwise an operator who pastes '?v=152&...'
+        # one day and 'v=152&...' the next forks the audit history under two
+        # `screen_query` keys, defeating drift detection.
+        new_finviz = replace(new_finviz, screen_query=str(fv_query).lstrip("?"))
+    if new_finviz is not base_cfg.integrations.finviz:
+        new_integrations = replace(base_cfg.integrations, finviz=new_finviz)
+
+    return replace(
+        base_cfg,
+        web=new_web,
+        pipeline=new_pipeline,
+        account=new_account,
+        integrations=new_integrations,
+    )
 
 
 def get_field_source(base_cfg: Config, field_path: str) -> Literal["default", "tracked", "override"]:

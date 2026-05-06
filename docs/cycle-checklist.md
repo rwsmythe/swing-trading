@@ -7,13 +7,23 @@ Working routine for the refactored stack (Phase 3d+). Assumes `swing` is on PATH
 
 ## Daily — Pre-market (evening or morning before open)
 
-### 1. Drop the Finviz CSV
+### 1. Finviz screen — automated via API
 
-- Export from Finviz with the **13 required columns**:
+- ~~Export Finviz screen as CSV named `finvizDDMmmYYYY.csv` and drop in
+  `data/finviz-inbox/`.~~
+  **Replaced 2026-05-06:** the pipeline now fetches the screen automatically via
+  the Finviz Elite API (see `_step_finviz_fetch` in `swing/pipeline/runner.py`).
+  Manual export remains supported as a fallback if the API fails or the operator
+  wants to override the day's screen — drop the file in the inbox before
+  triggering the pipeline and the API fetch will skip
+  (logs `skipped_manual_override`).
+- (NEW) Inspect `swing finviz status` weekly to confirm rate-limit headroom +
+  watch for the `signature changed since prior run` WARNING (indicates operator
+  edited the saved screen).
+- Manual fallback format (when needed): the **13 required columns** are
   `No., Ticker, Sector, Industry, Country, Price, Change, Average Volume,
-  Relative Volume, Average True Range, 52-Week High, 52-Week Low, Market Cap`
-- Save to `data/finviz-inbox/finvizDDMmmYYYY.csv` (e.g. `finviz19Apr2026.csv`)
-- Tip: save a custom Finviz layout with this schema so export is mechanical
+  Relative Volume, Average True Range, 52-Week High, 52-Week Low, Market Cap`;
+  filename `finvizDDMmmYYYY.csv` with 1-2 digit day, e.g. `finviz5May2026.csv`.
 
 ### 2. Run the nightly pipeline
 

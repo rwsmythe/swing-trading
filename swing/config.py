@@ -165,6 +165,25 @@ class ReviewConfig:
 
 
 @dataclass(frozen=True)
+class FinvizIntegrationConfig:
+    """Finviz Elite API integration config (Phase 7e — finviz-api-integration plan).
+
+    `token` + `screen_query` are sensitive/operator-specific; live in user-config
+    only. `timeout_seconds` is non-sensitive default; tracked toml may override.
+    """
+    token: str = ""
+    screen_query: str = ""
+    timeout_seconds: int = 30
+
+
+@dataclass(frozen=True)
+class IntegrationsConfig:
+    """External-API integrations namespace. Future Schwab integration adds a
+    sibling field here following the same per-integration sub-dataclass pattern."""
+    finviz: FinvizIntegrationConfig = field(default_factory=FinvizIntegrationConfig)
+
+
+@dataclass(frozen=True)
 class Web:
     host: str = "127.0.0.1"
     port: int = 8080
@@ -217,6 +236,7 @@ class Config:
     classifier: ClassifierConfig = field(default_factory=ClassifierConfig)
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
     review: ReviewConfig = field(default_factory=ReviewConfig)
+    integrations: IntegrationsConfig = field(default_factory=IntegrationsConfig)
 
 
 _PROJECT_INTERNAL_PREFIXES = ("data/", "exports/", "reference/")
@@ -266,6 +286,13 @@ def load(config_path: Path) -> Config:
         rs_universe_path=_resolve_path(p["rs_universe_path"], home, project_root),
     )
 
+    raw_finviz = dict(raw.get("integrations", {}).get("finviz", {}))
+    # Sensitive fields MUST come from user-config only; tracked toml may carry
+    # only timeout_seconds. Drop any token / screen_query rows defensively to
+    # eliminate the leak path (Phase 7e plan §A.6).
+    raw_finviz.pop("token", None)
+    raw_finviz.pop("screen_query", None)
+
     return Config(
         paths=paths,
         account=Account(**raw["account"]),
@@ -295,4 +322,7 @@ def load(config_path: Path) -> Config:
         classifier=ClassifierConfig(**raw.get("classifier", {})),
         archive=ArchiveConfig(**raw.get("archive", {})),
         review=ReviewConfig(**raw.get("review", {})),
+        integrations=IntegrationsConfig(
+            finviz=FinvizIntegrationConfig(**raw_finviz),
+        ),
     )

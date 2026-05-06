@@ -103,3 +103,9 @@ archive_compression_format = "zip"
 # Phase 6 cadence-review tunable. Days since trade close before the
 # dashboard "needs review" badge counts the trade. Default 7.
 review_window_days = 7
+
+[integrations.finviz]
+# Finviz Elite API integration. token + screen_query live in user-config
+# (%USERPROFILE%/swing-data/user-config.toml under [integrations.finviz])
+# — never tracked. timeout_seconds is the per-request HTTP timeout.
+timeout_seconds = 30

@@ -277,6 +277,17 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 log.warning("weather failed: %s", exc)
                 lease.status(weather_status="failed")
 
+            lease.step("finviz_fetch")
+            try:
+                _step_finviz_fetch(cfg=cfg, lease=lease)
+            except LeaseRevoked:
+                raise
+            except Exception as exc:
+                # _step_finviz_fetch is itself error-tolerant; this catches
+                # programming errors only (KeyError, etc.). Pipeline must
+                # not abort here either — preserve fallback semantics.
+                log.warning("finviz_fetch programming error (continuing): %s", exc)
+
             lease.step("evaluate")
             try:
                 eval_run_id = _step_evaluate(
@@ -960,3 +971,291 @@ def _step_review_log_cadence(*, lease: Lease) -> None:
                 period_end=p_end.isoformat(),
                 scheduled_date=scheduled,
             )
+
+
+def _finviz_fetch_core(cfg) -> dict:
+    """Shared API fetch + normalize + signature computation.
+
+    Returns a dict with keys:
+        status: 'ok' | 'error' | 'skipped_manual_override'
+        csv_text: str | None  (canonical 13-column CSV text; None if not written)
+        csv_path: Path        (target path; written by caller on status=='ok')
+        row_count: int | None
+        response_time_ms: int | None
+        signature_hash: str | None
+        rate_limit_remaining: int | None
+        error_message: str | None
+
+    Performs the fetch but does NOT write to DB or filesystem; the caller
+    persists per-surface (lease-fenced for pipeline; raw conn for CLI).
+    """
+    import os  # noqa: F401
+    import platform
+    import time
+
+    from swing.integrations.finviz_api import (
+        FinvizApiError,
+        FinvizClient,
+        FinvizConfigMissingError,
+        FinvizRateLimitError,
+        FinvizSchemaParityError,
+    )
+
+    action_session = action_session_for_run(_dt.now())
+    fmt = "%#d" if platform.system() == "Windows" else "%-d"
+    date_str = action_session.strftime(f"{fmt}%b%Y")
+    csv_path = cfg.paths.finviz_inbox_dir / f"finviz{date_str}.csv"
+
+    # Codex R1 Major-2 fix: inbox-dir creation can fail (PermissionError on
+    # locked-down filesystems; OSError on non-existent parent + read-only mount).
+    # Plan §A.13/§H requires file-write failures to downgrade to status='error'
+    # with an audit row inserted last — same contract as the shadow-write path.
+    # Returning early with status='error' here lets the caller's lease-fenced
+    # audit insert record the failure truthfully rather than escaping as a
+    # generic "programming error" via the outer try/except.
+    try:
+        cfg.paths.finviz_inbox_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        msg = f"{type(exc).__name__}: {exc}"
+        log.warning("Finviz inbox-dir creation failed: %s", msg)
+        return {
+            "status": "error", "csv_text": None, "csv_path": csv_path,
+            "row_count": None, "response_time_ms": 0,
+            "signature_hash": None, "rate_limit_remaining": None,
+            "error_message": msg[:1024],
+        }
+
+    if csv_path.exists():
+        log.info(
+            "Manual CSV present at %s; Finviz API fetch skipped (manual override).",
+            csv_path,
+        )
+        return {
+            "status": "skipped_manual_override", "csv_text": None,
+            "csv_path": csv_path, "row_count": None,
+            "response_time_ms": None, "signature_hash": None,
+            "rate_limit_remaining": None, "error_message": None,
+        }
+
+    # Pre-check config presence so a missing-token does NOT trigger any
+    # network call (the test asserts fetch_screen.assert_not_called()).
+    fz_cfg = cfg.integrations.finviz
+    if not fz_cfg.token:
+        return {
+            "status": "error", "csv_text": None, "csv_path": csv_path,
+            "row_count": None, "response_time_ms": 0,
+            "signature_hash": None, "rate_limit_remaining": None,
+            "error_message": "FinvizConfigMissingError: token is missing",
+        }
+    # Codex R2 Minor-1: validate AFTER stripping leading '?' so a bare '?'
+    # (or '?'-only padding) is treated as missing — same canonicalization as
+    # FinvizClient.fetch_screen so the surface-vs-helper precheck matches.
+    if not fz_cfg.screen_query.lstrip("?"):
+        return {
+            "status": "error", "csv_text": None, "csv_path": csv_path,
+            "row_count": None, "response_time_ms": 0,
+            "signature_hash": None, "rate_limit_remaining": None,
+            "error_message": "FinvizConfigMissingError: screen_query is missing",
+        }
+
+    start = time.monotonic()
+    try:
+        client = FinvizClient(cfg)
+        body = client.fetch_screen()
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        canonical_text = client.normalize_to_canonical_csv(body)
+        sig = client.compute_signature_hash(body)
+        return {
+            "status": "ok", "csv_text": canonical_text, "csv_path": csv_path,
+            "row_count": canonical_text.count("\n") - 1,
+            "response_time_ms": elapsed_ms, "signature_hash": sig,
+            "rate_limit_remaining": client.last_rate_limit_remaining,
+            "error_message": None,
+        }
+    except (
+        FinvizConfigMissingError, FinvizApiError, FinvizRateLimitError,
+        FinvizSchemaParityError,
+    ) as exc:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        msg = f"{type(exc).__name__}: {exc}"
+        log.warning("Finviz API fetch failed: %s", msg)
+        return {
+            "status": "error", "csv_text": None, "csv_path": csv_path,
+            "row_count": None, "response_time_ms": elapsed_ms,
+            "signature_hash": None, "rate_limit_remaining": None,
+            "error_message": msg[:1024],
+        }
+
+
+def _finviz_persist_csv_shadow(csv_path: Path, csv_text: str) -> Path:
+    """Write CSV to a shadow path '<canonical>.api-pending' atomically.
+    Returns the shadow path for later promotion. Per plan §A.13."""
+    import os
+    shadow_path = Path(str(csv_path) + ".api-pending")
+    tmp_path = Path(str(shadow_path) + ".tmp")
+    tmp_path.write_text(csv_text, encoding="utf-8")
+    os.replace(tmp_path, shadow_path)
+    return shadow_path
+
+
+def _finviz_promote_shadow(shadow_path: Path, canonical_path: Path) -> None:
+    """Atomic rename shadow → canonical."""
+    import os
+    os.replace(shadow_path, canonical_path)
+
+
+def _finviz_cleanup_stale_shadows(inbox_dir: Path) -> None:
+    """Delete '.api-pending' files older than 1 hour. Belt-and-suspenders
+    cleanup for the rare case where a process-kill leaks a shadow."""
+    import time
+    cutoff = time.time() - 3600  # 1 hour
+    if not inbox_dir.exists():
+        return
+    for f in inbox_dir.glob("*.api-pending"):
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+        except OSError:
+            pass
+
+
+def _assert_no_active_pipeline_run(conn: sqlite3.Connection) -> None:
+    """Refuse standalone Finviz fetch if a pipeline run is currently running.
+    Plan §A.14 (Codex R2 Major-3 fix). Pipeline-internal _step_finviz_fetch
+    does NOT call this — it runs WHILE the lease is held."""
+    from swing.integrations.finviz_api import FinvizPipelineActiveError
+    row = conn.execute(
+        "SELECT id FROM pipeline_runs WHERE state = 'running' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if row is not None:
+        raise FinvizPipelineActiveError(
+            f"A pipeline run is currently in flight (run_id={row[0]}); "
+            "the standalone Finviz fetch is refused to avoid corrupting "
+            "the inbox or audit log. Wait for the run to complete "
+            "(swing pipeline status) and retry, OR run the fetch as "
+            "part of the pipeline (swing pipeline run)."
+        )
+
+
+def _step_finviz_fetch(*, cfg, lease) -> None:
+    """Pipeline step: fetch today's Finviz screen via API.
+
+    Sequence (Codex R3 Major-1 fix — file work BEFORE audit insert; audit row
+    is THE ground truth):
+      1. Recovery sweep for stale shadow files.
+      2. _finviz_fetch_core (in-memory fetch + normalize + signature).
+      3. If result['status']=='ok': lease-fenced read of prior signature →
+         drift warning; shadow-write CSV; promote shadow to canonical.
+      4. Any exception during step-3 file work → DOWNGRADE result to
+         status='error' with the OS-error message; clean any leftover shadow.
+      5. Lease-fenced audit-row insert with the (possibly-downgraded) result.
+    """
+    from swing.data.models import FinvizApiCall
+    from swing.data.repos.finviz_api_calls import get_latest_signature_hash, insert_call
+
+    _finviz_cleanup_stale_shadows(cfg.paths.finviz_inbox_dir)
+    result = _finviz_fetch_core(cfg)
+    now_iso = _dt.now().isoformat(timespec="seconds")
+    # Codex R5: canonicalize for direct runner callers (defense-in-depth
+    # complement to apply_overrides() + fetch_screen() canonicalization).
+    sq = cfg.integrations.finviz.screen_query.lstrip("?")
+
+    if result["status"] == "ok":
+        shadow_path: Path | None = None
+        try:
+            with lease.fenced_write() as conn:
+                prior_sig = get_latest_signature_hash(conn, screen_query=sq)
+            if prior_sig is not None and prior_sig != result["signature_hash"]:
+                log.warning(
+                    "Finviz screen signature changed since prior run "
+                    "(%s -> %s); operator may have edited the saved screen.",
+                    prior_sig[:12], result["signature_hash"][:12],
+                )
+            shadow_path = _finviz_persist_csv_shadow(
+                result["csv_path"], result["csv_text"],
+            )
+            _finviz_promote_shadow(shadow_path, result["csv_path"])
+            shadow_path = None  # promoted; nothing to clean
+        except Exception as exc:
+            # File-write OR promote OR fenced-read failed. DOWNGRADE the
+            # result so the audit row reflects ground truth (Codex R3 M1).
+            log.warning("Finviz CSV write/promote failed: %s", exc)
+            result["status"] = "error"
+            result["row_count"] = None
+            result["signature_hash"] = None
+            result["error_message"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            if shadow_path is not None and shadow_path.exists():
+                try:
+                    shadow_path.unlink()
+                except OSError as _exc:
+                    log.warning("failed to clean up Finviz shadow file: %s", _exc)
+
+    # Final audit-row insert. If THIS fenced_write raises LeaseRevoked,
+    # the audit row is missing but file state is consistent.
+    with lease.fenced_write() as conn:
+        insert_call(conn, FinvizApiCall(
+            call_id=None, ts=now_iso, screen_query=sq,
+            status=result["status"], row_count=result["row_count"],
+            response_time_ms=result["response_time_ms"],
+            rate_limit_remaining=result["rate_limit_remaining"],
+            signature_hash=result["signature_hash"],
+            error_message=result["error_message"],
+        ))
+
+
+def _perform_finviz_fetch_no_lease(*, cfg, conn: sqlite3.Connection) -> None:
+    """Standalone (non-pipeline) Finviz fetch — used by `swing finviz fetch` CLI.
+
+    Refuses execution if a pipeline run is currently in flight (plan §A.14).
+    Same file-work-before-audit-insert ordering as `_step_finviz_fetch`
+    (Codex R3 Major-1 fix). Writes through the caller-provided `conn`.
+    """
+    from swing.data.models import FinvizApiCall
+    from swing.data.repos.finviz_api_calls import get_latest_signature_hash, insert_call
+
+    _assert_no_active_pipeline_run(conn)
+    _finviz_cleanup_stale_shadows(cfg.paths.finviz_inbox_dir)
+    result = _finviz_fetch_core(cfg)
+    now_iso = _dt.now().isoformat(timespec="seconds")
+    # Codex R5: canonicalize for direct runner callers (defense-in-depth
+    # complement to apply_overrides() + fetch_screen() canonicalization).
+    sq = cfg.integrations.finviz.screen_query.lstrip("?")
+
+    if result["status"] == "ok":
+        shadow_path: Path | None = None
+        try:
+            prior_sig = get_latest_signature_hash(conn, screen_query=sq)
+            if prior_sig is not None and prior_sig != result["signature_hash"]:
+                log.warning(
+                    "Finviz screen signature changed since prior run "
+                    "(%s -> %s); operator may have edited the saved screen.",
+                    prior_sig[:12], result["signature_hash"][:12],
+                )
+            shadow_path = _finviz_persist_csv_shadow(
+                result["csv_path"], result["csv_text"],
+            )
+            _finviz_promote_shadow(shadow_path, result["csv_path"])
+            shadow_path = None
+        except Exception as exc:
+            log.warning("Finviz CSV write/promote failed: %s", exc)
+            result["status"] = "error"
+            result["row_count"] = None
+            result["signature_hash"] = None
+            result["error_message"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            if shadow_path is not None and shadow_path.exists():
+                try:
+                    shadow_path.unlink()
+                except OSError as _exc:
+                    log.warning("failed to clean up Finviz shadow file: %s", _exc)
+
+    insert_call(conn, FinvizApiCall(
+        call_id=None, ts=now_iso, screen_query=sq,
+        status=result["status"], row_count=result["row_count"],
+        response_time_ms=result["response_time_ms"],
+        rate_limit_remaining=result["rate_limit_remaining"],
+        signature_hash=result["signature_hash"],
+        error_message=result["error_message"],
+    ))
