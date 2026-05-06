@@ -2,8 +2,10 @@ import pytest
 
 from swing.config import Config, FinvizIntegrationConfig, IntegrationsConfig
 from swing.integrations.finviz_api import (
+    FinvizApiError,
     FinvizClient,
     FinvizConfigMissingError,
+    FinvizRateLimitError,
     FinvizSchemaParityError,
 )
 
@@ -121,3 +123,63 @@ def test_signature_hash_deterministic_across_runs() -> None:
     )
     client = FinvizClient(cfg)
     assert client.compute_signature_hash(body) == client.compute_signature_hash(body)
+
+
+@pytest.mark.vcr(filter_query_parameters=["auth"])
+def test_fetch_screen_500_raises_FinvizApiError() -> None:
+    cfg = _cfg_with()
+    with pytest.raises(FinvizApiError) as ei:
+        FinvizClient(cfg).fetch_screen()
+    assert ei.value.status_code == 500
+    assert not isinstance(ei.value, FinvizRateLimitError)
+
+
+@pytest.mark.vcr(filter_query_parameters=["auth"])
+def test_fetch_screen_403_raises_FinvizApiError() -> None:
+    cfg = _cfg_with()
+    with pytest.raises(FinvizApiError) as ei:
+        FinvizClient(cfg).fetch_screen()
+    assert ei.value.status_code == 403
+    assert "test-sentinel-token" not in str(ei.value)
+
+
+@pytest.mark.vcr(filter_query_parameters=["auth"])
+def test_fetch_screen_429_with_retry_after_retries_once_and_succeeds(monkeypatch) -> None:
+    """Cassette double-interaction: first response 429 + Retry-After: 1; second response 200."""
+    monkeypatch.setattr("swing.integrations.finviz_api.time.sleep", lambda *_: None)
+    cfg = _cfg_with()
+    body = FinvizClient(cfg).fetch_screen()
+    assert b"Ticker" in body
+
+
+@pytest.mark.vcr(filter_query_parameters=["auth"])
+def test_fetch_screen_429_with_oversized_retry_after_raises_FinvizRateLimitError() -> None:
+    """Cassette: response 429 + Retry-After: 999."""
+    cfg = _cfg_with()
+    with pytest.raises(FinvizRateLimitError):
+        FinvizClient(cfg).fetch_screen()
+
+
+@pytest.mark.vcr(filter_query_parameters=["auth"])
+def test_fetch_screen_429_then_429_raises_FinvizRateLimitError(monkeypatch) -> None:
+    """Cassette double-interaction: both responses 429."""
+    monkeypatch.setattr("swing.integrations.finviz_api.time.sleep", lambda *_: None)
+    cfg = _cfg_with()
+    with pytest.raises(FinvizRateLimitError):
+        FinvizClient(cfg).fetch_screen()
+
+
+def test_fetch_screen_network_error_raises_FinvizApiError(monkeypatch) -> None:
+    """No cassette; monkeypatch requests.get to raise."""
+    cfg = _cfg_with()
+
+    def _raise(*args, **kwargs):
+        import requests
+
+        raise requests.ConnectionError("DNS failure simulated")
+
+    monkeypatch.setattr("swing.integrations.finviz_api.requests.get", _raise)
+    with pytest.raises(FinvizApiError) as ei:
+        FinvizClient(cfg).fetch_screen()
+    assert ei.value.status_code == 0
+    assert "test-sentinel-token" not in str(ei.value)

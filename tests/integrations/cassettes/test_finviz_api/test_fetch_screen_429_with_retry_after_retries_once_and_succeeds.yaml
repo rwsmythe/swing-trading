@@ -1,0 +1,50 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.1
+    method: GET
+    uri: https://elite.finviz.com/export.ashx?v=152&f=cap_largeover
+  response:
+    body:
+      string: 'rate limited'
+    headers:
+      Content-Type:
+      - text/plain
+      Retry-After:
+      - '1'
+    status:
+      code: 429
+      message: Too Many Requests
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.1
+    method: GET
+    uri: https://elite.finviz.com/export.ashx?v=152&f=cap_largeover
+  response:
+    body:
+      string: |
+        No.,Ticker,Sector,Industry,Country,Price,Change,Average Volume,Relative Volume,Average True Range,52-Week High,52-Week Low,Market Cap
+        1,AAPL,Technology,Consumer Electronics,USA,180.50,1.20%,50000000,1.10,2.50,210.00,150.00,2.8T
+    headers:
+      Content-Type:
+      - text/csv
+    status:
+      code: 200
+      message: OK
+version: 1

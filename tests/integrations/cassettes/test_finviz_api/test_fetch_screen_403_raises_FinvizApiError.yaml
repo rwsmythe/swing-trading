@@ -1,0 +1,24 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.1
+    method: GET
+    uri: https://elite.finviz.com/export.ashx?v=152&f=cap_largeover
+  response:
+    body:
+      string: 'Forbidden'
+    headers:
+      Content-Type:
+      - text/plain
+    status:
+      code: 403
+      message: Forbidden
+version: 1
