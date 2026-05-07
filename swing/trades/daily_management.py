@@ -546,7 +546,17 @@ def compute_daily_approximate_snapshot(  # noqa: PLR0913  -- spec-locked signatu
     # Defensive validator pass — service callers see a clean
     # ValidationException above the upsert/insert call rather than discovering
     # a missing field deep inside the repo's INSERT.
+    #
+    # Coherent-NULL exception per spec §3.1.1: when ``trail_MA_candidate_price``
+    # is NULL (archive history insufficient), the eligibility flag is
+    # coherently NULL too. Both are legitimately absent for the early life of
+    # a position; the validator must NOT flag this as missing.
     missing = validate_for_operation(fields, op="snapshot_emit")
+    if (
+        trail_MA_candidate_price is None
+        and "trail_MA_eligibility_flag" in missing
+    ):
+        missing = [m for m in missing if m != "trail_MA_eligibility_flag"]
     if missing:
         raise ValidationException(
             f"compute_daily_approximate_snapshot missing required fields: {missing}"
