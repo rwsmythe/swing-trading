@@ -663,3 +663,119 @@ def test_record_event_log_rejects_closed_trade_with_stop_change(
     ).fetchone()[0]
     assert post_dmr == pre_dmr
     assert post_te == pre_te
+
+
+
+# ---------------------------------------------------------------------------
+# Codex R3 Major #1: record_event_log must open a single transaction with
+# BEGIN IMMEDIATE so the validation read + writes are atomic against
+# concurrent writers (default sqlite3 ``with conn:`` opens DEFERRED — locks
+# are not acquired until the first WRITE statement, so the stale-form
+# ``prior_stop`` check can pass while another writer mutates
+# ``trades.current_stop`` between read and write).
+# Spec §4.4: "BEGIN IMMEDIATE / COMMIT".
+# ---------------------------------------------------------------------------
+
+
+def test_record_event_log_issues_begin_immediate_before_validation_read(
+    conn: sqlite3.Connection,
+) -> None:
+    """The service must issue BEGIN IMMEDIATE BEFORE its validation SELECT.
+
+    Captures the SQL statement trace via ``set_trace_callback`` and asserts
+    that a ``BEGIN IMMEDIATE`` statement appears before the first ``SELECT``
+    against the trades table. Pre-fix: ``with conn:`` is the only transaction
+    boundary, which is DEFERRED — locks are not acquired until the first
+    write statement, so the validation read can pass while another writer
+    mutates ``trades.current_stop`` between read and the repo write.
+    """
+    from swing.trades.daily_management import record_event_log
+
+    _seed_trade(
+        conn, trade_id=1, state="managing", current_stop=92.0,
+    )
+
+    statements: list[str] = []
+
+    def _trace(sql: str) -> None:
+        statements.append(sql)
+
+    conn.set_trace_callback(_trace)
+    try:
+        req = _build_event_log_request(
+            trade_id=1, stop_changed=0,
+            action_taken="hold", action_reason=None,
+            rule_violation_suspected=0, emotional_state='["calm"]',
+            created_at="2026-05-07T18:00:00",
+        )
+        record_event_log(conn, trade_id=1, req=req)
+    finally:
+        conn.set_trace_callback(None)
+
+    upper_stmts = [s.upper() for s in statements]
+    begin_idx = next(
+        (
+            i for i, s in enumerate(upper_stmts)
+            if s.strip().startswith("BEGIN IMMEDIATE")
+        ),
+        None,
+    )
+    select_trade_idx = next(
+        (
+            i for i, s in enumerate(upper_stmts)
+            if "SELECT" in s and "FROM TRADES" in s
+        ),
+        None,
+    )
+    assert begin_idx is not None, (
+        "record_event_log did not issue BEGIN IMMEDIATE; "
+        f"statements: {statements!r}"
+    )
+    assert select_trade_idx is not None, (
+        f"validation SELECT FROM trades not observed; statements: {statements!r}"
+    )
+    assert begin_idx < select_trade_idx, (
+        "BEGIN IMMEDIATE must precede the validation SELECT FROM trades; "
+        f"begin_idx={begin_idx}, select_trade_idx={select_trade_idx}, "
+        f"statements: {statements!r}"
+    )
+
+
+def test_record_event_log_respects_caller_held_transaction(
+    conn: sqlite3.Connection,
+) -> None:
+    """When the caller already holds a transaction (``conn.in_transaction``
+    is True at entry), the service MUST NOT open a nested BEGIN — sqlite3
+    raises ``OperationalError: cannot start a transaction within a transaction``.
+
+    Demonstrates that the caller-managed-transaction code path is preserved.
+    """
+    from swing.trades.daily_management import record_event_log
+
+    _seed_trade(
+        conn, trade_id=1, state="managing", current_stop=92.0,
+    )
+    conn.execute("BEGIN IMMEDIATE")
+    assert conn.in_transaction
+    try:
+        req = _build_event_log_request(
+            trade_id=1, stop_changed=0,
+            action_taken="hold", action_reason=None,
+            rule_violation_suspected=0, emotional_state='["calm"]',
+            created_at="2026-05-07T18:00:00",
+        )
+        record_event_log(conn, trade_id=1, req=req)
+        conn.commit()
+    except sqlite3.OperationalError as exc:
+        if "transaction within a transaction" in str(exc).lower():
+            pytest.fail(
+                "record_event_log opened a nested BEGIN despite caller-held "
+                f"transaction: {exc!r}",
+            )
+        raise
+
+    n = conn.execute(
+        "SELECT COUNT(*) FROM daily_management_records "
+        "WHERE trade_id = 1 AND record_type = 'event_log'",
+    ).fetchone()[0]
+    assert n == 1

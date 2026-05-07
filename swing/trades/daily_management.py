@@ -706,6 +706,15 @@ def record_event_log(
     would commit prematurely inside the outer single-transaction. Future
     maintainers MUST NOT consolidate the two call paths — the asymmetry
     is intentional. (See plan §A.1 + spec §4.4.)
+
+    Transaction contract (Codex R3 Major #1; spec §4.4): the function opens
+    a ``BEGIN IMMEDIATE`` transaction up front so the validation read of
+    ``trades.current_stop`` is taken under a RESERVED lock — no concurrent
+    writer can mutate the row between the stale-form check and the
+    ``repo_update_stop_with_event`` write. If ``conn.in_transaction`` is
+    True at entry the caller already owns the transaction boundary; the
+    function trusts that boundary and does NOT issue its own BEGIN /
+    COMMIT / ROLLBACK (the caller is responsible for finalizing).
     """
     # Lazy imports to avoid module-load circulars + give monkeypatch surface:
     from swing.data.repos.trades import get_trade
@@ -743,10 +752,25 @@ def record_event_log(
             "action_taken NOT IN ('no_action', 'hold', None) requires action_reason"
         )
 
-    # Step 1 — open deferred-mode transaction. The `with conn:` block opens
-    # a deferred transaction on the first write and commits on success /
-    # rolls back on exception. See docstring for concurrency contract notes.
-    with conn:
+    # Step 1 — open IMMEDIATE-mode transaction (Codex R3 Major #1 fix; spec
+    # §4.4: "BEGIN IMMEDIATE / COMMIT"). The default sqlite3 ``with conn:``
+    # block opens a DEFERRED transaction — locks are not acquired until the
+    # first WRITE statement, so the validation read of ``trades.current_stop``
+    # below could pass while another writer mutates the row before our
+    # ``repo_update_stop_with_event`` call reaches the lock manager. BEGIN
+    # IMMEDIATE acquires the RESERVED lock up front, blocking concurrent
+    # writers for the full validation+write sequence.
+    #
+    # Caller-managed transaction handling: if ``conn.in_transaction`` is True
+    # at entry, the caller already owns the transaction boundary — issuing
+    # another BEGIN here would raise ``OperationalError: cannot start a
+    # transaction within a transaction``. In that case we trust the caller's
+    # transaction (DEFERRED or IMMEDIATE per their choice) and skip both BEGIN
+    # and COMMIT/ROLLBACK; the caller is responsible for finalizing.
+    _owns_transaction = not conn.in_transaction
+    if _owns_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
         # Re-read trade state for the entered→managing decision (per §5.2):
         trade = get_trade(conn, trade_id)
         if trade is None:
@@ -853,7 +877,15 @@ def record_event_log(
                 event_ts=req.created_at,
                 rationale="first_daily_management_record",
             )
-        # COMMIT — `with conn:` exit auto-commits.
+    except Exception:
+        # On ANY exception roll back the transaction we opened (caller-owned
+        # transactions are left intact — caller decides whether to roll back).
+        if _owns_transaction:
+            conn.rollback()
+        raise
+    else:
+        if _owns_transaction:
+            conn.commit()
 
     return management_record_id
 
