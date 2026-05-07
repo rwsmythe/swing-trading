@@ -309,3 +309,139 @@ def test_event_log_form_partial_does_not_render_hidden_created_at():
     assert 'name="created_at"' not in text, (
         "hidden created_at input must be removed; route server-stamps"
     )
+
+
+
+# ---------------------------------------------------------------------------
+# Codex R3 Major #2: review_date / data_asof_session must default to
+# last_completed_session(now) (NOT date.today()). Spec §4.5.
+# Weekend / holiday / pre-close submissions otherwise create rows anchored
+# to non-session dates, breaking same-session snapshot context. The route
+# must server-stamp on POST (do NOT trust hidden form fields — same fix
+# pattern as R2 Major #2 for created_at).
+# ---------------------------------------------------------------------------
+
+
+def test_event_log_form_vm_defaults_review_date_to_last_completed_session(
+    app_with_seeded_trade,
+):
+    """VM defaults must use last_completed_session(now) — Saturday
+    submission anchors to the prior Friday, NOT Saturday."""
+    import datetime as _dt
+
+    import swing.web.view_models.trades as vm_mod
+
+    app, db_path = app_with_seeded_trade
+    base_cfg = load(Path("swing.config.toml"))
+    cfg = dc_replace(base_cfg, paths=dc_replace(base_cfg.paths, db_path=db_path))
+
+    # Pin "now" to Saturday 2026-05-09 14:00 HST (operator local TZ).
+    saturday = _dt.datetime(2026, 5, 9, 14, 0, 0)
+
+    class _FrozenDatetime(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            if tz is None:
+                return saturday
+            return saturday.replace(tzinfo=tz)
+
+    # Patch the `datetime` symbol the VM builder uses (lazy-imported inside
+    # the function — patch the module-attribute it imports from).
+    import datetime as _real_dt
+    monkeypatch_target = vm_mod
+    saved = getattr(monkeypatch_target, "datetime", _real_dt.datetime)
+    try:
+        monkeypatch_target.datetime = _FrozenDatetime  # type: ignore[attr-defined]
+        vm = vm_mod.build_event_log_form_vm(trade_id=1, cfg=cfg)
+    finally:
+        monkeypatch_target.datetime = saved  # type: ignore[attr-defined]
+
+    assert vm is not None
+    # Saturday 2026-05-09 → last completed session = Friday 2026-05-08.
+    assert vm.review_date == "2026-05-08", (
+        f"review_date={vm.review_date!r}; expected last_completed_session "
+        "(Friday 2026-05-08), not date.today() (Saturday 2026-05-09)"
+    )
+    assert vm.data_asof_session == "2026-05-08", (
+        f"data_asof_session={vm.data_asof_session!r}; expected last_completed_session "
+        "(Friday 2026-05-08), not date.today() (Saturday 2026-05-09)"
+    )
+
+
+def test_event_log_form_partial_does_not_render_hidden_review_date():
+    """Major #2: hidden review_date form input must be removed; route
+    server-stamps from last_completed_session(now) on POST."""
+    template_path = Path(
+        "swing/web/templates/partials/daily_management_event_form.html.j2",
+    )
+    text = template_path.read_text(encoding="utf-8")
+    assert 'name="review_date"' not in text, (
+        "hidden review_date input must be removed; route server-stamps from "
+        "last_completed_session(now)"
+    )
+
+
+def test_event_log_form_partial_does_not_render_hidden_data_asof_session():
+    """Major #2: hidden data_asof_session form input must be removed."""
+    template_path = Path(
+        "swing/web/templates/partials/daily_management_event_form.html.j2",
+    )
+    text = template_path.read_text(encoding="utf-8")
+    assert 'name="data_asof_session"' not in text, (
+        "hidden data_asof_session input must be removed; route server-stamps"
+    )
+
+
+def test_event_log_post_server_stamps_review_date_ignoring_form_value(
+    app_with_seeded_trade,
+):
+    """Tampered/stale review_date and data_asof_session form values
+    must be IGNORED; the persisted row carries the SERVER-stamped session
+    anchor (last_completed_session(now))."""
+    import datetime as _dt
+
+    from swing.evaluation.dates import last_completed_session
+
+    app, db_path = app_with_seeded_trade
+    tampered_review = "1999-01-01"
+    tampered_session = "2099-12-31"
+
+    expected_session = last_completed_session(_dt.datetime.now()).isoformat()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/trades/1/daily-management/event",
+            data={
+                "stop_changed": "0",
+                "action_taken": "hold",
+                "rule_violation_suspected": "0",
+                "emotional_state": '["calm"]',
+                "review_date": tampered_review,  # <-- malicious / stale
+                "data_asof_session": tampered_session,
+                "mfe_mae_precision_level": "daily_approximate",
+            },
+            headers={"HX-Request": "true"},
+        )
+    assert response.status_code == 204
+
+    conn = connect(db_path)
+    try:
+        review_date, data_asof_session = conn.execute(
+            "SELECT review_date, data_asof_session FROM daily_management_records "
+            "WHERE trade_id = 1 AND record_type = 'event_log'",
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert review_date != tampered_review, (
+        f"route trusted client-supplied review_date: persisted={review_date!r}"
+    )
+    assert data_asof_session != tampered_session, (
+        f"route trusted client-supplied data_asof_session: persisted={data_asof_session!r}"
+    )
+    assert review_date == expected_session, (
+        f"review_date={review_date!r}, expected last_completed_session={expected_session!r}"
+    )
+    assert data_asof_session == expected_session, (
+        f"data_asof_session={data_asof_session!r}, expected={expected_session!r}"
+    )

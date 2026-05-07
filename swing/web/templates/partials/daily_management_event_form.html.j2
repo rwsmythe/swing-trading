@@ -74,9 +74,15 @@
       NOT render a hidden input — a stale form (page open across sessions)
       or tampered submission would otherwise persist the wrong audit
       timestamp. The view-model's ``created_at`` field is preserved for
-      diagnostics on the validation-error re-render path only. -#}
-  <input type="hidden" name="review_date" value="{{ vm.review_date }}">
-  <input type="hidden" name="data_asof_session" value="{{ vm.data_asof_session }}">
+      diagnostics on the validation-error re-render path only.
+
+      Codex R3 Major #2: review_date + data_asof_session are also
+      SERVER-STAMPED at handler entry from ``last_completed_session(now)``
+      (spec §4.5) — same fix pattern as created_at. The VM exposes the
+      computed anchor as a display string (rendered as text) so the
+      operator sees what the row will be tagged with at submit time. -#}
+  <div><label>Review session (server-stamped)</label>
+    <span class="muted">{{ vm.review_date }}</span></div>
   <input type="hidden" name="mfe_mae_precision_level" value="{{ vm.mfe_mae_precision_level }}">
 
   <div><button type="submit">Submit</button></div>

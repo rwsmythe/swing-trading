@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Literal
 
 from swing.config import Config
@@ -953,12 +953,18 @@ def build_event_log_form_vm(
 
     Reads ``trades.current_stop`` so the hidden ``prior_stop`` field
     pre-populates with the canonical at-render value (T3.2 stale-form guard
-    contract). Caller fills in the operator-supplied metadata defaults
-    (review_date, data_asof_session, created_at, precision-level) — the
-    builder does NOT decide those for the VM (the route handler that
-    re-renders on validation error re-uses the operator's submitted values).
+    contract). Session anchors (``review_date``, ``data_asof_session``)
+    default to ``last_completed_session(now)`` per spec §4.5 (Codex R3
+    Major #2 fix) — weekend / holiday / pre-close renders otherwise stamp
+    a non-session date and break same-session snapshot context. The route
+    server-stamps these on POST regardless of the rendered values; the VM
+    values feed the template's display strings only (no client-trustable
+    hidden inputs — same R2 Major #2 carry-forward pattern as
+    ``created_at``).
     """
-    from datetime import datetime as _dt
+    # Lazy / module-level import keeps the symbol patchable for tests + avoids
+    # the circular-import surface load at top-of-module.
+    from swing.evaluation.dates import last_completed_session
 
     conn = connect(cfg.paths.db_path)
     try:
@@ -968,13 +974,14 @@ def build_event_log_form_vm(
                 return None
     finally:
         conn.close()
-    today = date.today().isoformat()
+    now = datetime.now()
+    session_anchor = last_completed_session(now).isoformat()
     return EventLogFormVM(
         trade=trade,
         current_stop=trade.current_stop,
-        review_date=today,
-        data_asof_session=today,
-        created_at=_dt.now().isoformat(timespec="seconds"),
+        review_date=session_anchor,
+        data_asof_session=session_anchor,
+        created_at=now.isoformat(timespec="seconds"),
         mfe_mae_precision_level="daily_approximate",
     )
 

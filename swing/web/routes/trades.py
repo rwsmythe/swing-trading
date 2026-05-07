@@ -1574,6 +1574,17 @@ async def daily_management_event_post(request: Request, trade_id: int):
         _dt_now.now(_UTC).replace(tzinfo=None, microsecond=0).isoformat()
     )
 
+    # Codex R3 Major #2 fix: SERVER-STAMP session anchors at handler entry.
+    # ``review_date`` and ``data_asof_session`` default to
+    # ``last_completed_session(now)`` per spec §4.5 — never trust hidden
+    # form values (a stale form across sessions, weekend/holiday submission,
+    # or tampered POST would otherwise anchor the row to a non-session
+    # date and break same-session snapshot context). The form template no
+    # longer renders hidden inputs for these fields; values arrive (if at
+    # all) from the previous render's display + are IGNORED here.
+    from swing.evaluation.dates import last_completed_session
+    server_session_anchor = last_completed_session(_dt_now.now()).isoformat()
+
     # Build EventLogRequest from the form payload. Required NOT-NULL
     # metadata fields fall back to safe defaults so the dataclass
     # constructor never raises on missing keys (the service-layer
@@ -1582,8 +1593,10 @@ async def daily_management_event_post(request: Request, trade_id: int):
     try:
         req = EventLogRequest(
             trade_id=trade_id,
-            review_date=str(form.get("review_date") or ""),
-            data_asof_session=str(form.get("data_asof_session") or ""),
+            # NOTE: review_date / data_asof_session are server-stamped above
+            # (Codex R3 Major #2); the route does NOT read them from form data.
+            review_date=server_session_anchor,
+            data_asof_session=server_session_anchor,
             # NOTE: ``created_at`` is server-stamped above; the route does
             # NOT read it from form data (Codex R2 Major #2).
             created_at=server_created_at,
