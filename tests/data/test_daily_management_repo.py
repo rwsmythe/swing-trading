@@ -335,6 +335,42 @@ def test_list_open_position_active_snapshots_excludes_event_log_rows(
     assert all(s.record_type == "daily_snapshot" for s in snaps)
 
 
+def test_list_open_position_active_snapshots_returns_only_latest_per_trade(
+    conn: sqlite3.Connection,
+) -> None:
+    """Codex R1 Major 1 discriminator.
+
+    Daily snapshots are NOT superseded across sessions (the partial unique
+    index over (trade_id, data_asof_session, mfe_mae_precision_level)
+    treats different sessions as different rows; both retain
+    is_superseded=0). After multiple pipeline runs over multiple days, the
+    dashboard-tile feed must return ONE row per open trade (the latest
+    data_asof_session), not one row per (trade, session).
+
+    Pre-fix: WHERE clause filters only by record_type + is_superseded +
+    state — returns N rows per trade (one per session).
+    Post-fix: correlated subquery clamps to MAX(data_asof_session) per
+    trade — exactly one row per trade.
+    """
+    fields_d1 = _full_snapshot_fields(data_asof_session="2026-05-05")
+    fields_d2 = _full_snapshot_fields(data_asof_session="2026-05-06")
+    fields_d3 = _full_snapshot_fields(data_asof_session="2026-05-07")
+    insert_snapshot(conn, trade_id=1, snapshot_fields=fields_d1)
+    insert_snapshot(conn, trade_id=1, snapshot_fields=fields_d2)
+    insert_snapshot(conn, trade_id=1, snapshot_fields=fields_d3)
+
+    snaps = list_open_position_active_snapshots(conn)
+    assert len(snaps) == 1, (
+        f"expected exactly one active snapshot per trade (latest session); "
+        f"got {len(snaps)} rows. Pre-fix: query returns one row per "
+        f"(trade, session) — duplicate tile rendering on the dashboard."
+    )
+    assert snaps[0].trade_id == 1
+    assert snaps[0].data_asof_session == "2026-05-07", (
+        f"latest session must win; got {snaps[0].data_asof_session}"
+    )
+
+
 # ---- T2.3: upsert_snapshot + tier_upgrade_snapshot --------------------------
 
 

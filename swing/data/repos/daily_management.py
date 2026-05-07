@@ -272,6 +272,20 @@ def list_open_position_active_snapshots(
     qualified_cols = ", ".join(
         f"dmr.{c.strip()}" for c in _DMR_SELECT_COLS.split(",")
     )
+    # Codex R1 Major 1 fix: clamp to LATEST data_asof_session per trade.
+    # Daily snapshots are NOT superseded across sessions (the partial-unique
+    # index over (trade_id, data_asof_session, mfe_mae_precision_level)
+    # treats different sessions as distinct rows; both retain
+    # is_superseded=0). Without this clamp, after multiple pipeline runs
+    # over multiple days the query returns one row per (trade, session) —
+    # duplicating tile rendering on the dashboard.
+    #
+    # Tie-break: V1 ships only ``daily_approximate``; if a future tier
+    # upgrade lands an ``intraday_exact`` row in the SAME session, the
+    # tier_upgrade_snapshot path supersedes the daily_approximate row, so
+    # the is_superseded=0 filter alone selects the higher tier within the
+    # latest session. The correlated subquery clamps the SESSION; the
+    # is_superseded filter clamps the TIER within that session.
     rows = conn.execute(
         f"SELECT {qualified_cols} "
         f"FROM daily_management_records dmr "
@@ -279,6 +293,13 @@ def list_open_position_active_snapshots(
         f"WHERE dmr.record_type = 'daily_snapshot' "
         f"  AND dmr.is_superseded = 0 "
         f"  AND t.state IN ('entered', 'managing', 'partial_exited') "
+        f"  AND dmr.data_asof_session = ("
+        f"    SELECT MAX(d2.data_asof_session) "
+        f"    FROM daily_management_records d2 "
+        f"    WHERE d2.trade_id = dmr.trade_id "
+        f"      AND d2.record_type = 'daily_snapshot' "
+        f"      AND d2.is_superseded = 0"
+        f"  ) "
         f"ORDER BY dmr.trade_id ASC",
     ).fetchall()
     return [_row_to_record(r) for r in rows]
