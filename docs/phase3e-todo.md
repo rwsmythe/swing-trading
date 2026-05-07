@@ -301,7 +301,11 @@ Sourced from operator-commissioned research at `reference/Future Work/Trading Jo
 - **Pyramiding R-views (R_initial / R_effective / R_campaign):** DROP. Operator at $7,500 capital, 5 concurrent, no pyramiding plan.
 - **Drawdown circuit breaker:** v1.2 defaults this opt-in disabled; align (do not enable by default).
 
-### Phase 8 — Daily_Management + MFE/MAE precision (gated on Phase 7)
+### Phase 8 — Daily_Management + MFE/MAE precision — **brainstorm SHIPPED 2026-05-06 at `c954eef`**
+
+> **Outcome:** Brainstorm dispatched 2026-05-06; brief at `docs/phase8-daily-management-brainstorm-brief.md` (`e9ce5a3`). Spec at `docs/superpowers/specs/2026-05-06-phase8-daily-management-design.md` (875 lines; commits `c2507d3..c954eef`; 5 substantive Codex rounds + R5 confirmation → `NO_NEW_CRITICAL_MAJOR`; convergent chain per Phase 7 Sub-B lesson — each round caught fix-introduced regressions, not adversarial thrash). Three highest-leverage locked decisions: (1) **single table** `daily_management_records` with `record_type` discriminator + validator-level operation-contextual requiredness; (2) **tier-upgrade additive with audit trail** via `is_superseded` flag + `superseded_by_record_id` FK; (3) **authoritative-source precedence ladder** anchoring `trades.current_stop` as LIVE truth. Capture cadence: new pipeline step `_step_daily_management` after `_step_evaluate`; UPSERT key `(trade_id, data_asof_session, mfe_mae_precision_level)` via SELECT-then-UPDATE-or-INSERT (NOT SQLite REPLACE per R4 fix); GAP-FLAGGED no auto back-fill. `trail_MA_candidate_price` = 21-day SMA at session close with per-row `trail_MA_period_days` stamp; `planned_target_R` lives on trades table (pre-trade-locked discipline). Phase 8 spec §11 surfaces 4 capture-needs feedback for Phase 9 brainstorm. Writing-plans dispatch queued; per retention discipline, this entry stays in active until next phase ship; original queued content retained below for historical reference.
+
+### Original queued entry (2026-05-04; pre-design-lock; superseded by SHIPPED brainstorm above)
 
 **Bundle:** Daily_Management snapshot/event_log + per-day MFE/MAE computation via OHLCV cache + precision-flag hierarchy.
 
@@ -355,6 +359,17 @@ v1.2 was authored agnostic of our platform. Several design choices encode discre
 | Pyramiding R_views | Operator at $7,500 capital with 5 concurrent doesn't pyramid | DROP indefinitely |
 | `trade_origin` 7-value discretionary enum | Our ingestion is pipeline-driven (4 paths) | 4-value pipeline-aware enum: `pipeline_aplus`, `pipeline_watch_hyp_recs`, `pipeline_watch_manual`, `manual_off_pipeline` |
 | Drawdown circuit breaker | v1.2 default opt-in disabled (matches our caution) | Align: opt-in disabled by default |
+
+---
+
+## 2026-05-06 Phase 10 metrics dashboard — **brainstorm SHIPPED 2026-05-06 at `fe6cb45`**
+
+> **Outcome:** Operator-commissioned external research at `reference/Future Work/Metrics/` (5 docs: v1.0 baseline + v1.1 + v1.1-alternate + findings + rebuttal-determinations) — orchestrator-thread analysis confirmed v1.1-alternate as structural baseline + identified framework-fit gaps requiring NEW design (hypothesis-cohort as primary axis; tier-comparison; capital-friction; maturity-stage; identification-vs-trade-funnel; deviation-outcome; process-grade-trend). Brainstorm-dispatched 2026-05-06; brief at `docs/phase10-metrics-brainstorm-brief.md` (`3ad5ea2`). Spec at `docs/superpowers/specs/2026-05-06-phase10-metrics-design.md` (641 lines; commits `a46b458` + `fe6cb45`; 5 substantive Codex rounds + R6 confirmation → `NO_NEW_CRITICAL_MAJOR`). Three highest-leverage locked decisions: (1) **capital-denominator split-policy** — governance metrics lock to constant `$7,500`; operational/live-state metrics PROVISIONAL with `$7,500` fallback until §8.2 resolves; (2) **global statistical-confidence floor** `n=20` decoupled from cohort target; (3) **tier-comparison view** explicitly avoids false-significance signals (text-only `cohort_ci_overlap_descriptor`; no boolean flag). Mistake-cost formula DECISION: brainstorm AFFIRMS Phase 6's already-shipped v1.1-alternate / v1.2 §8.8 formula (the brief's §1.5 premise that Phase 6 ships v1.1-main was empirically wrong; Phase 6 already ships the correct formula at `swing/trades/review.py:157-174`). Spec §11 enumerates capture-needs feedback for Phase 8 (consumed) + Phase 9 + Phase 10+. **Sequencing locked: brainstorms 10 → 8 → 9; execution order 8 → 9 → 10.** RESEARCH-posture (no schema/code; only metric definitions + dashboard sketches + capture-needs feedback). Per retention discipline, this entry stays in active until next phase ship.
+
+### Open follow-ups from Phase 10 brainstorm (operator-paced)
+
+- **§8.6 — Surface `lucky_violation_R` on Phase 6 review form.** Phase 6 already computes + persists `total_lucky_violation_R` (per migration 0013); review form does NOT surface the per-trade or cohort field. Operator concurred with implementer's recommendation: small standalone follow-up dispatch (~30 min), separate from Phase 10 writing-plans. Not bundled with Phase 10 because it's Phase-6-surface-extension, not metrics-dashboard scope. Pick up when bandwidth allows.
+- Other open questions (§8.1 fills.action enum gap; §8.2 daily equity capture; §8.3 benchmark series location; §8.4 Corporate_Actions MVP; §8.5 process_grade_rolling_N window; §8.7 decision-criteria automation) — operator concurred with implementer's recommendations across all 7. Bundled with Phase 10+ writing-plans + execution unless re-litigated.
 
 ---
 
@@ -447,10 +462,14 @@ Operator-surfaced 2026-05-04. Three concurrent uses of the official Charles Schw
 
 ### Open design questions (for brainstorm dispatch):
 
-1. **Library choice: Schwabdev vs build-from-scratch.** Schwabdev (https://github.com/tylerebowers/Schwabdev) wraps the entire Schwab Trader API surface (auth, account, orders, market data, streamer); reviewing time-to-first-working-Phase-A is faster with the wrapper. Risks: unofficial → Schwab API changes can break it; maintainer-bus-factor (single-author project); supply-chain trust (vendor + pin to specific commit/version, OR vendor the source into `swing/integrations/schwab/_vendor/`). Recommendation: adopt Schwabdev for V1 with a vendored / version-pinned dependency + thin abstraction layer (`swing/integrations/schwab/client.py`) so swap-to-direct-API is bounded if the wrapper goes stale. Confirm at brainstorm time.
+1. **Library choice: three candidates surfaced 2026-05-06.** Evaluate at brainstorm time:
+   - **Schwabdev** (https://github.com/tylerebowers/Schwabdev) — wraps entire Schwab Trader API surface (auth/account/orders/market data/streamer); single-author; newer trajectory.
+   - **schwab-py** (https://github.com/alexgolec/schwab-py) — by alexgolec who previously authored `tda-api` for the TD Ameritrade API; multi-year community-usage lineage; broker-API client design experience.
+   - **Build-from-scratch** — direct Schwab Trader API integration in `swing/integrations/schwab/`; max control + max maintenance burden.
+   Operator leaning toward schwabdev (2026-05-06) but explicitly evaluating at brainstorm time. Risks: unofficial wrappers can break on Schwab API changes; maintainer-bus-factor; supply-chain trust. For any wrapper choice, recommend vendored / version-pinned dependency + thin abstraction layer (`swing/integrations/schwab/client.py`) so swap-to-direct-API is bounded if the wrapper goes stale.
 2. **Phase A vs Phase B vs Phase C ordering — operator preference.** Recommendation: A (account reconciliation) → B (data source) → C (trade automation). A is cheapest; B has highest yfinance-pain-relief value; C is highest-risk + lowest urgency at $7,500 capital with 1-2 trades/month pace.
 3. **OAuth refresh-token storage location.** User-config TOML (per Phase 5)? New encrypted store? Operator's risk preference.
-4. **Schwab Developer Portal production-access approval time.** Could be days to weeks; orchestrator-blocking for Phase A start.
+4. ~~**Schwab Developer Portal production-access approval time.**~~ **RESOLVED 2026-05-06.** Operator confirms Dev Portal app registration + production-access approval are both COMPLETE. The long-pole approval friction is gone — when Phase A is sequenced, brainstorm + writing-plans + executing-plans can dispatch immediately without external approval gating.
 5. **Schwab API entitlements scope.** Read-only account vs trading entitlements require separate Schwab approvals; operator decides per-phase.
 6. **yfinance vs Schwab data parity.** Adjusted vs unadjusted prices; corporate-action handling; dividend treatment; intraday-bar timestamping. Need a parity study before flipping `cfg.data_source.primary`.
 7. **Trade automation safety gates.** Hard maximums (per-trade size; daily order count; circuit breaker on N consecutive failed orders); operator-defined override path.
