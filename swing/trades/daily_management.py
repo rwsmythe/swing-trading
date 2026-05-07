@@ -82,6 +82,7 @@ __all__ = [
     "resolve_thesis_status",
     # Service entry-points:
     "compute_daily_approximate_snapshot",
+    "tier_upgrade_to_intraday",
     # Re-exported repo API:
     "insert_snapshot",
     "insert_event_log",
@@ -563,3 +564,21 @@ def compute_daily_approximate_snapshot(  # noqa: PLR0913  -- spec-locked signatu
         )
 
     return fields
+
+
+# ---------------------------------------------------------------------------
+# Service entry-point: tier_upgrade_to_intraday (V2 stub)
+# ---------------------------------------------------------------------------
+
+
+def tier_upgrade_to_intraday(*args: Any, **kwargs: Any) -> int:
+    """V2 entry point — gated on intraday data source per spec §10.7.
+
+    V1 ships ``daily_approximate`` only; the schema reserves ``intraday_estimated``
+    and ``intraday_exact`` enum values plus the 6-step transactional
+    tier-upgrade path (exercised at V1 via direct repo-level
+    ``tier_upgrade_snapshot`` calls — see T2.3 tests). This service-layer
+    facade is a placeholder that surfaces a clear NotImplementedError until
+    Phase B (Schwab API intraday ingestion) wires real intraday tier emitters.
+    """
+    raise NotImplementedError("V2: gated on Schwab API Phase B intraday ingestion")

@@ -301,3 +301,22 @@ def test_compute_daily_approximate_snapshot_stamps_trail_MA_period_days_when_win
     # SMA mean of last 21 closes: closes[4..24] starting at 100.4 step 0.1 →
     # mean = (100.4 + 102.4) / 2 = 101.4
     assert fields["trail_MA_candidate_price"] == pytest.approx(101.4)
+
+
+def test_tier_upgrade_to_intraday_stubbed_for_V2(  # noqa: N802
+    conn: sqlite3.Connection,
+) -> None:
+    """V1 schema reserves enum + path; service stubs V2 behavior.
+
+    Plan §T3.1: tier 2/3 enum values are reserved without an emitter; the V2
+    service entry-point ``tier_upgrade_to_intraday`` is a NotImplementedError
+    stub. The schema and validator path ARE exercised at V1 via direct
+    repo-level ``tier_upgrade_snapshot`` calls in T2.3 tests.
+    """
+    from swing.trades.daily_management import tier_upgrade_to_intraday
+
+    with pytest.raises(NotImplementedError, match="Schwab API Phase B"):
+        tier_upgrade_to_intraday(
+            conn, trade_id=1, data_asof_session="2026-05-07",
+            new_precision_level="intraday_estimated", snapshot_fields={},
+        )
