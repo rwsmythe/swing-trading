@@ -1562,6 +1562,17 @@ async def daily_management_event_post(request: Request, trade_id: int):
         except ValueError:
             return None
 
+    # Codex R2 Major #2 fix: SERVER-STAMP ``created_at`` at handler entry.
+    # The hidden form input is removed from the rendered partial — a stale
+    # form (page open across sessions) or a tampered POST would otherwise
+    # persist the wrong audit timestamp. Format matches spec §8.4 + the
+    # service-layer convention used by ``compute_daily_approximate_snapshot``
+    # (naive UTC ISO, microseconds stripped for stable comparison).
+    from datetime import UTC as _UTC, datetime as _dt_now
+    server_created_at = (
+        _dt_now.now(_UTC).replace(tzinfo=None, microsecond=0).isoformat()
+    )
+
     # Build EventLogRequest from the form payload. Required NOT-NULL
     # metadata fields fall back to safe defaults so the dataclass
     # constructor never raises on missing keys (the service-layer
@@ -1572,7 +1583,9 @@ async def daily_management_event_post(request: Request, trade_id: int):
             trade_id=trade_id,
             review_date=str(form.get("review_date") or ""),
             data_asof_session=str(form.get("data_asof_session") or ""),
-            created_at=str(form.get("created_at") or ""),
+            # NOTE: ``created_at`` is server-stamped above; the route does
+            # NOT read it from form data (Codex R2 Major #2).
+            created_at=server_created_at,
             mfe_mae_precision_level=str(
                 form.get("mfe_mae_precision_level") or "daily_approximate",
             ),

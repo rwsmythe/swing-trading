@@ -235,3 +235,77 @@ def test_event_log_post_writes_event_log_and_stop_adjust_atomically(
         assert link is not None
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Codex R2 Major #2: route must server-stamp ``created_at`` (not trust client).
+# ---------------------------------------------------------------------------
+#
+# Pre-fix: ``created_at`` was rendered as a hidden form field and read back
+# from the form payload on POST. A stale form (page open across sessions)
+# or a tampered submission would persist the wrong audit timestamp. Fix:
+# the route stamps ``created_at`` at handler entry (naive UTC ISO per
+# spec §8.4); the form no longer carries a hidden created_at input.
+
+
+def test_event_log_post_server_stamps_created_at_ignoring_form_value(
+    app_with_seeded_trade,
+):
+    """Tampered/stale ``created_at`` in the form payload must be IGNORED;
+    the persisted row carries the SERVER-stamped time."""
+    import datetime as _dt
+
+    app, db_path = app_with_seeded_trade
+    tampered = "1999-01-01T00:00:00"  # absurd far-past timestamp
+    before = _dt.datetime.now(_dt.UTC).replace(tzinfo=None, microsecond=0)
+    with TestClient(app) as client:
+        response = client.post(
+            "/trades/1/daily-management/event",
+            data={
+                "stop_changed": "0",
+                "action_taken": "hold",
+                "rule_violation_suspected": "0",
+                "emotional_state": '["calm"]',
+                "created_at": tampered,  # <-- malicious / stale
+                "review_date": "2026-05-07",
+                "data_asof_session": "2026-05-07",
+                "mfe_mae_precision_level": "daily_approximate",
+            },
+            headers={"HX-Request": "true"},
+        )
+    after = _dt.datetime.now(_dt.UTC).replace(tzinfo=None, microsecond=0)
+    assert response.status_code == 204
+
+    conn = connect(db_path)
+    try:
+        persisted = conn.execute(
+            "SELECT created_at FROM daily_management_records "
+            "WHERE trade_id = 1 AND record_type = 'event_log'",
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    # Persisted value MUST NOT equal the tampered form value.
+    assert persisted != tampered, (
+        f"route trusted client-supplied created_at: persisted={persisted!r}"
+    )
+    # And it MUST be within the request window (server-stamped).
+    persisted_dt = _dt.datetime.fromisoformat(persisted)
+    # Allow either naive or aware (route convention is naive UTC ISO).
+    if persisted_dt.tzinfo is not None:
+        persisted_dt = persisted_dt.astimezone(_dt.UTC).replace(tzinfo=None)
+    assert before <= persisted_dt <= after + _dt.timedelta(seconds=2), (
+        f"persisted={persisted_dt!r} outside [{before!r}, {after!r}]"
+    )
+
+
+def test_event_log_form_partial_does_not_render_hidden_created_at():
+    """Major #2: the hidden ``created_at`` form input must be removed (the
+    route server-stamps; rendering the input invites tampering and stale
+    values when the page sits open across sessions)."""
+    template_path = Path(
+        "swing/web/templates/partials/daily_management_event_form.html.j2",
+    )
+    text = template_path.read_text(encoding="utf-8")
+    assert 'name="created_at"' not in text, (
+        "hidden created_at input must be removed; route server-stamps"
+    )

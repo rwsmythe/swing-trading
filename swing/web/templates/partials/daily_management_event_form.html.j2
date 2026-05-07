@@ -70,7 +70,11 @@
     <textarea name="management_notes">{{ vm.management_notes or '' }}</textarea></div>
 
   {#- Identity / metadata. NOT NULL on the underlying table. -#}
-  <input type="hidden" name="created_at" value="{{ vm.created_at }}">
+  {#- Codex R2 Major #2: created_at is SERVER-STAMPED at handler entry; do
+      NOT render a hidden input — a stale form (page open across sessions)
+      or tampered submission would otherwise persist the wrong audit
+      timestamp. The view-model's ``created_at`` field is preserved for
+      diagnostics on the validation-error re-render path only. -#}
   <input type="hidden" name="review_date" value="{{ vm.review_date }}">
   <input type="hidden" name="data_asof_session" value="{{ vm.data_asof_session }}">
   <input type="hidden" name="mfe_mae_precision_level" value="{{ vm.mfe_mae_precision_level }}">
