@@ -29,6 +29,7 @@ reference/images/
 
 # Copowers session state (local to working checkout)
 .copowers-session-*.json
+.copowers-subagent-active
 
 # Claude Code session artifacts
 .claude/
