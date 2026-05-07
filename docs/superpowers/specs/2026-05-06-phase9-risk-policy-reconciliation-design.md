@@ -163,7 +163,7 @@ The migration that creates `risk_policy` MUST seed `policy_id=1` from current `s
 
 | risk_policy column | Seed source |
 |---|---|
-| `effective_from` | ISO datetime with millisecond precision (R2 Major #3 + R3 Major #1 fix — SQLite `strftime('%f', 'now')` emits SECONDS as decimal-fractional `SS.SSS` (3-digit fraction, NOT 6-digit microseconds as our prior wording implied). Writing-plans constructs the canonical `YYYY-MM-DDTHH:MM:SS.SSS` form via `strftime('%Y-%m-%dT%H:%M:%f', 'now')` OR bakes a literal at migration-draft time. Application-path writes (CLI / web edits post-Phase-9) generate with Python: `datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.') + f'{datetime.utcnow().microsecond // 1000:03d}'` to match the schema validator's millisecond contract. |
+| `effective_from` | ISO datetime with millisecond precision (R2 Major #3 + R3 Major #1 fix — SQLite `strftime('%f', 'now')` emits SECONDS as decimal-fractional `SS.SSS` (3-digit fraction, NOT 6-digit microseconds as our prior wording implied). Writing-plans constructs the canonical `YYYY-MM-DDTHH:MM:SS.SSS` form via `strftime('%Y-%m-%dT%H:%M:%f', 'now')` OR bakes a literal at migration-draft time. Application-path writes (CLI / web edits post-Phase-9) generate with Python (R4 Minor #1 fix — bind once to avoid second-boundary skew between the two `datetime.utcnow()` calls): `now = datetime.utcnow(); ts = now.strftime('%Y-%m-%dT%H:%M:%S.') + f'{now.microsecond // 1000:03d}'`. Single binding ensures the seconds and millisecond fragment come from the same instant. |
 | `is_active` | 1 |
 | `max_account_risk_per_trade_pct` | `cfg.risk.max_risk_pct × 100` (toml stores as fraction; v1.2 §7.8 form is percent — verify at writing-plans-time and pick one canonical unit) |
 | `max_concurrent_positions` | `cfg.position_limits.hard_cap_open` |
@@ -412,9 +412,9 @@ Decision: **application-layer enforcement, NOT SQL trigger.** Rationale:
 1. BEGIN IMMEDIATE TRANSACTION (acquires write lock first; SQLite serializes contending writers).
 2. SELECT current status from hypothesis_registry WHERE id=? (now reads under the lock).
 3. If current_status == new_status: ROLLBACK + return `NoOpIdentityTransition` sentinel (R3 Minor #1 fix — distinct return shape from error; CLI / web render "already <status>" as INFO not ERROR; never appends a duplicate transition).
-4. UPDATE hypothesis_status_history SET effective_to=now_microsecond WHERE hypothesis_id=? AND effective_to IS NULL.
-5. INSERT INTO hypothesis_status_history (hypothesis_id, status, effective_from=now_microsecond, effective_to=NULL, change_reason, recorded_at=now_microsecond).
-6. UPDATE hypothesis_registry SET status=new_status, status_changed_at=now_microsecond, status_change_reason=reason WHERE id=?.
+4. UPDATE hypothesis_status_history SET effective_to=now_ms WHERE hypothesis_id=? AND effective_to IS NULL.
+5. INSERT INTO hypothesis_status_history (hypothesis_id, status, effective_from=now_ms, effective_to=NULL, change_reason, recorded_at=now_ms).
+6. UPDATE hypothesis_registry SET status=new_status, status_changed_at=now_ms, status_change_reason=reason WHERE id=?.
 7. COMMIT.
 
 The pre-R2-fix race: two CLI invocations could both read `status='active'` BEFORE either acquired the write lock; Process A then would correctly transition active → paused; Process B would see its identity-check pass (active != paused at read-time, even though active!=paused-anymore-after-A's-commit), proceed to APPEND a stale paused → paused or active → paused transition. R2 fix moves the read inside the transaction so Process B reads the post-A status under the write lock.
@@ -460,7 +460,7 @@ CREATE INDEX ix_account_equity_snapshots_date
     ON account_equity_snapshots (snapshot_date);
 ```
 
-The unique index `(snapshot_date, source)` allows BOTH a manual-entry row AND a future Schwab-API row to coexist for the same date (operator-recorded vs broker-authoritative). Read-time precedence in Phase 8 + Phase 10 follows the source ladder: `schwab_api` > `tos_csv` > `manual`.
+The unique index `(snapshot_date, source)` allows BOTH a manual-entry row AND a future Schwab-API row to coexist for the same date (operator-recorded vs broker-authoritative). Read-time precedence in Phase 8 + Phase 10 follows the source ladder: `schwab_api` > `tos_csv` > `manual`. **R4 Minor #3 fix — provenance UX caveat:** when source-ladder suppresses a later-recorded-manual row in favor of an earlier-recorded-tos_csv row for the same `snapshot_date`, the dashboard surface MUST render which source won + the `recorded_at` of each row (both winning + suppressed) so the operator can see "TOS CSV from 2026-04-30T16:00 superseded my manual 2026-05-01T09:00 entry; broker authoritative." This prevents the operator from being confused why their just-recorded number isn't reflected. Phase 10+ writing-plans codifies the rendering. App-layer resolver returns BOTH the winner row and any suppressed row(s) for the same `snapshot_date` when called in "with-provenance" mode.
 
 **Cadence:** V1 manual entry (CLI `swing account snapshot --equity 1234.56` + web form); V2 Schwab Phase A may emit `schwab_api` rows automatically. **Daily target; gaps allowed (Phase 8 §4.3 GAP-FLAGGED-no-auto-back-fill precedent).** Read-time consumers (Phase 8 `position_capital_utilization_pct`; Phase 10 `live_capital_denominator_dollars`) resolve to most-recent-snapshot-on-or-before-asof_date via `MAX(snapshot_date)` query; on absence, fall back to `risk_policy.capital_floor_constant_dollars` (Phase 10 §2 split-policy PROVISIONAL).
 
