@@ -881,6 +881,9 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
                   data_asof: str, chart_paths: dict[str, Path]) -> None:
     lease.verify_held()
     from swing.data.repos.candidates import fetch_candidates_for_run
+    from swing.data.repos.daily_management import (
+        list_open_position_active_snapshots,
+    )
     from swing.data.repos.recommendations import list_for_session
     conn = connect(cfg.paths.db_path)
     try:
@@ -898,6 +901,7 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
         watchlist = list_active_watchlist(conn)
         weather = get_latest_for_date(conn, data_asof, ticker=cfg.rs.benchmark_ticker)
         trades = list_open_trades(conn)
+        daily_mgmt_snapshots = list_open_position_active_snapshots(conn)
         equity = current_equity(
             starting_equity=cfg.account.starting_equity,
             exits=_exits_via_fills_for_equity(conn),
@@ -923,6 +927,7 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
         chart_b64s={t: _b64_chart(p) for t, p in chart_paths.items()},
         near_trigger_above_pct=cfg.near_trigger.above_pct,
         near_trigger_below_pct=cfg.near_trigger.below_pct,
+        daily_management_active_snapshots=daily_mgmt_snapshots,
     )
     vm = build_briefing_view_model(inputs)
 

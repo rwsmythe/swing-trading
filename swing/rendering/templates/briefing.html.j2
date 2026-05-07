@@ -89,6 +89,35 @@
   </div>
   {% endif %}
 
+  <section id="daily-management-snapshot">
+  <div class="panel">
+    <h2>Daily Management Snapshot</h2>
+    {% if vm.daily_management_snapshots %}
+    <table>
+      <tr>
+        <th>Ticker</th><th>As-of session</th>
+        <th>MFE-to-date (R)</th><th>MAE-to-date (R)</th>
+        <th>Maturity stage</th><th>Trail-MA eligible</th>
+      </tr>
+      {% for s in vm.daily_management_snapshots %}
+      <tr>
+        <td>{{ s.ticker }}</td>
+        <td>{{ s.data_asof_session }}</td>
+        <td>{% if s.open_MFE_R_to_date is not none %}{{ "%.2f"|format(s.open_MFE_R_to_date) }}{% endif %}</td>
+        <td>{% if s.open_MAE_R_to_date is not none %}{{ "%.2f"|format(s.open_MAE_R_to_date) }}{% endif %}</td>
+        <td>{{ s.maturity_stage or "" }}</td>
+        <td>{% if s.trail_MA_eligibility_flag == 1 %}yes{% else %}no{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% elif vm.daily_management_open_trade_count_without_snapshot > 0 %}
+    <em>{{ vm.daily_management_open_trade_count_without_snapshot }} open positions; no daily-management snapshot available (pipeline step skipped or failed).</em>
+    {% else %}
+    <em>No open positions to manage.</em>
+    {% endif %}
+  </div>
+  </section>
+
   {% if vm.watchlist %}
   <div class="panel">
     <h2>Watchlist</h2>
