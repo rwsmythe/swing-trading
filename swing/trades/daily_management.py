@@ -667,9 +667,13 @@ def record_event_log(
 ) -> int:
     """Single-transaction contract per spec §4.4 + plan §A.1.
 
-    All side-effects in one ``with conn:`` deferred-mode transaction. If ANY
-    step fails, ALL roll back (no partial state where Phase 7 stop_adjust
-    event exists without Phase 8 event_log row, OR vice versa).
+    All side-effects run inside one explicit ``BEGIN IMMEDIATE`` / ``COMMIT``
+    boundary owned by THIS function (Codex R3 Major #1 + R4 Major #1; see
+    "Transaction contract" below). Callers MUST NOT pass a connection with
+    an open transaction — ``conn.in_transaction == True`` at entry raises
+    ``RuntimeError``. If ANY step fails, ALL roll back (no partial state
+    where Phase 7 stop_adjust event exists without Phase 8 event_log row,
+    OR vice versa).
 
     Steps:
 
@@ -677,7 +681,9 @@ def record_event_log(
          AND conditional validators (stop_changed=1 implies prior_stop +
          new_stop + stop_change_reason; action_taken NOT IN ('no_action',
          None) implies action_reason).
-      1. Open deferred-mode transaction (``with conn:``).
+      1. Reject caller-held transactions; open ``BEGIN IMMEDIATE``
+         transaction up front (RESERVED lock acquired before validation
+         read of ``trades.current_stop``).
       2. If ``req.stop_changed=1``: re-read trade state inside transaction;
          reject no-op stops (``new_stop == current_stop``); reject stale
          forms (``prior_stop != current_stop``); call REPO-LEVEL
@@ -694,6 +700,9 @@ def record_event_log(
         ``management_record_id`` of the inserted event_log row.
 
     Raises:
+        RuntimeError — caller passed a connection with an open transaction
+            (``conn.in_transaction == True``); fix: drop the wrapping
+            ``with conn:`` block / prior ``BEGIN``. (Codex R4 M#1.)
         ValidationException — missing required fields per spec §3.1.1, or
             no-op stop (Codex R1 M4), or stale prior_stop (Codex R4 M2).
         ValueError — Phase 7 service rejects (e.g., trade not found,
