@@ -105,24 +105,26 @@ To avoid drift, this spec uses the field names already shipped in production sch
 | `data_asof_session` | TEXT | NOT NULL | ISO date; NYSE session date the data anchors on; for daily_snapshot, MUST equal `review_date` (same calendar day for daily-tier capture) |
 | `created_at` | TEXT | NOT NULL | ISO datetime; system wall-clock at row insert; naive-UTC per §8 datetime policy |
 | `mfe_mae_precision_level` | TEXT | NOT NULL | CHECK IN (`daily_approximate`, `intraday_estimated`, `intraday_exact`) |
-| `pipeline_run_id` | INTEGER | nullable | FK → `pipeline_runs(evaluation_run_id)`; nullable for CLI/web event_log emissions |
+| `pipeline_run_id` | INTEGER | nullable | FK → `pipeline_runs(id)`; nullable for CLI/web event_log emissions |
 | `superseded_by_record_id` | INTEGER | nullable | FK → `daily_management_records(management_record_id)` (self-reference); set when a later higher-precision row replaces this one — see §6 |
-| **Position-state snapshot fields (required for both record_types)** | | | |
-| `current_price` | REAL | NOT NULL | CHECK > 0 |
-| `current_stop` | REAL | NOT NULL | CHECK > 0 |
-| `current_size` | REAL | NOT NULL | CHECK ≥ 0 (allows 0 for boundary rows) |
-| `current_avg_cost` | REAL | NOT NULL | CHECK > 0 |
-| `open_R_effective` | REAL | NOT NULL | computed at write: `(current_price - current_avg_cost) * current_size / planned_risk_budget_dollars` |
-| `open_MFE_R_to_date` | REAL | NOT NULL | running max from `pre_trade_locked_at` through `data_asof_session`; CHECK ≥ 0 |
-| `open_MAE_R_to_date` | REAL | NOT NULL | running abs(min) from `pre_trade_locked_at` through `data_asof_session`; CHECK ≥ 0 |
-| `intraday_high` | REAL | NOT NULL | CHECK > 0; daily-session high (used for tomorrow's MFE compute when chained) |
-| `intraday_low` | REAL | NOT NULL | CHECK > 0; daily-session low |
-| `position_capital_utilization_pct` | REAL | NOT NULL | proportion; PROVISIONAL fallback to `capital_floor_constant_dollars = $7,500` per Phase 10 §2 split-policy until Phase 9 ships `live_capital_denominator_dollars` |
-| `position_portfolio_heat_contribution_dollars` | REAL | NOT NULL | `max(0, (current_avg_cost - current_stop) * current_size)`; CHECK ≥ 0 |
-| `maturity_stage` | TEXT | NOT NULL | CHECK IN (`pre_+1.5R`, `+1.5R_to_+2R`, `>=+2R_trail_eligible`); derived from `open_MFE_R_to_date` thresholds |
-| `trail_MA_candidate_price` | REAL | nullable | 21-day SMA at `data_asof_session` close (per §6 lock); NULL when insufficient archive history (<21 sessions); CHECK > 0 OR NULL |
-| `trail_MA_eligibility_flag` | INTEGER | NOT NULL | CHECK IN (0,1); cached derivation: `1 IFF maturity_stage='>=+2R_trail_eligible' AND trail_MA_candidate_price IS NOT NULL AND current_stop < trail_MA_candidate_price`; else `0` |
-| `thesis_status` | TEXT | NOT NULL | CHECK IN (`intact`, `weakening`, `invalidated`); operator-set on event_log; defaults to `intact` for daily_snapshot (auto-populated; operator only mutates via event_log) |
+| **Position-state snapshot fields (NULLABLE on schema; validator REQUIRED for daily_snapshot, OPTIONAL for event_log — see §3.1.1)** | | | |
+| `current_price` | REAL | nullable | CHECK > 0 OR NULL |
+| `current_stop` | REAL | nullable | CHECK > 0 OR NULL |
+| `current_size` | REAL | nullable | CHECK ≥ 0 OR NULL (allows 0 for boundary rows) |
+| `current_avg_cost` | REAL | nullable | CHECK > 0 OR NULL |
+| `open_R_effective` | REAL | nullable | computed at write: `(current_price - current_avg_cost) * current_size / planned_risk_budget_dollars` |
+| `open_MFE_R_to_date` | REAL | nullable | running max from `pre_trade_locked_at` through `data_asof_session`; CHECK ≥ 0 OR NULL |
+| `open_MAE_R_to_date` | REAL | nullable | running abs(min) from `pre_trade_locked_at` through `data_asof_session`; CHECK ≥ 0 OR NULL |
+| `intraday_high` | REAL | nullable | CHECK > 0 OR NULL; daily-session high (used for tomorrow's MFE compute when chained) |
+| `intraday_low` | REAL | nullable | CHECK > 0 OR NULL; daily-session low |
+| `position_capital_utilization_pct` | REAL | nullable | proportion; uses denominator captured in `position_capital_denominator_dollars` (this row's stamp); PROVISIONAL `$7,500` fallback in V1 until Phase 9 ships live denominator |
+| `position_capital_denominator_dollars` | REAL | nullable | per-row stamp of the capital denominator used; V1 = `7500.0` (capital_floor_constant_dollars); V2+ may resolve to live account equity per Phase 9 risk_policy versioning. Snapshot history preserves the denominator at-time-of-capture (per §10.5 lock). |
+| `position_portfolio_heat_contribution_dollars` | REAL | nullable | `max(0, (current_avg_cost - current_stop) * current_size)`; CHECK ≥ 0 OR NULL |
+| `maturity_stage` | TEXT | nullable | CHECK IN (`pre_+1.5R`, `+1.5R_to_+2R`, `>=+2R_trail_eligible`) OR NULL; derived from `open_MFE_R_to_date` thresholds |
+| `trail_MA_candidate_price` | REAL | nullable | SMA at `data_asof_session` close, period from `trail_MA_period_days`; NULL when insufficient archive history (sessions available < `trail_MA_period_days`) OR for event_log rows; CHECK > 0 OR NULL |
+| `trail_MA_period_days` | INTEGER | nullable | per-row stamp of the SMA period used (V1 lock = 21; CHECK > 0 OR NULL); preserves interpretability when Phase 9 risk_policy versions the period (e.g., 10-day post-+2R upgrade) |
+| `trail_MA_eligibility_flag` | INTEGER | nullable | CHECK IN (0,1) OR NULL; cached derivation: `1 IFF maturity_stage='>=+2R_trail_eligible' AND trail_MA_candidate_price IS NOT NULL AND current_stop < trail_MA_candidate_price`; else `0`; NULL on event_log rows when position-state fields are NULL |
+| `thesis_status` | TEXT | nullable | CHECK IN (`intact`, `weakening`, `invalidated`) OR NULL; operator-set on event_log ONLY. Snapshot rows leave this NULL — never auto-restate. Read-side resolves "current thesis_status for this trade" by reading the most-recent event_log row with non-NULL `thesis_status`; defaults to `intact` when no such row exists. |
 | **Operator-input fields (required ONLY for record_type='event_log'; NULL for daily_snapshot)** | | | |
 | `prior_stop` | REAL | nullable | CHECK > 0 OR NULL; required at app-layer when `stop_changed=1` |
 | `stop_changed` | INTEGER | nullable | CHECK IN (0,1) OR NULL; required at app-layer when record_type='event_log' |
@@ -132,35 +134,47 @@ To avoid drift, this spec uses the field names already shipped in production sch
 | `market_regime_change` | INTEGER | nullable | CHECK IN (0,1) OR NULL |
 | `sector_condition_change` | INTEGER | nullable | CHECK IN (0,1) OR NULL |
 | `news_or_event_update` | TEXT | nullable | free-text |
-| `action_taken` | TEXT | nullable | CHECK IN (`hold`, `trim`, `add`, `exit`, `move_stop`, `no_action`) OR NULL; required at app-layer when record_type='event_log' |
+| `action_taken` | TEXT | nullable | CHECK IN (`hold`, `trim`, `exit`, `stop`, `move_stop`, `no_action`) OR NULL; required at app-layer when record_type='event_log'. NOTE (R1 Minor #2 fix): `add` REMOVED — pyramiding DROP per §1.4; aligns with Phase 7's shipped `fills.action` 4-value enum. `stop` added to mirror `fills.action='stop'` for stop-loss-triggered exits as a distinct event from operator-discretionary `exit`. |
 | `action_reason` | TEXT | nullable | required at app-layer when `action_taken IS NOT NULL AND action_taken != 'no_action'` |
 | `emotional_state` | TEXT | nullable | JSON-list-text; vocabulary mirrors Phase 7 entry `emotional_state_pre_trade` (`calm`/`confident`/`anxious`/`fomo`/`revenge`/`hopeful`/`doubtful`/`distracted`); validation + canonicalization helpers mirror Phase 6 mistake_tags pattern |
 | `rule_violation_suspected` | INTEGER | nullable | CHECK IN (0,1) OR NULL; required at app-layer when record_type='event_log' |
 | `management_notes` | TEXT | nullable | free-text |
 
-**Field count:** 30 (12 metadata + position-state + 18 conditional event-log fields).
+**Field count:** 32 (12 metadata + 14 position-state + 18 conditional event-log fields, after R1 fixes adding `position_capital_denominator_dollars` + `trail_MA_period_days`).
 
-**`record_type` discriminator validation policy (per Phase 7 §3.5.1 lesson "operation-contextual validation"):**
+### §3.1.1 Operation-contextual validation (LOCKED — per Phase 7 §3.5.1 lesson)
+
+Schema-level nullability is RELAXED on the position-state fields per Critical R1 #1 fix. App-layer validator enforces required-field set per OPERATION:
 
 ```
 OPERATION_REQUIRED_FIELDS = {
     "snapshot_emit": (
-        # Position-state fields per §3.1 NOT NULL (12 fields).
-        # Plus: trail_MA_candidate_price (nullable when archive insufficient),
-        #       intraday_high, intraday_low, data_asof_session.
-        # NOT required: prior_stop, stop_changed, action_taken, etc. (NULL ok).
+        # All 14 position-state fields REQUIRED non-null:
+        "current_price", "current_stop", "current_size", "current_avg_cost",
+        "open_R_effective", "open_MFE_R_to_date", "open_MAE_R_to_date",
+        "intraday_high", "intraday_low",
+        "position_capital_utilization_pct", "position_capital_denominator_dollars",
+        "position_portfolio_heat_contribution_dollars",
+        "maturity_stage", "trail_MA_eligibility_flag",
+        # trail_MA_candidate_price + trail_MA_period_days REQUIRED non-null UNLESS
+        # archive history insufficient (then both NULL coherently — never one without
+        # the other; cross-field constraint enforced at validator).
     ),
     "event_log_emit": (
-        # All snapshot_emit fields PLUS:
-        # stop_changed, action_taken, rule_violation_suspected, emotional_state.
-        # Conditional: stop_change_reason if stop_changed=1; prior_stop if stop_changed=1;
-        #              action_reason if action_taken NOT IN ('no_action', NULL).
+        # Position-state fields are OPTIONAL (NULL allowed).
+        # Operator commentary fields REQUIRED:
+        "stop_changed", "action_taken", "rule_violation_suspected", "emotional_state",
+        "thesis_status",
+        # Conditional:
+        # - "stop_change_reason" + "prior_stop" required if stop_changed=1
+        # - "action_reason" required if action_taken NOT IN ('no_action', NULL)
     ),
     "tier_upgrade": (
         # See §6 — replaces an existing daily_snapshot row with a higher-precision row;
         # mfe_mae_precision_level must be > prior row's tier per the ordering
         # daily_approximate < intraday_estimated < intraday_exact.
         # Sets prior row's superseded_by_record_id.
+        # All 14 position-state fields REQUIRED non-null (same set as snapshot_emit).
     ),
 }
 ```
@@ -173,6 +187,8 @@ def validate_for_operation(req, *, op: Literal["snapshot_emit", "event_log_emit"
 ```
 
 This contextual-enforcement rule is binding (per Phase 7 §3.5.1 lesson). Drift between write paths is impossible because all paths converge on `validate_for_operation()`.
+
+**Why event_log decouples from position-state (R1 Critical #1 fix):** event_log emission is operator commentary about a moment-in-time decision (stop change, rule violation observation, thesis revision). Coupling event_log writes to a fresh OHLCV-fetch-driven snapshot recompute would (a) couple operator action to network reliability, (b) introduce race conditions where a transient yfinance failure blocks operator from logging a trade decision, (c) force redundant compute when the operator emits multiple event_logs in the same session. The decoupled design lets event_log write atomically with no external data dependency. Read-side (§7.2 timeline) JOINs the same-day daily_snapshot (if it exists) for position-state context; if no snapshot for the day yet, reads the trades-row denorms (Phase 7 shipped).
 
 ### §3.2 Single-table-with-discriminator (LOCKED) — rationale
 
@@ -196,9 +212,16 @@ This contextual-enforcement rule is binding (per Phase 7 §3.5.1 lesson). Drift 
 ### §3.3 Indexes
 
 ```
-CREATE UNIQUE INDEX ux_daily_mgmt_snapshot_one_per_day
+-- Active-snapshot uniqueness: ONE non-superseded daily_snapshot per (trade, date).
+CREATE UNIQUE INDEX ux_daily_mgmt_snapshot_active_per_day
     ON daily_management_records (trade_id, review_date)
     WHERE record_type = 'daily_snapshot' AND superseded_by_record_id IS NULL;
+
+-- Per-precision uniqueness: idempotent UPSERT key for tier-aware writes (R1 Major #2 fix).
+-- Tier-upgrade re-run with the same precision_level → REPLACE; different precision_level → new row.
+CREATE UNIQUE INDEX ux_daily_mgmt_snapshot_precision_per_day
+    ON daily_management_records (trade_id, review_date, mfe_mae_precision_level)
+    WHERE record_type = 'daily_snapshot';
 
 CREATE INDEX ix_daily_mgmt_trade_date
     ON daily_management_records (trade_id, review_date);
@@ -210,11 +233,13 @@ CREATE INDEX ix_daily_mgmt_pipeline_run
 
 **Index rationale:**
 
-1. **`ux_daily_mgmt_snapshot_one_per_day`** (PARTIAL UNIQUE) — enforces ONE active daily_snapshot per (trade, date). The `WHERE record_type='daily_snapshot' AND superseded_by_record_id IS NULL` predicate allows: (a) multiple event_log rows per day per trade; (b) tier-upgraded rows to coexist with the upgraded successor (the old row's `superseded_by_record_id` is non-NULL, so it falls outside the unique constraint). Same partial-unique-index pattern as `ux_trades_one_open_per_ticker`.
+1. **`ux_daily_mgmt_snapshot_active_per_day`** (PARTIAL UNIQUE) — enforces ONE active (non-superseded) daily_snapshot per (trade, date). The `WHERE record_type='daily_snapshot' AND superseded_by_record_id IS NULL` predicate allows: (a) multiple event_log rows per day per trade; (b) tier-upgraded rows to coexist with the upgraded successor (the old row's `superseded_by_record_id` is non-NULL, so it falls outside the unique constraint). Same partial-unique-index pattern as `ux_trades_one_open_per_ticker`.
 
-2. **`ix_daily_mgmt_trade_date`** — drives per-trade timeline reads (§7.2). Cardinality at 5 trades × 365 sessions = ~1,825 rows/year — index trivial.
+2. **`ux_daily_mgmt_snapshot_precision_per_day`** (PARTIAL UNIQUE — R1 Major #2 fix) — enforces ONE row per (trade, date, precision-level) for snapshot rows including superseded ones. This is the idempotency key for tier-upgrade and same-tier reflows. Without this index, repeatedly running a tier-upgrade on the same (trade, date, precision) could create duplicate rows pointing forward to the same successor, fragmenting the audit chain. With it: re-running tier-upgrade with the same precision_level UPSERTs (REPLACE-on-conflict); a higher-tier upgrade INSERTs a NEW row at the new precision and updates the prior row's `superseded_by_record_id`. The two unique indexes coexist because they have different predicates: this one covers ALL snapshot rows (superseded or not); the other covers only the non-superseded subset.
 
-3. **`ix_daily_mgmt_pipeline_run`** — drives pipeline-run-traceability reads (e.g., "show me all snapshots emitted by this pipeline run"). Partial index since CLI/web event_log rows have no pipeline_run_id.
+3. **`ix_daily_mgmt_trade_date`** — drives per-trade timeline reads (§7.2). Cardinality at 5 trades × 365 sessions = ~1,825 rows/year — index trivial.
+
+4. **`ix_daily_mgmt_pipeline_run`** — drives pipeline-run-traceability reads (e.g., "show me all snapshots emitted by this pipeline run"). Partial index since CLI/web event_log rows have no pipeline_run_id.
 
 ### §3.4 Modifications to existing tables
 
@@ -273,9 +298,11 @@ All 10 Phase 10 §6.1 capture-needs covered. No deviations. (Brief watch-item 6 
 
 **Decision:** Same-day re-run = UPSERT (REPLACE-on-conflict against `ux_daily_mgmt_snapshot_one_per_day` partial unique index). Re-running pipeline twice in same session refreshes `current_price` / `intraday_high` / `intraday_low` / running MFE/MAE based on archive state at the moment-of-fire. This is correct behavior — yfinance archive may receive late-day correction; later run captures more accurate data.
 
-**Tier-upgrade interaction (§6):** UPSERT applies WITHIN the same `mfe_mae_precision_level`. A higher-tier emission (V2+) does NOT UPSERT — it INSERTs a new row + sets the prior row's `superseded_by_record_id`. The partial unique index excludes superseded rows, so the new higher-tier row holds the unique slot.
+**Tier-upgrade interaction (§6):** UPSERT applies WITHIN the same `mfe_mae_precision_level` (per `ux_daily_mgmt_snapshot_precision_per_day` partial-unique index). A higher-tier emission (V2+) does NOT UPSERT against the active-snapshot index — it INSERTs a new row at the new precision + sets the prior row's `superseded_by_record_id`. The active-snapshot partial unique index (`ux_daily_mgmt_snapshot_active_per_day`) excludes superseded rows, so the new higher-tier row holds the active slot.
 
 **event_log idempotency:** NO unique constraint. Operator may emit multiple event_log rows per day (e.g., morning stop_adjust event + afternoon news_or_event_update event). Each row gets its own `management_record_id` via autoincrement.
+
+**Operational discipline (R1 Major #3 — narrative coherence between snapshot and event_log):** the recommended cadence is "pipeline runs first; operator reviews dashboard; emits event_log SECOND." If operator emits event_log BEFORE the day's pipeline run, then a later pipeline run's UPSERT refreshes the snapshot's position-state values to AFTER-event values — the event_log's commentary may then read as describing a state that no longer matches the same-day snapshot. This is a known design tradeoff, not a bug: the event_log row's own captured fields (prior_stop, current_stop-at-event-time per Phase 7's `update_stop_with_event` audit, action_taken) preserve the operator's view at-event-time independently of the snapshot. Read-side surfaces (§7.2 timeline) render event_log row fields as authoritative for "what operator saw"; snapshot row fields as authoritative for "what archive showed at end-of-session." The two views don't conflict because they answer different questions. **Documented as discipline, NOT enforced at schema level** — the schema permits the order; operator workflow guides usage.
 
 ### §4.3 Back-fill policy: GAP-FLAGGED, no auto back-fill
 
@@ -385,6 +412,23 @@ When `state` transitions to `closed`, the prior open-state snapshot history is p
 
 **Read-only enforcement:** repo-layer convention (no UPDATE paths exposed for closed-trade snapshot rows). Mirrors Phase 7's pre-trade-locked-fields discipline (no DB triggers; lint/test discipline). The exception is tier-upgrade (§6), which intentionally MUTATES the prior row's `superseded_by_record_id` — but the prior row's content fields stay frozen.
 
+### §5.6 Authoritative-source precedence (R1 Major #1 fix)
+
+When the same conceptual value appears across multiple shipped/Phase-8 surfaces, read-side queries follow this PRECEDENCE LADDER. Higher entries on the ladder are AUTHORITATIVE; lower entries are CACHED COPIES with explicit at-time-of-write semantics.
+
+| Field | Authoritative source | Cached copies | At-write semantic |
+|---|---|---|---|
+| Current stop on a live trade | `trades.current_stop` (Phase 7 single-write-path via `update_stop_with_event`) | `daily_management_records.current_stop` (snapshot at end-of-session); `daily_management_records.prior_stop` / `current_stop` (event_log row at moment-of-event) | Snapshot copy = stop in force at session close; event_log copy = stop in force at event time. Operator-actionable read = trades.current_stop ALWAYS. |
+| Current size on a live trade | `trades.current_size` (Phase 7 `_recompute_aggregates` after every fill) | `daily_management_records.current_size` (snapshot at end-of-session) | Same pattern — trades-row authoritative; snapshot is timestamped historical record. |
+| Trade lifecycle state | `trades.state` (Phase 7 single-write-path via `state_transition`) | none | snapshot rows do NOT cache state. Read-side queries that filter by state JOIN trades. |
+| MFE/MAE running max from entry | `daily_management_records.open_MFE_R_to_date` / `open_MAE_R_to_date` (most-recent active snapshot) | none | Snapshot row IS authoritative for in-flight running extrema. Closed-trade post-mortem MFE/MAE = max over all snapshot rows for the trade. |
+| Thesis status | most-recent event_log row with non-NULL `thesis_status` | none (snapshot rows ALWAYS leave thesis_status NULL per R1 Critical #4 fix) | Read-side resolves "current thesis_status" via subquery. Defaults to `intact` if no event_log row exists. |
+| Pre-trade decision fields | `trades.thesis` / `why_now` / `invalidation_condition` etc. (Phase 7 frozen-at-lock) | none | Snapshots and event_logs do NOT cache pre-trade fields. Read-side reads from trades. |
+| Capital denominator at snapshot time | `daily_management_records.position_capital_denominator_dollars` (per-row stamp; R1 Major #4 fix) | none | Each snapshot row IS authoritative for the denominator it used. Phase 9 versioning resolves forward-going writes; historical rows preserve their stamp. |
+| Trail-MA period at snapshot time | `daily_management_records.trail_MA_period_days` (per-row stamp; R1 Major #5 fix) | none | Same per-row stamp pattern as the capital denominator. |
+
+**Read-precedence enforcement:** view-models JOIN `trades` for trade-level current state + JOIN `daily_management_records` for time-series snapshot data + subquery for latest event_log thesis_status. NO surface reads stale snapshot copies as if they were live values. Test fixture binding: synthetic case where `trades.current_stop != latest_snapshot.current_stop` (operator did mid-day stop_adjust after morning snapshot) — assert dashboard tile reads `trades.current_stop`, NOT snapshot's stale value.
+
 ---
 
 ## §6 MFE/MAE precision tier semantics (LOCKED)
@@ -428,16 +472,21 @@ V1 ships `daily_approximate` ONLY. The schema reserves `intraday_estimated` + `i
 
 ### §6.6 `trail_MA_candidate_price` reference period (LOCKED — decision §10.1)
 
-**LOCKED: 21-day SMA at `data_asof_session` close.**
+**LOCKED: 21-day SMA at `data_asof_session` close, with per-row `trail_MA_period_days` stamp (R1 Major #5 fix).**
 
-Rationale:
+V1 default value of `trail_MA_period_days = 21`. The per-row stamp is REQUIRED so that:
+
+1. Phase 9 risk_policy versioning of the period (e.g., 10-day upgrade after +2R per Tier-3 #6 doctrine) does NOT silently re-interpret historical rows.
+2. A V2 surface that shows mixed-period trail-MA candidates (e.g., a +1.5R trade tagged 21-day; a +2.5R trade tagged 10-day) renders correctly without ambiguity.
+3. Future operator-configurability of the period (per §11.1 Phase 9 hand-off) is a clean migration: Phase 9 versioning adjusts forward-going default; per-row stamp preserves history.
+
+Rationale for the V1 = 21-day default:
 
 1. **Canonical TA period.** Minervini's framework uses 10/21/50 SMAs; 21-day is the canonical "intermediate" trail. 20-day is also common but lacks the same TA-chain alignment.
-2. **Tier-3 #6 doctrine alignment.** Operator's framing "default 20MA early, upgrade to 10MA after ~+1.5-2R" — V1 ships the EARLIER trail (default ~20MA family); 10MA upgrade is V2 (open question per §10).
-3. **Single column simplicity.** One `trail_MA_candidate_price` column, one period. Operator-configurable via Phase 9 risk_policy versioning is the upgrade path (§9.1).
-4. **NULL-on-insufficient-history.** If `data_asof_session` is fewer than 21 trading days after `pre_trade_locked_at`'s session AND the OHLCV archive has fewer than 21 sessions of history for the ticker, `trail_MA_candidate_price` is NULL. The trail_MA_eligibility_flag definition handles NULL: `1 IFF maturity_stage='>=+2R_trail_eligible' AND trail_MA_candidate_price IS NOT NULL AND current_stop < trail_MA_candidate_price`.
+2. **Tier-3 #6 doctrine alignment.** Operator's framing "default 20MA early, upgrade to 10MA after ~+1.5-2R" — V1 ships the EARLIER trail (default 21-day family); 10MA upgrade is V2 (open question per §10).
+3. **NULL-on-insufficient-history.** If the OHLCV archive has fewer than `trail_MA_period_days` sessions of history for the ticker at `data_asof_session`, BOTH `trail_MA_candidate_price` AND `trail_MA_period_days` are NULL coherently (cross-field constraint per §3.1.1 OPERATION_REQUIRED_FIELDS validator). The trail_MA_eligibility_flag definition handles NULL: `1 IFF maturity_stage='>=+2R_trail_eligible' AND trail_MA_candidate_price IS NOT NULL AND current_stop < trail_MA_candidate_price`.
 
-**V2 deferral:** 10-day SMA upgrade after +2R becomes operator-configurable via Phase 9 risk_policy. V2 schema may add a `trail_MA_period_days` column or shift to a per-policy mapping. V1 doesn't paint Phase 9 into a corner — adding a column or a side table is a clean migration.
+**V2 path:** 10-day SMA upgrade after +2R via Phase 9 risk_policy versioning of `trail_MA_post_2R_period_days`. Snapshot writer reads the policy effective at write time; stamps `trail_MA_period_days` accordingly. Historical rows untouched. (R1 Major #5 satisfied: per-row stamp eliminates retroactive interpretation drift.)
 
 (Watch-item 15 satisfied.)
 
@@ -457,10 +506,14 @@ Rationale:
 
 ### §7.2 Per-trade detail timeline drill-down
 
-- **Primary axis:** per-trade; chronological (review_date ASC).
-- **Composition:** table with one row per (review_date, record_type) combination ordered ASC. Columns: `review_date` / `record_type` / `current_price` / `current_stop` / `open_R_effective` / `open_MFE_R_to_date` / `open_MAE_R_to_date` / `mfe_mae_precision_level` (badge) / event-log fields (collapsed per row when record_type='event_log'; absent otherwise).
+- **Primary axis:** per-trade; chronological with deterministic tie-break (R1 Critical #2 + #3 fix).
+- **Row contract:** ONE row per `management_record_id` (NOT per (review_date, record_type) — multiple event_log rows per day are explicitly allowed and EACH renders as its own distinct row).
+- **Ordering contract:** `ORDER BY review_date ASC, created_at ASC, management_record_id ASC`. The `created_at ASC` tie-break is binding for same-date event_log rows; `management_record_id ASC` final tie-break ensures determinism even when two rows share the same `created_at` wall-clock second. Per Phase 7 Sub-B R3 M1 lesson "lexicographic ordering on text-stored datetimes is a contract requiring naive-only inputs" — `created_at` validator enforces naive-UTC.
+- **Tier-upgrade default visibility:** default rendering filters to `superseded_by_record_id IS NULL` (active snapshots only); event_log rows ALWAYS render (never superseded). Toggle "show superseded snapshots" expands to include the audit chain.
+- **Composition:** table columns by record_type:
+  - **For `record_type='daily_snapshot'`:** `review_date` / "snapshot" badge / `current_price` / `current_stop` / `open_R_effective` / `open_MFE_R_to_date` / `open_MAE_R_to_date` / `mfe_mae_precision_level` (badge) / `maturity_stage`.
+  - **For `record_type='event_log'`:** `review_date` / "event" badge / `created_at` (wall-clock; distinguishes multiple same-day events) / `action_taken` / `stop_changed` (with prior→new stop if true) / `thesis_status` / `rule_violation_suspected` (badge if true) / `emotional_state` (chips) / collapsed `action_reason` + `management_notes` (expand on click). Position-state cells render as JOIN-from-same-day-snapshot if available, else "—" (per §3.1.1 R1 Critical #1 fix — event_log rows don't carry position-state by default).
 - **Gap rendering:** missing days between snapshots render as a single placeholder row "(no snapshot — pipeline did not run)".
-- **Tier-upgrade audit row toggle:** option to show superseded rows alongside their successors (default hidden; click to expand).
 - **Sample-size threshold:** N/A (per-trade, not aggregate).
 - **Operator-actionability:** post-trade review consumption. Phase 6 review form may surface this as a drill-down link (deferred V1; operator-paced V2 follow-up).
 - **State-of-the-trade footer:** "open since {pre_trade_locked_at}; total snapshot days = N; total event_log entries = M; final snapshot precision = {tier}".
@@ -620,15 +673,19 @@ Decision-source: writing-plans dispatch scope-review.
 
 Decision-source: orchestrator review of binding contract; writing-plans dispatch verifies the helper choice in plan tasks.
 
-### §10.5 `position_capital_utilization_pct` PROVISIONAL fallback at snapshot time
+### §10.5 `position_capital_utilization_pct` PROVISIONAL fallback at snapshot time (LOCKED in §3.1 + §5.6 — surfaced for orchestrator review)
 
-**Question:** Phase 10 §2 split-policy specifies `live_capital_denominator_dollars` as the OPERATIONAL denominator; V1 PROVISIONAL fallback to `capital_floor_constant_dollars = $7,500`. Phase 8 captures `position_capital_utilization_pct` AT SNAPSHOT TIME. When Phase 9 ships `live_capital_denominator_dollars` (or operator manually adds account_equity_snapshot per Phase 10 §8.2), do retroactive snapshots get the provisional value re-computed against the new denominator? Or stay frozen at $7,500 fallback?
+**Locked (R1 Major #4 fix): FROZEN-AT-CAPTURE with per-row `position_capital_denominator_dollars` stamp.**
 
-**Tradeoff:** retroactive recomputation requires re-running the whole snapshot table; introduces a "policy change" event semantic. Frozen-at-capture preserves historical record per the same v1.2 §8.6 precision-tier discipline.
+The snapshot's `position_capital_utilization_pct` value reflects what the system knew at capture time. Per-row `position_capital_denominator_dollars` stamps the actual denominator value used (V1 = `7500.0`). This makes per-row interpretability explicit:
 
-**Recommendation:** FROZEN-AT-CAPTURE. The snapshot's `position_capital_utilization_pct` value reflects what the system knew AT that capture time. Phase 9 risk_policy versioning (per Phase 10 §6.2) stamps the capital_floor_constant_dollars VERSION; Phase 8 snapshots resolve via the policy effective at `created_at`. Future operator who wants "what would utilization look like under TODAY's denominator?" runs a re-render on the read side; stored value stays.
+- A V1 row reads as "utilization = X% of $7,500 floor" — the denominator is in the row, not just a UI badge.
+- A V2 row (post-Phase-9-live-denominator) reads as "utilization = Y% of $A,BCD live equity" — same column carries the actual value used.
+- Phase 9 risk_policy versioning resolves the denominator at write time per the policy effective at `created_at`; the stamp records the resolved value.
 
-Decision-source: orchestrator + operator approval. Aligns with Phase 7 frozen-pre-trade-fields discipline.
+Open dimension: should the V1 → V2 transition CAVEAT historical rows on read? Recommendation: yes, the dashboard tile (§7.1) renders the row's denominator value alongside the percentage when the historical denominator differs from the current live denominator. UI concern; Phase 10 writing-plans scope.
+
+Decision-source: orchestrator + operator approval; Phase 9 brainstorm inherits the per-row-stamp contract.
 
 ### §10.6 V2+ journal-stats integration of Phase 8 data
 
@@ -691,6 +748,20 @@ Phase 8's `daily_management_records` schema does NOT block:
 - [x] **Internal consistency:** §3.1 schema sketches consume Phase 7's shipped fields verbatim; §3.5 cross-checks Phase 10 §6.1 capture-needs (10/10 covered); §5.3 cross-table coupling specifies single-write-path discipline; §8 migration strategy inherits Phase 7 lessons.
 - [x] **Scope check:** SCHEMA-LOCKING but no migration SQL (§3 column-level; §8 mechanic-level only); no code drafting (§5.3 single-write-path is described, not implemented); no task decomposition.
 - [x] **Ambiguity check:** §3.1 OPERATION_REQUIRED_FIELDS makes per-record_type required-field set explicit; §4.2 idempotency policy explicit; §6.1 tier-upgrade policy explicit (additive with audit trail); §10 open questions enumerated.
+- [x] **Codex R1 fix coverage:** all 4 critical + 5 major findings addressed:
+  - Critical #1 (event_log doesn't need full position-state recompute) → §3.1 nullability relaxed; §3.1.1 OPERATION_REQUIRED_FIELDS makes position-state OPTIONAL for event_log_emit; §3.1.1 explicit rationale paragraph.
+  - Critical #2 (timeline contract conflicts with multiple event_log per day) → §7.2 row contract = ONE row per `management_record_id`.
+  - Critical #3 (deterministic ordering for same-date rows) → §7.2 ordering contract `(review_date ASC, created_at ASC, management_record_id ASC)`.
+  - Critical #4 (thesis_status drift trap) → §3.1 thesis_status NULLABLE; snapshot rows leave NULL; §3.1.1 + §5.6 read-side resolves via latest event_log row.
+  - Major #1 (authoritative-source ambiguity) → §5.6 NEW precedence ladder + read-precedence enforcement test fixture binding.
+  - Major #2 (tier-upgrade duplicate superseded chains) → §3.3 NEW `ux_daily_mgmt_snapshot_precision_per_day` partial-unique index.
+  - Major #3 (UPSERT mutation after event_log narrative inconsistency) → §4.2 NEW Operational discipline paragraph; documented as discipline not enforced.
+  - Major #4 (PROVISIONAL capital denominator without per-row stamp) → §3.1 NEW `position_capital_denominator_dollars` column; §10.5 + §5.6 contract.
+  - Major #5 (trail_MA scalar without period stamp) → §3.1 NEW `trail_MA_period_days` column; §6.6 + §5.6 contract.
+  - Minor #1 (intraday_high/low naming) → ACCEPTED-with-rationale: reader-context note added (V1 daily-tier captures session H/L; V2+ intraday tiers may capture sub-session H/L).
+  - Minor #2 (action_taken includes 'add' despite no-pyramiding) → §3.1 enum dropped 'add'; added 'stop' to mirror Phase 7 fills.action.
+  - Minor #3 (pipeline_run_id FK target) → §3.1 corrected to `pipeline_runs(id)` (verified against migration 0001 PK).
+  - Minor #4 (UTC/local-midnight off-by-one) → §10.4 ACCEPTED-as-binding-contract: `last_completed_session(now)` per Phase 6 §A.8 lesson.
 - [x] **Brief watch-item coverage:** all 16 watch items addressed:
   - 1 (Phase 7 state-machine integration completeness): §5.1 + §5.2 + §5.3 + §5.4 + §5.5 cover all 5 states + transitions + cross-table coupling.
   - 2 (predicate rewrite per call-site): §5.3 audit table — 4 distinct predicates per call-site purpose.
@@ -708,8 +779,8 @@ Phase 8's `daily_management_records` schema does NOT block:
   - 14 (Schwab API Phase B coordination): §10.7 + §11.1 — flagged cleanly; V1 ships tier 1 only without Schwab dependency.
   - 15 (`trail_MA_candidate_price` reference period): §6.6 + §10.1 — locked 21-day; rationale.
   - 16 (`planned_target_R` table-of-residence): §3.4 + §10.2 — locked trades-table; rationale.
-- [x] **Single commit landing:** spec is the only artifact for this brainstorm session; no rogue commits.
-- [x] **Line target:** ~700 lines (within brief's 500-800 target).
+- [x] **Single commit landing:** spec is the only artifact for this brainstorm session; landing + R1-fix follow-up commit per Phase 7 / Phase 10 precedent.
+- [x] **Line target:** within brief's 500-800 target after R1 fix integrations.
 
 ---
 
