@@ -1,0 +1,79 @@
+{#- Phase 8 Task 5.0: daily-management event-log form partial.
+    Expects: vm (EventLogFormVM), error_message (optional str)
+
+    Embedded HTMX form — MUST include hx-headers='{"HX-Request": "true"}'
+    so OriginGuard strict-mode admits the nested POST (Phase 5 R1 M1
+    lesson; CLAUDE.md HTMX form gotcha).
+
+    Hidden ``prior_stop`` pre-populated from ``vm.current_stop`` so the
+    T3.2 stale-form guard fires correctly when a stop_adjust races
+    between form-render and POST.
+
+    Success-path response is 204 + HX-Redirect (Phase 5 R1 M2 lesson) —
+    the form does not need to wire hx-target/hx-swap for the success
+    case; htmx.js follows the redirect on its own.
+-#}
+<form id="daily-management-event-form-{{ vm.trade.id }}"
+      hx-post="/trades/{{ vm.trade.id }}/daily-management/event"
+      hx-target="this" hx-swap="outerHTML"
+      hx-headers='{"HX-Request": "true"}'>
+  {% if error_message %}
+    <div class="banner banner-degraded" role="alert">{{ error_message }}</div>
+  {% endif %}
+
+  <div><label>Trade</label>
+    <span>#{{ vm.trade.id }} {{ vm.trade.ticker }} —
+          current stop ${{ '%.2f' | format(vm.current_stop) }}</span></div>
+
+  {#- T3.2 carry-forward: prior_stop pre-populated from trades.current_stop
+      so the stale-form guard inside record_event_log fires correctly
+      when another stop_adjust races between render and POST. -#}
+  <input type="hidden" name="prior_stop"
+         value="{{ '%.2f' | format(vm.current_stop) }}">
+
+  <div><label>
+      <input type="checkbox" name="stop_changed" value="1"
+             {% if vm.stop_changed %}checked{% endif %}>
+      Stop changed?
+    </label></div>
+
+  <div><label>New stop</label>
+    <input type="number" step="0.01" min="0" name="new_stop"
+           value="{{ '%.2f' | format(vm.new_stop) if vm.new_stop is not none else '' }}"></div>
+
+  <div><label>Stop change reason</label>
+    <input type="text" name="stop_change_reason"
+           value="{{ vm.stop_change_reason or '' }}"></div>
+
+  <div><label>Action taken</label>
+    <select name="action_taken">
+      {% for opt in vm.action_taken_options %}
+        <option value="{{ opt }}"{% if opt == vm.action_taken %} selected{% endif %}>{{ opt }}</option>
+      {% endfor %}
+    </select></div>
+
+  <div><label>Action reason</label>
+    <input type="text" name="action_reason"
+           value="{{ vm.action_reason or '' }}"></div>
+
+  <div><label>
+      <input type="checkbox" name="rule_violation_suspected" value="1"
+             {% if vm.rule_violation_suspected %}checked{% endif %}>
+      Rule violation suspected?
+    </label></div>
+
+  <div><label>Emotional state (JSON list)</label>
+    <input type="text" name="emotional_state"
+           value='{{ vm.emotional_state or "[]" }}'></div>
+
+  <div><label>Management notes</label>
+    <textarea name="management_notes">{{ vm.management_notes or '' }}</textarea></div>
+
+  {#- Identity / metadata. NOT NULL on the underlying table. -#}
+  <input type="hidden" name="created_at" value="{{ vm.created_at }}">
+  <input type="hidden" name="review_date" value="{{ vm.review_date }}">
+  <input type="hidden" name="data_asof_session" value="{{ vm.data_asof_session }}">
+  <input type="hidden" name="mfe_mae_precision_level" value="{{ vm.mfe_mae_precision_level }}">
+
+  <div><button type="submit">Submit</button></div>
+</form>

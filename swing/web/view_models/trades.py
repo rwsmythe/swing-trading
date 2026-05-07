@@ -896,3 +896,84 @@ def build_trade_detail_vm(
         audit_entries=audit_entries,
         fills=fills,
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 Task 5.0 — daily-management event-log form VM.
+# ---------------------------------------------------------------------------
+
+
+# Closed-taxonomy action options surfaced in the event-log form. Mirrors
+# spec §3.1.1 ``action_taken`` values; ``no_action`` and ``hold`` are inert
+# observations exempt from the action_reason requirement (T3.2 contract).
+_EVENT_LOG_ACTION_OPTIONS: tuple[str, ...] = (
+    "no_action",
+    "hold",
+    "move_stop",
+    "trim",
+    "exit",
+    "stop",
+)
+
+
+@dataclass(frozen=True)
+class EventLogFormVM:
+    """View-model for the daily-management event-log form.
+
+    Pre-populates ``current_stop`` from the live ``trades.current_stop`` so
+    the hidden ``prior_stop`` form input matches what ``record_event_log``
+    re-reads inside its single-transaction stale-form guard. If a
+    ``stop_adjust`` races between render + POST, the guard rejects the
+    submission with a ``ValidationException`` and the route re-renders the
+    form with the error banner.
+    """
+
+    trade: Trade
+    current_stop: float
+    review_date: str
+    data_asof_session: str
+    created_at: str
+    mfe_mae_precision_level: str
+    action_taken_options: tuple[str, ...] = _EVENT_LOG_ACTION_OPTIONS
+    # Preservation fields (populated on validation-error re-render):
+    stop_changed: int = 0
+    new_stop: float | None = None
+    stop_change_reason: str | None = None
+    action_taken: str | None = None
+    action_reason: str | None = None
+    rule_violation_suspected: int = 0
+    emotional_state: str = "[]"
+    management_notes: str | None = None
+
+
+def build_event_log_form_vm(
+    *, trade_id: int, cfg: Config,
+) -> EventLogFormVM | None:
+    """Build the event-log form VM. Returns None if the trade is not active.
+
+    Reads ``trades.current_stop`` so the hidden ``prior_stop`` field
+    pre-populates with the canonical at-render value (T3.2 stale-form guard
+    contract). Caller fills in the operator-supplied metadata defaults
+    (review_date, data_asof_session, created_at, precision-level) — the
+    builder does NOT decide those for the VM (the route handler that
+    re-renders on validation error re-uses the operator's submitted values).
+    """
+    from datetime import datetime as _dt
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            trade = get_trade(conn, trade_id)
+            if trade is None or trade.state not in _ACTIVE_STATES:
+                return None
+    finally:
+        conn.close()
+    today = date.today().isoformat()
+    return EventLogFormVM(
+        trade=trade,
+        current_stop=trade.current_stop,
+        review_date=today,
+        data_asof_session=today,
+        created_at=_dt.now().isoformat(timespec="seconds"),
+        mfe_mae_precision_level="daily_approximate",
+    )

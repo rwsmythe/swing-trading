@@ -1498,6 +1498,138 @@ def open_position_row(request: Request, trade_id: int):
     )
 
 
+# Phase 8 Task 5.0 — daily-management event-log POST. Registered BEFORE the
+# bare `/trades/{trade_id}` wildcard so the more-specific path is matched
+# first by FastAPI/Starlette's registration-order routing. The route
+# delegates to ``record_event_log`` (T3.2's single-transaction service)
+# and emits 204 + ``HX-Redirect: /trades/{trade_id}`` on success per Phase
+# 5 R1 M2 lesson (htmx.js swallows 303 → swap-target transparently;
+# real-browser navigation requires the 204 + HX-Redirect pair).
+@router.post("/trades/{trade_id}/daily-management/event")
+async def daily_management_event_post(request: Request, trade_id: int):
+    """POST handler for the daily-management event-log form.
+
+    Constructs an :class:`EventLogRequest` dataclass from the form payload
+    and calls ``record_event_log`` (T3.2 single-transaction service). On
+    ``ValidationException`` re-renders the form partial with a 422 + error
+    banner; on success returns ``204 No Content`` + ``HX-Redirect:
+    /trades/{trade_id}`` so htmx.js navigates the real browser to the
+    canonical trade-detail page.
+
+    HTMX failure-surface mitigations (CLAUDE.md HTMX form gotcha; Phase 5
+    R1 M1/M2 + Phase 6 R5 I3 lessons):
+
+    * (a) The form partial includes ``hx-headers='{"HX-Request": "true"}'``
+      so OriginGuard strict-mode admits nested submits — verified by a
+      template literal-string assertion (real-browser only failure).
+    * (b) Success-path response = 204 + HX-Redirect, NOT 303 → swap-target.
+    * (c) HX-Redirect target ``/trades/{trade_id}`` IS a registered GET
+      route (the canonical trade-detail page below).
+    """
+    from fastapi.responses import Response
+
+    from swing.trades.daily_management import (
+        EventLogRequest,
+        ValidationException,
+        record_event_log,
+    )
+
+    cfg = apply_overrides(request.app.state.cfg)
+    templates = request.app.state.templates
+    form = await request.form()
+
+    def _opt(name: str) -> str | None:
+        # Form-input fallback: prefer None to "" so nullable text columns
+        # with CHECK enums (CLAUDE.md `or "" vs or None` gotcha) accept the
+        # absent input cleanly. Empty-string survives only as the explicit
+        # JSON-list emotional_state default ("[]") set in the form template.
+        raw = form.get(name)
+        if raw is None:
+            return None
+        s = str(raw).strip()
+        return s or None
+
+    def _int_flag(name: str) -> int:
+        raw = form.get(name)
+        return 1 if str(raw or "").strip() == "1" else 0
+
+    def _opt_float(name: str) -> float | None:
+        raw = form.get(name)
+        if raw is None or str(raw).strip() == "":
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+
+    # Build EventLogRequest from the form payload. Required NOT-NULL
+    # metadata fields fall back to safe defaults so the dataclass
+    # constructor never raises on missing keys (the service-layer
+    # validator surfaces missing-required-field errors via
+    # ValidationException → 422 below).
+    try:
+        req = EventLogRequest(
+            trade_id=trade_id,
+            review_date=str(form.get("review_date") or ""),
+            data_asof_session=str(form.get("data_asof_session") or ""),
+            created_at=str(form.get("created_at") or ""),
+            mfe_mae_precision_level=str(
+                form.get("mfe_mae_precision_level") or "daily_approximate",
+            ),
+            stop_changed=_int_flag("stop_changed"),
+            action_taken=_opt("action_taken"),
+            rule_violation_suspected=_int_flag("rule_violation_suspected"),
+            emotional_state=_opt("emotional_state"),
+            prior_stop=_opt_float("prior_stop"),
+            new_stop=_opt_float("new_stop"),
+            stop_change_reason=_opt("stop_change_reason"),
+            action_reason=_opt("action_reason"),
+            management_notes=_opt("management_notes"),
+        )
+    except (TypeError, ValueError) as exc:
+        return templates.TemplateResponse(
+            request, "partials/trade_form_error.html.j2",
+            {"error_message": str(exc)},
+            status_code=422,
+        )
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        try:
+            record_event_log(conn, trade_id=trade_id, req=req)
+        except ValidationException as exc:
+            from swing.web.view_models.trades import build_event_log_form_vm
+            vm = build_event_log_form_vm(trade_id=trade_id, cfg=cfg)
+            if vm is None:
+                # Trade not found / not active — bubble up as 422 with the
+                # service-layer error message rather than re-render an
+                # absent form. (Active-state precondition is the operator's
+                # discriminating signal.)
+                return templates.TemplateResponse(
+                    request, "partials/trade_form_error.html.j2",
+                    {"error_message": str(exc)},
+                    status_code=422,
+                )
+            return templates.TemplateResponse(
+                request, "partials/daily_management_event_form.html.j2",
+                {"vm": vm, "error_message": str(exc)},
+                status_code=422,
+            )
+        except ValueError as exc:
+            # Trade not found / Phase 7 service rejection (terminal state).
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+    finally:
+        conn.close()
+
+    # Success: 204 + HX-Redirect. Target route /trades/{trade_id} IS
+    # registered (Phase 6 R5 I3 lesson — verified by route-table assertion
+    # in the regression test).
+    return Response(
+        status_code=204,
+        headers={"HX-Redirect": f"/trades/{trade_id}"},
+    )
+
+
 # Phase 7 Sub-C C.5 — canonical trade-detail page. REGISTERED LAST so the
 # bare `/trades/{trade_id}` path-template wildcard does NOT shadow the more
 # specific `/trades/entry/form`, `/trades/{trade_id}/exit`, etc. routes
