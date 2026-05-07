@@ -20,12 +20,16 @@ import pytest
 
 from swing.data.db import ensure_schema
 from swing.data.repos.daily_management import (
+    SupersededRowImmutableException,
+    TierOrderingError,
     insert_event_log,
     insert_snapshot,
     list_for_trade_timeline,
     list_open_position_active_snapshots,
     select_active_snapshot,
     select_history,
+    tier_upgrade_snapshot,
+    upsert_snapshot,
 )
 
 
@@ -329,6 +333,140 @@ def test_list_open_position_active_snapshots_excludes_event_log_rows(
     insert_event_log(conn, trade_id=1, event_log_fields=el)
     snaps = list_open_position_active_snapshots(conn)
     assert all(s.record_type == "daily_snapshot" for s in snaps)
+
+
+# ---- T2.3: upsert_snapshot + tier_upgrade_snapshot --------------------------
+
+
+def test_upsert_snapshot_same_tier_reflow_preserves_PK(
+    conn: sqlite3.Connection,
+) -> None:
+    """SELECT-then-UPDATE-or-INSERT: management_record_id PRESERVED on reflow.
+    Discriminating against REPLACE which would mint a new PK."""
+    fields = _full_snapshot_fields(data_asof_session="2026-05-07")
+    fields["current_price"] = 100.0
+    rec_id_first = upsert_snapshot(conn, trade_id=1, snapshot_fields=fields)
+
+    # Same-tier reflow with new price:
+    fields2 = dict(fields)
+    fields2["current_price"] = 105.0
+    rec_id_second = upsert_snapshot(conn, trade_id=1, snapshot_fields=fields2)
+
+    # PK preserved (NOT a new row):
+    assert rec_id_second == rec_id_first
+
+    # Data updated:
+    row = conn.execute(
+        "SELECT current_price FROM daily_management_records "
+        "WHERE management_record_id = ?",
+        (rec_id_first,),
+    ).fetchone()
+    assert row[0] == 105.0
+
+
+def test_upsert_snapshot_against_superseded_raises(
+    conn: sqlite3.Connection,
+) -> None:
+    """SupersededRowImmutableException when only superseded rows exist."""
+    fields = _full_snapshot_fields(data_asof_session="2026-05-07")
+    rec_id = upsert_snapshot(conn, trade_id=1, snapshot_fields=fields)
+    conn.execute(
+        "UPDATE daily_management_records SET is_superseded = 1 "
+        "WHERE management_record_id = ?",
+        (rec_id,),
+    )
+
+    with pytest.raises(SupersededRowImmutableException):
+        upsert_snapshot(conn, trade_id=1, snapshot_fields=fields)
+
+
+def test_tier_upgrade_3_tier_chain(conn: sqlite3.Connection) -> None:
+    """Synthetic 3-tier sequence: daily_approximate → intraday_estimated → intraday_exact.
+    Discriminating: at every transaction boundary, exactly one active row;
+    audit chain threaded via superseded_by_record_id."""
+    # Step 1: daily_approximate
+    f1 = _full_snapshot_fields(data_asof_session="2026-05-07")
+    f1["mfe_mae_precision_level"] = "daily_approximate"
+    rec1 = upsert_snapshot(conn, trade_id=1, snapshot_fields=f1)
+
+    # Step 2: tier-upgrade to intraday_estimated
+    f2 = _full_snapshot_fields(data_asof_session="2026-05-07")
+    f2["mfe_mae_precision_level"] = "intraday_estimated"
+    rec2 = tier_upgrade_snapshot(
+        conn,
+        trade_id=1,
+        data_asof_session="2026-05-07",
+        new_precision_level="intraday_estimated",
+        snapshot_fields=f2,
+    )
+    row1 = conn.execute(
+        "SELECT is_superseded, superseded_by_record_id "
+        "FROM daily_management_records WHERE management_record_id = ?",
+        (rec1,),
+    ).fetchone()
+    assert row1 == (1, rec2)
+
+    # Step 3: tier-upgrade to intraday_exact
+    f3 = _full_snapshot_fields(data_asof_session="2026-05-07")
+    f3["mfe_mae_precision_level"] = "intraday_exact"
+    rec3 = tier_upgrade_snapshot(
+        conn,
+        trade_id=1,
+        data_asof_session="2026-05-07",
+        new_precision_level="intraday_exact",
+        snapshot_fields=f3,
+    )
+    row2 = conn.execute(
+        "SELECT is_superseded, superseded_by_record_id "
+        "FROM daily_management_records WHERE management_record_id = ?",
+        (rec2,),
+    ).fetchone()
+    assert row2 == (1, rec3)
+
+    # Active count must be 1 at end:
+    active_count = conn.execute(
+        "SELECT COUNT(*) FROM daily_management_records "
+        "WHERE trade_id = 1 AND data_asof_session = '2026-05-07' "
+        "  AND record_type = 'daily_snapshot' AND is_superseded = 0"
+    ).fetchone()[0]
+    assert active_count == 1
+
+
+def test_tier_upgrade_to_lower_tier_raises_TierOrderingError(
+    conn: sqlite3.Connection,
+) -> None:
+    f1 = _full_snapshot_fields(data_asof_session="2026-05-07")
+    f1["mfe_mae_precision_level"] = "intraday_estimated"
+    upsert_snapshot(conn, trade_id=1, snapshot_fields=f1)
+    f2 = _full_snapshot_fields(data_asof_session="2026-05-07")
+    f2["mfe_mae_precision_level"] = "daily_approximate"
+    with pytest.raises(TierOrderingError):
+        tier_upgrade_snapshot(
+            conn,
+            trade_id=1,
+            data_asof_session="2026-05-07",
+            new_precision_level="daily_approximate",
+            snapshot_fields=f2,
+        )
+
+
+def test_upsert_snapshot_does_not_use_REPLACE(
+    conn: sqlite3.Connection,
+) -> None:
+    """Discriminating against `INSERT OR REPLACE` (CLAUDE.md gotcha 2026-05-06).
+    REPLACE would: (a) cascade-wipe child FK rows, (b) mint new PK. We test (b):
+    insert; reflow; assert original management_record_id IS the same row, not a
+    new one with same logical key. (Already tested in
+    test_upsert_snapshot_same_tier_reflow_preserves_PK; this test additionally
+    asserts no AUTOINCREMENT advance.)"""
+    f1 = _full_snapshot_fields(data_asof_session="2026-05-07")
+    rec_id = upsert_snapshot(conn, trade_id=1, snapshot_fields=f1)
+    upsert_snapshot(conn, trade_id=1, snapshot_fields=f1)  # reflow
+    # Highest auto-incremented id should still equal rec_id (no INSERT happened):
+    max_id = conn.execute(
+        "SELECT MAX(management_record_id) FROM daily_management_records"
+    ).fetchone()[0]
+    assert max_id == rec_id
 
 
 # ---- helpers ----------------------------------------------------------------

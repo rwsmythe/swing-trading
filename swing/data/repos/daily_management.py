@@ -11,16 +11,31 @@ Public API split across multiple Phase 8 tasks:
 
   Task 2.0: ``insert_snapshot``, ``insert_event_log``
   Task 2.1: ``select_active_snapshot``
-  Task 2.2 (this file, latest): ``select_history``,
+  Task 2.2: ``select_history``,
            ``list_for_trade_timeline``,
            ``list_open_position_active_snapshots``
-  Task 2.3: ``upsert_snapshot``, ``tier_upgrade_snapshot``
+  Task 2.3 (this file, latest): ``upsert_snapshot``, ``tier_upgrade_snapshot``
+           + co-located exception classes
+           (``SupersededRowImmutableException``, ``TierOrderingError``)
+           + co-located ``DAILY_MGMT_PRECISION_RANK`` constant.
 
-CLAUDE.md gotcha (2026-05-06) — ``INSERT OR REPLACE`` is forbidden on this
-table because REPLACE is ``DELETE old + INSERT new`` semantically and would
-CASCADE-WIPE FK-linked rows + reissue the auto-increment PK. T2.0's INSERTs
-are plain INSERTs; the UPSERT semantics live in T2.3 via SELECT-then-UPDATE-
-or-INSERT against the ACTIVE row.
+CLAUDE.md gotcha (2026-05-06) — the SQLite ``INSERT-OR-REPLACE`` form is
+forbidden on this table because the REPLACE conflict-resolution clause is
+``DELETE old + INSERT new`` semantically: it would cascade-wipe FK-linked
+rows + reissue the auto-increment PK. T2.0's INSERTs are plain INSERTs;
+T2.3's UPSERT goes through SELECT-then-UPDATE-or-INSERT against the ACTIVE
+row only — REPLACE-conflict-clause is never used.
+
+Module-organization choice (per plan §T2.3 note): exception classes
++ ``DAILY_MGMT_PRECISION_RANK`` are CO-LOCATED here (the repo module) rather
+than in ``swing/trades/daily_management.py`` because:
+
+  1. T2.3 lands BEFORE T3.0 — the trades module does not yet exist.
+  2. Both exceptions are repo-layer audit-trail invariants (raised by repo
+     code), not service-layer policy.
+  3. T3.0 will import + re-export from here so callers may continue using
+     ``swing.trades.daily_management`` as the public surface — no churn for
+     downstream consumers.
 """
 from __future__ import annotations
 
@@ -28,6 +43,30 @@ import sqlite3
 from typing import Any
 
 from swing.data.models import DailyManagementRecord
+
+
+class SupersededRowImmutableException(Exception):  # noqa: N818  -- name fixed by Phase 8 spec §4.2 audit-stability contract
+    """Raised when a write attempts to mutate a superseded row, OR when a
+    same-tier reflow targets a tier where no active row exists but a
+    superseded row at that same tier does. Per spec §6.1 audit-stability
+    contract; CLAUDE.md gotcha 2026-05-06."""
+
+
+class TierOrderingError(Exception):
+    """Raised when ``tier_upgrade_snapshot`` is invoked with a new precision
+    level that does not strictly outrank the predecessor's level per
+    ``DAILY_MGMT_PRECISION_RANK``."""
+
+
+# Precision-tier rank ordering (spec §3.3). Higher rank = more authoritative;
+# tier-upgrade transitions must move strictly higher (rank_new > rank_pred).
+# Co-located here because T2.3's repo-layer ``tier_upgrade_snapshot`` consumes
+# it; T3.0's ``swing/trades/daily_management.py`` will re-export.
+DAILY_MGMT_PRECISION_RANK: dict[str, int] = {
+    "daily_approximate": 1,
+    "intraday_estimated": 2,
+    "intraday_exact": 3,
+}
 
 # Canonical 42-column SELECT list for daily_management_records, in the same
 # field order as ``DailyManagementRecord`` so positional unpack into the
@@ -394,3 +433,306 @@ def insert_event_log(
         ),
     )
     return int(cur.lastrowid)
+
+
+def upsert_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+    snapshot_fields: dict[str, Any],
+) -> int:
+    """SELECT-then-UPDATE-or-INSERT against the active row only (spec §4.2).
+
+    Same-tier reflow updates the active row in place — preserves
+    ``management_record_id`` + ``is_superseded`` + ``superseded_by_record_id``
+    chain. Higher-tier writes go through ``tier_upgrade_snapshot``, NOT this
+    path.
+
+    Caller manages the outer (deferred-mode) transaction — Codex R3 M2
+    ``with conn:``.
+
+    Caller MUST validate ``snapshot_fields`` per
+    ``OPERATION_REQUIRED_FIELDS["snapshot_emit"]`` BEFORE calling. The repo
+    layer trusts validated input — mirrors T2.0 ``insert_snapshot`` discipline.
+
+    CLAUDE.md gotcha 2026-05-06 — this function MUST NOT use the SQLite
+    REPLACE conflict-resolution clause. That clause is ``DELETE old + INSERT
+    new`` semantically: it would cascade-wipe FK-linked rows (event_log
+    audit-FK chains pointing at the prior PK) and mint a new auto-increment
+    PK (history rewrite). The SELECT-then-UPDATE-or-INSERT pattern below
+    preserves both.
+
+    Raises:
+        SupersededRowImmutableException — if no active row exists at the
+            target ``(trade_id, data_asof_session, mfe_mae_precision_level)``
+            but a superseded row does. Means tier-upgrade has already
+            occurred at this tier; same-tier reflow is meaningless.
+
+    Returns the (preserved or newly-minted) ``management_record_id``.
+    """
+    # Step 1: lookup active row at this tier (spec §4.2 + §A.6 partial-unique-
+    # index predicate: record_type='daily_snapshot' AND is_superseded=0).
+    cur = conn.execute(
+        """
+        SELECT management_record_id FROM daily_management_records
+        WHERE trade_id = ? AND data_asof_session = ?
+          AND mfe_mae_precision_level = ?
+          AND record_type = 'daily_snapshot' AND is_superseded = 0
+        """,
+        (
+            trade_id,
+            snapshot_fields["data_asof_session"],
+            snapshot_fields["mfe_mae_precision_level"],
+        ),
+    )
+    row = cur.fetchone()
+    if row is not None:
+        existing_active_id = row[0]
+        # Step 2: in-place UPDATE — preserves PK + audit-chain pointers.
+        # Audit columns (record_type, is_superseded, superseded_by_record_id,
+        # review_date, mfe_mae_precision_level, trade_id) are intentionally
+        # NOT mutated by reflow — only data fields update.
+        conn.execute(
+            """
+            UPDATE daily_management_records
+            SET current_price = ?,
+                current_stop = ?,
+                current_size = ?,
+                current_avg_cost = ?,
+                open_R_effective = ?,
+                open_MFE_R_to_date = ?,
+                open_MAE_R_to_date = ?,
+                intraday_high = ?,
+                intraday_low = ?,
+                position_capital_utilization_pct = ?,
+                position_capital_denominator_dollars = ?,
+                position_portfolio_heat_contribution_dollars = ?,
+                maturity_stage = ?,
+                trail_MA_candidate_price = ?,
+                trail_MA_period_days = ?,
+                trail_MA_eligibility_flag = ?,
+                pipeline_run_id = ?,
+                created_at = ?
+            WHERE management_record_id = ?
+            """,
+            (
+                snapshot_fields["current_price"],
+                snapshot_fields["current_stop"],
+                snapshot_fields["current_size"],
+                snapshot_fields["current_avg_cost"],
+                snapshot_fields["open_R_effective"],
+                snapshot_fields["open_MFE_R_to_date"],
+                snapshot_fields["open_MAE_R_to_date"],
+                snapshot_fields["intraday_high"],
+                snapshot_fields["intraday_low"],
+                snapshot_fields["position_capital_utilization_pct"],
+                snapshot_fields["position_capital_denominator_dollars"],
+                snapshot_fields[
+                    "position_portfolio_heat_contribution_dollars"
+                ],
+                snapshot_fields["maturity_stage"],
+                snapshot_fields.get("trail_MA_candidate_price"),
+                snapshot_fields.get("trail_MA_period_days"),
+                snapshot_fields["trail_MA_eligibility_flag"],
+                snapshot_fields.get("pipeline_run_id"),
+                snapshot_fields["created_at"],
+                existing_active_id,
+            ),
+        )
+        return int(existing_active_id)
+
+    # Step 3: no active row — check whether a superseded row exists at this
+    # exact tier. If so, the active row was tier-upgraded away; same-tier
+    # reflow is meaningless (audit-stability contract per spec §4.2/§6.1).
+    cur = conn.execute(
+        """
+        SELECT 1 FROM daily_management_records
+        WHERE trade_id = ? AND data_asof_session = ?
+          AND mfe_mae_precision_level = ?
+          AND record_type = 'daily_snapshot' AND is_superseded = 1
+        LIMIT 1
+        """,
+        (
+            trade_id,
+            snapshot_fields["data_asof_session"],
+            snapshot_fields["mfe_mae_precision_level"],
+        ),
+    )
+    if cur.fetchone() is not None:
+        raise SupersededRowImmutableException(
+            f"trade {trade_id} session "
+            f"{snapshot_fields['data_asof_session']!r} tier "
+            f"{snapshot_fields['mfe_mae_precision_level']!r} has been "
+            "tier-upgraded; same-tier reflow rejected."
+        )
+
+    # Step 4: fresh INSERT — same column shape as ``insert_snapshot``.
+    cur = conn.execute(
+        """
+        INSERT INTO daily_management_records (
+            trade_id, record_type, review_date, data_asof_session, created_at,
+            mfe_mae_precision_level, pipeline_run_id, is_superseded,
+            current_price, current_stop, current_size, current_avg_cost,
+            open_R_effective, open_MFE_R_to_date, open_MAE_R_to_date,
+            intraday_high, intraday_low,
+            position_capital_utilization_pct,
+            position_capital_denominator_dollars,
+            position_portfolio_heat_contribution_dollars,
+            maturity_stage, trail_MA_candidate_price,
+            trail_MA_period_days, trail_MA_eligibility_flag
+        ) VALUES (?, 'daily_snapshot', ?, ?, ?, ?, ?, 0,
+                  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            trade_id,
+            snapshot_fields["review_date"],
+            snapshot_fields["data_asof_session"],
+            snapshot_fields["created_at"],
+            snapshot_fields["mfe_mae_precision_level"],
+            snapshot_fields.get("pipeline_run_id"),
+            snapshot_fields["current_price"],
+            snapshot_fields["current_stop"],
+            snapshot_fields["current_size"],
+            snapshot_fields["current_avg_cost"],
+            snapshot_fields["open_R_effective"],
+            snapshot_fields["open_MFE_R_to_date"],
+            snapshot_fields["open_MAE_R_to_date"],
+            snapshot_fields["intraday_high"],
+            snapshot_fields["intraday_low"],
+            snapshot_fields["position_capital_utilization_pct"],
+            snapshot_fields["position_capital_denominator_dollars"],
+            snapshot_fields["position_portfolio_heat_contribution_dollars"],
+            snapshot_fields["maturity_stage"],
+            snapshot_fields.get("trail_MA_candidate_price"),
+            snapshot_fields.get("trail_MA_period_days"),
+            snapshot_fields["trail_MA_eligibility_flag"],
+        ),
+    )
+    return int(cur.lastrowid)
+
+
+def tier_upgrade_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+    data_asof_session: str,
+    new_precision_level: str,
+    snapshot_fields: dict[str, Any],
+) -> int:
+    """6-step transactional sequence per spec §3.3.
+
+    The audit-trail dual-column pattern: predecessor row keeps its data
+    fields verbatim (NEVER updated post-supersede; immutability contract per
+    spec §4.2), but its ``is_superseded`` flips to 1 and
+    ``superseded_by_record_id`` is set to the new successor's PK. The
+    successor is inserted as a fresh row at ``new_precision_level``.
+
+    Caller manages the outer (deferred-mode) ``with conn:`` transaction —
+    Codex R3 M2.
+
+    Sequence (per plan §H pseudocode, verbatim):
+
+      Step 0 (validator): new tier MUST strictly outrank predecessor's tier
+                          (rank_new > rank_pred); else TierOrderingError.
+      Step 1: BEGIN — caller's responsibility.
+      Step 2: SELECT predecessor by partial-unique-index key.
+      Step 3: flag predecessor.is_superseded = 1 BY EXACT PK.
+      Step 4: INSERT successor at the new (higher) tier.
+      Step 5: UPDATE predecessor.superseded_by_record_id = successor.PK.
+      Step 6: COMMIT — caller's responsibility.
+
+    Raises:
+        TierOrderingError — new tier does not strictly outrank predecessor.
+
+    Returns the new successor's ``management_record_id``.
+    """
+    # Step 0 + Step 2: SELECT predecessor (active row at any tier for this
+    # session) to validate tier ordering AND capture the exact PK to flip.
+    pred_row = conn.execute(
+        """
+        SELECT management_record_id, mfe_mae_precision_level
+        FROM daily_management_records
+        WHERE trade_id = ? AND data_asof_session = ?
+          AND record_type = 'daily_snapshot' AND is_superseded = 0
+        """,
+        (trade_id, data_asof_session),
+    ).fetchone()
+    if pred_row is not None:
+        pred_level = pred_row[1]
+        pred_rank = DAILY_MGMT_PRECISION_RANK[pred_level]
+        new_rank = DAILY_MGMT_PRECISION_RANK[new_precision_level]
+        if new_rank <= pred_rank:
+            raise TierOrderingError(
+                f"new tier {new_precision_level!r} (rank {new_rank}) must be "
+                f"strictly higher than predecessor {pred_level!r} "
+                f"(rank {pred_rank})"
+            )
+
+    predecessor_id = pred_row[0] if pred_row is not None else None
+
+    # Step 3: flag predecessor superseded BY EXACT PK. Done BEFORE the
+    # successor INSERT so the partial-unique-index predicate
+    # (record_type='daily_snapshot' AND is_superseded=0) does not collide
+    # with the existing predecessor row at (trade_id, data_asof_session).
+    if predecessor_id is not None:
+        conn.execute(
+            "UPDATE daily_management_records SET is_superseded = 1 "
+            "WHERE management_record_id = ?",
+            (predecessor_id,),
+        )
+
+    # Step 4: INSERT successor (fresh row at the new higher tier).
+    cur = conn.execute(
+        """
+        INSERT INTO daily_management_records (
+            trade_id, record_type, review_date, data_asof_session, created_at,
+            mfe_mae_precision_level, pipeline_run_id, is_superseded,
+            current_price, current_stop, current_size, current_avg_cost,
+            open_R_effective, open_MFE_R_to_date, open_MAE_R_to_date,
+            intraday_high, intraday_low,
+            position_capital_utilization_pct,
+            position_capital_denominator_dollars,
+            position_portfolio_heat_contribution_dollars,
+            maturity_stage, trail_MA_candidate_price,
+            trail_MA_period_days, trail_MA_eligibility_flag
+        ) VALUES (?, 'daily_snapshot', ?, ?, ?, ?, ?, 0,
+                  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            trade_id,
+            snapshot_fields["review_date"],
+            snapshot_fields["data_asof_session"],
+            snapshot_fields["created_at"],
+            new_precision_level,
+            snapshot_fields.get("pipeline_run_id"),
+            snapshot_fields["current_price"],
+            snapshot_fields["current_stop"],
+            snapshot_fields["current_size"],
+            snapshot_fields["current_avg_cost"],
+            snapshot_fields["open_R_effective"],
+            snapshot_fields["open_MFE_R_to_date"],
+            snapshot_fields["open_MAE_R_to_date"],
+            snapshot_fields["intraday_high"],
+            snapshot_fields["intraday_low"],
+            snapshot_fields["position_capital_utilization_pct"],
+            snapshot_fields["position_capital_denominator_dollars"],
+            snapshot_fields["position_portfolio_heat_contribution_dollars"],
+            snapshot_fields["maturity_stage"],
+            snapshot_fields.get("trail_MA_candidate_price"),
+            snapshot_fields.get("trail_MA_period_days"),
+            snapshot_fields["trail_MA_eligibility_flag"],
+        ),
+    )
+    successor_id = int(cur.lastrowid)
+
+    # Step 5: UPDATE predecessor.superseded_by_record_id BY EXACT PK.
+    if predecessor_id is not None:
+        conn.execute(
+            "UPDATE daily_management_records "
+            "SET superseded_by_record_id = ? "
+            "WHERE management_record_id = ?",
+            (successor_id, predecessor_id),
+        )
+
+    # Step 6: COMMIT — caller's responsibility.
+    return successor_id
