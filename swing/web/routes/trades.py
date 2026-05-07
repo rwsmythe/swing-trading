@@ -1568,7 +1568,8 @@ async def daily_management_event_post(request: Request, trade_id: int):
     # persist the wrong audit timestamp. Format matches spec §8.4 + the
     # service-layer convention used by ``compute_daily_approximate_snapshot``
     # (naive UTC ISO, microseconds stripped for stable comparison).
-    from datetime import UTC as _UTC, datetime as _dt_now
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt_now
     server_created_at = (
         _dt_now.now(_UTC).replace(tzinfo=None, microsecond=0).isoformat()
     )
