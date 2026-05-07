@@ -468,6 +468,42 @@ def test_tier_upgrade_3_tier_chain(conn: sqlite3.Connection) -> None:
     assert active_count == 1
 
 
+def test_tier_upgrade_without_predecessor_raises_TierOrderingError(  # noqa: N802
+    conn: sqlite3.Connection,
+) -> None:
+    """Codex R1 Major 4 discriminator.
+
+    ``tier_upgrade_snapshot`` is the audit-chain "successor inserts +
+    predecessor flips superseded_by_record_id" path; calling it without a
+    predecessor at the lower tier silently produced a higher-tier row with
+    no daily_approximate root, breaking the audit chain.
+
+    Pre-fix: INSERT proceeds; the new active row exists with no
+    predecessor link; downstream audit-trail traversal misses the gap.
+    Post-fix: TierOrderingError raised — operator must seed the daily
+    snapshot via upsert_snapshot first.
+    """
+    fields = _full_snapshot_fields(data_asof_session="2026-05-07")
+    fields["mfe_mae_precision_level"] = "intraday_estimated"
+    with pytest.raises(TierOrderingError, match="predecessor"):
+        tier_upgrade_snapshot(
+            conn,
+            trade_id=1,
+            data_asof_session="2026-05-07",
+            new_precision_level="intraday_estimated",
+            snapshot_fields=fields,
+        )
+    # Defensive: no orphan row was inserted before the raise.
+    inserted = conn.execute(
+        "SELECT COUNT(*) FROM daily_management_records "
+        "WHERE trade_id = 1 AND data_asof_session = '2026-05-07'"
+    ).fetchone()[0]
+    assert inserted == 0, (
+        f"tier_upgrade_snapshot must not insert an orphan row when "
+        f"predecessor is missing; got {inserted} rows."
+    )
+
+
 def test_tier_upgrade_to_lower_tier_raises_TierOrderingError(
     conn: sqlite3.Connection,
 ) -> None:

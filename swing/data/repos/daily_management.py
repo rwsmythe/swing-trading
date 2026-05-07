@@ -663,7 +663,10 @@ def tier_upgrade_snapshot(
       Step 6: COMMIT — caller's responsibility.
 
     Raises:
-        TierOrderingError — new tier does not strictly outrank predecessor.
+        TierOrderingError — new tier does not strictly outrank predecessor,
+        OR no active daily_snapshot predecessor exists at any tier (Codex
+        R1 Major 4: tier upgrades require a seeded predecessor; call
+        ``upsert_snapshot`` first).
 
     Returns the new successor's ``management_record_id``.
     """
@@ -678,29 +681,45 @@ def tier_upgrade_snapshot(
         """,
         (trade_id, data_asof_session),
     ).fetchone()
-    if pred_row is not None:
-        pred_level = pred_row[1]
-        pred_rank = DAILY_MGMT_PRECISION_RANK[pred_level]
-        new_rank = DAILY_MGMT_PRECISION_RANK[new_precision_level]
-        if new_rank <= pred_rank:
-            raise TierOrderingError(
-                f"new tier {new_precision_level!r} (rank {new_rank}) must be "
-                f"strictly higher than predecessor {pred_level!r} "
-                f"(rank {pred_rank})"
-            )
+    # Codex R1 Major 4 fix: tier_upgrade_snapshot REQUIRES a predecessor.
+    # Without this guard, a direct call could land an intraday_exact (or
+    # any higher-tier) active row with no daily_approximate root, breaking
+    # the audit-chain "tier upgrade replaces existing active row" model.
+    # The pipeline path always seeds via upsert_snapshot first; the guard
+    # protects ad-hoc / future caller paths from quietly bypassing the
+    # invariant.
+    if pred_row is None:
+        raise TierOrderingError(
+            f"tier_upgrade_snapshot requires an existing active "
+            f"daily_snapshot predecessor at a lower tier for "
+            f"trade_id={trade_id}, data_asof_session={data_asof_session!r}; "
+            f"got none. Call upsert_snapshot first to seed the "
+            f"daily_approximate predecessor."
+        )
 
-    predecessor_id = pred_row[0] if pred_row is not None else None
+    pred_level = pred_row[1]
+    pred_rank = DAILY_MGMT_PRECISION_RANK[pred_level]
+    new_rank = DAILY_MGMT_PRECISION_RANK[new_precision_level]
+    if new_rank <= pred_rank:
+        raise TierOrderingError(
+            f"new tier {new_precision_level!r} (rank {new_rank}) must be "
+            f"strictly higher than predecessor {pred_level!r} "
+            f"(rank {pred_rank})"
+        )
+
+    predecessor_id = pred_row[0]
 
     # Step 3: flag predecessor superseded BY EXACT PK. Done BEFORE the
     # successor INSERT so the partial-unique-index predicate
     # (record_type='daily_snapshot' AND is_superseded=0) does not collide
     # with the existing predecessor row at (trade_id, data_asof_session).
-    if predecessor_id is not None:
-        conn.execute(
-            "UPDATE daily_management_records SET is_superseded = 1 "
-            "WHERE management_record_id = ?",
-            (predecessor_id,),
-        )
+    # predecessor_id is guaranteed non-None per the Codex R1 Major 4
+    # invariant raised above.
+    conn.execute(
+        "UPDATE daily_management_records SET is_superseded = 1 "
+        "WHERE management_record_id = ?",
+        (predecessor_id,),
+    )
 
     # Step 4: INSERT successor (fresh row at the new higher tier).
     cur = conn.execute(
@@ -747,13 +766,14 @@ def tier_upgrade_snapshot(
     successor_id = int(cur.lastrowid)
 
     # Step 5: UPDATE predecessor.superseded_by_record_id BY EXACT PK.
-    if predecessor_id is not None:
-        conn.execute(
-            "UPDATE daily_management_records "
-            "SET superseded_by_record_id = ? "
-            "WHERE management_record_id = ?",
-            (successor_id, predecessor_id),
-        )
+    # predecessor_id is guaranteed non-None per the Codex R1 Major 4
+    # invariant raised above.
+    conn.execute(
+        "UPDATE daily_management_records "
+        "SET superseded_by_record_id = ? "
+        "WHERE management_record_id = ?",
+        (successor_id, predecessor_id),
+    )
 
     # Step 6: COMMIT — caller's responsibility.
     return successor_id
