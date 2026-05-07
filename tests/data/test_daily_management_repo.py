@@ -22,6 +22,7 @@ from swing.data.db import ensure_schema
 from swing.data.repos.daily_management import (
     insert_event_log,
     insert_snapshot,
+    select_active_snapshot,
 )
 
 
@@ -148,6 +149,44 @@ def test_insert_event_log_persists_operator_input_fields(
         "move_stop", "stage 2 trail", "confirming", "improving",
         0, "clean uptrend",
     )
+
+
+def test_select_active_snapshot_returns_active_only(
+    conn: sqlite3.Connection,
+) -> None:
+    fields_a = _full_snapshot_fields(data_asof_session="2026-05-07")
+    insert_snapshot(conn, trade_id=1, snapshot_fields=fields_a)
+    rec = select_active_snapshot(
+        conn, trade_id=1, data_asof_session="2026-05-07"
+    )
+    assert rec is not None
+    assert rec.is_superseded == 0
+    assert rec.mfe_mae_precision_level == "daily_approximate"
+
+
+def test_select_active_snapshot_returns_none_when_only_superseded(
+    conn: sqlite3.Connection,
+) -> None:
+    fields = _full_snapshot_fields(data_asof_session="2026-05-07")
+    rec_id = insert_snapshot(conn, trade_id=1, snapshot_fields=fields)
+    conn.execute(
+        "UPDATE daily_management_records SET is_superseded = 1 "
+        "WHERE management_record_id = ?",
+        (rec_id,),
+    )
+    rec = select_active_snapshot(
+        conn, trade_id=1, data_asof_session="2026-05-07"
+    )
+    assert rec is None
+
+
+def test_select_active_snapshot_returns_none_for_unknown_session(
+    conn: sqlite3.Connection,
+) -> None:
+    rec = select_active_snapshot(
+        conn, trade_id=1, data_asof_session="1999-01-01"
+    )
+    assert rec is None
 
 
 # ---- helpers ----------------------------------------------------------------
