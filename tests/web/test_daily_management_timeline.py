@@ -296,3 +296,67 @@ def test_timeline_renders_for_closed_trade(app_factory):
     assert response.status_code == 200
     body = response.text
     assert 'id="daily-management-timeline"' in body
+
+
+# ---------------------------------------------------------------------------
+# Codex R1 Major 2: event-log form must be reachable from the trade-detail
+# UI for ACTIVE trades; absent for closed trades.
+# ---------------------------------------------------------------------------
+
+
+def test_event_log_form_present_on_detail_page_for_active_trade(app_factory):
+    """Codex R1 Major 2 discriminator (active-trade branch).
+
+    Plan §5.0 acceptance criterion: the operator must be able to reach the
+    event-log form via the trade-detail UI for active trades. Pre-fix:
+    detail.html.j2 included the timeline partial but never rendered the
+    event-log form partial; the route handler did not build the form VM.
+
+    Post-fix: form HTML present (id selector + POST action both render).
+    """
+    app, db_path = app_factory()
+    conn = connect(db_path)
+    try:
+        _seed_trade(conn, trade_id=1, state="managing")
+    finally:
+        conn.close()
+    with TestClient(app) as client:
+        response = client.get("/trades/1")
+    assert response.status_code == 200
+    body = response.text
+    assert 'id="daily-management-event-form-1"' in body, (
+        "trade-detail page MUST render the event-log form for active trades; "
+        "operator cannot reach the form otherwise (POST endpoint exists "
+        "but no UI surface). See Codex R1 Major 2."
+    )
+    assert 'hx-post="/trades/1/daily-management/event"' in body, (
+        "form must POST to the daily-management event route"
+    )
+
+
+def test_event_log_form_absent_on_detail_page_for_closed_trade(app_factory):
+    """Codex R1 Major 2 discriminator (closed-trade branch).
+
+    Closed trades MUST NOT surface the event-log form (state-machine
+    invariant: only entered/managing/partial_exited can record new events).
+    Pre-fix this branch was vacuously satisfied because no form ever
+    rendered; post-fix it must be actively gated by trade.state.
+    """
+    app, db_path = app_factory()
+    conn = connect(db_path)
+    try:
+        _seed_trade(conn, trade_id=2, state="managing")
+        # Mark closed AFTER seed so the helper's CHECK-constrained insert
+        # path stays valid.
+        conn.execute("UPDATE trades SET state='closed' WHERE id=2")
+        conn.commit()
+    finally:
+        conn.close()
+    with TestClient(app) as client:
+        response = client.get("/trades/2")
+    assert response.status_code == 200
+    body = response.text
+    assert 'id="daily-management-event-form-2"' not in body, (
+        "closed trades MUST NOT render the event-log form (state-machine "
+        "invariant: only active states can record new events)."
+    )

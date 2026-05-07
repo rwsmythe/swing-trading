@@ -88,6 +88,25 @@
    position-management surface (exit/stop/review buttons) deferred to V2 or
    handled via the existing trade-action routes triggered from the dashboard. #}
 
+{# Codex R1 Major 2 fix — Daily Management actions section.
+   The event-log form is rendered for active trades (entered, managing,
+   partial_exited); ``build_event_log_form_vm`` returns None for closed/
+   reviewed trades, naturally gating the section. The form itself goes
+   through the canonical partial so OOB-swap consumers stay in sync
+   (CLAUDE.md OOB-swap-drift gotcha).
+
+   The form is placed BEFORE the timeline so the operator's
+   action-then-review reading order matches the §7.2 layout intent —
+   "what did I just do" comes after "what am I doing now". #}
+{% if event_form_vm is not none %}
+  <section class="daily-management-actions">
+    <h2>Daily management — record event</h2>
+    {% with vm = event_form_vm %}
+      {% include "partials/daily_management_event_form.html.j2" %}
+    {% endwith %}
+  </section>
+{% endif %}
+
 {# Phase 8 Task 5.1 — Daily Management Timeline section per spec §7.2.
    ``timeline_vm`` is always populated when the route reaches this template
    (see route handler for the None-branch rationale). The section root is

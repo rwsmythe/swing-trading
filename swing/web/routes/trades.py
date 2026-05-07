@@ -1647,6 +1647,7 @@ def trade_detail(request: Request, trade_id: int):
     """
     from swing.web.view_models.trades import (
         build_daily_management_timeline_vm,
+        build_event_log_form_vm,
     )
     cfg = apply_overrides(request.app.state.cfg)
     templates = request.app.state.templates
@@ -1666,7 +1667,17 @@ def trade_detail(request: Request, trade_id: int):
     timeline_vm = build_daily_management_timeline_vm(
         trade_id=trade_id, cfg=cfg,
     )
+    # Codex R1 Major 2 fix — surface the event-log form for active trades.
+    # ``build_event_log_form_vm`` returns None for non-active states (closed,
+    # reviewed), so the template's ``{% if event_form_vm is not none %}``
+    # gate naturally hides the form on those trades. Without this, the POST
+    # endpoint exists but the operator has no UI surface to reach it.
+    event_form_vm = build_event_log_form_vm(trade_id=trade_id, cfg=cfg)
     return templates.TemplateResponse(
         request, "trades/detail.html.j2",
-        {"vm": vm, "timeline_vm": timeline_vm},
+        {
+            "vm": vm,
+            "timeline_vm": timeline_vm,
+            "event_form_vm": event_form_vm,
+        },
     )
