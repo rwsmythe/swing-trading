@@ -752,6 +752,22 @@ def record_event_log(
         if trade is None:
             raise ValueError(f"trade {trade_id} not found")
 
+        # Codex R2 Major #1 fix: write-path active-state guard. The UI hides
+        # the form for closed/reviewed trades (R1 Major #2 fix) but a direct
+        # POST or future programmatic caller can otherwise reach the
+        # ``stop_changed=0`` branch and pollute closed-trade timelines (the
+        # repo-level ``update_stop_with_event`` guard only fires on the
+        # ``stop_changed=1`` path). Reject here BEFORE branching so both
+        # paths share the same active-state contract that mirrors
+        # ``swing.trades.exit._ACTIVE_STATES``.
+        _active_states = frozenset({"entered", "managing", "partial_exited"})
+        if trade.state not in _active_states:
+            raise ValidationException(
+                f"trade {trade_id} not active (state={trade.state!r}); "
+                f"event_log emission only permitted from "
+                f"{sorted(_active_states)}"
+            )
+
         # Step 2 — Phase 7 stop-adjust (REPO-LEVEL per §A.1):
         linked_event_id: int | None = None
         if req.stop_changed:

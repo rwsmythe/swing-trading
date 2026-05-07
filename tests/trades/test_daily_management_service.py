@@ -584,3 +584,82 @@ def test_record_event_log_rejects_noop_stop_change(
         "SELECT current_stop FROM trades WHERE id = 1",
     ).fetchone()[0]
     assert cs == 92.0  # unchanged
+
+
+# ---------------------------------------------------------------------------
+# Codex R2 Major #1: write-path active-state guard for record_event_log.
+# ---------------------------------------------------------------------------
+#
+# UI hides the form for closed/reviewed trades (R1 M2 fix), but the WRITE
+# PATH is not guarded. A direct POST or programmatic caller can pollute a
+# closed-trade timeline. record_event_log MUST reject closed/reviewed
+# trades regardless of stop_changed branch.
+
+
+@pytest.mark.parametrize("closed_state", ["closed", "reviewed"])
+def test_record_event_log_rejects_closed_trade_no_stop_change(
+    conn: sqlite3.Connection, closed_state: str,
+) -> None:
+    """Closed/reviewed trade + stop_changed=0 must raise + insert nothing.
+
+    Pre-fix: stop_changed=0 path skipped the repo-level active-state guard
+    in update_stop_with_event, so insert_event_log polluted closed-trade
+    timelines. Post-fix: service rejects at the top before branching.
+    """
+    from swing.trades.daily_management import ValidationException, record_event_log
+
+    _seed_trade(conn, trade_id=1, state=closed_state, current_stop=92.0)
+    pre_dmr = conn.execute(
+        "SELECT COUNT(*) FROM daily_management_records",
+    ).fetchone()[0]
+    req = _build_event_log_request(
+        trade_id=1, stop_changed=0,
+        action_taken="hold", action_reason=None,
+        rule_violation_suspected=0, emotional_state='["calm"]',
+        created_at="2026-05-07T18:00:00",
+    )
+    with pytest.raises(ValidationException, match="not active"):
+        record_event_log(conn, trade_id=1, req=req)
+    post_dmr = conn.execute(
+        "SELECT COUNT(*) FROM daily_management_records",
+    ).fetchone()[0]
+    assert post_dmr == pre_dmr
+
+
+@pytest.mark.parametrize("closed_state", ["closed", "reviewed"])
+def test_record_event_log_rejects_closed_trade_with_stop_change(
+    conn: sqlite3.Connection, closed_state: str,
+) -> None:
+    """Closed/reviewed trade + stop_changed=1 must raise + insert nothing.
+
+    Repo-level update_stop_with_event already guards but the service-level
+    rejection short-circuits BEFORE invoking the repo, leaving consistent
+    error semantics with the no-stop-change path.
+    """
+    from swing.trades.daily_management import ValidationException, record_event_log
+
+    _seed_trade(conn, trade_id=1, state=closed_state, current_stop=92.0)
+    pre_dmr = conn.execute(
+        "SELECT COUNT(*) FROM daily_management_records",
+    ).fetchone()[0]
+    pre_te = conn.execute(
+        "SELECT COUNT(*) FROM trade_events WHERE trade_id = 1",
+    ).fetchone()[0]
+    req = _build_event_log_request(
+        trade_id=1, stop_changed=1,
+        prior_stop=92.0, new_stop=95.0,
+        stop_change_reason="trail",
+        action_taken="move_stop", action_reason="x",
+        rule_violation_suspected=0, emotional_state='["calm"]',
+        created_at="2026-05-07T18:00:00",
+    )
+    with pytest.raises((ValidationException, ValueError)):
+        record_event_log(conn, trade_id=1, req=req)
+    post_dmr = conn.execute(
+        "SELECT COUNT(*) FROM daily_management_records",
+    ).fetchone()[0]
+    post_te = conn.execute(
+        "SELECT COUNT(*) FROM trade_events WHERE trade_id = 1",
+    ).fetchone()[0]
+    assert post_dmr == pre_dmr
+    assert post_te == pre_te
