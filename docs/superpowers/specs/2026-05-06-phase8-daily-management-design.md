@@ -125,11 +125,11 @@ To avoid drift, this spec uses the field names already shipped in production sch
 | `trail_MA_candidate_price` | REAL | nullable | SMA at `data_asof_session` close, period from `trail_MA_period_days`; NULL when insufficient archive history (sessions available < `trail_MA_period_days`) OR for event_log rows; CHECK > 0 OR NULL |
 | `trail_MA_period_days` | INTEGER | nullable | per-row stamp of the SMA period used (V1 lock = 21; CHECK > 0 OR NULL); preserves interpretability when Phase 9 risk_policy versions the period (e.g., 10-day post-+2R upgrade) |
 | `trail_MA_eligibility_flag` | INTEGER | nullable | CHECK IN (0,1) OR NULL; cached derivation: `1 IFF maturity_stage='>=+2R_trail_eligible' AND trail_MA_candidate_price IS NOT NULL AND current_stop < trail_MA_candidate_price`; else `0`; NULL on event_log rows when position-state fields are NULL |
-| `thesis_status` | TEXT | nullable | CHECK IN (`intact`, `weakening`, `invalidated`) OR NULL; OPTIONAL on every row including event_log (R2 Major #4 fix — operator only populates when explicitly updating thesis). Snapshot rows ALWAYS leave NULL. Read-side resolves "current thesis_status for this trade" by reading the most-recent event_log row with non-NULL `thesis_status`; defaults to `intact` when no such row exists. A routine event_log (e.g., note-taking, volume_behavior observation) leaves thesis_status NULL and does NOT overwrite the operator's prior thesis state. |
+| `thesis_status` | TEXT | nullable | CHECK IN (`intact`, `weakening`, `invalidated`) OR NULL; OPTIONAL on every row including event_log (R2 Major #4 fix — operator only populates when explicitly updating thesis). Snapshot rows ALWAYS leave NULL. Read-side resolution rules (R3 Major #4 fix — terminal-state disambiguation): (a) for OPEN trades (state ∈ {entered, managing, partial_exited}), if ≥1 event_log row has non-NULL thesis_status, return the latest such value; else return `intact` as the no-explicit-update default. (b) For CLOSED/REVIEWED trades, if ≥1 event_log row has non-NULL thesis_status, return the latest such value; ELSE the read-side returns `unrecorded` (a SENTINEL — NOT a CHECK enum value; rendered in UI as "thesis status not recorded during open phase"). The `intact` default DOES NOT propagate to closed-trade post-mortems because that would mislead a reviewer into thinking the operator affirmed thesis intactness when in fact no Phase 8 thesis update was ever emitted. Phase 6 review surfaces should consume the resolution result and display the sentinel verbatim. |
 | **Operator-input fields (required ONLY for record_type='event_log'; NULL for daily_snapshot)** | | | |
 | `prior_stop` | REAL | nullable | CHECK > 0 OR NULL; required at app-layer when `stop_changed=1` |
 | `new_stop` | REAL | nullable | CHECK > 0 OR NULL; required at app-layer when `stop_changed=1` (R2 Major #3 fix — preserves event-time stop value durably on the row) |
-| `linked_trade_event_id` | INTEGER | nullable | FK → `trade_events(id)`; populated when `stop_changed=1` and Phase 7's `update_stop_with_event` co-emits a stop_adjust trade_events row (R2 Major #3 fix — audit-chain pointer) |
+| `linked_trade_event_id` | INTEGER | nullable | FK → `trade_events(id)` ON DELETE SET NULL (R3 Minor #3 fix — audit-pointer-only; trade_events row deletion preserves the daily_management_records row but clears the broken pointer); populated when `stop_changed=1` and Phase 7's `update_stop_with_event` co-emits a stop_adjust trade_events row (R2 Major #3 fix — audit-chain pointer) |
 | `stop_changed` | INTEGER | nullable | CHECK IN (0,1) OR NULL; required at app-layer when record_type='event_log' |
 | `stop_change_reason` | TEXT | nullable | required at app-layer when `stop_changed=1`; non-empty/non-whitespace |
 | `volume_behavior` | TEXT | nullable | CHECK IN (`confirming`, `neutral`, `distribution`, `fading`) OR NULL |
@@ -213,7 +213,7 @@ This contextual-enforcement rule is binding (per Phase 7 §3.5.1 lesson). Drift 
 - *Two-table split would force tighter NULL discipline.* Rejected: the validator-level discipline per §3.1 is explicit; CHECK constraints enforce enum validity for non-null values; single-table with discriminator is the established pattern in v1.2 §7.7 source-spec.
 - *Conflation with Phase 7's `trade_events` table.* Rejected: `trade_events` is LIFECYCLE audit (state transitions); `daily_management_records` is PER-DAY MANAGEMENT activity. Different semantic domains. See §2 vocabulary table.
 
-**Alternative one-table-but-no-discriminator considered:** every row is a "review record" with optional event-log fields. Rejected because daily_snapshot vs event_log have different idempotency rules (§4) — daily_snapshot UPSERTs on `(trade_id, review_date)`; event_log allows multiple rows per day. The discriminator drives the index policy.
+**Alternative one-table-but-no-discriminator considered:** every row is a "review record" with optional event-log fields. Rejected because daily_snapshot vs event_log have different idempotency rules (§4) — daily_snapshot UPSERTs on `(trade_id, data_asof_session, mfe_mae_precision_level)` (R3 Minor #1 fix — session-anchored, precision-keyed); event_log allows multiple rows per day with no UPSERT. The discriminator drives the index policy.
 
 ### §3.3 Indexes
 
@@ -250,15 +250,16 @@ CREATE INDEX ix_daily_mgmt_pipeline_run
 
 4. **`ix_daily_mgmt_pipeline_run`** — drives pipeline-run-traceability reads (e.g., "show me all snapshots emitted by this pipeline run"). Partial index since CLI/web event_log rows have no pipeline_run_id.
 
-**Tier-upgrade write sequence (R2 Major #2 fix — binding):** the active-snapshot partial unique index forbids two non-superseded rows for the same `(trade, session)`, so a naive INSERT-then-UPDATE creates a transient violation. Locked sequence within a single transaction:
+**Tier-upgrade write sequence (R2 Major #2 + R3 Major #3 fix — binding):** the active-snapshot partial unique index forbids two non-superseded rows for the same `(trade, session)`, so a naive INSERT-then-UPDATE creates a transient violation. Step 4 must target the EXACT predecessor row by primary key (NOT by `is_superseded=1 AND superseded_by_record_id IS NULL`, because an earlier interrupted/manual repair could have left other matching rows). Locked sequence within a single transaction:
 
 1. `BEGIN TRANSACTION`.
-2. `UPDATE daily_management_records SET is_superseded = 1 WHERE trade_id = ? AND data_asof_session = ? AND record_type = 'daily_snapshot' AND is_superseded = 0`. (Frees the active-snapshot uniqueness slot.)
-3. `INSERT INTO daily_management_records (...) VALUES (...)`. (New row; `is_superseded = 0`.)
-4. `UPDATE daily_management_records SET superseded_by_record_id = last_insert_rowid() WHERE trade_id = ? AND data_asof_session = ? AND is_superseded = 1 AND superseded_by_record_id IS NULL`. (Records audit-chain pointer.)
-5. `COMMIT`.
+2. `SELECT management_record_id FROM daily_management_records WHERE trade_id = ? AND data_asof_session = ? AND record_type = 'daily_snapshot' AND is_superseded = 0` → store as `predecessor_id` (exactly 0 or 1 row by the active-snapshot unique index; NULL means no predecessor — either fresh-write or restart-after-failure case).
+3. If `predecessor_id IS NOT NULL`: `UPDATE daily_management_records SET is_superseded = 1 WHERE management_record_id = predecessor_id`. (Frees the active-snapshot uniqueness slot.)
+4. `INSERT INTO daily_management_records (...) VALUES (...)` → store as `successor_id = last_insert_rowid()`. (New row; `is_superseded = 0`.)
+5. If `predecessor_id IS NOT NULL`: `UPDATE daily_management_records SET superseded_by_record_id = successor_id WHERE management_record_id = predecessor_id`. (Records audit-chain pointer scoped to the EXACT predecessor.)
+6. `COMMIT`.
 
-The `is_superseded` column (R2 Major #2 fix) decouples uniqueness-slot management from the FK audit-pointer, allowing the sequence to satisfy the index at every statement boundary. Discriminating regression test: synthetic 3-tier sequence (daily_approximate → intraday_estimated → intraday_exact) on the same session; assert at every transaction boundary the active partial unique index has exactly one row.
+The `is_superseded` column decouples uniqueness-slot management from the FK audit-pointer; capturing `predecessor_id` in step 2 ensures step 5 cannot incorrectly point unrelated repair rows at the new successor (R3 Major #3 fix). Discriminating regression test (binding): synthetic 3-tier sequence (daily_approximate → intraday_estimated → intraday_exact) on the same session; assert at every transaction boundary the active partial unique index has exactly one row AND the audit chain `daily_approximate → intraday_estimated → intraday_exact` is correctly threaded via `superseded_by_record_id` pointers (each row points to its immediate successor only).
 
 ### §3.4 Modifications to existing tables
 
@@ -313,11 +314,11 @@ All 10 Phase 10 §6.1 capture-needs covered. No deviations. (Brief watch-item 6 
 
 **CLI trigger (also supported):** `swing daily-management snapshot --trade-id <id>` for operator-directed re-snapshot (e.g., debugging; replaying a missed day). Same code path as `_step_daily_management` per-trade body. NOT scoped for V1 V1 release; flagged as "implementation-time scope decision" — writing-plans dispatch decides whether to wire CLI or defer.
 
-### §4.2 Idempotency policy: UPSERT on `(trade_id, review_date)` for daily_snapshot
+### §4.2 Idempotency policy: UPSERT on `(trade_id, data_asof_session, mfe_mae_precision_level)` for daily_snapshot (R3 Major #1 fix)
 
-**Decision:** Same-day re-run = UPSERT (REPLACE-on-conflict against `ux_daily_mgmt_snapshot_one_per_day` partial unique index). Re-running pipeline twice in same session refreshes `current_price` / `intraday_high` / `intraday_low` / running MFE/MAE based on archive state at the moment-of-fire. This is correct behavior — yfinance archive may receive late-day correction; later run captures more accurate data.
+**Decision:** Same-day re-run within the same precision tier = UPSERT (REPLACE-on-conflict against `ux_daily_mgmt_snapshot_precision_per_session` partial unique index). The conflict key is `(trade_id, data_asof_session, mfe_mae_precision_level)` — NOT `(trade_id, review_date)`. The session-anchor key is binding for V2+ tier-upgrade-across-calendar-days correctness (per §3.3). Re-running pipeline twice in same session refreshes `current_price` / `intraday_high` / `intraday_low` / running MFE/MAE based on archive state at the moment-of-fire. This is correct behavior — yfinance archive may receive late-day correction; later run captures more accurate data.
 
-**Tier-upgrade interaction (§6):** UPSERT applies WITHIN the same `mfe_mae_precision_level` (per `ux_daily_mgmt_snapshot_precision_per_day` partial-unique index). A higher-tier emission (V2+) does NOT UPSERT against the active-snapshot index — it INSERTs a new row at the new precision + sets the prior row's `superseded_by_record_id`. The active-snapshot partial unique index (`ux_daily_mgmt_snapshot_active_per_day`) excludes superseded rows, so the new higher-tier row holds the active slot.
+**Tier-upgrade interaction (§6):** UPSERT applies WITHIN the same `mfe_mae_precision_level`. A higher-tier emission (V2+) does NOT UPSERT against the active-snapshot index (`ux_daily_mgmt_snapshot_active_per_session`) — it INSERTs a new row at the new precision following the §3.3 5-step transactional sequence. The active-snapshot partial unique index excludes superseded rows (predicate `is_superseded = 0`), so the new higher-tier row holds the active slot post-step-3.
 
 **event_log idempotency:** NO unique constraint. Operator may emit multiple event_log rows per day (e.g., morning stop_adjust event + afternoon news_or_event_update event). Each row gets its own `management_record_id` via autoincrement.
 
@@ -344,14 +345,24 @@ All 10 Phase 10 §6.1 capture-needs covered. No deviations. (Brief watch-item 6 
 1. **Web:** new POST `/trades/{id}/daily-management/event` from per-trade detail page. Form gathers event-log fields per §3.1.
 2. **CLI:** `swing trade event-log <trade-id> [--stop-changed --new-stop X --reason "..."] [--action trim --reason "..."] [--rule-violation] [--emotional-state JSON-list]`.
 
-Both surfaces CONVERGE on a single `swing/trades/daily_management.py` `record_event_log(conn, trade_id, req)` function (per Phase 7 §9.2 single-source-of-truth pattern). The function (R2 Critical #1 fix — NO automatic OHLCV fetch):
+Both surfaces CONVERGE on a single `swing/trades/daily_management.py` `record_event_log(conn, trade_id, req)` function (per Phase 7 §9.2 single-source-of-truth pattern). The function (R2 Critical #1 + R3 Major #5 fix — NO automatic OHLCV fetch; single-transaction atomicity):
 
-1. Validates operator-input fields per §3.1.1 OPERATION_REQUIRED_FIELDS["event_log_emit"].
-2. (Conditional) If `req.stop_changed=1`, calls Phase 7's `update_stop_with_event(conn, trade_id, req.new_stop, req.stop_change_reason)`. That service (Phase 7 shipped) atomically updates `trades.current_stop`, emits a `trade_events` row with `event_type='stop_adjust'`, and returns the new `trade_event_id`.
-3. INSERTs the event_log row with: operator-input fields populated; position-state fields set to `req.captured_position_state` if operator supplies them OR NULL otherwise; `linked_trade_event_id` set to the trade_events row id from step 2 if a stop_change occurred; `new_stop` set from req.new_stop if stop_changed=1.
-4. If `trades.state == 'entered'`, calls `state_transition(conn, trade_id, 'managing', trigger='first_daily_management_record')` per Phase 7 §3.4.
+**Single-transaction contract (R3 Major #5 fix — binding):** all of the following execute inside ONE `BEGIN IMMEDIATE` / `COMMIT` transaction. If ANY step fails, the entire flow rolls back: no partial state where Phase 7 stop_adjust trade_event row exists without its Phase 8 daily_management_records event_log context, OR vice versa. This is binding because the audit-chain pointer (`linked_trade_event_id`) is meaningless if the two sides can diverge.
 
-**No OHLCV fetch in this path.** Operator commentary is decoupled from network reliability per R1 Critical #1. If operator wants the row's position-state fields populated, they pass them explicitly (web form may pre-fill from latest snapshot or trades-row denorms client-side; that's a UI concern, not a write-path requirement). Read-side timeline (§7.2) uses `linked_trade_event_id` + Phase 7's `trade_events.payload_json` for atomic stop-change reconstruction; falls back to the daily_management_records `prior_stop` / `new_stop` if `linked_trade_event_id IS NULL`.
+1. `BEGIN IMMEDIATE TRANSACTION`.
+2. Validates operator-input fields per §3.1.1 OPERATION_REQUIRED_FIELDS["event_log_emit"]. On invalid → ROLLBACK + raise `ValidationException`.
+3. (Conditional) If `req.stop_changed=1`: calls Phase 7's `update_stop_with_event(conn, trade_id, req.new_stop, req.stop_change_reason)` WITHIN the existing transaction (the service must accept being called inside a transaction, not open its own — verify Phase 7 shipped behavior at writing-plans dispatch time). Captures the returned `trade_event_id` as `linked_event_id`. ELSE: `linked_event_id = None`.
+4. INSERTs the event_log row with:
+   - All operator-input fields per §3.1.1 OPERATION_REQUIRED_FIELDS["event_log_emit"].
+   - Position-state fields = `req.captured_position_state.<field>` if operator supplies them, ELSE NULL.
+   - `linked_trade_event_id = linked_event_id` (NULL if no stop_change occurred).
+   - `new_stop = req.new_stop` if `stop_changed=1`, ELSE NULL.
+5. If `trades.state == 'entered'`: calls `state_transition(conn, trade_id, 'managing', trigger='first_daily_management_record')` per Phase 7 §3.4 (also accepts being inside a transaction).
+6. `COMMIT`.
+
+**Phase 7 service-call-inside-transaction precondition:** Phase 7's shipped `update_stop_with_event` and `state_transition` services either accept-or-reject being called inside an outer transaction. Writing-plans dispatch time MUST verify (a) the shipped behavior; (b) write a discriminating regression test that this single-transaction call pattern works WITHOUT the inner service double-BEGINing OR rolling back the outer's changes. If Phase 7 services internally `BEGIN`, Phase 8's caller-controls-transaction discipline conflicts and either Phase 7 services need to be made transaction-context-aware OR Phase 8 needs a different atomicity strategy (e.g., savepoint nesting).
+
+**No OHLCV fetch in this path.** Operator commentary is decoupled from network reliability per R1 Critical #1. If operator wants the row's position-state fields populated, they pass them explicitly (web form may pre-fill from latest snapshot or trades-row denorms client-side; that's a UI concern, not a write-path requirement). Read-side timeline (§7.2) uses `linked_trade_event_id` + Phase 7's `trade_events.payload_json` for atomic stop-change reconstruction; falls back to the daily_management_records `prior_stop` / `new_stop` if `linked_trade_event_id IS NULL` (which means the event_log row was emitted without a stop_change).
 
 **V1 scope decision:** web form ships V1; CLI flagged as "writing-plans-decides scope" (dispatch may defer if scope inflates).
 
@@ -438,7 +449,7 @@ When the same conceptual value appears across multiple shipped/Phase-8 surfaces,
 
 | Field | Authoritative source | Cached copies | At-write semantic |
 |---|---|---|---|
-| Current stop on a live trade | `trades.current_stop` (Phase 7 single-write-path via `update_stop_with_event`) | `daily_management_records.current_stop` (snapshot at end-of-session); `daily_management_records.prior_stop` / `current_stop` (event_log row at moment-of-event) | Snapshot copy = stop in force at session close; event_log copy = stop in force at event time. Operator-actionable read = trades.current_stop ALWAYS. |
+| Current stop on a live trade | `trades.current_stop` (Phase 7 single-write-path via `update_stop_with_event`) | `daily_management_records.current_stop` (snapshot row only; NULL on event_log per R2 fix); event_log row's durable stop fields are `prior_stop` + `new_stop` (R3 Minor #2 fix) | Snapshot row's `current_stop` = stop in force at session close; event_log row's `prior_stop` / `new_stop` = stop in force immediately before/after the change at event time. Operator-actionable LIVE read = `trades.current_stop` ALWAYS (per §7.1 dashboard tile read-source precedence). |
 | Current size on a live trade | `trades.current_size` (Phase 7 `_recompute_aggregates` after every fill) | `daily_management_records.current_size` (snapshot at end-of-session) | Same pattern — trades-row authoritative; snapshot is timestamped historical record. |
 | Trade lifecycle state | `trades.state` (Phase 7 single-write-path via `state_transition`) | none | snapshot rows do NOT cache state. Read-side queries that filter by state JOIN trades. |
 | MFE/MAE running max from entry | `daily_management_records.open_MFE_R_to_date` / `open_MAE_R_to_date` (most-recent active snapshot) | none | Snapshot row IS authoritative for in-flight running extrema. Closed-trade post-mortem MFE/MAE = max over all snapshot rows for the trade. |
@@ -535,7 +546,7 @@ Rationale for the V1 = 21-day default:
 - **Primary axis:** per-trade; chronological with deterministic tie-break (R1 Critical #2 + #3 fix).
 - **Row contract:** ONE row per `management_record_id` (NOT per (review_date, record_type) — multiple event_log rows per day are explicitly allowed and EACH renders as its own distinct row).
 - **Ordering contract:** `ORDER BY review_date ASC, created_at ASC, management_record_id ASC`. The `created_at ASC` tie-break is binding for same-date event_log rows; `management_record_id ASC` final tie-break ensures determinism even when two rows share the same `created_at` wall-clock second. Per Phase 7 Sub-B R3 M1 lesson "lexicographic ordering on text-stored datetimes is a contract requiring naive-only inputs" — `created_at` validator enforces naive-UTC.
-- **Tier-upgrade default visibility:** default rendering filters to `superseded_by_record_id IS NULL` (active snapshots only); event_log rows ALWAYS render (never superseded). Toggle "show superseded snapshots" expands to include the audit chain.
+- **Tier-upgrade default visibility:** default rendering filters to `is_superseded = 0` (active snapshots only — canonical predicate per §6.3 R2 Major #1 fix; NOT `superseded_by_record_id IS NULL` which can be transiently NULL during the §3.3 tier-upgrade write sequence). Event_log rows ALWAYS render (never superseded; their `is_superseded` field is `0` by default and never mutated). Toggle "show superseded snapshots" expands to include the audit chain.
 - **Composition:** table columns by record_type:
   - **For `record_type='daily_snapshot'`:** `review_date` / "snapshot" badge / `current_price` / `current_stop` / `open_R_effective` / `open_MFE_R_to_date` / `open_MAE_R_to_date` / `mfe_mae_precision_level` (badge) / `maturity_stage`.
   - **For `record_type='event_log'`:** `review_date` / "event" badge / `created_at` (wall-clock; distinguishes multiple same-day events) / `action_taken` / `stop_changed` (with prior→new stop if true) / `thesis_status` / `rule_violation_suspected` (badge if true) / `emotional_state` (chips) / collapsed `action_reason` + `management_notes` (expand on click). Position-state cells render as JOIN-from-same-day-snapshot if available, else "—" (per §3.1.1 R1 Critical #1 fix — event_log rows don't carry position-state by default).
@@ -774,6 +785,15 @@ Phase 8's `daily_management_records` schema does NOT block:
 - [x] **Internal consistency:** §3.1 schema sketches consume Phase 7's shipped fields verbatim; §3.5 cross-checks Phase 10 §6.1 capture-needs (10/10 covered); §5.3 cross-table coupling specifies single-write-path discipline; §8 migration strategy inherits Phase 7 lessons.
 - [x] **Scope check:** SCHEMA-LOCKING but no migration SQL (§3 column-level; §8 mechanic-level only); no code drafting (§5.3 single-write-path is described, not implemented); no task decomposition.
 - [x] **Ambiguity check:** §3.1 OPERATION_REQUIRED_FIELDS makes per-record_type required-field set explicit; §4.2 idempotency policy explicit; §6.1 tier-upgrade policy explicit (additive with audit trail); §10 open questions enumerated.
+- [x] **Codex R3 fix coverage:** all 0 critical + 5 major + 3 minor findings addressed:
+  - Major R3 #1 (§4.2 stale UPSERT key + index names) → §4.2 re-keyed to `(trade_id, data_asof_session, mfe_mae_precision_level)` against the new `ux_daily_mgmt_snapshot_precision_per_session` partial-unique index.
+  - Major R3 #2 (§7.2 visibility predicate stale) → §7.2 default rendering uses `is_superseded = 0` (canonical predicate), NOT the FK-NULL check.
+  - Major R3 #3 (tier-upgrade step 4 too loose; could mis-point unrelated repair rows) → §3.3 5-step sequence revised to capture `predecessor_id` in step 2 (SELECT) and use it as exact-match in step 5 update.
+  - Major R3 #4 (terminal-state thesis_status defaults misleadingly to 'intact' for closed trades) → §3.1 thesis_status entry: read-side resolution returns sentinel `unrecorded` (not `intact`) for closed/reviewed trades with no event_log thesis updates.
+  - Major R3 #5 (stop-change atomicity under-specified) → §4.4 single-transaction contract — BEGIN IMMEDIATE; validate; Phase 7 update_stop_with_event call; INSERT event_log row; (state transition); COMMIT. Phase 7 service-call-inside-transaction precondition flagged as writing-plans verification gate.
+  - Minor R3 #1 (§3.2 stale UPSERT mention) → §3.2 alternative-rationale corrected.
+  - Minor R3 #2 (§5.6 cached-copies table mentions event_log copies of position-state) → §5.6 row updated; event_log durable stop fields are `prior_stop` / `new_stop`; position-state copy is snapshot-only.
+  - Minor R3 #3 (linked_trade_event_id FK delete behavior) → §3.1 FK clause adds `ON DELETE SET NULL`.
 - [x] **Codex R2 fix coverage:** all 1 critical + 5 major + 3 minor findings addressed:
   - Critical R2 #1 (§4.4 reintroduced R1 Critical #1) → §4.4 rewritten — record_event_log() does NO OHLCV fetch; position-state fields populated only if operator supplies them.
   - Major R2 #1 (tier-upgrade keying inconsistent with review_date != data_asof_session) → §3.3 unique indexes re-keyed on `data_asof_session`; §6.3 read predicates updated.
