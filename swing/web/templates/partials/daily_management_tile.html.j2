@@ -4,6 +4,10 @@
   Spec §7.1 composition + §5.6 read-precedence ladder enforced by VM:
     * Live values (current_stop, state, planned_target_R) sourced from
       trades-row (NOT snapshot's stale copy).
+    * open_R_effective is RECOMPUTED LIVE per Codex R1 Major 3 (spec §7.1
+      line 547): VM computes (live_price - live_avg_cost) * live_size /
+      planned_risk_budget. The snapshot column of the same name is the
+      close-of-session anchor and surfaces in the timeline view, not here.
     * Time-series running extrema + end-of-session anchored values
       sourced from latest active snapshot row.
 

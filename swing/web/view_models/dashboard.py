@@ -1053,6 +1053,47 @@ def build_dashboard(
                 # in-memory open_trades list. Skip rather than render a
                 # ghost tile.
                 continue
+            # Codex R1 Major 3 fix — open_R_effective recomputed LIVE.
+            # Spec §7.1 line 547: tile shows the LIVE risk-effective value
+            # using the trades-row's current_size (post-partial-exit) and
+            # the live PriceCache snapshot. Snapshot's open_R_effective is
+            # the close-of-session anchor and remains in the timeline; the
+            # tile is the operator's "right now" view, which must reflect
+            # mid-session partial exits and live price moves.
+            #
+            # Formula matches compute_open_R_effective in
+            # swing/trades/daily_management.py:
+            #   (live_price - live_avg_cost) * live_size / planned_risk
+            # planned_risk_budget = (entry_price - initial_stop) * initial_shares
+            # (Phase 7 pre-trade-locked derivation).
+            live_snap = open_trade_last_prices.get(trade.ticker)
+            live_avg_cost = (
+                trade.current_avg_cost
+                if trade.current_avg_cost is not None
+                else trade.entry_price
+            )
+            planned_risk_budget = (
+                (trade.entry_price - trade.initial_stop)
+                * trade.initial_shares
+            )
+            if (
+                live_snap is not None
+                and trade.current_size is not None
+                and trade.current_size > 0
+                and planned_risk_budget != 0
+            ):
+                live_open_R = (  # noqa: N806
+                    (live_snap.price - live_avg_cost)
+                    * trade.current_size
+                    / planned_risk_budget
+                )
+            else:
+                # Fall back to the snapshot's value if live price missing
+                # (PriceCache degraded path) or the trade has zero size.
+                # The fallback is the closing-session anchor, not "right
+                # now"; the operator sees the same value as the timeline.
+                live_open_R = snap.open_R_effective  # noqa: N806
+
             tiles.append(DailyManagementTileVM(
                 trade_id=snap.trade_id,
                 ticker=trade.ticker,
@@ -1063,7 +1104,7 @@ def build_dashboard(
                 # §5.6 time-series + end-of-session anchored values from
                 # the active snapshot row:
                 current_price=snap.current_price,
-                open_R_effective=snap.open_R_effective,
+                open_R_effective=live_open_R,
                 open_MFE_R_to_date=snap.open_MFE_R_to_date,
                 open_MAE_R_to_date=snap.open_MAE_R_to_date,
                 maturity_stage=snap.maturity_stage,

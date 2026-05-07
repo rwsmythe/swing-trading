@@ -405,3 +405,106 @@ def test_dashboard_tile_renders_MFE_MAE_R_to_date_values(app_factory):  # noqa: 
     # Two-decimal R format expected (matches existing tile precision).
     assert "2.34" in tile_html
     assert "0.45" in tile_html
+
+
+# ---------------------------------------------------------------------------
+# Codex R1 Major 3: tile open_R_effective recomputed LIVE — uses
+# trades.current_size (live), trades.current_avg_cost (live), live
+# current_price, and the planned_risk_budget = (entry_price - initial_stop)
+# * initial_shares. Pre-fix: VM passes snapshot.open_R_effective unchanged,
+# so a partial exit between snapshot emission and dashboard render shows
+# the stale closing-session R, not the live R.
+# ---------------------------------------------------------------------------
+
+
+def test_dashboard_tile_open_R_effective_recomputed_live(  # noqa: N802
+    tmp_path: Path, monkeypatch,
+):
+    """Spec §7.1 line 547: live tile recomputes open_R_effective using
+    LIVE trades.current_size + LIVE current_price. Snapshot's
+    open_R_effective is the close-of-session anchor; the tile is the live
+    view.
+
+    Discriminator setup:
+      * Trade: entry_price=100, initial_stop=90, initial_shares=50.
+        planned_risk_budget = (100 - 90) * 50 = 500.
+      * Snapshot: open_R_effective=1.0 (closing-session value).
+      * Mid-session partial exit simulated: current_size dropped 50 → 25.
+      * Live current_price = 110, current_avg_cost = 100.
+      * Live formula: (110 - 100) * 25 / 500 = 0.50R.
+
+    Pre-fix: tile renders 1.00R (snapshot stale).
+    Post-fix: tile renders 0.50R (live recompute).
+    """
+    from datetime import datetime as _dt
+
+    from swing.web.price_cache import PriceSnapshot
+
+    db_path = tmp_path / "phase8_tile_open_R.db"
+    ensure_schema(db_path).close()
+
+    conn = connect(db_path)
+    try:
+        _seed_trade(
+            conn, trade_id=1, ticker="DHC", state="managing",
+            entry_price=100.0, initial_stop=90.0, initial_shares=50,
+            current_avg_cost=100.0, current_size=50.0, current_stop=92.0,
+        )
+        # Snapshot at close of session: full position, open_R_effective=1.0.
+        insert_snapshot(
+            conn, trade_id=1,
+            snapshot_fields=_full_snapshot_fields(
+                current_price=110.0,
+            ),  # snapshot's open_R_effective fixed at 1.0 by helper
+        )
+        # Mid-session partial exit: current_size 50 -> 25 (live trades-row).
+        conn.execute(
+            "UPDATE trades SET current_size = 25.0 WHERE id = 1",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Inject live current_price via PriceCache.get_many monkeypatch.
+    live_snap = PriceSnapshot(
+        ticker="DHC",
+        price=110.0,
+        asof=_dt(2026, 5, 7, 18, 0, 0),
+        is_stale=False,
+        source="live",
+    )
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: (
+            {t: live_snap for t in tickers if t == "DHC"}
+        ),
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+
+    base_cfg = load(Path("swing.config.toml"))
+    cfg = dc_replace(
+        base_cfg, paths=dc_replace(base_cfg.paths, db_path=db_path),
+    )
+    app = create_app(cfg)
+    with TestClient(app) as client:
+        response = client.get("/")
+    assert response.status_code == 200
+    body = response.text
+    tile_section = body.split('id="daily-management-tiles"')
+    assert len(tile_section) >= 2, "tile section missing from dashboard"
+    tile_html = tile_section[1].split("</section>")[0]
+
+    # Live R = (110 - 100) * 25 / 500 = 0.50.
+    assert "0.50R" in tile_html, (
+        "tile must render LIVE open_R_effective = 0.50R "
+        "((110 - 100) * 25 / 500). See Codex R1 Major 3 — pre-fix "
+        f"renders snapshot's 1.00R. Tile body: {tile_html[:500]!r}"
+    )
+    # The snapshot's stale 1.00R MUST NOT appear in the open_R_effective
+    # cell. The cell is the only place this value would render in the
+    # tile, so a substring check is sufficient.
+    assert "1.00R" not in tile_html, (
+        "snapshot's stale open_R_effective (1.00R) leaked into the live "
+        "tile — pre-fix bug per Codex R1 Major 3."
+    )
