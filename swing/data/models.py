@@ -133,6 +133,9 @@ class Trade:
     market_regime: str | None = None
     catalyst: str | None = None
     catalyst_other_description: str | None = None
+    # Phase 8 (migration 0016) — pre-trade-locked R-multiple target. NULL for
+    # legacy rows + non-target trades. CHECK constraint enforces > 0 when set.
+    planned_target_R: float | None = None  # noqa: N815
 
 
 @dataclass(frozen=True)
@@ -379,6 +382,69 @@ class ReviewLog:
     avg_loss_R: float | None = None  # noqa: N815
     profit_factor: float | None = None
     max_drawdown_R: float | None = None  # noqa: N815
+
+
+@dataclass(frozen=True)
+class DailyManagementRecord:
+    """One row of daily_management_records (migration 0016 — Phase 8).
+
+    Single-table-with-discriminator: ``record_type`` is either
+    ``'daily_snapshot'`` (pipeline-emitted; UPSERT-keyed on
+    ``(trade_id, data_asof_session, mfe_mae_precision_level)``) or
+    ``'event_log'`` (operator-discretionary). Position-state fields are
+    NULLABLE on the schema; the validator enforces presence per
+    ``OPERATION_REQUIRED_FIELDS`` for ``snapshot_emit`` (all required) but
+    not for ``event_log_emit`` (all optional).
+
+    The 42 fields below mirror spec §3.1 column order: 10 metadata + 14
+    position-state + 2 trail-MA stamp/cache + 16 operator-input.
+    """
+    # Metadata (10):
+    management_record_id: int | None
+    trade_id: int
+    record_type: str  # 'daily_snapshot' | 'event_log'
+    review_date: str
+    data_asof_session: str
+    created_at: str
+    mfe_mae_precision_level: str  # 'daily_approximate' | 'intraday_estimated' | 'intraday_exact'
+    pipeline_run_id: int | None
+    is_superseded: int  # 0|1
+    superseded_by_record_id: int | None
+    # Position-state (14):
+    current_price: float | None
+    current_stop: float | None
+    current_size: float | None
+    current_avg_cost: float | None
+    open_R_effective: float | None  # noqa: N815
+    open_MFE_R_to_date: float | None  # noqa: N815
+    open_MAE_R_to_date: float | None  # noqa: N815
+    intraday_high: float | None
+    intraday_low: float | None
+    position_capital_utilization_pct: float | None
+    position_capital_denominator_dollars: float | None
+    position_portfolio_heat_contribution_dollars: float | None
+    maturity_stage: str | None
+    trail_MA_candidate_price: float | None  # noqa: N815
+    # Trail-MA per-row stamp + cached eligibility (2):
+    trail_MA_period_days: int | None  # noqa: N815
+    trail_MA_eligibility_flag: int | None  # noqa: N815  # 0|1
+    # Operator-input (16):
+    thesis_status: str | None
+    prior_stop: float | None
+    new_stop: float | None
+    linked_trade_event_id: int | None
+    stop_changed: int | None  # 0|1
+    stop_change_reason: str | None
+    volume_behavior: str | None
+    relative_strength_status: str | None
+    market_regime_change: int | None  # 0|1
+    sector_condition_change: int | None  # 0|1
+    news_or_event_update: str | None
+    action_taken: str | None
+    action_reason: str | None
+    emotional_state: str | None  # JSON-list TEXT
+    rule_violation_suspected: int | None  # 0|1
+    management_notes: str | None
 
 
 @dataclass(frozen=True)

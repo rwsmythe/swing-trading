@@ -24,7 +24,7 @@ from swing.data.repos.trades import get_trade, insert_trade_with_event
 def _seed_v14(tmp_path):
     db = tmp_path / "test.db"
     conn = sqlite3.connect(db)
-    run_migrations(conn, target_version=14, backup_dir=tmp_path)
+    run_migrations(conn, target_version=16, backup_dir=tmp_path)
     return conn
 
 
