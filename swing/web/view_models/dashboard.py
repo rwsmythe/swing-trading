@@ -348,6 +348,14 @@ class DashboardVM:
     daily_card: CadenceCardVM | None = None
     weekly_card: CadenceCardVM | None = None
     monthly_card: CadenceCardVM | None = None
+    # Phase 8 Task 5.1 — per-open-position daily-management tiles. Built from
+    # ``list_open_position_active_snapshots(conn) + JOIN trades-row`` per
+    # spec §7.1 + §5.6 read-precedence ladder. Empty tuple when no open
+    # trade has an active snapshot yet (legacy rows / first session before
+    # any pipeline run has emitted snapshots). Default empty tuple so
+    # ad-hoc VM construction in tests outside the Phase 8 surface remains
+    # valid without supplying the field.
+    daily_management_tiles: tuple = field(default_factory=tuple)
 
 
 def _build_active_recommendations(
@@ -1018,6 +1026,62 @@ def build_dashboard(
     finally:
         conn2.close()
 
+    # Phase 8 Task 5.1 — daily-management tile list. Open the DB once more to
+    # query the active-snapshot feed; JOIN with the open-trades collection
+    # already in scope so each tile resolves §5.6 live values from the
+    # trades-row authoritative source (current_stop, state,
+    # planned_target_R) and time-series values from the snapshot row.
+    from swing.data.repos.daily_management import (
+        list_open_position_active_snapshots,
+    )
+    from swing.web.view_models.trades import DailyManagementTileVM
+
+    daily_management_tiles: tuple[DailyManagementTileVM, ...] = ()
+    open_trades_by_id = {t.id: t for t in open_trades if t.id is not None}
+    if open_trades_by_id:
+        conn3 = connect(cfg.paths.db_path)
+        try:
+            with conn3:
+                snapshots = list_open_position_active_snapshots(conn3)
+        finally:
+            conn3.close()
+        tiles: list[DailyManagementTileVM] = []
+        for snap in snapshots:
+            trade = open_trades_by_id.get(snap.trade_id)
+            if trade is None:
+                # Defensive: snapshot's open-trade JOIN diverges from the
+                # in-memory open_trades list. Skip rather than render a
+                # ghost tile.
+                continue
+            tiles.append(DailyManagementTileVM(
+                trade_id=snap.trade_id,
+                ticker=trade.ticker,
+                # §5.6 LIVE values from trades-row:
+                state=trade.state,
+                current_stop=trade.current_stop,
+                planned_target_R=trade.planned_target_R,
+                # §5.6 time-series + end-of-session anchored values from
+                # the active snapshot row:
+                current_price=snap.current_price,
+                open_R_effective=snap.open_R_effective,
+                open_MFE_R_to_date=snap.open_MFE_R_to_date,
+                open_MAE_R_to_date=snap.open_MAE_R_to_date,
+                maturity_stage=snap.maturity_stage,
+                trail_MA_eligibility_flag=snap.trail_MA_eligibility_flag,
+                trail_MA_candidate_price=snap.trail_MA_candidate_price,
+                position_capital_utilization_pct=(
+                    snap.position_capital_utilization_pct
+                ),
+                position_capital_denominator_dollars=(
+                    snap.position_capital_denominator_dollars
+                ),
+                position_portfolio_heat_contribution_dollars=(
+                    snap.position_portfolio_heat_contribution_dollars
+                ),
+                data_asof_session=snap.data_asof_session,
+            ))
+        daily_management_tiles = tuple(tiles)
+
     degraded_until = cache.degraded_until()
     return DashboardVM(
         generated_at=now.isoformat(timespec="seconds"),
@@ -1048,6 +1112,7 @@ def build_dashboard(
         daily_card=cadence_cards["daily"],
         weekly_card=cadence_cards["weekly"],
         monthly_card=cadence_cards["monthly"],
+        daily_management_tiles=daily_management_tiles,
     )
 
 

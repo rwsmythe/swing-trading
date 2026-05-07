@@ -87,4 +87,12 @@
    Phase 7 V1 detail page is read-only summary + Pre-Trade Decision; full
    position-management surface (exit/stop/review buttons) deferred to V2 or
    handled via the existing trade-action routes triggered from the dashboard. #}
+
+{# Phase 8 Task 5.1 — Daily Management Timeline section per spec §7.2.
+   ``timeline_vm`` is always populated when the route reaches this template
+   (see route handler for the None-branch rationale). The section root is
+   <section id="daily-management-timeline"> for stable test selectors. #}
+{% if timeline_vm is not none %}
+  {% include "partials/daily_management_timeline.html.j2" %}
+{% endif %}
 {% endblock %}

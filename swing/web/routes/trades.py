@@ -1645,6 +1645,9 @@ def trade_detail(request: Request, trade_id: int):
     read-only summary of the trade. Position-management actions remain on
     the dashboard's open-positions row in V1.
     """
+    from swing.web.view_models.trades import (
+        build_daily_management_timeline_vm,
+    )
     cfg = apply_overrides(request.app.state.cfg)
     templates = request.app.state.templates
     vm = build_trade_detail_vm(trade_id=trade_id, cfg=cfg)
@@ -1652,6 +1655,18 @@ def trade_detail(request: Request, trade_id: int):
         raise HTTPException(
             status_code=404, detail=f"Trade #{trade_id} not found",
         )
+    # Phase 8 Task 5.1 — per-trade timeline section. Always rendered (state-
+    # agnostic per spec §7.2; closed trades surface their history). Returns
+    # None only when the trade does not exist; the trade_detail VM build
+    # above already returned 404 in that case, so the timeline VM is
+    # guaranteed non-None here unless a race deletes the trade between the
+    # two reads (acceptable: the section will simply render its empty
+    # state via the partial's `{% if not timeline_vm.rows %}` branch when
+    # rows is empty; the None branch is defensive for the race window).
+    timeline_vm = build_daily_management_timeline_vm(
+        trade_id=trade_id, cfg=cfg,
+    )
     return templates.TemplateResponse(
-        request, "trades/detail.html.j2", {"vm": vm},
+        request, "trades/detail.html.j2",
+        {"vm": vm, "timeline_vm": timeline_vm},
     )

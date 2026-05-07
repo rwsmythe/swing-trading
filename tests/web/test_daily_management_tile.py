@@ -170,6 +170,7 @@ def test_dashboard_tile_reads_live_current_stop_from_trades_row(app_factory):
         )
         conn.commit()
     finally:
+        conn.commit()
         conn.close()
 
     with TestClient(app) as client:
@@ -231,6 +232,7 @@ def test_dashboard_tile_trail_MA_eligibility_badge_visible_only_when_TRUE(  # no
             ),
         )
     finally:
+        conn.commit()
         conn.close()
 
     with TestClient(app) as client:
@@ -275,6 +277,7 @@ def test_dashboard_tile_planned_target_R_renders_dash_when_NULL(  # noqa: N802
             conn, trade_id=1, snapshot_fields=_full_snapshot_fields(),
         )
     finally:
+        conn.commit()
         conn.close()
 
     with TestClient(app) as client:
@@ -315,6 +318,7 @@ def test_dashboard_tile_capital_utilization_PROVISIONAL_marker(  # noqa: N802
             ),
         )
     finally:
+        conn.commit()
         conn.close()
 
     with TestClient(app) as client:
@@ -351,6 +355,7 @@ def test_dashboard_tile_excludes_closed_trade(app_factory):
             conn, trade_id=2, snapshot_fields=_full_snapshot_fields(),
         )
     finally:
+        conn.commit()
         conn.close()
 
     with TestClient(app) as client:
@@ -388,6 +393,7 @@ def test_dashboard_tile_renders_MFE_MAE_R_to_date_values(app_factory):  # noqa: 
             ),
         )
     finally:
+        conn.commit()
         conn.close()
 
     with TestClient(app) as client:

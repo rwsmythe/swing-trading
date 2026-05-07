@@ -977,3 +977,152 @@ def build_event_log_form_vm(
         created_at=_dt.now().isoformat(timespec="seconds"),
         mfe_mae_precision_level="daily_approximate",
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 Task 5.1 — Daily Management read-surface VMs.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DailyManagementTileVM:
+    """Per-open-position dashboard tile row (spec §7.1 + plan T5.1).
+
+    Read-source precedence (§5.6 ladder enforced by the builder):
+
+      * Live values (``current_stop``, ``state``, ``planned_target_R``) ←
+        ``trades`` row (Phase 7 single-write-path is authoritative). NOT
+        the snapshot's stale copy — operator stop_adjusts mid-session must
+        surface as the live tile value.
+      * Time-series running extrema (``open_MFE_R_to_date``,
+        ``open_MAE_R_to_date``) ← latest active snapshot row.
+      * End-of-session anchored values (``current_price``, ``maturity_stage``,
+        ``trail_MA_*``, ``position_capital_*``,
+        ``position_portfolio_heat_contribution_dollars``) ← latest active
+        snapshot row.
+
+    ``data_asof_session`` is included so the template can stamp "as-of-{date}"
+    on the tile (the snapshot is end-of-session anchored — the operator must
+    see the staleness window explicitly).
+    """
+    trade_id: int
+    ticker: str
+    state: str                              # from trades-row (live)
+    current_price: float | None             # from snapshot
+    current_stop: float                     # from trades-row (LIVE per §5.6)
+    open_R_effective: float | None          # noqa: N815  -- spec column name
+    open_MFE_R_to_date: float | None        # noqa: N815  -- spec column name
+    open_MAE_R_to_date: float | None        # noqa: N815  -- spec column name
+    maturity_stage: str | None
+    trail_MA_eligibility_flag: int | None   # noqa: N815  -- spec column name
+    trail_MA_candidate_price: float | None  # noqa: N815  -- spec column name
+    position_capital_utilization_pct: float | None
+    position_capital_denominator_dollars: float | None
+    position_portfolio_heat_contribution_dollars: float | None
+    planned_target_R: float | None          # noqa: N815  -- from trades-row
+    data_asof_session: str | None
+
+
+@dataclass(frozen=True)
+class DailyManagementTimelineRowVM:
+    """One row of the per-trade timeline (spec §7.2).
+
+    ``record_type`` discriminates 'daily_snapshot' vs 'event_log'; the
+    template renders different cells per type. Both share the chronological
+    ORDER BY contract enforced by the repo (review_date ASC, created_at
+    ASC, management_record_id ASC).
+    """
+    management_record_id: int
+    record_type: str                # 'daily_snapshot' | 'event_log'
+    review_date: str
+    created_at: str
+    is_superseded: int              # 0|1 — UI may toggle visibility
+    mfe_mae_precision_level: str
+    # Snapshot-only fields (None on event_log rows by default):
+    current_price: float | None
+    current_stop: float | None
+    open_R_effective: float | None         # noqa: N815
+    open_MFE_R_to_date: float | None       # noqa: N815
+    open_MAE_R_to_date: float | None       # noqa: N815
+    maturity_stage: str | None
+    # Event_log-only fields (None on snapshot rows):
+    action_taken: str | None
+    action_reason: str | None
+    stop_changed: int | None               # 0|1
+    prior_stop: float | None
+    new_stop: float | None
+    thesis_status: str | None
+    rule_violation_suspected: int | None   # 0|1
+    emotional_state: str | None            # JSON-list TEXT
+    management_notes: str | None
+
+
+@dataclass(frozen=True)
+class DailyManagementTimelineVM:
+    """Timeline section for the per-trade detail page (spec §7.2).
+
+    Surfaced as a dedicated section on the trade-detail page (Phase 7 Sub-C
+    C.5 ``trades/detail.html.j2``) below the Pre-Trade Decision section.
+    """
+    trade_id: int
+    ticker: str
+    rows: tuple[DailyManagementTimelineRowVM, ...]
+
+
+def _record_to_timeline_row(rec) -> DailyManagementTimelineRowVM:
+    """Map a ``DailyManagementRecord`` to the timeline-row VM.
+
+    Field selection mirrors spec §7.2 composition list — snapshot rows
+    surface position-state cells; event_log rows surface operator-input
+    cells. The dataclass carries both column groups so the template can
+    branch on ``record_type``.
+    """
+    return DailyManagementTimelineRowVM(
+        management_record_id=rec.management_record_id,
+        record_type=rec.record_type,
+        review_date=rec.review_date,
+        created_at=rec.created_at,
+        is_superseded=rec.is_superseded,
+        mfe_mae_precision_level=rec.mfe_mae_precision_level,
+        current_price=rec.current_price,
+        current_stop=rec.current_stop,
+        open_R_effective=rec.open_R_effective,
+        open_MFE_R_to_date=rec.open_MFE_R_to_date,
+        open_MAE_R_to_date=rec.open_MAE_R_to_date,
+        maturity_stage=rec.maturity_stage,
+        action_taken=rec.action_taken,
+        action_reason=rec.action_reason,
+        stop_changed=rec.stop_changed,
+        prior_stop=rec.prior_stop,
+        new_stop=rec.new_stop,
+        thesis_status=rec.thesis_status,
+        rule_violation_suspected=rec.rule_violation_suspected,
+        emotional_state=rec.emotional_state,
+        management_notes=rec.management_notes,
+    )
+
+
+def build_daily_management_timeline_vm(
+    *, trade_id: int, cfg: Config,
+) -> DailyManagementTimelineVM | None:
+    """Build the per-trade timeline VM (spec §7.2).
+
+    Returns ``None`` when the trade does not exist (caller surfaces the
+    section conditionally — closed trades, partial_exited, etc., all render
+    their history per the state-agnostic §7.2 read predicate).
+    """
+    from swing.data.repos.daily_management import list_for_trade_timeline
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            trade = get_trade(conn, trade_id)
+            if trade is None:
+                return None
+            records = list_for_trade_timeline(conn, trade_id=trade_id)
+    finally:
+        conn.close()
+    rows = tuple(_record_to_timeline_row(r) for r in records)
+    return DailyManagementTimelineVM(
+        trade_id=trade_id, ticker=trade.ticker, rows=rows,
+    )

@@ -1,0 +1,112 @@
+{#- swing/web/templates/partials/daily_management_tile.html.j2 -#}
+{#- Phase 8 Task 5.1 — Per-open-position daily-management dashboard tile.
+
+  Spec §7.1 composition + §5.6 read-precedence ladder enforced by VM:
+    * Live values (current_stop, state, planned_target_R) sourced from
+      trades-row (NOT snapshot's stale copy).
+    * Time-series running extrema + end-of-session anchored values
+      sourced from latest active snapshot row.
+
+  Section root (NOT a leading <tr>) per CLAUDE.md HTMX `<tr>`-leading
+  makeFragment regression — the surface is rendered server-side as part
+  of the dashboard full-page render today; future OOB-swap refresh paths
+  must continue to wrap inside <section> so makeFragment doesn't drop
+  the inner <table>.
+
+  data-tile-* attrs are stable hooks for downstream tests + DOM probes.
+-#}
+<section id="daily-management-tiles" class="daily-management-tiles">
+  <h2>Daily Management</h2>
+  {% if not vm.daily_management_tiles %}
+    <p class="empty"><em>No active snapshots — pipeline has not yet emitted daily-management data for any open position.</em></p>
+  {% else %}
+    <table>
+      <thead>
+        <tr>
+          <th>Ticker</th>
+          <th>State</th>
+          <th>As-of</th>
+          <th>Current price</th>
+          <th>Current stop</th>
+          <th>Open R</th>
+          <th>MFE R</th>
+          <th>MAE R</th>
+          <th>Maturity</th>
+          <th>Trail-MA</th>
+          <th>Capital %</th>
+          <th>Heat $</th>
+          <th>Target R</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for tile in vm.daily_management_tiles %}
+        <tr data-tile-trade-id="{{ tile.trade_id }}">
+          <td>{{ tile.ticker }}</td>
+          <td><span class="state-badge state-{{ tile.state }}">{{ tile.state }}</span></td>
+          <td>{{ tile.data_asof_session or "—" }}</td>
+          <td data-tile-cell="current_price">
+            {%- if tile.current_price is not none -%}
+              ${{ "%.2f"|format(tile.current_price) }}
+            {%- else -%}—{%- endif -%}
+          </td>
+          <td data-tile-cell="current_stop">
+            {#- §5.6: live value from trades-row, NOT snapshot's stale copy. -#}
+            ${{ "%.2f"|format(tile.current_stop) }}
+          </td>
+          <td data-tile-cell="open_R_effective">
+            {%- if tile.open_R_effective is not none -%}
+              {{ "%.2f"|format(tile.open_R_effective) }}R
+            {%- else -%}—{%- endif -%}
+          </td>
+          <td data-tile-cell="open_MFE_R_to_date">
+            {%- if tile.open_MFE_R_to_date is not none -%}
+              {{ "%.2f"|format(tile.open_MFE_R_to_date) }}R
+            {%- else -%}—{%- endif -%}
+          </td>
+          <td data-tile-cell="open_MAE_R_to_date">
+            {%- if tile.open_MAE_R_to_date is not none -%}
+              {{ "%.2f"|format(tile.open_MAE_R_to_date) }}R
+            {%- else -%}—{%- endif -%}
+          </td>
+          <td data-tile-cell="maturity_stage">
+            {%- if tile.maturity_stage -%}
+              <span class="maturity-badge">{{ tile.maturity_stage }}</span>
+            {%- else -%}—{%- endif -%}
+          </td>
+          <td data-tile-cell="trail_MA">
+            {#- Spec §7.1: trail_MA_eligibility_flag badge visible only when TRUE. -#}
+            {% if tile.trail_MA_eligibility_flag == 1 %}
+              <span class="badge badge-trail-eligible" data-flag="trail-eligible">TRAIL ELIGIBLE</span>
+              {% if tile.trail_MA_candidate_price is not none %}
+                <span class="trail-ma-price">@ ${{ "%.2f"|format(tile.trail_MA_candidate_price) }}</span>
+              {% endif %}
+            {% elif tile.trail_MA_candidate_price is not none %}
+              <span class="trail-ma-price-only">${{ "%.2f"|format(tile.trail_MA_candidate_price) }}</span>
+            {% else %}—{% endif %}
+          </td>
+          <td data-tile-cell="position_capital_utilization_pct">
+            {%- if tile.position_capital_utilization_pct is not none -%}
+              {{ "%.1f"|format(tile.position_capital_utilization_pct * 100.0) }}%
+              {#- Spec §10.5: V1 fallback uses capital_floor_constant_dollars
+                 ($7500) as denominator — surface a PROVISIONAL marker so
+                 the operator sees the V1→V2 versioning caveat. -#}
+              <span class="badge badge-provisional" data-marker="PROVISIONAL" title="V1 denominator = $7500 capital_floor_constant_dollars; V2 will resolve to live account equity (Phase 9 risk_policy versioning).">PROVISIONAL</span>
+            {%- else -%}—{%- endif -%}
+          </td>
+          <td data-tile-cell="position_portfolio_heat_contribution_dollars">
+            {%- if tile.position_portfolio_heat_contribution_dollars is not none -%}
+              ${{ "%.2f"|format(tile.position_portfolio_heat_contribution_dollars) }}
+            {%- else -%}—{%- endif -%}
+          </td>
+          <td data-tile-cell="planned_target_R">
+            {#- Spec §7.1: trades.planned_target_R IS NULL → em-dash placeholder. -#}
+            {%- if tile.planned_target_R is not none -%}
+              {{ "%.2f"|format(tile.planned_target_R) }}R
+            {%- else -%}—{%- endif -%}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</section>

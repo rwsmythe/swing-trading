@@ -175,6 +175,7 @@ def test_timeline_orders_chronologically_with_tiebreak(app_factory):
         )
         assert rec_b > rec_a
     finally:
+        conn.commit()
         conn.close()
 
     with TestClient(app) as client:
@@ -211,6 +212,7 @@ def test_timeline_renders_event_log_and_snapshot_rows_distinctly(app_factory):
             ),
         )
     finally:
+        conn.commit()
         conn.close()
 
     with TestClient(app) as client:
@@ -254,6 +256,7 @@ def test_timeline_default_excludes_superseded_rows(app_factory):
             ),
         )
     finally:
+        conn.commit()
         conn.close()
 
     with TestClient(app) as client:
@@ -285,6 +288,7 @@ def test_timeline_renders_for_closed_trade(app_factory):
             ),
         )
     finally:
+        conn.commit()
         conn.close()
 
     with TestClient(app) as client:
