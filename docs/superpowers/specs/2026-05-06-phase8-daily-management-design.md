@@ -107,7 +107,7 @@ To avoid drift, this spec uses the field names already shipped in production sch
 | `mfe_mae_precision_level` | TEXT | NOT NULL | CHECK IN (`daily_approximate`, `intraday_estimated`, `intraday_exact`) |
 | `pipeline_run_id` | INTEGER | nullable | FK → `pipeline_runs(id)`; nullable for CLI/web event_log emissions |
 | `is_superseded` | INTEGER | NOT NULL | CHECK IN (0,1) DEFAULT 0; predecessor flag set BEFORE successor row INSERT to free the active-snapshot uniqueness slot (R2 Major #2 fix). Decoupled from the FK pointer so the insert-then-update sequence is feasible. |
-| `superseded_by_record_id` | INTEGER | nullable | FK → `daily_management_records(management_record_id)` (self-reference); set AFTER successor row INSERT to record the audit-chain pointer (R2 Major #2 fix — order: UPDATE prior is_superseded=1; INSERT successor; UPDATE prior superseded_by_record_id=last_insert_rowid). |
+| `superseded_by_record_id` | INTEGER | nullable | FK → `daily_management_records(management_record_id)` (self-reference); set AFTER successor row INSERT to record the audit-chain pointer per §3.3 6-step sequence (R4 Minor #3 fix — sequence captures `predecessor_id` in step 2 SELECT, INSERTs successor in step 4 capturing `successor_id = last_insert_rowid()`, UPDATEs predecessor's `superseded_by_record_id = successor_id` in step 5 by exact PK match). |
 | **Position-state snapshot fields (NULLABLE on schema; validator REQUIRED for daily_snapshot, OPTIONAL for event_log — see §3.1.1)** | | | |
 | `current_price` | REAL | nullable | CHECK > 0 OR NULL |
 | `current_stop` | REAL | nullable | CHECK > 0 OR NULL |
@@ -314,11 +314,21 @@ All 10 Phase 10 §6.1 capture-needs covered. No deviations. (Brief watch-item 6 
 
 **CLI trigger (also supported):** `swing daily-management snapshot --trade-id <id>` for operator-directed re-snapshot (e.g., debugging; replaying a missed day). Same code path as `_step_daily_management` per-trade body. NOT scoped for V1 V1 release; flagged as "implementation-time scope decision" — writing-plans dispatch decides whether to wire CLI or defer.
 
-### §4.2 Idempotency policy: UPSERT on `(trade_id, data_asof_session, mfe_mae_precision_level)` for daily_snapshot (R3 Major #1 fix)
+### §4.2 Idempotency policy: same-tier reflow = SELECT-then-UPDATE-or-INSERT against the active row only (R4 Major #1 fix)
 
-**Decision:** Same-day re-run within the same precision tier = UPSERT (REPLACE-on-conflict against `ux_daily_mgmt_snapshot_precision_per_session` partial unique index). The conflict key is `(trade_id, data_asof_session, mfe_mae_precision_level)` — NOT `(trade_id, review_date)`. The session-anchor key is binding for V2+ tier-upgrade-across-calendar-days correctness (per §3.3). Re-running pipeline twice in same session refreshes `current_price` / `intraday_high` / `intraday_low` / running MFE/MAE based on archive state at the moment-of-fire. This is correct behavior — yfinance archive may receive late-day correction; later run captures more accurate data.
+**Decision:** Same-day re-run within the same precision tier targets the ACTIVE row only (`is_superseded = 0`). The implementation is APPLICATION-LEVEL INSERT-or-UPDATE, NOT SQLite `REPLACE` (which is delete+insert and would destroy the active row's `management_record_id` + break any audit-chain pointers + violate §6.1's "both rows persist forever" semantic):
 
-**Tier-upgrade interaction (§6):** UPSERT applies WITHIN the same `mfe_mae_precision_level`. A higher-tier emission (V2+) does NOT UPSERT against the active-snapshot index (`ux_daily_mgmt_snapshot_active_per_session`) — it INSERTs a new row at the new precision following the §3.3 5-step transactional sequence. The active-snapshot partial unique index excludes superseded rows (predicate `is_superseded = 0`), so the new higher-tier row holds the active slot post-step-3.
+1. `BEGIN IMMEDIATE TRANSACTION`.
+2. `SELECT management_record_id FROM daily_management_records WHERE trade_id = ? AND data_asof_session = ? AND mfe_mae_precision_level = ? AND record_type = 'daily_snapshot' AND is_superseded = 0` → store as `existing_active_id`.
+3. If `existing_active_id IS NOT NULL`: `UPDATE daily_management_records SET <data fields> WHERE management_record_id = existing_active_id`. (Preserves `management_record_id` + `is_superseded` + `superseded_by_record_id` audit chain; only mutates the OHLCV-derived data fields.)
+4. ELSE: `INSERT INTO daily_management_records (...) VALUES (...)`. (Fresh write.)
+5. `COMMIT`.
+
+**Same-tier writes against superseded rows are REJECTED at validator level.** A superseded row's data fields are immutable per §6.1 audit-stability contract. Re-emitting same-tier data after a tier-upgrade has occurred would conflict with the precision-per-session unique index (because index covers superseded rows too); the operation is meaningless — the higher-tier row is authoritative. Validator raises `SupersededRowImmutableException`.
+
+The conflict key for the precision-per-session unique index is `(trade_id, data_asof_session, mfe_mae_precision_level)` — NOT `(trade_id, review_date)`. The session-anchor key is binding for V2+ tier-upgrade-across-calendar-days correctness (per §3.3). Re-running pipeline twice in same session refreshes `current_price` / `intraday_high` / `intraday_low` / running MFE/MAE based on archive state at the moment-of-fire. This is correct behavior — yfinance archive may receive late-day correction; later run captures more accurate data.
+
+**Tier-upgrade interaction (§6):** Same-tier reflow uses the §4.2 SELECT-then-UPDATE pattern above. A higher-tier emission (V2+) does NOT touch existing rows in-place — it INSERTs a new row at the new precision following the §3.3 6-step transactional sequence (R4 Minor #1 fix — "6-step", not "5-step"). The active-snapshot partial unique index excludes superseded rows (predicate `is_superseded = 0`), so the new higher-tier row holds the active slot AFTER step 3 (predecessor flagged) AND step 4 (successor INSERTed) of the §3.3 sequence (R4 Minor #2 fix — active successor exists only after step 4).
 
 **event_log idempotency:** NO unique constraint. Operator may emit multiple event_log rows per day (e.g., morning stop_adjust event + afternoon news_or_event_update event). Each row gets its own `management_record_id` via autoincrement.
 
@@ -453,7 +463,7 @@ When the same conceptual value appears across multiple shipped/Phase-8 surfaces,
 | Current size on a live trade | `trades.current_size` (Phase 7 `_recompute_aggregates` after every fill) | `daily_management_records.current_size` (snapshot at end-of-session) | Same pattern — trades-row authoritative; snapshot is timestamped historical record. |
 | Trade lifecycle state | `trades.state` (Phase 7 single-write-path via `state_transition`) | none | snapshot rows do NOT cache state. Read-side queries that filter by state JOIN trades. |
 | MFE/MAE running max from entry | `daily_management_records.open_MFE_R_to_date` / `open_MAE_R_to_date` (most-recent active snapshot) | none | Snapshot row IS authoritative for in-flight running extrema. Closed-trade post-mortem MFE/MAE = max over all snapshot rows for the trade. |
-| Thesis status | most-recent event_log row with non-NULL `thesis_status` | none (snapshot rows ALWAYS leave thesis_status NULL per R1 Critical #4 fix) | Read-side resolves "current thesis_status" via subquery. Defaults to `intact` if no event_log row exists. |
+| Thesis status | most-recent event_log row with non-NULL `thesis_status` | none (snapshot rows ALWAYS leave thesis_status NULL per R1 Critical #4 fix) | Read-side resolves "current thesis_status" via subquery. Resolution rule (R4 Major #2 fix — must align with §3.1 thesis_status definition): for OPEN trades (state ∈ {entered, managing, partial_exited}) with no event_log thesis update, default to `intact`. For CLOSED/REVIEWED trades with no event_log thesis update, return sentinel `unrecorded` (NOT `intact`) — closed-trade post-mortems must NOT silently affirm thesis intactness. |
 | Pre-trade decision fields | `trades.thesis` / `why_now` / `invalidation_condition` etc. (Phase 7 frozen-at-lock) | none | Snapshots and event_logs do NOT cache pre-trade fields. Read-side reads from trades. |
 | Capital denominator at snapshot time | `daily_management_records.position_capital_denominator_dollars` (per-row stamp; R1 Major #4 fix) | none | Each snapshot row IS authoritative for the denominator it used. Phase 9 versioning resolves forward-going writes; historical rows preserve their stamp. |
 | Trail-MA period at snapshot time | `daily_management_records.trail_MA_period_days` (per-row stamp; R1 Major #5 fix) | none | Same per-row stamp pattern as the capital denominator. |
@@ -785,6 +795,12 @@ Phase 8's `daily_management_records` schema does NOT block:
 - [x] **Internal consistency:** §3.1 schema sketches consume Phase 7's shipped fields verbatim; §3.5 cross-checks Phase 10 §6.1 capture-needs (10/10 covered); §5.3 cross-table coupling specifies single-write-path discipline; §8 migration strategy inherits Phase 7 lessons.
 - [x] **Scope check:** SCHEMA-LOCKING but no migration SQL (§3 column-level; §8 mechanic-level only); no code drafting (§5.3 single-write-path is described, not implemented); no task decomposition.
 - [x] **Ambiguity check:** §3.1 OPERATION_REQUIRED_FIELDS makes per-record_type required-field set explicit; §4.2 idempotency policy explicit; §6.1 tier-upgrade policy explicit (additive with audit trail); §10 open questions enumerated.
+- [x] **Codex R4 fix coverage:** all 0 critical + 2 major + 3 minor findings addressed:
+  - Major R4 #1 (same-tier UPSERT REPLACE breaks audit chain) → §4.2 same-tier reflow rewritten to SELECT-then-UPDATE-or-INSERT against active row only; superseded-row writes rejected at validator level via `SupersededRowImmutableException`.
+  - Major R4 #2 (§5.6 cached-copies thesis ladder still 'intact'-defaults universally) → §5.6 row updated to mirror §3.1 state-class-aware resolution (intact for open, unrecorded for closed/reviewed).
+  - Minor R4 #1 (§4.2 said "5-step" instead of "6-step") → §4.2 corrected.
+  - Minor R4 #2 (§4.2 said "post-step-3" but successor exists only post-step-4) → §4.2 corrected.
+  - Minor R4 #3 (§3.1 superseded_by_record_id prose used old last_insert_rowid description) → §3.1 prose updated to predecessor_id/successor_id sequence per §3.3.
 - [x] **Codex R3 fix coverage:** all 0 critical + 5 major + 3 minor findings addressed:
   - Major R3 #1 (§4.2 stale UPSERT key + index names) → §4.2 re-keyed to `(trade_id, data_asof_session, mfe_mae_precision_level)` against the new `ux_daily_mgmt_snapshot_precision_per_session` partial-unique index.
   - Major R3 #2 (§7.2 visibility predicate stale) → §7.2 default rendering uses `is_superseded = 0` (canonical predicate), NOT the FK-NULL check.
