@@ -1585,6 +1585,16 @@ async def daily_management_event_post(request: Request, trade_id: int):
     from swing.evaluation.dates import last_completed_session
     server_session_anchor = last_completed_session(_dt_now.now()).isoformat()
 
+    # Codex R4 Major #2 fix: SERVER-STAMP ``mfe_mae_precision_level``. V1
+    # only emits ``daily_approximate`` (spec §10.7); the form template no
+    # longer renders a hidden input for this field. A tampered POST
+    # (``mfe_mae_precision_level=intraday_exact``) would otherwise persist
+    # misleading audit metadata that doesn't match the actual data source.
+    # Future V2 (Schwab API intraday ingestion) will route through
+    # ``tier_upgrade_to_intraday`` rather than the operator-driven event_log
+    # form, so this constant is correct for the lifetime of the form route.
+    server_mfe_mae_precision_level = "daily_approximate"
+
     # Build EventLogRequest from the form payload. Required NOT-NULL
     # metadata fields fall back to safe defaults so the dataclass
     # constructor never raises on missing keys (the service-layer
@@ -1600,9 +1610,9 @@ async def daily_management_event_post(request: Request, trade_id: int):
             # NOTE: ``created_at`` is server-stamped above; the route does
             # NOT read it from form data (Codex R2 Major #2).
             created_at=server_created_at,
-            mfe_mae_precision_level=str(
-                form.get("mfe_mae_precision_level") or "daily_approximate",
-            ),
+            # NOTE: ``mfe_mae_precision_level`` is server-stamped above; the
+            # route does NOT read it from form data (Codex R4 Major #2).
+            mfe_mae_precision_level=server_mfe_mae_precision_level,
             stop_changed=_int_flag("stop_changed"),
             action_taken=_opt("action_taken"),
             rule_violation_suspected=_int_flag("rule_violation_suspected"),

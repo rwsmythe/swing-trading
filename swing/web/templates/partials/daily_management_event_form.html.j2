@@ -80,10 +80,18 @@
       SERVER-STAMPED at handler entry from ``last_completed_session(now)``
       (spec §4.5) — same fix pattern as created_at. The VM exposes the
       computed anchor as a display string (rendered as text) so the
-      operator sees what the row will be tagged with at submit time. -#}
+      operator sees what the row will be tagged with at submit time.
+
+      Codex R4 Major #2: ``mfe_mae_precision_level`` is also SERVER-STAMPED
+      at handler entry — V1 only ever emits ``daily_approximate`` (per
+      spec §10.7); accepting the value from the form would let a tampered
+      POST persist intraday-tier audit metadata that does not match the
+      actual data source. Hidden input removed; the VM exposes the value
+      as a display string only (V1 invariant: always 'daily_approximate'). -#}
   <div><label>Review session (server-stamped)</label>
     <span class="muted">{{ vm.review_date }}</span></div>
-  <input type="hidden" name="mfe_mae_precision_level" value="{{ vm.mfe_mae_precision_level }}">
+  <div><label>MFE/MAE precision tier (server-stamped)</label>
+    <span class="muted">{{ vm.mfe_mae_precision_level }}</span></div>
 
   <div><button type="submit">Submit</button></div>
 </form>

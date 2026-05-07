@@ -445,3 +445,58 @@ def test_event_log_post_server_stamps_review_date_ignoring_form_value(
     assert data_asof_session == expected_session, (
         f"data_asof_session={data_asof_session!r}, expected={expected_session!r}"
     )
+
+
+def test_event_log_form_partial_does_not_render_hidden_mfe_mae_precision_level():
+    """Codex R4 Major #2: hidden mfe_mae_precision_level form input must be
+    removed. The route server-stamps 'daily_approximate' (V1's only emitter
+    tier); accepting the value from the form lets a tampered POST persist
+    'intraday_exact' or 'intraday_estimated' precision metadata that doesn't
+    match the actual data source — misleading audit metadata."""
+    template_path = Path(
+        "swing/web/templates/partials/daily_management_event_form.html.j2",
+    )
+    text = template_path.read_text(encoding="utf-8")
+    assert 'name="mfe_mae_precision_level"' not in text, (
+        "hidden mfe_mae_precision_level input must be removed; route "
+        "server-stamps 'daily_approximate' (Codex R4 Major #2)"
+    )
+
+
+def test_event_log_post_server_stamps_mfe_mae_precision_level_ignoring_form_value(
+    app_with_seeded_trade,
+):
+    """Codex R4 Major #2: tampered ``mfe_mae_precision_level`` form value
+    (e.g., ``intraday_exact``) MUST be ignored — the persisted row carries
+    the SERVER-stamped value ``daily_approximate`` (V1's only emitter tier
+    per spec §10.7)."""
+    app, db_path = app_with_seeded_trade
+    with TestClient(app) as client:
+        response = client.post(
+            "/trades/1/daily-management/event",
+            data={
+                "stop_changed": "0",
+                "action_taken": "hold",
+                "rule_violation_suspected": "0",
+                "emotional_state": '["calm"]',
+                # <-- tampered: V1 only emits daily_approximate; client
+                # cannot upgrade audit metadata to intraday tiers.
+                "mfe_mae_precision_level": "intraday_exact",
+            },
+            headers={"HX-Request": "true"},
+        )
+    assert response.status_code == 204
+
+    conn = connect(db_path)
+    try:
+        precision = conn.execute(
+            "SELECT mfe_mae_precision_level FROM daily_management_records "
+            "WHERE trade_id = 1 AND record_type = 'event_log'",
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert precision == "daily_approximate", (
+        f"route trusted client-supplied mfe_mae_precision_level: "
+        f"persisted={precision!r}; expected SERVER-stamped 'daily_approximate'"
+    )
