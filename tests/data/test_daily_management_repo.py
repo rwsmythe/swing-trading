@@ -22,7 +22,10 @@ from swing.data.db import ensure_schema
 from swing.data.repos.daily_management import (
     insert_event_log,
     insert_snapshot,
+    list_for_trade_timeline,
+    list_open_position_active_snapshots,
     select_active_snapshot,
+    select_history,
 )
 
 
@@ -189,18 +192,161 @@ def test_select_active_snapshot_returns_none_for_unknown_session(
     assert rec is None
 
 
+# ---- T2.2: select_history + list_for_trade_timeline +
+#           list_open_position_active_snapshots ------------------------------
+
+
+def test_select_history_returns_chain_in_creation_order(
+    conn: sqlite3.Connection,
+) -> None:
+    """Full chain incl. superseded; order: created_at ASC, precision_level ASC."""
+    fields1 = _full_snapshot_fields(data_asof_session="2026-05-07")
+    fields1["mfe_mae_precision_level"] = "daily_approximate"
+    rec1 = insert_snapshot(conn, trade_id=1, snapshot_fields=fields1)
+    conn.execute(
+        "UPDATE daily_management_records SET is_superseded = 1 "
+        "WHERE management_record_id = ?",
+        (rec1,),
+    )
+    fields2 = _full_snapshot_fields(data_asof_session="2026-05-07")
+    fields2["mfe_mae_precision_level"] = "intraday_estimated"
+    rec2 = insert_snapshot(conn, trade_id=1, snapshot_fields=fields2)
+    chain = select_history(
+        conn, trade_id=1, data_asof_session="2026-05-07"
+    )
+    assert [r.management_record_id for r in chain] == [rec1, rec2]
+
+
+def test_select_history_no_session_filter_returns_all_sessions(
+    conn: sqlite3.Connection,
+) -> None:
+    """data_asof_session=None returns all rows for the trade."""
+    fields_a = _full_snapshot_fields(data_asof_session="2026-05-06")
+    rec_a = insert_snapshot(conn, trade_id=1, snapshot_fields=fields_a)
+    fields_b = _full_snapshot_fields(data_asof_session="2026-05-07")
+    rec_b = insert_snapshot(conn, trade_id=1, snapshot_fields=fields_b)
+    chain = select_history(conn, trade_id=1, data_asof_session=None)
+    ids = [r.management_record_id for r in chain]
+    assert rec_a in ids and rec_b in ids
+
+
+def test_list_for_trade_timeline_orders_chronologically_with_tiebreak(
+    conn: sqlite3.Connection,
+) -> None:
+    """Spec §7.2: ORDER BY review_date ASC, created_at ASC, management_record_id ASC."""
+    el_a = _minimal_event_log_fields(data_asof_session="2026-05-07")
+    el_a["created_at"] = "2026-05-07T10:00:00"
+    rec_a = insert_event_log(conn, trade_id=1, event_log_fields=el_a)
+    el_b = _minimal_event_log_fields(data_asof_session="2026-05-07")
+    el_b["created_at"] = "2026-05-07T10:00:00"  # same wall-clock!
+    rec_b = insert_event_log(conn, trade_id=1, event_log_fields=el_b)
+    timeline = list_for_trade_timeline(conn, trade_id=1)
+    ids = [r.management_record_id for r in timeline]
+    assert ids.index(rec_a) < ids.index(rec_b)
+
+
+def test_list_for_trade_timeline_default_excludes_superseded(
+    conn: sqlite3.Connection,
+) -> None:
+    fields = _full_snapshot_fields(data_asof_session="2026-05-07")
+    rec_id = insert_snapshot(conn, trade_id=1, snapshot_fields=fields)
+    conn.execute(
+        "UPDATE daily_management_records SET is_superseded = 1 "
+        "WHERE management_record_id = ?",
+        (rec_id,),
+    )
+    timeline = list_for_trade_timeline(
+        conn, trade_id=1, include_superseded=False
+    )
+    assert all(r.is_superseded == 0 for r in timeline)
+
+
+def test_list_for_trade_timeline_include_superseded_returns_all(
+    conn: sqlite3.Connection,
+) -> None:
+    fields = _full_snapshot_fields(data_asof_session="2026-05-07")
+    rec_id = insert_snapshot(conn, trade_id=1, snapshot_fields=fields)
+    conn.execute(
+        "UPDATE daily_management_records SET is_superseded = 1 "
+        "WHERE management_record_id = ?",
+        (rec_id,),
+    )
+    timeline = list_for_trade_timeline(
+        conn, trade_id=1, include_superseded=True
+    )
+    assert any(
+        r.management_record_id == rec_id and r.is_superseded == 1
+        for r in timeline
+    )
+
+
+def test_list_open_position_active_snapshots_returns_one_per_open_trade(
+    conn: sqlite3.Connection,
+) -> None:
+    """Drives §7.1 dashboard tile."""
+    _seed_minimal_trade(conn, trade_id=2)
+    fields1 = _full_snapshot_fields(data_asof_session="2026-05-07")
+    insert_snapshot(conn, trade_id=1, snapshot_fields=fields1)
+    fields2 = _full_snapshot_fields(data_asof_session="2026-05-07")
+    insert_snapshot(conn, trade_id=2, snapshot_fields=fields2)
+    snaps = list_open_position_active_snapshots(conn)
+    assert {s.trade_id for s in snaps} == {1, 2}
+
+
+def test_list_open_position_active_snapshots_excludes_closed_trade(
+    conn: sqlite3.Connection,
+) -> None:
+    """Closed trades must NOT appear in the dashboard tile feed."""
+    _seed_minimal_trade(conn, trade_id=3)
+    conn.execute(
+        "UPDATE trades SET state = 'closed' WHERE id = ?", (3,)
+    )
+    fields = _full_snapshot_fields(data_asof_session="2026-05-07")
+    insert_snapshot(conn, trade_id=3, snapshot_fields=fields)
+    snaps = list_open_position_active_snapshots(conn)
+    assert all(s.trade_id != 3 for s in snaps)
+
+
+def test_list_open_position_active_snapshots_excludes_superseded(
+    conn: sqlite3.Connection,
+) -> None:
+    fields = _full_snapshot_fields(data_asof_session="2026-05-07")
+    rec_id = insert_snapshot(conn, trade_id=1, snapshot_fields=fields)
+    conn.execute(
+        "UPDATE daily_management_records SET is_superseded = 1 "
+        "WHERE management_record_id = ?",
+        (rec_id,),
+    )
+    snaps = list_open_position_active_snapshots(conn)
+    assert all(s.management_record_id != rec_id for s in snaps)
+
+
+def test_list_open_position_active_snapshots_excludes_event_log_rows(
+    conn: sqlite3.Connection,
+) -> None:
+    """Only daily_snapshot rows feed the dashboard tile, not event_log rows."""
+    el = _minimal_event_log_fields(data_asof_session="2026-05-07")
+    insert_event_log(conn, trade_id=1, event_log_fields=el)
+    snaps = list_open_position_active_snapshots(conn)
+    assert all(s.record_type == "daily_snapshot" for s in snaps)
+
+
 # ---- helpers ----------------------------------------------------------------
 
 
 def _seed_minimal_trade(conn: sqlite3.Connection, *, trade_id: int) -> None:
-    """Mirror Phase 7 trades schema; sufficient to satisfy NOT NULL + CHECK."""
+    """Mirror Phase 7 trades schema; sufficient to satisfy NOT NULL + CHECK.
+
+    Ticker is derived from ``trade_id`` so multiple seeds in the same test
+    don't collide on the ``trades.ticker`` UNIQUE constraint.
+    """
     conn.execute(
         "INSERT INTO trades "
         "(id, ticker, entry_date, entry_price, initial_shares, initial_stop, "
         " current_stop, state, trade_origin, pre_trade_locked_at, current_size) "
-        "VALUES (?, 'TST', '2026-05-01', 100.0, 10, 90.0, 90.0, "
+        "VALUES (?, ?, '2026-05-01', 100.0, 10, 90.0, 90.0, "
         "        'managing', 'manual_off_pipeline', '2026-05-01T16:00:00', 10.0)",
-        (trade_id,),
+        (trade_id, f"TST{trade_id}"),
     )
 
 

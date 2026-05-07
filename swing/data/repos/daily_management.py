@@ -9,10 +9,11 @@ Two ``record_type`` values share the table:
 
 Public API split across multiple Phase 8 tasks:
 
-  Task 2.0 (this file): ``insert_snapshot``, ``insert_event_log``
+  Task 2.0: ``insert_snapshot``, ``insert_event_log``
   Task 2.1: ``select_active_snapshot``
-  Task 2.2: ``select_history``, ``list_for_trade_timeline``,
-            ``list_open_position_active_snapshots``
+  Task 2.2 (this file, latest): ``select_history``,
+           ``list_for_trade_timeline``,
+           ``list_open_position_active_snapshots``
   Task 2.3: ``upsert_snapshot``, ``tier_upgrade_snapshot``
 
 CLAUDE.md gotcha (2026-05-06) — ``INSERT OR REPLACE`` is forbidden on this
@@ -127,6 +128,121 @@ def select_active_snapshot(
         (trade_id, data_asof_session),
     ).fetchone()
     return _row_to_record(row) if row else None
+
+
+def select_history(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+    data_asof_session: str | None = None,
+) -> list[DailyManagementRecord]:
+    """Return the FULL audit chain for ``trade_id`` (incl. superseded rows).
+
+    Spec §B file map: "full chain incl. superseded; ordered by ``created_at
+    ASC, mfe_mae_precision_level ASC``". When ``data_asof_session`` is
+    provided, scopes the chain to that single session; ``None`` returns all
+    sessions for the trade.
+
+    Distinct from ``list_for_trade_timeline`` (per-trade-detail UI surface
+    with the Phase 8 spec §7.2 deterministic ``review_date / created_at /
+    management_record_id`` tiebreak ordering).
+    """
+    if data_asof_session is None:
+        rows = conn.execute(
+            f"SELECT {_DMR_SELECT_COLS} FROM daily_management_records "
+            f"WHERE trade_id = ? "
+            f"ORDER BY created_at ASC, mfe_mae_precision_level ASC, "
+            f"         management_record_id ASC",
+            (trade_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"SELECT {_DMR_SELECT_COLS} FROM daily_management_records "
+            f"WHERE trade_id = ? AND data_asof_session = ? "
+            f"ORDER BY created_at ASC, mfe_mae_precision_level ASC, "
+            f"         management_record_id ASC",
+            (trade_id, data_asof_session),
+        ).fetchall()
+    return [_row_to_record(r) for r in rows]
+
+
+def list_for_trade_timeline(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+    include_superseded: bool = False,
+) -> list[DailyManagementRecord]:
+    """Drive the per-trade timeline drill-down per spec §7.2.
+
+    Returns ``daily_snapshot`` + ``event_log`` rows interleaved
+    chronologically. Default predicate ``is_superseded = 0`` (per spec §7.2
+    visibility rule + Codex R3 Major #2 fix); ``include_superseded=True``
+    returns the full chain so the UI can render the "show superseded"
+    toggle.
+
+    ORDER BY clause is canonical per spec §7.2 + plan acceptance criterion:
+    ``(review_date ASC, created_at ASC, management_record_id ASC)`` —
+    deterministic tiebreak via PK so same-second event_log emissions render
+    in insertion order.
+    """
+    if include_superseded:
+        rows = conn.execute(
+            f"SELECT {_DMR_SELECT_COLS} FROM daily_management_records "
+            f"WHERE trade_id = ? "
+            f"ORDER BY review_date ASC, created_at ASC, "
+            f"         management_record_id ASC",
+            (trade_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"SELECT {_DMR_SELECT_COLS} FROM daily_management_records "
+            f"WHERE trade_id = ? AND is_superseded = 0 "
+            f"ORDER BY review_date ASC, created_at ASC, "
+            f"         management_record_id ASC",
+            (trade_id,),
+        ).fetchall()
+    return [_row_to_record(r) for r in rows]
+
+
+def list_open_position_active_snapshots(
+    conn: sqlite3.Connection,
+) -> list[DailyManagementRecord]:
+    """Drive the §7.1 dashboard tile feed — ONE active snapshot per OPEN trade.
+
+    Predicate per spec §7.1: ``record_type = 'daily_snapshot'`` AND
+    ``is_superseded = 0`` AND trade.state IN ``('entered', 'managing',
+    'partial_exited')`` (active-trade enum mirroring
+    ``swing.data.repos.trades._ACTIVE_STATES_SQL``). Closed/reviewed trades
+    do NOT surface in the dashboard tile.
+
+    JOIN against ``trades`` resolves the live state per Phase 7 + Phase 9 R1
+    M4 lesson — snapshot rows do not carry trade.state, so an unjoined
+    ``WHERE`` clause cannot exclude closed-trade snapshot rows that may
+    persist after closure (per spec §6.10 closed-trade snapshot history is
+    preserved verbatim).
+
+    Ordering: deterministic by trade_id ASC. Per-trade row uniqueness is
+    enforced by the partial-unique-index ``ix_daily_mgmt_active_snapshot``
+    over ``(trade_id, data_asof_session, mfe_mae_precision_level) WHERE
+    record_type='daily_snapshot' AND is_superseded=0`` — the dashboard tile
+    consumes the latest active row per trade.
+    """
+    # Many DMR columns shadow trades-row columns (current_stop, current_size,
+    # etc.) — qualify the SELECT list with the dmr alias so the JOIN doesn't
+    # raise "ambiguous column name".
+    qualified_cols = ", ".join(
+        f"dmr.{c.strip()}" for c in _DMR_SELECT_COLS.split(",")
+    )
+    rows = conn.execute(
+        f"SELECT {qualified_cols} "
+        f"FROM daily_management_records dmr "
+        f"INNER JOIN trades t ON t.id = dmr.trade_id "
+        f"WHERE dmr.record_type = 'daily_snapshot' "
+        f"  AND dmr.is_superseded = 0 "
+        f"  AND t.state IN ('entered', 'managing', 'partial_exited') "
+        f"ORDER BY dmr.trade_id ASC",
+    ).fetchall()
+    return [_row_to_record(r) for r in rows]
 
 
 def insert_snapshot(
