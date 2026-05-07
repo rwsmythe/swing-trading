@@ -632,9 +632,15 @@ def test_record_event_log_rejects_closed_trade_with_stop_change(
 ) -> None:
     """Closed/reviewed trade + stop_changed=1 must raise + insert nothing.
 
-    Repo-level update_stop_with_event already guards but the service-level
-    rejection short-circuits BEFORE invoking the repo, leaving consistent
-    error semantics with the no-stop-change path.
+    Codex R3 Minor #1 (post-R2 Major #1 fix): the service-level guard
+    short-circuits BEFORE invoking the repo, so the canonical raise is
+    ``ValidationException`` — the repo-level ``ValueError`` path is no
+    longer reachable here. The earlier permissive
+    ``raises((ValidationException, ValueError))`` would silently mask a
+    regression that re-introduced the repo-level fall-through. Pin to
+    ``ValidationException`` only and match on the service-level
+    \"not active\" message so a missing service guard would surface
+    explicitly.
     """
     from swing.trades.daily_management import ValidationException, record_event_log
 
@@ -653,7 +659,7 @@ def test_record_event_log_rejects_closed_trade_with_stop_change(
         rule_violation_suspected=0, emotional_state='["calm"]',
         created_at="2026-05-07T18:00:00",
     )
-    with pytest.raises((ValidationException, ValueError)):
+    with pytest.raises(ValidationException, match="not active"):
         record_event_log(conn, trade_id=1, req=req)
     post_dmr = conn.execute(
         "SELECT COUNT(*) FROM daily_management_records",
