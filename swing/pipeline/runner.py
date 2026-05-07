@@ -1040,7 +1040,14 @@ def _step_daily_management(
                     run_now=run_now,
                     ohlcv_archive_dir=ohlcv_archive_dir,
                     archive_history_days=archive_history_days,
-                    pipeline_run_id=eval_run_id,
+                    # Codex R1 Critical 1 fix: snapshot.pipeline_run_id is
+                    # FK to pipeline_runs(id), NOT evaluation_runs(id).
+                    # ``lease.run_id`` is the pipeline_runs.id (set during
+                    # lease acquisition); ``eval_run_id`` is the
+                    # evaluation_runs.id from _step_evaluate. They diverge
+                    # in normal operation; the FK will fire when ids
+                    # diverge and the eval id can't be found in pipeline_runs.
+                    pipeline_run_id=lease.run_id,
                     capital_floor_dollars=capital_floor_dollars,
                     trail_MA_period_days_default=trail_MA_period_days_default,
                 )

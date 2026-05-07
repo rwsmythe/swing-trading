@@ -115,6 +115,12 @@ def synthetic_lease_and_trades(tmp_path: Path, monkeypatch):
     # fenced_write(). Mirrors the cadence-step test pattern; the runner
     # function only needs ``lease.fenced_write()`` to yield a usable conn.
     class _StubLease:
+        # Codex R1 Critical 1: ``_step_daily_management`` reads
+        # ``lease.run_id`` to wire ``pipeline_run_id`` into the snapshot
+        # (FK to pipeline_runs.id). The fixture pre-seeded
+        # pipeline_runs.id=99, so the stub must mirror that.
+        run_id = 99
+
         def fenced_write(self):
             from contextlib import contextmanager
 

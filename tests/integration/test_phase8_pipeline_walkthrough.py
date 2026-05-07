@@ -398,3 +398,94 @@ def test_phase8_pipeline_record_event_log_after_run_links_correctly(
         )
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Test (Codex R1 Critical 1): pipeline_run_id wired to pipeline_runs.id, NOT
+# evaluation_runs.id. The original Test 1 above only asserts FK resolves to
+# *something* — when both ids happen to be 1 in a fresh DB, that test passes
+# vacuously even when the wiring is wrong. This test pre-seeds an
+# ``evaluation_runs`` row so the two id sequences DIVERGE: pipeline_runs.id=1
+# (inserted by lease acquisition), evaluation_runs.id starts at 2 (because
+# id=1 was pre-seeded). After the run, the snapshot's pipeline_run_id MUST
+# equal pipeline_runs.id (=1) and MUST NOT equal evaluation_runs.id (=2).
+# ---------------------------------------------------------------------------
+
+
+def test_phase8_pipeline_run_id_is_pipeline_runs_id_not_evaluation_runs_id(
+    synthetic_pipeline_env,
+):
+    """Codex R1 Critical 1 discriminator.
+
+    Pre-fix: ``_step_daily_management`` passes ``eval_run_id`` (an
+    evaluation_runs.id) into ``compute_daily_approximate_snapshot`` as
+    ``pipeline_run_id`` — the snapshot's ``pipeline_run_id`` ends up being
+    an ``evaluation_runs.id``, NOT a ``pipeline_runs.id``. The migration's
+    FK ``pipeline_run_id REFERENCES pipeline_runs(id)`` would normally
+    enforce this, but the FK only fires when the value can't FK-resolve in
+    pipeline_runs. When evaluation_runs.id and pipeline_runs.id collide
+    (both =1 in a fresh DB), the FK happens to resolve and the bug is
+    masked.
+
+    Post-fix: snapshot's pipeline_run_id = pipeline_runs.id (=1 below).
+    """
+    cfg = synthetic_pipeline_env
+
+    # Pre-seed an evaluation_runs row so the id sequence skips ahead.
+    # Now: pipeline_runs.id will be 1 (inserted by lease acquisition);
+    # evaluation_runs.id will be 2 (the real eval inside _step_evaluate).
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO evaluation_runs
+                (id, run_ts, data_asof_date, action_session_date,
+                 finviz_csv_path,
+                 tickers_evaluated, aplus_count, watch_count, skip_count,
+                 excluded_count, error_count)
+            VALUES (1, '2026-04-15T00:00:00', '2026-04-15', '2026-04-16',
+                    NULL, 0, 0, 0, 0, 0, 0)
+            """,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = run_pipeline_internal(cfg=cfg, trigger="manual")
+    assert result.state == "complete", (
+        f"pipeline did not complete cleanly: state={result.state!r}, "
+        f"error={result.error_message!r}"
+    )
+
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        # The pipeline_runs row inserted by the lease acquisition.
+        pr_ids = [r[0] for r in conn.execute(
+            "SELECT id FROM pipeline_runs ORDER BY id"
+        ).fetchall()]
+        assert pr_ids == [1], (
+            f"expected exactly one pipeline_runs row at id=1; got {pr_ids}"
+        )
+        # The evaluation_runs rows: pre-seeded id=1 + real run id=2.
+        er_ids = [r[0] for r in conn.execute(
+            "SELECT id FROM evaluation_runs ORDER BY id"
+        ).fetchall()]
+        assert er_ids == [1, 2], (
+            f"expected pre-seeded eval id=1 + real eval id=2; got {er_ids}"
+        )
+
+        snap_ids = conn.execute(
+            "SELECT DISTINCT pipeline_run_id FROM daily_management_records "
+            "WHERE record_type='daily_snapshot'"
+        ).fetchall()
+        assert snap_ids, "no daily_snapshot rows emitted"
+        for (pid,) in snap_ids:
+            assert pid == 1, (
+                f"snapshot.pipeline_run_id MUST equal pipeline_runs.id "
+                f"(=1), NOT evaluation_runs.id (=2). Got {pid}. "
+                "Pre-fix bug: runner.py passes eval_run_id into the "
+                "compute_daily_approximate_snapshot's pipeline_run_id "
+                "parameter — the wrong FK target."
+            )
+    finally:
+        conn.close()
