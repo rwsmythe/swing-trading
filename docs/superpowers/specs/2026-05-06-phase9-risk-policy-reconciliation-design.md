@@ -83,9 +83,9 @@ Per `docs/phase3e-todo.md` Schwab API Phase A entry — Phase 9 reconciliation d
 | Column | Type | Nullability | CHECK / FK |
 |---|---|---|---|
 | `policy_id` | INTEGER PRIMARY KEY | NOT NULL | autoincrement |
-| `effective_from` | TEXT | NOT NULL | ISO date (YYYY-MM-DD); chronology field; naive-only validator policy per §9 datetime discipline |
-| `effective_to` | TEXT | nullable | ISO date OR NULL; NULL while is_active=1; set when row is superseded by `superseded_by_policy_id` (set in same transaction per §4.1 6-step sequence) |
-| `is_active` | INTEGER | NOT NULL | CHECK IN (0,1) DEFAULT 1; predecessor flag set BEFORE successor row INSERT to free the active-policy uniqueness slot (Phase 8 R2 lesson) |
+| `effective_from` | TEXT | NOT NULL | **ISO datetime** (YYYY-MM-DDTHH:MM:SS); naive-UTC per §9 datetime discipline; chosen over date-only so same-day policy changes have monotone ordering AND so consumers comparing against `trades.pre_trade_locked_at` (datetime) can use a uniform string format. (R1 Major #2 fix.) |
+| `effective_to` | TEXT | nullable | ISO datetime OR NULL; NULL while is_active=1; set in same transaction as supersession per §4.1 6-step sequence; lexicographic ordering preserved by naive-UTC validator policy. |
+| `is_active` | INTEGER | NOT NULL | CHECK IN (0,1) DEFAULT 1; predecessor flag set BEFORE successor row INSERT to free the active-policy uniqueness slot (Phase 8 R2 lesson — decoupled from FK pointer) |
 | `superseded_by_policy_id` | INTEGER | nullable | FK → `risk_policy(policy_id)` (self-reference); set AFTER successor row INSERT to record the audit-chain pointer per §4.1 6-step sequence |
 | `created_at` | TEXT | NOT NULL | ISO datetime; system wall-clock; naive-UTC per §9 datetime policy |
 | `policy_notes` | TEXT | nullable | free-text rationale |
@@ -97,12 +97,12 @@ Per `docs/phase3e-todo.md` Schwab API Phase A entry — Phase 9 reconciliation d
 | `consecutive_losses_pause_threshold` | INTEGER | NOT NULL | CHECK > 0; default seed 3 |
 | `consecutive_losses_pause_action` | TEXT | NOT NULL | CHECK IN ('review_required'); seed 'review_required' (V1 single-value enum; V2 may extend) |
 | `consecutive_losses_streak_reset` | TEXT | NOT NULL | CHECK IN ('review_completed'); seed 'review_completed' |
-| **Drawdown circuit breaker (DEFAULT opt-in disabled per §1.4)** | | | |
+| **Drawdown circuit breaker (DEFAULT opt-in disabled per §1.4; sign convention: thresholds are negative R per Phase 10 §2 lock — drawdowns are always ≤ 0)** | | | |
 | `drawdown_circuit_breaker_enabled` | INTEGER | NOT NULL | CHECK IN (0,1) DEFAULT 0 |
-| `drawdown_pause_threshold_R` | REAL | nullable | CHECK > 0 OR NULL; required at app-layer when `drawdown_circuit_breaker_enabled=1`; CHECK constraint at-row-level cross-field (`(drawdown_circuit_breaker_enabled=0) OR (drawdown_pause_threshold_R IS NOT NULL)`) |
+| `drawdown_pause_threshold_R` | REAL | nullable | CHECK < 0 OR NULL (R1 Major #7 fix — Phase 10 sign convention); required at app-layer when `drawdown_circuit_breaker_enabled=1`; runtime predicate per v1.2 §7.8: `current_drawdown_R <= drawdown_pause_threshold_R` (both signed-negative). Enforce-when-enabled via app-layer validator (cross-field CHECK with sentinel NULL is feasible but the validator path stays the binding contract per §3.1.1). |
 | `drawdown_pause_action` | TEXT | nullable | CHECK IN ('halt_new_entries','reduce_size') OR NULL; required at app-layer when enabled |
-| `drawdown_size_reduction_pct` | REAL | nullable | CHECK > 0 OR NULL; required at app-layer when `drawdown_pause_action='reduce_size'` |
-| `drawdown_recovery_threshold_R` | REAL | nullable | CHECK > 0 OR NULL; required at app-layer when enabled |
+| `drawdown_size_reduction_pct` | REAL | nullable | CHECK > 0 AND ≤ 1 OR NULL; required at app-layer when `drawdown_pause_action='reduce_size'`; expressed as fraction (0.50 = halve sizing) |
+| `drawdown_recovery_threshold_R` | REAL | nullable | CHECK < 0 OR NULL (Phase 10 sign convention); required at app-layer when enabled; runtime: drawdown recovers when `current_drawdown_R >= recovery_threshold_R` (closer to zero than pause_threshold) |
 | **Capital + sizing (Phase 10 §6.2 split-policy capture-need)** | | | |
 | `capital_floor_constant_dollars` | REAL | NOT NULL | CHECK > 0; default seed 7500.0 (governance-anchor; Phase 10 §2 split-policy) |
 | **Statistics-methodology knobs (Phase 10 §6.2 capture-needs)** | | | |
@@ -122,7 +122,7 @@ Per `docs/phase3e-todo.md` Schwab API Phase A entry — Phase 9 reconciliation d
 | `trail_MA_period_days` | INTEGER | NOT NULL | CHECK > 0; default seed 21 (Phase 8 §6.6 lock externalized) |
 | `trail_MA_post_2R_period_days` | INTEGER | nullable | CHECK > 0 OR NULL; default seed NULL (V1 = no upgrade); V2 may set 10 (Tier-3 #6 doctrine) |
 | **Sum-to-1.0 cross-field constraint** | | | |
-| The three `process_grade_weight_*` fields MUST sum to 1.0 (with tolerance ±1e-9). Schema-level CHECK is impractical (CHECK can't reference column arithmetic across multiple columns precisely with float tolerance); enforced at app-layer validator (`risk_policy_repo.validate_for_insert`). | | | |
+| The three `process_grade_weight_*` fields MUST sum to 1.0 within tolerance ±1e-9. (R1 Minor #4 correction — earlier wording over-claimed that SQLite cannot CHECK cross-column arithmetic. SQLite CAN: `CHECK (ABS((entry+management+exit) - 1.0) < 1e-9)` is valid.) Spec keeps app-layer validator as the binding contract for clearer error messaging + UI form integration; schema-level CHECK is added as defense-in-depth at writing-plans-time (operator-actionable: writing-plans verifies CHECK syntax executes correctly under SQLite-runner). |
 
 **Field count:** 28 columns (7 metadata + supersession + 13 trading-risk + 5 statistics-methodology grade weights, etc.).
 
@@ -134,7 +134,7 @@ Per Phase 8 brainstorm lesson "Per-row stamp of policy-versioned values prevents
 |---|---|---|
 | `trades` (Phase 7 shipped) | `risk_policy_id_at_lock` (INTEGER FK → `risk_policy(policy_id)`, nullable for legacy) | Trades pre-Phase-9 have NULL; new trades stamp at `pre_trade_locked_at`; preserves capital floor + scratch_epsilon + tripwire interpretation for the trade's lifetime. |
 | `review_log` (Phase 6 shipped) | `risk_policy_id_at_review_completion` (INTEGER FK → `risk_policy(policy_id)`, nullable until completion) | Set at completion-time (alongside frozen aggregates). Preserves which `scratch_epsilon` + `process_grade_weights` produced the frozen aggregates. |
-| `daily_management_records` (Phase 8 will ship in v15→v16) | NO new column; resolves via `trade_id → trades.risk_policy_id_at_lock` | Phase 8 already stamps `trail_MA_period_days` per-row (R1 M5 satisfied for SMA period). For policy-versioned values consumed at snapshot-emit-time (`mfe_mae_default_precision_level`), Phase 8 already stamps `mfe_mae_precision_level` per-row. No additional Phase 9 stamp needed at daily_management grain. |
+| `daily_management_records` (Phase 8 will ship in v15→v16) | NO new column for V1 (R1 Major #3 ACCEPTED with rationale + V2 trigger); resolves via `trade_id → trades.risk_policy_id_at_lock` for trade-grain interpretation | **Phase 8 already stamps `trail_MA_period_days` per-row** (Phase 8 §3.1 column; R1 M5 satisfied for SMA period at snapshot grain). **Phase 8 already stamps `mfe_mae_precision_level` per-row** (Phase 8 §3.1 column). **Phase 8 already stamps `position_capital_denominator_dollars` per-row** (Phase 8 §3.1 column; R1 Major #4 self-stamp at snapshot time). Every Phase 8 column whose value derives from a Phase 9 risk_policy field is ALREADY self-stamped at snapshot-emit-time. **R1 Major #3 trigger condition for V2:** if a future Phase 9 policy field is added that Phase 8 daily_management consumes at snapshot-emit-time WITHOUT Phase 8 self-stamping it, V2 must add a `risk_policy_id_at_snapshot` FK column on daily_management_records. V1 audit at writing-plans-time MUST verify no such field exists pre-ship. |
 | `account_equity_snapshots` (Phase 9 §3.5) | NO stamp; capital floor is static per-policy and snapshots are capital-state, not capital-doctrine. | Snapshot date + source already capture the meaningful provenance. |
 | `hypothesis_status_history` (Phase 9 §3.4) | NO stamp; status transitions are operator-decision-anchored, not policy-anchored. | |
 
@@ -183,7 +183,15 @@ The migration that creates `risk_policy` MUST seed `policy_id=1` from current `s
 | `trail_MA_period_days` | constant 21 |
 | `trail_MA_post_2R_period_days` | NULL |
 
-**Operational consequence:** post-Phase-9 ship, Phase 9 reads of risk values come from `risk_policy.policy_id=1` row, NOT from `swing.config.toml`. Phase 5 config-page surfaces (`cfg.account.risk_equity_floor`, `cfg.review.review_window_days`) MUST be re-routed in writing-plans territory to update `risk_policy` instead of `cfg`. The toml values BECOME defaults for fresh install only. Spec §10.1 surfaces the transition policy as an open question for orchestrator triage.
+**Operational consequence (LOCKED — R1 Major #8 fix; previously deferred to §10.1):** post-Phase-9 ship, `risk_policy` IS the source-of-truth for every field that has a corresponding column. The transition contract:
+
+1. **At Phase 9 ship-time:** the v16→v17 migration seeds `policy_id=1` from current TOML values per the table above.
+2. **Post-Phase-9, for the 3 currently-Phase-5-surfaced fields** (`cfg.web.chase_factor`, `cfg.pipeline.chart_top_n_watch`, `cfg.account.risk_equity_floor`):
+   - `cfg.account.risk_equity_floor` corresponds to `risk_policy.capital_floor_constant_dollars` — Phase 5 config page edit MUST cascade to a new `risk_policy` row (writing-plans wires this); the cfg field becomes a startup-mirror (read-only, refreshed at process start from `risk_policy.is_active=1` row). If operator hand-edits `swing.config.toml` directly, startup detects divergence + logs a warning + writes a new `risk_policy` row matching the TOML edit (operator-paced reconciliation; no auto-write under operator's hands).
+   - `cfg.web.chase_factor` and `cfg.pipeline.chart_top_n_watch` are NOT risk_policy fields (operational-tunable, not policy). They stay cfg-managed.
+3. **Post-Phase-9, for non-Phase-5-surfaced fields** (the 21 statistics-methodology + drawdown + sector-concentration + MFE/MAE precision fields newly introduced by §3.1): edited via `swing config policy ...` CLI (V1) or future Phase 10+ web form. Each edit creates a new policy_id row.
+4. **Read path discipline:** all policy-value reads (Phase 8 snapshot emit; Phase 6 review computation; Phase 10 metric layer; Phase 9 reconciliation discrepancy classifier) resolve via either `trades.risk_policy_id_at_lock` (at-trade-time semantics — capital_floor, scratch_epsilon, tripwire, MA periods) OR `risk_policy.is_active=1` (live-time semantics — statistics-methodology knobs at dashboard render). NEVER from cfg.
+5. **Backwards-compatibility:** the existing `cfg.account.starting_equity` + `cfg.account.starting_date` + `cfg.account.risk_equity_floor` persist; only `risk_equity_floor` becomes mirrored. `starting_equity` + `starting_date` are static (account-open snapshots), not policy. Phase 5 config-page existing field set is preserved.
 
 #### §3.1.4 Versioning-model decision rationale (LOCKED — per-policy-snapshot)
 
@@ -207,7 +215,7 @@ The migration that creates `risk_policy` MUST seed `policy_id=1` from current `s
 | Column | Type | Nullability | CHECK / FK |
 |---|---|---|---|
 | `run_id` | INTEGER PRIMARY KEY | NOT NULL | autoincrement |
-| `source` | TEXT | NOT NULL | CHECK IN ('tos_csv','schwab_api','manual'); V1 ships with 'tos_csv' active + 'schwab_api' + 'manual' reserved |
+| `source` | TEXT | NOT NULL | CHECK IN ('tos_csv','schwab_api','manual','system_audit'); V1 ships with 'tos_csv' + 'system_audit' active + 'schwab_api' + 'manual' reserved (R1 Minor #2 fix — `system_audit` distinguishes route-layer-emitted ad-hoc runs (e.g., the §7 sector_tamper rejection) from operator-initiated reconciliation; prevents `manual` from being overloaded with two semantics) |
 | `source_artifact_path` | TEXT | nullable | absolute path to TOS CSV (V1) or null for `schwab_api` runs (no artifact) |
 | `source_artifact_sha256` | TEXT | nullable | content-hash of source artifact at run-start (TOS CSV); NULL for `schwab_api`; supports re-run idempotency check |
 | `period_start` | TEXT | nullable | ISO date; reconciliation period inclusive lower bound; NULL for full-account snapshot mode |
@@ -312,9 +320,26 @@ JSON shapes are per-type contracts; writing-plans bakes a JSON-shape validator (
 | `entry_price_mismatch` | `{"price": <journal entry_price (REAL)>, "entry_date": <ISO date>}` | `{"price": <tos entry price (REAL)>, "fill_date": <ISO date>}` | YES (+ fill_id) | 1 (TRUE) |
 | `equity_delta` | `{"equity_dollars": <journal equity (REAL)>}` | `{"equity_dollars": <source equity (REAL)>}` | NO (run-grain only) | 0 (FALSE — surfaces as a run-summary metric, not a per-trade reopen trigger) |
 
-#### §3.3.2 material_to_review default lookup
+#### §3.3.2 material_to_review default lookup + override semantics (R1 Major #6 fix — non-trade-linked behavior locked)
 
-The `material_to_review` boolean is COMPUTED at INSERT-time by the discrepancy emitter (writing-plans codifies the lookup as `MATERIAL_BY_TYPE: dict[str,int]`). Operator may override per-row at app-layer post-INSERT (e.g., promote an `acknowledged_immaterial` cash_movement_mismatch to `material=1` if discretionary judgment differs). Schema CHECK does NOT bind type → material mapping; the binding lives in the validator. Rationale: type-to-material mapping changes when sector concentration becomes a gate (V2 elevates `sector_tamper` from immaterial → material); putting it in CHECK requires a schema migration to flip; putting it in the validator requires a code commit only.
+The `material_to_review` boolean is COMPUTED at INSERT-time by the discrepancy emitter (writing-plans codifies the lookup as `MATERIAL_BY_TYPE: dict[str,int]`). Operator may override per-row at app-layer post-INSERT. Schema CHECK does NOT bind type → material mapping; the binding lives in the validator. Rationale: type-to-material mapping changes when sector concentration becomes a gate (V2 elevates `sector_tamper` from immaterial → material); putting it in CHECK requires a schema migration to flip; putting it in the validator requires a code commit only.
+
+**Operator-override semantics (LOCKED):** `material_to_review` is a CLASSIFICATION flag, NOT a workflow trigger. The §5.1 "trades flagged for re-review attention" query joins on `trade_id IS NOT NULL AND material_to_review=1 AND resolution='unresolved'` — discrepancies WITHOUT `trade_id` (run-grain `equity_delta`; cash_movement-grain `cash_movement_mismatch`; orphan `unmatched_open_fill` / `unmatched_close_fill` with no journal trade to attribute to) NEVER appear in the trade-attention query, regardless of `material_to_review` value.
+
+For non-trade-linked discrepancies, operator dispositioning happens via the resolution lifecycle (§4.2):
+
+| discrepancy_type (non-trade-linked) | Operator action when material=1 (overridden) | Rendering surface |
+|---|---|---|
+| `equity_delta` | Resolve via journal correction (e.g., add missing cash_movement) → `resolution='journal_corrected'` | Run-summary surface (Phase 10+ dashboard "reconciliation status" badge) |
+| `cash_movement_mismatch` | Resolve via journal correction → resolution=journal_corrected; OR acknowledge → `acknowledged_immaterial` | Discrepancy list page (Phase 10+ writing-plans) |
+| `unmatched_open_fill` (no trade_id, ticker only) | Operator creates the missed trade journal entry → resolution=journal_corrected; OR acknowledges (e.g., the trade was a previously-closed trade not in our DB scope) → `acknowledged_immaterial` | Run-summary surface; discrepancy list |
+| `unmatched_close_fill` (no trade_id) | Same as above; or operator records the matching exit fill on an existing open trade | Same |
+| `sector_tamper` (V1 immaterial; V2 material when gate elevates) | Acknowledge in V1; in V2 when gate elevates, audit-investigate the cache-vs-form drift before re-attempting entry | Sector-concentration audit surface (V2 only) |
+| `snapshot_mismatch` (V2 only when Schwab Phase A wires emitter) | Resolve when broker / journal alignment is verified | Phase 8 daily_management UI extension (Phase 10+) |
+
+**Why operator override is allowed but does NOT trigger trade-attention:** The classification flag default is BEST GUESS at type-to-material mapping; operator may know context that elevates an otherwise-immaterial discrepancy (e.g., a cash_movement_mismatch reveals the operator made an account-fund-transfer error that affects sizing for the next several trades — material to operator's broader practice but NOT to a specific trade's review). The override flips the badge surface; it does NOT manufacture a phantom trade-attention row. This avoids the failure mode where a non-trade discrepancy with operator-override `material=1` generates phantom trade-list entries via `trade_id IS NULL` joins.
+
+**Strict-validator note:** writing-plans CHECK constraint should NOT enforce `(material_to_review=1 → trade_id IS NOT NULL)` — operator-discretion is the binding; otherwise legitimate "this is material to my workflow even though no specific trade ties to it" overrides become impossible.
 
 #### §3.3.3 Reconciliation_Run + Discrepancies single-transaction emit (LOCKED)
 
@@ -365,6 +390,14 @@ CREATE UNIQUE INDEX ux_hypothesis_status_history_current
 
 The partial-unique index enforces "exactly one current row per hypothesis" at schema level (defense-in-depth against application-layer bug introducing two open intervals).
 
+#### §3.4.0 Why no `is_superseded` + `superseded_by_history_id` dual-column pattern (R1 Major #1 — ACCEPTED with rationale)
+
+The Phase 8 R2 dual-column lesson applies when the supersession SEQUENCE is `INSERT successor → UPDATE predecessor's FK pointer`, because between those two steps the active-row uniqueness slot is occupied by BOTH rows (predecessor's `is_superseded=0` flag must be UPDATEd FIRST to free the slot; the FK pointer is set LATER once successor's PK is known). On `risk_policy`, that's exactly the §4.1 6-step sequence.
+
+`hypothesis_status_history` does NOT need the dual-column pattern because the supersession sequence is REVERSED: predecessor is closed (`UPDATE prior SET effective_to=NOW`) BEFORE successor is INSERTed. There is no intermediate state where two rows have `effective_to IS NULL` for the same `hypothesis_id`. The FK chain is implicit via `effective_from` chronology — readers query "what came after row X?" by `WHERE effective_from = (SELECT effective_to FROM hsh WHERE history_id=X)`. No FK pointer needed.
+
+If a future workflow demands "what immediately replaced this row?" as an O(1) lookup (e.g., audit-trail visualization with predecessor/successor links), writing-plans can ADD `superseded_by_history_id INTEGER` column at-need without breaking V1 readers. V1 ships without it.
+
 #### §3.4.1 Append-on-status-update mechanism (LOCKED — application-layer, not SQL trigger)
 
 Decision: **application-layer enforcement, NOT SQL trigger.** Rationale:
@@ -404,7 +437,7 @@ For hypotheses whose `status_changed_at` is NOT NULL (any of the seeded 4 might 
 | `snapshot_id` | INTEGER PRIMARY KEY | NOT NULL | autoincrement |
 | `snapshot_date` | TEXT | NOT NULL | ISO date (YYYY-MM-DD); chronology field; one row per (snapshot_date, source) |
 | `equity_dollars` | REAL | NOT NULL | CHECK > 0; account net liquidation value at snapshot_date close-of-business |
-| `source` | TEXT | NOT NULL | CHECK IN ('manual','schwab_api','csv_import'); V1 ships 'manual' active + 'schwab_api' + 'csv_import' reserved |
+| `source` | TEXT | NOT NULL | CHECK IN ('manual','schwab_api','tos_csv'); V1 ships 'manual' active + 'schwab_api' + 'tos_csv' reserved (R1 Minor #3 fix — vocabulary harmonized with `reconciliation_runs.source`; was `csv_import`, renamed to `tos_csv` for consistency. Future broker CSV imports — e.g., a hypothetical Schwab-CSV-export — would extend the enum then; do not over-anticipate) |
 | `source_artifact_path` | TEXT | nullable | path to underlying CSV / API response cache; NULL for 'manual' |
 | `recorded_at` | TEXT | NOT NULL | ISO datetime; system wall-clock at INSERT |
 | `recorded_by` | TEXT | NOT NULL | session/user identifier; V1 hardcoded 'operator' |
@@ -424,7 +457,7 @@ CREATE INDEX ix_account_equity_snapshots_date
     ON account_equity_snapshots (snapshot_date);
 ```
 
-The unique index `(snapshot_date, source)` allows BOTH a manual-entry row AND a future Schwab-API row to coexist for the same date (operator-recorded vs broker-authoritative). Read-time precedence in Phase 8 + Phase 10 follows the source ladder: `schwab_api` > `csv_import` > `manual`.
+The unique index `(snapshot_date, source)` allows BOTH a manual-entry row AND a future Schwab-API row to coexist for the same date (operator-recorded vs broker-authoritative). Read-time precedence in Phase 8 + Phase 10 follows the source ladder: `schwab_api` > `tos_csv` > `manual`.
 
 **Cadence:** V1 manual entry (CLI `swing account snapshot --equity 1234.56` + web form); V2 Schwab Phase A may emit `schwab_api` rows automatically. **Daily target; gaps allowed (Phase 8 §4.3 GAP-FLAGGED-no-auto-back-fill precedent).** Read-time consumers (Phase 8 `position_capital_utilization_pct`; Phase 10 `live_capital_denominator_dollars`) resolve to most-recent-snapshot-on-or-before-asof_date via `MAX(snapshot_date)` query; on absence, fall back to `risk_policy.capital_floor_constant_dollars` (Phase 10 §2 split-policy PROVISIONAL).
 
@@ -444,15 +477,15 @@ The unique index `(snapshot_date, source)` allows BOTH a manual-entry row AND a 
 
 **Migration mechanic:** `ALTER TABLE trades ADD COLUMN risk_policy_id_at_lock INTEGER REFERENCES risk_policy(policy_id)` — no rebuild (nullable column add). Phase 7's locked-table-rebuild migration 0014 is NOT re-run.
 
-**`review_log` (Phase 6 shipped) — ADD THREE COLUMNS:**
+**`review_log` (Phase 6 shipped) — ADD ONE COLUMN (R1 Major #4 + #5 fix):**
 
 | Column | Type | Nullability | CHECK / FK |
 |---|---|---|---|
-| `risk_policy_id_at_review_completion` | INTEGER | nullable | FK → `risk_policy(policy_id)` ON DELETE SET NULL; populated at completion-time |
-| `reopened_at` | TEXT | nullable | ISO datetime; populated when a material reconciliation discrepancy reopens this review (per §5.1) |
-| `reopened_due_to_reconciliation_run_id` | INTEGER | nullable | FK → `reconciliation_runs(run_id)` ON DELETE SET NULL; pointer to the run that triggered the reopen |
+| `risk_policy_id_at_review_completion` | INTEGER | nullable | FK → `risk_policy(policy_id)` ON DELETE SET NULL; populated at completion-time per §3.1.1 stamp discipline |
 
-**Migration mechanic:** three `ALTER TABLE review_log ADD COLUMN ...` statements — no rebuild.
+**Migration mechanic:** one `ALTER TABLE review_log ADD COLUMN ...` — no rebuild.
+
+**Why `reopened_at` + `reopened_due_to_reconciliation_run_id` + `reopen_resolution_completed_at` are NOT added (R1 Major #4 fix — review_log is cadence-period-grain, NOT trade-grain):** Phase 6's `review_log` table tracks daily/weekly/monthly/quarterly/circuit_breaker cadence reviews; rows are keyed on `(review_type, period_start, period_end)`. There is NO `trade_id` column and NO bridge table mapping reviews to trades — a "weekly review" reviews ALL trades that closed in the period as a batch. Setting a reopen flag on review_log when ONE trade in the period has a material discrepancy would (a) reopen the entire period's review for one trade's discrepancy, (b) require a "most-recent review whose period overlaps trade close date" lookup that lacks a precise mapping when multiple reviews of different cadences cover the same trade. The reopen workflow is reframed as a query-side join (§5.1) instead of a row-side flag — the dashboard surfaces "reviews containing trades with unresolved material discrepancies" by JOINing review_log to trades-by-period-overlap to discrepancies. No schema additions to review_log beyond the policy-id stamp.
 
 **`hypothesis_registry` (Phase 1 shipped via migration 0008) — NO MODIFICATIONS.** The audit history lives in the new `hypothesis_status_history` child table. The shipped `hypothesis_registry.status` + `status_changed_at` + `status_change_reason` columns retain their meaning as "current-row denorm" of the most-recent transition (writing-plans keeps them in sync via the §3.4.1 service helper).
 
@@ -560,50 +593,60 @@ UPDATE pattern is SELECT-then-UPDATE-or-INSERT (the row exists; just UPDATE) —
 
 ## §5 Lifecycle integration with Phase 6 + Phase 7 + Phase 8 (LOCKED)
 
-### §5.1 Phase 7 state-machine integration: review_log flag, NOT state transition
+### §5.1 Phase 7 state-machine integration: query-side reopen, NOT state transition + NOT review_log flag
 
-**Decision (LOCKED):** When a material reconciliation discrepancy is detected on a trade with `state='reviewed'`, Phase 9 does NOT introduce a new state, does NOT extend Phase 7's state machine with a `reviewed → managing` reopen transition, and does NOT add a `reviewed_with_pending_discrepancy` discriminator state. Instead, Phase 9 sets `review_log.reopened_at` + `review_log.reopened_due_to_reconciliation_run_id` on the most-recent completed review row for the trade. Phase 7 state stays at `reviewed`.
+**Decision (LOCKED — R1 Major #4 redesign):** When a material reconciliation discrepancy is detected on a trade with `state='reviewed'`, Phase 9 does NOT introduce a new state, does NOT extend Phase 7's state machine, AND does NOT add reopen-flag columns to `review_log`. Phase 7 state stays at `reviewed`. The "reopen review" semantic is a QUERY-SIDE JOIN against `reconciliation_discrepancies`; the discrepancy row IS the source-of-truth for "this trade has audit-trail-pending material disagreement."
 
 **Rationale:**
 
-1. **Phase 7 state machine is operationally settled.** 11 operator-witnessed gate surfaces PASS post-hotfix (Phase 7 ship 2026-05-05); production DB has 4 trades at known states. Touching the state CHECK enum forces a Phase 7-style table-rebuild (migration `0014` precedent) — a backup gate, foreign_keys=OFF runner discipline, full constraint enumeration, and reconsidering every status→state predicate-rewrite call site (Phase 7 R1 Major 1 lesson). Massive blast radius for a flag-shaped need.
-2. **Reopen is a flag, not a state.** The operator semantic is "this review needs another look." There is no "managing" implication (the trade is closed; partial_exited isn't applicable; the position-state column meaning of `state` doesn't actually change). Adding a state to model a flag is a category error.
-3. **Phase 6 review_log already has the right shape for an audit-trail extension.** `reopened_at` + `reopened_due_to_reconciliation_run_id` mirror the dashboard `needs review` badge query (Phase 6 §) — it's the same surface, just a new predicate (`reopened_at IS NOT NULL AND reopen_resolution_completed_at IS NULL`).
-4. **Frozen aggregates remain frozen.** `review_log.net_R_effective` etc. are an audit snapshot of "what was reviewed." A reopen does NOT change them — what's frozen is the historical record. New aggregates, if recomputed, are computed at the dashboard read layer from current trade-row + fill-row data. This preserves Phase 6's frozen-aggregates lock semantics without a schema-level un-freeze.
+1. **Phase 7 state machine is operationally settled.** 11 operator-witnessed gate surfaces PASS post-hotfix (Phase 7 ship 2026-05-05); production DB has 4 trades at known states. Touching the state CHECK enum forces a Phase 7-style table-rebuild — backup gate, foreign_keys=OFF runner discipline, full constraint enumeration (Phase 7 R1 Major 1 lesson). Massive blast radius for a flag-shaped need.
+2. **Reopen is a property of the discrepancy, not the trade or the review_log row.** The operator-actionable surface is: "show me discrepancies that are unresolved AND material AND attribute to a reviewed trade." That's a SELECT, not a flag.
+3. **review_log is cadence-period-grain, NOT trade-grain (R1 Major #4 fix).** Phase 6 `review_log` rows track daily / weekly / monthly / quarterly / circuit_breaker cadence; one row covers MANY trades in its period. Setting a reopen flag on a weekly review_log row when ONE trade in the period has a discrepancy reopens the WHOLE period's review semantically, which doesn't match operator intent. There is also NO trade-to-review-log mapping in current Phase 6 schema (no `review_log_id` column on trades; no bridge table); inferring "the most recent review whose period overlaps trade close date" is a heuristic that breaks down when multiple cadences cover the same trade. Query-side JOIN by period-overlap remains correct AND has no ambiguity-amplifying flag to maintain.
+4. **Frozen aggregates remain frozen.** `review_log.net_R_effective` etc. are an audit snapshot of "what was reviewed." Phase 9 does NOT touch them. New aggregates, if needed, are computed at the dashboard read layer from current trade+fill data; the dashboard distinguishes "frozen-at-time-of-review" vs "current" naturally without a schema-level un-freeze.
 
 **Operational sequence when material discrepancy hits a `state='reviewed'` trade (LOCKED — single transaction):**
 
 1. (Inside the §3.3.3 reconciliation_runs transaction.) Discrepancy is INSERTed with `material_to_review=1` + `trade_id=T`.
-2. SELECT review_log row for T: `SELECT review_id FROM review_log WHERE n_trades_reviewed >= 1 AND completed_date IS NOT NULL ORDER BY completed_date DESC LIMIT 1` filtered by trade-row association (review_log row associated via writing-plans-time existing trade-to-review-log resolution; brainstorm flags this lookup as a writing-plans verification gate — current Phase 6 schema does NOT have a `review_log_id` on trades, so resolution is by `(trade.reviewed_at IS NOT NULL AND trade.id=T)` AND most-recent review_log overlapping trade close date; writing-plans verifies and documents).
-3. UPDATE review_log SET reopened_at=now, reopened_due_to_reconciliation_run_id=this_run_id WHERE review_id=R AND reopened_at IS NULL.
-4. NO Phase 7 state column UPDATE.
-5. NO Phase 6 frozen aggregates UPDATE.
-6. (Transaction COMMITs at §3.3.3 step 6.)
+2. NO `review_log` UPDATE.
+3. NO Phase 7 state column UPDATE.
+4. (Transaction COMMITs at §3.3.3 step 6.)
 
-**Idempotency:** the `WHERE reopened_at IS NULL` predicate prevents repeated reopens from the same operator-rerun reconciliation. If a SECOND discrepancy hits the same trade in a LATER run, the OPERATOR must explicitly clear the prior reopen (writing-plans `swing review reopen-resolve` CLI) before a new reopen-flag fires. Defense: keeps the badge meaningful (operator addresses the first reopen before another piles on).
+That's it. Operator-actionable surface is the discrepancy resolution lifecycle (§4.2): operator dispositions the discrepancy via CLI / web, optionally adds an addendum to the trade via Phase 7's `trade_events.event_type='note'` mechanism. If the operator's review judgment changes after the discrepancy resolves, they may add a `mistake_tag` to the trade row (`swing trade review` already supports re-running review on a closed trade per Phase 6 design) — that path EXISTS independently of Phase 9.
 
-**Predicate rewrite per call-site (Phase 7 R1 Major 1 lesson, applied):** Phase 9 introduces ONE new query predicate — "trade has a pending reopen":
+**Predicate rewrite per call-site (Phase 7 R1 Major 1 lesson, applied):** Phase 9 introduces ONE new query predicate — "trade has unresolved material discrepancies on a reviewed trade" — but this predicate is built from EXISTING tables (no new `state` value, no new flag column):
 
+```sql
+-- Reviews containing trades with unresolved material discrepancies (Phase 10+ dashboard surface):
+SELECT r.review_id, r.review_type, r.period_start, r.period_end,
+       COUNT(d.discrepancy_id) AS pending_material_count
+FROM review_log r
+JOIN trades t ON
+  -- trade close date overlaps review period (Phase 6 review_log periods are inclusive bounds)
+  (SELECT MAX(f.fill_datetime) FROM fills f
+   WHERE f.trade_id = t.id AND f.action IN ('exit','stop','trim'))
+  BETWEEN (r.period_start || 'T00:00:00') AND (r.period_end || 'T23:59:59')
+JOIN reconciliation_discrepancies d ON
+  d.trade_id = t.id
+  AND d.material_to_review = 1
+  AND d.resolution = 'unresolved'
+WHERE r.completed_date IS NOT NULL
+  AND t.state = 'reviewed'
+GROUP BY r.review_id;
+
+-- Trades flagged for re-review attention (Phase 6 dashboard "needs re-attention" extension):
+SELECT t.id, t.ticker, COUNT(d.discrepancy_id) AS pending_material_count
+FROM trades t
+JOIN reconciliation_discrepancies d ON
+  d.trade_id = t.id
+  AND d.material_to_review = 1
+  AND d.resolution = 'unresolved'
+WHERE t.state = 'reviewed'
+GROUP BY t.id;
 ```
-trades_with_pending_reopen :=
-  SELECT t.* FROM trades t
-  JOIN review_log r ON ((r.review_type, r.period_start, r.period_end) — Phase-6-association resolution)
-  WHERE t.state = 'reviewed'
-    AND r.reopened_at IS NOT NULL
-    AND r.reopen_resolution_completed_at IS NULL
-```
 
-This predicate is DISTINCT from existing Phase 7 state predicates (closed-or-reviewed-aggregator: `state IN ('closed','reviewed')`; active-trade-filter: `state IN ('entered','managing','partial_exited')`; review-precondition: `state='closed'`). Writing-plans enumerates ALL Phase 9 query call sites and per-purpose specifies which of these 4 predicates applies.
+These predicates are DISTINCT from existing Phase 7 state predicates (closed-or-reviewed-aggregator: `state IN ('closed','reviewed')`; active-trade-filter: `state IN ('entered','managing','partial_exited')`; review-precondition: `state='closed'`; entry-uniqueness: `state IN ('entered','managing','partial_exited')`). Writing-plans MUST enumerate every Phase 9 query call site and specify per-purpose which predicate applies — see Phase 7 R1 Major 1 lesson on per-call-site predicate-rewrite discipline.
 
-**Reopen-resolution column:** `review_log.reopen_resolution_completed_at` (TEXT nullable) — populated when operator clears the reopen. Writing-plans surfaces the CLI / web action that sets it.
-
-**Updated review_log column list (Phase 9 ADDs):**
-- `risk_policy_id_at_review_completion` (FK → risk_policy)
-- `reopened_at` (TEXT nullable)
-- `reopened_due_to_reconciliation_run_id` (FK → reconciliation_runs)
-- `reopen_resolution_completed_at` (TEXT nullable)
-
-(Total Phase 9 additions to review_log: 4 columns. §3.6 listed 3; corrected here — `reopen_resolution_completed_at` was missed in §3.6 inventory; the spec authoritative count is 4.)
+**Idempotency at discrepancy grain:** the `(run_id, trade_id, discrepancy_type, fill_id, ticker, field_name)` combination is what defines a "duplicate" — writing-plans codifies a uniqueness check at INSERT-time so a second reconciliation rerun for the same source artifact doesn't generate exponential discrepancy counts on the same trade. (This complements §3.2's `source_artifact_sha256` advisory at the run level.)
 
 ### §5.2 Phase 6 review_log integration: frozen aggregates NEVER unfreeze
 
@@ -741,7 +784,7 @@ The brainstorm-locked refactor shape is: `reconcile_tos(...)` returns the existi
 **Decision (LOCKED):** BOTH schema-side and route-layer.
 
 - **Schema-side (Phase 9 in scope):** `discrepancy_type='sector_tamper'` enum value already in §3.3. `expected_value_json` / `actual_value_json` shape per §3.3.1 (cached vs form-submitted sector + industry).
-- **Route-layer (writing-plans territory):** mirrors `chart_pattern` hardening at `swing/web/routes/trades.py` commits `117dc97` + `2b9d6f3`. At trade entry POST: lookup cached candidate row by `(ticker, action_session)`; reject if form-submitted sector or industry doesn't match. On rejection path: ALSO emit a `sector_tamper` discrepancy row inside an ad-hoc `reconciliation_runs` row (`source='manual'`, `state='completed'`, period_start=period_end=action_session) for audit trail.
+- **Route-layer (writing-plans territory):** mirrors `chart_pattern` hardening at `swing/web/routes/trades.py` commits `117dc97` + `2b9d6f3`. At trade entry POST: lookup cached candidate row by `(ticker, action_session)`; reject if form-submitted sector or industry doesn't match. On rejection path: ALSO emit a `sector_tamper` discrepancy row inside an ad-hoc `reconciliation_runs` row (`source='system_audit'` per R1 Minor #2 distinction, `state='completed'`, period_start=period_end=action_session) for audit trail.
 
 **material_to_review default for sector_tamper:** 0 (FALSE) in V1. **Elevate to 1 (TRUE) when** `risk_policy.max_sector_concentration_positions` becomes a HARD GATE (V2). The elevation requires:
 
@@ -815,7 +858,7 @@ Phase 8 lands v15 → v16 in writing-plans-time. Phase 9 lands v16 → v17. Migr
 | CREATE TABLE `hypothesis_status_history` + 2 indexes | CREATE TABLE + CREATE INDEX | none |
 | CREATE TABLE `account_equity_snapshots` + 2 indexes | CREATE TABLE + CREATE INDEX | none |
 | ALTER `trades` ADD `risk_policy_id_at_lock` | `ALTER TABLE trades ADD COLUMN ...` (NULL allowed) | none — no rebuild |
-| ALTER `review_log` ADD 4 columns | 4× `ALTER TABLE review_log ADD COLUMN ...` (all NULL) | none — no rebuild |
+| ALTER `review_log` ADD 1 column | 1× `ALTER TABLE review_log ADD COLUMN risk_policy_id_at_review_completion ...` (NULL) | none — no rebuild (R1 Major #4 + #5 fix — was 4 columns; reduced to 1) |
 | INSERT seed `risk_policy` row 1 | `INSERT INTO risk_policy (...)` | none |
 | INSERT seed `hypothesis_status_history` rows (one per existing hypothesis_registry row) | INSERT in idempotent form | none — uses existing `hypothesis_registry.created_at` |
 
@@ -849,25 +892,13 @@ Production DB at HEAD `c954eef` (post-Phase-8-brainstorm) has:
 
 ### §9.5 Existing swing.config.toml seed transition
 
-Per §3.1.3, Phase 9 seeds `risk_policy.policy_id=1` from current `cfg.account.risk_equity_floor` + `cfg.review.review_window_days` + v1.2 defaults. **Open question §10.1:** is the toml the ongoing source-of-truth (Phase 5 config-page edits cfg, then a sync helper updates risk_policy)? OR does writing-plans flip the cfg → risk_policy direction (config-page edits risk_policy; cfg is read-only mirror at startup)? Brainstorm SURFACES this; orchestrator triages.
+Per §3.1.3 LOCKED contract: post-Phase-9 ship, `risk_policy` is canonical source-of-truth; cfg is startup-mirror for the 1 currently-Phase-5-surfaced field that has a `risk_policy` corresponding column (`cfg.account.risk_equity_floor` ↔ `risk_policy.capital_floor_constant_dollars`); other risk_policy fields have no cfg counterpart. Writing-plans wires the cascade.
 
 ---
 
 ## §10 Open questions for orchestrator triage
 
-### §10.1 swing.config.toml ↔ risk_policy synchronization direction
-
-**Question:** Post-Phase-9 ship, when operator edits `cfg.review.review_window_days` via Phase 5 config page, what happens?
-
-- **Option A:** cfg remains source-of-truth; a sync-on-startup helper UPDATEs risk_policy.review_lag_threshold_days (creating a new policy_id row if changed). Operator edits cfg; risk_policy is downstream.
-- **Option B:** risk_policy becomes source-of-truth post-Phase-9. Phase 5 config page surfaces `risk_policy` editing path; cfg is read-only mirror at startup (or removed entirely from these fields).
-- **Option C:** Hybrid — operator-editable cfg fields (Phase 5 surface) cascade into risk_policy on save; non-Phase-5 cfg fields stay cfg-only.
-
-**Brainstorm recommendation:** Option C. Phase 5-surfaced fields (currently `cfg.web.chase_factor`, `cfg.pipeline.chart_top_n_watch`, `cfg.account.risk_equity_floor`) cascade to risk_policy on save (i.e., editing risk_equity_floor via Phase 5 produces a new risk_policy row). Other risk_policy fields (statistics-methodology knobs, drawdown gate fields) are risk_policy-only — Phase 9 introduces a new CLI/web surface for editing them. This minimizes disruption to Phase 5's existing flow + scopes the new CLI/web surface narrowly.
-
-**Defer:** orchestrator triage for writing-plans-phase decision.
-
-### §10.2 reconciliation_run period_end resolution when source is account-state-only
+### §10.1 reconciliation_run period_end resolution when source is account-state-only
 
 **Question:** When Schwab API Phase A ships and `swing journal reconcile-schwab` does an account-state pull (not a CSV import covering a date range), what is `period_end`? Today's date? Last completed NYSE session? Operator-passed?
 
@@ -875,7 +906,7 @@ Per §3.1.3, Phase 9 seeds `risk_policy.policy_id=1` from current `cfg.account.r
 
 **Defer:** Schwab Phase A brainstorm decides at writing-plans time.
 
-### §10.3 sector_tamper hard-gate elevation trigger
+### §10.2 sector_tamper hard-gate elevation trigger
 
 **Question:** When does `risk_policy.max_sector_concentration_positions` become a HARD GATE rather than ADVISORY?
 
@@ -890,7 +921,7 @@ Per §3.1.3, Phase 9 seeds `risk_policy.policy_id=1` from current `cfg.account.r
 
 **Brainstorm recommendation:** Operator-decision. Operator + orchestrator decide at any time post-Phase-9. The elevation IS a `risk_policy` UPDATE (introducing `sector_concentration_gating_mode` enum field — currently NOT in the §3.1 column list; would be a new ALTER ADD COLUMN OR a future Phase migration). For Phase 9 scope, flag as future work; do NOT add the field to V1 schema. **Defer:** orchestrator triage at first orchestrator-context update post-Phase-9 ship.
 
-### §10.4 reconciliation_runs vs reconciliation_discrepancies retention
+### §10.3 reconciliation_runs vs reconciliation_discrepancies retention
 
 **Question:** Long-horizon, do we retain ALL runs + discrepancies forever? Or roll up to summary after N years?
 
@@ -898,7 +929,7 @@ Per §3.1.3, Phase 9 seeds `risk_policy.policy_id=1` from current `cfg.account.r
 
 **Defer:** revisit at year 5+ if cardinality changes.
 
-### §10.5 hypothesis_status_history seed effective_from policy
+### §10.4 hypothesis_status_history seed effective_from policy
 
 **Question:** Should the seed migration use `hypothesis_registry.created_at` as `effective_from` (preserves chronology) or migration-apply-time (declares "Phase 9 is when audit started")?
 
@@ -906,7 +937,7 @@ Per §3.1.3, Phase 9 seeds `risk_policy.policy_id=1` from current `cfg.account.r
 
 **Locked in §3.4.1.** Surfaced here for orchestrator review; if orchestrator prefers migration-apply-time, writing-plans changes the seed.
 
-### §10.6 V1 CLI surface for risk_policy editing
+### §10.5 V1 CLI surface for risk_policy editing
 
 **Question:** What CLI surface does writing-plans add for non-Phase-5-mirror risk_policy fields?
 
@@ -918,7 +949,7 @@ Per §3.1.3, Phase 9 seeds `risk_policy.policy_id=1` from current `cfg.account.r
 
 **Defer:** writing-plans decides at task-decomposition time.
 
-### §10.7 Reconciliation_run period_end vs source artifact date alignment
+### §10.6 Reconciliation_run period_end vs source artifact date alignment
 
 **Question:** If operator imports a TOS CSV labeled `2026-04-30-AccountStatement.csv` but the CSV's last fill date is 2026-04-28, what is `period_end`?
 
@@ -930,17 +961,7 @@ Per §3.1.3, Phase 9 seeds `risk_policy.policy_id=1` from current `cfg.account.r
 
 **Defer:** writing-plans codifies CLI default.
 
-### §10.8 Reopen-resolution UI surface
-
-**Question:** How does the operator clear `review_log.reopened_at` (mark the reopen resolved)?
-
-- CLI: `swing review reopen-resolve <review_id> --notes "..."`.
-- Web: re-open the review form + add a "resolved-after-reconciliation" checkbox.
-- Auto-clear when discrepancy resolution moves off `unresolved`?
-
-**Brainstorm recommendation:** CLI explicit (operator-paced). Auto-clear is too magical (risks the operator missing the corrective action). Web surface deferred to Phase 10 writing-plans.
-
-**Defer:** writing-plans codifies the CLI shape; Phase 10 writing-plans adds the web surface if operator demands.
+(R1 Major #4 fix — former §10.8 "Reopen-resolution UI surface" REMOVED. Reopen flag dropped from review_log; query-side JOIN over `reconciliation_discrepancies.resolution` IS the operator-actionable surface — see §5.1.)
 
 ---
 
@@ -995,7 +1016,7 @@ live_capital_denominator_dollars(asof_date) :=
        WHERE snapshot_date <= asof_date
        ORDER BY snapshot_date DESC,
                 CASE source WHEN 'schwab_api' THEN 1
-                            WHEN 'csv_import' THEN 2
+                            WHEN 'tos_csv' THEN 2
                             WHEN 'manual' THEN 3 END ASC
        LIMIT 1),
     (SELECT capital_floor_constant_dollars FROM risk_policy WHERE is_active = 1)
@@ -1017,28 +1038,24 @@ Phase 10 §6.3 enumerated capture-needs beyond Phase 8/9 plans:
 
 ## §12 Self-review checklist (pre-commit)
 
-- [x] **Placeholders:** No "TBD" / "TODO" markers in normative sections.
-- [x] **Internal consistency:** §3.1 risk_policy column count = 28 verified; §3.6 review_log additions = 4 verified (note in §5.1 corrects inventory drift); Phase 8 §11 + Phase 10 §6.2 capture-needs cross-check = 15/15 in §3.7.
-- [x] **Scope check:** SCHEMA-LOCKING but no migration SQL (§3 column-level; §9 mechanic-level only); no code drafting; no task decomposition; no Schwab library / auth design.
-- [x] **Brief watch-item coverage:** all 18 watch items addressed:
-  - 1 (Phase 7 state-machine integration completeness): §5.1 — flag-not-state decision; predicate-rewrite enumerated.
-  - 2 (Phase 7 lesson — predicate rewrite per call-site): §5.1 — 4 distinct predicates per call-site purpose; writing-plans gate.
-  - 3 (Phase 8 lesson — `is_superseded` flag pattern): §3.1 risk_policy uses `is_active` + `superseded_by_policy_id` dual-column; same pattern.
-  - 4 (Phase 8 lesson — SQLite REPLACE prohibition): §9.3 enumerates 5 UPSERT call sites + the SELECT-then-UPDATE-or-INSERT contract.
-  - 5 (Per-row policy-versioned value stamping — Phase 8 R1 M5): §3.1.1 enumerates `trades.risk_policy_id_at_lock` + `review_log.risk_policy_id_at_review_completion`.
-  - 6 (Phase 10 §6.2 + Phase 8 §11 capture-need completeness): §3.7 — 15/15 covered.
-  - 7 (Schwab API Phase A coordination cleanliness): §8 — source enum reserved; no Schwab-specific columns; boundary contract documented.
-  - 8 (TOS reconciliation bundle subsumption): §6 — all 3 queued gaps + new gap 4 mapped to discrepancy_type with JSON shapes.
-  - 9 (Sector/industry tamper hardening scope): §7 — locked BOTH (schema + route-layer).
-  - 10 (material_to_review semantics enumerated): §3.3.2 + §5.1 — material_to_review per-type lookup + reopen mechanism via review_log flag.
-  - 11 (Backup gate condition — Phase 7 Sub-A I1 lesson): §9.3 — fires only on `current_version == 16 AND target >= 17`.
-  - 12 (Backup-on-every-rebuild discipline): §9.2 — no rebuilds in Phase 9; lesson flagged as writing-plans-phase forward-looking trigger.
-  - 13 (Test fixture PRAGMA state — Phase 7 hotfix `283d4fa`): §9.3 — `PRAGMA foreign_keys=ON` discipline.
-  - 14 (Datetime impedance + lexicographic ordering): §9.3 — naive-only validator policy on all TEXT datetime columns.
-  - 15 (JS-test-harness gap awareness): No HTMX-driven Phase 9 surface in V1 (CLI-only). Reopen + reconciliation review surfaces are Phase 10 writing-plans territory; brief flagged at §10.8.
-  - 16 (Operator-actionability test): §3.3 + §6 — every discrepancy_type has a clear operator action (resolve / acknowledge / re-review).
-  - 17 (Convergent-chain expectation): brief budget 4-6 rounds; spec authored with discriminating-test-discipline expectation.
-  - 18 (Brief-premise empirical-verification): brief premises empirically verified — `tos_import.py` line numbers, `swing/config.py` field cascades, `hypothesis_registry` schema (migration 0008), Phase 6 review_log columns (migration 0013), Phase 7 trades+fills (migration 0014). All confirmed against actual files.
+- **Placeholders:** No "TBD" / "TODO" markers in normative sections.
+- **Internal consistency** (R1 Major #5 fix — review_log additions = 1 column verified; risk_policy column count = 28 verified; §3.7 capture-need cross-check = 15/15).
+- **Scope check:** SCHEMA-LOCKING but no migration SQL; no code drafting; no task decomposition; no Schwab library / auth design.
+- **Brief watch-item coverage:** all 18 brief §5 watch items addressed (key dispositions: §5.1 Phase 7 state untouched, query-side reopen via discrepancy JOIN; §3.1 risk_policy uses `is_active` + `superseded_by_policy_id` dual-column; §3.4.0 hypothesis_status_history justified as no-dual-col case; §9.3 SQLite REPLACE prohibition enumerated for 5 UPSERT sites; §3.1.1 per-row policy stamping locked; §3.7 15/15; §8 Schwab source-enum cleanly reserved; §6 TOS bundle 3 gaps + gap 4 mapped; §7 sector tamper BOTH; §3.3.2 material_to_review override semantics for non-trade-linked discrepancies; §9.3 backup gate fires only at `current_version==16 AND target>=17`; §9.3 PRAGMA + naive-only datetime validator; §11 operator-actionability + Phase 10 hand-off; §13 brief premises empirically verified against shipped migrations + tos_import.py + config.py).
+- **R1 Codex round disposition** (8 majors + 5 minors):
+  - Major #1 (hypothesis_status_history dual-column) — ACCEPTED with rationale at §3.4.0.
+  - Major #2 (effective_from/to date vs datetime) — FIXED at §3.1 (locked ISO datetime).
+  - Major #3 (Phase 8 stamp completeness) — FIXED at §3.1.1 (clarified Phase 8 self-stamps; V2 trigger documented).
+  - Major #4 (review_log reopen keyed-to-trade) — FIXED at §5.1 (redesigned to query-side JOIN; review_log additions reduced 4→1).
+  - Major #5 (review_log additions count drift) — FIXED (consistent 1-column count post-#4 redesign).
+  - Major #6 (material_to_review for non-trade discrepancies) — FIXED at §3.3.2 (override semantics + non-trade rendering surfaces locked).
+  - Major #7 (drawdown sign convention) — FIXED at §3.1 (CHECK < 0; aligned with Phase 10 §2 lock).
+  - Major #8 (config source-of-truth direction) — FIXED at §3.1.3 (locked: `risk_policy` canonical post-Phase-9; cfg startup-mirror).
+  - Minor #1 (line-count overage) — partial trim of §12 + open-question consolidation; final post-fix line count ~1100 lines (still slightly over 900 target — accepted as locked-content-density vs Phase 8's 875 lines proportional to Phase 9 having 5 new tables + Phase 6/7/8 integration vs Phase 8's 1 new table).
+  - Minor #2 (source enum overload) — FIXED at §3.2 (added `system_audit` enum value).
+  - Minor #3 (csv_import vs tos_csv vocabulary) — FIXED at §3.5 (harmonized to `tos_csv`).
+  - Minor #4 (SQLite cross-column CHECK over-claim) — FIXED at §3.1 (correction documented; defense-in-depth CHECK noted as writing-plans verifiable).
+  - Minor #5 ("corrected here" inline drift) — FIXED via §3.6 + §5.1 redesign (drift collapsed; canonical sections updated).
 
 ---
 
