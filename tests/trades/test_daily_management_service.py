@@ -33,14 +33,15 @@ def _seed_trade(
     conn: sqlite3.Connection,
     *,
     trade_id: int,
-    ticker: str,
-    entry_price: float,
-    initial_stop: float,
-    initial_shares: int,
-    current_avg_cost: float,
-    current_size: float,
-    current_stop: float,
-    pre_trade_locked_at: str,
+    ticker: str = "DHC",
+    entry_price: float = 100.0,
+    initial_stop: float = 90.0,
+    initial_shares: int = 50,
+    current_avg_cost: float = 100.0,
+    current_size: float = 50.0,
+    current_stop: float = 92.0,
+    pre_trade_locked_at: str = "2026-05-01T09:30:00",
+    state: str = "managing",
 ) -> None:
     """Mirror Phase 7 trades schema; sufficient to satisfy NOT NULL + CHECK."""
     conn.execute(
@@ -48,12 +49,56 @@ def _seed_trade(
         "(id, ticker, entry_date, entry_price, initial_shares, initial_stop, "
         " current_stop, state, trade_origin, pre_trade_locked_at, "
         " current_size, current_avg_cost) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, 'managing', 'manual_off_pipeline', ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'manual_off_pipeline', ?, ?, ?)",
         (
             trade_id, ticker, pre_trade_locked_at[:10],
-            entry_price, initial_shares, initial_stop, current_stop,
+            entry_price, initial_shares, initial_stop, current_stop, state,
             pre_trade_locked_at, current_size, current_avg_cost,
         ),
+    )
+    # Commit the seed so the service-under-test's `with conn:` rollback on
+    # error does NOT also wipe the seeded trade row (T3.2 rollback tests
+    # depend on the seed surviving the rolled-back inner transaction).
+    conn.commit()
+
+
+def _build_event_log_request(
+    *,
+    trade_id: int,
+    stop_changed: int,
+    prior_stop: float | None = None,
+    new_stop: float | None = None,
+    stop_change_reason: str | None = None,
+    action_taken: str | None = None,
+    action_reason: str | None = None,
+    rule_violation_suspected: int = 0,
+    emotional_state: str = '["calm"]',
+    created_at: str = "2026-05-07T18:00:00",
+    review_date: str = "2026-05-07",
+    data_asof_session: str = "2026-05-07",
+    mfe_mae_precision_level: str = "daily_approximate",
+    thesis_status: str | None = None,
+    management_notes: str | None = None,
+):
+    """Construct an EventLogRequest fixture for T3.2 service tests."""
+    from swing.trades.daily_management import EventLogRequest
+
+    return EventLogRequest(
+        trade_id=trade_id,
+        review_date=review_date,
+        data_asof_session=data_asof_session,
+        created_at=created_at,
+        mfe_mae_precision_level=mfe_mae_precision_level,
+        stop_changed=stop_changed,
+        prior_stop=prior_stop,
+        new_stop=new_stop,
+        stop_change_reason=stop_change_reason,
+        action_taken=action_taken,
+        action_reason=action_reason,
+        rule_violation_suspected=rule_violation_suspected,
+        emotional_state=emotional_state,
+        thesis_status=thesis_status,
+        management_notes=management_notes,
     )
 
 
@@ -320,3 +365,222 @@ def test_tier_upgrade_to_intraday_stubbed_for_V2(  # noqa: N802
             conn, trade_id=1, data_asof_session="2026-05-07",
             new_precision_level="intraday_estimated", snapshot_fields={},
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 3.2: record_event_log single-transaction contract (the §A.1 critical task)
+# ---------------------------------------------------------------------------
+
+
+def test_record_event_log_happy_path_stop_change_and_state_transition(
+    conn: sqlite3.Connection,
+) -> None:
+    """All 4 side-effects landed in single transaction (per plan §I happy path)."""
+    from swing.trades.daily_management import record_event_log
+
+    _seed_trade(conn, trade_id=1, state="entered", current_stop=92.0)
+    req = _build_event_log_request(
+        trade_id=1, stop_changed=1, prior_stop=92.0, new_stop=95.0,
+        stop_change_reason="trail_to_breakout_low",
+        action_taken="move_stop", action_reason="breakout_confirmed",
+        rule_violation_suspected=0, emotional_state='["calm"]',
+        created_at="2026-05-07T18:00:00",
+    )
+    rec_id = record_event_log(conn, trade_id=1, req=req)
+
+    # Side-effect 1: event_log row inserted with linked_trade_event_id
+    row = conn.execute(
+        "SELECT linked_trade_event_id, new_stop FROM daily_management_records "
+        "WHERE management_record_id = ?", (rec_id,),
+    ).fetchone()
+    assert row[0] is not None  # FK populated
+    assert row[1] == 95.0
+    # Side-effect 2: trade_events stop_adjust row inserted
+    te_row = conn.execute(
+        "SELECT id, event_type FROM trade_events WHERE id = ?", (row[0],),
+    ).fetchone()
+    assert te_row is not None
+    assert te_row[1] == "stop_adjust"
+    # Side-effect 3: trades.current_stop = 95.0
+    cs = conn.execute(
+        "SELECT current_stop FROM trades WHERE id = 1",
+    ).fetchone()[0]
+    assert cs == 95.0
+    # Side-effect 4: trades.state = 'managing' (entered → managing transition)
+    state = conn.execute(
+        "SELECT state FROM trades WHERE id = 1",
+    ).fetchone()[0]
+    assert state == "managing"
+
+
+def test_record_event_log_rolls_back_all_on_late_failure(
+    conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The §A.1 critical discriminating test: if event_log INSERT fails AFTER
+    repo-level update_stop_with_event already wrote the stop_adjust row, the
+    OUTER `with conn:` rollback wipes BOTH writes."""
+    from swing.trades.daily_management import record_event_log
+
+    _seed_trade(conn, trade_id=1, state="entered", current_stop=92.0)
+    pre_stop = conn.execute(
+        "SELECT current_stop FROM trades WHERE id = 1",
+    ).fetchone()[0]
+    pre_event_count = conn.execute(
+        "SELECT COUNT(*) FROM trade_events WHERE trade_id = 1",
+    ).fetchone()[0]
+
+    # Inject a synthetic exception in the event_log INSERT step:
+    def boom(*a: object, **kw: object) -> None:
+        raise RuntimeError("synthetic-failure-after-stop-adjust")
+    monkeypatch.setattr(
+        "swing.trades.daily_management.insert_event_log", boom,
+    )
+
+    req = _build_event_log_request(
+        trade_id=1, stop_changed=1, prior_stop=92.0, new_stop=95.0,
+        stop_change_reason="trail",
+        action_taken="move_stop", action_reason="x",
+        rule_violation_suspected=0, emotional_state='["calm"]',
+        created_at="2026-05-07T18:00:00",
+    )
+    with pytest.raises(RuntimeError, match="synthetic"):
+        record_event_log(conn, trade_id=1, req=req)
+
+    # Side-effects rolled back:
+    post_stop = conn.execute(
+        "SELECT current_stop FROM trades WHERE id = 1",
+    ).fetchone()[0]
+    post_event_count = conn.execute(
+        "SELECT COUNT(*) FROM trade_events WHERE trade_id = 1",
+    ).fetchone()[0]
+    post_dmr_count = conn.execute(
+        "SELECT COUNT(*) FROM daily_management_records",
+    ).fetchone()[0]
+    assert post_stop == pre_stop  # NOT 95.0 — rolled back
+    assert post_event_count == pre_event_count  # NO stop_adjust event
+    assert post_dmr_count == 0  # NO event_log row
+
+
+def test_record_event_log_no_stop_change(conn: sqlite3.Connection) -> None:
+    from swing.trades.daily_management import record_event_log
+
+    _seed_trade(conn, trade_id=1, state="managing", current_stop=92.0)
+    req = _build_event_log_request(
+        trade_id=1, stop_changed=0, action_taken="hold", action_reason=None,
+        rule_violation_suspected=0, emotional_state='["calm"]',
+        created_at="2026-05-07T18:00:00",
+    )
+    rec_id = record_event_log(conn, trade_id=1, req=req)
+    row = conn.execute(
+        "SELECT linked_trade_event_id, new_stop FROM daily_management_records "
+        "WHERE management_record_id = ?", (rec_id,),
+    ).fetchone()
+    assert row[0] is None
+    assert row[1] is None
+    cs = conn.execute(
+        "SELECT current_stop FROM trades WHERE id = 1",
+    ).fetchone()[0]
+    assert cs == 92.0  # unchanged
+
+
+def test_record_event_log_validation_failure_rolls_back(
+    conn: sqlite3.Connection,
+) -> None:
+    from swing.trades.daily_management import (
+        ValidationException,
+        record_event_log,
+    )
+
+    _seed_trade(conn, trade_id=1, state="managing", current_stop=92.0)
+    req = _build_event_log_request(
+        trade_id=1, stop_changed=1,
+        prior_stop=92.0, new_stop=None,  # invalid: stop_changed=1 but new_stop missing
+        stop_change_reason="x",
+        action_taken="move_stop", action_reason="x",
+        rule_violation_suspected=0, emotional_state='["calm"]',
+        created_at="2026-05-07T18:00:00",
+    )
+    with pytest.raises(ValidationException):
+        record_event_log(conn, trade_id=1, req=req)
+    count = conn.execute(
+        "SELECT COUNT(*) FROM daily_management_records",
+    ).fetchone()[0]
+    assert count == 0
+
+
+def test_record_event_log_rejects_stale_prior_stop(
+    conn: sqlite3.Connection,
+) -> None:
+    """Codex R4 Major #2 discriminating test: a stale form (operator-rendered
+    against an earlier trades.current_stop) submits prior_stop=92 while
+    trades.current_stop has already moved to 93 via a racing stop_adjust."""
+    from swing.trades.daily_management import (
+        ValidationException,
+        record_event_log,
+    )
+
+    _seed_trade(conn, trade_id=1, state="managing", current_stop=93.0)  # already 93
+    pre_dmr = conn.execute(
+        "SELECT COUNT(*) FROM daily_management_records",
+    ).fetchone()[0]
+    pre_te = conn.execute(
+        "SELECT COUNT(*) FROM trade_events WHERE trade_id = 1",
+    ).fetchone()[0]
+    req = _build_event_log_request(
+        trade_id=1, stop_changed=1,
+        prior_stop=92.0,  # STALE — actual is 93.0
+        new_stop=95.0,
+        stop_change_reason="trail_to_breakout_low",
+        action_taken="move_stop", action_reason="x",
+        rule_violation_suspected=0, emotional_state='["calm"]',
+        created_at="2026-05-07T18:00:00",
+    )
+    with pytest.raises(ValidationException, match="stale form"):
+        record_event_log(conn, trade_id=1, req=req)
+    post_dmr = conn.execute(
+        "SELECT COUNT(*) FROM daily_management_records",
+    ).fetchone()[0]
+    post_te = conn.execute(
+        "SELECT COUNT(*) FROM trade_events WHERE trade_id = 1",
+    ).fetchone()[0]
+    assert post_dmr == pre_dmr
+    assert post_te == pre_te
+    cs = conn.execute(
+        "SELECT current_stop FROM trades WHERE id = 1",
+    ).fetchone()[0]
+    assert cs == 93.0  # unchanged
+
+
+def test_record_event_log_rejects_noop_stop_change(
+    conn: sqlite3.Connection,
+) -> None:
+    """Codex R1 Major #4 discriminating test: stop_changed=1 with new_stop ==
+    current trades.current_stop is a no-op at the repo layer (returns early,
+    no INSERT)."""
+    from swing.trades.daily_management import (
+        ValidationException,
+        record_event_log,
+    )
+
+    _seed_trade(conn, trade_id=1, state="managing", current_stop=92.0)
+    pre_dmr = conn.execute(
+        "SELECT COUNT(*) FROM daily_management_records",
+    ).fetchone()[0]
+    req = _build_event_log_request(
+        trade_id=1, stop_changed=1,
+        prior_stop=92.0, new_stop=92.0,  # SAME as current — no-op
+        stop_change_reason="ostensible reason",
+        action_taken="move_stop", action_reason="x",
+        rule_violation_suspected=0, emotional_state='["calm"]',
+        created_at="2026-05-07T18:00:00",
+    )
+    with pytest.raises(ValidationException, match="no-op stop change"):
+        record_event_log(conn, trade_id=1, req=req)
+    post_dmr = conn.execute(
+        "SELECT COUNT(*) FROM daily_management_records",
+    ).fetchone()[0]
+    assert post_dmr == pre_dmr
+    cs = conn.execute(
+        "SELECT current_stop FROM trades WHERE id = 1",
+    ).fetchone()[0]
+    assert cs == 92.0  # unchanged

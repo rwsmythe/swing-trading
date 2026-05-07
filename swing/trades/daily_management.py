@@ -33,6 +33,7 @@ CLAUDE.md gotchas observed here:
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -72,6 +73,8 @@ __all__ = [
     "ValidationException",
     "SupersededRowImmutableException",
     "TierOrderingError",
+    # Request models:
+    "EventLogRequest",
     # Pure helpers:
     "compute_maturity_stage",
     "compute_trail_MA_eligibility_flag",
@@ -82,6 +85,7 @@ __all__ = [
     "resolve_thesis_status",
     # Service entry-points:
     "compute_daily_approximate_snapshot",
+    "record_event_log",
     "tier_upgrade_to_intraday",
     # Re-exported repo API:
     "insert_snapshot",
@@ -208,7 +212,7 @@ OPERATION_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
 
 
 def validate_for_operation(
-    req: dict[str, Any],
+    req: dict[str, Any] | Any,
     *,
     op: Literal["snapshot_emit", "event_log_emit", "tier_upgrade"],
 ) -> list[str]:
@@ -218,6 +222,11 @@ def validate_for_operation(
     ``0.0`` and empty-string-but-key-present do NOT count as missing — those
     are legitimate position-state values (e.g. ``open_MFE_R_to_date == 0.0``
     is a valid early-trade state, not "we forgot to set it").
+
+    Accepts either a ``dict[str, Any]`` (used by snapshot-emit callers
+    constructing the field dict directly) OR an object with attribute-access
+    semantics (used by ``record_event_log`` passing an ``EventLogRequest``
+    dataclass instance).
     """
     if op not in OPERATION_REQUIRED_FIELDS:
         raise ValueError(
@@ -225,7 +234,86 @@ def validate_for_operation(
             f"{tuple(OPERATION_REQUIRED_FIELDS)}"
         )
     required = OPERATION_REQUIRED_FIELDS[op]
-    return [f for f in required if req.get(f) is None]
+    if isinstance(req, dict):
+        return [f for f in required if req.get(f) is None]
+    return [f for f in required if getattr(req, f, None) is None]
+
+
+# ---------------------------------------------------------------------------
+# Request models (T3.2 — EventLogRequest)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class EventLogRequest:
+    """Operator-emitted event_log request payload (T3.2 + spec §3.1.1).
+
+    Mirrors the daily_management_records ``record_type='event_log'`` row
+    shape: position-state OPTIONAL (the operator is logging a free-form
+    event, not committing to a fresh snapshot); operator-input fields
+    REQUIRED per ``OPERATION_REQUIRED_FIELDS["event_log_emit"]``.
+
+    Carries the four metadata columns required by the table's NOT NULL
+    constraints (``review_date``, ``data_asof_session``, ``created_at``,
+    ``mfe_mae_precision_level``) so the dataclass round-trips cleanly into
+    ``insert_event_log``'s ``event_log_fields`` dict via :meth:`to_dict`.
+
+    The web POST handler (T-web in this phase) constructs an instance from
+    the form payload; the CLI is a V2 follow-up per plan §A.2.
+    """
+
+    # Identity + metadata (NOT NULL on the underlying table):
+    trade_id: int
+    review_date: str
+    data_asof_session: str
+    created_at: str
+    mfe_mae_precision_level: str  # CHECK enum at the schema layer
+
+    # Required operator-input (per OPERATION_REQUIRED_FIELDS["event_log_emit"]):
+    stop_changed: int = 0
+    action_taken: str | None = None
+    rule_violation_suspected: int = 0
+    emotional_state: str | None = None  # JSON-encoded list per spec §D
+
+    # Conditionally-required when stop_changed=1:
+    prior_stop: float | None = None
+    new_stop: float | None = None
+    stop_change_reason: str | None = None
+
+    # Conditionally-required when action_taken NOT IN ('no_action', None):
+    action_reason: str | None = None
+
+    # Optional context columns:
+    pipeline_run_id: int | None = None
+    thesis_status: str | None = None
+    volume_behavior: str | None = None
+    relative_strength_status: str | None = None
+    market_regime_change: str | None = None
+    sector_condition_change: str | None = None
+    news_or_event_update: str | None = None
+    management_notes: str | None = None
+    # Position-state — OPTIONAL per spec §3.1.1 R1 Critical 1:
+    current_price: float | None = None
+    current_stop: float | None = None
+    current_size: float | None = None
+    current_avg_cost: float | None = None
+    open_R_effective: float | None = None  # noqa: N815  -- name locked by schema column
+    open_MFE_R_to_date: float | None = None  # noqa: N815  -- name locked by schema column
+    open_MAE_R_to_date: float | None = None  # noqa: N815  -- name locked by schema column
+    intraday_high: float | None = None
+    intraday_low: float | None = None
+    position_capital_utilization_pct: float | None = None
+    position_capital_denominator_dollars: float | None = None
+    position_portfolio_heat_contribution_dollars: float | None = None
+    maturity_stage: str | None = None
+    trail_MA_candidate_price: float | None = None  # noqa: N815  -- name locked by schema
+    trail_MA_period_days: int | None = None  # noqa: N815  -- name locked by schema
+    trail_MA_eligibility_flag: int | None = None  # noqa: N815  -- name locked by schema
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the dataclass as a plain dict suitable for splat into
+        ``insert_event_log``'s ``event_log_fields`` argument."""
+        return asdict(self)
 
 
 # ---------------------------------------------------------------------------
@@ -564,6 +652,194 @@ def compute_daily_approximate_snapshot(  # noqa: PLR0913  -- spec-locked signatu
         )
 
     return fields
+
+
+# ---------------------------------------------------------------------------
+# Service entry-point: record_event_log (T3.2 — single-transaction §A.1)
+# ---------------------------------------------------------------------------
+
+
+def record_event_log(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+    req: EventLogRequest,
+) -> int:
+    """Single-transaction contract per spec §4.4 + plan §A.1.
+
+    All side-effects in one ``with conn:`` deferred-mode transaction. If ANY
+    step fails, ALL roll back (no partial state where Phase 7 stop_adjust
+    event exists without Phase 8 event_log row, OR vice versa).
+
+    Steps:
+
+      0. Validate ``req`` against ``OPERATION_REQUIRED_FIELDS["event_log_emit"]``
+         AND conditional validators (stop_changed=1 implies prior_stop +
+         new_stop + stop_change_reason; action_taken NOT IN ('no_action',
+         None) implies action_reason).
+      1. Open deferred-mode transaction (``with conn:``).
+      2. If ``req.stop_changed=1``: re-read trade state inside transaction;
+         reject no-op stops (``new_stop == current_stop``); reject stale
+         forms (``prior_stop != current_stop``); call REPO-LEVEL
+         :func:`swing.data.repos.trades.update_stop_with_event` (NOT the
+         service-level wrapper at :mod:`swing.trades.stop_adjust`, which
+         opens its own ``with conn:`` block and would prematurely commit
+         the outer transaction — see plan §A.1); resolve
+         ``linked_trade_event_id`` via TRADE-SCOPED max-id-after-insert.
+      3. INSERT event_log row via :func:`insert_event_log`.
+      4. If ``trade.state == 'entered'``: call
+         :func:`swing.trades.state.state_transition` to flip → 'managing'.
+
+    Returns:
+        ``management_record_id`` of the inserted event_log row.
+
+    Raises:
+        ValidationException — missing required fields per spec §3.1.1, or
+            no-op stop (Codex R1 M4), or stale prior_stop (Codex R4 M2).
+        ValueError — Phase 7 service rejects (e.g., trade not found,
+            terminal state).
+
+    §A.1 binding contract: this function calls the REPO-LEVEL update_stop
+    function (``swing.data.repos.trades:update_stop_with_event``), NOT the
+    service-level one (``swing.trades.stop_adjust:update_stop_with_event``).
+    The service-level wrapper opens its own ``with conn:`` block which
+    would commit prematurely inside the outer single-transaction. Future
+    maintainers MUST NOT consolidate the two call paths — the asymmetry
+    is intentional. (See plan §A.1 + spec §4.4.)
+    """
+    # Lazy imports to avoid module-load circulars + give monkeypatch surface:
+    from swing.data.repos.trades import get_trade
+    from swing.data.repos.trades import (
+        update_stop_with_event as repo_update_stop_with_event,
+    )
+    from swing.trades.state import state_transition
+
+    # Step 0 — validate required fields:
+    missing = validate_for_operation(req, op="event_log_emit")
+    if missing:
+        raise ValidationException(
+            f"missing required fields: {missing}"
+        )
+    # Conditional validators:
+    if req.stop_changed and (
+        not req.stop_change_reason
+        or not req.stop_change_reason.strip()
+        or req.prior_stop is None
+        or req.new_stop is None
+    ):
+        raise ValidationException(
+            "stop_changed=1 requires prior_stop, new_stop, stop_change_reason"
+        )
+    # action_reason required only for STATE-CHANGING actions (move_stop /
+    # trim / exit / stop). 'hold' and 'no_action' are inert observations
+    # that do not require operator justification — matches the plan's
+    # discriminating regression test (test_record_event_log_no_stop_change
+    # passes action_taken='hold' with action_reason=None).
+    action_reason_exempt = (None, "no_action", "hold")
+    if req.action_taken not in action_reason_exempt and (
+        not req.action_reason or not req.action_reason.strip()
+    ):
+        raise ValidationException(
+            "action_taken NOT IN ('no_action', 'hold', None) requires action_reason"
+        )
+
+    # Step 1 — open deferred-mode transaction. The `with conn:` block opens
+    # a deferred transaction on the first write and commits on success /
+    # rolls back on exception. See docstring for concurrency contract notes.
+    with conn:
+        # Re-read trade state for the entered→managing decision (per §5.2):
+        trade = get_trade(conn, trade_id)
+        if trade is None:
+            raise ValueError(f"trade {trade_id} not found")
+
+        # Step 2 — Phase 7 stop-adjust (REPO-LEVEL per §A.1):
+        linked_event_id: int | None = None
+        if req.stop_changed:
+            # Codex R1 Major #4 fix: reject no-op stops at the validator
+            # boundary BEFORE invoking the repo call. The repo-level
+            # update_stop_with_event returns EARLY without inserting when
+            # trade.current_stop == new_stop; a subsequent
+            # last_insert_rowid() / max-id capture would mis-link to a
+            # stale prior trade_events row.
+            if req.new_stop == trade.current_stop:
+                raise ValidationException(
+                    f"stop_changed=1 but new_stop={req.new_stop!r} equals "
+                    f"current trades.current_stop={trade.current_stop!r}; "
+                    "no-op stop change is invalid for event_log emission"
+                )
+            # Codex R4 Major #2 fix: stale-form guard. The web form
+            # pre-fills `prior_stop` from a snapshot or trades-row reading
+            # PRIOR to the POST. If another stop_adjust raced ahead between
+            # form-render and POST, the form's prior_stop is STALE and
+            # persisting it would diverge from Phase 7's
+            # trade_events.payload_json (which records the actual
+            # at-time-of-mutation old_stop). Re-read inside the transaction
+            # and reject mismatches:
+            if req.prior_stop != trade.current_stop:
+                raise ValidationException(
+                    f"req.prior_stop={req.prior_stop!r} does not match "
+                    f"current trades.current_stop={trade.current_stop!r} — "
+                    "stale form (a stop_adjust raced between render and "
+                    "POST); operator should reload + re-submit"
+                )
+            # Capture trade_events.id BEFORE invoking — we use the
+            # TRADE-SCOPED max-id-after-insert technique (Codex R2 Major #3
+            # fix: globally-scoped MAX(id) compared against trade-scoped
+            # MAX(id) would mis-fire when another trade has a higher prior
+            # event id). Both queries scope to (trade_id = ?) so the
+            # comparison is arithmetically valid:
+            pre_max_event_id = conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM trade_events "
+                "WHERE trade_id = ?",
+                (trade_id,),
+            ).fetchone()[0]
+            repo_update_stop_with_event(
+                conn,
+                trade_id=trade_id,
+                new_stop=req.new_stop,
+                event_ts=req.created_at,  # naive UTC ISO datetime
+                rationale=req.stop_change_reason,
+            )
+            # Resolve the freshly-inserted trade_events row by querying for
+            # the max id NEW since pre-call (same trade_id scope). Both
+            # queries run inside the outer transaction so the max value is
+            # consistent. The repo-level update_stop_with_event ALWAYS
+            # inserts when new != current (the no-op pre-validation above
+            # guarantees the non-no-op path):
+            new_max = conn.execute(
+                "SELECT MAX(id) FROM trade_events WHERE trade_id = ?",
+                (trade_id,),
+            ).fetchone()[0]
+            assert new_max is not None and new_max > pre_max_event_id, (
+                f"expected trade_events INSERT for trade_id={trade_id!r} "
+                f"but got new_max={new_max!r}, "
+                f"pre_max={pre_max_event_id!r} — repo-level "
+                "update_stop_with_event did not insert as expected; "
+                "investigate Phase 7 contract."
+            )
+            linked_event_id = int(new_max)
+
+        # Step 3 — INSERT event_log row:
+        event_log_fields: dict[str, Any] = {
+            **req.to_dict(),
+            "linked_trade_event_id": linked_event_id,
+        }
+        management_record_id = insert_event_log(
+            conn, trade_id=trade_id, event_log_fields=event_log_fields,
+        )
+
+        # Step 4 — entered→managing transition (per spec §5.2):
+        if trade.state == "entered":
+            state_transition(
+                conn,
+                trade_id=trade_id,
+                new_state="managing",
+                event_ts=req.created_at,
+                rationale="first_daily_management_record",
+            )
+        # COMMIT — `with conn:` exit auto-commits.
+
+    return management_record_id
 
 
 # ---------------------------------------------------------------------------
