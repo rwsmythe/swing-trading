@@ -11,7 +11,8 @@ from pathlib import Path
 # post-trade review surface: 10 trade fields + review_log table (migration 0013)
 # phase 7 state machine + fills first-class (migration 0014)
 # finviz_api_calls table (migration 0015)
-EXPECTED_SCHEMA_VERSION = 15
+# phase 8 daily_management_records table + planned_target_R column (migration 0016)
+EXPECTED_SCHEMA_VERSION = 16
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 # Phase 7 backup gate (spec §12.1): when migrating to schema_version >= 14,
@@ -33,6 +34,16 @@ PHASE7_EXPECTED_TABLES: set[str] = {
     "review_log",
     "schema_version",
 }
+
+# Phase 8 backup gate (spec §8.2 + plan §A.5): when migrating from v15 → v16+,
+# snapshot the live v15 DB. The expected table set is the ACTUAL post-Phase-7-
+# post-Finviz v15 schema (NOT the Phase 7 v13 source set). Phase 7's migration
+# 0014 dropped `exits` and added `fills`; migration 0015 (Finviz V1) added
+# `finviz_api_calls`. Per Codex R4 Major #1: derive deterministically from the
+# Phase 7 set so future maintainers can reason about provenance.
+PHASE8_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
+    (PHASE7_EXPECTED_TABLES - {"exits"}) | {"fills", "finviz_api_calls"}
+)
 
 
 class SchemaVersionMismatch(RuntimeError):
@@ -294,6 +305,71 @@ def _phase7_backup_gate(
         ) from exc
 
 
+def _create_pre_phase8_migration_backup(
+    src_path: Path, *, dest_dir: Path,
+) -> Path:
+    """Phase 8 mirror of _create_pre_migration_backup with phase8 filename prefix.
+
+    Per spec §8.2 + plan §A.5: backup file pattern
+    ``swing-pre-phase8-migration-<ISO>.db``. SQLite-native Connection.backup()
+    is the only acceptable snapshot mechanism (consistent under live writers).
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = dest_dir / f"swing-pre-phase8-migration-{timestamp}.db"
+    src_conn = sqlite3.connect(src_path)
+    try:
+        dest_conn = sqlite3.connect(backup_path)
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        src_conn.close()
+    return backup_path
+
+
+def _phase8_backup_gate(
+    conn: sqlite3.Connection,
+    *,
+    current_version: int,
+    target_version: int,
+    backup_dir: Path | None,
+) -> None:
+    """Phase 8 spec §8.2 backup-before-migrate gate (plan §A.5 + §1.0 Step 3).
+
+    Fires only when ``current_version == 15 AND target_version >= 16`` —
+    i.e., a real production v15 DB about to receive Phase 8's migration 0016.
+    Mutually exclusive with ``_phase7_backup_gate`` by construction
+    (current_version == 13 vs 15); both gates can coexist without conflict.
+    Filename: ``swing-pre-phase8-migration-<ISO>.db`` (NOT phase7 prefix).
+    """
+    if target_version < 16 or current_version != 15:
+        return
+    src_path = _resolve_main_db_path(conn)
+    if src_path is None:
+        raise MigrationBackupRequiredException(
+            "pre-Phase-8 backup gate requires a file-backed source DB; "
+            "in-memory connections cannot be snapshotted."
+        )
+    if backup_dir is None:
+        backup_dir = src_path.parent
+    try:
+        backup_path = _create_pre_phase8_migration_backup(
+            src_path, dest_dir=backup_dir,
+        )
+        _verify_backup_integrity(
+            backup_path,
+            expected_tables=PHASE8_PRE_MIGRATION_EXPECTED_TABLES,
+        )
+    except MigrationBackupRequiredException:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise MigrationBackupRequiredException(
+            f"pre-Phase-8 backup failed: {exc}"
+        ) from exc
+
+
 def run_migrations(
     conn: sqlite3.Connection,
     *,
@@ -319,6 +395,12 @@ def run_migrations(
         return
 
     _phase7_backup_gate(
+        conn,
+        current_version=current,
+        target_version=target_version,
+        backup_dir=backup_dir,
+    )
+    _phase8_backup_gate(
         conn,
         current_version=current,
         target_version=target_version,
