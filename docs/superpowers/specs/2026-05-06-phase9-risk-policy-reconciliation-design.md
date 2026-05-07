@@ -83,8 +83,8 @@ Per `docs/phase3e-todo.md` Schwab API Phase A entry — Phase 9 reconciliation d
 | Column | Type | Nullability | CHECK / FK |
 |---|---|---|---|
 | `policy_id` | INTEGER PRIMARY KEY | NOT NULL | autoincrement |
-| `effective_from` | TEXT | NOT NULL | **ISO datetime with microsecond precision** (YYYY-MM-DDTHH:MM:SS.SSSSSS); naive-UTC per §9 datetime discipline; second-level precision is INSUFFICIENT (R2 Major #4 fix — multiple operator edits within the same wall-clock second produce identical timestamps + zero-length intervals + ambiguous "policy effective at trade lock" reads). Resolvers use `(effective_from DESC, policy_id DESC) LIMIT 1` as deterministic tie-breaker on identical timestamps. (R1 Major #2 + R2 Major #4 fix.) |
-| `effective_to` | TEXT | nullable | ISO datetime with microsecond precision OR NULL; NULL while is_active=1; set in same transaction as supersession per §4.1 6-step sequence; lexicographic ordering preserved by naive-UTC validator policy. |
+| `effective_from` | TEXT | NOT NULL | **ISO datetime with millisecond precision** (YYYY-MM-DDTHH:MM:SS.SSS); naive-UTC per §9 datetime discipline; second-level precision is INSUFFICIENT (R2 Major #4 fix — multiple operator edits within the same wall-clock second produce identical timestamps + zero-length intervals + ambiguous "policy effective at trade lock" reads). Resolvers use `(effective_from DESC, policy_id DESC) LIMIT 1` as deterministic tie-breaker on identical timestamps. (R1 Major #2 + R2 Major #4 fix.) |
+| `effective_to` | TEXT | nullable | ISO datetime with millisecond precision OR NULL; NULL while is_active=1; set in same transaction as supersession per §4.1 6-step sequence; lexicographic ordering preserved by naive-UTC validator policy. |
 | `is_active` | INTEGER | NOT NULL | CHECK IN (0,1) DEFAULT 1; predecessor flag set BEFORE successor row INSERT to free the active-policy uniqueness slot (Phase 8 R2 lesson — decoupled from FK pointer) |
 | `superseded_by_policy_id` | INTEGER | nullable | FK → `risk_policy(policy_id)` (self-reference); set AFTER successor row INSERT to record the audit-chain pointer per §4.1 6-step sequence |
 | `created_at` | TEXT | NOT NULL | ISO datetime; system wall-clock; naive-UTC per §9 datetime policy |
@@ -163,7 +163,7 @@ The migration that creates `risk_policy` MUST seed `policy_id=1` from current `s
 
 | risk_policy column | Seed source |
 |---|---|
-| `effective_from` | ISO datetime of migration apply (R2 Major #3 fix — was previously `date('now')` which would have re-introduced mixed date/datetime in the same column). Writing-plans uses `strftime('%Y-%m-%dT%H:%M:%f', 'now')` (SQLite microsecond format) OR a baked `YYYY-MM-DDTHH:MM:SS.SSSSSS` literal computed at migration draft time. |
+| `effective_from` | ISO datetime with millisecond precision (R2 Major #3 + R3 Major #1 fix — SQLite `strftime('%f', 'now')` emits SECONDS as decimal-fractional `SS.SSS` (3-digit fraction, NOT 6-digit microseconds as our prior wording implied). Writing-plans constructs the canonical `YYYY-MM-DDTHH:MM:SS.SSS` form via `strftime('%Y-%m-%dT%H:%M:%f', 'now')` OR bakes a literal at migration-draft time. Application-path writes (CLI / web edits post-Phase-9) generate with Python: `datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.') + f'{datetime.utcnow().microsecond // 1000:03d}'` to match the schema validator's millisecond contract. |
 | `is_active` | 1 |
 | `max_account_risk_per_trade_pct` | `cfg.risk.max_risk_pct × 100` (toml stores as fraction; v1.2 §7.8 form is percent — verify at writing-plans-time and pick one canonical unit) |
 | `max_concurrent_positions` | `cfg.position_limits.hard_cap_open` |
@@ -188,7 +188,7 @@ The migration that creates `risk_policy` MUST seed `policy_id=1` from current `s
 1. **At Phase 9 ship-time:** the v16→v17 migration seeds `policy_id=1` from current TOML values per the table above.
 2. **Post-Phase-9, for the 3 currently-Phase-5-surfaced fields** (`cfg.web.chase_factor`, `cfg.pipeline.chart_top_n_watch`, `cfg.account.risk_equity_floor`):
    - `cfg.account.risk_equity_floor` corresponds to `risk_policy.capital_floor_constant_dollars` — Phase 5 config page edit MUST cascade to a new `risk_policy` row (writing-plans wires this); the cfg field becomes a startup-mirror (read-only, refreshed at process start from `risk_policy.is_active=1` row).
-   - **Hand-edited TOML divergence (R2 Major #5 fix — was previously "auto-write a new policy row matching TOML edit," which made TOML an implicit write surface that could spawn policy versions on stale-config-restore).** Locked behavior: at startup, if `cfg.account.risk_equity_floor` differs from `risk_policy.is_active=1`'s `capital_floor_constant_dollars`, the app logs a WARNING and treats `risk_policy` as authoritative — TOML is overwritten in-memory to match risk_policy at startup. No new policy row is auto-written from a TOML edit. To make a hand-edited TOML edit canonical, the operator runs the explicit CLI `swing config policy import-from-toml --field <name>` (writing-plans codifies). This preserves the "policy versions only via explicit operator action" invariant + audit-trail integrity.
+   - **Hand-edited TOML divergence (R2 Major #5 + R3 Minor #2 fix — discoverability strengthened).** Locked behavior: at startup, if `cfg.account.risk_equity_floor` differs from `risk_policy.is_active=1`'s `capital_floor_constant_dollars`, the app logs a WARNING and treats `risk_policy` as authoritative — TOML is overwritten in-memory to match risk_policy at startup. No new policy row is auto-written from a TOML edit. **R3 Minor #2 fix — VISIBLE divergence surfacing:** the divergence is also surfaced in the CLI startup banner (`swing --version` + every `swing` command's first-line stderr if divergence exists; mirrors `pip` / `git`'s "your config differs from canonical" advisory pattern) AND on the Phase 5 config page header as a yellow-banner warning until resolved. To make a hand-edited TOML edit canonical, the operator runs the explicit CLI `swing config policy import-from-toml --field <name>` (writing-plans codifies). This preserves the "policy versions only via explicit operator action" invariant + audit-trail integrity, AND the operator cannot accidentally miss the divergence (CLI-only operator workflow is covered).
    - `cfg.web.chase_factor` and `cfg.pipeline.chart_top_n_watch` are NOT risk_policy fields (operational-tunable, not policy). They stay cfg-managed.
 3. **Post-Phase-9, for non-Phase-5-surfaced fields** (the 21 statistics-methodology + drawdown + sector-concentration + MFE/MAE precision fields newly introduced by §3.1): edited via `swing config policy ...` CLI (V1) or future Phase 10+ web form. Each edit creates a new policy_id row.
 4. **Read path discipline:** all policy-value reads (Phase 8 snapshot emit; Phase 6 review computation; Phase 10 metric layer; Phase 9 reconciliation discrepancy classifier) resolve via either `trades.risk_policy_id_at_lock` (at-trade-time semantics — capital_floor, scratch_epsilon, tripwire, MA periods) OR `risk_policy.is_active=1` (live-time semantics — statistics-methodology knobs at dashboard render). NEVER from cfg.
@@ -411,7 +411,7 @@ Decision: **application-layer enforcement, NOT SQL trigger.** Rationale:
 
 1. BEGIN IMMEDIATE TRANSACTION (acquires write lock first; SQLite serializes contending writers).
 2. SELECT current status from hypothesis_registry WHERE id=? (now reads under the lock).
-3. If current_status == new_status: ROLLBACK + return no-op result (identity check; never appends a duplicate transition).
+3. If current_status == new_status: ROLLBACK + return `NoOpIdentityTransition` sentinel (R3 Minor #1 fix — distinct return shape from error; CLI / web render "already <status>" as INFO not ERROR; never appends a duplicate transition).
 4. UPDATE hypothesis_status_history SET effective_to=now_microsecond WHERE hypothesis_id=? AND effective_to IS NULL.
 5. INSERT INTO hypothesis_status_history (hypothesis_id, status, effective_from=now_microsecond, effective_to=NULL, change_reason, recorded_at=now_microsecond).
 6. UPDATE hypothesis_registry SET status=new_status, status_changed_at=now_microsecond, status_change_reason=reason WHERE id=?.
@@ -421,13 +421,13 @@ The pre-R2-fix race: two CLI invocations could both read `status='active'` BEFOR
 
 **Single-write-path discipline:** Phase 8 §5.3 introduces this discipline for stop-change cross-table coupling; Phase 9 inherits the pattern. Writing-plans gate enumerates ALL existing status-UPDATE call sites and re-routes them through the helper.
 
-**Seed-row migration content:** the v16→v17 migration MUST insert a seed row per existing hypothesis_registry row, with:
+**Seed-row migration content (R3 Major #2 fix — date normalization to validator format):** the v16→v17 migration MUST insert a seed row per existing hypothesis_registry row, with:
 
-- `effective_from` = `hypothesis_registry.created_at` (preserves chronology — the seed row represents "initial active status" effective from creation).
+- `effective_from` = `hypothesis_registry.created_at` NORMALIZED to the validator's millisecond-precision form. Migration 0008 stores date-only values like `'2026-04-25'`; the seed migration normalizes via SQL: `strftime('%Y-%m-%dT00:00:00.000', hypothesis_registry.created_at)`. This produces `'2026-04-25T00:00:00.000'` (day-start anchor) — preserves chronology while satisfying §9.3 datetime validator's uniform-format requirement. Resolver tests treat day-start anchor as semantically "the hypothesis became active at midnight UTC of its created_at date" (operator-meaningful for back-recorded seeds).
 - `effective_to` = NULL (current row).
 - `status` = current `hypothesis_registry.status`.
 - `change_reason` = NULL (no prior change).
-- `recorded_at` = migration apply time.
+- `recorded_at` = migration apply time, millisecond-precision via `strftime('%Y-%m-%dT%H:%M:%f', 'now')`.
 
 For hypotheses whose `status_changed_at` is NOT NULL (any of the seeded 4 might have been mutated post-Phase-9-deploy if some operator action sneaks in — defensive), writing-plans handles the two-row backfill (one row from `created_at` → `status_changed_at`, one row from `status_changed_at` → NULL with status=current). Production DB at v15 has all 4 hypotheses at default `status='active'` with `status_changed_at=NULL`, so single-row seed suffices for current state.
 
@@ -616,15 +616,25 @@ UPDATE pattern is SELECT-then-UPDATE-or-INSERT (the row exists; just UPDATE) —
 
 That's it. Operator-actionable surface is the discrepancy resolution lifecycle (§4.2): operator dispositions the discrepancy via CLI / web, optionally adds an addendum to the trade via Phase 7's `trade_events.event_type='note'` mechanism. If the operator's review judgment changes after the discrepancy resolves, they may add a `mistake_tag` to the trade row (`swing trade review` already supports re-running review on a closed trade per Phase 6 design) — that path EXISTS independently of Phase 9.
 
-**Predicate rewrite per call-site (Phase 7 R1 Major 1 lesson, applied; R2 Major #1 fix — review-level JOIN dropped as primary action surface):** Phase 9 introduces ONE canonical operator-action predicate — "trade has unresolved material discrepancies":
+**Predicate rewrite per call-site (Phase 7 R1 Major 1 lesson, applied; R2 Major #1 + R3 Major #3 fix — split active-trade vs closed-trade attention surfaces):** Phase 9 introduces TWO canonical operator-action predicates — "active trade has unresolved live-divergence" + "closed trade has unresolved material attention":
 
 ```sql
--- CANONICAL: Trades flagged for re-review attention (Phase 6 dashboard extension; trade-grain).
--- This is the ONLY surface that drives operator action. State predicate is `state IN ('closed','reviewed')`
--- because both closed-but-unreviewed AND reviewed trades benefit from the badge — closed trades may not
--- yet have been reviewed AND are surfacing material discrepancy that should inform the upcoming review;
--- reviewed trades surface for the operator's optional re-review judgment.
-SELECT t.id, t.ticker, COUNT(d.discrepancy_id) AS pending_material_count
+-- CANONICAL #1: Active-trade reconciliation alerts (R3 Major #3 fix — open-trade discrepancies were
+-- absent from R2's canonical surface). position_qty_mismatch + stop_mismatch are MOST URGENT on
+-- entered/managing/partial_exited trades because they indicate live broker/journal divergence
+-- (operator may be flying blind on a position size or stop level).
+SELECT t.id, t.ticker, t.state, COUNT(d.discrepancy_id) AS pending_count
+FROM trades t
+JOIN reconciliation_discrepancies d ON
+  d.trade_id = t.id
+  AND d.material_to_review = 1
+  AND d.resolution = 'unresolved'
+WHERE t.state IN ('entered','managing','partial_exited')
+GROUP BY t.id;
+
+-- CANONICAL #2: Closed/reviewed-trade re-review attention (Phase 6 dashboard extension).
+-- Both closed-but-unreviewed AND reviewed trades benefit from the badge.
+SELECT t.id, t.ticker, t.state, COUNT(d.discrepancy_id) AS pending_count
 FROM trades t
 JOIN reconciliation_discrepancies d ON
   d.trade_id = t.id
@@ -634,11 +644,19 @@ WHERE t.state IN ('closed','reviewed')
 GROUP BY t.id;
 ```
 
+**Surface-rendering distinction:** Active-trade alerts render with HIGH urgency (immediate operator action — verify broker state matches journal; correct or reconcile NOW); closed/reviewed-trade attention renders with NORMAL urgency (operator dispositions at next reconciliation review cadence). Phase 10 dashboard surfaces these as TWO separate badges; writing-plans for Phase 10 codifies the urgency rendering.
+
 **Cadence-review JOIN — INFORMATIONAL ONLY (R2 Major #1 fix; explicitly NOT a reopen trigger):** Phase 6 review_log rows cover MULTIPLE trades in a cadence period (a daily review covers all closes that day; a weekly review covers all closes that week; a monthly review covers all closes that month). A single trade with a material discrepancy semantically appears in DAILY + WEEKLY + MONTHLY reviews simultaneously. There is no "the review to reopen" — there are several reviews whose aggregates included the trade. The CANONICAL surface is the TRADE-level query above, NOT a review-level JOIN. Phase 10+ dashboard MAY surface a secondary informational query — "review periods containing trades with unresolved material discrepancies" — but that is rendering of an aggregate, NOT a trigger for human action; writing-plans for Phase 10 explicitly labels it informational and de-duplicates the trade-attribution count across cadence periods to avoid inflating "N reviews need attention" badges from a single underlying discrepancy.
 
 These predicates are DISTINCT from existing Phase 7 state predicates (closed-or-reviewed-aggregator: `state IN ('closed','reviewed')`; active-trade-filter: `state IN ('entered','managing','partial_exited')`; review-precondition: `state='closed'`; entry-uniqueness: `state IN ('entered','managing','partial_exited')`). Writing-plans MUST enumerate every Phase 9 query call site and specify per-purpose which predicate applies — see Phase 7 R1 Major 1 lesson on per-call-site predicate-rewrite discipline.
 
-**Idempotency at discrepancy grain:** the `(run_id, trade_id, discrepancy_type, fill_id, ticker, field_name)` combination is what defines a "duplicate" — writing-plans codifies a uniqueness check at INSERT-time so a second reconciliation rerun for the same source artifact doesn't generate exponential discrepancy counts on the same trade. (This complements §3.2's `source_artifact_sha256` advisory at the run level.) **R2 Minor #3 fix — NULL-safe comparison:** the comparison MUST be NULL-safe (some fields are nullable: `trade_id` for orphan unmatched fills; `fill_id` for stop-mismatch discrepancies; `ticker` for run-grain `equity_delta`). Writing-plans uses `IS NOT DISTINCT FROM` (or SQLite's `IS` operator) per-field instead of `=`; OR coerces NULLs to a sentinel value at comparison-time. App-layer uniqueness check (not schema-level) keeps this maintainable — schema CHECK on a 6-tuple including nullables is awkward.
+**Idempotency at discrepancy grain (R3 Major #4 fix — within-run vs cross-run distinction made explicit):**
+
+- **Within-run dedup (BINDING; in-memory):** while a single reconciliation_runs transaction is open, the discrepancy emitter MUST NOT emit two rows with identical `(trade_id, discrepancy_type, fill_id, ticker, field_name)` for the same run — that would indicate a logic bug (e.g., the close-price comparator firing twice on the same exit fill). Writing-plans codifies an in-memory set check during step 4 of §3.3.3.
+- **Cross-run dedup (NOT done; explicit by-design):** a SECOND reconciliation run on the SAME source CSV WILL produce a NEW set of discrepancy rows with a NEW `run_id` even if the underlying disagreements are identical. This is by-design: re-running reconciliation is a legitimate operator workflow (CSV correction; incremental data refresh; audit verification); each run is its own audit row. Operator-visible UX consequence: the dashboard "unresolved material discrepancies" count needs to COLLAPSE BY `(trade_id, discrepancy_type, field_name)` at READ-time so the operator sees ONE attention row per underlying disagreement, not N (one per re-run). Writing-plans for Phase 10 dashboard codifies the collapse.
+- **Source-artifact-rerun signal:** `reconciliation_runs.source_artifact_sha256` is the audit-trail anchor — if the same SHA256 appears across multiple runs, the dashboard surfaces an advisory "this CSV has been reconciled N times" (operator-actionable: investigate why; usually fine — incremental imports as the operator's TOS export evolves through a trading day).
+
+**NULL-safe comparison (R2 Minor #3 fix):** within-run dedup comparison MUST be NULL-safe. Some fields are nullable: `trade_id` for orphan unmatched fills; `fill_id` for stop_mismatch discrepancies; `ticker` for run-grain `equity_delta`. Writing-plans uses `IS NOT DISTINCT FROM` (or SQLite's `IS` operator) per-field instead of `=`; OR coerces NULLs to a sentinel value at comparison-time. App-layer uniqueness check (not schema-level) keeps this maintainable — schema CHECK on a 6-tuple including nullables is awkward.
 
 ### §5.2 Phase 6 review_log integration: frozen aggregates NEVER unfreeze
 
@@ -697,7 +715,7 @@ Phase 9 refactor: after a successful match, compare `f.price` (TOS) to the match
 - **expected_value_json:** `{"price": <journal exit price>, "exit_date": <ISO date>}`
 - **actual_value_json:** `{"price": <tos price>, "fill_date": <ISO date>}`
 - **delta_text:** `"$N.NN price difference"` (display-aid)
-- **material_to_review:** 1 (TRUE — close price drives realized R; review reopen warranted)
+- **material_to_review:** 1 (TRUE — close price drives realized R; trade-attention warranted; if the trade was already reviewed, surfaces in §5.1 closed/reviewed-attention query for operator's optional re-review judgment)
 
 ### §6.2 Gap 2 — Stop-order reconciliation against Account Order History → `discrepancy_type='stop_mismatch'`
 
@@ -868,7 +886,7 @@ Phase 8 lands v15 → v16 in writing-plans-time. Phase 9 lands v16 → v17. Migr
   - `risk_policy` supersession 6-step sequence (§4.1).
   - `hypothesis_status_history` append (§3.4.1) — pure append; the closing UPDATE on `effective_to` is a UPDATE, NOT REPLACE; defensive lesson reminder.
   - `review_log.risk_policy_id_at_review_completion` stamp at completion-time — UPDATE on existing row.
-- **Datetime-column impedance discipline (Phase 7 Sub-B R1 M1 lesson; R2 Major #4 microsecond extension):** TEXT datetime columns (`effective_from` / `effective_to` on risk_policy + hypothesis_status_history; `started_ts` / `finished_ts` on reconciliation_runs; `created_at` / `resolved_at` on discrepancies; `recorded_at` on equity snapshots) require validator policy. Decision (LOCKED): **naive-only inputs with microsecond precision** (YYYY-MM-DDTHH:MM:SS.SSSSSS); validator rejects tz-aware datetimes AND second-precision-only inputs. Mirrors Phase 7 Sub-B `_normalize_trade_event_date_to_iso` validator + extended for microsecond. Lexicographic ordering on text-stored datetimes is preserved when inputs are naive-only + uniform precision. **Tie-breaker discipline:** every "policy / status / equity-as-of-time" resolver appends `(effective_from DESC, primary_key DESC) LIMIT 1` to the ORDER BY so identical-microsecond ties (rare but possible) resolve deterministically by PK monotonicity (newer PK wins).
+- **Datetime-column impedance discipline (Phase 7 Sub-B R1 M1 lesson; R2 Major #4 microsecond extension):** TEXT datetime columns (`effective_from` / `effective_to` on risk_policy + hypothesis_status_history; `started_ts` / `finished_ts` on reconciliation_runs; `created_at` / `resolved_at` on discrepancies; `recorded_at` on equity snapshots) require validator policy. Decision (LOCKED): **naive-only inputs with millisecond precision** (YYYY-MM-DDTHH:MM:SS.SSS); validator rejects tz-aware datetimes AND second-precision-only inputs. Mirrors Phase 7 Sub-B `_normalize_trade_event_date_to_iso` validator + extended for microsecond. Lexicographic ordering on text-stored datetimes is preserved when inputs are naive-only + uniform precision. **Tie-breaker discipline:** every "policy / status / equity-as-of-time" resolver appends `(effective_from DESC, primary_key DESC) LIMIT 1` to the ORDER BY so identical-microsecond ties (rare but possible) resolve deterministically by PK monotonicity (newer PK wins).
 - **Per-row stamp of policy-versioned values (Phase 8 R1 M5 lesson):** §3.1.1 enumerates the stamps. Writing-plans verifies no risk_policy-versioned value is consumed without a corresponding per-row stamp.
 
 ### §9.4 In-flight production data
