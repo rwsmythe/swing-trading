@@ -747,14 +747,23 @@ def test_record_event_log_issues_begin_immediate_before_validation_read(
     )
 
 
-def test_record_event_log_respects_caller_held_transaction(
+def test_record_event_log_rejects_caller_held_transaction(
     conn: sqlite3.Connection,
 ) -> None:
-    """When the caller already holds a transaction (``conn.in_transaction``
-    is True at entry), the service MUST NOT open a nested BEGIN — sqlite3
-    raises ``OperationalError: cannot start a transaction within a transaction``.
+    """Codex R4 Major #1: ``record_event_log`` MUST own its own transaction
+    boundary. If the caller already holds an open transaction at entry, the
+    service raises ``RuntimeError`` rather than reusing the caller's
+    transaction.
 
-    Demonstrates that the caller-managed-transaction code path is preserved.
+    Background: an earlier ``in_transaction``-aware code path (introduced in
+    R3 Major #1's "nested-call safety" guard) re-introduced the very race
+    condition the BEGIN-IMMEDIATE fix was meant to close — a DEFERRED caller
+    transaction would let the validation read of ``trades.current_stop``
+    happen without a write lock, and a late failure inside the function
+    could leak partial state out via the caller's later ``commit()``. The
+    fix is to refuse the unsafe contract outright (Option A): callers MUST
+    pass a fresh connection without a wrapping ``with conn:`` (or other
+    open transaction).
     """
     from swing.trades.daily_management import record_event_log
 
@@ -763,25 +772,19 @@ def test_record_event_log_respects_caller_held_transaction(
     )
     conn.execute("BEGIN IMMEDIATE")
     assert conn.in_transaction
-    try:
-        req = _build_event_log_request(
-            trade_id=1, stop_changed=0,
-            action_taken="hold", action_reason=None,
-            rule_violation_suspected=0, emotional_state='["calm"]',
-            created_at="2026-05-07T18:00:00",
-        )
+    req = _build_event_log_request(
+        trade_id=1, stop_changed=0,
+        action_taken="hold", action_reason=None,
+        rule_violation_suspected=0, emotional_state='["calm"]',
+        created_at="2026-05-07T18:00:00",
+    )
+    with pytest.raises(RuntimeError, match="open transaction"):
         record_event_log(conn, trade_id=1, req=req)
-        conn.commit()
-    except sqlite3.OperationalError as exc:
-        if "transaction within a transaction" in str(exc).lower():
-            pytest.fail(
-                "record_event_log opened a nested BEGIN despite caller-held "
-                f"transaction: {exc!r}",
-            )
-        raise
-
+    # Caller is still responsible for its own transaction; clean up so the
+    # fixture teardown does not see a dangling BEGIN.
+    conn.rollback()
     n = conn.execute(
         "SELECT COUNT(*) FROM daily_management_records "
         "WHERE trade_id = 1 AND record_type = 'event_log'",
     ).fetchone()[0]
-    assert n == 1
+    assert n == 0

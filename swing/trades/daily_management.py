@@ -707,14 +707,20 @@ def record_event_log(
     maintainers MUST NOT consolidate the two call paths — the asymmetry
     is intentional. (See plan §A.1 + spec §4.4.)
 
-    Transaction contract (Codex R3 Major #1; spec §4.4): the function opens
-    a ``BEGIN IMMEDIATE`` transaction up front so the validation read of
-    ``trades.current_stop`` is taken under a RESERVED lock — no concurrent
-    writer can mutate the row between the stale-form check and the
-    ``repo_update_stop_with_event`` write. If ``conn.in_transaction`` is
-    True at entry the caller already owns the transaction boundary; the
-    function trusts that boundary and does NOT issue its own BEGIN /
-    COMMIT / ROLLBACK (the caller is responsible for finalizing).
+    Transaction contract (Codex R3 Major #1 + R4 Major #1; spec §4.4):
+    the function opens a ``BEGIN IMMEDIATE`` transaction up front so the
+    validation read of ``trades.current_stop`` is taken under a RESERVED
+    lock — no concurrent writer can mutate the row between the stale-form
+    check and the ``repo_update_stop_with_event`` write. The function
+    ALWAYS owns its transaction boundary (BEGIN IMMEDIATE / COMMIT on
+    success / ROLLBACK on exception); callers MUST NOT pass a connection
+    with an open transaction (no wrapping ``with conn:`` block, no prior
+    ``conn.execute('BEGIN ...')``). Entry guard raises ``RuntimeError`` if
+    ``conn.in_transaction`` is True at entry — the earlier "nested-call
+    safety" branch (R3 Major #1) was speculative and re-introduced the
+    DEFERRED-caller race the IMMEDIATE-mode fix was meant to close (R4
+    Major #1; chose Option A — reject — over Option B — SAVEPOINT — because
+    no real caller needs the nested form).
     """
     # Lazy imports to avoid module-load circulars + give monkeypatch surface:
     from swing.data.repos.trades import get_trade
@@ -752,24 +758,35 @@ def record_event_log(
             "action_taken NOT IN ('no_action', 'hold', None) requires action_reason"
         )
 
-    # Step 1 — open IMMEDIATE-mode transaction (Codex R3 Major #1 fix; spec
-    # §4.4: "BEGIN IMMEDIATE / COMMIT"). The default sqlite3 ``with conn:``
-    # block opens a DEFERRED transaction — locks are not acquired until the
-    # first WRITE statement, so the validation read of ``trades.current_stop``
-    # below could pass while another writer mutates the row before our
-    # ``repo_update_stop_with_event`` call reaches the lock manager. BEGIN
-    # IMMEDIATE acquires the RESERVED lock up front, blocking concurrent
-    # writers for the full validation+write sequence.
+    # Step 1 — open IMMEDIATE-mode transaction (Codex R3 Major #1 + R4 Major
+    # #1 fix; spec §4.4: "BEGIN IMMEDIATE / COMMIT"). The default sqlite3
+    # ``with conn:`` block opens a DEFERRED transaction — locks are not
+    # acquired until the first WRITE statement, so the validation read of
+    # ``trades.current_stop`` below could pass while another writer mutates
+    # the row before our ``repo_update_stop_with_event`` call reaches the
+    # lock manager. BEGIN IMMEDIATE acquires the RESERVED lock up front,
+    # blocking concurrent writers for the full validation+write sequence.
     #
-    # Caller-managed transaction handling: if ``conn.in_transaction`` is True
-    # at entry, the caller already owns the transaction boundary — issuing
-    # another BEGIN here would raise ``OperationalError: cannot start a
-    # transaction within a transaction``. In that case we trust the caller's
-    # transaction (DEFERRED or IMMEDIATE per their choice) and skip both BEGIN
-    # and COMMIT/ROLLBACK; the caller is responsible for finalizing.
-    _owns_transaction = not conn.in_transaction
-    if _owns_transaction:
-        conn.execute("BEGIN IMMEDIATE")
+    # Codex R4 Major #1 fix (Option A — reject caller-held transactions):
+    # the earlier ``in_transaction``-aware branch (R3 Major #1's "nested-call
+    # safety" guard) re-introduced the very race the BEGIN-IMMEDIATE fix was
+    # meant to close — a DEFERRED caller transaction would let the validation
+    # read above happen without a write lock, and a late failure inside this
+    # function could leak partial state out via the caller's later commit.
+    # Refuse the unsafe contract outright: callers MUST NOT pass a connection
+    # with an open transaction. The single production caller
+    # (``swing.web.routes.trades.daily_management_event_post``) opens a fresh
+    # connection without a wrapping ``with conn:`` block; the cadence-step
+    # service (``compute_daily_approximate_snapshot``) doesn't call this
+    # function at all.
+    if conn.in_transaction:
+        raise RuntimeError(
+            "record_event_log requires a connection with no open transaction; "
+            "the caller MUST NOT wrap the call in `with conn:` or otherwise "
+            "issue BEGIN before calling. The function manages its own "
+            "BEGIN IMMEDIATE / COMMIT / ROLLBACK boundary (Codex R4 Major #1)."
+        )
+    conn.execute("BEGIN IMMEDIATE")
     try:
         # Re-read trade state for the entered→managing decision (per §5.2):
         trade = get_trade(conn, trade_id)
@@ -878,14 +895,13 @@ def record_event_log(
                 rationale="first_daily_management_record",
             )
     except Exception:
-        # On ANY exception roll back the transaction we opened (caller-owned
-        # transactions are left intact — caller decides whether to roll back).
-        if _owns_transaction:
-            conn.rollback()
+        # On ANY exception roll back the transaction we opened. Codex R4
+        # Major #1: we ALWAYS own the boundary (the entry guard above
+        # rejects caller-held transactions outright).
+        conn.rollback()
         raise
     else:
-        if _owns_transaction:
-            conn.commit()
+        conn.commit()
 
     return management_record_id
 
