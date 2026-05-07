@@ -244,7 +244,7 @@ CREATE INDEX ix_daily_mgmt_pipeline_run
 
 1. **`ux_daily_mgmt_snapshot_active_per_session`** (PARTIAL UNIQUE) — enforces ONE active (non-superseded) daily_snapshot per (trade, session). Predicate `WHERE record_type='daily_snapshot' AND is_superseded=0` allows: (a) multiple event_log rows per (trade, day); (b) tier-upgraded rows to coexist with their successor (predecessor has `is_superseded=1`, falls outside the unique constraint). Same partial-unique-index pattern as `ux_trades_one_open_per_ticker`. Keying on `data_asof_session` instead of `review_date` is binding for the V2+ tier-upgrade-across-calendar-days case (R2 Major #1).
 
-2. **`ux_daily_mgmt_snapshot_precision_per_session`** (PARTIAL UNIQUE — R1 Major #2 + R2 Major #1 fix) — enforces ONE row per (trade, session, precision-level) for snapshot rows including superseded ones. Idempotency key for tier-aware writes. Re-running same-tier UPSERTs (REPLACE-on-conflict); higher-tier INSERTs a new row + supersedes prior.
+2. **`ux_daily_mgmt_snapshot_precision_per_session`** (PARTIAL UNIQUE — R1 Major #2 + R2 Major #1 fix) — enforces ONE row per (trade, session, precision-level) for snapshot rows including superseded ones. Idempotency key for tier-aware writes. Re-running same-tier writes use the §4.2 SELECT-then-UPDATE-or-INSERT pattern targeting the active row only (R5 Minor #1 fix — NOT SQLite REPLACE; REPLACE would delete+insert and break audit-chain pointers); higher-tier INSERTs a new row at the new precision following the §3.3 6-step sequence + supersedes prior.
 
 3. **`ix_daily_mgmt_trade_review`** — drives per-trade timeline reads (§7.2). Cardinality at 5 trades × 365 sessions ≈ 1,825 rows/year — index trivial. NOT unique; multiple records (snapshots + event_logs) share the (trade, review_date) tuple.
 
@@ -491,7 +491,7 @@ When the same conceptual value appears across multiple shipped/Phase-8 surfaces,
 daily_approximate < intraday_estimated < intraday_exact
 ```
 
-**Tier-upgrade rule:** new row's `mfe_mae_precision_level` MUST be strictly higher than the prior row's. Same-tier or lower-tier "upgrades" are rejected at validator level (`tier_upgrade` operation per §3.1 OPERATION_REQUIRED_FIELDS). Same-tier reflows are UPSERTs per §4.2 (replace-on-conflict).
+**Tier-upgrade rule:** new row's `mfe_mae_precision_level` MUST be strictly higher than the prior row's. Same-tier or lower-tier "upgrades" are rejected at validator level (`tier_upgrade` operation per §3.1 OPERATION_REQUIRED_FIELDS). Same-tier reflows are SELECT-then-UPDATE-or-INSERT against the active row per §4.2 (R5 Minor #2 fix — NOT SQLite REPLACE; superseded-row writes raise SupersededRowImmutableException).
 
 ### §6.3 Read-time tier resolution
 
