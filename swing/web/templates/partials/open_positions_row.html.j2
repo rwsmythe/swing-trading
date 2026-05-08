@@ -48,5 +48,8 @@
             hx-get="/trades/{{ row.trade.id }}/stop/form"
             hx-target="closest tr" hx-swap="outerHTML"
             hx-headers='{"HX-Request": "true"}'>Adjust stop</button>
+    <a href="/trades/{{ row.trade.id }}"
+       class="row-action-link"
+       onclick="event.stopPropagation()">Detail</a>
   </td>
 </tr>

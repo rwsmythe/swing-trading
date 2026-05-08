@@ -1071,6 +1071,16 @@ class DailyManagementTimelineRowVM:
     rule_violation_suspected: int | None   # 0|1
     emotional_state: str | None            # JSON-list TEXT
     management_notes: str | None
+    # Phase 8 V1 polish — Item #1: legacy Phase 7 trade_events surfacing.
+    # Populated only on `record_type == 'trade_event_legacy'` rows. None
+    # everywhere else (defaulted so existing _record_to_timeline_row call
+    # sites construct unchanged).
+    trade_event_id: int | None = None
+    event_type: str | None = None  # raw trade_events.event_type
+    legacy_prior_stop: float | None = None  # decoded from payload_json["old_stop"]
+    legacy_new_stop: float | None = None    # decoded from payload_json["new_stop"]
+    legacy_rationale: str | None = None     # trade_events.rationale
+    legacy_notes: str | None = None         # trade_events.notes
 
 
 @dataclass(frozen=True)
@@ -1118,16 +1128,96 @@ def _record_to_timeline_row(rec) -> DailyManagementTimelineRowVM:
     )
 
 
+def _orphan_stop_adjust_to_timeline_row(event):
+    """Map an orphan Phase 7 ``trade_events`` row of event_type='stop_adjust'
+    to the timeline-row VM (Phase 8 V1 polish Item #1).
+
+    Field mapping:
+        review_date          := event.ts[:10]   (YYYY-MM-DD slice of ISO ts)
+        created_at           := event.ts        (full ISO timestamp)
+        trade_event_id       := event.id        (positive PK — the sort
+                                                 tiebreak uses this; see
+                                                 ``_sort_key`` in
+                                                 ``build_daily_management_timeline_vm``)
+        management_record_id := -event.id       (negative synthetic ID,
+                                                 emitted as the template
+                                                 ``data-timeline-record-id``
+                                                 attribute so legacy rows do
+                                                 NOT collide with positive
+                                                 ``daily_management_records``
+                                                 PKs; informational only,
+                                                 NOT used in sort key)
+
+    Payload decode is DEFENSIVE — the helper never raises on malformed
+    payload_json or missing keys; missing values render as None (template
+    branch handles None gracefully via `is not none` checks).
+    """
+    import json
+
+    prior_stop: float | None = None
+    new_stop: float | None = None
+    try:
+        payload = json.loads(event.payload_json) if event.payload_json else {}
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+    if isinstance(payload, dict):
+        old = payload.get("old_stop")
+        new = payload.get("new_stop")
+        if isinstance(old, (int, float)):
+            prior_stop = float(old)
+        if isinstance(new, (int, float)):
+            new_stop = float(new)
+
+    return DailyManagementTimelineRowVM(
+        management_record_id=-event.id,
+        record_type="trade_event_legacy",
+        review_date=event.ts[:10],
+        created_at=event.ts,
+        is_superseded=0,  # Phase 7 trade_events have no supersedure semantics.
+        mfe_mae_precision_level="",  # Not applicable; template branch ignores.
+        # All daily_snapshot/event_log column-group fields stay None on legacy rows:
+        current_price=None,
+        current_stop=None,
+        open_R_effective=None,
+        open_MFE_R_to_date=None,
+        open_MAE_R_to_date=None,
+        maturity_stage=None,
+        action_taken=None,
+        action_reason=None,
+        stop_changed=None,
+        prior_stop=None,
+        new_stop=None,
+        thesis_status=None,
+        rule_violation_suspected=None,
+        emotional_state=None,
+        management_notes=None,
+        # Phase 8 V1 polish legacy fields (populated):
+        trade_event_id=event.id,
+        event_type=event.event_type,
+        legacy_prior_stop=prior_stop,
+        legacy_new_stop=new_stop,
+        legacy_rationale=event.rationale,
+        legacy_notes=event.notes,
+    )
+
+
 def build_daily_management_timeline_vm(
     *, trade_id: int, cfg: Config,
 ) -> DailyManagementTimelineVM | None:
-    """Build the per-trade timeline VM (spec §7.2).
+    """Build the per-trade timeline VM (spec §7.2 + Phase 8 V1 polish Item #1).
 
-    Returns ``None`` when the trade does not exist (caller surfaces the
-    section conditionally — closed trades, partial_exited, etc., all render
-    their history per the state-agnostic §7.2 read predicate).
+    V1 polish: also surfaces Phase 7 ``trade_events`` rows of
+    ``event_type='stop_adjust'`` that have NO corresponding Phase 8
+    ``daily_management_records`` row referencing them via
+    ``linked_trade_event_id`` (orphans). Dedup rule: a trade_event is an
+    orphan iff its ``id`` is NOT in the set of ``linked_trade_event_id``
+    values from the trade's event_log records. Orphans render with
+    ``record_type='trade_event_legacy'``.
+
+    Returns ``None`` when the trade does not exist.
     """
     from swing.data.repos.daily_management import list_for_trade_timeline
+    from swing.data.repos.trades import list_events_for_trade
 
     conn = connect(cfg.paths.db_path)
     try:
@@ -1135,10 +1225,52 @@ def build_daily_management_timeline_vm(
             trade = get_trade(conn, trade_id)
             if trade is None:
                 return None
+            # Two sequential SELECTs without a wrapping read transaction. A
+            # concurrent ``record_event_log`` COMMIT landing between them can
+            # produce a transient false legacy-orphan in the rendered page
+            # (read-side snapshot inconsistency). Accepted V1 limitation —
+            # see ``docs/phase3e-todo.md`` "Phase 8 V2 advisory items" for
+            # the V2 fix options + impact framing.
             records = list_for_trade_timeline(conn, trade_id=trade_id)
+            events = list_events_for_trade(conn, trade_id=trade_id)
     finally:
         conn.close()
-    rows = tuple(_record_to_timeline_row(r) for r in records)
+
+    # Dedup: collect linked_trade_event_id values from event_log records.
+    # Snapshots never carry linked_trade_event_id; the predicate also gates
+    # on record_type defensively in case repo-layer semantics widen later.
+    linked_event_ids = {
+        r.linked_trade_event_id for r in records
+        if r.record_type == "event_log" and r.linked_trade_event_id is not None
+    }
+
+    # Filter trade_events to orphan stop_adjusts (per §0.3 #4 of brief: ONLY
+    # event_type='stop_adjust'; entry/exit/partial/review_complete have their
+    # own surfaces and are intentionally excluded).
+    orphan_stop_adjusts = [
+        e for e in events
+        if e.event_type == "stop_adjust" and e.id not in linked_event_ids
+    ]
+
+    record_rows = [_record_to_timeline_row(r) for r in records]
+    orphan_rows = [_orphan_stop_adjust_to_timeline_row(e) for e in orphan_stop_adjusts]
+
+    # Merge + sort by canonical timeline key. Tiebreak via a 4-tuple
+    # (review_date, created_at, source_rank, abs_id):
+    #   - source_rank=0 for legacy orphans → orphans sort BEFORE DMR rows
+    #     within the same (review_date, created_at) bucket.
+    #   - source_rank=1 for daily_management_records.
+    #   - abs_id uses trade_event_id ASC for orphans (insertion order) and
+    #     management_record_id ASC for DMR rows (preserves prior semantics).
+    # Adversarial-review R1 M1+M3: replaces the negative-id tiebreak that
+    # previously reversed insertion order for multi-orphan same-second ties.
+    def _sort_key(row: DailyManagementTimelineRowVM) -> tuple:
+        if row.record_type == "trade_event_legacy":
+            return (row.review_date, row.created_at, 0, row.trade_event_id or 0)
+        return (row.review_date, row.created_at, 1, row.management_record_id)
+
+    merged = sorted(record_rows + orphan_rows, key=_sort_key)
+
     return DailyManagementTimelineVM(
-        trade_id=trade_id, ticker=trade.ticker, rows=rows,
+        trade_id=trade_id, ticker=trade.ticker, rows=tuple(merged),
     )

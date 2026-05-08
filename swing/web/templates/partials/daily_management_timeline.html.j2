@@ -35,6 +35,8 @@
             {% if row.record_type == 'daily_snapshot' %}
               <span class="badge badge-snapshot" data-record-type="snapshot">snapshot</span>
               <span class="precision-badge">{{ row.mfe_mae_precision_level }}</span>
+            {% elif row.record_type == 'trade_event_legacy' %}
+              <span class="badge badge-event-legacy" data-record-type="trade_event_legacy">Stop adjustment (legacy quick-adjust)</span>
             {% else %}
               <span class="badge badge-event" data-record-type="event_log">event</span>
             {% endif %}
@@ -60,6 +62,15 @@
               {%- if row.maturity_stage %}
                 <span class="maturity-badge">{{ row.maturity_stage }}</span>
               {%- endif %}
+            {% elif row.record_type == 'trade_event_legacy' %}
+              {# Phase 7 always writes both old_stop+new_stop together;
+                 require BOTH so a half-decoded payload falls back instead
+                 of rendering a half transition like "stop $90.00 →". #}
+              {% if row.legacy_prior_stop is not none and row.legacy_new_stop is not none %}
+                stop ${{ "%.2f"|format(row.legacy_prior_stop) }} → ${{ "%.2f"|format(row.legacy_new_stop) }}
+              {% else %}
+                <em>stop adjustment details unavailable</em>
+              {% endif %}
             {% else %}
               {%- if row.action_taken %}
                 <strong>{{ row.action_taken }}</strong>
@@ -82,6 +93,9 @@
             {%- if row.record_type == 'event_log' %}
               {%- if row.action_reason %}{{ row.action_reason }}{%- endif %}
               {%- if row.management_notes %}{% if row.action_reason %} — {% endif %}{{ row.management_notes }}{%- endif %}
+            {%- elif row.record_type == 'trade_event_legacy' %}
+              {%- if row.legacy_rationale %}{{ row.legacy_rationale }}{%- endif %}
+              {%- if row.legacy_notes %}{% if row.legacy_rationale %} — {% endif %}{{ row.legacy_notes }}{%- endif %}
             {%- endif %}
           </td>
         </tr>
