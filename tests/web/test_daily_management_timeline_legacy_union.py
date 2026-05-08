@@ -121,3 +121,40 @@ def test_orphan_stop_adjust_surfaces_in_timeline_post_fix(cfg_with_db):
     assert row.review_date == "2026-05-05"
     assert row.created_at == "2026-05-05T10:30:00"
     assert row.management_record_id == -event_id
+
+
+def test_orphan_stop_adjust_renders_label_in_trade_detail_page(cfg_with_db):
+    """Discriminating test for the template branch:
+
+    Pre-fix expectation (no template branch): the literal string "stop adjustment
+    (legacy quick-adjust)" is absent from the trade-detail HTML even when an
+    orphan trade_event exists.
+    Post-fix expectation: the label appears in the timeline section AND the
+    decoded prior_stop -> new_stop dollar amounts render."""
+    cfg, db_path = cfg_with_db
+    conn = connect(db_path)
+    try:
+        _seed_trade(conn, trade_id=1, ticker="DHC", current_stop=95.0)
+        _insert_orphan_stop_adjust(
+            conn, trade_id=1,
+            ts="2026-05-05T10:30:00",
+            old_stop=90.0, new_stop=95.0,
+            rationale="trail-up to entry+5",
+            notes=None,
+        )
+    finally:
+        conn.close()
+
+    app = create_app(cfg)
+    with TestClient(app) as client:
+        response = client.get("/trades/1")
+    assert response.status_code == 200
+    body = response.text
+    assert 'id="daily-management-timeline"' in body
+    timeline_html = (
+        body.split('id="daily-management-timeline"')[1].split("</section>")[0]
+    )
+    assert "Stop adjustment (legacy quick-adjust)" in timeline_html
+    assert "$90.00" in timeline_html
+    assert "$95.00" in timeline_html
+    assert "trail-up to entry+5" in timeline_html
