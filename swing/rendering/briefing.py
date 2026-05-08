@@ -9,12 +9,14 @@ from dataclasses import dataclass, field
 from typing import Mapping
 
 from swing.data.models import (
-    Candidate, DailyRecommendation, Trade, WatchlistEntry, WeatherRun,
+    Candidate, DailyManagementRecord, DailyRecommendation, Trade,
+    WatchlistEntry, WeatherRun,
 )
 from swing.rendering.view_models import (
     AccountTileVM, AdvisorySuggestionVM, BriefingViewModel, CriterionVM,
-    OpenPositionVM, PipelineTileVM, StatusStripVM, TickerExpansionVM,
-    TodaysDecisionVM, WatchlistRowVM, WeatherTileVM,
+    DailyManagementSnapshotRowVM, OpenPositionVM, PipelineTileVM,
+    StatusStripVM, TickerExpansionVM, TodaysDecisionVM, WatchlistRowVM,
+    WeatherTileVM,
 )
 
 
@@ -42,6 +44,12 @@ class BriefingInputs:
     chart_b64s: Mapping[str, str] = field(default_factory=dict)
     near_trigger_above_pct: float = 0.5
     near_trigger_below_pct: float = 1.0
+    # Phase 8 §7.4 — per-open-trade daily-management active snapshots.
+    # Sourced from list_open_position_active_snapshots(conn). Default empty
+    # tuple keeps the existing call sites back-compatible.
+    daily_management_active_snapshots: list[DailyManagementRecord] = field(
+        default_factory=list
+    )
 
 
 def _sizing_implication(status: str) -> str:
@@ -167,6 +175,41 @@ def _expansions(inputs: BriefingInputs) -> list[TickerExpansionVM]:
     return out
 
 
+def _daily_management_snapshots(
+    inputs: BriefingInputs,
+) -> tuple[list[DailyManagementSnapshotRowVM], int]:
+    """Resolve ticker via JOIN against inputs.open_trades by trade_id, filter
+    out orphan snapshots whose trade_id is no longer in open_trades (closed
+    trades belong to Phase 6 post-mortem surfaces, not Phase 8 briefing).
+
+    Returns ``(rows, open_trade_count_without_snapshot)`` where the latter is
+    populated only if open_trades is non-empty AND no snapshots match — drives
+    the operator-actionable "no daily-management snapshot available" marker
+    per Codex R3 M3.
+    """
+    open_by_id: dict[int, Trade] = {
+        t.id: t for t in inputs.open_trades if t.id is not None
+    }
+    rows: list[DailyManagementSnapshotRowVM] = []
+    for snap in inputs.daily_management_active_snapshots:
+        trade = open_by_id.get(snap.trade_id)
+        if trade is None:
+            # Orphan: snapshot's trade_id not in open_trades — skip.
+            continue
+        rows.append(DailyManagementSnapshotRowVM(
+            ticker=trade.ticker,
+            data_asof_session=snap.data_asof_session,
+            open_MFE_R_to_date=snap.open_MFE_R_to_date,
+            open_MAE_R_to_date=snap.open_MAE_R_to_date,
+            maturity_stage=snap.maturity_stage,
+            trail_MA_eligibility_flag=snap.trail_MA_eligibility_flag,
+        ))
+    no_snapshot_count = 0
+    if open_by_id and not rows:
+        no_snapshot_count = len(open_by_id)
+    return rows, no_snapshot_count
+
+
 def build_briefing_view_model(inputs: BriefingInputs) -> BriefingViewModel:
     return BriefingViewModel(
         action_session_date=inputs.action_session_date,
@@ -188,4 +231,8 @@ def build_briefing_view_model(inputs: BriefingInputs) -> BriefingViewModel:
         open_positions=_open_positions(inputs),
         watchlist=_watchlist_rows(inputs),
         expansions=_expansions(inputs),
+        daily_management_snapshots=_daily_management_snapshots(inputs)[0],
+        daily_management_open_trade_count_without_snapshot=(
+            _daily_management_snapshots(inputs)[1]
+        ),
     )

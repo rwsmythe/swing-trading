@@ -28,7 +28,7 @@ ALL_STATES = ["entered", "managing", "partial_exited", "closed", "reviewed"]
 def _seed_v14(tmp_path):
     db = tmp_path / "test.db"
     conn = sqlite3.connect(db)
-    run_migrations(conn, target_version=14, backup_dir=tmp_path)
+    run_migrations(conn, target_version=16, backup_dir=tmp_path)
     return conn
 
 

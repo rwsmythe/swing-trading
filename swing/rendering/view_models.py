@@ -106,6 +106,19 @@ class TickerExpansionVM:
 
 
 @dataclass(frozen=True)
+class DailyManagementSnapshotRowVM:
+    """Phase 8 spec §7.4 — one row of the briefing's "Daily Management
+    Snapshot" subsection. Ticker resolved by JOIN against open_trades by
+    trade_id (DailyManagementRecord has no ticker column — Codex R4 M5)."""
+    ticker: str
+    data_asof_session: str
+    open_MFE_R_to_date: float | None  # noqa: N815
+    open_MAE_R_to_date: float | None  # noqa: N815
+    maturity_stage: str | None
+    trail_MA_eligibility_flag: int | None  # noqa: N815  # 0|1
+
+
+@dataclass(frozen=True)
 class BriefingViewModel:
     action_session_date: str
     data_asof_date: str
@@ -115,3 +128,7 @@ class BriefingViewModel:
     open_positions: list[OpenPositionVM] = field(default_factory=list)
     watchlist: list[WatchlistRowVM] = field(default_factory=list)
     expansions: list[TickerExpansionVM] = field(default_factory=list)
+    daily_management_snapshots: list[DailyManagementSnapshotRowVM] = field(default_factory=list)
+    # Operator-actionable signal: open_trades count when no snapshots emitted.
+    # Drives the "no daily-management snapshot available" marker per Codex R3 M3.
+    daily_management_open_trade_count_without_snapshot: int = 0

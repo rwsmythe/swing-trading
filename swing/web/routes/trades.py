@@ -1498,6 +1498,198 @@ def open_position_row(request: Request, trade_id: int):
     )
 
 
+# Phase 8 Task 5.0 — daily-management event-log POST. Registered BEFORE the
+# bare `/trades/{trade_id}` wildcard so the more-specific path is matched
+# first by FastAPI/Starlette's registration-order routing. The route
+# delegates to ``record_event_log`` (T3.2's single-transaction service)
+# and emits 204 + ``HX-Redirect: /trades/{trade_id}`` on success per Phase
+# 5 R1 M2 lesson (htmx.js swallows 303 → swap-target transparently;
+# real-browser navigation requires the 204 + HX-Redirect pair).
+@router.post("/trades/{trade_id}/daily-management/event")
+async def daily_management_event_post(request: Request, trade_id: int):
+    """POST handler for the daily-management event-log form.
+
+    Constructs an :class:`EventLogRequest` dataclass from the form payload
+    and calls ``record_event_log`` (T3.2 single-transaction service). On
+    ``ValidationException`` re-renders the form partial with a 422 + error
+    banner; on success returns ``204 No Content`` + ``HX-Redirect:
+    /trades/{trade_id}`` so htmx.js navigates the real browser to the
+    canonical trade-detail page.
+
+    HTMX failure-surface mitigations (CLAUDE.md HTMX form gotcha; Phase 5
+    R1 M1/M2 + Phase 6 R5 I3 lessons):
+
+    * (a) The form partial includes ``hx-headers='{"HX-Request": "true"}'``
+      so OriginGuard strict-mode admits nested submits — verified by a
+      template literal-string assertion (real-browser only failure).
+    * (b) Success-path response = 204 + HX-Redirect, NOT 303 → swap-target.
+    * (c) HX-Redirect target ``/trades/{trade_id}`` IS a registered GET
+      route (the canonical trade-detail page below).
+    """
+    from fastapi.responses import Response
+
+    from swing.trades.daily_management import (
+        EventLogRequest,
+        ValidationException,
+        record_event_log,
+    )
+
+    cfg = apply_overrides(request.app.state.cfg)
+    templates = request.app.state.templates
+    form = await request.form()
+
+    def _opt(name: str) -> str | None:
+        # Form-input fallback: prefer None to "" so nullable text columns
+        # with CHECK enums (CLAUDE.md `or "" vs or None` gotcha) accept the
+        # absent input cleanly. Empty-string survives only as the explicit
+        # JSON-list emotional_state default ("[]") set in the form template.
+        raw = form.get(name)
+        if raw is None:
+            return None
+        s = str(raw).strip()
+        return s or None
+
+    def _int_flag(name: str) -> int:
+        raw = form.get(name)
+        return 1 if str(raw or "").strip() == "1" else 0
+
+    def _opt_float(name: str) -> float | None:
+        raw = form.get(name)
+        if raw is None or str(raw).strip() == "":
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+
+    def _emotional_state_from_form(form_data) -> str:
+        # code-review I1 fix — multi-checkbox: form.getlist returns the list
+        # of values for each checked box. Filter empties + dedupe (preserve
+        # first-seen order). Returns JSON-encoded string for record_event_log
+        # service-layer contract (emotional_state TEXT JSON-list per spec §1.2).
+        import json as _json
+        raw_values = form_data.getlist("emotional_state")
+        seen: set[str] = set()
+        clean: list[str] = []
+        for v in raw_values:
+            s = str(v).strip()
+            if s and s not in seen:
+                seen.add(s)
+                clean.append(s)
+        return _json.dumps(clean)
+
+    # Codex R2 Major #2 fix: SERVER-STAMP ``created_at`` at handler entry.
+    # The hidden form input is removed from the rendered partial — a stale
+    # form (page open across sessions) or a tampered POST would otherwise
+    # persist the wrong audit timestamp. Format matches spec §8.4 + the
+    # service-layer convention used by ``compute_daily_approximate_snapshot``
+    # (naive UTC ISO, microseconds stripped for stable comparison).
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt_now
+    server_created_at = (
+        _dt_now.now(_UTC).replace(tzinfo=None, microsecond=0).isoformat()
+    )
+
+    # Codex R3 Major #2 fix: SERVER-STAMP session anchors at handler entry.
+    # ``review_date`` and ``data_asof_session`` default to
+    # ``last_completed_session(now)`` per spec §4.5 — never trust hidden
+    # form values (a stale form across sessions, weekend/holiday submission,
+    # or tampered POST would otherwise anchor the row to a non-session
+    # date and break same-session snapshot context). The form template no
+    # longer renders hidden inputs for these fields; values arrive (if at
+    # all) from the previous render's display + are IGNORED here.
+    from swing.evaluation.dates import last_completed_session
+    server_session_anchor = last_completed_session(_dt_now.now()).isoformat()
+
+    # Codex R4 Major #2 fix: SERVER-STAMP ``mfe_mae_precision_level``. V1
+    # only emits ``daily_approximate`` (spec §10.7); the form template no
+    # longer renders a hidden input for this field. A tampered POST
+    # (``mfe_mae_precision_level=intraday_exact``) would otherwise persist
+    # misleading audit metadata that doesn't match the actual data source.
+    # Future V2 (Schwab API intraday ingestion) will route through
+    # ``tier_upgrade_to_intraday`` rather than the operator-driven event_log
+    # form, so this constant is correct for the lifetime of the form route.
+    server_mfe_mae_precision_level = "daily_approximate"
+
+    # Build EventLogRequest from the form payload. Required NOT-NULL
+    # metadata fields fall back to safe defaults so the dataclass
+    # constructor never raises on missing keys (the service-layer
+    # validator surfaces missing-required-field errors via
+    # ValidationException → 422 below).
+    try:
+        req = EventLogRequest(
+            trade_id=trade_id,
+            # NOTE: review_date / data_asof_session are server-stamped above
+            # (Codex R3 Major #2); the route does NOT read them from form data.
+            review_date=server_session_anchor,
+            data_asof_session=server_session_anchor,
+            # NOTE: ``created_at`` is server-stamped above; the route does
+            # NOT read it from form data (Codex R2 Major #2).
+            created_at=server_created_at,
+            # NOTE: ``mfe_mae_precision_level`` is server-stamped above; the
+            # route does NOT read it from form data (Codex R4 Major #2).
+            mfe_mae_precision_level=server_mfe_mae_precision_level,
+            stop_changed=_int_flag("stop_changed"),
+            action_taken=_opt("action_taken"),
+            rule_violation_suspected=_int_flag("rule_violation_suspected"),
+            # code-review I1 fix — emotional_state is multi-checkbox; collect
+            # via form.getlist + JSON-encode (mirrors Phase 7 entry-form's
+            # `_json.dumps(list(emotional_state))` pattern in the route +
+            # CLI). Filter empties + dedupe (preserve first-seen order) so
+            # bare-cURL POST submitting "emotional_state=" doesn't survive
+            # as the literal empty-string member; an explicitly empty list
+            # serializes to "[]" — matching the previous default value.
+            emotional_state=_emotional_state_from_form(form),
+            prior_stop=_opt_float("prior_stop"),
+            new_stop=_opt_float("new_stop"),
+            stop_change_reason=_opt("stop_change_reason"),
+            action_reason=_opt("action_reason"),
+            management_notes=_opt("management_notes"),
+        )
+    except (TypeError, ValueError) as exc:
+        return templates.TemplateResponse(
+            request, "partials/trade_form_error.html.j2",
+            {"error_message": str(exc)},
+            status_code=422,
+        )
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        try:
+            record_event_log(conn, trade_id=trade_id, req=req)
+        except ValidationException as exc:
+            from swing.web.view_models.trades import build_event_log_form_vm
+            vm = build_event_log_form_vm(trade_id=trade_id, cfg=cfg)
+            if vm is None:
+                # Trade not found / not active — bubble up as 422 with the
+                # service-layer error message rather than re-render an
+                # absent form. (Active-state precondition is the operator's
+                # discriminating signal.)
+                return templates.TemplateResponse(
+                    request, "partials/trade_form_error.html.j2",
+                    {"error_message": str(exc)},
+                    status_code=422,
+                )
+            return templates.TemplateResponse(
+                request, "partials/daily_management_event_form.html.j2",
+                {"vm": vm, "error_message": str(exc)},
+                status_code=422,
+            )
+        except ValueError as exc:
+            # Trade not found / Phase 7 service rejection (terminal state).
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+    finally:
+        conn.close()
+
+    # Success: 204 + HX-Redirect. Target route /trades/{trade_id} IS
+    # registered (Phase 6 R5 I3 lesson — verified by route-table assertion
+    # in the regression test).
+    return Response(
+        status_code=204,
+        headers={"HX-Redirect": f"/trades/{trade_id}"},
+    )
+
+
 # Phase 7 Sub-C C.5 — canonical trade-detail page. REGISTERED LAST so the
 # bare `/trades/{trade_id}` path-template wildcard does NOT shadow the more
 # specific `/trades/entry/form`, `/trades/{trade_id}/exit`, etc. routes
@@ -1513,6 +1705,10 @@ def trade_detail(request: Request, trade_id: int):
     read-only summary of the trade. Position-management actions remain on
     the dashboard's open-positions row in V1.
     """
+    from swing.web.view_models.trades import (
+        build_daily_management_timeline_vm,
+        build_event_log_form_vm,
+    )
     cfg = apply_overrides(request.app.state.cfg)
     templates = request.app.state.templates
     vm = build_trade_detail_vm(trade_id=trade_id, cfg=cfg)
@@ -1520,6 +1716,28 @@ def trade_detail(request: Request, trade_id: int):
         raise HTTPException(
             status_code=404, detail=f"Trade #{trade_id} not found",
         )
+    # Phase 8 Task 5.1 — per-trade timeline section. Always rendered (state-
+    # agnostic per spec §7.2; closed trades surface their history). Returns
+    # None only when the trade does not exist; the trade_detail VM build
+    # above already returned 404 in that case, so the timeline VM is
+    # guaranteed non-None here unless a race deletes the trade between the
+    # two reads (acceptable: the section will simply render its empty
+    # state via the partial's `{% if not timeline_vm.rows %}` branch when
+    # rows is empty; the None branch is defensive for the race window).
+    timeline_vm = build_daily_management_timeline_vm(
+        trade_id=trade_id, cfg=cfg,
+    )
+    # Codex R1 Major 2 fix — surface the event-log form for active trades.
+    # ``build_event_log_form_vm`` returns None for non-active states (closed,
+    # reviewed), so the template's ``{% if event_form_vm is not none %}``
+    # gate naturally hides the form on those trades. Without this, the POST
+    # endpoint exists but the operator has no UI surface to reach it.
+    event_form_vm = build_event_log_form_vm(trade_id=trade_id, cfg=cfg)
     return templates.TemplateResponse(
-        request, "trades/detail.html.j2", {"vm": vm},
+        request, "trades/detail.html.j2",
+        {
+            "vm": vm,
+            "timeline_vm": timeline_vm,
+            "event_form_vm": event_form_vm,
+        },
     )

@@ -41,6 +41,36 @@ def render_briefing_md(vm: BriefingViewModel) -> str:
                 parts.append(f"- **{p.ticker} \u00b7 {s.rule}:** {s.message}")
         parts.append("")
 
+    # Phase 8 §7.4 — Daily Management Snapshot subsection. Always-emitted
+    # heading (stable section anchor); body branches between (a) per-trade
+    # rows, (b) no-open-positions marker, (c) open-trades-but-no-snapshots
+    # operator-actionable marker per Codex R3 M3.
+    parts.append("## Daily Management Snapshot")
+    if vm.daily_management_snapshots:
+        parts.append(
+            "| Ticker | As-of session | MFE-to-date (R) | "
+            "MAE-to-date (R) | Maturity stage | Trail-MA eligible |"
+        )
+        parts.append("|---|---|---|---|---|---|")
+        for s in vm.daily_management_snapshots:
+            mfe = f"{s.open_MFE_R_to_date:.2f}" if s.open_MFE_R_to_date is not None else ""
+            mae = f"{s.open_MAE_R_to_date:.2f}" if s.open_MAE_R_to_date is not None else ""
+            stage = s.maturity_stage or ""
+            eligible = "yes" if s.trail_MA_eligibility_flag == 1 else "no"
+            parts.append(
+                f"| {s.ticker} | {s.data_asof_session} | {mfe} | {mae} | "
+                f"{stage} | {eligible} |"
+            )
+        parts.append("")
+    elif vm.daily_management_open_trade_count_without_snapshot > 0:
+        n = vm.daily_management_open_trade_count_without_snapshot
+        parts.append(
+            f"_{n} open positions; no daily-management snapshot available "
+            f"(pipeline step skipped or failed)._\n"
+        )
+    else:
+        parts.append("_No open positions to manage._\n")
+
     if vm.watchlist:
         parts.append("## Watchlist")
         parts.append("| Flag | Ticker | Last | Pivot | %\u2192 | ADR | Stop | Status |")

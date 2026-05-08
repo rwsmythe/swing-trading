@@ -1,0 +1,92 @@
+{#- swing/web/templates/partials/daily_management_timeline.html.j2 -#}
+{#- Phase 8 Task 5.1 — Per-trade detail timeline drill-down.
+
+  Spec §7.2 row contract: ONE row per management_record_id (NOT per
+  (review_date, record_type)). Multiple event_log rows per day each
+  render as their own distinct row.
+
+  Ordering enforced by repo (`list_for_trade_timeline` → ORDER BY
+  review_date ASC, created_at ASC, management_record_id ASC). Default
+  visibility filters `is_superseded = 0` (canonical predicate per §6.3).
+
+  Section root (NOT a leading <tr>) so HTMX OOB-swap refresh paths in
+  V2 don't trip the makeFragment regression catalog.
+-#}
+<section id="daily-management-timeline" class="daily-management-timeline">
+  <h2>Daily Management Timeline</h2>
+  {% if not timeline_vm.rows %}
+    <p class="empty"><em>No daily-management records for this trade yet.</em></p>
+  {% else %}
+    <table>
+      <thead>
+        <tr>
+          <th>Review date</th>
+          <th>Type</th>
+          <th>When</th>
+          <th>Details</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for row in timeline_vm.rows %}
+        <tr data-timeline-record-id="{{ row.management_record_id }}" data-record-type="{{ row.record_type }}">
+          <td>{{ row.review_date }}</td>
+          <td>
+            {% if row.record_type == 'daily_snapshot' %}
+              <span class="badge badge-snapshot" data-record-type="snapshot">snapshot</span>
+              <span class="precision-badge">{{ row.mfe_mae_precision_level }}</span>
+            {% else %}
+              <span class="badge badge-event" data-record-type="event_log">event</span>
+            {% endif %}
+          </td>
+          <td><time>{{ row.created_at }}</time></td>
+          <td>
+            {% if row.record_type == 'daily_snapshot' %}
+              {%- if row.current_price is not none %}
+                price ${{ "%.2f"|format(row.current_price) }};
+              {%- endif %}
+              {%- if row.current_stop is not none %}
+                stop ${{ "%.2f"|format(row.current_stop) }};
+              {%- endif %}
+              {%- if row.open_R_effective is not none %}
+                R {{ "%.2f"|format(row.open_R_effective) }};
+              {%- endif %}
+              {%- if row.open_MFE_R_to_date is not none %}
+                MFE {{ "%.2f"|format(row.open_MFE_R_to_date) }}R;
+              {%- endif %}
+              {%- if row.open_MAE_R_to_date is not none %}
+                MAE {{ "%.2f"|format(row.open_MAE_R_to_date) }}R;
+              {%- endif %}
+              {%- if row.maturity_stage %}
+                <span class="maturity-badge">{{ row.maturity_stage }}</span>
+              {%- endif %}
+            {% else %}
+              {%- if row.action_taken %}
+                <strong>{{ row.action_taken }}</strong>
+              {%- endif %}
+              {% if row.stop_changed == 1 %}
+                — stop
+                {%- if row.prior_stop is not none %} ${{ "%.2f"|format(row.prior_stop) }}{%- endif %}
+                →
+                {%- if row.new_stop is not none %} ${{ "%.2f"|format(row.new_stop) }}{%- endif %}
+              {% endif %}
+              {%- if row.thesis_status %}
+                ; thesis: {{ row.thesis_status }}
+              {%- endif %}
+              {% if row.rule_violation_suspected == 1 %}
+                <span class="badge badge-rule-violation">rule violation</span>
+              {% endif %}
+            {% endif %}
+          </td>
+          <td>
+            {%- if row.record_type == 'event_log' %}
+              {%- if row.action_reason %}{{ row.action_reason }}{%- endif %}
+              {%- if row.management_notes %}{% if row.action_reason %} — {% endif %}{{ row.management_notes }}{%- endif %}
+            {%- endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</section>

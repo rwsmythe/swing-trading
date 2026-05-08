@@ -12,7 +12,7 @@ from swing.trades.origin import EntryPath, derive_trade_origin
 def _seed_v14(tmp_path) -> sqlite3.Connection:
     db = tmp_path / "test.db"
     conn = sqlite3.connect(db)
-    run_migrations(conn, target_version=14, backup_dir=tmp_path)
+    run_migrations(conn, target_version=16, backup_dir=tmp_path)
     return conn
 
 

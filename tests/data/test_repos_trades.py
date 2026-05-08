@@ -420,7 +420,7 @@ def _seed_v14(tmp_path: Path) -> sqlite3.Connection:
     db = tmp_path / "test.db"
     conn = sqlite3.connect(str(db))
     conn.execute("PRAGMA foreign_keys=ON")
-    run_migrations(conn, target_version=14, backup_dir=tmp_path)
+    run_migrations(conn, target_version=16, backup_dir=tmp_path)
     return conn
 
 

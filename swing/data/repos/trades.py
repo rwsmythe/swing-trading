@@ -60,7 +60,8 @@ _TRADE_SELECT_COLS = """
     premortem_additional,
     event_risk_present, event_handling, event_type, event_date,
     gap_risk_present, gap_risk_handling, emotional_state_pre_trade,
-    market_regime, catalyst, catalyst_other_description
+    market_regime, catalyst, catalyst_other_description,
+    planned_target_R
 """
 
 
@@ -131,14 +132,16 @@ def insert_trade_with_event(
              event_risk_present, event_handling, event_type, event_date,
              gap_risk_present, gap_risk_handling,
              emotional_state_pre_trade, market_regime, catalyst,
-             catalyst_other_description)
+             catalyst_other_description,
+             planned_target_R)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
                 ?, ?, ?, ?,
                 ?, ?, ?, ?,
                 ?, ?, ?, ?,
                 ?, ?,
-                ?, ?, ?, ?)
+                ?, ?, ?, ?,
+                ?)
         """,
         (
             trade.ticker, trade.entry_date, trade.entry_price,
@@ -163,6 +166,8 @@ def insert_trade_with_event(
             trade.gap_risk_present, trade.gap_risk_handling,
             trade.emotional_state_pre_trade, trade.market_regime,
             trade.catalyst, trade.catalyst_other_description,
+            # Phase 8 (migration 0016) — pre-trade-locked R-multiple target.
+            trade.planned_target_R,
         ),
     )
     trade_id = int(cur.lastrowid)
@@ -356,6 +361,7 @@ def _row_to_trade(row: tuple) -> Trade:
       41:event_risk_present 42:event_handling 43:event_type 44:event_date
       45:gap_risk_present 46:gap_risk_handling 47:emotional_state_pre_trade
       48:market_regime 49:catalyst 50:catalyst_other_description
+      51:planned_target_R (Phase 8 / migration 0016)
     """
     dpv = row[24]
     return Trade(
@@ -402,6 +408,7 @@ def _row_to_trade(row: tuple) -> Trade:
         market_regime=row[48],
         catalyst=row[49],
         catalyst_other_description=row[50],
+        planned_target_R=row[51],
     )
 
 

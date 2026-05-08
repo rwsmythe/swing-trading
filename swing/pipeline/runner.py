@@ -305,6 +305,25 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 lease.release(state="failed", error_message=str(exc))
                 return RunResult(run_id=lease.run_id, state="failed", error_message=str(exc))
 
+            lease.step("daily_management")
+            try:
+                _step_daily_management(
+                    lease=lease, run_now=run_now, eval_run_id=eval_run_id,
+                    archive_history_days=cfg.archive.archive_history_days,
+                    ohlcv_archive_dir=cfg.paths.prices_cache_dir,
+                )
+            except LeaseRevoked:
+                raise
+            except Exception as exc:
+                # Cadence-step semantics: per-trade failures are already
+                # logged + swallowed inside _step_daily_management. This
+                # catches programming errors (KeyError, ImportError, etc.)
+                # — pipeline must continue regardless.
+                log.warning(
+                    "daily_management step programming error (continuing): %s",
+                    exc,
+                )
+
             lease.step("watchlist")
             try:
                 _step_watchlist(cfg=cfg, eval_run_id=eval_run_id,
@@ -862,6 +881,9 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
                   data_asof: str, chart_paths: dict[str, Path]) -> None:
     lease.verify_held()
     from swing.data.repos.candidates import fetch_candidates_for_run
+    from swing.data.repos.daily_management import (
+        list_open_position_active_snapshots,
+    )
     from swing.data.repos.recommendations import list_for_session
     conn = connect(cfg.paths.db_path)
     try:
@@ -879,6 +901,7 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
         watchlist = list_active_watchlist(conn)
         weather = get_latest_for_date(conn, data_asof, ticker=cfg.rs.benchmark_ticker)
         trades = list_open_trades(conn)
+        daily_mgmt_snapshots = list_open_position_active_snapshots(conn)
         equity = current_equity(
             starting_equity=cfg.account.starting_equity,
             exits=_exits_via_fills_for_equity(conn),
@@ -904,6 +927,7 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
         chart_b64s={t: _b64_chart(p) for t, p in chart_paths.items()},
         near_trigger_above_pct=cfg.near_trigger.above_pct,
         near_trigger_below_pct=cfg.near_trigger.below_pct,
+        daily_management_active_snapshots=daily_mgmt_snapshots,
     )
     vm = build_briefing_view_model(inputs)
 
@@ -970,6 +994,86 @@ def _step_review_log_cadence(*, lease: Lease) -> None:
                 period_start=p_start.isoformat(),
                 period_end=p_end.isoformat(),
                 scheduled_date=scheduled,
+            )
+
+
+def _step_daily_management(
+    *, lease, run_now: _dt, eval_run_id: int,
+    archive_history_days: int, ohlcv_archive_dir,
+    capital_floor_dollars: float = 7500.0,
+    trail_MA_period_days_default: int = 21,  # noqa: N803  -- name locked by spec §6.6
+) -> None:
+    """Spec §4.1 step body — emit a daily_approximate snapshot per open trade.
+
+    Cadence-step semantics: per-trade failures logged + step continues —
+    EXCEPT for ``LeaseRevoked``, which MUST re-raise so force-clear remains
+    authoritative (Codex R2 Major #5; mirrors all other pipeline steps'
+    discipline at the run_pipeline_internal try/except branches).
+
+    Gap-flagged policy (spec §4.1): one snapshot per ``last_completed_session
+    (run_now)``. NO auto back-fill of missed sessions — if the pipeline
+    didn't run on a given day, no snapshot exists for that day.
+
+    Idempotent same-session re-run: ``upsert_snapshot`` does
+    SELECT-then-UPDATE-or-INSERT against ``(trade_id, data_asof_session,
+    mfe_mae_precision_level)``, so re-running on the same day preserves
+    ``management_record_id`` (audit-FK chain stable).
+
+    State-machine transition: trades in state ``'entered'`` advance to
+    ``'managing'`` after the first snapshot row lands.
+    """
+    from swing.data.repos.daily_management import upsert_snapshot
+    from swing.data.repos.trades import list_open_trades
+    from swing.pipeline.lease import LeaseRevoked
+    from swing.trades import daily_management as _dm
+    from swing.trades.state import state_transition
+
+    asof_session = last_completed_session(run_now)
+    with lease.fenced_write() as conn:
+        trades = list_open_trades(conn)
+    for trade in trades:
+        try:
+            with lease.fenced_write() as conn:
+                fields = _dm.compute_daily_approximate_snapshot(
+                    conn, trade_id=trade.id,
+                    asof_session=asof_session,
+                    run_now=run_now,
+                    ohlcv_archive_dir=ohlcv_archive_dir,
+                    archive_history_days=archive_history_days,
+                    # Codex R1 Critical 1 fix: snapshot.pipeline_run_id is
+                    # FK to pipeline_runs(id), NOT evaluation_runs(id).
+                    # ``lease.run_id`` is the pipeline_runs.id (set during
+                    # lease acquisition); ``eval_run_id`` is the
+                    # evaluation_runs.id from _step_evaluate. They diverge
+                    # in normal operation; the FK will fire when ids
+                    # diverge and the eval id can't be found in pipeline_runs.
+                    pipeline_run_id=lease.run_id,
+                    capital_floor_dollars=capital_floor_dollars,
+                    trail_MA_period_days_default=trail_MA_period_days_default,
+                )
+                if fields is None:
+                    log.warning(
+                        "daily_management snapshot skipped for trade %s "
+                        "(ticker=%s): archive returned None",
+                        trade.id, trade.ticker,
+                    )
+                    continue
+                upsert_snapshot(
+                    conn, trade_id=trade.id, snapshot_fields=fields,
+                )
+                if trade.state == "entered":
+                    state_transition(
+                        conn, trade_id=trade.id, new_state="managing",
+                        event_ts=fields["created_at"],
+                        rationale="first_daily_management_record",
+                    )
+        except LeaseRevoked:
+            # Force-clear authoritative — propagate immediately. Codex R2 M5.
+            raise
+        except Exception as exc:
+            log.warning(
+                "daily_management step failed for trade %s: %s",
+                trade.id, exc,
             )
 
 
