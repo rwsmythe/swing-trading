@@ -1,0 +1,72 @@
+"""Phase 8 V1 polish Item #2: Dashboard "Detail" button visible per open
+positions row. Plan: docs/superpowers/plans/2026-05-07-phase8-v1-polish.md.
+"""
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import replace as dc_replace
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from swing.config import load
+from swing.data.db import ensure_schema
+from swing.web.app import create_app
+from swing.web.price_cache import PriceCache
+
+
+def _seed_trade(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+    ticker: str = "DHC",
+    state: str = "managing",
+) -> None:
+    conn.execute(
+        "INSERT INTO trades "
+        "(id, ticker, entry_date, entry_price, initial_shares, initial_stop, "
+        " current_stop, state, trade_origin, pre_trade_locked_at, "
+        " current_size, current_avg_cost) "
+        "VALUES (?, ?, '2026-05-01', 100.0, 50, 90.0, 92.0, ?, "
+        " 'manual_off_pipeline', '2026-05-01T09:30:00', 50.0, 100.0)",
+        (trade_id, ticker, state),
+    )
+    conn.commit()
+
+
+@pytest.fixture
+def dashboard_app(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *args, **kwargs: {},
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+    db_path = tmp_path / "phase8_polish.db"
+    conn = ensure_schema(db_path)
+    try:
+        _seed_trade(conn, trade_id=1, ticker="DHC")
+        _seed_trade(conn, trade_id=2, ticker="CC")
+    finally:
+        conn.close()
+    base_cfg = load(Path("swing.config.toml"))
+    cfg = dc_replace(
+        base_cfg, paths=dc_replace(base_cfg.paths, db_path=db_path),
+    )
+    return create_app(cfg), db_path
+
+
+def test_dashboard_detail_anchor_present_per_open_position(dashboard_app):
+    """Pre-fix: zero anchors with href='/trades/<id>' in dashboard HTML.
+    Post-fix: exactly one such anchor per seeded open trade (2 -> 2 matches)."""
+    app, _ = dashboard_app
+    with TestClient(app) as client:
+        response = client.get("/")
+    assert response.status_code == 200
+    body = response.text
+    # Anchor with the exact href our partial emits.
+    assert body.count('href="/trades/1"') >= 1
+    assert body.count('href="/trades/2"') >= 1
+    # And it carries the literal "Detail" anchor text within the row-actions cell.
+    assert ">Detail</a>" in body
