@@ -1132,10 +1132,21 @@ def _orphan_stop_adjust_to_timeline_row(event):
     """Map an orphan Phase 7 ``trade_events`` row of event_type='stop_adjust'
     to the timeline-row VM (Phase 8 V1 polish Item #1).
 
-    Sort-key mapping per plan §A.2:
-        review_date           := event.ts[:10]   (YYYY-MM-DD slice of ISO ts)
-        created_at            := event.ts        (full ISO timestamp)
-        management_record_id  := -event.id       (negative to avoid PK collision)
+    Field mapping:
+        review_date          := event.ts[:10]   (YYYY-MM-DD slice of ISO ts)
+        created_at           := event.ts        (full ISO timestamp)
+        trade_event_id       := event.id        (positive PK — the sort
+                                                 tiebreak uses this; see
+                                                 ``_sort_key`` in
+                                                 ``build_daily_management_timeline_vm``)
+        management_record_id := -event.id       (negative synthetic ID,
+                                                 emitted as the template
+                                                 ``data-timeline-record-id``
+                                                 attribute so legacy rows do
+                                                 NOT collide with positive
+                                                 ``daily_management_records``
+                                                 PKs; informational only,
+                                                 NOT used in sort key)
 
     Payload decode is DEFENSIVE — the helper never raises on malformed
     payload_json or missing keys; missing values render as None (template
