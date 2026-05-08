@@ -158,3 +158,65 @@ def test_orphan_stop_adjust_renders_label_in_trade_detail_page(cfg_with_db):
     assert "$90.00" in timeline_html
     assert "$95.00" in timeline_html
     assert "trail-up to entry+5" in timeline_html
+
+
+def test_dedup_linked_stop_adjust_does_not_double_appear(cfg_with_db):
+    """Discriminating test for the dedup rule:
+
+    Setup: insert a Phase 7 stop_adjust trade_event (id=E) AND a Phase 8
+    event_log row whose `linked_trade_event_id = E`.
+
+    Pre-fix expectation (no dedup): the trade_event surfaces as a
+    'trade_event_legacy' row AND the event_log row also renders -> operator
+    sees TWO rows describing the same stop change.
+    Post-fix expectation: only the event_log row surfaces (canonical Phase 8
+    audit row); the trade_event is suppressed by the linked_event_ids set."""
+    from swing.data.repos.daily_management import insert_event_log
+
+    cfg, db_path = cfg_with_db
+    conn = connect(db_path)
+    try:
+        _seed_trade(conn, trade_id=1, ticker="DHC", current_stop=95.0)
+        event_id = _insert_orphan_stop_adjust(
+            conn, trade_id=1,
+            ts="2026-05-05T10:30:00",
+            old_stop=90.0, new_stop=95.0,
+            rationale="trail-up",
+        )
+        # The matching Phase 8 event_log row referencing this trade_event:
+        insert_event_log(
+            conn, trade_id=1,
+            event_log_fields={
+                "review_date": "2026-05-05",
+                "data_asof_session": "2026-05-05",
+                "created_at": "2026-05-05T10:30:00",
+                "mfe_mae_precision_level": "daily_approximate",
+                "stop_changed": 1,
+                "prior_stop": 90.0,
+                "new_stop": 95.0,
+                "linked_trade_event_id": event_id,
+                "stop_change_reason": "trail-up",
+                "action_taken": "move_stop",
+                "rule_violation_suspected": 0,
+                "emotional_state": "[]",
+            },
+        )
+    finally:
+        # `insert_event_log` docstring (`swing/data/repos/daily_management.py`)
+        # explicitly defers transaction control to the caller. Commit BEFORE
+        # close — sqlite3 rolls back uncommitted work on connection close, so
+        # without this the dedup setup row vanishes and the test no longer
+        # discriminates the dedup logic.
+        conn.commit()
+        conn.close()
+
+    vm = build_daily_management_timeline_vm(trade_id=1, cfg=cfg)
+    assert vm is not None
+    legacy_rows = [r for r in vm.rows if r.record_type == "trade_event_legacy"]
+    event_log_rows = [r for r in vm.rows if r.record_type == "event_log"]
+    assert legacy_rows == [], (
+        f"linked stop_adjust should be deduped; got {len(legacy_rows)} legacy rows"
+    )
+    assert len(event_log_rows) == 1
+    assert event_log_rows[0].new_stop == 95.0
+    assert event_log_rows[0].prior_stop == 90.0
