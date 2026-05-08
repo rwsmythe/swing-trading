@@ -220,3 +220,45 @@ def test_dedup_linked_stop_adjust_does_not_double_appear(cfg_with_db):
     assert len(event_log_rows) == 1
     assert event_log_rows[0].new_stop == 95.0
     assert event_log_rows[0].prior_stop == 90.0
+
+
+def test_non_stop_adjust_trade_events_do_not_appear_in_timeline(cfg_with_db):
+    """Discriminating test for the event_type filter (per locked design §0.3 #4):
+
+    Insert orphan trade_events of representative non-stop_adjust event_types
+    that exist in the production CHECK constraint enum: 'entry', 'exit',
+    'note', 'flag'. Lifecycle events (entry/exit) have their own UI surfaces
+    (dashboard row, exit form) and MUST NOT also surface in the timeline.
+
+    Pre-fix expectation (had we shipped a too-wide filter `event_type IN
+    ('stop_adjust','entry','exit','note','flag')`): all four orphans appear.
+    Post-fix expectation: ONLY stop_adjust orphans surface; entry/exit/note/
+    flag rows are absent from the timeline."""
+    cfg, db_path = cfg_with_db
+    conn = connect(db_path)
+    try:
+        _seed_trade(conn, trade_id=1, ticker="DHC", current_stop=95.0)
+        for ts, event_type, payload in [
+            ("2026-05-05T11:00:00", "entry",          '{"shares":50,"price":100.0}'),
+            ("2026-05-05T11:30:00", "exit",           '{"shares":50,"price":105.0}'),
+            ("2026-05-05T12:00:00", "note",           '{"note":"NOTE_MARKER"}'),
+            ("2026-05-05T12:30:00", "flag",           '{"flag":"FLAG_MARKER"}'),
+            ("2026-05-05T13:00:00", "pre_trade_edit", '{"field":"thesis"}'),
+        ]:
+            conn.execute(
+                "INSERT INTO trade_events "
+                "(trade_id, ts, event_type, payload_json, rationale, notes) "
+                "VALUES (1, ?, ?, ?, NULL, NULL)",
+                (ts, event_type, payload),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    vm = build_daily_management_timeline_vm(trade_id=1, cfg=cfg)
+    assert vm is not None
+    assert vm.rows == (), (
+        "Non-stop_adjust trade_events must NOT surface in the timeline; "
+        f"got {len(vm.rows)} unexpected rows: "
+        f"{[r.record_type for r in vm.rows]}"
+    )
