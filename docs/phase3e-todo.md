@@ -47,6 +47,20 @@
 
 > **Archived:** 3e.1 (mark-to-market on Account card; SHIPPED 2026-04-26 `2b5cded`) + 3e.3 (`POST /prices/refresh` clears OHLCV breaker; SHIPPED 2026-04-26 `5b56a2d`). See archive.
 
+### 3e.4 — Current price in hyp-rec expanded row (operator-surfaced 2026-05-08)
+
+**Observed:** When a hypothesis-recommendation row on the dashboard is expanded (chevron click → `GET /hyp-recs/<ticker>/expand` → `partials/hypothesis_recommendations_expanded.html.j2`), the additional details panel does NOT include current price. Operator workflow: expand a hyp-rec to evaluate the trade decision; current-price context is needed alongside pivot, ADR, sector etc., but currently absent.
+
+**Proposed fix:** Surface current price in the expanded panel. Mirrors the pattern already used in open-positions row (price_snapshot from PriceFetcher). VM `build_hyp_recs_expanded` already resolves the binding pipeline run; extend to also fetch the current price for the ticker (likely via the same `PriceCache` pathway the dashboard uses) and add to `HypRecsExpandedVM`. Template renders the price + stale-flag if applicable.
+
+**Scope:** `swing/web/view_models/recommendations.py` (or equivalent VM) + `partials/hypothesis_recommendations_expanded.html.j2` + 1-2 discriminating tests (price renders when fetched; price omitted/marked stale when fetch fails). ~30-45 min standalone dispatch.
+
+**Cross-references:**
+- `swing/web/routes/recommendations.py:160` — `/hyp-recs/{ticker}/expand` route.
+- `partials/open_positions_row.html.j2` — price + stale-flag rendering pattern to mirror.
+- CLAUDE.md gotcha "OHLCV fetch scope = open-trade tickers ONLY" — does NOT apply here (this is current-price via PriceCache, not OHLCV).
+- Watchlist row already shows price; same primitive likely available.
+
 ### 3e.2 — Include realized-from-partial-exits in journal stats total
 
 **Observed:** `swing journal review --period month` shows 0 trades / $0.00 total
