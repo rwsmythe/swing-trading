@@ -70,3 +70,24 @@ def test_dashboard_detail_anchor_present_per_open_position(dashboard_app):
     assert body.count('href="/trades/2"') >= 1
     # And it carries the literal "Detail" anchor text within the row-actions cell.
     assert ">Detail</a>" in body
+
+
+def test_dashboard_detail_anchor_includes_stop_propagation(dashboard_app):
+    """Per CLAUDE.md HTMX click-propagation gotcha: the Detail anchor MUST
+    include `event.stopPropagation()` so a click on Detail does NOT also fire
+    the row's `hx-get="/trades/open/{id}/expand"` row-expand binding.
+
+    Pre-fix expectation: rendered HTML for the open-positions row contains an
+    anchor without the literal `event.stopPropagation()` marker.
+    Post-fix expectation: every Detail anchor includes the marker.
+    """
+    app, _ = dashboard_app
+    with TestClient(app) as client:
+        response = client.get("/")
+    body = response.text
+    needle = '<a href="/trades/1"'
+    assert needle in body, f"Detail anchor not found for trade 1; body subset: {body[:500]}"
+    anchor_start = body.index(needle)
+    anchor_end = body.index("</a>", anchor_start)
+    anchor_block = body[anchor_start:anchor_end]
+    assert "event.stopPropagation()" in anchor_block
