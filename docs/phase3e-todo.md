@@ -61,6 +61,61 @@
 - CLAUDE.md gotcha "OHLCV fetch scope = open-trade tickers ONLY" — does NOT apply here (this is current-price via PriceCache, not OHLCV).
 - Watchlist row already shows price; same primitive likely available.
 
+### 3e.5 — Daily management "updated today?" indicator on open-positions row (operator-surfaced 2026-05-08)
+
+**Observed:** Phase 8 daily management surface lets operator log a daily snapshot OR event_log per trade per session, but the dashboard's open-positions table provides no at-a-glance signal of which trades have been touched today vs. which still need attention. Operator workflow: scan dashboard at end of day, must individually open `/trades/<id>` for each open trade to determine update status.
+
+**Proposed fix:** Add a small icon or badge to each open-positions row indicating whether a `daily_management_records` row (`record_type IN ('daily_snapshot', 'event_log')` AND `is_superseded = 0`) exists for that trade with `review_date == action_session_for_run(now())`. Two-state visual: ✓ updated today / ⚠ not yet. Reuses Phase 8 §7.1 dashboard-tile plumbing (per `swing/data/repos/daily_management.py:list_open_position_active_snapshots`) — likely just adds a `has_update_today` boolean to `OpenPositionsRowVM`.
+
+**Scope:** `swing/web/view_models/dashboard.py` (extend `OpenPositionsRowVM`) + `partials/open_positions_row.html.j2` (render badge after Ticker + state badge) + 2 discriminating tests (badge rendered when row exists; badge absent when not). ~30-45 min standalone dispatch.
+
+**Cross-references:**
+- Phase 8 §7.1 dashboard-tile feed (`list_open_position_active_snapshots`) — same predicate, scoped to "active snapshot for this trade today."
+- `swing/evaluation/dates.py:action_session_for_run` — canonical session anchor.
+- `partials/state_badge.html.j2` — existing badge-rendering pattern.
+
+### 3e.6 — Auto-return to dashboard after daily management event submission (operator-surfaced 2026-05-08)
+
+**Observed:** After submitting a daily management event/snapshot via the `POST /trades/<id>/daily-management/event` form on the trade-detail page, the response re-renders the detail page. Operator workflow at end of day is "tour open trades, log update on each, move to next" — current behavior requires manual navigation back to `/` after each submission.
+
+**Proposed fix:** On successful submission, return `204 No Content` + `HX-Redirect: /` header (browser navigates to dashboard via htmx.js). Pattern: same as Phase 5 config page success-path (CLAUDE.md gotcha "HX-Redirect for HTMX success-path response"). Watch item: assert HX-Redirect target route resolves to 200 (Phase 6 lesson — TestClient verifies header but doesn't follow).
+
+**Scope:** `swing/web/routes/trades.py` daily-management POST handler success-path + 2 discriminating tests (HX-Redirect emitted on success; target `/` resolves). ~15-30 min standalone dispatch.
+
+**Cross-references:**
+- CLAUDE.md gotcha "HTMX form-driven endpoints have two browser-only failure surfaces" (Phase 5 R1 M2).
+- CLAUDE.md gotcha "HX-Redirect target route must be verified to exist" (Phase 6 I3).
+
+### 3e.7 — Example entries beside premortem + pre-trade-thesis textareas (operator-surfaced 2026-05-08)
+
+**Observed:** Trade entry form has free-text fields for pre-mortem + pre-trade thesis. New / occasional users may not know what an effective entry looks like; operator wants generic example text rendered alongside (not inside) the textareas to assist with filling them out.
+
+**Proposed fix:** Add a side-panel `<aside>` to the right of each textarea showing 2-3 generic example entries (NOT trade-specific; static content). Operator preference: examples visible always, not toggle-shown. CSS layout: textarea + aside in a flex/grid container.
+
+**Scope:** `partials/trade_entry_form.html.j2` (add aside elements with hard-coded example strings) + minor CSS for the side-panel layout in `static/style.css` + 1 discriminating test (asserts example text is rendered on entry form). ~30-45 min standalone dispatch. No VM changes (static template content).
+
+**Cross-references:**
+- `partials/trade_entry_form.html.j2` — current form rendering.
+- `static/style.css` — flex/grid container patterns.
+
+### 3e.8 — Sell-position indications for winning trades (INVESTIGATION; operator-surfaced 2026-05-08)
+
+**Operator question:** What sell-side advisories / indications are surfaced for winning trades today, and what additions would close the doctrine gap? Framework currently emphasizes initial-stop discipline + trail-stop advisories (Phase 3d trail-MA at 20MA pre-+2R, 10MA post-+2R per Tier-3 #6 doctrine), but the affirmative "sell signal" surface for winners is less explicit. Tied to Tier-3 #6 (advisory state-machine + trade-maturity gating; operator-context.md deferred-with-tracking — MEDIUM-HIGH operational urgency; DHC currently approaching trail-MA decision territory).
+
+**Investigation scope:**
+1. **Survey current state.** Enumerate what sell-side / trim-side / take-profit advisories the dashboard currently surfaces (open-positions row advisory column; per-trade detail page Phase 8 daily-management `action_taken` enum; `swing/trades/advisory.py` rules). Identify gaps vs Minervini SEPA + Disciplined Swing Trader winner-management doctrine.
+2. **Doctrine reconciliation.** Reference Minervini sell-into-strength + parabolic-extension-trim + 7-week-rule + violated-MA-on-volume rules. Reference Disciplined Swing Trader take-profit-into-strength + trail-tighten-after-+2R rules. Compare against Phase 8 maturity stages (pre_+1.5R / +1.5R-2R / +2R+ per Tier-3 #6 doctrine).
+3. **Recommend additions.** Specific advisories to add (e.g., "20% advance in 1-3 weeks → consider sell-into-strength"; "violated 50MA on volume → exit"; "parabolic extension → trim 25-50%"). Per V2.1 §VII.F source-of-truth correction protocol if any addition would alter operational classification logic; per ordinary brief-then-dispatch path if it's only advisory-message extension.
+
+**Scope estimate:** investigation 2-4 hours; subsequent implementation dispatch (if approved) 4-8 hours depending on rule count. Investigation can be orchestrator-thread OR dispatch (per Phase 4.5 brainstorm-dispatch threshold).
+
+**Cross-references:**
+- `docs/orchestrator-context.md` Tier-3 #6 (advisory state-machine + trade-maturity gating; deferred-with-tracking).
+- `swing/trades/advisory.py` — current advisory rule surface.
+- `reference/methodology/` — Minervini Trend Template + Disciplined Swing Trader transcriptions.
+- Phase 10 metrics-dashboard `maturity_stage` cohort axis (`docs/superpowers/specs/2026-05-06-phase10-metrics-design.md`).
+- V2.1 §VII.F source-of-truth correction protocol.
+
 ### 3e.2 — Include realized-from-partial-exits in journal stats total
 
 **Observed:** `swing journal review --period month` shows 0 trades / $0.00 total
