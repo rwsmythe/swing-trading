@@ -935,6 +935,12 @@ class EventLogFormVM:
     created_at: str
     mfe_mae_precision_level: str
     action_taken_options: tuple[str, ...] = _EVENT_LOG_ACTION_OPTIONS
+    # code-review I1 fix — emotional_state is multi-checkbox, mirroring Phase 7
+    # entry-form pattern. ``emotional_state_options`` is the canonical option
+    # list rendered as checkboxes; ``emotional_state_set`` is the preservation
+    # tuple for validation-error re-render (which boxes were checked).
+    emotional_state_options: tuple[str, ...] = ()
+    emotional_state_set: tuple[str, ...] = ()
     # Preservation fields (populated on validation-error re-render):
     stop_changed: int = 0
     new_stop: float | None = None
@@ -942,7 +948,6 @@ class EventLogFormVM:
     action_taken: str | None = None
     action_reason: str | None = None
     rule_violation_suspected: int = 0
-    emotional_state: str = "[]"
     management_notes: str | None = None
 
 
@@ -976,6 +981,9 @@ def build_event_log_form_vm(
         conn.close()
     now = datetime.now()
     session_anchor = last_completed_session(now).isoformat()
+    # code-review I1 fix — populate emotional_state_options from canonical
+    # vocabulary (mirrors Phase 7 entry-form's hardcoded same-tuple pattern).
+    from swing.trades.daily_management import DAILY_MGMT_EMOTIONAL_STATES
     return EventLogFormVM(
         trade=trade,
         current_stop=trade.current_stop,
@@ -983,6 +991,7 @@ def build_event_log_form_vm(
         data_asof_session=session_anchor,
         created_at=now.isoformat(timespec="seconds"),
         mfe_mae_precision_level="daily_approximate",
+        emotional_state_options=DAILY_MGMT_EMOTIONAL_STATES,
     )
 
 

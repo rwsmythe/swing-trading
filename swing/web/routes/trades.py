@@ -1562,6 +1562,22 @@ async def daily_management_event_post(request: Request, trade_id: int):
         except ValueError:
             return None
 
+    def _emotional_state_from_form(form_data) -> str:
+        # code-review I1 fix — multi-checkbox: form.getlist returns the list
+        # of values for each checked box. Filter empties + dedupe (preserve
+        # first-seen order). Returns JSON-encoded string for record_event_log
+        # service-layer contract (emotional_state TEXT JSON-list per spec §1.2).
+        import json as _json
+        raw_values = form_data.getlist("emotional_state")
+        seen: set[str] = set()
+        clean: list[str] = []
+        for v in raw_values:
+            s = str(v).strip()
+            if s and s not in seen:
+                seen.add(s)
+                clean.append(s)
+        return _json.dumps(clean)
+
     # Codex R2 Major #2 fix: SERVER-STAMP ``created_at`` at handler entry.
     # The hidden form input is removed from the rendered partial — a stale
     # form (page open across sessions) or a tampered POST would otherwise
@@ -1616,7 +1632,14 @@ async def daily_management_event_post(request: Request, trade_id: int):
             stop_changed=_int_flag("stop_changed"),
             action_taken=_opt("action_taken"),
             rule_violation_suspected=_int_flag("rule_violation_suspected"),
-            emotional_state=_opt("emotional_state"),
+            # code-review I1 fix — emotional_state is multi-checkbox; collect
+            # via form.getlist + JSON-encode (mirrors Phase 7 entry-form's
+            # `_json.dumps(list(emotional_state))` pattern in the route +
+            # CLI). Filter empties + dedupe (preserve first-seen order) so
+            # bare-cURL POST submitting "emotional_state=" doesn't survive
+            # as the literal empty-string member; an explicitly empty list
+            # serializes to "[]" — matching the previous default value.
+            emotional_state=_emotional_state_from_form(form),
             prior_stop=_opt_float("prior_stop"),
             new_stop=_opt_float("new_stop"),
             stop_change_reason=_opt("stop_change_reason"),

@@ -96,7 +96,7 @@ def test_event_log_post_success_returns_204_with_HX_Redirect(  # noqa: N802
                 "stop_changed": "0",
                 "action_taken": "hold",
                 "rule_violation_suspected": "0",
-                "emotional_state": '["calm"]',
+                "emotional_state": ["calm"],
                 "created_at": "2026-05-07T18:00:00",
                 "review_date": "2026-05-07",
                 "data_asof_session": "2026-05-07",
@@ -163,7 +163,7 @@ def test_event_log_post_validation_failure_returns_422(app_with_seeded_trade):
                 "action_taken": "move_stop",
                 "action_reason": "breakout_confirmed",
                 "rule_violation_suspected": "0",
-                "emotional_state": '["calm"]',
+                "emotional_state": ["calm"],
                 "created_at": "2026-05-07T18:00:00",
                 "review_date": "2026-05-07",
                 "data_asof_session": "2026-05-07",
@@ -210,7 +210,7 @@ def test_event_log_post_writes_event_log_and_stop_adjust_atomically(
                 "action_taken": "move_stop",
                 "action_reason": "breakout_confirmed",
                 "rule_violation_suspected": "0",
-                "emotional_state": '["calm"]',
+                "emotional_state": ["calm"],
                 "created_at": "2026-05-07T18:00:00",
                 "review_date": "2026-05-07",
                 "data_asof_session": "2026-05-07",
@@ -265,7 +265,7 @@ def test_event_log_post_server_stamps_created_at_ignoring_form_value(
                 "stop_changed": "0",
                 "action_taken": "hold",
                 "rule_violation_suspected": "0",
-                "emotional_state": '["calm"]',
+                "emotional_state": ["calm"],
                 "created_at": tampered,  # <-- malicious / stale
                 "review_date": "2026-05-07",
                 "data_asof_session": "2026-05-07",
@@ -415,7 +415,7 @@ def test_event_log_post_server_stamps_review_date_ignoring_form_value(
                 "stop_changed": "0",
                 "action_taken": "hold",
                 "rule_violation_suspected": "0",
-                "emotional_state": '["calm"]',
+                "emotional_state": ["calm"],
                 "review_date": tampered_review,  # <-- malicious / stale
                 "data_asof_session": tampered_session,
                 "mfe_mae_precision_level": "daily_approximate",
@@ -478,7 +478,7 @@ def test_event_log_post_server_stamps_mfe_mae_precision_level_ignoring_form_valu
                 "stop_changed": "0",
                 "action_taken": "hold",
                 "rule_violation_suspected": "0",
-                "emotional_state": '["calm"]',
+                "emotional_state": ["calm"],
                 # <-- tampered: V1 only emits daily_approximate; client
                 # cannot upgrade audit metadata to intraday tiers.
                 "mfe_mae_precision_level": "intraday_exact",
@@ -499,4 +499,115 @@ def test_event_log_post_server_stamps_mfe_mae_precision_level_ignoring_form_valu
     assert precision == "daily_approximate", (
         f"route trusted client-supplied mfe_mae_precision_level: "
         f"persisted={precision!r}; expected SERVER-stamped 'daily_approximate'"
+    )
+
+
+def test_event_log_post_multi_checkbox_emotional_state_persists_as_json_list(  # noqa: N802
+    app_with_seeded_trade,
+):
+    """code-review I1 fix: emotional_state form input is multi-checkbox.
+
+    Discriminating test: pre-fix route used ``_opt("emotional_state")`` which
+    returns a single str (last value wins); post-fix uses
+    ``_emotional_state_from_form(form)`` which calls ``form.getlist`` +
+    JSON-encodes. Submit two checked values; verify both persist as a JSON
+    list in the audit row.
+    """
+    import json
+
+    app, db_path = app_with_seeded_trade
+    with TestClient(app) as client:
+        response = client.post(
+            "/trades/1/daily-management/event",
+            data={
+                "stop_changed": "0",
+                "action_taken": "hold",
+                "rule_violation_suspected": "0",
+                # httpx encodes Python lists as multi-value form fields:
+                # emotional_state=calm&emotional_state=focused.
+                # form.getlist("emotional_state") collects both.
+                "emotional_state": ["calm", "confident"],
+            },
+            headers={"HX-Request": "true"},
+        )
+    assert response.status_code == 204
+
+    conn = connect(db_path)
+    try:
+        emotional_state = conn.execute(
+            "SELECT emotional_state FROM daily_management_records "
+            "WHERE trade_id = 1 AND record_type = 'event_log'",
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    parsed = json.loads(emotional_state)
+    assert parsed == ["calm", "confident"], (
+        f"multi-checkbox values did not persist as JSON list: "
+        f"persisted={emotional_state!r}; expected JSON list "
+        f'["calm", "confident"]'
+    )
+
+
+def test_event_log_form_template_renders_emotional_state_checkboxes():
+    """code-review I1 fix: form template uses checkbox loop over canonical
+    DAILY_MGMT_EMOTIONAL_STATES (mirrors Phase 7 entry-form pattern).
+
+    Discriminating test: pre-fix template had a single ``<input type="text"
+    name="emotional_state">`` with JSON literal default ``[]``; post-fix
+    template iterates over ``vm.emotional_state_options`` rendering one
+    ``<input type="checkbox" name="emotional_state" value="...">`` per
+    canonical state. Verify the template source code asserts the new shape.
+    """
+    template_path = Path(
+        "swing/web/templates/partials/daily_management_event_form.html.j2",
+    )
+    text = template_path.read_text(encoding="utf-8")
+    # Old shape MUST be absent (single text input with [] default).
+    assert (
+        "<input type=\"text\" name=\"emotional_state\""
+        not in text
+    ), "form template still has single-text-input emotional_state field"
+    # New shape: checkbox loop over options.
+    assert "vm.emotional_state_options" in text, (
+        "form template missing vm.emotional_state_options iteration"
+    )
+    assert (
+        "type=\"checkbox\" name=\"emotional_state\""
+        in text
+    ), "form template missing checkbox inputs for emotional_state"
+
+
+def test_event_log_form_vm_exposes_canonical_emotional_state_options(
+    app_with_seeded_trade,
+):
+    """code-review I1 fix: build_event_log_form_vm populates
+    emotional_state_options from DAILY_MGMT_EMOTIONAL_STATES (canonical
+    Phase 7 entry vocabulary mirror per swing.trades.daily_management:129).
+
+    Discriminating test: pre-fix VM had no emotional_state_options field;
+    template rendered a text input with literal JSON default. Post-fix VM
+    field is populated from canonical constant; template iterates it.
+
+    Reuses ``app_with_seeded_trade`` fixture for clean DB lifecycle on
+    Windows (tempfile.TemporaryDirectory + WAL-mode SQLite produces ACL
+    teardown failures; pytest's tmp_path-via-fixture sidesteps that).
+    """
+    from swing.trades.daily_management import DAILY_MGMT_EMOTIONAL_STATES
+    from swing.web.view_models.trades import build_event_log_form_vm
+
+    _, db_path = app_with_seeded_trade
+    base_cfg = load(Path("swing.config.toml"))
+    cfg = dc_replace(base_cfg, paths=dc_replace(base_cfg.paths, db_path=db_path))
+    vm = build_event_log_form_vm(trade_id=1, cfg=cfg)
+
+    assert vm is not None, "VM build returned None for active trade"
+    assert vm.emotional_state_options == DAILY_MGMT_EMOTIONAL_STATES, (
+        f"VM options drift from canonical: vm.emotional_state_options="
+        f"{vm.emotional_state_options!r}; canonical="
+        f"{DAILY_MGMT_EMOTIONAL_STATES!r}"
+    )
+    assert vm.emotional_state_set == (), (
+        f"VM emotional_state_set should default to empty tuple on initial "
+        f"render (no preserved checked-state); got {vm.emotional_state_set!r}"
     )

@@ -62,9 +62,20 @@
       Rule violation suspected?
     </label></div>
 
-  <div><label>Emotional state (JSON list)</label>
-    <input type="text" name="emotional_state"
-           value='{{ vm.emotional_state or "[]" }}'></div>
+  {#- code-review I1 fix — emotional_state is multi-checkbox, mirroring Phase 7
+      entry-form pattern (`partials/trade_entry_form.html.j2:188-197`). Each
+      checkbox emits one form value with `name="emotional_state"`; the route
+      handler collects via `form.getlist("emotional_state")` + JSON-encodes
+      before passing to `EventLogRequest`. Canonical option list lives at
+      `swing.trades.daily_management.DAILY_MGMT_EMOTIONAL_STATES` (mirrors
+      Phase 7 entry vocabulary; same 8 values). -#}
+  <div><label>Emotional state (multi-select)</label>
+    {% for value in vm.emotional_state_options %}
+      <label><input type="checkbox" name="emotional_state" value="{{ value }}"
+                    {% if value in vm.emotional_state_set %}checked{% endif %}>
+        {{ value }}</label>
+    {% endfor %}
+  </div>
 
   <div><label>Management notes</label>
     <textarea name="management_notes">{{ vm.management_notes or '' }}</textarea></div>
