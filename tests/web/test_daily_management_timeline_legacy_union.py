@@ -262,3 +262,78 @@ def test_non_stop_adjust_trade_events_do_not_appear_in_timeline(cfg_with_db):
         f"got {len(vm.rows)} unexpected rows: "
         f"{[r.record_type for r in vm.rows]}"
     )
+
+
+def test_timeline_orders_legacy_orphan_chronologically_with_dmr_rows(cfg_with_db):
+    """Discriminating test for the merged sort order:
+
+    Insert (in scrambled insertion order):
+      - daily_snapshot for 2026-05-04 (created_at 2026-05-04T16:00:00)
+      - orphan stop_adjust for 2026-05-05 (ts 2026-05-05T10:30:00)
+      - event_log for 2026-05-06 (created_at 2026-05-06T09:00:00)
+
+    Pre-fix expectation (had we appended orphans without sorting): they'd
+    appear at the end of the rows list regardless of date.
+    Post-fix expectation: rows ordered chronologically ascending - snapshot
+    (4th), orphan (5th), event_log (6th)."""
+    from swing.data.repos.daily_management import insert_event_log, insert_snapshot
+
+    cfg, db_path = cfg_with_db
+    conn = connect(db_path)
+    try:
+        _seed_trade(conn, trade_id=1, ticker="DHC", current_stop=95.0)
+        # Snapshot first chronologically:
+        insert_snapshot(
+            conn, trade_id=1,
+            snapshot_fields={
+                "review_date": "2026-05-04",
+                "data_asof_session": "2026-05-04",
+                "created_at": "2026-05-04T16:00:00",
+                "mfe_mae_precision_level": "daily_approximate",
+                "pipeline_run_id": None,
+                "current_price": 110.0, "current_stop": 95.0,
+                "current_size": 50.0, "current_avg_cost": 100.0,
+                "open_R_effective": 1.0,
+                "open_MFE_R_to_date": 1.5, "open_MAE_R_to_date": 0.2,
+                "intraday_high": 111.0, "intraday_low": 109.0,
+                "position_capital_utilization_pct": 0.15,
+                "position_capital_denominator_dollars": 7500.0,
+                "position_portfolio_heat_contribution_dollars": 50.0,
+                "maturity_stage": "+1.5R_to_+2R",
+                "trail_MA_candidate_price": 105.0,
+                "trail_MA_period_days": 21,
+                "trail_MA_eligibility_flag": 0,
+            },
+        )
+        # Orphan in the middle:
+        _insert_orphan_stop_adjust(
+            conn, trade_id=1,
+            ts="2026-05-05T10:30:00",
+            old_stop=90.0, new_stop=95.0,
+        )
+        # Event_log last chronologically:
+        insert_event_log(
+            conn, trade_id=1,
+            event_log_fields={
+                "review_date": "2026-05-06",
+                "data_asof_session": "2026-05-06",
+                "created_at": "2026-05-06T09:00:00",
+                "mfe_mae_precision_level": "daily_approximate",
+                "stop_changed": 0,
+                "action_taken": "hold",
+                "rule_violation_suspected": 0,
+                "emotional_state": "[]",
+            },
+        )
+    finally:
+        # See B.6 fix: insert_snapshot/insert_event_log defer commit to caller.
+        conn.commit()
+        conn.close()
+
+    vm = build_daily_management_timeline_vm(trade_id=1, cfg=cfg)
+    assert vm is not None
+    assert len(vm.rows) == 3
+    types_in_order = [r.record_type for r in vm.rows]
+    assert types_in_order == [
+        "daily_snapshot", "trade_event_legacy", "event_log",
+    ], f"got order: {types_in_order}"
