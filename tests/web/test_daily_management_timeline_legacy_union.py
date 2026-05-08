@@ -337,3 +337,46 @@ def test_timeline_orders_legacy_orphan_chronologically_with_dmr_rows(cfg_with_db
     assert types_in_order == [
         "daily_snapshot", "trade_event_legacy", "event_log",
     ], f"got order: {types_in_order}"
+
+
+def test_orphan_with_malformed_payload_renders_with_none_stops(cfg_with_db):
+    """Discriminating test for the defensive payload decoder:
+
+    Insert an orphan trade_event with a malformed payload_json (not valid
+    JSON).
+
+    Pre-fix expectation (had we used `json.loads(...)` without try/except):
+    the VM build raises JSONDecodeError and the trade-detail page 500s.
+    Post-fix expectation: the row appears with `legacy_prior_stop is None
+    and legacy_new_stop is None` (decoder swallows the malformed payload),
+    and the page renders 200."""
+    cfg, db_path = cfg_with_db
+    conn = connect(db_path)
+    try:
+        _seed_trade(conn, trade_id=1, ticker="DHC", current_stop=95.0)
+        conn.execute(
+            "INSERT INTO trade_events "
+            "(trade_id, ts, event_type, payload_json, rationale, notes) "
+            "VALUES (1, '2026-05-05T10:30:00', 'stop_adjust', "
+            " 'this is not json', 'trail-up', NULL)",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    vm = build_daily_management_timeline_vm(trade_id=1, cfg=cfg)
+    assert vm is not None
+    assert len(vm.rows) == 1
+    row = vm.rows[0]
+    assert row.record_type == "trade_event_legacy"
+    assert row.legacy_prior_stop is None
+    assert row.legacy_new_stop is None
+    assert row.legacy_rationale == "trail-up"
+
+    app = create_app(cfg)
+    with TestClient(app) as client:
+        response = client.get("/trades/1")
+    assert response.status_code == 200
+    # Template fallback: with both legacy stops None, the row renders the
+    # fallback marker rather than a dangling "stop  ->" transition.
+    assert "stop adjustment details unavailable" in response.text
