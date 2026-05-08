@@ -1225,6 +1225,12 @@ def build_daily_management_timeline_vm(
             trade = get_trade(conn, trade_id)
             if trade is None:
                 return None
+            # Two sequential SELECTs without a wrapping read transaction. A
+            # concurrent ``record_event_log`` COMMIT landing between them can
+            # produce a transient false legacy-orphan in the rendered page
+            # (read-side snapshot inconsistency). Accepted V1 limitation —
+            # see ``docs/phase3e-todo.md`` "Phase 8 V2 advisory items" for
+            # the V2 fix options + impact framing.
             records = list_for_trade_timeline(conn, trade_id=trade_id)
             events = list_events_for_trade(conn, trade_id=trade_id)
     finally:
