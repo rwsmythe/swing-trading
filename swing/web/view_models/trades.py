@@ -1238,14 +1238,21 @@ def build_daily_management_timeline_vm(
     record_rows = [_record_to_timeline_row(r) for r in records]
     orphan_rows = [_orphan_stop_adjust_to_timeline_row(e) for e in orphan_stop_adjusts]
 
-    # Merge + sort by canonical timeline key (review_date ASC, created_at ASC,
-    # management_record_id ASC). For orphans, management_record_id is
-    # negative (-trade_events.id) per §A.2 — gives deterministic tiebreak
-    # without colliding with positive autoincrements.
-    merged = sorted(
-        record_rows + orphan_rows,
-        key=lambda r: (r.review_date, r.created_at, r.management_record_id),
-    )
+    # Merge + sort by canonical timeline key. Tiebreak via a 4-tuple
+    # (review_date, created_at, source_rank, abs_id):
+    #   - source_rank=0 for legacy orphans → orphans sort BEFORE DMR rows
+    #     within the same (review_date, created_at) bucket.
+    #   - source_rank=1 for daily_management_records.
+    #   - abs_id uses trade_event_id ASC for orphans (insertion order) and
+    #     management_record_id ASC for DMR rows (preserves prior semantics).
+    # Adversarial-review R1 M1+M3: replaces the negative-id tiebreak that
+    # previously reversed insertion order for multi-orphan same-second ties.
+    def _sort_key(row: DailyManagementTimelineRowVM) -> tuple:
+        if row.record_type == "trade_event_legacy":
+            return (row.review_date, row.created_at, 0, row.trade_event_id or 0)
+        return (row.review_date, row.created_at, 1, row.management_record_id)
+
+    merged = sorted(record_rows + orphan_rows, key=_sort_key)
 
     return DailyManagementTimelineVM(
         trade_id=trade_id, ticker=trade.ticker, rows=tuple(merged),

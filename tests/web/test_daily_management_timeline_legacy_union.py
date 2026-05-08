@@ -380,3 +380,101 @@ def test_orphan_with_malformed_payload_renders_with_none_stops(cfg_with_db):
     # Template fallback: with both legacy stops None, the row renders the
     # fallback marker rather than a dangling "stop  ->" transition.
     assert "stop adjustment details unavailable" in response.text
+
+
+def test_multiple_orphans_same_second_sort_by_insertion_order(cfg_with_db):
+    """Adversarial-review R1 Major 1 (sort tiebreak):
+
+    Insert two orphan stop_adjust trade_events with the SAME `ts` (resolution
+    to the second). The earlier insertion has a smaller autoincrement id; the
+    later insertion has a larger id. Both share the same (review_date,
+    created_at) bucket.
+
+    Pre-fix expectation (sort key tiebreak `-event.id`): the LATER-inserted
+    orphan (id=2 → -2) sorts BEFORE the earlier one (id=1 → -1) because
+    -2 < -1, REVERSING insertion order.
+
+    Post-fix expectation (sort key tiebreak `(0, +event.id)`): orphans sort
+    by trade_events.id ASC within the same (review_date, created_at) bucket
+    — i.e., insertion order is preserved.
+    """
+    cfg, db_path = cfg_with_db
+    conn = connect(db_path)
+    try:
+        _seed_trade(conn, trade_id=1, ticker="DHC", current_stop=99.0)
+        first_id = _insert_orphan_stop_adjust(
+            conn, trade_id=1,
+            ts="2026-05-05T10:30:00",
+            old_stop=90.0, new_stop=92.0,
+            rationale="first nudge",
+        )
+        second_id = _insert_orphan_stop_adjust(
+            conn, trade_id=1,
+            ts="2026-05-05T10:30:00",
+            old_stop=92.0, new_stop=95.0,
+            rationale="second nudge",
+        )
+    finally:
+        conn.close()
+
+    assert first_id < second_id, "fixture invariant: autoincrement preserves order"
+
+    vm = build_daily_management_timeline_vm(trade_id=1, cfg=cfg)
+    assert vm is not None
+    assert len(vm.rows) == 2
+    # Insertion order: first row should be the FIRST-inserted orphan.
+    assert vm.rows[0].trade_event_id == first_id
+    assert vm.rows[1].trade_event_id == second_id
+    # And rationale labels confirm we are reading the right rows.
+    assert vm.rows[0].legacy_rationale == "first nudge"
+    assert vm.rows[1].legacy_rationale == "second nudge"
+
+
+def test_orphan_sorts_before_dmr_at_same_review_date_and_created_at(cfg_with_db):
+    """Adversarial-review R1 Major 3 (same-(date,ts) DMR-vs-orphan ordering):
+
+    Insert a Phase 8 daily_management_record AND a Phase 7 orphan stop_adjust
+    that share the SAME (review_date, created_at) tuple to the second.
+
+    Locked behavior: orphans render BEFORE Phase 8 records at the same
+    timestamp (source_rank=0 < 1). Operators reading the timeline see the
+    legacy quick-adjust "first" within a same-second bucket so the
+    chronological story stays internally consistent — Phase 7 events fired,
+    Phase 8 review captured them.
+    """
+    from swing.data.repos.daily_management import insert_event_log
+
+    cfg, db_path = cfg_with_db
+    conn = connect(db_path)
+    try:
+        _seed_trade(conn, trade_id=1, ticker="DHC", current_stop=95.0)
+        _insert_orphan_stop_adjust(
+            conn, trade_id=1,
+            ts="2026-05-05T10:30:00",
+            old_stop=90.0, new_stop=92.0,
+            rationale="orphan",
+        )
+        # Phase 8 event_log row at the SAME (review_date, created_at) but
+        # with no linked_trade_event_id (so the orphan stays orphan).
+        insert_event_log(
+            conn, trade_id=1,
+            event_log_fields={
+                "review_date": "2026-05-05",
+                "data_asof_session": "2026-05-05",
+                "created_at": "2026-05-05T10:30:00",
+                "mfe_mae_precision_level": "daily_approximate",
+                "stop_changed": 0,
+                "action_taken": "hold",
+                "rule_violation_suspected": 0,
+                "emotional_state": "[]",
+            },
+        )
+    finally:
+        conn.commit()
+        conn.close()
+
+    vm = build_daily_management_timeline_vm(trade_id=1, cfg=cfg)
+    assert vm is not None
+    assert len(vm.rows) == 2
+    assert vm.rows[0].record_type == "trade_event_legacy"
+    assert vm.rows[1].record_type == "event_log"
