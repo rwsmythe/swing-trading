@@ -1071,6 +1071,16 @@ class DailyManagementTimelineRowVM:
     rule_violation_suspected: int | None   # 0|1
     emotional_state: str | None            # JSON-list TEXT
     management_notes: str | None
+    # Phase 8 V1 polish — Item #1: legacy Phase 7 trade_events surfacing.
+    # Populated only on `record_type == 'trade_event_legacy'` rows. None
+    # everywhere else (defaulted so existing _record_to_timeline_row call
+    # sites construct unchanged).
+    trade_event_id: int | None = None
+    event_type: str | None = None  # raw trade_events.event_type
+    legacy_prior_stop: float | None = None  # decoded from payload_json["old_stop"]
+    legacy_new_stop: float | None = None    # decoded from payload_json["new_stop"]
+    legacy_rationale: str | None = None     # trade_events.rationale
+    legacy_notes: str | None = None         # trade_events.notes
 
 
 @dataclass(frozen=True)
