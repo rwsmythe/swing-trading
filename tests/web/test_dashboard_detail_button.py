@@ -91,3 +91,25 @@ def test_dashboard_detail_anchor_includes_stop_propagation(dashboard_app):
     anchor_end = body.index("</a>", anchor_start)
     anchor_block = body[anchor_start:anchor_end]
     assert "event.stopPropagation()" in anchor_block
+
+
+def test_dashboard_detail_target_route_resolves(dashboard_app):
+    """Phase 6 R5 I3 lesson: navigation target route MUST be registered AND
+    resolve. The Detail anchor's href is `/trades/{id}`; verify both the route
+    is registered + GET to that path returns 200 for a seeded trade.
+
+    Pre-fix expectation (had we shipped a broken href like `/trade/1`): GET
+    returns 404. Post-fix expectation: GET returns 200 with the trade-detail
+    page rendered.
+    """
+    app, _ = dashboard_app
+    paths = {getattr(r, "path", None) for r in app.routes}
+    assert "/trades/{trade_id}" in paths, (
+        f"GET /trades/{{trade_id}} not registered; routes: {sorted(p for p in paths if p)}"
+    )
+    with TestClient(app) as client:
+        response = client.get("/trades/1")
+    assert response.status_code == 200
+    # And the page renders the Phase 8 timeline section header (sanity that
+    # the Detail destination is actually the trade-detail page).
+    assert 'id="daily-management-timeline"' in response.text
