@@ -132,30 +132,21 @@ def test_event_log_post_HX_Redirect_target_route_registered(  # noqa: N802
 ):
     """Phase 6 R5 I3 lesson: HX-Redirect target route MUST exist in app.routes.
 
-    The success-path emits ``HX-Redirect: /trades/{trade_id}``; verify a route
-    with a path-template matching ``/trades/{...}`` (NOT the daily-management
-    sub-route) is registered.
+    Polish-bundle-2026-05-09 Task B.3: the success-path now emits
+    ``HX-Redirect: /`` (dashboard, post-Task-B.1 retarget). Verify the
+    dashboard route IS registered AND resolves with 200 — TestClient
+    verifies the header value but does NOT follow the redirect, so a
+    missing/renamed dashboard route would silently 404 the operator's
+    browser without test feedback.
     """
     app, _ = app_with_seeded_trade
     paths = {getattr(r, "path", None) for r in app.routes}
-    assert any(
-        p
-        and p.startswith("/trades/")
-        and "{" in p
-        and not p.endswith("/daily-management/event")
-        and not p.endswith("/exit")
-        and not p.endswith("/exit/form")
-        and not p.endswith("/stop")
-        and not p.endswith("/stop/form")
-        and not p.endswith("/cancel")
-        and not p.endswith("/review")
-        and not p.endswith("/row")
-        and not p.endswith("/expand")
-        for p in paths
-    ), f"no GET /trades/{{trade_id}} target found; routes: {paths}"
-    # And specifically: GET /trades/{trade_id} renders 200 (target resolves).
+    assert any(p == "/" for p in paths), (
+        f"no GET / dashboard route registered; routes: {paths}"
+    )
+    # And specifically: GET / renders 200 (target resolves).
     with TestClient(app) as client:
-        r = client.get("/trades/1")
+        r = client.get("/")
     assert r.status_code == 200
 
 
