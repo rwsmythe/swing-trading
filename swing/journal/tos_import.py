@@ -45,6 +45,29 @@ class TosFill:
 
 
 @dataclass(frozen=True)
+class FillDecision:
+    """Per-fill reconciliation outcome with journal-vs-TOS price visibility.
+
+    Populated alongside the matched/unmatched/price_mismatch/already_reconciled
+    bucket lists so `--verbose` CLI output can surface the journal entry_price
+    that participated in each routing decision. The operator-actionable
+    invariant — 'reconciliation checks existence AND correct values' — needs
+    this view: existence-only matching cannot show whether the journal price
+    agrees with the broker fill.
+
+    `journal_price` is set for OPEN matched / OPEN price_mismatch decisions
+    (where a single trade-row entry_price drove the routing). It is None for
+    CLOSE-side matches via cumulative-allocation, unmatched fills, and
+    already_reconciled cases — those don't compare against a single journal
+    entry_price.
+    """
+    fill: TosFill
+    outcome: str  # matched | price_mismatch | unmatched_open | unmatched_close | already_reconciled
+    journal_price: float | None
+    tolerance: float
+
+
+@dataclass(frozen=True)
 class ReconciliationReport:
     matched_fills: list[TosFill] = field(default_factory=list)
     unmatched_open_fills: list[TosFill] = field(default_factory=list)
@@ -57,6 +80,11 @@ class ReconciliationReport:
     already_reconciled_fills: list[TosFill] = field(default_factory=list)
     new_cash_movements: list[CashMovement] = field(default_factory=list)
     duplicate_cash_movements: list[CashMovement] = field(default_factory=list)
+    # Parallel detail list — one entry per processed fill in encounter order
+    # — for `swing tos-import --verbose`. Always populated so CLI verbose
+    # mode never has to second-guess existence; default CLI output ignores
+    # it so byte-identical default behavior is preserved.
+    fill_decisions: list[FillDecision] = field(default_factory=list)
 
 
 def parse_tos_export(text: str) -> dict[str, list[dict]]:
@@ -266,6 +294,13 @@ def reconcile_tos(
 
         within_batch_alloc: dict[int, int] = {}
         claimed_exit_ids: set[int] = set()
+
+        def _record(f: TosFill, outcome: str, journal_price: float | None) -> None:
+            report.fill_decisions.append(FillDecision(
+                fill=f, outcome=outcome,
+                journal_price=journal_price, tolerance=price_tolerance,
+            ))
+
         for f in fills:
             if f.open_close == "OPEN":
                 t = find_open_trade_by_match(
@@ -275,8 +310,10 @@ def reconcile_tos(
                 if t is not None:
                     if abs(t.entry_price - f.price) > price_tolerance:
                         report.price_mismatch_fills.append(f)
+                        _record(f, "price_mismatch", t.entry_price)
                     else:
                         report.matched_fills.append(f)
+                        _record(f, "matched", t.entry_price)
                     continue
                 # No open trade matched. Check historical (closed) trades —
                 # re-importing an old TOS statement is a routine case, and
@@ -286,8 +323,10 @@ def reconcile_tos(
                     price=f.price, side="OPEN", price_tolerance=price_tolerance,
                 ):
                     report.already_reconciled_fills.append(f)
+                    _record(f, "already_reconciled", None)
                 else:
                     report.unmatched_open_fills.append(f)
+                    _record(f, "unmatched_open", None)
             else:
                 t = find_any_open_trade(conn, ticker=f.ticker)
                 # Historical re-import detection: a CLOSE fill whose
@@ -310,9 +349,11 @@ def reconcile_tos(
                 if claimed is not None:
                     claimed_exit_ids.add(claimed)
                     report.already_reconciled_fills.append(f)
+                    _record(f, "already_reconciled", None)
                     continue
                 if t is None:
                     report.unmatched_close_fills.append(f)
+                    _record(f, "unmatched_close", None)
                     continue
                 # Phase 7 B.9: exits table dropped (migration 0014). Sum
                 # quantities of all non-entry fills (trim/exit/stop) — that
@@ -327,8 +368,10 @@ def reconcile_tos(
                 cumulative = sold_in_db + already_allocated + f.qty
                 if cumulative > t.initial_shares:
                     report.unmatched_close_fills.append(f)
+                    _record(f, "unmatched_close", None)
                 else:
                     report.matched_fills.append(f)
+                    _record(f, "matched", None)
                     within_batch_alloc[t.id or 0] = already_allocated + f.qty
     finally:
         conn.close()

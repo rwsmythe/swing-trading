@@ -1512,14 +1512,20 @@ def journal_cash_cmd(ctx, deposit, withdraw, date_str, ref, note):
 @click.option("--csv", "csv_path", required=True, type=click.Path(exists=True, dir_okay=False))
 @click.option("--dry-run", is_flag=True, help="Print report without committing anything")
 @click.option("--auto-confirm", is_flag=True, help="Commit new cash movements without prompting")
+@click.option("--verbose", is_flag=True, help=(
+    "Surface per-section row counts + per-fill price-comparison detail. "
+    "Default output is byte-identical to the non-verbose summary; --verbose "
+    "appends an extra block so silent extraction failures (3e.12) are "
+    "observable-with-context."
+))
 @click.pass_context
-def tos_import_cmd(ctx, csv_path, dry_run, auto_confirm):
+def tos_import_cmd(ctx, csv_path, dry_run, auto_confirm, verbose):
     """Reconcile a TOS Account Statement CSV against the journal."""
     from pathlib import Path as _Path
 
     from swing.data.db import connect
     from swing.data.repos.cash import insert_cash
-    from swing.journal.tos_import import reconcile_tos
+    from swing.journal.tos_import import extract_stock_fills, parse_tos_export, reconcile_tos
 
     cfg = ctx.obj["config"]
     text = _Path(csv_path).read_text(encoding="utf-8")
@@ -1540,6 +1546,47 @@ def tos_import_cmd(ctx, csv_path, dry_run, auto_confirm):
         click.echo(f"  ? unmatched OPEN: {f.ticker} {f.date} qty={f.qty} @ ${f.price:.2f}")
     for f in report.unmatched_close_fills:
         click.echo(f"  ? unmatched CLOSE: {f.ticker} {f.date} qty={f.qty} @ ${f.price:.2f}")
+
+    if verbose:
+        # Per-section diagnostic. Re-parses the text — cheap, and gives the
+        # CLI direct visibility into what `parse_tos_export` saw without
+        # widening the reconcile_tos return surface. Also surfaces the
+        # silent-zero-result symptom (rows>0 but extracted_fills=0) directly.
+        click.echo("")
+        click.echo("--- VERBOSE diagnostic ---")
+        bom_present = text.startswith("﻿")
+        click.echo(
+            f"[parse] total_chars={len(text)} bom={'yes' if bom_present else 'no'}"
+        )
+        sections = parse_tos_export(text)
+        for section_label in (
+            "Cash Balance", "Account Trade History", "Account Order History",
+            "Futures Statements", "Forex Statements", "Account Summary",
+        ):
+            rows = sections.get(section_label) or []
+            present = "yes" if section_label in sections else "no"
+            click.echo(
+                f"[section] {section_label}: detected={present} rows={len(rows)}"
+            )
+        ath_rows = sections.get("Account Trade History") or []
+        extracted = list(extract_stock_fills(ath_rows))
+        click.echo(
+            f"[fills] extracted={len(extracted)} from "
+            f"{len(ath_rows)} Account Trade History rows; "
+            f"tolerance=${0.01:.4f}"
+        )
+        # Per-fill outcome with journal-vs-TOS price comparison.
+        for d in report.fill_decisions:
+            f = d.fill
+            jp = (
+                f"journal=${d.journal_price:.4f}"
+                if d.journal_price is not None
+                else "journal=N/A"
+            )
+            click.echo(
+                f"  [{d.outcome}] {f.ticker} {f.date} {f.side} qty={f.qty} "
+                f"TOS=${f.price:.4f} {jp} tol=${d.tolerance:.4f}"
+            )
 
     if dry_run:
         click.echo("Dry run \u2014 no changes committed.")
