@@ -136,4 +136,31 @@ def test_build_dashboard_sets_has_update_today_false_when_no_record(
     assert vm.open_trade_rows[2].has_update_today is False
 
 
-# NOTE: Task A.7 template-render test added in the next commit.
+def test_dashboard_renders_both_update_badge_states(dashboard_env) -> None:
+    """A.7 — full-page dashboard render contains BOTH badge glyphs when one
+    open trade has a today-snapshot and one does not.
+
+    Pre-fix: template never emits either glyph.
+    Post-fix: row partial appends ``✓ today`` for matched trades and
+    ``⚠ not yet`` for unmatched trades next to the state badge."""
+    cfg, db_path = dashboard_env
+    today = action_session_for_run(datetime.now()).isoformat()
+    conn = connect(db_path)
+    try:
+        _seed_trade(conn, trade_id=10, ticker="UPDT")  # will get a snapshot
+        _seed_trade(conn, trade_id=11, ticker="STAL")  # no snapshot
+        with conn:
+            insert_snapshot(
+                conn, trade_id=10,
+                snapshot_fields=_full_snapshot_fields(data_asof_session=today),
+            )
+    finally:
+        conn.close()
+
+    app = create_app(cfg)
+    with TestClient(app) as client:
+        response = client.get("/")
+    assert response.status_code == 200
+    body = response.text
+    assert "✓ today" in body, "expected '✓ today' badge in dashboard HTML"
+    assert "⚠ not yet" in body, "expected '⚠ not yet' badge in dashboard HTML"
