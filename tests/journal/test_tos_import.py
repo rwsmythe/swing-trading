@@ -850,3 +850,89 @@ def test_reconcile_real_world_csv_sgml_round_trip(tmp_path: Path):
         f"real-world unmatched-routing assertion the brief §5 watch item "
         f"requires."
     )
+
+
+def test_fill_decisions_journal_price_semantics(tmp_path: Path):
+    """Round 3 Major 1: pin the FillDecision contract directly so the
+    `--verbose` price-comparison line does not silently misroute prices
+    across outcome categories.
+
+    Contract:
+      OPEN matched         -> journal_price == matched trade.entry_price
+      OPEN price_mismatch  -> journal_price == matched trade.entry_price
+      CLOSE matched (alloc)-> journal_price is None (no single price drove the routing)
+      OPEN unmatched       -> journal_price is None
+      CLOSE unmatched      -> journal_price is None
+
+    Discriminator: a regression that swapped the OPEN paths' journal_price
+    semantics (e.g., always None, or copied from the TosFill instead of
+    the journal trade) would pass the existing CLI verbose substring
+    assertions because `TOS=$X journal=$X` happens to align when prices
+    match. This test pins each branch independently."""
+    from swing.data.db import ensure_schema
+
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+
+    conn = sqlite3.connect(db)
+    try:
+        # OPEN matched: LAR seeded at TOS price.
+        _seed_entry(conn, ticker="LAR", entry_date="2026-05-08",
+                    entry_price=11.7066, shares=7, initial_stop=7.00)
+        # OPEN price_mismatch: CVGI seeded with intentionally off price.
+        _seed_entry(conn, ticker="CVGI", entry_date="2026-05-08",
+                    entry_price=5.50, shares=20, initial_stop=3.67)
+        # SGML round-trip: OPEN matched + CLOSE allocation match.
+        _seed_entry(conn, ticker="SGML", entry_date="2026-05-07",
+                    entry_price=23.87, shares=3, initial_stop=11.63)
+        # VSAT, YOU left unseeded -> unmatched_open routing.
+    finally:
+        conn.close()
+
+    text = REAL_WORLD_FIXTURE.read_text(encoding="utf-8")
+    report = reconcile_tos(db_path=db, tos_text=text)
+
+    by_key = {(d.fill.ticker, d.fill.open_close, d.fill.qty): d
+              for d in report.fill_decisions}
+
+    lar_open = by_key[("LAR", "OPEN", 7)]
+    assert lar_open.outcome == "matched"
+    assert lar_open.journal_price == 11.7066, (
+        f"OPEN matched MUST carry journal entry_price; got "
+        f"journal_price={lar_open.journal_price}"
+    )
+
+    cvgi_open = by_key[("CVGI", "OPEN", 20)]
+    assert cvgi_open.outcome == "price_mismatch"
+    assert cvgi_open.journal_price == 5.50, (
+        f"OPEN price_mismatch MUST carry the mismatched journal entry_price "
+        f"so verbose can show TOS=5.2244 vs journal=5.50; got "
+        f"journal_price={cvgi_open.journal_price}"
+    )
+
+    sgml_open = by_key[("SGML", "OPEN", 3)]
+    assert sgml_open.outcome == "matched"
+    assert sgml_open.journal_price == 23.87
+
+    sgml_close = by_key[("SGML", "CLOSE", 3)]
+    assert sgml_close.outcome == "matched"
+    assert sgml_close.journal_price is None, (
+        f"CLOSE allocation match has no single trade-row price driving the "
+        f"decision (cumulative-shares allocation against the open lot); "
+        f"journal_price MUST be None to prevent verbose mis-attributing a "
+        f"stale entry_price as the matched 'value'. Got "
+        f"journal_price={sgml_close.journal_price}"
+    )
+
+    vsat_open = by_key[("VSAT", "OPEN", 2)]
+    assert vsat_open.outcome == "unmatched_open"
+    assert vsat_open.journal_price is None
+
+    you_open = by_key[("YOU", "OPEN", 2)]
+    assert you_open.outcome == "unmatched_open"
+    assert you_open.journal_price is None
+
+    # Tolerance must propagate through the report unchanged so verbose
+    # output is consistent with the routing decision threshold.
+    for d in report.fill_decisions:
+        assert d.tolerance == 0.01

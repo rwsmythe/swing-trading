@@ -272,6 +272,19 @@ def test_tos_import_verbose_surfaces_section_diagnostics(tmp_path: Path):
         f"leaks into Forex Statements."
     )
     assert "detected=yes" in crypto_lines[0]
+    # Round 3 Minor 2: pin the *original leak target* — Forex Statements
+    # in the real-world fixture has zero data rows (only its header), so
+    # any rows>0 here would mean Crypto data is leaking back into Forex.
+    forex_lines = [
+        line for line in verbose.splitlines()
+        if line.startswith("[section] Forex Statements:")
+    ]
+    assert len(forex_lines) == 1
+    assert "rows=0" in forex_lines[0], (
+        f"Forex Statements should have rows=0 (real-world fixture has only "
+        f"its header line, no data rows); inflated count means Crypto "
+        f"Statements is leaking into the Forex buffer. Got: {forex_lines[0]!r}"
+    )
 
 
 def test_tos_import_warns_on_absent_required_section(tmp_path: Path):

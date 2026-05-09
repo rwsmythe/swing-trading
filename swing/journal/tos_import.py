@@ -35,6 +35,12 @@ _SECTION_LABELS = (
     # but the row-count signal for the operator is misleading).
     "Equities",
     "Profits and Losses",
+    # Crypto Statements is the canonical label for the quoted, bank-name-
+    # bearing header line in the real-world export. `_section_label_for_line`
+    # bridges the volatile line text to this stable canonical name; the
+    # canonical name belongs in the recognized-section list so it does not
+    # diverge from the registry of valid labels.
+    "Crypto Statements",
 )
 
 
