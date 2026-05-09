@@ -22,6 +22,7 @@ from swing.data.db import ensure_schema
 from swing.data.repos.daily_management import (
     SupersededRowImmutableException,
     TierOrderingError,
+    has_update_today_for_trades,
     insert_event_log,
     insert_snapshot,
     list_for_trade_timeline,
@@ -539,6 +540,29 @@ def test_upsert_snapshot_does_not_use_REPLACE(
         "SELECT MAX(management_record_id) FROM daily_management_records"
     ).fetchone()[0]
     assert max_id == rec_id
+
+
+# ---- has_update_today_for_trades (Polish-bundle 2026-05-09 Family A) -------
+
+
+def test_has_update_today_for_trades_empty_when_no_records(
+    conn: sqlite3.Connection,
+) -> None:
+    """A.1 — open trade with NO daily_management_records returns empty set."""
+    today = "2026-05-09"
+    result = has_update_today_for_trades(conn, [1], action_session=today)
+    assert result == set()
+
+
+def test_has_update_today_for_trades_returns_id_for_today_snapshot(
+    conn: sqlite3.Connection,
+) -> None:
+    """A.2 — daily_snapshot row whose review_date matches today qualifies."""
+    today = "2026-05-09"
+    fields = _full_snapshot_fields(data_asof_session=today)
+    insert_snapshot(conn, trade_id=1, snapshot_fields=fields)
+    result = has_update_today_for_trades(conn, [1], action_session=today)
+    assert result == {1}
 
 
 # ---- helpers ----------------------------------------------------------------

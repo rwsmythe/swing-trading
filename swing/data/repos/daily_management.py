@@ -40,6 +40,7 @@ than in ``swing/trades/daily_management.py`` because:
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from typing import Any
 
 from swing.data.models import DailyManagementRecord
@@ -141,6 +142,44 @@ def _row_to_record(row: sqlite3.Row | tuple[Any, ...]) -> DailyManagementRecord:
         rule_violation_suspected=row[40],
         management_notes=row[41],
     )
+
+
+def has_update_today_for_trades(
+    conn: sqlite3.Connection,
+    trade_ids: Iterable[int],
+    *,
+    action_session: str,
+) -> set[int]:
+    """Return the subset of ``trade_ids`` that have a daily-management update
+    for ``action_session``.
+
+    Predicate (locked per polish-bundle 2026-05-09 Task family A):
+
+      ``record_type IN ('daily_snapshot', 'event_log')``
+      AND ``is_superseded = 0``
+      AND ``review_date = action_session``
+
+    BOTH record types satisfy "updated today" — the operator can satisfy via
+    either a pipeline-emitted snapshot OR an operator-emitted event_log entry.
+
+    Empty ``trade_ids`` returns ``set()`` without hitting the DB. Caller
+    passes ``action_session`` (already-computed
+    ``action_session_for_run(now()).isoformat()``) so this helper is testable
+    without freezing the clock.
+    """
+    ids = list(trade_ids)
+    if not ids:
+        return set()
+    placeholders = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"SELECT DISTINCT trade_id FROM daily_management_records "
+        f"WHERE trade_id IN ({placeholders}) "
+        f"  AND record_type IN ('daily_snapshot', 'event_log') "
+        f"  AND is_superseded = 0 "
+        f"  AND review_date = ?",
+        (*ids, action_session),
+    ).fetchall()
+    return {int(r[0]) for r in rows}
 
 
 def select_active_snapshot(
