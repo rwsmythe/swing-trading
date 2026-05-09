@@ -1502,9 +1502,12 @@ def open_position_row(request: Request, trade_id: int):
 # bare `/trades/{trade_id}` wildcard so the more-specific path is matched
 # first by FastAPI/Starlette's registration-order routing. The route
 # delegates to ``record_event_log`` (T3.2's single-transaction service)
-# and emits 204 + ``HX-Redirect: /trades/{trade_id}`` on success per Phase
-# 5 R1 M2 lesson (htmx.js swallows 303 → swap-target transparently;
-# real-browser navigation requires the 204 + HX-Redirect pair).
+# and emits 204 + ``HX-Redirect: /`` on success per Phase 5 R1 M2 lesson
+# (htmx.js swallows 303 → swap-target transparently; real-browser
+# navigation requires the 204 + HX-Redirect pair).
+# Polish-bundle-2026-05-09 Task B.1: redirect target was changed from
+# ``/trades/{trade_id}`` to ``/`` so the operator returns to the dashboard
+# after submitting a daily-management event.
 @router.post("/trades/{trade_id}/daily-management/event")
 async def daily_management_event_post(request: Request, trade_id: int):
     """POST handler for the daily-management event-log form.
@@ -1512,9 +1515,9 @@ async def daily_management_event_post(request: Request, trade_id: int):
     Constructs an :class:`EventLogRequest` dataclass from the form payload
     and calls ``record_event_log`` (T3.2 single-transaction service). On
     ``ValidationException`` re-renders the form partial with a 422 + error
-    banner; on success returns ``204 No Content`` + ``HX-Redirect:
-    /trades/{trade_id}`` so htmx.js navigates the real browser to the
-    canonical trade-detail page.
+    banner; on success returns ``204 No Content`` + ``HX-Redirect: /`` so
+    htmx.js navigates the real browser back to the dashboard
+    (polish-bundle-2026-05-09 Task B.1).
 
     HTMX failure-surface mitigations (CLAUDE.md HTMX form gotcha; Phase 5
     R1 M1/M2 + Phase 6 R5 I3 lessons):
@@ -1523,8 +1526,9 @@ async def daily_management_event_post(request: Request, trade_id: int):
       so OriginGuard strict-mode admits nested submits — verified by a
       template literal-string assertion (real-browser only failure).
     * (b) Success-path response = 204 + HX-Redirect, NOT 303 → swap-target.
-    * (c) HX-Redirect target ``/trades/{trade_id}`` IS a registered GET
-      route (the canonical trade-detail page below).
+    * (c) HX-Redirect target ``/`` IS a registered GET route (the
+      dashboard) — verified by route-table + GET-resolves assertion in
+      the regression test (Phase 6 I3 lesson).
     """
     from fastapi.responses import Response
 
@@ -1681,12 +1685,15 @@ async def daily_management_event_post(request: Request, trade_id: int):
     finally:
         conn.close()
 
-    # Success: 204 + HX-Redirect. Target route /trades/{trade_id} IS
-    # registered (Phase 6 R5 I3 lesson — verified by route-table assertion
-    # in the regression test).
+    # Success: 204 + HX-Redirect. Target route ``/`` (dashboard) IS
+    # registered (Phase 6 R5 I3 lesson — verified by route-table + GET-
+    # resolves assertion in the regression test). Redirect target was
+    # changed from ``/trades/{trade_id}`` to ``/`` in
+    # polish-bundle-2026-05-09 Task B.1 so the operator returns to the
+    # dashboard after submitting a daily-management event.
     return Response(
         status_code=204,
-        headers={"HX-Redirect": f"/trades/{trade_id}"},
+        headers={"HX-Redirect": "/"},
     )
 
 

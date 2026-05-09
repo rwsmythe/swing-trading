@@ -7,8 +7,11 @@ Three browser-only HTMX failure surfaces enforced (Phase 5 R1 M1 + M2 + Phase
 
   (a) Embedded form propagates HX-Request header via
       ``hx-headers='{"HX-Request": "true"}'`` (OriginGuard strict-mode).
-  (b) Success-path response = 204 + ``HX-Redirect: /trades/{trade_id}``
-      (NOT 303 → swap-target — htmx.js swallows 303 transparently).
+  (b) Success-path response = 204 + ``HX-Redirect: /`` (dashboard;
+      polish-bundle-2026-05-09 Task B.1 changed the target from
+      ``/trades/{trade_id}`` so the operator returns to the dashboard
+      after submitting a daily-management event). NOT 303 → swap-target —
+      htmx.js swallows 303 transparently.
   (c) HX-Redirect target route IS registered in app.routes (Phase 6 I3
       operator-witnessed lesson — TestClient verifies the header but
       does NOT follow the redirect).
@@ -87,7 +90,12 @@ def app_with_seeded_trade(tmp_path: Path):
 def test_event_log_post_success_returns_204_with_HX_Redirect(  # noqa: N802
     app_with_seeded_trade,
 ):
-    """No stop-change path: 204 + HX-Redirect: /trades/1; event_log row exists."""
+    """No stop-change path: 204 + HX-Redirect: /; event_log row exists.
+
+    Polish-bundle-2026-05-09 Task B.1: success-path redirect target was
+    changed from ``/trades/{trade_id}`` to ``/`` so the operator returns
+    to the dashboard after submitting a daily-management event.
+    """
     app, db_path = app_with_seeded_trade
     with TestClient(app) as client:
         response = client.post(
@@ -105,7 +113,7 @@ def test_event_log_post_success_returns_204_with_HX_Redirect(  # noqa: N802
             headers={"HX-Request": "true"},
         )
     assert response.status_code == 204
-    assert response.headers["HX-Redirect"] == "/trades/1"
+    assert response.headers["HX-Redirect"] == "/"
 
     # Side-effect: event_log row exists for this trade.
     conn = connect(db_path)
@@ -219,7 +227,7 @@ def test_event_log_post_writes_event_log_and_stop_adjust_atomically(
             headers={"HX-Request": "true"},
         )
     assert response.status_code == 204
-    assert response.headers["HX-Redirect"] == "/trades/1"
+    assert response.headers["HX-Redirect"] == "/"
 
     # Side-effects: trades.current_stop bumped + event_log linked to trade_events.
     conn = connect(db_path)
