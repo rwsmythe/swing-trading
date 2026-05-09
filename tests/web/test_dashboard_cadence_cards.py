@@ -209,3 +209,28 @@ def test_completed_cadence_card_does_not_render_complete_review_link(tmp_path: P
     # All three cadences are completed — NO "Complete review" link should appear:
     assert "Complete review" not in r.text
     assert "/complete\"" not in r.text
+
+
+# Task E.4: pin /reviews/{review_id}/complete route registration
+def test_reviews_complete_route_is_registered(tmp_path: Path):
+    """Confirm Phase 6 route /reviews/{review_id}/complete remains registered.
+
+    Pins the contract that the inline 'Complete review' link added in Task
+    E.3 points at a real route (Phase 6 R5 I3 lesson generalized; mirrors
+    Task D.3 pattern for /reviews/pending).
+    """
+    from dataclasses import replace as dc_replace
+    from swing.config import load
+    from swing.data.db import ensure_schema
+    from swing.web.app import create_app
+
+    db_path = tmp_path / "phase_e_route_check.db"
+    ensure_schema(db_path).close()
+    base_cfg = load(Path("swing.config.toml"))
+    cfg = dc_replace(base_cfg, paths=dc_replace(base_cfg.paths, db_path=db_path))
+    app = create_app(cfg)
+    paths = {getattr(r, "path", None) for r in app.routes}
+    assert "/reviews/{review_id}/complete" in paths, (
+        f"/reviews/{{review_id}}/complete not in app.routes; available: "
+        f"{sorted(p for p in paths if p)}"
+    )
