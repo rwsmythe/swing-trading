@@ -227,10 +227,74 @@ def test_tos_import_verbose_surfaces_section_diagnostics(tmp_path: Path):
         assert section in verbose, (
             f"verbose output missing section line for {section!r}; got:\n{verbose}"
         )
-    # Total-fills row count must be visible (the immediate diagnostic for
-    # the silent-zero failure mode). The exact label is impl-controlled but
-    # the count of 6 fills extracted MUST be derivable.
-    assert "6" in verbose, (
-        f"verbose output should surface the count of extracted fills (6); "
-        f"got:\n{verbose}"
+    # Round 1 Minor 1: tighten — assert the exact extracted-fills line so
+    # the count of 6 is structurally tied to extraction, not just a stray
+    # `6` somewhere in the output (e.g., from a price string).
+    assert "extracted=6" in verbose, (
+        f"verbose output should surface `extracted=6` (count of fills "
+        f"derived from Account Trade History); got:\n{verbose}"
+    )
+    # Section row count for Account Trade History must be exactly 6 — not
+    # inflated by trailing Equities / Profits and Losses rows leaking
+    # into the ATH buffer (Round 1 Major 2).
+    ath_section_lines = [
+        line for line in verbose.splitlines()
+        if line.startswith("[section] Account Trade History:")
+    ]
+    assert len(ath_section_lines) == 1, (
+        f"expected one [section] Account Trade History line; got {ath_section_lines}"
+    )
+    assert "rows=6" in ath_section_lines[0], (
+        f"Account Trade History row count must be exactly 6 (real fixture "
+        f"has 6 fill rows); inflated count signals Equities / Profits and "
+        f"Losses leaking into the ATH buffer. Got: {ath_section_lines[0]!r}"
+    )
+    # Encoding + bytes diagnostics (Round 1 Major 1).
+    assert "encoding=utf-8" in verbose
+    assert "bom=yes" in verbose, (
+        f"real-world fixture preserves UTF-8 BOM; verbose should detect it. "
+        f"Got:\n{verbose}"
+    )
+    assert "bytes=" in verbose
+    # Skipped-row categories surfaced.
+    assert "[skipped]" in verbose
+
+
+def test_tos_import_warns_on_absent_required_section(tmp_path: Path):
+    """Round 1 Major 3: when a required section is missing from the CSV
+    (e.g., upstream format drift drops the entire `Account Trade History`
+    label), the default-mode summary MUST surface a one-line warning so
+    the operator sees `matched=0 BECAUSE section absent`, not just an
+    unexplained zero. Discriminator: pre-fix the same CSV would silently
+    show `Fills: matched=0, ...` with no localizing context."""
+    project = tmp_path / "project"; project.mkdir()
+    home = tmp_path / "home"; home.mkdir()
+    cfg = _minimal_config(project, home)
+    runner = CliRunner()
+    runner.invoke(main, ["--config", str(cfg), "db-migrate"])
+
+    # CSV with Cash Balance only — Account Trade History label removed.
+    csv_path = tmp_path / "missing-ath.csv"
+    csv_path.write_text(
+        "Cash Balance\n"
+        "DATE,TIME,TYPE,REF #,DESCRIPTION,AMOUNT,BALANCE\n"
+        "2026-05-08,09:00:00,DEP,DEP-X,WIRE,$100.00,$100.00\n",
+        encoding="utf-8",
+    )
+    r = runner.invoke(main, [
+        "--config", str(cfg), "tos-import",
+        "--csv", str(csv_path), "--dry-run",
+    ])
+    assert r.exit_code == 0, r.output
+    assert "WARNING" in r.output and "Account Trade History" in r.output, (
+        f"expected absent-section warning; got:\n{r.output}"
+    )
+    # Cash Balance is present, so no warning for it.
+    cash_warning_lines = [
+        line for line in r.output.splitlines()
+        if line.startswith("WARNING") and "Cash Balance" in line
+    ]
+    assert cash_warning_lines == [], (
+        f"present sections should NOT trigger absent-section warning; got: "
+        f"{cash_warning_lines}"
     )

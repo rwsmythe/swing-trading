@@ -837,3 +837,16 @@ def test_reconcile_real_world_csv_sgml_round_trip(tmp_path: Path):
         f"reconcile_tos at all (would also fail the OPEN match for the same reason)."
     )
     assert sgml_close.qty == 3 and sgml_close.date == "2026-05-08"
+    # Round 1 Major 4: also assert real-world UNMATCHED routing is
+    # exercised. With only SGML seeded, the four other OPEN tickers
+    # (LAR/CVGI/VSAT/YOU) lack a matching journal trade, so they MUST
+    # land in unmatched_open_fills (not silently consumed). This closes
+    # the all-paths discriminating-test gap — pre-fix all 4 would be
+    # missing entirely (silent zero); post-fix they route to unmatched.
+    unmatched_open_tickers = sorted(f.ticker for f in report.unmatched_open_fills)
+    assert unmatched_open_tickers == ["CVGI", "LAR", "VSAT", "YOU"], (
+        f"expected 4 unmatched OPEN fills (LAR/CVGI/VSAT/YOU) when only "
+        f"SGML is seeded; got {unmatched_open_tickers}. This is the "
+        f"real-world unmatched-routing assertion the brief §5 watch item "
+        f"requires."
+    )

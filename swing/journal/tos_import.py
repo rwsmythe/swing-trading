@@ -26,6 +26,15 @@ _SECTION_LABELS = (
     "Futures Statements",
     "Forex Statements",
     "Account Summary",
+    # Real-world Schwab/TOS multi-day exports include Equities and Profits
+    # and Losses sections AFTER Account Trade History. Without recognizing
+    # them as section boundaries, parse_tos_export accumulates their rows
+    # into the trailing buffer of the previous label — inflating any
+    # row-count diagnostic and feeding non-fill rows into
+    # extract_stock_fills (which then filters them by Spread != 'STOCK',
+    # but the row-count signal for the operator is misleading).
+    "Equities",
+    "Profits and Losses",
 )
 
 
@@ -200,7 +209,9 @@ def extract_cash_movements(rows: Iterable[dict]) -> list[CashMovement]:
     return out
 
 
-def extract_stock_fills(rows: Iterable[dict]) -> list[TosFill]:
+def extract_stock_fills(
+    rows: Iterable[dict], *, _skip_log: dict[str, int] | None = None,
+) -> list[TosFill]:
     """Extract STOCK fills from the Account Trade History section.
 
     Two real-world export shapes are supported:
@@ -220,16 +231,23 @@ def extract_stock_fills(rows: Iterable[dict]) -> list[TosFill]:
     the side comes from the canonical `Side`/`Pos Effect` columns rather
     than the qty sign.
     """
+    def _bump(reason: str) -> None:
+        if _skip_log is not None:
+            _skip_log[reason] = _skip_log.get(reason, 0) + 1
+
     out: list[TosFill] = []
     for row in rows:
         spread = (row.get("Spread") or "").strip().upper()
         if spread not in ("", "STOCK"):
+            _bump("non_stock_spread")
             continue
         exp = (row.get("Exp") or "").strip()
         if exp and exp != "--":
+            _bump("option_with_expiry")
             continue
         ticker = (row.get("Symbol") or "").strip().upper()
         if not ticker:
+            _bump("empty_ticker")
             continue
         side = (row.get("Side") or "").strip().upper()
         pos = (row.get("Pos Effect") or "").strip().upper()
@@ -245,6 +263,7 @@ def extract_stock_fills(rows: Iterable[dict]) -> list[TosFill]:
             # carried by the `Side` / `Pos Effect` columns (canonical).
             qty = abs(int(row.get("Qty") or row.get("QTY") or 0))
         except ValueError:
+            _bump("qty_parse_error")
             continue
         price = _parse_tos_amount(row.get("Price") or row.get("PRICE") or "")
         # Account Trade History on multi-day exports collapses date+time
@@ -259,7 +278,11 @@ def extract_stock_fills(rows: Iterable[dict]) -> list[TosFill]:
             date_str = (row.get("Date") or row.get("DATE") or "").strip()
             time_str = (row.get("Time") or row.get("TIME") or "").strip()
         date_str = _normalize_date(date_str)
-        if qty <= 0 or not date_str:
+        if qty <= 0:
+            _bump("qty_zero_or_negative")
+            continue
+        if not date_str:
+            _bump("empty_date")
             continue
         out.append(TosFill(
             date=date_str, side=side, open_close=oc,
