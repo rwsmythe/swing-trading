@@ -243,6 +243,26 @@ Every counter is zero. Operator has open trades + at least one Phase 8 stop-chan
 
 **Bundling note (2026-05-09):** This item is the same size profile + UX-polish theme as 3e.5 / 3e.6 / 3e.11 (the in-flight polish-bundle-2026-05-09 dispatch at brief `1957946`). If dispatch hasn't fired yet, consider expanding the brief to a 4-item bundle. Otherwise picks up as an independent ~15-min standalone after the polish bundle ships.
 
+### 3e.14 — Cadence card "Complete review" inline link (operator-surfaced 2026-05-09; lifted from archived Phase 6 V1 follow-up)
+
+**Observed:** Cadence cards on the dashboard (rendered by `swing/web/templates/partials/cadence_cards.html.j2`) display period + scheduled/completed status but have NO clickable link to the completion form when `card.is_pending`. Operator must navigate via direct URL OR (with 3e.13 in flight) via top-nav Reviews → list view → click into the matching review. The cadence card itself, where the pending status is visible, has no direct action surface. **This entry was archived as a Phase 6 V1 follow-up 2026-05-04 + lifted back to active 2026-05-09 because operator surfaced the gap during the polish-bundle-2026-05-09 dispatch and confirmed it remains valid.**
+
+**Proposed fix:**
+1. Extend `CadenceCardVM` (`swing/web/view_models/dashboard.py:292`) with `review_id: int` field (currently absent — archived fix sketch assumed `card.review_id` existed but VM doesn't carry it).
+2. Populate `review_id=row.id` in the construction site at `swing/web/view_models/dashboard.py:1016-1023`.
+3. Add link in template `partials/cadence_cards.html.j2`: `{% if card.is_pending %}<a href="/reviews/{{ card.review_id }}/complete">Complete review</a>{% endif %}`.
+4. 2 discriminating tests: link rendered when card is_pending; link absent when completed.
+
+**Scope:** ~15-20 min standalone; pairs naturally with 3e.13 (top-nav Reviews link) since both surface review reachability gaps from the dashboard.
+
+**Cross-references:**
+- `swing/web/templates/partials/cadence_cards.html.j2` — current card template (no link).
+- `swing/web/view_models/dashboard.py:292-306` — `CadenceCardVM` definition (needs `review_id` field).
+- `swing/web/view_models/dashboard.py:1016-1023` — construction site (populate `review_id=row.id`).
+- `swing/web/routes/reviews.py` (or wherever) — `/reviews/{id}/complete` route confirmed Phase 6 R5 I3.
+- 3e.13 (in-flight bundle) — top-nav reachability; this is the per-card direct-action surface.
+- Archived entry at `docs/phase3e-todo-archive.md:736` — original 2026-05-04 capture.
+
 ### 3e.2 — Include realized-from-partial-exits in journal stats total
 
 **Observed:** `swing journal review --period month` shows 0 trades / $0.00 total

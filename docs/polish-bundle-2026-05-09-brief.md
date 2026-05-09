@@ -2,14 +2,15 @@
 
 **Audience:** Fresh Claude Code instance with no prior conversation context.
 
-**Mission:** Ship four small operator-surfaced UX/CLI improvements as a single TDD-disciplined dispatch on a worktree branch:
+**Mission:** Ship five small operator-surfaced UX/CLI improvements as a single TDD-disciplined dispatch on a worktree branch:
 
 1. **3e.5** — Add a "updated today?" badge to each open-positions row on the dashboard (Phase 8 daily-management UX completion).
 2. **3e.6** — Auto-return to dashboard after submitting a daily-management event on the trade-detail page (HX-Redirect to `/`).
 3. **3e.11** — Strip "Phase 6" internal nomenclature from `swing review` CLI help text.
 4. **3e.13** — Add a top-nav "Reviews" link to `/reviews/pending` so the Phase 6 review list view is reachable from the dashboard (V1: link only; count badge deferred to V1.5 follow-up).
+5. **3e.14** — Add an inline "Complete review" link to each pending cadence card on the dashboard (per-card direct-action surface — complements 3e.13's top-nav reachability with workflow-friction reduction at the visible-status surface).
 
-**Expected duration:** ~1.25-1.75 hr implementation + ~30-45 min dispatch overhead (worktree + TDD + adversarial review). Total ~2.25-2.75 hr.
+**Expected duration:** ~1.5-2 hr implementation + ~30-45 min dispatch overhead (worktree + TDD + adversarial review). Total ~2.5-3 hr.
 
 **Skill posture:**
 - Invoke `superpowers:subagent-driven-development` directly (NOT via the `copowers:executing-plans` wrapper, which bundles writing-plans + adversarial-critic without marker-file management between phases).
@@ -25,6 +26,7 @@
 - `docs/phase3e-todo.md` §3e.6 (auto-return to dashboard after daily-mgmt submit)
 - `docs/phase3e-todo.md` §3e.11 (CLI Phase 6 leak)
 - `docs/phase3e-todo.md` §3e.13 (top-nav Reviews link)
+- `docs/phase3e-todo.md` §3e.14 (cadence card "Complete review" inline link)
 
 ### §0.2 Code surface
 
@@ -50,6 +52,12 @@
 - `swing/web/templates/base.html.j2` — nav bar location (current links: Dashboard / Watchlist / Journal / Pipeline / Config). Insert "Reviews" link between Journal and Pipeline (workflow-aligned position — review is journal-adjacent).
 - `swing/web/routes/reviews.py` (or wherever the `/reviews/pending` route is registered) — verify route exists. Phase 6 R5 I3 fix established `/reviews/pending` as the canonical post-completion redirect target; route MUST be registered.
 
+**For 3e.14 (cadence card link):**
+- `swing/web/view_models/dashboard.py:292-306` — `CadenceCardVM` definition. Currently has 6 fields (cadence_type / scheduled_date / completed_date / period_start / period_end / is_pending). Needs `review_id: int` added.
+- `swing/web/view_models/dashboard.py:1016-1023` — construction site. The `row` object passed in (a Review_Log row) has `id` available; populate `review_id=row.id`.
+- `swing/web/templates/partials/cadence_cards.html.j2:9` — `{% if card.is_pending %}` block. Add `<a href="/reviews/{{ card.review_id }}/complete">Complete review</a>` inside this conditional.
+- `/reviews/{id}/complete` route — verify registered (Phase 6 shipped this route; D.3-style assertion test pins the contract).
+
 ### §0.3 LOCKED DESIGN DECISIONS (DO NOT re-litigate)
 
 Locked by orchestrator + operator in-thread design lock 2026-05-09. Plan implements them; does NOT brainstorm alternatives:
@@ -74,11 +82,15 @@ Locked by orchestrator + operator in-thread design lock 2026-05-09. Plan impleme
 
 9. **3e.13 nav-link position:** between Journal and Pipeline in the rendered nav. Workflow rationale: review is journal-adjacent; pipeline is data-ingest-side. Plan author MUST preserve this order — do NOT reorder existing nav links.
 
+10. **3e.14 VM extension required.** The archived 2026-05-04 fix sketch assumed `card.review_id` existed on `CadenceCardVM` but it doesn't (verified empirically 2026-05-09 against `swing/web/view_models/dashboard.py:292-306`). Implementation MUST: (a) add `review_id: int` field to the dataclass; (b) populate `review_id=row.id` at the construction site (`:1016-1023`); (c) add the link in the template inside the existing `{% if card.is_pending %}` block. Pure VM extension + template edit — NO new repo function; NO route changes (Phase 6 shipped `/reviews/{id}/complete`).
+
+11. **3e.14 link rendering scope:** ONLY when `card.is_pending`. Completed cadence cards do NOT render the link (no completion form needed for already-completed reviews). Mirror the existing `{% if card.is_pending %}` conditional shape.
+
 ---
 
 ## §1 Strategic context
 
-This is the post-Phase-8-V1-polish "loose ends" bundle. Four operator-surfaced items: two from the operator-witnessed verification gate of Phase 8 ship (3e.5 + 3e.6); one from a CLI-help review (3e.11); one from a top-nav reachability audit (3e.13 — operator noted that the Phase 6 review surface has no path from the dashboard). All small; all narrowly scoped; all testable via existing patterns. Bundling them avoids dispatch overhead × 4.
+This is the post-Phase-8-V1-polish "loose ends" bundle. Five operator-surfaced items: two from the operator-witnessed verification gate of Phase 8 ship (3e.5 + 3e.6); one from a CLI-help review (3e.11); two from review-surface reachability audits (3e.13 top-nav reachability + 3e.14 cadence-card direct-action — both lifted from operator workflow inspection during this bundle's design; 3e.14 was archived as a Phase 6 V1 follow-up 2026-05-04 and lifted back to active when surfaced again 2026-05-09). All small; all narrowly scoped; all testable via existing patterns. Bundling them avoids dispatch overhead × 5.
 
 **Schema state (binding):** Production DB at schema_version 16 post-3e.12 ship at HEAD `c55a659`. No migration in scope. EXPECTED_SCHEMA_VERSION assertion stays at 16.
 
@@ -158,9 +170,26 @@ This is the post-Phase-8-V1-polish "loose ends" bundle. Four operator-surfaced i
 - Link href targets the registered `/reviews/pending` route.
 - All 3 new tests pass; ~0 regressions in existing nav-rendering tests.
 
+### Task family E — 3e.14 cadence card "Complete review" inline link
+
+**E.1** Discriminating test: a pending cadence card (`is_pending == True`) renders an `<a href="/reviews/{review_id}/complete">Complete review</a>` link with the correct review_id. Test seeds a Review_Log row with `completed_date=NULL`; calls `build_dashboard`; asserts the cadence card's rendered HTML contains the link with the populated review_id. RED before implementation.
+
+**E.2** Discriminating test: a completed cadence card (`is_pending == False`) does NOT render the "Complete review" link. RED-then-GREEN OR GREEN-from-implementation if the conditional is shipped correctly.
+
+**E.3** Implementation: extend `CadenceCardVM` (`swing/web/view_models/dashboard.py:292-306`) with `review_id: int` field. Update construction site (`:1016-1023`) to populate `review_id=row.id`. Edit template `swing/web/templates/partials/cadence_cards.html.j2` to add the link inside the existing `{% if card.is_pending %}` block. Tests E.1 + E.2 → GREEN.
+
+**E.4** Discriminating test: `/reviews/{id}/complete` route IS registered in the app's route table — `assert any(getattr(r, "path", None) == "/reviews/{id}/complete" for r in app.routes)` (with appropriate path-pattern matching for the `{id}` placeholder per FastAPI's route-discovery API). RED-then-GREEN OR GREEN-from-existing (Phase 6 shipped this route). Per Phase 6 I3 lesson — pre-empt link-points-at-unrouted-target regression.
+
+**E.5** Discriminating test: existing cadence-card rendering tests (if any) STILL pass with the VM extension. Per the "additive dataclass changes are NOT zero-cost" archived lesson — `CadenceCardVM` extension may break hand-constructed test fixtures. Plan author audits via `grep -rn "CadenceCardVM(" tests/` BEFORE shipping to enumerate fixture sites that need updates.
+
+**Acceptance:**
+- Pending cadence cards render a "Complete review" link with the correct review_id.
+- Completed cadence cards do NOT render the link.
+- All 4-5 new E.x tests pass; existing CadenceCardVM-construction tests adjusted as needed; ~0 regressions.
+
 ### Task family Z — Final verification
 
-**Z.1** Run `python -m pytest -m "not slow" -q` — assert 2099 → ~2108-2114 (N ≥ 9: 5 from family A + 1 from family B + 2 from family C + 3 from family D; total bias ~9-12 new tests).
+**Z.1** Run `python -m pytest -m "not slow" -q` — assert 2099 → ~2113-2119 (N ≥ 13: 5 from family A + 1 from family B + 2 from family C + 3 from family D + 4-5 from family E + audit fixture-update offsets; total bias ~13-17 new tests, possibly with offsetting test adjustments to existing CadenceCardVM-construction fixtures).
 
 **Z.2** Run `ruff check swing/` — assert baseline 78 preserved.
 
@@ -169,6 +198,7 @@ This is the post-Phase-8-V1-polish "loose ends" bundle. Four operator-surfaced i
 - Surface 2 (3e.6): submit a daily-management event on any open trade's detail page; confirm browser navigates back to dashboard.
 - Surface 3 (3e.11): run `swing review --help` and `swing review cadence --help` from terminal; confirm no "Phase" text appears.
 - Surface 4 (3e.13): visit dashboard; confirm "Reviews" nav link appears between Journal and Pipeline; click "Reviews" → navigates to `/reviews/pending`; review list view renders.
+- Surface 5 (3e.14): visit dashboard; for any pending cadence card, confirm "Complete review" link is rendered; click → navigates to `/reviews/{id}/complete`; completion form renders. For any completed cadence card, confirm NO "Complete review" link is rendered.
 
 ---
 
@@ -211,12 +241,16 @@ This is the post-Phase-8-V1-polish "loose ends" bundle. Four operator-surfaced i
 
 10. **3e.13 base-layout scope discipline.** V1 = link only; NO count badge. If the implementation creeps toward adding a count badge (which would require base-layout VM extension audit per the 5-VM rule), halt + flag scope creep in return report.
 
+11. **3e.14 VM extension regressions.** Per "Additive dataclass field changes are NOT zero-cost" archived lesson — extending `CadenceCardVM` with `review_id: int` may break hand-constructed test fixtures. Verify implementer ran `grep -rn "CadenceCardVM(" tests/` BEFORE shipping + updated all hand-constructed sites. If any test was missed, Z.1 fast-suite assertion catches it.
+
+12. **3e.14 link conditional correctness.** Verify the link is ONLY rendered when `card.is_pending` is True. Discriminating tests E.1 + E.2 cover both paths; Codex should verify these tests would FAIL with a sloppy conditional (e.g., always-rendered link).
+
 ---
 
 ## §5 Done criteria
 
-- [ ] All 4 task families' (A + B + C + D) acceptance criteria met (per §2).
-- [ ] `python -m pytest -m "not slow" -q` shows ~2108-2114 passing (was 2099 pre-dispatch).
+- [ ] All 5 task families' (A + B + C + D + E) acceptance criteria met (per §2).
+- [ ] `python -m pytest -m "not slow" -q` shows ~2113-2119 passing (was 2099 pre-dispatch).
 - [ ] `ruff check swing/` shows baseline 78 violations preserved.
 - [ ] Adversarial review reaches NO_NEW_CRITICAL_MAJOR.
 - [ ] §0.3 design locks honored exactly (no scope expansion without explicit operator authorization in return report).
@@ -245,6 +279,7 @@ ruff baseline 78 preserved: {yes/no}
 - Task C.1 / C.2 / C.3 — {commit SHAs}
 - C.4 audit step findings: {captured findings; flag any operator-facing leaks for follow-up}
 - Task D.1 / D.2 / D.3 / D.4 — {commit SHAs}
+- Task E.1 / E.2 / E.3 / E.4 / E.5 — {commit SHAs}
 
 ## §0.3 design lock honored
 - 3e.5 badge two-state: {confirmed / deviated with rationale}
@@ -253,6 +288,8 @@ ruff baseline 78 preserved: {yes/no}
 - 3e.11 replacement text: {confirmed}
 - 3e.13 link-only V1 scope (no count badge): {confirmed}
 - 3e.13 nav-link order Dashboard → Watchlist → Journal → Reviews → Pipeline → Config: {confirmed}
+- 3e.14 CadenceCardVM extension (review_id field added; construction site updated; hand-constructed test fixtures audited): {confirmed}
+- 3e.14 link conditional (rendered only when card.is_pending == True): {confirmed}
 
 ## Adversarial review chain
 - R1: {N critical / N major / N minor} → {ACCEPTED-with-rationale or FIXED in commit SHA}
@@ -287,4 +324,4 @@ ruff baseline 78 preserved: {yes/no}
 - **EXPECTED_SCHEMA_VERSION:** 16 (unchanged)
 - **Pre-dispatch test baseline:** 2099 fast tests + 1 skipped
 - **Pre-dispatch ruff baseline:** 78
-- **Test delta projection:** +9 to +12 fast tests (5 from family A + 1 from family B + 2 from family C + 3 from family D)
+- **Test delta projection:** +13 to +17 fast tests (5 from family A + 1 from family B + 2 from family C + 3 from family D + 4-5 from family E; possibly with offsetting fixture updates per the additive-dataclass-cost lesson)
