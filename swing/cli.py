@@ -1545,7 +1545,14 @@ def tos_import_cmd(ctx, csv_path, dry_run, auto_confirm, verbose):
                 f"upstream export format may have drifted; "
                 f"re-run with --verbose for per-section diagnostics."
             )
-    report = reconcile_tos(db_path=cfg.paths.db_path, tos_text=text)
+    # Single source of truth for the price-comparison tolerance — passed
+    # to reconcile_tos AND echoed in verbose output so any future change
+    # propagates to both surfaces (Codex R2 Minor 1).
+    price_tolerance = 0.01
+    report = reconcile_tos(
+        db_path=cfg.paths.db_path, tos_text=text,
+        price_tolerance=price_tolerance,
+    )
 
     click.echo(f"Cash: {len(report.new_cash_movements)} new, "
                f"{len(report.duplicate_cash_movements)} duplicate")
@@ -1578,8 +1585,8 @@ def tos_import_cmd(ctx, csv_path, dry_run, auto_confirm, verbose):
         sections = parse_tos_export(text)
         for section_label in (
             "Cash Balance", "Account Trade History", "Account Order History",
-            "Futures Statements", "Forex Statements", "Account Summary",
-            "Equities", "Profits and Losses",
+            "Futures Statements", "Forex Statements", "Crypto Statements",
+            "Account Summary", "Equities", "Profits and Losses",
         ):
             rows = sections.get(section_label) or []
             present = "yes" if section_label in sections else "no"
@@ -1603,7 +1610,7 @@ def tos_import_cmd(ctx, csv_path, dry_run, auto_confirm, verbose):
         click.echo(
             f"[fills] extracted={len(extracted)} from "
             f"{len(ath_rows)} Account Trade History rows; "
-            f"tolerance=${0.01:.4f}"
+            f"tolerance=${price_tolerance:.4f}"
         )
         if skip_log:
             skip_summary = " ".join(

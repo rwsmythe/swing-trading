@@ -258,6 +258,20 @@ def test_tos_import_verbose_surfaces_section_diagnostics(tmp_path: Path):
     assert "bytes=" in verbose
     # Skipped-row categories surfaced.
     assert "[skipped]" in verbose
+    # Round 2 Major 2: Crypto Statements quoted header MUST be recognized
+    # as a section boundary so it forms its own bucket and does not leak
+    # into the Forex Statements buffer (which would inflate Forex's row
+    # count + sample with crypto-table garbage).
+    crypto_lines = [
+        line for line in verbose.splitlines()
+        if line.startswith("[section] Crypto Statements:")
+    ]
+    assert len(crypto_lines) == 1, (
+        f"expected `[section] Crypto Statements: ...` line; got {crypto_lines}. "
+        f"Without quote-stripping + Crypto pattern matching, this header "
+        f"leaks into Forex Statements."
+    )
+    assert "detected=yes" in crypto_lines[0]
 
 
 def test_tos_import_warns_on_absent_required_section(tmp_path: Path):

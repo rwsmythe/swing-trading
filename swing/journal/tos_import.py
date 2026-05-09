@@ -96,6 +96,28 @@ class ReconciliationReport:
     fill_decisions: list[FillDecision] = field(default_factory=list)
 
 
+def _section_label_for_line(stripped: str) -> str | None:
+    """Return the canonical section label this line opens, or None.
+
+    Schwab/TOS multi-day exports CSV-quote any header that contains an
+    internal comma (the Crypto Statements header wraps the bank name and
+    its trailing comma in double quotes — `\"Crypto # (Crypto offered by
+    Charles Schwab Premier Bank, SSB) Statements\"`). The bank-name
+    substring varies; collapse all such variants to a single canonical
+    `Crypto Statements` label by pattern. All other section labels are
+    bare strings — but quote-stripping is harmless and protects against
+    future Schwab/TOS quoting drift.
+    """
+    s = stripped.strip('"').strip()
+    if not s:
+        return None
+    if s in _SECTION_LABELS:
+        return s
+    if s.startswith("Crypto") and s.endswith("Statements"):
+        return "Crypto Statements"
+    return None
+
+
 def parse_tos_export(text: str) -> dict[str, list[dict]]:
     """Split multi-section TOS export into section -> row-dicts."""
     lines = text.splitlines()
@@ -114,9 +136,10 @@ def parse_tos_export(text: str) -> dict[str, list[dict]]:
 
     for line in lines:
         stripped = line.strip()
-        if stripped in _SECTION_LABELS:
+        section_label = _section_label_for_line(stripped)
+        if section_label is not None:
             flush()
-            cur_label = stripped
+            cur_label = section_label
             cur_buf = []
         elif stripped.startswith("#"):
             continue
@@ -279,7 +302,10 @@ def extract_stock_fills(
             time_str = (row.get("Time") or row.get("TIME") or "").strip()
         date_str = _normalize_date(date_str)
         if qty <= 0:
-            _bump("qty_zero_or_negative")
+            # Post-`abs()` qty is non-negative — `qty <= 0` reduces to
+            # `qty == 0`. Name the reason accordingly so the verbose
+            # operator-facing diagnostic isn't misleading (Codex R2 Minor 2).
+            _bump("qty_zero")
             continue
         if not date_str:
             _bump("empty_date")
