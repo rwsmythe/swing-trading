@@ -584,6 +584,24 @@ def test_has_update_today_for_trades_excludes_superseded(
     assert result == set()
 
 
+def test_has_update_today_for_trades_excludes_yesterday(
+    conn: sqlite3.Connection,
+) -> None:
+    """A.5 — yesterday's session does NOT count as 'updated today'. GREEN at
+    write-time (predicate already enforces ``review_date = ?`` exact match);
+    pins the contract so a future widening (e.g. ``>= ?``) cannot silently
+    leak prior-session updates into the badge."""
+    from datetime import date, timedelta
+
+    today_d = date(2026, 5, 9)
+    today = today_d.isoformat()
+    yesterday = (today_d - timedelta(days=1)).isoformat()
+    fields = _full_snapshot_fields(data_asof_session=yesterday)
+    insert_snapshot(conn, trade_id=1, snapshot_fields=fields)
+    result = has_update_today_for_trades(conn, [1], action_session=today)
+    assert result == set()
+
+
 # ---- helpers ----------------------------------------------------------------
 
 
