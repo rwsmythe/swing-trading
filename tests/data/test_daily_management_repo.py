@@ -602,6 +602,20 @@ def test_has_update_today_for_trades_excludes_yesterday(
     assert result == set()
 
 
+def test_has_update_today_for_trades_event_log_satisfies(
+    conn: sqlite3.Connection,
+) -> None:
+    """A.6 — event_log rows ALSO satisfy the predicate, so an operator can
+    satisfy 'updated today' without a pipeline-emitted snapshot. GREEN at
+    write-time — the predicate is
+    ``record_type IN ('daily_snapshot', 'event_log')``."""
+    today = "2026-05-09"
+    el = _minimal_event_log_fields(data_asof_session=today)
+    insert_event_log(conn, trade_id=1, event_log_fields=el)
+    result = has_update_today_for_trades(conn, [1], action_session=today)
+    assert result == {1}
+
+
 # ---- helpers ----------------------------------------------------------------
 
 
