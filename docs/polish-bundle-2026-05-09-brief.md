@@ -2,13 +2,14 @@
 
 **Audience:** Fresh Claude Code instance with no prior conversation context.
 
-**Mission:** Ship three small operator-surfaced UX/CLI improvements as a single TDD-disciplined dispatch on a worktree branch:
+**Mission:** Ship four small operator-surfaced UX/CLI improvements as a single TDD-disciplined dispatch on a worktree branch:
 
 1. **3e.5** — Add a "updated today?" badge to each open-positions row on the dashboard (Phase 8 daily-management UX completion).
 2. **3e.6** — Auto-return to dashboard after submitting a daily-management event on the trade-detail page (HX-Redirect to `/`).
 3. **3e.11** — Strip "Phase 6" internal nomenclature from `swing review` CLI help text.
+4. **3e.13** — Add a top-nav "Reviews" link to `/reviews/pending` so the Phase 6 review list view is reachable from the dashboard (V1: link only; count badge deferred to V1.5 follow-up).
 
-**Expected duration:** ~1-1.5 hr implementation + ~30-45 min dispatch overhead (worktree + TDD + adversarial review). Total ~2-2.5 hr.
+**Expected duration:** ~1.25-1.75 hr implementation + ~30-45 min dispatch overhead (worktree + TDD + adversarial review). Total ~2.25-2.75 hr.
 
 **Skill posture:**
 - Invoke `superpowers:subagent-driven-development` directly (NOT via the `copowers:executing-plans` wrapper, which bundles writing-plans + adversarial-critic without marker-file management between phases).
@@ -23,6 +24,7 @@
 - `docs/phase3e-todo.md` §3e.5 (daily management "updated today?" indicator)
 - `docs/phase3e-todo.md` §3e.6 (auto-return to dashboard after daily-mgmt submit)
 - `docs/phase3e-todo.md` §3e.11 (CLI Phase 6 leak)
+- `docs/phase3e-todo.md` §3e.13 (top-nav Reviews link)
 
 ### §0.2 Code surface
 
@@ -44,6 +46,10 @@
 - `swing/cli.py:1174` — `"""Post-trade review (Phase 6).` (group docstring)
 - `swing/cli.py:1303` — `"""Phase 6: cadence review (daily / weekly / monthly Review_Log completion)."""` (subcommand)
 
+**For 3e.13 (Reviews nav link):**
+- `swing/web/templates/base.html.j2` — nav bar location (current links: Dashboard / Watchlist / Journal / Pipeline / Config). Insert "Reviews" link between Journal and Pipeline (workflow-aligned position — review is journal-adjacent).
+- `swing/web/routes/reviews.py` (or wherever the `/reviews/pending` route is registered) — verify route exists. Phase 6 R5 I3 fix established `/reviews/pending` as the canonical post-completion redirect target; route MUST be registered.
+
 ### §0.3 LOCKED DESIGN DECISIONS (DO NOT re-litigate)
 
 Locked by orchestrator + operator in-thread design lock 2026-05-09. Plan implements them; does NOT brainstorm alternatives:
@@ -64,11 +70,15 @@ Locked by orchestrator + operator in-thread design lock 2026-05-09. Plan impleme
 
 7. **No schema changes.** No migration. No new repo functions UNLESS plan-author choice §0.3#2(b) is taken (then ONE small helper added to `swing/data/repos/daily_management.py`).
 
+8. **3e.13 V1 scope: link only.** Add `<a href="/reviews/pending">Reviews</a>` to base.html.j2 nav between Journal and Pipeline. NO count badge in this dispatch — V1.5 follow-up dispatch handles the badge IF operator confirms the V1 link is sufficient. Rationale: keeps the bundle scope tight; count badge would require base-layout VM extension audit (per the 5-VM rule + new-VM-inherits-fields lessons), which inflates scope beyond polish-bundle character.
+
+9. **3e.13 nav-link position:** between Journal and Pipeline in the rendered nav. Workflow rationale: review is journal-adjacent; pipeline is data-ingest-side. Plan author MUST preserve this order — do NOT reorder existing nav links.
+
 ---
 
 ## §1 Strategic context
 
-This is the post-Phase-8-V1-polish "loose ends" bundle. Three operator-surfaced items: two from the operator-witnessed verification gate of Phase 8 ship (3e.5 + 3e.6); one from a CLI-help review (3e.11). All small; all narrowly scoped; all testable via existing patterns. Bundling them avoids dispatch overhead × 3.
+This is the post-Phase-8-V1-polish "loose ends" bundle. Four operator-surfaced items: two from the operator-witnessed verification gate of Phase 8 ship (3e.5 + 3e.6); one from a CLI-help review (3e.11); one from a top-nav reachability audit (3e.13 — operator noted that the Phase 6 review surface has no path from the dashboard). All small; all narrowly scoped; all testable via existing patterns. Bundling them avoids dispatch overhead × 4.
 
 **Schema state (binding):** Production DB at schema_version 16 post-3e.12 ship at HEAD `c55a659`. No migration in scope. EXPECTED_SCHEMA_VERSION assertion stays at 16.
 
@@ -133,9 +143,24 @@ This is the post-Phase-8-V1-polish "loose ends" bundle. Three operator-surfaced 
 - `swing review --help` and `swing review cadence --help` no longer leak "Phase" nomenclature.
 - Audit step output captured in return report.
 
+### Task family D — 3e.13 top-nav Reviews link
+
+**D.1** Discriminating test: nav rendered HTML contains `<a href="/reviews/pending">Reviews</a>` (or equivalent — assert href value AND visible text). Test against any base-layout-rendered route (e.g., dashboard `/`). RED before implementation.
+
+**D.2** Discriminating test: nav-link order preserved — Dashboard → Watchlist → Journal → **Reviews** → Pipeline → Config. Test asserts the rendered HTML's nav links appear in that exact order. RED before implementation.
+
+**D.3** Discriminating test: `/reviews/pending` route IS registered in the app's route table — `assert any(getattr(r, "path", None) == "/reviews/pending" for r in app.routes)`. RED-then-GREEN OR GREEN-from-existing (Phase 6 R5 I3 fix established this route; this test pins the contract for future). Per Phase 6 I3 lesson — pre-empt nav-link-points-at-unrouted-target regression.
+
+**D.4** Implementation: edit `swing/web/templates/base.html.j2` to insert the nav link between Journal and Pipeline per §0.3 #9. Tests D.1 + D.2 → GREEN.
+
+**Acceptance:**
+- Dashboard (and every base-layout-extending page) renders a "Reviews" nav link in the correct order position.
+- Link href targets the registered `/reviews/pending` route.
+- All 3 new tests pass; ~0 regressions in existing nav-rendering tests.
+
 ### Task family Z — Final verification
 
-**Z.1** Run `python -m pytest -m "not slow" -q` — assert 2099 → ~2105-2110 (N ≥ 6: at least 5 from family A + at least 1 from family B + 2 from family C; total bias ~6-9 new tests).
+**Z.1** Run `python -m pytest -m "not slow" -q` — assert 2099 → ~2108-2114 (N ≥ 9: 5 from family A + 1 from family B + 2 from family C + 3 from family D; total bias ~9-12 new tests).
 
 **Z.2** Run `ruff check swing/` — assert baseline 78 preserved.
 
@@ -143,6 +168,7 @@ This is the post-Phase-8-V1-polish "loose ends" bundle. Three operator-surfaced 
 - Surface 1 (3e.5): visit dashboard; confirm every open-positions row shows the two-state badge with correct state per trade.
 - Surface 2 (3e.6): submit a daily-management event on any open trade's detail page; confirm browser navigates back to dashboard.
 - Surface 3 (3e.11): run `swing review --help` and `swing review cadence --help` from terminal; confirm no "Phase" text appears.
+- Surface 4 (3e.13): visit dashboard; confirm "Reviews" nav link appears between Journal and Pipeline; click "Reviews" → navigates to `/reviews/pending`; review list view renders.
 
 ---
 
@@ -179,12 +205,18 @@ This is the post-Phase-8-V1-polish "loose ends" bundle. Three operator-surfaced 
 
 7. **Test-fixture PRAGMA state.** For tests that touch the `daily_management_records` schema (Family A), fixture connections should set `foreign_keys=ON` per Phase 7 hotfix lesson. Verify the test fixtures use `ensure_schema(db_path)` (which sets PRAGMA correctly) rather than bare `connect(db_path)`.
 
+8. **3e.13 nav-link target route resolves.** Per Phase 6 I3 lesson — D.3 test asserts `/reviews/pending` is registered in the app's route table. If the implementation adds the nav link without verifying route existence, regression risk is real (operator clicks Reviews → 404). The Phase 6 R5 I3 fix established this route; the test pins the contract.
+
+9. **3e.13 nav-link order preservation.** D.2 asserts the nav links appear in `Dashboard → Watchlist → Journal → Reviews → Pipeline → Config` order. Verify the implementation does NOT accidentally reorder existing links during the insert.
+
+10. **3e.13 base-layout scope discipline.** V1 = link only; NO count badge. If the implementation creeps toward adding a count badge (which would require base-layout VM extension audit per the 5-VM rule), halt + flag scope creep in return report.
+
 ---
 
 ## §5 Done criteria
 
-- [ ] All 3 task families' acceptance criteria met (per §2).
-- [ ] `python -m pytest -m "not slow" -q` shows ~2105-2110 passing (was 2099 pre-dispatch).
+- [ ] All 4 task families' (A + B + C + D) acceptance criteria met (per §2).
+- [ ] `python -m pytest -m "not slow" -q` shows ~2108-2114 passing (was 2099 pre-dispatch).
 - [ ] `ruff check swing/` shows baseline 78 violations preserved.
 - [ ] Adversarial review reaches NO_NEW_CRITICAL_MAJOR.
 - [ ] §0.3 design locks honored exactly (no scope expansion without explicit operator authorization in return report).
@@ -212,12 +244,15 @@ ruff baseline 78 preserved: {yes/no}
 - Task B.1 / B.2 / B.3 / B.4 — {commit SHAs}
 - Task C.1 / C.2 / C.3 — {commit SHAs}
 - C.4 audit step findings: {captured findings; flag any operator-facing leaks for follow-up}
+- Task D.1 / D.2 / D.3 / D.4 — {commit SHAs}
 
 ## §0.3 design lock honored
 - 3e.5 badge two-state: {confirmed / deviated with rationale}
 - 3e.5 query placement choice: {a / b / c per §0.3 #2}
 - 3e.6 response shape: 204 + HX-Redirect: / → {confirmed}
 - 3e.11 replacement text: {confirmed}
+- 3e.13 link-only V1 scope (no count badge): {confirmed}
+- 3e.13 nav-link order Dashboard → Watchlist → Journal → Reviews → Pipeline → Config: {confirmed}
 
 ## Adversarial review chain
 - R1: {N critical / N major / N minor} → {ACCEPTED-with-rationale or FIXED in commit SHA}
@@ -252,4 +287,4 @@ ruff baseline 78 preserved: {yes/no}
 - **EXPECTED_SCHEMA_VERSION:** 16 (unchanged)
 - **Pre-dispatch test baseline:** 2099 fast tests + 1 skipped
 - **Pre-dispatch ruff baseline:** 78
-- **Test delta projection:** +6 to +9 fast tests
+- **Test delta projection:** +9 to +12 fast tests (5 from family A + 1 from family B + 2 from family C + 3 from family D)

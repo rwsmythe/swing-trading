@@ -223,6 +223,26 @@ Every counter is zero. Operator has open trades + at least one Phase 8 stop-chan
 - `thinkorswim/2026-05-08-AccountStatement.csv` — the actual CSV that triggered this.
 - 2026-04-30 TOS reconciliation depth follow-ups bundle (BUNDLED into Phase 9 brainstorm at `31ee51c`) — Phase 9 will redesign the reconciliation surface; this investigation may inform Phase 9 writing-plans (or get subsumed if Phase A of Schwab API ships first).
 
+### 3e.13 — Top-nav "Reviews" link to `/reviews/pending` (operator-surfaced 2026-05-09)
+
+**Observed:** The base template's nav bar (`swing/web/templates/base.html.j2`) renders Dashboard / Watchlist / Journal / Pipeline / Config — but NO Reviews link. The Phase 6 review list view at `/reviews/pending` is reachable only via direct URL OR via the post-review-complete HX-Redirect (per Phase 6 I3 fix). Operator workflow: there's no obvious path from the dashboard to the daily/weekly/monthly cadence reviews surface.
+
+**Proposed fix:**
+1. Add `<a href="/reviews/pending">Reviews</a>` to the base.html.j2 nav between Journal and Pipeline (workflow-aligned position — review is a journal-adjacent activity).
+2. **Optional enhancement (V1.5):** add a count badge `Reviews (N)` where N = count of pending Review_Logs (mirror the existing "needs review" badge pattern shipped in Phase 6 — `swing/web/view_models/dashboard.py` has `pending_reviews_count` or similar field already).
+
+**Scope:**
+- V1 (link only): 1-line template addition + 1 discriminating test (assert nav contains "Reviews" + correct href). ~10-15 min.
+- V1.5 (link + count badge): + base-layout VM extension to surface count + base.html.j2 conditional render. ~30-45 min if VMs need extension; possibly ~15 min if `pending_reviews_count` already lives on a base-layout-friendly VM.
+
+**Cross-references:**
+- `swing/web/templates/base.html.j2` — nav bar location.
+- `swing/web/routes/reviews.py` (or wherever `/reviews/pending` route lives) — confirms route exists.
+- Phase 6 archived follow-up "Cadence card lacks clickable 'Complete review' link" (in `docs/phase3e-todo-archive.md`) — RELATED but different gap; that's about cadence card → completion form on dashboard; this is about top-nav → review list view.
+- CLAUDE.md gotcha "base.html.j2 is shared — new vm.foo field requires adding to EVERY base-layout VM" — applies if V1.5 (count badge) requires a new base-layout-dereferenced field.
+
+**Bundling note (2026-05-09):** This item is the same size profile + UX-polish theme as 3e.5 / 3e.6 / 3e.11 (the in-flight polish-bundle-2026-05-09 dispatch at brief `1957946`). If dispatch hasn't fired yet, consider expanding the brief to a 4-item bundle. Otherwise picks up as an independent ~15-min standalone after the polish bundle ships.
+
 ### 3e.2 — Include realized-from-partial-exits in journal stats total
 
 **Observed:** `swing journal review --period month` shows 0 trades / $0.00 total
