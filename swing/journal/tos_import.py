@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from io import StringIO
 from pathlib import Path
 from typing import Iterable
@@ -88,6 +89,34 @@ def parse_tos_export(text: str) -> dict[str, list[dict]]:
     return sections
 
 
+def _normalize_date(raw: str) -> str:
+    """Normalize a TOS-export date string to ISO YYYY-MM-DD.
+
+    Real-world Schwab/TOS exports emit dates as `M/D/YY` (e.g. `5/8/26`);
+    the synthetic fixture uses ISO `YYYY-MM-DD`. `reconcile_tos` matches
+    fills against journal `entry_date`, which is stored ISO — without
+    normalization the M/D/YY-formatted real-world fills never match an
+    ISO-formatted journal row even when the underlying date is identical.
+
+    Returns the input unchanged if it does not match a known format, so
+    unexpected shapes propagate to the caller rather than silently
+    masquerading as a valid date.
+    """
+    s = (raw or "").strip()
+    if not s:
+        return s
+    try:
+        return date.fromisoformat(s).isoformat()
+    except ValueError:
+        pass
+    for fmt in ("%m/%d/%y", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(s, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return s
+
+
 def _parse_tos_amount(raw: str) -> float:
     s = (raw or "").strip()
     if s in ("", "--", "N/A"):
@@ -144,6 +173,25 @@ def extract_cash_movements(rows: Iterable[dict]) -> list[CashMovement]:
 
 
 def extract_stock_fills(rows: Iterable[dict]) -> list[TosFill]:
+    """Extract STOCK fills from the Account Trade History section.
+
+    Two real-world export shapes are supported:
+
+    1. Synthetic / pre-2026-05 shape — separate `DATE`/`Date` and
+       `TIME`/`Time` columns; unsigned `Qty`.
+    2. Schwab/TOS 2026-era multi-day Account Statement export — single
+       combined `Exec Time` column (e.g. `5/8/26 06:52:18`); signed `Qty`
+       (`+7` for BUY, `-3` for SELL); MDY-2yr dates.
+
+    Pre-fix the parser only handled shape (1). Against shape (2) every row
+    failed the `date_str` predicate (no `Date` column in the dict) AND the
+    SELL fills additionally tripped the `qty <= 0` filter (`int('-3')` is
+    -3) — net result was a silent zero-fill output the operator surfaced
+    on 2026-05-08. Fix: prefer `Exec Time` (split on first space), fall
+    back to `Date`+`Time`; normalize the date to ISO; take `abs(qty)` so
+    the side comes from the canonical `Side`/`Pos Effect` columns rather
+    than the qty sign.
+    """
     out: list[TosFill] = []
     for row in rows:
         spread = (row.get("Spread") or "").strip().upper()
@@ -164,12 +212,25 @@ def extract_stock_fills(rows: Iterable[dict]) -> list[TosFill]:
         else:
             oc = "OPEN" if side == "BUY" else "CLOSE"
         try:
-            qty = int(row.get("Qty") or row.get("QTY") or 0)
+            # `int('+7')` -> 7, `int('-3')` -> -3; abs() so the SELL fill
+            # survives the qty-positivity check below. Side direction is
+            # carried by the `Side` / `Pos Effect` columns (canonical).
+            qty = abs(int(row.get("Qty") or row.get("QTY") or 0))
         except ValueError:
             continue
         price = _parse_tos_amount(row.get("Price") or row.get("PRICE") or "")
-        date_str = (row.get("Date") or row.get("DATE") or "").strip()
-        time_str = (row.get("Time") or row.get("TIME") or "").strip()
+        # Account Trade History on multi-day exports collapses date+time
+        # into a single `Exec Time` cell (`M/D/YY HH:MM:SS`). Prefer that
+        # when present; fall back to legacy split columns otherwise.
+        exec_time = (row.get("Exec Time") or row.get("EXEC TIME") or "").strip()
+        if exec_time:
+            parts = exec_time.split(" ", 1)
+            date_str = parts[0]
+            time_str = parts[1].strip() if len(parts) > 1 else ""
+        else:
+            date_str = (row.get("Date") or row.get("DATE") or "").strip()
+            time_str = (row.get("Time") or row.get("TIME") or "").strip()
+        date_str = _normalize_date(date_str)
         if qty <= 0 or not date_str:
             continue
         out.append(TosFill(
