@@ -304,6 +304,7 @@ class CadenceCardVM:
     period_start: str
     period_end: str
     is_pending: bool
+    review_id: int           # Task E.3: target for inline /reviews/{id}/complete link
 
 
 @dataclass(frozen=True)
@@ -1026,6 +1027,10 @@ def build_dashboard(
                 recent = list_recent(conn2, review_type=cadence, limit=1)
                 if recent:
                     row = recent[0]
+                    # row.review_id is non-None for any row returned by
+                    # list_recent (it SELECTs from review_log where rows
+                    # already carry an auto-increment PK). The `or 0`
+                    # fallback is defensive only — never hit at runtime.
                     cadence_cards[cadence] = CadenceCardVM(
                         cadence_type=cadence,
                         scheduled_date=row.scheduled_date,
@@ -1033,6 +1038,7 @@ def build_dashboard(
                         period_start=row.period_start,
                         period_end=row.period_end,
                         is_pending=row.completed_date is None,
+                        review_id=row.review_id or 0,
                     )
                 else:
                     cadence_cards[cadence] = None

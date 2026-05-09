@@ -8,6 +8,7 @@
         <p>Period: {{ card.period_start }} &ndash; {{ card.period_end }}</p>
         {% if card.is_pending %}
           <p>Scheduled: {{ card.scheduled_date }} (pending)</p>
+          <p><a href="/reviews/{{ card.review_id }}/complete">Complete review</a></p>
         {% else %}
           <p>Completed: {{ card.completed_date }}</p>
         {% endif %}
