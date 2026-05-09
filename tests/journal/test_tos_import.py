@@ -14,6 +14,9 @@ from swing.journal.tos_import import (
 
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "tos" / "synthetic-tos.csv"
+REAL_WORLD_FIXTURE = (
+    Path(__file__).parent.parent / "fixtures" / "tos" / "real-world-2026-05-08.csv"
+)
 
 
 def _seed_entry(
@@ -631,3 +634,305 @@ def test_reconcile_already_reconciled_match_uses_fill_id_not_exit_id(tmp_path: P
         "raise OperationalError instead of matching the fills row."
     )
     assert len(report.unmatched_close_fills) == 0
+
+
+# ---------------------------------------------------------------------------
+# 3e.12 — real-world 7-day Schwab/TOS export reconciliation
+#
+# These tests exercise the operator's actual export shape (sanitized): the
+# `Account Trade History` section uses a single `Exec Time` column instead of
+# separate `Date` + `Time`; `Qty` is signed (`+7`, `-3`); dates are MDY-2yr
+# (`5/8/26`). Pre-fix `extract_stock_fills` returned `[]` because `date_str`
+# was empty (no `Date`/`DATE` column) — silent zero on every reconcile.
+# Per operator clarification 2026-05-08 ("the whole point of reconciliation
+# is to check for existence AND correct values") these tests run the FULL
+# pipeline (extract → reconcile → matched / price_mismatch / unmatched routing)
+# against a seeded test DB, not just extraction in isolation.
+# ---------------------------------------------------------------------------
+
+
+def _seed_real_world_open_positions(conn: sqlite3.Connection) -> dict[str, int]:
+    """Seed the four operator-confirmed OPEN trades (LAR / CVGI / VSAT / YOU)
+    plus the SGML round-trip OPEN at TOS prices. Returns ticker -> trade_id."""
+    return {
+        "LAR": _seed_entry(
+            conn, ticker="LAR", entry_date="2026-05-08",
+            entry_price=11.7066, shares=7, initial_stop=7.00,
+        ),
+        "CVGI": _seed_entry(
+            conn, ticker="CVGI", entry_date="2026-05-08",
+            entry_price=5.2244, shares=20, initial_stop=3.67,
+        ),
+        "VSAT": _seed_entry(
+            conn, ticker="VSAT", entry_date="2026-05-06",
+            entry_price=65.685, shares=2, initial_stop=54.11,
+        ),
+        "YOU": _seed_entry(
+            conn, ticker="YOU", entry_date="2026-05-04",
+            entry_price=56.295, shares=2, initial_stop=45.38,
+        ),
+        "SGML": _seed_entry(
+            conn, ticker="SGML", entry_date="2026-05-07",
+            entry_price=23.87, shares=3, initial_stop=11.63,
+        ),
+    }
+
+
+def test_extract_stock_fills_from_real_world_csv():
+    """Pre-fix: returns 0 fills because `Date`/`DATE` columns absent (real
+    export uses `Exec Time`). Post-fix: returns the 6 STOCK fills from
+    Account Trade History with normalized ISO dates and unsigned qty."""
+    text = REAL_WORLD_FIXTURE.read_text(encoding="utf-8")
+    sections = parse_tos_export(text)
+    fills = list(extract_stock_fills(sections.get("Account Trade History", [])))
+    # Pre-fix: extract returns [] (date_str empty + signed-qty `-3` filtered).
+    # Post-fix: 6 fills (5 BUY OPEN + 1 SELL CLOSE for SGML).
+    assert len(fills) == 6, (
+        f"expected 6 fills from real-world CSV; got {len(fills)}. "
+        f"Pre-fix the parser returns [] because the real export uses "
+        f"`Exec Time` (combined date+time) and signed `Qty` (+7 / -3) — "
+        f"`row.get('Date')` returns None and `qty <= 0` skips SELL fills."
+    )
+    by_ticker = {f.ticker: f for f in fills}
+    assert set(by_ticker) == {"LAR", "SGML", "CVGI", "VSAT", "YOU"}, (
+        f"expected tickers LAR/SGML/CVGI/VSAT/YOU; got {sorted(by_ticker)}"
+    )
+    # Date normalization: M/D/YY -> YYYY-MM-DD so reconcile_tos's strict
+    # equality match against journal entry_date works.
+    lar = by_ticker["LAR"]
+    assert lar.date == "2026-05-08", f"expected 2026-05-08; got {lar.date!r}"
+    assert lar.qty == 7, f"expected qty=7 (abs of '+7'); got {lar.qty}"
+    assert lar.open_close == "OPEN" and lar.side == "BUY"
+    # Signed-qty SELL: TOS Qty=`-3` must extract as qty=3 + open_close=CLOSE
+    # (Side='SELL' + Pos Effect='TO CLOSE' both supply direction; the qty
+    # field's sign is informational only).
+    sgml_fills = [f for f in fills if f.ticker == "SGML"]
+    assert len(sgml_fills) == 2, (
+        f"expected SGML round-trip (BUY+3 + SELL-3) -> 2 fills; "
+        f"got {len(sgml_fills)}"
+    )
+    sgml_close = next(f for f in sgml_fills if f.open_close == "CLOSE")
+    assert sgml_close.qty == 3, (
+        f"expected unsigned qty=3 from signed `-3`; got {sgml_close.qty}. "
+        f"Pre-fix `int('-3') == -3` would route this through the `qty <= 0` "
+        f"early-return and the SELL fill would never be extracted."
+    )
+    assert sgml_close.side == "SELL" and sgml_close.date == "2026-05-08"
+
+
+def test_reconcile_real_world_csv_full_pipeline_price_match(tmp_path: Path):
+    """End-to-end reconcile against operator's sanitized 7-day export with
+    journal entry_prices matching TOS exactly. All 6 fills must land in
+    matched_fills (5 OPEN price-match + 1 CLOSE cumulative-allocation match
+    for SGML). Discriminator: pre-fix `report.matched_fills == []`
+    (operator's silent-zero symptom)."""
+    from swing.data.db import ensure_schema
+
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+
+    conn = sqlite3.connect(db)
+    try:
+        _seed_real_world_open_positions(conn)
+    finally:
+        conn.close()
+
+    text = REAL_WORLD_FIXTURE.read_text(encoding="utf-8")
+    report = reconcile_tos(db_path=db, tos_text=text)
+    assert len(report.matched_fills) == 6, (
+        f"expected matched=6 (5 OPEN + 1 CLOSE allocation); "
+        f"got matched={len(report.matched_fills)}, "
+        f"price_mismatch={len(report.price_mismatch_fills)}, "
+        f"unmatched_open={len(report.unmatched_open_fills)}, "
+        f"unmatched_close={len(report.unmatched_close_fills)}, "
+        f"already_reconciled={len(report.already_reconciled_fills)}. "
+        f"Pre-fix the parser drops every fill so matched is 0."
+    )
+    assert report.price_mismatch_fills == []
+    assert report.unmatched_open_fills == []
+    assert report.unmatched_close_fills == []
+
+
+def test_reconcile_real_world_csv_price_mismatch_path(tmp_path: Path):
+    """Seed CVGI with entry_price intentionally OFF by more than tolerance
+    (5.50 vs TOS 5.2244, diff 0.2756 > 0.01). The CVGI fill MUST land in
+    price_mismatch_fills, not matched_fills. Discriminator: existence-only
+    matching would route this to matched even when journal price disagrees
+    with broker fill — exactly the value-correctness gap the operator
+    flagged ('the whole point of reconciliation is to check for existence
+    AND correct values')."""
+    from swing.data.db import ensure_schema
+
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+
+    conn = sqlite3.connect(db)
+    try:
+        # All other tickers seeded at TOS prices so they route to matched.
+        _seed_entry(conn, ticker="LAR", entry_date="2026-05-08",
+                    entry_price=11.7066, shares=7, initial_stop=7.00)
+        _seed_entry(conn, ticker="VSAT", entry_date="2026-05-06",
+                    entry_price=65.685, shares=2, initial_stop=54.11)
+        _seed_entry(conn, ticker="YOU", entry_date="2026-05-04",
+                    entry_price=56.295, shares=2, initial_stop=45.38)
+        _seed_entry(conn, ticker="SGML", entry_date="2026-05-07",
+                    entry_price=23.87, shares=3, initial_stop=11.63)
+        # CVGI deliberately mispriced.
+        _seed_entry(conn, ticker="CVGI", entry_date="2026-05-08",
+                    entry_price=5.50, shares=20, initial_stop=3.67)
+    finally:
+        conn.close()
+
+    text = REAL_WORLD_FIXTURE.read_text(encoding="utf-8")
+    report = reconcile_tos(db_path=db, tos_text=text)
+    mismatch_tickers = {f.ticker for f in report.price_mismatch_fills}
+    assert mismatch_tickers == {"CVGI"}, (
+        f"expected CVGI in price_mismatch_fills (TOS=5.2244 vs journal=5.50, "
+        f"diff=0.2756 > tolerance=0.01); got mismatch={mismatch_tickers}, "
+        f"matched={[f.ticker for f in report.matched_fills]}"
+    )
+    matched_tickers = sorted(f.ticker for f in report.matched_fills)
+    assert matched_tickers == ["LAR", "SGML", "SGML", "VSAT", "YOU"], (
+        f"expected LAR + SGML(BUY) + SGML(SELL) + VSAT + YOU in matched; "
+        f"got {matched_tickers}"
+    )
+
+
+def test_reconcile_real_world_csv_sgml_round_trip(tmp_path: Path):
+    """Isolated test of the SGML BUY+3 (5/7) → SELL-3 (5/8) round-trip
+    routing. The CLOSE fill must land in matched_fills via the CLOSE-side
+    allocation path at swing/journal/tos_import.py:230-271, which calls
+    find_any_open_trade and bounds cumulative-shares-sold by initial_shares.
+    Discriminator: with the parser bug present the SELL fill is silently
+    dropped (qty=`-3` int-parses to -3, `qty <= 0` returns early); the test
+    would assert matched=2 but get matched=0."""
+    from swing.data.db import ensure_schema
+
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+
+    conn = sqlite3.connect(db)
+    try:
+        # Only SGML seeded — other 5 fills will fall through to unmatched
+        # OPEN (irrelevant to this test's assertion scope).
+        _seed_entry(conn, ticker="SGML", entry_date="2026-05-07",
+                    entry_price=23.87, shares=3, initial_stop=11.63)
+    finally:
+        conn.close()
+
+    text = REAL_WORLD_FIXTURE.read_text(encoding="utf-8")
+    report = reconcile_tos(db_path=db, tos_text=text)
+    sgml_matched = [f for f in report.matched_fills if f.ticker == "SGML"]
+    sgml_open = next((f for f in sgml_matched if f.open_close == "OPEN"), None)
+    sgml_close = next((f for f in sgml_matched if f.open_close == "CLOSE"), None)
+    assert sgml_open is not None, (
+        f"expected SGML BUY+3 in matched_fills (existence + price match); "
+        f"got matched_tickers={[(f.ticker, f.open_close) for f in report.matched_fills]}"
+    )
+    assert sgml_close is not None, (
+        f"expected SGML SELL-3 in matched_fills via CLOSE-allocation path; "
+        f"got matched_tickers={[(f.ticker, f.open_close) for f in report.matched_fills]}, "
+        f"unmatched_close_tickers={[(f.ticker, f.qty) for f in report.unmatched_close_fills]}. "
+        f"Pre-fix the SELL-3 fill is filtered by `qty <= 0` and never reaches "
+        f"reconcile_tos at all (would also fail the OPEN match for the same reason)."
+    )
+    assert sgml_close.qty == 3 and sgml_close.date == "2026-05-08"
+    # Round 1 Major 4: also assert real-world UNMATCHED routing is
+    # exercised. With only SGML seeded, the four other OPEN tickers
+    # (LAR/CVGI/VSAT/YOU) lack a matching journal trade, so they MUST
+    # land in unmatched_open_fills (not silently consumed). This closes
+    # the all-paths discriminating-test gap — pre-fix all 4 would be
+    # missing entirely (silent zero); post-fix they route to unmatched.
+    unmatched_open_tickers = sorted(f.ticker for f in report.unmatched_open_fills)
+    assert unmatched_open_tickers == ["CVGI", "LAR", "VSAT", "YOU"], (
+        f"expected 4 unmatched OPEN fills (LAR/CVGI/VSAT/YOU) when only "
+        f"SGML is seeded; got {unmatched_open_tickers}. This is the "
+        f"real-world unmatched-routing assertion the brief §5 watch item "
+        f"requires."
+    )
+
+
+def test_fill_decisions_journal_price_semantics(tmp_path: Path):
+    """Round 3 Major 1: pin the FillDecision contract directly so the
+    `--verbose` price-comparison line does not silently misroute prices
+    across outcome categories.
+
+    Contract:
+      OPEN matched         -> journal_price == matched trade.entry_price
+      OPEN price_mismatch  -> journal_price == matched trade.entry_price
+      CLOSE matched (alloc)-> journal_price is None (no single price drove the routing)
+      OPEN unmatched       -> journal_price is None
+      CLOSE unmatched      -> journal_price is None
+
+    Discriminator: a regression that swapped the OPEN paths' journal_price
+    semantics (e.g., always None, or copied from the TosFill instead of
+    the journal trade) would pass the existing CLI verbose substring
+    assertions because `TOS=$X journal=$X` happens to align when prices
+    match. This test pins each branch independently."""
+    from swing.data.db import ensure_schema
+
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+
+    conn = sqlite3.connect(db)
+    try:
+        # OPEN matched: LAR seeded at TOS price.
+        _seed_entry(conn, ticker="LAR", entry_date="2026-05-08",
+                    entry_price=11.7066, shares=7, initial_stop=7.00)
+        # OPEN price_mismatch: CVGI seeded with intentionally off price.
+        _seed_entry(conn, ticker="CVGI", entry_date="2026-05-08",
+                    entry_price=5.50, shares=20, initial_stop=3.67)
+        # SGML round-trip: OPEN matched + CLOSE allocation match.
+        _seed_entry(conn, ticker="SGML", entry_date="2026-05-07",
+                    entry_price=23.87, shares=3, initial_stop=11.63)
+        # VSAT, YOU left unseeded -> unmatched_open routing.
+    finally:
+        conn.close()
+
+    text = REAL_WORLD_FIXTURE.read_text(encoding="utf-8")
+    report = reconcile_tos(db_path=db, tos_text=text)
+
+    by_key = {(d.fill.ticker, d.fill.open_close, d.fill.qty): d
+              for d in report.fill_decisions}
+
+    lar_open = by_key[("LAR", "OPEN", 7)]
+    assert lar_open.outcome == "matched"
+    assert lar_open.journal_price == 11.7066, (
+        f"OPEN matched MUST carry journal entry_price; got "
+        f"journal_price={lar_open.journal_price}"
+    )
+
+    cvgi_open = by_key[("CVGI", "OPEN", 20)]
+    assert cvgi_open.outcome == "price_mismatch"
+    assert cvgi_open.journal_price == 5.50, (
+        f"OPEN price_mismatch MUST carry the mismatched journal entry_price "
+        f"so verbose can show TOS=5.2244 vs journal=5.50; got "
+        f"journal_price={cvgi_open.journal_price}"
+    )
+
+    sgml_open = by_key[("SGML", "OPEN", 3)]
+    assert sgml_open.outcome == "matched"
+    assert sgml_open.journal_price == 23.87
+
+    sgml_close = by_key[("SGML", "CLOSE", 3)]
+    assert sgml_close.outcome == "matched"
+    assert sgml_close.journal_price is None, (
+        f"CLOSE allocation match has no single trade-row price driving the "
+        f"decision (cumulative-shares allocation against the open lot); "
+        f"journal_price MUST be None to prevent verbose mis-attributing a "
+        f"stale entry_price as the matched 'value'. Got "
+        f"journal_price={sgml_close.journal_price}"
+    )
+
+    vsat_open = by_key[("VSAT", "OPEN", 2)]
+    assert vsat_open.outcome == "unmatched_open"
+    assert vsat_open.journal_price is None
+
+    you_open = by_key[("YOU", "OPEN", 2)]
+    assert you_open.outcome == "unmatched_open"
+    assert you_open.journal_price is None
+
+    # Tolerance must propagate through the report unchanged so verbose
+    # output is consistent with the routing decision threshold.
+    for d in report.fill_decisions:
+        assert d.tolerance == 0.01

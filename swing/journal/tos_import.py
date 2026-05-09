@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from io import StringIO
 from pathlib import Path
 from typing import Iterable
@@ -25,6 +26,21 @@ _SECTION_LABELS = (
     "Futures Statements",
     "Forex Statements",
     "Account Summary",
+    # Real-world Schwab/TOS multi-day exports include Equities and Profits
+    # and Losses sections AFTER Account Trade History. Without recognizing
+    # them as section boundaries, parse_tos_export accumulates their rows
+    # into the trailing buffer of the previous label — inflating any
+    # row-count diagnostic and feeding non-fill rows into
+    # extract_stock_fills (which then filters them by Spread != 'STOCK',
+    # but the row-count signal for the operator is misleading).
+    "Equities",
+    "Profits and Losses",
+    # Crypto Statements is the canonical label for the quoted, bank-name-
+    # bearing header line in the real-world export. `_section_label_for_line`
+    # bridges the volatile line text to this stable canonical name; the
+    # canonical name belongs in the recognized-section list so it does not
+    # diverge from the registry of valid labels.
+    "Crypto Statements",
 )
 
 
@@ -44,6 +60,29 @@ class TosFill:
 
 
 @dataclass(frozen=True)
+class FillDecision:
+    """Per-fill reconciliation outcome with journal-vs-TOS price visibility.
+
+    Populated alongside the matched/unmatched/price_mismatch/already_reconciled
+    bucket lists so `--verbose` CLI output can surface the journal entry_price
+    that participated in each routing decision. The operator-actionable
+    invariant — 'reconciliation checks existence AND correct values' — needs
+    this view: existence-only matching cannot show whether the journal price
+    agrees with the broker fill.
+
+    `journal_price` is set for OPEN matched / OPEN price_mismatch decisions
+    (where a single trade-row entry_price drove the routing). It is None for
+    CLOSE-side matches via cumulative-allocation, unmatched fills, and
+    already_reconciled cases — those don't compare against a single journal
+    entry_price.
+    """
+    fill: TosFill
+    outcome: str  # matched | price_mismatch | unmatched_open | unmatched_close | already_reconciled
+    journal_price: float | None
+    tolerance: float
+
+
+@dataclass(frozen=True)
 class ReconciliationReport:
     matched_fills: list[TosFill] = field(default_factory=list)
     unmatched_open_fills: list[TosFill] = field(default_factory=list)
@@ -56,6 +95,33 @@ class ReconciliationReport:
     already_reconciled_fills: list[TosFill] = field(default_factory=list)
     new_cash_movements: list[CashMovement] = field(default_factory=list)
     duplicate_cash_movements: list[CashMovement] = field(default_factory=list)
+    # Parallel detail list — one entry per processed fill in encounter order
+    # — for `swing tos-import --verbose`. Always populated so CLI verbose
+    # mode never has to second-guess existence; default CLI output ignores
+    # it so byte-identical default behavior is preserved.
+    fill_decisions: list[FillDecision] = field(default_factory=list)
+
+
+def _section_label_for_line(stripped: str) -> str | None:
+    """Return the canonical section label this line opens, or None.
+
+    Schwab/TOS multi-day exports CSV-quote any header that contains an
+    internal comma (the Crypto Statements header wraps the bank name and
+    its trailing comma in double quotes — `\"Crypto # (Crypto offered by
+    Charles Schwab Premier Bank, SSB) Statements\"`). The bank-name
+    substring varies; collapse all such variants to a single canonical
+    `Crypto Statements` label by pattern. All other section labels are
+    bare strings — but quote-stripping is harmless and protects against
+    future Schwab/TOS quoting drift.
+    """
+    s = stripped.strip('"').strip()
+    if not s:
+        return None
+    if s in _SECTION_LABELS:
+        return s
+    if s.startswith("Crypto") and s.endswith("Statements"):
+        return "Crypto Statements"
+    return None
 
 
 def parse_tos_export(text: str) -> dict[str, list[dict]]:
@@ -76,9 +142,10 @@ def parse_tos_export(text: str) -> dict[str, list[dict]]:
 
     for line in lines:
         stripped = line.strip()
-        if stripped in _SECTION_LABELS:
+        section_label = _section_label_for_line(stripped)
+        if section_label is not None:
             flush()
-            cur_label = stripped
+            cur_label = section_label
             cur_buf = []
         elif stripped.startswith("#"):
             continue
@@ -86,6 +153,34 @@ def parse_tos_export(text: str) -> dict[str, list[dict]]:
             cur_buf.append(line)
     flush()
     return sections
+
+
+def _normalize_date(raw: str) -> str:
+    """Normalize a TOS-export date string to ISO YYYY-MM-DD.
+
+    Real-world Schwab/TOS exports emit dates as `M/D/YY` (e.g. `5/8/26`);
+    the synthetic fixture uses ISO `YYYY-MM-DD`. `reconcile_tos` matches
+    fills against journal `entry_date`, which is stored ISO — without
+    normalization the M/D/YY-formatted real-world fills never match an
+    ISO-formatted journal row even when the underlying date is identical.
+
+    Returns the input unchanged if it does not match a known format, so
+    unexpected shapes propagate to the caller rather than silently
+    masquerading as a valid date.
+    """
+    s = (raw or "").strip()
+    if not s:
+        return s
+    try:
+        return date.fromisoformat(s).isoformat()
+    except ValueError:
+        pass
+    for fmt in ("%m/%d/%y", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(s, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return s
 
 
 def _parse_tos_amount(raw: str) -> float:
@@ -143,17 +238,45 @@ def extract_cash_movements(rows: Iterable[dict]) -> list[CashMovement]:
     return out
 
 
-def extract_stock_fills(rows: Iterable[dict]) -> list[TosFill]:
+def extract_stock_fills(
+    rows: Iterable[dict], *, _skip_log: dict[str, int] | None = None,
+) -> list[TosFill]:
+    """Extract STOCK fills from the Account Trade History section.
+
+    Two real-world export shapes are supported:
+
+    1. Synthetic / pre-2026-05 shape — separate `DATE`/`Date` and
+       `TIME`/`Time` columns; unsigned `Qty`.
+    2. Schwab/TOS 2026-era multi-day Account Statement export — single
+       combined `Exec Time` column (e.g. `5/8/26 06:52:18`); signed `Qty`
+       (`+7` for BUY, `-3` for SELL); MDY-2yr dates.
+
+    Pre-fix the parser only handled shape (1). Against shape (2) every row
+    failed the `date_str` predicate (no `Date` column in the dict) AND the
+    SELL fills additionally tripped the `qty <= 0` filter (`int('-3')` is
+    -3) — net result was a silent zero-fill output the operator surfaced
+    on 2026-05-08. Fix: prefer `Exec Time` (split on first space), fall
+    back to `Date`+`Time`; normalize the date to ISO; take `abs(qty)` so
+    the side comes from the canonical `Side`/`Pos Effect` columns rather
+    than the qty sign.
+    """
+    def _bump(reason: str) -> None:
+        if _skip_log is not None:
+            _skip_log[reason] = _skip_log.get(reason, 0) + 1
+
     out: list[TosFill] = []
     for row in rows:
         spread = (row.get("Spread") or "").strip().upper()
         if spread not in ("", "STOCK"):
+            _bump("non_stock_spread")
             continue
         exp = (row.get("Exp") or "").strip()
         if exp and exp != "--":
+            _bump("option_with_expiry")
             continue
         ticker = (row.get("Symbol") or "").strip().upper()
         if not ticker:
+            _bump("empty_ticker")
             continue
         side = (row.get("Side") or "").strip().upper()
         pos = (row.get("Pos Effect") or "").strip().upper()
@@ -164,13 +287,34 @@ def extract_stock_fills(rows: Iterable[dict]) -> list[TosFill]:
         else:
             oc = "OPEN" if side == "BUY" else "CLOSE"
         try:
-            qty = int(row.get("Qty") or row.get("QTY") or 0)
+            # `int('+7')` -> 7, `int('-3')` -> -3; abs() so the SELL fill
+            # survives the qty-positivity check below. Side direction is
+            # carried by the `Side` / `Pos Effect` columns (canonical).
+            qty = abs(int(row.get("Qty") or row.get("QTY") or 0))
         except ValueError:
+            _bump("qty_parse_error")
             continue
         price = _parse_tos_amount(row.get("Price") or row.get("PRICE") or "")
-        date_str = (row.get("Date") or row.get("DATE") or "").strip()
-        time_str = (row.get("Time") or row.get("TIME") or "").strip()
-        if qty <= 0 or not date_str:
+        # Account Trade History on multi-day exports collapses date+time
+        # into a single `Exec Time` cell (`M/D/YY HH:MM:SS`). Prefer that
+        # when present; fall back to legacy split columns otherwise.
+        exec_time = (row.get("Exec Time") or row.get("EXEC TIME") or "").strip()
+        if exec_time:
+            parts = exec_time.split(" ", 1)
+            date_str = parts[0]
+            time_str = parts[1].strip() if len(parts) > 1 else ""
+        else:
+            date_str = (row.get("Date") or row.get("DATE") or "").strip()
+            time_str = (row.get("Time") or row.get("TIME") or "").strip()
+        date_str = _normalize_date(date_str)
+        if qty <= 0:
+            # Post-`abs()` qty is non-negative — `qty <= 0` reduces to
+            # `qty == 0`. Name the reason accordingly so the verbose
+            # operator-facing diagnostic isn't misleading (Codex R2 Minor 2).
+            _bump("qty_zero")
+            continue
+        if not date_str:
+            _bump("empty_date")
             continue
         out.append(TosFill(
             date=date_str, side=side, open_close=oc,
@@ -205,6 +349,13 @@ def reconcile_tos(
 
         within_batch_alloc: dict[int, int] = {}
         claimed_exit_ids: set[int] = set()
+
+        def _record(f: TosFill, outcome: str, journal_price: float | None) -> None:
+            report.fill_decisions.append(FillDecision(
+                fill=f, outcome=outcome,
+                journal_price=journal_price, tolerance=price_tolerance,
+            ))
+
         for f in fills:
             if f.open_close == "OPEN":
                 t = find_open_trade_by_match(
@@ -214,8 +365,10 @@ def reconcile_tos(
                 if t is not None:
                     if abs(t.entry_price - f.price) > price_tolerance:
                         report.price_mismatch_fills.append(f)
+                        _record(f, "price_mismatch", t.entry_price)
                     else:
                         report.matched_fills.append(f)
+                        _record(f, "matched", t.entry_price)
                     continue
                 # No open trade matched. Check historical (closed) trades —
                 # re-importing an old TOS statement is a routine case, and
@@ -225,8 +378,10 @@ def reconcile_tos(
                     price=f.price, side="OPEN", price_tolerance=price_tolerance,
                 ):
                     report.already_reconciled_fills.append(f)
+                    _record(f, "already_reconciled", None)
                 else:
                     report.unmatched_open_fills.append(f)
+                    _record(f, "unmatched_open", None)
             else:
                 t = find_any_open_trade(conn, ticker=f.ticker)
                 # Historical re-import detection: a CLOSE fill whose
@@ -249,9 +404,11 @@ def reconcile_tos(
                 if claimed is not None:
                     claimed_exit_ids.add(claimed)
                     report.already_reconciled_fills.append(f)
+                    _record(f, "already_reconciled", None)
                     continue
                 if t is None:
                     report.unmatched_close_fills.append(f)
+                    _record(f, "unmatched_close", None)
                     continue
                 # Phase 7 B.9: exits table dropped (migration 0014). Sum
                 # quantities of all non-entry fills (trim/exit/stop) — that
@@ -266,8 +423,10 @@ def reconcile_tos(
                 cumulative = sold_in_db + already_allocated + f.qty
                 if cumulative > t.initial_shares:
                     report.unmatched_close_fills.append(f)
+                    _record(f, "unmatched_close", None)
                 else:
                     report.matched_fills.append(f)
+                    _record(f, "matched", None)
                     within_batch_alloc[t.id or 0] = already_allocated + f.qty
     finally:
         conn.close()

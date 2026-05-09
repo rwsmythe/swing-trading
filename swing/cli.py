@@ -1512,18 +1512,47 @@ def journal_cash_cmd(ctx, deposit, withdraw, date_str, ref, note):
 @click.option("--csv", "csv_path", required=True, type=click.Path(exists=True, dir_okay=False))
 @click.option("--dry-run", is_flag=True, help="Print report without committing anything")
 @click.option("--auto-confirm", is_flag=True, help="Commit new cash movements without prompting")
+@click.option("--verbose", is_flag=True, help=(
+    "Surface per-section row counts + per-fill price-comparison detail. "
+    "Default output is byte-identical to the non-verbose summary; --verbose "
+    "appends an extra block so silent extraction failures (3e.12) are "
+    "observable-with-context."
+))
 @click.pass_context
-def tos_import_cmd(ctx, csv_path, dry_run, auto_confirm):
+def tos_import_cmd(ctx, csv_path, dry_run, auto_confirm, verbose):
     """Reconcile a TOS Account Statement CSV against the journal."""
     from pathlib import Path as _Path
 
     from swing.data.db import connect
     from swing.data.repos.cash import insert_cash
-    from swing.journal.tos_import import reconcile_tos
+    from swing.journal.tos_import import extract_stock_fills, parse_tos_export, reconcile_tos
 
     cfg = ctx.obj["config"]
     text = _Path(csv_path).read_text(encoding="utf-8")
-    report = reconcile_tos(db_path=cfg.paths.db_path, tos_text=text)
+    # Surface absent required sections in default mode — the silent-zero
+    # failure mode (3e.12) was operator-actionable only via verbose, which
+    # left the bare `swing tos-import` invocation diagnostic-free. A
+    # warning here is non-disruptive (synthetic fixture has both sections
+    # so back-compat tests pass) and turns "matched=0" with no context
+    # into "matched=0 because section X is missing — likely upstream
+    # format drift."
+    _required_sections = ("Cash Balance", "Account Trade History")
+    _parsed_for_warn = parse_tos_export(text)
+    for _section in _required_sections:
+        if _section not in _parsed_for_warn:
+            click.echo(
+                f"WARNING: '{_section}' section not found in CSV — "
+                f"upstream export format may have drifted; "
+                f"re-run with --verbose for per-section diagnostics."
+            )
+    # Single source of truth for the price-comparison tolerance — passed
+    # to reconcile_tos AND echoed in verbose output so any future change
+    # propagates to both surfaces (Codex R2 Minor 1).
+    price_tolerance = 0.01
+    report = reconcile_tos(
+        db_path=cfg.paths.db_path, tos_text=text,
+        price_tolerance=price_tolerance,
+    )
 
     click.echo(f"Cash: {len(report.new_cash_movements)} new, "
                f"{len(report.duplicate_cash_movements)} duplicate")
@@ -1540,6 +1569,68 @@ def tos_import_cmd(ctx, csv_path, dry_run, auto_confirm):
         click.echo(f"  ? unmatched OPEN: {f.ticker} {f.date} qty={f.qty} @ ${f.price:.2f}")
     for f in report.unmatched_close_fills:
         click.echo(f"  ? unmatched CLOSE: {f.ticker} {f.date} qty={f.qty} @ ${f.price:.2f}")
+
+    if verbose:
+        # Per-section diagnostic. Re-parses the text — cheap, and gives the
+        # CLI direct visibility into what `parse_tos_export` saw without
+        # widening the reconcile_tos return surface. Also surfaces the
+        # silent-zero-result symptom (rows>0 but extracted_fills=0) directly.
+        click.echo("")
+        click.echo("--- VERBOSE diagnostic ---")
+        bom_present = text.startswith("﻿")
+        click.echo(
+            f"[parse] encoding=utf-8 bom={'yes' if bom_present else 'no'} "
+            f"chars={len(text)} bytes={len(text.encode('utf-8'))}"
+        )
+        sections = parse_tos_export(text)
+        for section_label in (
+            "Cash Balance", "Account Trade History", "Account Order History",
+            "Futures Statements", "Forex Statements", "Crypto Statements",
+            "Account Summary", "Equities", "Profits and Losses",
+        ):
+            rows = sections.get(section_label) or []
+            present = "yes" if section_label in sections else "no"
+            sample_summary = ""
+            if rows:
+                # First row's first 2-3 fields summarized — full dict can
+                # be wide for ATH (13 cols) but the operator just needs a
+                # shape sanity-check: are these the right kind of rows?
+                first = rows[0]
+                items = list(first.items())[:3]
+                sample_summary = " sample={" + ", ".join(
+                    f"{k!r}: {v!r}" for k, v in items
+                ) + (", ..." if len(first) > 3 else "") + "}"
+            click.echo(
+                f"[section] {section_label}: detected={present} "
+                f"rows={len(rows)}{sample_summary}"
+            )
+        ath_rows = sections.get("Account Trade History") or []
+        skip_log: dict[str, int] = {}
+        extracted = list(extract_stock_fills(ath_rows, _skip_log=skip_log))
+        click.echo(
+            f"[fills] extracted={len(extracted)} from "
+            f"{len(ath_rows)} Account Trade History rows; "
+            f"tolerance=${price_tolerance:.4f}"
+        )
+        if skip_log:
+            skip_summary = " ".join(
+                f"{reason}={count}" for reason, count in sorted(skip_log.items())
+            )
+            click.echo(f"[skipped] {skip_summary}")
+        else:
+            click.echo("[skipped] (none)")
+        # Per-fill outcome with journal-vs-TOS price comparison.
+        for d in report.fill_decisions:
+            f = d.fill
+            jp = (
+                f"journal=${d.journal_price:.4f}"
+                if d.journal_price is not None
+                else "journal=N/A"
+            )
+            click.echo(
+                f"  [{d.outcome}] {f.ticker} {f.date} {f.side} qty={f.qty} "
+                f"TOS=${f.price:.4f} {jp} tol=${d.tolerance:.4f}"
+            )
 
     if dry_run:
         click.echo("Dry run \u2014 no changes committed.")
