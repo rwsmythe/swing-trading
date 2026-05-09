@@ -610,3 +610,55 @@ def test_event_log_form_vm_exposes_canonical_emotional_state_options(
         f"VM emotional_state_set should default to empty tuple on initial "
         f"render (no preserved checked-state); got {vm.emotional_state_set!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Polish-bundle-2026-05-09 Task B.4: error path MUST NOT emit HX-Redirect.
+# ---------------------------------------------------------------------------
+#
+# Task B.1 changed the success-path HX-Redirect target to "/" (dashboard).
+# The error path (ValidationException → 422 with form re-render) must NOT
+# carry an HX-Redirect header — otherwise htmx.js would navigate the
+# browser away from the form on validation failure, dropping the operator's
+# in-progress input. Pin the contract explicitly so a future refactor that
+# unifies success/error response builders cannot regress this silently.
+
+
+def test_event_log_post_error_path_does_not_emit_HX_Redirect(  # noqa: N802
+    app_with_seeded_trade,
+):
+    """Validation failure path: 422 response MUST NOT carry HX-Redirect.
+
+    Reuses the missing-required-fields scenario from
+    ``test_event_log_post_validation_failure_returns_422``: stop_changed=1
+    without prior_stop / new_stop / stop_change_reason → ValidationException
+    → 422 + form re-render. The 422 response must NOT include HX-Redirect
+    (only the success path does — Task B.1).
+    """
+    app, _ = app_with_seeded_trade
+    with TestClient(app) as client:
+        response = client.post(
+            "/trades/1/daily-management/event",
+            data={
+                "stop_changed": "1",
+                # new_stop, prior_stop, stop_change_reason intentionally missing.
+                "action_taken": "move_stop",
+                "action_reason": "breakout_confirmed",
+                "rule_violation_suspected": "0",
+                "emotional_state": ["calm"],
+                "created_at": "2026-05-07T18:00:00",
+                "review_date": "2026-05-07",
+                "data_asof_session": "2026-05-07",
+                "mfe_mae_precision_level": "daily_approximate",
+            },
+            headers={"HX-Request": "true"},
+        )
+    assert response.status_code == 422, (
+        f"expected 422 from missing-required-fields path; got "
+        f"{response.status_code}: {response.text[:200]}"
+    )
+    assert "HX-Redirect" not in response.headers, (
+        f"error path must NOT emit HX-Redirect (would navigate browser away "
+        f"from in-progress form); got HX-Redirect="
+        f"{response.headers.get('HX-Redirect')!r}"
+    )
