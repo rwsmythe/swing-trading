@@ -2,7 +2,7 @@
 
 **Audience:** Future orchestrator-role Claude sessions for the Swing Trading project. Also useful as a reference when the current orchestrator's context window is compacted.
 **Purpose:** Provide enough context to bootstrap an orchestrator role without re-reading conversation history. Not a complete project spec — pointers to authoritative sources are throughout.
-**Last updated:** 2026-05-08 (Phase 8 V1 polish SHIPPED at `24b3e9a` — Detail button + Phase 7 stop-adjust legacy path surfaced in Phase 8 timeline via VM-level read-side union; 4-surface operator-witnessed gate PASS via Chrome MCP. 2079 → 2090 fast tests; ruff baseline 78 preserved. Plus 4 new lessons captured 2026-05-07/08: writing-plans plan-commit discipline; sort-key brief-recommendation fragility; merge-action-as-orchestrator-action; worktree directory-path-in-brief).
+**Last updated:** 2026-05-09 (3e.12 tos-import diagnostic SHIPPED at `a9541d2` — fix for `Exec Time` column + signed Qty + M/D/YY date format on real Schwab/TOS multi-day exports + `--verbose` per-fill price-comparison hardening. Investigation-first dispatch with operator-confirmation gate; implementer empirically surfaced a 3rd mechanism (M/D/YY normalization) the orchestrator pre-analysis missed. 2090 → 2099 fast tests; ruff baseline 78 preserved. Real-world fixture at `tests/fixtures/tos/real-world-2026-05-08.csv` now exercises actual Schwab/TOS export shape per the Synthetic-fixture-coverage-gap lesson family (third instance: TRD-as-withdrawal 2026-04-30 + Excel-quoted REF 2026-04-30 + Exec Time/Qty/MDY 2026-05-09). Post-merge smoke test on operator's actual CSV: matched=4, already-reconciled=2, price-mismatch=0.).
 
 ---
 

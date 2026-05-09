@@ -183,7 +183,13 @@ Phase nomenclature is internal-development context, not operator-facing. The hel
 - `swing/cli.py:1174` + `swing/cli.py:1303` — sites to fix.
 - Pre-empt similar leakage in future CLI additions: per brief-drafting checklist, verify CLI help strings are operator-facing, not phase-nomenclature.
 
-### 3e.12 — `swing tos-import` silent zero-result diagnosis (INVESTIGATION; operator-surfaced 2026-05-08)
+### 3e.12 — `swing tos-import` silent zero-result diagnosis — **SHIPPED 2026-05-09 at `a9541d2`**
+
+> **Outcome:** Investigation-first dispatch (brief at `docs/tos-import-diagnostic-brief.md`) on worktree branch `tos-import-diagnostic` (BASELINE_SHA `25bbaa2`); 5 commits = 2 task-impl + 3 adversarial-fix; integration merge `a9541d2`. Investigation identified THREE mechanisms (originally orchestrator analyzed two; implementer surfaced the third empirically): (A) `Exec Time` column in real Schwab/TOS export (parser was looking for `Date`/`DATE`); (B) signed Qty (`+7` BUY / `-3` SELL) tripped `qty <= 0` guard; (C) M/D/YY date format vs journal's ISO `entry_date` blocked match-query even after (A)+(B). Operator-confirmation gate PASSED. Fix scope expanded mid-dispatch by operator clarification ("the whole point of reconciliation is to check for existence AND correct values") — broadened §3.1 from extraction-only to full-pipeline reconciliation tests. Adversarial review chain: R1 0/4/2 → R2 0/2/2 → R3 0/1/2 → R4 NO_NEW_CRITICAL_MAJOR (convergent shape; 4→2→1→0 majors). Test count 2090 → 2099 (+9; ruff baseline 78 preserved). New `_normalize_date()` helper + `FillDecision` dataclass + `tests/fixtures/tos/real-world-2026-05-08.csv` real-world fixture. New `--verbose` flag surfaces per-section row counts + per-fill price-comparison output. Post-merge smoke test against operator's actual CSV: `matched=4, already-reconciled=2, price-mismatch=0` (4 OPEN fills LAR/CVGI/VSAT/YOU reconciled with journal entry_prices matching; SGML round-trip routed to already-reconciled). Per retention discipline, this entry stays in active until next phase ship; original investigation content retained below for historical reference.
+
+### Original entry (2026-05-08; pre-dispatch; superseded by SHIPPED outcome above)
+
+`swing tos-import` silent zero-result diagnosis (INVESTIGATION; operator-surfaced 2026-05-08)
 
 **Observed:** Operator ran `swing tos-import --csv "...\2026-05-08-AccountStatement.csv"` (with and without `--dry-run`). Output:
 ```
