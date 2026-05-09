@@ -440,7 +440,7 @@ def trade_group() -> None:
                   "pivot-breakout", "post-earnings-continuation",
                   "relative-strength", "other",
               ]),
-              help="Entry rationale (closed taxonomy, Tranche B-ops T4). "
+              help="Entry rationale (closed taxonomy). "
                    "'other' requires --notes.")
 @click.option("--notes", default=None)
 @click.option("--hypothesis", "hypothesis", default=None,
@@ -463,7 +463,7 @@ def trade_group() -> None:
                   "manual_web_form", "cli_manual",
               ]),
               default="cli_manual",
-              help="Entry-path origin discriminator (Phase 7 §10).")
+              help="Entry-path origin discriminator.")
 @click.option("--thesis", default=None,
               help="Pre-trade thesis (required).")
 @click.option("--why-now", default=None,
@@ -748,9 +748,8 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
 def trade_exit_cmd(ctx, trade_id, exit_date, exit_price, shares, reason, notes):
     """Record a trade exit (full or partial).
 
-    Tranche B-ops T6: ``--rationale`` was dropped; trade_events.rationale is
-    derived server-side from ``--reason``. Use ``--notes`` for free-form
-    context.
+    ``trade_events.rationale`` is derived server-side from ``--reason``;
+    use ``--notes`` for free-form context.
     """
     from datetime import datetime as _dt
 
@@ -826,7 +825,7 @@ def trade_list_cmd(ctx, show_all):
                   "breakeven", "trail-10ma", "trail-20ma", "weather-tighten",
                   "manual-trail", "news", "other",
               ]),
-              help="Stop-adjust rationale (closed taxonomy, Tranche B-ops T5). "
+              help="Stop-adjust rationale (closed taxonomy). "
                    "'other' requires --notes.")
 @click.option("--notes", default=None)
 @click.option("--force", is_flag=True, help="Allow lowering the stop")
@@ -1171,12 +1170,7 @@ def trade_review_cmd(
     disqualifying_process_violation, realized_r_if_plan_followed,
     mistake_cost_confidence, lesson_learned,
 ):
-    """Post-trade review (Phase 6).
-
-    Two modes:
-      `swing trade review --list`  → print pending-review trades and exit.
-      `swing trade review --trade-id N --entry-grade A ...`  → record a review.
-    """
+    """Post-trade review surface — log mistakes, process grade, and outcome attribution."""
     import json
     from datetime import date as _date
     from datetime import datetime as _dt
@@ -1300,7 +1294,7 @@ def trade_review_cmd(
 
 @main.group("review")
 def review_group() -> None:
-    """Phase 6: cadence review (daily / weekly / monthly Review_Log completion)."""
+    """Cadence review — complete daily / weekly / monthly Review_Log entries."""
 
 
 @review_group.command("complete")
