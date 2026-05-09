@@ -1,0 +1,139 @@
+"""Polish-bundle 2026-05-09 Task family A — dashboard "updated today?" badge
+on every open-positions row.
+
+A.3 verifies the VM-level wiring: ``OpenPositionsRowVM.has_update_today``
+field is True iff the trade has at least one matching daily-management record
+for today's action session (predicate locked in
+``has_update_today_for_trades``).
+
+A.7 verifies the rendered HTML: dashboard responds with the two-state badge
+glyphs ``✓ today`` (matched) and ``⚠ not yet`` (unmatched) per row.
+"""
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import replace as dc_replace
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import pytest
+from fastapi.testclient import TestClient  # used by A.7 next commit
+
+from swing.config import load
+from swing.data.db import connect, ensure_schema
+from swing.data.repos.daily_management import insert_snapshot
+from swing.evaluation.dates import action_session_for_run
+from swing.web.app import create_app  # used by A.7 next commit
+from swing.web.price_cache import PriceCache
+from swing.web.view_models.dashboard import build_dashboard
+
+
+def _seed_trade(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+    ticker: str,
+    state: str = "managing",
+) -> None:
+    conn.execute(
+        "INSERT INTO trades "
+        "(id, ticker, entry_date, entry_price, initial_shares, initial_stop, "
+        " current_stop, state, trade_origin, pre_trade_locked_at, "
+        " current_size, current_avg_cost) "
+        "VALUES (?, ?, '2026-05-01', 100.0, 50, 90.0, 92.0, ?, "
+        " 'manual_off_pipeline', '2026-05-01T09:30:00', 50.0, 100.0)",
+        (trade_id, ticker, state),
+    )
+    conn.commit()
+
+
+def _full_snapshot_fields(*, data_asof_session: str) -> dict[str, Any]:
+    """Mirrors the helper in tests/data/test_daily_management_repo.py."""
+    return {
+        "review_date": data_asof_session,
+        "data_asof_session": data_asof_session,
+        "created_at": f"{data_asof_session}T00:00:00",
+        "mfe_mae_precision_level": "daily_approximate",
+        "pipeline_run_id": None,
+        "current_price": 110.0,
+        "current_stop": 95.0,
+        "current_size": 50.0,
+        "current_avg_cost": 100.0,
+        "open_R_effective": 1.0,
+        "open_MFE_R_to_date": 1.5,
+        "open_MAE_R_to_date": 0.2,
+        "intraday_high": 111.0,
+        "intraday_low": 109.0,
+        "position_capital_utilization_pct": 0.1467,
+        "position_capital_denominator_dollars": 7500.0,
+        "position_portfolio_heat_contribution_dollars": 50.0,
+        "maturity_stage": "+1.5R_to_+2R",
+        "trail_MA_candidate_price": 105.0,
+        "trail_MA_period_days": 21,
+        "trail_MA_eligibility_flag": 0,
+    }
+
+
+@pytest.fixture
+def dashboard_env(tmp_path: Path, monkeypatch):
+    """Stand up a dashboard app + DB with PriceCache stubbed (no network)."""
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, *args, **kwargs: {},
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+    db_path = tmp_path / "polish_a.db"
+    conn = ensure_schema(db_path)
+    conn.close()
+    base_cfg = load(Path("swing.config.toml"))
+    cfg = dc_replace(
+        base_cfg, paths=dc_replace(base_cfg.paths, db_path=db_path),
+    )
+    return cfg, db_path
+
+
+def test_build_dashboard_sets_has_update_today_true_when_snapshot_present(
+    dashboard_env,
+) -> None:
+    """A.3 — when a daily_snapshot row exists for today's action_session,
+    ``OpenPositionsRowVM.has_update_today`` must be True."""
+    cfg, db_path = dashboard_env
+    today = action_session_for_run(datetime.now()).isoformat()
+    conn = connect(db_path)
+    try:
+        _seed_trade(conn, trade_id=1, ticker="AAA")
+        with conn:
+            insert_snapshot(
+                conn, trade_id=1,
+                snapshot_fields=_full_snapshot_fields(data_asof_session=today),
+            )
+    finally:
+        conn.close()
+
+    cache = PriceCache(cfg.web)
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=None)
+    assert 1 in vm.open_trade_rows
+    assert vm.open_trade_rows[1].has_update_today is True
+
+
+def test_build_dashboard_sets_has_update_today_false_when_no_record(
+    dashboard_env,
+) -> None:
+    """A.3 — open trade with no daily-management record for today must have
+    ``has_update_today`` == False."""
+    cfg, db_path = dashboard_env
+    conn = connect(db_path)
+    try:
+        _seed_trade(conn, trade_id=2, ticker="BBB")
+    finally:
+        conn.close()
+
+    cache = PriceCache(cfg.web)
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=None)
+    assert 2 in vm.open_trade_rows
+    assert vm.open_trade_rows[2].has_update_today is False
+
+
+# NOTE: Task A.7 template-render test added in the next commit.

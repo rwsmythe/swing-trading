@@ -705,6 +705,18 @@ def build_dashboard(
             exits_by_trade: dict[int, list] = defaultdict(list)
             for e in all_exits:
                 exits_by_trade[e.trade_id].append(e)
+            # Polish-bundle 2026-05-09 Family A — "updated today?" badge per
+            # open position. Computed ONCE under this read snapshot and
+            # consumed in the per-trade loop below; mirrors the
+            # ``exits_by_trade`` precompute pattern.
+            from swing.data.repos.daily_management import (
+                has_update_today_for_trades,
+            )
+            update_today_set = has_update_today_for_trades(
+                conn,
+                [t.id for t in open_trades if t.id is not None],
+                action_session=action_session,
+            )
             # Latest pipeline run — two independent reads so an in-flight run
             # (finished_ts IS NULL) doesn't mask the last-known-good completion.
             # `last_pipeline_ts` = most-recent COMPLETED run's finished_ts
@@ -900,6 +912,7 @@ def build_dashboard(
             remaining_shares=remaining,
             advisories=advisories_tuple,
             state_badge_label=STATE_BADGE_LABELS.get(t.state, t.state),
+            has_update_today=(t.id in update_today_set),
         )
         open_trade_rows[t.id] = row_vm
         # Legacy mappings — kept for backward compat with any external consumer.

@@ -18,6 +18,7 @@ from datetime import datetime
 from swing.config import Config
 from swing.data.db import connect
 from swing.data.models import Trade
+from swing.data.repos.daily_management import has_update_today_for_trades
 from swing.data.repos.fills import list_fills_for_trade
 from swing.data.repos.trades import get_trade
 from swing.data.repos.weather import get_latest
@@ -50,6 +51,12 @@ class OpenPositionsRowVM:
     remaining_shares: int
     advisories: tuple[AdvisorySuggestionVM, ...]
     state_badge_label: str
+    # Polish-bundle 2026-05-09 Family A — "updated today?" badge. True iff the
+    # trade has at least one matching daily_management_records row for today's
+    # action_session per ``has_update_today_for_trades`` predicate. Default
+    # False so positional callers (none currently) and tests building VMs
+    # without the field aren't broken.
+    has_update_today: bool = False
 
 
 def _open_positions_row_vm(
@@ -58,6 +65,7 @@ def _open_positions_row_vm(
     remaining_shares: int,
     advisories: tuple[AdvisorySuggestionVM, ...],
     state_badge_label: str,
+    has_update_today: bool = False,
 ) -> OpenPositionsRowVM:
     """Pure render-input assembler. NO I/O. Single source of truth for the
     fields an open-positions row consumes from Jinja."""
@@ -67,6 +75,7 @@ def _open_positions_row_vm(
         remaining_shares=remaining_shares,
         advisories=advisories,
         state_badge_label=state_badge_label,
+        has_update_today=has_update_today,
     )
 
 
@@ -134,6 +143,13 @@ def build_open_positions_row(
             # is forward-looking; querying by action_session silently fails
             # on weekend/holiday gaps.
             weather = get_latest(conn, ticker=cfg.rs.benchmark_ticker)
+            # Polish-bundle 2026-05-09 Family A — single-row variant of the
+            # dashboard's batched call; passes a one-element list. Empty input
+            # short-circuits per helper contract, so trade.id=None is also
+            # safe (assertion above already excludes that path).
+            update_set = has_update_today_for_trades(
+                conn, [trade.id], action_session=action_session,
+            )
     finally:
         if own_conn:
             conn.close()
@@ -165,6 +181,7 @@ def build_open_positions_row(
         remaining_shares=remaining,
         advisories=advisories,
         state_badge_label=STATE_BADGE_LABELS.get(trade.state, trade.state),
+        has_update_today=(trade.id in update_set),
     )
 
 
