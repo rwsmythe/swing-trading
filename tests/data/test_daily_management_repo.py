@@ -565,6 +565,25 @@ def test_has_update_today_for_trades_returns_id_for_today_snapshot(
     assert result == {1}
 
 
+def test_has_update_today_for_trades_excludes_superseded(
+    conn: sqlite3.Connection,
+) -> None:
+    """A.4 — superseded rows are filtered out by the ``is_superseded = 0``
+    clause in the helper's predicate. GREEN at write-time (predicate already
+    enforces this) — captures the contract so a future maintainer who edits
+    the predicate cannot silently drop the supersede filter."""
+    today = "2026-05-09"
+    fields = _full_snapshot_fields(data_asof_session=today)
+    rec_id = insert_snapshot(conn, trade_id=1, snapshot_fields=fields)
+    conn.execute(
+        "UPDATE daily_management_records SET is_superseded = 1 "
+        "WHERE management_record_id = ?",
+        (rec_id,),
+    )
+    result = has_update_today_for_trades(conn, [1], action_session=today)
+    assert result == set()
+
+
 # ---- helpers ----------------------------------------------------------------
 
 
