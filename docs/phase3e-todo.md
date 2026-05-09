@@ -142,6 +142,81 @@
 - CLAUDE.md gotcha "yfinance `interval='1d'` includes in-progress bar" — applies to any benchmark-OHLCV fetch in the new chart pipeline.
 - Phase 10 metrics-dashboard spec at `docs/superpowers/specs/2026-05-06-phase10-metrics-design.md` — may have overlapping regime-display requirements; investigate during scoping.
 
+### 3e.10 — Dark theme (operator-surfaced 2026-05-08)
+
+**Observed:** Web UI is light-theme only. Operator wants dark theme available (operator preference + reduces eye strain in evening prep windows; aligns with most modern trader-facing tools).
+
+**Proposed fix:** CSS-variable-driven theme system. Steps:
+1. Refactor existing colors in `static/style.css` to CSS variables (`--bg`, `--fg`, `--accent`, `--badge-bullish-bg`, etc.) with light-theme defaults.
+2. Add a `.dark` body class with dark-theme variable overrides.
+3. Add a toggle UI element (likely in nav bar or status_strip) that flips the class + persists preference via `localStorage` (cookie if server-side persistence is preferred — Phase 5 user-config infrastructure could host it but localStorage is lighter).
+4. Audit chart rendering — matplotlib chart PNGs are baked at pipeline time with light backgrounds; either regenerate per theme (heavy) or accept that charts stay light-themed against dark UI (acceptable V1).
+5. Verify Phase 8 daily-management timeline rendering, watchlist tag colors, hyp-rec recommendation rows, advisory badges, state badges all read correctly under both themes.
+
+**Scope:** ~2-4 hr standalone dispatch. CSS-heavy; minimal Python/template change. No VM changes.
+
+**Cross-references:**
+- `static/style.css` — current light-theme colors.
+- `swing/web/templates/base.html.j2` — body element + nav bar.
+- Phase 5 user-config infrastructure (`swing.config.toml` user-config) if server-side persistence preferred over localStorage.
+- Operator's actual viewing environment (browser; OS-dark-mode preference) to inform whether to add `prefers-color-scheme: dark` media-query default.
+
+### 3e.11 — CLI `swing review` help text leaks "Phase 6" internal nomenclature (operator-surfaced 2026-05-08)
+
+**Observed:** `swing --help` and `swing review --help` show:
+```
+review       Phase 6: cadence review (daily / weekly / monthly...
+```
+Phase nomenclature is internal-development context, not operator-facing. The help text should describe the command's purpose self-contained.
+
+**Locations** (per `grep -n "Phase 6" swing/cli.py`):
+- `swing/cli.py:1174` — `"""Post-trade review (Phase 6).` (group docstring; surfaces in `swing review --help`)
+- `swing/cli.py:1303` — `"""Phase 6: cadence review (daily / weekly / monthly Review_Log completion)."""` (subcommand; surfaces in `swing review cadence --help` AND `swing --help` group listing)
+
+**Proposed fix:** Replace "Phase 6" leakage with self-descriptive text. Suggested:
+- Group: `"""Post-trade review surface — log mistakes, process grade, and outcome attribution."""`
+- Subcommand: `"""Cadence review — complete daily / weekly / monthly Review_Log entries."""`
+
+**Scope:** 2-line change in `swing/cli.py` + 1 discriminating test asserting help text doesn't contain "Phase". ~10 min standalone fix; could bundle with any next CLI-touching dispatch. Audit other commands for similar phase-nomenclature leakage at the same time (`grep -n "Phase [0-9]\|Tranche" swing/cli.py`).
+
+**Cross-references:**
+- `swing/cli.py:1174` + `swing/cli.py:1303` — sites to fix.
+- Pre-empt similar leakage in future CLI additions: per brief-drafting checklist, verify CLI help strings are operator-facing, not phase-nomenclature.
+
+### 3e.12 — `swing tos-import` silent zero-result diagnosis (INVESTIGATION; operator-surfaced 2026-05-08)
+
+**Observed:** Operator ran `swing tos-import --csv "...\2026-05-08-AccountStatement.csv"` (with and without `--dry-run`). Output:
+```
+Cash: 0 new, 0 duplicate
+Fills: matched=0, already-reconciled=0, price-mismatch=0, unmatched OPEN=0, unmatched CLOSE=0
+```
+Every counter is zero. Operator has open trades + at least one Phase 8 stop-change today (DHC) so the CSV almost certainly contains transactions. The CLI provides NO indication of WHY the result is empty — parser silent-fallback OR file structure changed OR everything-already-reconciled-and-empty-CSV-section all collapse to the same output.
+
+**Possible mechanisms (NON-exhaustive; investigation must disambiguate):**
+
+1. **CSV section-parser silent failure.** TOS Account Statement CSVs are multi-section (Cash Balance, Account Order History, Account Trade History, Profits And Losses, Forex Account Summary, etc.). The parser at `swing/journal/tos_import.py` looks for specific section headers; if Schwab/TOS renamed a section header in a recent export-format update, the parser silently produces 0 rows for that section. Pattern complement to existing CLAUDE.md gotcha "TOS-import TRD-as-withdrawal" + "Excel-quoted REF cleanup" (both 2026-04-30); same family — TOS export format drift breaking parser silently.
+2. **Empty trade window in this specific export.** If operator exported only a date range with no fills (e.g., 1-day window with no trades on 5/8), parser correctly produces 0. Unlikely given operator's open trades + Phase 8 stop-change activity, but verify.
+3. **All transactions already reconciled.** Existing journal state already includes all CSV transactions; `matched=0` because matched-already-skipped, but `already-reconciled` should then be > 0 (it's also 0). This rules out the "everything already done" hypothesis — parser ISN'T finding rows at all.
+4. **Encoding / line-ending / BOM mismatch.** TOS CSVs sometimes have UTF-16 BOM or CRLF variants; if the parser splits on a different newline pattern than the export uses, rows silently dropped.
+5. **Filename-date mismatch with parser's date-anchoring logic.** Some TOS parsers anchor to filename date; if the CSV content's session date doesn't match the filename date, rows could be filtered.
+
+**Investigation steps:**
+
+1. **Open the actual CSV** (`thinkorswim/2026-05-08-AccountStatement.csv`) and verify structure manually: does it contain a trades section? How many rows? What section headers does it use?
+2. **Add diagnostic logging** to `reconcile_tos` (or a new `--verbose` flag on the CLI) that reports: total bytes parsed; section headers detected; rows-per-section count; sample row from each section. Operator-facing observability — converts silent-zero into observable-zero-with-context.
+3. **Run synthetic-fixture comparison.** `tests/fixtures/tos/synthetic-tos.csv` is the test fixture; verify it currently parses correctly (`pytest tests/journal/test_tos_import.py`). If parser works on synthetic but fails on operator's real export, diff the structure.
+4. **If section-header drift confirmed:** add per-section "found 0 rows in section X" warnings to the CLI output even on success. Pre-empts future silent-fail.
+5. **Bonus:** consider extending the CLI report with "Sections parsed: Cash=1 (0 rows), Trades=1 (0 rows), Forex=0 (skipped)" so operator can distinguish "section absent" from "section present but empty."
+
+**Scope:** ~1-2 hr investigation + 30-60 min hardening dispatch (logging, parser-error visibility). Could be bundled into a single dispatch if root-cause is clear from initial CSV inspection.
+
+**Cross-references:**
+- `swing/journal/tos_import.py` — parser code.
+- `tests/fixtures/tos/synthetic-tos.csv` — synthetic fixture (CLAUDE.md gotcha "Synthetic-fixture coverage gap can mask real-world data shape bugs" 2026-05-01 — same family).
+- CLAUDE.md gotcha "TOS-import TRD-as-withdrawal fix + Excel-quoted REF cleanup" (2026-04-30) — prior parser breakage on real-world export format.
+- `thinkorswim/2026-05-08-AccountStatement.csv` — the actual CSV that triggered this.
+- 2026-04-30 TOS reconciliation depth follow-ups bundle (BUNDLED into Phase 9 brainstorm at `31ee51c`) — Phase 9 will redesign the reconciliation surface; this investigation may inform Phase 9 writing-plans (or get subsumed if Phase A of Schwab API ships first).
+
 ### 3e.2 — Include realized-from-partial-exits in journal stats total
 
 **Observed:** `swing journal review --period month` shows 0 trades / $0.00 total
