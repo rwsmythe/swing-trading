@@ -15,12 +15,21 @@
   (2) ORPHANED WORKTREE dirs (added 2026-05-05 per phase3e-todo.md
       trigger-gated entry; recurrence-trigger fired at Phase 7 cleanup
       with 5/5 worktrees affected by the .tmp/pytest-of-rwsmy/ ACL-lock
-      pattern). Subdirs of `.worktrees/` whose branch is NOT in
-      `git worktree list` (i.e., `git worktree remove --force` succeeded
-      at deregistering but failed to delete on-disk content). pytest's
-      tmpdir machinery creates `.tmp/pytest-of-rwsmy/` subdirs whose
-      ACL inheritance prevents normal-user delete; same takeown/icacls
-      treatment as category (1) handles it.
+      pattern). Subdirs of `.worktrees/` OR `.claude/worktrees/` whose
+      branch is NOT in `git worktree list` (i.e., `git worktree remove
+      --force` succeeded at deregistering but failed to delete on-disk
+      content). pytest's tmpdir machinery creates `.tmp/pytest-of-rwsmy/`
+      subdirs whose ACL inheritance prevents normal-user delete; same
+      takeown/icacls treatment as category (1) handles it.
+
+      `.claude/worktrees/` coverage added 2026-05-09 after the Phase 8
+      V1 polish dispatch chose this non-precedent path (per the
+      `superpowers:using-git-worktrees` skill default) instead of the
+      project-precedent `.worktrees/` location. Operator-elevated
+      cleanup didn't reach the husk because the script only scanned
+      `.worktrees/`; explicit `git worktree remove --force` on the
+      orphaned `.claude/worktrees/phase8-v1-polish` path eventually
+      cleared it. Script now scans BOTH paths to avoid the gap.
 
   For each surviving target runs:
     takeown /F <path> /R /D Y
@@ -160,45 +169,67 @@ foreach ($dir in $topLevelDirs) {
 # 5/5 recurrence rate confirmed durable 2026-05-05; phase3e-todo trigger-gated
 # entry's tripwire fired; this discovery branch is the script extension.
 if (-not $SkipWorktrees) {
-  $worktreesDir = Join-Path $ProjectRoot '.worktrees'
-  if (Test-Path $worktreesDir) {
-    # Get registered worktree paths from git
-    $registeredPaths = @()
-    try {
-      $worktreeListOutput = & git -C $ProjectRoot worktree list 2>&1
-      foreach ($line in $worktreeListOutput) {
-        # Format: "<path>  <sha> [<branch>]" — first whitespace-delimited token is path
-        if ($line -match '^(\S+)\s+[a-f0-9]+\s+\[') {
-          $regPath = $matches[1].Trim()
-          # Normalize to absolute Windows path for comparison
-          try {
-            $registeredPaths += (Resolve-Path -LiteralPath $regPath -ErrorAction Stop).Path
-          } catch {
-            $registeredPaths += $regPath
+  # Scan BOTH worktree base paths (project-precedent + skill-default).
+  # `.worktrees/` is the project precedent (Phase 5/6/7/8/V1.5 polish dispatches).
+  # `.claude/worktrees/` is the `superpowers:using-git-worktrees` skill default
+  # (added 2026-05-09 after the Phase 8 V1 polish dispatch landed there and the
+  # operator-elevated cleanup didn't reach the husk because the script only
+  # scanned `.worktrees/`). See orchestrator-context.md §"Lessons captured"
+  # 2026-05-08 entry on worktree directory path discipline + the 2026-05-09
+  # cleanup-script extension that closes the gap.
+  $worktreeBaseDirs = @(
+    (Join-Path $ProjectRoot '.worktrees'),
+    (Join-Path $ProjectRoot '.claude/worktrees')
+  )
+
+  # Get registered worktree paths from git ONCE (shared across both base scans).
+  $registeredPaths = @()
+  try {
+    $worktreeListOutput = & git -C $ProjectRoot worktree list 2>&1
+    foreach ($line in $worktreeListOutput) {
+      # Format: "<path>  <sha> [<branch>]" — first whitespace-delimited token is path
+      if ($line -match '^(\S+)\s+[a-f0-9]+\s+\[') {
+        $regPath = $matches[1].Trim()
+        # Normalize to absolute Windows path for comparison
+        try {
+          $registeredPaths += (Resolve-Path -LiteralPath $regPath -ErrorAction Stop).Path
+        } catch {
+          $registeredPaths += $regPath
+        }
+      }
+    }
+  } catch {
+    Write-Warning "git worktree list failed: $($_.Exception.Message). Skipping orphaned-worktree discovery."
+    $registeredPaths = $null
+  }
+
+  if ($null -ne $registeredPaths) {
+    foreach ($worktreesDir in $worktreeBaseDirs) {
+      if (-not (Test-Path $worktreesDir)) { continue }
+
+      # Compute the relative-prefix label used in candidate Name (e.g.,
+      # ".worktrees" or ".claude/worktrees"). Used both for display + for
+      # the safety-filter admission check below.
+      $relPrefix = ($worktreesDir.Substring($ProjectRoot.Length).TrimStart('\','/') -replace '\\','/')
+
+      # Subdirs of <worktreesDir> whose absolute path is NOT in the registered set
+      $worktreeSubdirs = Get-ChildItem -LiteralPath $worktreesDir -Directory -Force -ErrorAction SilentlyContinue
+      foreach ($wt in $worktreeSubdirs) {
+        $wtAbs = $wt.FullName
+        $isRegistered = $false
+        foreach ($regPath in $registeredPaths) {
+          if ($wtAbs -ieq $regPath) {  # case-insensitive Windows path equality
+            $isRegistered = $true
+            break
           }
         }
-      }
-    } catch {
-      Write-Warning "git worktree list failed: $($_.Exception.Message). Skipping orphaned-worktree discovery."
-    }
-
-    # Subdirs of .worktrees/ whose absolute path is NOT in the registered set
-    $worktreeSubdirs = Get-ChildItem -LiteralPath $worktreesDir -Directory -Force -ErrorAction SilentlyContinue
-    foreach ($wt in $worktreeSubdirs) {
-      $wtAbs = $wt.FullName
-      $isRegistered = $false
-      foreach ($regPath in $registeredPaths) {
-        if ($wtAbs -ieq $regPath) {  # case-insensitive Windows path equality
-          $isRegistered = $true
-          break
+        if (-not $isRegistered) {
+          [void]$candidates.Add([PSCustomObject]@{
+            Name   = "$relPrefix/$($wt.Name)"
+            Path   = $wtAbs
+            Reason = "Orphaned worktree (deregistered but on-disk dir remains; pytest-of-rwsmy ACL-lock pattern)"
+          })
         }
-      }
-      if (-not $isRegistered) {
-        [void]$candidates.Add([PSCustomObject]@{
-          Name   = ".worktrees/$($wt.Name)"
-          Path   = $wtAbs
-          Reason = "Orphaned worktree (deregistered but on-disk dir remains; pytest-of-rwsmy ACL-lock pattern)"
-        })
       }
     }
   }
@@ -233,18 +264,21 @@ $candidates | Format-Table Name, Reason -AutoSize
 #   - pytest-run-*          (alternate pytest scratch naming)
 #
 # Orphaned-worktree path admission: candidate Reason starts with "Orphaned
-# worktree" AND Name starts with ".worktrees/" — both must hold (defense-in-
-# depth against accidental admission).
+# worktree" AND Name starts with ".worktrees/" OR ".claude/worktrees/" —
+# both must hold (defense-in-depth against accidental admission). Two-prefix
+# admission added 2026-05-09 alongside the discovery-pass extension that
+# scans both base paths.
 $scratchPattern = '^(\.tmp([-_].*|$)|\.pytest[-_](tmp|temp)|tmp[-_]|task\d+_pytest|phase\d+basetemp|pytest_temp|ptemp$|\.config-overrides-|\.codex-pytest-|pytest-run-)'
+$worktreePathPattern = '^(\.worktrees|\.claude/worktrees)/'
 
 $safe = @($candidates | Where-Object {
   ($_.Name -match $scratchPattern) -or
-  ($_.Reason -like 'Orphaned worktree*' -and $_.Name -like '.worktrees/*')
+  ($_.Reason -like 'Orphaned worktree*' -and $_.Name -match $worktreePathPattern)
 })
 $rejected = @($candidates | Where-Object {
   -not (
     ($_.Name -match $scratchPattern) -or
-    ($_.Reason -like 'Orphaned worktree*' -and $_.Name -like '.worktrees/*')
+    ($_.Reason -like 'Orphaned worktree*' -and $_.Name -match $worktreePathPattern)
   )
 })
 
