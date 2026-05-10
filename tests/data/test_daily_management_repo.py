@@ -22,6 +22,7 @@ from swing.data.db import ensure_schema
 from swing.data.repos.daily_management import (
     SupersededRowImmutableException,
     TierOrderingError,
+    has_update_today_for_trades,
     insert_event_log,
     insert_snapshot,
     list_for_trade_timeline,
@@ -539,6 +540,80 @@ def test_upsert_snapshot_does_not_use_REPLACE(
         "SELECT MAX(management_record_id) FROM daily_management_records"
     ).fetchone()[0]
     assert max_id == rec_id
+
+
+# ---- has_update_today_for_trades (Polish-bundle 2026-05-09 Family A) -------
+
+
+def test_has_update_today_for_trades_empty_when_no_records(
+    conn: sqlite3.Connection,
+) -> None:
+    """A.1 — open trade with NO daily_management_records returns empty set."""
+    today = "2026-05-09"
+    result = has_update_today_for_trades(conn, [1], session_date=today)
+    assert result == set()
+
+
+def test_has_update_today_for_trades_returns_id_for_today_snapshot(
+    conn: sqlite3.Connection,
+) -> None:
+    """A.2 — daily_snapshot row whose review_date matches today qualifies."""
+    today = "2026-05-09"
+    fields = _full_snapshot_fields(data_asof_session=today)
+    insert_snapshot(conn, trade_id=1, snapshot_fields=fields)
+    result = has_update_today_for_trades(conn, [1], session_date=today)
+    assert result == {1}
+
+
+def test_has_update_today_for_trades_excludes_superseded(
+    conn: sqlite3.Connection,
+) -> None:
+    """A.4 — superseded rows are filtered out by the ``is_superseded = 0``
+    clause in the helper's predicate. GREEN at write-time (predicate already
+    enforces this) — captures the contract so a future maintainer who edits
+    the predicate cannot silently drop the supersede filter."""
+    today = "2026-05-09"
+    fields = _full_snapshot_fields(data_asof_session=today)
+    rec_id = insert_snapshot(conn, trade_id=1, snapshot_fields=fields)
+    conn.execute(
+        "UPDATE daily_management_records SET is_superseded = 1 "
+        "WHERE management_record_id = ?",
+        (rec_id,),
+    )
+    result = has_update_today_for_trades(conn, [1], session_date=today)
+    assert result == set()
+
+
+def test_has_update_today_for_trades_excludes_yesterday(
+    conn: sqlite3.Connection,
+) -> None:
+    """A.5 — yesterday's session does NOT count as 'updated today'. GREEN at
+    write-time (predicate already enforces ``review_date = ?`` exact match);
+    pins the contract so a future widening (e.g. ``>= ?``) cannot silently
+    leak prior-session updates into the badge."""
+    from datetime import date, timedelta
+
+    today_d = date(2026, 5, 9)
+    today = today_d.isoformat()
+    yesterday = (today_d - timedelta(days=1)).isoformat()
+    fields = _full_snapshot_fields(data_asof_session=yesterday)
+    insert_snapshot(conn, trade_id=1, snapshot_fields=fields)
+    result = has_update_today_for_trades(conn, [1], session_date=today)
+    assert result == set()
+
+
+def test_has_update_today_for_trades_event_log_satisfies(
+    conn: sqlite3.Connection,
+) -> None:
+    """A.6 — event_log rows ALSO satisfy the predicate, so an operator can
+    satisfy 'updated today' without a pipeline-emitted snapshot. GREEN at
+    write-time — the predicate is
+    ``record_type IN ('daily_snapshot', 'event_log')``."""
+    today = "2026-05-09"
+    el = _minimal_event_log_fields(data_asof_session=today)
+    insert_event_log(conn, trade_id=1, event_log_fields=el)
+    result = has_update_today_for_trades(conn, [1], session_date=today)
+    assert result == {1}
 
 
 # ---- helpers ----------------------------------------------------------------

@@ -7,8 +7,11 @@ Three browser-only HTMX failure surfaces enforced (Phase 5 R1 M1 + M2 + Phase
 
   (a) Embedded form propagates HX-Request header via
       ``hx-headers='{"HX-Request": "true"}'`` (OriginGuard strict-mode).
-  (b) Success-path response = 204 + ``HX-Redirect: /trades/{trade_id}``
-      (NOT 303 → swap-target — htmx.js swallows 303 transparently).
+  (b) Success-path response = 204 + ``HX-Redirect: /`` (dashboard;
+      polish-bundle-2026-05-09 Task B.1 changed the target from
+      ``/trades/{trade_id}`` so the operator returns to the dashboard
+      after submitting a daily-management event). NOT 303 → swap-target —
+      htmx.js swallows 303 transparently.
   (c) HX-Redirect target route IS registered in app.routes (Phase 6 I3
       operator-witnessed lesson — TestClient verifies the header but
       does NOT follow the redirect).
@@ -87,7 +90,12 @@ def app_with_seeded_trade(tmp_path: Path):
 def test_event_log_post_success_returns_204_with_HX_Redirect(  # noqa: N802
     app_with_seeded_trade,
 ):
-    """No stop-change path: 204 + HX-Redirect: /trades/1; event_log row exists."""
+    """No stop-change path: 204 + HX-Redirect: /; event_log row exists.
+
+    Polish-bundle-2026-05-09 Task B.1: success-path redirect target was
+    changed from ``/trades/{trade_id}`` to ``/`` so the operator returns
+    to the dashboard after submitting a daily-management event.
+    """
     app, db_path = app_with_seeded_trade
     with TestClient(app) as client:
         response = client.post(
@@ -105,7 +113,7 @@ def test_event_log_post_success_returns_204_with_HX_Redirect(  # noqa: N802
             headers={"HX-Request": "true"},
         )
     assert response.status_code == 204
-    assert response.headers["HX-Redirect"] == "/trades/1"
+    assert response.headers["HX-Redirect"] == "/"
 
     # Side-effect: event_log row exists for this trade.
     conn = connect(db_path)
@@ -124,30 +132,21 @@ def test_event_log_post_HX_Redirect_target_route_registered(  # noqa: N802
 ):
     """Phase 6 R5 I3 lesson: HX-Redirect target route MUST exist in app.routes.
 
-    The success-path emits ``HX-Redirect: /trades/{trade_id}``; verify a route
-    with a path-template matching ``/trades/{...}`` (NOT the daily-management
-    sub-route) is registered.
+    Polish-bundle-2026-05-09 Task B.3: the success-path now emits
+    ``HX-Redirect: /`` (dashboard, post-Task-B.1 retarget). Verify the
+    dashboard route IS registered AND resolves with 200 — TestClient
+    verifies the header value but does NOT follow the redirect, so a
+    missing/renamed dashboard route would silently 404 the operator's
+    browser without test feedback.
     """
     app, _ = app_with_seeded_trade
     paths = {getattr(r, "path", None) for r in app.routes}
-    assert any(
-        p
-        and p.startswith("/trades/")
-        and "{" in p
-        and not p.endswith("/daily-management/event")
-        and not p.endswith("/exit")
-        and not p.endswith("/exit/form")
-        and not p.endswith("/stop")
-        and not p.endswith("/stop/form")
-        and not p.endswith("/cancel")
-        and not p.endswith("/review")
-        and not p.endswith("/row")
-        and not p.endswith("/expand")
-        for p in paths
-    ), f"no GET /trades/{{trade_id}} target found; routes: {paths}"
-    # And specifically: GET /trades/{trade_id} renders 200 (target resolves).
+    assert any(p == "/" for p in paths), (
+        f"no GET / dashboard route registered; routes: {paths}"
+    )
+    # And specifically: GET / renders 200 (target resolves).
     with TestClient(app) as client:
-        r = client.get("/trades/1")
+        r = client.get("/")
     assert r.status_code == 200
 
 
@@ -219,7 +218,7 @@ def test_event_log_post_writes_event_log_and_stop_adjust_atomically(
             headers={"HX-Request": "true"},
         )
     assert response.status_code == 204
-    assert response.headers["HX-Redirect"] == "/trades/1"
+    assert response.headers["HX-Redirect"] == "/"
 
     # Side-effects: trades.current_stop bumped + event_log linked to trade_events.
     conn = connect(db_path)
@@ -610,4 +609,56 @@ def test_event_log_form_vm_exposes_canonical_emotional_state_options(
     assert vm.emotional_state_set == (), (
         f"VM emotional_state_set should default to empty tuple on initial "
         f"render (no preserved checked-state); got {vm.emotional_state_set!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Polish-bundle-2026-05-09 Task B.4: error path MUST NOT emit HX-Redirect.
+# ---------------------------------------------------------------------------
+#
+# Task B.1 changed the success-path HX-Redirect target to "/" (dashboard).
+# The error path (ValidationException → 422 with form re-render) must NOT
+# carry an HX-Redirect header — otherwise htmx.js would navigate the
+# browser away from the form on validation failure, dropping the operator's
+# in-progress input. Pin the contract explicitly so a future refactor that
+# unifies success/error response builders cannot regress this silently.
+
+
+def test_event_log_post_error_path_does_not_emit_HX_Redirect(  # noqa: N802
+    app_with_seeded_trade,
+):
+    """Validation failure path: 422 response MUST NOT carry HX-Redirect.
+
+    Reuses the missing-required-fields scenario from
+    ``test_event_log_post_validation_failure_returns_422``: stop_changed=1
+    without prior_stop / new_stop / stop_change_reason → ValidationException
+    → 422 + form re-render. The 422 response must NOT include HX-Redirect
+    (only the success path does — Task B.1).
+    """
+    app, _ = app_with_seeded_trade
+    with TestClient(app) as client:
+        response = client.post(
+            "/trades/1/daily-management/event",
+            data={
+                "stop_changed": "1",
+                # new_stop, prior_stop, stop_change_reason intentionally missing.
+                "action_taken": "move_stop",
+                "action_reason": "breakout_confirmed",
+                "rule_violation_suspected": "0",
+                "emotional_state": ["calm"],
+                "created_at": "2026-05-07T18:00:00",
+                "review_date": "2026-05-07",
+                "data_asof_session": "2026-05-07",
+                "mfe_mae_precision_level": "daily_approximate",
+            },
+            headers={"HX-Request": "true"},
+        )
+    assert response.status_code == 422, (
+        f"expected 422 from missing-required-fields path; got "
+        f"{response.status_code}: {response.text[:200]}"
+    )
+    assert "HX-Redirect" not in response.headers, (
+        f"error path must NOT emit HX-Redirect (would navigate browser away "
+        f"from in-progress form); got HX-Redirect="
+        f"{response.headers.get('HX-Redirect')!r}"
     )

@@ -304,6 +304,7 @@ class CadenceCardVM:
     period_start: str
     period_end: str
     is_pending: bool
+    review_id: int           # Task E.3: target for inline /reviews/{id}/complete link
 
 
 @dataclass(frozen=True)
@@ -705,6 +706,31 @@ def build_dashboard(
             exits_by_trade: dict[int, list] = defaultdict(list)
             for e in all_exits:
                 exits_by_trade[e.trade_id].append(e)
+            # Polish-bundle 2026-05-09 Family A — "updated today?" badge per
+            # open position. Computed ONCE under this read snapshot and
+            # consumed in the per-trade loop below; mirrors the
+            # ``exits_by_trade`` precompute pattern.
+            #
+            # Codex R1 Major #1 fix: anchor the read on
+            # ``last_completed_session(now)`` (NOT the forward-looking
+            # ``action_session``) because both daily-management writers
+            # (pipeline ``record_snapshot`` + web route
+            # ``daily_management_event_post``) stamp ``review_date =
+            # last_completed_session(now)`` per Phase 8 spec §4.5 / R3
+            # Major #2. Using ``action_session`` here would diverge from
+            # the writers before market close, after market close, and on
+            # weekends/holidays — leaving the badge stuck at "⚠ not yet"
+            # immediately after a successful operator submit.
+            from swing.data.repos.daily_management import (
+                has_update_today_for_trades,
+            )
+            from swing.evaluation.dates import last_completed_session
+            mgmt_session_date = last_completed_session(now).isoformat()
+            update_today_set = has_update_today_for_trades(
+                conn,
+                [t.id for t in open_trades if t.id is not None],
+                session_date=mgmt_session_date,
+            )
             # Latest pipeline run — two independent reads so an in-flight run
             # (finished_ts IS NULL) doesn't mask the last-known-good completion.
             # `last_pipeline_ts` = most-recent COMPLETED run's finished_ts
@@ -900,6 +926,8 @@ def build_dashboard(
             remaining_shares=remaining,
             advisories=advisories_tuple,
             state_badge_label=STATE_BADGE_LABELS.get(t.state, t.state),
+            has_update_today=(t.id in update_today_set),
+            update_session_date=mgmt_session_date,
         )
         open_trade_rows[t.id] = row_vm
         # Legacy mappings — kept for backward compat with any external consumer.
@@ -1013,6 +1041,17 @@ def build_dashboard(
                 recent = list_recent(conn2, review_type=cadence, limit=1)
                 if recent:
                     row = recent[0]
+                    # row.review_id is the auto-increment PK from review_log;
+                    # ``list_recent`` only returns persisted rows, so it must
+                    # be non-None. Codex R1 Minor #2: assert rather than
+                    # fall back to 0 — a 0 PK would render
+                    # ``/reviews/0/complete`` and silently 404 the operator
+                    # instead of surfacing the data-integrity bug.
+                    assert row.review_id is not None, (
+                        f"list_recent returned a {cadence} row with "
+                        f"review_id=None — data-integrity bug; expected "
+                        f"persisted PK from review_log auto-increment"
+                    )
                     cadence_cards[cadence] = CadenceCardVM(
                         cadence_type=cadence,
                         scheduled_date=row.scheduled_date,
@@ -1020,6 +1059,7 @@ def build_dashboard(
                         period_start=row.period_start,
                         period_end=row.period_end,
                         is_pending=row.completed_date is None,
+                        review_id=row.review_id,
                     )
                 else:
                     cadence_cards[cadence] = None

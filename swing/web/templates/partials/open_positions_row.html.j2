@@ -21,7 +21,9 @@
     hx-target="closest tr"
     hx-swap="outerHTML"
     hx-headers='{"HX-Request": "true"}'>
-  <td>{{ row.trade.ticker }} {{ state_badge(row.trade.state) }}</td>
+  <td>{{ row.trade.ticker }} {{ state_badge(row.trade.state) }}
+    {% if row.has_update_today %}<span class="badge-update-today" title="daily-management entry recorded for session {{ row.update_session_date }}">✓ logged</span>{% else %}<span class="badge-update-needed" title="no daily-management entry for session {{ row.update_session_date }}">⚠ pending</span>{% endif %}
+  </td>
   <td>{{ row.trade.entry_date }}</td>
   <td>${{ '%.2f' | format(row.trade.entry_price) }}</td>
   <td>{{ row.remaining_shares }} / {{ row.trade.initial_shares }}</td>
