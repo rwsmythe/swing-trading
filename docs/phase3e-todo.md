@@ -265,6 +265,67 @@ Every counter is zero. Operator has open trades + at least one Phase 8 stop-chan
 - 3e.13 (in-flight bundle) — top-nav reachability; this is the per-card direct-action surface.
 - Archived entry at `docs/phase3e-todo-archive.md:736` — original 2026-05-04 capture.
 
+### 3e.15 — Analyze utility of "logged today?" badge given pipeline auto-snapshots (INVESTIGATION; operator-surfaced 2026-05-09)
+
+**Operator question (Surface 2 verification 2026-05-09):** "Will running the pipeline end up causing all open trades to report logged? If so, analyze utility of tracking the pending/logged status."
+
+**Empirical answer (orchestrator-confirmed):** YES. Phase 8 `_step_daily_management` (per `swing/pipeline/runner.py` after `_step_evaluate`) writes a `daily_management_records` row with `record_type='daily_snapshot'` AND `review_date == last_completed_session()` for every open trade. The polish bundle 2026-05-09 badge predicate (per the cfacbc5 fix) is `record_type IN ('daily_snapshot', 'event_log') AND is_superseded = 0 AND review_date == last_completed_session()`. **After every successful pipeline run, every open trade satisfies this predicate → every badge shows ✓ logged.** The badge as currently defined cannot distinguish "pipeline auto-snapshot landed" from "operator paid attention today" — it collapses two distinct concepts into a single state.
+
+**Window of utility (current behavior):** the badge is operator-actionable ONLY between (a) the start of a new session AND (b) the next pipeline run. Once pipeline runs, badge degrades to "did pipeline run today?" — a question the existing pipeline-status banner already answers.
+
+**Investigation scope:**
+
+1. **Confirm assumption empirically.** Verify `_step_daily_management` writes for ALL open trades (not just A+ candidates / specific maturity stages). Check spec §7 + actual code at `swing/pipeline/runner.py` (the daily-management step body) + `swing/data/repos/daily_management.py:list_for_trade_timeline` predicate semantics.
+
+2. **Enumerate operator workflow scenarios** where the current badge would be operator-useful vs. not:
+   - Pre-market session prep BEFORE pipeline runs → badge meaningful (shows operator hasn't toured yet)
+   - Mid-day: pipeline already ran → badge always ✓ → useless
+   - Operator manually logs an event_log entry → predicate already satisfied by snapshot anyway → no visual change
+   - Post-market evening review → badge meaningful only if pipeline didn't run for some reason
+
+3. **Design alternatives to evaluate:**
+   - **(a) Filter predicate to `event_log` only.** Distinguishes operator-driven entries from pipeline auto-snapshots. Badge means "operator paid attention" rather than "either source touched the row". Aligns with original operator-intent "did I log anything for this trade today?"
+   - **(b) Two-state expansion to three: ✓ event-logged / ⊙ snapshot-only / ⚠ pending.** Three glyphs preserve the snapshot signal while distinguishing operator-action.
+   - **(c) Operator-action-only predicate with dismissible state.** Badge clears via operator-confirmation (click-to-dismiss). Per-session dismissal stored in localStorage OR a new `daily_management_records.acknowledged_at` column. More UX surface; less doctrine-clean.
+   - **(d) Drop the badge.** If operator concludes the badge isn't useful given pipeline timing, V1.5 reverses the badge addition. Polish-bundle ship would be partially superseded; orchestrator-context lesson would be captured.
+
+**Recommendation (orchestrator preliminary):** Option (a) — filter predicate to `event_log` only. Smallest change; cleanest semantic ("operator-action today"); doesn't require new column or three-state UI. Pipeline snapshots already surface elsewhere (timeline view; `swing tos-import` style audit-trail surfaces).
+
+**Scope:** Investigation 1-2 hr (steps 1-2 above + scope-recommendation). If recommendation is (a), implementation ~30 min standalone (predicate change + 1-2 discriminating tests + label may need adjustment from `✓ logged` to `✓ event-logged`). If (b) or (c), larger scope.
+
+**Cross-references:**
+- `swing/pipeline/runner.py` — `_step_daily_management` body (the auto-snapshot writer).
+- `swing/data/repos/daily_management.py:has_update_today_for_trades` — current badge predicate (post-cfacbc5 fix).
+- `partials/open_positions_row.html.j2` — current badge rendering.
+- CLAUDE.md gotcha "Session-anchor read/write mismatch" (promoted 2026-05-09) — applies to any predicate change here.
+- Polish bundle 2026-05-09 brief at `docs/polish-bundle-2026-05-09-brief.md` — original badge design rationale.
+
+### 3e.16 — Trade summary section in daily/weekly/monthly review pages (operator-surfaced 2026-05-09)
+
+**Observed (Surface 5 follow-up 2026-05-09):** The `/reviews/{id}/complete` form view (Phase 6 cadence completion surface) does NOT surface the trades conducted during the review period (entered, exited, or event-logged within the period's date range). Operator has to context-switch to other surfaces (journal, dashboard, trades list) to see what happened — defeating part of the cadence-review value (review with relevant context in front of you).
+
+**Proposed fix:** Add a "Trades during this review period" section to the cadence completion form template. Section lists trades with activity within `[period_start, period_end]` from the Review_Log row. Per-trade summary line: ticker + entry_date + exit_date (if closed) + entry_price + exit_price (if closed) + realized_R + hypothesis_label. Possibly grouped by state (closed during period | opened during period | event-logged during period).
+
+**Scope:**
+- Extend `CadenceCompleteVM` (or whatever VM serves `/reviews/{id}/complete`) with a `trades_during_period: tuple[TradeSummaryVM, ...]` field.
+- Repo helper to query trades with relevant activity within `[period_start, period_end]` (entry_date OR exit_date OR trade_event ts within period).
+- Template extension in `templates/reviews/complete.html.j2` (or wherever) — render the trade list section above (or alongside) the completion form.
+- 3-4 discriminating tests: trades-in-period populated correctly; trades-outside-period excluded; closed/open/event-only paths each represented.
+
+Estimated ~1-2 hr standalone dispatch (depends on how rich the per-trade summary needs to be). Could grow if operator wants R-multiple distributions / pattern-tag aggregation / hypothesis-label rollup.
+
+**Open design questions for brainstorm-skip in-thread lock:**
+1. Group trades by activity type (opened / closed / event-only) OR show flat chronological?
+2. Per-trade summary fields — ticker + dates + R only, OR include hypothesis_label + sector + chart-pattern + emotional_state aggregations?
+3. Should completed-cadence read-only view also show this? (Phase 6 shipped completion form; read-only completed view is V1.5 territory per archived Phase 6 follow-up.)
+
+**Cross-references:**
+- Phase 6 completion form: `swing/web/templates/reviews/complete.html.j2` (or partial per template structure).
+- `swing/web/view_models/dashboard.py:CadenceCardVM` — has `period_start` + `period_end` fields; the completion form likely has the same window via Review_Log row.
+- Trades repo: `swing/data/repos/trades.py:list_open_trades` + `list_closed_trades` — likely starting point for the new "list_trades_with_activity_in_period" helper.
+- Phase 6 archived follow-ups at `docs/phase3e-todo-archive.md:737` ("Completion route 404s for already-completed Review_Logs") — related; both are completion-form-extension territory.
+- Aligns with Phase 6 v1.2 §10.3 "Cadence Review Workflow" — reviewing trades-during-period is the canonical workflow per spec.
+
 ### 3e.2 — Include realized-from-partial-exits in journal stats total
 
 **Observed:** `swing journal review --period month` shows 0 trades / $0.00 total
