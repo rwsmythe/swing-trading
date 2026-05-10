@@ -49,3 +49,20 @@ tr.tripwire-fired td:first-child { border-left: 4px solid #c00; }
 .state-partial_exited { background: #fff3cd; color: #664d03; }
 .state-closed { background: #e2e3e5; color: #41464b; }
 .state-reviewed { background: #cff4fc; color: #055160; }
+
+/* Polish-bundle 2026-05-09 Family A — daily-management "updated today?"
+   two-state badge on each open-positions row. Mirrors .state-badge sizing so
+   the two badges sit naturally next to each other. Color choices keep the
+   "needs operator action" cue scannable (amber for not-yet, green for done)
+   without inventing a new palette. */
+.badge-update-today,
+.badge-update-needed {
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.85em;
+  font-weight: 500;
+  display: inline-block;
+  margin-left: 4px;
+}
+.badge-update-today { background: #d1e7dd; color: #0f5132; }
+.badge-update-needed { background: #fff3cd; color: #664d03; }
