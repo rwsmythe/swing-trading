@@ -10,11 +10,13 @@ from swing.data.models import Fill, Trade, WatchlistArchiveEntry
 from swing.data.repos.fills import insert_fill_with_event
 from swing.data.repos.trades import insert_trade_with_event, list_open_trades
 from swing.data.repos.watchlist import (
-    archive_watchlist_entry, get_watchlist_entry,
+    archive_watchlist_entry,
+    get_watchlist_entry,
 )
 from swing.trades.origin import EntryPath, derive_trade_origin
 from swing.trades.state import (
-    MissingPreTradeFieldsException, validate_for_operation,
+    MissingPreTradeFieldsException,
+    validate_for_operation,
 )
 
 # Re-export for callers: ``from swing.trades.entry import

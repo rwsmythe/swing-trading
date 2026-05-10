@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Iterable, Mapping
 
 from swing.config import Config
 from swing.data.db import connect
-from swing.data.models import Candidate, Trade, WatchlistEntry, WeatherRun
+from swing.data.models import Candidate, Trade, WatchlistEntry
 from swing.data.repos.candidates import fetch_candidates_for_run
 from swing.data.repos.cash import list_cash
 from swing.data.repos.fills import list_all_fills

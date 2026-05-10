@@ -86,7 +86,7 @@ def classify_weather(ohlcv: pd.DataFrame) -> WeatherClassification:
         status = "Caution"
         misses: list[str] = []
         if last_close <= s20:
-            misses.append(f"close at/below 20MA")
+            misses.append("close at/below 20MA")
         if slope20_state == "flat":
             misses.append("20MA is flat")
         elif slope20_state == "declining":

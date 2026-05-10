@@ -1172,7 +1172,6 @@ def trade_review_cmd(
 ):
     """Post-trade review surface — log mistakes, process grade, and outcome attribution."""
     import json
-    from datetime import date as _date
     from datetime import datetime as _dt
 
     from swing.data.db import connect
@@ -1780,7 +1779,7 @@ def rs_universe_refresh_cmd(ctx, source):
     new_version = refresh_rs_universe(dest=cfg.paths.rs_universe_path, source=source)
     click.echo(f"RS universe refreshed: version {new_version}")
     click.echo(f"  Path: {cfg.paths.rs_universe_path}")
-    click.echo(f"  Prior snapshot saved alongside")
+    click.echo("  Prior snapshot saved alongside")
 
 
 @main.command("web")

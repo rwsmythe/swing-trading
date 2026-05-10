@@ -1,9 +1,10 @@
 """Behavioral flags — three pure rules from legacy trade.py."""
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, Iterable
+from typing import Any
 
 from swing.data.models import Trade, WeatherRun
 

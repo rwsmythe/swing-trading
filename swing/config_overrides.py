@@ -13,7 +13,6 @@ from typing import Any, Literal
 from swing.config import Config
 from swing.config_user import load_user_overrides
 
-
 # V1 field paths — keep in lockstep with config_validation.FIELD_REGISTRY.
 _V1_PATHS = ("web.chase_factor", "pipeline.chart_top_n_watch", "account.risk_equity_floor")
 

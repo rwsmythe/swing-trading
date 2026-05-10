@@ -14,7 +14,6 @@ import sqlite3
 
 from swing.data.models import HypothesisRegistryEntry
 
-
 _VALID_STATUSES = ("active", "paused", "closed-escaped", "closed-target-met")
 
 # Allowed status transitions per brief §4.6.

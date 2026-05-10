@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from swing.data.models import WatchlistEntry, WatchlistArchiveEntry
+from swing.data.models import WatchlistArchiveEntry, WatchlistEntry
 
 
 def upsert_watchlist_entry(conn: sqlite3.Connection, e: WatchlistEntry) -> None:

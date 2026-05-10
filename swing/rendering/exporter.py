@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import base64
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Mapping
 
 from swing.rendering.briefing_md import render_briefing_md
 from swing.rendering.html_renderer import render_briefing_html

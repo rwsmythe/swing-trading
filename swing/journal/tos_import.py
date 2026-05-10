@@ -7,17 +7,16 @@ ReconciliationReport — caller (CLI) decides what to commit.
 from __future__ import annotations
 
 import csv
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from io import StringIO
 from pathlib import Path
-from typing import Iterable
 
 from swing.data.db import connect
 from swing.data.models import CashMovement
 from swing.data.repos.cash import find_by_ref
 from swing.data.repos.trades import find_any_open_trade, find_open_trade_by_match
-
 
 _SECTION_LABELS = (
     "Cash Balance",

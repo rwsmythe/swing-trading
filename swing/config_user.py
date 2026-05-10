@@ -5,7 +5,7 @@ import logging
 import os
 import sys
 import tempfile
-from datetime import datetime as _dt   # module-level so tests can monkeypatch (Codex R4 M1)
+from datetime import datetime as _dt  # module-level so tests can monkeypatch (Codex R4 M1)
 from pathlib import Path
 from typing import Any
 

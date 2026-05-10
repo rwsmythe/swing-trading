@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Iterable, Literal
+from typing import Literal
 
 from swing.data.models import CashMovement, Trade
 

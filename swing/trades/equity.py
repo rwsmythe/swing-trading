@@ -1,7 +1,8 @@
 """Pure functions: equity, R-multiple, position sizing helpers (legacy parity)."""
 from __future__ import annotations
 
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from swing.data.models import CashMovement, Trade
 

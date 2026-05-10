@@ -10,9 +10,9 @@ import logging
 import threading
 import time
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Sequence
+from datetime import UTC, datetime
 
 from swing.config import Config
 from swing.data.db import connect
@@ -306,7 +306,8 @@ class PriceCache:
         if not misses:
             return results
 
-        from concurrent.futures import as_completed, TimeoutError as FuturesTimeout
+        from concurrent.futures import TimeoutError as FuturesTimeout
+        from concurrent.futures import as_completed
         futures = {executor.submit(self._fetch_with_fallback, t): t for t in misses}
         try:
             for future in as_completed(futures, timeout=deadline_seconds):
@@ -355,7 +356,7 @@ class PriceCache:
         import exchange_calendars as xcals
         import pandas as pd
         nyse = xcals.get_calendar("XNYS")
-        utc_now = pd.Timestamp(datetime.now(timezone.utc))
+        utc_now = pd.Timestamp(datetime.now(UTC))
         try:
             return bool(nyse.is_open_at_time(utc_now, ignore_breaks=True))
         except Exception:

@@ -2,16 +2,22 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
 
 from swing.data.db import connect
 from swing.data.repos.pipeline import (
-    LeaseRevoked, find_active_run, finalize_run, find_run, insert_pipeline_run,
-    update_heartbeat, update_status_columns, update_step,
+    LeaseRevoked,
+    finalize_run,
+    find_active_run,
+    find_run,
+    insert_pipeline_run,
+    update_heartbeat,
+    update_status_columns,
+    update_step,
 )
 
 

@@ -243,9 +243,10 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
         # media types are case-insensitive per RFC 7231.
         accept_header = request.headers.get("accept", "").lower()
         if request.method == "GET" and "text/html" in accept_header:
-            from swing.web.view_models.error import PageErrorVM
-            from swing.evaluation.dates import action_session_for_run
             from datetime import datetime
+
+            from swing.evaluation.dates import action_session_for_run
+            from swing.web.view_models.error import PageErrorVM
             try:
                 session_date = action_session_for_run(datetime.now()).isoformat()
             except Exception:
@@ -288,11 +289,23 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
 
     from swing.web.routes import (
         config as config_route,
+    )
+    from swing.web.routes import (
         dashboard as dashboard_route,
+    )
+    from swing.web.routes import (
         journal as journal_route,
+    )
+    from swing.web.routes import (
         pipeline as pipeline_route,
+    )
+    from swing.web.routes import (
         recommendations as recommendations_route,
+    )
+    from swing.web.routes import (
         trades as trades_route,
+    )
+    from swing.web.routes import (
         watchlist as watchlist_route,
     )
     app.include_router(dashboard_route.router)

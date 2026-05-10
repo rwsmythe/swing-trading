@@ -6,7 +6,6 @@ import shutil
 from datetime import date
 from pathlib import Path
 
-
 _HTTP_TIMEOUT_SECONDS = 30
 # Filename-safe version characters per spec §4.1 (`YYYY-MM-DD-<n>`) plus the
 # Phase 1 scaffold form (`test-v1`). Requires an alphanumeric first character

@@ -27,8 +27,8 @@ require routing through the source-of-truth correction protocol.
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass, field
-from typing import Iterable
+from collections.abc import Iterable
+from dataclasses import dataclass
 
 from swing.data.models import Candidate, HypothesisRegistryEntry, Trade
 

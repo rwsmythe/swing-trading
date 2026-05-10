@@ -5,17 +5,29 @@ view-model construction with no I/O.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Mapping
 
 from swing.data.models import (
-    Candidate, DailyManagementRecord, DailyRecommendation, Trade,
-    WatchlistEntry, WeatherRun,
+    Candidate,
+    DailyManagementRecord,
+    DailyRecommendation,
+    Trade,
+    WatchlistEntry,
+    WeatherRun,
 )
 from swing.rendering.view_models import (
-    AccountTileVM, AdvisorySuggestionVM, BriefingViewModel, CriterionVM,
-    DailyManagementSnapshotRowVM, OpenPositionVM, PipelineTileVM,
-    StatusStripVM, TickerExpansionVM, TodaysDecisionVM, WatchlistRowVM,
+    AccountTileVM,
+    AdvisorySuggestionVM,
+    BriefingViewModel,
+    CriterionVM,
+    DailyManagementSnapshotRowVM,
+    OpenPositionVM,
+    PipelineTileVM,
+    StatusStripVM,
+    TickerExpansionVM,
+    TodaysDecisionVM,
+    WatchlistRowVM,
     WeatherTileVM,
 )
 

@@ -9,8 +9,8 @@ Ties broken by ticker alpha (deterministic).
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 from swing.data.models import Candidate
 

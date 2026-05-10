@@ -6,8 +6,8 @@ Watchlist tickers in watch state → watchlist_watch (informational).
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 from swing.data.models import Candidate, DailyRecommendation, WatchlistEntry
 from swing.recommendations.near_trigger import is_near_trigger

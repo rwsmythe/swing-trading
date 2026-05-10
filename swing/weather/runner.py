@@ -8,7 +8,7 @@ from swing.data.db import connect
 from swing.data.models import WeatherRun
 from swing.data.repos.weather import upsert_weather_run
 from swing.prices import PriceFetcher
-from swing.weather.classifier import classify_weather, WeatherClassification
+from swing.weather.classifier import WeatherClassification, classify_weather
 
 
 def run_weather(

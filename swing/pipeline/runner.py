@@ -469,7 +469,7 @@ def _step_evaluate(
         spy_return = float((spy_closes.iloc[-1] / spy_closes.iloc[-bars - 1]) - 1)
 
     returns_12w: dict[str, float] = {}
-    ohlcv_by_ticker: dict[str, "pd.DataFrame"] = {}
+    ohlcv_by_ticker: dict[str, pd.DataFrame] = {}
     error_tickers: list[str] = []
     bars_needed = cfg.rs.horizon_weeks * 5
     for t in tickers:
