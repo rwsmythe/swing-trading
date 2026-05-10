@@ -556,10 +556,16 @@ class HypRecsExpandedVM:
     chart_reason_message: str | None
     # Freshness.
     pipeline_finished_at: str | None      # ISO timestamp of binding pipeline run
+    # 3e.4 — Current price for the operator's price-vs-pivot context when
+    # evaluating buy_stop / buy_limit / sell_stop. Defaults to None for
+    # backward-compat with callers that don't pass a cache; the route
+    # populates this via the PriceCache single-ticker `get` path.
+    current_price: PriceSnapshot | None = None
 
 
 def build_hyp_recs_expanded(
     conn, cfg: Config, *, ticker: str, current_balance: float,
+    cache: PriceCache | None = None,
 ) -> HypRecsExpandedVM | None:
     """Resolve a hyp-recs expansion VM at request time. Returns None when:
 
@@ -628,6 +634,12 @@ def build_hyp_recs_expanded(
         # operator-facing message; spec §3.5.3 last paragraph.
         return None
 
+    # 3e.4 — Single-ticker price snapshot. The single-ticker `cache.get`
+    # path handles market-hours + last-close fallback + breaker degraded
+    # state internally; no executor needed (vs. the batch `get_many` path
+    # used by the dashboard for many tickers).
+    current_price = cache.get(ticker) if cache is not None else None
+
     return HypRecsExpandedVM(
         ticker=ticker,
         buy_stop=candidate.pivot,
@@ -644,6 +656,7 @@ def build_hyp_recs_expanded(
         chart_reason=chart_reason,
         chart_reason_message=chart_message,
         pipeline_finished_at=binding.finished_ts,
+        current_price=current_price,
     )
 
 

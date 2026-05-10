@@ -495,3 +495,146 @@ def test_apply_overrides_chase_factor_propagates_to_buy_limit(
     assert vm.buy_limit == pytest.approx(102.5)
     # Also explicitly distinguish from the no-override default (101.0).
     assert vm.buy_limit != pytest.approx(101.0)
+
+
+# ---------------------------------------------------------------------------
+# 3e.4 Task A.1 — `HypRecsExpandedVM.current_price` field + builder cache
+# parameter. The field defaults to None for backward-compat with callers
+# that don't pass a cache; the builder accepts an optional `cache=` kwarg;
+# when cache is provided the builder fetches via `cache.get(ticker)` and
+# populates the field. Acceptance criteria A.AC.1 + A.AC.2.
+# ---------------------------------------------------------------------------
+def test_hyp_recs_expanded_vm_has_current_price_field_default_none(seeded_db):
+    """A.AC.1 — `HypRecsExpandedVM.current_price` exists and defaults to
+    None when constructed without an explicit value. Discriminating: the
+    field is accessible and defaults to None even though every existing
+    constructor call site omits it."""
+    from swing.recommendations.sizing import SizingResult
+    from swing.web.view_models.dashboard import HypRecsExpandedVM
+
+    vm = HypRecsExpandedVM(
+        ticker="AAPL",
+        buy_stop=100.0,
+        buy_limit=101.0,
+        sell_stop=95.0,
+        chase_factor=0.01,
+        current_balance=10_000.0,
+        risk_equity=10_000.0,
+        sizing_risk=SizingResult(
+            shares=0, risk_dollars=0.0, risk_pct=0.0,
+            notional=0.0, notional_pct=0.0,
+            feasible=False, constraint="x"),
+        sizing_cash=SizingResult(
+            shares=0, risk_dollars=0.0, risk_pct=0.0,
+            notional=0.0, notional_pct=0.0,
+            feasible=False, constraint="x"),
+        sector="S", industry="I",
+        data_asof_date=None, chart_reason=None, chart_reason_message=None,
+        pipeline_finished_at=None,
+    )
+    # Field exists and is None by default.
+    assert vm.current_price is None
+
+
+def test_build_hyp_recs_expanded_populates_current_price_when_cache_provided(
+    seeded_db,
+):
+    """A.AC.2 — when builder is called with `cache=<PriceCache-like>`,
+    the returned VM has `current_price` populated with the snapshot the
+    cache returned for the ticker. Discriminating: a stub cache returning
+    PriceSnapshot(price=123.45) propagates verbatim to VM.current_price.price."""
+    from datetime import datetime
+
+    from swing.web.price_cache import PriceSnapshot
+    from swing.web.view_models.dashboard import build_hyp_recs_expanded
+
+    cfg, _ = seeded_db
+    _seed_complete_pipeline(cfg, candidates=[
+        {"ticker": "AAPL", "pivot": 100.0, "initial_stop": 95.0},
+    ])
+
+    class _StubCache:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def get(self, ticker: str):
+            self.calls.append(ticker)
+            return PriceSnapshot(
+                ticker=ticker, price=123.45, asof=datetime.now(),
+                is_stale=False, source="live",
+            )
+
+    stub = _StubCache()
+    conn = connect(cfg.paths.db_path)
+    try:
+        vm = build_hyp_recs_expanded(
+            conn, cfg, ticker="AAPL", current_balance=10_000.0,
+            cache=stub,
+        )
+    finally:
+        conn.close()
+
+    assert vm is not None
+    assert stub.calls == ["AAPL"], (
+        f"builder must invoke cache.get('AAPL') exactly once; got {stub.calls}"
+    )
+    assert vm.current_price is not None
+    assert vm.current_price.price == 123.45
+    assert vm.current_price.is_stale is False
+    assert vm.current_price.source == "live"
+
+
+def test_build_hyp_recs_expanded_leaves_current_price_none_without_cache(
+    seeded_db,
+):
+    """A.AC.1 + A.AC.2 — when builder is called WITHOUT the cache kwarg
+    (cache defaults to None), the returned VM has `current_price = None`.
+    Discriminating: existing call sites pass nothing and must remain
+    backward-compat — no AttributeError, no network call, no live fetch."""
+    from swing.web.view_models.dashboard import build_hyp_recs_expanded
+
+    cfg, _ = seeded_db
+    _seed_complete_pipeline(cfg, candidates=[
+        {"ticker": "AAPL", "pivot": 100.0, "initial_stop": 95.0},
+    ])
+    conn = connect(cfg.paths.db_path)
+    try:
+        vm = build_hyp_recs_expanded(
+            conn, cfg, ticker="AAPL", current_balance=10_000.0,
+        )
+    finally:
+        conn.close()
+
+    assert vm is not None
+    assert vm.current_price is None
+
+
+def test_build_hyp_recs_expanded_current_price_none_when_cache_returns_none(
+    seeded_db,
+):
+    """A.AC.6 (VM-level) — when cache returns None (e.g., ticker not in
+    last_close fallback path; degraded mode with no last_close row), the
+    VM has `current_price = None`. Discriminating: a stub cache returning
+    None propagates as None, NOT as an exception, NOT as a sentinel."""
+    from swing.web.view_models.dashboard import build_hyp_recs_expanded
+
+    cfg, _ = seeded_db
+    _seed_complete_pipeline(cfg, candidates=[
+        {"ticker": "AAPL", "pivot": 100.0, "initial_stop": 95.0},
+    ])
+
+    class _NoneCache:
+        def get(self, ticker: str):
+            return None
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        vm = build_hyp_recs_expanded(
+            conn, cfg, ticker="AAPL", current_balance=10_000.0,
+            cache=_NoneCache(),
+        )
+    finally:
+        conn.close()
+
+    assert vm is not None
+    assert vm.current_price is None
