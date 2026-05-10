@@ -63,7 +63,7 @@ def write_user_overrides(overrides: dict[str, Any]) -> None:
         log.warning(
             "user-config malformed; backed up to %s before overwrite", backup,
         )
-    fd = tempfile.NamedTemporaryFile(
+    fd = tempfile.NamedTemporaryFile(  # noqa: SIM115 — atomic-replace pattern manages fd lifetime via os.replace; close+rename in try, cleanup in except
         mode="wb", dir=path.parent, delete=False, suffix=".tmp",
     )
     try:

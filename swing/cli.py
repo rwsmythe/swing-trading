@@ -724,7 +724,7 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
                 f"Missing required pre-trade fields: {', '.join(flags)}"
             ) from exc
         except (SoftWarnException, HardCapException, DuplicateOpenPositionException) as exc:
-            raise click.ClickException(str(exc))
+            raise click.ClickException(str(exc)) from exc
     finally:
         conn.close()
 
@@ -851,7 +851,7 @@ def trade_stop_adjust_cmd(ctx, trade_id, new_stop, rationale, notes, force):
                 event_ts=_dt.now().isoformat(timespec="seconds"), force=force,
             ))
         except StopRegressionError as exc:
-            raise click.ClickException(str(exc))
+            raise click.ClickException(str(exc)) from exc
     finally:
         conn.close()
     click.echo(f"Trade {trade_id} stop -> ${new_stop:.2f}")
@@ -930,7 +930,7 @@ def trade_analyze_cmd(ctx, trade_id):
         try:
             a = analyze_trade(conn, trade_id)
         except ValueError as exc:
-            raise click.ClickException(str(exc))
+            raise click.ClickException(str(exc)) from exc
     finally:
         conn.close()
 
@@ -1927,9 +1927,9 @@ def hypothesis_update_cmd(ctx: click.Context, hypothesis_id: int,
                 # Make the error message explicit so the test (and
                 # operator) can tell it's a transition issue, not a
                 # generic value error.
-                raise click.ClickException(f"transition not allowed: {exc}")
+                raise click.ClickException(f"transition not allowed: {exc}") from exc
             except ValueError as exc:
-                raise click.ClickException(str(exc))
+                raise click.ClickException(str(exc)) from exc
     finally:
         conn.close()
     click.echo(

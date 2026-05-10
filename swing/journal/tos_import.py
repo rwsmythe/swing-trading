@@ -133,7 +133,7 @@ def parse_tos_export(text: str) -> dict[str, list[dict]]:
     def flush():
         if cur_label is None or not cur_buf:
             return
-        clean = [l for l in cur_buf if l.strip()]
+        clean = [line for line in cur_buf if line.strip()]
         if not clean:
             return
         reader = csv.DictReader(StringIO("\n".join(clean)))

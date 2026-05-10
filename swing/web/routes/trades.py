@@ -1182,7 +1182,7 @@ def stop_post(
         except ValueError as exc:
             # Trade not found or already closed — surface as 404 so the
             # HTMX-aware handler renders trade_form_error.html.j2 (§5.2).
-            raise HTTPException(status_code=404, detail=str(exc))
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         except StopRegressionError as exc:
             # R: spec §5.1 case 3 — re-render form with updated current_stop.
             # T7: preservation fields populated from the submitted form
