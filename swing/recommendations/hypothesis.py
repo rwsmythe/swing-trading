@@ -273,10 +273,7 @@ def _descriptive_label(
     nature of the recommendation clear in the saved label.
     """
     non_pass = sorted(_non_pass_criterion_names(candidate))
-    if non_pass:
-        suffix = f"; failed: {', '.join(non_pass)}"
-    else:
-        suffix = ""
+    suffix = f"; failed: {', '.join(non_pass)}" if non_pass else ""
     if hypothesis_name == H_CAPITAL_BLOCKED and candidate.bucket == "skip":
         bucket_disp = "skip; capital-blocked"
     else:
@@ -390,12 +387,13 @@ def prioritize_recommendations(
             tripwire_fired=tripwire,
         ))
 
-    sort_key = lambda r: (
-        r.tripwire_fired,
-        -r.distance_to_target,
-        r.priority_hint,
-        r.candidate_ticker,
-    )
+    def sort_key(r):
+        return (
+            r.tripwire_fired,
+            -r.distance_to_target,
+            r.priority_hint,
+            r.candidate_ticker,
+        )
     recs.sort(key=sort_key)
 
     # Per-ticker dedup: keep the first (highest-priority) entry per

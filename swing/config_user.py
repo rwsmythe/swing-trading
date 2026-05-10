@@ -1,18 +1,15 @@
 """User-config file I/O. Atomic write per CLAUDE.md cross-device-link gotcha."""
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
-import sys
 import tempfile
+import tomllib
 from datetime import datetime as _dt  # module-level so tests can monkeypatch (Codex R4 M1)
 from pathlib import Path
 from typing import Any
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # pragma: no cover
-    import tomli as tomllib
 import tomli_w
 
 log = logging.getLogger(__name__)
@@ -76,14 +73,10 @@ def write_user_overrides(overrides: dict[str, Any]) -> None:
         fd.close()
         os.replace(fd.name, path)
     except Exception:
-        try:
+        with contextlib.suppress(Exception):
             fd.close()
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             Path(fd.name).unlink(missing_ok=True)
-        except Exception:
-            pass
         raise
 
 

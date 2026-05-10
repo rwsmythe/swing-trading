@@ -47,7 +47,7 @@ def rank_focus(candidates: Iterable[Candidate], *, weights: FocusWeights) -> lis
     max_trend = max(trends) if trends else 0.0
 
     scored: list[tuple[float, str, Candidate]] = []
-    for c, cl, a, t in zip(cands, closenesses, adrs, trends):
+    for c, cl, a, t in zip(cands, closenesses, adrs, trends, strict=False):
         score = (
             weights.closeness_to_pivot * cl
             + weights.adr * _safe_div(a, max_adr)

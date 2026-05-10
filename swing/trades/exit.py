@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from swing.data.models import Fill
 from swing.data.repos.fills import insert_fill_with_event
@@ -34,7 +34,7 @@ from swing.trades.derived_metrics import (
 from swing.trades.state import state_transition
 
 
-class ExitReason(str, Enum):
+class ExitReason(StrEnum):
     STOP_HIT = "stop-hit"
     TARGET = "target"
     MANUAL = "manual"

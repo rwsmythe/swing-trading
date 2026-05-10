@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -137,10 +137,8 @@ class Lease:
             except LeaseRevoked:
                 # ROLLBACK explicitly so the write lock is released
                 # immediately rather than at conn.close() (R4 minor).
-                try:
+                with suppress(sqlite3.OperationalError):
                     conn.execute("ROLLBACK")
-                except sqlite3.OperationalError:
-                    pass
                 raise
             except Exception:
                 conn.execute("ROLLBACK")

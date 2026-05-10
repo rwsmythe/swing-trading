@@ -501,10 +501,7 @@ def _step_evaluate(
     )
 
     max_dates = [df.index.max() for df in ohlcv_by_ticker.values() if not df.empty]
-    if max_dates:
-        data_asof = max(max_dates).date()
-    else:
-        data_asof = last_completed_session(run_now)
+    data_asof = max(max_dates).date() if max_dates else last_completed_session(run_now)
 
     eq_conn = connect(cfg.paths.db_path)
     try:
