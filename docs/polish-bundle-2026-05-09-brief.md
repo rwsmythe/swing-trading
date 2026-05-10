@@ -35,7 +35,7 @@
 - `swing/web/view_models/open_positions_row.py` — alternate constructor; verify it stays in sync.
 - `swing/data/repos/daily_management.py` — repo functions; the `list_open_position_active_snapshots` function at line 246 is the closest existing pattern (same predicate family). Plan author may add a tiny new helper OR inline the query in the builder; choose whichever minimizes scope.
 - `swing/web/templates/partials/open_positions_row.html.j2` — render the badge after the existing state badge (line 24 area); use a concise label like "✓ today" / "⚠ not yet".
-- `swing/evaluation/dates.py` — `action_session_for_run` is the canonical session anchor.
+- `swing/evaluation/dates.py` — `last_completed_session` is the writer-side session anchor (per Phase 8 §4.5; CORRECTED post-merge — the brief originally locked `action_session_for_run` here, but writers stamp `last_completed_session`; reader MUST mirror writer per CLAUDE.md "Session-anchor read/write mismatch" gotcha promoted 2026-05-09).
 
 **For 3e.6 (HX-Redirect):**
 - `swing/web/routes/trades.py` — locate the daily-management event POST handler (search for `daily-management/event` or `record_event_log`). Modify the success path to return `204 No Content` + `HX-Redirect: /` header.
@@ -62,7 +62,7 @@
 
 Locked by orchestrator + operator in-thread design lock 2026-05-09. Plan implements them; does NOT brainstorm alternatives:
 
-1. **3e.5 badge: TWO-state visual.** Show `✓ today` (or visually similar positive marker) when a daily_management_record exists for this trade with `record_type IN ('daily_snapshot', 'event_log')` AND `is_superseded = 0` AND `review_date == action_session_for_run(now())`. Show `⚠ not yet` (or visually similar negative marker) otherwise. Plan author picks exact glyphs/labels but commit to two-state binary.
+1. **3e.5 badge: TWO-state visual.** Show `✓ logged` (or visually similar positive marker) when a daily_management_record exists for this trade with `record_type IN ('daily_snapshot', 'event_log')` AND `is_superseded = 0` AND `review_date == last_completed_session(now()).isoformat()`. Show `⚠ pending` (or visually similar negative marker) otherwise. **POST-MERGE CORRECTION 2026-05-09:** brief originally locked `action_session_for_run(now())` for the predicate AND `✓ today / ⚠ not yet` for the labels. Both were corrected mid-dispatch by Codex R1 Major #1 + R2 Major #1: predicate must mirror writer's `last_completed_session` per Phase 8 §4.5; labels must not carry temporal claims that lie on weekends/holidays. Brief's "Plan author picks exact glyphs/labels" latitude language explicitly authorized the label change.
 
 2. **3e.5 query placement:** plan author choice between (a) extending `list_open_position_active_snapshots` with a richer return shape OR (b) adding a tiny new helper `has_update_today_for_trades(conn, trade_ids: Iterable[int]) -> set[int]` that returns the set of trade IDs with an update today OR (c) inline subquery in `build_dashboard`. Recommendation: **(b) helper** — clean separation; reusable; testable in isolation. Plan author may override with rationale.
 
@@ -109,13 +109,13 @@ This is the post-Phase-8-V1-polish "loose ends" bundle. Five operator-surfaced i
 
 **A.1** Discriminating test: with a trade that has NO daily_management_records row for today's session, the open-positions row's VM has `has_update_today == False`. Test fixture seeds an open trade + zero records; calls `build_dashboard`; asserts the row's VM field. RED before implementation.
 
-**A.2** Discriminating test: with a trade that HAS a daily_management_records row for today's session (record_type='daily_snapshot', is_superseded=0, review_date=action_session_for_run(now())), the VM has `has_update_today == True`. RED before implementation.
+**A.2** Discriminating test: with a trade that HAS a daily_management_records row for today's session (record_type='daily_snapshot', is_superseded=0, review_date=last_completed_session(now()).isoformat() — POST-MERGE CORRECTION 2026-05-09; brief originally said `action_session_for_run`), the VM has `has_update_today == True`. RED before implementation.
 
 **A.3** Implementation: extend `OpenPositionsRowVM` with `has_update_today: bool = False`. Add helper per §0.3 #2 choice. Wire into `build_dashboard` (and the alternate constructor at `swing/web/view_models/open_positions_row.py` if it exists separately). Tests A.1 + A.2 → GREEN.
 
 **A.4** Discriminating test: superseded snapshots (is_superseded=1) do NOT count as "updated today". Plan author seeds a superseded snapshot for today + nothing else; asserts `has_update_today == False`. RED-then-GREEN OR GREEN-from-A.3 if implementation already filters `is_superseded = 0`. Document which.
 
-**A.5** Discriminating test: snapshots from yesterday's session do NOT count as "updated today". Plan author seeds a snapshot for `action_session_for_run(now() - 1 day)` + nothing else; asserts `has_update_today == False`. RED-then-GREEN OR GREEN-from-A.3 (predicate filters by today's session).
+**A.5** Discriminating test: snapshots from yesterday's session do NOT count as "updated today". Plan author seeds a snapshot for `last_completed_session(now() - 1 day).isoformat()` + nothing else; asserts `has_update_today == False`. RED-then-GREEN OR GREEN-from-A.3 (predicate filters by today's session). POST-MERGE CORRECTION 2026-05-09: brief originally said `action_session_for_run`.
 
 **A.6** Template change: render the badge in `partials/open_positions_row.html.j2` after the state badge (around line 24). Plan author picks exact glyphs/labels.
 
@@ -145,14 +145,14 @@ This is the post-Phase-8-V1-polish "loose ends" bundle. Five operator-surfaced i
 
 **C.1** Discriminating test: `python -m click swing/cli.py review --help` (or click's testing utility — `runner.invoke(main, ["review", "--help"])`) produces output that does NOT contain "Phase". RED before implementation.
 
-**C.2** Discriminating test: `swing review cadence --help` output does NOT contain "Phase". RED before implementation.
+**C.2** Discriminating test: `swing review complete --help` output does NOT contain "Phase". RED before implementation. (POST-MERGE CORRECTION 2026-05-09: brief originally said `swing review cadence --help`; actual subcommand is `complete`, not `cadence`. Implementer used the correct command name.)
 
 **C.3** Implementation: edit the two docstrings per §0.3 #5. Tests C.1 + C.2 → GREEN.
 
 **C.4** Audit step (NOT a fix): run `grep -nE "Phase [0-9]|Tranche" swing/cli.py` and capture findings in the return report. If findings are trivial (e.g., a comment saying "Phase 7 added X" with no operator-facing surface), flag for follow-up. If a finding IS operator-facing (another `--help` text leak), the implementer may add to scope IF the fix is also trivial; otherwise flag for follow-up.
 
 **Acceptance:**
-- `swing review --help` and `swing review cadence --help` no longer leak "Phase" nomenclature.
+- `swing review --help` and `swing review complete --help` no longer leak "Phase" nomenclature. (POST-MERGE CORRECTION 2026-05-09: subcommand is `complete`, not `cadence`.)
 - Audit step output captured in return report.
 
 ### Task family D — 3e.13 top-nav Reviews link
@@ -196,7 +196,7 @@ This is the post-Phase-8-V1-polish "loose ends" bundle. Five operator-surfaced i
 **Z.3** Operator-witnessed gate flagged PENDING (operator runs post-merge):
 - Surface 1 (3e.5): visit dashboard; confirm every open-positions row shows the two-state badge with correct state per trade.
 - Surface 2 (3e.6): submit a daily-management event on any open trade's detail page; confirm browser navigates back to dashboard.
-- Surface 3 (3e.11): run `swing review --help` and `swing review cadence --help` from terminal; confirm no "Phase" text appears.
+- Surface 3 (3e.11): run `swing review --help`, `swing review complete --help`, `swing trade review --help`, `swing trade entry --help`, `swing trade exit --help`, `swing trade stop-adjust --help` from terminal; confirm no "Phase" or "Tranche" text appears in any. (POST-MERGE CORRECTION 2026-05-09: subcommand is `complete`, not `cadence`. Surface widened to cover the 4 audit-found additional commands fixed in C.3 in-scope expansion.)
 - Surface 4 (3e.13): visit dashboard; confirm "Reviews" nav link appears between Journal and Pipeline; click "Reviews" → navigates to `/reviews/pending`; review list view renders.
 - Surface 5 (3e.14): visit dashboard; for any pending cadence card, confirm "Complete review" link is rendered; click → navigates to `/reviews/{id}/complete`; completion form renders. For any completed cadence card, confirm NO "Complete review" link is rendered.
 

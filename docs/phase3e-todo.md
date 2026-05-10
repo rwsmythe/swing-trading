@@ -61,20 +61,22 @@
 - CLAUDE.md gotcha "OHLCV fetch scope = open-trade tickers ONLY" — does NOT apply here (this is current-price via PriceCache, not OHLCV).
 - Watchlist row already shows price; same primitive likely available.
 
-### 3e.5 — Daily management "updated today?" indicator on open-positions row (operator-surfaced 2026-05-08)
+### 3e.5 — Daily management "logged?" indicator on open-positions row — **SHIPPED 2026-05-09 at `b4bb9dd`** (polish-bundle)
 
-**Observed:** Phase 8 daily management surface lets operator log a daily snapshot OR event_log per trade per session, but the dashboard's open-positions table provides no at-a-glance signal of which trades have been touched today vs. which still need attention. Operator workflow: scan dashboard at end of day, must individually open `/trades/<id>` for each open trade to determine update status.
+> **Outcome:** SHIPPED as Task family A in polish bundle 2026-05-09 (5 commits — A.2 helper + A.4 superseded test + A.5 yesterday-session test + A.6 event_log predicate test + A.3 VM + A.7 template badge; +R1 fix `cfacbc5` correcting predicate to `last_completed_session(now())`; +R2 fix `69a9026` correcting badge labels to `✓ logged / ⚠ pending`). Helper at `swing/data/repos/daily_management.py:has_update_today_for_trades`. Original entry retained below for historical reference.
 
-**Proposed fix:** Add a small icon or badge to each open-positions row indicating whether a `daily_management_records` row (`record_type IN ('daily_snapshot', 'event_log')` AND `is_superseded = 0`) exists for that trade with `review_date == action_session_for_run(now())`. Two-state visual: ✓ updated today / ⚠ not yet. Reuses Phase 8 §7.1 dashboard-tile plumbing (per `swing/data/repos/daily_management.py:list_open_position_active_snapshots`) — likely just adds a `has_update_today` boolean to `OpenPositionsRowVM`.
+**Observed (original):** Phase 8 daily management surface lets operator log a daily snapshot OR event_log per trade per session, but the dashboard's open-positions table provides no at-a-glance signal of which trades have been touched today vs. which still need attention. Operator workflow: scan dashboard at end of day, must individually open `/trades/<id>` for each open trade to determine update status.
 
-**Scope:** `swing/web/view_models/dashboard.py` (extend `OpenPositionsRowVM`) + `partials/open_positions_row.html.j2` (render badge after Ticker + state badge) + 2 discriminating tests (badge rendered when row exists; badge absent when not). ~30-45 min standalone dispatch.
+**Proposed fix (original — predicate corrected at ship):** Add a small icon or badge to each open-positions row indicating whether a `daily_management_records` row (`record_type IN ('daily_snapshot', 'event_log')` AND `is_superseded = 0`) exists for that trade with `review_date == last_completed_session(now()).isoformat()` (originally specified `action_session_for_run(now())`; corrected mid-dispatch by Codex R1 Major #1 — writers stamp `last_completed_session`, not `action_session_for_run`; using the wrong anchor would silently invisibility every just-submitted entry on weekends/holidays/evenings/pre-market). Two-state visual: ✓ logged / ⚠ pending (originally specified ✓ today / ⚠ not yet; corrected mid-dispatch by Codex R2 Major #1 — original labels were temporal lies on weekends/holidays).
+
+**Scope (as shipped):** new helper `has_update_today_for_trades` at `swing/data/repos/daily_management.py` + `OpenPositionsRowVM.has_update_today: bool` + `partials/open_positions_row.html.j2` badge + 8 discriminating tests including round-trip integration test pinning read/write predicate alignment.
 
 **Cross-references:**
 - Phase 8 §7.1 dashboard-tile feed (`list_open_position_active_snapshots`) — same predicate, scoped to "active snapshot for this trade today."
-- `swing/evaluation/dates.py:action_session_for_run` — canonical session anchor.
+- `swing/evaluation/dates.py:last_completed_session` — backward-looking session anchor (the writer-side function; mirrors weather lookup gotcha per CLAUDE.md "Session-anchor read/write mismatch" gotcha promoted 2026-05-09).
 - `partials/state_badge.html.j2` — existing badge-rendering pattern.
 
-### 3e.6 — Auto-return to dashboard after daily management event submission (operator-surfaced 2026-05-08)
+### 3e.6 — Auto-return to dashboard after daily management event submission — **SHIPPED 2026-05-09 at `b4bb9dd`** (polish-bundle Task family B; commits 4154e4c + c108474 + 6b33c98)
 
 **Observed:** After submitting a daily management event/snapshot via the `POST /trades/<id>/daily-management/event` form on the trade-detail page, the response re-renders the detail page. Operator workflow at end of day is "tour open trades, log update on each, move to next" — current behavior requires manual navigation back to `/` after each submission.
 
@@ -161,7 +163,7 @@
 - Phase 5 user-config infrastructure (`swing.config.toml` user-config) if server-side persistence preferred over localStorage.
 - Operator's actual viewing environment (browser; OS-dark-mode preference) to inform whether to add `prefers-color-scheme: dark` media-query default.
 
-### 3e.11 — CLI `swing review` help text leaks "Phase 6" internal nomenclature (operator-surfaced 2026-05-08)
+### 3e.11 — CLI `swing review` help text leaks "Phase 6" internal nomenclature — **SHIPPED 2026-05-09 at `b4bb9dd`** (polish-bundle Task family C; commit d64978a; in-scope-expanded to fix 4 additional operator-facing leaks beyond the 2 originally locked — Tranche B-ops T4/T5/T6 in entry/exit/stop-adjust rationale help + Phase 7 §10 in entry-path discriminator help)
 
 **Observed:** `swing --help` and `swing review --help` show:
 ```
@@ -223,7 +225,7 @@ Every counter is zero. Operator has open trades + at least one Phase 8 stop-chan
 - `thinkorswim/2026-05-08-AccountStatement.csv` — the actual CSV that triggered this.
 - 2026-04-30 TOS reconciliation depth follow-ups bundle (BUNDLED into Phase 9 brainstorm at `31ee51c`) — Phase 9 will redesign the reconciliation surface; this investigation may inform Phase 9 writing-plans (or get subsumed if Phase A of Schwab API ships first).
 
-### 3e.13 — Top-nav "Reviews" link to `/reviews/pending` (operator-surfaced 2026-05-09)
+### 3e.13 — Top-nav "Reviews" link to `/reviews/pending` — **SHIPPED 2026-05-09 at `b4bb9dd`** (polish-bundle Task family D; commits 9dbed5a + e6717a5; V1 link-only per design lock; count badge V1.5 deferred)
 
 **Observed:** The base template's nav bar (`swing/web/templates/base.html.j2`) renders Dashboard / Watchlist / Journal / Pipeline / Config — but NO Reviews link. The Phase 6 review list view at `/reviews/pending` is reachable only via direct URL OR via the post-review-complete HX-Redirect (per Phase 6 I3 fix). Operator workflow: there's no obvious path from the dashboard to the daily/weekly/monthly cadence reviews surface.
 
@@ -243,7 +245,7 @@ Every counter is zero. Operator has open trades + at least one Phase 8 stop-chan
 
 **Bundling note (2026-05-09):** This item is the same size profile + UX-polish theme as 3e.5 / 3e.6 / 3e.11 (the in-flight polish-bundle-2026-05-09 dispatch at brief `1957946`). If dispatch hasn't fired yet, consider expanding the brief to a 4-item bundle. Otherwise picks up as an independent ~15-min standalone after the polish bundle ships.
 
-### 3e.14 — Cadence card "Complete review" inline link (operator-surfaced 2026-05-09; lifted from archived Phase 6 V1 follow-up)
+### 3e.14 — Cadence card "Complete review" inline link — **SHIPPED 2026-05-09 at `b4bb9dd`** (polish-bundle Task family E; commits f46ca98 + d2d7f23; CadenceCardVM extended with `review_id: int`; E.5 audit confirmed zero hand-constructed test fixtures needed update)
 
 **Observed:** Cadence cards on the dashboard (rendered by `swing/web/templates/partials/cadence_cards.html.j2`) display period + scheduled/completed status but have NO clickable link to the completion form when `card.is_pending`. Operator must navigate via direct URL OR (with 3e.13 in flight) via top-nav Reviews → list view → click into the matching review. The cadence card itself, where the pending status is visible, has no direct action surface. **This entry was archived as a Phase 6 V1 follow-up 2026-05-04 + lifted back to active 2026-05-09 because operator surfaced the gap during the polish-bundle-2026-05-09 dispatch and confirmed it remains valid.**
 
