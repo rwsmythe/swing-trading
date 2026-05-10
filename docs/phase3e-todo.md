@@ -941,3 +941,51 @@ Operator-surfaced 2026-05-04. Three concurrent uses of the official Charles Schw
 - `docs/superpowers/specs/2026-04-26-chart-pattern-flag-v1-design.md` — flag-v1 brainstorm spec (subsumed under v2's broader scope but flag-v1 implementation choices remain authoritative for the pole-and-flag pattern).
 - 2026-05-06 Phase 10 metrics dashboard entry (above) — outcome-distribution surfaces in v2's review interface depend on Phase 10 infrastructure.
 - 2026-05-04 Schwab API integration entry (above) — v2's "delisted-stock data is essential" requirement may surface in Schwab Phase B market-data integration scope.
+
+## 2026-05-10 Ruff residual cleanup (BACKLOG; bundle with other minor fixes)
+
+**Surfaced 2026-05-10** during a ruff sweep that took the `swing/` baseline from 78 → 26 across three commits (`e99047f` safe auto-fixes 78→44, `33338f7` unsafe auto-fixes 44→34, `9c9b57c` manual B904+E741+SIM115-noqa batch 34→26). The 26 remaining are deferred for bundling with other minor fixes rather than a dedicated dispatch.
+
+### Remaining ruff issues in `swing/`
+
+| Code | Count | Description | Effort | Risk |
+|---|---:|---|---|---|
+| **N818** | 8 | Exception class names lacking `Error` suffix | ~10 min mechanical rename + verify | Medium — cross-cutting (~79 file references across swing/ + tests/) |
+| **E501** | 18 | Lines exceeding 100-char `line-length` | ~30 min judgment work | Low per-site; no mechanical fix |
+
+### N818 — exception class renames (8 classes)
+
+Each rename is a sed-style global replace; names are distinctive enough that no substring false-positives are likely.
+
+| Old | New | swing/ files | tests/ files |
+|---|---|---:|---:|
+| `SchemaVersionMismatch` | `SchemaVersionMismatchError` | 4 | 4 |
+| `LeaseRevoked` | `LeaseRevokedError` | 10 | 12 |
+| `WatchlistEntryNotFound` | `WatchlistEntryNotFoundError` | 2 | 2 |
+| `ConcurrentRunBlocked` | `ConcurrentRunBlockedError` | 4 | 4 |
+| `ChartingUnavailable` | `ChartingUnavailableError` | 4 | 2 |
+| `SoftWarnException` | `SoftWarnError` | 6 | 4 |
+| `HardCapException` | `HardCapError` | 7 | 2 |
+| `DuplicateOpenPositionException` | `DuplicateOpenPositionError` | 7 | 5 |
+
+**Approach when attempted:** `git grep -l <OldName> | xargs sed -i 's/<OldName>/<NewName>/g'` per class; run `pytest -m "not slow"` after each batch (or after the full set) to verify; commit as a single rename pass.
+
+**Watch-item:** verify no test asserts on the OLD class name as a string literal (e.g., `pytest.raises(ValueError, match="WatchlistEntryNotFound")`). If found, those test assertions need the new name too — sed handles that uniformly since the match string contains the class name.
+
+### E501 — line-too-long (18 lines)
+
+`line-length = 100` is already configured (per `pyproject.toml`). The 18 violators exceed even that. No mechanical fix; each needs an editorial choice (break the string literal, extract a variable, accept a `# noqa: E501` for a justified comment). Would benefit from looking at all 18 sites and grouping by category (long log strings, long expressions, long comments) before deciding.
+
+### Bundling guidance
+
+These are good candidates to fold into ANY future small-scope dispatch as out-of-band cleanup, e.g.:
+- A backlog UX-polish bundle (3e.4 + 3e.7) — add the N818 rename as a separate commit in the same dispatch
+- A future tooling/lint pass — bundle with any pyproject.toml or CI configuration work
+- Phase 9 writing-plans/executing-plans dispatch — N818 may surface naturally if any new exception classes get added (single batch commit at that point covers both new + legacy)
+
+Per project baseline-tracking convention: when bundled in, update `docs/orchestrator-context.md`'s "ruff baseline" line in the track-record summary to the post-fix count. (CLAUDE.md does not currently track a ruff baseline; the living-state mention is in orchestrator-context.md.)
+
+### Cross-references
+
+- Sweep commits: `e99047f`, `33338f7`, `9c9b57c` on `main` (2026-05-10).
+- `docs/orchestrator-context.md` track-record summary still reads "ruff baseline 78 preserved" (anchored to HEAD `b4bb9dd` polish-bundle ship — historical narrative). The live state at HEAD `9c9b57c` is **26**; orchestrator-context.md track-record summary line should be updated to the new live count at next housekeeping commit, OR when this backlog item is attempted (whichever comes first).
