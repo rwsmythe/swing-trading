@@ -148,24 +148,36 @@ def has_update_today_for_trades(
     conn: sqlite3.Connection,
     trade_ids: Iterable[int],
     *,
-    action_session: str,
+    session_date: str,
 ) -> set[int]:
     """Return the subset of ``trade_ids`` that have a daily-management update
-    for ``action_session``.
+    whose ``review_date`` equals ``session_date``.
 
-    Predicate (locked per polish-bundle 2026-05-09 Task family A):
+    Predicate:
 
       ``record_type IN ('daily_snapshot', 'event_log')``
       AND ``is_superseded = 0``
-      AND ``review_date = action_session``
+      AND ``review_date = session_date``
 
     BOTH record types satisfy "updated today" — the operator can satisfy via
     either a pipeline-emitted snapshot OR an operator-emitted event_log entry.
 
-    Empty ``trade_ids`` returns ``set()`` without hitting the DB. Caller
-    passes ``action_session`` (already-computed
-    ``action_session_for_run(now()).isoformat()``) so this helper is testable
-    without freezing the clock.
+    **Session-anchor contract (polish-bundle 2026-05-09 Codex R1 Major #1
+    fix):** ``session_date`` MUST equal the value the writers stamp into
+    ``review_date``. Both writers — the pipeline ``record_snapshot`` in
+    ``swing/trades/daily_management.py`` and the web route
+    ``daily_management_event_post`` in ``swing/web/routes/trades.py`` —
+    stamp ``review_date = last_completed_session(now).isoformat()`` per
+    Phase 8 spec §4.5 / R3 Major #2 (canonical session anchor for
+    daily-management records is the LAST COMPLETED NYSE session, not the
+    forward-looking action session). Therefore badge readers MUST also pass
+    ``session_date = last_completed_session(now).isoformat()``. The brief's
+    earlier ``action_session_for_run`` reference was incorrect — those two
+    functions diverge before market close, after market close, and on
+    weekends/holidays. Pinning the read to ``last_completed_session``
+    closes the read/write drift Codex R1 Major #1 surfaced.
+
+    Empty ``trade_ids`` returns ``set()`` without hitting the DB.
     """
     ids = list(trade_ids)
     if not ids:
@@ -177,7 +189,7 @@ def has_update_today_for_trades(
         f"  AND record_type IN ('daily_snapshot', 'event_log') "
         f"  AND is_superseded = 0 "
         f"  AND review_date = ?",
-        (*ids, action_session),
+        (*ids, session_date),
     ).fetchall()
     return {int(r[0]) for r in rows}
 

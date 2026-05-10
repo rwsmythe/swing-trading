@@ -550,7 +550,7 @@ def test_has_update_today_for_trades_empty_when_no_records(
 ) -> None:
     """A.1 — open trade with NO daily_management_records returns empty set."""
     today = "2026-05-09"
-    result = has_update_today_for_trades(conn, [1], action_session=today)
+    result = has_update_today_for_trades(conn, [1], session_date=today)
     assert result == set()
 
 
@@ -561,7 +561,7 @@ def test_has_update_today_for_trades_returns_id_for_today_snapshot(
     today = "2026-05-09"
     fields = _full_snapshot_fields(data_asof_session=today)
     insert_snapshot(conn, trade_id=1, snapshot_fields=fields)
-    result = has_update_today_for_trades(conn, [1], action_session=today)
+    result = has_update_today_for_trades(conn, [1], session_date=today)
     assert result == {1}
 
 
@@ -580,7 +580,7 @@ def test_has_update_today_for_trades_excludes_superseded(
         "WHERE management_record_id = ?",
         (rec_id,),
     )
-    result = has_update_today_for_trades(conn, [1], action_session=today)
+    result = has_update_today_for_trades(conn, [1], session_date=today)
     assert result == set()
 
 
@@ -598,7 +598,7 @@ def test_has_update_today_for_trades_excludes_yesterday(
     yesterday = (today_d - timedelta(days=1)).isoformat()
     fields = _full_snapshot_fields(data_asof_session=yesterday)
     insert_snapshot(conn, trade_id=1, snapshot_fields=fields)
-    result = has_update_today_for_trades(conn, [1], action_session=today)
+    result = has_update_today_for_trades(conn, [1], session_date=today)
     assert result == set()
 
 
@@ -612,7 +612,7 @@ def test_has_update_today_for_trades_event_log_satisfies(
     today = "2026-05-09"
     el = _minimal_event_log_fields(data_asof_session=today)
     insert_event_log(conn, trade_id=1, event_log_fields=el)
-    result = has_update_today_for_trades(conn, [1], action_session=today)
+    result = has_update_today_for_trades(conn, [1], session_date=today)
     assert result == {1}
 
 

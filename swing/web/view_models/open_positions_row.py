@@ -147,8 +147,16 @@ def build_open_positions_row(
             # dashboard's batched call; passes a one-element list. Empty input
             # short-circuits per helper contract, so trade.id=None is also
             # safe (assertion above already excludes that path).
+            #
+            # Codex R1 Major #1 fix: anchor on ``last_completed_session(now)``
+            # (NOT the forward-looking ``action_session``) — see
+            # ``swing/data/repos/daily_management.py``
+            # ``has_update_today_for_trades`` docstring for the full
+            # session-anchor contract.
+            from swing.evaluation.dates import last_completed_session
+            mgmt_session_date = last_completed_session(now).isoformat()
             update_set = has_update_today_for_trades(
-                conn, [trade.id], action_session=action_session,
+                conn, [trade.id], session_date=mgmt_session_date,
             )
     finally:
         if own_conn:
