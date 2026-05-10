@@ -902,3 +902,42 @@ Operator-surfaced 2026-05-04. Three concurrent uses of the official Charles Schw
 - `swing/cli.py`, `swing/journal/flags.py`, `swing/journal/analyze.py`, `swing/trades/advisory.py`, `swing/pipeline/briefing.py` — current consumers of `date.fromisoformat(trade.entry_date)`.
 - Phase 7 Sub-B `_normalize_trade_event_date_to_iso` helper (commits `e6541fe..71ddb95`) — established pattern for trade-chronology canonicalization at service boundary; likely the migration's API surface.
 - 2026-05-04 Schwab API integration entry (Phase B market_data integration may surface intraday-precision needs).
+
+## 2026-05-09 Chart pattern detection v2 — research captured (RESEARCH-CAPTURED; greenfield expansion; brainstorm-needed)
+
+**Operator-surfaced 2026-05-09**: dropped three reference documents into `reference/Future Work/Chart Pattern Detection/` (committed `6b40292`). These describe research informing potential paths forward for expanding chart-pattern detection from the shipped flag-v1 classifier to a full swing-trading setup detector.
+
+### Reference documents
+
+- **`stock_chart_pattern_detection_ai_ingestion.md`** (v1.0) — generic original; surveys 9 mathematical approaches across all chart-pattern families.
+- **`stock_chart_pattern_detection_delta_review.md`** — section-by-section critical review re-scoping for swing trading (Minervini/CANSLIM); adds VCP as headline pattern, Development Data Strategy, Drift Detection, Small ML Model Decision Analysis with G1-G7 implementation gates.
+- **`stock_chart_pattern_detection_ai_ingestion_v2.md`** (v2.0; **canonical** — supersedes v1.0 per its frontmatter) — merged swing-trading-scoped analysis brief; 8-phase roadmap; rule-based + template-matching as production primary; ML re-ranker deferred 12-18 months gated on G1-G7.
+
+### Scope vs shipped flag-v1
+
+**Distinct from existing chart-pattern flag-v1 follow-ups** (this file's 2026-04-26 + 2026-04-27 sections). Flag-v1 is a single-pattern (pole-and-flag) classifier with no closed-loop outcome back-linkage. The v2 docs propose a substantially broader greenfield surface:
+
+- **Primary buy-side patterns:** VCP (highest-priority; Minervini signature), cup-with-handle, flat base, high-tight flag, double-bottom W; pole-and-flag overlaps flag-v1 turf and would need explicit reconciliation at brainstorm time.
+- **Upstream context:** trend-template universe pre-filter (Stage 2 + RS rank + liquidity floor) — runs before pattern detection, dramatically reducing multiple-comparisons surface area.
+- **Sell-side detector module:** H&S top, climax run, Stage 4 breakdown, MA50/MA200 violations — separate from buy-side detector.
+- **Closed-loop:** trade actions + outcomes back-linked to candidates; outcome-distribution surfaces in review interface ("of the last 20 VCPs flagged with similar scores, X% triggered, Y% reached 1R, Z% hit stop"). Depends on Phase 10 metrics infrastructure.
+- **Drift detection:** feature drift / pattern frequency drift / outcome drift / self-drift dashboards as first-class system component (not afterthought).
+- **Development data strategy:** five sources tagged in corpus — curated exemplars / AI-assisted labeling / parametric synthetic / perturbation / organic from trade history; mixed training with stratified evaluation on real-only held-out subset.
+- **Optional ML re-ranker:** deferred 12-18 months minimum, gated on G1-G7 (rule saturation; label volume ≥200/class with ≥100 outcomes; multi-regime coverage; self-drift bounded; articulable failure mode; feature stability; operational bandwidth). Recommended initial implementation: LightGBM/XGBoost over ~50-100 engineered features as Role-2 setup-quality re-ranker (NOT primary detector; NOT outcome predictor).
+
+### Trigger and effort estimate
+
+**Trigger:** operator decision to expand beyond flag-v1 classifier scope. Likely sequence-locked after Phase 9 (risk_policy + reconciliation) + Phase 10 (metrics dashboard) ship, since outcome-distribution surfaces in the review interface depend on the metrics infrastructure being in place.
+
+**Effort estimate (pre-brainstorm; speculative):** comparable-to-Phase-7-or-larger multi-phase commitment. Universe pipeline (Phase 0 in v2's roadmap) is potentially valuable on its own and could be the first dispatchable slice — runs once daily, gates pattern detection, surfaces useful trend-template state independent of any pattern detector.
+
+**Brainstorm gate:** v2 doc is research-quality — explicit + introspectable but not project-scoped. Brainstorm dispatch would translate the 8-phase roadmap into project-specific phase decomposition (likely "Phase 11+ chart-pattern detection v2" or similar) with concrete schema + CLI + web surfaces, reconciliation against shipped flag-v1 module, and integration points with shipped Phase 6 (review_log) + Phase 7 (state machine + fills) + Phase 9 (risk_policy) + Phase 10 (metrics).
+
+### Cross-references
+
+- `reference/Future Work/Chart Pattern Detection/stock_chart_pattern_detection_ai_ingestion_v2.md` — canonical v2 analysis brief.
+- 2026-04-26 chart-pattern flag-v1 brainstorm follow-ups (above) — flag-v1-specific, narrower scope; calibration study + schema-layer hardening + hidden-form-field tampering hardening remain valid for flag-v1 itself even under v2.
+- 2026-04-27 chart-pattern flag-v1 V1-ship gates — operator-paced gates for shipping flag-v1 V1 (precedes any v2 work).
+- `docs/superpowers/specs/2026-04-26-chart-pattern-flag-v1-design.md` — flag-v1 brainstorm spec (subsumed under v2's broader scope but flag-v1 implementation choices remain authoritative for the pole-and-flag pattern).
+- 2026-05-06 Phase 10 metrics dashboard entry (above) — outcome-distribution surfaces in v2's review interface depend on Phase 10 infrastructure.
+- 2026-05-04 Schwab API integration entry (above) — v2's "delisted-stock data is essential" requirement may surface in Schwab Phase B market-data integration scope.
