@@ -51,12 +51,22 @@ class OpenPositionsRowVM:
     remaining_shares: int
     advisories: tuple[AdvisorySuggestionVM, ...]
     state_badge_label: str
-    # Polish-bundle 2026-05-09 Family A — "updated today?" badge. True iff the
-    # trade has at least one matching daily_management_records row for today's
-    # action_session per ``has_update_today_for_trades`` predicate. Default
+    # Polish-bundle 2026-05-09 Family A — daily-management "logged?" badge
+    # boolean. True iff the trade has at least one ``daily_management_records``
+    # row whose ``review_date`` equals the latest-completed-NYSE-session date
+    # (per ``has_update_today_for_trades`` predicate, anchored on
+    # ``last_completed_session(now)`` post-Codex R1 Major #1 fix). Default
     # False so positional callers (none currently) and tests building VMs
     # without the field aren't broken.
     has_update_today: bool = False
+    # Codex R2 Major #1 fix: badge text was "✓ today" / "⚠ not yet" but the
+    # predicate is anchored on last_completed_session — Friday's session would
+    # render as "today" on Monday morning before market close. Template now
+    # shows "✓ logged" / "⚠ pending" + a hover ``title=`` carrying this
+    # session-date string so the operator sees the actual session anchor on
+    # hover. Default empty string so legacy hand-constructed VMs render an
+    # empty title (harmless) without raising.
+    update_session_date: str = ""
 
 
 def _open_positions_row_vm(
@@ -66,6 +76,7 @@ def _open_positions_row_vm(
     advisories: tuple[AdvisorySuggestionVM, ...],
     state_badge_label: str,
     has_update_today: bool = False,
+    update_session_date: str = "",
 ) -> OpenPositionsRowVM:
     """Pure render-input assembler. NO I/O. Single source of truth for the
     fields an open-positions row consumes from Jinja."""
@@ -76,6 +87,7 @@ def _open_positions_row_vm(
         advisories=advisories,
         state_badge_label=state_badge_label,
         has_update_today=has_update_today,
+        update_session_date=update_session_date,
     )
 
 
@@ -154,9 +166,9 @@ def build_open_positions_row(
             # ``has_update_today_for_trades`` docstring for the full
             # session-anchor contract.
             from swing.evaluation.dates import last_completed_session
-            mgmt_session_date = last_completed_session(now).isoformat()
+            mgmt_session_date_local = last_completed_session(now).isoformat()
             update_set = has_update_today_for_trades(
-                conn, [trade.id], session_date=mgmt_session_date,
+                conn, [trade.id], session_date=mgmt_session_date_local,
             )
     finally:
         if own_conn:
@@ -190,6 +202,7 @@ def build_open_positions_row(
         advisories=advisories,
         state_badge_label=STATE_BADGE_LABELS.get(trade.state, trade.state),
         has_update_today=(trade.id in update_set),
+        update_session_date=mgmt_session_date_local,
     )
 
 

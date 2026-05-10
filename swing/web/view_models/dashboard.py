@@ -927,6 +927,7 @@ def build_dashboard(
             advisories=advisories_tuple,
             state_badge_label=STATE_BADGE_LABELS.get(t.state, t.state),
             has_update_today=(t.id in update_today_set),
+            update_session_date=mgmt_session_date,
         )
         open_trade_rows[t.id] = row_vm
         # Legacy mappings — kept for backward compat with any external consumer.
