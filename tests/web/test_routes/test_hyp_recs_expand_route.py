@@ -566,6 +566,108 @@ def test_expand_route_freshness_footer_includes_finished_ts(
 
 
 # ---------------------------------------------------------------------------
+# 3e.4 Task A.2 — current price renders at top of expansion partial via
+# PriceCache wiring from the route handler.
+# ---------------------------------------------------------------------------
+def _patch_single_ticker_get(monkeypatch, *, snapshot=None):
+    """Stub PriceCache.get (single-ticker path used by build_hyp_recs_expanded)
+    so the expand route does not invoke yfinance during tests."""
+
+    def _get(self, ticker: str):
+        return snapshot
+    monkeypatch.setattr(PriceCache, "get", _get)
+
+
+def test_expand_route_renders_current_price_when_cache_hits(
+    seeded_db, monkeypatch,
+):
+    """A.AC.3 + A.AC.4 — the expand route threads `request.app.state.price_cache`
+    into `build_hyp_recs_expanded`; the template renders `Current: $X.XX`
+    above the Order parameters heading. Discriminating: pre-wiring path
+    has no `Current:` substring; post-wiring path renders the stub price."""
+    snap = PriceSnapshot(
+        ticker="NVDA", price=187.34, asof=datetime.now(),
+        is_stale=False, source="live",
+    )
+    _patch_single_ticker_get(monkeypatch, snapshot=snap)
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg)
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/hyp-recs/NVDA/expand",
+            headers={"HX-Request": "true"},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    assert "Current: $187.34" in body, (
+        f"current-price line missing; body excerpt:\n{body[:1500]}"
+    )
+    # Layout watch: current-price line MUST render ABOVE Order parameters
+    # heading per brief §0.3 #1.
+    assert body.index("Current: $187.34") < body.index("Order parameters"), (
+        "current-price line must render ABOVE the Order parameters heading"
+    )
+
+
+def test_expand_route_renders_stale_indicator_when_price_stale(
+    seeded_db, monkeypatch,
+):
+    """A.AC.5 — when the PriceSnapshot has is_stale=True, template renders
+    `(stale)` next to the price. Mirrors `partials/open_positions_row.html.j2`
+    stale-flag pattern per brief §0.3 #2."""
+    snap = PriceSnapshot(
+        ticker="NVDA", price=187.34, asof=datetime.now(),
+        is_stale=True, source="last_close",
+    )
+    _patch_single_ticker_get(monkeypatch, snapshot=snap)
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg)
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/hyp-recs/NVDA/expand",
+            headers={"HX-Request": "true"},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    assert "Current: $187.34" in body
+    assert "(stale)" in body, (
+        "stale snapshot must render the `(stale)` indicator next to the price"
+    )
+
+
+def test_expand_route_renders_dash_when_price_unavailable(
+    seeded_db, monkeypatch,
+):
+    """A.AC.6 — when PriceCache.get returns None (no live, no last_close),
+    template renders `Current: —`. Mirrors open-positions empty-snapshot
+    rendering pattern per brief §0.3 #2."""
+    _patch_single_ticker_get(monkeypatch, snapshot=None)
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg)
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/hyp-recs/NVDA/expand",
+            headers={"HX-Request": "true"},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    assert "Current: —" in body, (
+        "missing-price fallback must render the `Current: —` placeholder"
+    )
+    # Discriminating: must NOT accidentally render a price string when
+    # the snapshot is None.
+    assert "Current: $" not in body, (
+        "no price snapshot ⇒ template must not render a `Current: $N.NN` line"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Task 5.6 — Take-this-trade button (Q8) on expansion.
 # Spec §3.5.6 (layout) + §3.7 D.2 D.3 D.5 (binding contracts).
 # ---------------------------------------------------------------------------

@@ -169,6 +169,7 @@ def hyp_recs_expand(request: Request, ticker: str):
     `finished_ts IS NULL` cannot win.
     """
     cfg = apply_overrides(request.app.state.cfg)
+    cache = request.app.state.price_cache
     templates = request.app.state.templates
     ticker_upper = ticker.upper()
     conn = connect(cfg.paths.db_path)
@@ -182,6 +183,7 @@ def hyp_recs_expand(request: Request, ticker: str):
             vm = build_hyp_recs_expanded(
                 conn, cfg,
                 ticker=ticker_upper, current_balance=current_balance,
+                cache=cache,
             )
             if vm is None:
                 return templates.TemplateResponse(
