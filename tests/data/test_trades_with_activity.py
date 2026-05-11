@@ -285,7 +285,7 @@ def test_empty_period_returns_empty_list(conn):
 
 def test_trim_only_in_period_on_still_open_trade_tags_event_not_closed(conn):
     """Codex R1 Major #1 regression: a partial-exit ('trim') fill on a
-    still-'managing' trade must NOT trigger the [CLOSED] tag.
+    still-open trade must NOT trigger the [CLOSED] tag.
 
     Prior implementation tagged any non-entry-fill-in-period as
     was_closed_in_period regardless of trade state. The fix gates
@@ -294,31 +294,109 @@ def test_trim_only_in_period_on_still_open_trade_tags_event_not_closed(conn):
     row (event_type='exit' per swing/data/repos/fills.py:65), so the
     trade still surfaces via the [EVENT] branch — the row still appears,
     just under the semantically-correct tag.
+
+    Codex R2 Minor #2 strengthening: the conftest insert_exit_fill helper
+    with close_trade=False leaves state='entered', but the real exit
+    service transitions a trim to 'partial_exited'. This test flips
+    state to 'partial_exited' manually to mirror the real lifecycle
+    state machine, ensuring the regression covers the partial_exited
+    state (not just entered/managing).
     """
     tid = _add_trade(
         conn, ticker="TRM", entry_date="2026-03-10",
         entry_price=10.0, initial_shares=100, initial_stop=9.0,
     )
-    # Trim 30 shares mid-period. close_trade=False keeps state='entered'
-    # (which the helper treats the same as 'managing' for this purpose —
-    # any non-terminal state). The fill is action='trim'.
     with conn:
         insert_exit_fill(
             conn, trade_id=tid, exit_date="2026-04-15",
             exit_price=11.0, shares=30, action="trim", close_trade=False,
             fill_datetime="2026-04-15T15:00:00",
         )
+        # Mirror production exit-service: a trim transitions state to
+        # 'partial_exited' (Codex R2 Minor #2).
+        conn.execute(
+            "UPDATE trades SET state='partial_exited' WHERE id=?", (tid,),
+        )
     rows = list_trades_with_activity_in_period(
         conn, period_start="2026-04-01", period_end="2026-04-30",
     )
     assert len(rows) == 1
     assert rows[0].trade_id == tid
-    # NOT [CLOSED] — trade is still open.
+    # NOT [CLOSED] — trade is still partial_exited (non-terminal).
     assert rows[0].state_tag == "[EVENT]"
     # No trade-level exit fields populated because state is not closed.
     assert rows[0].exit_date is None
     assert rows[0].exit_price is None
     assert rows[0].realized_R is None
+
+
+def test_trim_in_period_then_exit_later_does_not_tag_closed_for_earlier_period(conn):
+    """Codex R2 Major #1 regression: a trade with a trim fill in April +
+    final exit fill in May, viewed from the APRIL cadence review, must
+    NOT tag [CLOSED]. The trade IS in terminal state ('closed') by the
+    time the April review opens (May exit already happened), AND it has
+    a non-entry fill in April (the trim), so the R1-style heuristic
+    (terminal-state + any-non-entry-fill-in-period) would incorrectly
+    tag [CLOSED]. The R2 fix requires the LAST non-entry fill across all
+    time to fall in-period.
+    """
+    tid = _add_trade(
+        conn, ticker="LON", entry_date="2026-03-10",
+        entry_price=10.0, initial_shares=100, initial_stop=9.0,
+    )
+    with conn:
+        insert_exit_fill(
+            conn, trade_id=tid, exit_date="2026-04-15",
+            exit_price=11.0, shares=30, action="trim", close_trade=False,
+            fill_datetime="2026-04-15T15:00:00",
+        )
+        insert_exit_fill(
+            conn, trade_id=tid, exit_date="2026-05-10",
+            exit_price=13.0, shares=70, action="exit",
+            fill_datetime="2026-05-10T15:00:00",
+        )
+    # APRIL review: should NOT tag [CLOSED] — the actual close was in May.
+    rows_apr = list_trades_with_activity_in_period(
+        conn, period_start="2026-04-01", period_end="2026-04-30",
+    )
+    assert len(rows_apr) == 1
+    assert rows_apr[0].trade_id == tid
+    assert rows_apr[0].state_tag == "[EVENT]"
+    # MAY review: SHOULD tag [CLOSED] — the closing fill is in-period.
+    rows_may = list_trades_with_activity_in_period(
+        conn, period_start="2026-05-01", period_end="2026-05-31",
+    )
+    assert len(rows_may) == 1
+    assert rows_may[0].state_tag == "[CLOSED]"
+
+
+def test_fractional_second_event_ts_on_period_end_included(conn):
+    """Codex R2 Major #2 regression: a trade_events row at
+    '2026-04-30T23:59:59.500000' must be INCLUDED in an April review.
+
+    The prior R1 fix used `ts <= 'YYYY-MM-DDT23:59:59'` as the upper
+    bound, which compares less than '2026-04-30T23:59:59.500000'
+    lexicographically — so fractional-second timestamps at the very end
+    of period_end were silently excluded. The R2 fix uses a half-open
+    next-day-midnight upper bound that is fully inclusive of any sub-
+    second precision on the last day.
+    """
+    tid = _add_trade(conn, ticker="FRAC", entry_date="2026-03-15")
+    with conn:
+        # Insert trade_event directly so we control fractional-second ts.
+        conn.execute(
+            """
+            INSERT INTO trade_events (trade_id, ts, event_type, payload_json)
+            VALUES (?, ?, 'note', '{"note":"sub-second"}')
+            """,
+            (tid, "2026-04-30T23:59:59.500000"),
+        )
+    rows = list_trades_with_activity_in_period(
+        conn, period_start="2026-04-01", period_end="2026-04-30",
+    )
+    assert len(rows) == 1
+    assert rows[0].trade_id == tid
+    assert rows[0].state_tag == "[EVENT]"
 
 
 def test_ordering_is_deterministic_for_same_day_closes(conn):

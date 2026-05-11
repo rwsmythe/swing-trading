@@ -523,16 +523,24 @@ def list_trades_with_activity_in_period(
     Contract per 3e.16 dispatch brief §0.3 #6. The three predicates are:
 
       * was_opened_in_period: ``entry_date >= ps AND entry_date <= pe``
-      * was_closed_in_period: trade has reached terminal state
-        (``'closed'`` or ``'reviewed'``) AND has a non-entry fill inside
-        the period. A partial-exit ('trim') fill on a still-open trade
-        does NOT qualify — that case falls through to ``[EVENT]``
-        (Codex R1 Major #1 fix). Phase 7 fills are the source-of-truth
-        for exit dates; the ``exits`` table is dropped.
-      * had_event_in_period: any ``trade_events`` row with
-        ``ts BETWEEN ps||'T00:00:00' AND pe||'T23:59:59'`` (sargable
-        against the ``(trade_id, ts)`` composite index per brief
-        watch-item; ANY event_type counts — operator wants to see
+      * was_closed_in_period: trade is in terminal state
+        (``'closed'`` or ``'reviewed'``) AND the LAST non-entry fill
+        across all time falls in-period (Codex R2 Major #1 fix). The
+        prior implementation tested "any non-entry fill in-period",
+        which incorrectly tagged the April cadence review as [CLOSED]
+        for a trade that trimmed in April but exited in May — by April
+        review time the trade is terminally closed AND has a non-entry
+        (trim) fill in-period, but the actual close happened later.
+        A 'trim' fill on a still-open trade also does not qualify
+        (state-not-terminal) — that case falls through to [EVENT] via
+        the paired trade_events row. Phase 7 fills are the
+        source-of-truth for exit dates; the ``exits`` table is dropped.
+      * had_event_in_period: any ``trade_events`` row with ``ts``
+        in the half-open interval ``[ps||'T00:00:00', (pe+1day)||'T00:00:00')``
+        (Codex R2 Major #2 — half-open form is fully inclusive of
+        fractional-second datetimes like ``2026-04-30T23:59:59.500000``;
+        sargable against the ``(trade_id, ts)`` composite index per
+        brief watch-item; ANY event_type counts — operator wants to see
         "this trade was touched during the period" regardless of
         event_type per brief §3.1 watch items).
 
@@ -563,15 +571,23 @@ def list_trades_with_activity_in_period(
     exit-shape" definition MUST be mirrored here.
     """
     # Brief §3.1 watch-item: trade_events.ts is ISO datetime; period_end is
-    # ISO date. Use range predicates with explicit T00:00:00 / T23:59:59
-    # bounds so the (trade_id, ts) composite index does a range scan
-    # instead of a wrapped-function scan via date(ts).
+    # ISO date. Use half-open range predicates against the next-day
+    # midnight upper bound: fully inclusive of fractional-second datetimes
+    # (Codex R2 Major #2) AND sargable against the (trade_id, ts)
+    # composite index (Codex R1 Major #2).
+    from datetime import date as _date
+    from datetime import timedelta as _timedelta
     period_start_ts = f"{period_start}T00:00:00"
-    period_end_ts = f"{period_end}T23:59:59"
+    period_end_exclusive_ts = (
+        _date.fromisoformat(period_end) + _timedelta(days=1)
+    ).isoformat() + "T00:00:00"
 
     # 1. Find candidate trade_ids via UNION across the three predicates.
-    # Sargable range form on ts / fill_datetime (no date() wrapper) per
-    # Codex R1 Major #2.
+    # NOTE: the trade_events / fills branches of the candidate UNION can't
+    # leverage the (trade_id, ts) composite index because trade_id is not
+    # constrained at this step — these are necessarily table scans (sargable
+    # on ts, but the leading composite-index column is absent). The
+    # per-trade probes further down DO leverage the index.
     candidate_rows = conn.execute(
         """
         SELECT DISTINCT trade_id FROM (
@@ -580,16 +596,16 @@ def list_trades_with_activity_in_period(
             UNION
             SELECT trade_id FROM fills
               WHERE action != 'entry'
-                AND fill_datetime >= ? AND fill_datetime <= ?
+                AND fill_datetime >= ? AND fill_datetime < ?
             UNION
             SELECT trade_id FROM trade_events
-              WHERE ts >= ? AND ts <= ?
+              WHERE ts >= ? AND ts < ?
         )
         """,
         (
             period_start, period_end,
-            period_start_ts, period_end_ts,
-            period_start_ts, period_end_ts,
+            period_start_ts, period_end_exclusive_ts,
+            period_start_ts, period_end_exclusive_ts,
         ),
     ).fetchall()
     if not candidate_rows:
@@ -605,43 +621,45 @@ def list_trades_with_activity_in_period(
         # was_opened_in_period (entry_date inclusive on both ends)
         was_opened = period_start <= trade.entry_date <= period_end
 
-        # Latest non-entry fill ts INSIDE period (used for [CLOSED] tag +
-        # activity_ts when was_closed_in_period). Sargable range form.
-        row = conn.execute(
-            """
-            SELECT MAX(fill_datetime) FROM fills
-            WHERE trade_id = ? AND action != 'entry'
-              AND fill_datetime >= ? AND fill_datetime <= ?
-            """,
-            (trade_id, period_start_ts, period_end_ts),
-        ).fetchone()
-        latest_exit_fill_ts_in_period = row[0]
-        # Codex R1 Major #1: a non-entry fill in-period only qualifies as
-        # was_closed_in_period when the trade itself reached terminal
-        # state. A 'trim' fill on a still-'managing' trade is a partial
-        # exit, not a close — that case falls through to [EVENT] via the
-        # paired trade_events row.
-        was_closed_in_period = (
-            latest_exit_fill_ts_in_period is not None
-            and trade.state in ("closed", "reviewed")
-        )
+        # Codex R2 Major #1: was_closed_in_period requires the LAST
+        # non-entry fill (across all time, not just in-period) to fall
+        # in-period AND the trade to be in terminal state. This
+        # distinguishes "the closing fill landed in this period" from
+        # "any historical non-entry fill happens to be in this period"
+        # — the latter would mis-tag a trim-in-April + exit-in-May trade
+        # as [CLOSED] when the April cadence review opens (terminal-state
+        # + has-in-period-fill is True under the prior heuristic).
+        was_closed_in_period = False
         latest_exit_date_in_period: str | None = None
-        if latest_exit_fill_ts_in_period is not None:
-            latest_exit_date_in_period = (
-                latest_exit_fill_ts_in_period.split("T")[0]
-                if "T" in latest_exit_fill_ts_in_period
-                else latest_exit_fill_ts_in_period
-            )
+        if trade.state in ("closed", "reviewed"):
+            last_fill_row = conn.execute(
+                """
+                SELECT MAX(fill_datetime) FROM fills
+                WHERE trade_id = ? AND action != 'entry'
+                """,
+                (trade_id,),
+            ).fetchone()
+            last_fill_ts_all_time = last_fill_row[0]
+            if (
+                last_fill_ts_all_time is not None
+                and period_start_ts <= last_fill_ts_all_time < period_end_exclusive_ts
+            ):
+                was_closed_in_period = True
+                latest_exit_date_in_period = (
+                    last_fill_ts_all_time.split("T")[0]
+                    if "T" in last_fill_ts_all_time
+                    else last_fill_ts_all_time
+                )
 
         # Latest trade_events.ts INSIDE period (used for [EVENT] activity_ts).
-        # Range-form predicate against (trade_id, ts) composite index.
+        # Range-form half-open predicate against (trade_id, ts) composite index.
         row = conn.execute(
             """
             SELECT MAX(ts) FROM trade_events
             WHERE trade_id = ?
-              AND ts >= ? AND ts <= ?
+              AND ts >= ? AND ts < ?
             """,
-            (trade_id, period_start_ts, period_end_ts),
+            (trade_id, period_start_ts, period_end_exclusive_ts),
         ).fetchone()
         latest_event_ts_in_period = row[0]
         had_event_in_period = latest_event_ts_in_period is not None
