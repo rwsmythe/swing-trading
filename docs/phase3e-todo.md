@@ -47,9 +47,11 @@
 
 > **Archived:** 3e.1 (mark-to-market on Account card; SHIPPED 2026-04-26 `2b5cded`) + 3e.3 (`POST /prices/refresh` clears OHLCV breaker; SHIPPED 2026-04-26 `5b56a2d`). See archive.
 
-### 3e.4 — Current price in hyp-rec expanded row (operator-surfaced 2026-05-08)
+### 3e.4 — Current price in hyp-rec expanded row — **SHIPPED 2026-05-10 at `44ac760`** (polish-bundle Task family A; commits 083fa68 + 88d17ca + Codex-fix 17d6e55)
 
-**Observed:** When a hypothesis-recommendation row on the dashboard is expanded (chevron click → `GET /hyp-recs/<ticker>/expand` → `partials/hypothesis_recommendations_expanded.html.j2`), the additional details panel does NOT include current price. Operator workflow: expand a hyp-rec to evaluate the trade decision; current-price context is needed alongside pivot, ADR, sector etc., but currently absent.
+> **Outcome:** SHIPPED as Task family A in polish bundle 2026-05-10. New `HypRecsExpandedVM.current_price: PriceSnapshot | None` field; `build_hyp_recs_expanded` extended with `cache=None, executor=None` kwargs; route threads `request.app.state.price_cache` + `price_fetch_executor`. Template renders `Current: $X.XX` with `(stale)` indicator at top of expanded panel above Order parameters. Codex R1 Major #1+#2+#3 caught brief-author error: brief watch-item named non-existent `PriceCache.get_or_fetch(ticker, executor=...)` API; real API is `cache.get_many([tickers], deadline_seconds=..., executor=executor)`. Implementer fix in 17d6e55 mirrors open-positions dashboard path. +8 tests; operator-witnessed Surface 1 PASS. Original entry retained below for historical reference.
+
+**Observed (original):** When a hypothesis-recommendation row on the dashboard is expanded (chevron click → `GET /hyp-recs/<ticker>/expand` → `partials/hypothesis_recommendations_expanded.html.j2`), the additional details panel does NOT include current price. Operator workflow: expand a hyp-rec to evaluate the trade decision; current-price context is needed alongside pivot, ADR, sector etc., but currently absent.
 
 **Proposed fix:** Surface current price in the expanded panel. Mirrors the pattern already used in open-positions row (price_snapshot from PriceFetcher). VM `build_hyp_recs_expanded` already resolves the binding pipeline run; extend to also fetch the current price for the ticker (likely via the same `PriceCache` pathway the dashboard uses) and add to `HypRecsExpandedVM`. Template renders the price + stale-flag if applicable.
 
@@ -88,9 +90,11 @@
 - CLAUDE.md gotcha "HTMX form-driven endpoints have two browser-only failure surfaces" (Phase 5 R1 M2).
 - CLAUDE.md gotcha "HX-Redirect target route must be verified to exist" (Phase 6 I3).
 
-### 3e.7 — Example entries beside premortem + pre-trade-thesis textareas (operator-surfaced 2026-05-08)
+### 3e.7 — Example entries beside premortem + pre-trade-thesis textareas — **SHIPPED 2026-05-10 at `44ac760`** (polish-bundle Task family B; commits 40b3daf + d973126 + operator-gate I1 fix ed563d3)
 
-**Observed:** Trade entry form has free-text fields for pre-mortem + pre-trade thesis. New / occasional users may not know what an effective entry looks like; operator wants generic example text rendered alongside (not inside) the textareas to assist with filling them out.
+> **Outcome:** SHIPPED as Task family B in polish bundle 2026-05-10. 8 example asides — one per textarea: thesis + why_now + expected_scenario + invalidation_condition + 4 premortem subs (technical / market_sector / execution / additional). Each aside wrapped in HTML5 native `<details>`/`<summary>` for individually-expandable behavior, default collapsed. CSS in `swing/web/static/app.css`. Two operator-driven mid-gate iterations caught by operator-witnessed Surface 4: (1) brief-author undercount (locked '5 textareas' but Pre-trade thesis fieldset has 4 — only thesis got an aside originally); (2) inverted visibility lock from "visible always, NO toggle" → "default collapsed, individually expandable." Both fixed inline via operator-gate I1 commit ed563d3 (+3 new content tests + bumped layout-class count assertion 5→8 + new default-collapsed test). +7 tests total. Original entry retained below for historical reference.
+
+**Observed (original):** Trade entry form has free-text fields for pre-mortem + pre-trade thesis. New / occasional users may not know what an effective entry looks like; operator wants generic example text rendered alongside (not inside) the textareas to assist with filling them out.
 
 **Proposed fix:** Add a side-panel `<aside>` to the right of each textarea showing 2-3 generic example entries (NOT trade-specific; static content). Operator preference: examples visible always, not toggle-shown. CSS layout: textarea + aside in a flex/grid container.
 
@@ -942,7 +946,9 @@ Operator-surfaced 2026-05-04. Three concurrent uses of the official Charles Schw
 - 2026-05-06 Phase 10 metrics dashboard entry (above) — outcome-distribution surfaces in v2's review interface depend on Phase 10 infrastructure.
 - 2026-05-04 Schwab API integration entry (above) — v2's "delisted-stock data is essential" requirement may surface in Schwab Phase B market-data integration scope.
 
-## 2026-05-10 Ruff residual cleanup (BACKLOG; bundle with other minor fixes)
+## 2026-05-10 Ruff residual cleanup (BACKLOG; **N818 SHIPPED 2026-05-10 at `44ac760`**; E501 still open)
+
+> **N818 outcome (2026-05-10):** SHIPPED as Task family C in polish bundle 2026-05-10 (commit `efd3e15`). All 8 exception class renames landed in one mechanical commit: `SchemaVersionMismatch`, `LeaseRevoked`, `WatchlistEntryNotFound`, `ConcurrentRunBlocked`, `ChartingUnavailable`, `SoftWarnException`, `HardCapException`, `DuplicateOpenPositionException` → `…Error` suffixed. ~284 lines changed across `swing/` + `tests/` + `docs/` (the docs/ touches were spec/plan/backlog historical-reference renames; Codex R1 Minor #1 surfaced that the phase3e-todo N818 table cells got reflowed by the sed pass and the audit trail was restored via parenthetical). Ruff baseline 26 → 18 (matches expectation). 18 E501 still open per below.
 
 **Surfaced 2026-05-10** during a ruff sweep that took the `swing/` baseline from 78 → 26 across three commits (`e99047f` safe auto-fixes 78→44, `33338f7` unsafe auto-fixes 44→34, `9c9b57c` manual B904+E741+SIM115-noqa batch 34→26). The 26 remaining are deferred for bundling with other minor fixes rather than a dedicated dispatch.
 
