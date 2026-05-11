@@ -785,3 +785,186 @@ def test_c10_build_cadence_complete_vm_consumes_fills(seeded_db):
         f"in-period closed trade; got {vm.n_closed_trades_in_period}. "
         f"If 0, the migration helper returned empty (no fills surfaced)."
     )
+
+
+# ---------------------------------------------------------------------------
+# 3e.16 — build_cadence_complete_vm populates trades_during_period via
+# list_trades_with_activity_in_period.
+# ---------------------------------------------------------------------------
+
+
+def test_3e16_build_cadence_complete_vm_populates_trades_during_period(seeded_db):
+    """The builder must populate trades_during_period with one TradeSummaryVM
+    per trade returned by list_trades_with_activity_in_period."""
+    from swing.data.db import connect as _connect
+    from swing.data.repos.review_log import insert_pre_create
+    from swing.web.view_models.trades import (
+        TradeSummaryVM,
+        build_cadence_complete_vm,
+    )
+
+    cfg, _ = seeded_db
+    conn = _connect(cfg.paths.db_path)
+    try:
+        with conn:
+            review_id = insert_pre_create(
+                conn, review_type="daily",
+                period_start="2026-05-04", period_end="2026-05-04",
+                scheduled_date="2026-05-05",
+            )
+    finally:
+        conn.close()
+    assert review_id is not None
+
+    # Two trades: one opened+closed same-period; one entered before but
+    # received an event in period.
+    rt = _seed_phase7_trade(
+        cfg, ticker="RND", state="entered",
+        initial_shares=10, entry_price=100.0, initial_stop=95.0,
+    )
+    # Override entry_date so it falls inside the daily period.
+    conn = _connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE trades SET entry_date='2026-05-04' WHERE id=?", (rt,),
+            )
+    finally:
+        conn.close()
+    _seed_fill(
+        cfg, trade_id=rt, action="exit", quantity=10, price=110.0,
+        fill_datetime="2026-05-04T15:30:00", reason="target",
+    )
+    # Force state to closed (the exit-fill insert doesn't auto-close in this fixture).
+    conn = _connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute("UPDATE trades SET state='closed' WHERE id=?", (rt,))
+    finally:
+        conn.close()
+
+    ev = _seed_phase7_trade(
+        cfg, ticker="EVT", state="managing",
+        initial_shares=10, entry_price=100.0, initial_stop=95.0,
+    )
+    # Add a note event inside the period; entry_date is 2026-05-01 (out of period).
+    from swing.data.repos.trades import add_note_event
+    conn = _connect(cfg.paths.db_path)
+    try:
+        with conn:
+            add_note_event(
+                conn, trade_id=ev, event_ts="2026-05-04T11:00:00",
+                note="watching SMA",
+            )
+    finally:
+        conn.close()
+
+    vm = build_cadence_complete_vm(cfg=cfg, review_id=review_id)
+    assert vm is not None
+    assert isinstance(vm.trades_during_period, tuple)
+    assert len(vm.trades_during_period) == 2
+    for row in vm.trades_during_period:
+        assert isinstance(row, TradeSummaryVM)
+
+    by_ticker = {r.ticker: r for r in vm.trades_during_period}
+    assert by_ticker["RND"].state_tag == "[OPENED+CLOSED]"
+    assert by_ticker["RND"].realized_R == pytest.approx(2.0)
+    assert by_ticker["EVT"].state_tag == "[EVENT]"
+    assert by_ticker["EVT"].realized_R is None
+
+
+def test_3e16_build_cadence_complete_vm_empty_when_no_activity(seeded_db):
+    """A review with no trade activity in its period must produce
+    trades_during_period == () (empty tuple)."""
+    from swing.data.db import connect as _connect
+    from swing.data.repos.review_log import insert_pre_create
+    from swing.web.view_models.trades import build_cadence_complete_vm
+
+    cfg, _ = seeded_db
+    conn = _connect(cfg.paths.db_path)
+    try:
+        with conn:
+            review_id = insert_pre_create(
+                conn, review_type="daily",
+                period_start="2026-06-01", period_end="2026-06-01",
+                scheduled_date="2026-06-02",
+            )
+    finally:
+        conn.close()
+    assert review_id is not None
+
+    # Trade entered + closed BEFORE period — should not surface.
+    tid = _seed_phase7_trade(
+        cfg, ticker="OUT", state="entered",
+        initial_shares=10, entry_price=100.0, initial_stop=95.0,
+    )
+    _seed_fill(
+        cfg, trade_id=tid, action="exit", quantity=10, price=105.0,
+        fill_datetime="2026-05-04T15:30:00", reason="target",
+    )
+
+    vm = build_cadence_complete_vm(cfg=cfg, review_id=review_id)
+    assert vm is not None
+    assert vm.trades_during_period == ()
+
+
+def test_3e16_n_closed_trades_count_consistent_with_summary_list(seeded_db):
+    """The existing n_closed_trades_in_period count must agree with the
+    closed-subset of the new trades_during_period list (priority-coding
+    OPENED+CLOSED also counts as closed-in-period)."""
+    from swing.data.db import connect as _connect
+    from swing.data.repos.review_log import insert_pre_create
+    from swing.web.view_models.trades import build_cadence_complete_vm
+
+    cfg, _ = seeded_db
+    conn = _connect(cfg.paths.db_path)
+    try:
+        with conn:
+            review_id = insert_pre_create(
+                conn, review_type="daily",
+                period_start="2026-05-04", period_end="2026-05-04",
+                scheduled_date="2026-05-05",
+            )
+    finally:
+        conn.close()
+
+    # In-period closed.
+    t_closed = _seed_phase7_trade(
+        cfg, ticker="WMT", state="entered",
+        initial_shares=10, entry_price=100.0, initial_stop=95.0,
+    )
+    _seed_fill(
+        cfg, trade_id=t_closed, action="exit", quantity=10, price=110.0,
+        fill_datetime="2026-05-04T15:30:00", reason="target",
+    )
+    conn = _connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE trades SET state='closed' WHERE id=?", (t_closed,),
+            )
+    finally:
+        conn.close()
+    # In-period EVENT (no exit) — should NOT contribute to closed count.
+    t_event = _seed_phase7_trade(
+        cfg, ticker="EVT", state="managing",
+        initial_shares=10, entry_price=100.0, initial_stop=95.0,
+    )
+    from swing.data.repos.trades import add_note_event
+    conn = _connect(cfg.paths.db_path)
+    try:
+        with conn:
+            add_note_event(
+                conn, trade_id=t_event, event_ts="2026-05-04T11:00:00",
+                note="watching",
+            )
+    finally:
+        conn.close()
+
+    vm = build_cadence_complete_vm(cfg=cfg, review_id=review_id)
+    assert vm is not None
+    closed_in_summary = sum(
+        1 for r in vm.trades_during_period
+        if "CLOSED" in r.state_tag
+    )
+    assert closed_in_summary == vm.n_closed_trades_in_period == 1

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import dataclass
 
 from swing.data.models import Trade, TradeEvent
 
@@ -455,3 +456,333 @@ def update_trade_review_fields(
     )
     if cur.rowcount == 0:
         raise ValueError(f"trade {trade_id} not found")
+
+
+# ---------------------------------------------------------------------------
+# 3e.16 — cadence-review trade-activity summary helper.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TradeActivitySummary:
+    """One row of ``list_trades_with_activity_in_period`` output.
+
+    Locked field set per 3e.16 dispatch brief §0.3 #3. Consumed by
+    ``swing/web/view_models/trades.py::build_cadence_complete_vm`` to render
+    the per-trade summary section on the cadence completion form.
+    """
+    trade_id: int
+    ticker: str
+    entry_date: str
+    entry_price: float
+    exit_date: str | None
+    exit_price: float | None
+    realized_R: float | None  # noqa: N815 — operator-facing R-multiple convention
+    hypothesis_label: str | None
+    state_tag: str  # '[OPENED]' / '[CLOSED]' / '[EVENT]' / '[OPENED+CLOSED]'
+    activity_ts: str  # ISO datetime used for ASC chronological ordering
+
+
+def _share_weighted_realized_r(
+    *,
+    entry_price: float,
+    initial_stop: float,
+    initial_shares: int,
+    fills: list[tuple[float, float]],  # (exit_price, quantity)
+) -> float | None:
+    """Mirror of ``swing.trades.review.compute_actual_realized_R_effective``.
+
+    Re-implemented in the repo layer (per Phase 6 §A.1 byte-identical pattern)
+    so the helper does not import from the trades-service layer. Formula:
+        share_weighted_R = sum_i (r_multiple_i * quantity_i / initial_shares)
+    where r_multiple_i = (exit_price_i - entry_price) / (entry_price - initial_stop).
+    Returns None for ill-defined math (zero risk-per-share or zero shares).
+    """
+    risk_per_share = entry_price - initial_stop
+    if risk_per_share == 0 or initial_shares == 0:
+        return None
+    total = 0.0
+    for exit_price, quantity in fills:
+        if quantity == 0:
+            continue
+        r_mult = (exit_price - entry_price) / risk_per_share
+        total += r_mult * (quantity / initial_shares)
+    return total
+
+
+def list_trades_with_activity_in_period(
+    conn: sqlite3.Connection,
+    *,
+    period_start: str,  # ISO date YYYY-MM-DD
+    period_end: str,    # ISO date YYYY-MM-DD (inclusive)
+) -> list[TradeActivitySummary]:
+    """Return distinct trades with at least one activity (entry, exit,
+    or trade_event) inside [period_start, period_end] inclusive, ordered
+    by activity_ts ASC.
+
+    Contract per 3e.16 dispatch brief §0.3 #6. The three predicates are:
+
+      * was_opened_in_period: ``entry_date >= ps AND entry_date <= pe``
+      * was_closed_in_period: trade is in terminal state
+        (``'closed'`` or ``'reviewed'``) AND the LAST non-entry fill
+        across all time falls in-period (Codex R2 Major #1 fix). The
+        prior implementation tested "any non-entry fill in-period",
+        which incorrectly tagged the April cadence review as [CLOSED]
+        for a trade that trimmed in April but exited in May — by April
+        review time the trade is terminally closed AND has a non-entry
+        (trim) fill in-period, but the actual close happened later.
+        A 'trim' fill on a still-open trade also does not qualify
+        (state-not-terminal) — that case falls through to [EVENT] via
+        the paired trade_events row. Phase 7 fills are the
+        source-of-truth for exit dates; the ``exits`` table is dropped.
+      * had_event_in_period: any ``trade_events`` row with ``ts``
+        in the half-open interval ``[ps||'T00:00:00', (pe+1day)||'T00:00:00')``
+        (Codex R2 Major #2 — half-open form is fully inclusive of
+        fractional-second datetimes like ``2026-04-30T23:59:59.500000``;
+        sargable against the ``(trade_id, ts)`` composite index per
+        brief watch-item; ANY event_type counts — operator wants to see
+        "this trade was touched during the period" regardless of
+        event_type per brief §3.1 watch items).
+
+    ``state_tag`` priority: OPENED+CLOSED > OPENED > CLOSED > EVENT (the
+    same-period round-trip case renders as the concatenated form). A trade
+    opened in period that also has trade_events is tagged ``[OPENED]``, not
+    ``[OPENED+EVENT]`` — the entry IS the event.
+
+    Codex R4 Major #1 disposition (ACCEPTED): the [EVENT] tag's operator-
+    facing semantic per brief §3.1 watch-items is "this trade was touched
+    during the period" (regardless of touch-type). The R3 fill-fallback
+    means a trade can appear under [EVENT] purely because of an in-period
+    non-entry fill (no in-period trade_events row, e.g. when the paired
+    event ts diverged out-of-period). Adding a distinct [FILL] or
+    [PARTIAL] tag would violate the brief's locked 4-tag set; instead
+    [EVENT] is the broader operator-facing label for any in-period
+    non-OPEN-non-CLOSE activity.
+
+    ``activity_ts`` priority (latest relevant activity in period; per
+    brief §0.3 #4 plus Codex R3 Major #1 fill-fallback + R4 Major #2
+    MAX-combine):
+
+      1. ``was_closed_in_period`` → ``latest_exit_date_in_period||'T23:59:59'``
+      2. otherwise if ``had_event_in_period`` OR
+         ``has_non_entry_fill_in_period``: take the MAX of all in-period
+         non-OPEN-non-CLOSE anchor timestamps (latest trade_events.ts +
+         latest non-entry fill_datetime). R4 Major #2: a trade with an
+         event on April 5 and a trim fill on April 20 must sort at
+         April 20 (the latest activity), not April 5. R3 case
+         (production exit-service writes fill_datetime and the paired
+         trade_events.ts separately, so they can diverge — a fill in-
+         period whose paired event is out-of-period) is the case where
+         only the fill-anchor is non-None.
+      3. ``was_opened_in_period`` → ``entry_date||'T00:00:00'`` (this
+         branch is unreachable when any of the above qualifies; the
+         candidate UNION guarantees at least one branch fires).
+
+    The string is used purely for ASC chronological ordering; consumers
+    should not interpret it as the trade's canonical timestamp (exit
+    fills carry their own ``fill_datetime``). Sort is stable on
+    ``(activity_ts, ticker, trade_id)`` so identical activity_ts strings
+    (multi-trade same-day exits) render deterministically.
+
+    ``realized_R`` is the share-weighted R-multiple per
+    ``compute_actual_realized_R_effective`` semantics. NULL for trades whose
+    DB ``state`` is not yet ``'closed'``/``'reviewed'`` (still-open trades
+    show ``None`` even if a partial-exit fill landed in-period).
+
+    Note on Phase 7 fills source-of-truth: ``_list_all_exitshape_via_fills``
+    (web view-model layer) is the canonical adapter for the "non-entry fills
+    as exits" abstraction. This helper does not import that adapter because
+    it lives in the web layer; instead the same ``action != 'entry'``
+    predicate is applied directly against the ``fills`` table per the
+    byte-identical re-implementation pattern (brief §3.1 A.AC.6, Phase 6
+    §A.1 lesson). Any future change to the adapter's "non-entry =
+    exit-shape" definition MUST be mirrored here.
+    """
+    # Brief §3.1 watch-item: trade_events.ts is ISO datetime; period_end is
+    # ISO date. Use half-open range predicates against the next-day
+    # midnight upper bound: fully inclusive of fractional-second datetimes
+    # (Codex R2 Major #2) AND sargable against the (trade_id, ts)
+    # composite index (Codex R1 Major #2).
+    from datetime import date as _date
+    from datetime import timedelta as _timedelta
+    period_start_ts = f"{period_start}T00:00:00"
+    period_end_exclusive_ts = (
+        _date.fromisoformat(period_end) + _timedelta(days=1)
+    ).isoformat() + "T00:00:00"
+
+    # 1. Find candidate trade_ids via UNION across the three predicates.
+    # NOTE: the trade_events / fills branches of the candidate UNION can't
+    # leverage the (trade_id, ts) composite index because trade_id is not
+    # constrained at this step — these are necessarily table scans (sargable
+    # on ts, but the leading composite-index column is absent). The
+    # per-trade probes further down DO leverage the index.
+    candidate_rows = conn.execute(
+        """
+        SELECT DISTINCT trade_id FROM (
+            SELECT id AS trade_id FROM trades
+              WHERE entry_date >= ? AND entry_date <= ?
+            UNION
+            SELECT trade_id FROM fills
+              WHERE action != 'entry'
+                AND fill_datetime >= ? AND fill_datetime < ?
+            UNION
+            SELECT trade_id FROM trade_events
+              WHERE ts >= ? AND ts < ?
+        )
+        """,
+        (
+            period_start, period_end,
+            period_start_ts, period_end_exclusive_ts,
+            period_start_ts, period_end_exclusive_ts,
+        ),
+    ).fetchall()
+    if not candidate_rows:
+        return []
+
+    summaries: list[TradeActivitySummary] = []
+    for (trade_id,) in candidate_rows:
+        trade = get_trade(conn, trade_id)
+        if trade is None:
+            # Orphan event/fill with no parent trade — defensive skip.
+            continue
+
+        # was_opened_in_period (entry_date inclusive on both ends)
+        was_opened = period_start <= trade.entry_date <= period_end
+
+        # Codex R2 Major #1: was_closed_in_period requires the LAST
+        # non-entry fill (across all time, not just in-period) to fall
+        # in-period AND the trade to be in terminal state. This
+        # distinguishes "the closing fill landed in this period" from
+        # "any historical non-entry fill happens to be in this period"
+        # — the latter would mis-tag a trim-in-April + exit-in-May trade
+        # as [CLOSED] when the April cadence review opens (terminal-state
+        # + has-in-period-fill is True under the prior heuristic).
+        was_closed_in_period = False
+        latest_exit_date_in_period: str | None = None
+        if trade.state in ("closed", "reviewed"):
+            last_fill_row = conn.execute(
+                """
+                SELECT MAX(fill_datetime) FROM fills
+                WHERE trade_id = ? AND action != 'entry'
+                """,
+                (trade_id,),
+            ).fetchone()
+            last_fill_ts_all_time = last_fill_row[0]
+            if (
+                last_fill_ts_all_time is not None
+                and period_start_ts <= last_fill_ts_all_time < period_end_exclusive_ts
+            ):
+                was_closed_in_period = True
+                latest_exit_date_in_period = (
+                    last_fill_ts_all_time.split("T")[0]
+                    if "T" in last_fill_ts_all_time
+                    else last_fill_ts_all_time
+                )
+
+        # Latest trade_events.ts INSIDE period (used for [EVENT] activity_ts).
+        # Range-form half-open predicate against (trade_id, ts) composite index.
+        row = conn.execute(
+            """
+            SELECT MAX(ts) FROM trade_events
+            WHERE trade_id = ?
+              AND ts >= ? AND ts < ?
+            """,
+            (trade_id, period_start_ts, period_end_exclusive_ts),
+        ).fetchone()
+        latest_event_ts_in_period = row[0]
+        had_event_in_period = latest_event_ts_in_period is not None
+
+        # Latest in-period NON-ENTRY fill ts (independent of close-state
+        # gating). Codex R3 Major #1: in production the exit service
+        # writes fill_datetime and the paired trade_events.ts as
+        # separately-supplied arguments, so they can diverge. A fill
+        # in-period whose paired event is out-of-period would otherwise
+        # fall through to entry_date midnight as activity_ts (possibly
+        # months earlier). This probe gives the [EVENT] branch a sane
+        # in-period anchor for that case.
+        row = conn.execute(
+            """
+            SELECT MAX(fill_datetime) FROM fills
+            WHERE trade_id = ? AND action != 'entry'
+              AND fill_datetime >= ? AND fill_datetime < ?
+            """,
+            (trade_id, period_start_ts, period_end_exclusive_ts),
+        ).fetchone()
+        latest_in_period_fill_ts = row[0]
+
+        # state_tag derivation (brief §0.3 #2 priority).
+        if was_opened and was_closed_in_period:
+            state_tag = "[OPENED+CLOSED]"
+        elif was_opened:
+            state_tag = "[OPENED]"
+        elif was_closed_in_period:
+            state_tag = "[CLOSED]"
+        else:
+            state_tag = "[EVENT]"
+
+        # activity_ts derivation (brief §0.3 #4 + Codex R3 fill-fallback
+        # + R4 Major #2 MAX-combine).
+        if was_closed_in_period:
+            activity_ts = f"{latest_exit_date_in_period}T23:59:59"
+        elif had_event_in_period or latest_in_period_fill_ts is not None:
+            # R4 Major #2: take MAX of all in-period non-OPEN-non-CLOSE
+            # anchors. A trade with an event on Apr 5 + trim fill on Apr 20
+            # must sort at Apr 20, not Apr 5. R3's fill-fallback case
+            # (paired event ts diverged out-of-period) is the sub-case
+            # where only the fill anchor is non-None.
+            activity_ts = max(
+                ts for ts in (
+                    latest_event_ts_in_period,
+                    latest_in_period_fill_ts,
+                )
+                if ts is not None
+            )
+        else:
+            # was_opened MUST be True (else trade_id wouldn't be in candidate set).
+            activity_ts = f"{trade.entry_date}T00:00:00"
+
+        # Trade-level exit fields + realized_R: populated only when the trade
+        # itself is fully closed (state in 'closed'/'reviewed'). Uses ALL
+        # non-entry fills (not just in-period ones) because operator wants to
+        # see the trade's actual realized outcome.
+        exit_date: str | None = None
+        exit_price: float | None = None
+        realized_r: float | None = None
+        if trade.state in ("closed", "reviewed"):
+            exit_rows = conn.execute(
+                """
+                SELECT fill_datetime, price, quantity FROM fills
+                WHERE trade_id = ? AND action != 'entry'
+                ORDER BY fill_datetime ASC, fill_id ASC
+                """,
+                (trade_id,),
+            ).fetchall()
+            if exit_rows:
+                latest = exit_rows[-1]
+                exit_date = latest[0].split("T")[0] if "T" in latest[0] else latest[0]
+                exit_price = float(latest[1])
+                realized_r = _share_weighted_realized_r(
+                    entry_price=trade.entry_price,
+                    initial_stop=trade.initial_stop,
+                    initial_shares=trade.initial_shares,
+                    fills=[(float(r[1]), float(r[2])) for r in exit_rows],
+                )
+
+        summaries.append(TradeActivitySummary(
+            trade_id=trade_id,
+            ticker=trade.ticker,
+            entry_date=trade.entry_date,
+            entry_price=trade.entry_price,
+            exit_date=exit_date,
+            exit_price=exit_price,
+            realized_R=realized_r,
+            hypothesis_label=trade.hypothesis_label,
+            state_tag=state_tag,
+            activity_ts=activity_ts,
+        ))
+
+    # Codex R1 Major #4: secondary sort keys (ticker, trade_id) make ties
+    # deterministic when multiple trades share the same activity_ts string
+    # (multi-trade same-day closes collapse to YYYY-MM-DDT23:59:59).
+    summaries.sort(key=lambda s: (s.activity_ts, s.ticker, s.trade_id))
+    return summaries

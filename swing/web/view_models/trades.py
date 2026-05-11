@@ -14,8 +14,10 @@ from swing.data.repos.fills import (
     list_fills_for_trade,
 )
 from swing.data.repos.trades import (
+    TradeActivitySummary,
     get_trade,
     list_open_trades,
+    list_trades_with_activity_in_period,
 )
 from swing.data.repos.watchlist import list_active_watchlist
 from swing.recommendations.sizing import compute_shares
@@ -25,6 +27,12 @@ from swing.trades.exit import ExitReason
 from swing.trades.stop_adjust import stop_adjust_rationale_options
 from swing.web.chart_scope import latest_completed_pipeline_run
 from swing.web.price_cache import PriceCache
+
+# 3e.16 — re-export TradeActivitySummary under the VM-layer name. The
+# helper's dataclass is the canonical shape used by the cadence-completion
+# template; no separate VM dataclass is needed (would duplicate the locked
+# field set in two places). Template-side imports use TradeSummaryVM.
+TradeSummaryVM = TradeActivitySummary
 
 # Phase 7 Sub-C T1: Active-trade lifecycle states (exit-form + stop-form
 # preconditions). Mirrors `_ACTIVE_STATES_SQL` in repos/trades.py.
@@ -667,6 +675,11 @@ def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
 class CadenceCompleteVM:
     review: ReviewLog
     n_closed_trades_in_period: int
+    # 3e.16 — per-trade activity summaries for the review's period
+    # (entered / exited / had a trade_event inside the period inclusive).
+    # Default-empty tuple keeps backwards compatibility with existing
+    # constructor sites that pre-date the field.
+    trades_during_period: tuple[TradeSummaryVM, ...] = ()
     # 5-VM existing-fields safe defaults:
     session_date: str = ""
     stale_banner: str = ""
@@ -732,9 +745,19 @@ def build_cadence_complete_vm(*, review_id: int, cfg: Config) -> CadenceComplete
             ]
             if relevant and ps <= max(relevant) <= pe:
                 n += 1
+        # 3e.16 — per-trade activity summaries for the period.
+        trades_during_period = tuple(list_trades_with_activity_in_period(
+            conn,
+            period_start=review.period_start,
+            period_end=review.period_end,
+        ))
     finally:
         conn.close()
-    return CadenceCompleteVM(review=review, n_closed_trades_in_period=n)
+    return CadenceCompleteVM(
+        review=review,
+        n_closed_trades_in_period=n,
+        trades_during_period=trades_during_period,
+    )
 
 
 # ---------------------------------------------------------------------------

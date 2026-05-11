@@ -5,5 +5,24 @@
 <p>Period: {{ vm.review.period_start }} – {{ vm.review.period_end }}</p>
 <p>{{ vm.n_closed_trades_in_period }} trade{{ "s" if vm.n_closed_trades_in_period != 1 else "" }}
    closed in this period.</p>
+
+<h2>Trade activity during this period</h2>
+{% if vm.trades_during_period %}
+<ul class="cadence-trade-summary-list">
+  {% for row in vm.trades_during_period %}
+  <li>
+    <span class="trade-summary-tag">{{ row.state_tag }}</span>
+    <a href="/trades/{{ row.trade_id }}">{{ row.ticker }}</a>
+    {{ row.entry_date }}{% if row.exit_date %} → {{ row.exit_date }}{% endif %}
+    ${{ '%.2f' | format(row.entry_price) }}{% if row.exit_price is not none %} → ${{ '%.2f' | format(row.exit_price) }}{% endif %}
+    {% if row.realized_R is not none %}{{ '%+.2f' | format(row.realized_R) }}R{% endif %}
+    {% if row.hypothesis_label %}<span class="muted">{{ row.hypothesis_label }}</span>{% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="muted">No trade activity in this period.</p>
+{% endif %}
+
 {% include "partials/cadence_complete_form.html.j2" %}
 {% endblock %}
