@@ -1058,3 +1058,118 @@ Per project baseline-tracking convention: when bundled in, update `docs/orchestr
 - `~/.claude/projects/c--Users-rwsmy-swing-trading/memory/feedback_orchestrator_vs_implementer_execution.md` — the auto-memory entry capturing the principle
 - `docs/orchestrator-context.md` Conventions section — target home for the formalized policy
 - `feedback_orchestrator_performs_merge.md` — pattern complement (both about scoping orchestrator actions to high-leverage edges)
+
+---
+
+## 2026-05-10 3e.8 disposition + commission bundles (derived from sell-side advisories investigation)
+
+**Operator-orchestrator walkthrough 2026-05-10** of the 14 operator-decision items in [`docs/3e8-sell-side-advisories-investigation.md`](3e8-sell-side-advisories-investigation.md) §6 produced the dispositions below. Three commission bundles + three deferred-with-gate items + one in-flight operator-action (§4.G transcription) + two banked-without-gate items.
+
+### Disposition matrix (14 items)
+
+| # | §3e.8 item | Disposition | Workstream / trigger |
+|---|---|---|---|
+| 1 | §4.A trail-MA gating | §4.A.bis commissioned (advisory-only); §4.A deferred (V2.1 §VII.F-routed; gated on §4.G) | Bundle 3 below |
+| 2 | §4.B trim/sell-into-strength | Commission V1 (single hint at +1R; default 25%) | Bundle 2 below |
+| 3 | §4.C / §4.C.bis time-stop | Defer both; revisit at n≥10 closed sub-A+ trades OR §4.G-driven Minervini 7-week confirmation | Banked — see "Banked without gate" below |
+| 4 | §4.D parabolic detector | Commission, bundled with §4.B + §4.K (sell-side bundle) | Bundle 2 below |
+| 5 | §4.E briefing advisories | Commission, bundled with §4.F (parity bundle) | Bundle 1 below |
+| 6 | §4.F detail+expanded advisory column | Commission, bundled with §4.E | Bundle 1 below |
+| 7 | §4.G Minervini SEPA + DST sell-side transcription | Commission as immediate priority — operator-action; PRECEDES Bundles 1-3 | In-flight — scaffolding files at `reference/methodology/minervini-sell-side-rules.md` + `reference/methodology/dst-take-profit-and-trail.md` |
+| 8 | §4.H sector RS check | Defer with second-source gate | Deferred-with-gate below |
+| 9 | §4.I volume-confirmed exit | Defer with §4.G-completion-gate-trichotomy | Deferred-with-gate below |
+| 10 | §4.J combined-violation | Defer with second-source gate | Deferred-with-gate below |
+| 11 | §4.K planned_target_R hit | Commission, bundled with §4.B + §4.D | Bundle 2 below |
+| 12 | DHC §6.2 decision | Case A confirmed 2026-05-10 (snapshot 2026-05-08T11:24:23: open_R=0.85, MFE=0.88R, maturity_stage=pre_+1.5R) — keep 20MA trail; ignore 10MA suggestion | Resolved |
+| 13 | §6.3 sequencing | Approved as 4-step: §4.G transcription → Bundle 1 → Bundle 2 → Bundle 3 | Resolved |
+| 14 | §6.4 [UNVERIFIED] flags (13 items) | Triage folded into §4.G transcription work | In-flight — see scaffolding files |
+
+### In-flight — §4.G transcription (operator-action; precedes all dispatches)
+
+**Status:** Scaffolding files created; operator transcription pending.
+
+**Files to populate:**
+- `reference/methodology/minervini-sell-side-rules.md` — 7 rules (M.1-M.7); ~30-90 min per chapter
+- `reference/methodology/dst-take-profit-and-trail.md` — 5 rules (D.1-D.5); ~30-90 min per chapter
+
+Each file has per-rule sections with placeholder `Source citation` / `Transcription` / `Operator notes` / `Status` fields. Status flips per rule from `⚠ UNVERIFIED — pending operator transcription` to `CONFIRMED` / `CORRECTED` / `NOT-PRESENT-IN-SOURCE`. Once all rules in a file are dispositioned, top-of-file `Status` flips to `✓ COMPLETE` and the file becomes reference-grade per V2 Addendum Addition 2.
+
+**Triggered post-completion:**
+- §4.I (Bundle 0 trichotomy) — re-evaluate per M.6 disposition
+- §4.A full + §4.C full — V2.1 §VII.F routing now possible (still operator-decision whether to route)
+- 13 [UNVERIFIED] flags in `docs/3e8-sell-side-advisories-investigation.md` §6.4 — update flag dispositions
+
+### Bundle 1 — Advisory-parity (§4.E + §4.F) — DISPATCH-READY POST-§4.G
+
+**Trigger:** §4.G transcription complete. Operator commission.
+
+**Scope:** Wire existing advisory rules from `swing/trades/advisory.py` into two surfaces that don't render advisories today:
+- §4.E: pipeline briefing (`exports/<session>/briefing.md` + `briefing.html`) — fix `swing/pipeline/runner.py:921` `open_trade_advisories={}` hard-code
+- §4.F: trade-detail page + open-positions expanded HTMX partial — VMs already carry data
+
+**Effort:** ~5-6 hr bundled (~2-3 hr each). Advisory-message-only; zero risk.
+
+**Cross-refs:** §3e.8 §4.E + §4.F.
+
+### Bundle 2 — Sell-side advisories (§4.B + §4.K + §4.D) — DISPATCH-READY POST-BUNDLE-1
+
+**Trigger:** Bundle 1 ships. Operator commission.
+
+**Scope:** Three new sell-side advisory rules emitting on dashboard advisory column (and via Bundle 1 also on briefing + detail + expanded row):
+- §4.B: trim/sell-into-strength at +1R first time (default 25%); both threshold + percentage cfg-tunable via new `cfg.stop_advisory.trim_first_r_trigger` + `trim_first_pct_default`
+- §4.K: planned_target_R hit when `r_so_far >= trades.planned_target_R`
+- §4.D: parabolic-extension detector (default ≥25% in ≤5 days AND ≥15% above 20MA); cfg-tunable via new `cfg.stop_advisory.parabolic_*` keys
+
+**Effort:** ~8-10 hr bundled. All advisory-message-only; new helper `recent_pct_gain` extension to `AdvisoryContext` for §4.D.
+
+**Cross-refs:** §3e.8 §4.B + §4.K + §4.D.
+
+### Bundle 3 — Maturity-stage hint advisory (§4.A.bis) — DISPATCH-READY POST-BUNDLE-2
+
+**Trigger:** Bundle 2 ships. Operator commission.
+
+**Scope:** New annotation-style advisory `maturity_stage_recommendation` emitting "Maturity stage `{stage}` → recommended trail-MA: `{20MA | 10MA}`". Does NOT suppress existing `trail_10MA` / `trail_20MA` advisories — operator keeps both raw signals visible plus the maturity-stage hint. Reads `daily_management_records.maturity_stage` from active snapshot.
+
+**Effort:** ~2-3 hr. Advisory-message-only; no V2.1 §VII.F.
+
+**Cross-refs:** §3e.8 §4.A.bis (alternative formulation of §4.A).
+
+### Deferred §4.H — Sector RS check (second-source gate)
+
+**Trigger to revisit:** A doctrine-confluent sector-lag exit rule surfaces from §4.G transcription OR another future doctrine source.
+
+**Rationale:** Single-source-Q (Qullamaggie only) is structural weakness; no Minervini or DST analog in surveyed sources. Cost-benefit (10-14 hr + V2.1 §VII.F) doesn't change with trade-volume scale. Drop-equivalent for now; gate preserves optionality.
+
+**Cross-refs:** §3e.8 §4.H + §3.H.
+
+### Deferred §4.I — Volume-confirmed exit overlay (§4.G-completion-gate-trichotomy)
+
+**Trigger to revisit:** §4.G transcription completes. Then THREE possible dispositions per M.6 outcome:
+- M.6 carries **specific** volume threshold in source → commission §4.I with confirmed defaults (~2-3 hr; advisory-message-only)
+- M.6 is **qualitative** without numerical threshold → escalate to second-source gate (mirror §4.H pattern)
+- M.6 **doesn't exist** in source → drop §4.I
+
+**Rationale:** Threshold-tuning friction without doctrine anchor; premature optimization. Gate ties revisit to concrete trichotomy.
+
+**Cross-refs:** §3e.8 §4.I + §3.I.
+
+### Deferred §4.J — Combined-violation rule (second-source gate)
+
+**Trigger to revisit:** A doctrine-confluent combined-violation rule surfaces from §4.G transcription OR another future doctrine source.
+
+**Rationale:** Single-source-Q (Qullamaggie only); cosmetic refinement (operator already sees both messages). Same gate-pattern as §4.H for matrix consistency.
+
+**Cross-refs:** §3e.8 §4.J + §3.J.
+
+### Banked without gate — §4.A full + §4.C / §4.C.bis
+
+**§4.A full** (classification-altering trail-MA gating with suppression): Banked. Trigger to revisit = sufficient evidence accumulation from Bundle 3's §4.A.bis hint adoption (n≥10 closed trades where operator's actual stop adjustments consistently follow the maturity-stage-recommended MA). At that point, the §4.A.bis behavioral evidence IS the shadow-mode-equivalent that V2.1 §VII.F would otherwise require.
+
+**§4.C / §4.C.bis** (time-stop discipline change): Banked. Triggers to revisit = either (a) n≥10 closed sub-A+ hypothesis trades giving statistical signal on whether 10/0.5R is too aggressive, OR (b) operator surfaces a specific trade time-stopped prematurely with hypothesis still under evaluation, OR (c) §4.G Minervini transcription confirms 7-week rule context that justifies an informed default change.
+
+### Cross-references for this disposition
+
+- `docs/3e8-sell-side-advisories-investigation.md` — full investigation analysis (746 lines)
+- `reference/methodology/minervini-sell-side-rules.md` — §4.G scaffolding (Minervini)
+- `reference/methodology/dst-take-profit-and-trail.md` — §4.G scaffolding (DST)
+- Earlier 3e.8 entry above (line 311) — investigation entry summary
