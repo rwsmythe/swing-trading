@@ -49,9 +49,13 @@ from swing.pipeline.lease import (
 )
 from swing.pipeline.recovery import sweep_stale_artifacts
 from swing.pipeline.staging import StagingDir, promote_staging
+from swing.pipeline.ohlcv import compute_smas as _compute_smas
+from swing.pipeline.ohlcv import previous_close as _previous_close
 from swing.prices import PriceFetcher
 from swing.recommendations.build import BuildContext, build_recommendations
 from swing.rendering.briefing import BriefingInputs, build_briefing_view_model
+from swing.rendering.view_models import AdvisorySuggestionVM
+from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
 from swing.rendering.charts import (
     ChartingUnavailableError,
     PatternOverlay,
@@ -874,8 +878,91 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
     return {t: promote.target_path / f"{t}.png" for t in out_paths}
 
 
+def compose_open_trade_advisories_for_briefing(
+    *,
+    trades,
+    fetcher,
+    candidates_by_ticker,
+    weather_status: str,
+    stop_advisory_config,
+    action_session_date: str,
+) -> dict[int, list[AdvisorySuggestionVM]]:
+    """Compose per-trade advisories for the pipeline briefing renderer.
+
+    Mirrors the dashboard's ``compute_all_suggestions(trade, AdvisoryContext)``
+    composition (see ``swing/web/view_models/dashboard.py`` build_dashboard
+    loop) so the briefing emits the SAME advisories an operator would see on
+    the dashboard. Pipeline-side divergence from web side
+    (locked design §0.3 #2):
+
+      * No live ``PriceCache``. ``current_price`` is sourced from the open-
+        position synthetic candidate row's ``close`` (written by
+        ``_step_evaluate`` per CLAUDE.md "PriceCache._last_close only sees
+        tickers in today's candidates table"), then falls back to the OHLCV
+        ``previous_close`` if the candidate has no close. The pipeline runs
+        end-of-day; ``previous_close`` IS the most-recent completed-session
+        close → semantically equivalent to the dashboard's last-close
+        fallback in the after-hours render path.
+      * SMA + ``previous_close`` from ``fetcher.get(ticker, lookback_days=200)``
+        which consumes the per-ticker archive (``swing.data.ohlcv_archive``)
+        ``_step_charts`` already populated. Re-reading the archive does NOT
+        add new yfinance calls — open-position tickers always appear in
+        chart-step scope (Tier-2 dedup precedence) so the archive is fresh.
+
+    Returns ``{trade.id: [AdvisorySuggestionVM, ...]}`` keyed by every open
+    trade — empty list when no advisory triggers fire OR when the fetcher
+    fails (defensive: briefing emission must not abort on per-ticker
+    fetcher failure; logged as warning).
+    """
+    out: dict[int, list[AdvisorySuggestionVM]] = {}
+    for t in trades:
+        if t.id is None:
+            # Briefing renderer key uses `t.id or 0` — defensive: skip rows
+            # that lack a PK (data-integrity bug; would otherwise collide).
+            continue
+        try:
+            bars = fetcher.get(t.ticker, lookback_days=200, as_of_date=None)
+        except Exception as exc:
+            log.warning(
+                "briefing advisory: fetcher.get failed for %s: %s",
+                t.ticker, exc,
+            )
+            out[t.id] = []
+            continue
+
+        smas = _compute_smas(bars, [10, 20, 50])
+        prev_close = _previous_close(bars)
+
+        cand = candidates_by_ticker.get(t.ticker)
+        cand_close = cand.close if cand is not None else None
+        # current_price precedence: candidate's last_close (kept fresh for
+        # open-position tickers by `_step_evaluate`) → OHLCV last-bar close
+        # fallback. Both anchor on the last completed session.
+        current_price = cand_close if cand_close is not None else prev_close
+        if current_price is None:
+            out[t.id] = []
+            continue
+
+        ctx = AdvisoryContext(
+            as_of_date=action_session_date,
+            current_price=current_price,
+            sma10=smas.get(10),
+            sma20=smas.get(20),
+            sma50=smas.get(50),
+            previous_close=prev_close,
+            weather_status=weather_status,
+            config=stop_advisory_config,
+        )
+        raw = compute_all_suggestions(t, ctx)
+        out[t.id] = [
+            AdvisorySuggestionVM(rule=s.rule, message=s.message) for s in raw
+        ]
+    return out
+
+
 def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
-                  data_asof: str, chart_paths: dict[str, Path]) -> None:
+                  data_asof: str, chart_paths: dict[str, Path],
+                  fetcher: PriceFetcher | None = None) -> None:
     lease.verify_held()
     from swing.data.repos.candidates import fetch_candidates_for_run
     from swing.data.repos.daily_management import (
