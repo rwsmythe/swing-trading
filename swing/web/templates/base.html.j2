@@ -4,6 +4,51 @@
 <head>
   <meta charset="utf-8">
   <title>Swing Trading Dashboard</title>
+  <script>
+    /* 3e.10 dark theme — FOUC-prevention head script.
+     *
+     * Placed BEFORE the stylesheet link (Codex R1 Major #2 fix) so the
+     * `dark` class is on <html> before the browser has fetched and
+     * applied app.css — eliminates the theoretical race where a fast-
+     * cached stylesheet could compute initial style on the unmodified
+     * <html> element. Inline + synchronous; this script always runs
+     * before any <body> markup parses.
+     *
+     * Reads localStorage `swing-trading-theme`; validates the value
+     * against the ["light","dark"] allowlist; on "dark", adds the
+     * `dark` class to <html>. CSS pairs `html.dark, body.dark` so
+     * this head-time class application activates the dark theme
+     * cascade before first paint.
+     *
+     * Untrusted-localStorage hardening: any value other than "dark"
+     * or "light" (including null on first visit, or a tampered value)
+     * silently falls back to the default light theme. localStorage
+     * access is wrapped in try/catch for private-browsing-mode browsers
+     * that throw on access.
+     *
+     * CSP note: this is an inline <script> with no nonce. The project
+     * does not currently set a Content-Security-Policy header. If a
+     * strict CSP gets introduced (Phase 9+), this script needs to
+     * either move to /static/theme-fouc.js with a nonce/hash, or get
+     * exempted via 'unsafe-inline'. Documented in dispatch brief §4.2.
+     */
+    (function () {
+      try {
+        var t = window.localStorage.getItem('swing-trading-theme');
+        /* Explicit allowlist: only "dark" and "light" are recognized.
+         * Any other value (null on first visit, tampered, legacy) is
+         * silently ignored — default light theme stays applied. */
+        if (t === 'dark' || t === 'light') {
+          if (t === 'dark') {
+            document.documentElement.classList.add('dark');
+          }
+          /* t === 'light' → no class change; default IS light. */
+        }
+      } catch (e) {
+        /* Private-browsing / storage disabled — fall back to light. */
+      }
+    })();
+  </script>
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/htmx.min.js"></script>
   <script>
@@ -28,6 +73,10 @@
     <a href="/reviews/pending">Reviews</a>
     <a href="/pipeline">Pipeline</a>
     <a href="/config">Config</a>
+    <button id="theme-toggle"
+            class="theme-toggle"
+            type="button"
+            aria-label="Switch to dark theme">🌙</button>
   </nav>
   {% if vm.stale_banner %}
     {% include "partials/stale_banner.html.j2" %}
@@ -41,5 +90,65 @@
   <main>
     {% block content %}{% endblock %}
   </main>
+  <script>
+    /* 3e.10 dark theme — toggle click handler + body-class sync.
+     *
+     * Attached via addEventListener (NOT inline onclick=) per dispatch
+     * brief §0.3 #7 (CSP-clean pattern).
+     *
+     * Codex R1 Major #1 fix: keeps both `html.dark` AND `body.dark` in
+     * sync. The head FOUC script runs before <body> exists so it can
+     * only annotate <html>; this end-of-body script promotes the class
+     * onto <body> so the brief §0.3 #6 `body.dark` contract holds for
+     * any selector targeting body specifically (the paired
+     * `html.dark, body.dark` rule in app.css already activates dark
+     * tokens off either, but future selectors written per the locked
+     * convention may target body alone).
+     *
+     * Click handler: toggles the class on BOTH <html> and <body>
+     * synchronously, persists the new value to localStorage (try/catch
+     * — storage may be unavailable), and updates the button's emoji +
+     * aria-label.
+     *
+     * Initial-render reconciliation: the server-rendered button text
+     * is 🌙 with aria-label "Switch to dark theme" (light is the
+     * default). If the FOUC head script already applied html.dark
+     * from localStorage, this script runs at parse-time and flips
+     * the button to ☀️ before the operator interacts — a sub-frame
+     * visual catch-up (acceptable V1; bank for V2 if operator
+     * surfaces it).
+     */
+    (function () {
+      var btn = document.getElementById('theme-toggle');
+      if (!btn) return;
+      var html = document.documentElement;
+      var body = document.body;
+      /* Initial sync (Codex R2 Minor #1 — two-way): mirror html.dark
+       * onto body so the body.dark contract holds in either direction. */
+      body.classList.toggle('dark', html.classList.contains('dark'));
+      function applyToButton(isDark) {
+        if (isDark) {
+          btn.textContent = '☀️';  /* ☀️ sun */
+          btn.setAttribute('aria-label', 'Switch to light theme');
+        } else {
+          btn.textContent = '🌙';  /* 🌙 moon */
+          btn.setAttribute('aria-label', 'Switch to dark theme');
+        }
+      }
+      applyToButton(html.classList.contains('dark'));
+      btn.addEventListener('click', function () {
+        var isDark = html.classList.toggle('dark');
+        /* Keep body in sync so `body.dark` selectors stay valid. */
+        body.classList.toggle('dark', isDark);
+        var next = isDark ? 'dark' : 'light';
+        try {
+          window.localStorage.setItem('swing-trading-theme', next);
+        } catch (e) {
+          /* Storage unavailable — flip is session-only. */
+        }
+        applyToButton(isDark);
+      });
+    })();
+  </script>
 </body>
 </html>
