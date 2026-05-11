@@ -99,8 +99,23 @@
       {#- §3 Pre-trade thesis -#}
       <fieldset class="entry-section entry-section-thesis">
         <legend>Pre-trade thesis</legend>
-        <div><label>Thesis</label>
-          <textarea name="thesis"{{ err_class('thesis') }}>{{ vm.draft_thesis }}</textarea></div>
+        {#- 3e.7 Task B.1: per-textarea example aside (locked content from
+            brief §0.3 #6). Static prompt-style hints — NOT trade-specific,
+            NOT toggle-shown. Mirrors operator preference (visible always). -#}
+        <div class="entry-textarea-row">
+          <div class="entry-textarea">
+            <label>Thesis</label>
+            <textarea name="thesis"{{ err_class('thesis') }}>{{ vm.draft_thesis }}</textarea>
+          </div>
+          <aside class="entry-example-aside" aria-label="Examples for pre-trade thesis">
+            <strong>Examples:</strong>
+            <ul>
+              <li>Setup type + base structure (e.g., VCP with N contractions; cup-with-handle; flat base of length L weeks; depth %).</li>
+              <li>Setup grade + binding criteria passed (A+ vs A vs sub-A; which trend-template + VCP criteria are met or relaxed and why the relaxation is acceptable).</li>
+              <li>Catalyst + RS context (sector strength + group leaders confirming; earnings driver; macro thesis).</li>
+            </ul>
+          </aside>
+        </div>
         <div><label>Why now</label>
           <textarea name="why_now"{{ err_class('why_now') }}>{{ vm.draft_why_now }}</textarea></div>
         <div><label>Expected scenario</label>
@@ -112,14 +127,62 @@
       {#- §4 Premortem -#}
       <fieldset class="entry-section entry-section-premortem">
         <legend>Premortem</legend>
-        <div><label>Technical failure mode</label>
-          <textarea name="premortem_technical"{{ err_class('premortem_technical') }}>{{ vm.draft_premortem_technical }}</textarea></div>
-        <div><label>Market / sector failure mode</label>
-          <textarea name="premortem_market_sector"{{ err_class('premortem_market_sector') }}>{{ vm.draft_premortem_market_sector }}</textarea></div>
-        <div><label>Execution failure mode</label>
-          <textarea name="premortem_execution"{{ err_class('premortem_execution') }}>{{ vm.draft_premortem_execution }}</textarea></div>
-        <div><label>Additional risks (optional)</label>
-          <textarea name="premortem_additional">{{ vm.draft_premortem_additional }}</textarea></div>
+        <div class="entry-textarea-row">
+          <div class="entry-textarea">
+            <label>Technical failure mode</label>
+            <textarea name="premortem_technical"{{ err_class('premortem_technical') }}>{{ vm.draft_premortem_technical }}</textarea>
+          </div>
+          <aside class="entry-example-aside" aria-label="Examples for premortem: technical">
+            <strong>Examples:</strong>
+            <ul>
+              <li>What invalidates the setup (close below pivot; close below 50MA; base breakdown on volume).</li>
+              <li>Where the framework would call you wrong (extended above 20MA; tightness floor not met; volume profile thin).</li>
+              <li>Failure modes for the specific pattern (VCP final contraction blow-out; cup-with-handle handle too deep; flat-base inside-day reversal).</li>
+            </ul>
+          </aside>
+        </div>
+        <div class="entry-textarea-row">
+          <div class="entry-textarea">
+            <label>Market / sector failure mode</label>
+            <textarea name="premortem_market_sector"{{ err_class('premortem_market_sector') }}>{{ vm.draft_premortem_market_sector }}</textarea>
+          </div>
+          <aside class="entry-example-aside" aria-label="Examples for premortem: market/sector">
+            <strong>Examples:</strong>
+            <ul>
+              <li>Market weather state + your sizing response (bullish / caution / bearish; full / half / skip).</li>
+              <li>Sector strength vs market (RS rank; leadership concentration; mean-reversion risk).</li>
+              <li>Macro/news risk specific to the trade window (scheduled FOMC / CPI / earnings; sector-specific catalysts pending).</li>
+            </ul>
+          </aside>
+        </div>
+        <div class="entry-textarea-row">
+          <div class="entry-textarea">
+            <label>Execution failure mode</label>
+            <textarea name="premortem_execution"{{ err_class('premortem_execution') }}>{{ vm.draft_premortem_execution }}</textarea>
+          </div>
+          <aside class="entry-example-aside" aria-label="Examples for premortem: execution">
+            <strong>Examples:</strong>
+            <ul>
+              <li>Personal entry biases (chase tendency; premature add; sizing inconsistency).</li>
+              <li>Stop discipline (no tightening before +1.5R; trail-MA selection per trade-maturity stage).</li>
+              <li>Position management (drawdown to half-stop response; breakout-and-fade response).</li>
+            </ul>
+          </aside>
+        </div>
+        <div class="entry-textarea-row">
+          <div class="entry-textarea">
+            <label>Additional risks (optional)</label>
+            <textarea name="premortem_additional">{{ vm.draft_premortem_additional }}</textarea>
+          </div>
+          <aside class="entry-example-aside" aria-label="Examples for premortem: additional">
+            <strong>Examples:</strong>
+            <ul>
+              <li>Earnings proximity + hold-through policy (distance in sessions; sizing / exit policy).</li>
+              <li>Personal availability (travel; workload conflicts; ability to manage in-flight).</li>
+              <li>Catch-all for pattern-specific or ticker-specific risks not covered above.</li>
+            </ul>
+          </aside>
+        </div>
       </fieldset>
 
       {#- §5 Risk acknowledgments. V1: always-visible if-then conditional

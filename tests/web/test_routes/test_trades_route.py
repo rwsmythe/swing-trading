@@ -4681,3 +4681,117 @@ def test_c10_sizing_hint_consumes_fills_for_equity(seeded_db):
         "the migration helper may have returned empty. Baseline text:\n"
         f"{baseline_text!r}\nAfter:\n{after.text!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 3e.7 Task B.1 — Example asides on entry-form textareas. One <aside> per
+# each of the 5 brief-locked textareas (thesis + 4 premortem). Brief §0.3
+# #5 + #6 (locked content). Verify each aside's hint-bullet content is
+# rendered verbatim and the structural wrapper class is present.
+# ---------------------------------------------------------------------------
+def test_b1_entry_form_renders_thesis_aside(seeded_db, monkeypatch):
+    """B.AC.1+B.AC.2 — Pre-trade thesis aside renders with locked content."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="B1TH")
+    _c3_patch_pricecache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=B1TH")
+    assert r.status_code == 200
+    text = r.text
+    # Anchor on unique substring from each of the 3 locked thesis hints.
+    assert "Setup type + base structure" in text
+    assert "Setup grade + binding criteria passed" in text
+    assert "Catalyst + RS context" in text
+
+
+def test_b1_entry_form_renders_premortem_technical_aside(
+    seeded_db, monkeypatch,
+):
+    """B.AC.1+B.AC.2 — Premortem: technical aside renders with locked content."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="B1PT")
+    _c3_patch_pricecache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=B1PT")
+    assert r.status_code == 200
+    text = r.text
+    assert "What invalidates the setup" in text
+    assert "Where the framework would call you wrong" in text
+    assert "Failure modes for the specific pattern" in text
+
+
+def test_b1_entry_form_renders_premortem_market_sector_aside(
+    seeded_db, monkeypatch,
+):
+    """B.AC.1+B.AC.2 — Premortem: market/sector aside renders with locked content."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="B1PM")
+    _c3_patch_pricecache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=B1PM")
+    assert r.status_code == 200
+    text = r.text
+    assert "Market weather state + your sizing response" in text
+    assert "Sector strength vs market" in text
+    assert "Macro/news risk specific to the trade window" in text
+
+
+def test_b1_entry_form_renders_premortem_execution_aside(
+    seeded_db, monkeypatch,
+):
+    """B.AC.1+B.AC.2 — Premortem: execution aside renders with locked content."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="B1PX")
+    _c3_patch_pricecache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=B1PX")
+    assert r.status_code == 200
+    text = r.text
+    assert "Personal entry biases" in text
+    assert "Stop discipline" in text
+    assert "Position management" in text
+
+
+def test_b1_entry_form_renders_premortem_additional_aside(
+    seeded_db, monkeypatch,
+):
+    """B.AC.1+B.AC.2 — Premortem: additional aside renders with locked content."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="B1PA")
+    _c3_patch_pricecache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=B1PA")
+    assert r.status_code == 200
+    text = r.text
+    assert "Earnings proximity + hold-through policy" in text
+    assert "Personal availability" in text
+    assert "Catch-all for pattern-specific or ticker-specific risks" in text
+
+
+def test_b1_entry_form_aside_layout_class_present(seeded_db, monkeypatch):
+    """B.AC.3 — structural wrapper `entry-textarea-row` class present so
+    the CSS flex layout (Task B.2) targets the textarea-aside pairs.
+    Discriminating: regression that drops the wrapper would fail here."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="B1LC")
+    _c3_patch_pricecache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=B1LC")
+    assert r.status_code == 200
+    text = r.text
+    # 5 wrappers expected (one per textarea getting an aside).
+    assert text.count("entry-textarea-row") >= 5, (
+        f"expected at least 5 `entry-textarea-row` wrapper occurrences "
+        f"(one per thesis + 4 premortem textareas); got {text.count('entry-textarea-row')}"
+    )
+    # 5 asides expected.
+    assert text.count("entry-example-aside") >= 5, (
+        f"expected at least 5 `entry-example-aside` elements; "
+        f"got {text.count('entry-example-aside')}"
+    )
