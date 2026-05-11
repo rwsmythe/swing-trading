@@ -1000,6 +1000,49 @@ def compose_open_trade_advisories_for_briefing(
     return out
 
 
+class _CachingFetcherWrapper:
+    """Wraps a fetcher protocol (PriceFetcher or test stub) and caches
+    per-key bars + per-key failure across both
+    ``compose_open_trade_advisories_for_briefing`` and
+    ``compose_open_trade_last_prices_for_briefing`` invocations.
+
+    Codex R3 Major #1 closure — without the cache, the two helpers can
+    diverge under transient fetcher failures: the first call (advisory
+    composition) succeeds and uses ``prev_close``, but the second call
+    (last-price resolution) raises → ticker omitted from
+    ``open_trade_last_prices`` → briefing renderer falls back to
+    ``t.entry_price`` for Last/R/P&L while advisories fire from a newer
+    price. By caching the SAME (ticker, lookback, as_of_date) → bars
+    mapping AND the failure state, both helpers see identical results.
+
+    Lifecycle: instantiated per ``_step_export`` call; discarded at end.
+    Not thread-safe; pipeline run is single-threaded by lease design.
+    """
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self._cache: dict[tuple, object] = {}
+        self._failures: dict[tuple, BaseException] = {}
+
+    def get(self, ticker, lookback_days, *, as_of_date=None):
+        key = (ticker, lookback_days, as_of_date)
+        if key in self._failures:
+            # Re-raise the original exception type so callers (helpers) get
+            # the same failure semantics as the un-cached path.
+            raise self._failures[key]
+        if key in self._cache:
+            return self._cache[key]
+        try:
+            bars = self._inner.get(
+                ticker, lookback_days, as_of_date=as_of_date,
+            )
+        except BaseException as exc:  # noqa: BLE001 — re-raise after caching
+            self._failures[key] = exc
+            raise
+        self._cache[key] = bars
+        return bars
+
+
 def compose_open_trade_last_prices_for_briefing(
     *,
     trades,
@@ -1096,11 +1139,21 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
     # per-ticker OHLCV archive _step_charts already populated → no new
     # yfinance calls. If the caller did NOT supply a fetcher (test paths,
     # explicit opt-out), fall back to the legacy empty-dict.
+    #
+    # Codex R3 Major #1 fix — wrap fetcher in a per-step bars cache so the
+    # advisory helper AND the last-price helper see IDENTICAL bars (or
+    # identical failures) for any given (ticker, lookback, as_of_date)
+    # tuple. Without the cache, a transient failure between the two helper
+    # calls could diverge: advisory uses prev_close path while last-prices
+    # omits the ticker.
+    cached_fetcher = (
+        _CachingFetcherWrapper(fetcher) if fetcher is not None else None
+    )
     open_trade_advisories: dict[int, list[AdvisorySuggestionVM]]
-    if fetcher is not None:
+    if cached_fetcher is not None:
         open_trade_advisories = compose_open_trade_advisories_for_briefing(
             trades=trades,
-            fetcher=fetcher,
+            fetcher=cached_fetcher,
             candidates_by_ticker=candidates_by_ticker,
             weather_status=(weather.status if weather else "STALE"),
             stop_advisory_config=cfg.stop_advisory,
@@ -1119,10 +1172,10 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
     # the (rare) candidate-absent path, while advisories fire from the
     # prev_close — the residual contradiction R2 Major 2 surfaced.
     open_trade_last_prices: dict[str, float]
-    if fetcher is not None:
+    if cached_fetcher is not None:
         open_trade_last_prices = compose_open_trade_last_prices_for_briefing(
             trades=trades,
-            fetcher=fetcher,
+            fetcher=cached_fetcher,
             candidates_by_ticker=candidates_by_ticker,
             data_asof_date=data_asof,
         )

@@ -318,6 +318,78 @@ def test_step_export_populates_open_trade_last_prices_from_candidates(
     )
 
 
+def test_step_export_caches_bars_across_helpers_one_fetch_per_ticker(
+    tmp_path, monkeypatch,
+):
+    """Codex R3 Major #1 closure — when candidate.close is NULL (so the
+    last-price helper falls back to OHLCV), the advisory helper AND the
+    last-price helper both consult the fetcher for the same ticker. The
+    _CachingFetcherWrapper must collapse these to ONE underlying fetcher
+    call per (ticker, lookback, as_of_date) tuple so the two helpers
+    cannot diverge on a transient fetcher failure between them.
+    """
+    from swing.pipeline.lease import Lease
+    from swing.pipeline.runner import _step_export
+
+    cfg = _make_cfg(tmp_path)
+    conn = sqlite3.connect(str(cfg.paths.db_path))
+    try:
+        with conn:
+            eval_id = _seed_eval_run(conn)
+            _seed_open_trade(
+                conn, ticker="CACHE", entry_date="2026-04-01",
+                entry_price=100.0, initial_stop=95.0,
+            )
+            # candidate.close = NULL forces the last-price helper into the
+            # OHLCV fallback path.
+            conn.execute(
+                """INSERT INTO candidates
+                   (evaluation_run_id, ticker, bucket, close, pivot,
+                    initial_stop, rs_method, notes)
+                   VALUES (?, 'CACHE', 'excluded', NULL, NULL, NULL,
+                           'universe', 'open position')""",
+                (eval_id,),
+            )
+            run_id, token = _seed_pipeline_run_running(conn)
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(
+        "swing.pipeline.runner.build_briefing_view_model",
+        lambda inputs: type("VM", (), {"briefing_html": "", "briefing_md": ""})(),
+    )
+    monkeypatch.setattr(
+        "swing.pipeline.runner.export_briefing", lambda **kw: None,
+    )
+    monkeypatch.setattr(
+        "swing.pipeline.runner.promote_staging",
+        lambda **kw: type("PR", (), {"target_path": tmp_path})(),
+    )
+    monkeypatch.setattr(
+        "swing.rendering.retention.archive_old_exports", lambda **kw: None,
+    )
+
+    fetcher = _StubFetcher({"CACHE": _bars_trail_setup()})
+    lease = Lease(db_path=cfg.paths.db_path, run_id=run_id, token=token)
+    _step_export(
+        cfg=cfg, lease=lease, eval_run_id=eval_id,
+        action_session=_date(2026, 4, 15),
+        data_asof="2026-04-14",
+        chart_paths={},
+        fetcher=fetcher,
+    )
+
+    # Even though BOTH helpers consulted the fetcher for CACHE (advisory
+    # helper unconditionally; last-price helper because candidate.close is
+    # NULL), the caching wrapper collapses to ONE underlying call.
+    tickers_called = [t for t, _lb in fetcher.calls]
+    assert tickers_called == ["CACHE"], (
+        f"Expected exactly one underlying fetcher.get call for CACHE across "
+        f"both helpers (Codex R3 Major #1 caching guarantee); got "
+        f"{fetcher.calls!r}"
+    )
+
+
 def test_step_export_last_prices_falls_back_to_prev_close_when_candidate_close_null(
     tmp_path, monkeypatch,
 ):
