@@ -148,7 +148,11 @@
 - CLAUDE.md gotcha "yfinance `interval='1d'` includes in-progress bar" — applies to any benchmark-OHLCV fetch in the new chart pipeline.
 - Phase 10 metrics-dashboard spec at `docs/superpowers/specs/2026-05-06-phase10-metrics-design.md` — may have overlapping regime-display requirements; investigate during scoping.
 
-### 3e.10 — Dark theme (operator-surfaced 2026-05-08)
+### 3e.10 — Dark theme — **SHIPPED 2026-05-10 at `8488bf0`** (worktree dispatch; 7 commits = 3 task-impl + 3 Codex-fix + 1 orchestrator pre-gate I1)
+
+> **Outcome:** SHIPPED via worktree dispatch on `3e10-dark-theme` branch. CSS-variable-driven theme with localStorage-persisted nav-bar toggle (🌙/☀️). Light is default; operator opts in to dark. Codex chain 3 rounds → NO_NEW_CRITICAL_MAJOR (R1 0/5/4 → R2 0/2/3 → R3 0/0/3; convergent shape). 4 Major findings ACCEPTED with sound rationale (.field-error + soft_warn_confirm + visual audit ownership + cross-tab storage event). Orchestrator-side pre-gate I1 added `color-scheme: dark` hint to pre-empt white-on-white form inputs on Windows browsers — operator-witnessed Surface 4 confirmed Config form inputs render dark + readable post-patch. Operator-witnessed gate via Chrome MCP: S1+S2+S3+S4+S5+S7 PASS; S6 covered by S3+S5 localStorage writes. Test count 2166 → 2183 (+17); ruff baseline 18 unchanged. **8 V2 watch items banked** for future polish: .field-error universal styling, soft-warn inline color, native `<details>` chevron, non-topbar link color contrast, cross-tab sync via storage event, weather badge classes (tokens defined; classes not yet in templates), toggle button initial-reconciliation sub-frame FOUC, CSP forward-compat for inline scripts. **Trade-entry-form-direct-URL noted: form is fragment-without-layout when accessed via direct URL; operator's normal "Take this trade" flow keeps form inside dark dashboard body so no operational impact.** Original entry retained.
+
+**Observed (original, 2026-05-08):**
 
 **Observed:** Web UI is light-theme only. Operator wants dark theme available (operator preference + reduces eye strain in evening prep windows; aligns with most modern trader-facing tools).
 
