@@ -1099,17 +1099,11 @@ Per project baseline-tracking convention: when bundled in, update `docs/orchestr
 - **Bundle 3 reframed to Option δ (hybrid α + β-LITE).** Operator-locked 2026-05-10. TWO complementary advisories: (a) §4.A.bis maturity-stage MA hint (operator-policy per Tier-3 #6); (b) M.2 R-multiple stop-tighten hint (doctrine per TLSMW Ch 13 p. 296). Different triggers (MFE-anchored stage vs live R-multiple); complementary signals. ~4-5 hr bundled.
 - **13 [UNVERIFIED] flags in `docs/3e8-sell-side-advisories-investigation.md` §6.4 — dispositions captured in methodology files.** Future doc-update pass can refresh §6.4 inline if/when operator wants the investigation doc to reflect the post-transcription state.
 
-### Bundle 1 — Advisory-parity (§4.E + §4.F) — DISPATCH-READY POST-§4.G
+### Bundle 1 — Advisory-parity (§4.E + §4.F) — **SHIPPED 2026-05-11 at `b535cb2`** (worktree dispatch; 9 commits = 5 task-impl + 1 ruff-style + 3 Codex-fix; 4 Codex rounds NO_NEW_CRITICAL_MAJOR)
 
-**Trigger:** §4.G transcription complete. Operator commission.
+> **Outcome:** SHIPPED via worktree dispatch on `3e8-bundle-1-advisory-parity` branch from BASELINE_SHA `a0d8d21`. Wires existing advisory rules into pipeline briefing (`exports/<session>/briefing.md` + `.html`) + trade-detail page (`/trades/{id}`) + open-positions expanded HTMX partial. NO new advisory rules; pure parity work. Codex chain 4 rounds → NO_NEW_CRITICAL_MAJOR (R1 0/4/2 → R2 0/2/2 → R3 0/1/1 → R4 0/0/0; convergent shape; each round caught real issues including a transient-failure cache-divergence trap fixed via new `_CachingFetcherWrapper`). 2 Major findings ACCEPTED with rationale (R1 M1 brief-on-main-vs-baseline procedural; R1 M4 V2-hardening on yfinance call enforcement). Operator-witnessed gate via Chrome MCP: S2+S3+S4+S5+S6 PASS; S1 SKIPPED-with-test-coverage. Test count 2183 → 2206 (+23); ruff baseline 18 unchanged. **2 V2 watch items banked separately below.**
 
-**Scope:** Wire existing advisory rules from `swing/trades/advisory.py` into two surfaces that don't render advisories today:
-- §4.E: pipeline briefing (`exports/<session>/briefing.md` + `briefing.html`) — fix `swing/pipeline/runner.py:921` `open_trade_advisories={}` hard-code
-- §4.F: trade-detail page + open-positions expanded HTMX partial — VMs already carry data
-
-**Effort:** ~5-6 hr bundled (~2-3 hr each). Advisory-message-only; zero risk.
-
-**Cross-refs:** §3e.8 §4.E + §4.F.
+**Cross-refs:** §3e.8 §4.E + §4.F. Brief at `docs/3e8-bundle-1-advisory-parity-brief.md`.
 
 ### Bundle 2 — Sell-side advisories (§4.B + §4.K + §4.D) — DISPATCH-READY POST-BUNDLE-1
 
@@ -1194,3 +1188,41 @@ For DHC's current state (open_R=0.85, MFE=0.88R, pre_+1.5R) NEITHER would fire y
 - `reference/methodology/minervini-sell-side-rules.md` — §4.G scaffolding (Minervini)
 - `reference/methodology/dst-take-profit-and-trail.md` — §4.G scaffolding (DST)
 - Earlier 3e.8 entry above (line 311) — investigation entry summary
+
+---
+
+## 2026-05-11 V2 watch items banked from 3e.8 Bundle 1 ship
+
+### V2 — Extract shared advisory composer (drift-risk reduction)
+
+**Banked from:** Bundle 1 Codex R1 Minor #1 (orchestrator triage 2026-05-11).
+
+**Symptom:** Advisory composition is now hand-duplicated across 5 paths post-Bundle-1 ship: `build_dashboard`, `build_open_positions_row`, `build_trade_detail_vm`, `build_open_positions_expanded`, briefing helper (`compose_open_trade_advisories_for_briefing`). Future drift risk if `AdvisoryContext` inputs change — every change to advisory composition needs to be propagated to all 5 sites independently.
+
+**Brief-locked deferral:** Bundle 1 brief §0.3 #2 explicitly locks "mirror dashboard composition" for V1 to avoid scope-creep. The hand-duplication is a known trade-off accepted at brief time.
+
+**Proposed V2:** Extract a shared "compose advisory VMs for trade" web-side helper + a separate data_asof-pinned pipeline-side helper. Both consume a common `AdvisoryContext` constructor; both produce the same `tuple[AdvisorySuggestionVM, ...]` shape. Single source of truth for advisory composition logic.
+
+**Effort estimate:** ~3-4 hr (refactor + update 5 call sites + verify all existing tests still pass).
+
+**Trigger:** When `AdvisoryContext` inputs change OR a third advisory-rendering surface gets added OR a Codex round on a future bundle flags drift.
+
+### V2 — `build_open_positions_expanded` cache I/O during SQLite read-snapshot
+
+**Banked from:** Bundle 1 Codex R1 Minor #2 (orchestrator triage 2026-05-11).
+
+**Symptom:** `build_open_positions_expanded` performs cache I/O (PriceCache.get_many) while the route holds a SQLite read-snapshot transaction. Lock window is bounded by `cfg.web.price_fetch_deadline_seconds` (typically 5-8s) but the pattern diverges from `build_dashboard`'s open-own-conn-DB-phase-then-cache-phase canonical pattern.
+
+**Operational impact:** Under sustained load (many concurrent expand requests), the SQLite read-snapshot lock window blocks other read transactions for the cache-I/O duration. At single-operator scale this is invisible; it surfaces if/when the project ever supports concurrent operator sessions or background read-heavy workloads.
+
+**Proposed V2:** Refactor `build_open_positions_expanded` to mirror `build_dashboard`'s pattern — open own connection, complete DB phase, close connection, then enter cache phase. Symmetric with the canonical pattern.
+
+**Effort estimate:** ~2-3 hr (refactor + verify expand-route tests still pass).
+
+**Trigger:** When concurrent-session support becomes a project goal OR when operator surfaces lock-related latency on the expand route.
+
+### Cross-references
+
+- Bundle 1 SHIPPED entry above (line ~417 post-housekeeping)
+- `docs/3e8-bundle-1-advisory-parity-brief.md` §0.3 #2 (mirror-dashboard-composition lock)
+- `swing/web/view_models/dashboard.py:build_dashboard` — canonical open-own-conn pattern reference
