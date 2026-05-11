@@ -24,6 +24,18 @@ class AdvisoryContext:
     previous_close: float | None         # NEW (drives exit_close_below_ma)
     weather_status: str
     config: StopAdvisoryConfig
+    # 3e.8 Bundle 2 — ADR% of price over trailing ~20 bars (per
+    # swing/evaluation/criteria/_base.py:adr_pct). Drives suggest_parabolic_trim
+    # (§4.D). None when OHLCV unavailable / fewer than lookback bars — rule
+    # silently no-ops.
+    adr_pct: float | None = None
+    # 3e.8 Bundle 2 — True iff the trade has at least one non-entry fill
+    # (action != 'entry') recorded. Drives suggest_trim_into_strength (§4.B):
+    # the rule suppresses itself after the first trim/exit, even if the
+    # trade still meets the +1R trigger. Callers compute this from the same
+    # fills they already query for remaining-shares math; default False so
+    # legacy unit-test fixtures continue to fire the rule.
+    has_been_trimmed: bool = False
 
 
 @dataclass(frozen=True)

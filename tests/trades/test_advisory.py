@@ -12,6 +12,45 @@ from swing.trades.advisory import (
 )
 
 
+def test_advisory_context_accepts_adr_pct_field():
+    """3e.8 Bundle 2 — AdvisoryContext gains adr_pct field for §4.D parabolic."""
+    ctx = AdvisoryContext(
+        as_of_date="2026-04-15", current_price=100.0,
+        sma10=None, sma20=None, sma50=None, previous_close=None,
+        weather_status="Bullish", config=StopAdvisoryConfig(),
+        adr_pct=5.0,
+    )
+    assert ctx.adr_pct == 5.0
+
+
+def test_advisory_context_adr_pct_defaults_to_none():
+    ctx = AdvisoryContext(
+        as_of_date="2026-04-15", current_price=100.0,
+        sma10=None, sma20=None, sma50=None, previous_close=None,
+        weather_status="Bullish", config=StopAdvisoryConfig(),
+    )
+    assert ctx.adr_pct is None
+
+
+def test_advisory_context_accepts_has_been_trimmed_field():
+    ctx = AdvisoryContext(
+        as_of_date="2026-04-15", current_price=100.0,
+        sma10=None, sma20=None, sma50=None, previous_close=None,
+        weather_status="Bullish", config=StopAdvisoryConfig(),
+        has_been_trimmed=True,
+    )
+    assert ctx.has_been_trimmed is True
+
+
+def test_advisory_context_has_been_trimmed_defaults_to_false():
+    ctx = AdvisoryContext(
+        as_of_date="2026-04-15", current_price=100.0,
+        sma10=None, sma20=None, sma50=None, previous_close=None,
+        weather_status="Bullish", config=StopAdvisoryConfig(),
+    )
+    assert ctx.has_been_trimmed is False
+
+
 def _trade(*, current_stop: float = 170.0, entry: float = 180.0, days: int = 0) -> Trade:
     from datetime import date, timedelta
     entry_date = (date.fromisoformat("2026-04-15") - timedelta(days=days)).isoformat()
