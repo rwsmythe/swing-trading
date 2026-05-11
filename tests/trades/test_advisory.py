@@ -51,6 +51,234 @@ def test_advisory_context_has_been_trimmed_defaults_to_false():
     assert ctx.has_been_trimmed is False
 
 
+# ----------------------------------------------------------------------
+# 3e.8 Bundle 2 — §4.B suggest_trim_into_strength
+# Entry 180, initial_stop 170 → 1R = $10. +1R fires at price ≥ 190.
+# ----------------------------------------------------------------------
+
+def test_suggest_trim_into_strength_returns_none_below_trigger_r():
+    from swing.trades.advisory import suggest_trim_into_strength
+    # Price 189.99 → 0.999R; below trigger 1.0R.
+    s = suggest_trim_into_strength(_trade(), _ctx(close=189.99))
+    assert s is None
+
+
+def test_suggest_trim_into_strength_returns_none_when_already_trimmed():
+    from swing.trades.advisory import suggest_trim_into_strength
+    ctx = AdvisoryContext(
+        as_of_date="2026-04-15", current_price=200.0,  # +2R; above trigger
+        sma10=None, sma20=None, sma50=None, previous_close=None,
+        weather_status="Bullish", config=StopAdvisoryConfig(),
+        has_been_trimmed=True,
+    )
+    assert suggest_trim_into_strength(_trade(), ctx) is None
+
+
+def test_suggest_trim_into_strength_fires_at_trigger_r_no_prior_trim():
+    from swing.trades.advisory import suggest_trim_into_strength
+    s = suggest_trim_into_strength(_trade(), _ctx(close=190.0))  # exactly +1R
+    assert s is not None
+    assert s.rule == "trim_into_strength"
+    assert "1.00R" in s.message
+    assert "25" in s.message  # trim_first_pct_default 0.25 → 25%
+
+
+def test_suggest_trim_into_strength_fires_above_trigger_when_not_trimmed():
+    from swing.trades.advisory import suggest_trim_into_strength
+    s = suggest_trim_into_strength(_trade(), _ctx(close=200.0))  # +2R
+    assert s is not None
+    assert s.rule == "trim_into_strength"
+    assert "2.00R" in s.message
+
+
+def test_suggest_trim_into_strength_message_format():
+    from swing.trades.advisory import suggest_trim_into_strength
+    s = suggest_trim_into_strength(_trade(), _ctx(close=190.0))
+    assert s is not None
+    msg = s.message
+    # Hard-anchored phrasing per §0.3 #1 message template.
+    assert "trim" in msg.lower()
+    assert "25%" in msg
+    assert "sell-into-strength" in msg.lower()
+
+
+# ----------------------------------------------------------------------
+# 3e.8 Bundle 2 — §4.K suggest_planned_target_r_hit
+# Entry 180, initial_stop 170 → 1R = $10. +2R fires at price ≥ 200.
+# ----------------------------------------------------------------------
+
+def _trade_with_target(planned_target_R: float | None) -> Trade:
+    from datetime import date, timedelta
+    entry_date = (date.fromisoformat("2026-04-15") - timedelta(days=0)).isoformat()
+    return Trade(
+        id=1, ticker="AAPL", entry_date=entry_date, entry_price=180.0,
+        initial_shares=10, initial_stop=170.0, current_stop=170.0,
+        state="entered", watchlist_entry_target=None,
+        watchlist_initial_stop=None, notes=None,
+        planned_target_R=planned_target_R,
+    )
+
+
+def test_suggest_planned_target_r_hit_returns_none_when_target_is_null():
+    from swing.trades.advisory import suggest_planned_target_r_hit
+    # Even at +5R, NULL planned_target_R suppresses the rule. Must NOT raise.
+    s = suggest_planned_target_r_hit(_trade_with_target(None), _ctx(close=230.0))
+    assert s is None
+
+
+def test_suggest_planned_target_r_hit_returns_none_below_target():
+    from swing.trades.advisory import suggest_planned_target_r_hit
+    # Target 2.0R; price 199 → 1.9R; below target.
+    s = suggest_planned_target_r_hit(_trade_with_target(2.0), _ctx(close=199.0))
+    assert s is None
+
+
+def test_suggest_planned_target_r_hit_fires_at_target_r():
+    from swing.trades.advisory import suggest_planned_target_r_hit
+    # Target 2.0R; price 200 → exactly +2R.
+    s = suggest_planned_target_r_hit(_trade_with_target(2.0), _ctx(close=200.0))
+    assert s is not None
+    assert s.rule == "planned_target_r_hit"
+    assert "2.0R" in s.message or "+2.0R" in s.message
+
+
+def test_suggest_planned_target_r_hit_fires_above_target():
+    from swing.trades.advisory import suggest_planned_target_r_hit
+    s = suggest_planned_target_r_hit(_trade_with_target(2.0), _ctx(close=220.0))
+    assert s is not None
+
+
+def test_suggest_planned_target_r_hit_message_format():
+    from swing.trades.advisory import suggest_planned_target_r_hit
+    s = suggest_planned_target_r_hit(_trade_with_target(2.5), _ctx(close=210.0))
+    assert s is not None
+    msg = s.message
+    assert "+2.5R" in msg
+    assert "target" in msg.lower()
+
+
+# ----------------------------------------------------------------------
+# 3e.8 Bundle 2 — §4.D suggest_parabolic_trim
+# Trigger: (price - sma50) / sma50 * 100 >= multiple * adr_pct.
+# With multiple=7.0 and adr_pct=5%, the threshold extension is 35% above sma50.
+# ----------------------------------------------------------------------
+
+def _ctx_parabolic(
+    *, close: float, sma50: float | None, adr_pct: float | None,
+) -> AdvisoryContext:
+    return AdvisoryContext(
+        as_of_date="2026-04-15", current_price=close,
+        sma10=None, sma20=None, sma50=sma50, previous_close=None,
+        weather_status="Bullish", config=StopAdvisoryConfig(),
+        adr_pct=adr_pct,
+    )
+
+
+def test_suggest_parabolic_trim_returns_none_when_adr_pct_none():
+    from swing.trades.advisory import suggest_parabolic_trim
+    s = suggest_parabolic_trim(
+        _trade(), _ctx_parabolic(close=150.0, sma50=100.0, adr_pct=None),
+    )
+    assert s is None
+
+
+def test_suggest_parabolic_trim_returns_none_when_sma50_none():
+    from swing.trades.advisory import suggest_parabolic_trim
+    s = suggest_parabolic_trim(
+        _trade(), _ctx_parabolic(close=150.0, sma50=None, adr_pct=5.0),
+    )
+    assert s is None
+
+
+def test_suggest_parabolic_trim_returns_none_when_price_below_sma50():
+    from swing.trades.advisory import suggest_parabolic_trim
+    s = suggest_parabolic_trim(
+        _trade(), _ctx_parabolic(close=95.0, sma50=100.0, adr_pct=5.0),
+    )
+    assert s is None
+
+
+def test_suggest_parabolic_trim_returns_none_when_extension_below_multiple():
+    """6.9× ADR above sma50 → does NOT fire (just below 7.0× threshold)."""
+    from swing.trades.advisory import suggest_parabolic_trim
+    # sma50=100, adr_pct=5 → 1 ADR = $5 extension (5% of sma50).
+    # Threshold extension = 7.0 × 5 = 35%. Below: 34.5% → close=134.5.
+    s = suggest_parabolic_trim(
+        _trade(), _ctx_parabolic(close=134.5, sma50=100.0, adr_pct=5.0),
+    )
+    assert s is None
+
+
+def test_suggest_parabolic_trim_fires_at_7x_adr_above_50sma():
+    """7.0× ADR exactly → fires (≥ comparison)."""
+    from swing.trades.advisory import suggest_parabolic_trim
+    # Threshold extension = 35% above sma50=100 → close=135.0.
+    s = suggest_parabolic_trim(
+        _trade(), _ctx_parabolic(close=135.0, sma50=100.0, adr_pct=5.0),
+    )
+    assert s is not None
+    assert s.rule == "parabolic_trim"
+
+
+def test_suggest_parabolic_trim_fires_above_7x_adr():
+    from swing.trades.advisory import suggest_parabolic_trim
+    # 7.1× ADR → 35.5% above; clearly above.
+    s = suggest_parabolic_trim(
+        _trade(), _ctx_parabolic(close=135.5, sma50=100.0, adr_pct=5.0),
+    )
+    assert s is not None
+
+
+def test_suggest_parabolic_trim_message_format():
+    from swing.trades.advisory import suggest_parabolic_trim
+    s = suggest_parabolic_trim(
+        _trade(), _ctx_parabolic(close=140.0, sma50=100.0, adr_pct=5.0),
+    )
+    assert s is not None
+    msg = s.message
+    assert "parabolic" in msg.lower()
+    assert "ADR" in msg
+    assert "50SMA" in msg or "50 SMA" in msg
+    assert "DST" in msg or "D.7" in msg or "Realsimpleariel" in msg.lower()
+
+
+def test_suggest_parabolic_trim_returns_none_when_adr_pct_is_nan():
+    """ADR may be NaN when fewer than `lookback` bars available."""
+    import math
+    from swing.trades.advisory import suggest_parabolic_trim
+    s = suggest_parabolic_trim(
+        _trade(), _ctx_parabolic(close=200.0, sma50=100.0, adr_pct=math.nan),
+    )
+    assert s is None
+
+
+# ----------------------------------------------------------------------
+# 3e.8 Bundle 2 — compute_all_suggestions aggregator wiring
+# ----------------------------------------------------------------------
+
+def test_compute_all_suggestions_includes_trim_into_strength():
+    """Aggregator picks up the new rule alongside existing ones."""
+    sugs = compute_all_suggestions(_trade(), _ctx(close=190.0))
+    rules = [s.rule for s in sugs]
+    assert "trim_into_strength" in rules
+
+
+def test_compute_all_suggestions_includes_planned_target_r_hit():
+    trade = _trade_with_target(2.0)
+    sugs = compute_all_suggestions(trade, _ctx(close=200.0))
+    rules = [s.rule for s in sugs]
+    assert "planned_target_r_hit" in rules
+
+
+def test_compute_all_suggestions_includes_parabolic_trim():
+    sugs = compute_all_suggestions(
+        _trade(),
+        _ctx_parabolic(close=140.0, sma50=100.0, adr_pct=5.0),
+    )
+    rules = [s.rule for s in sugs]
+    assert "parabolic_trim" in rules
+
+
 def _trade(*, current_stop: float = 170.0, entry: float = 180.0, days: int = 0) -> Trade:
     from datetime import date, timedelta
     entry_date = (date.fromisoformat("2026-04-15") - timedelta(days=days)).isoformat()
