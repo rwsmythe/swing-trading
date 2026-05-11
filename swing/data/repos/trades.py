@@ -549,12 +549,25 @@ def list_trades_with_activity_in_period(
     opened in period that also has trade_events is tagged ``[OPENED]``, not
     ``[OPENED+EVENT]`` — the entry IS the event.
 
-    ``activity_ts`` priority (latest relevant activity in period): exits
-    > events > entry. The string is used purely for ASC chronological
-    ordering; consumers should not interpret it as the trade's canonical
-    timestamp (exit fills carry their own ``fill_datetime``). Sort is
-    stable on ``(activity_ts, ticker, trade_id)`` so identical activity_ts
-    strings (multi-trade same-day exits) render deterministically.
+    ``activity_ts`` priority (latest relevant activity in period; per
+    brief §0.3 #4 plus Codex R3 Major #1 fill-fallback):
+
+      1. ``was_closed_in_period`` → ``latest_exit_date_in_period||'T23:59:59'``
+      2. ``had_event_in_period`` → ``latest_event_ts_in_period``
+      3. ``has_non_entry_fill_in_period`` (R3 fix) →
+         ``latest_in_period_fill_ts``. Production exit-service writes
+         ``fill_datetime`` and the paired ``trade_events.ts`` separately
+         (fill_datetime tracks exit_date; event_ts tracks operator
+         submit time), so they can diverge — a fill in-period whose
+         paired event is out-of-period would otherwise fall through to
+         ``entry_date||'T00:00:00'`` (possibly months earlier).
+      4. ``was_opened_in_period`` → ``entry_date||'T00:00:00'``
+
+    The string is used purely for ASC chronological ordering; consumers
+    should not interpret it as the trade's canonical timestamp (exit
+    fills carry their own ``fill_datetime``). Sort is stable on
+    ``(activity_ts, ticker, trade_id)`` so identical activity_ts strings
+    (multi-trade same-day exits) render deterministically.
 
     ``realized_R`` is the share-weighted R-multiple per
     ``compute_actual_realized_R_effective`` semantics. NULL for trades whose
@@ -664,6 +677,24 @@ def list_trades_with_activity_in_period(
         latest_event_ts_in_period = row[0]
         had_event_in_period = latest_event_ts_in_period is not None
 
+        # Latest in-period NON-ENTRY fill ts (independent of close-state
+        # gating). Codex R3 Major #1: in production the exit service
+        # writes fill_datetime and the paired trade_events.ts as
+        # separately-supplied arguments, so they can diverge. A fill
+        # in-period whose paired event is out-of-period would otherwise
+        # fall through to entry_date midnight as activity_ts (possibly
+        # months earlier). This probe gives the [EVENT] branch a sane
+        # in-period anchor for that case.
+        row = conn.execute(
+            """
+            SELECT MAX(fill_datetime) FROM fills
+            WHERE trade_id = ? AND action != 'entry'
+              AND fill_datetime >= ? AND fill_datetime < ?
+            """,
+            (trade_id, period_start_ts, period_end_exclusive_ts),
+        ).fetchone()
+        latest_in_period_fill_ts = row[0]
+
         # state_tag derivation (brief §0.3 #2 priority).
         if was_opened and was_closed_in_period:
             state_tag = "[OPENED+CLOSED]"
@@ -674,11 +705,15 @@ def list_trades_with_activity_in_period(
         else:
             state_tag = "[EVENT]"
 
-        # activity_ts derivation (brief §0.3 #4 priority: exits > events > entry).
+        # activity_ts derivation (brief §0.3 #4 priority + R3 fill-fallback).
         if was_closed_in_period:
             activity_ts = f"{latest_exit_date_in_period}T23:59:59"
         elif had_event_in_period:
             activity_ts = latest_event_ts_in_period
+        elif latest_in_period_fill_ts is not None:
+            # Codex R3 Major #1: in-period non-entry fill whose paired
+            # event ts diverged out-of-period. Anchor on the fill ts.
+            activity_ts = latest_in_period_fill_ts
         else:
             # was_opened MUST be True (else trade_id wouldn't be in candidate set).
             activity_ts = f"{trade.entry_date}T00:00:00"
