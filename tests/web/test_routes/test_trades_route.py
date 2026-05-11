@@ -4773,10 +4773,63 @@ def test_b1_entry_form_renders_premortem_additional_aside(
     assert "Catch-all for pattern-specific or ticker-specific risks" in text
 
 
+def test_b1_entry_form_renders_why_now_aside(seeded_db, monkeypatch):
+    """Operator-gate I1 — Why-now aside renders with locked content.
+    Brief-author undercount fix: the Pre-trade thesis fieldset has 4
+    textareas (thesis + why_now + expected_scenario + invalidation_
+    condition); original brief locked only the thesis aside. Operator
+    surface-4 gate caught the gap; this aside closes it."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="B1WN")
+    _c3_patch_pricecache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=B1WN")
+    assert r.status_code == 200
+    text = r.text
+    assert "Trigger event" in text
+    assert "Window context" in text
+    assert "Cost of waiting" in text
+
+
+def test_b1_entry_form_renders_expected_scenario_aside(seeded_db, monkeypatch):
+    """Operator-gate I1 — Expected-scenario aside renders with locked content."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="B1ES")
+    _c3_patch_pricecache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=B1ES")
+    assert r.status_code == 200
+    text = r.text
+    assert "first profit zone in N sessions" in text
+    assert "First +1R checkpoint" in text
+    assert "Maturity-stage progression" in text
+
+
+def test_b1_entry_form_renders_invalidation_condition_aside(
+    seeded_db, monkeypatch,
+):
+    """Operator-gate I1 — Invalidation-condition aside renders with locked content."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="B1IC")
+    _c3_patch_pricecache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=B1IC")
+    assert r.status_code == 200
+    text = r.text
+    assert "Hard stop" in text
+    assert "Soft invalidation" in text
+    assert "Time-stop" in text
+
+
 def test_b1_entry_form_aside_layout_class_present(seeded_db, monkeypatch):
     """B.AC.3 — structural wrapper `entry-textarea-row` class present so
     the CSS flex layout (Task B.2) targets the textarea-aside pairs.
-    Discriminating: regression that drops the wrapper would fail here."""
+    Operator-gate I1 (2026-05-10) bumped count 5 → 8: original brief
+    locked thesis + 4 premortem (5 pairs); gate added why_now + expected
+    _scenario + invalidation_condition (3 more pairs)."""
     cfg, cfg_path = seeded_db
     _c3_seed_watchlist(cfg, ticker="B1LC")
     _c3_patch_pricecache(monkeypatch)
@@ -4785,18 +4838,50 @@ def test_b1_entry_form_aside_layout_class_present(seeded_db, monkeypatch):
         r = client.get("/trades/entry/form?ticker=B1LC")
     assert r.status_code == 200
     text = r.text
-    # Exactly 5 wrappers + 5 asides (Codex R1 Minor #2 tightening: ==,
-    # not >=, so accidental duplicate asides would fail the test).
-    # Brief §0.3 #5 binding: one aside per each of thesis + 4 premortem.
-    # Anchor on `class="entry-textarea-row"` so we count the wrapper-class
-    # attribute exactly once per pair (the bare substring would double-
-    # count if CSS rules ever referenced the class name in an HTML doc).
-    assert text.count('class="entry-textarea-row"') == 5, (
-        f"expected exactly 5 `entry-textarea-row` wrapper occurrences "
-        f"(one per thesis + 4 premortem textareas); got "
+    # Exactly 8 wrappers + 8 asides (== not >= per Codex R1 Minor #2
+    # tightening). Anchor on `class="entry-textarea-row"` so we count the
+    # wrapper-class attribute exactly once per pair.
+    assert text.count('class="entry-textarea-row"') == 8, (
+        f"expected exactly 8 `entry-textarea-row` wrapper occurrences "
+        f"(one per thesis + why_now + expected_scenario + invalidation_"
+        f"condition + 4 premortem textareas); got "
         f"{text.count(chr(34) + 'entry-textarea-row' + chr(34))}"
     )
-    assert text.count('class="entry-example-aside"') == 5, (
-        f"expected exactly 5 `entry-example-aside` elements; got "
+    assert text.count('class="entry-example-aside"') == 8, (
+        f"expected exactly 8 `entry-example-aside` elements; got "
         f"{text.count(chr(34) + 'entry-example-aside' + chr(34))}"
+    )
+
+
+def test_b1_entry_form_asides_default_collapsed(seeded_db, monkeypatch):
+    """Operator-gate I1 — all 8 asides wrap content in <details>/<summary>
+    AND default to collapsed state. Pins the operator-locked decision that
+    each aside is individually expandable; default state must NOT have the
+    `open` attribute on any <details> element. Discriminating: a regression
+    that adds `<details open>` to any aside would fail the count."""
+    cfg, cfg_path = seeded_db
+    _c3_seed_watchlist(cfg, ticker="B1DC")
+    _c3_patch_pricecache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=B1DC")
+    assert r.status_code == 200
+    text = r.text
+    # 8 collapsed <details> elements (exact count == 8). Anchoring on the
+    # opening tag without `open` attribute pins the default-collapsed
+    # contract.
+    assert text.count("<details>") == 8, (
+        f"expected exactly 8 collapsed <details> elements (one per aside); "
+        f"got {text.count('<details>')}"
+    )
+    # Discriminating: zero <details open> elements. A regression that pre-
+    # expands any aside would surface here.
+    assert text.count("<details open>") == 0, (
+        f"expected zero pre-expanded <details open> elements; "
+        f"got {text.count('<details open>')}"
+    )
+    # Discriminating: every aside has its <summary> toggle.
+    assert text.count("<summary>") == 8, (
+        f"expected exactly 8 <summary> toggles (one per aside); "
+        f"got {text.count('<summary>')}"
     )
