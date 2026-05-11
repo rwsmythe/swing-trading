@@ -106,22 +106,30 @@ class StopAdvisoryConfig:
     parabolic_adr_multiple: float = 7.0
 
     def __post_init__(self) -> None:
-        # Codex R2 Major #1 — validate Bundle 2 fields at construction time.
-        # Pathological TOML overrides would otherwise emit nonsensical advisories
-        # (negative-R trims, 150% trim percentages, near-zero parabolic thresholds).
-        if self.trim_first_r_trigger <= 0:
+        # Codex R2 Major #1 + R3 Major #1 — validate Bundle 2 fields at
+        # construction time. Pathological TOML overrides would otherwise emit
+        # nonsensical advisories (negative-R trims, 150% trim percentages,
+        # near-zero parabolic thresholds). R3 tightens: NaN/inf must also be
+        # rejected — `nan <= 0` is False, so NaN sneaks past a bare `<= 0`
+        # check and then `r < nan` is False, firing the advisory on every
+        # untrimmed trade.
+        import math as _math
+        if not _math.isfinite(self.trim_first_r_trigger) or self.trim_first_r_trigger <= 0:
             raise ValueError(
-                f"stop_advisory.trim_first_r_trigger must be > 0; got "
+                f"stop_advisory.trim_first_r_trigger must be a finite value > 0; got "
                 f"{self.trim_first_r_trigger!r}"
             )
-        if not (0 < self.trim_first_pct_default <= 1):
+        if (
+            not _math.isfinite(self.trim_first_pct_default)
+            or not (0 < self.trim_first_pct_default <= 1)
+        ):
             raise ValueError(
-                f"stop_advisory.trim_first_pct_default must be in (0, 1]; got "
+                f"stop_advisory.trim_first_pct_default must be a finite value in (0, 1]; got "
                 f"{self.trim_first_pct_default!r}"
             )
-        if self.parabolic_adr_multiple <= 0:
+        if not _math.isfinite(self.parabolic_adr_multiple) or self.parabolic_adr_multiple <= 0:
             raise ValueError(
-                f"stop_advisory.parabolic_adr_multiple must be > 0; got "
+                f"stop_advisory.parabolic_adr_multiple must be a finite value > 0; got "
                 f"{self.parabolic_adr_multiple!r}"
             )
 

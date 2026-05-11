@@ -102,19 +102,29 @@ def compute_adr_pct(
     if len(bars) < lookback:
         return None
     tail = bars.tail(lookback)
-    # Codex R1 Minor #1 + R2 Minor #1 — guard against missing or
-    # non-finite High/Low/Close rows inside the trailing window. pandas
-    # would silently skip NaNs (computing a mean over fewer than
-    # `lookback` valid bars and breaking the invariant compute_smas
-    # enforces) or propagate inf into the result. Treat ANY missing OR
-    # non-finite OHLC in the window as insufficient data and no-op at
+    # Codex R1 Minor #1 + R2 Minor #1 + R3 Minor #1 — guard against
+    # missing, non-numeric, or non-finite High/Low/Close rows inside the
+    # trailing window. pandas would silently skip NaNs (computing a mean
+    # over fewer than `lookback` valid bars and breaking the invariant
+    # compute_smas enforces), propagate inf into the result, or raise on
+    # non-numeric object dtype. Treat ANY missing / non-finite /
+    # non-numeric OHLC in the window as insufficient data and no-op at
     # the data-computation boundary.
     ohlc = tail[["High", "Low", "Close"]]
-    if not np.isfinite(ohlc.to_numpy(dtype=float)).all():
+    try:
+        ohlc_arr = ohlc.to_numpy(dtype=float)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(ohlc_arr).all():
         return None
     # Defend against zero/negative close (corrupted bar) — would yield
     # inf/-inf in the per-bar percent.
     if (tail["Close"] <= 0).any():
+        return None
+    # Codex R3 Minor #2 — reject High < Low rows (physically impossible
+    # OHLC). The data boundary should classify these as invalid even
+    # though the downstream rule already suppresses negative ADR.
+    if (tail["High"] < tail["Low"]).any():
         return None
     ranges_pct = (tail["High"] - tail["Low"]) / tail["Close"] * 100
     val = ranges_pct.mean()

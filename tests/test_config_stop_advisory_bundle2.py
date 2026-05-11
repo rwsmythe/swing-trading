@@ -44,6 +44,46 @@ def test_stop_advisory_config_rejects_negative_parabolic_adr_multiple():
         StopAdvisoryConfig(parabolic_adr_multiple=-1.0)
 
 
+def test_stop_advisory_config_rejects_nan_trim_first_r_trigger():
+    """Codex R3 Major #1 — `nan <= 0` is False so a bare comparison lets
+    NaN sneak past. Without isfinite, `r < nan` is False and trim_into_strength
+    fires on EVERY untrimmed trade."""
+    import math
+    import pytest
+    with pytest.raises(ValueError, match="trim_first_r_trigger"):
+        StopAdvisoryConfig(trim_first_r_trigger=math.nan)
+
+
+def test_stop_advisory_config_rejects_inf_trim_first_r_trigger():
+    import math
+    import pytest
+    with pytest.raises(ValueError, match="trim_first_r_trigger"):
+        StopAdvisoryConfig(trim_first_r_trigger=math.inf)
+
+
+def test_stop_advisory_config_rejects_nan_trim_first_pct_default():
+    import math
+    import pytest
+    with pytest.raises(ValueError, match="trim_first_pct_default"):
+        StopAdvisoryConfig(trim_first_pct_default=math.nan)
+
+
+def test_stop_advisory_config_rejects_nan_parabolic_adr_multiple():
+    """NaN parabolic_adr_multiple → threshold = nan → `extension_pct < nan`
+    is False → fires for any price above sma50."""
+    import math
+    import pytest
+    with pytest.raises(ValueError, match="parabolic_adr_multiple"):
+        StopAdvisoryConfig(parabolic_adr_multiple=math.nan)
+
+
+def test_stop_advisory_config_rejects_inf_parabolic_adr_multiple():
+    import math
+    import pytest
+    with pytest.raises(ValueError, match="parabolic_adr_multiple"):
+        StopAdvisoryConfig(parabolic_adr_multiple=math.inf)
+
+
 def test_stop_advisory_config_has_trim_first_r_trigger_default():
     cfg = StopAdvisoryConfig()
     assert cfg.trim_first_r_trigger == 1.0

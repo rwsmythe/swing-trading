@@ -132,3 +132,26 @@ def test_compute_adr_pct_returns_none_when_trailing_window_has_negative_inf_low(
         "Close": [100.0] * 20,
     })
     assert compute_adr_pct(df, lookback=20) is None
+
+
+def test_compute_adr_pct_returns_none_when_ohlc_columns_have_non_numeric_objects():
+    """Codex R3 Minor #1 — corrupt cache surfacing object dtype must NOT
+    raise; rule must no-op at the data boundary."""
+    df = pd.DataFrame({
+        "High": [101.0] * 19 + ["corrupt"],
+        "Low": [99.0] * 20,
+        "Close": [100.0] * 20,
+    })
+    # Should NOT raise TypeError/ValueError.
+    assert compute_adr_pct(df, lookback=20) is None
+
+
+def test_compute_adr_pct_returns_none_when_high_lower_than_low():
+    """Codex R3 Minor #2 — physically-impossible OHLC (High < Low)
+    classified as invalid at the data boundary."""
+    df = pd.DataFrame({
+        "High": [101.0] * 19 + [50.0],
+        "Low": [99.0] * 19 + [99.0],
+        "Close": [100.0] * 20,
+    })
+    assert compute_adr_pct(df, lookback=20) is None
