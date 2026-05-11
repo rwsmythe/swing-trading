@@ -19,12 +19,6 @@ from swing.data.repos.trades import (
     list_open_trades,
     list_trades_with_activity_in_period,
 )
-
-# 3e.16 — re-export TradeActivitySummary under the VM-layer name. The
-# helper's dataclass is the canonical shape used by the cadence-completion
-# template; no separate VM dataclass is needed (would duplicate the locked
-# field set in two places). Template-side imports use TradeSummaryVM.
-TradeSummaryVM = TradeActivitySummary
 from swing.data.repos.watchlist import list_active_watchlist
 from swing.recommendations.sizing import compute_shares
 from swing.trades.entry import entry_rationale_options
@@ -33,6 +27,12 @@ from swing.trades.exit import ExitReason
 from swing.trades.stop_adjust import stop_adjust_rationale_options
 from swing.web.chart_scope import latest_completed_pipeline_run
 from swing.web.price_cache import PriceCache
+
+# 3e.16 — re-export TradeActivitySummary under the VM-layer name. The
+# helper's dataclass is the canonical shape used by the cadence-completion
+# template; no separate VM dataclass is needed (would duplicate the locked
+# field set in two places). Template-side imports use TradeSummaryVM.
+TradeSummaryVM = TradeActivitySummary
 
 # Phase 7 Sub-C T1: Active-trade lifecycle states (exit-form + stop-form
 # preconditions). Mirrors `_ACTIVE_STATES_SQL` in repos/trades.py.
