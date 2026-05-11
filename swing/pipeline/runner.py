@@ -47,6 +47,7 @@ from swing.pipeline.lease import (
     Lease,
     acquire_lease,
 )
+from swing.pipeline.ohlcv import compute_adr_pct as _compute_adr_pct
 from swing.pipeline.ohlcv import compute_smas as _compute_smas
 from swing.pipeline.ohlcv import previous_close as _previous_close
 from swing.pipeline.recovery import sweep_stale_artifacts
@@ -888,6 +889,7 @@ def compose_open_trade_advisories_for_briefing(
     stop_advisory_config,
     action_session_date: str,
     data_asof_date: str | None = None,
+    trimmed_trade_ids: set[int] | None = None,
 ) -> dict[int, list[AdvisorySuggestionVM]]:
     """Compose per-trade advisories for the pipeline briefing renderer.
 
@@ -972,6 +974,9 @@ def compose_open_trade_advisories_for_briefing(
 
         smas = _compute_smas(bars, [10, 20, 50])
         prev_close = _previous_close(bars)
+        # 3e.8 Bundle 2 — adr_pct from the SAME bars helper consumed for SMAs.
+        # No new fetch; identical caching/staleness semantics.
+        adr_pct = _compute_adr_pct(bars, lookback=20)
 
         cand = candidates_by_ticker.get(t.ticker)
         cand_close = cand.close if cand is not None else None
@@ -992,6 +997,12 @@ def compose_open_trade_advisories_for_briefing(
             previous_close=prev_close,
             weather_status=weather_status,
             config=stop_advisory_config,
+            adr_pct=adr_pct,
+            has_been_trimmed=(
+                t.id in trimmed_trade_ids
+                if trimmed_trade_ids is not None
+                else False
+            ),
         )
         raw = compute_all_suggestions(t, ctx)
         out[t.id] = [
@@ -1105,6 +1116,7 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
     from swing.data.repos.daily_management import (
         list_open_position_active_snapshots,
     )
+    from swing.data.repos.fills import list_all_fills
     from swing.data.repos.recommendations import list_for_session
     conn = connect(cfg.paths.db_path)
     try:
@@ -1128,6 +1140,19 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
             exits=_exits_via_fills_for_equity(conn),
             cash_movements=list_cash(conn),
         )
+        # 3e.8 Bundle 2 — build trimmed_trade_ids alongside the equity /
+        # exits-aggregation reads above. SQLite Python autocommit gives each
+        # SELECT its own implicit transaction, so this is NOT a strict
+        # multi-statement snapshot; the export step relies on the pipeline
+        # lease serializing pipeline-side writers, matching the pre-existing
+        # posture of the equity/exits/trades reads in this same block.
+        # A trade is "trimmed" iff at least one non-entry fill exists.
+        # (Codex R1 Major #2 — ACCEPTED-with-rationale: lease-guarded
+        # isolation; raising this to a true BEGIN IMMEDIATE snapshot is a
+        # broader cleanup outside Bundle 2 scope.)
+        trimmed_trade_ids: set[int] = {
+            f.trade_id for f in list_all_fills(conn) if f.action != "entry"
+        }
     finally:
         conn.close()
 
@@ -1159,6 +1184,7 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
             stop_advisory_config=cfg.stop_advisory,
             action_session_date=action_session.isoformat(),
             data_asof_date=data_asof,
+            trimmed_trade_ids=trimmed_trade_ids,
         )
     else:
         open_trade_advisories = {}

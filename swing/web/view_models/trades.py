@@ -945,6 +945,9 @@ def build_trade_detail_vm(
             )
             bundle = bundles.get(trade.ticker)
         weather_status = weather.status if weather else "STALE"
+        # 3e.8 Bundle 2 — has_been_trimmed from the already-loaded fills
+        # tuple (line ~899); adr_pct from OhlcvBundle (no new fetch).
+        has_been_trimmed = any(f.action != "entry" for f in fills)
         if snap is not None:
             ctx = AdvisoryContext(
                 as_of_date=action_session,
@@ -955,6 +958,8 @@ def build_trade_detail_vm(
                 previous_close=bundle.previous_close if bundle else None,
                 weather_status=weather_status,
                 config=cfg.stop_advisory,
+                adr_pct=bundle.adr_pct if bundle else None,
+                has_been_trimmed=has_been_trimmed,
             )
             raw = compute_all_suggestions(trade, ctx)
             advisories = tuple(

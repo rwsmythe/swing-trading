@@ -94,6 +94,44 @@ class StopAdvisoryConfig:
     trail_20ma_buffer_pct: float = 0.3
     time_stop_days: int = 10
     time_stop_min_r: float = 0.5
+    # 3e.8 Bundle 2 (§4.B) — first-trim sell-into-strength advisory.
+    # Operator locked R-multiple trigger (rationale: lowest-friction;
+    # aligns with framework's existing R-multiple plumbing; DST D.2's
+    # Day-3-5 calendar trigger banked for V2). Default 1.0R per §0.3 #1.
+    trim_first_r_trigger: float = 1.0
+    trim_first_pct_default: float = 0.25
+    # 3e.8 Bundle 2 (§4.D) — parabolic-extension advisory; DST D.7 / Realsimpleariel
+    # doctrine anchor. Fires when (current_price - sma50) / sma50 * 100 >=
+    # parabolic_adr_multiple * adr_pct. Default 7.0× ADR per §0.3 #2.
+    parabolic_adr_multiple: float = 7.0
+
+    def __post_init__(self) -> None:
+        # Codex R2 Major #1 + R3 Major #1 — validate Bundle 2 fields at
+        # construction time. Pathological TOML overrides would otherwise emit
+        # nonsensical advisories (negative-R trims, 150% trim percentages,
+        # near-zero parabolic thresholds). R3 tightens: NaN/inf must also be
+        # rejected — `nan <= 0` is False, so NaN sneaks past a bare `<= 0`
+        # check and then `r < nan` is False, firing the advisory on every
+        # untrimmed trade.
+        import math as _math
+        if not _math.isfinite(self.trim_first_r_trigger) or self.trim_first_r_trigger <= 0:
+            raise ValueError(
+                f"stop_advisory.trim_first_r_trigger must be a finite value > 0; got "
+                f"{self.trim_first_r_trigger!r}"
+            )
+        if (
+            not _math.isfinite(self.trim_first_pct_default)
+            or not (0 < self.trim_first_pct_default <= 1)
+        ):
+            raise ValueError(
+                f"stop_advisory.trim_first_pct_default must be a finite value in (0, 1]; got "
+                f"{self.trim_first_pct_default!r}"
+            )
+        if not _math.isfinite(self.parabolic_adr_multiple) or self.parabolic_adr_multiple <= 0:
+            raise ValueError(
+                f"stop_advisory.parabolic_adr_multiple must be a finite value > 0; got "
+                f"{self.parabolic_adr_multiple!r}"
+            )
 
 
 @dataclass(frozen=True)

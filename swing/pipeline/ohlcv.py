@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from datetime import date, datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from swing.data.ohlcv_archive import read_or_fetch_archive
@@ -73,6 +74,69 @@ def compute_smas(
             last = sma.iloc[-1]
             out[p] = float(last) if pd.notna(last) else None
     return out
+
+
+def compute_adr_pct(
+    bars: pd.DataFrame | None, lookback: int = 20,
+) -> float | None:
+    """ADR% over the trailing ``lookback`` bars from a daily-bar DataFrame.
+
+    ADR% = mean((High - Low) / Close * 100) across the trailing window.
+
+    Returns None when bars is None/empty, when High/Low/Close columns are
+    missing, or when fewer than ``lookback`` bars are available. Mirrors
+    ``compute_smas``'s "insufficient bars → None" contract so callers can
+    surface ``adr_pct=None`` uniformly when OHLCV history is short — the
+    §4.D parabolic-trim rule then silently no-ops.
+
+    Bundle 2 add (3e.8) — same formula as
+    ``swing.evaluation.criteria._base.adr_pct`` but with explicit
+    insufficient-bars handling so the cache surface matches its
+    SMA-companion contract.
+    """
+    if bars is None or bars.empty:
+        return None
+    for col in ("High", "Low", "Close"):
+        if col not in bars.columns:
+            return None
+    if len(bars) < lookback:
+        return None
+    tail = bars.tail(lookback)
+    # Codex R1 Minor #1 + R2 Minor #1 + R3 Minor #1 — guard against
+    # missing, non-numeric, or non-finite High/Low/Close rows inside the
+    # trailing window. pandas would silently skip NaNs (computing a mean
+    # over fewer than `lookback` valid bars and breaking the invariant
+    # compute_smas enforces), propagate inf into the result, or raise on
+    # non-numeric object dtype. Treat ANY missing / non-finite /
+    # non-numeric OHLC in the window as insufficient data and no-op at
+    # the data-computation boundary.
+    ohlc = tail[["High", "Low", "Close"]]
+    try:
+        ohlc_arr = ohlc.to_numpy(dtype=float)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(ohlc_arr).all():
+        return None
+    # Codex R4 Minor #1 — operate on the converted numeric array from here
+    # so numeric-string-object columns ("100.0") that converted successfully
+    # don't fall back into mixed-dtype arithmetic on the original Series.
+    highs = ohlc_arr[:, 0]
+    lows = ohlc_arr[:, 1]
+    closes = ohlc_arr[:, 2]
+    # Defend against zero/negative close (corrupted bar) — would yield
+    # inf/-inf in the per-bar percent.
+    if (closes <= 0).any():
+        return None
+    # Codex R3 Minor #2 — reject High < Low rows (physically impossible
+    # OHLC). The data boundary should classify these as invalid even
+    # though the downstream rule already suppresses negative ADR.
+    if (highs < lows).any():
+        return None
+    ranges_pct = (highs - lows) / closes * 100
+    val = ranges_pct.mean()
+    if not np.isfinite(val):
+        return None
+    return float(val)
 
 
 def previous_close(bars: pd.DataFrame) -> float | None:
