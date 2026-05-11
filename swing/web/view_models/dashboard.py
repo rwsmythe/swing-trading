@@ -558,8 +558,10 @@ class HypRecsExpandedVM:
     pipeline_finished_at: str | None      # ISO timestamp of binding pipeline run
     # 3e.4 — Current price for the operator's price-vs-pivot context when
     # evaluating buy_stop / buy_limit / sell_stop. Defaults to None for
-    # backward-compat with callers that don't pass a cache; the route
-    # populates this via the PriceCache single-ticker `get` path.
+    # backward-compat with callers that don't pass cache+executor; the
+    # route populates this via the PriceCache+executor batch `get_many`
+    # path (Codex R1 Major #1+#2 fix: deadline-bounded; NOT the unbounded
+    # single-ticker `get`).
     current_price: PriceSnapshot | None = None
 
 
@@ -568,7 +570,18 @@ def build_hyp_recs_expanded(
     cache: PriceCache | None = None,
     executor=None,
 ) -> HypRecsExpandedVM | None:
-    """Resolve a hyp-recs expansion VM at request time. Returns None when:
+    """Resolve a hyp-recs expansion VM at request time.
+
+    Live-price fetch contract (3e.4 / Codex R1 Major #1+#2): BOTH ``cache``
+    and ``executor`` must be provided to populate ``current_price``; if
+    either is missing, the builder skips the fetch and returns the VM with
+    ``current_price=None`` (template renders ``Current: —``). The pairing
+    is intentional — ``cache.get_many`` requires an executor for its
+    deadline-bounded async dispatch path. Production route always passes
+    both; unit tests exercising other code paths may omit both to skip
+    the fetch entirely.
+
+    Returns None when:
 
     - No completed pipeline_run exists yet.
     - The ticker has no candidate row in the latest completed pipeline

@@ -498,11 +498,14 @@ def test_apply_overrides_chase_factor_propagates_to_buy_limit(
 
 
 # ---------------------------------------------------------------------------
-# 3e.4 Task A.1 — `HypRecsExpandedVM.current_price` field + builder cache
-# parameter. The field defaults to None for backward-compat with callers
-# that don't pass a cache; the builder accepts an optional `cache=` kwarg;
-# when cache is provided the builder fetches via `cache.get(ticker)` and
-# populates the field. Acceptance criteria A.AC.1 + A.AC.2.
+# 3e.4 Task A.1 — `HypRecsExpandedVM.current_price` field + builder
+# cache+executor parameters. The field defaults to None for backward-compat
+# with callers that don't pass a cache; the builder accepts optional
+# `cache=` and `executor=` kwargs; when BOTH are provided, the builder
+# fetches via `cache.get_many([ticker], deadline_seconds=..., executor=...)`
+# (Codex R1 Major #1+#2: deadline-bounded batch path, NOT the unbounded
+# single-ticker `get`) and populates the field. Acceptance criteria
+# A.AC.1 + A.AC.2.
 # ---------------------------------------------------------------------------
 def test_hyp_recs_expanded_vm_has_current_price_field_default_none(seeded_db):
     """A.AC.1 — `HypRecsExpandedVM.current_price` exists and defaults to
