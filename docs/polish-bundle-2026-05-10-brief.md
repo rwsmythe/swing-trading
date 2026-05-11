@@ -192,11 +192,12 @@ Use `superpowers:using-git-worktrees` to create. Specify the `.worktrees/<branch
 - **NO `--amend`** (always create new commits; CLAUDE.md hook-failure rule).
 - **TDD discipline per task family:** failing test first, minimal implementation, pass, commit. One red-green cycle per logical change OR cluster cycles when tests are essentially discriminators of one feature (implementer's judgment; document in return report).
 
-### §2.4 Branch isolation
+### §2.4 Branch isolation + ownership of the dispatch lifecycle
 
 - Commits land ONLY on `polish-bundle-2026-05-10` branch. Do NOT push to `origin` from inside the worktree.
-- Operator-witnessed verification gate happens AFTER adversarial-critic NO_NEW_CRITICAL_MAJOR.
-- Integration merge to main is an ORCHESTRATOR action post-gate-pass — implementer does NOT merge.
+- **Implementer owns:** task-family TDD commits (§3) → marker-file removal (§4.1) → adversarial-critic invocation + round iteration + Codex-fix commits (§4) → return report drafting (§6).
+- **Operator owns:** witnessed verification gate (§5) — implementer signals readiness via return report; operator drives the browser walkthrough.
+- **Orchestrator owns:** integration merge to main (post-gate-pass) + post-merge housekeeping (orchestrator-context updates, phase3e-todo entry archival, etc.). Implementer does NOT merge.
 
 ### §2.5 Verify command (worktree + editable install)
 
@@ -324,24 +325,29 @@ ruff check swing/ | wc -l       # expect 18 (down from 26; only E501 remains)
 
 ## §4 Adversarial review (Codex)
 
-### §4.1 Setup
+### §4.1 Setup (IMPLEMENTER runs this — convention per orchestrator-context "Executing-plans dispatch convention" 2026-05-02)
 
-After ALL task-family commits land + tests are GREEN at branch HEAD:
+After ALL task-family commits land + tests are GREEN at branch HEAD, the implementer (this top-level Claude Code instance — NOT a subagent of the orchestrator) performs:
 
-1. `rm .copowers-subagent-active` (deactivates the PreToolUse blocking hook).
-2. Invoke `copowers:adversarial-critic` directly (NOT via `copowers:executing-plans` wrapper).
+1. **Remove the marker file** so the implementer's own Codex invocation isn't blocked by the global PreToolUse hook:
+   ```powershell
+   Remove-Item c:\Users\rwsmy\swing-trading\.copowers-subagent-active
+   ```
+   (Path is at the MAIN project root, NOT inside the worktree. The hook only blocks Codex calls coming from subagents the implementer dispatches via the Task tool — the top-level implementer instance itself becomes free to invoke Codex once the marker is removed.)
+2. Invoke `copowers:adversarial-critic` directly (NOT via the `copowers:executing-plans` wrapper).
 3. Pass these args:
    - `PHASE`: `polish-bundle-2026-05-10`
    - `SPEC_PATH`: `docs/polish-bundle-2026-05-10-brief.md` (this brief)
    - `PLAN_PATH`: `docs/polish-bundle-2026-05-10-brief.md` (same — no separate plan file)
    - `BASELINE_SHA`: `794c51c`
 
-### §4.2 Iteration
+### §4.2 Iteration (IMPLEMENTER drives)
 
 - Iterate rounds until **NO_NEW_CRITICAL_MAJOR**.
-- Per-round fixes commit as `fix(area): Codex RN Major #X — <description>` (or `Codex RN Critical #X` for Critical findings).
+- Per-round fixes commit as `fix(area): Codex RN Major #X (internal) — <description>` (or `Codex RN Critical #X (internal)` for Critical findings). The `(internal)` tag flags the commit as Codex-driven (vs operator-gate-driven `operator-gate I<N>`); convention from prior ship history.
 - For each finding: FIX it OR ACCEPT-with-rationale (state explicitly in the response). ACCEPTED-with-rationale findings should be cited in the return report.
 - Expected convergence: **2-3 rounds** (small surface; mechanical rename + UX-polish; precedent: polish-bundle-2026-05-09 converged in 3 rounds).
+- After NO_NEW_CRITICAL_MAJOR, the implementer signals readiness for the operator-witnessed verification gate (§5) via the return report (§6). Operator drives the gate from there.
 
 ### §4.3 Pre-empt list (issues that have surfaced in similar prior dispatches)
 
@@ -430,14 +436,23 @@ Step 3 — Verify worktree state:
 
 Step 4 — Execute the brief via superpowers:subagent-driven-development. Each task family commits via TDD discipline (red-green-commit cycles). Keep commits small + per the prefix conventions in §2.3.
 
-Step 5 — After ALL task families land + GREEN: signal orchestrator. Orchestrator will rm the marker file + invoke copowers:adversarial-critic.
+Step 5 — After ALL task families land + GREEN, run the adversarial review YOURSELF (per §4.1):
+  - Remove-Item c:\Users\rwsmy\swing-trading\.copowers-subagent-active
+    (this top-level instance is then free to invoke copowers — the marker only blocked subagents you dispatched via Task tool)
+  - Invoke copowers:adversarial-critic with PHASE=polish-bundle-2026-05-10,
+    SPEC_PATH=docs/polish-bundle-2026-05-10-brief.md,
+    PLAN_PATH=docs/polish-bundle-2026-05-10-brief.md,
+    BASELINE_SHA=794c51c
+  - Iterate rounds + land Codex-fix commits per §4.2 until NO_NEW_CRITICAL_MAJOR.
+
+Step 6 — Draft return report per §6 + signal orchestrator. Orchestrator triages the report; operator drives the witnessed verification gate (§5); orchestrator handles integration merge to main after gate PASS.
 
 DO NOT:
-  - Push to origin from inside the worktree
+  - Push to origin from inside the worktree (orchestrator handles after gate PASS)
   - Merge to main (orchestrator action)
-  - Invoke copowers:adversarial-critic directly (orchestrator-side step)
   - Use --amend or --no-verify
   - Add Claude co-author footer to commits
+  - Skip the marker-file removal before invoking copowers (the hook will block your invocation otherwise)
 ```
 
 ---
