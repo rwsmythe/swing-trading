@@ -77,7 +77,11 @@ Full detail: `reference/Future Work/QuantEcon/2026-04-24-quant-econ-companion-tr
 
 > **This section decays fastest. Update on every meaningful change.**
 
-**As of 2026-05-10 (post-polish-bundle-2026-05-10 ship; Phase 9 writing-plans queued next):**
+**As of 2026-05-10 (post-3e.15-ship; Phase 9 writing-plans queued next):**
+
+**3e.15 SHIPPED 2026-05-10 at `d1aed5a`** (option (a) — narrowed badge predicate to event_log only). Single-commit inline orchestrator ship; ~30 min impl. Empirical premise re-verified at code before design lock. Operator-facing impact: open trades show ⚠ pending after pipeline runs unless operator submits an event_log entry via daily-management form (badge now means "operator engaged" not "pipeline ran"). +2 net tests; full suite 2140 → 2142 GREEN.
+
+
 
 **Post-2026-04-28 6-phase operator sequence — current status:**
 

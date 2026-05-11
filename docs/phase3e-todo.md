@@ -269,7 +269,11 @@ Every counter is zero. Operator has open trades + at least one Phase 8 stop-chan
 - 3e.13 (in-flight bundle) — top-nav reachability; this is the per-card direct-action surface.
 - Archived entry at `docs/phase3e-todo-archive.md:736` — original 2026-05-04 capture.
 
-### 3e.15 — Analyze utility of "logged today?" badge given pipeline auto-snapshots (INVESTIGATION; operator-surfaced 2026-05-09)
+### 3e.15 — Analyze utility of "logged today?" badge given pipeline auto-snapshots — **SHIPPED 2026-05-10 at `d1aed5a`** (option (a) — narrowed predicate to event_log only)
+
+> **Outcome:** SHIPPED inline by orchestrator (single-commit; ~30 min impl). Empirical premise re-verified at code (`swing/pipeline/runner.py:997-1074` iterates `list_open_trades` with no filter; `swing/data/repos/daily_management.py:147-194` matched both record types). Design-locked option (a): narrowed predicate from `record_type IN ('daily_snapshot', 'event_log')` to `record_type = 'event_log'`. Badge now means "operator personally engaged via daily-management form" rather than "pipeline ran today." Tests: 5 existing tests renamed/fixture-switched in place + 2 new discriminator tests; full suite 2140 → 2142 GREEN. **Operator-facing impact:** open trades will show ⚠ pending after pipeline runs unless operator submits an event_log entry; this is the intended contract (badge previously was effectively decorative once pipeline ran).
+
+### Original entry (2026-05-09; pre-dispatch; superseded by SHIPPED outcome above)
 
 **Operator question (Surface 2 verification 2026-05-09):** "Will running the pipeline end up causing all open trades to report logged? If so, analyze utility of tracking the pending/logged status."
 
