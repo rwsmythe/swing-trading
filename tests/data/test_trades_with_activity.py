@@ -283,6 +283,73 @@ def test_empty_period_returns_empty_list(conn):
     assert rows == []
 
 
+def test_trim_only_in_period_on_still_open_trade_tags_event_not_closed(conn):
+    """Codex R1 Major #1 regression: a partial-exit ('trim') fill on a
+    still-'managing' trade must NOT trigger the [CLOSED] tag.
+
+    Prior implementation tagged any non-entry-fill-in-period as
+    was_closed_in_period regardless of trade state. The fix gates
+    was_closed_in_period on the trade being in terminal state
+    ('closed' / 'reviewed'). A trim fill writes a paired trade_events
+    row (event_type='exit' per swing/data/repos/fills.py:65), so the
+    trade still surfaces via the [EVENT] branch — the row still appears,
+    just under the semantically-correct tag.
+    """
+    tid = _add_trade(
+        conn, ticker="TRM", entry_date="2026-03-10",
+        entry_price=10.0, initial_shares=100, initial_stop=9.0,
+    )
+    # Trim 30 shares mid-period. close_trade=False keeps state='entered'
+    # (which the helper treats the same as 'managing' for this purpose —
+    # any non-terminal state). The fill is action='trim'.
+    with conn:
+        insert_exit_fill(
+            conn, trade_id=tid, exit_date="2026-04-15",
+            exit_price=11.0, shares=30, action="trim", close_trade=False,
+            fill_datetime="2026-04-15T15:00:00",
+        )
+    rows = list_trades_with_activity_in_period(
+        conn, period_start="2026-04-01", period_end="2026-04-30",
+    )
+    assert len(rows) == 1
+    assert rows[0].trade_id == tid
+    # NOT [CLOSED] — trade is still open.
+    assert rows[0].state_tag == "[EVENT]"
+    # No trade-level exit fields populated because state is not closed.
+    assert rows[0].exit_date is None
+    assert rows[0].exit_price is None
+    assert rows[0].realized_R is None
+
+
+def test_ordering_is_deterministic_for_same_day_closes(conn):
+    """Codex R1 Major #4 regression: two trades closing on the same day
+    receive identical activity_ts ('YYYY-MM-DDT23:59:59'). The sort must
+    be stable on a secondary key so the rendered order doesn't depend on
+    SQLite's UNION row-order.
+    """
+    # Insert two trades with closes on the SAME day. Tickers chosen so
+    # alphabetic ordering is unambiguous (AAA < BBB).
+    a = _add_trade(conn, ticker="AAA", entry_date="2026-03-10")
+    b = _add_trade(conn, ticker="BBB", entry_date="2026-03-11")
+    with conn:
+        insert_exit_fill(
+            conn, trade_id=b, exit_date="2026-04-15",
+            exit_price=12.0, shares=100,
+            fill_datetime="2026-04-15T15:00:00",
+        )
+        insert_exit_fill(
+            conn, trade_id=a, exit_date="2026-04-15",
+            exit_price=12.0, shares=100,
+            fill_datetime="2026-04-15T15:00:00",
+        )
+    rows = list_trades_with_activity_in_period(
+        conn, period_start="2026-04-01", period_end="2026-04-30",
+    )
+    assert [r.ticker for r in rows] == ["AAA", "BBB"]
+    # Both have the same activity_ts string — secondary key must break the tie.
+    assert rows[0].activity_ts == rows[1].activity_ts == "2026-04-15T23:59:59"
+
+
 def test_summary_field_set_matches_locked_contract(conn):
     # All §0.3 #3 locked fields must be on the dataclass + populated correctly.
     tid = _add_trade(

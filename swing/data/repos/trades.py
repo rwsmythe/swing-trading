@@ -523,12 +523,17 @@ def list_trades_with_activity_in_period(
     Contract per 3e.16 dispatch brief §0.3 #6. The three predicates are:
 
       * was_opened_in_period: ``entry_date >= ps AND entry_date <= pe``
-      * was_closed_in_period: any non-entry fill with
-        ``date(fill_datetime) BETWEEN ps AND pe`` (Phase 7 fills are the
-        source-of-truth for exit dates; the ``exits`` table is dropped).
+      * was_closed_in_period: trade has reached terminal state
+        (``'closed'`` or ``'reviewed'``) AND has a non-entry fill inside
+        the period. A partial-exit ('trim') fill on a still-open trade
+        does NOT qualify — that case falls through to ``[EVENT]``
+        (Codex R1 Major #1 fix). Phase 7 fills are the source-of-truth
+        for exit dates; the ``exits`` table is dropped.
       * had_event_in_period: any ``trade_events`` row with
-        ``date(ts) BETWEEN ps AND pe`` (ANY event_type counts — operator wants
-        to see "this trade was touched during the period" regardless of
+        ``ts BETWEEN ps||'T00:00:00' AND pe||'T23:59:59'`` (sargable
+        against the ``(trade_id, ts)`` composite index per brief
+        watch-item; ANY event_type counts — operator wants to see
+        "this trade was touched during the period" regardless of
         event_type per brief §3.1 watch items).
 
     ``state_tag`` priority: OPENED+CLOSED > OPENED > CLOSED > EVENT (the
@@ -539,14 +544,34 @@ def list_trades_with_activity_in_period(
     ``activity_ts`` priority (latest relevant activity in period): exits
     > events > entry. The string is used purely for ASC chronological
     ordering; consumers should not interpret it as the trade's canonical
-    timestamp (exit fills carry their own ``fill_datetime``).
+    timestamp (exit fills carry their own ``fill_datetime``). Sort is
+    stable on ``(activity_ts, ticker, trade_id)`` so identical activity_ts
+    strings (multi-trade same-day exits) render deterministically.
 
     ``realized_R`` is the share-weighted R-multiple per
     ``compute_actual_realized_R_effective`` semantics. NULL for trades whose
     DB ``state`` is not yet ``'closed'``/``'reviewed'`` (still-open trades
     show ``None`` even if a partial-exit fill landed in-period).
+
+    Note on Phase 7 fills source-of-truth: ``_list_all_exitshape_via_fills``
+    (web view-model layer) is the canonical adapter for the "non-entry fills
+    as exits" abstraction. This helper does not import that adapter because
+    it lives in the web layer; instead the same ``action != 'entry'``
+    predicate is applied directly against the ``fills`` table per the
+    byte-identical re-implementation pattern (brief §3.1 A.AC.6, Phase 6
+    §A.1 lesson). Any future change to the adapter's "non-entry =
+    exit-shape" definition MUST be mirrored here.
     """
+    # Brief §3.1 watch-item: trade_events.ts is ISO datetime; period_end is
+    # ISO date. Use range predicates with explicit T00:00:00 / T23:59:59
+    # bounds so the (trade_id, ts) composite index does a range scan
+    # instead of a wrapped-function scan via date(ts).
+    period_start_ts = f"{period_start}T00:00:00"
+    period_end_ts = f"{period_end}T23:59:59"
+
     # 1. Find candidate trade_ids via UNION across the three predicates.
+    # Sargable range form on ts / fill_datetime (no date() wrapper) per
+    # Codex R1 Major #2.
     candidate_rows = conn.execute(
         """
         SELECT DISTINCT trade_id FROM (
@@ -555,16 +580,16 @@ def list_trades_with_activity_in_period(
             UNION
             SELECT trade_id FROM fills
               WHERE action != 'entry'
-                AND date(fill_datetime) >= ? AND date(fill_datetime) <= ?
+                AND fill_datetime >= ? AND fill_datetime <= ?
             UNION
             SELECT trade_id FROM trade_events
-              WHERE date(ts) >= ? AND date(ts) <= ?
+              WHERE ts >= ? AND ts <= ?
         )
         """,
         (
             period_start, period_end,
-            period_start, period_end,
-            period_start, period_end,
+            period_start_ts, period_end_ts,
+            period_start_ts, period_end_ts,
         ),
     ).fetchall()
     if not candidate_rows:
@@ -580,27 +605,43 @@ def list_trades_with_activity_in_period(
         # was_opened_in_period (entry_date inclusive on both ends)
         was_opened = period_start <= trade.entry_date <= period_end
 
-        # Latest non-entry fill date INSIDE period (used for [CLOSED] tag +
-        # activity_ts when was_closed_in_period).
+        # Latest non-entry fill ts INSIDE period (used for [CLOSED] tag +
+        # activity_ts when was_closed_in_period). Sargable range form.
         row = conn.execute(
             """
-            SELECT MAX(date(fill_datetime)) FROM fills
+            SELECT MAX(fill_datetime) FROM fills
             WHERE trade_id = ? AND action != 'entry'
-              AND date(fill_datetime) >= ? AND date(fill_datetime) <= ?
+              AND fill_datetime >= ? AND fill_datetime <= ?
             """,
-            (trade_id, period_start, period_end),
+            (trade_id, period_start_ts, period_end_ts),
         ).fetchone()
-        latest_exit_date_in_period = row[0]
-        was_closed_in_period = latest_exit_date_in_period is not None
+        latest_exit_fill_ts_in_period = row[0]
+        # Codex R1 Major #1: a non-entry fill in-period only qualifies as
+        # was_closed_in_period when the trade itself reached terminal
+        # state. A 'trim' fill on a still-'managing' trade is a partial
+        # exit, not a close — that case falls through to [EVENT] via the
+        # paired trade_events row.
+        was_closed_in_period = (
+            latest_exit_fill_ts_in_period is not None
+            and trade.state in ("closed", "reviewed")
+        )
+        latest_exit_date_in_period: str | None = None
+        if latest_exit_fill_ts_in_period is not None:
+            latest_exit_date_in_period = (
+                latest_exit_fill_ts_in_period.split("T")[0]
+                if "T" in latest_exit_fill_ts_in_period
+                else latest_exit_fill_ts_in_period
+            )
 
         # Latest trade_events.ts INSIDE period (used for [EVENT] activity_ts).
+        # Range-form predicate against (trade_id, ts) composite index.
         row = conn.execute(
             """
             SELECT MAX(ts) FROM trade_events
             WHERE trade_id = ?
-              AND date(ts) >= ? AND date(ts) <= ?
+              AND ts >= ? AND ts <= ?
             """,
-            (trade_id, period_start, period_end),
+            (trade_id, period_start_ts, period_end_ts),
         ).fetchone()
         latest_event_ts_in_period = row[0]
         had_event_in_period = latest_event_ts_in_period is not None
@@ -664,5 +705,8 @@ def list_trades_with_activity_in_period(
             activity_ts=activity_ts,
         ))
 
-    summaries.sort(key=lambda s: s.activity_ts)
+    # Codex R1 Major #4: secondary sort keys (ticker, trade_id) make ties
+    # deterministic when multiple trades share the same activity_ts string
+    # (multi-trade same-day closes collapse to YYYY-MM-DDT23:59:59).
+    summaries.sort(key=lambda s: (s.activity_ts, s.ticker, s.trade_id))
     return summaries
