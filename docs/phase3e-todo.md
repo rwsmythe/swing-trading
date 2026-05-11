@@ -1001,3 +1001,45 @@ Per project baseline-tracking convention: when bundled in, update `docs/orchestr
 
 - Sweep commits: `e99047f`, `33338f7`, `9c9b57c` on `main` (2026-05-10).
 - `docs/orchestrator-context.md` track-record summary still reads "ruff baseline 78 preserved" (anchored to HEAD `b4bb9dd` polish-bundle ship — historical narrative). The live state at HEAD `9c9b57c` is **26**; orchestrator-context.md track-record summary line should be updated to the new live count at next housekeeping commit, OR when this backlog item is attempted (whichever comes first).
+
+---
+
+## 2026-05-10 Formalize orchestrator-vs-implementer execution-mode policy (PROCESS; below current backlog priority)
+
+**Operator-surfaced 2026-05-10** during the 3e.16 dispatch design-question round. Operator clarified the principle: **default to implementer-dispatch over orchestrator-inline; minimize orchestrator context growth; crossover where inline beats dispatch is when orchestrator's token cost is less than the implementer's spinup-plus-task cost.** Captured as auto-memory at `feedback_orchestrator_vs_implementer_execution.md`. This entry tracks the formalization work to make the policy operationally enforceable across future sessions.
+
+### Why formalize
+
+- Auto-memory captures the principle but is fuzzy on the cost-estimation method. Without a heuristic the orchestrator can run pre-task, the default-to-dispatch rule will erode under orchestrator-side optimism ("this one is small enough").
+- This session already had orchestrator-inline drift (operator-gate I1 + 3e.15 both inline) before the principle was made explicit. Recurrence likely without a checklist.
+- Brief-drafting checklist + orchestrator-context Conventions section both lack a "decide execution mode" step — currently implicit in operator-driven choice (which means the orchestrator carries the cognitive load each time).
+
+### Scope (what "formalize" likely means)
+
+1. **Cost-estimation heuristic.** A back-of-envelope rubric the orchestrator runs before each task:
+   - Estimate orchestrator token cost: file reads + file edits + tests written + commit drafting + housekeeping. Use ~prior-session anchors as benchmarks (3e.15 was ~5-8k orchestrator tokens; operator-gate I1 was ~3-4k; polish-bundle-2026-05-10 brief authorship was ~12-15k orchestrator tokens for the dispatch path).
+   - Estimate implementer spinup cost: bootstrap (CLAUDE.md + orch-context + brief read) ≈ 30-50k tokens; plus task-implementation cost (~similar to orchestrator-inline since same code surface).
+   - Crossover: if estimated orchestrator-inline < ~30k AND task is single-file + no TDD discipline benefit + no adversarial-review benefit, INLINE; else DISPATCH.
+
+2. **Brief-drafting checklist addition.** Add a §0 "execution mode decision" line: orchestrator records the chosen mode + rationale BEFORE drafting brief content. Forces explicit consideration.
+
+3. **Orchestrator-context Conventions update.** Promote the auto-memory feedback into a Conventions §-level entry (with cap-rotation if needed). Future fresh-orchestrator sessions read it at bootstrap.
+
+4. **Telemetry-style retrospective.** After each ship, capture in the return report: actual orchestrator tokens consumed (estimable from the conversation log) vs the pre-task estimate. Builds a feedback loop on the heuristic's calibration.
+
+5. **Edge cases worth enumerating:**
+   - Mid-gate operator-driven scope changes (operator-gate I1 pattern) — defaults to inline regardless because dispatch overhead doesn't make sense for a 30-min mid-gate hotfix on an active worktree branch
+   - Housekeeping commits (orchestrator-context updates, phase3e-todo SHIPPED markers, post-merge memory captures) — always inline
+   - Brief-author-error mid-dispatch fixes — could be either path; operator's call
+
+### Effort estimate
+
+~1-2 hr orchestrator-thread work to draft the checklist + heuristic + memory→conventions promotion + brief-template addition. No code; pure process-doc work. Can be done by orchestrator inline in a quiet moment between dispatches OR queued as a thinking-session task.
+
+**NOT a dispatch candidate** — this is orchestrator-doctrine work that lives in orchestrator-context + brief templates; an implementer doesn't have the cross-session orchestrator-perspective to do it well. (And this very item demonstrates the principle: process-doc work IS the kind of thing where orchestrator-inline beats implementer-dispatch on the cost-crossover.)
+
+### Cross-references
+
+- `~/.claude/projects/c--Users-rwsmy-swing-trading/memory/feedback_orchestrator_vs_implementer_execution.md` — the auto-memory entry capturing the principle
+- `docs/orchestrator-context.md` Conventions section — target home for the formalized policy
+- `feedback_orchestrator_performs_merge.md` — pattern complement (both about scoping orchestrator actions to high-leverage edges)
