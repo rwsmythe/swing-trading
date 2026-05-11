@@ -107,21 +107,44 @@ def test_b3_toggle_button_no_inline_onclick(seeded_db, monkeypatch):
 def test_b4_fouc_script_appears_in_head_before_body(seeded_db, monkeypatch):
     """B.4 — FOUC-prevention script (the one that reads localStorage) must
     appear inside <head> and BEFORE the <body> opening tag.
+
+    Robust position search: identifies all `<script>...</script>` blocks
+    and excludes literal `<body>` matches inside them (those are JS
+    comments mentioning the body tag, not the real tag).
     """
     html = _get_html(seeded_db, monkeypatch)
+    script_spans = [
+        (m.start(), m.end())
+        for m in re.finditer(
+            r"<script\b[^>]*>.*?</script>",
+            html, flags=re.DOTALL | re.IGNORECASE,
+        )
+    ]
+
+    def in_script(pos: int) -> bool:
+        return any(s <= pos < e for s, e in script_spans)
+
+    # First `<body[\s>]` that is NOT inside a script block.
+    real_body_start = None
+    for m in re.finditer(r"<body[\s>]", html, flags=re.IGNORECASE):
+        if not in_script(m.start()):
+            real_body_start = m.start()
+            break
+    assert real_body_start is not None, "no actual <body> tag found"
+
     head_end = html.lower().find("</head>")
-    body_start = html.lower().find("<body")
-    assert head_end != -1 and body_start != -1, "could not locate head/body"
-    # Position of the localStorage read inside the document.
+    assert head_end != -1, "</head> not found"
+
     ls_pos = html.find("swing-trading-theme")
-    assert ls_pos != -1
+    assert ls_pos != -1, "swing-trading-theme key not found in rendered HTML"
+
     assert ls_pos < head_end, (
         "swing-trading-theme localStorage read does not appear inside <head>; "
         "FOUC will result because body renders before the dark class applies."
     )
-    assert ls_pos < body_start, (
-        "swing-trading-theme localStorage read appears AFTER <body> start "
-        "(FOUC risk)."
+    assert ls_pos < real_body_start, (
+        "swing-trading-theme localStorage read appears AFTER the actual "
+        "<body> opening tag (FOUC risk)."
     )
 
 
