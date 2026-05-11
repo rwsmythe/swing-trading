@@ -458,35 +458,54 @@ For each open trade T:
 
 **Estimated implementation effort:** 2-3 hours (template edit + golden test + visual verification per the CLAUDE.md `<tr>`-leading makeFragment gotcha — verify the detail page is not first-element-`<tr>`-leading; it is currently a full page render so not at risk, but the operator-witnessed browser gate should confirm).
 
-### §4.G Recommendation G — Transcribe Minervini SEPA + DST sell-side rules into `reference/methodology/` (addresses §3.G)
+### §4.H Recommendation H — Sector-relative-strength check on open positions (addresses §3.H)
 
-**Proposed change:** Per V2.1 §VII.F, the operator commissions transcription of the relevant Minervini chapters (sell-side rules; SEPA winner-management discipline; 7-week rule; parabolic extension; violated MA on volume) and the DST take-profit + trail rules into `reference/methodology/`. Adds N new files following the format established by `minervini-trend-template.md`: source citation + transcription + usage notes ("This file is reference material only; do not edit production code to 'match' this table without routing the change through the research-branch promotion cycle per V2 Addendum Addition 2.").
+**Proposed rule:** `suggest_sector_laggard_exit` — emits an exit suggestion when an open trade's sector relative strength (computed at evaluation time and persisted on a recurring schedule) drops below a configurable percentile threshold AND the open trade's R-multiple is below a configurable floor (avoid suggesting exit on profitable trades whose sector has merely cooled).
 
-**Trigger condition:** N/A (this is an operator-action recommendation, not a code change).
+**Trigger condition (precise):**
+```
+sector_lag_rs_threshold = cfg.stop_advisory.sector_lag_rs_threshold (NEW, default 50 — IBD-percentile-style)
+sector_lag_r_floor = cfg.stop_advisory.sector_lag_r_floor (NEW, default 0.5, i.e., trade must be under +0.5R)
+
+For each open trade T:
+  sector_rs = latest_sector_rs_for(T.sector)  # from existing eval pipeline RS calc
+  IF sector_rs IS NOT NULL AND
+     sector_rs < sector_lag_rs_threshold AND
+     r_so_far(T) < sector_lag_r_floor:
+    emit "Sector laggard — {T.sector} RS={sector_rs} below {threshold}; trade only +{r:.2f}R; consider exit per Q.8"
+```
+
+**Emission surface:** Dashboard open-positions row Advisory column.
+
+**Maturity-stage gating:** Fires in **new** + **maturing** stages (R<+1.5R, by R-floor design). Does NOT fire in **mature** or **well-mature** because R_floor=0.5 caps it. Operator can tune the floor up to extend the gate.
+
+**Classification:** **CLASSIFICATION-ALTERING.** Requires extending the evaluation pipeline to persist sector RS at a cadence the advisory layer can consume; the new `sector_rs` field is operationally consumed by an exit recommendation. Per V2.1 §VII.F: (1) new method-record version for sector-laggard exit logic, (2) research-branch validation (does sector RS predict exit-side return improvement?), (3) shadow mode, (4) promote/demote based on shadow evidence.
+
+**Doctrine support:** Q.8 only (cited). No Minervini or DST confluence in surveyed rules. Single-source.
+
+**V2.1 §VII.F routing:** Required.
+
+**Estimated implementation effort:** 10-14 hours including pipeline-side RS persistence + research-branch validation harness + advisory wiring.
+
+**Recommendation: DEFER.** Single-source-Q rule with no Minervini or DST confluence; novelty risk on implementation; current trade-volume floor (~5 concurrent positions, ~50/year ceiling) doesn't make this a high-value add against the implementation cost. Operator decision in §6 likely `defer` or `drop`. Note: a much cheaper V0 of this would be an advisory-message-only check against existing entry-time RS data without pipeline changes, but that doesn't address the "RS as the trade ages" aspect that Q.8 is actually about.
+
+### §4.G Operator-action prerequisite — Transcribe Minervini SEPA + DST sell-side rules into `reference/methodology/` (addresses §3.G)
+
+**Note on classification framework:** This item is intentionally surfaced OUTSIDE the §4.A-K recommendation set because the brief's locked taxonomy (advisory-message-only OR classification-altering) classifies code/advisory changes only. Transcribing doctrine into `reference/methodology/` is neither a code change nor a classification-altering operation — it is an **operator-action prerequisite** that makes the V2.1 §VII.F-routed code recommendations (§4.A, §4.C, §4.H if accepted) citable against source-of-truth doctrine instead of `[UNVERIFIED]` memory. It is captured here adjacent to §4 because of its dependency relationship, not as a code recommendation. Surfaced as an operator-decision item in §6.
+
+**Proposed operator action:** Per V2.1 §VII.F, the operator commissions transcription of the relevant Minervini chapters (sell-side rules; SEPA winner-management discipline; 7-week rule; parabolic extension; violated MA on volume) and the DST take-profit + trail rules into `reference/methodology/`. Adds N new files following the format established by `minervini-trend-template.md`: source citation + transcription + usage notes ("This file is reference material only; do not edit production code to 'match' this table without routing the change through the research-branch promotion cycle per V2 Addendum Addition 2.").
+
+**Trigger:** Operator-discretionary; no automated trigger applies.
 
 **Emission surface:** New files in `reference/methodology/`.
 
 **Maturity-stage gating:** N/A.
 
-**Classification:** **NEITHER advisory-message-only NOR classification-altering** — this is a documentation / reference-base recommendation. It does not modify any production code. It DOES make every subsequent classification-altering change in §4 (Recommendations A, C) routable through V2.1 §VII.F with a citable source. Without this, the operator is making routing decisions on classification-altering changes against `[UNVERIFIED]` doctrine, which is exactly what V2.1 §VII.F line 446 warns against.
+**Classification:** **Not a §4 recommendation per locked taxonomy** — operator-action prerequisite for §4.A, §4.C, §4.H V2.1 §VII.F routing.
 
-**Doctrine support:** N/A (this IS the doctrine-capture step).
+**V2.1 §VII.F routing:** N/A directly. But this is a PREREQUISITE for V2.1 §VII.F-routed §4 recommendations A, C, H to have citable source-of-truth basis.
 
-**V2.1 §VII.F routing:** N/A directly. But this is a PREREQUISITE for V2.1 §VII.F-routed §4 recommendations A and C to have citable source-of-truth basis.
-
-**Estimated implementation effort:** Operator action ~30-90 min per source-chapter transcription; depends on Minervini source chapter length + DST coverage. The operator owns this; the implementer cannot substitute (no PDF/transcription available).
-
-### §4.H Recommendation H — Sector-relative-strength check on open positions (defers; addresses §3.H)
-
-**Proposed rule:** A future advisory checking each open trade's sector RS at evaluation time and flagging "Sector laggard — consider exit" when the sector RS drops below a configurable threshold.
-
-**Trigger condition (sketch):** Computed at pipeline time; consumed by advisory layer. Concrete trigger TBD.
-
-**Classification:** Indeterminate (depends on implementation; likely classification-altering if it leverages the evaluation pipeline's RS computation).
-
-**V2.1 §VII.F routing:** Likely required.
-
-**Recommendation: DEFER.** Single-source-Q rule (Q.8) with no Minervini or DST confluence; novelty risk on implementation; current trade-volume floor doesn't make this a high-value add. Operator decision in §6 likely `drop` or `defer`.
+**Estimated effort:** Operator action ~30-90 min per source-chapter transcription; depends on Minervini source chapter length + DST coverage. The operator owns this; the implementer cannot substitute (no PDF/transcription available).
 
 ### §4.I Recommendation I — Volume-confirmed close-below-MA overlay (defers; addresses §3.I)
 
@@ -494,7 +513,7 @@ For each open trade T:
 
 **Trigger condition:** Volume already in OHLCV bundle; trivial to compute relative volume.
 
-**Classification:** **ADVISORY-MESSAGE-ONLY** (messaging refinement; rule trigger unchanged).
+**Classification:** **ADVISORY-MESSAGE-ONLY** (new advisory overlay; does NOT alter the existing `exit_below_*ma` trigger conditions — adds a volume-relative condition that strengthens or weakens the message wording).
 
 **V2.1 §VII.F routing:** N/A.
 
@@ -562,32 +581,52 @@ Synthesis of how the Recommendations §4.A-K should gate on Tier-3 #6 maturity s
 | **parabolic_trim** (Recommendation D; NEW) | FIRES if recent_pct & above-20MA both trip | FIRES if recent_pct & above-20MA both trip | FIRES if recent_pct & above-20MA both trip | FIRES if recent_pct & above-20MA both trip |
 | **volume_confirmed_exit** (Recommendation I; DEFER) | FIRES (when wired) | FIRES (when wired) | FIRES (when wired) | FIRES (when wired) |
 | **combined_violation** (Recommendation J; DEFER) | FIRES on combo | FIRES on combo | FIRES on combo | FIRES on combo |
-| **sector_relative_strength** (Recommendation H; DEFER) | TBD | TBD | TBD | TBD |
+| **sector_relative_strength** (Recommendation H; DEFER; CLASSIFICATION-ALTERING) | FIRES if sector_rs<50 AND R<+0.5 (and `sector_rs` field is wired) | FIRES if sector_rs<50 AND R<+0.5 | n/a (R-floor caps to <+0.5 — well above this stage's R range) | n/a |
 | **per_hypothesis_time_stop** (Recommendation C; CLASSIFICATION-ALTERING) | OVERRIDES time_stop | OVERRIDES time_stop | typically n/a | typically n/a |
 
-### §5.2 State transitions (implementation-shape sketch)
+### §5.2 State transitions — derivation correction
 
-The DB enum stage transitions are computed by the pipeline (Phase 8 `_step_daily_management` per `docs/superpowers/specs/2026-05-06-phase8-daily-management-design.md`). The advisory layer reads `daily_management_records.maturity_stage` for the active snapshot. State transitions:
+The DB enum stage values are computed by `compute_maturity_stage(open_MFE_R_to_date)` at [`swing/trades/daily_management.py:324-332`](swing/trades/daily_management.py#L324-L332), called from the pipeline `_step_daily_management` path at [`swing/trades/daily_management.py:567`](swing/trades/daily_management.py#L567). The advisory layer reads `daily_management_records.maturity_stage` from the active snapshot.
 
-- `pre_+1.5R` → `+1.5R_to_+2R` when `open_R_effective >= +1.5R` at session close.
-- `+1.5R_to_+2R` → `>=+2R_trail_eligible` when `open_R_effective >= +2.0R` at session close.
-- Reverse transitions: monotonic-up only (per the operator's "trade has to prove itself" framing; once a trade has earned trail eligibility, an R-multiple dip below +2R does NOT demote the maturity stage). **Pending verification:** the implementer should NOT assume monotonic-up without checking the pipeline `_step_daily_management` code or its spec; the maturity_stage transition rules are NOT verified in this investigation. Operator-decision item in §6 covers this.
+**Critical derivation note (Codex R1 correction):** `maturity_stage` is derived from `open_MFE_R_to_date` (the trade's maximum-favorable-excursion R-multiple recorded so far), **NOT** from current/live `open_R_effective`. The function thresholds per code lines 328-332:
 
-### §5.3 DHC-specific application
+```
+if open_MFE_R_to_date is None:    return None
+if open_MFE_R_to_date < 1.5:      return "pre_+1.5R"
+if open_MFE_R_to_date < 2.0:      return "+1.5R_to_+2R"
+return ">=+2R_trail_eligible"
+```
 
-DHC is open since 2026-04-27 with entry $7.58, stop currently... (the orchestrator-context.md DB-state notes pin entry but not the current stop or current R; the investigation does not have live DB access to check). Per the orchestrator brief §1 the trade is approaching the +1.5R/+2R region. Decision guidance from the matrix:
+**Monotonicity is automatic, not a design question.** Because `open_MFE_R_to_date` is by definition the running MAX of R-so-far over the trade's life (the "maximum favorable excursion to date"), it can only ever increase or stay flat — never decrease. Therefore `compute_maturity_stage` cannot "demote" a trade once promoted; if a trade hits +2R and then pulls back to +1R, MFE-to-date stays at +2R, and `maturity_stage` stays at `>=+2R_trail_eligible`. This satisfies the operator's "trade has to prove itself; once proven, it stays in the well-mature stage" framing as an automatic consequence of the MFE derivation — no separate monotonicity-preservation logic is needed.
 
-- **If DHC `maturity_stage = 'pre_+1.5R'`** (R<+1.5): keep 20MA trail; do NOT upgrade. The existing `trail_20MA` advisory is the right one; today's `trail_10MA` advisory should not be acted on by an operator following Tier-3 #6 discipline. **Operator-decision moment if accepting Recommendation A:** activate the gate so the 10MA advisory does not surface at this stage.
-- **If DHC `maturity_stage = '+1.5R_to_+2R'`**: still 20MA trail per Tier-3 #6 ("default 20MA pre-+2R"). The 10MA-upgrade does NOT activate until +2R. Same advisory disposition as `pre_+1.5R`.
-- **If DHC `maturity_stage = '>=+2R_trail_eligible'`**: upgrade to 10MA trail. The trail_20MA advisory should now suppress; the trail_10MA is the operationally-correct one.
+**Practical implication for the advisory layer:** A trade can simultaneously have `maturity_stage = '>=+2R_trail_eligible'` (because its MFE peak hit ≥+2R) and `open_R_effective = +0.5R` (because price pulled back). The 10MA-trail-eligibility computed by `compute_trail_MA_eligibility_flag` at [`swing/trades/daily_management.py:335-352`](swing/trades/daily_management.py#L335-L352) is gated on `maturity_stage='>=+2R_trail_eligible' AND trail_MA_candidate_price IS NOT NULL AND current_stop < trail_MA_candidate_price` — i.e., it leverages the MFE-anchored maturity stage to allow upgrades to 10MA trail even after a pullback. This is doctrinally consistent with "once a trade has run +2R, it has earned the tighter trail" (per Tier-3 #6 framing).
 
-The operator can read DHC's current `maturity_stage` from the daily-management tile on the dashboard ([`daily_management_tile.html.j2:75-78`](swing/web/templates/partials/daily_management_tile.html.j2#L75-L78)) — the value renders as a `<span class="maturity-badge">` in the Maturity column. If the badge reads `pre_+1.5R`, the trade hasn't yet hit the mature stage and BOTH the +1R trim hint (Recommendation B) and the 20MA trail hold; no 10MA upgrade decision yet. If `+1.5R_to_+2R`, the trim opportunity at +1R may already be behind the operator (unless not trimmed yet, in which case Recommendation B's "fires if no prior trim" branch still applies); 20MA still the default trail. If `>=+2R_trail_eligible`, the operator's actionable choice is to upgrade the trail stop from a 20MA-buffered level to a 10MA-buffered level.
+### §5.3 DHC-specific application — three-field decision
 
-**This is what the §1 operator-urgency framing reduces to in concrete terms:** the operator needs the dashboard to make this decision easier. Today the operator must read the maturity-badge value, mentally map to "20MA or 10MA", and ignore the trail-10MA advisory while pre-`>=+2R_trail_eligible` (or ignore the trail-20MA advisory while `>=+2R_trail_eligible`). Recommendation A (or A.bis) closes the mental-mapping step.
+DHC is open since 2026-04-27 with entry $7.58 per the orchestrator-context.md DB-state notes. The investigation does not have live DB access; the operator reads the live state from the daily-management dashboard tile per [`daily_management_tile.html.j2:75-90`](swing/web/templates/partials/daily_management_tile.html.j2#L75-L90), which surfaces THREE relevant cells:
 
-### §5.4 Open question for operator on monotonic stage transitions
+1. **`open_R_effective`** — current/live R-multiple from `(current_price - current_avg_cost) * current_size / planned_risk_budget` per spec §7.1 line 547. This is what the operator's gain currently is.
+2. **`open_MFE_R_to_date`** — the trade's peak R-multiple over its life. This is what drives the maturity stage.
+3. **`maturity_stage`** — derived from (2) per §5.2; renders as the `maturity-badge` span.
 
-If a trade gets demoted (operator action — partial exit reduces position size, or stop adjustment changes R-math), does `maturity_stage` get recomputed downward, or does it stay at the highest stage ever reached? The investigation does not have access to the operator's intended behavior on this; the spec at `docs/superpowers/specs/2026-05-06-phase8-daily-management-design.md` may answer it but is not consulted here. Flagged for operator decision in §6.
+Decision-guidance matrix for DHC, refined per §5.2 derivation correction:
+
+- **Case A — `maturity_stage = 'pre_+1.5R'`** (MFE peak has never reached +1.5R): the trade has not yet proven itself. Keep 20MA trail; do NOT upgrade. If `open_R_effective` is also <+1R, Recommendation B (trim/sell-into-strength) has not fired yet. If `open_R_effective` is between +1R and +1.5R, the trim-at-+1R advisory (Recommendation B) would fire once active.
+- **Case B — `maturity_stage = '+1.5R_to_+2R'`** (MFE peak hit +1.5R but never +2R): the trade is mature but not well-mature. Tier-3 #6 default stays at 20MA trail. The `open_R_effective` may be currently below +1.5R (because of pullback off MFE peak) — that's a doctrine signal in its own right (gave back gains; consider whether the trim opportunity at MFE peak was missed).
+- **Case C — `maturity_stage = '>=+2R_trail_eligible'`** (MFE peak hit +2R): the trade is well-mature. Operator may now upgrade to 10MA trail per Tier-3 #6. `trail_MA_eligibility_flag` (per [`daily_management_tile.html.j2:82-86`](swing/web/templates/partials/daily_management_tile.html.j2#L82-L86)) renders TRAIL ELIGIBLE badge with the proposed price IFF current_stop < trail_MA_candidate_price. Even if `open_R_effective` has pulled back to +1R or lower, the 10MA upgrade is still doctrine-supported because MFE-to-date earned it.
+
+**Operator's actual decision moment for DHC:** read THREE values from the dashboard tile, not just one:
+1. `maturity_stage` (the maturity-badge span).
+2. `open_R_effective` (the Open R cell).
+3. `open_MFE_R_to_date` (the MFE R cell).
+
+The maturity_stage cell alone is necessary but not sufficient. The operator's "where is DHC in its life" answer is the joint reading. The current advisory layer renders trail_10MA + trail_20MA based on `ctx.sma10` / `ctx.sma20` and `ctx.current_price` (per [`advisory.py:46-62`](swing/trades/advisory.py#L46-L62)) — without consulting `maturity_stage`. Recommendation A would close the consult; Recommendation A.bis would surface the stage's preferred MA as an advisory hint without suppressing the other.
+
+**This is what the §1 operator-urgency framing reduces to in concrete terms:** the operator today must read three dashboard cells, map them through the Tier-3 #6 framing manually, and ignore one of the trail-MA advisories per the mapping. Recommendation A (or A.bis) closes the mental-mapping step.
+
+### §5.4 (removed; previously covered "monotonic stage transitions" open question)
+
+Per §5.2's derivation correction, monotonic-up stage transitions are an automatic consequence of `open_MFE_R_to_date` semantics — not an open design question. This section is intentionally retained as a placeholder to preserve the §5.x section numbering for §5.1/§5.2/§5.3 cross-references elsewhere in the doc. Previously flagged operator-decision row about monotonic transitions has been **REMOVED from §6** as a `[UNVERIFIED]` item.
 
 ---
 
@@ -606,12 +645,11 @@ For each recommendation in §4, the operator's decision is `commission` (route t
 | §4.D (parabolic-extension detector; advisory-message-only) | **commission** | ___ | Should the dashboard flag parabolic moves (+25% in 5 days + 15% above 20MA) as candidates for aggressive trim? |
 | §4.E (briefing emits advisories; advisory-message-only) | **commission** | ___ | Should the pipeline briefing also carry the advisory column, or is the web dashboard a sufficient single source? |
 | §4.F (advisory column on detail + expanded row; advisory-message-only) | **commission** | ___ | Should the trade detail page + open-positions expanded view also render advisories? |
-| §4.G (transcribe Minervini SEPA + DST sell-side; doc-only) | **commission (operator-action)** | ___ | Should the operator commission transcription of Minervini SEPA + DST sell-side rules into `reference/methodology/` to close the §3.G `[UNVERIFIED]` gap before any §4.A or §4.C classification-altering work is dispatched? |
-| §4.H (sector RS check; classification-altering) | **defer or drop** | ___ | Single-source-Q rule; defer until trade volume justifies more sophistication, or drop entirely? |
+| §4.G (transcribe Minervini SEPA + DST sell-side; operator-action prerequisite — NOT a §4 code recommendation per locked taxonomy) | **commission (operator-action)** | ___ | Should the operator commission transcription of Minervini SEPA + DST sell-side rules into `reference/methodology/` to close the §3.G `[UNVERIFIED]` gap before any §4.A, §4.C, or §4.H V2.1 §VII.F-routed work is dispatched? |
+| §4.H (sector RS check on open positions; classification-altering) | **defer or drop** | ___ | Single-source-Q rule; defer until trade volume justifies more sophistication, or drop entirely? |
 | §4.I (volume-confirmed exit overlay; advisory-message-only) | **defer** until §4.G confirms M.6 | ___ | Should the close-below-MA advisory escalate when volume is heavy, or defer until Minervini transcription confirms the rule? |
 | §4.J (combined-violation rule; advisory-message-only) | **drop** (cosmetic; low value) | ___ | Should two independent advisories be merged into one stronger one? |
 | §4.K (planned_target_R hit advisory; advisory-message-only) | **bundle with §4.B** | ___ | Should the dashboard flag when a trade reaches the operator-defined planned target R, OR bundle this into §4.B's trim/sell-into-strength dispatch? |
-| §5.4 (monotonic stage transition policy) | **operator-clarification** | ___ | When a trade is demoted (partial exit / stop adjustment changes R-math), does `maturity_stage` recompute downward, or stay at the highest stage reached? |
 
 ### §6.2 DHC-specific decision
 
@@ -651,7 +689,6 @@ Below is the full list of `[UNVERIFIED — physical-copy-only claim; flag for op
 | 11 | DST D.4: tighten stop after +2R | ___ |
 | 12 | DST D.5: 7-10 day vs 7-week time stop | ___ |
 | 13 | Confluence/divergence map in §2.4 (rows 1-9) carries `[UNVERIFIED]` from the constituents | ___ |
-| 14 | §5.2 monotonic-up stage transition assumption | ___ |
 
 ---
 
@@ -691,5 +728,5 @@ Below is the full list of `[UNVERIFIED — physical-copy-only claim; flag for op
 - **Code files read end-to-end:** `swing/trades/advisory.py`, `swing/data/migrations/0016_phase8_daily_management.sql`, `swing/web/templates/partials/open_positions_row.html.j2`, `swing/web/templates/partials/daily_management_tile.html.j2`, the relevant slice of `swing/web/view_models/dashboard.py` (lines 920-980), the relevant slice of `swing/pipeline/runner.py` (lines 900-935), `swing/web/templates/partials/open_positions_expanded.html.j2`, the relevant slice of `swing/rendering/briefing.py` (lines 120-140).
 - **Files surveyed by grep / Glob (not full-read):** `swing/data/repos/daily_management.py` (action_taken + maturity_stage refs); `swing/web/templates/trades/detail.html.j2` (verified absence of advisory rendering); `docs/orchestrator-context.md` (Tier-3 #6 + maturity refs).
 - **`[UNVERIFIED]` flag count:** 14 distinct claims flagged for operator triage (§6.4 captures them).
-- **Recommendation count:** 11 distinct recommendations (§4.A through §4.K). Classification breakdown: advisory-message-only = 7 (§4.A.bis, §4.B, §4.D, §4.E, §4.F, §4.I, §4.J, §4.K — counting §4.A.bis as the operator-selectable alternative); classification-altering = 2 (§4.A full, §4.C full); operator-action (transcription) = 1 (§4.G); defer-or-drop indeterminate = 1 (§4.H).
+- **Recommendation count:** 10 distinct §4 code/advisory recommendations (§4.A, §4.B, §4.C, §4.D, §4.E, §4.F, §4.H, §4.I, §4.J, §4.K) plus 1 operator-action prerequisite (§4.G; intentionally NOT counted under the brief's locked binary taxonomy). §4.A has an alternative formulation §4.A.bis. Classification breakdown of the 10 §4 code recommendations: advisory-message-only = 7 (§4.B, §4.D, §4.E, §4.F, §4.I, §4.J, §4.K); classification-altering = 3 (§4.A, §4.C, §4.H); §4.A.bis is the advisory-message-only alternative to §4.A. §4.G is an operator-action prerequisite (transcription) per locked-taxonomy carve-out documented in §4.G.
 - **Operator decision-points surfaced:** 13 (§6.1 row count) + DHC-specific decision (§6.2) + sequencing suggestion (§6.3) + 14 `[UNVERIFIED]` triage rows (§6.4) = 13 / 1 / 1 / 14 = 29 distinct operator inputs requested across the doc.
