@@ -887,6 +887,7 @@ def compose_open_trade_advisories_for_briefing(
     weather_status: str,
     stop_advisory_config,
     action_session_date: str,
+    data_asof_date: str | None = None,
 ) -> dict[int, list[AdvisorySuggestionVM]]:
     """Compose per-trade advisories for the pipeline briefing renderer.
 
@@ -904,17 +905,43 @@ def compose_open_trade_advisories_for_briefing(
         end-of-day; ``previous_close`` IS the most-recent completed-session
         close → semantically equivalent to the dashboard's last-close
         fallback in the after-hours render path.
-      * SMA + ``previous_close`` from ``fetcher.get(ticker, lookback_days=200)``
-        which consumes the per-ticker archive (``swing.data.ohlcv_archive``)
-        ``_step_charts`` already populated. Re-reading the archive does NOT
-        add new yfinance calls — open-position tickers always appear in
-        chart-step scope (Tier-2 dedup precedence) so the archive is fresh.
+      * SMA + ``previous_close`` from ``fetcher.get(ticker, lookback_days=200,
+        as_of_date=date.fromisoformat(data_asof_date))`` which consumes the
+        per-ticker archive (``swing.data.ohlcv_archive``) ``_step_charts``
+        already populated FOR THE SAME LEASE / data_asof. The
+        ``as_of_date`` pin (Codex R1 Major 3 fix) prevents
+        wall-clock-vs-data-asof drift on retries / cross-session runs that
+        ``PriceFetcher._resolve_asof(None)`` would otherwise mask.
+
+    "No new yfinance calls" claim (brief A.AC.5; Codex R1 Major 4
+    disposition — ACCEPTED with rationale): re-reading the archive consults
+    ``read_or_fetch_archive``, which COULD refresh from yfinance under
+    stale-archive or weekly-refresh paths. In practice this never happens
+    in steady state because:
+
+      * Open-trade tickers are guaranteed to be in chart-step scope (Tier-2
+        dedup precedence at ``_step_charts`` lines 728-752); the archive
+        is freshly written within the same lease ~seconds before
+        ``_step_export`` runs.
+      * The archive helper's refresh trigger keys on ``data_asof`` parity;
+        pinning ``as_of_date`` here matches the chart-step's pin so a
+        chart-step-populated archive entry is always considered current.
+
+    The acceptance precedent matches ``_step_charts`` itself, which has the
+    same dependency. A stricter "archive-only" knob on ``PriceFetcher``
+    would be V2 scope.
 
     Returns ``{trade.id: [AdvisorySuggestionVM, ...]}`` keyed by every open
     trade — empty list when no advisory triggers fire OR when the fetcher
     fails (defensive: briefing emission must not abort on per-ticker
     fetcher failure; logged as warning).
     """
+    # Pin as_of_date so PriceFetcher does NOT default-fall back to
+    # `last_completed_session(datetime.now())` (Codex R1 Major 3 fix —
+    # mismatch on retries / cross-session runs).
+    pinned_asof = (
+        _date.fromisoformat(data_asof_date) if data_asof_date else None
+    )
     out: dict[int, list[AdvisorySuggestionVM]] = {}
     for t in trades:
         if t.id is None:
@@ -922,7 +949,9 @@ def compose_open_trade_advisories_for_briefing(
             # that lack a PK (data-integrity bug; would otherwise collide).
             continue
         try:
-            bars = fetcher.get(t.ticker, lookback_days=200, as_of_date=None)
+            bars = fetcher.get(
+                t.ticker, lookback_days=200, as_of_date=pinned_asof,
+            )
         except Exception as exc:
             log.warning(
                 "briefing advisory: fetcher.get failed for %s: %s",
@@ -1012,9 +1041,24 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
             weather_status=(weather.status if weather else "STALE"),
             stop_advisory_config=cfg.stop_advisory,
             action_session_date=action_session.isoformat(),
+            data_asof_date=data_asof,
         )
     else:
         open_trade_advisories = {}
+
+    # 3e.8 Bundle 1 Codex R1 Major 2 fix — populate open_trade_last_prices
+    # from the SAME source (candidate.close) the advisory composition uses
+    # for ``current_price``. Without this, the briefing renderer's
+    # ``inputs.open_trade_last_prices.get(t.ticker, t.entry_price)`` fall-
+    # back at swing/rendering/briefing.py:123 displays Last == entry_price
+    # → R / unrealized P&L / dist_to_stop_pct all derive from $0 P&L, while
+    # advisories fire from the newer candidate close. Tying both surfaces
+    # to candidate.close removes the contradiction.
+    open_trade_last_prices: dict[str, float] = {}
+    for t in trades:
+        cand = candidates_by_ticker.get(t.ticker)
+        if cand is not None and cand.close is not None:
+            open_trade_last_prices[t.ticker] = cand.close
 
     inputs = BriefingInputs(
         action_session_date=action_session.isoformat(),
@@ -1028,7 +1072,7 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
         pipeline_is_stale=False, current_session_match=True,
         recommendations=recs, open_trades=trades,
         open_trade_advisories=open_trade_advisories,
-        open_trade_last_prices={},
+        open_trade_last_prices=open_trade_last_prices,
         watchlist=watchlist, watchlist_last_prices={},
         candidates_by_ticker=candidates_by_ticker,
         chart_b64s={t: _b64_chart(p) for t, p in chart_paths.items()},

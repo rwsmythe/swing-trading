@@ -251,6 +251,73 @@ def test_step_export_open_trade_advisories_empty_list_when_no_triggers(
     )
 
 
+def test_step_export_populates_open_trade_last_prices_from_candidates(
+    tmp_path, monkeypatch,
+):
+    """Codex R1 Major 2 fix — _step_export now populates
+    open_trade_last_prices keyed by ticker, sourced from the SAME
+    candidate.close used by the advisory composition. Closes the briefing
+    "Last column shows entry_price while advisories use newer candidate
+    close" contradiction.
+    """
+    from swing.pipeline.lease import Lease
+    from swing.pipeline.runner import _step_export
+
+    cfg = _make_cfg(tmp_path)
+    conn = sqlite3.connect(str(cfg.paths.db_path))
+    try:
+        with conn:
+            eval_id = _seed_eval_run(conn)
+            _seed_open_trade(
+                conn, ticker="MJR2", entry_date="2026-04-01",
+                entry_price=100.0, initial_stop=95.0,
+            )
+            _seed_candidate_excluded(
+                conn, eval_id=eval_id, ticker="MJR2", close=108.42,
+            )
+            run_id, token = _seed_pipeline_run_running(conn)
+    finally:
+        conn.close()
+
+    captured: dict = {}
+
+    def fake_build_view_model(inputs):
+        captured["open_trade_last_prices"] = dict(inputs.open_trade_last_prices)
+        class _VM:
+            briefing_html = ""
+            briefing_md = ""
+        return _VM()
+
+    monkeypatch.setattr(
+        "swing.pipeline.runner.build_briefing_view_model", fake_build_view_model,
+    )
+    monkeypatch.setattr(
+        "swing.pipeline.runner.export_briefing", lambda **kw: None,
+    )
+    monkeypatch.setattr(
+        "swing.pipeline.runner.promote_staging",
+        lambda **kw: type("PR", (), {"target_path": tmp_path})(),
+    )
+    monkeypatch.setattr(
+        "swing.rendering.retention.archive_old_exports", lambda **kw: None,
+    )
+
+    fetcher = _StubFetcher({"MJR2": _bars_trail_setup()})
+    lease = Lease(db_path=cfg.paths.db_path, run_id=run_id, token=token)
+    _step_export(
+        cfg=cfg, lease=lease, eval_run_id=eval_id,
+        action_session=_date(2026, 4, 15),
+        data_asof="2026-04-14",
+        chart_paths={},
+        fetcher=fetcher,
+    )
+
+    assert captured["open_trade_last_prices"] == {"MJR2": 108.42}, (
+        f"Expected open_trade_last_prices to be populated from candidate.close "
+        f"(R1 Major 2 fix); got {captured['open_trade_last_prices']!r}"
+    )
+
+
 def test_step_export_no_extra_fetcher_calls_beyond_open_trade_count(
     tmp_path, monkeypatch,
 ):

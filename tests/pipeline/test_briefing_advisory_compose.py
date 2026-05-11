@@ -212,6 +212,45 @@ def test_compose_open_trade_advisories_graceful_on_fetcher_error():
     assert trade_ok.id in result
 
 
+def test_compose_open_trade_advisories_pins_as_of_date_when_supplied():
+    """Codex R1 Major 3 fix — helper passes ``data_asof_date`` through as
+    ``as_of_date=date.fromisoformat(...)`` to the fetcher so cross-session
+    or retry runs don't silently fall back to wall-clock
+    ``last_completed_session(datetime.now())``.
+
+    Discriminating: stub fetcher records the as_of_date received; assert
+    it equals the parsed-from-ISO date object.
+    """
+    from datetime import date
+
+    from swing.pipeline.runner import compose_open_trade_advisories_for_briefing
+
+    trade = _trade()
+    bars = _bars_with_trail_setup()
+    candidates = {"ABCD": _candidate(close=float(bars["Close"].iloc[-1]))}
+
+    class _Recording:
+        def __init__(self):
+            self.last_as_of_date = "<unset>"
+        def get(self, ticker, lookback_days, *, as_of_date=None):
+            self.last_as_of_date = as_of_date
+            return bars
+
+    fetcher = _Recording()
+    compose_open_trade_advisories_for_briefing(
+        trades=[trade], fetcher=fetcher,
+        candidates_by_ticker=candidates, weather_status="Bullish",
+        stop_advisory_config=_stop_advisory_default(),
+        action_session_date="2026-04-15",
+        data_asof_date="2026-04-14",
+    )
+
+    assert fetcher.last_as_of_date == date(2026, 4, 14), (
+        f"Expected fetcher to receive as_of_date=date(2026, 4, 14); got "
+        f"{fetcher.last_as_of_date!r}"
+    )
+
+
 def test_compose_open_trade_advisories_returns_view_model_dataclasses():
     """Returned items must be ``AdvisorySuggestionVM`` (rendering layer type),
     not raw ``AdvisorySuggestion`` — matches the briefing-renderer template's
