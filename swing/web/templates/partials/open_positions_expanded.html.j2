@@ -1,21 +1,27 @@
 {#- Tier-2 #3: open-positions row expanded fragment.
     Expects: expanded (OpenPositionsExpandedVM)
 
-    V1 scope-limit (per chart-access UX brief §2): expanded row contains
-    chart only — no P&L breakdown, no advisories list, no recent events.
-    Operator can request additional fields as a separate post-V1 dispatch.
+    3e.8 Bundle 1 (§4.F B.AC.5): the prior V1 scope-limit "no advisories list"
+    exclusion is REMOVED. Advisories are rendered inside the <td colspan="10">
+    via the SAME canonical shared partial used by the dashboard list-view row
+    and the trade-detail page (CLAUDE.md HTMX OOB-swap-drift gotcha — single
+    canonical include target).
 
     Chart-display block intentionally duplicates watchlist_expanded.html.j2
     lines 33-40 (CLAUDE.md HTMX OOB-swap drift gotcha allows verbatim
     duplication when factoring would force changes outside scope; the
-    watchlist expand pattern is explicitly out-of-scope per brief §2).
-    If a future dispatch factors a shared chart_display partial, BOTH
-    files must migrate together.
+    watchlist expand pattern is explicitly out-of-scope per chart-access UX
+    brief §2). If a future dispatch factors a shared chart_display partial,
+    BOTH files must migrate together.
 
     Colspan must match the compact open_positions_row.html.j2 cell count
     (10 cells: Ticker, Entry date, Entry price, Shares, Current stop, Last,
     Sector, Industry, Advisory, Actions). A mismatch breaks the table layout.
-    (Sector + Industry added in Task 9 of the sector/industry capture plan.)
+
+    HTMX-safety pre-empt list (§0.3 #7): response MUST lead with <tr> so the
+    htmx.js makeFragment synthetic-table-wrap rule fires correctly for the
+    `hx-target="closest tr"` + outerHTML swap convention. The new advisory
+    rendering goes INSIDE the existing <tr>, not as a leading element.
 -#}
 <tr id="open-position-{{ expanded.trade_id }}" class="expanded">
   <td colspan="10">
@@ -37,5 +43,8 @@
         {{ expanded.chart_reason_message }}
       </div>
     {% endif %}
+    {% with advisories = expanded.advisories %}
+      {% include "partials/open_positions_advisories.html.j2" %}
+    {% endwith %}
   </td>
 </tr>
