@@ -117,18 +117,24 @@ def compute_adr_pct(
         return None
     if not np.isfinite(ohlc_arr).all():
         return None
+    # Codex R4 Minor #1 — operate on the converted numeric array from here
+    # so numeric-string-object columns ("100.0") that converted successfully
+    # don't fall back into mixed-dtype arithmetic on the original Series.
+    highs = ohlc_arr[:, 0]
+    lows = ohlc_arr[:, 1]
+    closes = ohlc_arr[:, 2]
     # Defend against zero/negative close (corrupted bar) — would yield
     # inf/-inf in the per-bar percent.
-    if (tail["Close"] <= 0).any():
+    if (closes <= 0).any():
         return None
     # Codex R3 Minor #2 — reject High < Low rows (physically impossible
     # OHLC). The data boundary should classify these as invalid even
     # though the downstream rule already suppresses negative ADR.
-    if (tail["High"] < tail["Low"]).any():
+    if (highs < lows).any():
         return None
-    ranges_pct = (tail["High"] - tail["Low"]) / tail["Close"] * 100
+    ranges_pct = (highs - lows) / closes * 100
     val = ranges_pct.mean()
-    if pd.isna(val):
+    if not np.isfinite(val):
         return None
     return float(val)
 
