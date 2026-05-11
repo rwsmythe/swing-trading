@@ -144,7 +144,7 @@ This is the post-3e.8-investigation Bundle 2 commission. Three new sell-side adv
 ### §2.1 Worktree
 - **Branch:** `3e8-bundle-2-sell-side-advisories`
 - **Worktree directory:** `.worktrees/3e8-bundle-2-sell-side-advisories/` at repo root.
-- **BASELINE_SHA:** `<bundle-2-brief-commit-SHA>` (resolved post-commit; orchestrator fills in after committing this brief).
+- **BASELINE_SHA:** `5037c5c` (HEAD of `main` immediately after the Bundle 2 brief commit; this commit is pinned as the worktree baseline).
 
 ### §2.2 Marker-file workflow
 - After worktree creation: `New-Item -ItemType File c:\Users\rwsmy\swing-trading\.copowers-subagent-active`
@@ -413,7 +413,7 @@ DO NOT:
 ## §8 Dispatch metadata
 
 - **Brief author:** Orchestrator session 2026-05-11 (post-Bundle-1-ship handoff).
-- **Brief commit:** `<filled-in-after-commit>`.
+- **Brief commit:** `5037c5c` (initial draft) + `<pin-commit-SHA>` (BASELINE_SHA pin).
 - **Brief HEAD context:** `202f8d6` on main (post-Bundle-1-ship + handoff brief).
 - **Worktree path (binding):** `.worktrees/3e8-bundle-2-sell-side-advisories/`.
 - **Baseline test count:** 2206 fast (1 skipped).
