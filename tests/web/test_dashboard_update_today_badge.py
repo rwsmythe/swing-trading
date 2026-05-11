@@ -25,7 +25,7 @@ from fastapi.testclient import TestClient  # used by A.7 next commit
 
 from swing.config import load
 from swing.data.db import connect, ensure_schema
-from swing.data.repos.daily_management import insert_snapshot
+from swing.data.repos.daily_management import insert_event_log, insert_snapshot
 from swing.evaluation.dates import last_completed_session
 from swing.web.app import create_app  # used by A.7 next commit
 from swing.web.price_cache import PriceCache
@@ -49,6 +49,20 @@ def _seed_trade(
         (trade_id, ticker, state),
     )
     conn.commit()
+
+
+def _minimal_event_log_fields(*, data_asof_session: str) -> dict[str, Any]:
+    """Mirrors the helper in tests/data/test_daily_management_repo.py.
+    Re-paste of tiny private helper per Phase 6 lesson 'tiny private
+    helpers may be re-pasted across boundaries; private-prefix bounds
+    drift risk.' Only required-by-validator fields for event_log_emit."""
+    return {
+        "review_date": data_asof_session,
+        "data_asof_session": data_asof_session,
+        "created_at": f"{data_asof_session}T12:00:00",
+        "mfe_mae_precision_level": "daily_approximate",
+        "current_price": 110.0,
+    }
 
 
 def _full_snapshot_fields(*, data_asof_session: str) -> dict[str, Any]:
@@ -97,13 +111,15 @@ def dashboard_env(tmp_path: Path, monkeypatch):
     return cfg, db_path
 
 
-def test_build_dashboard_sets_has_update_today_true_when_snapshot_present(
+def test_build_dashboard_sets_has_update_today_false_when_only_snapshot_present(
     dashboard_env,
 ) -> None:
-    """A.3 — when a daily_snapshot row exists for the current
-    ``last_completed_session`` (the canonical session anchor for daily-
-    management records per Codex R1 Major #1 fix),
-    ``OpenPositionsRowVM.has_update_today`` must be True."""
+    """3e.15 — when ONLY a daily_snapshot row exists for the current
+    ``last_completed_session`` (no operator event_log entry),
+    ``OpenPositionsRowVM.has_update_today`` must be False. The pipeline
+    auto-emits a snapshot for every open trade on every run; collapsing
+    the badge to True on snapshot-existence would defeat the badge's
+    purpose ("did operator engage with this trade today?")."""
     cfg, db_path = dashboard_env
     today = last_completed_session(datetime.now()).isoformat()
     conn = connect(db_path)
@@ -113,6 +129,34 @@ def test_build_dashboard_sets_has_update_today_true_when_snapshot_present(
             insert_snapshot(
                 conn, trade_id=1,
                 snapshot_fields=_full_snapshot_fields(data_asof_session=today),
+            )
+    finally:
+        conn.close()
+
+    cache = PriceCache(cfg.web)
+    vm = build_dashboard(cfg=cfg, cache=cache, executor=None)
+    assert 1 in vm.open_trade_rows
+    assert vm.open_trade_rows[1].has_update_today is False
+
+
+def test_build_dashboard_sets_has_update_today_true_when_event_log_present(
+    dashboard_env,
+) -> None:
+    """3e.15 — when an event_log row exists for the current
+    ``last_completed_session``, ``OpenPositionsRowVM.has_update_today``
+    must be True. event_log is the operator-driven entry surface, so
+    presence of an event_log row IS the badge's True signal."""
+    cfg, db_path = dashboard_env
+    today = last_completed_session(datetime.now()).isoformat()
+    conn = connect(db_path)
+    try:
+        _seed_trade(conn, trade_id=1, ticker="AAA")
+        with conn:
+            insert_event_log(
+                conn, trade_id=1,
+                event_log_fields=_minimal_event_log_fields(
+                    data_asof_session=today,
+                ),
             )
     finally:
         conn.close()
@@ -159,23 +203,29 @@ def _row_html_for(body: str, trade_id: int) -> str:
 
 def test_dashboard_renders_both_update_badge_states(dashboard_env) -> None:
     """A.7 — full-page dashboard render contains the matched badge for the
-    seeded-snapshot row AND the pending badge for the un-seeded row, each
+    seeded-event_log row AND the pending badge for the un-seeded row, each
     correctly scoped to its own ``<tr id="open-position-...">``.
 
     Codex R2 Major #1 fix — labels are now ``✓ logged`` / ``⚠ pending``
     (not ``today`` / ``not yet``) so the operator never sees a Friday
     session described as "today" on a Monday morning.
+
+    3e.15 — fixture switched from snapshot to event_log: the badge now
+    fires only on operator-driven event_log rows (snapshot is auto-emitted
+    by pipeline for every open trade and would collapse the badge).
     """
     cfg, db_path = dashboard_env
     today = last_completed_session(datetime.now()).isoformat()
     conn = connect(db_path)
     try:
-        _seed_trade(conn, trade_id=10, ticker="UPDT")  # will get a snapshot
-        _seed_trade(conn, trade_id=11, ticker="STAL")  # no snapshot
+        _seed_trade(conn, trade_id=10, ticker="UPDT")  # will get an event_log
+        _seed_trade(conn, trade_id=11, ticker="STAL")  # no event_log
         with conn:
-            insert_snapshot(
+            insert_event_log(
                 conn, trade_id=10,
-                snapshot_fields=_full_snapshot_fields(data_asof_session=today),
+                event_log_fields=_minimal_event_log_fields(
+                    data_asof_session=today,
+                ),
             )
     finally:
         conn.close()
@@ -191,19 +241,19 @@ def test_dashboard_renders_both_update_badge_states(dashboard_env) -> None:
     updt_row = _row_html_for(body, 10)
     stal_row = _row_html_for(body, 11)
     assert "✓ logged" in updt_row, (
-        f"UPDT row (with seeded snapshot) must show '✓ logged'; "
+        f"UPDT row (with seeded event_log) must show '✓ logged'; "
         f"row HTML window:\n{updt_row}"
     )
     assert "⚠ pending" not in updt_row, (
-        f"UPDT row (with seeded snapshot) must NOT show '⚠ pending'; "
+        f"UPDT row (with seeded event_log) must NOT show '⚠ pending'; "
         f"row HTML window:\n{updt_row}"
     )
     assert "⚠ pending" in stal_row, (
-        f"STAL row (no snapshot) must show '⚠ pending'; "
+        f"STAL row (no event_log) must show '⚠ pending'; "
         f"row HTML window:\n{stal_row}"
     )
     assert "✓ logged" not in stal_row, (
-        f"STAL row (no snapshot) must NOT show '✓ logged'; "
+        f"STAL row (no event_log) must NOT show '✓ logged'; "
         f"row HTML window:\n{stal_row}"
     )
     # Hover-title carries the actual session date so the operator can

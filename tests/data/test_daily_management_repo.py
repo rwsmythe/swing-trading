@@ -554,27 +554,31 @@ def test_has_update_today_for_trades_empty_when_no_records(
     assert result == set()
 
 
-def test_has_update_today_for_trades_returns_id_for_today_snapshot(
+def test_has_update_today_for_trades_excludes_today_snapshot(
     conn: sqlite3.Connection,
 ) -> None:
-    """A.2 — daily_snapshot row whose review_date matches today qualifies."""
+    """3e.15 — daily_snapshot row ALONE does NOT qualify (snapshot is
+    pipeline-auto; badge means OPERATOR engagement). Discriminator: this
+    is the entire point of the 3e.15 narrowing; without it the badge
+    collapses to 'did pipeline run today?' once the pipeline runs."""
     today = "2026-05-09"
     fields = _full_snapshot_fields(data_asof_session=today)
     insert_snapshot(conn, trade_id=1, snapshot_fields=fields)
     result = has_update_today_for_trades(conn, [1], session_date=today)
-    assert result == {1}
+    assert result == set()
 
 
 def test_has_update_today_for_trades_excludes_superseded(
     conn: sqlite3.Connection,
 ) -> None:
     """A.4 — superseded rows are filtered out by the ``is_superseded = 0``
-    clause in the helper's predicate. GREEN at write-time (predicate already
-    enforces this) — captures the contract so a future maintainer who edits
-    the predicate cannot silently drop the supersede filter."""
+    clause in the helper's predicate. Captures the contract so a future
+    maintainer who edits the predicate cannot silently drop the supersede
+    filter. Switched fixture from snapshot to event_log post-3e.15 since
+    snapshot rows no longer satisfy the predicate at all."""
     today = "2026-05-09"
-    fields = _full_snapshot_fields(data_asof_session=today)
-    rec_id = insert_snapshot(conn, trade_id=1, snapshot_fields=fields)
+    el = _minimal_event_log_fields(data_asof_session=today)
+    rec_id = insert_event_log(conn, trade_id=1, event_log_fields=el)
     conn.execute(
         "UPDATE daily_management_records SET is_superseded = 1 "
         "WHERE management_record_id = ?",
@@ -587,17 +591,17 @@ def test_has_update_today_for_trades_excludes_superseded(
 def test_has_update_today_for_trades_excludes_yesterday(
     conn: sqlite3.Connection,
 ) -> None:
-    """A.5 — yesterday's session does NOT count as 'updated today'. GREEN at
-    write-time (predicate already enforces ``review_date = ?`` exact match);
-    pins the contract so a future widening (e.g. ``>= ?``) cannot silently
-    leak prior-session updates into the badge."""
+    """A.5 — yesterday's session does NOT count as 'updated today'. Pins
+    the contract so a future widening (e.g. ``>= ?``) cannot silently
+    leak prior-session updates into the badge. Switched fixture from
+    snapshot to event_log post-3e.15."""
     from datetime import date, timedelta
 
     today_d = date(2026, 5, 9)
     today = today_d.isoformat()
     yesterday = (today_d - timedelta(days=1)).isoformat()
-    fields = _full_snapshot_fields(data_asof_session=yesterday)
-    insert_snapshot(conn, trade_id=1, snapshot_fields=fields)
+    el = _minimal_event_log_fields(data_asof_session=yesterday)
+    insert_event_log(conn, trade_id=1, event_log_fields=el)
     result = has_update_today_for_trades(conn, [1], session_date=today)
     assert result == set()
 
@@ -605,11 +609,27 @@ def test_has_update_today_for_trades_excludes_yesterday(
 def test_has_update_today_for_trades_event_log_satisfies(
     conn: sqlite3.Connection,
 ) -> None:
-    """A.6 — event_log rows ALSO satisfy the predicate, so an operator can
-    satisfy 'updated today' without a pipeline-emitted snapshot. GREEN at
-    write-time — the predicate is
-    ``record_type IN ('daily_snapshot', 'event_log')``."""
+    """A.6 — event_log rows satisfy the predicate. Post-3e.15: event_log
+    is now the ONLY record_type that satisfies (was previously
+    ``IN ('daily_snapshot', 'event_log')``)."""
     today = "2026-05-09"
+    el = _minimal_event_log_fields(data_asof_session=today)
+    insert_event_log(conn, trade_id=1, event_log_fields=el)
+    result = has_update_today_for_trades(conn, [1], session_date=today)
+    assert result == {1}
+
+
+def test_has_update_today_for_trades_event_log_with_snapshot_still_satisfies(
+    conn: sqlite3.Connection,
+) -> None:
+    """3e.15 — when BOTH a daily_snapshot AND an event_log exist for the
+    same trade + session, the event_log alone satisfies the predicate.
+    Discriminator pins the contract that snapshot is not subtracting from
+    or AND-ing with the event_log match — the event_log is sufficient and
+    the snapshot is irrelevant to the predicate."""
+    today = "2026-05-09"
+    snap = _full_snapshot_fields(data_asof_session=today)
+    insert_snapshot(conn, trade_id=1, snapshot_fields=snap)
     el = _minimal_event_log_fields(data_asof_session=today)
     insert_event_log(conn, trade_id=1, event_log_fields=el)
     result = has_update_today_for_trades(conn, [1], session_date=today)

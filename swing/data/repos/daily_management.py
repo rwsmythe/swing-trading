@@ -150,17 +150,26 @@ def has_update_today_for_trades(
     *,
     session_date: str,
 ) -> set[int]:
-    """Return the subset of ``trade_ids`` that have a daily-management update
-    whose ``review_date`` equals ``session_date``.
+    """Return the subset of ``trade_ids`` that have an OPERATOR-DRIVEN
+    event_log entry whose ``review_date`` equals ``session_date``.
 
     Predicate:
 
-      ``record_type IN ('daily_snapshot', 'event_log')``
+      ``record_type = 'event_log'``
       AND ``is_superseded = 0``
       AND ``review_date = session_date``
 
-    BOTH record types satisfy "updated today" — the operator can satisfy via
-    either a pipeline-emitted snapshot OR an operator-emitted event_log entry.
+    **3e.15 narrowed semantic (2026-05-10):** the original polish-bundle
+    2026-05-09 predicate also matched ``daily_snapshot`` rows (both record
+    types satisfied "updated today"). But the pipeline's ``_step_daily_
+    management`` step writes a ``daily_snapshot`` row for EVERY open trade
+    on every successful run, with ``review_date = last_completed_session
+    (run_now)`` — so within hours of session start every open trade
+    satisfies the old predicate and the badge collapses to "did pipeline
+    run today?" — a question the existing pipeline-status banner already
+    answers. Filtering to ``event_log`` only narrows the badge to mean
+    "operator personally engaged with this trade today via the daily-
+    management form." See ``docs/phase3e-todo.md`` 3e.15.
 
     **Session-anchor contract (polish-bundle 2026-05-09 Codex R1 Major #1
     fix):** ``session_date`` MUST equal the value the writers stamp into
@@ -186,7 +195,7 @@ def has_update_today_for_trades(
     rows = conn.execute(
         f"SELECT DISTINCT trade_id FROM daily_management_records "
         f"WHERE trade_id IN ({placeholders}) "
-        f"  AND record_type IN ('daily_snapshot', 'event_log') "
+        f"  AND record_type = 'event_log' "
         f"  AND is_superseded = 0 "
         f"  AND review_date = ?",
         (*ids, session_date),
