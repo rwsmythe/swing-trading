@@ -77,7 +77,9 @@ Full detail: `reference/Future Work/QuantEcon/2026-04-24-quant-econ-companion-tr
 
 > **This section decays fastest. Update on every meaningful change.**
 
-**As of 2026-05-10 (post-3e.15-ship; Phase 9 writing-plans queued next):**
+**As of 2026-05-10 (post-3e.16-ship; Phase 9 writing-plans queued next):**
+
+**3e.16 SHIPPED 2026-05-10 at `1b43efb`** (worktree dispatch on `3e16-cadence-review-trade-summary`; 8 commits = 4 task-impl + 4 Codex-fix). Adds "Trade activity during this period" section to `/reviews/{id}/complete` form view with state-tagged rows ([OPENED] / [CLOSED] / [OPENED+CLOSED] / [EVENT]). New `list_trades_with_activity_in_period` data-layer helper. Codex chain 5 rounds → NO_NEW_CRITICAL_MAJOR (R1 0/4/3 → R2 0/2/2 → R3 0/2/2 → R4 0/2/1 → R5 0/0/2; convergent shape; each round caught real edge cases including a brief-author error on `was_closed_in_period` predicate that would have mis-tagged partial-trim fills as `[CLOSED]`). 3 Major findings ACCEPTED with sound rationale (data-layer adapter re-paste + V1 closing-fill proxy + [EVENT] semantic for fill-fallback). Operator-witnessed gate via Chrome MCP browser automation: S1+S3+S4+S5 PASS; S2 SKIPPED-with-test-coverage. Test count 2142 → 2166 (+24); ruff baseline 18 unchanged. Three V2 watch items banked in `docs/phase3e-todo.md` 3e.16 entry.
 
 **3e.15 SHIPPED 2026-05-10 at `d1aed5a`** (option (a) — narrowed badge predicate to event_log only). Single-commit inline orchestrator ship; ~30 min impl. Empirical premise re-verified at code before design lock. Operator-facing impact: open trades show ⚠ pending after pipeline runs unless operator submits an event_log entry via daily-management form (badge now means "operator engaged" not "pipeline ran"). +2 net tests; full suite 2140 → 2142 GREEN.
 
