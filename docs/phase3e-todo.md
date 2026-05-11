@@ -104,7 +104,11 @@
 - `partials/trade_entry_form.html.j2` — current form rendering.
 - `static/style.css` — flex/grid container patterns.
 
-### 3e.8 — Sell-position indications for winning trades (INVESTIGATION; operator-surfaced 2026-05-08)
+### 3e.8 — Sell-position indications for winning trades — **INVESTIGATION SHIPPED 2026-05-10 at `63350ad`** (746-line analysis doc; commission decisions pending operator review)
+
+> **Outcome:** SHIPPED via worktree dispatch on `3e8-sell-side-advisories-investigation` branch. 746-line analysis doc at `docs/3e8-sell-side-advisories-investigation.md`. 4 commits = 1 stage-assembly + 2 Codex-fix + 1 polish. Codex chain 3 rounds → NO_NEW_CRITICAL_MAJOR (R1 0/4/3 → R2 0/2/2 → R3 0/0/2; convergent). All 6 Major findings RESOLVED in-doc; 1 Minor accepted (Qullamaggie citation form is replay-oriented per brief authorization). 11 recommendations: 7 advisory-message-only + 3 classification-altering + 1 alternative + 1 operator-action prerequisite. **Critical structural finding §3.G:** `reference/methodology/` contains ONLY Minervini Trend Template (entry criteria), NOT sell-side rules — 12 of 13 [UNVERIFIED] flags are sell-side claims requiring physical-copy text; §4.G (transcribe Minervini SEPA + DST sell-side into reference/methodology/) is operator-action prerequisite gating §4.A/§4.C/§4.H V2.1 §VII.F routing. **DHC-applicable §5.3:** three-field decision matrix (read maturity_stage + open_R_effective + open_MFE_R_to_date together; maturity-badge alone is unsafe). **Operator decision pending on 27 items** in §6 (12 recommendation dispositions + 1 DHC + 1 sequencing + 13 [UNVERIFIED] triages). Each commissioned recommendation will be banked as separate backlog entry with own brainstorm/writing-plans/executing-plans cycle.
+
+**Observed (original, 2026-05-08):**
 
 **Operator question:** What sell-side advisories / indications are surfaced for winning trades today, and what additions would close the doctrine gap? Framework currently emphasizes initial-stop discipline + trail-stop advisories (Phase 3d trail-MA at 20MA pre-+2R, 10MA post-+2R per Tier-3 #6 doctrine), but the affirmative "sell signal" surface for winners is less explicit. Tied to Tier-3 #6 (advisory state-machine + trade-maturity gating; operator-context.md deferred-with-tracking — MEDIUM-HIGH operational urgency; DHC currently approaching trail-MA decision territory).
 
