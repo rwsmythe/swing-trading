@@ -1840,8 +1840,8 @@ from fastapi import Form, HTTPException
 from markupsafe import Markup
 from swing.data.repos.trades import list_open_trades
 from swing.trades.entry import (
-    EntryRequest, HardCapException, DuplicateOpenPositionException,
-    SoftWarnException, record_entry,
+    EntryRequest, HardCapError, DuplicateOpenPositionError,
+    SoftWarnError, record_entry,
 )
 from swing.web.view_models.dashboard import build_dashboard
 from swing.web.view_models.open_positions_row import build_open_positions_row
@@ -1890,10 +1890,10 @@ def entry_post(
                 hard_cap=cfg.position_limits.hard_cap_open,
                 force=(force == "true"),
             )
-        except SoftWarnException:
+        except SoftWarnError:
             # Soft-warn 2-step flow — implemented in Task 11.
             raise
-        except (HardCapException, DuplicateOpenPositionException) as exc:
+        except (HardCapError, DuplicateOpenPositionError) as exc:
             # Error-path rendering — implemented in Task 12. For now re-raise so
             # the happy-path test fails loudly if it hits these.
             raise
@@ -2089,14 +2089,14 @@ def test_post_entry_soft_warn_2step(seeded_db, monkeypatch):
 - [ ] **Step 3: Verify it fails**
 
 Run: `python -m pytest tests/web/test_routes/test_trades_route.py::test_post_entry_soft_warn_2step -v`
-Expected: FAIL — first submit currently raises 500 (SoftWarnException re-raised).
+Expected: FAIL — first submit currently raises 500 (SoftWarnError re-raised).
 
-- [ ] **Step 4: Handle SoftWarnException in the route**
+- [ ] **Step 4: Handle SoftWarnError in the route**
 
-Replace the `except SoftWarnException: raise` block in `swing/web/routes/trades.py::entry_post` with:
+Replace the `except SoftWarnError: raise` block in `swing/web/routes/trades.py::entry_post` with:
 
 ```python
-        except SoftWarnException:
+        except SoftWarnError:
             # First submit at soft cap — render the 2-step confirm fragment.
             # Re-serialize the submitted form values so the next submit carries
             # them + force=true (spec §4.3 step 4).
@@ -2245,10 +2245,10 @@ Expected: FAIL — currently raise 500.
 
 - [ ] **Step 3: Handle the exceptions**
 
-Replace the `except (HardCapException, DuplicateOpenPositionException) as exc: raise` block in `swing/web/routes/trades.py::entry_post` with:
+Replace the `except (HardCapError, DuplicateOpenPositionError) as exc: raise` block in `swing/web/routes/trades.py::entry_post` with:
 
 ```python
-        except (HardCapException, DuplicateOpenPositionException) as exc:
+        except (HardCapError, DuplicateOpenPositionError) as exc:
             return templates.TemplateResponse(
                 request, "partials/trade_form_error.html.j2",
                 {"error_message": str(exc), "form_body": None},

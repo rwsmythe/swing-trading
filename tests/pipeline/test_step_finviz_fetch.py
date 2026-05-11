@@ -200,7 +200,7 @@ def test_step_finviz_fetch_warns_on_signature_drift(tmp_path: Path, caplog) -> N
 def test_step_finviz_fetch_lease_revoke_during_signature_read_downgrades_to_error(
     tmp_path: Path,
 ) -> None:
-    """Codex R3/R4 fix: LeaseRevoked from the FIRST fenced_write (the prior-sig
+    """Codex R3/R4 fix: LeaseRevokedError from the FIRST fenced_write (the prior-sig
     read) is caught by the file-work try/except → result downgraded to error →
     final fenced audit insert records the error truthfully → no canonical CSV
     + no shadow leftover (file work never started).
@@ -209,14 +209,14 @@ def test_step_finviz_fetch_lease_revoke_during_signature_read_downgrades_to_erro
     Discriminating post-fix (downgrade-on-exception): audit row says error.
     """
     from unittest.mock import MagicMock
-    from swing.data.repos.pipeline import LeaseRevoked
+    from swing.data.repos.pipeline import LeaseRevokedError
     from swing.pipeline.runner import _step_finviz_fetch
 
     cfg = _setup_cfg(tmp_path)
     cfg.paths.finviz_inbox_dir.mkdir(parents=True)
     db_conn = _setup_db(cfg)
 
-    # Fake lease: FIRST fenced_write raises LeaseRevoked (simulated revoke
+    # Fake lease: FIRST fenced_write raises LeaseRevokedError (simulated revoke
     # during the prior-signature read). The downgrade-to-error path then
     # uses the SECOND fenced_write to insert the audit row.
     call_count = [0]
@@ -225,7 +225,7 @@ def test_step_finviz_fetch_lease_revoke_during_signature_read_downgrades_to_erro
     def _fenced_write_iter():
         call_count[0] += 1
         if call_count[0] == 1:
-            raise LeaseRevoked("simulated revoke during prior-sig read")
+            raise LeaseRevokedError("simulated revoke during prior-sig read")
         yield db_conn
 
     fake_lease = MagicMock()
@@ -244,7 +244,7 @@ def test_step_finviz_fetch_lease_revoke_during_signature_read_downgrades_to_erro
         ),
     ):
         # Does NOT raise — _step_finviz_fetch's file-work try/except catches
-        # the first LeaseRevoked + downgrades to error; second fenced_write
+        # the first LeaseRevokedError + downgrades to error; second fenced_write
         # (audit insert) then succeeds.
         _step_finviz_fetch(cfg=cfg, lease=fake_lease)
 
@@ -264,7 +264,7 @@ def test_step_finviz_fetch_lease_revoke_during_signature_read_downgrades_to_erro
     rows = list_recent_calls(db_conn)
     assert len(rows) == 1
     assert rows[0].status == "error"
-    assert "LeaseRevoked" in (rows[0].error_message or "")
+    assert "LeaseRevokedError" in (rows[0].error_message or "")
     db_conn.close()
 
 
@@ -272,16 +272,16 @@ def test_step_finviz_fetch_lease_revoke_during_final_audit_propagates(
     tmp_path: Path,
 ) -> None:
     """Codex R4 fix (matching §A.13's lossy-audit-history failure case):
-    LeaseRevoked from the FINAL fenced_write (the audit insert AFTER promote)
+    LeaseRevokedError from the FINAL fenced_write (the audit insert AFTER promote)
     propagates up — the canonical CSV is already on disk; the audit row is
     missing for this fetch.
 
-    Discriminating: caller observes LeaseRevoked; canonical CSV exists;
+    Discriminating: caller observes LeaseRevokedError; canonical CSV exists;
     no shadow leftover. Next pipeline run will see the canonical as a
     manual-override (skipped_manual_override).
     """
     from unittest.mock import MagicMock
-    from swing.data.repos.pipeline import LeaseRevoked
+    from swing.data.repos.pipeline import LeaseRevokedError
     from swing.pipeline.runner import _step_finviz_fetch
 
     cfg = _setup_cfg(tmp_path)
@@ -289,14 +289,14 @@ def test_step_finviz_fetch_lease_revoke_during_final_audit_propagates(
     db_conn = _setup_db(cfg)
 
     # FIRST fenced_write succeeds (yields conn for prior-sig read);
-    # SECOND fenced_write raises LeaseRevoked (audit insert blocked).
+    # SECOND fenced_write raises LeaseRevokedError (audit insert blocked).
     call_count = [0]
 
     @contextlib.contextmanager
     def _fenced_write_iter():
         call_count[0] += 1
         if call_count[0] == 2:
-            raise LeaseRevoked("simulated revoke at final audit insert")
+            raise LeaseRevokedError("simulated revoke at final audit insert")
         yield db_conn
 
     fake_lease = MagicMock()
@@ -314,7 +314,7 @@ def test_step_finviz_fetch_lease_revoke_during_final_audit_propagates(
             ),
         ),
     ):
-        with pytest.raises(LeaseRevoked):
+        with pytest.raises(LeaseRevokedError):
             _step_finviz_fetch(cfg=cfg, lease=fake_lease)
 
     # Discriminating: canonical EXISTS (promoted before audit insert tried);

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import threading
 
-from swing.data.repos.pipeline import LeaseRevoked
+from swing.data.repos.pipeline import LeaseRevokedError
 from swing.pipeline.lease import Lease
 
 
@@ -18,7 +18,7 @@ class Heartbeat:
         while not self._stop.is_set():
             try:
                 self.lease.heartbeat()
-            except LeaseRevoked:
+            except LeaseRevokedError:
                 return
             except Exception:
                 pass

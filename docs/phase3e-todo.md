@@ -959,18 +959,18 @@ Each rename is a sed-style global replace; names are distinctive enough that no 
 
 | Old | New | swing/ files | tests/ files |
 |---|---|---:|---:|
-| `SchemaVersionMismatch` | `SchemaVersionMismatchError` | 4 | 4 |
-| `LeaseRevoked` | `LeaseRevokedError` | 10 | 12 |
-| `WatchlistEntryNotFound` | `WatchlistEntryNotFoundError` | 2 | 2 |
-| `ConcurrentRunBlocked` | `ConcurrentRunBlockedError` | 4 | 4 |
-| `ChartingUnavailable` | `ChartingUnavailableError` | 4 | 2 |
-| `SoftWarnException` | `SoftWarnError` | 6 | 4 |
-| `HardCapException` | `HardCapError` | 7 | 2 |
-| `DuplicateOpenPositionException` | `DuplicateOpenPositionError` | 7 | 5 |
+| `SchemaVersionMismatchError` | `SchemaVersionMismatchError` | 4 | 4 |
+| `LeaseRevokedError` | `LeaseRevokedError` | 10 | 12 |
+| `WatchlistEntryNotFoundError` | `WatchlistEntryNotFoundError` | 2 | 2 |
+| `ConcurrentRunBlockedError` | `ConcurrentRunBlockedError` | 4 | 4 |
+| `ChartingUnavailableError` | `ChartingUnavailableError` | 4 | 2 |
+| `SoftWarnError` | `SoftWarnError` | 6 | 4 |
+| `HardCapError` | `HardCapError` | 7 | 2 |
+| `DuplicateOpenPositionError` | `DuplicateOpenPositionError` | 7 | 5 |
 
 **Approach when attempted:** `git grep -l <OldName> | xargs sed -i 's/<OldName>/<NewName>/g'` per class; run `pytest -m "not slow"` after each batch (or after the full set) to verify; commit as a single rename pass.
 
-**Watch-item:** verify no test asserts on the OLD class name as a string literal (e.g., `pytest.raises(ValueError, match="WatchlistEntryNotFound")`). If found, those test assertions need the new name too — sed handles that uniformly since the match string contains the class name.
+**Watch-item:** verify no test asserts on the OLD class name as a string literal (e.g., `pytest.raises(ValueError, match="WatchlistEntryNotFoundError")`). If found, those test assertions need the new name too — sed handles that uniformly since the match string contains the class name.
 
 ### E501 — line-too-long (18 lines)
 

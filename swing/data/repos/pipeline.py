@@ -1,6 +1,6 @@
 """Pipeline runs repo with lease-token fencing.
 
-Every mutation function takes lease_token and raises LeaseRevoked if it doesn't
+Every mutation function takes lease_token and raises LeaseRevokedError if it doesn't
 match the row's current value (or if the row's state is no longer 'running').
 This is the only enforcement layer — the application can't bypass it.
 """
@@ -12,7 +12,7 @@ import uuid
 from swing.data.models import PipelineChartTarget, PipelineRun
 
 
-class LeaseRevoked(Exception):
+class LeaseRevokedError(Exception):
     """Raised when a write is attempted with a stale or wrong lease_token."""
 
 
@@ -43,7 +43,7 @@ def insert_pipeline_run(
 
 def _raise_revoked_if_no_row(conn: sqlite3.Connection, run_id: int) -> None:
     """If a lease-fenced UPDATE matched 0 rows, diagnose which condition failed
-    (run missing, lease_token mismatch, or state change) and raise LeaseRevoked
+    (run missing, lease_token mismatch, or state change) and raise LeaseRevokedError
     with a useful message. Called AFTER a rowcount==0 UPDATE so the read happens
     inside the same transaction as the failed update."""
     row = conn.execute(
@@ -51,8 +51,8 @@ def _raise_revoked_if_no_row(conn: sqlite3.Connection, run_id: int) -> None:
         (run_id,),
     ).fetchone()
     if row is None:
-        raise LeaseRevoked(f"run {run_id} not found")
-    raise LeaseRevoked(
+        raise LeaseRevokedError(f"run {run_id} not found")
+    raise LeaseRevokedError(
         f"run {run_id} lease revoked or state changed (state={row[1]})"
     )
 
@@ -138,7 +138,7 @@ def force_clear(
     conn: sqlite3.Connection, *, run_id: int, error_message: str
 ) -> None:
     """Admin recovery — does NOT take lease_token because lease is being revoked.
-    Subsequent writes by the original holder will raise LeaseRevoked."""
+    Subsequent writes by the original holder will raise LeaseRevokedError."""
     conn.execute(
         """
         UPDATE pipeline_runs SET state = 'force_cleared',

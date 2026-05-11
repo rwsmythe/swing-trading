@@ -4,7 +4,7 @@
 
 **Goal:** Convert the hyp-recs panel from a flat 7-column read-only table into a click-to-expand surface with full trade-preparation context (order parameters, sizing twins, sector/industry, inline chart). Add per-row Enter button (Q7) and expansion-internal "Take this trade" button (Q8). Bundle the CC pivot bug fix on the watchlist Pivot column across all three render sites. Add `Config.web.chase_factor` config field. Make the existing trade entry form origin-aware so it serves both watchlist and hyp-recs callers correctly across colspan, Cancel, POST round-trips, and candidate anchor.
 
-**Architecture:** Snapshot-at-click expansion VM (`HypRecsExpandedVM`) computed inside a route-local helper bound to `latest_completed_pipeline_run`; sizing twins are two `compute_shares` calls with risk-equity-floor and cash-feasible equity arguments — no new sizing logic. The hyp-recs flat table extracts a per-row partial (`hypothesis_recommendations_row.html.j2`) so the same markup feeds full-page render and the new `/hyp-recs/refresh` scoped route — closes the HTMX OOB-swap drift class. The refresh route uses a scoped `build_hyp_recs_section` builder (not the full `build_dashboard`) so a hyp-recs close action does not couple to open-trades / OHLCV / watchlist subsystems. The trade entry form gains a `TradeEntryFormVM.origin: Literal["watchlist","hyp-recs"]` discriminator (default `"watchlist"` preserves existing behavior); colspan, Cancel target, and a hidden form field parameterize on it; POST round-trip paths (`_rerender_entry_form_with_error`, `DuplicateOpenPositionException`, `soft_warn_confirm`) propagate the discriminator end-to-end. Anchor consistency for `origin=hyp-recs` binds ALL candidate-derived reads to `latest_completed_pipeline_run`'s `evaluation_run_id` — matches the expansion's anchor.
+**Architecture:** Snapshot-at-click expansion VM (`HypRecsExpandedVM`) computed inside a route-local helper bound to `latest_completed_pipeline_run`; sizing twins are two `compute_shares` calls with risk-equity-floor and cash-feasible equity arguments — no new sizing logic. The hyp-recs flat table extracts a per-row partial (`hypothesis_recommendations_row.html.j2`) so the same markup feeds full-page render and the new `/hyp-recs/refresh` scoped route — closes the HTMX OOB-swap drift class. The refresh route uses a scoped `build_hyp_recs_section` builder (not the full `build_dashboard`) so a hyp-recs close action does not couple to open-trades / OHLCV / watchlist subsystems. The trade entry form gains a `TradeEntryFormVM.origin: Literal["watchlist","hyp-recs"]` discriminator (default `"watchlist"` preserves existing behavior); colspan, Cancel target, and a hidden form field parameterize on it; POST round-trip paths (`_rerender_entry_form_with_error`, `DuplicateOpenPositionError`, `soft_warn_confirm`) propagate the discriminator end-to-end. Anchor consistency for `origin=hyp-recs` binds ALL candidate-derived reads to `latest_completed_pipeline_run`'s `evaluation_run_id` — matches the expansion's anchor.
 
 **Tech Stack:** Python 3.14, SQLite (WAL mode, foreign_keys=ON), dataclasses (frozen=True), FastAPI + Starlette + Jinja2 + HTMX, click CLI, pytest.
 
@@ -63,7 +63,7 @@ Plan task ordering = spec §7.1 ordering. Acknowledged transient state: Task 5 s
 3. `swing/web/view_models/watchlist.py` (Task 1) — `WatchlistRowVM` gains `current_pivot: float | None = None` trailing-default field. `build_watchlist_row` resolves `current_pivot` from `candidates_by_ticker[ticker].pivot` when available, else `None`.
 4. `swing/web/view_models/trades.py` (Tasks 6 + 7 + 9) — Task 6: `TradeEntryFormVM` gains `origin: Literal["watchlist", "hyp-recs"] = "watchlist"` trailing-default field; `build_entry_form_vm` accepts `origin: str = "watchlist"` keyword arg with whitelist coercion. Task 7: extends candidate-row SELECT to fetch `pivot` + `initial_stop`; falls back to candidate values when `wl_entry` is None. Task 9: gains `pipeline_finished_at: str | None = None` trailing-default field; for `origin=hyp-recs`, ALL candidate-derived reads (sector, industry, pivot, initial_stop, chart-pattern) bind to `latest_completed_pipeline_run`'s `evaluation_run_id`.
 5. `swing/web/routes/watchlist.py` (Task 1) — `GET /watchlist/{ticker}/row` populates `WatchlistRowVM.current_pivot` from `candidates_by_ticker`; the row partial render context dict gains `current_pivot=row_vm.current_pivot`.
-6. `swing/web/routes/trades.py` (Tasks 6 + 8) — Task 6: `entry_form` GET handler reads `?origin=` query param (whitelist-coerce; unknown → `"watchlist"`); passes through to `build_entry_form_vm`. Task 8: `entry_post` POST handler reads form-payload `origin` (whitelist-coerce); threads through `_rerender_entry_form_with_error`, `DuplicateOpenPositionException` re-render, and soft-warn `form_values` dict.
+6. `swing/web/routes/trades.py` (Tasks 6 + 8) — Task 6: `entry_form` GET handler reads `?origin=` query param (whitelist-coerce; unknown → `"watchlist"`); passes through to `build_entry_form_vm`. Task 8: `entry_post` POST handler reads form-payload `origin` (whitelist-coerce); threads through `_rerender_entry_form_with_error`, `DuplicateOpenPositionError` re-render, and soft-warn `form_values` dict.
 7. `swing/web/app.py` (Tasks 5) — Task 5: register the recommendations router; extend `_ROW_TARGET_PREFIXES` to include `"hyp-rec-row-"`.
 8. `swing/web/templates/partials/hypothesis_recommendations.html.j2` (Tasks 5 + 4) — Task 5: gains chevron leading column (col 1) + Enter trailing column (col 9); `<tbody>` iterates `{% include "partials/hypothesis_recommendations_row.html.j2" %}`. Task 4 (refresh-route handoff): the same template renders the refresh response (no template diff at Task 4 — all template changes are bundled into Task 5's commit).
 9. `swing/web/templates/partials/trade_entry_form.html.j2` (Tasks 6 + 8 + 9) — Task 6: parameterize `<td colspan>` (9 if `vm.origin == 'hyp-recs'` else 8) + Cancel button `hx-get` / `hx-target` based on `vm.origin`. Task 8: hidden `<input type="hidden" name="origin" value="{{ vm.origin }}">` form field. Task 9: freshness footer when `vm.origin == 'hyp-recs'` showing `Candidate context as of pipeline finished {{ vm.pipeline_finished_at }}`.
@@ -2491,7 +2491,7 @@ EOF
 **Files:**
 - Modify: `swing/web/templates/partials/trade_entry_form.html.j2` — add hidden `<input type="hidden" name="origin" value="{{ vm.origin }}">` form field (anywhere inside the `<form>` tag).
 - Modify: `swing/web/templates/partials/soft_warn_confirm.html.j2` — Cancel button parameterized on `form_values.origin` (mirroring trade_entry_form's pattern); the hidden `origin` form field is auto-emitted by the existing `for key, value in form_values.items()` loop once `origin` is added to `form_values` (Task 8 subroutine in `entry_post`).
-- Modify: `swing/web/routes/trades.py:217-526` — `entry_post` POST handler reads form-payload `origin` (whitelist-coerce); threads through `_rerender_entry_form_with_error`, `DuplicateOpenPositionException` re-render, soft-warn `form_values` dict.
+- Modify: `swing/web/routes/trades.py:217-526` — `entry_post` POST handler reads form-payload `origin` (whitelist-coerce); threads through `_rerender_entry_form_with_error`, `DuplicateOpenPositionError` re-render, soft-warn `form_values` dict.
 - Test: extend `tests/web/test_routes/test_hyp_recs_expand_route.py` — POST round-trip discriminating tests.
 
 **Discriminating-test sanity-check.** Three round-trip paths each get a discriminating test:
@@ -2531,7 +2531,7 @@ def test_duplicate_open_position_rerender_preserves_origin(tmp_path: Path):
     """R4-Major-1 — duplicate-position round-trip preserves origin."""
     cfg = _make_cfg(tmp_path); _seed_hyp_recs_fixture(cfg, tickers=["NVDA"])
     # Seed an existing OPEN trade for NVDA so a new POST triggers
-    # DuplicateOpenPositionException.
+    # DuplicateOpenPositionError.
     from swing.data.db import connect
     from swing.data.repos.watchlist import upsert_watchlist_entry
     from swing.data.models import WatchlistEntry
@@ -2630,7 +2630,7 @@ origin_coerced = _coerce_origin(origin)
 
 (c) Modify `_rerender_entry_form_with_error` signature + threading: add `origin: str = "watchlist"` keyword arg; pass `origin=origin_coerced` from each call site (4 call sites: rationale-validation failure, stop>=entry validation failure, chart-pattern ValueError catch, chart-pattern IntegrityError catch); inside the function pass `origin=origin` to `build_entry_form_vm`.
 
-(d) Modify the `DuplicateOpenPositionException` re-render branch to call `build_entry_form_vm(... origin=origin_coerced)` so the duplicate re-render preserves origin.
+(d) Modify the `DuplicateOpenPositionError` re-render branch to call `build_entry_form_vm(... origin=origin_coerced)` so the duplicate re-render preserves origin.
 
 (e) Modify the soft-warn `form_values` dict to include `"origin": origin_coerced` (the existing `for key, value in form_values.items()` loop in `soft_warn_confirm.html.j2` auto-emits the hidden input once the key is added to the dict).
 
@@ -2730,7 +2730,7 @@ submission. entry_post POST handler reads form-payload origin
 (whitelist-coerced); threaded through:
   - _rerender_entry_form_with_error (rationale validation, stop>=entry,
     chart-pattern ValueError, chart-pattern IntegrityError);
-  - DuplicateOpenPositionException re-render branch;
+  - DuplicateOpenPositionError re-render branch;
   - soft-warn form_values dict.
 
 soft_warn_confirm.html.j2 Cancel parameterized on form_values.origin;

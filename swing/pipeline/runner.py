@@ -18,7 +18,7 @@ from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
 from swing.data.repos.cash import list_cash
 from swing.data.repos.pattern_classifications import insert_classification
 from swing.data.repos.pipeline import (
-    LeaseRevoked,
+    LeaseRevokedError,
     insert_chart_target,
     set_evaluation_run_id,
     update_chart_target_status,
@@ -43,7 +43,7 @@ from swing.pipeline.finviz_schema import reject_csv, validate_csv
 from swing.pipeline.finviz_select import AmbiguousInboxError, NoFilesError, select_csv
 from swing.pipeline.heartbeat import Heartbeat
 from swing.pipeline.lease import (
-    ConcurrentRunBlocked,
+    ConcurrentRunBlockedError,
     Lease,
     acquire_lease,
 )
@@ -53,7 +53,7 @@ from swing.prices import PriceFetcher
 from swing.recommendations.build import BuildContext, build_recommendations
 from swing.rendering.briefing import BriefingInputs, build_briefing_view_model
 from swing.rendering.charts import (
-    ChartingUnavailable,
+    ChartingUnavailableError,
     PatternOverlay,
     render_chart,
 )
@@ -192,7 +192,7 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
             rs_universe_version=universe.version,
             rs_universe_hash=universe_hash,
         )
-    except ConcurrentRunBlocked as exc:
+    except ConcurrentRunBlockedError as exc:
         log.warning("blocked: %s", exc)
         return RunResult(run_id=0, state="blocked", error_message=str(exc))
 
@@ -234,7 +234,7 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
             )
             conn.commit()
             if cur.rowcount == 0:
-                raise LeaseRevoked(
+                raise LeaseRevokedError(
                     f"lease revoked before finviz_csv_path update "
                     f"for run_id={lease.run_id}"
                 )
@@ -271,7 +271,7 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                         rationale=classification.rationale,
                     ))
                 lease.status(weather_status="ok")
-            except LeaseRevoked:
+            except LeaseRevokedError:
                 raise
             except Exception as exc:
                 log.warning("weather failed: %s", exc)
@@ -280,7 +280,7 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
             lease.step("finviz_fetch")
             try:
                 _step_finviz_fetch(cfg=cfg, lease=lease)
-            except LeaseRevoked:
+            except LeaseRevokedError:
                 raise
             except Exception as exc:
                 # _step_finviz_fetch is itself error-tolerant; this catches
@@ -297,7 +297,7 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                     lease=lease,
                 )
                 lease.status(evaluation_status="ok")
-            except LeaseRevoked:
+            except LeaseRevokedError:
                 raise
             except Exception as exc:
                 log.error("evaluation failed: %s", exc)
@@ -312,7 +312,7 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                     archive_history_days=cfg.archive.archive_history_days,
                     ohlcv_archive_dir=cfg.paths.prices_cache_dir,
                 )
-            except LeaseRevoked:
+            except LeaseRevokedError:
                 raise
             except Exception as exc:
                 # Cadence-step semantics: per-trade failures are already
@@ -330,7 +330,7 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                                 data_asof_date=lease_data_asof(cfg, lease),
                                 lease=lease)
                 lease.status(watchlist_status="ok")
-            except LeaseRevoked:
+            except LeaseRevokedError:
                 raise
             except Exception as exc:
                 log.warning("watchlist failed: %s", exc)
@@ -343,7 +343,7 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                                        data_asof=lease_data_asof(cfg, lease),
                                        lease=lease)
                 lease.status(recommendations_status="ok")
-            except LeaseRevoked:
+            except LeaseRevokedError:
                 raise
             except Exception as exc:
                 log.warning("recommendations failed: %s", exc)
@@ -357,9 +357,9 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                     data_asof=lease_data_asof(cfg, lease), fetcher=fetcher,
                 )
                 lease.status(charts_status="ok")
-            except LeaseRevoked:
+            except LeaseRevokedError:
                 raise
-            except ChartingUnavailable:
+            except ChartingUnavailableError:
                 lease.status(charts_status="skipped")
             except Exception as exc:
                 log.warning("charts failed: %s", exc)
@@ -372,7 +372,7 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                              data_asof=lease_data_asof(cfg, lease),
                              chart_paths=chart_paths)
                 lease.status(export_status="ok")
-            except LeaseRevoked:
+            except LeaseRevokedError:
                 raise
             except Exception as exc:
                 log.warning("export failed: %s", exc)
@@ -387,7 +387,7 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 # watch item 13.
                 log.warning("review_log cadence step failed (continuing): %s", exc)
             lease.release(state="complete")
-        except LeaseRevoked as exc:
+        except LeaseRevokedError as exc:
             # Force-cleared mid-run. The pipeline_runs row has already moved to
             # state='force_cleared'; we cannot lease.release() anymore. Just
             # log, stop the heartbeat via `finally`, and surface the outcome.
@@ -672,7 +672,7 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
     """Render charts for A+ + top-N near-trigger watchlist via staging.
 
     Writes go through `promote_staging`, which re-reads pipeline_runs in-line
-    and raises `LeaseRevoked` if the lease has been force-cleared before the
+    and raises `LeaseRevokedError` if the lease has been force-cleared before the
     canonical rename. `verify_held()` is a cheap fail-fast so we don't render
     a staging dir's worth of charts only to discard them at promote time."""
     lease.verify_held()
@@ -1003,7 +1003,7 @@ def _step_daily_management(
     """Spec §4.1 step body — emit a daily_approximate snapshot per open trade.
 
     Cadence-step semantics: per-trade failures logged + step continues —
-    EXCEPT for ``LeaseRevoked``, which MUST re-raise so force-clear remains
+    EXCEPT for ``LeaseRevokedError``, which MUST re-raise so force-clear remains
     authoritative (Codex R2 Major #5; mirrors all other pipeline steps'
     discipline at the run_pipeline_internal try/except branches).
 
@@ -1021,7 +1021,7 @@ def _step_daily_management(
     """
     from swing.data.repos.daily_management import upsert_snapshot
     from swing.data.repos.trades import list_open_trades
-    from swing.pipeline.lease import LeaseRevoked
+    from swing.pipeline.lease import LeaseRevokedError
     from swing.trades import daily_management as _dm
     from swing.trades.state import state_transition
 
@@ -1064,7 +1064,7 @@ def _step_daily_management(
                         event_ts=fields["created_at"],
                         rationale="first_daily_management_record",
                     )
-        except LeaseRevoked:
+        except LeaseRevokedError:
             # Force-clear authoritative — propagate immediately. Codex R2 M5.
             raise
         except Exception as exc:
@@ -1293,7 +1293,7 @@ def _step_finviz_fetch(*, cfg, lease) -> None:
                 except OSError as _exc:
                     log.warning("failed to clean up Finviz shadow file: %s", _exc)
 
-    # Final audit-row insert. If THIS fenced_write raises LeaseRevoked,
+    # Final audit-row insert. If THIS fenced_write raises LeaseRevokedError,
     # the audit row is missing but file state is consistent.
     with lease.fenced_write() as conn:
         insert_call(conn, FinvizApiCall(

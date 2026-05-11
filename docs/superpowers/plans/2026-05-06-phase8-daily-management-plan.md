@@ -3007,22 +3007,22 @@ def test_step_failure_does_not_abort_pipeline(synthetic_lease_and_trades, monkey
 
 
 def test_step_re_raises_LeaseRevoked(synthetic_lease_and_trades, monkeypatch):
-    """Codex R2 Major #5 discriminating test: LeaseRevoked MUST propagate
+    """Codex R2 Major #5 discriminating test: LeaseRevokedError MUST propagate
     (force-clear authoritative); the broad `except Exception` MUST NOT catch it.
 
     EXACT pre-fix expected (broad-except only): no exception raised; warning logged.
-    EXACT post-fix expected: LeaseRevoked propagates out of _step_daily_management."""
-    from swing.pipeline.lease import LeaseRevoked
+    EXACT post-fix expected: LeaseRevokedError propagates out of _step_daily_management."""
+    from swing.pipeline.lease import LeaseRevokedError
     lease, conn = synthetic_lease_and_trades
 
     def raise_revoked(conn_inner, *, trade_id, **kwargs):
-        raise LeaseRevoked("synthetic-revoke-during-snapshot")
+        raise LeaseRevokedError("synthetic-revoke-during-snapshot")
     monkeypatch.setattr(
         "swing.trades.daily_management.compute_daily_approximate_snapshot",
         raise_revoked,
     )
 
-    with pytest.raises(LeaseRevoked, match="synthetic-revoke-during-snapshot"):
+    with pytest.raises(LeaseRevokedError, match="synthetic-revoke-during-snapshot"):
         _step_daily_management(
             lease=lease, run_now=datetime(2026, 5, 7, 18, 0, 0),
             eval_run_id=99, archive_history_days=120,
@@ -3043,16 +3043,16 @@ def _step_daily_management(
     """Spec §4.1 step body. Lands AFTER _step_evaluate.
 
     Cadence-step semantics: per-trade failures logged + pipeline continues —
-    EXCEPT for LeaseRevoked, which MUST re-raise so force-clear remains
+    EXCEPT for LeaseRevokedError, which MUST re-raise so force-clear remains
     authoritative (Codex R2 Major #5 fix; mirrors all existing pipeline
-    steps' LeaseRevoked discipline at swing/pipeline/runner.py:274/283/300/etc.).
+    steps' LeaseRevokedError discipline at swing/pipeline/runner.py:274/283/300/etc.).
 
     Codex R4 Major #4 fix: `last_completed_session` is imported at module
     scope of `swing/pipeline/runner.py` (line 35 — verified) — use the
     module-scope name directly, do NOT re-import inside the function. Tests
     monkeypatch the runner-module-scope name `swing.pipeline.runner.last_completed_session`.
     """
-    from swing.pipeline.lease import LeaseRevoked
+    from swing.pipeline.lease import LeaseRevokedError
     from swing.trades.daily_management import (
         compute_daily_approximate_snapshot,
     )
@@ -3098,7 +3098,7 @@ def _step_daily_management(
                         event_ts=fields["created_at"],
                         rationale="first_daily_management_record",
                     )
-        except LeaseRevoked:
+        except LeaseRevokedError:
             # Force-clear authoritative — propagate immediately. Codex R2 M5.
             raise
         except Exception as exc:
@@ -3107,14 +3107,14 @@ def _step_daily_management(
             )
 ```
 
-Wire call site in `run_pipeline_internal` — AFTER `eval_run_id = _step_evaluate(...)` line. Mirror existing `LeaseRevoked` `except` branches at lines 274/283/300/314/327/341/356/371 — the outer caller already handles the propagated `LeaseRevoked`.
+Wire call site in `run_pipeline_internal` — AFTER `eval_run_id = _step_evaluate(...)` line. Mirror existing `LeaseRevokedError` `except` branches at lines 274/283/300/314/327/341/356/371 — the outer caller already handles the propagated `LeaseRevokedError`.
 
 Run all 7 tests → PASS.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git commit -m "feat(pipeline): Task 4.0 — _step_daily_management (cadence-step semantics; idempotent UPSERT; gap-flagged; LeaseRevoked re-raise)"
+git commit -m "feat(pipeline): Task 4.0 — _step_daily_management (cadence-step semantics; idempotent UPSERT; gap-flagged; LeaseRevokedError re-raise)"
 ```
 
 **Estimated test count delta:** +7
@@ -4078,7 +4078,7 @@ swing pipeline run  # in another
 | T3.0 | +14 | Helpers (8) + service end-to-end (3) + thesis resolution (3) — added aware-tz canonicalization test (Codex R1 M5) |
 | T3.1 | +1 | tier_upgrade_to_intraday V2 stub |
 | T3.2 | +6 | record_event_log single-transaction (the §A.1 critical) — added no-op-stop guard test (Codex R1 M4) + stale-prior-stop guard test (Codex R4 M2) |
-| T4.0 | +7 | _step_daily_management — added LeaseRevoked re-raise discriminating test (Codex R2 M5) |
+| T4.0 | +7 | _step_daily_management — added LeaseRevokedError re-raise discriminating test (Codex R2 M5) |
 | T4.1 | +3 | Pipeline integration end-to-end |
 | T4.2 | +6 | Briefing "Daily Management Snapshot" subsection (Codex R1 M1 fix — was deferred, now V1 in-scope per spec §7.4 LOCKED) — added distinguishing-empty-states + orphan-snapshot-filter tests (Codex R3 M3 + m2) |
 | T5.0 | +6 | Web POST event — added HX-Request header propagation literal-check + atomic side-effect verification test |
@@ -4088,7 +4088,7 @@ swing pipeline run  # in another
 
 **Subtotal:** +79 (planner-projected post-Codex-R1+R2+R3+R4 fixes)
 
-**Range projection per Phase 6 lesson + brief §2.4:** +30 to +60 was the brief's range; this plan's projection (+79) sits ABOVE the brief's upper bound, reflecting the discriminating-test discipline applied across all 15 active tasks (including T4.2 added per Codex R1 Major #1) plus all R1/R2/R3/R4-fix-driven additions (no-op stop guard; stale-prior-stop guard; aware-tz canonicalization; HX-Request literal check; atomic side-effect verification; LeaseRevoked re-raise; distinguishing-empty-states; orphan-snapshot filter). Executing-plans dispatch acceptance criteria use the **range +55 to +100**, NOT a point estimate. Recap: do NOT tighten executing-plans dispatch acceptance criteria around +79 — bake the range.
+**Range projection per Phase 6 lesson + brief §2.4:** +30 to +60 was the brief's range; this plan's projection (+79) sits ABOVE the brief's upper bound, reflecting the discriminating-test discipline applied across all 15 active tasks (including T4.2 added per Codex R1 Major #1) plus all R1/R2/R3/R4-fix-driven additions (no-op stop guard; stale-prior-stop guard; aware-tz canonicalization; HX-Request literal check; atomic side-effect verification; LeaseRevokedError re-raise; distinguishing-empty-states; orphan-snapshot filter). Executing-plans dispatch acceptance criteria use the **range +55 to +100**, NOT a point estimate. Recap: do NOT tighten executing-plans dispatch acceptance criteria around +79 — bake the range.
 
 ---
 

@@ -135,13 +135,13 @@ The naive design (write canonical CSV → fenced-write audit row) had failure mo
 |---|---|---|
 | Step 3.b (shadow write fails) | result→error; no canonical; audit row says error | Truth-preserving; next run retries cleanly. |
 | Step 3.c (rename fails after shadow exists) | shadow deleted in finally; result→error; no canonical; audit says error | Same. No `ok`-without-CSV liar row. |
-| Step 4 (audit insert fails — e.g. LeaseRevoked) | canonical exists (was promoted); audit row missing | Lossy audit history (one fetch un-recorded), but next pipeline run sees canonical → `skipped_manual_override` and consumes the data normally. Far better than a false `ok`. |
+| Step 4 (audit insert fails — e.g. LeaseRevokedError) | canonical exists (was promoted); audit row missing | Lossy audit history (one fetch un-recorded), but next pipeline run sees canonical → `skipped_manual_override` and consumes the data normally. Far better than a false `ok`. |
 | Lease revoke between 3.a and 3.b | exception caught at step 3.e; result→error; nothing on disk; audit (step 4) says error | Clean. |
 
 **File-collision check** (algorithm §H step 2) inspects the **canonical path only**, NOT the shadow. A leftover `.api-pending` file does NOT trigger `skipped_manual_override` — it's an internal artifact, not operator manual data.
 
 **Discriminating tests in Task 6:**
-- `test_step_finviz_fetch_orphan_shadow_cleanup_on_lease_revoke`: simulate LeaseRevoked from the FIRST fenced_write (signature read in step 3.a); assert no canonical CSV, no shadow, audit row records `status='error'` with `LeaseRevoked` in error_message.
+- `test_step_finviz_fetch_orphan_shadow_cleanup_on_lease_revoke`: simulate LeaseRevokedError from the FIRST fenced_write (signature read in step 3.a); assert no canonical CSV, no shadow, audit row records `status='error'` with `LeaseRevokedError` in error_message.
 - (Implementer-added at task time) `test_step_finviz_fetch_promote_failure_downgrades_to_error`: monkey-patch `os.replace` second call (the promote) to raise `OSError`; assert audit row is `status='error'`, no canonical CSV, no shadow.
 
 ### A.14 — CLI vs pipeline concurrency: refuse-while-pipeline-running (Codex R2 Major-3 fix)
@@ -218,7 +218,7 @@ Brief §2.2 line "MAY contain a placeholder `screen_id = ""` and timeout/retry d
 | Path | Reason |
 |---|---|
 | `swing/cli.py` | Add new `@main.group("finviz")` subcommand group with `fetch` + `status` commands. |
-| `swing/pipeline/runner.py` | Add `_step_finviz_fetch(*, cfg, lease)` function (uses `lease.fenced_write()` for `finviz_api_calls` inserts). Call site lands BEFORE `_step_evaluate` invocation in `run_pipeline_internal`. **Error-handling contract** (per §A.13 R3): API failures, normalize failures, shadow-write failures, and promote failures are all caught + downgrade `result["status"]='error'`; the FINAL fenced audit-insert records the (possibly-downgraded) result and pipeline continues. EXCEPTION: if the final fenced audit-insert itself raises `LeaseRevoked` (mid-step force-clear lands AFTER promote completes but BEFORE audit row commits), the canonical CSV exists on disk + the audit row is missing for this fetch + `LeaseRevoked` propagates up to `run_pipeline_internal`'s outer LeaseRevoked handler (terminating the run with state='force_cleared' per existing pipeline semantics). The lossy audit-history is preferable to a false `ok` row; the next pipeline run sees the canonical CSV as a manual-override (skipped_manual_override) + consumes the data normally. |
+| `swing/pipeline/runner.py` | Add `_step_finviz_fetch(*, cfg, lease)` function (uses `lease.fenced_write()` for `finviz_api_calls` inserts). Call site lands BEFORE `_step_evaluate` invocation in `run_pipeline_internal`. **Error-handling contract** (per §A.13 R3): API failures, normalize failures, shadow-write failures, and promote failures are all caught + downgrade `result["status"]='error'`; the FINAL fenced audit-insert records the (possibly-downgraded) result and pipeline continues. EXCEPTION: if the final fenced audit-insert itself raises `LeaseRevokedError` (mid-step force-clear lands AFTER promote completes but BEFORE audit row commits), the canonical CSV exists on disk + the audit row is missing for this fetch + `LeaseRevokedError` propagates up to `run_pipeline_internal`'s outer LeaseRevokedError handler (terminating the run with state='force_cleared' per existing pipeline semantics). The lossy audit-history is preferable to a false `ok` row; the next pipeline run sees the canonical CSV as a manual-override (skipped_manual_override) + consumes the data normally. |
 | `swing/pipeline/runner.py` (additionally) | Add `_perform_finviz_fetch_no_lease(*, cfg, conn) -> None` helper used by the standalone CLI `swing finviz fetch` (Task 8). Refuses execution if a pipeline run is currently in flight (plan §A.14 cross-surface concurrency exclusion; raises `FinvizPipelineActiveError`). Same fetch + normalize + signature + persist semantics as `_step_finviz_fetch`. Both functions share `_finviz_fetch_core(cfg)`, `_finviz_persist_csv_shadow`, `_finviz_promote_shadow`, `_finviz_cleanup_stale_shadows` private helpers (plan §A.13 shadow-then-promote atomicity). |
 | `swing/data/db.py` | Bump `EXPECTED_SCHEMA_VERSION` 14 → 15 (single-line edit). |
 | `swing/data/models.py` | Add `FinvizApiCall` dataclass (frozen). |
@@ -2136,7 +2136,7 @@ def test_step_finviz_fetch_warns_on_signature_drift(tmp_path: Path, caplog) -> N
 def test_step_finviz_fetch_lease_revoke_during_signature_read_downgrades_to_error(
     tmp_path: Path,
 ) -> None:
-    """Codex R3/R4 fix: LeaseRevoked from the FIRST fenced_write (the prior-sig
+    """Codex R3/R4 fix: LeaseRevokedError from the FIRST fenced_write (the prior-sig
     read) is caught by the file-work try/except → result downgraded to error →
     final fenced audit insert records the error truthfully → no canonical CSV
     + no shadow leftover (file work never started).
@@ -2145,14 +2145,14 @@ def test_step_finviz_fetch_lease_revoke_during_signature_read_downgrades_to_erro
     Discriminating post-fix (downgrade-on-exception): audit row says error.
     """
     from unittest.mock import MagicMock
-    from swing.data.repos.pipeline import LeaseRevoked
+    from swing.data.repos.pipeline import LeaseRevokedError
     from swing.pipeline.runner import _step_finviz_fetch
 
     cfg = _setup_cfg(tmp_path)
     cfg.paths.finviz_inbox_dir.mkdir(parents=True)
     db_conn = _setup_db(cfg)
 
-    # Fake lease: FIRST fenced_write raises LeaseRevoked (simulated revoke
+    # Fake lease: FIRST fenced_write raises LeaseRevokedError (simulated revoke
     # during the prior-signature read). The downgrade-to-error path then
     # uses the SECOND fenced_write to insert the audit row.
     call_count = [0]
@@ -2161,7 +2161,7 @@ def test_step_finviz_fetch_lease_revoke_during_signature_read_downgrades_to_erro
     def _fenced_write_iter():
         call_count[0] += 1
         if call_count[0] == 1:
-            raise LeaseRevoked("simulated revoke during prior-sig read")
+            raise LeaseRevokedError("simulated revoke during prior-sig read")
         yield db_conn
 
     fake_lease = MagicMock()
@@ -2180,7 +2180,7 @@ def test_step_finviz_fetch_lease_revoke_during_signature_read_downgrades_to_erro
         ),
     ):
         # Does NOT raise — _step_finviz_fetch's file-work try/except catches
-        # the first LeaseRevoked + downgrades to error; second fenced_write
+        # the first LeaseRevokedError + downgrades to error; second fenced_write
         # (audit insert) then succeeds.
         _step_finviz_fetch(cfg=cfg, lease=fake_lease)
 
@@ -2200,7 +2200,7 @@ def test_step_finviz_fetch_lease_revoke_during_signature_read_downgrades_to_erro
     rows = list_recent_calls(db_conn)
     assert len(rows) == 1
     assert rows[0].status == "error"
-    assert "LeaseRevoked" in (rows[0].error_message or "")
+    assert "LeaseRevokedError" in (rows[0].error_message or "")
     db_conn.close()
 
 
@@ -2208,16 +2208,16 @@ def test_step_finviz_fetch_lease_revoke_during_final_audit_propagates(
     tmp_path: Path,
 ) -> None:
     """Codex R4 fix (matching §A.13's lossy-audit-history failure case):
-    LeaseRevoked from the FINAL fenced_write (the audit insert AFTER promote)
+    LeaseRevokedError from the FINAL fenced_write (the audit insert AFTER promote)
     propagates up — the canonical CSV is already on disk; the audit row is
     missing for this fetch.
 
-    Discriminating: caller observes LeaseRevoked; canonical CSV exists;
+    Discriminating: caller observes LeaseRevokedError; canonical CSV exists;
     no shadow leftover. Next pipeline run will see the canonical as a
     manual-override (skipped_manual_override).
     """
     from unittest.mock import MagicMock
-    from swing.data.repos.pipeline import LeaseRevoked
+    from swing.data.repos.pipeline import LeaseRevokedError
     from swing.pipeline.runner import _step_finviz_fetch
 
     cfg = _setup_cfg(tmp_path)
@@ -2225,14 +2225,14 @@ def test_step_finviz_fetch_lease_revoke_during_final_audit_propagates(
     db_conn = _setup_db(cfg)
 
     # FIRST fenced_write succeeds (yields conn for prior-sig read);
-    # SECOND fenced_write raises LeaseRevoked (audit insert blocked).
+    # SECOND fenced_write raises LeaseRevokedError (audit insert blocked).
     call_count = [0]
 
     @contextlib.contextmanager
     def _fenced_write_iter():
         call_count[0] += 1
         if call_count[0] == 2:
-            raise LeaseRevoked("simulated revoke at final audit insert")
+            raise LeaseRevokedError("simulated revoke at final audit insert")
         yield db_conn
 
     fake_lease = MagicMock()
@@ -2250,7 +2250,7 @@ def test_step_finviz_fetch_lease_revoke_during_final_audit_propagates(
             ),
         ),
     ):
-        with pytest.raises(LeaseRevoked):
+        with pytest.raises(LeaseRevokedError):
             _step_finviz_fetch(cfg=cfg, lease=fake_lease)
 
     # Discriminating: canonical EXISTS (promoted before audit insert tried);
@@ -2491,12 +2491,12 @@ def _step_finviz_fetch(*, cfg, lease) -> None:
       5. Lease-fenced audit-row insert with the (possibly-downgraded) result.
 
     Failure modes covered:
-      - LeaseRevoked between step 1 and step 5: no canonical CSV remains
+      - LeaseRevokedError between step 1 and step 5: no canonical CSV remains
         (shadow deleted in finally); no audit row; pipeline aborts; clean
         next-run state.
       - Promote-fails after shadow-write: caught in step 4; result→error;
         canonical never created; audit row reflects failure truthfully.
-      - LeaseRevoked DURING the final audit-insert: canonical CSV may exist
+      - LeaseRevokedError DURING the final audit-insert: canonical CSV may exist
         (depending on which side of the rename); operator's next pipeline
         run sees the canonical file as manual override (skipped_manual);
         audit history is lossy for this fetch but no false 'ok' row.
@@ -2546,7 +2546,7 @@ def _step_finviz_fetch(*, cfg, lease) -> None:
                 except OSError as _exc:
                     log.warning("failed to clean up Finviz shadow file: %s", _exc)
 
-    # Final audit-row insert. If THIS fenced_write raises LeaseRevoked,
+    # Final audit-row insert. If THIS fenced_write raises LeaseRevokedError,
     # the audit row is missing but file state is consistent (canonical
     # either fully-promoted or not-present, never an in-between).
     with lease.fenced_write() as conn:
@@ -2627,7 +2627,7 @@ Locate the line in `swing/pipeline/runner.py:run_pipeline_internal` where `lease
             lease.step("finviz_fetch")
             try:
                 _step_finviz_fetch(cfg=cfg, lease=lease)
-            except LeaseRevoked:
+            except LeaseRevokedError:
                 raise
             except Exception as exc:
                 # _step_finviz_fetch is itself error-tolerant; this catches

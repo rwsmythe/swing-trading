@@ -1278,7 +1278,7 @@ def test_post_entry_stop_ge_entry_renders_form_preserved(seeded_db, monkeypatch)
             ),
         )
     # Pre-fix this is 500; post-fix it must be 400 (validation failure shape
-    # mirroring DuplicateOpenPositionException).
+    # mirroring DuplicateOpenPositionError).
     assert r.status_code == 400, (
         f"Expected 400 (validation failure re-render), got {r.status_code}.\n"
         f"Body[:500]: {r.text[:500]!r}"

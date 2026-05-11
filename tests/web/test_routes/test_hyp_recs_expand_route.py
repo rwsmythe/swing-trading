@@ -1260,7 +1260,7 @@ def test_duplicate_open_position_rerender_preserves_origin(
     """R4-Major-1 — duplicate-position round-trip preserves origin.
 
     POST with origin=hyp-recs for a ticker that already has an OPEN
-    trade → DuplicateOpenPositionException → form re-renders at 400
+    trade → DuplicateOpenPositionError → form re-renders at 400
     with origin still 'hyp-recs'.
 
     Discriminating: pre-fix the duplicate re-render branch calls
@@ -1270,7 +1270,7 @@ def test_duplicate_open_position_rerender_preserves_origin(
     cfg, cfg_path = seeded_db
     _seed_hyp_recs_fixture(cfg, tickers=["NVDA"])
     # Seed an existing OPEN trade for NVDA so the new POST trips
-    # DuplicateOpenPositionException at record_entry.
+    # DuplicateOpenPositionError at record_entry.
     conn = connect(cfg.paths.db_path)
     try:
         with conn:

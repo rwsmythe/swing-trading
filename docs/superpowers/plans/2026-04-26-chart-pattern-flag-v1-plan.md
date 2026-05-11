@@ -4140,7 +4140,7 @@ def render_chart(
     try:
         import mplfinance as mpf
     except ImportError as exc:
-        raise ChartingUnavailable("mplfinance not installed") from exc
+        raise ChartingUnavailableError("mplfinance not installed") from exc
 
     df = ohlcv.tail(CHART_LOOKBACK_DAYS).copy()
     if len(df) < MIN_BARS:

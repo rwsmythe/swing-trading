@@ -948,7 +948,7 @@ from pathlib import Path
 
 import pytest
 
-from swing.data.db import EXPECTED_SCHEMA_VERSION, connect, ensure_schema, SchemaVersionMismatch
+from swing.data.db import EXPECTED_SCHEMA_VERSION, connect, ensure_schema, SchemaVersionMismatchError
 
 
 def test_ensure_schema_applies_migrations_on_fresh_db(tmp_db: Path):
@@ -968,7 +968,7 @@ def test_connect_refuses_old_schema(tmp_db: Path):
     conn.commit()
     conn.close()
 
-    with pytest.raises(SchemaVersionMismatch) as exc:
+    with pytest.raises(SchemaVersionMismatchError) as exc:
         connect(tmp_db)
     assert "db-migrate" in str(exc.value)
 
@@ -1001,7 +1001,7 @@ EXPECTED_SCHEMA_VERSION = 1
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 
-class SchemaVersionMismatch(RuntimeError):
+class SchemaVersionMismatchError(RuntimeError):
     """Raised when the DB schema version doesn't match what the code expects."""
 
 
@@ -1035,7 +1035,7 @@ def ensure_schema(db_path: Path) -> sqlite3.Connection:
         return conn
     if current > EXPECTED_SCHEMA_VERSION:
         conn.close()
-        raise SchemaVersionMismatch(
+        raise SchemaVersionMismatchError(
             f"DB schema version {current} newer than code ({EXPECTED_SCHEMA_VERSION}). "
             "Update the swing package."
         )
@@ -1061,7 +1061,7 @@ def ensure_schema(db_path: Path) -> sqlite3.Connection:
 def connect(db_path: Path) -> sqlite3.Connection:
     """Open a connection for normal app use. Raises if schema is not current."""
     if not db_path.exists():
-        raise SchemaVersionMismatch(
+        raise SchemaVersionMismatchError(
             f"DB not found at {db_path}. Run: python -m swing.cli db-migrate"
         )
     conn = sqlite3.connect(db_path)
@@ -1069,7 +1069,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
     current = _current_version(conn)
     if current != EXPECTED_SCHEMA_VERSION:
         conn.close()
-        raise SchemaVersionMismatch(
+        raise SchemaVersionMismatchError(
             f"DB schema version {current}, code expects {EXPECTED_SCHEMA_VERSION}. "
             "Run: python -m swing.cli db-migrate"
         )

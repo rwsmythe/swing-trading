@@ -29,7 +29,7 @@
 | §4.4 Override = "none" | Deferred | Requires additional real trade |
 | §4.5 Override = "other" + free text | Deferred | Requires additional real trade |
 | §4.6 Not classified stub (out-of-scope) | ✅ | ELVN form: stub message exact; no override surface |
-| §4.7 Soft-warn × chart_pattern | Deferred | Requires 4+ open trades to fire SoftWarnException |
+| §4.7 Soft-warn × chart_pattern | Deferred | Requires 4+ open trades to fire SoftWarnError |
 | §5.1 CLI WITH cached classification | Deferred | Requires additional real trade |
 | §5.2 CLI refusal gate | ✅ | ELVN: exit 1; spec §3.7-verbatim error message; no trade row created |
 | §5.3 CLI without --chart-pattern-operator | Deferred | Backward-compat verification requires real trade |

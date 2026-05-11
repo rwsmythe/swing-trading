@@ -50,11 +50,11 @@ def test_cli_overrides_config(test_cfg, monkeypatch):
 
 
 def test_run_server_fails_fast_on_schema_mismatch(test_cfg, monkeypatch, capsys):
-    from swing.data.db import SchemaVersionMismatch
+    from swing.data.db import SchemaVersionMismatchError
     cfg, cfg_path = test_cfg
 
     def boom(*args, **kwargs):
-        raise SchemaVersionMismatch("schema version 0 < expected 3")
+        raise SchemaVersionMismatchError("schema version 0 < expected 3")
 
     monkeypatch.setattr("swing.web.cli_cmd.connect", boom)
 

@@ -21,12 +21,12 @@ from swing.trades.state import (
 
 # Re-export for callers: ``from swing.trades.entry import
 # MissingPreTradeFieldsException`` mirrors the route/CLI ergonomic pattern
-# used for the other entry-service exceptions (SoftWarnException etc.).
+# used for the other entry-service exceptions (SoftWarnError etc.).
 __all__ = [
     "EntryRationale", "EntryRequest", "EntryResult",
     "entry_rationale_options", "record_entry",
-    "SoftWarnException", "HardCapException",
-    "DuplicateOpenPositionException", "MissingPreTradeFieldsException",
+    "SoftWarnError", "HardCapError",
+    "DuplicateOpenPositionError", "MissingPreTradeFieldsException",
 ]
 
 
@@ -82,15 +82,15 @@ def entry_rationale_options() -> tuple[tuple[str, str], ...]:
     return tuple((r.value, _ENTRY_RATIONALE_LABELS[r]) for r in EntryRationale)
 
 
-class SoftWarnException(Exception):
+class SoftWarnError(Exception):
     """Open count >= soft_warn_open without force=True."""
 
 
-class HardCapException(Exception):
+class HardCapError(Exception):
     """Open count >= hard_cap_open — never bypassable."""
 
 
-class DuplicateOpenPositionException(Exception):
+class DuplicateOpenPositionError(Exception):
     """Already an open trade for this ticker."""
 
 
@@ -273,19 +273,19 @@ def record_entry(
 
     open_trades = list_open_trades(conn)
     if any(t.ticker == req.ticker for t in open_trades):
-        raise DuplicateOpenPositionException(
+        raise DuplicateOpenPositionError(
             f"Already an open position in {req.ticker}"
         )
 
     open_count = len(open_trades)
     if open_count >= hard_cap:
-        raise HardCapException(
+        raise HardCapError(
             f"Hard cap reached: {open_count} >= {hard_cap}"
         )
     warning: str | None = None
     if open_count >= soft_warn:
         if not force:
-            raise SoftWarnException(
+            raise SoftWarnError(
                 f"Open count {open_count} >= soft warn {soft_warn}; use --force"
             )
         warning = f"Soft warn exceeded: {open_count} open positions (soft={soft_warn})"
@@ -386,9 +386,9 @@ def record_entry(
         # Schema-level safety net (ux_trades_one_open_per_ticker, migration 0004):
         # two concurrent record_entry calls raced past the app-layer list_open_trades
         # check; the partial unique index rejected the second INSERT. Map to the same
-        # DuplicateOpenPositionException callers already handle.
+        # DuplicateOpenPositionError callers already handle.
         if "UNIQUE" in str(exc) and "trades" in str(exc):
-            raise DuplicateOpenPositionException(
+            raise DuplicateOpenPositionError(
                 f"Already an open position in {req.ticker} (race-detected)"
             ) from exc
         raise

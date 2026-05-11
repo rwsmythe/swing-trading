@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from swing.rendering.charts import render_chart, ChartingUnavailable
+from swing.rendering.charts import render_chart, ChartingUnavailableError
 
 
 pytestmark = pytest.mark.slow  # heavy dep
