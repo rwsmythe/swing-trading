@@ -665,3 +665,167 @@ def test_open_positions_expanded_colspan_matches_new_row_cell_count():
         "(Ticker, Entry date, Entry price, Shares, Current stop, Last, "
         "Sector, Industry, Advisory, Actions)."
     )
+
+
+# ---------------------------------------------------------------------------
+# 3e.8 Bundle 1 Task B.3 — expanded-row renders advisories via the SAME
+# canonical partial as the dashboard list view (CLAUDE.md OOB-swap-drift
+# gotcha — no hand-duplicated markup).
+# ---------------------------------------------------------------------------
+
+
+def test_b3_expanded_row_renders_advisories(seeded_db, monkeypatch):
+    """Active trade with active advisory triggers → expand fragment contains
+    advisory message content. Stub PriceCache + OhlcvCache so trail_10ma
+    fires.
+    """
+    from datetime import datetime as _dt
+
+    from swing.web.ohlcv_cache import OhlcvBundle, OhlcvCache
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_in_scope_trade(cfg, ticker="B3ADV")
+
+    # PriceCache: live price 100.0 (matches trade entry).
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: PriceSnapshot(
+                ticker=t, price=100.0, asof=_dt.now(),
+                is_stale=False, source="live",
+            ) for t in tickers
+        },
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+
+    # OhlcvCache: sma10 below price + current_stop $90 → trail_10ma fires.
+    monkeypatch.setattr(
+        OhlcvCache, "get_many_bundles",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: OhlcvBundle(sma10=99.0, sma20=98.0, sma50=97.0,
+                            previous_close=99.5, fetched_at=0.0)
+            for t in tickers
+        },
+    )
+    monkeypatch.setattr(OhlcvCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(
+            f"/trades/open/{trade_id}/expand",
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 200, r.text[:200]
+    body = r.text
+    # Advisory message rendered through the shared partial.
+    assert "Trail stop up to" in body, (
+        f"Expected trail-MA advisory text in expanded-row body; "
+        f"got body[:500]={body[:500]!r}"
+    )
+    # The shared partial wraps each advisory in <div class="advisory">.
+    assert 'class="advisory"' in body
+
+
+def test_b3_expanded_row_renders_empty_state_when_no_triggers(
+    seeded_db, monkeypatch,
+):
+    """Codex R2 Major #1 — brief §4.2 + §5 Surface 4: expanded row MUST
+    render the "No advisories." muted empty-state message when no advisory
+    triggers fire. Active trade with current_stop above trail-proposed +
+    bullish weather + recent entry (no time_stop) → no advisories →
+    expand fragment surfaces empty-state.
+    """
+    from datetime import date as _date
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+
+    from swing.web.ohlcv_cache import OhlcvBundle, OhlcvCache
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    # Recent entry_date — defaults to 2026-04-20 would fire time_stop in
+    # any test run more than 10 days later. Use 2 days before today.
+    recent = (_date.today() - _td(days=2)).isoformat()
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            eval_id = _insert_eval_run(
+                conn, run_ts=f"{recent}T21:30:00", data_asof_date=recent,
+            )
+            run_id = _insert_pipeline_run(
+                conn, started_ts=f"{recent}T21:00:00",
+                finished_ts=f"{recent}T21:55:00",
+                data_asof_date=recent, evaluation_run_id=eval_id,
+            )
+            _insert_chart_target(
+                conn, pipeline_run_id=run_id, ticker="B3EMP",
+                source="aplus", chart_status="ok",
+            )
+            trade_id = _insert_open_trade(
+                conn, ticker="B3EMP", entry_date=recent,
+            )
+    finally:
+        conn.close()
+    _write_chart(cfg.paths.charts_dir, date=recent, ticker="B3EMP")
+
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: PriceSnapshot(
+                ticker=t, price=95.0, asof=_dt.now(),
+                is_stale=False, source="live",
+            ) for t in tickers
+        },
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(
+        OhlcvCache, "get_many_bundles",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: OhlcvBundle(sma10=89.0, sma20=88.0, sma50=85.0,
+                            previous_close=89.5, fetched_at=0.0)
+            for t in tickers
+        },
+    )
+    monkeypatch.setattr(OhlcvCache, "is_degraded", lambda self: False)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(
+            f"/trades/open/{trade_id}/expand",
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 200, r.text[:200]
+    body = r.text
+    assert "No advisories." in body, (
+        "Expanded row MUST render 'No advisories.' muted message when no "
+        "triggers fire (brief §4.2 + §5 Surface 4; Codex R2 Major #1)"
+    )
+
+
+def test_b3_expanded_row_response_starts_with_tr(seeded_db, monkeypatch):
+    """HTMX-safety pre-empt list — expand response must continue to lead with
+    <tr> per existing convention (the new advisory content goes INSIDE the
+    <tr>, not as a leading element). Closes §0.3 #7 + pre-empt list
+    "HTMX expanded-row response shape preserved".
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_in_scope_trade(cfg, ticker="B3SHA")
+    _patch_price_cache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(
+            f"/trades/open/{trade_id}/expand",
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 200
+    body_stripped = r.text.lstrip()
+    assert body_stripped.startswith("<tr"), (
+        "Expand response MUST lead with <tr> — leading-with-tr triggers "
+        "htmx.js makeFragment synthetic-table-wrap which is the EXPECTED "
+        "behavior here (target is closest tr, outerHTML swap). The new "
+        "advisory rendering must NOT precede the <tr>; otherwise the OOB-"
+        "wrapping rule fires per CLAUDE.md gotcha. Got: "
+        f"{body_stripped[:80]!r}"
+    )

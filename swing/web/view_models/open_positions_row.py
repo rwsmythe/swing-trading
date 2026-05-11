@@ -12,7 +12,7 @@ WatchlistExpandedVM's chart_reason / data_asof_date contract).
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from swing.config import Config
@@ -216,16 +216,25 @@ class OpenPositionsExpandedVM:
     used to construct the date-prefixed `/charts/<date>/<ticker>.png` URL
     when the chart is available. `chart_reason` and `chart_reason_message`
     are returned verbatim from `swing.web.chart_scope.resolve_chart_scope`.
+
+    3e.8 Bundle 1 (§4.F B.AC.5) — ``advisories`` carries the same per-trade
+    ``AdvisorySuggestionVM`` tuple ``OpenPositionsRowVM.advisories`` surfaces
+    on the dashboard list view. Default empty tuple keeps existing callers
+    green (builder paths that don't pass cache/executor see no advisories).
     """
     trade_id: int
     ticker: str
     data_asof_date: str | None
     chart_reason: str | None
     chart_reason_message: str | None
+    # Spec-conformant ``field(default_factory=tuple)`` per brief §0.3 #5
+    # (Codex R2 Minor #1 alignment).
+    advisories: tuple = field(default_factory=tuple)  # tuple[AdvisorySuggestionVM, ...]
 
 
 def build_open_positions_expanded(
     *, conn: sqlite3.Connection, cfg: Config, trade_id: int,
+    cache: PriceCache | None = None, executor=None, ohlcv_cache=None,
 ) -> OpenPositionsExpandedVM | None:
     """Resolve the expanded-row VM for an open trade.
 
@@ -249,6 +258,50 @@ def build_open_positions_expanded(
     if trade is None or trade.state not in _ACTIVE_STATES:
         return None
 
+    # 3e.8 Bundle 1 (§4.F B.AC.5) — compose advisories via the same path the
+    # dashboard list view uses; mirrors ``build_open_positions_row``. Only
+    # active trades reach this point (the precondition above returns None for
+    # closed/reviewed). When the caller did not thread a ``cache`` (e.g.,
+    # pre-Bundle-1 unit tests), advisories remain empty.
+    advisories: tuple = ()
+    if cache is not None:
+        now = datetime.now()
+        action_session = action_session_for_run(now).isoformat()
+        prices = cache.get_many(
+            [trade.ticker],
+            deadline_seconds=cfg.web.price_fetch_deadline_seconds,
+            executor=executor,
+        )
+        snap = prices.get(trade.ticker)
+        bundle = None
+        if ohlcv_cache is not None:
+            bundles = ohlcv_cache.get_many_bundles(
+                [trade.ticker],
+                deadline_seconds=cfg.web.price_fetch_deadline_seconds,
+                executor=executor,
+            )
+            bundle = bundles.get(trade.ticker)
+        # Latest weather — read-only UIs must use get_latest (CLAUDE.md
+        # weather lookup gotcha).
+        weather = get_latest(conn, ticker=cfg.rs.benchmark_ticker)
+        weather_status = weather.status if weather else "STALE"
+        if snap is not None:
+            ctx = AdvisoryContext(
+                as_of_date=action_session,
+                current_price=snap.price,
+                sma10=bundle.sma10 if bundle else None,
+                sma20=bundle.sma20 if bundle else None,
+                sma50=bundle.sma50 if bundle else None,
+                previous_close=bundle.previous_close if bundle else None,
+                weather_status=weather_status,
+                config=cfg.stop_advisory,
+            )
+            raw = compute_all_suggestions(trade, ctx)
+            advisories = tuple(
+                AdvisorySuggestionVM(rule=s.rule, message=s.message)
+                for s in raw
+            )
+
     binding = latest_completed_pipeline_run(conn)
     if binding is None:
         # No completed runs — chart unavailable AND data_asof_date is None.
@@ -258,6 +311,7 @@ def build_open_positions_expanded(
             data_asof_date=None,
             chart_reason="no-run",
             chart_reason_message=CHART_REASON_MESSAGES["no-run"],
+            advisories=advisories,
         )
 
     chart_reason, chart_reason_message = resolve_chart_scope(
@@ -271,4 +325,5 @@ def build_open_positions_expanded(
         data_asof_date=binding.data_asof_date,
         chart_reason=chart_reason,
         chart_reason_message=chart_reason_message,
+        advisories=advisories,
     )

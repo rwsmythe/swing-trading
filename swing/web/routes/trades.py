@@ -1225,7 +1225,12 @@ def stop_post(
 def open_position_expand(request: Request, trade_id: int):
     """Render the open-positions expanded fragment for `trade_id`. 404 when
     the trade does not exist OR is not currently open (closed trades must
-    not display the open-positions UI)."""
+    not display the open-positions UI).
+
+    3e.8 Bundle 1 (§4.F B.AC.5) — threads the same caches as the dashboard
+    route so the expanded row can compose advisories that mirror the
+    dashboard list view's content via the shared partial.
+    """
     cfg = apply_overrides(request.app.state.cfg)
     templates = request.app.state.templates
     conn = connect(cfg.paths.db_path)
@@ -1233,6 +1238,9 @@ def open_position_expand(request: Request, trade_id: int):
         with conn:
             expanded = build_open_positions_expanded(
                 conn=conn, cfg=cfg, trade_id=trade_id,
+                cache=request.app.state.price_cache,
+                executor=request.app.state.price_fetch_executor,
+                ohlcv_cache=request.app.state.ohlcv_cache,
             )
     finally:
         conn.close()
@@ -1718,7 +1726,16 @@ def trade_detail(request: Request, trade_id: int):
     )
     cfg = apply_overrides(request.app.state.cfg)
     templates = request.app.state.templates
-    vm = build_trade_detail_vm(trade_id=trade_id, cfg=cfg)
+    # 3e.8 Bundle 1 (§4.F B.AC.6) — thread the price + OHLCV caches so the
+    # detail-page VM can compose per-trade advisories. Mirrors the dashboard
+    # route's pattern; closed/reviewed trades short-circuit to advisories=()
+    # inside the builder.
+    vm = build_trade_detail_vm(
+        trade_id=trade_id, cfg=cfg,
+        cache=request.app.state.price_cache,
+        executor=request.app.state.price_fetch_executor,
+        ohlcv_cache=request.app.state.ohlcv_cache,
+    )
     if vm is None:
         raise HTTPException(
             status_code=404, detail=f"Trade #{trade_id} not found",

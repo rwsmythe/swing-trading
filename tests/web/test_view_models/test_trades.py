@@ -278,6 +278,121 @@ def test_trade_detail_vm_exposes_trade_origin_and_locked_at(seeded_db):
     assert vm.pre_trade_locked_at == "2026-05-03T09:30:00"
 
 
+# ---------------------------------------------------------------------------
+# 3e.8 Bundle 1 Task B.1 — TradeDetailVM advisories field + builder.
+# Mirrors the dashboard path's composition (OpenPositionsRowVM.advisories).
+# ---------------------------------------------------------------------------
+
+
+def test_trade_detail_vm_has_advisories_field_default_empty(seeded_db):
+    """B.AC.1 — advisories field exists with empty-tuple default. Builder
+    called WITHOUT cache/executor keeps it empty (back-compat with the
+    pre-Bundle-1 call signature)."""
+    from swing.web.view_models.trades import build_trade_detail_vm
+
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(cfg, state="entered")
+    vm = build_trade_detail_vm(trade_id=trade_id, cfg=cfg)
+    assert vm is not None
+    assert hasattr(vm, "advisories")
+    assert vm.advisories == ()
+
+
+def test_trade_detail_vm_populates_advisories_when_open_trade(
+    seeded_db, monkeypatch,
+):
+    """B.AC.2 — when the trade is in an active lifecycle state AND the
+    builder gets cache/executor/ohlcv_cache, advisories mirror the
+    dashboard-row composition. Stub the ohlcv_cache to return a bundle
+    where trail_10ma fires (current_price > sma10 and proposed stop above
+    current_stop)."""
+    from datetime import datetime as _dt
+
+    from swing.web.ohlcv_cache import OhlcvBundle
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from swing.web.view_models.trades import build_trade_detail_vm
+
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(
+        cfg, ticker="ABCD", state="managing", initial_shares=10,
+        entry_price=100.0, initial_stop=95.0,
+    )
+
+    cache = PriceCache(cfg)
+    monkeypatch.setattr(
+        cache, "get_many",
+        lambda tickers, deadline_seconds, *, executor=None: {
+            "ABCD": PriceSnapshot(
+                ticker="ABCD", price=100.0, asof=_dt.now(),
+                is_stale=False, source="live",
+            ),
+        },
+    )
+
+    class _StubOhlcvCache:
+        def get_many_bundles(self, tickers, deadline_seconds, *, executor=None):
+            return {
+                "ABCD": OhlcvBundle(
+                    sma10=99.0, sma20=98.0, sma50=97.0,
+                    previous_close=99.5, fetched_at=0.0,
+                ),
+            }
+
+    vm = build_trade_detail_vm(
+        trade_id=trade_id, cfg=cfg,
+        cache=cache, executor=None, ohlcv_cache=_StubOhlcvCache(),
+    )
+    assert vm is not None
+    rules = {s.rule for s in vm.advisories}
+    assert "trail_10ma" in rules, (
+        f"Expected trail_10ma to fire on active trade with sma10 below price; "
+        f"got advisories={vm.advisories!r}"
+    )
+
+
+def test_trade_detail_vm_advisories_empty_for_closed_trade(
+    seeded_db, monkeypatch,
+):
+    """B.AC.4 + §0.3 #3 — closed trades render the empty-state message.
+    The VM must yield an empty advisories tuple regardless of cache state.
+    """
+    from datetime import datetime as _dt
+
+    from swing.web.ohlcv_cache import OhlcvBundle
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from swing.web.view_models.trades import build_trade_detail_vm
+
+    cfg, _ = seeded_db
+    trade_id = _seed_phase7_trade(
+        cfg, ticker="DONE", state="closed",
+    )
+    cache = PriceCache(cfg)
+    monkeypatch.setattr(
+        cache, "get_many",
+        lambda tickers, deadline_seconds, *, executor=None: {
+            "DONE": PriceSnapshot(
+                ticker="DONE", price=100.0, asof=_dt.now(),
+                is_stale=False, source="live",
+            ),
+        },
+    )
+
+    class _StubOhlcvCache:
+        def get_many_bundles(self, tickers, deadline_seconds, *, executor=None):
+            return {"DONE": OhlcvBundle(sma10=99.0, sma20=98.0, sma50=97.0,
+                                         previous_close=99.5, fetched_at=0.0)}
+
+    vm = build_trade_detail_vm(
+        trade_id=trade_id, cfg=cfg, cache=cache, executor=None,
+        ohlcv_cache=_StubOhlcvCache(),
+    )
+    assert vm is not None
+    assert vm.advisories == (), (
+        "Closed trades MUST yield an empty advisories tuple regardless of "
+        "cache content (per §0.3 #3 advisory rules fire only on open positions)"
+    )
+
+
 def test_trade_detail_vm_audit_entries_empty_when_no_pre_trade_edits(seeded_db):
     """V1: no /trades/{id}/edit-pre-trade route exists, so audit list is empty."""
     from swing.web.view_models.trades import build_trade_detail_vm
