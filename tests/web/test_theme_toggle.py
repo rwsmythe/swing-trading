@@ -173,55 +173,74 @@ def test_b5_localstorage_access_wrapped_in_try_catch(seeded_db, monkeypatch):
 
 def test_b7_body_class_sync_contract(seeded_db, monkeypatch):
     """B.7 — the end-of-body toggle script MUST (a) initialize body.dark
-    from html.dark on initial load AND (b) keep body.dark in sync with
-    html.dark on click. Pins the body.dark sync contract added in the
-    Codex R1 Major #1 fix so future edits can't silently remove it.
+    via the two-arg `classList.toggle('dark', <bool>)` form on initial
+    load AND (b) keep body.dark in sync with html.dark INSIDE the click
+    handler (not as an unrelated independent toggle elsewhere). Pins the
+    body.dark sync contract added in the Codex R1 Major #1 fix so future
+    edits can't silently remove it.
 
-    Heuristic: locate the inline script that mentions both
-    `document.body` AND `classList`, and assert it contains the sync
-    primitives (a classList toggle/add against body that's gated on
-    html.dark, plus a body-class update inside the click handler).
+    Robustness pass (Codex R3 Minor #1/#2/#3): asserts the two-argument
+    toggle form (one-way `.add()` was R2's regression-risk pattern) AND
+    extracts the click-handler body specifically to ensure the sync is
+    INSIDE the handler (not just present somewhere in the script).
     """
     html = _get_html(seeded_db, monkeypatch)
     scripts = re.findall(
         r"<script\b[^>]*>(.*?)</script>",
         html, flags=re.DOTALL | re.IGNORECASE,
     )
-    # The end-of-body toggle script touches `document.body` AND
-    # `addEventListener` on the click handler.
     candidates = [
         s for s in scripts
         if "document.body" in s or "body.classList" in s
     ]
     assert candidates, "no inline script touches body.classList"
     toggle_script = max(candidates, key=len)
-    # (a) initial-load body-sync — body.classList.{toggle,add} appears
-    #     gated on html / documentElement classList containing 'dark'.
+
+    # (a) initial-load body-sync — assert the TWO-ARG toggle form
+    #     `body.classList.toggle('dark', html.classList.contains('dark'))`.
+    #     R2 specifically resolved the one-way `.add()` regression by
+    #     adopting this form; allowing `.add()` would let that regression
+    #     re-creep in.
     assert re.search(
-        r"body\.classList\.(toggle|add)\(\s*['\"]dark['\"]",
+        r"body\.classList\.toggle\(\s*['\"]dark['\"]\s*,\s*"
+        r"(?:html|document\.documentElement)\.classList\.contains\(",
         toggle_script,
     ), (
-        "End-of-body script does not call body.classList.{toggle,add}('dark', ...) — "
-        "the html.dark → body.dark initial sync (Codex R1 Major #1 fix) is missing."
+        "End-of-body script does not call the two-arg form "
+        "body.classList.toggle('dark', <html-contains-dark>) for "
+        "initial sync — one-way add() was the R2 regression pattern."
     )
-    # (b) click-handler body-sync — body class update appears alongside
-    #     html.classList.toggle('dark'). We check that there are at least
-    #     two occurrences of a body-class change OR the toggle uses the
-    #     two-arg form `body.classList.toggle('dark', isDark)` which
-    #     handles both initial sync AND click updates.
-    body_class_updates = re.findall(
-        r"body\.classList\.(?:toggle|add|remove)\(", toggle_script,
+
+    # (b) click-handler body-sync — extract the click-handler body and
+    #     assert the body-class update lives INSIDE it, paired with the
+    #     html.dark toggle whose return value drives the body update
+    #     (so they can't diverge).
+    click_handler = re.search(
+        r"addEventListener\(\s*['\"]click['\"]\s*,\s*function\s*\("
+        r"[^)]*\)\s*\{(.*?)\}\s*\)\s*;",
+        toggle_script, flags=re.DOTALL,
     )
-    assert len(body_class_updates) >= 2, (
-        f"End-of-body script has {len(body_class_updates)} body.classList "
-        f"updates — expected at least 2 (one for initial sync, one in click "
-        f"handler) to maintain html.dark ↔ body.dark consistency."
-    )
-    # (c) click handler must also toggle html — confirm the sync is paired.
+    assert click_handler, "could not locate click handler body in toggle script"
+    handler_body = click_handler.group(1)
+    # Click handler MUST toggle html.dark and capture the boolean.
     assert re.search(
-        r"(documentElement|html)\.classList\.toggle\(\s*['\"]dark['\"]",
-        toggle_script,
+        r"(?:html|document\.documentElement)\.classList\.toggle\(\s*"
+        r"['\"]dark['\"]\s*\)",
+        handler_body,
     ), "Click handler does not toggle html.dark class."
+    # Click handler MUST update body.classList using the two-arg form
+    # so the body update is driven by the same boolean as the html toggle
+    # (or an alias for it). This prevents the divergence Codex R3 Minor #3
+    # warns about: a future edit toggling html one way and body the
+    # other.
+    assert re.search(
+        r"body\.classList\.toggle\(\s*['\"]dark['\"]\s*,\s*\w+\s*\)",
+        handler_body,
+    ), (
+        "Click handler does not call body.classList.toggle('dark', "
+        "<isDark>) — the html ↔ body sync MUST be paired off the same "
+        "boolean to prevent divergence."
+    )
 
 
 def test_b6_toggle_button_has_aria_label(seeded_db, monkeypatch):
