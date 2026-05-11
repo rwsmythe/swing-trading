@@ -4051,6 +4051,74 @@ def test_c5_trade_detail_renders_all_5_base_layout_safe_defaults(seeded_db):
 
 
 # ---------------------------------------------------------------------------
+# 3e.8 Bundle 1 Task B.2 — GET /trades/{id} renders Advisories section.
+# ---------------------------------------------------------------------------
+
+
+def test_b2_trade_detail_route_renders_advisories_section(
+    seeded_db, monkeypatch,
+):
+    """B.AC.3 — Active trade with active advisory triggers → response body
+    contains the Advisories section heading + at least one advisory message
+    (mirroring the dashboard list view's content)."""
+    _c3_patch_pricecache(monkeypatch, price=100.0)
+
+    # Stub the OhlcvCache so the trail_10ma advisory fires (sma10 < price).
+    from swing.web.ohlcv_cache import OhlcvBundle, OhlcvCache
+    monkeypatch.setattr(
+        OhlcvCache, "get_many_bundles",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: OhlcvBundle(sma10=99.0, sma20=98.0, sma50=97.0,
+                            previous_close=99.5, fetched_at=0.0)
+            for t in tickers
+        },
+    )
+    monkeypatch.setattr(OhlcvCache, "is_degraded", lambda self: False)
+
+    cfg, cfg_path = seeded_db
+    tid = _c5_seed_phase7_trade(cfg, ticker="B2ADV", state="managing")
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{tid}")
+    assert r.status_code == 200, r.text[:300]
+    text = r.text
+    # Advisories section heading present.
+    assert "Advisories" in text, (
+        "Active trade detail page must render an Advisories section heading"
+    )
+    # At least one advisory message rendered (trail_10ma fires per stub).
+    assert "Trail stop up to" in text or "trail" in text.lower(), (
+        f"Expected trail-MA advisory text in response; got "
+        f"{text[text.find('Advisories'): text.find('Advisories') + 500]!r}"
+    )
+
+
+def test_b2_trade_detail_route_renders_empty_state_when_closed(
+    seeded_db, monkeypatch,
+):
+    """B.AC.4 — Closed trade → response body contains the "No advisories."
+    muted empty-state message."""
+    _c3_patch_pricecache(monkeypatch, price=100.0)
+
+    cfg, cfg_path = seeded_db
+    tid = _c5_seed_phase7_trade(cfg, ticker="B2DON", state="closed")
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{tid}")
+    assert r.status_code == 200, r.text[:300]
+    text = r.text
+    assert "Advisories" in text, (
+        "Advisories section heading must render even on closed trades "
+        "(empty-state surface)"
+    )
+    assert "No advisories." in text, (
+        "Closed trade must show 'No advisories.' muted empty-state per B.AC.4"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Phase 7 Sub-C C.7 — route state-aware predicate rewrites + base-layout VM
 # no-regression check.
 # ---------------------------------------------------------------------------

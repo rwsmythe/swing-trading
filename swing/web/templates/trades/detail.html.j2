@@ -83,6 +83,24 @@
   </section>
 {% endif %}
 
+{# 3e.8 Bundle 1 (§4.F B.AC.3 + B.AC.4) — Advisories section. Mirrors the
+   dashboard list-view content via the shared partial (single canonical
+   include target per CLAUDE.md OOB-swap-drift gotcha). Empty state is
+   surfaced explicitly here on the dedicated page so the operator sees an
+   unambiguous "no advisories" indicator rather than a silently-empty
+   section. Closed/reviewed trades AND active trades with no triggers
+   render the muted message. #}
+<section class="advisories">
+  <h2>Advisories</h2>
+  {% if vm.advisories %}
+    {% with advisories = vm.advisories %}
+      {% include "partials/open_positions_advisories.html.j2" %}
+    {% endwith %}
+  {% else %}
+    <p class="muted">No advisories.</p>
+  {% endif %}
+</section>
+
 {# Position management section TBD — currently rendered via dashboard partials.
    Phase 7 V1 detail page is read-only summary + Pre-Trade Decision; full
    position-management surface (exit/stop/review buttons) deferred to V2 or

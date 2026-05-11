@@ -37,9 +37,12 @@
   <td>{{ row.trade.sector or "—" }}</td>
   <td>{{ row.trade.industry or "—" }}</td>
   <td>
-    {% for s in row.advisories %}
-      <div>{{ s.message }}</div>
-    {% endfor %}
+    {# 3e.8 Bundle 1 — route advisory rendering through the shared partial
+       so the dashboard, the expanded row, and the trade-detail page emit
+       identical advisory markup (CLAUDE.md OOB-swap-drift gotcha). #}
+    {% with advisories = row.advisories %}
+      {% include "partials/open_positions_advisories.html.j2" %}
+    {% endwith %}
   </td>
   <td class="row-actions">
     <button onclick="event.stopPropagation()"

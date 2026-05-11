@@ -1,0 +1,20 @@
+{#- Single canonical advisory-list rendering used by:
+      * dashboard open-positions list-view row (open_positions_row.html.j2)
+      * open-positions expanded fragment (open_positions_expanded.html.j2)
+      * trade-detail page Advisories section (trades/detail.html.j2)
+
+    Contract: caller passes `advisories` (tuple[AdvisorySuggestionVM, ...])
+    via `{% with advisories = ... %}` (mirrors the dashboard's existing
+    `{% for s in row.advisories %}` pattern).
+
+    NO empty-state markup here — empty-state handling is per-surface so the
+    list-view cell and the detail-page section can differ (the list view
+    leaves the cell empty; the detail page renders "No advisories." in the
+    `{% else %}` branch around the include).
+
+    CLAUDE.md gotcha — "HTMX OOB-swap partials that hand-duplicate full-page
+    markup drift silently." This partial IS the canonical rendering target;
+    do NOT inline-duplicate `<div>{{ s.message }}</div>` in any caller. -#}
+{% for s in advisories %}
+  <div class="advisory">{{ s.message }}</div>
+{% endfor %}
