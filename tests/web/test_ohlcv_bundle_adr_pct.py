@@ -73,3 +73,39 @@ def test_compute_adr_pct_only_uses_trailing_lookback_bars():
     assert result is not None
     # Trailing 20 bars: (101-99)/100*100 = 2.0%.
     assert abs(result - 2.0) < 1e-9
+
+
+def test_compute_adr_pct_returns_none_when_trailing_window_has_nan_high():
+    """Codex R1 Minor #1 — NaN High in the trailing window MUST return None
+    (pandas would silently mean over fewer valid rows, breaking the "≥
+    lookback bars" invariant)."""
+    import math
+    highs = [101.0] * 19 + [math.nan]
+    df = pd.DataFrame({
+        "High": highs,
+        "Low": [99.0] * 20,
+        "Close": [100.0] * 20,
+    })
+    assert compute_adr_pct(df, lookback=20) is None
+
+
+def test_compute_adr_pct_returns_none_when_trailing_window_has_nan_close():
+    """Codex R1 Minor #1 — NaN Close in the trailing window MUST return None."""
+    import math
+    df = pd.DataFrame({
+        "High": [101.0] * 20,
+        "Low": [99.0] * 20,
+        "Close": [100.0] * 19 + [math.nan],
+    })
+    assert compute_adr_pct(df, lookback=20) is None
+
+
+def test_compute_adr_pct_returns_none_when_trailing_window_has_zero_close():
+    """Defensive: zero Close in the trailing window would yield inf in the
+    per-bar percent computation; rule must no-op."""
+    df = pd.DataFrame({
+        "High": [101.0] * 20,
+        "Low": [99.0] * 20,
+        "Close": [100.0] * 19 + [0.0],
+    })
+    assert compute_adr_pct(df, lookback=20) is None

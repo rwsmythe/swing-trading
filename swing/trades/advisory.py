@@ -193,7 +193,14 @@ def suggest_parabolic_trim(
     """
     if ctx.adr_pct is None or ctx.sma50 is None:
         return None
-    if math.isnan(ctx.adr_pct):
+    # Codex R1 Major #3 — defensive numeric guards. Cache corruption /
+    # bad upstream OHLCV could surface NaN/inf/zero/negative values; rule
+    # must no-op rather than divide-by-zero or compute a nonsense threshold.
+    if not math.isfinite(ctx.adr_pct) or ctx.adr_pct < 0:
+        return None
+    if not math.isfinite(ctx.sma50) or ctx.sma50 <= 0:
+        return None
+    if not math.isfinite(ctx.current_price):
         return None
     if ctx.current_price <= ctx.sma50:
         return None

@@ -252,6 +252,54 @@ def test_suggest_parabolic_trim_returns_none_when_adr_pct_is_nan():
     assert s is None
 
 
+def test_suggest_parabolic_trim_returns_none_when_adr_pct_is_inf():
+    """Codex R1 Major #3 — non-finite adr_pct (inf from corrupted bars) must no-op."""
+    import math
+    from swing.trades.advisory import suggest_parabolic_trim
+    s = suggest_parabolic_trim(
+        _trade(), _ctx_parabolic(close=200.0, sma50=100.0, adr_pct=math.inf),
+    )
+    assert s is None
+
+
+def test_suggest_parabolic_trim_returns_none_when_adr_pct_negative():
+    """Codex R1 Major #3 — defensive: negative ADR% is nonsensical, must no-op."""
+    from swing.trades.advisory import suggest_parabolic_trim
+    s = suggest_parabolic_trim(
+        _trade(), _ctx_parabolic(close=200.0, sma50=100.0, adr_pct=-5.0),
+    )
+    assert s is None
+
+
+def test_suggest_parabolic_trim_returns_none_when_sma50_is_zero():
+    """Codex R1 Major #3 — divide-by-zero guard. Corrupted OHLCV producing
+    sma50=0 must not raise ZeroDivisionError; rule must no-op."""
+    from swing.trades.advisory import suggest_parabolic_trim
+    s = suggest_parabolic_trim(
+        _trade(), _ctx_parabolic(close=10.0, sma50=0.0, adr_pct=5.0),
+    )
+    assert s is None
+
+
+def test_suggest_parabolic_trim_returns_none_when_sma50_negative():
+    """Codex R1 Major #3 — negative sma50 is nonsensical, must no-op."""
+    from swing.trades.advisory import suggest_parabolic_trim
+    s = suggest_parabolic_trim(
+        _trade(), _ctx_parabolic(close=10.0, sma50=-50.0, adr_pct=5.0),
+    )
+    assert s is None
+
+
+def test_suggest_parabolic_trim_returns_none_when_current_price_non_finite():
+    """Codex R1 Major #3 — non-finite price must no-op."""
+    import math
+    from swing.trades.advisory import suggest_parabolic_trim
+    s = suggest_parabolic_trim(
+        _trade(), _ctx_parabolic(close=math.inf, sma50=100.0, adr_pct=5.0),
+    )
+    assert s is None
+
+
 # ----------------------------------------------------------------------
 # 3e.8 Bundle 2 — compute_all_suggestions aggregator wiring
 # ----------------------------------------------------------------------

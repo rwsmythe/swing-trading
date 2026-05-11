@@ -1140,10 +1140,16 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
             exits=_exits_via_fills_for_equity(conn),
             cash_movements=list_cash(conn),
         )
-        # 3e.8 Bundle 2 — build trimmed_trade_ids under the same read
-        # snapshot so the advisory composer's has_been_trimmed predicate
-        # agrees with equity / exits-aggregation. A trade is "trimmed"
-        # iff at least one non-entry fill exists for it.
+        # 3e.8 Bundle 2 — build trimmed_trade_ids alongside the equity /
+        # exits-aggregation reads above. SQLite Python autocommit gives each
+        # SELECT its own implicit transaction, so this is NOT a strict
+        # multi-statement snapshot; the export step relies on the pipeline
+        # lease serializing pipeline-side writers, matching the pre-existing
+        # posture of the equity/exits/trades reads in this same block.
+        # A trade is "trimmed" iff at least one non-entry fill exists.
+        # (Codex R1 Major #2 — ACCEPTED-with-rationale: lease-guarded
+        # isolation; raising this to a true BEGIN IMMEDIATE snapshot is a
+        # broader cleanup outside Bundle 2 scope.)
         trimmed_trade_ids: set[int] = {
             f.trade_id for f in list_all_fills(conn) if f.action != "entry"
         }

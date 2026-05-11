@@ -864,15 +864,18 @@ def trade_stop_adjust_cmd(ctx, trade_id, new_stop, rationale, notes, force):
 @click.option("--sma20", type=float, default=None)
 @click.option("--sma50", type=float, default=None)
 @click.option("--previous-close", type=float, default=None)
+@click.option("--adr-pct", type=float, default=None,
+              help="trailing ~20-bar ADR%; drives §4.D parabolic_trim")
 @click.option("--weather", default="Bullish")
 @click.option("--as-of-date", default=None, help="default: today")
 @click.pass_context
 def trade_advisory_cmd(ctx, trade_id, current_price, sma10, sma20, sma50,
-                        previous_close, weather, as_of_date):
+                        previous_close, adr_pct, weather, as_of_date):
     """Print stop-advisory suggestions for an open trade."""
     from datetime import date as _date
 
     from swing.data.db import connect
+    from swing.data.repos.fills import list_fills_for_trade
     from swing.data.repos.trades import get_trade
     from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
 
@@ -882,8 +885,14 @@ def trade_advisory_cmd(ctx, trade_id, current_price, sma10, sma20, sma50,
         trade = get_trade(conn, trade_id)
         if trade is None:
             raise click.ClickException(f"trade {trade_id} not found")
+        # 3e.8 Bundle 2 — load fills to derive has_been_trimmed so the new
+        # §4.B trim_into_strength rule suppresses correctly on trades that
+        # already have a non-entry fill. Same predicate as the web/pipeline
+        # surfaces.
+        fills = list_fills_for_trade(conn, trade_id)
     finally:
         conn.close()
+    has_been_trimmed = any(f.action != "entry" for f in fills)
     asof = as_of_date or _date.today().isoformat()
     ctx_a = AdvisoryContext(
         as_of_date=asof, current_price=current_price,
@@ -891,6 +900,8 @@ def trade_advisory_cmd(ctx, trade_id, current_price, sma10, sma20, sma50,
         sma50=sma50, previous_close=previous_close,
         weather_status=weather,
         config=cfg.stop_advisory,
+        adr_pct=adr_pct,
+        has_been_trimmed=has_been_trimmed,
     )
     sugs = compute_all_suggestions(trade, ctx_a)
     if not sugs:

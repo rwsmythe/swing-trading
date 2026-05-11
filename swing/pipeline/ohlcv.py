@@ -101,6 +101,17 @@ def compute_adr_pct(
     if len(bars) < lookback:
         return None
     tail = bars.tail(lookback)
+    # Codex R1 Minor #1 — guard against NaN High/Low/Close rows inside the
+    # trailing window. pandas would silently skip NaNs and compute a mean
+    # over fewer than `lookback` valid bars, breaking the "≥ lookback bars"
+    # invariant compute_smas enforces. Treat ANY missing OHLC in the window
+    # as insufficient data and no-op.
+    if tail[["High", "Low", "Close"]].isna().any().any():
+        return None
+    # Defend against zero/negative close (corrupted bar) — would yield
+    # inf/-inf in the per-bar percent.
+    if (tail["Close"] <= 0).any():
+        return None
     ranges_pct = (tail["High"] - tail["Low"]) / tail["Close"] * 100
     val = ranges_pct.mean()
     if pd.isna(val):
