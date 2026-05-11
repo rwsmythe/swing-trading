@@ -566,33 +566,50 @@ def test_expand_route_freshness_footer_includes_finished_ts(
 
 
 # ---------------------------------------------------------------------------
-# 3e.4 Task A.2 — current price renders at top of expansion partial via
-# PriceCache wiring from the route handler.
+# 3e.4 Task A.2 — current price renders at top of expansion partial via the
+# PriceCache+executor `get_many` path threaded from the route handler.
+# Codex R1 Major #1+#2+#3 fix: builder accepts `executor=` and routes
+# through the deadline-bounded batch `get_many` call mirroring the
+# open-positions dashboard pattern (NOT the unbounded single-ticker `get`).
 # ---------------------------------------------------------------------------
-def _patch_single_ticker_get(monkeypatch, *, snapshot=None):
-    """Stub PriceCache.get (single-ticker path used by build_hyp_recs_expanded)
-    so the expand route does not invoke yfinance during tests."""
+def _patch_get_many_for_expand(monkeypatch, *, ticker, snapshot=None):
+    """Stub PriceCache.get_many (batch path used by build_hyp_recs_expanded)
+    so the expand route does not invoke yfinance during tests. Records each
+    call's kwargs so tests can assert the deadline + executor were threaded
+    through correctly."""
+    calls: list = []
 
-    def _get(self, ticker: str):
-        return snapshot
-    monkeypatch.setattr(PriceCache, "get", _get)
+    def _get_many(self, tickers, *, deadline_seconds, executor):
+        calls.append(
+            (list(tickers), deadline_seconds, executor),
+        )
+        if snapshot is None:
+            return {}
+        return {ticker: snapshot}
+    monkeypatch.setattr(PriceCache, "get_many", _get_many)
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+    return calls
 
 
 def test_expand_route_renders_current_price_when_cache_hits(
     seeded_db, monkeypatch,
 ):
     """A.AC.3 + A.AC.4 — the expand route threads `request.app.state.price_cache`
-    into `build_hyp_recs_expanded`; the template renders `Current: $X.XX`
-    above the Order parameters heading. Discriminating: pre-wiring path
-    has no `Current:` substring; post-wiring path renders the stub price."""
+    AND `request.app.state.price_fetch_executor` into `build_hyp_recs_expanded`;
+    the template renders `Current: $X.XX` above the Order parameters heading.
+    Discriminating: pre-wiring path has no `Current:` substring; post-wiring
+    path renders the stub price AND records get_many being invoked with the
+    configured deadline + non-None executor."""
     snap = PriceSnapshot(
         ticker="NVDA", price=187.34, asof=datetime.now(),
         is_stale=False, source="live",
     )
-    _patch_single_ticker_get(monkeypatch, snapshot=snap)
+    calls = _patch_get_many_for_expand(
+        monkeypatch, ticker="NVDA", snapshot=snap,
+    )
     cfg, cfg_path = seeded_db
     _seed_hyp_recs_fixture(cfg)
-    _patch_price_cache(monkeypatch)
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
         resp = client.get(
@@ -609,6 +626,22 @@ def test_expand_route_renders_current_price_when_cache_hits(
     assert body.index("Current: $187.34") < body.index("Order parameters"), (
         "current-price line must render ABOVE the Order parameters heading"
     )
+    # Codex R1 Major #1+#3: assert the route actually invoked the batch
+    # `get_many` path with deadline + executor (NOT the unbounded `get`).
+    expand_calls = [c for c in calls if c[0] == ["NVDA"]]
+    assert len(expand_calls) == 1, (
+        f"expand route must call PriceCache.get_many(['NVDA'], ...) exactly "
+        f"once; got calls={calls!r}"
+    )
+    _tickers_called, deadline_called, executor_called = expand_calls[0]
+    assert deadline_called == cfg.web.price_fetch_deadline_seconds, (
+        f"expand route must thread cfg.web.price_fetch_deadline_seconds "
+        f"({cfg.web.price_fetch_deadline_seconds}); got {deadline_called}"
+    )
+    assert executor_called is not None, (
+        "expand route must thread app.state.price_fetch_executor into "
+        "get_many (Codex R1 Major #1 + #2)"
+    )
 
 
 def test_expand_route_renders_stale_indicator_when_price_stale(
@@ -621,10 +654,9 @@ def test_expand_route_renders_stale_indicator_when_price_stale(
         ticker="NVDA", price=187.34, asof=datetime.now(),
         is_stale=True, source="last_close",
     )
-    _patch_single_ticker_get(monkeypatch, snapshot=snap)
+    _patch_get_many_for_expand(monkeypatch, ticker="NVDA", snapshot=snap)
     cfg, cfg_path = seeded_db
     _seed_hyp_recs_fixture(cfg)
-    _patch_price_cache(monkeypatch)
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
         resp = client.get(
@@ -642,13 +674,12 @@ def test_expand_route_renders_stale_indicator_when_price_stale(
 def test_expand_route_renders_dash_when_price_unavailable(
     seeded_db, monkeypatch,
 ):
-    """A.AC.6 — when PriceCache.get returns None (no live, no last_close),
-    template renders `Current: —`. Mirrors open-positions empty-snapshot
-    rendering pattern per brief §0.3 #2."""
-    _patch_single_ticker_get(monkeypatch, snapshot=None)
+    """A.AC.6 — when PriceCache.get_many returns an empty dict (no live,
+    no last_close, OR the deadline elapsed), template renders `Current: —`.
+    Mirrors open-positions empty-snapshot rendering pattern per brief §0.3 #2."""
+    _patch_get_many_for_expand(monkeypatch, ticker="NVDA", snapshot=None)
     cfg, cfg_path = seeded_db
     _seed_hyp_recs_fixture(cfg)
-    _patch_price_cache(monkeypatch)
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
         resp = client.get(

@@ -4785,13 +4785,18 @@ def test_b1_entry_form_aside_layout_class_present(seeded_db, monkeypatch):
         r = client.get("/trades/entry/form?ticker=B1LC")
     assert r.status_code == 200
     text = r.text
-    # 5 wrappers expected (one per textarea getting an aside).
-    assert text.count("entry-textarea-row") >= 5, (
-        f"expected at least 5 `entry-textarea-row` wrapper occurrences "
-        f"(one per thesis + 4 premortem textareas); got {text.count('entry-textarea-row')}"
+    # Exactly 5 wrappers + 5 asides (Codex R1 Minor #2 tightening: ==,
+    # not >=, so accidental duplicate asides would fail the test).
+    # Brief §0.3 #5 binding: one aside per each of thesis + 4 premortem.
+    # Anchor on `class="entry-textarea-row"` so we count the wrapper-class
+    # attribute exactly once per pair (the bare substring would double-
+    # count if CSS rules ever referenced the class name in an HTML doc).
+    assert text.count('class="entry-textarea-row"') == 5, (
+        f"expected exactly 5 `entry-textarea-row` wrapper occurrences "
+        f"(one per thesis + 4 premortem textareas); got "
+        f"{text.count(chr(34) + 'entry-textarea-row' + chr(34))}"
     )
-    # 5 asides expected.
-    assert text.count("entry-example-aside") >= 5, (
-        f"expected at least 5 `entry-example-aside` elements; "
-        f"got {text.count('entry-example-aside')}"
+    assert text.count('class="entry-example-aside"') == 5, (
+        f"expected exactly 5 `entry-example-aside` elements; got "
+        f"{text.count(chr(34) + 'entry-example-aside' + chr(34))}"
     )

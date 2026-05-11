@@ -959,18 +959,20 @@ Each rename is a sed-style global replace; names are distinctive enough that no 
 
 | Old | New | swing/ files | tests/ files |
 |---|---|---:|---:|
-| `SchemaVersionMismatchError` | `SchemaVersionMismatchError` | 4 | 4 |
-| `LeaseRevokedError` | `LeaseRevokedError` | 10 | 12 |
-| `WatchlistEntryNotFoundError` | `WatchlistEntryNotFoundError` | 2 | 2 |
-| `ConcurrentRunBlockedError` | `ConcurrentRunBlockedError` | 4 | 4 |
-| `ChartingUnavailableError` | `ChartingUnavailableError` | 4 | 2 |
-| `SoftWarnError` | `SoftWarnError` | 6 | 4 |
-| `HardCapError` | `HardCapError` | 7 | 2 |
-| `DuplicateOpenPositionError` | `DuplicateOpenPositionError` | 7 | 5 |
+| `SchemaVersionMismatch` (renamed to `SchemaVersionMismatchError`) | `SchemaVersionMismatchError` | 4 | 4 |
+| `LeaseRevoked` (renamed to `LeaseRevokedError`) | `LeaseRevokedError` | 10 | 12 |
+| `WatchlistEntryNotFound` (renamed to `WatchlistEntryNotFoundError`) | `WatchlistEntryNotFoundError` | 2 | 2 |
+| `ConcurrentRunBlocked` (renamed to `ConcurrentRunBlockedError`) | `ConcurrentRunBlockedError` | 4 | 4 |
+| `ChartingUnavailable` (renamed to `ChartingUnavailableError`) | `ChartingUnavailableError` | 4 | 2 |
+| `SoftWarnException` (renamed to `SoftWarnError`) | `SoftWarnError` | 6 | 4 |
+| `HardCapException` (renamed to `HardCapError`) | `HardCapError` | 7 | 2 |
+| `DuplicateOpenPositionException` (renamed to `DuplicateOpenPositionError`) | `DuplicateOpenPositionError` | 7 | 5 |
+
+(Note: this table was a planning artifact pre-2026-05-10 polish bundle rename. Both columns originally read identically because the planner left the "Old" cell as a TODO mirror of "New"; the polish-bundle-2026-05-10 sed pass through `docs/` reflowed the still-pending TODO mirrors. The old-name parenthetical above restores the audit trail.)
 
 **Approach when attempted:** `git grep -l <OldName> | xargs sed -i 's/<OldName>/<NewName>/g'` per class; run `pytest -m "not slow"` after each batch (or after the full set) to verify; commit as a single rename pass.
 
-**Watch-item:** verify no test asserts on the OLD class name as a string literal (e.g., `pytest.raises(ValueError, match="WatchlistEntryNotFoundError")`). If found, those test assertions need the new name too — sed handles that uniformly since the match string contains the class name.
+**Watch-item:** verify no test asserts on the OLD class name as a string literal (e.g., `pytest.raises(ValueError, match="WatchlistEntryNotFound")` would have to become `match="WatchlistEntryNotFoundError"`). If found, those test assertions need the new name too — sed handles that uniformly since the match string contains the class name.
 
 ### E501 — line-too-long (18 lines)
 

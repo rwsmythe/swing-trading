@@ -170,6 +170,7 @@ def hyp_recs_expand(request: Request, ticker: str):
     """
     cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
+    executor = request.app.state.price_fetch_executor
     templates = request.app.state.templates
     ticker_upper = ticker.upper()
     conn = connect(cfg.paths.db_path)
@@ -183,7 +184,7 @@ def hyp_recs_expand(request: Request, ticker: str):
             vm = build_hyp_recs_expanded(
                 conn, cfg,
                 ticker=ticker_upper, current_balance=current_balance,
-                cache=cache,
+                cache=cache, executor=executor,
             )
             if vm is None:
                 return templates.TemplateResponse(

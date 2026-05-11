@@ -566,6 +566,7 @@ class HypRecsExpandedVM:
 def build_hyp_recs_expanded(
     conn, cfg: Config, *, ticker: str, current_balance: float,
     cache: PriceCache | None = None,
+    executor=None,
 ) -> HypRecsExpandedVM | None:
     """Resolve a hyp-recs expansion VM at request time. Returns None when:
 
@@ -634,11 +635,24 @@ def build_hyp_recs_expanded(
         # operator-facing message; spec §3.5.3 last paragraph.
         return None
 
-    # 3e.4 — Single-ticker price snapshot. The single-ticker `cache.get`
-    # path handles market-hours + last-close fallback + breaker degraded
-    # state internally; no executor needed (vs. the batch `get_many` path
-    # used by the dashboard for many tickers).
-    current_price = cache.get(ticker) if cache is not None else None
+    # 3e.4 — Fetch the ticker price via the batch `get_many` path so the
+    # request is deadline-bounded (mirrors the open-positions dashboard
+    # path; brief §0.3 #4 "PriceCache+executor pattern"). A synchronous
+    # `cache.get(ticker)` would block the route on yfinance for up to the
+    # socket-level timeout (~30-60s) on a stuck fetch. `get_many` wraps
+    # the same `_fetch_with_fallback` under `cfg.web.price_fetch_deadline_seconds`
+    # and gracefully returns the last-close fallback (or nothing) when the
+    # deadline elapses. Executor is required by `get_many`; when the caller
+    # omits it (e.g., unit tests exercising other code paths) we skip the
+    # fetch entirely and leave current_price None.
+    current_price = None
+    if cache is not None and executor is not None:
+        prices = cache.get_many(
+            [ticker],
+            deadline_seconds=cfg.web.price_fetch_deadline_seconds,
+            executor=executor,
+        )
+        current_price = prices.get(ticker)
 
     return HypRecsExpandedVM(
         ticker=ticker,

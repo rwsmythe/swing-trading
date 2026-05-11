@@ -539,10 +539,13 @@ def test_hyp_recs_expanded_vm_has_current_price_field_default_none(seeded_db):
 def test_build_hyp_recs_expanded_populates_current_price_when_cache_provided(
     seeded_db,
 ):
-    """A.AC.2 — when builder is called with `cache=<PriceCache-like>`,
-    the returned VM has `current_price` populated with the snapshot the
-    cache returned for the ticker. Discriminating: a stub cache returning
-    PriceSnapshot(price=123.45) propagates verbatim to VM.current_price.price."""
+    """A.AC.2 — when builder is called with `cache=<PriceCache-like>` AND
+    `executor=<Executor-like>`, the returned VM has `current_price` populated
+    with the snapshot the cache returned for the ticker via the batch
+    `get_many([ticker], deadline_seconds=, executor=)` path. Brief §0.3 #4
+    PriceCache+executor pattern. Discriminating: a stub cache returning
+    PriceSnapshot(price=123.45) propagates verbatim to VM.current_price.price.
+    """
     from datetime import datetime
 
     from swing.web.price_cache import PriceSnapshot
@@ -555,28 +558,47 @@ def test_build_hyp_recs_expanded_populates_current_price_when_cache_provided(
 
     class _StubCache:
         def __init__(self):
-            self.calls: list[str] = []
+            self.calls: list = []
 
-        def get(self, ticker: str):
-            self.calls.append(ticker)
-            return PriceSnapshot(
-                ticker=ticker, price=123.45, asof=datetime.now(),
-                is_stale=False, source="live",
+        def get_many(self, tickers, *, deadline_seconds, executor):
+            self.calls.append(
+                (list(tickers), deadline_seconds, executor),
             )
+            return {
+                t: PriceSnapshot(
+                    ticker=t, price=123.45, asof=datetime.now(),
+                    is_stale=False, source="live",
+                ) for t in tickers
+            }
 
     stub = _StubCache()
+    sentinel_executor = object()
     conn = connect(cfg.paths.db_path)
     try:
         vm = build_hyp_recs_expanded(
             conn, cfg, ticker="AAPL", current_balance=10_000.0,
-            cache=stub,
+            cache=stub, executor=sentinel_executor,
         )
     finally:
         conn.close()
 
     assert vm is not None
-    assert stub.calls == ["AAPL"], (
-        f"builder must invoke cache.get('AAPL') exactly once; got {stub.calls}"
+    assert len(stub.calls) == 1, (
+        f"builder must invoke get_many exactly once; got {stub.calls}"
+    )
+    tickers_called, deadline_called, executor_called = stub.calls[0]
+    assert tickers_called == ["AAPL"], (
+        f"builder must call get_many with a 1-element list; got {tickers_called}"
+    )
+    # Deadline-bounded contract: builder must pass the configured deadline
+    # (mirrors the open-positions dashboard path).
+    assert deadline_called == cfg.web.price_fetch_deadline_seconds, (
+        f"builder must thread cfg.web.price_fetch_deadline_seconds; "
+        f"got {deadline_called}"
+    )
+    # Executor passthrough (locked in brief §0.3 #4 + A.AC.2).
+    assert executor_called is sentinel_executor, (
+        "builder must forward the executor kwarg into get_many verbatim"
     )
     assert vm.current_price is not None
     assert vm.current_price.price == 123.45
@@ -609,13 +631,14 @@ def test_build_hyp_recs_expanded_leaves_current_price_none_without_cache(
     assert vm.current_price is None
 
 
-def test_build_hyp_recs_expanded_current_price_none_when_cache_returns_none(
+def test_build_hyp_recs_expanded_current_price_none_when_cache_returns_empty(
     seeded_db,
 ):
-    """A.AC.6 (VM-level) — when cache returns None (e.g., ticker not in
-    last_close fallback path; degraded mode with no last_close row), the
-    VM has `current_price = None`. Discriminating: a stub cache returning
-    None propagates as None, NOT as an exception, NOT as a sentinel."""
+    """A.AC.6 (VM-level) — when get_many returns an empty dict (e.g., the
+    deadline elapsed or the breaker is degraded with no last_close row),
+    the VM has `current_price = None`. Discriminating: a stub cache
+    returning `{}` propagates as None, NOT as an exception, NOT as a sentinel.
+    """
     from swing.web.view_models.dashboard import build_hyp_recs_expanded
 
     cfg, _ = seeded_db
@@ -623,15 +646,49 @@ def test_build_hyp_recs_expanded_current_price_none_when_cache_returns_none(
         {"ticker": "AAPL", "pivot": 100.0, "initial_stop": 95.0},
     ])
 
-    class _NoneCache:
-        def get(self, ticker: str):
-            return None
+    class _EmptyCache:
+        def get_many(self, tickers, *, deadline_seconds, executor):
+            return {}
 
     conn = connect(cfg.paths.db_path)
     try:
         vm = build_hyp_recs_expanded(
             conn, cfg, ticker="AAPL", current_balance=10_000.0,
-            cache=_NoneCache(),
+            cache=_EmptyCache(), executor=object(),
+        )
+    finally:
+        conn.close()
+
+    assert vm is not None
+    assert vm.current_price is None
+
+
+def test_build_hyp_recs_expanded_skips_fetch_when_executor_missing(
+    seeded_db,
+):
+    """A.AC.2 (caller contract) — when cache is provided but executor is
+    missing (e.g., unit tests exercising other code paths), the builder
+    skips the live fetch and returns VM with `current_price = None`.
+    Discriminating: a stub cache whose `get_many` would explode is NEVER
+    invoked — the builder's guard short-circuits before calling it."""
+    from swing.web.view_models.dashboard import build_hyp_recs_expanded
+
+    cfg, _ = seeded_db
+    _seed_complete_pipeline(cfg, candidates=[
+        {"ticker": "AAPL", "pivot": 100.0, "initial_stop": 95.0},
+    ])
+
+    class _ExplodingCache:
+        def get_many(self, *args, **kwargs):
+            raise AssertionError(
+                "get_many must NOT be called when executor is missing"
+            )
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        vm = build_hyp_recs_expanded(
+            conn, cfg, ticker="AAPL", current_balance=10_000.0,
+            cache=_ExplodingCache(),  # executor=None (default)
         )
     finally:
         conn.close()
