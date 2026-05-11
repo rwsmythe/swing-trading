@@ -123,10 +123,9 @@
       if (!btn) return;
       var html = document.documentElement;
       var body = document.body;
-      /* Initial sync: if head script set html.dark, mirror onto body. */
-      if (html.classList.contains('dark')) {
-        body.classList.add('dark');
-      }
+      /* Initial sync (Codex R2 Minor #1 — two-way): mirror html.dark
+       * onto body so the body.dark contract holds in either direction. */
+      body.classList.toggle('dark', html.classList.contains('dark'));
       function applyToButton(isDark) {
         if (isDark) {
           btn.textContent = '☀️';  /* ☀️ sun */
@@ -140,11 +139,7 @@
       btn.addEventListener('click', function () {
         var isDark = html.classList.toggle('dark');
         /* Keep body in sync so `body.dark` selectors stay valid. */
-        if (isDark) {
-          body.classList.add('dark');
-        } else {
-          body.classList.remove('dark');
-        }
+        body.classList.toggle('dark', isDark);
         var next = isDark ? 'dark' : 'light';
         try {
           window.localStorage.setItem('swing-trading-theme', next);

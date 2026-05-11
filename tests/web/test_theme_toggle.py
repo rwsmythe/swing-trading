@@ -171,6 +171,59 @@ def test_b5_localstorage_access_wrapped_in_try_catch(seeded_db, monkeypatch):
     )
 
 
+def test_b7_body_class_sync_contract(seeded_db, monkeypatch):
+    """B.7 — the end-of-body toggle script MUST (a) initialize body.dark
+    from html.dark on initial load AND (b) keep body.dark in sync with
+    html.dark on click. Pins the body.dark sync contract added in the
+    Codex R1 Major #1 fix so future edits can't silently remove it.
+
+    Heuristic: locate the inline script that mentions both
+    `document.body` AND `classList`, and assert it contains the sync
+    primitives (a classList toggle/add against body that's gated on
+    html.dark, plus a body-class update inside the click handler).
+    """
+    html = _get_html(seeded_db, monkeypatch)
+    scripts = re.findall(
+        r"<script\b[^>]*>(.*?)</script>",
+        html, flags=re.DOTALL | re.IGNORECASE,
+    )
+    # The end-of-body toggle script touches `document.body` AND
+    # `addEventListener` on the click handler.
+    candidates = [
+        s for s in scripts
+        if "document.body" in s or "body.classList" in s
+    ]
+    assert candidates, "no inline script touches body.classList"
+    toggle_script = max(candidates, key=len)
+    # (a) initial-load body-sync — body.classList.{toggle,add} appears
+    #     gated on html / documentElement classList containing 'dark'.
+    assert re.search(
+        r"body\.classList\.(toggle|add)\(\s*['\"]dark['\"]",
+        toggle_script,
+    ), (
+        "End-of-body script does not call body.classList.{toggle,add}('dark', ...) — "
+        "the html.dark → body.dark initial sync (Codex R1 Major #1 fix) is missing."
+    )
+    # (b) click-handler body-sync — body class update appears alongside
+    #     html.classList.toggle('dark'). We check that there are at least
+    #     two occurrences of a body-class change OR the toggle uses the
+    #     two-arg form `body.classList.toggle('dark', isDark)` which
+    #     handles both initial sync AND click updates.
+    body_class_updates = re.findall(
+        r"body\.classList\.(?:toggle|add|remove)\(", toggle_script,
+    )
+    assert len(body_class_updates) >= 2, (
+        f"End-of-body script has {len(body_class_updates)} body.classList "
+        f"updates — expected at least 2 (one for initial sync, one in click "
+        f"handler) to maintain html.dark ↔ body.dark consistency."
+    )
+    # (c) click handler must also toggle html — confirm the sync is paired.
+    assert re.search(
+        r"(documentElement|html)\.classList\.toggle\(\s*['\"]dark['\"]",
+        toggle_script,
+    ), "Click handler does not toggle html.dark class."
+
+
 def test_b6_toggle_button_has_aria_label(seeded_db, monkeypatch):
     """B.6 — theme-toggle button carries an `aria-label` so screen readers
     + accessibility tooling can interpret it. Server-render-side this
