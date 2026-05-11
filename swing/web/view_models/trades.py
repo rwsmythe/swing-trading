@@ -777,6 +777,12 @@ class TradeDetailVM:
     ``has_pre_trade_data`` gates the Pre-Trade Decision section render —
     legacy rows (pre-Phase-7, ``premortem_technical IS NULL``) hide the
     section entirely so the operator does not see a sea of empty fields.
+
+    3e.8 Bundle 1 (§4.F) — ``advisories`` carries the same per-trade
+    ``AdvisorySuggestionVM`` tuple that ``OpenPositionsRowVM.advisories``
+    surfaces on the dashboard list view. Default empty tuple keeps
+    existing call sites green (callers that build the VM without
+    ``cache``/``executor``/``ohlcv_cache`` see no advisories).
     """
     trade: Trade
     state: str
@@ -815,6 +821,10 @@ class TradeDetailVM:
     trade_origin: str
     audit_entries: tuple[AuditEntry, ...]
     fills: tuple[Fill, ...]
+    # 3e.8 Bundle 1 (§4.F B.AC.1) — empty default keeps pre-existing build
+    # call sites green (back-compat). The Bundle 1 dispatch updates the
+    # trade-detail route to thread cache+executor+ohlcv_cache.
+    advisories: tuple = ()  # tuple[AdvisorySuggestionVM, ...]
     # 5-VM existing-fields safe defaults (CLAUDE.md base-layout VM rule):
     session_date: str = ""
     stale_banner: str = ""
@@ -861,12 +871,21 @@ def _load_audit_entries(
 
 def build_trade_detail_vm(
     *, trade_id: int, cfg: Config,
+    cache=None, executor=None, ohlcv_cache=None,
 ) -> TradeDetailVM | None:
     """Build the trade-detail page VM. Returns None if trade not found.
 
     Loads trade + fills + pre-trade-edit audit log + (optionally) the
     authoritative entry-fill's ``manual_entry_confidence`` and assembles
     the VM. Pure read; no DB writes.
+
+    3e.8 Bundle 1 (§4.F B.AC.2) — when ``cache`` is provided AND the trade
+    is in an active lifecycle state (entered/managing/partial_exited),
+    composes per-trade advisories via the same path as
+    ``build_open_positions_row`` (live PriceCache + optional OhlcvCache +
+    latest weather + ``compute_all_suggestions``). When ``cache is None``
+    OR the trade is closed/reviewed, ``vm.advisories`` is an empty tuple
+    (closed trades render the "No advisories." empty state per B.AC.4).
     """
     from swing.data.repos.fills import get_authoritative_entry_fill
 
@@ -879,6 +898,15 @@ def build_trade_detail_vm(
             fills = tuple(list_fills_for_trade(conn, trade_id))
             audit_entries = _load_audit_entries(conn, trade_id)
             entry_fill = get_authoritative_entry_fill(conn, trade_id)
+            # Latest weather — pipeline writer stamps `data_asof_date` on
+            # weather rows, so read-only UIs MUST use get_latest (per CLAUDE.md
+            # "Weather lookup in read-only UIs must NOT query by
+            # action_session"). Read inside the same snapshot so the advisory
+            # composition sees a consistent view.
+            weather = None
+            if cache is not None and trade.state in _ACTIVE_STATES:
+                from swing.data.repos.weather import get_latest
+                weather = get_latest(conn, ticker=cfg.rs.benchmark_ticker)
     finally:
         conn.close()
 
@@ -887,6 +915,51 @@ def build_trade_detail_vm(
     manual_entry_confidence = (
         entry_fill.manual_entry_confidence if entry_fill is not None else None
     )
+
+    # 3e.8 Bundle 1 (§4.F B.AC.2) advisories: only compose for active trades
+    # AND only when the caller threaded the live PriceCache. Mirrors the
+    # dashboard composition in `build_dashboard` / `build_open_positions_row`.
+    advisories: tuple = ()
+    if cache is not None and trade.state in _ACTIVE_STATES:
+        from swing.evaluation.dates import action_session_for_run
+        from swing.trades.advisory import (
+            AdvisoryContext,
+            compute_all_suggestions,
+        )
+        from swing.web.view_models.dashboard import AdvisorySuggestionVM
+
+        action_session = action_session_for_run(datetime.now()).isoformat()
+        prices = cache.get_many(
+            [trade.ticker],
+            deadline_seconds=cfg.web.price_fetch_deadline_seconds,
+            executor=executor,
+        )
+        snap = prices.get(trade.ticker)
+        bundle = None
+        if ohlcv_cache is not None:
+            bundles = ohlcv_cache.get_many_bundles(
+                [trade.ticker],
+                deadline_seconds=cfg.web.price_fetch_deadline_seconds,
+                executor=executor,
+            )
+            bundle = bundles.get(trade.ticker)
+        weather_status = weather.status if weather else "STALE"
+        if snap is not None:
+            ctx = AdvisoryContext(
+                as_of_date=action_session,
+                current_price=snap.price,
+                sma10=bundle.sma10 if bundle else None,
+                sma20=bundle.sma20 if bundle else None,
+                sma50=bundle.sma50 if bundle else None,
+                previous_close=bundle.previous_close if bundle else None,
+                weather_status=weather_status,
+                config=cfg.stop_advisory,
+            )
+            raw = compute_all_suggestions(trade, ctx)
+            advisories = tuple(
+                AdvisorySuggestionVM(rule=s.rule, message=s.message)
+                for s in raw
+            )
 
     return TradeDetailVM(
         trade=trade,
@@ -918,6 +991,7 @@ def build_trade_detail_vm(
         trade_origin=trade.trade_origin,
         audit_entries=audit_entries,
         fills=fills,
+        advisories=advisories,
     )
 
 

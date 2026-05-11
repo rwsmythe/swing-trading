@@ -1718,7 +1718,16 @@ def trade_detail(request: Request, trade_id: int):
     )
     cfg = apply_overrides(request.app.state.cfg)
     templates = request.app.state.templates
-    vm = build_trade_detail_vm(trade_id=trade_id, cfg=cfg)
+    # 3e.8 Bundle 1 (§4.F B.AC.6) — thread the price + OHLCV caches so the
+    # detail-page VM can compose per-trade advisories. Mirrors the dashboard
+    # route's pattern; closed/reviewed trades short-circuit to advisories=()
+    # inside the builder.
+    vm = build_trade_detail_vm(
+        trade_id=trade_id, cfg=cfg,
+        cache=request.app.state.price_cache,
+        executor=request.app.state.price_fetch_executor,
+        ohlcv_cache=request.app.state.ohlcv_cache,
+    )
     if vm is None:
         raise HTTPException(
             status_code=404, detail=f"Trade #{trade_id} not found",
