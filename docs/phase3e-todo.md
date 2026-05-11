@@ -1105,18 +1105,17 @@ Per project baseline-tracking convention: when bundled in, update `docs/orchestr
 
 **Cross-refs:** §3e.8 §4.E + §4.F. Brief at `docs/3e8-bundle-1-advisory-parity-brief.md`.
 
-### Bundle 2 — Sell-side advisories (§4.B + §4.K + §4.D) — DISPATCH-READY POST-BUNDLE-1
+### Bundle 2 — Sell-side advisories (§4.B + §4.K + §4.D) — **SHIPPED 2026-05-11** at `3485f51` (worktree dispatch; 9 commits = 5 task-impl + 4 Codex-fix; 4 Codex rounds NO_NEW_CRITICAL_MAJOR)
 
-**Trigger:** Bundle 1 ships. Operator commission.
+> **Outcome:** SHIPPED via worktree dispatch on `3e8-bundle-2-sell-side-advisories` branch from BASELINE_SHA `7f3cfa6`. Three new sell-side advisory rules (§4.B `suggest_trim_into_strength` at +1R first-time / 25% trim; §4.K `suggest_planned_target_r_hit` when `r_so_far ≥ trades.planned_target_R`; §4.D `suggest_parabolic_trim` at >7× ADR above 50SMA per DST D.7 / Realsimpleariel doctrine anchor) wired into 6 composition surfaces (dashboard list view + open-positions row + open-positions expanded HTMX partial + trade-detail page + pipeline briefing composer + CLI `swing trade advisory`). All advisory-message-only; no schema; no V2.1 §VII.F routing. `AdvisoryContext` gains `adr_pct: float | None` + `has_been_trimmed: bool` fields; `StopAdvisoryConfig` gains 3 cfg keys with `__post_init__` validation rejecting NaN/inf/out-of-range overrides. New `compute_adr_pct` helper at [`swing/pipeline/ohlcv.py`](../swing/pipeline/ohlcv.py) with robust guards (insufficient bars, NaN/inf/non-numeric/zero-close/High<Low rejected at the data boundary). Codex chain 4 rounds → NO_NEW_CRITICAL_MAJOR (R1 0/3/2 → R2 0/2/2 → R3 0/1/2 → R4 0/0/1; convergent shape; chain drove +25 tests via 4 rounds of defensive numeric / config-validation hardening that wasn't in brief acceptance criteria). 1 Major finding ACCEPTED-with-rationale (R1 M2: `_step_export` not a strict snapshot — pipeline lease serializes all writers; matches pre-existing posture of equity/exits/trades reads in same block; misleading comment corrected). Operator-witnessed gate via Chrome MCP S1+S2+S3+S4+S5+S6 ALL PASS — LAR `parabolic_trim` fires across all 4 UI/output surfaces with exact spec-matching message ("Parabolic extension — price $11.68 is ≥7.0× ADR above 50SMA (ADR=6.36%); consider aggressive trim per DST D.7 / Realsimpleariel"); DHC r=0.85R matches CLAUDE.md snapshot, all Bundle 2 rules correctly suppressed where triggers not met. Test count 2206 → 2277 (+71); ruff baseline 18 unchanged.
 
-**Scope:** Three new sell-side advisory rules emitting on dashboard advisory column (and via Bundle 1 also on briefing + detail + expanded row):
-- §4.B: trim/sell-into-strength at +1R first time (default 25%); both threshold + percentage cfg-tunable via new `cfg.stop_advisory.trim_first_r_trigger` + `trim_first_pct_default`
-- §4.K: planned_target_R hit when `r_so_far >= trades.planned_target_R`
-- §4.D: parabolic-extension detector (default ≥25% in ≤5 days AND ≥15% above 20MA); cfg-tunable via new `cfg.stop_advisory.parabolic_*` keys
+**Operator design locks** (in-session 2026-05-11):
+- §4.B trigger: (a) R-multiple over (b) DST D.2 Day-3-5 calendar / (c) both / (d) hybrid. Doctrine-faithful Day-3-5 trigger banked for V2 if R-multiple version mis-times the trim window.
+- §4.D thresholds: (b) DST D.7 doctrine (>7× ADR above 50SMA) over (a) 3e.8 arbitrary defaults / (c) both. D.6 intraday-EMA upgrade banked for V2.
 
-**Effort:** ~8-10 hr bundled. All advisory-message-only; new helper `recent_pct_gain` extension to `AdvisoryContext` for §4.D.
+**Brief defect surfaced (lesson banked below):** Brief enumerated 5 composition surfaces in §0.2; actual count is **6** — `swing/cli.py:trade_advisory_cmd` was the 6th surface (CLI), caught by Codex R1 Major #1. Resolved with `--adr-pct` CLI flag + fill-loading + `has_been_trimmed` derivation. Lesson: orchestrator brief should grep ALL invocations of the composition target, not memory-enumerate.
 
-**Cross-refs:** §3e.8 §4.B + §4.K + §4.D.
+**Cross-refs:** §3e.8 §4.B + §4.K + §4.D. Brief at `docs/3e8-bundle-2-sell-side-advisories-brief.md`.
 
 ### Bundle 3 — Maturity-stage hint + M.2 R-multiple stop-tighten hint (Option δ) — DISPATCH-READY POST-BUNDLE-2
 
@@ -1226,3 +1225,31 @@ For DHC's current state (open_R=0.85, MFE=0.88R, pre_+1.5R) NEITHER would fire y
 - Bundle 1 SHIPPED entry above (line ~417 post-housekeeping)
 - `docs/3e8-bundle-1-advisory-parity-brief.md` §0.3 #2 (mirror-dashboard-composition lock)
 - `swing/web/view_models/dashboard.py:build_dashboard` — canonical open-own-conn pattern reference
+
+---
+
+## 2026-05-11 V2 watch items + lessons banked from 3e.8 Bundle 2 ship
+
+### V2 — Brief composition-surface enumeration: grep, don't memory-enumerate
+
+**Banked from:** Bundle 2 Codex R1 Major #1 (orchestrator triage 2026-05-11).
+
+**Symptom:** Bundle 2 dispatch brief §0.2 enumerated 5 advisory-composition surfaces (4 web VMs + 1 pipeline briefing composer). The actual surface count is **6** — `swing/cli.py:trade_advisory_cmd` was the 6th, missed by orchestrator recon. Without Codex's discovery in R1 Major #1, the CLI `swing trade advisory` command would have emitted `trim_into_strength` advisories on already-trimmed trades because `has_been_trimmed` defaulted to `False` at the CLI composition site (no fill-loading wired through). Fixed in same Codex round with new `--adr-pct` flag + fill loading + 3 CLI tests.
+
+**Generalized lesson:** When writing a dispatch brief that lists N composition / hand-mirroring sites for a new feature, the orchestrator MUST grep the codebase for ALL invocations of the canonical composition target — never enumerate from memory. Bundle 1 also listed 5 surfaces (same memory enumeration); Bundle 2 inherited the count without re-grepping. The CLI command lives outside the obvious web + pipeline namespaces and gets missed.
+
+**Pre-empt in future dispatches:** writing-plans phase grep target = the function name or class name of the composition target (e.g., `compose_open_trade_advisories`, `AdvisorySuggestion`, `build_open_positions_row`). Cross-reference grep output against the brief's surface list before approving for dispatch.
+
+**Effort estimate:** N/A — process change, not a code change. Lesson encoded in this entry + applied to all future bundle briefs.
+
+**Promotion candidate to CLAUDE.md gotcha:** consider promoting "advisory composition has 6 sites (web ×4 + pipeline ×1 + CLI ×1) — grep for invocations, don't memory-enumerate" as a gotcha if a third bundle adds new rules. For now, lesson lives here.
+
+### Inherited from Bundle 1 (unchanged)
+
+The two V2 watch items banked at the 2026-05-11 Bundle 1 section above carry forward unchanged — Bundle 2 incremented the hand-duplication surface count from 5 → 6 (CLI added) but did NOT extract a shared composer. Same accept-with-rationale on the drift risk. Same trigger for V2 composer extract.
+
+### Cross-references
+
+- Bundle 2 SHIPPED entry above (line ~1108)
+- `docs/3e8-bundle-2-sell-side-advisories-brief.md` §0.2 (5-site enumeration that missed CLI; §0.3 #4 V2 hand-duplication acceptance)
+- `swing/cli.py:trade_advisory_cmd` — the 6th composition site
