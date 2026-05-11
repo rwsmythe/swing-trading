@@ -318,6 +318,85 @@ def test_step_export_populates_open_trade_last_prices_from_candidates(
     )
 
 
+def test_step_export_last_prices_falls_back_to_prev_close_when_candidate_close_null(
+    tmp_path, monkeypatch,
+):
+    """Codex R2 Major #2 closure — when the candidate row exists but
+    candidate.close IS NULL, _step_export's open_trade_last_prices
+    population must fall back to OHLCV previous_close (mirroring the
+    advisory composition's same fallback). Otherwise the briefing renderer
+    silently degrades to entry_price for Last/R/P&L while advisories fire
+    from the newer prev_close — the residual R2 Major #2 contradiction.
+    """
+    from swing.pipeline.lease import Lease
+    from swing.pipeline.runner import _step_export
+
+    cfg = _make_cfg(tmp_path)
+    conn = sqlite3.connect(str(cfg.paths.db_path))
+    try:
+        with conn:
+            eval_id = _seed_eval_run(conn)
+            _seed_open_trade(
+                conn, ticker="MJR2B", entry_date="2026-04-01",
+                entry_price=100.0, initial_stop=95.0,
+            )
+            # Candidate exists but close IS NULL — simulates the
+            # _step_evaluate degraded path where the synthesized excluded
+            # row for an open position didn't acquire a fresh close.
+            conn.execute(
+                """INSERT INTO candidates
+                   (evaluation_run_id, ticker, bucket, close, pivot,
+                    initial_stop, rs_method, notes)
+                   VALUES (?, 'MJR2B', 'excluded', NULL, NULL, NULL,
+                           'universe', 'open position')""",
+                (eval_id,),
+            )
+            run_id, token = _seed_pipeline_run_running(conn)
+    finally:
+        conn.close()
+
+    captured: dict = {}
+
+    def fake_build_view_model(inputs):
+        captured["open_trade_last_prices"] = dict(inputs.open_trade_last_prices)
+        class _VM:
+            briefing_html = ""
+            briefing_md = ""
+        return _VM()
+
+    monkeypatch.setattr(
+        "swing.pipeline.runner.build_briefing_view_model", fake_build_view_model,
+    )
+    monkeypatch.setattr(
+        "swing.pipeline.runner.export_briefing", lambda **kw: None,
+    )
+    monkeypatch.setattr(
+        "swing.pipeline.runner.promote_staging",
+        lambda **kw: type("PR", (), {"target_path": tmp_path})(),
+    )
+    monkeypatch.setattr(
+        "swing.rendering.retention.archive_old_exports", lambda **kw: None,
+    )
+
+    bars = _bars_trail_setup()
+    expected_prev = float(bars["Close"].iloc[-1])
+    fetcher = _StubFetcher({"MJR2B": bars})
+    lease = Lease(db_path=cfg.paths.db_path, run_id=run_id, token=token)
+    _step_export(
+        cfg=cfg, lease=lease, eval_run_id=eval_id,
+        action_session=_date(2026, 4, 15),
+        data_asof="2026-04-14",
+        chart_paths={},
+        fetcher=fetcher,
+    )
+
+    assert captured["open_trade_last_prices"] == {"MJR2B": expected_prev}, (
+        f"R2 Major #2 — last-prices must fall back to OHLCV prev_close "
+        f"when candidate.close is NULL; got "
+        f"{captured['open_trade_last_prices']!r}"
+    )
+
+
 def test_step_export_no_extra_fetcher_calls_beyond_open_trade_count(
     tmp_path, monkeypatch,
 ):

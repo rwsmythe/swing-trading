@@ -914,27 +914,37 @@ def compose_open_trade_advisories_for_briefing(
         ``PriceFetcher._resolve_asof(None)`` would otherwise mask.
 
     "No new yfinance calls" claim (brief A.AC.5; Codex R1 Major 4
-    disposition — ACCEPTED with rationale): re-reading the archive consults
-    ``read_or_fetch_archive``, which COULD refresh from yfinance under
-    stale-archive or weekly-refresh paths. In practice this never happens
-    in steady state because:
+    disposition — ACCEPTED with rationale; R2 Minor #2 docstring
+    correction): re-reading the archive consults ``read_or_fetch_archive``,
+    which COULD refresh from yfinance under its own staleness rules
+    (weekly full-refresh on metadata; gap-fill when
+    ``archive.index.max() < last_completed_session_today()``). In practice
+    this never happens in steady state because open-trade tickers are
+    guaranteed to be in chart-step scope (Tier-2 dedup precedence at
+    ``_step_charts`` lines 728-752); the archive is freshly written within
+    the same lease ~seconds before ``_step_export`` runs, so when this
+    helper re-consults the archive the latest stored bar is already today's
+    completed-session bar.
 
-      * Open-trade tickers are guaranteed to be in chart-step scope (Tier-2
-        dedup precedence at ``_step_charts`` lines 728-752); the archive
-        is freshly written within the same lease ~seconds before
-        ``_step_export`` runs.
-      * The archive helper's refresh trigger keys on ``data_asof`` parity;
-        pinning ``as_of_date`` here matches the chart-step's pin so a
-        chart-step-populated archive entry is always considered current.
-
-    The acceptance precedent matches ``_step_charts`` itself, which has the
-    same dependency. A stricter "archive-only" knob on ``PriceFetcher``
-    would be V2 scope.
+    Note: the archive's refresh rules are WALL-CLOCK driven (today =
+    ``_last_completed_session_today()``), NOT keyed on the ``end_date``
+    parameter we pass via ``as_of_date``. Our ``as_of_date`` pin only
+    SLICES the returned DataFrame; it does NOT control refresh behavior.
+    A pipeline run whose wall-clock day differs from its ``data_asof``
+    (e.g., retry on Tuesday for Monday's session) MAY therefore trigger a
+    gap-fill yfinance call. Acceptance precedent matches ``_step_charts``
+    itself, which has the same dependency. A stricter "archive-only" knob
+    on ``PriceFetcher`` would be V2 scope.
 
     Returns ``{trade.id: [AdvisorySuggestionVM, ...]}`` keyed by every open
     trade — empty list when no advisory triggers fire OR when the fetcher
     fails (defensive: briefing emission must not abort on per-ticker
     fetcher failure; logged as warning).
+
+    Companion helper ``compose_open_trade_last_prices_for_briefing`` uses
+    the SAME candidate.close → OHLCV previous_close fallback chain to
+    populate ``BriefingInputs.open_trade_last_prices``. Both helpers must
+    stay in sync — Codex R2 Major #2 closure.
     """
     # Pin as_of_date so PriceFetcher does NOT default-fall back to
     # `last_completed_session(datetime.now())` (Codex R1 Major 3 fix —
@@ -987,6 +997,60 @@ def compose_open_trade_advisories_for_briefing(
         out[t.id] = [
             AdvisorySuggestionVM(rule=s.rule, message=s.message) for s in raw
         ]
+    return out
+
+
+def compose_open_trade_last_prices_for_briefing(
+    *,
+    trades,
+    fetcher,
+    candidates_by_ticker,
+    data_asof_date: str | None = None,
+) -> dict[str, float]:
+    """Resolve per-ticker last prices using the SAME candidate.close →
+    OHLCV previous_close fallback chain that
+    ``compose_open_trade_advisories_for_briefing`` uses for advisory
+    ``current_price``. Codex R2 Major #2 closure.
+
+    Without this companion helper, the briefing renderer's
+    ``open_trade_last_prices.get(t.ticker, t.entry_price)`` fallback at
+    ``swing/rendering/briefing.py:123`` can render Last == entry_price for
+    a trade whose advisories fired from a newer prev_close — the very
+    contradiction R1 Major #2 closed for the candidate-present path.
+
+    Returns ``{ticker: float}`` matching the
+    ``BriefingInputs.open_trade_last_prices`` contract. Tickers without a
+    resolved price (no candidate row AND fetcher.get raised OR returned no
+    Close column) are OMITTED — the briefing renderer's
+    ``.get(ticker, t.entry_price)`` fallback handles those, and that's the
+    correct semantic: "we genuinely have no price data; show entry price
+    as a degraded fallback".
+    """
+    pinned_asof = (
+        _date.fromisoformat(data_asof_date) if data_asof_date else None
+    )
+    out: dict[str, float] = {}
+    for t in trades:
+        cand = candidates_by_ticker.get(t.ticker)
+        if cand is not None and cand.close is not None:
+            out[t.ticker] = cand.close
+            continue
+        # Candidate.close missing — fall back to OHLCV previous_close.
+        # Archive read is cheap (parquet); duplicates the advisory helper's
+        # read for the same ticker but keeps both helpers single-purpose.
+        try:
+            bars = fetcher.get(
+                t.ticker, lookback_days=200, as_of_date=pinned_asof,
+            )
+        except Exception as exc:
+            log.warning(
+                "briefing last-price: fetcher.get failed for %s: %s",
+                t.ticker, exc,
+            )
+            continue
+        prev = _previous_close(bars)
+        if prev is not None:
+            out[t.ticker] = prev
     return out
 
 
@@ -1046,19 +1110,31 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
     else:
         open_trade_advisories = {}
 
-    # 3e.8 Bundle 1 Codex R1 Major 2 fix — populate open_trade_last_prices
-    # from the SAME source (candidate.close) the advisory composition uses
-    # for ``current_price``. Without this, the briefing renderer's
-    # ``inputs.open_trade_last_prices.get(t.ticker, t.entry_price)`` fall-
-    # back at swing/rendering/briefing.py:123 displays Last == entry_price
-    # → R / unrealized P&L / dist_to_stop_pct all derive from $0 P&L, while
-    # advisories fire from the newer candidate close. Tying both surfaces
-    # to candidate.close removes the contradiction.
-    open_trade_last_prices: dict[str, float] = {}
-    for t in trades:
-        cand = candidates_by_ticker.get(t.ticker)
-        if cand is not None and cand.close is not None:
-            open_trade_last_prices[t.ticker] = cand.close
+    # 3e.8 Bundle 1 Codex R1 Major 2 + R2 Major 2 fix — populate
+    # open_trade_last_prices from the SAME source chain the advisory
+    # composition uses for ``current_price`` (candidate.close →
+    # OHLCV previous_close). Without the matched fallback, the briefing
+    # renderer's ``open_trade_last_prices.get(t.ticker, t.entry_price)``
+    # at swing/rendering/briefing.py:123 displays Last == entry_price for
+    # the (rare) candidate-absent path, while advisories fire from the
+    # prev_close — the residual contradiction R2 Major 2 surfaced.
+    open_trade_last_prices: dict[str, float]
+    if fetcher is not None:
+        open_trade_last_prices = compose_open_trade_last_prices_for_briefing(
+            trades=trades,
+            fetcher=fetcher,
+            candidates_by_ticker=candidates_by_ticker,
+            data_asof_date=data_asof,
+        )
+    else:
+        # No fetcher → no OHLCV fallback available; degenerate to
+        # candidate.close only.
+        open_trade_last_prices = {
+            t.ticker: candidates_by_ticker[t.ticker].close
+            for t in trades
+            if t.ticker in candidates_by_ticker
+            and candidates_by_ticker[t.ticker].close is not None
+        }
 
     inputs = BriefingInputs(
         action_session_date=action_session.isoformat(),

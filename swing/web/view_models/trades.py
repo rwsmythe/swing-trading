@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Literal
 
@@ -821,10 +821,11 @@ class TradeDetailVM:
     trade_origin: str
     audit_entries: tuple[AuditEntry, ...]
     fills: tuple[Fill, ...]
-    # 3e.8 Bundle 1 (§4.F B.AC.1) — empty default keeps pre-existing build
-    # call sites green (back-compat). The Bundle 1 dispatch updates the
-    # trade-detail route to thread cache+executor+ohlcv_cache.
-    advisories: tuple = ()  # tuple[AdvisorySuggestionVM, ...]
+    # 3e.8 Bundle 1 (§4.F B.AC.1) — spec-conformant ``field(default_factory=
+    # tuple)`` per brief §0.3 #3. Tuples are immutable so a shared default
+    # is also safe, but the brief locks the factory form to harmonize with
+    # the dashboard surface's existing pattern. Codex R2 Minor #1.
+    advisories: tuple = field(default_factory=tuple)  # tuple[AdvisorySuggestionVM, ...]
     # 5-VM existing-fields safe defaults (CLAUDE.md base-layout VM rule):
     session_date: str = ""
     stale_banner: str = ""

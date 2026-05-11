@@ -212,6 +212,78 @@ def test_compose_open_trade_advisories_graceful_on_fetcher_error():
     assert trade_ok.id in result
 
 
+def test_compose_open_trade_last_prices_uses_candidate_close_when_present():
+    """Codex R2 Major #2 closure — companion helper resolves per-ticker
+    prices using candidate.close first, mirroring the advisory helper's
+    primary path."""
+    from swing.pipeline.runner import compose_open_trade_last_prices_for_briefing
+
+    trade = _trade()
+    bars = _bars_with_trail_setup()
+    candidates = {"ABCD": _candidate(close=108.42)}
+    fetcher = _StubFetcher({"ABCD": bars})
+
+    result = compose_open_trade_last_prices_for_briefing(
+        trades=[trade], fetcher=fetcher, candidates_by_ticker=candidates,
+        data_asof_date="2026-04-14",
+    )
+
+    assert result == {"ABCD": 108.42}, (
+        f"candidate.close path must yield exact value; got {result!r}"
+    )
+    # Fetcher MUST NOT be called when candidate.close path resolves.
+    assert fetcher.calls == [], (
+        f"fetcher should not be consulted when candidate.close is present; "
+        f"got {fetcher.calls!r}"
+    )
+
+
+def test_compose_open_trade_last_prices_falls_back_to_prev_close():
+    """Codex R2 Major #2 closure — when candidate.close is None (or
+    candidate row absent), the helper falls back to OHLCV previous_close.
+    Discriminating: candidate exists but close=None → helper consults
+    fetcher and returns prev_close.
+    """
+    from swing.pipeline.runner import compose_open_trade_last_prices_for_briefing
+
+    trade = _trade()
+    bars = _bars_with_trail_setup()
+    expected_prev_close = float(bars["Close"].iloc[-1])
+    candidates = {"ABCD": _candidate(close=None)}  # candidate.close missing
+    fetcher = _StubFetcher({"ABCD": bars})
+
+    result = compose_open_trade_last_prices_for_briefing(
+        trades=[trade], fetcher=fetcher, candidates_by_ticker=candidates,
+        data_asof_date="2026-04-14",
+    )
+
+    assert result == {"ABCD": expected_prev_close}, (
+        f"prev_close fallback must yield bars[Close].iloc[-1]; got {result!r}"
+    )
+
+
+def test_compose_open_trade_last_prices_omits_when_no_data():
+    """Codex R2 Major #2 closure — when candidate.close is None AND fetcher
+    raises, the ticker is OMITTED from the result. Briefing renderer's
+    .get(ticker, t.entry_price) fallback handles this degenerate path.
+    """
+    from swing.pipeline.runner import compose_open_trade_last_prices_for_briefing
+
+    trade = _trade()
+    candidates = {"ABCD": _candidate(close=None)}
+    fetcher = _StubFetcher({}, raise_for={"ABCD"})
+
+    result = compose_open_trade_last_prices_for_briefing(
+        trades=[trade], fetcher=fetcher, candidates_by_ticker=candidates,
+        data_asof_date="2026-04-14",
+    )
+
+    assert "ABCD" not in result, (
+        f"Ticker with no resolvable price MUST be omitted (briefing renderer "
+        f"falls back to t.entry_price); got {result!r}"
+    )
+
+
 def test_compose_open_trade_advisories_pins_as_of_date_when_supplied():
     """Codex R1 Major 3 fix — helper passes ``data_asof_date`` through as
     ``as_of_date=date.fromisoformat(...)`` to the fetcher so cross-session

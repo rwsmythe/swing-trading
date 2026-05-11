@@ -43,8 +43,18 @@
         {{ expanded.chart_reason_message }}
       </div>
     {% endif %}
-    {% with advisories = expanded.advisories %}
-      {% include "partials/open_positions_advisories.html.j2" %}
-    {% endwith %}
+    {# Codex R2 Major #1 fix — brief §4.2 + §5 Surface 4 require the empty-
+       state message to render on the expanded row too, not just on the
+       trade-detail page. The shared partial intentionally emits nothing for
+       an empty list; this wrapper surfaces "No advisories." in the
+       expanded surface so an open trade with no triggers does not silently
+       render no advisory state. #}
+    {% if expanded.advisories %}
+      {% with advisories = expanded.advisories %}
+        {% include "partials/open_positions_advisories.html.j2" %}
+      {% endwith %}
+    {% else %}
+      <p class="muted">No advisories.</p>
+    {% endif %}
   </td>
 </tr>

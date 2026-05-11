@@ -12,7 +12,7 @@ WatchlistExpandedVM's chart_reason / data_asof_date contract).
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from swing.config import Config
@@ -227,7 +227,9 @@ class OpenPositionsExpandedVM:
     data_asof_date: str | None
     chart_reason: str | None
     chart_reason_message: str | None
-    advisories: tuple = ()  # tuple[AdvisorySuggestionVM, ...]
+    # Spec-conformant ``field(default_factory=tuple)`` per brief §0.3 #5
+    # (Codex R2 Minor #1 alignment).
+    advisories: tuple = field(default_factory=tuple)  # tuple[AdvisorySuggestionVM, ...]
 
 
 def build_open_positions_expanded(
