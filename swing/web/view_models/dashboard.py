@@ -946,6 +946,12 @@ def build_dashboard(
         snap = prices.get(t.ticker)
         remaining = t.initial_shares - sum(e.shares for e in exits_by_trade.get(t.id, []))
         bundle = bundles.get(t.ticker)        # may be None or all-None
+        # 3e.8 Bundle 2 — adr_pct sourced from the same OhlcvBundle as
+        # the SMA fields (no new yfinance fetches). has_been_trimmed
+        # derived from the exits-by-trade map already in scope; a trade
+        # has been trimmed iff any non-entry fill exists for it
+        # (exits_by_trade rows are sourced from non-entry fills via
+        # `_list_all_exitshape_via_fills`).
         ctx_adv = AdvisoryContext(
             as_of_date=action_session,
             current_price=snap.price if snap else 0.0,
@@ -955,6 +961,8 @@ def build_dashboard(
             previous_close=bundle.previous_close if bundle else None,
             weather_status=weather_status_str,
             config=cfg.stop_advisory,
+            adr_pct=bundle.adr_pct if bundle else None,
+            has_been_trimmed=bool(exits_by_trade.get(t.id)),
         )
         raw = compute_all_suggestions(t, ctx_adv) if snap else []
         advisories_tuple = tuple(

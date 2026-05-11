@@ -180,6 +180,8 @@ def build_open_positions_row(
 
     advisories: tuple[AdvisorySuggestionVM, ...] = ()
     if snapshot is not None:
+        # 3e.8 Bundle 2 — adr_pct from OhlcvBundle; has_been_trimmed from
+        # the same non_entry_fills already used for remaining-shares math.
         ctx = AdvisoryContext(
             as_of_date=action_session,
             current_price=snapshot.price,
@@ -189,6 +191,8 @@ def build_open_positions_row(
             previous_close=bundle.previous_close if bundle else None,
             weather_status=weather_status,
             config=cfg.stop_advisory,
+            adr_pct=bundle.adr_pct if bundle else None,
+            has_been_trimmed=bool(non_entry_fills),
         )
         raw = compute_all_suggestions(trade, ctx)
         advisories = tuple(
@@ -285,6 +289,14 @@ def build_open_positions_expanded(
         # weather lookup gotcha).
         weather = get_latest(conn, ticker=cfg.rs.benchmark_ticker)
         weather_status = weather.status if weather else "STALE"
+        # 3e.8 Bundle 2 — has_been_trimmed from the trade's fills. The
+        # expanded-row builder isn't already loading fills (unlike the row
+        # builder which loads them for remaining-shares); we query here
+        # specifically for the trim-detection predicate. Read happens
+        # under the same caller-owned conn so it stays in the request's
+        # snapshot.
+        fills = list_fills_for_trade(conn, trade.id)
+        has_been_trimmed = any(f.action != "entry" for f in fills)
         if snap is not None:
             ctx = AdvisoryContext(
                 as_of_date=action_session,
@@ -295,6 +307,8 @@ def build_open_positions_expanded(
                 previous_close=bundle.previous_close if bundle else None,
                 weather_status=weather_status,
                 config=cfg.stop_advisory,
+                adr_pct=bundle.adr_pct if bundle else None,
+                has_been_trimmed=has_been_trimmed,
             )
             raw = compute_all_suggestions(trade, ctx)
             advisories = tuple(

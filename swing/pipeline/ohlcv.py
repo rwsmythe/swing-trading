@@ -75,6 +75,39 @@ def compute_smas(
     return out
 
 
+def compute_adr_pct(
+    bars: pd.DataFrame | None, lookback: int = 20,
+) -> float | None:
+    """ADR% over the trailing ``lookback`` bars from a daily-bar DataFrame.
+
+    ADR% = mean((High - Low) / Close * 100) across the trailing window.
+
+    Returns None when bars is None/empty, when High/Low/Close columns are
+    missing, or when fewer than ``lookback`` bars are available. Mirrors
+    ``compute_smas``'s "insufficient bars → None" contract so callers can
+    surface ``adr_pct=None`` uniformly when OHLCV history is short — the
+    §4.D parabolic-trim rule then silently no-ops.
+
+    Bundle 2 add (3e.8) — same formula as
+    ``swing.evaluation.criteria._base.adr_pct`` but with explicit
+    insufficient-bars handling so the cache surface matches its
+    SMA-companion contract.
+    """
+    if bars is None or bars.empty:
+        return None
+    for col in ("High", "Low", "Close"):
+        if col not in bars.columns:
+            return None
+    if len(bars) < lookback:
+        return None
+    tail = bars.tail(lookback)
+    ranges_pct = (tail["High"] - tail["Low"]) / tail["Close"] * 100
+    val = ranges_pct.mean()
+    if pd.isna(val):
+        return None
+    return float(val)
+
+
 def previous_close(bars: pd.DataFrame) -> float | None:
     """Last daily bar's Close, or None if unavailable."""
     if bars is None or bars.empty or "Close" not in bars.columns:

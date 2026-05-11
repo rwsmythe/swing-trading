@@ -29,19 +29,26 @@ log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class OhlcvBundle:
-    """SMA10/20/50 + previous close from a single daily-bar fetch. All fields
-    are None if the fetch failed or the bar history was insufficient for the
-    given period. `fetched_at` is a monotonic timestamp (time.monotonic()).
+    """SMA10/20/50 + previous close + ADR% from a single daily-bar fetch.
+    All fields are None if the fetch failed or the bar history was
+    insufficient for the given period. `fetched_at` is a monotonic
+    timestamp (time.monotonic()).
+
+    3e.8 Bundle 2 — ``adr_pct`` added for §4.D parabolic-trim advisory.
+    Default None so any code that constructs OhlcvBundle without supplying
+    it (e.g., older test fixtures, hand-built bundles) continues to work
+    with the rule silently no-opping.
     """
     sma10: float | None
     sma20: float | None
     sma50: float | None
     previous_close: float | None
     fetched_at: float
+    adr_pct: float | None = None
 
     @classmethod
     def empty(cls, fetched_at: float) -> OhlcvBundle:
-        return cls(None, None, None, None, fetched_at)
+        return cls(None, None, None, None, fetched_at, None)
 
 
 class OhlcvCache:
@@ -242,12 +249,14 @@ class OhlcvCache:
                 return OhlcvBundle.empty(fetched_at=now), True
             smas = ohlcv_mod.compute_smas(bars, [10, 20, 50])
             prev = ohlcv_mod.previous_close(bars)
+            adr_pct = ohlcv_mod.compute_adr_pct(bars, lookback=20)
             return OhlcvBundle(
                 sma10=smas.get(10),
                 sma20=smas.get(20),
                 sma50=smas.get(50),
                 previous_close=prev,
                 fetched_at=now,
+                adr_pct=adr_pct,
             ), True
 
     def _record_outcome(self, *, success: bool) -> None:
