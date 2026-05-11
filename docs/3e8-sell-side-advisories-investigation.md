@@ -467,9 +467,10 @@ For each open trade T:
 sector_lag_rs_threshold = cfg.stop_advisory.sector_lag_rs_threshold (NEW, default 50 — IBD-percentile-style)
 sector_lag_r_floor = cfg.stop_advisory.sector_lag_r_floor (NEW, default 0.5, i.e., trade must be under +0.5R)
 
-For each open trade T:
+For each open trade T with active snapshot S:
   sector_rs = latest_sector_rs_for(T.sector)  # from existing eval pipeline RS calc
-  IF sector_rs IS NOT NULL AND
+  IF S.maturity_stage = 'pre_+1.5R' AND  # explicit maturity gate per Codex R2 correction
+     sector_rs IS NOT NULL AND
      sector_rs < sector_lag_rs_threshold AND
      r_so_far(T) < sector_lag_r_floor:
     emit "Sector laggard — {T.sector} RS={sector_rs} below {threshold}; trade only +{r:.2f}R; consider exit per Q.8"
@@ -477,7 +478,7 @@ For each open trade T:
 
 **Emission surface:** Dashboard open-positions row Advisory column.
 
-**Maturity-stage gating:** Fires in **new** + **maturing** stages (R<+1.5R, by R-floor design). Does NOT fire in **mature** or **well-mature** because R_floor=0.5 caps it. Operator can tune the floor up to extend the gate.
+**Maturity-stage gating (explicit; Codex R2 correction):** Fires ONLY in **new** + **maturing** (both map to `maturity_stage='pre_+1.5R'`). Suppressed in **mature** + **well-mature** because once MFE-to-date has hit +1.5R the trade has already demonstrated relative strength — Q.8's "don't hold laggards" framing is about positions that haven't proved themselves, NOT positions that proved themselves and pulled back. (Note: without this explicit maturity gate, a `>=+2R_trail_eligible` trade pulled back below +0.5R would trip the R-floor gate alone, which conflicts with §5.2's MFE-derived maturity semantics — see Codex R2.M1 fix.)
 
 **Classification:** **CLASSIFICATION-ALTERING.** Requires extending the evaluation pipeline to persist sector RS at a cadence the advisory layer can consume; the new `sector_rs` field is operationally consumed by an exit recommendation. Per V2.1 §VII.F: (1) new method-record version for sector-laggard exit logic, (2) research-branch validation (does sector RS predict exit-side return improvement?), (3) shadow mode, (4) promote/demote based on shadow evidence.
 
@@ -581,7 +582,7 @@ Synthesis of how the Recommendations §4.A-K should gate on Tier-3 #6 maturity s
 | **parabolic_trim** (Recommendation D; NEW) | FIRES if recent_pct & above-20MA both trip | FIRES if recent_pct & above-20MA both trip | FIRES if recent_pct & above-20MA both trip | FIRES if recent_pct & above-20MA both trip |
 | **volume_confirmed_exit** (Recommendation I; DEFER) | FIRES (when wired) | FIRES (when wired) | FIRES (when wired) | FIRES (when wired) |
 | **combined_violation** (Recommendation J; DEFER) | FIRES on combo | FIRES on combo | FIRES on combo | FIRES on combo |
-| **sector_relative_strength** (Recommendation H; DEFER; CLASSIFICATION-ALTERING) | FIRES if sector_rs<50 AND R<+0.5 (and `sector_rs` field is wired) | FIRES if sector_rs<50 AND R<+0.5 | n/a (R-floor caps to <+0.5 — well above this stage's R range) | n/a |
+| **sector_relative_strength** (Recommendation H; DEFER; CLASSIFICATION-ALTERING) | FIRES if sector_rs<50 AND R<+0.5 AND `maturity_stage='pre_+1.5R'` | FIRES if sector_rs<50 AND R<+0.5 AND `maturity_stage='pre_+1.5R'` | SUPPRESSED (maturity_stage='+1.5R_to_+2R' fails the gate) | SUPPRESSED (maturity_stage='>=+2R_trail_eligible' fails the gate; trade has proved itself) |
 | **per_hypothesis_time_stop** (Recommendation C; CLASSIFICATION-ALTERING) | OVERRIDES time_stop | OVERRIDES time_stop | typically n/a | typically n/a |
 
 ### §5.2 State transitions — derivation correction
@@ -653,9 +654,20 @@ For each recommendation in §4, the operator's decision is `commission` (route t
 
 ### §6.2 DHC-specific decision
 
-The investigation produced operationally-applicable guidance for DHC: per §5.3, read the maturity-badge value on the daily-management dashboard tile and apply the trail-MA mapping (pre-+2R → 20MA; +2R+ → 10MA). The operator can use this guidance today without any §4 recommendation landing in code. The mental-mapping load is the operator's pain point; Recommendation A or A.bis would reduce it.
+The investigation produced operationally-applicable guidance for DHC. Per §5.3, the operator's decision moment requires reading **THREE fields** from the daily-management dashboard tile, NOT one:
 
-**Operator decision for DHC specifically:** review the current `maturity_stage` on the dashboard and apply the §5.3 mapping. If `maturity_stage='pre_+1.5R'`, the 10MA-trail advisory is a doctrine-divergent suggestion and should be ignored per Tier-3 #6 (20MA is correct). If `>=+2R_trail_eligible`, switch to 10MA-trail. The investigation cannot make this decision; only the operator can.
+1. **`maturity_stage`** — derived from `open_MFE_R_to_date` per `compute_maturity_stage` (the MFE-anchored running max; monotonic-up).
+2. **`open_R_effective`** — current/live R-multiple.
+3. **`open_MFE_R_to_date`** — peak R reached over the trade's life.
+
+The single-field "read the maturity-badge" shortcut is unsafe per §5.3: a trade can be `>=+2R_trail_eligible` (because MFE peak earned it) and currently below +0.5R (because of pullback), and the decision differs from one whose live and MFE values both sit in the same stage band.
+
+**Operator decision for DHC specifically:** apply the §5.3 three-case matrix:
+- **Case A** (`maturity_stage='pre_+1.5R'`): keep 20MA trail; ignore the trail_10MA advisory per Tier-3 #6.
+- **Case B** (`maturity_stage='+1.5R_to_+2R'`): 20MA trail still the default; check `open_R_effective` vs `open_MFE_R_to_date` — if live R is significantly below MFE peak, gains have been given back (doctrine signal in its own right; check whether trim-at-MFE-peak was missed).
+- **Case C** (`maturity_stage='>=+2R_trail_eligible'`): switch to 10MA trail per Tier-3 #6 doctrine. Even if `open_R_effective` has pulled back below +2R or +1.5R, the 10MA upgrade is still doctrine-supported because MFE-to-date earned it (§5.2 derivation).
+
+The investigation cannot make this decision; only the operator can, by reading all three cells from the dashboard tile per [`daily_management_tile.html.j2:75-90`](swing/web/templates/partials/daily_management_tile.html.j2#L75-L90). The mental-mapping load is the operator's pain point; Recommendation A or A.bis would reduce it.
 
 ### §6.3 Sequencing suggestion (for operator's commission planning)
 
@@ -668,7 +680,7 @@ If the operator commissions multiple recommendations, suggested sequence:
 6. **§4.C.bis** (global time-stop default change, if operator wants it).
 7. **Defer:** §4.A full (classification-altering); §4.C full (classification-altering); §4.H, §4.I, §4.J.
 
-The first four steps are advisory-message-only and skip V2.1 §VII.F; they're the lowest-friction adds.
+Step 1 (§4.G transcription) is operator-action documentation work, NOT a code dispatch. Steps 2-5 above are advisory-message-only code dispatches that skip V2.1 §VII.F; they are the lowest-friction code adds once §4.G has unblocked the doctrine basis.
 
 ### §6.4 Triage of `[UNVERIFIED]` flags
 
@@ -727,6 +739,6 @@ Below is the full list of `[UNVERIFIED — physical-copy-only claim; flag for op
   - CLAUDE.md memory items consulted: `project_references.md` (DST is physical copy only); `reference_qullamaggie_mcp.md` (Qullamaggie is reference-only via MCP); `project_capital_risk_floor.md` (capital constraint context for urgency ranking).
 - **Code files read end-to-end:** `swing/trades/advisory.py`, `swing/data/migrations/0016_phase8_daily_management.sql`, `swing/web/templates/partials/open_positions_row.html.j2`, `swing/web/templates/partials/daily_management_tile.html.j2`, the relevant slice of `swing/web/view_models/dashboard.py` (lines 920-980), the relevant slice of `swing/pipeline/runner.py` (lines 900-935), `swing/web/templates/partials/open_positions_expanded.html.j2`, the relevant slice of `swing/rendering/briefing.py` (lines 120-140).
 - **Files surveyed by grep / Glob (not full-read):** `swing/data/repos/daily_management.py` (action_taken + maturity_stage refs); `swing/web/templates/trades/detail.html.j2` (verified absence of advisory rendering); `docs/orchestrator-context.md` (Tier-3 #6 + maturity refs).
-- **`[UNVERIFIED]` flag count:** 14 distinct claims flagged for operator triage (§6.4 captures them).
+- **`[UNVERIFIED]` flag count:** 13 distinct claims flagged for operator triage (§6.4 rows 1-13; row 14 about monotonic stage transitions was removed in Codex R1.M3 fix because the MFE-to-date derivation makes monotonicity automatic).
 - **Recommendation count:** 10 distinct §4 code/advisory recommendations (§4.A, §4.B, §4.C, §4.D, §4.E, §4.F, §4.H, §4.I, §4.J, §4.K) plus 1 operator-action prerequisite (§4.G; intentionally NOT counted under the brief's locked binary taxonomy). §4.A has an alternative formulation §4.A.bis. Classification breakdown of the 10 §4 code recommendations: advisory-message-only = 7 (§4.B, §4.D, §4.E, §4.F, §4.I, §4.J, §4.K); classification-altering = 3 (§4.A, §4.C, §4.H); §4.A.bis is the advisory-message-only alternative to §4.A. §4.G is an operator-action prerequisite (transcription) per locked-taxonomy carve-out documented in §4.G.
-- **Operator decision-points surfaced:** 13 (§6.1 row count) + DHC-specific decision (§6.2) + sequencing suggestion (§6.3) + 14 `[UNVERIFIED]` triage rows (§6.4) = 13 / 1 / 1 / 14 = 29 distinct operator inputs requested across the doc.
+- **Operator decision-points surfaced:** 12 (§6.1 row count post-removal of the §5.4 monotonic-transitions row) + DHC-specific decision (§6.2) + sequencing suggestion (§6.3) + 13 `[UNVERIFIED]` triage rows (§6.4) = 12 + 1 + 1 + 13 = 27 distinct operator inputs requested across the doc.
