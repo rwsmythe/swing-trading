@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import dataclass
 
 from swing.data.models import Trade, TradeEvent
 
@@ -455,3 +456,213 @@ def update_trade_review_fields(
     )
     if cur.rowcount == 0:
         raise ValueError(f"trade {trade_id} not found")
+
+
+# ---------------------------------------------------------------------------
+# 3e.16 — cadence-review trade-activity summary helper.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TradeActivitySummary:
+    """One row of ``list_trades_with_activity_in_period`` output.
+
+    Locked field set per 3e.16 dispatch brief §0.3 #3. Consumed by
+    ``swing/web/view_models/trades.py::build_cadence_complete_vm`` to render
+    the per-trade summary section on the cadence completion form.
+    """
+    trade_id: int
+    ticker: str
+    entry_date: str
+    entry_price: float
+    exit_date: str | None
+    exit_price: float | None
+    realized_R: float | None  # noqa: N815 — operator-facing R-multiple convention
+    hypothesis_label: str | None
+    state_tag: str  # '[OPENED]' / '[CLOSED]' / '[EVENT]' / '[OPENED+CLOSED]'
+    activity_ts: str  # ISO datetime used for ASC chronological ordering
+
+
+def _share_weighted_realized_r(
+    *,
+    entry_price: float,
+    initial_stop: float,
+    initial_shares: int,
+    fills: list[tuple[float, float]],  # (exit_price, quantity)
+) -> float | None:
+    """Mirror of ``swing.trades.review.compute_actual_realized_R_effective``.
+
+    Re-implemented in the repo layer (per Phase 6 §A.1 byte-identical pattern)
+    so the helper does not import from the trades-service layer. Formula:
+        share_weighted_R = sum_i (r_multiple_i * quantity_i / initial_shares)
+    where r_multiple_i = (exit_price_i - entry_price) / (entry_price - initial_stop).
+    Returns None for ill-defined math (zero risk-per-share or zero shares).
+    """
+    risk_per_share = entry_price - initial_stop
+    if risk_per_share == 0 or initial_shares == 0:
+        return None
+    total = 0.0
+    for exit_price, quantity in fills:
+        if quantity == 0:
+            continue
+        r_mult = (exit_price - entry_price) / risk_per_share
+        total += r_mult * (quantity / initial_shares)
+    return total
+
+
+def list_trades_with_activity_in_period(
+    conn: sqlite3.Connection,
+    *,
+    period_start: str,  # ISO date YYYY-MM-DD
+    period_end: str,    # ISO date YYYY-MM-DD (inclusive)
+) -> list[TradeActivitySummary]:
+    """Return distinct trades with at least one activity (entry, exit,
+    or trade_event) inside [period_start, period_end] inclusive, ordered
+    by activity_ts ASC.
+
+    Contract per 3e.16 dispatch brief §0.3 #6. The three predicates are:
+
+      * was_opened_in_period: ``entry_date >= ps AND entry_date <= pe``
+      * was_closed_in_period: any non-entry fill with
+        ``date(fill_datetime) BETWEEN ps AND pe`` (Phase 7 fills are the
+        source-of-truth for exit dates; the ``exits`` table is dropped).
+      * had_event_in_period: any ``trade_events`` row with
+        ``date(ts) BETWEEN ps AND pe`` (ANY event_type counts — operator wants
+        to see "this trade was touched during the period" regardless of
+        event_type per brief §3.1 watch items).
+
+    ``state_tag`` priority: OPENED+CLOSED > OPENED > CLOSED > EVENT (the
+    same-period round-trip case renders as the concatenated form). A trade
+    opened in period that also has trade_events is tagged ``[OPENED]``, not
+    ``[OPENED+EVENT]`` — the entry IS the event.
+
+    ``activity_ts`` priority (latest relevant activity in period): exits
+    > events > entry. The string is used purely for ASC chronological
+    ordering; consumers should not interpret it as the trade's canonical
+    timestamp (exit fills carry their own ``fill_datetime``).
+
+    ``realized_R`` is the share-weighted R-multiple per
+    ``compute_actual_realized_R_effective`` semantics. NULL for trades whose
+    DB ``state`` is not yet ``'closed'``/``'reviewed'`` (still-open trades
+    show ``None`` even if a partial-exit fill landed in-period).
+    """
+    # 1. Find candidate trade_ids via UNION across the three predicates.
+    candidate_rows = conn.execute(
+        """
+        SELECT DISTINCT trade_id FROM (
+            SELECT id AS trade_id FROM trades
+              WHERE entry_date >= ? AND entry_date <= ?
+            UNION
+            SELECT trade_id FROM fills
+              WHERE action != 'entry'
+                AND date(fill_datetime) >= ? AND date(fill_datetime) <= ?
+            UNION
+            SELECT trade_id FROM trade_events
+              WHERE date(ts) >= ? AND date(ts) <= ?
+        )
+        """,
+        (
+            period_start, period_end,
+            period_start, period_end,
+            period_start, period_end,
+        ),
+    ).fetchall()
+    if not candidate_rows:
+        return []
+
+    summaries: list[TradeActivitySummary] = []
+    for (trade_id,) in candidate_rows:
+        trade = get_trade(conn, trade_id)
+        if trade is None:
+            # Orphan event/fill with no parent trade — defensive skip.
+            continue
+
+        # was_opened_in_period (entry_date inclusive on both ends)
+        was_opened = period_start <= trade.entry_date <= period_end
+
+        # Latest non-entry fill date INSIDE period (used for [CLOSED] tag +
+        # activity_ts when was_closed_in_period).
+        row = conn.execute(
+            """
+            SELECT MAX(date(fill_datetime)) FROM fills
+            WHERE trade_id = ? AND action != 'entry'
+              AND date(fill_datetime) >= ? AND date(fill_datetime) <= ?
+            """,
+            (trade_id, period_start, period_end),
+        ).fetchone()
+        latest_exit_date_in_period = row[0]
+        was_closed_in_period = latest_exit_date_in_period is not None
+
+        # Latest trade_events.ts INSIDE period (used for [EVENT] activity_ts).
+        row = conn.execute(
+            """
+            SELECT MAX(ts) FROM trade_events
+            WHERE trade_id = ?
+              AND date(ts) >= ? AND date(ts) <= ?
+            """,
+            (trade_id, period_start, period_end),
+        ).fetchone()
+        latest_event_ts_in_period = row[0]
+        had_event_in_period = latest_event_ts_in_period is not None
+
+        # state_tag derivation (brief §0.3 #2 priority).
+        if was_opened and was_closed_in_period:
+            state_tag = "[OPENED+CLOSED]"
+        elif was_opened:
+            state_tag = "[OPENED]"
+        elif was_closed_in_period:
+            state_tag = "[CLOSED]"
+        else:
+            state_tag = "[EVENT]"
+
+        # activity_ts derivation (brief §0.3 #4 priority: exits > events > entry).
+        if was_closed_in_period:
+            activity_ts = f"{latest_exit_date_in_period}T23:59:59"
+        elif had_event_in_period:
+            activity_ts = latest_event_ts_in_period
+        else:
+            # was_opened MUST be True (else trade_id wouldn't be in candidate set).
+            activity_ts = f"{trade.entry_date}T00:00:00"
+
+        # Trade-level exit fields + realized_R: populated only when the trade
+        # itself is fully closed (state in 'closed'/'reviewed'). Uses ALL
+        # non-entry fills (not just in-period ones) because operator wants to
+        # see the trade's actual realized outcome.
+        exit_date: str | None = None
+        exit_price: float | None = None
+        realized_r: float | None = None
+        if trade.state in ("closed", "reviewed"):
+            exit_rows = conn.execute(
+                """
+                SELECT fill_datetime, price, quantity FROM fills
+                WHERE trade_id = ? AND action != 'entry'
+                ORDER BY fill_datetime ASC, fill_id ASC
+                """,
+                (trade_id,),
+            ).fetchall()
+            if exit_rows:
+                latest = exit_rows[-1]
+                exit_date = latest[0].split("T")[0] if "T" in latest[0] else latest[0]
+                exit_price = float(latest[1])
+                realized_r = _share_weighted_realized_r(
+                    entry_price=trade.entry_price,
+                    initial_stop=trade.initial_stop,
+                    initial_shares=trade.initial_shares,
+                    fills=[(float(r[1]), float(r[2])) for r in exit_rows],
+                )
+
+        summaries.append(TradeActivitySummary(
+            trade_id=trade_id,
+            ticker=trade.ticker,
+            entry_date=trade.entry_date,
+            entry_price=trade.entry_price,
+            exit_date=exit_date,
+            exit_price=exit_price,
+            realized_R=realized_r,
+            hypothesis_label=trade.hypothesis_label,
+            state_tag=state_tag,
+            activity_ts=activity_ts,
+        ))
+
+    summaries.sort(key=lambda s: s.activity_ts)
+    return summaries
