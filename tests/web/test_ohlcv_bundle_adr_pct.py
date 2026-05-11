@@ -109,3 +109,26 @@ def test_compute_adr_pct_returns_none_when_trailing_window_has_zero_close():
         "Close": [100.0] * 19 + [0.0],
     })
     assert compute_adr_pct(df, lookback=20) is None
+
+
+def test_compute_adr_pct_returns_none_when_trailing_window_has_inf_high():
+    """Codex R2 Minor #1 — non-finite OHLC must be rejected at the data
+    layer (not just NaN). inf High would propagate into adr_pct mean."""
+    import math
+    df = pd.DataFrame({
+        "High": [101.0] * 19 + [math.inf],
+        "Low": [99.0] * 20,
+        "Close": [100.0] * 20,
+    })
+    assert compute_adr_pct(df, lookback=20) is None
+
+
+def test_compute_adr_pct_returns_none_when_trailing_window_has_negative_inf_low():
+    """Codex R2 Minor #1 — -inf Low must be rejected."""
+    import math
+    df = pd.DataFrame({
+        "High": [101.0] * 20,
+        "Low": [99.0] * 19 + [-math.inf],
+        "Close": [100.0] * 20,
+    })
+    assert compute_adr_pct(df, lookback=20) is None

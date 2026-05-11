@@ -183,9 +183,14 @@ def suggest_parabolic_trim(
     """3e.8 Bundle 2 §4.D — parabolic-extension advisory (DST D.7 / Realsimpleariel).
 
     Fires when current price has extended ≥ ``parabolic_adr_multiple`` ×
-    ``adr_pct`` percent above the 50-day SMA. Silently no-ops when ADR%
-    or 50SMA is unavailable, when price is at/below 50SMA, or when ADR%
-    is NaN (insufficient bars).
+    ``adr_pct`` percent above the 50-day SMA. Silently no-ops when:
+
+    - ADR% or 50SMA is unavailable (None);
+    - ADR% / 50SMA / current_price is non-finite (NaN / inf), zero, or
+      negative (Codex R1 Major #3 + R2 Major #2 — defends against
+      corrupted OHLCV or zero-range/illiquid days);
+    - price is at/below 50SMA (no parabolic extension exists below the
+      anchor).
 
     Operator-locked DST D.7 doctrine anchor (brief §0.3 #2; 3e.8 arbitrary
     25%/5d/15% defaults rejected). V2 watch item: intraday-EMA reference
@@ -193,10 +198,13 @@ def suggest_parabolic_trim(
     """
     if ctx.adr_pct is None or ctx.sma50 is None:
         return None
-    # Codex R1 Major #3 — defensive numeric guards. Cache corruption /
-    # bad upstream OHLCV could surface NaN/inf/zero/negative values; rule
-    # must no-op rather than divide-by-zero or compute a nonsense threshold.
-    if not math.isfinite(ctx.adr_pct) or ctx.adr_pct < 0:
+    # Codex R1 Major #3 + R2 Major #2 — defensive numeric guards. Cache
+    # corruption / bad upstream OHLCV / zero-range (illiquid/holiday)
+    # days could surface NaN/inf/zero/negative values; rule must no-op
+    # rather than divide-by-zero or compute a nonsense threshold. R2
+    # tightened adr_pct guard from `>= 0` to `> 0` — zero ADR makes
+    # threshold zero and would otherwise fire for any close above sma50.
+    if not math.isfinite(ctx.adr_pct) or ctx.adr_pct <= 0:
         return None
     if not math.isfinite(ctx.sma50) or ctx.sma50 <= 0:
         return None

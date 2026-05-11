@@ -6,6 +6,44 @@ from pathlib import Path
 from swing.config import StopAdvisoryConfig, load
 
 
+def test_stop_advisory_config_rejects_zero_trim_first_r_trigger():
+    """Codex R2 Major #1 — defense against pathological TOML override."""
+    import pytest
+    with pytest.raises(ValueError, match="trim_first_r_trigger"):
+        StopAdvisoryConfig(trim_first_r_trigger=0.0)
+
+
+def test_stop_advisory_config_rejects_negative_trim_first_r_trigger():
+    import pytest
+    with pytest.raises(ValueError, match="trim_first_r_trigger"):
+        StopAdvisoryConfig(trim_first_r_trigger=-1.0)
+
+
+def test_stop_advisory_config_rejects_zero_trim_first_pct_default():
+    import pytest
+    with pytest.raises(ValueError, match="trim_first_pct_default"):
+        StopAdvisoryConfig(trim_first_pct_default=0.0)
+
+
+def test_stop_advisory_config_rejects_over_one_trim_first_pct_default():
+    """1.5 ≡ 'trim 150% of position', nonsensical."""
+    import pytest
+    with pytest.raises(ValueError, match="trim_first_pct_default"):
+        StopAdvisoryConfig(trim_first_pct_default=1.5)
+
+
+def test_stop_advisory_config_rejects_zero_parabolic_adr_multiple():
+    import pytest
+    with pytest.raises(ValueError, match="parabolic_adr_multiple"):
+        StopAdvisoryConfig(parabolic_adr_multiple=0.0)
+
+
+def test_stop_advisory_config_rejects_negative_parabolic_adr_multiple():
+    import pytest
+    with pytest.raises(ValueError, match="parabolic_adr_multiple"):
+        StopAdvisoryConfig(parabolic_adr_multiple=-1.0)
+
+
 def test_stop_advisory_config_has_trim_first_r_trigger_default():
     cfg = StopAdvisoryConfig()
     assert cfg.trim_first_r_trigger == 1.0

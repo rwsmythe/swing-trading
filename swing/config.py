@@ -105,6 +105,26 @@ class StopAdvisoryConfig:
     # parabolic_adr_multiple * adr_pct. Default 7.0× ADR per §0.3 #2.
     parabolic_adr_multiple: float = 7.0
 
+    def __post_init__(self) -> None:
+        # Codex R2 Major #1 — validate Bundle 2 fields at construction time.
+        # Pathological TOML overrides would otherwise emit nonsensical advisories
+        # (negative-R trims, 150% trim percentages, near-zero parabolic thresholds).
+        if self.trim_first_r_trigger <= 0:
+            raise ValueError(
+                f"stop_advisory.trim_first_r_trigger must be > 0; got "
+                f"{self.trim_first_r_trigger!r}"
+            )
+        if not (0 < self.trim_first_pct_default <= 1):
+            raise ValueError(
+                f"stop_advisory.trim_first_pct_default must be in (0, 1]; got "
+                f"{self.trim_first_pct_default!r}"
+            )
+        if self.parabolic_adr_multiple <= 0:
+            raise ValueError(
+                f"stop_advisory.parabolic_adr_multiple must be > 0; got "
+                f"{self.parabolic_adr_multiple!r}"
+            )
+
 
 @dataclass(frozen=True)
 class SizingConfig:

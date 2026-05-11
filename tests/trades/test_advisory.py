@@ -300,6 +300,17 @@ def test_suggest_parabolic_trim_returns_none_when_current_price_non_finite():
     assert s is None
 
 
+def test_suggest_parabolic_trim_returns_none_when_adr_pct_is_zero():
+    """Codex R2 Major #2 — adr_pct == 0 makes threshold zero, which would
+    otherwise fire for any close above sma50. Zero ADR is usually corrupt
+    / illiquid / holiday data, not a valid 'extended above ADR' signal."""
+    from swing.trades.advisory import suggest_parabolic_trim
+    s = suggest_parabolic_trim(
+        _trade(), _ctx_parabolic(close=150.0, sma50=100.0, adr_pct=0.0),
+    )
+    assert s is None
+
+
 # ----------------------------------------------------------------------
 # 3e.8 Bundle 2 — compute_all_suggestions aggregator wiring
 # ----------------------------------------------------------------------
