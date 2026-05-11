@@ -140,3 +140,58 @@ def test_get_cadence_complete_404_for_already_completed(test_app_with_completed_
     with TestClient(test_app_with_completed_daily) as client:
         r = client.get("/reviews/1/complete")
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 3e.16 — trade-activity section rendering.
+# ---------------------------------------------------------------------------
+
+
+def test_3e16_renders_trade_activity_section_when_populated(
+    test_app_with_pending_daily,
+):
+    """The cadence-completion page must render the trade-activity heading
+    and one row per in-period trade with a deep-link to /trades/{id}."""
+    with TestClient(test_app_with_pending_daily) as client:
+        r = client.get("/reviews/1/complete")
+    assert r.status_code == 200
+    assert "Trade activity during this period" in r.text
+    # VIR was opened 2026-04-29 + closed 2026-04-30; the daily review period
+    # is 2026-04-30, so the only in-period activity is the CLOSE.
+    assert "[CLOSED]" in r.text
+    # Deep-link to /trades/{id} present.
+    assert 'href="/trades/1"' in r.text
+    assert "VIR" in r.text
+
+
+def test_3e16_renders_empty_state_when_no_activity(tmp_path: Path):
+    """A pending review with no trade activity in its period must render
+    the empty-state message (and still show the section heading)."""
+    from dataclasses import replace as dc_replace
+    from swing.config import load
+    from swing.data.db import connect, ensure_schema
+    from swing.data.repos.review_log import insert_pre_create
+    from swing.web.app import create_app
+
+    db_path = tmp_path / "phase6.db"
+    ensure_schema(db_path).close()
+    conn = connect(db_path)
+    try:
+        with conn:
+            insert_pre_create(
+                conn, review_type="daily",
+                period_start="2026-06-15", period_end="2026-06-15",
+                scheduled_date="2026-06-16",
+            )
+    finally:
+        conn.close()
+
+    base_cfg = load(Path("swing.config.toml"))
+    cfg = dc_replace(base_cfg, paths=dc_replace(base_cfg.paths, db_path=db_path))
+    app = create_app(cfg)
+
+    with TestClient(app) as client:
+        r = client.get("/reviews/1/complete")
+    assert r.status_code == 200
+    assert "Trade activity during this period" in r.text
+    assert "No trade activity in this period." in r.text
