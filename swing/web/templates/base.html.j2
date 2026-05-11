@@ -5,6 +5,41 @@
   <meta charset="utf-8">
   <title>Swing Trading Dashboard</title>
   <link rel="stylesheet" href="/static/app.css">
+  <script>
+    /* 3e.10 dark theme — FOUC-prevention head script.
+     *
+     * Runs synchronously inside the head BEFORE the body renders. Reads
+     * localStorage `swing-trading-theme`; validates the value against
+     * the ["light","dark"] allowlist; on "dark", adds the `dark` class
+     * to <html>. CSS pairs `html.dark, body.dark` selectors so this
+     * head-time class application activates the dark theme cascade
+     * before first paint — no FOUC.
+     *
+     * Untrusted-localStorage hardening: any value other than "dark"
+     * or "light" (including null on first visit, or a tampered value)
+     * silently falls back to the default light theme. localStorage
+     * access is wrapped in try/catch for private-browsing-mode browsers
+     * that throw on access.
+     *
+     * CSP note: this is an inline <script> with no nonce. The project
+     * does not currently set a Content-Security-Policy header. If a
+     * strict CSP gets introduced (Phase 9+), this script needs to
+     * either move to /static/theme-fouc.js with a nonce/hash, or get
+     * exempted via 'unsafe-inline'. Documented in dispatch brief §4.2.
+     */
+    (function () {
+      try {
+        var t = window.localStorage.getItem('swing-trading-theme');
+        if (t === 'dark') {
+          document.documentElement.classList.add('dark');
+        }
+        /* t === 'light', t === null (first visit), or any other value
+         * (tampered, legacy) → fall through; default light theme stays. */
+      } catch (e) {
+        /* Private-browsing / storage disabled — fall back to light. */
+      }
+    })();
+  </script>
   <script src="/static/htmx.min.js"></script>
   <script>
     // Spec 3c §3.2a: HTMX 2.x defaults 4xx responses to swap:false+error:true.
@@ -28,6 +63,10 @@
     <a href="/reviews/pending">Reviews</a>
     <a href="/pipeline">Pipeline</a>
     <a href="/config">Config</a>
+    <button id="theme-toggle"
+            class="theme-toggle"
+            type="button"
+            aria-label="Switch to dark theme">🌙</button>
   </nav>
   {% if vm.stale_banner %}
     {% include "partials/stale_banner.html.j2" %}
@@ -41,5 +80,46 @@
   <main>
     {% block content %}{% endblock %}
   </main>
+  <script>
+    /* 3e.10 dark theme — toggle click handler.
+     *
+     * Attached via addEventListener (NOT inline onclick=) per dispatch
+     * brief §0.3 #7 (CSP-clean pattern). Reads current theme from the
+     * <html> element's classList, flips it, writes the new value to
+     * localStorage (try/catch — storage may be unavailable), and updates
+     * the button's emoji + aria-label.
+     *
+     * Initial-render reconciliation: the server-rendered button text is
+     * 🌙 with aria-label "Switch to dark theme" (light is the default).
+     * If the FOUC head script already applied html.dark from localStorage,
+     * this handler runs on parse-time and flips the button to ☀️ before
+     * the operator interacts — a sub-frame visual catch-up (acceptable
+     * V1; bank for V2 if operator surfaces it).
+     */
+    (function () {
+      var btn = document.getElementById('theme-toggle');
+      if (!btn) return;
+      function applyToButton(isDark) {
+        if (isDark) {
+          btn.textContent = '☀️';  /* ☀️ sun */
+          btn.setAttribute('aria-label', 'Switch to light theme');
+        } else {
+          btn.textContent = '🌙';  /* 🌙 moon */
+          btn.setAttribute('aria-label', 'Switch to dark theme');
+        }
+      }
+      applyToButton(document.documentElement.classList.contains('dark'));
+      btn.addEventListener('click', function () {
+        var isDark = document.documentElement.classList.toggle('dark');
+        var next = isDark ? 'dark' : 'light';
+        try {
+          window.localStorage.setItem('swing-trading-theme', next);
+        } catch (e) {
+          /* Storage unavailable — flip is session-only. */
+        }
+        applyToButton(isDark);
+      });
+    })();
+  </script>
 </body>
 </html>

@@ -85,6 +85,15 @@
   --example-aside-bg: #f8f9fa;
 }
 
+/* Dark theme override block.
+ *
+ * Selectors paired: `html.dark` (set by the FOUC-prevention <head> script
+ * — applied before <body> exists so the variables cascade before first
+ * paint) AND `body.dark` (preserved per dispatch brief §0.3 #6 for
+ * forward-compat; either selector activates the overrides). The toggle
+ * handler in base.html.j2 flips the class on <html>; CSS catches both
+ * forms so future implementers can target either element. */
+html.dark,
 body.dark {
   /* Backgrounds — near-black layered surfaces. */
   --bg: #1a1a1a;
