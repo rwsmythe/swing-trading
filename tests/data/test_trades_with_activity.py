@@ -418,6 +418,60 @@ def test_fill_in_period_with_out_of_period_paired_event_uses_fill_ts(conn):
     assert rows[0].activity_ts == "2026-04-15T15:00:00"
 
 
+def test_activity_ts_picks_max_of_event_and_fill_anchors(conn):
+    """Codex R4 Major #2 regression: when a trade has BOTH an in-period
+    trade_events row AND an in-period non-entry fill, the activity_ts
+    must be the MAX of the two anchors — not whichever branch
+    short-circuits first in the priority chain.
+
+    Setup: trade entered before period; stop_adjust trade_events row on
+    Apr 5; trim fill on Apr 20 (with paired trade_events row written
+    OUT-of-period via direct INSERT to simulate the production
+    ts-divergence case). Without the MAX-combine fix, the helper would
+    pick the Apr 5 event_ts (event branch fires first) — wrong, the
+    actual latest in-period activity is the Apr 20 fill.
+    """
+    tid = _add_trade(conn, ticker="MIX", entry_date="2026-03-01")
+    with conn:
+        # In-period trade_events row (stop_adjust on Apr 5).
+        conn.execute(
+            """
+            INSERT INTO trade_events (trade_id, ts, event_type,
+                                      payload_json)
+            VALUES (?, ?, 'stop_adjust',
+                    '{"old_stop":9.0,"new_stop":9.5}')
+            """,
+            (tid, "2026-04-05T11:00:00"),
+        )
+        # In-period non-entry fill (trim on Apr 20). Insert directly to
+        # bypass insert_fill_with_event's paired-event write; simulate
+        # the production case where the paired event ts was written
+        # out-of-period (via a separate INSERT below).
+        conn.execute(
+            """
+            INSERT INTO fills (trade_id, fill_datetime, action,
+                               quantity, price)
+            VALUES (?, ?, 'trim', 30, 11.0)
+            """,
+            (tid, "2026-04-20T15:00:00"),
+        )
+        # The trim's paired trade_events row was written out-of-period.
+        conn.execute(
+            """
+            INSERT INTO trade_events (trade_id, ts, event_type,
+                                      payload_json)
+            VALUES (?, ?, 'exit', '{"backfilled":true}')
+            """,
+            (tid, "2026-05-10T11:00:00"),
+        )
+    rows = list_trades_with_activity_in_period(
+        conn, period_start="2026-04-01", period_end="2026-04-30",
+    )
+    assert len(rows) == 1
+    # MAX of (event 04-05T11:00, fill 04-20T15:00) = 04-20T15:00.
+    assert rows[0].activity_ts == "2026-04-20T15:00:00"
+
+
 def test_fractional_second_event_ts_on_period_end_included(conn):
     """Codex R2 Major #2 regression: a trade_events row at
     '2026-04-30T23:59:59.500000' must be INCLUDED in an April review.

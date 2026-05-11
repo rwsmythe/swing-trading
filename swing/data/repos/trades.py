@@ -549,19 +549,34 @@ def list_trades_with_activity_in_period(
     opened in period that also has trade_events is tagged ``[OPENED]``, not
     ``[OPENED+EVENT]`` — the entry IS the event.
 
+    Codex R4 Major #1 disposition (ACCEPTED): the [EVENT] tag's operator-
+    facing semantic per brief §3.1 watch-items is "this trade was touched
+    during the period" (regardless of touch-type). The R3 fill-fallback
+    means a trade can appear under [EVENT] purely because of an in-period
+    non-entry fill (no in-period trade_events row, e.g. when the paired
+    event ts diverged out-of-period). Adding a distinct [FILL] or
+    [PARTIAL] tag would violate the brief's locked 4-tag set; instead
+    [EVENT] is the broader operator-facing label for any in-period
+    non-OPEN-non-CLOSE activity.
+
     ``activity_ts`` priority (latest relevant activity in period; per
-    brief §0.3 #4 plus Codex R3 Major #1 fill-fallback):
+    brief §0.3 #4 plus Codex R3 Major #1 fill-fallback + R4 Major #2
+    MAX-combine):
 
       1. ``was_closed_in_period`` → ``latest_exit_date_in_period||'T23:59:59'``
-      2. ``had_event_in_period`` → ``latest_event_ts_in_period``
-      3. ``has_non_entry_fill_in_period`` (R3 fix) →
-         ``latest_in_period_fill_ts``. Production exit-service writes
-         ``fill_datetime`` and the paired ``trade_events.ts`` separately
-         (fill_datetime tracks exit_date; event_ts tracks operator
-         submit time), so they can diverge — a fill in-period whose
-         paired event is out-of-period would otherwise fall through to
-         ``entry_date||'T00:00:00'`` (possibly months earlier).
-      4. ``was_opened_in_period`` → ``entry_date||'T00:00:00'``
+      2. otherwise if ``had_event_in_period`` OR
+         ``has_non_entry_fill_in_period``: take the MAX of all in-period
+         non-OPEN-non-CLOSE anchor timestamps (latest trade_events.ts +
+         latest non-entry fill_datetime). R4 Major #2: a trade with an
+         event on April 5 and a trim fill on April 20 must sort at
+         April 20 (the latest activity), not April 5. R3 case
+         (production exit-service writes fill_datetime and the paired
+         trade_events.ts separately, so they can diverge — a fill in-
+         period whose paired event is out-of-period) is the case where
+         only the fill-anchor is non-None.
+      3. ``was_opened_in_period`` → ``entry_date||'T00:00:00'`` (this
+         branch is unreachable when any of the above qualifies; the
+         candidate UNION guarantees at least one branch fires).
 
     The string is used purely for ASC chronological ordering; consumers
     should not interpret it as the trade's canonical timestamp (exit
@@ -705,15 +720,23 @@ def list_trades_with_activity_in_period(
         else:
             state_tag = "[EVENT]"
 
-        # activity_ts derivation (brief §0.3 #4 priority + R3 fill-fallback).
+        # activity_ts derivation (brief §0.3 #4 + Codex R3 fill-fallback
+        # + R4 Major #2 MAX-combine).
         if was_closed_in_period:
             activity_ts = f"{latest_exit_date_in_period}T23:59:59"
-        elif had_event_in_period:
-            activity_ts = latest_event_ts_in_period
-        elif latest_in_period_fill_ts is not None:
-            # Codex R3 Major #1: in-period non-entry fill whose paired
-            # event ts diverged out-of-period. Anchor on the fill ts.
-            activity_ts = latest_in_period_fill_ts
+        elif had_event_in_period or latest_in_period_fill_ts is not None:
+            # R4 Major #2: take MAX of all in-period non-OPEN-non-CLOSE
+            # anchors. A trade with an event on Apr 5 + trim fill on Apr 20
+            # must sort at Apr 20, not Apr 5. R3's fill-fallback case
+            # (paired event ts diverged out-of-period) is the sub-case
+            # where only the fill anchor is non-None.
+            activity_ts = max(
+                ts for ts in (
+                    latest_event_ts_in_period,
+                    latest_in_period_fill_ts,
+                )
+                if ts is not None
+            )
         else:
             # was_opened MUST be True (else trade_id wouldn't be in candidate set).
             activity_ts = f"{trade.entry_date}T00:00:00"
