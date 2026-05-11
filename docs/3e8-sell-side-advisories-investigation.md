@@ -472,13 +472,15 @@ For each open trade T with active snapshot S:
   IF S.maturity_stage = 'pre_+1.5R' AND  # explicit maturity gate per Codex R2 correction
      sector_rs IS NOT NULL AND
      sector_rs < sector_lag_rs_threshold AND
-     r_so_far(T) < sector_lag_r_floor:
+     r_so_far(T, ctx.current_price) < sector_lag_r_floor:  # price source: live ctx.current_price, matching the other advisory rules at advisory.py:36 / 99
     emit "Sector laggard — {T.sector} RS={sector_rs} below {threshold}; trade only +{r:.2f}R; consider exit per Q.8"
 ```
 
 **Emission surface:** Dashboard open-positions row Advisory column.
 
-**Maturity-stage gating (explicit; Codex R2 correction):** Fires ONLY in **new** + **maturing** (both map to `maturity_stage='pre_+1.5R'`). Suppressed in **mature** + **well-mature** because once MFE-to-date has hit +1.5R the trade has already demonstrated relative strength — Q.8's "don't hold laggards" framing is about positions that haven't proved themselves, NOT positions that proved themselves and pulled back. (Note: without this explicit maturity gate, a `>=+2R_trail_eligible` trade pulled back below +0.5R would trip the R-floor gate alone, which conflicts with §5.2's MFE-derived maturity semantics — see Codex R2.M1 fix.)
+**Maturity-stage gating (explicit; Codex R2 correction):** Fires ONLY in **new** + **maturing** (both map to `maturity_stage='pre_+1.5R'`). Suppressed in **mature** + **well-mature**.
+
+**Rationale (project/operator interpretation; not direct doctrine claim):** Q.8 (Qullamaggie "don't hold laggards") does NOT itself specify a maturity gate — the rule as cited in `query_trading_rules(category=exit)` rules 28-29 (videos 26 + 29, 2019-11-11 + 2019-11-15) is unconditional. The maturity gate above is a **project/operator-level interpretation** layered on top: treating MFE-to-date ≥ +1.5R as "the trade has proved itself" and excluding it from the laggard-exit advisory. This is consistent with the operator's Tier-3 #6 framing ("trade has to prove itself") and avoids the §5.2 MFE-derived consistency issue (a `>=+2R_trail_eligible` trade pulled back below +0.5R would otherwise trip the R-floor alone — see Codex R2.M1 fix), but it is NOT directly traceable to Qullamaggie commentary. Operator triage in §6 should treat the gate as a project-policy choice rather than a doctrine fact.
 
 **Classification:** **CLASSIFICATION-ALTERING.** Requires extending the evaluation pipeline to persist sector RS at a cadence the advisory layer can consume; the new `sector_rs` field is operationally consumed by an exit recommendation. Per V2.1 §VII.F: (1) new method-record version for sector-laggard exit logic, (2) research-branch validation (does sector RS predict exit-side return improvement?), (3) shadow mode, (4) promote/demote based on shadow evidence.
 
