@@ -323,6 +323,204 @@ def test_compose_open_trade_advisories_pins_as_of_date_when_supplied():
     )
 
 
+# ----------------------------------------------------------------------
+# 3e.8 Bundle 2 — new advisory rules wired into briefing composer.
+# ----------------------------------------------------------------------
+
+
+def _bars_for_parabolic() -> pd.DataFrame:
+    """Bars rigged for §4.D parabolic-trim verification.
+
+    All 50 bars: Close=100, High=102.5, Low=97.5
+      → SMA-50 = 100.0
+      → ADR% over trailing 20 = (102.5 - 97.5) / 100 * 100 = 5.0
+      → §4.D threshold extension = 7.0 × 5.0 = 35%
+      → fire iff current_price >= 100 * 1.35 = 135.
+
+    Note: in the briefing composer ``current_price`` is sourced from
+    ``candidate.close`` (open-position synthetic candidate row), so the
+    test's threshold check is exercised by varying candidate.close, NOT
+    the last bar's close.
+    """
+    closes = [100.0] * 50
+    highs = [102.5] * 50
+    lows = [97.5] * 50
+    dates = pd.date_range("2026-01-01", periods=50, freq="B")
+    return pd.DataFrame(
+        {"Open": closes, "High": highs, "Low": lows, "Close": closes,
+         "Volume": [1_000_000] * 50},
+        index=dates,
+    )
+
+
+def test_briefing_composer_fires_trim_into_strength_at_plus_1r_no_prior_trim():
+    """§4.B — trade at +1R with no fills (has_been_trimmed=False / default)
+    fires trim_into_strength via the briefing composer."""
+    from swing.pipeline.runner import compose_open_trade_advisories_for_briefing
+
+    # entry=100, stop=95 → 1R = $5. close=105 → +1R exactly.
+    trade = _trade(entry=100.0, initial_stop=95.0)
+    bars = _bars_no_trigger()  # SMA neutral; we only test the +1R rule here.
+    candidates = {"ABCD": _candidate(close=105.0)}
+    fetcher = _StubFetcher({"ABCD": bars})
+
+    result = compose_open_trade_advisories_for_briefing(
+        trades=[trade], fetcher=fetcher, candidates_by_ticker=candidates,
+        weather_status="Bullish", stop_advisory_config=_stop_advisory_default(),
+        action_session_date="2026-04-15",
+        # trimmed_trade_ids omitted → all trades treated as no-prior-trim.
+    )
+
+    rules = {s.rule for s in result[trade.id]}
+    assert "trim_into_strength" in rules
+
+
+def test_briefing_composer_suppresses_trim_into_strength_when_trimmed():
+    """§4.B — trade at +1R but flagged in trimmed_trade_ids → no advisory.
+
+    Discriminating: same exact bars/candidate/trade as the fire-test;
+    only difference is trimmed_trade_ids membership.
+    """
+    from swing.pipeline.runner import compose_open_trade_advisories_for_briefing
+
+    trade = _trade(entry=100.0, initial_stop=95.0)
+    bars = _bars_no_trigger()
+    candidates = {"ABCD": _candidate(close=105.0)}
+    fetcher = _StubFetcher({"ABCD": bars})
+
+    result = compose_open_trade_advisories_for_briefing(
+        trades=[trade], fetcher=fetcher, candidates_by_ticker=candidates,
+        weather_status="Bullish", stop_advisory_config=_stop_advisory_default(),
+        action_session_date="2026-04-15",
+        trimmed_trade_ids={trade.id},
+    )
+
+    rules = {s.rule for s in result[trade.id]}
+    assert "trim_into_strength" not in rules
+
+
+def test_briefing_composer_fires_planned_target_r_hit():
+    """§4.K — trade has planned_target_R=2.0 and is at +2R → fires."""
+    from swing.pipeline.runner import compose_open_trade_advisories_for_briefing
+
+    trade = Trade(
+        id=42, ticker="ABCD", entry_date="2026-04-01",
+        entry_price=100.0, initial_shares=10, initial_stop=95.0,
+        current_stop=95.0, state="managing",
+        watchlist_entry_target=None, watchlist_initial_stop=None,
+        notes=None, planned_target_R=2.0,
+    )
+    bars = _bars_no_trigger()
+    # close=110 → +2R exactly.
+    candidates = {"ABCD": _candidate(close=110.0)}
+    fetcher = _StubFetcher({"ABCD": bars})
+
+    result = compose_open_trade_advisories_for_briefing(
+        trades=[trade], fetcher=fetcher, candidates_by_ticker=candidates,
+        weather_status="Bullish", stop_advisory_config=_stop_advisory_default(),
+        action_session_date="2026-04-15",
+    )
+
+    rules = {s.rule for s in result[trade.id]}
+    assert "planned_target_r_hit" in rules
+
+
+def test_briefing_composer_omits_planned_target_r_hit_when_target_null():
+    """§4.K — trade without planned_target_R never fires (NULL guard).
+    Discriminating: at +5R (clearly past any plausible target), NULL
+    must still suppress.
+    """
+    from swing.pipeline.runner import compose_open_trade_advisories_for_briefing
+
+    trade = _trade(entry=100.0, initial_stop=95.0)  # planned_target_R defaults None
+    bars = _bars_no_trigger()
+    candidates = {"ABCD": _candidate(close=125.0)}  # +5R
+    fetcher = _StubFetcher({"ABCD": bars})
+
+    result = compose_open_trade_advisories_for_briefing(
+        trades=[trade], fetcher=fetcher, candidates_by_ticker=candidates,
+        weather_status="Bullish", stop_advisory_config=_stop_advisory_default(),
+        action_session_date="2026-04-15",
+    )
+
+    rules = {s.rule for s in result[trade.id]}
+    assert "planned_target_r_hit" not in rules
+
+
+def test_briefing_composer_fires_parabolic_trim_at_7x_adr_above_50sma():
+    """§4.D — fixture rigged: SMA-50 = 100, ADR% = 5, current_price = 135
+    → extension is 35% = 7.0 × 5.0 → fires (>= comparison)."""
+    from swing.pipeline.runner import compose_open_trade_advisories_for_briefing
+
+    trade = _trade(entry=100.0, initial_stop=95.0, current_stop=130.0)
+    # current_stop=130 above trail-MA proposed so neighboring trail rules quiet down.
+    bars = _bars_for_parabolic()
+    candidates = {"ABCD": _candidate(close=135.0)}
+    fetcher = _StubFetcher({"ABCD": bars})
+
+    result = compose_open_trade_advisories_for_briefing(
+        trades=[trade], fetcher=fetcher, candidates_by_ticker=candidates,
+        weather_status="Bullish", stop_advisory_config=_stop_advisory_default(),
+        action_session_date="2026-04-15",
+    )
+
+    rules = {s.rule for s in result[trade.id]}
+    assert "parabolic_trim" in rules, (
+        f"Expected parabolic_trim to fire at 7× ADR; got rules={rules!r}"
+    )
+
+
+def test_briefing_composer_omits_parabolic_trim_below_threshold():
+    """§4.D — fixture below threshold (price = 134, 34% extension, 6.8× ADR)
+    must NOT fire. Discriminating pair with the fire-test above."""
+    from swing.pipeline.runner import compose_open_trade_advisories_for_briefing
+
+    trade = _trade(entry=100.0, initial_stop=95.0, current_stop=130.0)
+    bars = _bars_for_parabolic()
+    # 6.8× ADR → extension 34% → below 7× threshold of 35%.
+    candidates = {"ABCD": _candidate(close=134.0)}
+    fetcher = _StubFetcher({"ABCD": bars})
+
+    result = compose_open_trade_advisories_for_briefing(
+        trades=[trade], fetcher=fetcher, candidates_by_ticker=candidates,
+        weather_status="Bullish", stop_advisory_config=_stop_advisory_default(),
+        action_session_date="2026-04-15",
+    )
+
+    rules = {s.rule for s in result[trade.id]}
+    assert "parabolic_trim" not in rules
+
+
+def test_briefing_composer_no_extra_fetcher_calls_when_bundle2_rules_added():
+    """C.AC.8 — ADR reuses existing bars; one fetcher.get per trade total
+    even with Bundle 2 rules wired in."""
+    from swing.pipeline.runner import compose_open_trade_advisories_for_briefing
+
+    trades = [
+        _trade(ticker="AAAA", trade_id=1),
+        _trade(ticker="BBBB", trade_id=2),
+    ]
+    bars = _bars_for_parabolic()
+    candidates = {t.ticker: _candidate(ticker=t.ticker, close=135.0) for t in trades}
+    fetcher = _StubFetcher({t.ticker: bars for t in trades})
+
+    compose_open_trade_advisories_for_briefing(
+        trades=trades, fetcher=fetcher, candidates_by_ticker=candidates,
+        weather_status="Bullish", stop_advisory_config=_stop_advisory_default(),
+        action_session_date="2026-04-15",
+        trimmed_trade_ids=set(),
+    )
+
+    # Each ticker fetched once (lookback_days=200 path); no second call
+    # for ADR computation.
+    call_counts: dict[str, int] = {}
+    for ticker, _lb in fetcher.calls:
+        call_counts[ticker] = call_counts.get(ticker, 0) + 1
+    assert all(c == 1 for c in call_counts.values()), (
+        f"Expected exactly one fetcher.get per ticker; got {fetcher.calls!r}"
+    )
+
+
 def test_compose_open_trade_advisories_returns_view_model_dataclasses():
     """Returned items must be ``AdvisorySuggestionVM`` (rendering layer type),
     not raw ``AdvisorySuggestion`` — matches the briefing-renderer template's
