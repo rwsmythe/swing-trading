@@ -374,7 +374,8 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 _step_export(cfg=cfg, lease=lease, eval_run_id=eval_run_id,
                              action_session=action_session,
                              data_asof=lease_data_asof(cfg, lease),
-                             chart_paths=chart_paths)
+                             chart_paths=chart_paths,
+                             fetcher=fetcher)
                 lease.status(export_status="ok")
             except LeaseRevokedError:
                 raise
@@ -994,6 +995,27 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
     finally:
         conn.close()
 
+    candidates_by_ticker = {c.ticker: c for c in candidates}
+
+    # 3e.8 Bundle 1 Task A.2 — compose per-trade advisories so the briefing
+    # surfaces the SAME advisories the dashboard renders. ``fetcher`` is
+    # threaded from ``run`` (the pipeline orchestrator) and re-reads the
+    # per-ticker OHLCV archive _step_charts already populated → no new
+    # yfinance calls. If the caller did NOT supply a fetcher (test paths,
+    # explicit opt-out), fall back to the legacy empty-dict.
+    open_trade_advisories: dict[int, list[AdvisorySuggestionVM]]
+    if fetcher is not None:
+        open_trade_advisories = compose_open_trade_advisories_for_briefing(
+            trades=trades,
+            fetcher=fetcher,
+            candidates_by_ticker=candidates_by_ticker,
+            weather_status=(weather.status if weather else "STALE"),
+            stop_advisory_config=cfg.stop_advisory,
+            action_session_date=action_session.isoformat(),
+        )
+    else:
+        open_trade_advisories = {}
+
     inputs = BriefingInputs(
         action_session_date=action_session.isoformat(),
         data_asof_date=data_asof,
@@ -1005,9 +1027,10 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
         last_pipeline_ts=_dt.now().isoformat(timespec="seconds"),
         pipeline_is_stale=False, current_session_match=True,
         recommendations=recs, open_trades=trades,
-        open_trade_advisories={}, open_trade_last_prices={},
+        open_trade_advisories=open_trade_advisories,
+        open_trade_last_prices={},
         watchlist=watchlist, watchlist_last_prices={},
-        candidates_by_ticker={c.ticker: c for c in candidates},
+        candidates_by_ticker=candidates_by_ticker,
         chart_b64s={t: _b64_chart(p) for t, p in chart_paths.items()},
         near_trigger_above_pct=cfg.near_trigger.above_pct,
         near_trigger_below_pct=cfg.near_trigger.below_pct,
