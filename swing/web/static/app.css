@@ -66,3 +66,39 @@ tr.tripwire-fired td:first-child { border-left: 4px solid #c00; }
 }
 .badge-update-today { background: #d1e7dd; color: #0f5132; }
 .badge-update-needed { background: #fff3cd; color: #664d03; }
+
+/* 3e.7 Task B.2 — flex-row layout for entry-form textarea + example aside
+   pairs. Locks the aside visible to the right of the textarea per brief
+   §0.3 #7 (operator preference: NO toggle, NO <details>). Aside width is
+   capped so it doesn't crowd the textarea on narrow viewports; muted text
+   color so the example hints don't visually compete with the operator's
+   own typed content. */
+.entry-textarea-row {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+  margin-bottom: 0.75rem;
+}
+.entry-textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.entry-textarea textarea {
+  width: 100%;
+}
+.entry-example-aside {
+  flex: 0 0 auto;
+  max-width: 320px;
+  font-size: 0.875rem;
+  color: #666;
+  background: #f8f9fa;
+  border-left: 3px solid #dee2e6;
+  padding: 0.5rem 0.75rem;
+}
+.entry-example-aside ul {
+  margin: 0.25rem 0 0;
+  padding-left: 1.25rem;
+}
+.entry-example-aside li {
+  margin-bottom: 0.25rem;
+}
