@@ -1084,20 +1084,20 @@ Per project baseline-tracking convention: when bundled in, update `docs/orchestr
 | 13 | §6.3 sequencing | Approved as 4-step: §4.G transcription → Bundle 1 → Bundle 2 → Bundle 3 | Resolved |
 | 14 | §6.4 [UNVERIFIED] flags (13 items) | Triage folded into §4.G transcription work | In-flight — see scaffolding files |
 
-### In-flight — §4.G transcription (operator-action; precedes all dispatches)
+### §4.G transcription — **COMPLETE 2026-05-10 within available sources**
 
-**Status:** Scaffolding files created; operator transcription pending.
+**DST file** (`reference/methodology/dst-take-profit-and-trail.md`): `~ PARTIAL` — 3/5 CONFIRMED-with-correction; 2/5 NOT-PRESENT-IN-SOURCE; 2 NEW rules surfaced (D.6 intraday-EMA parabolic + D.7 ADR-extension trim). Orchestrator pre-filled via PyMuPDF extraction of the DST PDF.
 
-**Files to populate:**
-- `reference/methodology/minervini-sell-side-rules.md` — 7 rules (M.1-M.7); ~30-90 min per chapter
-- `reference/methodology/dst-take-profit-and-trail.md` — 5 rules (D.1-D.5); ~30-90 min per chapter
+**Minervini file** (`reference/methodology/minervini-sell-side-rules.md`): `~ PARTIAL` — 1/7 CONFIRMED-QUANTITATIVE (M.2 sell-into-strength with R-multiple-of-stop-loss anchor); 4/7 BRIEF-MENTION-NO-DETAIL; 2/7 NOT-PRESENT-IN-AVAILABLE-SOURCES (M.1, M.4). Operator reviewed TLSMW (2013) on 2026-05-10. Think & Trade Like a Champion (2017) is NOT available — M.4 7-week rule remains unverifiable.
 
-Each file has per-rule sections with placeholder `Source citation` / `Transcription` / `Operator notes` / `Status` fields. Status flips per rule from `⚠ UNVERIFIED — pending operator transcription` to `CONFIRMED` / `CORRECTED` / `NOT-PRESENT-IN-SOURCE`. Once all rules in a file are dispositioned, top-of-file `Status` flips to `✓ COMPLETE` and the file becomes reference-grade per V2 Addendum Addition 2.
+**Triggered post-completion (resolutions):**
 
-**Triggered post-completion:**
-- §4.I (Bundle 0 trichotomy) — re-evaluate per M.6 disposition
-- §4.A full + §4.C full — V2.1 §VII.F routing now possible (still operator-decision whether to route)
-- 13 [UNVERIFIED] flags in `docs/3e8-sell-side-advisories-investigation.md` §6.4 — update flag dispositions
+- **§4.I gate-trichotomy → OUTCOME 2 (escalate to second-source gate).** M.6 is qualitative-without-threshold in TLSMW. §4.I now in same bucket as §4.H + §4.J (deferred-with-second-source-gate).
+- **§4.A full + §4.C/§4.C.bis deferrals REINFORCED.** No quantitative anchor for either in available sources. §4.C/§4.C.bis: doctrine landscape on time-stops favors the AGGRESSIVE end (Q.1 3-5 day) — opposite of original 3e.8 framing.
+- **Bundle 2 §4.B trim defaults need re-anchoring.** Doctrine = DST D.2 (50% on Day 3-5 calendar window) OR Minervini M.2 (R-multiple stop-tighten, NOT trim). The 3e.8 default (+1R first-time / 25% trim) is operator-policy hybrid. Implementation brief should support EITHER trigger pattern OR keep operator-policy hybrid with explicit annotation.
+- **Bundle 2 §4.D parabolic defaults need re-anchoring.** Doctrine = DST D.7 (>7x ADR above 50SMA per Realsimpleariel). The 3e.8 defaults (25%/5d/15%) are arbitrary. Implementation brief should re-anchor.
+- **Bundle 3 reframed to Option δ (hybrid α + β-LITE).** Operator-locked 2026-05-10. TWO complementary advisories: (a) §4.A.bis maturity-stage MA hint (operator-policy per Tier-3 #6); (b) M.2 R-multiple stop-tighten hint (doctrine per TLSMW Ch 13 p. 296). Different triggers (MFE-anchored stage vs live R-multiple); complementary signals. ~4-5 hr bundled.
+- **13 [UNVERIFIED] flags in `docs/3e8-sell-side-advisories-investigation.md` §6.4 — dispositions captured in methodology files.** Future doc-update pass can refresh §6.4 inline if/when operator wants the investigation doc to reflect the post-transcription state.
 
 ### Bundle 1 — Advisory-parity (§4.E + §4.F) — DISPATCH-READY POST-§4.G
 
@@ -1124,15 +1124,36 @@ Each file has per-rule sections with placeholder `Source citation` / `Transcript
 
 **Cross-refs:** §3e.8 §4.B + §4.K + §4.D.
 
-### Bundle 3 — Maturity-stage hint advisory (§4.A.bis) — DISPATCH-READY POST-BUNDLE-2
+### Bundle 3 — Maturity-stage hint + M.2 R-multiple stop-tighten hint (Option δ) — DISPATCH-READY POST-BUNDLE-2
 
 **Trigger:** Bundle 2 ships. Operator commission.
 
-**Scope:** New annotation-style advisory `maturity_stage_recommendation` emitting "Maturity stage `{stage}` → recommended trail-MA: `{20MA | 10MA}`". Does NOT suppress existing `trail_10MA` / `trail_20MA` advisories — operator keeps both raw signals visible plus the maturity-stage hint. Reads `daily_management_records.maturity_stage` from active snapshot.
+**Reframing (operator-locked 2026-05-10 post-§4.G):** Originally §4.A.bis only (maturity-stage MA hint). Reframed to Option δ (hybrid) — TWO complementary advisories addressing different operator questions.
 
-**Effort:** ~2-3 hr. Advisory-message-only; no V2.1 §VII.F.
+**Scope (TWO advisories):**
 
-**Cross-refs:** §3e.8 §4.A.bis (alternative formulation of §4.A).
+1. **§4.A.bis — Maturity-stage MA hint (operator-policy per Tier-3 #6):**
+   - Trigger: read `maturity_stage` from active snapshot
+   - Emit: `"Maturity stage {stage} → recommended trail-MA: {20MA | 10MA}"`
+   - Doctrine basis: project-policy hybrid of M.2 + D.3 (not pure-doctrine in either thread)
+   - Does NOT suppress existing `trail_10MA` / `trail_20MA` advisories
+   - Effort: ~2-3 hr
+
+2. **NEW — M.2 R-multiple stop-tighten hint (doctrine per TLSMW Ch 13 p. 296):**
+   - Trigger: `r_so_far >= cfg.stop_advisory.tighten_at_r_multiple` (default 2.0R, operator-tunable; rough match to TLSMW 7%/20% example = 2.86R)
+   - Emit: `"At +X.YR (≥{K}× stop) — Minervini M.2: consider moving stop to breakeven OR tightening trail to lock in majority of gain"`
+   - Doctrine basis: directly TLSMW-anchored (Ch 13 p. 296 verbatim quote in `reference/methodology/minervini-sell-side-rules.md` M.2 section)
+   - Effort: ~1-2 hr
+
+**Total bundle effort:** ~4-5 hr. Both advisory-message-only; no V2.1 §VII.F.
+
+**Why hybrid (operator decision rationale):** The two advisories answer different operator questions:
+- §4.A.bis answers "which trail-MA should I use?" (MFE-anchored maturity stage)
+- M.2 hint answers "should I tighten anything yet?" (live R-multiple)
+
+For DHC's current state (open_R=0.85, MFE=0.88R, pre_+1.5R) NEITHER would fire yet — both activate at meaningful operator-decision moments going forward.
+
+**Cross-refs:** §3e.8 §4.A.bis (alternative formulation of §4.A); `reference/methodology/minervini-sell-side-rules.md` M.2 (doctrine source for the new R-multiple stop-tighten hint).
 
 ### Deferred §4.H — Sector RS check (second-source gate)
 
