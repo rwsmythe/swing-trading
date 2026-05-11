@@ -1,25 +1,188 @@
-/* swing/web/static/app.css */
+/* swing/web/static/app.css
+ *
+ * 3e.10 dark theme — semantic CSS-variable refactor.
+ *
+ * All theme-relevant colors live as `--token` values under `:root` (light
+ * defaults) and are redefined under `body.dark` for the dark theme. Every
+ * color reference in the rules below uses `var(--token)`; no raw hex /
+ * rgb() literals appear outside `:root` and `body.dark`. The toggle just
+ * flips a class on `<body>`; the variables cascade everywhere.
+ *
+ * Token list mirrors dispatch brief §0.3 #5 (locked) plus a handful of
+ * additional semantic tokens for colors that didn't fit the locked list
+ * (banner-stale variants, decisions bg, tripwire row, example-aside bg,
+ * three border weights). Adding tokens is explicitly permitted by the
+ * brief.
+ */
+
+:root {
+  /* Backgrounds */
+  --bg: #ffffff;
+  --bg-elevated: #f7f7f7;
+  --bg-muted: #f8f9fa;
+
+  /* Text */
+  --fg: #000000;
+  --fg-muted: #666666;
+
+  /* Borders — three weights to preserve pre-refactor visual hierarchy. */
+  --border: #dddddd;
+  --border-strong: #cccccc;
+  --border-subtle: #eeeeee;
+
+  /* Accents (defined for future link / button styling; currently unused
+     in app.css rules — browser defaults still apply to non-topbar links). */
+  --accent: #0066cc;
+  --accent-hover: #004999;
+
+  /* Weather + state-managing share a green family. */
+  --badge-bullish-bg: #d1e7dd;
+  --badge-bullish-fg: #0f5132;
+  /* Weather Caution + state-pending share an amber family. */
+  --badge-caution-bg: #fff3cd;
+  --badge-caution-fg: #664d03;
+  /* Weather Bearish + state-stop_hit share a red family. */
+  --badge-bearish-bg: #f8d7da;
+  --badge-bearish-fg: #842029;
+
+  /* Phase 7 trade-state badges. */
+  --state-entered-bg: #cfe2ff;
+  --state-entered-fg: #0a3469;
+  --state-managing-bg: #d1e7dd;
+  --state-managing-fg: #0f5132;
+  --state-partial_exited-bg: #fff3cd;
+  --state-partial_exited-fg: #664d03;
+  --state-closed-bg: #e2e3e5;
+  --state-closed-fg: #41464b;
+  --state-reviewed-bg: #cff4fc;
+  --state-reviewed-fg: #055160;
+
+  /* 3e.5 / 3e.15 daily-management two-state badge. */
+  --badge-update-today-bg: #d1e7dd;
+  --badge-update-today-fg: #0f5132;
+  --badge-update-needed-bg: #fff3cd;
+  --badge-update-needed-fg: #664d03;
+
+  /* Form validation error highlighting (class used in templates; no rule
+     currently applies styling — tokens defined for future hookup). */
+  --field-error-bg: #f8d7da;
+  --field-error-fg: #842029;
+
+  /* Banners. */
+  --banner-stale-bg: #fff3cd;
+  --banner-stale-border: #ffeaa7;
+  --banner-degraded-bg: #f8d7da;
+  --banner-degraded-border: #f5c6cb;
+  --banner-degraded-fg: #842029;
+
+  /* Stale-price indicator. */
+  --stale-fg: #bb0000;
+
+  /* Misc surfaces. */
+  --decisions-bg: #fff8e1;
+  --tripwire-bg: #ffe6e6;
+  --tripwire-border: #cc0000;
+  --example-aside-bg: #f8f9fa;
+}
+
+body.dark {
+  /* Backgrounds — near-black layered surfaces. */
+  --bg: #1a1a1a;
+  --bg-elevated: #242424;
+  --bg-muted: #2a2a2a;
+
+  /* Text — near-white with a muted variant for secondary. */
+  --fg: #e9ecef;
+  --fg-muted: #adb5bd;
+
+  /* Borders — subtle on dark; three weights. */
+  --border: #3a3a3a;
+  --border-strong: #555555;
+  --border-subtle: #2c2c2c;
+
+  /* Accents — lighter blue for legibility on dark bg. */
+  --accent: #6ab0ff;
+  --accent-hover: #8cc1ff;
+
+  /* Weather + state badges — darker backgrounds, lighter foregrounds. */
+  --badge-bullish-bg: #1e4a36;
+  --badge-bullish-fg: #b8e0c8;
+  --badge-caution-bg: #4a3d1a;
+  --badge-caution-fg: #ffd97a;
+  --badge-bearish-bg: #4a1d1d;
+  --badge-bearish-fg: #f5b8b8;
+
+  --state-entered-bg: #1c3760;
+  --state-entered-fg: #b6d3ff;
+  --state-managing-bg: #1e4a36;
+  --state-managing-fg: #b8e0c8;
+  --state-partial_exited-bg: #4a3d1a;
+  --state-partial_exited-fg: #ffd97a;
+  --state-closed-bg: #2e2f30;
+  --state-closed-fg: #c8c9ca;
+  --state-reviewed-bg: #163d4a;
+  --state-reviewed-fg: #9fd7e3;
+
+  --badge-update-today-bg: #1e4a36;
+  --badge-update-today-fg: #b8e0c8;
+  --badge-update-needed-bg: #4a3d1a;
+  --badge-update-needed-fg: #ffd97a;
+
+  --field-error-bg: #4a1d1d;
+  --field-error-fg: #f5b8b8;
+
+  --banner-stale-bg: #4a3d1a;
+  --banner-stale-border: #66571f;
+  --banner-degraded-bg: #3d1d1f;
+  --banner-degraded-border: #5a2a2d;
+  --banner-degraded-fg: #f0c4c8;
+
+  --stale-fg: #ff6666;
+
+  --decisions-bg: #3d3520;
+  --tripwire-bg: #4a1d1d;
+  --tripwire-border: #ff5555;
+  --example-aside-bg: #2a2a2a;
+}
+
 * { box-sizing: border-box; }
-body { font-family: system-ui, sans-serif; margin: 1rem; }
-.topbar { display: flex; gap: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ccc; }
-.topbar a { text-decoration: none; color: #333; }
+body {
+  font-family: system-ui, sans-serif;
+  margin: 1rem;
+  color: var(--fg);
+  background: var(--bg);
+}
+.topbar { display: flex; gap: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-strong); align-items: center; }
+.topbar a { text-decoration: none; color: var(--fg); }
+.topbar .theme-toggle {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font: inherit;
+  padding: 0.15rem 0.45rem;
+  border-radius: 3px;
+  cursor: pointer;
+  line-height: 1;
+}
+.topbar .theme-toggle:hover { background: var(--bg-elevated); }
 .banner { padding: 0.5rem 1rem; margin: 0.5rem 0; border-radius: 4px; }
-.banner-stale { background: #fff3cd; border: 1px solid #ffeaa7; }
-.banner-degraded { background: #f8d7da; border: 1px solid #f5c6cb; }
+.banner-stale { background: var(--banner-stale-bg); border: 1px solid var(--banner-stale-border); }
+.banner-degraded { background: var(--banner-degraded-bg); border: 1px solid var(--banner-degraded-border); color: var(--banner-degraded-fg); }
 #status-strip { display: flex; gap: 1rem; margin: 1rem 0; }
-.tile { flex: 1; padding: 0.75rem; border: 1px solid #ddd; border-radius: 4px; }
-.tile .label { font-size: 0.75rem; text-transform: uppercase; color: #666; }
+.tile { flex: 1; padding: 0.75rem; border: 1px solid var(--border); border-radius: 4px; }
+.tile .label { font-size: 0.75rem; text-transform: uppercase; color: var(--fg-muted); }
 .tile .value { font-size: 1.25rem; font-weight: bold; }
-.tile .rationale { font-size: 0.85rem; color: #555; }
-.decisions { background: #fff8e1; padding: 1rem; border-radius: 4px; margin: 1rem 0; }
-.stale { color: #b00; font-size: 0.75rem; }
+.tile .rationale { font-size: 0.85rem; color: var(--fg-muted); }
+.decisions { background: var(--decisions-bg); padding: 1rem; border-radius: 4px; margin: 1rem 0; }
+.stale { color: var(--stale-fg); font-size: 0.75rem; }
 table { border-collapse: collapse; width: 100%; }
-th, td { text-align: left; padding: 0.25rem 0.5rem; border-bottom: 1px solid #eee; }
+th, td { text-align: left; padding: 0.25rem 0.5rem; border-bottom: 1px solid var(--border-subtle); }
 .hypothesis-recommendations { margin: 1rem 0; }
 .hypothesis-recommendations h2 { margin: 0 0 0.5rem; font-size: 1.05rem; }
 /* Visual distinction for alternating rows in any table. Source order matters:
    the tripwire-fired rule below this declaration wins on equal specificity. */
-tbody tr:nth-child(even) td { background: #f7f7f7; }
+tbody tr:nth-child(even) td { background: var(--bg-elevated); }
 /* tripwire-fired marks rows whose hypothesis hit a pre-registered loss
    tripwire (consecutive -1R streak or absolute cumulative loss). The
    tinted-red background + red left-edge band must be loud enough that
@@ -28,8 +191,8 @@ tbody tr:nth-child(even) td { background: #f7f7f7; }
    `border-collapse: collapse` set globally; row-level borders are
    unreliable across browsers under collapse, so we paint cell borders
    instead. (Adversarial review R1 Minor 2.) */
-tr.tripwire-fired td { background: #ffe6e6; font-weight: 600; }
-tr.tripwire-fired td:first-child { border-left: 4px solid #c00; }
+tr.tripwire-fired td { background: var(--tripwire-bg); font-weight: 600; }
+tr.tripwire-fired td:first-child { border-left: 4px solid var(--tripwire-border); }
 
 /* Phase 7 Sub-C C.6 — trade-lifecycle state badge color rules.
    Rendered by the shared partials/state_badge.html.j2 macro on the
@@ -44,11 +207,11 @@ tr.tripwire-fired td:first-child { border-left: 4px solid #c00; }
   font-weight: 500;
   display: inline-block;
 }
-.state-entered { background: #cfe2ff; color: #0a3469; }
-.state-managing { background: #d1e7dd; color: #0f5132; }
-.state-partial_exited { background: #fff3cd; color: #664d03; }
-.state-closed { background: #e2e3e5; color: #41464b; }
-.state-reviewed { background: #cff4fc; color: #055160; }
+.state-entered { background: var(--state-entered-bg); color: var(--state-entered-fg); }
+.state-managing { background: var(--state-managing-bg); color: var(--state-managing-fg); }
+.state-partial_exited { background: var(--state-partial_exited-bg); color: var(--state-partial_exited-fg); }
+.state-closed { background: var(--state-closed-bg); color: var(--state-closed-fg); }
+.state-reviewed { background: var(--state-reviewed-bg); color: var(--state-reviewed-fg); }
 
 /* Polish-bundle 2026-05-09 Family A — daily-management "updated today?"
    two-state badge on each open-positions row. Mirrors .state-badge sizing so
@@ -64,8 +227,8 @@ tr.tripwire-fired td:first-child { border-left: 4px solid #c00; }
   display: inline-block;
   margin-left: 4px;
 }
-.badge-update-today { background: #d1e7dd; color: #0f5132; }
-.badge-update-needed { background: #fff3cd; color: #664d03; }
+.badge-update-today { background: var(--badge-update-today-bg); color: var(--badge-update-today-fg); }
+.badge-update-needed { background: var(--badge-update-needed-bg); color: var(--badge-update-needed-fg); }
 
 /* 3e.7 Task B.2 — flex-row layout for entry-form textarea + example aside
    pairs. Aside sits to the right of the textarea, capped width so it does
@@ -95,9 +258,9 @@ tr.tripwire-fired td:first-child { border-left: 4px solid #c00; }
   flex: 0 0 auto;
   max-width: 320px;
   font-size: 0.875rem;
-  color: #666;
-  background: #f8f9fa;
-  border-left: 3px solid #dee2e6;
+  color: var(--fg-muted);
+  background: var(--example-aside-bg);
+  border-left: 3px solid var(--border);
   padding: 0.5rem 0.75rem;
 }
 .entry-example-aside details > summary {
