@@ -47,21 +47,21 @@ from swing.pipeline.lease import (
     Lease,
     acquire_lease,
 )
-from swing.pipeline.recovery import sweep_stale_artifacts
-from swing.pipeline.staging import StagingDir, promote_staging
 from swing.pipeline.ohlcv import compute_smas as _compute_smas
 from swing.pipeline.ohlcv import previous_close as _previous_close
+from swing.pipeline.recovery import sweep_stale_artifacts
+from swing.pipeline.staging import StagingDir, promote_staging
 from swing.prices import PriceFetcher
 from swing.recommendations.build import BuildContext, build_recommendations
 from swing.rendering.briefing import BriefingInputs, build_briefing_view_model
-from swing.rendering.view_models import AdvisorySuggestionVM
-from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
 from swing.rendering.charts import (
     ChartingUnavailableError,
     PatternOverlay,
     render_chart,
 )
 from swing.rendering.exporter import export_briefing
+from swing.rendering.view_models import AdvisorySuggestionVM
+from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
 from swing.trades.equity import current_equity, sizing_equity
 from swing.watchlist.service import compute_watchlist_changes
 
