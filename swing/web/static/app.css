@@ -95,6 +95,15 @@
  * forms so future implementers can target either element. */
 html.dark,
 body.dark {
+  /* Hint browsers to use dark UA styles for native form controls
+   * (text inputs, selects, checkboxes, scrollbars). Without this, Windows
+   * browsers render form controls with light backgrounds even when our
+   * variables are dark — producing white-on-white form fields on Config /
+   * cadence-complete / trade entry forms. Operator-gate I1 pre-patch
+   * 2026-05-10 (orchestrator-side, pre-gate; per implementer §6.9 watch
+   * item #3 for this dispatch). */
+  color-scheme: dark;
+
   /* Backgrounds — near-black layered surfaces. */
   --bg: #1a1a1a;
   --bg-elevated: #242424;
