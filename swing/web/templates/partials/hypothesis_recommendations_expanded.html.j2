@@ -16,6 +16,17 @@
             title="Close">✕</button>
     <h3>{{ expanded.ticker }}</h3>
 
+    {#- 3e.4: current price for price-vs-pivot operator context. Mirrors
+        the open-positions stale-flag pattern (partials/open_positions_row.html.j2). -#}
+    <p class="current-price">
+      {% if expanded.current_price %}
+        Current: ${{ '%.2f' | format(expanded.current_price.price) }}
+        {% if expanded.current_price.is_stale %}<span class="stale">(stale)</span>{% endif %}
+      {% else %}
+        Current: —
+      {% endif %}
+    </p>
+
     <h4>Order parameters</h4>
     <ul class="order-params">
       <li>Buy stop:  ${{ '%.2f' | format(expanded.buy_stop) }} <span class="muted">(pivot)</span></li>

@@ -556,12 +556,32 @@ class HypRecsExpandedVM:
     chart_reason_message: str | None
     # Freshness.
     pipeline_finished_at: str | None      # ISO timestamp of binding pipeline run
+    # 3e.4 — Current price for the operator's price-vs-pivot context when
+    # evaluating buy_stop / buy_limit / sell_stop. Defaults to None for
+    # backward-compat with callers that don't pass cache+executor; the
+    # route populates this via the PriceCache+executor batch `get_many`
+    # path (Codex R1 Major #1+#2 fix: deadline-bounded; NOT the unbounded
+    # single-ticker `get`).
+    current_price: PriceSnapshot | None = None
 
 
 def build_hyp_recs_expanded(
     conn, cfg: Config, *, ticker: str, current_balance: float,
+    cache: PriceCache | None = None,
+    executor=None,
 ) -> HypRecsExpandedVM | None:
-    """Resolve a hyp-recs expansion VM at request time. Returns None when:
+    """Resolve a hyp-recs expansion VM at request time.
+
+    Live-price fetch contract (3e.4 / Codex R1 Major #1+#2): BOTH ``cache``
+    and ``executor`` must be provided to populate ``current_price``; if
+    either is missing, the builder skips the fetch and returns the VM with
+    ``current_price=None`` (template renders ``Current: —``). The pairing
+    is intentional — ``cache.get_many`` requires an executor for its
+    deadline-bounded async dispatch path. Production route always passes
+    both; unit tests exercising other code paths may omit both to skip
+    the fetch entirely.
+
+    Returns None when:
 
     - No completed pipeline_run exists yet.
     - The ticker has no candidate row in the latest completed pipeline
@@ -628,6 +648,25 @@ def build_hyp_recs_expanded(
         # operator-facing message; spec §3.5.3 last paragraph.
         return None
 
+    # 3e.4 — Fetch the ticker price via the batch `get_many` path so the
+    # request is deadline-bounded (mirrors the open-positions dashboard
+    # path; brief §0.3 #4 "PriceCache+executor pattern"). A synchronous
+    # `cache.get(ticker)` would block the route on yfinance for up to the
+    # socket-level timeout (~30-60s) on a stuck fetch. `get_many` wraps
+    # the same `_fetch_with_fallback` under `cfg.web.price_fetch_deadline_seconds`
+    # and gracefully returns the last-close fallback (or nothing) when the
+    # deadline elapses. Executor is required by `get_many`; when the caller
+    # omits it (e.g., unit tests exercising other code paths) we skip the
+    # fetch entirely and leave current_price None.
+    current_price = None
+    if cache is not None and executor is not None:
+        prices = cache.get_many(
+            [ticker],
+            deadline_seconds=cfg.web.price_fetch_deadline_seconds,
+            executor=executor,
+        )
+        current_price = prices.get(ticker)
+
     return HypRecsExpandedVM(
         ticker=ticker,
         buy_stop=candidate.pivot,
@@ -644,6 +683,7 @@ def build_hyp_recs_expanded(
         chart_reason=chart_reason,
         chart_reason_message=chart_message,
         pipeline_finished_at=binding.finished_ts,
+        current_price=current_price,
     )
 
 

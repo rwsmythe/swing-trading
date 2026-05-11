@@ -10,7 +10,7 @@ from pathlib import Path
 
 from swing.data.db import connect
 from swing.data.repos.pipeline import (
-    LeaseRevoked,
+    LeaseRevokedError,
     finalize_run,
     find_active_run,
     find_run,
@@ -21,7 +21,7 @@ from swing.data.repos.pipeline import (
 )
 
 
-class ConcurrentRunBlocked(Exception):
+class ConcurrentRunBlockedError(Exception):
     """Another pipeline_runs row has state='running' with a fresh heartbeat."""
 
 
@@ -87,7 +87,7 @@ class Lease:
             conn.close()
 
     def verify_held(self) -> None:
-        """Preflight check: re-read pipeline_runs and raise LeaseRevoked if our
+        """Preflight check: re-read pipeline_runs and raise LeaseRevokedError if our
         token no longer matches a 'running' row. Cheap fail-fast; the
         authoritative protection for write transactions is `fenced_write`."""
         conn = connect(self.db_path)
@@ -96,7 +96,7 @@ class Lease:
         finally:
             conn.close()
         if run is None or run.lease_token != self.token or run.state != "running":
-            raise LeaseRevoked(
+            raise LeaseRevokedError(
                 f"lease revoked for run_id={self.run_id} "
                 f"(state={run.state if run else 'missing'})"
             )
@@ -108,7 +108,7 @@ class Lease:
         the authoritative atomic fencing for canonical DB mutations outside of
         the `pipeline_runs` table (candidates, watchlist, recommendations,
         weather_runs). If a concurrent `force_clear` committed before us, our
-        SELECT sees `state != 'running'` and we ROLLBACK + raise LeaseRevoked.
+        SELECT sees `state != 'running'` and we ROLLBACK + raise LeaseRevokedError.
         If a concurrent `force_clear` tries after we hold the RESERVED lock,
         it waits until we COMMIT; our writes land atomically then force_clear
         proceeds. Callers must do all their writes inside the `with` block;
@@ -128,13 +128,13 @@ class Lease:
                 ).fetchone()
                 if row is None or row[0] != "running" or row[1] != self.token:
                     conn.execute("ROLLBACK")
-                    raise LeaseRevoked(
+                    raise LeaseRevokedError(
                         f"lease revoked mid-txn for run_id={self.run_id} "
                         f"(state={row[0] if row else 'missing'})"
                     )
                 yield conn
                 conn.execute("COMMIT")
-            except LeaseRevoked:
+            except LeaseRevokedError:
                 # ROLLBACK explicitly so the write lock is released
                 # immediately rather than at conn.close() (R4 minor).
                 with suppress(sqlite3.OperationalError):
@@ -159,7 +159,7 @@ def acquire_lease(
     Race-safe: BEGIN IMMEDIATE acquires the SQLite reserved lock up front, and
     the partial unique index ux_pipeline_one_running (migration 0003) is the
     second line of defense. The race-winner gets the lease; every loser
-    surfaces as ConcurrentRunBlocked.
+    surfaces as ConcurrentRunBlockedError.
     """
     conn = connect(db_path)
     try:
@@ -170,7 +170,7 @@ def acquire_lease(
                 age = _heartbeat_age_seconds(datetime.now(), active.lease_heartbeat_ts)
                 if age <= block_threshold_seconds:
                     conn.execute("ROLLBACK")
-                    raise ConcurrentRunBlocked(
+                    raise ConcurrentRunBlockedError(
                         f"run {active.id} state=running, heartbeat {age:.0f}s ago"
                     )
             try:
@@ -185,11 +185,11 @@ def acquire_lease(
                 )
             except sqlite3.IntegrityError as exc:
                 conn.execute("ROLLBACK")
-                raise ConcurrentRunBlocked(
+                raise ConcurrentRunBlockedError(
                     f"another run inserted concurrently: {exc}"
                 ) from exc
             conn.execute("COMMIT")
-        except ConcurrentRunBlocked:
+        except ConcurrentRunBlockedError:
             raise
         except Exception:
             conn.execute("ROLLBACK")

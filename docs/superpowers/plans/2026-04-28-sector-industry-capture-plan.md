@@ -1627,7 +1627,7 @@ In the `req = EntryRequest(...)` construction, add `sector=sector` and `industry
     )
 ```
 
-In the SoftWarnException branch's `form_values` dict, add:
+In the SoftWarnError branch's `form_values` dict, add:
 
 ```python
             form_values = {

@@ -81,7 +81,7 @@ def test_promote_backs_up_previous(tmp_path: Path):
 def test_promote_aborts_when_lease_revoked(tmp_path: Path):
     """Spec §5.7: if the owning run's lease was force-cleared mid-work,
     promote_staging must refuse to rename and leave staging for sweep."""
-    from swing.data.repos.pipeline import LeaseRevoked, force_clear
+    from swing.data.repos.pipeline import LeaseRevokedError, force_clear
 
     db = tmp_path / "swing.db"
     token = _seed_running_run(db)
@@ -99,7 +99,7 @@ def test_promote_aborts_when_lease_revoked(tmp_path: Path):
         conn.close()
 
     target = base / "2026-04-15"
-    with pytest.raises(LeaseRevoked):
+    with pytest.raises(LeaseRevokedError):
         promote_staging(
             staging=staging, target=target, lease_token=token, db_path=db,
         )

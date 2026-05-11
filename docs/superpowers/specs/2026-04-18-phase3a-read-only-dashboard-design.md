@@ -421,7 +421,7 @@ Polling interval comes from `cfg.web.polling_interval_seconds` (default 2). Outs
 
 | Failure origin | Who catches | User-visible outcome |
 |---|---|---|
-| DB unavailable / schema mismatch | `connect()` raises `SchemaVersionMismatch` at app startup | App doesn't start; `swing web` prints "Run: swing db-migrate" and exits 1 |
+| DB unavailable / schema mismatch | `connect()` raises `SchemaVersionMismatchError` at app startup | App doesn't start; `swing web` prints "Run: swing db-migrate" and exits 1 |
 | Port already in use | `uvicorn.run()` raises `OSError` | `swing web` prints "Port {port} busy. Set `[web].port` or pass --port." exits 1 |
 | Repo/DB exception mid-request | FastAPI exception handler | 500 page via `error.html.j2` showing exception summary + "Check `swing-data/logs/web.log` (request id X)" |
 | Price-cache fetch timeout / yfinance error | Caught **inside** `PriceCache.get()` | Returns `PriceSnapshot(is_stale=True, source="last_close")`. Template shows "(stale)" badge. Never propagates. |
@@ -451,7 +451,7 @@ The banner's "Run now" button is the same `POST /pipeline/run` flow described in
 Multiple tabs of the dashboard open against the same server is a normal case, not a limitation:
 - **Reads** — all GET routes are read-only against SQLite (Phase 2's WAL-mode reader-writer isolation) plus the in-process `PriceCache` (guarded by `threading.Lock`). N concurrent GETs from N tabs work correctly.
 - **`POST /prices/refresh`** — `cache.refresh_all(...)` + subsequent `get_many` is idempotent; concurrent calls may each refresh, but the result is the same.
-- **`POST /pipeline/run`** — the check-then-spawn race is already mitigated by `acquire_lease`'s `ConcurrentRunBlocked` (Phase 2's partial unique index `ux_pipeline_one_running` is the DB-level authoritative gate). The loser tab sees "Pipeline already running" and polls the existing run's progress.
+- **`POST /pipeline/run`** — the check-then-spawn race is already mitigated by `acquire_lease`'s `ConcurrentRunBlockedError` (Phase 2's partial unique index `ux_pipeline_one_running` is the DB-level authoritative gate). The loser tab sees "Pipeline already running" and polls the existing run's progress.
 
 ### 5.5 NYSE-only assumption (documented)
 
@@ -560,7 +560,7 @@ tests/web/
 - [ ] `GET /watchlist` lists all watchlist entries; `GET /journal?period=<p>` renders stats + trade table per selected period.
 - [ ] `POST /pipeline/run` spawns a background pipeline; HTMX polls `GET /pipeline/status/{id}` every 2s; terminal state stops polling and refreshes the status-strip pipeline tile.
 - [ ] Clicking "Refresh prices" invalidates cache and updates three regions via `hx-swap-oob`.
-- [ ] `POST /pipeline/run` blocked by `ConcurrentRunBlocked` surfaces a "Pipeline already running" panel instead of attempting a second run.
+- [ ] `POST /pipeline/run` blocked by `ConcurrentRunBlockedError` surfaces a "Pipeline already running" panel instead of attempting a second run.
 - [ ] Full Phase 2 fast test suite still green (287 tests). ~38 new tests for `swing.web` all pass.
 - [ ] Base install (without the `web` extra) still starts the CLI without ImportError.
 

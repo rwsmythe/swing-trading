@@ -5,7 +5,7 @@
 -- conflicting on both sides of a race.
 --
 -- The partial unique index makes the race-losing INSERT fail with IntegrityError;
--- the entry service catches that and raises DuplicateOpenPositionException.
+-- the entry service catches that and raises DuplicateOpenPositionError.
 
 CREATE UNIQUE INDEX ux_trades_one_open_per_ticker
     ON trades(ticker) WHERE status = 'open';

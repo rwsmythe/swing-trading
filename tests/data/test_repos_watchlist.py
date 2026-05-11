@@ -9,7 +9,7 @@ from swing.data.db import ensure_schema
 from swing.data.models import WatchlistEntry, WatchlistArchiveEntry
 from swing.data.repos.watchlist import (
     upsert_watchlist_entry, get_watchlist_entry, list_active_watchlist,
-    archive_watchlist_entry, list_archive, WatchlistEntryNotFound,
+    archive_watchlist_entry, list_archive, WatchlistEntryNotFoundError,
 )
 
 
@@ -87,7 +87,7 @@ def test_archive_unknown_ticker_raises_without_phantom_row(tmp_path: Path):
             removed_date="2026-04-20", reason="typo",
             qualification_count=None, last_data_asof_date=None, notes=None,
         )
-        with pytest.raises(WatchlistEntryNotFound):
+        with pytest.raises(WatchlistEntryNotFoundError):
             with conn:
                 archive_watchlist_entry(conn, wa)
         # No archive row should have been written
@@ -111,7 +111,7 @@ def test_archive_twice_second_call_raises(tmp_path: Path):
         with conn:
             archive_watchlist_entry(conn, wa)
         # Second call on already-archived ticker must raise
-        with pytest.raises(WatchlistEntryNotFound):
+        with pytest.raises(WatchlistEntryNotFoundError):
             with conn:
                 archive_watchlist_entry(conn, wa)
         # Exactly one archive row, not two

@@ -17,12 +17,12 @@ from swing.data.repos.cash import list_cash
 from swing.data.repos.trades import get_trade, list_open_trades
 from swing.recommendations.sizing import SizingResult, compute_shares
 from swing.trades.entry import (
-    DuplicateOpenPositionException,
+    DuplicateOpenPositionError,
     EntryRationale,
     EntryRequest,
-    HardCapException,
+    HardCapError,
     MissingPreTradeFieldsException,
-    SoftWarnException,
+    SoftWarnError,
     record_entry,
 )
 from swing.trades.equity import current_equity
@@ -644,7 +644,7 @@ def entry_post(
                 },
                 status_code=400,
             )
-        except SoftWarnException:
+        except SoftWarnError:
             # First submit at soft cap — render the 2-step confirm fragment.
             # Re-serialize the submitted form values so the next submit carries
             # them + force=true (spec §4.3 step 4).
@@ -762,7 +762,7 @@ def entry_post(
                 request, "partials/soft_warn_confirm.html.j2",
                 {"form_values": form_values},
             )
-        except DuplicateOpenPositionException as exc:
+        except DuplicateOpenPositionError as exc:
             # Spec §5.1 case 1: re-render form with submitted values preserved
             # so the user sees the conflict without losing typed inputs.
             # Task 8 (R4-Major-1): pass ``origin=origin_coerced`` so the
@@ -794,7 +794,7 @@ def entry_post(
                 {"error_message": str(exc)},
                 status_code=400,
             )
-        except HardCapException as exc:
+        except HardCapError as exc:
             # Hard cap: do NOT re-render the form — re-submitting won't succeed
             # until a position is closed (spec §8 "No UI bypass for hard-cap").
             return templates.TemplateResponse(
@@ -848,7 +848,7 @@ def entry_post(
             # form pattern, not a generic 500. Re-raise IntegrityErrors
             # not attributable to chart_pattern (e.g., the partial unique
             # index ux_trades_one_open_per_ticker, already mapped to
-            # DuplicateOpenPositionException upstream — but defense in
+            # DuplicateOpenPositionError upstream — but defense in
             # depth).
             msg = str(exc)
             # V1: schema-message-coupled — substring-matches CHECK constraint text; forward hardening = pre-insert FK existence check

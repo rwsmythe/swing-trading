@@ -553,11 +553,11 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
 
     from swing.data.db import connect
     from swing.trades.entry import (
-        DuplicateOpenPositionException,
+        DuplicateOpenPositionError,
         EntryRequest,
-        HardCapException,
+        HardCapError,
         MissingPreTradeFieldsException,
-        SoftWarnException,
+        SoftWarnError,
         record_entry,
     )
     from swing.trades.origin import EntryPath
@@ -723,7 +723,7 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
             raise click.UsageError(
                 f"Missing required pre-trade fields: {', '.join(flags)}"
             ) from exc
-        except (SoftWarnException, HardCapException, DuplicateOpenPositionException) as exc:
+        except (SoftWarnError, HardCapError, DuplicateOpenPositionError) as exc:
             raise click.ClickException(str(exc)) from exc
     finally:
         conn.close()

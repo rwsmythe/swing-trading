@@ -94,6 +94,25 @@ def test_css_state_badge_rules_present():
         assert cls in css, f"missing CSS rule: {cls}"
 
 
+def test_css_entry_textarea_aside_layout_rules_present():
+    """3e.7 B.AC.4 — flex-row layout for entry-form textarea + example aside
+    pairs. Brief §0.3 #7 binding constraint: aside visible to the right of
+    textarea, never toggled. Discriminating: regression that drops the
+    flex rule reverts to vertical stacking and the aside falls below the
+    textarea — operator-facing UX regression."""
+    css = Path("swing/web/static/app.css").read_text(encoding="utf-8")
+    assert ".entry-textarea-row" in css, "missing .entry-textarea-row selector"
+    assert ".entry-example-aside" in css, "missing .entry-example-aside selector"
+    # Layout discriminator: must declare flex (or grid) on the row.
+    # Pin display: flex per the brief's preferred shape.
+    row_idx = css.find(".entry-textarea-row")
+    # Look at the next ~200 chars after the selector for the display: flex rule.
+    assert "display: flex" in css[row_idx:row_idx + 300], (
+        ".entry-textarea-row must declare `display: flex` (or grid) to "
+        "achieve side-by-side layout per brief §0.3 #7"
+    )
+
+
 def test_state_badge_partial_consumed_by_three_or_more_templates():
     """OOB-swap drift gotcha (CLAUDE.md): callers MUST go through the
     SAME include/import target rather than hand-duplicating markup. The

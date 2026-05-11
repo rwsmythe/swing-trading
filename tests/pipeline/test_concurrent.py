@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from swing.data.db import ensure_schema
-from swing.pipeline.lease import ConcurrentRunBlocked, acquire_lease
+from swing.pipeline.lease import ConcurrentRunBlockedError, acquire_lease
 
 
 def test_second_acquire_blocked(tmp_path: Path):
@@ -18,7 +18,7 @@ def test_second_acquire_blocked(tmp_path: Path):
         block_threshold_seconds=120,
     )
     try:
-        with pytest.raises(ConcurrentRunBlocked):
+        with pytest.raises(ConcurrentRunBlockedError):
             acquire_lease(
                 db_path=db, trigger="manual",
                 data_asof_date="2026-04-15", action_session_date="2026-04-16",
@@ -47,7 +47,7 @@ def test_stale_heartbeat_still_blocks_without_force_clear(tmp_path: Path):
     """Spec §5.1 step 1: when the prior run's heartbeat is older than the
     block threshold it becomes eligible for admin force-clear — but it does
     NOT auto-takeover. A concurrent attempt with a stale predecessor still
-    raises ConcurrentRunBlocked (via ux_pipeline_one_running partial unique
+    raises ConcurrentRunBlockedError (via ux_pipeline_one_running partial unique
     index) until force_clear moves state out of 'running'. Completes the
     H3 coverage of the two lease-gate branches (adversarial review Batch 5
     Round 1 Major 3)."""
@@ -71,10 +71,10 @@ def test_stale_heartbeat_still_blocks_without_force_clear(tmp_path: Path):
         conn.close()
 
     # A new acquire MUST still block — stale heartbeat skips the explicit
-    # ConcurrentRunBlocked raise, but the partial unique index refuses the
+    # ConcurrentRunBlockedError raise, but the partial unique index refuses the
     # INSERT (state='running' already), surfaced via sqlite3.IntegrityError
-    # → remapped to ConcurrentRunBlocked.
-    with pytest.raises(ConcurrentRunBlocked):
+    # → remapped to ConcurrentRunBlockedError.
+    with pytest.raises(ConcurrentRunBlockedError):
         acquire_lease(
             db_path=db, trigger="manual",
             data_asof_date="2026-04-15", action_session_date="2026-04-16",
@@ -140,7 +140,7 @@ def test_concurrent_acquire_exactly_one_wins(tmp_path: Path):
             )
             with results_lock:
                 winners.append(lease)
-        except ConcurrentRunBlocked:
+        except ConcurrentRunBlockedError:
             with results_lock:
                 blocked_count[0] += 1
 

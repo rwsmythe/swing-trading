@@ -80,7 +80,7 @@ Swing Trading/                                # repo root
 │   │   ├── __init__.py                       # NEW — public entry: run_pipeline()
 │   │   ├── finviz_schema.py                  # NEW — declared schema + validate_csv + reject_csv
 │   │   ├── finviz_select.py                  # NEW — date-from-filename → mtime fallback
-│   │   ├── lease.py                          # NEW — Lease class + acquire_lease + LeaseRevoked
+│   │   ├── lease.py                          # NEW — Lease class + acquire_lease + LeaseRevokedError
 │   │   ├── heartbeat.py                      # NEW — background thread (30s cadence)
 │   │   ├── staging.py                        # NEW — StagingDir context manager + atomic promote
 │   │   ├── recovery.py                       # NEW — sweep_stale_artifacts (startup sweep)
@@ -161,7 +161,7 @@ Swing Trading/                                # repo root
 
 (All Phase 1 conventions carry forward. Additions for Phase 2:)
 
-- **Lease fencing:** every Phase 2 repo method that mutates `pipeline_runs`-related rows takes a `lease_token: str` argument and rejects writes whose token doesn't match the current `state='running'` row. Mismatch raises `swing.pipeline.lease.LeaseRevoked`.
+- **Lease fencing:** every Phase 2 repo method that mutates `pipeline_runs`-related rows takes a `lease_token: str` argument and rejects writes whose token doesn't match the current `state='running'` row. Mismatch raises `swing.pipeline.lease.LeaseRevokedError`.
 - **Trade events are mandatory:** every mutation of `trades` (entry, exit-completion, stop adjust, manual flag, note) writes a `trade_events` row in the same transaction. The repo enforces this — there is no public method on `swing.data.repos.trades` that mutates `trades` without also writing a `trade_events` row. Writing only a `trade_events` row (e.g., a free-text note that doesn't change `trades` state) is allowed.
 - **Daily recommendations are append-only via UPSERT:** writes use `INSERT ... ON CONFLICT(action_session_date, ticker, recommendation) DO UPDATE` so re-running the pipeline for the same session is idempotent without inflating row counts.
 - **Pure-logic modules return result dataclasses, not side effects.** `swing.watchlist.service.compute_watchlist_changes` returns a `WatchlistDelta` (lists of adds/requalifies/streak_increments/removes); the caller (`pipeline.runner`) applies it via the watchlist repo. Same pattern for `recommendations.build`, `trades.advisory`, `journal.stats`, `journal.flags`.
@@ -1604,7 +1604,7 @@ def find_any_open_trade(
 
     Returns the OLDEST open trade for the ticker (FIFO policy, matching US tax-lot
     convention for long positions without explicit lot designation). Under the
-    Phase 2 entry invariant (swing.trades.entry raises DuplicateOpenPositionException
+    Phase 2 entry invariant (swing.trades.entry raises DuplicateOpenPositionError
     if a ticker already has an open position), there is at most one open trade
     per ticker — so FIFO here is the same as "the one".
 
@@ -1961,7 +1961,7 @@ git commit -m "feat(repos): add cash_movements and daily_recommendations repos"
 - Create: `swing/data/repos/pipeline.py`
 - Create: `tests/data/test_repos_pipeline.py`
 
-The pipeline_runs repo is special: every mutation past the initial INSERT enforces lease-token matching. A repo function that should mutate the row but finds the lease has been revoked raises `LeaseRevoked` instead of silently writing.
+The pipeline_runs repo is special: every mutation past the initial INSERT enforces lease-token matching. A repo function that should mutate the row but finds the lease has been revoked raises `LeaseRevokedError` instead of silently writing.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1976,7 +1976,7 @@ import pytest
 
 from swing.data.db import ensure_schema
 from swing.data.repos.pipeline import (
-    LeaseRevoked, insert_pipeline_run, update_step, update_status_columns,
+    LeaseRevokedError, insert_pipeline_run, update_step, update_status_columns,
     finalize_run, force_clear, find_active_run, find_run, list_recent_runs,
 )
 
@@ -2020,7 +2020,7 @@ def test_lease_fenced_step_update(tmp_path: Path):
         assert run.last_step_progress_ts == _ts(2)
 
         # Wrong token must raise
-        with pytest.raises(LeaseRevoked):
+        with pytest.raises(LeaseRevokedError):
             with conn:
                 update_step(conn, run_id=rid, lease_token="wrong-token",
                             step="evaluate", progress_ts=_ts(3))
@@ -2041,7 +2041,7 @@ def test_force_clear_revokes_lease(tmp_path: Path):
             force_clear(conn, run_id=rid, error_message="admin force at 22:00")
 
         # Original holder cannot continue
-        with pytest.raises(LeaseRevoked):
+        with pytest.raises(LeaseRevokedError):
             with conn:
                 update_step(conn, run_id=rid, lease_token=token,
                             step="evaluate", progress_ts=_ts(5))
@@ -2099,7 +2099,7 @@ def test_list_recent_returns_descending(tmp_path: Path):
 ```python
 """Pipeline runs repo with lease-token fencing.
 
-Every mutation function takes lease_token and raises LeaseRevoked if it doesn't
+Every mutation function takes lease_token and raises LeaseRevokedError if it doesn't
 match the row's current value (or if the row's state is no longer 'running').
 This is the only enforcement layer — the application can't bypass it.
 """
@@ -2111,7 +2111,7 @@ import uuid
 from swing.data.models import PipelineRun
 
 
-class LeaseRevoked(Exception):
+class LeaseRevokedError(Exception):
     """Raised when a write is attempted with a stale or wrong lease_token."""
 
 
@@ -2146,9 +2146,9 @@ def _check_lease(conn: sqlite3.Connection, run_id: int, lease_token: str) -> Non
         (run_id,),
     ).fetchone()
     if row is None:
-        raise LeaseRevoked(f"run {run_id} not found")
+        raise LeaseRevokedError(f"run {run_id} not found")
     if row[0] != lease_token or row[1] != "running":
-        raise LeaseRevoked(
+        raise LeaseRevokedError(
             f"run {run_id} lease revoked or state changed (state={row[1]})"
         )
 
@@ -2221,7 +2221,7 @@ def force_clear(
     conn: sqlite3.Connection, *, run_id: int, error_message: str
 ) -> None:
     """Admin recovery — does NOT take lease_token because lease is being revoked.
-    Subsequent writes by the original holder will raise LeaseRevoked."""
+    Subsequent writes by the original holder will raise LeaseRevokedError."""
     conn.execute(
         """
         UPDATE pipeline_runs SET state = 'force_cleared',
@@ -4316,7 +4316,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from swing.rendering.charts import render_chart, ChartingUnavailable
+from swing.rendering.charts import render_chart, ChartingUnavailableError
 
 
 pytestmark = pytest.mark.slow  # heavy dep
@@ -4367,7 +4367,7 @@ CONSOLIDATION_DAYS = 10
 MIN_BARS = CONSOLIDATION_DAYS + 1
 
 
-class ChartingUnavailable(RuntimeError):
+class ChartingUnavailableError(RuntimeError):
     """mplfinance not installed — pipeline should set charts_status='skipped'."""
 
 
@@ -4378,12 +4378,12 @@ def render_chart(
     """Render a daily chart with SMAs 10/20/50 + pivot/stop hlines + consolidation marker.
 
     Returns the output path on success, None if data is too short.
-    Raises ChartingUnavailable if mplfinance isn't installed (caller handles).
+    Raises ChartingUnavailableError if mplfinance isn't installed (caller handles).
     """
     try:
         import mplfinance as mpf
     except ImportError as exc:
-        raise ChartingUnavailable("mplfinance not installed") from exc
+        raise ChartingUnavailableError("mplfinance not installed") from exc
 
     df = ohlcv.tail(CHART_LOOKBACK_DAYS).copy()
     if len(df) < MIN_BARS:
@@ -5708,7 +5708,7 @@ from swing.data.repos.trades import get_trade, list_open_trades
 from swing.data.repos.watchlist import get_watchlist_entry, upsert_watchlist_entry
 from swing.trades.entry import (
     EntryRequest, EntryResult, record_entry,
-    SoftWarnException, HardCapException, DuplicateOpenPositionException,
+    SoftWarnError, HardCapError, DuplicateOpenPositionError,
 )
 
 
@@ -5753,7 +5753,7 @@ def test_soft_warn_blocks_unless_forced(tmp_path: Path):
     try:
         for t in ["AAPL", "MSFT", "NVDA", "META"]:
             record_entry(conn, _req(t), soft_warn=10, hard_cap=10, force=False)
-        with pytest.raises(SoftWarnException):
+        with pytest.raises(SoftWarnError):
             record_entry(conn, _req("GOOG"), soft_warn=4, hard_cap=10, force=False)
     finally:
         conn.close()
@@ -5764,7 +5764,7 @@ def test_hard_cap_blocks_even_with_force(tmp_path: Path):
     try:
         for t in ["AAPL", "MSFT", "NVDA", "META", "GOOG", "TSLA"]:
             record_entry(conn, _req(t), soft_warn=10, hard_cap=10, force=False)
-        with pytest.raises(HardCapException):
+        with pytest.raises(HardCapError):
             record_entry(conn, _req("AMZN"), soft_warn=2, hard_cap=6, force=True)
     finally:
         conn.close()
@@ -5774,7 +5774,7 @@ def test_duplicate_open_position_blocked(tmp_path: Path):
     conn = ensure_schema(tmp_path / "swing.db")
     try:
         record_entry(conn, _req("AAPL"), soft_warn=4, hard_cap=6, force=False)
-        with pytest.raises(DuplicateOpenPositionException):
+        with pytest.raises(DuplicateOpenPositionError):
             record_entry(conn, _req("AAPL"), soft_warn=4, hard_cap=6, force=False)
     finally:
         conn.close()
@@ -5832,15 +5832,15 @@ from swing.data.repos.watchlist import (
 )
 
 
-class SoftWarnException(Exception):
+class SoftWarnError(Exception):
     """Open count >= soft_warn_open without force=True."""
 
 
-class HardCapException(Exception):
+class HardCapError(Exception):
     """Open count >= hard_cap_open — never bypassable."""
 
 
-class DuplicateOpenPositionException(Exception):
+class DuplicateOpenPositionError(Exception):
     """Already an open trade for this ticker."""
 
 
@@ -5876,19 +5876,19 @@ def record_entry(
 
     open_trades = list_open_trades(conn)
     if any(t.ticker == req.ticker for t in open_trades):
-        raise DuplicateOpenPositionException(
+        raise DuplicateOpenPositionError(
             f"Already an open position in {req.ticker}"
         )
 
     open_count = len(open_trades)
     if open_count >= hard_cap:
-        raise HardCapException(
+        raise HardCapError(
             f"Hard cap reached: {open_count} >= {hard_cap}"
         )
     warning: str | None = None
     if open_count >= soft_warn:
         if not force:
-            raise SoftWarnException(
+            raise SoftWarnError(
                 f"Open count {open_count} >= soft warn {soft_warn}; use --force"
             )
         warning = f"Soft warn exceeded: {open_count} open positions (soft={soft_warn})"
@@ -6666,7 +6666,7 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
     from swing.data.db import connect
     from swing.trades.entry import (
         EntryRequest, record_entry,
-        SoftWarnException, HardCapException, DuplicateOpenPositionException,
+        SoftWarnError, HardCapError, DuplicateOpenPositionError,
     )
 
     cfg = ctx.obj["config"]
@@ -6687,7 +6687,7 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
                 hard_cap=cfg.position_limits.hard_cap_open,
                 force=force,
             )
-        except (SoftWarnException, HardCapException, DuplicateOpenPositionException) as exc:
+        except (SoftWarnError, HardCapError, DuplicateOpenPositionError) as exc:
             raise click.ClickException(str(exc))
     finally:
         conn.close()
@@ -8338,9 +8338,9 @@ from pathlib import Path
 import pytest
 
 from swing.data.db import ensure_schema
-from swing.data.repos.pipeline import LeaseRevoked, find_run
+from swing.data.repos.pipeline import LeaseRevokedError, find_run
 from swing.pipeline.lease import (
-    acquire_lease, ConcurrentRunBlocked, Lease,
+    acquire_lease, ConcurrentRunBlockedError, Lease,
 )
 
 
@@ -8368,7 +8368,7 @@ def test_concurrent_blocked_within_threshold(tmp_path: Path):
         data_asof_date="2026-04-15", action_session_date="2026-04-16",
         block_threshold_seconds=120,
     )
-    with pytest.raises(ConcurrentRunBlocked):
+    with pytest.raises(ConcurrentRunBlockedError):
         acquire_lease(
             db_path=db, trigger="manual",
             data_asof_date="2026-04-15", action_session_date="2026-04-16",
@@ -8430,12 +8430,12 @@ from pathlib import Path
 
 from swing.data.db import connect
 from swing.data.repos.pipeline import (
-    LeaseRevoked, find_active_run, finalize_run, insert_pipeline_run,
+    LeaseRevokedError, find_active_run, finalize_run, insert_pipeline_run,
     update_heartbeat, update_status_columns, update_step,
 )
 
 
-class ConcurrentRunBlocked(Exception):
+class ConcurrentRunBlockedError(Exception):
     """Another pipeline_runs row has state='running' with a fresh heartbeat."""
 
 
@@ -8513,7 +8513,7 @@ def acquire_lease(
     Race-safe: uses BEGIN IMMEDIATE to acquire a write transaction before the
     check-and-insert, and relies on the partial unique index ux_pipeline_one_running
     (see migration 0003) as a second line of defense. Any race-winner gets the
-    lease; every loser gets ConcurrentRunBlocked.
+    lease; every loser gets ConcurrentRunBlockedError.
     """
     import sqlite3
 
@@ -8529,7 +8529,7 @@ def acquire_lease(
                 age = _heartbeat_age_seconds(datetime.now(), active.lease_heartbeat_ts)
                 if age <= block_threshold_seconds:
                     conn.execute("ROLLBACK")
-                    raise ConcurrentRunBlocked(
+                    raise ConcurrentRunBlockedError(
                         f"run {active.id} state=running, heartbeat {age:.0f}s ago"
                     )
             try:
@@ -8544,13 +8544,13 @@ def acquire_lease(
                 )
             except sqlite3.IntegrityError as exc:
                 # ux_pipeline_one_running partial index triggered — another writer
-                # beat us into the 'running' slot. Map to ConcurrentRunBlocked.
+                # beat us into the 'running' slot. Map to ConcurrentRunBlockedError.
                 conn.execute("ROLLBACK")
-                raise ConcurrentRunBlocked(
+                raise ConcurrentRunBlockedError(
                     f"another run inserted concurrently: {exc}"
                 ) from exc
             conn.execute("COMMIT")
-        except ConcurrentRunBlocked:
+        except ConcurrentRunBlockedError:
             raise
         except Exception:
             conn.execute("ROLLBACK")
@@ -8643,7 +8643,7 @@ from __future__ import annotations
 
 import threading
 
-from swing.data.repos.pipeline import LeaseRevoked
+from swing.data.repos.pipeline import LeaseRevokedError
 from swing.pipeline.lease import Lease
 
 
@@ -8658,7 +8658,7 @@ class Heartbeat:
         while not self._stop.is_set():
             try:
                 self.lease.heartbeat()
-            except LeaseRevoked:
+            except LeaseRevokedError:
                 # Force-cleared mid-run — exit thread; main loop will see it next step.
                 return
             except Exception:
@@ -8790,7 +8790,7 @@ def test_promote_backs_up_previous(tmp_path: Path):
 def test_promote_aborts_when_lease_revoked(tmp_path: Path):
     """Spec §5.7: if the owning run's lease was force-cleared mid-work,
     promote_staging must refuse to rename and leave staging for sweep."""
-    from swing.data.repos.pipeline import LeaseRevoked, force_clear
+    from swing.data.repos.pipeline import LeaseRevokedError, force_clear
     import pytest
 
     db = tmp_path / "swing.db"
@@ -8810,7 +8810,7 @@ def test_promote_aborts_when_lease_revoked(tmp_path: Path):
         conn.close()
 
     target = base / "2026-04-15"
-    with pytest.raises(LeaseRevoked):
+    with pytest.raises(LeaseRevokedError):
         promote_staging(
             staging=staging, target=target, lease_token=token, db_path=db,
         )
@@ -8878,7 +8878,7 @@ def promote_staging(
     artifacts written by the new run.
     """
     from swing.data.db import connect
-    from swing.data.repos.pipeline import LeaseRevoked, find_run
+    from swing.data.repos.pipeline import LeaseRevokedError, find_run
 
     if not staging.path.exists():
         raise RuntimeError(f"staging dir does not exist: {staging.path}")
@@ -8902,7 +8902,7 @@ def promote_staging(
     try:
         run = find_run(conn, staging.run_id)
         if run is None or run.lease_token != lease_token or run.state != "running":
-            raise LeaseRevoked(
+            raise LeaseRevokedError(
                 f"run {staging.run_id} lease revoked or state changed "
                 f"(state={run.state if run else 'missing'}); aborting promote"
             )
@@ -9352,14 +9352,14 @@ from swing.pipeline.finviz_schema import reject_csv, validate_csv
 from swing.pipeline.finviz_select import select_csv, NoFilesError, AmbiguousInboxError
 from swing.pipeline.heartbeat import Heartbeat
 from swing.pipeline.lease import (
-    Lease, acquire_lease, ConcurrentRunBlocked,
+    Lease, acquire_lease, ConcurrentRunBlockedError,
 )
 from swing.pipeline.recovery import sweep_stale_artifacts
 from swing.pipeline.staging import StagingDir, promote_staging
 from swing.prices import PriceFetcher
 from swing.recommendations.build import BuildContext, build_recommendations
 from swing.rendering.briefing import BriefingInputs, build_briefing_view_model
-from swing.rendering.charts import render_chart, ChartingUnavailable
+from swing.rendering.charts import render_chart, ChartingUnavailableError
 from swing.rendering.exporter import export_briefing
 from swing.trades.equity import current_equity, sizing_equity
 from swing.watchlist.service import compute_watchlist_changes
@@ -9449,7 +9449,7 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
             rs_universe_version=universe.version,
             rs_universe_hash=universe_hash,
         )
-    except ConcurrentRunBlocked as exc:
+    except ConcurrentRunBlockedError as exc:
         log.warning("blocked: %s", exc)
         return RunResult(run_id=0, state="blocked", error_message=str(exc))
 
@@ -9521,7 +9521,7 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 data_asof=lease_data_asof(cfg, lease), fetcher=fetcher,
             )
             lease.status(charts_status="ok")
-        except ChartingUnavailable:
+        except ChartingUnavailableError:
             lease.status(charts_status="skipped")
         except Exception as exc:
             log.warning("charts failed: %s", exc)
@@ -10453,7 +10453,7 @@ from pathlib import Path
 import pytest
 
 from swing.data.db import ensure_schema
-from swing.pipeline.lease import ConcurrentRunBlocked, acquire_lease
+from swing.pipeline.lease import ConcurrentRunBlockedError, acquire_lease
 
 
 def test_second_acquire_blocked(tmp_path: Path):
@@ -10465,7 +10465,7 @@ def test_second_acquire_blocked(tmp_path: Path):
         block_threshold_seconds=120,
     )
     try:
-        with pytest.raises(ConcurrentRunBlocked):
+        with pytest.raises(ConcurrentRunBlockedError):
             acquire_lease(
                 db_path=db, trigger="manual",
                 data_asof_date="2026-04-15", action_session_date="2026-04-16",
@@ -10515,7 +10515,7 @@ def test_concurrent_acquire_exactly_one_wins(tmp_path: Path):
             with results_lock:
                 winners.append(lease)
             # HOLD — do not release here, so other threads see contention
-        except ConcurrentRunBlocked:
+        except ConcurrentRunBlockedError:
             with results_lock:
                 blocked_count[0] += 1
 

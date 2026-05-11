@@ -75,7 +75,7 @@ swing/web/
 
 ### 2.3 Dependencies (read-only)
 
-- `swing/trades/entry.py::record_entry, EntryRequest, SoftWarnException, HardCapException, DuplicateOpenPositionException`
+- `swing/trades/entry.py::record_entry, EntryRequest, SoftWarnError, HardCapError, DuplicateOpenPositionError`
 - `swing/trades/exit.py::record_exit, ExitRequest, ExitReason`
 - `swing/trades/stop_adjust.py::adjust_stop, StopAdjustRequest, StopRegressionError`
 - `swing/recommendations/sizing.py::compute_shares`
@@ -243,8 +243,8 @@ POST /trades/<trade_id>/stop                   → open_positions_row (new curre
                 hard_cap=cfg.position_limits.hard_cap_open,
                 force=(form.get("force") == "true"))
    ```
-4. On `SoftWarnException`: if `force` was missing/false, render `soft_warn_confirm.html.j2` with the submitted form values re-serialized in a hidden block plus `<input type="hidden" name="force" value="true">`. The user clicks "Submit anyway" → a fresh POST with `force=true` → route retries and on `SoftWarnException` now bypasses (Phase 2 behavior).
-5. On `HardCapException` / `DuplicateOpenPositionException`: render `trade_form_error.html.j2` with the Phase 2 error message prepended above the re-rendered form.
+4. On `SoftWarnError`: if `force` was missing/false, render `soft_warn_confirm.html.j2` with the submitted form values re-serialized in a hidden block plus `<input type="hidden" name="force" value="true">`. The user clicks "Submit anyway" → a fresh POST with `force=true` → route retries and on `SoftWarnError` now bypasses (Phase 2 behavior).
+5. On `HardCapError` / `DuplicateOpenPositionError`: render `trade_form_error.html.j2` with the Phase 2 error message prepended above the re-rendered form.
 6. On success (two-call pattern; both share the same `PriceCache` so the second call's `get_many` is almost entirely cache hits):
    a. **Primary target row:** call `build_open_positions_row(trade=<new>, cfg, cache, executor)` to produce the new `OpenPositionsRowVM` → render `open_positions_row.html.j2`.
    b. **OOB fragments:** call `build_dashboard(cfg, cache, executor)` to rebuild `DashboardVM`. Render the OOB fragments directly from fields the rebuilt VM already exposes — `status_strip: StatusStripVM`, `watchlist_top5: list[WatchlistEntry]`, `watchlist_last_prices`, `flag_tags`, `watchlist_remaining_count`. These field names already exist on `DashboardVM` today (see [swing/web/view_models/dashboard.py](swing/web/view_models/dashboard.py)); no VM schema change is needed to support the OOB emission.
@@ -303,9 +303,9 @@ The POST handler does not block on price fetches beyond the configured deadline.
 | Error class | Source | HTTP status | Rendered as |
 |---|---|---|---|
 | Field validation (required missing, non-numeric, negative) | Starlette form parsing + route guards | 400 | `trade_form_error.html.j2` — banner above re-rendered form |
-| `SoftWarnException` (1st submit) | `record_entry` | 200 | `soft_warn_confirm.html.j2` — replaces form body; hidden `force=true` primed |
-| `HardCapException` | `record_entry` | 400 | Error fragment: "Hard cap ({cap}) reached. Close a position first." No UI bypass. |
-| `DuplicateOpenPositionException` | `record_entry` | 400 | Error fragment: "Ticker already has an open trade (#{id})." |
+| `SoftWarnError` (1st submit) | `record_entry` | 200 | `soft_warn_confirm.html.j2` — replaces form body; hidden `force=true` primed |
+| `HardCapError` | `record_entry` | 400 | Error fragment: "Hard cap ({cap}) reached. Close a position first." No UI bypass. |
+| `DuplicateOpenPositionError` | `record_entry` | 400 | Error fragment: "Ticker already has an open trade (#{id})." |
 | `StopRegressionError` | `adjust_stop` | 400 | Error fragment: "New stop {new} is below current {old}. Use CLI `swing trade stop-adjust ... --force` if intentional." |
 | Exit shares > remaining | `record_exit` | 400 | Error fragment: "Cannot exit {shares} sh — only {remaining} remaining." |
 | Trade id not found / not open (for exit/stop form GET) | DB lookup | 404 | HTMX-aware 404 fragment (see §5.2); the row's HTMX target swaps in a small "Trade #N not found or closed" fragment, not the default FastAPI JSON 404 body |
@@ -338,7 +338,7 @@ This tightens — but does not replace — 3a's generic exception handler. The o
 
 Inline forms are populated from DB state at form-GET time. Between GET and POST, another tab (or the CLI) can mutate that state: create a duplicate open trade, close the trade being edited, exit some of its shares, adjust its stop. Phase 2 services already catch most of this at write time (`record_entry` re-checks `open_count`, `record_exit` re-checks `remaining_shares`, `adjust_stop` re-reads `current_stop`). The 3b UX contract on state-drift:
 
-1. On `DuplicateOpenPositionException` during entry POST: render `trade_form_error.html.j2` with banner `"Ticker already has an open trade (#<id>)."` Form fields stay populated but submit is disabled until user explicitly cancels (swaps row back to normal). The existing trade is visible in the dashboard's open-positions table; there is no separate /trades tab (rejected as a design decision — see §9.1).
+1. On `DuplicateOpenPositionError` during entry POST: render `trade_form_error.html.j2` with banner `"Ticker already has an open trade (#<id>)."` Form fields stay populated but submit is disabled until user explicitly cancels (swaps row back to normal). The existing trade is visible in the dashboard's open-positions table; there is no separate /trades tab (rejected as a design decision — see §9.1).
 2. On `record_exit` raising a "shares-exceeds-remaining" error: re-fetch the trade + its exits from DB, re-render the exit form with the **authoritative** remaining-shares bound (new `max="<remaining>"`) and a banner explaining the conflict. The user sees the fresh limit; their previous input is preserved but clamped.
 3. On `adjust_stop` raising `StopRegressionError`: the route already re-reads `current_stop` inside the service, so the error message carries both the attempted `new_stop` and the actual `current_stop`. Re-render the stop form with the updated `current_stop` prefilled (not the user's attempted value) and the rationale preserved.
 4. On form GET discovering the trade is closed or missing: return a 404 fragment that replaces the row. A Phase 3c polling mechanism could notice this proactively; 3b accepts that the user sees "trade not found" only after clicking an action button.

@@ -264,7 +264,7 @@ Navigate to `http://127.0.0.1:8080/trades/entry/<TICKER>` for a ticker WITH a `p
 - [ ] **Form submits successfully WITHOUT chart_pattern fields populated** (all 4 chart_pattern columns persist as NULL).
 
 ### §4.7 Soft-warn confirm flow (Phase 5 Codex R1 M2 fix verification)
-- [ ] Pick a ticker WITH cached `pattern='flag'` classification AND set up conditions to trigger a soft-warn (e.g., 4+ open trades to fire `SoftWarnException`).
+- [ ] Pick a ticker WITH cached `pattern='flag'` classification AND set up conditions to trigger a soft-warn (e.g., 4+ open trades to fire `SoftWarnError`).
 - [ ] Submit the entry form.
 - [ ] Soft-warn confirmation page appears.
 - [ ] **Verify the chart_pattern hidden inputs ARE preserved** in the soft-warn confirm form (browser DevTools → Inspect → hidden inputs for `chart_pattern_algo`, etc.).

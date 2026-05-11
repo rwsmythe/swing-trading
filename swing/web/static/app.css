@@ -66,3 +66,52 @@ tr.tripwire-fired td:first-child { border-left: 4px solid #c00; }
 }
 .badge-update-today { background: #d1e7dd; color: #0f5132; }
 .badge-update-needed { background: #fff3cd; color: #664d03; }
+
+/* 3e.7 Task B.2 — flex-row layout for entry-form textarea + example aside
+   pairs. Aside sits to the right of the textarea, capped width so it does
+   not crowd on narrow viewports; muted text color so example hints do not
+   visually compete with operator-typed content.
+
+   Operator-gate I1 (2026-05-10): aside content is now wrapped in native
+   <details>/<summary> for individually expandable / collapsible behavior
+   (default collapsed). Reverses the original §0.3 #7 lock ("examples
+   visible always, NO toggle") per operator's mid-gate iteration on
+   surface 4. <details>/<summary> is HTML5 native — no JS — and each aside
+   toggles independently. */
+.entry-textarea-row {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+  margin-bottom: 0.75rem;
+}
+.entry-textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.entry-textarea textarea {
+  width: 100%;
+}
+.entry-example-aside {
+  flex: 0 0 auto;
+  max-width: 320px;
+  font-size: 0.875rem;
+  color: #666;
+  background: #f8f9fa;
+  border-left: 3px solid #dee2e6;
+  padding: 0.5rem 0.75rem;
+}
+.entry-example-aside details > summary {
+  cursor: pointer;
+  user-select: none;
+  list-style: revert;
+}
+.entry-example-aside details[open] > summary {
+  margin-bottom: 0.25rem;
+}
+.entry-example-aside ul {
+  margin: 0.25rem 0 0;
+  padding-left: 1.25rem;
+}
+.entry-example-aside li {
+  margin-bottom: 0.25rem;
+}

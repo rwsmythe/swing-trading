@@ -107,7 +107,7 @@ Files touched (full list):
   3. `swing/web/view_models/watchlist.py` — `WatchlistRowVM` gains `current_pivot: float | None = None` (R1-Major-3).
   4. `swing/web/view_models/trades.py` — `TradeEntryFormVM` gains `origin: Literal["watchlist","hyp-recs"] = "watchlist"` + `pipeline_finished_at: str | None`; `build_entry_form_vm` accepts `origin`, applies anchor-consistency logic per origin (R4-Major-2), extends candidate-row SELECT to fetch `pivot` + `initial_stop`, falls back to candidate values when `wl_entry` is None (R3-Major-1 + R3-Major-2 + R4-Major-2).
   5. `swing/web/routes/watchlist.py` — `/watchlist/{ticker}/row` populates `WatchlistRowVM.current_pivot` from `candidates_by_ticker`.
-  6. `swing/web/routes/trades.py` — GET entry-form handler reads `?origin=` query param (whitelist-validated); POST `/trades/entry` handler reads form-payload `origin`; threads through `_rerender_entry_form_with_error()`, `DuplicateOpenPositionException` re-render, and soft-warn `form_values` (R3-Major-1 + R4-Major-1).
+  6. `swing/web/routes/trades.py` — GET entry-form handler reads `?origin=` query param (whitelist-validated); POST `/trades/entry` handler reads form-payload `origin`; threads through `_rerender_entry_form_with_error()`, `DuplicateOpenPositionError` re-render, and soft-warn `form_values` (R3-Major-1 + R4-Major-1).
   7. `swing/web/app.py` — register the recommendations router AND extend `_ROW_TARGET_PREFIXES` to include `hyp-rec-row-` (R1-Major-2).
   8. `swing/web/templates/partials/hypothesis_recommendations.html.j2` — chevron leading column + Enter-button trailing column + iterate per-row partial.
   9. `swing/web/templates/partials/trade_entry_form.html.j2` — parameterize `colspan` + Cancel button `hx-get`/`hx-target` based on `vm.origin` (R3-Major-1) + hidden `origin` form field (R4-Major-1) + freshness footer when `vm.origin == 'hyp-recs'` (R4-Major-2).
@@ -853,7 +853,7 @@ GET-time threading of `origin` is necessary but NOT sufficient. The entry POST f
 
 - **`POST /trades/entry` handler (`swing/web/routes/trades.py`):** reads `origin` from form payload (whitelist-validated; unknown → "watchlist"). Threads to:
   - `_rerender_entry_form_with_error()` — current implementation rebuilds the VM from `ticker` only; spec requires it to also accept and propagate `origin`.
-  - `DuplicateOpenPositionException` re-render branch — same VM rebuild path; same `origin` propagation.
+  - `DuplicateOpenPositionError` re-render branch — same VM rebuild path; same `origin` propagation.
   - `soft_warn_confirm.html.j2` `form_values` dict — `origin` MUST be among the keys round-tripped to the confirmation partial. The confirmation partial's hidden inputs include `origin` so that a subsequent confirm-submit POSTs the same value back; on cancel, the partial's Cancel button uses `vm.origin` to choose the right unwind target (`/hyp-recs/refresh` for hyp-recs, `/watchlist/{ticker}/expand` for watchlist).
 
 - **`soft_warn_confirm.html.j2` template:** gains `<input type="hidden" name="origin" value="{{ vm.origin }}">` and parameterizes its Cancel button per the same logic as `trade_entry_form.html.j2:72-74` does post-R3-Major-1.
@@ -908,7 +908,7 @@ The Q7+Q8 + R3 + R4 resolution adds these to the dispatch's MODIFY list:
 - `swing/web/templates/partials/trade_entry_form.html.j2` — parameterize colspan + Cancel target (R3-Major-1) + hidden `origin` form field (R4-Major-1) + freshness footer when origin=hyp-recs (R4-Major-2).
 - `swing/web/templates/partials/soft_warn_confirm.html.j2` — hidden `origin` form field + parameterized Cancel button (R4-Major-1 round-trip).
 - `swing/web/view_models/trades.py` — `TradeEntryFormVM` gains `origin: Literal["watchlist", "hyp-recs"]` + `pipeline_finished_at: str | None` fields; `build_entry_form_vm` accepts `origin` param + applies anchor-consistency logic per origin (R3-Major-1 + R3-Major-2 + R4-Major-2).
-- `swing/web/routes/trades.py` — GET handler reads `?origin=` query param (whitelist); POST handler reads form-payload `origin`; threads to `_rerender_entry_form_with_error()` and `DuplicateOpenPositionException` re-render; soft-warn `form_values` includes `origin` (R3-Major-1 + R4-Major-1).
+- `swing/web/routes/trades.py` — GET handler reads `?origin=` query param (whitelist); POST handler reads form-payload `origin`; threads to `_rerender_entry_form_with_error()` and `DuplicateOpenPositionError` re-render; soft-warn `form_values` includes `origin` (R3-Major-1 + R4-Major-1).
 
 These are 4 additional MODIFY files NOT in the original §2.1 file map; updated below in the consolidated map and §9 done criteria.
 

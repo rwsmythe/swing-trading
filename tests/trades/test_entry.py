@@ -15,7 +15,7 @@ from swing.trades.entry import (
     EntryRationale, EntryRequest, EntryResult, entry_rationale_options,
     MissingPreTradeFieldsException,
     record_entry,
-    SoftWarnException, HardCapException, DuplicateOpenPositionException,
+    SoftWarnError, HardCapError, DuplicateOpenPositionError,
 )
 from swing.trades.origin import EntryPath
 
@@ -461,7 +461,7 @@ def test_soft_warn_blocks_unless_forced(tmp_path: Path):
     try:
         for t in ["AAPL", "MSFT", "NVDA", "META"]:
             record_entry(conn, _req(t), soft_warn=10, hard_cap=10, force=False)
-        with pytest.raises(SoftWarnException):
+        with pytest.raises(SoftWarnError):
             record_entry(conn, _req("GOOG"), soft_warn=4, hard_cap=10, force=False)
     finally:
         conn.close()
@@ -472,7 +472,7 @@ def test_hard_cap_blocks_even_with_force(tmp_path: Path):
     try:
         for t in ["AAPL", "MSFT", "NVDA", "META", "GOOG", "TSLA"]:
             record_entry(conn, _req(t), soft_warn=10, hard_cap=10, force=False)
-        with pytest.raises(HardCapException):
+        with pytest.raises(HardCapError):
             record_entry(conn, _req("AMZN"), soft_warn=2, hard_cap=6, force=True)
     finally:
         conn.close()
@@ -482,7 +482,7 @@ def test_duplicate_open_position_blocked(tmp_path: Path):
     conn = ensure_schema(tmp_path / "swing.db")
     try:
         record_entry(conn, _req("AAPL"), soft_warn=4, hard_cap=6, force=False)
-        with pytest.raises(DuplicateOpenPositionException):
+        with pytest.raises(DuplicateOpenPositionError):
             record_entry(conn, _req("AAPL"), soft_warn=4, hard_cap=6, force=False)
     finally:
         conn.close()
@@ -527,7 +527,7 @@ def test_integrity_error_mapped_to_duplicate_exception(tmp_path: Path, monkeypat
     """Adversarial review Batch 3 Round 2 Minor: when the app-layer duplicate
     check is bypassed (simulated race between list_open_trades and INSERT),
     the schema-level partial unique index fires IntegrityError, and
-    record_entry must map it to DuplicateOpenPositionException with the
+    record_entry must map it to DuplicateOpenPositionError with the
     race-detected suffix."""
     from swing.data.repos.trades import insert_trade_with_event
     from swing.trades import entry as entry_module
@@ -549,7 +549,7 @@ def test_integrity_error_mapped_to_duplicate_exception(tmp_path: Path, monkeypat
             )
         # Simulate the race: app-layer duplicate check sees an empty list.
         monkeypatch.setattr(entry_module, "list_open_trades", lambda c: [])
-        with pytest.raises(DuplicateOpenPositionException, match="race-detected"):
+        with pytest.raises(DuplicateOpenPositionError, match="race-detected"):
             record_entry(conn, _req("AAPL"), soft_warn=10, hard_cap=10, force=False)
     finally:
         conn.close()
@@ -557,7 +557,7 @@ def test_integrity_error_mapped_to_duplicate_exception(tmp_path: Path, monkeypat
 
 def test_concurrent_entry_one_wins_schema_level(tmp_path: Path):
     """Adversarial review Batch 3 Critical: two concurrent record_entry calls
-    for the SAME ticker — one wins, the other MUST get DuplicateOpenPositionException.
+    for the SAME ticker — one wins, the other MUST get DuplicateOpenPositionError.
     This tests the schema-level safety net (migration 0004 partial unique index)
     by bypassing the app-layer list_open_trades check (we seed a trade directly,
     then try to insert another via the repo — the partial unique index rejects).
@@ -585,7 +585,7 @@ def test_concurrent_entry_one_wins_schema_level(tmp_path: Path):
         # would reject on its own, but we also want to prove the schema
         # constraint catches a race that bypasses the app check. Simulating:
         # we directly verify the partial unique index exists and refuses.
-        with pytest.raises(DuplicateOpenPositionException):
+        with pytest.raises(DuplicateOpenPositionError):
             record_entry(conn, _req("AAPL"), soft_warn=10, hard_cap=10, force=False)
     finally:
         conn.close()

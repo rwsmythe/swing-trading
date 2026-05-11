@@ -131,7 +131,7 @@ The plan output (at `docs/superpowers/plans/2026-04-29-hyp-recs-trade-prep-expan
 11. **Origin-aware entry-form coverage.** Per spec §"R3+R4 resolutions" + §"R4-Major-1 resolution" (POST round-trip survival). Plan tasks must cover:
     - Origin field renders in entry form via hidden input for ALL origins.
     - Origin field survives `_rerender_entry_form_with_error` round-trip.
-    - Origin field survives `DuplicateOpenPositionException` round-trip.
+    - Origin field survives `DuplicateOpenPositionError` round-trip.
     - Origin field survives `soft_warn_confirm` round-trip.
     - Anchor-consistency for hyp-recs origin uses `latest_completed_pipeline_run` for ALL candidate-derived reads.
     
@@ -149,7 +149,7 @@ These are the high-likelihood failure modes Codex should specifically check. Pre
 
 1. **Three-site CC pivot wiring completeness.** Per spec §"Q-G resolution" + brainstorm R1+R2 history. The third site (`WatchlistRowVM.current_pivot` for `/watchlist/{ticker}/row` close-path) is the easiest to miss. Plan tasks must cover all three sites; verify by enumeration.
 
-2. **Origin-aware entry-form POST round-trip coverage.** Per spec §"R4-Major-1 resolution". Entry form serves multiple origins; the `origin` field must survive ALL POST-error paths (`_rerender_entry_form_with_error`, `DuplicateOpenPositionException`, `soft_warn_confirm`). Plan tests must cover each round-trip path.
+2. **Origin-aware entry-form POST round-trip coverage.** Per spec §"R4-Major-1 resolution". Entry form serves multiple origins; the `origin` field must survive ALL POST-error paths (`_rerender_entry_form_with_error`, `DuplicateOpenPositionError`, `soft_warn_confirm`). Plan tests must cover each round-trip path.
 
 3. **HTMX OOB-swap drift on `/hyp-recs/refresh`.** Per CLAUDE.md gotcha. Plan task for the route must include a discriminating test that catches drift if `build_hyp_recs_section` and the full-page render diverge in produced HTML.
 
@@ -226,7 +226,7 @@ The spec went through 5 brainstorming Codex rounds before this dispatch. Major f
 - R1: 4 Major + 3 Minor — snapshot-purity, `_ROW_TARGET_PREFIXES` extension, watchlist /row close-path CC pivot fix, full-section refresh decision; field-count churn, scope-accounting, dash sentinel.
 - R2: 2 Major + 1 Minor — correct CC pivot wiring sites (`watchlist_top5_section.html.j2` not `dashboard.html.j2`); scoped `build_hyp_recs_section` builder for `/refresh` instead of full `build_dashboard`.
 - R3: 2 Major + 1 Minor — origin-aware entry form (colspan + Cancel parameterized); off-watchlist candidate fallback for `entry_price`/`initial_stop`.
-- R4: 2 Major + 1 Minor — origin survives POST round-trips via hidden form field threaded through `_rerender_entry_form_with_error`/`DuplicateOpenPositionException`/`soft_warn_confirm`; anchor consistency for hyp-recs origin uses `latest_completed_pipeline_run` for ALL candidate-derived reads.
+- R4: 2 Major + 1 Minor — origin survives POST round-trips via hidden form field threaded through `_rerender_entry_form_with_error`/`DuplicateOpenPositionError`/`soft_warn_confirm`; anchor consistency for hyp-recs origin uses `latest_completed_pipeline_run` for ALL candidate-derived reads.
 - R5: 0 Major + 2 Minor — implementation sequencing in §7.1; freshness-footer wording clarified to "Candidate context as of pipeline finished" to avoid implying live-price freshness.
 
 Spec-history is durable in `docs/superpowers/specs/2026-04-29-hyp-recs-trade-prep-expansion-design.md` commit chain (`2bafde5` → `ff69143` → `70eea8c` → `51ffb07` → `622dc81` → `327b2b4` → `ade2b41`). Plan implementer should NOT re-iterate on resolved findings; if a Codex round in THIS dispatch raises a finding that already has a spec-history fix, cite the spec section + the brainstorm-fix commit, then proceed.

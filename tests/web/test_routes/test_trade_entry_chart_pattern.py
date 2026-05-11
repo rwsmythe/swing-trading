@@ -624,7 +624,7 @@ def test_soft_warn_confirm_round_trip_preserves_chart_pattern_snapshot(
 
     Compounding-confound: seed 4 unrelated open trades to push
     open_count to soft_warn_open=4, then submit AAPL with chart_pattern
-    snapshot → SoftWarnException fires inside record_entry → confirm
+    snapshot → SoftWarnError fires inside record_entry → confirm
     fragment renders. Verifies the bug is in the confirm-render path,
     not in the cached-only gate or invariant.
     """

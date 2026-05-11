@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from swing.data.db import EXPECTED_SCHEMA_VERSION, SchemaVersionMismatch, connect, ensure_schema
+from swing.data.db import EXPECTED_SCHEMA_VERSION, SchemaVersionMismatchError, connect, ensure_schema
 
 
 def test_ensure_schema_applies_migrations_on_fresh_db(tmp_db: Path):
@@ -29,7 +29,7 @@ def test_connect_refuses_old_schema(tmp_db: Path):
     conn.commit()
     conn.close()
 
-    with pytest.raises(SchemaVersionMismatch) as exc:
+    with pytest.raises(SchemaVersionMismatchError) as exc:
         connect(tmp_db)
     assert "db-migrate" in str(exc.value)
 
@@ -44,7 +44,7 @@ def test_connect_works_after_ensure_schema(tmp_db: Path):
 
 def test_connect_raises_when_db_missing(tmp_path: Path):
     missing = tmp_path / "nope.db"
-    with pytest.raises(SchemaVersionMismatch) as exc:
+    with pytest.raises(SchemaVersionMismatchError) as exc:
         connect(missing)
     assert "db-migrate" in str(exc.value)
 

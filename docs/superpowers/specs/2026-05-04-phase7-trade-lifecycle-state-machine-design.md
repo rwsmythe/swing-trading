@@ -588,9 +588,9 @@ Every new field declares disposition; no field ships without one.
 
 **Existing checks preserved (already in `record_entry()`):**
 
-- `HardCapException` (open_count ≥ hard_cap_open) — never bypassable.
-- `SoftWarnException` (open_count ≥ soft_warn_open) — bypassable with `force=True`.
-- `DuplicateOpenPositionException` (already-open ticker).
+- `HardCapError` (open_count ≥ hard_cap_open) — never bypassable.
+- `SoftWarnError` (open_count ≥ soft_warn_open) — bypassable with `force=True`.
+- `DuplicateOpenPositionError` (already-open ticker).
 - Stop < entry validation.
 - Risk-pct enforcement via existing `compute_shares` / `SizingResult` upstream.
 
@@ -879,7 +879,7 @@ Each gate component blocks separately (one test per failure mode):
 - `event_risk_present=1` + missing event_type / event_date → conditional rejection.
 - `gap_risk_present=1` + missing gap_risk_handling → conditional rejection.
 - `catalyst='other'` + missing catalyst_other_description → conditional rejection.
-- Existing checks preserved: stop ≥ entry → ValueError; hard cap → HardCapException; duplicate ticker → DuplicateOpenPositionException; soft-warn forceable.
+- Existing checks preserved: stop ≥ entry → ValueError; hard cap → HardCapError; duplicate ticker → DuplicateOpenPositionError; soft-warn forceable.
 
 **Complete-pass tests at all 3 surfaces:**
 

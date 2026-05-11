@@ -12,7 +12,7 @@ CONSOLIDATION_DAYS = 10
 MIN_BARS = CONSOLIDATION_DAYS + 1
 
 
-class ChartingUnavailable(RuntimeError):
+class ChartingUnavailableError(RuntimeError):
     """mplfinance not installed — pipeline should set charts_status='skipped'."""
 
 
@@ -75,7 +75,7 @@ def render_chart(
     """Render a daily chart with SMAs 10/20/50 + pivot/stop hlines + consolidation marker.
 
     Returns the output path on success, None if data is too short.
-    Raises ChartingUnavailable if mplfinance isn't installed (caller handles).
+    Raises ChartingUnavailableError if mplfinance isn't installed (caller handles).
 
     When `pattern_overlay` is non-None, paints pole + flag fill_betweenx
     bands plus an algo-pivot horizontal segment spanning only the flag
@@ -86,7 +86,7 @@ def render_chart(
         import matplotlib.pyplot as plt
         import mplfinance as mpf
     except ImportError as exc:
-        raise ChartingUnavailable("mplfinance not installed") from exc
+        raise ChartingUnavailableError("mplfinance not installed") from exc
 
     df = ohlcv.tail(CHART_LOOKBACK_DAYS).copy()
     if len(df) < MIN_BARS:

@@ -52,7 +52,7 @@ def promote_staging(
     by the new run: the re-check aborts before the irreversible rename.
     """
     from swing.data.db import connect
-    from swing.data.repos.pipeline import LeaseRevoked, find_run
+    from swing.data.repos.pipeline import LeaseRevokedError, find_run
 
     if not staging.path.exists():
         raise RuntimeError(f"staging dir does not exist: {staging.path}")
@@ -73,7 +73,7 @@ def promote_staging(
     try:
         run = find_run(conn, staging.run_id)
         if run is None or run.lease_token != lease_token or run.state != "running":
-            raise LeaseRevoked(
+            raise LeaseRevokedError(
                 f"run {staging.run_id} lease revoked or state changed "
                 f"(state={run.state if run else 'missing'}); aborting promote"
             )

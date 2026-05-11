@@ -46,7 +46,7 @@ PHASE8_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
 )
 
 
-class SchemaVersionMismatch(RuntimeError):
+class SchemaVersionMismatchError(RuntimeError):
     """Raised when the DB schema version doesn't match what the code expects."""
 
 
@@ -441,7 +441,7 @@ def ensure_schema(db_path: Path) -> sqlite3.Connection:
         return conn
     if current > EXPECTED_SCHEMA_VERSION:
         conn.close()
-        raise SchemaVersionMismatch(
+        raise SchemaVersionMismatchError(
             f"DB schema version {current} newer than code ({EXPECTED_SCHEMA_VERSION}). "
             "Update the swing package."
         )
@@ -457,7 +457,7 @@ def ensure_schema(db_path: Path) -> sqlite3.Connection:
 def connect(db_path: Path) -> sqlite3.Connection:
     """Open a connection for normal app use. Raises if schema is not current."""
     if not db_path.exists():
-        raise SchemaVersionMismatch(
+        raise SchemaVersionMismatchError(
             f"DB not found at {db_path}. Run: swing db-migrate"
         )
     conn = sqlite3.connect(db_path)
@@ -465,7 +465,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
     current = _current_version(conn)
     if current != EXPECTED_SCHEMA_VERSION:
         conn.close()
-        raise SchemaVersionMismatch(
+        raise SchemaVersionMismatchError(
             f"DB schema version {current}, code expects {EXPECTED_SCHEMA_VERSION}. "
             "Run: swing db-migrate"
         )

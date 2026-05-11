@@ -566,6 +566,139 @@ def test_expand_route_freshness_footer_includes_finished_ts(
 
 
 # ---------------------------------------------------------------------------
+# 3e.4 Task A.2 — current price renders at top of expansion partial via the
+# PriceCache+executor `get_many` path threaded from the route handler.
+# Codex R1 Major #1+#2+#3 fix: builder accepts `executor=` and routes
+# through the deadline-bounded batch `get_many` call mirroring the
+# open-positions dashboard pattern (NOT the unbounded single-ticker `get`).
+# ---------------------------------------------------------------------------
+def _patch_get_many_for_expand(monkeypatch, *, ticker, snapshot=None):
+    """Stub PriceCache.get_many (batch path used by build_hyp_recs_expanded)
+    so the expand route does not invoke yfinance during tests. Records each
+    call's kwargs so tests can assert the deadline + executor were threaded
+    through correctly."""
+    calls: list = []
+
+    def _get_many(self, tickers, *, deadline_seconds, executor):
+        calls.append(
+            (list(tickers), deadline_seconds, executor),
+        )
+        if snapshot is None:
+            return {}
+        return {ticker: snapshot}
+    monkeypatch.setattr(PriceCache, "get_many", _get_many)
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+    return calls
+
+
+def test_expand_route_renders_current_price_when_cache_hits(
+    seeded_db, monkeypatch,
+):
+    """A.AC.3 + A.AC.4 — the expand route threads `request.app.state.price_cache`
+    AND `request.app.state.price_fetch_executor` into `build_hyp_recs_expanded`;
+    the template renders `Current: $X.XX` above the Order parameters heading.
+    Discriminating: pre-wiring path has no `Current:` substring; post-wiring
+    path renders the stub price AND records get_many being invoked with the
+    configured deadline + non-None executor."""
+    snap = PriceSnapshot(
+        ticker="NVDA", price=187.34, asof=datetime.now(),
+        is_stale=False, source="live",
+    )
+    calls = _patch_get_many_for_expand(
+        monkeypatch, ticker="NVDA", snapshot=snap,
+    )
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/hyp-recs/NVDA/expand",
+            headers={"HX-Request": "true"},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    assert "Current: $187.34" in body, (
+        f"current-price line missing; body excerpt:\n{body[:1500]}"
+    )
+    # Layout watch: current-price line MUST render ABOVE Order parameters
+    # heading per brief §0.3 #1.
+    assert body.index("Current: $187.34") < body.index("Order parameters"), (
+        "current-price line must render ABOVE the Order parameters heading"
+    )
+    # Codex R1 Major #1+#3: assert the route actually invoked the batch
+    # `get_many` path with deadline + executor (NOT the unbounded `get`).
+    expand_calls = [c for c in calls if c[0] == ["NVDA"]]
+    assert len(expand_calls) == 1, (
+        f"expand route must call PriceCache.get_many(['NVDA'], ...) exactly "
+        f"once; got calls={calls!r}"
+    )
+    _tickers_called, deadline_called, executor_called = expand_calls[0]
+    assert deadline_called == cfg.web.price_fetch_deadline_seconds, (
+        f"expand route must thread cfg.web.price_fetch_deadline_seconds "
+        f"({cfg.web.price_fetch_deadline_seconds}); got {deadline_called}"
+    )
+    assert executor_called is not None, (
+        "expand route must thread app.state.price_fetch_executor into "
+        "get_many (Codex R1 Major #1 + #2)"
+    )
+
+
+def test_expand_route_renders_stale_indicator_when_price_stale(
+    seeded_db, monkeypatch,
+):
+    """A.AC.5 — when the PriceSnapshot has is_stale=True, template renders
+    `(stale)` next to the price. Mirrors `partials/open_positions_row.html.j2`
+    stale-flag pattern per brief §0.3 #2."""
+    snap = PriceSnapshot(
+        ticker="NVDA", price=187.34, asof=datetime.now(),
+        is_stale=True, source="last_close",
+    )
+    _patch_get_many_for_expand(monkeypatch, ticker="NVDA", snapshot=snap)
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/hyp-recs/NVDA/expand",
+            headers={"HX-Request": "true"},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    assert "Current: $187.34" in body
+    assert "(stale)" in body, (
+        "stale snapshot must render the `(stale)` indicator next to the price"
+    )
+
+
+def test_expand_route_renders_dash_when_price_unavailable(
+    seeded_db, monkeypatch,
+):
+    """A.AC.6 — when PriceCache.get_many returns an empty dict (no live,
+    no last_close, OR the deadline elapsed), template renders `Current: —`.
+    Mirrors open-positions empty-snapshot rendering pattern per brief §0.3 #2."""
+    _patch_get_many_for_expand(monkeypatch, ticker="NVDA", snapshot=None)
+    cfg, cfg_path = seeded_db
+    _seed_hyp_recs_fixture(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/hyp-recs/NVDA/expand",
+            headers={"HX-Request": "true"},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    assert "Current: —" in body, (
+        "missing-price fallback must render the `Current: —` placeholder"
+    )
+    # Discriminating: must NOT accidentally render a price string when
+    # the snapshot is None.
+    assert "Current: $" not in body, (
+        "no price snapshot ⇒ template must not render a `Current: $N.NN` line"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Task 5.6 — Take-this-trade button (Q8) on expansion.
 # Spec §3.5.6 (layout) + §3.7 D.2 D.3 D.5 (binding contracts).
 # ---------------------------------------------------------------------------
@@ -1158,7 +1291,7 @@ def test_duplicate_open_position_rerender_preserves_origin(
     """R4-Major-1 — duplicate-position round-trip preserves origin.
 
     POST with origin=hyp-recs for a ticker that already has an OPEN
-    trade → DuplicateOpenPositionException → form re-renders at 400
+    trade → DuplicateOpenPositionError → form re-renders at 400
     with origin still 'hyp-recs'.
 
     Discriminating: pre-fix the duplicate re-render branch calls
@@ -1168,7 +1301,7 @@ def test_duplicate_open_position_rerender_preserves_origin(
     cfg, cfg_path = seeded_db
     _seed_hyp_recs_fixture(cfg, tickers=["NVDA"])
     # Seed an existing OPEN trade for NVDA so the new POST trips
-    # DuplicateOpenPositionException at record_entry.
+    # DuplicateOpenPositionError at record_entry.
     conn = connect(cfg.paths.db_path)
     try:
         with conn:

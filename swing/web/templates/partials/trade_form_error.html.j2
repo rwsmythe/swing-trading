@@ -1,5 +1,5 @@
 {#- Trade form error fragment — banner-only. Used when form re-render is not
-    applicable (HardCapException, path-aware 404 fallback, trade gone after
+    applicable (HardCapError, path-aware 404 fallback, trade gone after
     form-GET). For drift-recovery cases (§5.1 cases 1, 2, 3), routes render
     the relevant form template directly with an `error_message` context var —
     the banner appears INLINE inside the form's `<td>`, so the next submit

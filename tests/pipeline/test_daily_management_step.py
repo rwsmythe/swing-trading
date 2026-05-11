@@ -324,22 +324,22 @@ def test_step_failure_does_not_abort_pipeline(
 
 
 def test_step_re_raises_LeaseRevoked(synthetic_lease_and_trades, monkeypatch):
-    """Codex R2 Major #5 discriminating test: LeaseRevoked MUST propagate
+    """Codex R2 Major #5 discriminating test: LeaseRevokedError MUST propagate
     (force-clear authoritative); the broad `except Exception` MUST NOT catch it.
 
     EXACT pre-fix expected (broad-except only): no exception raised; warning logged.
-    EXACT post-fix expected: LeaseRevoked propagates out of _step_daily_management."""
-    from swing.pipeline.lease import LeaseRevoked
+    EXACT post-fix expected: LeaseRevokedError propagates out of _step_daily_management."""
+    from swing.pipeline.lease import LeaseRevokedError
     lease, conn = synthetic_lease_and_trades
 
     def raise_revoked(conn_inner, *, trade_id, **kwargs):
-        raise LeaseRevoked("synthetic-revoke-during-snapshot")
+        raise LeaseRevokedError("synthetic-revoke-during-snapshot")
     monkeypatch.setattr(
         "swing.trades.daily_management.compute_daily_approximate_snapshot",
         raise_revoked,
     )
 
-    with pytest.raises(LeaseRevoked, match="synthetic-revoke-during-snapshot"):
+    with pytest.raises(LeaseRevokedError, match="synthetic-revoke-during-snapshot"):
         _step_daily_management(
             lease=lease, run_now=datetime(2026, 5, 7, 18, 0, 0),
             eval_run_id=99, archive_history_days=120,

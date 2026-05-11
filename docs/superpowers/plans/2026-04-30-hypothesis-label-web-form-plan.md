@@ -1549,7 +1549,7 @@ Replace with:
 
 - [ ] **Step 6: Add `hypothesis_label` to soft-warn `form_values`**
 
-In the same file, find the `form_values = { ... }` dict in the `SoftWarnException` block (line 413). The existing dict ends with `"open_count": actual_open,` then `"soft_warn"`, `"hard_cap"`. Add the field next to `sector`/`industry` per brief §3.D:
+In the same file, find the `form_values = { ... }` dict in the `SoftWarnError` block (line 413). The existing dict ends with `"open_count": actual_open,` then `"soft_warn"`, `"hard_cap"`. Add the field next to `sector`/`industry` per brief §3.D:
 
 Find:
 ```python

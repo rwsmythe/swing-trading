@@ -131,7 +131,7 @@ These are the high-likelihood failure modes Codex should specifically check post
 
 1. **Three-site CC pivot wiring completeness.** Per plan Task 1 + spec §"Q-G resolution". The third site (`WatchlistRowVM.current_pivot` for `/watchlist/{ticker}/row` close-path) is the easiest to miss. Verify all three render sites implement the fix; close-path test included.
 
-2. **Origin-aware entry-form POST round-trip coverage.** Per plan Task 7 + spec §"R4-Major-1 resolution". Entry form serves multiple origins; the `origin` field must survive ALL POST-error paths (`_rerender_entry_form_with_error`, `DuplicateOpenPositionException`, `soft_warn_confirm`). Tests cover each round-trip path. Per the multi-path-ingestion lesson (2026-04-29), enumerate ALL origin paths.
+2. **Origin-aware entry-form POST round-trip coverage.** Per plan Task 7 + spec §"R4-Major-1 resolution". Entry form serves multiple origins; the `origin` field must survive ALL POST-error paths (`_rerender_entry_form_with_error`, `DuplicateOpenPositionError`, `soft_warn_confirm`). Tests cover each round-trip path. Per the multi-path-ingestion lesson (2026-04-29), enumerate ALL origin paths.
 
 3. **HTMX OOB-swap drift on `/hyp-recs/refresh`.** Per plan Task 4 + CLAUDE.md gotcha. The route renders content via the same `{% include %}` chain as the full-page dashboard render — `build_hyp_recs_section` is the shared callable. Discriminating test must catch drift if the route's output and the full-page render diverge.
 

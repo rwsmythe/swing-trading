@@ -541,7 +541,7 @@ Heartbeat is emitted every 30 seconds by a background thread in the pipeline pro
 `/pipeline` page shows stale runs with a **Force clear** button. Clicking:
 1. Requires explicit confirmation ("This marks run #N as failed. Any still-live worker loses its lease and cannot commit further writes. Proceed?").
 2. Updates the row to `state='force_cleared'`, `error_message='admin force clear at <ts>'`.
-3. Future writes by the original (possibly still-alive) worker process fail at the repo layer because `lease_token` no longer matches — the repo raises `LeaseRevoked` and the worker exits.
+3. Future writes by the original (possibly still-alive) worker process fail at the repo layer because `lease_token` no longer matches — the repo raises `LeaseRevokedError` and the worker exits.
 
 This is the only way to clear a stuck lock. Restarting the app does not auto-clear.
 

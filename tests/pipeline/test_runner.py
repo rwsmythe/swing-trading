@@ -70,7 +70,7 @@ def test_runner_detects_mid_run_lease_revocation(tmp_path: Path, monkeypatch):
     """Adversarial review Batch 4 Round 1 Critical 1: a force-clear happening
     between step-boundaries must abort subsequent DB-writing steps. The runner
     calls _verify_lease_still_held at the start of each write-step; a revoked
-    lease raises LeaseRevoked which exits the step loop before canonical writes
+    lease raises LeaseRevokedError which exits the step loop before canonical writes
     happen."""
     from tests.cli.test_cli_eval import _minimal_config
     from swing.data.repos.pipeline import force_clear
@@ -115,7 +115,7 @@ def test_runner_detects_mid_run_lease_revocation(tmp_path: Path, monkeypatch):
 
     from swing.pipeline.runner import run_pipeline_internal
     result = run_pipeline_internal(cfg=cfg, trigger="manual")
-    # The runner catches LeaseRevoked at the top-level step loop and surfaces
+    # The runner catches LeaseRevokedError at the top-level step loop and surfaces
     # state='force_cleared' without attempting a lease.release() that would
     # re-raise.
     assert result.state == "force_cleared"
