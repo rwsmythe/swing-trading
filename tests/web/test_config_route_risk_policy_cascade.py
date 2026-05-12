@@ -129,6 +129,40 @@ def test_config_post_chase_factor_change_does_not_cascade(app_client):
         conn.close()
 
 
+def test_config_post_no_op_cascade_skipped_on_value_match(app_client):
+    """Phase 9 Codex R4 M#1 fix: when operator submits the form value
+    that already matches the active policy (e.g., to re-sync user-config
+    after a hand-edit divergence), no new policy row is created."""
+    client, cfg, _cfg_path = app_client
+    # First set risk_equity_floor to 8500 — creates policy_id=2.
+    payload = _form_payload(cfg, **{"account.risk_equity_floor": "8500.0"})
+    payload["force"] = "true"
+    resp = _post_form(client, payload)
+    assert resp.status_code in (204, 303)
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        n_after_first = conn.execute(
+            "SELECT COUNT(*) FROM risk_policy"
+        ).fetchone()[0]
+        assert n_after_first == 2
+    finally:
+        conn.close()
+
+    # Now POST AGAIN with the same value 8500 → no new policy row.
+    payload = _form_payload(cfg, **{"account.risk_equity_floor": "8500.0"})
+    payload["force"] = "true"
+    resp = _post_form(client, payload)
+    assert resp.status_code in (204, 303)
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        n_after_second = conn.execute(
+            "SELECT COUNT(*) FROM risk_policy"
+        ).fetchone()[0]
+        assert n_after_second == n_after_first  # no audit pollution
+    finally:
+        conn.close()
+
+
 def test_config_post_hx_redirect_success_response(app_client):
     """Phase 5 R1 M2 lesson preserved: HTMX POST responds with 204 +
     HX-Redirect, NOT a 303 swap-target."""

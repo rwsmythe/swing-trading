@@ -128,10 +128,39 @@ async def config_save(request: Request):
     # capital_floor_constant_dollars` to reconcile). The next startup's
     # divergence check will surface the gap.
     if cascade_updates:
+        from swing.data.repos.risk_policy import (
+            NoActivePolicyError,
+            get_active_policy,
+        )
         from swing.trades.risk_policy import supersede_active_policy
 
         cascade_conn = sqlite3.connect(base_cfg.paths.db_path)
         try:
+            # Codex R4 M#1 fix: skip cascade when EVERY would-be value
+            # already matches the active policy (avoids no-op audit-chain
+            # pollution when the operator submits the form to reconcile a
+            # bannered divergence — current_eff still reflects the
+            # divergent override, but the active policy already holds the
+            # submitted value).
+            try:
+                active_now = get_active_policy(cascade_conn)
+            except NoActivePolicyError:
+                active_now = None
+            if active_now is not None:
+                all_match = True
+                for policy_field, would_be in cascade_updates.items():
+                    active_val = getattr(active_now, policy_field)
+                    if isinstance(active_val, float) and isinstance(
+                        would_be, float,
+                    ):
+                        if abs(active_val - would_be) >= 1e-9:
+                            all_match = False
+                            break
+                    elif active_val != would_be:
+                        all_match = False
+                        break
+                if all_match:
+                    return _save_redirect_response(request)
             supersede_active_policy(
                 cascade_conn,
                 field_updates=cascade_updates,

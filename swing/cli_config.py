@@ -452,8 +452,15 @@ def policy_import_from_toml(
     is the explicit ratification that promotes the TOML edit to a new
     risk_policy row.
 
-    V1 only supports `capital_floor_constant_dollars` (per spec §3.1.3
-    only one Phase-5-surfaced field has a cfg counterpart).
+    Supports the four spec §3.1.3 SEED MAP fields with cfg counterparts:
+    capital_floor_constant_dollars (cfg.account.risk_equity_floor),
+    max_concurrent_positions (cfg.position_limits.hard_cap_open),
+    review_lag_threshold_days (cfg.review.review_window_days),
+    max_account_risk_per_trade_pct (cfg.risk.max_risk_pct × 100).
+
+    The Phase 5 web config page surfaces ONE of those four
+    (account.risk_equity_floor); the other three are CLI-only in V1
+    (operator edits via `swing config policy set` or this command).
     """
     from swing.data.db import connect
     from swing.trades.risk_policy import (
