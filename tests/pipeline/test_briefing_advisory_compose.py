@@ -546,3 +546,143 @@ def test_compose_open_trade_advisories_returns_view_model_dataclasses():
         assert isinstance(s, AdvisorySuggestionVM), (
             f"Expected AdvisorySuggestionVM; got {type(s).__name__}"
         )
+
+
+# ----------------------------------------------------------------------
+# 3e.8 Bundle 3 — briefing composer threads maturity_stage_by_trade_id +
+# fires §4.A.bis maturity_stage_trail_ma_hint and §M.2 r_multiple_stop_tighten.
+# ----------------------------------------------------------------------
+
+
+def test_briefing_composer_fires_maturity_stage_hint_when_stage_supplied():
+    """§4.A.bis — caller supplies maturity_stage_by_trade_id; advisory fires."""
+    from swing.pipeline.runner import compose_open_trade_advisories_for_briefing
+
+    trade = _trade(entry=100.0, initial_stop=95.0)
+    bars = _bars_no_trigger()
+    candidates = {"ABCD": _candidate(close=102.0)}  # +0.4R; below M.2 trigger
+    fetcher = _StubFetcher({"ABCD": bars})
+
+    result = compose_open_trade_advisories_for_briefing(
+        trades=[trade], fetcher=fetcher, candidates_by_ticker=candidates,
+        weather_status="Bullish", stop_advisory_config=_stop_advisory_default(),
+        action_session_date="2026-04-15",
+        maturity_stage_by_trade_id={trade.id: "pre_+1.5R"},
+    )
+
+    rules = {s.rule for s in result[trade.id]}
+    assert "maturity_stage_trail_ma_hint" in rules
+    msg = next(
+        s.message for s in result[trade.id]
+        if s.rule == "maturity_stage_trail_ma_hint"
+    )
+    assert "20MA" in msg
+    assert "pre_+1.5R" in msg
+
+
+def test_briefing_composer_omits_maturity_stage_hint_when_unsupplied():
+    """§4.A.bis — no maturity_stage map → rule no-ops (default-None path)."""
+    from swing.pipeline.runner import compose_open_trade_advisories_for_briefing
+
+    trade = _trade(entry=100.0, initial_stop=95.0)
+    bars = _bars_no_trigger()
+    candidates = {"ABCD": _candidate(close=102.0)}
+    fetcher = _StubFetcher({"ABCD": bars})
+
+    result = compose_open_trade_advisories_for_briefing(
+        trades=[trade], fetcher=fetcher, candidates_by_ticker=candidates,
+        weather_status="Bullish", stop_advisory_config=_stop_advisory_default(),
+        action_session_date="2026-04-15",
+        # maturity_stage_by_trade_id omitted.
+    )
+
+    rules = {s.rule for s in result[trade.id]}
+    assert "maturity_stage_trail_ma_hint" not in rules
+
+
+def test_briefing_composer_maturity_stage_2r_eligible_recommends_10ma():
+    """Discriminating test (operator-memory regression-test arithmetic):
+    distinct maturity stage yields distinct recommended MA in the rendered
+    advisory message."""
+    from swing.pipeline.runner import compose_open_trade_advisories_for_briefing
+
+    trade = _trade(entry=100.0, initial_stop=95.0)
+    bars = _bars_no_trigger()
+    candidates = {"ABCD": _candidate(close=102.0)}
+    fetcher = _StubFetcher({"ABCD": bars})
+
+    result = compose_open_trade_advisories_for_briefing(
+        trades=[trade], fetcher=fetcher, candidates_by_ticker=candidates,
+        weather_status="Bullish", stop_advisory_config=_stop_advisory_default(),
+        action_session_date="2026-04-15",
+        maturity_stage_by_trade_id={trade.id: ">=+2R_trail_eligible"},
+    )
+
+    msg = next(
+        s.message for s in result[trade.id]
+        if s.rule == "maturity_stage_trail_ma_hint"
+    )
+    assert "10MA" in msg
+    assert "20MA" not in msg
+
+
+def test_briefing_composer_fires_r_multiple_stop_tighten_at_2r():
+    """§M.2 — close at +2R fires r_multiple_stop_tighten (default 2.0R trigger)."""
+    from swing.pipeline.runner import compose_open_trade_advisories_for_briefing
+
+    # entry=100, stop=95 → 1R=$5. close=110 → +2R exactly.
+    trade = _trade(entry=100.0, initial_stop=95.0)
+    bars = _bars_no_trigger()
+    candidates = {"ABCD": _candidate(close=110.0)}
+    fetcher = _StubFetcher({"ABCD": bars})
+
+    result = compose_open_trade_advisories_for_briefing(
+        trades=[trade], fetcher=fetcher, candidates_by_ticker=candidates,
+        weather_status="Bullish", stop_advisory_config=_stop_advisory_default(),
+        action_session_date="2026-04-15",
+    )
+
+    rules = {s.rule for s in result[trade.id]}
+    assert "r_multiple_stop_tighten" in rules
+
+
+def test_briefing_composer_omits_r_multiple_stop_tighten_below_2r():
+    """Discriminating: +1.99R doesn't fire (entry=100, close=109.95 → 1.99R)."""
+    from swing.pipeline.runner import compose_open_trade_advisories_for_briefing
+
+    trade = _trade(entry=100.0, initial_stop=95.0)
+    bars = _bars_no_trigger()
+    candidates = {"ABCD": _candidate(close=109.95)}  # +1.99R
+    fetcher = _StubFetcher({"ABCD": bars})
+
+    result = compose_open_trade_advisories_for_briefing(
+        trades=[trade], fetcher=fetcher, candidates_by_ticker=candidates,
+        weather_status="Bullish", stop_advisory_config=_stop_advisory_default(),
+        action_session_date="2026-04-15",
+    )
+
+    rules = {s.rule for s in result[trade.id]}
+    assert "r_multiple_stop_tighten" not in rules
+
+
+def test_briefing_composer_dhc_like_does_not_fire_r_multiple_stop_tighten():
+    """DHC empirical case (brief §0.3 #13): r=0.85R must NOT fire the
+    M.2 rule under default cfg."""
+    from swing.pipeline.runner import compose_open_trade_advisories_for_briefing
+
+    # entry=100, stop=95 → 1R=$5. r=0.85R → close=104.25.
+    trade = _trade(entry=100.0, initial_stop=95.0)
+    bars = _bars_no_trigger()
+    candidates = {"ABCD": _candidate(close=104.25)}
+    fetcher = _StubFetcher({"ABCD": bars})
+
+    result = compose_open_trade_advisories_for_briefing(
+        trades=[trade], fetcher=fetcher, candidates_by_ticker=candidates,
+        weather_status="Bullish", stop_advisory_config=_stop_advisory_default(),
+        action_session_date="2026-04-15",
+        maturity_stage_by_trade_id={trade.id: "pre_+1.5R"},
+    )
+    rules = {s.rule for s in result[trade.id]}
+    # DHC scenario: §4.A.bis fires, §M.2 must not.
+    assert "maturity_stage_trail_ma_hint" in rules
+    assert "r_multiple_stop_tighten" not in rules
