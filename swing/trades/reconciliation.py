@@ -184,13 +184,24 @@ def run_tos_reconciliation(
             raise ValueError(
                 f"emitter received unknown discrepancy_type: {dtype!r}"
             )
+        # Defense-in-depth on top of the in-tos_import dedup. For orphan
+        # discrepancies (trade_id/fill_id/cash_movement_id all None), the
+        # actual_value_json is added to the dedup key so distinct source
+        # fills don't collapse silently (Codex R2 M#1).
+        trade_id = fields.get("trade_id")
+        fill_id = fields.get("fill_id")
+        cash_id = fields.get("cash_movement_id")
+        payload_key: str | None = None
+        if trade_id is None and fill_id is None and cash_id is None:
+            payload_key = fields.get("actual_value_json")
         key = (
-            fields.get("trade_id"),
+            trade_id,
             dtype,
             fields.get("field_name"),
             fields.get("ticker"),
-            fields.get("fill_id"),
-            fields.get("cash_movement_id"),
+            fill_id,
+            cash_id,
+            payload_key,
         )
         if key in dedup_seen:
             return -1

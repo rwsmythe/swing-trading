@@ -663,3 +663,113 @@ def test_source_artifact_path_normalized_to_absolute(
         f"source_artifact_path must be absolute per spec §3.2; "
         f"got {out.source_artifact_path!r}"
     )
+
+
+# ===========================================================================
+# §10 — Codex R2 fixes: orphan-fill dedup collision + overfill-close
+#       trade attribution.
+# ===========================================================================
+
+
+def test_orphan_unmatched_open_fills_distinct_payloads_dedup_separately(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Codex R2 M#1 — two real orphan fills for the same ticker but
+    different (date, qty, price) MUST produce TWO discrepancy rows,
+    not one. Pre-fix, the dedup key collapsed trade_id=None + fill_id
+    =None + ticker=X across distinct payloads.
+    """
+    csv = tmp_path / "tos.csv"
+    # Two GHOST OPEN fills, different qty/price.
+    csv.write_text(
+        "Account Trade History\n"
+        "Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,"
+        "Price,Net Price,Order Type\n"
+        "2026-05-12 10:00:00,STOCK,BUY,+5,OPENING,GHOST,,,,42.0000,42.0000,MKT\n"
+        "2026-05-12 11:00:00,STOCK,BUY,+7,OPENING,GHOST,,,,43.0000,43.0000,MKT\n",
+        encoding="utf-8",
+    )
+    out = run_tos_reconciliation(conn, csv_path=csv)
+    ds = recon_repo.list_discrepancies_for_run(conn, out.run_id)
+    uof = [d for d in ds if d.discrepancy_type == "unmatched_open_fill"]
+    assert len(uof) == 2, (
+        f"distinct orphan fills must produce 2 rows, not be deduped to 1; "
+        f"got {len(uof)}"
+    )
+    qtys = sorted(json.loads(d.actual_value_json)["qty"] for d in uof)
+    assert qtys == [5, 7]
+
+
+def test_overfill_close_attributes_to_trade_id(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Codex R2 M#2 — when a TOS CLOSE fill exceeds remaining open size
+    on a known journal trade, the unmatched_close_fill emit MUST set
+    trade_id=t.id so the active-trade attention query surfaces it.
+    """
+    # Seed an open trade with current_size=5 (10 initial - 5 already
+    # exited recorded as a non-entry fill).
+    from swing.data.models import Fill, Trade
+    from swing.data.repos.fills import insert_fill_with_event
+    from swing.data.repos.trades import insert_trade_with_event
+
+    entry_ts = "2026-05-10T09:30:00"
+    with conn:
+        tid = insert_trade_with_event(
+            conn,
+            Trade(
+                id=None, ticker="OVR", entry_date="2026-05-10",
+                entry_price=10.0, initial_shares=10,
+                initial_stop=9.0, current_stop=9.0,
+                state="partial_exited",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None, trade_origin="manual_off_pipeline",
+                pre_trade_locked_at=entry_ts,
+            ),
+            event_ts=entry_ts, rationale="seed",
+        )
+        insert_fill_with_event(
+            conn,
+            Fill(
+                fill_id=None, trade_id=tid, fill_datetime=entry_ts,
+                action="entry", quantity=10.0, price=10.0,
+            ),
+            event_ts=entry_ts,
+        )
+        # Already sold 5 shares per journal.
+        exit_ts = "2026-05-11T15:30:00"
+        insert_fill_with_event(
+            conn,
+            Fill(
+                fill_id=None, trade_id=tid, fill_datetime=exit_ts,
+                action="exit", quantity=5.0, price=11.0, reason="target",
+            ),
+            event_ts=exit_ts,
+        )
+        conn.execute(
+            "UPDATE trades SET current_size=5 WHERE id=?", (tid,),
+        )
+
+    # TOS reports a CLOSE for 8 more shares → cumulative would be 5+8=13
+    # > 10 initial_shares → overfill branch.
+    csv = tmp_path / "tos.csv"
+    csv.write_text(
+        "Account Trade History\n"
+        "Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,"
+        "Price,Net Price,Order Type\n"
+        "2026-05-12 15:30:00,STOCK,SELL,-8,CLOSING,OVR,,,,12.0000,12.0000,MKT\n",
+        encoding="utf-8",
+    )
+    out = run_tos_reconciliation(conn, csv_path=csv)
+    ds = recon_repo.list_discrepancies_for_run(conn, out.run_id)
+    ucf = [d for d in ds if d.discrepancy_type == "unmatched_close_fill"]
+    assert len(ucf) == 1
+    e = ucf[0]
+    # Must attribute to the live trade so CANONICAL #1 surfaces it.
+    assert e.trade_id == tid, (
+        f"overfill close MUST attribute to known trade.id={tid}; got "
+        f"trade_id={e.trade_id}"
+    )
+    # Confirm the canonical query picks it up.
+    active = recon_repo.list_unresolved_material_for_active_trades(conn)
+    assert any(d.discrepancy_id == e.discrepancy_id for d in active)

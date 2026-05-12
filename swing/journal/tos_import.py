@@ -558,6 +558,26 @@ def reconcile_tos(
         ) -> None:
             if emitter is None:
                 return
+            # Phase 9 within-run dedup tuple per spec §5.1 R3 Major #4.
+            # The trade/fill/cash IDs disambiguate trade-linked emits;
+            # orphan-fill types (unmatched_open_fill / unmatched_close_fill
+            # with trade_id=None + fill_id=None) need source-payload
+            # identity in the key so two real fills for the same ticker
+            # but different date / qty / price don't collapse into one
+            # discrepancy row (Codex R2 M#1 fix).
+            payload_disambiguator: tuple = ()
+            if (
+                trade_id is None
+                and fill_id is None
+                and cash_movement_id is None
+            ):
+                payload_disambiguator = (
+                    None if actual is None else (
+                        actual.get("fill_date"),
+                        actual.get("qty"),
+                        actual.get("price"),
+                    ),
+                )
             dedup_key = (
                 trade_id,
                 discrepancy_type,
@@ -565,6 +585,7 @@ def reconcile_tos(
                 ticker,
                 fill_id,
                 cash_movement_id,
+                payload_disambiguator,
             )
             if dedup_key in emitted_keys:
                 return
@@ -753,13 +774,18 @@ def reconcile_tos(
                 if cumulative > t.initial_shares:
                     report.unmatched_close_fills.append(f)
                     _record(f, "unmatched_close", None)
-                    # Codex R1 M#1 fix — unmatched_close_fill emit per
-                    # spec §6.5 + §3.3.1 (CLOSE quantity exceeds
-                    # remaining open size; trade_id=NULL because no
-                    # specific journal slot accepts the fill).
+                    # Codex R1 M#1 + R2 M#2 fix — unmatched_close_fill
+                    # emit per spec §6.5 + §3.3.1. ATTRIBUTE the
+                    # discrepancy to the live open trade (trade_id=t.id)
+                    # so the active-trade attention query surfaces it.
+                    # The CANONICAL #1 query JOINs trades; trade_id=NULL
+                    # rows are silently dropped from the surface (spec
+                    # §3.3.2 R2 M#2). An overfill close on a known
+                    # journal trade is exactly the kind of live-divergence
+                    # operators need flagged.
                     _emit(
                         discrepancy_type="unmatched_close_fill",
-                        trade_id=None,
+                        trade_id=t.id,
                         ticker=f.ticker,
                         field_name="fill",
                         expected={},
