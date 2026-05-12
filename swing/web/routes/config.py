@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import copy as _copy
+import logging
+import sqlite3
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -19,9 +21,22 @@ from swing.config_validation import (
 )
 from swing.web.view_models.config import build_config_vm
 
+log = logging.getLogger(__name__)
+
 router = APIRouter()
 
 _FIELD_PATHS = tuple(s.path for s in FIELD_REGISTRY)
+
+# Phase 9 T-A.5 cfg-mirror cascade map. Keys are FIELD_REGISTRY paths;
+# values are the corresponding risk_policy column. Per spec §3.1.3 only
+# ONE Phase-5-surfaced field has a risk_policy counterpart in V1
+# (risk_equity_floor → capital_floor_constant_dollars); other risk_policy
+# fields are edited via the new `swing config policy` CLI surface (T-A.6).
+# web.chase_factor + pipeline.chart_top_n_watch are operational tunables,
+# NOT policy — they DO NOT cascade.
+_RISK_POLICY_CASCADE_MAP: dict[str, str] = {
+    "account.risk_equity_floor": "capital_floor_constant_dollars",
+}
 
 
 def _save_redirect_response(request: Request) -> Response:
@@ -78,6 +93,7 @@ async def config_save(request: Request):
     base_cfg = request.app.state.cfg
     eff_cfg = apply_overrides(base_cfg)
     new_overrides: dict = _copy.deepcopy(load_user_overrides())
+    cascade_updates: dict[str, object] = {}
     for spec in FIELD_REGISTRY:
         section, key = spec.path.split(".")
         submitted = coerce_value(spec.path, payload[spec.path])
@@ -85,7 +101,45 @@ async def config_save(request: Request):
         if submitted == current_eff:
             continue  # invariant (a) — no-op for unchanged
         new_overrides.setdefault(section, {})[key] = submitted  # invariant (b)
+        # Phase 9 T-A.5: collect risk_policy cascades. Computed BEFORE the
+        # write so cascade vs override semantics stay independent (a write
+        # failure later doesn't leave a half-applied cascade).
+        if spec.path in _RISK_POLICY_CASCADE_MAP:
+            cascade_updates[_RISK_POLICY_CASCADE_MAP[spec.path]] = submitted
     write_user_overrides(new_overrides)
+
+    # Phase 9 T-A.5: cfg-mirror cascade. After overrides written, supersede
+    # the active risk_policy with the new value(s). Per plan §A.5: only
+    # account.risk_equity_floor cascades in V1; other risk_policy fields
+    # are edited via the new `swing config policy` CLI (T-A.6).
+    #
+    # Cascade fires AFTER overrides write so a cascade failure leaves the
+    # cfg-side change committed (operator can manually run
+    # `swing config policy import-from-toml --field
+    # capital_floor_constant_dollars` to reconcile). The next startup's
+    # divergence check will surface the gap.
+    if cascade_updates:
+        from swing.trades.risk_policy import supersede_active_policy
+
+        cascade_conn = sqlite3.connect(base_cfg.paths.db_path)
+        try:
+            supersede_active_policy(
+                cascade_conn,
+                field_updates=cascade_updates,
+                source="cfg_cascade",
+            )
+        except Exception:
+            log.exception(
+                "Phase 9 T-A.5: cfg-cascade to risk_policy failed; "
+                "overrides written successfully but policy NOT updated. "
+                "Operator: run `swing config policy import-from-toml "
+                "--field capital_floor_constant_dollars` to reconcile."
+            )
+            # Don't propagate — overrides are durable; surface via stderr
+            # log + next-startup divergence advisory rather than 500.
+        finally:
+            cascade_conn.close()
+
     return _save_redirect_response(request)
 
 

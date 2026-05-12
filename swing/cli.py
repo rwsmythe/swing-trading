@@ -101,6 +101,59 @@ def _list_all_exitshape_via_fills(
     return out
 
 
+def _apply_toml_divergence_check(ctx: click.Context) -> None:
+    """Phase 9 T-A.5 — post-schema-validation TOML divergence hook.
+
+    Per Codex R3 M#1 architectural fix (plan §A.5.1): swing/config.py:load()
+    REMAINS PURE; the divergence check moved here. Invoked from the
+    @main.callback BEFORE every CLI subcommand EXCEPT db-migrate (which is
+    the path that brings the DB to v17; running the check before the
+    migration completes is the failure mode the helper's pre-v17
+    silent-skip guards against — but the CLI ALSO skips defensively to
+    avoid even opening the DB).
+
+    On divergence: emits a stderr advisory line (mirrors pip / git
+    divergence-warning pattern per spec §3.1.3 R3 Minor #2) AND rebinds
+    ctx.obj["config"] to the corrected immutable Config. Subsequent CLI
+    handler reads of cfg.account.risk_equity_floor see the policy value,
+    NOT the stale TOML value.
+    """
+    from swing.trades.risk_policy import check_and_reconcile_toml_divergence
+
+    cfg = ctx.obj["config"]
+    db_path = cfg.paths.db_path
+    if not db_path.exists():
+        # Pre-migrate state — divergence check has nothing to compare against.
+        return
+    conn = sqlite3.connect(db_path)
+    try:
+        new_cfg, divergence = check_and_reconcile_toml_divergence(conn, cfg)
+    finally:
+        conn.close()
+    if divergence is not None:
+        click.echo(
+            f"NOTE: TOML diverges from risk_policy: "
+            f"cfg.account.risk_equity_floor={divergence['toml_value']} vs "
+            f"risk_policy.capital_floor_constant_dollars={divergence['policy_value']}; "
+            f"risk_policy is authoritative. To make TOML canonical, run: "
+            f"swing config policy import-from-toml --field capital_floor_constant_dollars",
+            err=True,
+        )
+        ctx.obj["config"] = new_cfg
+
+
+# Subcommands that MUST NOT trigger the divergence hook. db-migrate is the
+# canonical path that brings DB to v17; running the divergence check before
+# the migration completes would either (a) silent-skip wastefully (the
+# helper's pre-v17 path) or (b) surface a confusing advisory before the
+# very table the operator is about to create exists. db-backup is a
+# pure-IO operation with no policy semantics; skip too.
+_DIVERGENCE_HOOK_SKIP_SUBCOMMANDS: frozenset[str] = frozenset({
+    "db-migrate",
+    "db-backup",
+})
+
+
 @click.group()
 @click.option("--config", "config_path", default="swing.config.toml",
               help="Path to swing.config.toml")
@@ -110,6 +163,8 @@ def main(ctx: click.Context, config_path: str) -> None:
     ctx.ensure_object(dict)
     ctx.obj["config"] = load_config(Path(config_path))
     ctx.obj["config_path"] = Path(config_path)
+    if ctx.invoked_subcommand not in _DIVERGENCE_HOOK_SKIP_SUBCOMMANDS:
+        _apply_toml_divergence_check(ctx)
 
 
 main.add_command(config_group)
