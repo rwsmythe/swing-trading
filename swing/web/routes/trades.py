@@ -501,6 +501,75 @@ def entry_post(
                 origin=origin_coerced,
             )
 
+    # Phase 9 Sub-bundle D Task D.1 + D.2 — sector/industry tamper
+    # hardening (mirrors chart_pattern hardening pattern; recon at
+    # docs/phase9-bundle-D-task-D0-recon.md).
+    #
+    # Lookup cached candidate by ``(ticker, action_session_for_run(now()))``
+    # per spec §7. If a cached row exists AND form-submitted sector or
+    # industry doesn't match the cached value, reject with HTTP 400 +
+    # HTMX-friendly error fragment AND emit a ``sector_tamper`` discrepancy
+    # inside an ad-hoc ``reconciliation_runs`` row (``source='system_audit'``,
+    # ``state='completed'``) — audit row commits in a SEPARATE TRANSACTION
+    # so it persists even though the entry POST is rejected.
+    #
+    # Backward-compat: empty form sector AND industry (CLI / bare cURL
+    # callers that don't emit the hidden inputs) → skip the check entirely.
+    # Off-pipeline ticker (no cached row for today's action_session) →
+    # skip the check (mirrors chart_pattern's ``cp_anchor_value is None``
+    # early-out).
+    if sector or industry:
+        from swing.evaluation.dates import action_session_for_run
+        session_iso = action_session_for_run(datetime.now()).isoformat()
+        _conn = connect(cfg.paths.db_path)
+        try:
+            _cand_row = _conn.execute(
+                "SELECT c.sector, c.industry FROM candidates c "
+                "JOIN evaluation_runs e "
+                "ON c.evaluation_run_id = e.id "
+                "WHERE c.ticker = ? AND e.action_session_date = ? "
+                "ORDER BY e.run_ts DESC, e.id DESC "
+                "LIMIT 1",
+                (ticker.upper(), session_iso),
+            ).fetchone()
+        finally:
+            _conn.close()
+        if _cand_row is not None:
+            cached_sector = _cand_row[0] or ""
+            cached_industry = _cand_row[1] or ""
+            mismatch_field: str | None = None
+            if cached_sector and sector and cached_sector != sector:
+                mismatch_field = "sector"
+            elif (
+                cached_industry and industry
+                and cached_industry != industry
+            ):
+                mismatch_field = "industry"
+            if mismatch_field is not None:
+                # T-D.2 will add the ad-hoc system_audit reconciliation_run
+                # + sector_tamper discrepancy emission here BEFORE the
+                # rejection renders (audit persists in its own
+                # transaction even though entry POST is rejected). T-D.1
+                # ships rejection-only; audit emit follows in T-D.2.
+                return _rerender_entry_form_with_error(
+                    request=request, templates=templates, cfg=cfg,
+                    cache=cache, executor=executor,
+                    ticker=ticker, entry_date=entry_date,
+                    entry_price=entry_price, shares=shares,
+                    initial_stop=initial_stop,
+                    rationale=rationale, notes=notes,
+                    error_message=(
+                        f"Trade entry rejected: {mismatch_field} "
+                        f"mismatch for {ticker.upper()}. Cached "
+                        f"sector={cached_sector!r} industry="
+                        f"{cached_industry!r}; form submitted "
+                        f"sector={sector!r} industry={industry!r}. "
+                        f"Re-render the form or update the pipeline "
+                        f"candidate; audit row recorded for review."
+                    ),
+                    origin=origin_coerced,
+                )
+
     # Phase 7 Sub-C C.3 — emotional_state_pre_trade JSON-encoding.
     # Matches CLI's `_json.dumps(list(emotional_state))` (swing/cli.py).
     # Empty list / None → None so the validator's required-field check
