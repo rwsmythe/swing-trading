@@ -522,3 +522,144 @@ def test_cash_movement_mismatch_no_emit_when_amounts_match(
     ds = recon_repo.list_discrepancies_for_run(conn, out.run_id)
     cmms = [d for d in ds if d.discrepancy_type == "cash_movement_mismatch"]
     assert cmms == []
+
+
+# ===========================================================================
+# §9 — Codex R1 fixes: spec §6.5 unmatched fill emits + MATERIAL_BY_TYPE
+#       authoritative + NaN-JSON rejection + absolute source_artifact_path.
+# ===========================================================================
+
+
+_UNMATCHED_OPEN_FILL_CSV = """\
+Account Trade History
+Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+2026-05-12 10:00:00,STOCK,BUY,+5,OPENING,GHOST,,,,42.0000,42.0000,MKT
+"""
+
+
+_UNMATCHED_CLOSE_FILL_CSV = """\
+Account Trade History
+Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+2026-05-12 15:30:00,STOCK,SELL,-5,CLOSING,ZOMBIE,,,,99.0000,99.0000,MKT
+"""
+
+
+def test_unmatched_open_fill_emits_per_spec_6_5(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Codex R1 M#1 — spec §6.5 + §3.3.1 binding for unmatched_open_fill."""
+    csv = tmp_path / "tos.csv"
+    csv.write_text(_UNMATCHED_OPEN_FILL_CSV, encoding="utf-8")
+    out = run_tos_reconciliation(conn, csv_path=csv)
+    ds = recon_repo.list_discrepancies_for_run(conn, out.run_id)
+    uof = [d for d in ds if d.discrepancy_type == "unmatched_open_fill"]
+    assert len(uof) == 1
+    e = uof[0]
+    assert e.trade_id is None
+    assert e.ticker == "GHOST"
+    # spec §3.3.1: expected={}, actual={"price", "qty", "ticker", "fill_date"}
+    import json as _json
+    actual = _json.loads(e.actual_value_json)
+    assert actual["ticker"] == "GHOST"
+    assert actual["qty"] == 5
+    assert actual["price"] == 42.0
+    assert e.material_to_review == 1  # MATERIAL_BY_TYPE["unmatched_open_fill"]
+
+
+def test_unmatched_close_fill_emits_per_spec_6_5(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Codex R1 M#1 — unmatched_close_fill emit (no matching journal trade)."""
+    csv = tmp_path / "tos.csv"
+    csv.write_text(_UNMATCHED_CLOSE_FILL_CSV, encoding="utf-8")
+    out = run_tos_reconciliation(conn, csv_path=csv)
+    ds = recon_repo.list_discrepancies_for_run(conn, out.run_id)
+    ucf = [d for d in ds if d.discrepancy_type == "unmatched_close_fill"]
+    assert len(ucf) == 1
+    e = ucf[0]
+    assert e.trade_id is None
+    assert e.ticker == "ZOMBIE"
+    assert e.material_to_review == 1
+
+
+def test_material_by_type_authoritative_at_insert(
+    conn: sqlite3.Connection, tmp_path: Path, monkeypatch,
+) -> None:
+    """Codex R1 M#2 — caller-supplied material_to_review hint is IGNORED;
+    service derives from MATERIAL_BY_TYPE lookup at INSERT time. Operator
+    override is post-INSERT via update_discrepancy_material.
+    """
+    csv = tmp_path / "tos.csv"
+    csv.write_text(_UNMATCHED_OPEN_FILL_CSV, encoding="utf-8")
+
+    import swing.trades.reconciliation as svc
+
+    def _evil_recon(*, conn, tos_text, price_tolerance, run_id, emitter):
+        # Try to persist cash_movement_mismatch as material=1 (spec default 0).
+        emitter(
+            discrepancy_type="cash_movement_mismatch",
+            run_id=run_id,
+            trade_id=None,
+            ticker=None,
+            fill_id=None,
+            cash_movement_id=None,
+            field_name="amount",
+            expected_value_json='{"amount": 100}',
+            actual_value_json='{"amount": 200}',
+            delta_text="$100",
+            material_to_review=1,  # caller tries to lie
+        )
+        from swing.journal.tos_import import ReconciliationReport
+        return ReconciliationReport()
+
+    monkeypatch.setattr(svc, "reconcile_tos", _evil_recon)
+    out = run_tos_reconciliation(conn, csv_path=csv)
+    ds = recon_repo.list_discrepancies_for_run(conn, out.run_id)
+    cmms = [d for d in ds if d.discrepancy_type == "cash_movement_mismatch"]
+    assert len(cmms) == 1
+    # Service forced material=0 per MATERIAL_BY_TYPE, ignoring caller hint.
+    assert cmms[0].material_to_review == 0
+
+
+def test_nan_json_rejected_by_dataclass(
+    conn: sqlite3.Connection,
+) -> None:
+    """Codex R1 M#3 — non-standard JSON constants (NaN, Infinity) rejected
+    by ReconciliationDiscrepancy.__post_init__ even though Python's
+    default json.loads accepts them.
+    """
+    from swing.data.models import ReconciliationDiscrepancy
+    with pytest.raises(ValueError, match="non-standard JSON constant"):
+        ReconciliationDiscrepancy(
+            discrepancy_id=None, run_id=1,
+            discrepancy_type="close_price_mismatch",
+            trade_id=None, fill_id=None, cash_movement_id=None,
+            linked_daily_management_record_id=None,
+            ticker="ABC", field_name="price",
+            expected_value_json='{"price": NaN}',
+            actual_value_json=None,
+            delta_text=None,
+            material_to_review=1, resolution="unresolved",
+            resolution_reason=None, resolved_at=None, resolved_by=None,
+            mistake_tag_assigned=None,
+            created_at="2026-05-12T08:00:00.000",
+        )
+
+
+def test_source_artifact_path_normalized_to_absolute(
+    conn: sqlite3.Connection, tmp_path: Path, monkeypatch,
+) -> None:
+    """Codex R1 M#4 — source_artifact_path stored as absolute path per
+    spec §3.2 even when caller passes a relative Path.
+    """
+    csv = tmp_path / "tos.csv"
+    csv.write_text(_SIMPLE_TOS_CSV, encoding="utf-8")
+    # Run from tmp_path so the relative path "tos.csv" is meaningful.
+    monkeypatch.chdir(tmp_path)
+    out = run_tos_reconciliation(conn, csv_path=Path("tos.csv"))
+    assert out.source_artifact_path is not None
+    p = Path(out.source_artifact_path)
+    assert p.is_absolute(), (
+        f"source_artifact_path must be absolute per spec §3.2; "
+        f"got {out.source_artifact_path!r}"
+    )

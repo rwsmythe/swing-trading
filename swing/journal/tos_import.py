@@ -672,6 +672,27 @@ def reconcile_tos(
                 else:
                     report.unmatched_open_fills.append(f)
                     _record(f, "unmatched_open", None)
+                    # Phase 9 T-B.6 / Codex R1 M#1 fix: TOS open fill with
+                    # no matching journal trade → emit unmatched_open_fill
+                    # per spec §6.5 + §3.3.1. trade_id=NULL (no journal
+                    # entry); material_to_review=1 (operator action
+                    # required to journal the missed entry).
+                    _emit(
+                        discrepancy_type="unmatched_open_fill",
+                        trade_id=None,
+                        ticker=f.ticker,
+                        field_name="fill",
+                        expected={},
+                        actual={
+                            "price": f.price, "qty": f.qty,
+                            "ticker": f.ticker, "fill_date": f.date,
+                        },
+                        delta_text=(
+                            f"TOS open fill {f.ticker} {f.qty}@${f.price:.4f} "
+                            "with no journal entry"
+                        ),
+                        material_to_review=1,
+                    )
             else:
                 t = find_any_open_trade(conn, ticker=f.ticker)
                 # Historical re-import detection: a CLOSE fill whose
@@ -699,6 +720,24 @@ def reconcile_tos(
                 if t is None:
                     report.unmatched_close_fills.append(f)
                     _record(f, "unmatched_close", None)
+                    # Codex R1 M#1 fix — unmatched_close_fill emit per
+                    # spec §6.5 + §3.3.1.
+                    _emit(
+                        discrepancy_type="unmatched_close_fill",
+                        trade_id=None,
+                        ticker=f.ticker,
+                        field_name="fill",
+                        expected={},
+                        actual={
+                            "price": f.price, "qty": f.qty,
+                            "ticker": f.ticker, "fill_date": f.date,
+                        },
+                        delta_text=(
+                            f"TOS close fill {f.ticker} {f.qty}@${f.price:.4f} "
+                            "with no journal trade"
+                        ),
+                        material_to_review=1,
+                    )
                     continue
                 # Phase 7 B.9: exits table dropped (migration 0014). Sum
                 # quantities of all non-entry fills (trim/exit/stop) — that
@@ -714,6 +753,26 @@ def reconcile_tos(
                 if cumulative > t.initial_shares:
                     report.unmatched_close_fills.append(f)
                     _record(f, "unmatched_close", None)
+                    # Codex R1 M#1 fix — unmatched_close_fill emit per
+                    # spec §6.5 + §3.3.1 (CLOSE quantity exceeds
+                    # remaining open size; trade_id=NULL because no
+                    # specific journal slot accepts the fill).
+                    _emit(
+                        discrepancy_type="unmatched_close_fill",
+                        trade_id=None,
+                        ticker=f.ticker,
+                        field_name="fill",
+                        expected={},
+                        actual={
+                            "price": f.price, "qty": f.qty,
+                            "ticker": f.ticker, "fill_date": f.date,
+                        },
+                        delta_text=(
+                            f"TOS close fill {f.ticker} {f.qty}@${f.price:.4f} "
+                            "exceeds remaining journal open size"
+                        ),
+                        material_to_review=1,
+                    )
                 else:
                     report.matched_fills.append(f)
                     _record(f, "matched", None)

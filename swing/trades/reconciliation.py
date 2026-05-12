@@ -143,7 +143,11 @@ def run_tos_reconciliation(
             "race the explicit lock was meant to close'."
         )
 
-    csv_path = Path(csv_path)
+    # Codex R1 M#4 fix: normalize to absolute path per spec §3.2
+    # ("absolute path to TOS CSV"). Relative CLI/test invocations are
+    # resolved against the process cwd here so the stored provenance
+    # is portable across operator sessions.
+    csv_path = Path(csv_path).resolve()
     csv_bytes = csv_path.read_bytes()
     sha256 = _sha256_hex(csv_bytes)
     csv_text = csv_bytes.decode("utf-8")
@@ -191,9 +195,15 @@ def run_tos_reconciliation(
         if key in dedup_seen:
             return -1
         dedup_seen.add(key)
-        material = fields.get("material_to_review")
-        if material is None:
-            material = MATERIAL_BY_TYPE.get(dtype, 0)
+        # Codex R1 M#2 fix: MATERIAL_BY_TYPE is authoritative at INSERT
+        # time per spec §3.3.2. Detection-site emitters may PASS a
+        # material_to_review hint, but the service IGNORES it and
+        # derives from the lookup — preventing a future caller from
+        # persisting `stop_mismatch` as immaterial or
+        # `cash_movement_mismatch` as material. Operator-override
+        # happens POST-INSERT via update_discrepancy_material (CLI
+        # `swing journal discrepancy resolve --material` flag).
+        material = MATERIAL_BY_TYPE[dtype]
         did = repo.insert_discrepancy(
             conn,
             run_id=fields["run_id"],

@@ -1024,14 +1024,15 @@ def test_t_b_2_emitter_requires_run_id(tmp_path: Path):
         conn.close()
 
 
-def test_t_b_2_emitter_unused_when_no_discrepancies(tmp_path: Path):
-    """Seam is established but T-B.2 does NOT wire detection sites to emit.
+def test_t_b_2_emitter_skipped_on_empty_csv(tmp_path: Path):
+    """Empty-detection CSV (no fills, no equities, no orders, no cash) →
+    no emits.
 
-    With run_id + emitter provided but no detection sites wired (T-B.2
-    introduces the seam only; T-B.3..T-B.6 hook detection through it),
-    the emitter should NOT be called yet. This pins the per-task
-    boundary: T-B.2 establishes the seam contract; subsequent tasks
-    populate it.
+    Post-T-B.3..T-B.6, reconcile_tos wires emits for entry_price /
+    close_price / stop / position_qty / cash_movement / unmatched
+    discrepancy types. The seam still respects the boundary that NO
+    detection signal means NO emits — this test pins that invariant via
+    a CSV with no recognized section content.
     """
     from swing.data.db import ensure_schema
     db = tmp_path / "swing.db"
@@ -1044,8 +1045,9 @@ def test_t_b_2_emitter_unused_when_no_discrepancies(tmp_path: Path):
             emit_calls.append(kw)
             return len(emit_calls)
 
-        text = FIXTURE.read_text(encoding="utf-8")
-        reconcile_tos(conn=conn, tos_text=text, run_id=1, emitter=_emit)
+        # CSV with no fills, no orders, no equities, no cash → no emits.
+        empty_text = "Cash Balance\n\nAccount Trade History\n\n"
+        reconcile_tos(conn=conn, tos_text=empty_text, run_id=1, emitter=_emit)
         assert emit_calls == []
     finally:
         conn.close()

@@ -982,15 +982,25 @@ class ReconciliationDiscrepancy:
         # JSON well-formedness on the two payload fields. Per-type SHAPE
         # validation is enforced at the emitter call site (writing-plans
         # T-B.6 codifies the MATERIAL_BY_TYPE + shape contracts); the
-        # dataclass enforces only "must parse as JSON" so a stored row is
-        # never structurally malformed.
+        # dataclass enforces "must parse as STRICT JSON" so a stored row
+        # is never structurally malformed AND no non-standard JSON
+        # constants (NaN / Infinity / -Infinity) slip through. Python's
+        # default ``json.loads`` accepts these despite RFC 7159 banning
+        # them; the parse_constant callback rejects them explicitly
+        # (Codex R1 M#3 fix).
+        def _reject_non_standard_constant(token: str) -> None:
+            raise ValueError(
+                f"non-standard JSON constant {token!r} rejected"
+            )
         for fname, fval in (
             ("expected_value_json", self.expected_value_json),
             ("actual_value_json", self.actual_value_json),
         ):
             if fval is not None:
                 try:
-                    json.loads(fval)
+                    json.loads(
+                        fval, parse_constant=_reject_non_standard_constant,
+                    )
                 except (ValueError, TypeError) as e:
                     raise ValueError(
                         f"{fname} must be valid JSON or None; got {fval!r} "
