@@ -6,6 +6,55 @@
 
 ---
 
+## 2026-05-12 Phase 9 Sub-bundle E polish: Account Order History multi-line parser gap (operator-witnessed gate finding)
+
+**Observation (operator-witnessed gate finding 2026-05-12):** Phase 9 Sub-bundle B's `stop_mismatch` detection emitted 5 false-positive discrepancies during the operator-witnessed gate when reconciling the operator's real-world Schwab/TOS export `thinkorswim/2026-05-12-AccountStatement.csv` against the production journal. All 5 open trades (DHC/YOU/VSAT/CVGI/LAR) were flagged "no broker working stop" despite working stops being placed at Schwab with prices matching journal `current_stop` values exactly.
+
+**Root cause:** Bundle B's `extract_stop_orders` in `swing/journal/tos_import.py` per spec §6.2 looks narrowly for `STP` in the order_type column. Real-world Schwab/TOS Account Order History exports use a **2-line group** structure per working order:
+
+```
+,,5/11/26 23:09:41,STOCK,SELL,-20,TO CLOSE,CVGI,,,STOCK,~,MKT,GTC,WORKING
+,,,RE #1006290692715,,,,,,,,4.36,STP,STD,
+```
+
+The header line carries `order_type=MKT` + `price=~` + `time_in_force=GTC` + `status=WORKING`. The continuation row carries the STP trigger price + `STP STD` qualifier. The parser only sees the header line and concludes "no STP order" — missing the actual trigger price in the continuation row.
+
+Additional patterns observed across the 4 sample exports in `thinkorswim/`:
+
+| File | Pattern | Notes |
+|---|---|---|
+| 2026-04-15 | (no Account Order History rows) | empty section — operator had no working orders on that date |
+| 2026-04-30 (CC) | 3-line group: header + `TRG BY #ID BASE-6.74 STP STD` + `20.51 STP` | Conditional trigger (base-price relative) chained with absolute stop trigger |
+| 2026-05-08 (DHC) | header `MKT GTC WAIT TRG` (no continuation) | Conditional order not yet armed; status `WAIT TRG` not `WORKING` |
+| 2026-05-08 + 2026-05-12 | header `MKT GTC WORKING` + continuation `<price> STP STD` | Canonical 2-line stop-market group |
+| various | header `MKT GTC CANCELED` | Correctly skipped (not WORKING) |
+
+**Bundle E acceptance criteria:**
+
+1. **Multi-line grouping.** Rewrite `extract_stop_orders` (or introduce a streaming-grouper) to read the Account Order History section as **order groups** — header row + N continuation rows until the next dated header row OR section boundary.
+2. **Stop trigger extraction from continuation.** When the continuation row contains `STP STD` (or just `STP` per Schwab's column conventions), read the trigger price from the price column. Handle both simple absolute (`4.36 STP STD`) and conditional `TRG BY #ID BASE-X.XX STP STD` + absolute trigger row variants.
+3. **Status filter widening.** Include `WAIT TRG` alongside `WORKING` — both indicate a placed-but-not-yet-filled stop. `CANCELED` and `FILLED` correctly remain excluded.
+4. **Backwards compatibility.** Existing fixture-based discriminating tests (boundary delta=0/0.005/0.01/0.02 + 3 stop_mismatch sub-cases) MUST still pass. Add new fixture CSVs at `tests/fixtures/tos/` capturing the multi-line pattern variants observed in the operator's 4 sample exports.
+5. **Regression test against operator's real-world exports.** Add a new fast-test that reconciles `thinkorswim/2026-05-12-AccountStatement.csv` against a fixture journal with the matching open trades + asserts ZERO stop_mismatch discrepancies emitted (the matching path). Mirror for the 2026-05-08 export (with `WAIT TRG` DHC).
+6. **Spec §6.2 amendment.** Update spec text to reflect the 2-line group structure (currently spec assumes 1-row STP rows). Brief explicitly notes the spec text was a brainstorm-time approximation; the migration + production reality require the 2-line parse.
+
+**Scope:** ~3-4 hr implementation. Single-task dispatch suitable for inline orchestrator OR a small implementer dispatch. Sub-bundle E's existing scope (E2E happy path + CLAUDE.md gotcha promotion + Phase 10 hand-off prep per plan §H) absorbs this naturally as a new task T-E.0.bis or T-E.3.
+
+**Operator-side action items pending parser fix:**
+
+- The 5 `acknowledged_immaterial` resolutions on discrepancies 1-5 in production DB stand as the V1 disposition. Operator should re-reconcile after Bundle E ships to confirm the matching path produces zero stop_mismatch findings.
+- Real-world fixture corpus at `thinkorswim/*.csv` is currently untracked (in project root, not in `data/finviz-inbox/` or `tests/fixtures/tos/`); Bundle E should formalize the corpus location (copy a subset to `tests/fixtures/tos/schwab-real-world-*.csv` for the regression tests; keep the originals untracked at the operator's working location).
+
+**Cross-references:**
+
+- Sub-bundle B return report `docs/phase9-bundle-B-return-report.md` (merge `e96834a`).
+- Operator-witnessed gate findings: §S4 of Sub-bundle B gate, 2026-05-12.
+- Spec §6.2 + §3.3.1 expected_value/actual_value JSON shapes for `stop_mismatch`.
+- Bundle B parser current implementation: `swing/journal/tos_import.py` (the `extract_stop_orders` function — verified single-line per the current spec; gap is the multi-line group recognition).
+- Prior 3e.12 tos-import diagnostic fixed multi-day `Exec Time` parsing (commit `a9541d2`) — similar real-world-export-structure investigation pattern.
+
+---
+
 ## 2026-05-12 Low priority: Minervini reference review vs current strategy implementation
 
 **Observation (operator-surfaced 2026-05-12):** Two new methodology reference artifacts landed in `reference/minervini/`:
