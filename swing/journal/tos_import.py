@@ -522,12 +522,6 @@ def reconcile_tos(
     if owns_conn:
         conn = connect(db_path)
     try:
-        for c in cash_candidates:
-            if c.ref and find_by_ref(conn, c.ref) is not None:
-                report.duplicate_cash_movements.append(c)
-            else:
-                report.new_cash_movements.append(c)
-
         within_batch_alloc: dict[int, int] = {}
         claimed_exit_ids: set[int] = set()
         # Phase 9 within-run dedup tuple set: (trade_id, type, field_name)
@@ -585,6 +579,47 @@ def reconcile_tos(
                 delta_text=delta_text,
                 material_to_review=material_to_review,
             )
+
+        for c in cash_candidates:
+            existing = find_by_ref(conn, c.ref) if c.ref else None
+            if existing is not None:
+                report.duplicate_cash_movements.append(c)
+                # Phase 9 T-B.6: cash_movement_mismatch per spec §6.4.
+                # Compare amount + kind on duplicate REF#; emit when
+                # they disagree. material_to_review=0 (cash flow
+                # doesn't bear on trade review per spec §3.3.1).
+                if (
+                    abs(existing.amount - c.amount) > 1e-9
+                    or existing.kind != c.kind
+                ) and emitter is not None:
+                    _emit(
+                        discrepancy_type="cash_movement_mismatch",
+                        trade_id=None,
+                        cash_movement_id=existing.id,
+                        ticker=None,
+                        field_name=(
+                            "amount" if existing.kind == c.kind else "kind"
+                        ),
+                        expected={
+                            "amount": existing.amount,
+                            "kind": existing.kind,
+                            "ref": existing.ref,
+                        },
+                        actual={
+                            "amount": c.amount,
+                            "kind": c.kind,
+                            "ref": c.ref,
+                        },
+                        delta_text=(
+                            f"${c.amount - existing.amount:+.2f} amount "
+                            "difference"
+                            if existing.kind == c.kind
+                            else f"kind {existing.kind!r} vs {c.kind!r}"
+                        ),
+                        material_to_review=0,
+                    )
+            else:
+                report.new_cash_movements.append(c)
 
         for f in fills:
             if f.open_close == "OPEN":
