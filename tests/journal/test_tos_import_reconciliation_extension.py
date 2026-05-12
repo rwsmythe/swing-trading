@@ -644,6 +644,137 @@ def test_stop_mismatch_no_emit_when_emitter_none(
 
 
 # ===========================================================================
+# §6 — position_qty_mismatch detection (spec §6.3 + §3.3.1) — Task B.5
+# ===========================================================================
+
+
+def _tos_equities_section(*, positions: list[tuple[str, float]]) -> str:
+    """Build an Equities-section TOS fragment from (ticker, qty) tuples."""
+    header = "Equities\nSymbol,Description,Qty,Trade Price,Mark,Mark Value\n"
+    body = "".join(
+        f"{t},{t} Inc,{qty:g},10.00,11.00,{qty * 11.00:.2f}\n"
+        for t, qty in positions
+    )
+    return header + body
+
+
+def test_position_qty_mismatch_match_no_emit(db_with_schema: Path) -> None:
+    conn = sqlite3.connect(db_with_schema)
+    try:
+        _seed_entry(
+            conn, ticker="ABC", entry_date="2026-05-10",
+            entry_price=10.00, shares=10, initial_stop=9.00,
+        )
+        text = _tos_equities_section(positions=[("ABC", 10)])
+        captured, emit = _make_capture_emitter()
+        reconcile_tos(conn=conn, tos_text=text, run_id=1, emitter=emit)
+        pqms = [c for c in captured
+                if c["discrepancy_type"] == "position_qty_mismatch"]
+        assert pqms == []
+    finally:
+        conn.close()
+
+
+def test_position_qty_mismatch_qty_delta_emits(db_with_schema: Path) -> None:
+    conn = sqlite3.connect(db_with_schema)
+    try:
+        tid = _seed_entry(
+            conn, ticker="ABC", entry_date="2026-05-10",
+            entry_price=10.00, shares=10, initial_stop=9.00,
+        )
+        # Journal current_size=10; TOS reports 7. → mismatch.
+        text = _tos_equities_section(positions=[("ABC", 7)])
+        captured, emit = _make_capture_emitter()
+        reconcile_tos(conn=conn, tos_text=text, run_id=1, emitter=emit)
+        pqms = [c for c in captured
+                if c["discrepancy_type"] == "position_qty_mismatch"]
+        assert len(pqms) == 1
+        e = pqms[0]
+        assert e["trade_id"] == tid
+        assert e["ticker"] == "ABC"
+        assert e["field_name"] == "qty"
+        assert e["material_to_review"] == 1
+        expected = json.loads(e["expected_value_json"])
+        actual = json.loads(e["actual_value_json"])
+        assert expected == {"qty": 10.0}
+        assert actual == {"qty": 7.0}
+        assert "10 vs 7 shares" in e["delta_text"]
+    finally:
+        conn.close()
+
+
+def test_position_qty_mismatch_journal_open_no_tos_qty_emits(
+    db_with_schema: Path,
+) -> None:
+    """Broker shows zero for a ticker we have open → emit qty=0 (silent close)."""
+    conn = sqlite3.connect(db_with_schema)
+    try:
+        tid = _seed_entry(
+            conn, ticker="ABC", entry_date="2026-05-10",
+            entry_price=10.00, shares=10, initial_stop=9.00,
+        )
+        # Equities section present but no ABC row.
+        text = _tos_equities_section(positions=[("DEF", 5)])
+        captured, emit = _make_capture_emitter()
+        reconcile_tos(conn=conn, tos_text=text, run_id=1, emitter=emit)
+        pqms = [c for c in captured
+                if c["discrepancy_type"] == "position_qty_mismatch"
+                and c["trade_id"] == tid]
+        assert len(pqms) == 1
+        actual = json.loads(pqms[0]["actual_value_json"])
+        assert actual == {"qty": 0.0}
+    finally:
+        conn.close()
+
+
+def test_position_qty_mismatch_orphan_tos_qty_no_journal(
+    db_with_schema: Path,
+) -> None:
+    """Spec §6.3: TOS qty with no matching journal open trade → emit
+    trade_id=None + ticker populated.
+    """
+    conn = sqlite3.connect(db_with_schema)
+    try:
+        text = _tos_equities_section(positions=[("XYZ", 5)])
+        captured, emit = _make_capture_emitter()
+        reconcile_tos(conn=conn, tos_text=text, run_id=1, emitter=emit)
+        pqms = [c for c in captured
+                if c["discrepancy_type"] == "position_qty_mismatch"]
+        # XYZ orphan emit (no journal trades exist at all).
+        assert len(pqms) == 1
+        e = pqms[0]
+        assert e["trade_id"] is None
+        assert e["ticker"] == "XYZ"
+        actual = json.loads(e["actual_value_json"])
+        assert actual == {"qty": 5.0}
+        assert "orphan broker holding" in e["delta_text"]
+    finally:
+        conn.close()
+
+
+def test_extract_equity_positions_handles_signed_qty() -> None:
+    """Defensive parsing — accept '+10', '10', '10.0', strip commas."""
+    from swing.journal.tos_import import extract_equity_positions
+    rows = [
+        {"Symbol": "ABC", "Qty": "+10"},
+        {"Symbol": "DEF", "Qty": "5"},
+        {"Symbol": "GHI", "Qty": "1,000"},
+    ]
+    out = extract_equity_positions(rows)
+    assert out == {"ABC": 10.0, "DEF": 5.0, "GHI": 1000.0}
+
+
+def test_extract_equity_positions_filters_options() -> None:
+    from swing.journal.tos_import import extract_equity_positions
+    rows = [
+        {"Symbol": "ABC", "Qty": "10", "Exp": ""},
+        {"Symbol": "XYZ", "Qty": "1", "Exp": "1/19/27 110 CALL"},
+    ]
+    out = extract_equity_positions(rows)
+    assert out == {"ABC": 10.0}
+
+
+# ===========================================================================
 # §99 — within-run dedup pinned via duplicate rows in same CSV.
 # ===========================================================================
 

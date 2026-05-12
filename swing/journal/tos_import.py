@@ -342,6 +342,47 @@ def extract_stock_fills(
     return out
 
 
+def extract_equity_positions(
+    rows: Iterable[dict],
+) -> dict[str, float]:
+    """Extract position quantities from the Equities section.
+
+    Per spec §6.3 — Phase 9 T-B.5. Returns ``dict[ticker → qty]`` of
+    long-positive shares. TOS Equities section columns vary across
+    export shapes; we look for ``Symbol`` + ``Qty`` (or ``Quantity``).
+
+    Excludes rows with empty or zero-qty values; aggregates multiple
+    rows for the same ticker by SUMMING (defensive against multi-lot
+    rendering — rare for V1 but harmless).
+    """
+    out: dict[str, float] = {}
+    for row in rows:
+        def get(key: str) -> str:
+            return (row.get(key) or "").strip()
+
+        ticker = (get("Symbol") or get("Instrument") or "").upper()
+        if not ticker:
+            continue
+        # Filter option rows defensively — Equities section sometimes
+        # carries option holdings on real-world exports.
+        exp = (get("Exp") or "").strip()
+        if exp and exp != "--":
+            continue
+        qty_raw = get("Qty") or get("Quantity")
+        if not qty_raw or qty_raw in ("--", "N/A"):
+            continue
+        # Schwab/TOS may emit signed quantities (+/-) like Account Trade
+        # History; long positions are positive, but we abs() to be lenient.
+        try:
+            qty = abs(float(qty_raw.replace(",", "").lstrip("+")))
+        except ValueError:
+            continue
+        if qty == 0:
+            continue
+        out[ticker] = out.get(ticker, 0.0) + qty
+    return out
+
+
 def extract_stop_orders(
     rows: Iterable[dict],
 ) -> dict[str, tuple[float, str | None]]:
@@ -464,9 +505,11 @@ def reconcile_tos(
     cash_rows = sections.get("Cash Balance", [])
     fills_rows = sections.get("Account Trade History", [])
     order_rows = sections.get("Account Order History", [])
+    equities_rows = sections.get("Equities", [])
 
     cash_candidates = extract_cash_movements(cash_rows)
     stop_orders = extract_stop_orders(order_rows)
+    equity_positions = extract_equity_positions(equities_rows)
     # Sort fills by (date, time) so claim-tracking is deterministic across
     # CSV row orderings: a TOS export where the afternoon row appears before
     # the morning row must still attribute the morning CLOSE to the morning
@@ -662,11 +705,17 @@ def reconcile_tos(
         # Only runs when there's at least one stop_order parsed OR open
         # trades present — the absence-of-broker-stop branch needs the
         # open-trade enumeration regardless.
-        if emitter is not None and (stop_orders or True):
+        if emitter is not None:
             _emit_stop_mismatches(
                 conn,
                 stop_orders=stop_orders,
                 price_tolerance=price_tolerance,
+                emit=_emit,
+            )
+            # Phase 9 T-B.5: position_qty_mismatch detection per spec §6.3.
+            _emit_position_qty_mismatches(
+                conn,
+                equity_positions=equity_positions,
                 emit=_emit,
             )
     finally:
@@ -743,6 +792,78 @@ def _emit_stop_mismatches(
             actual={"working_stop_price": tos_price,
                     "order_id": tos_order_id},
             delta_text="orphan broker working stop",
+            material_to_review=1,
+        )
+
+
+def _emit_position_qty_mismatches(
+    conn,
+    *,
+    equity_positions: dict[str, float],
+    emit: Callable[..., None],
+) -> None:
+    """Emit position_qty_mismatch discrepancies per spec §6.3 + T-B.5.
+
+    Three sub-cases:
+      1. Open trade journal current_size != TOS qty → emit.
+      2. Open trade with NO TOS qty (broker shows zero) → emit
+         actual_value_json={"qty": 0} (silent close at broker).
+      3. TOS qty with no matching journal open trade → emit
+         trade_id=NULL + ticker populated (entry never journaled).
+
+    All material_to_review=1 per spec §6.3 (live broker/journal
+    divergence on position size is most urgent).
+    """
+    open_trades = list_open_trades(conn)
+    open_by_ticker = {t.ticker: t for t in open_trades}
+
+    # Cases 1 + 2 — per-open-trade.
+    for t in open_trades:
+        tos_qty = equity_positions.get(t.ticker)
+        journal_qty = float(t.current_size)
+        if tos_qty is None:
+            # Case 2: broker shows zero for a ticker we have open.
+            emit(
+                discrepancy_type="position_qty_mismatch",
+                trade_id=t.id,
+                fill_id=None,
+                ticker=t.ticker,
+                field_name="qty",
+                expected={"qty": journal_qty},
+                actual={"qty": 0.0},
+                delta_text=f"{journal_qty:g} vs 0 shares",
+                material_to_review=1,
+            )
+            continue
+        if abs(journal_qty - tos_qty) > 1e-9:
+            # Case 1: qty disagreement (fractional shares tolerance is
+            # 1e-9; V1 long-only integer shares makes this a strict-not-
+            # equal check in practice).
+            emit(
+                discrepancy_type="position_qty_mismatch",
+                trade_id=t.id,
+                fill_id=None,
+                ticker=t.ticker,
+                field_name="qty",
+                expected={"qty": journal_qty},
+                actual={"qty": tos_qty},
+                delta_text=f"{journal_qty:g} vs {tos_qty:g} shares",
+                material_to_review=1,
+            )
+
+    # Case 3: orphan TOS qty.
+    for ticker, tos_qty in equity_positions.items():
+        if ticker in open_by_ticker:
+            continue
+        emit(
+            discrepancy_type="position_qty_mismatch",
+            trade_id=None,
+            fill_id=None,
+            ticker=ticker,
+            field_name="qty",
+            expected={"qty": 0.0},
+            actual={"qty": tos_qty},
+            delta_text=f"0 vs {tos_qty:g} shares (orphan broker holding)",
             material_to_review=1,
         )
 
