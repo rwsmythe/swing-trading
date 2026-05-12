@@ -778,3 +778,258 @@ class RiskPolicy:
             )
             if f not in excluded  # safety: keep the excluded list authoritative
         }
+
+
+# ============================================================================
+# Phase 9 Sub-bundle B — reconciliation_runs + reconciliation_discrepancies
+# ============================================================================
+#
+# Spec §3.2 / §3.3 / §3.3.1 / §3.3.2 / §3.3.3 + plan §B file map (T-B.1).
+# Migration 0017 landed both tables (19 cols + 19 cols per LIST; plan-text
+# "17 + 18" subtotals are stale brainstorm miscounts — Codex R1 Major #2
+# precedent from Sub-bundle A's risk_policy 28-vs-34 reconciliation).
+#
+# Both dataclasses are frozen and carry ``__post_init__`` validators that
+# defend beyond schema-level CHECKs (NaN/inf rejection on REAL fields, enum
+# validation on TEXT fields, cross-field invariants like
+# ``finished_ts >= started_ts`` and resolution-vs-resolved_at consistency).
+# This is defense-in-depth on top of migration 0017's SQL CHECK constraints.
+
+
+_RECONCILIATION_SOURCES = ("tos_csv", "schwab_api", "manual", "system_audit")
+_RECONCILIATION_STATES = ("running", "completed", "failed")
+
+_DISCREPANCY_TYPES = (
+    "close_price_mismatch",
+    "stop_mismatch",
+    "position_qty_mismatch",
+    "cash_movement_mismatch",
+    "sector_tamper",
+    "snapshot_mismatch",
+    "unmatched_open_fill",
+    "unmatched_close_fill",
+    "entry_price_mismatch",
+    "equity_delta",
+)
+_RESOLUTION_VALUES = (
+    "journal_corrected",
+    "source_treated_canonical",
+    "manual_override",
+    "unresolved",
+    "acknowledged_immaterial",
+)
+
+
+@dataclass(frozen=True)
+class ReconciliationRun:
+    """One reconciliation pass — TOS CSV or future Schwab API or ad-hoc audit.
+
+    Spec §3.2 (19 fields per migration 0017 LIST; plan-text "17 cols" subtotal
+    is a stale brainstorm miscount). Lifecycle ``running`` → ``completed`` |
+    ``failed`` (state column). Failure path PRESERVES the row + UPDATEs
+    ``state='failed'`` per spec §3.3.3 + plan §A.2.1 (Codex R1 Major #1 in
+    writing-plans).
+    """
+
+    run_id: int | None  # None pre-INSERT; set by lastrowid after insert_run
+    source: str
+    source_artifact_path: str | None
+    source_artifact_sha256: str | None
+    period_start: str | None
+    period_end: str | None
+    started_ts: str
+    finished_ts: str | None
+    state: str
+    account_equity_journal_dollars: float | None
+    account_equity_source_dollars: float | None
+    equity_delta_dollars: float | None
+    trades_reconciled_count: int | None
+    fills_reconciled_count: int | None
+    discrepancies_count: int | None
+    unresolved_discrepancies_count: int | None
+    summary_json: str | None
+    error_message: str | None
+    notes: str | None
+
+    def __post_init__(self) -> None:
+        import math
+
+        if self.source not in _RECONCILIATION_SOURCES:
+            raise ValueError(
+                f"source must be one of {_RECONCILIATION_SOURCES}; "
+                f"got {self.source!r}"
+            )
+        if self.state not in _RECONCILIATION_STATES:
+            raise ValueError(
+                f"state must be one of {_RECONCILIATION_STATES}; "
+                f"got {self.state!r}"
+            )
+
+        # NaN/inf rejection on REAL fields (Bundle 2/3 pattern; spec
+        # §3.2 numeric defense-in-depth on top of SQL).
+        for fname, fval in (
+            ("account_equity_journal_dollars", self.account_equity_journal_dollars),
+            ("account_equity_source_dollars", self.account_equity_source_dollars),
+            ("equity_delta_dollars", self.equity_delta_dollars),
+        ):
+            if fval is not None and (math.isnan(fval) or math.isinf(fval)):
+                raise ValueError(f"{fname} must be finite; got {fval}")
+
+        # Counts must be non-negative when present.
+        for fname, fval in (
+            ("trades_reconciled_count", self.trades_reconciled_count),
+            ("fills_reconciled_count", self.fills_reconciled_count),
+            ("discrepancies_count", self.discrepancies_count),
+            ("unresolved_discrepancies_count", self.unresolved_discrepancies_count),
+        ):
+            if fval is not None and fval < 0:
+                raise ValueError(f"{fname} must be >= 0 or None; got {fval}")
+
+        # Cross-field: when both timestamps present, finished_ts >= started_ts
+        # (TEXT lexicographic ordering preserves chronology under naive-UTC
+        # millisecond-precision per Phase 9 spec §9.3 + §3.1.3 R3 Major #1).
+        if (
+            self.finished_ts is not None
+            and self.finished_ts < self.started_ts
+        ):
+            raise ValueError(
+                f"finished_ts ({self.finished_ts!r}) must be >= "
+                f"started_ts ({self.started_ts!r})"
+            )
+
+        # Cross-field: state == 'running' implies finished_ts IS NULL.
+        if self.state == "running" and self.finished_ts is not None:
+            raise ValueError(
+                "state='running' requires finished_ts is NULL; got "
+                f"finished_ts={self.finished_ts!r}"
+            )
+        # Cross-field: state in ('completed','failed') implies finished_ts NOT NULL.
+        if (
+            self.state in ("completed", "failed")
+            and self.finished_ts is None
+        ):
+            raise ValueError(
+                f"state={self.state!r} requires finished_ts set; got NULL"
+            )
+        # Cross-field: state='failed' should have error_message (defensible UX,
+        # not strictly required by spec §3.2 which marks error_message
+        # nullable; we enforce at the dataclass for run-row construction
+        # symmetry. The service layer always populates error_message on the
+        # failure-UPDATE path per plan §A.2 step 9).
+        if self.state == "failed" and not self.error_message:
+            raise ValueError(
+                "state='failed' requires non-empty error_message"
+            )
+
+
+@dataclass(frozen=True)
+class ReconciliationDiscrepancy:
+    """One reconciliation discrepancy — emitted by reconcile_tos via the seam.
+
+    Spec §3.3 (19 fields per migration 0017 LIST; plan-text "18 cols" subtotal
+    is a stale brainstorm miscount). Emitted inside the same transaction as
+    the parent ``reconciliation_runs`` row per spec §3.3.3 single-transaction
+    contract.
+
+    Resolution lifecycle: starts at ``'unresolved'`` with resolved_at /
+    resolved_by NULL; operator dispositions move resolution off
+    ``'unresolved'`` and SET resolved_at + resolved_by. ``resolution_reason``
+    is required at the app-layer when resolution is one of
+    {journal_corrected, source_treated_canonical, manual_override} per
+    spec §3.3.
+    """
+
+    discrepancy_id: int | None  # None pre-INSERT
+    run_id: int
+    discrepancy_type: str
+    trade_id: int | None
+    fill_id: int | None
+    cash_movement_id: int | None
+    linked_daily_management_record_id: int | None
+    ticker: str | None
+    field_name: str
+    expected_value_json: str | None
+    actual_value_json: str | None
+    delta_text: str | None
+    material_to_review: int
+    resolution: str
+    resolution_reason: str | None
+    resolved_at: str | None
+    resolved_by: str | None
+    mistake_tag_assigned: str | None
+    created_at: str
+
+    def __post_init__(self) -> None:
+        import json
+
+        if self.discrepancy_type not in _DISCREPANCY_TYPES:
+            raise ValueError(
+                f"discrepancy_type must be one of {_DISCREPANCY_TYPES}; "
+                f"got {self.discrepancy_type!r}"
+            )
+        if self.resolution not in _RESOLUTION_VALUES:
+            raise ValueError(
+                f"resolution must be one of {_RESOLUTION_VALUES}; "
+                f"got {self.resolution!r}"
+            )
+        if self.material_to_review not in (0, 1):
+            raise ValueError(
+                f"material_to_review must be 0 or 1; got {self.material_to_review}"
+            )
+        if not self.field_name:
+            raise ValueError("field_name must be non-empty")
+
+        # JSON well-formedness on the two payload fields. Per-type SHAPE
+        # validation is enforced at the emitter call site (writing-plans
+        # T-B.6 codifies the MATERIAL_BY_TYPE + shape contracts); the
+        # dataclass enforces only "must parse as JSON" so a stored row is
+        # never structurally malformed.
+        for fname, fval in (
+            ("expected_value_json", self.expected_value_json),
+            ("actual_value_json", self.actual_value_json),
+        ):
+            if fval is not None:
+                try:
+                    json.loads(fval)
+                except (ValueError, TypeError) as e:
+                    raise ValueError(
+                        f"{fname} must be valid JSON or None; got {fval!r} "
+                        f"({e})"
+                    ) from None
+
+        # Resolution-lifecycle invariants.
+        if self.resolution == "unresolved":
+            # When unresolved, resolved_at + resolved_by typically NULL.
+            # We don't strictly enforce NULL (operator could correct
+            # mid-workflow) but we DO reject non-null resolved_at without
+            # resolved_by or vice versa (asymmetry is a sign of bug).
+            if (self.resolved_at is None) != (self.resolved_by is None):
+                raise ValueError(
+                    "resolved_at and resolved_by must both be NULL or both "
+                    f"set; got resolved_at={self.resolved_at!r}, "
+                    f"resolved_by={self.resolved_by!r}"
+                )
+        else:
+            # Resolved-off-unresolved: BOTH resolved_at + resolved_by must
+            # be populated.
+            if self.resolved_at is None:
+                raise ValueError(
+                    f"resolution={self.resolution!r} requires resolved_at set"
+                )
+            if self.resolved_by is None:
+                raise ValueError(
+                    f"resolution={self.resolution!r} requires resolved_by set"
+                )
+            # resolution_reason required for these three (spec §3.3
+            # nullability rule; acknowledged_immaterial is the explicit
+            # opt-out where reason is allowed to be NULL but the operator's
+            # acknowledgment IS the reason).
+            if (
+                self.resolution
+                in ("journal_corrected", "source_treated_canonical", "manual_override")
+                and not self.resolution_reason
+            ):
+                raise ValueError(
+                    f"resolution={self.resolution!r} requires non-empty "
+                    "resolution_reason"
+                )
