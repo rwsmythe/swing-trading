@@ -6,6 +6,46 @@
 
 ---
 
+## 2026-05-12 Low priority: Minervini reference review vs current strategy implementation
+
+**Observation (operator-surfaced 2026-05-12):** Two new methodology reference artifacts landed in `reference/minervini/`:
+- `896159773-Minervini-Trading-Strategy-Deep-Dive.txt` — 91 KB summary of SEPA.
+- `Mark Minervini - Think & Trade Like a Champion-Access Publishing Group (2017).pdf` — Minervini's second book (~6 MB).
+- `think-and-trade-like-a-champion.md` — pymupdf4llm conversion of the PDF (415 KB markdown + 87 figures in `reference/minervini/figures/`).
+
+These supplement the existing `reference/methodology/minervini-trend-template.md` + `reference/methodology/minervini-sell-side-rules.md` source-of-truth extracts but contain broader doctrine + commentary not yet reconciled against current implementation.
+
+**Scope of review (operator-locked focus: entry/exit/stop; NOT limited to these):**
+
+- **Entry criteria.** Current implementation: `swing/evaluation/` (A+ criteria); `swing/web/routes/trades.py` entry form; `swing/trades/entry.py:entry_create` lock-time service; sector/industry tamper hardening (Phase 9 Bundle D queued). Compare to: Trend Template threshold logic; VCP / pivot pattern requirements; volume-confirmation rules; relative-strength minimums; sector-leadership posture.
+- **Exit criteria.** Current implementation: `swing/trades/exit.py`; advisory rules in `swing/trades/advisory.py` (3e.8 Bundle 2 = `suggest_trim_into_strength` + `suggest_planned_target_r_hit` + `suggest_parabolic_trim`); Phase 6 review-completion outcome bucketing. Compare to: profit-take rules; +20% / +25% targets; parabolic / blow-off climax exits; "violation of the line" exits.
+- **Stop criteria.** Current implementation: `swing/trades/stop_adjust.py`; trail-MA advisories (3e.8 Bundle 3 = `suggest_maturity_stage_trail_ma_hint` + `suggest_r_multiple_stop_tighten`); R-multiple stop tightening per TLSMW Ch 13 p. 296. Compare to: maximum-loss rule (-7%/-8% absolute floor); breakeven-stop timing; trailing-stop discipline; sell on first violation vs second.
+- **Position sizing + risk per trade.** Current: `swing/recommendations/compute_shares` + capital floor convention ($7500 floor; user memory `project_capital_risk_floor.md`); Phase 9 risk_policy `max_account_risk_per_trade_pct` (currently 0.75 inherited from S3 test). Compare to: 1.25-2.5% baseline per Minervini; concentration vs diversification stance; pyramid-up rules.
+- **Portfolio-level risk.** Current: Phase 9 risk_policy `max_concurrent_positions` + `max_portfolio_heat_pct` + `max_sector_concentration_positions` (foundation landed Sub-bundle A; consumption queued). Compare to: Minervini's portfolio-heat convention; pause-on-drawdown thresholds; consecutive-loss exit-the-market discipline.
+- **Trade journal cadence + post-trade review.** Current: Phase 6 review_log + cadence card; Phase 8 daily_management_records (event_log + daily_snapshot); MFE/MAE precision tiers. Compare to: Minervini's "post-analysis" prescription (Chapter 8 of TLSMW; chapters in TTLAC); win/loss size asymmetry tracking; batting-average framing.
+- **Mental model / discipline (not limited).** Compare current advisory + cadence surfaces to Minervini's psychological framework — pre-trade plan locking, batting-average framing, "trade the plan not the P&L" discipline, post-loss review cadence.
+
+**Output target:** `docs/methodology-review-minervini-2026-MM-DD.md` (or similar dated memo) enumerating divergences + gaps with citations to both reference sources + current-code surfaces. Memo classifies each finding:
+- **MATCHES** (current implementation aligns with reference; no action).
+- **DIVERGES** (current implementation deliberately differs; document rationale or escalate via V2.1 §VII.F).
+- **GAP** (reference prescribes something current implementation lacks; potential Phase 10+ candidate; route through V2.1 §VII.F if production-touching).
+- **UNCLEAR** (reference ambiguous OR current implementation under-specified; flag for operator adjudication).
+
+**Suggested dispatch shape (when sequenced):**
+
+Best handled as a single research-subagent dispatch (Explore or general-purpose agent), NOT orchestrator-inline. The grep-and-compare work would burn orchestrator context unnecessarily. Implementer brief: read all 3 reference sources + `reference/methodology/minervini-*.md` + grep current implementation surfaces (entry/exit/stop/sizing/portfolio/journal); produce structured memo. Adjudicate findings with operator after first draft.
+
+**Operator-paced; not orchestrator-blocking.** Phase 9 arc (Sub-bundles B-E) + Phase 10 brainstorm are higher-priority; this review is durable reference work that should sequence behind in-flight phases. Capturing here so the new reference artifacts don't sit unreconciled.
+
+**Cross-references:**
+- `reference/minervini/think-and-trade-like-a-champion.md` (converted 2026-05-12 via pymupdf4llm).
+- `reference/methodology/minervini-trend-template.md` + `minervini-sell-side-rules.md` (existing source-of-truth extracts).
+- `docs/3e8-sell-side-advisories-investigation.md` (746-line survey of sell-side advisory surface vs Minervini SEPA + DST + Qullamaggie doctrine; SHIPPED 2026-05-10 at `63350ad`; informs the exit/stop comparison axis).
+- `reference/Future Work/2026-04-23-bifurcated-strategic-implementation-proposal-v2.1.md` §VII.F (source-of-truth correction protocol; routes production-touching findings).
+- CLAUDE.md "Strategy" section — `reference/methodology/` is reference-only; any production change driven by methodology reference routes through V2.1 §VII.F.
+
+---
+
 ## 2026-05-07 Research candidate: risk level vs earnings proximity correlation
 
 **Observation (operator-surfaced 2026-05-07):** There appears to be a correlation between risk level and proximity to earnings announcements. Pattern not yet quantified; surfacing for future research-branch investigation.
