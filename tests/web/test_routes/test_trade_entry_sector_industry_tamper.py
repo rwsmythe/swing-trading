@@ -25,6 +25,7 @@ exact-fragment assertion is too brittle for layout shifts.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -421,6 +422,239 @@ def test_post_entry_with_no_cached_candidate_skips_tamper_check(
     )
 
 
-# T-D.2 audit-emit tests are added in the T-D.2 commit (mirrored on
-# this same file per dispatch brief §0.4 + plan §G T-D.2 file map).
+# =====================================================================
+# T-D.2 — On sector mismatch rejection, an ad-hoc system_audit run +
+# sector_tamper discrepancy persists (separate transaction; persists
+# even though entry POST is rejected).
+# =====================================================================
+
+
+def test_sector_mismatch_emits_system_audit_reconciliation_run(
+    seeded_db, monkeypatch,
+):
+    """Discriminating: pre-T-D.2 the rejection returned 400 with no
+    audit-trail emission. Post-fix: a reconciliation_runs row with
+    ``source='system_audit'``, ``state='completed'`` is inserted +
+    a sector_tamper discrepancy row attached to it.
+
+    The audit emit is in a SEPARATE TRANSACTION from the entry POST
+    (which is rejected). Plan §A.4.1: "Discriminating test T-D.2.5:
+    assert that after rejection, reconciliation_runs has +1 row AND
+    reconciliation_discrepancies has +1 row of type 'sector_tamper'."
+    """
+    cfg, cfg_path = seeded_db
+    _seed_candidate_with_sector_industry(
+        cfg.paths.db_path,
+        ticker="TAMP",
+        sector="Healthcare",
+        industry="Biotechnology",
+    )
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = _post_entry(
+            client,
+            sector="Technology",  # tampered
+            industry="Biotechnology",
+        )
+    assert resp.status_code == 400
+    conn = connect(cfg.paths.db_path)
+    try:
+        runs = conn.execute(
+            "SELECT run_id, source, state, period_start, period_end "
+            "FROM reconciliation_runs"
+        ).fetchall()
+        discs = conn.execute(
+            "SELECT discrepancy_type, field_name, ticker, "
+            "expected_value_json, actual_value_json, material_to_review, "
+            "trade_id, fill_id "
+            "FROM reconciliation_discrepancies"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert len(runs) == 1, (
+        f"Expected 1 reconciliation_runs row, got {len(runs)}. "
+        f"Rows: {runs!r}"
+    )
+    run_id, source, state, period_start, period_end = runs[0]
+    assert source == "system_audit", source
+    assert state == "completed", state
+    # Spec §3.3.1 + plan §A.4.1: period_start = period_end =
+    # action_session_for_run(now()).
+    expected_session = _today_action_session_iso()
+    assert period_start == expected_session, (period_start, expected_session)
+    assert period_end == expected_session, (period_end, expected_session)
+    assert len(discs) == 1, (
+        f"Expected 1 sector_tamper discrepancy row, got {len(discs)}. "
+        f"Rows: {discs!r}"
+    )
+    (dtype, field_name, ticker, exp_json, act_json, material, trade_id,
+     fill_id) = discs[0]
+    assert dtype == "sector_tamper", dtype
+    assert field_name == "sector", field_name
+    assert ticker == "TAMP", ticker
+    # Material default is 0 per MATERIAL_BY_TYPE['sector_tamper'] (V1
+    # advisory; V2 elevates per spec §3.3.2).
+    assert material == 0, material
+    # trade_id + fill_id NULL — entry POST was rejected; no trade row
+    # exists to attribute the discrepancy to.
+    assert trade_id is None, trade_id
+    assert fill_id is None, fill_id
+    # Spec §3.3.1 JSON shape — expected_value carries cached;
+    # actual_value carries form-submitted.
+    exp = json.loads(exp_json)
+    act = json.loads(act_json)
+    assert exp == {
+        "sector": "Healthcare",
+        "industry": "Biotechnology",
+        "session": expected_session,
+    }, exp
+    assert act == {
+        "sector": "Technology",
+        "industry": "Biotechnology",
+    }, act
+
+
+# =====================================================================
+# T-D.2 — On industry mismatch rejection, ad-hoc audit row carries
+# field_name='industry'.
+# =====================================================================
+
+
+def test_industry_mismatch_emits_audit_with_field_name_industry(
+    seeded_db, monkeypatch,
+):
+    """Industry-mismatch audit row carries ``field_name='industry'``
+    (separate code path from sector mismatch's ``field_name='sector'``).
+
+    Discriminating: a regression that flattens both paths to a single
+    ``field_name='sector'`` would fail here.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_candidate_with_sector_industry(
+        cfg.paths.db_path,
+        ticker="TAMP",
+        sector="Healthcare",
+        industry="Biotechnology",
+    )
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = _post_entry(
+            client,
+            sector="Healthcare",
+            industry="Medical-Devices",  # tampered
+        )
+    assert resp.status_code == 400
+    conn = connect(cfg.paths.db_path)
+    try:
+        rows = conn.execute(
+            "SELECT field_name, actual_value_json "
+            "FROM reconciliation_discrepancies "
+            "WHERE discrepancy_type='sector_tamper'"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert len(rows) == 1, rows
+    field_name, act_json = rows[0]
+    assert field_name == "industry", field_name
+    act = json.loads(act_json)
+    assert act["industry"] == "Medical-Devices", act
+
+
+# =====================================================================
+# T-D.2 — Sector-first short-circuit when BOTH fields mismatch.
+# Recon doc §5: sector wins; field_name='sector'.
+# =====================================================================
+
+
+def test_both_mismatch_short_circuits_to_sector(seeded_db, monkeypatch):
+    """When BOTH sector and industry mismatch cached, sector is checked
+    first → audit row carries ``field_name='sector'`` and only ONE
+    discrepancy row is emitted (not two).
+
+    Discriminating: a regression that emits per-field discrepancies
+    (two rows) would fail here.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_candidate_with_sector_industry(
+        cfg.paths.db_path,
+        ticker="TAMP",
+        sector="Healthcare",
+        industry="Biotechnology",
+    )
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = _post_entry(
+            client,
+            sector="Technology",  # tampered
+            industry="Software-Application",  # also tampered
+        )
+    assert resp.status_code == 400
+    conn = connect(cfg.paths.db_path)
+    try:
+        rows = conn.execute(
+            "SELECT field_name FROM reconciliation_discrepancies "
+            "WHERE discrepancy_type='sector_tamper'"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert len(rows) == 1, (
+        f"Expected exactly 1 discrepancy row (sector-first short-circuit); "
+        f"got {len(rows)}: {rows!r}"
+    )
+    assert rows[0][0] == "sector"
+
+
+# =====================================================================
+# T-D.2 — Audit emit's transaction is independent of the entry POST's
+# (rejected) transaction. Even if a downstream consumer query under the
+# same connection lifecycle fails, the audit row persists.
+# =====================================================================
+
+
+def test_audit_row_persists_across_session_separation(
+    seeded_db, monkeypatch,
+):
+    """The audit row commits via its OWN transaction (separate from
+    any record_entry transaction, which is never invoked on rejection).
+    A fresh DB connection opened AFTER the rejection sees the row.
+
+    Discriminating: a regression that wraps the audit emit inside a
+    transaction-scope that gets rolled back (e.g., re-using a
+    deferred-tx connection that the route eventually closes without
+    commit) would fail here.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_candidate_with_sector_industry(
+        cfg.paths.db_path,
+        ticker="TAMP",
+        sector="Healthcare",
+        industry="Biotechnology",
+    )
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = _post_entry(
+            client,
+            sector="Technology",
+            industry="Biotechnology",
+        )
+    assert resp.status_code == 400
+    # Fresh connection — verify the row truly persisted to disk.
+    conn = connect(cfg.paths.db_path)
+    try:
+        run_state = conn.execute(
+            "SELECT state FROM reconciliation_runs"
+        ).fetchone()
+        disc_count = conn.execute(
+            "SELECT COUNT(*) FROM reconciliation_discrepancies "
+            "WHERE discrepancy_type='sector_tamper'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert run_state is not None, "No reconciliation_runs row found"
+    assert run_state[0] == "completed", run_state[0]
+    assert disc_count == 1, disc_count
 

@@ -122,6 +122,98 @@ def _rerender_stop_form_with_error(
     )
 
 
+def _emit_sector_tamper_audit(
+    *,
+    cfg,
+    ticker: str,
+    cached_sector: str,
+    cached_industry: str,
+    form_sector: str,
+    form_industry: str,
+    session_iso: str,
+    field_name: str,
+) -> int:
+    """Phase 9 Sub-bundle D Task D.2 — emit ad-hoc system_audit
+    reconciliation_run + sector_tamper discrepancy on tamper rejection.
+
+    Owns its own connection + ``with conn:`` deferred transaction
+    (plan §A.4.1: SEPARATE TRANSACTION from any entry-POST tx — entry
+    POST is rejected and never commits its own tx). Uses Bundle B's repo
+    entry points (``insert_run`` + ``insert_discrepancy`` +
+    ``update_run_completed``) directly per plan §A.4 + Sub-bundle B
+    return report §10 #1 — does NOT route through Bundle B's
+    ``run_tos_reconciliation`` service (which is ``source='tos_csv'``
+    only).
+
+    Returns the inserted ``discrepancy_id`` for test plumbing.
+
+    Spec §3.3.1 ``sector_tamper`` JSON shapes:
+      expected = {"sector": cached_sector, "industry": cached_industry,
+                  "session": session_iso}
+      actual   = {"sector": form_sector, "industry": form_industry}
+
+    ``MATERIAL_BY_TYPE['sector_tamper'] = 0`` per spec §3.3.2 V1
+    advisory; V2 elevates when sector-concentration becomes a hard
+    gate. The lookup is authoritative per Bundle B Codex R1 M#2 —
+    DO NOT hand-set inline.
+    """
+    import json as _json
+
+    from swing.data.datetime_helpers import now_ms
+    from swing.data.repos.reconciliation import (
+        insert_discrepancy,
+        insert_run,
+        update_run_completed,
+    )
+    from swing.trades.reconciliation import MATERIAL_BY_TYPE
+
+    expected_value_json = _json.dumps(
+        {
+            "sector": cached_sector,
+            "industry": cached_industry,
+            "session": session_iso,
+        },
+        separators=(",", ":"),
+    )
+    actual_value_json = _json.dumps(
+        {"sector": form_sector, "industry": form_industry},
+        separators=(",", ":"),
+    )
+    started_ts = now_ms()
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            run_id = insert_run(
+                conn,
+                source="system_audit",
+                started_ts=started_ts,
+                state="running",
+                period_start=session_iso,
+                period_end=session_iso,
+            )
+            disc_id = insert_discrepancy(
+                conn,
+                run_id=run_id,
+                discrepancy_type="sector_tamper",
+                field_name=field_name,
+                material_to_review=MATERIAL_BY_TYPE["sector_tamper"],
+                created_at=started_ts,
+                ticker=ticker,
+                expected_value_json=expected_value_json,
+                actual_value_json=actual_value_json,
+            )
+            update_run_completed(
+                conn,
+                run_id=run_id,
+                finished_ts=now_ms(),
+                discrepancies_count=1,
+                unresolved_discrepancies_count=1,
+            )
+    finally:
+        conn.close()
+    return disc_id
+
+
 def _rerender_entry_form_with_error(
     *, request: Request, templates, cfg, cache, executor,
     ticker: str, entry_date: str, entry_price: float, shares: int,
@@ -546,11 +638,22 @@ def entry_post(
             ):
                 mismatch_field = "industry"
             if mismatch_field is not None:
-                # T-D.2 will add the ad-hoc system_audit reconciliation_run
-                # + sector_tamper discrepancy emission here BEFORE the
-                # rejection renders (audit persists in its own
-                # transaction even though entry POST is rejected). T-D.1
-                # ships rejection-only; audit emit follows in T-D.2.
+                # T-D.2 — emit ad-hoc system_audit reconciliation_run +
+                # sector_tamper discrepancy in a SEPARATE TRANSACTION
+                # (plan §A.4.1). The audit must persist regardless of
+                # what happens to the rejected entry POST — record_entry
+                # is never invoked on this path, so no entry-tx is open
+                # to interleave with the audit-tx.
+                _emit_sector_tamper_audit(
+                    cfg=cfg,
+                    ticker=ticker.upper(),
+                    cached_sector=cached_sector,
+                    cached_industry=cached_industry,
+                    form_sector=sector,
+                    form_industry=industry,
+                    session_iso=session_iso,
+                    field_name=mismatch_field,
+                )
                 return _rerender_entry_form_with_error(
                     request=request, templates=templates, cfg=cfg,
                     cache=cache, executor=executor,
