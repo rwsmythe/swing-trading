@@ -37,6 +37,11 @@ class ConfigPageVM:
     price_source_degraded: bool = False
     price_source_degraded_until: str | None = None
     ohlcv_source_degraded: bool = False
+    # Phase 9 T-A.5 Codex R1 Major #3 fix — visible TOML divergence banner
+    # per spec §3.1.3 R3 Minor #2 ("yellow-banner warning until resolved").
+    # Populated by build_config_vm via a fresh DB read against the active
+    # risk_policy. None means no divergence (banner suppressed).
+    risk_policy_divergence: dict | None = None
 
 
 def _current_value(cfg: Config, spec: FieldSpec) -> Any:
@@ -44,7 +49,19 @@ def _current_value(cfg: Config, spec: FieldSpec) -> Any:
     return getattr(getattr(cfg, section), key)
 
 
-def build_config_vm(base_cfg: Config, *, saved: bool = False) -> ConfigPageVM:
+def build_config_vm(
+    base_cfg: Config,
+    *,
+    saved: bool = False,
+    conn: Any = None,
+) -> ConfigPageVM:
+    """Build the /config page VM.
+
+    The optional ``conn`` parameter lets the route pass a sqlite3.Connection
+    so the VM can detect TOML/risk_policy divergence per spec §3.1.3 R3
+    Minor #2 (Codex R1 Major #3 fix). When omitted (e.g., legacy callers,
+    tests that don't need divergence), the banner is suppressed.
+    """
     eff = apply_overrides(base_cfg)
     rows: list[ConfigFieldRow] = []
     for spec in FIELD_REGISTRY:
@@ -61,8 +78,18 @@ def build_config_vm(base_cfg: Config, *, saved: bool = False) -> ConfigPageVM:
             hard_refuse_min=spec.hard_refuse_min,
             hard_refuse_max=spec.hard_refuse_max,
         ))
+    divergence: dict | None = None
+    if conn is not None:
+        from swing.trades.risk_policy import check_and_reconcile_toml_divergence
+        try:
+            _, divergence = check_and_reconcile_toml_divergence(conn, eff)
+        except Exception:
+            # Defensive — banner missing on transient DB error is preferable
+            # to a 500 on /config.
+            divergence = None
     return ConfigPageVM(
         rows=rows,
         saved=saved,
         session_date=date.today().isoformat(),
+        risk_policy_divergence=divergence,
     )

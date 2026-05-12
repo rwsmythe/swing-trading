@@ -309,6 +309,72 @@ def check_and_reconcile_toml_divergence(
     return new_cfg, divergence
 
 
+def ratify_seed_from_cfg_on_v17_landing(
+    conn: sqlite3.Connection, cfg,
+) -> int | None:
+    """Codex R1 Major #1 fix — ratify the migration's hard-coded seed
+    against the operator's actual cfg values immediately after the
+    v16 → v17 transition.
+
+    Spec §3.1.3 SEED MAP requires four fields to come from cfg:
+      - max_account_risk_per_trade_pct = cfg.risk.max_risk_pct × 100
+      - max_concurrent_positions      = cfg.position_limits.hard_cap_open
+      - capital_floor_constant_dollars = cfg.account.risk_equity_floor
+      - review_lag_threshold_days     = cfg.review.review_window_days
+
+    The migration's executescript path cannot Python-eval cfg, so the
+    initial INSERT uses conservative hard-coded defaults that match the
+    SHIPPED swing.config.toml values. This helper fires once at the
+    v16→v17 landing to overwrite those defaults with the operator's
+    actual values via supersede_active_policy.
+
+    Idempotent within a single migration run — only fires when the
+    db_migrate CLI handler detects pre_version <= 16 AND post_version >= 17.
+
+    Returns:
+        New policy_id (after supersession) when at least one mirrored
+        field differs from the migration's hard-coded seed; ``None``
+        when all 4 fields already agree (no supersession needed).
+    """
+    try:
+        active = repo.get_active_policy(conn)
+    except repo.NoActivePolicyError:
+        # Defensive — migration should have seeded policy_id=1.
+        return None
+
+    cfg_derived = {
+        "max_account_risk_per_trade_pct": cfg.risk.max_risk_pct * 100.0,
+        "max_concurrent_positions": cfg.position_limits.hard_cap_open,
+        "capital_floor_constant_dollars": cfg.account.risk_equity_floor,
+    }
+    if hasattr(cfg, "review"):
+        cfg_derived["review_lag_threshold_days"] = (
+            cfg.review.review_window_days
+        )
+
+    field_updates: dict[str, object] = {}
+    for field, cfg_value in cfg_derived.items():
+        active_value = getattr(active, field)
+        if isinstance(cfg_value, float):
+            if abs(active_value - cfg_value) >= 1e-9:
+                field_updates[field] = cfg_value
+        elif active_value != cfg_value:
+            field_updates[field] = cfg_value
+
+    if not field_updates:
+        return None
+
+    field_updates["policy_notes"] = (
+        "auto-ratified from swing.config.toml at Phase 9 v16→v17 "
+        "db-migrate landing (per spec §3.1.3 SEED MAP)"
+    )
+    return supersede_active_policy(
+        conn,
+        field_updates=field_updates,
+        source="cfg_cascade",
+    )
+
+
 def seed_initial_policy(conn: sqlite3.Connection, cfg) -> int:
     """Idempotent seed fall-back. Called from test fixtures or repair
     paths when the migration seed is missing (post-wipe, fresh fixture).

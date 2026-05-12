@@ -59,7 +59,16 @@ def _save_redirect_response(request: Request) -> Response:
 @router.get("/config", response_class=HTMLResponse)
 def config_page(request: Request, saved: int = 0):
     cfg = apply_overrides(request.app.state.cfg)
-    vm = build_config_vm(cfg, saved=bool(saved))
+    # Phase 9 T-A.5 Codex R1 Major #3 fix: open a short-lived connection
+    # so build_config_vm can detect TOML/risk_policy divergence per spec
+    # §3.1.3 R3 Minor #2 ("yellow-banner warning until resolved"). The
+    # connection is closed before TemplateResponse renders.
+    db_path = request.app.state.cfg.paths.db_path
+    conn = sqlite3.connect(db_path)
+    try:
+        vm = build_config_vm(cfg, saved=bool(saved), conn=conn)
+    finally:
+        conn.close()
     return request.app.state.templates.TemplateResponse(
         request, "config.html.j2", {"vm": vm},
     )

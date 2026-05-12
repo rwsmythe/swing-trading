@@ -195,8 +195,55 @@ def db_migrate(ctx: click.Context) -> None:
             src.close()
         click.echo(f"Backup: {backup_path}")
 
+    # Pre-version snoop so we can detect the v16 → v17 first-time landing
+    # and ratify the migration's hard-coded seed against the operator's
+    # actual swing.config.toml values (Codex R1 Major #1 fix). The
+    # ratification ONLY fires on the v16 → v17 transition; subsequent
+    # db-migrate invocations leave the active policy alone.
+    pre_version = 0
+    if db_path.exists():
+        _probe = _sqlite3.connect(db_path)
+        try:
+            _row = _probe.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name='schema_version'"
+            ).fetchone()
+            if _row is not None:
+                _row2 = _probe.execute(
+                    "SELECT version FROM schema_version"
+                ).fetchone()
+                pre_version = int(_row2[0]) if _row2 else 0
+        finally:
+            _probe.close()
+
     conn = ensure_schema(db_path)
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+    if pre_version <= 16 and version >= 17:
+        # First-time v17 landing: ratify the migration's hard-coded seed
+        # against cfg.{risk.max_risk_pct, position_limits.hard_cap_open,
+        # account.risk_equity_floor, review.review_window_days} per spec
+        # §3.1.3 SEED MAP. The migration cannot Python-eval cfg at
+        # executescript time; this post-migration step is the canonical
+        # cfg-derived seed.
+        from swing.trades.risk_policy import (
+            ratify_seed_from_cfg_on_v17_landing,
+        )
+        try:
+            ratified_id = ratify_seed_from_cfg_on_v17_landing(conn, cfg)
+            if ratified_id is not None:
+                click.echo(
+                    f"Phase 9 ratification: superseded migration's hard-coded "
+                    f"seed (policy_id=1) with cfg-derived values; new active "
+                    f"policy_id={ratified_id}."
+                )
+        except Exception as exc:
+            click.echo(
+                f"WARNING: Phase 9 seed ratification failed: {exc}; "
+                f"the migration's hard-coded seed remains active. Run "
+                f"`swing config policy import-from-toml` per field to "
+                f"reconcile manually.",
+                err=True,
+            )
     conn.close()
     click.echo(f"DB at {db_path} - schema version {version}")
 

@@ -45,6 +45,17 @@ def config_show(ctx: click.Context) -> None:
         )
 
 
+# Phase 9 T-A.5 / Codex R1 Major #4 fix: when `swing config set` writes a
+# field that has a risk_policy mirror counterpart (per spec §3.1.3), the
+# CLI MUST also supersede the active risk_policy with the new value.
+# Otherwise the legacy CLI surface bypasses the cfg-cascade that the web
+# config page wires (T-A.5), creating a divergence the operator cannot
+# easily detect. Map mirrors `swing/web/routes/config.py:_RISK_POLICY_CASCADE_MAP`.
+_CONFIG_SET_RISK_POLICY_CASCADE_MAP: dict[str, str] = {
+    "account.risk_equity_floor": "capital_floor_constant_dollars",
+}
+
+
 @config_group.command("set")
 @click.argument("field_path", type=click.Choice(_FIELD_PATHS))
 @click.argument("raw_value", type=str)
@@ -70,6 +81,50 @@ def config_set(ctx: click.Context, field_path: str, raw_value: str, force: bool)
     overrides.setdefault(section, {})[key] = coerced
     write_user_overrides(overrides)
     click.echo(f"Set {field_path} = {coerced}")
+
+    # Phase 9 cfg-cascade: when this CLI writes a field with a risk_policy
+    # mirror, supersede the active policy too (Codex R1 Major #4 fix).
+    # Mirrors the web config_save cascade in swing/web/routes/config.py.
+    # Cascade fires AFTER the override write so a cascade failure leaves
+    # the cfg-side change committed; the next-startup divergence advisory
+    # surfaces the gap.
+    if field_path in _CONFIG_SET_RISK_POLICY_CASCADE_MAP:
+        from swing.data.db import connect
+        from swing.trades.risk_policy import supersede_active_policy
+
+        cfg = ctx.obj["config"]
+        policy_field = _CONFIG_SET_RISK_POLICY_CASCADE_MAP[field_path]
+        try:
+            cascade_conn = connect(cfg.paths.db_path)
+        except Exception as exc:
+            click.echo(
+                f"WARNING: could not open DB for risk_policy cascade ({exc}); "
+                f"override written but risk_policy NOT updated. Run "
+                f"`swing config policy import-from-toml --field {policy_field}` "
+                f"to reconcile.",
+                err=True,
+            )
+            return
+        try:
+            new_id = supersede_active_policy(
+                cascade_conn,
+                field_updates={policy_field: coerced},
+                source="cfg_cascade",
+            )
+            click.echo(
+                f"Cascaded to risk_policy: new policy_id={new_id} with "
+                f"{policy_field}={coerced}"
+            )
+        except Exception as exc:
+            click.echo(
+                f"WARNING: risk_policy cascade failed ({exc}); override "
+                f"written but risk_policy NOT updated. Run "
+                f"`swing config policy import-from-toml --field {policy_field}` "
+                f"to reconcile.",
+                err=True,
+            )
+        finally:
+            cascade_conn.close()
 
 
 @config_group.command("reset")

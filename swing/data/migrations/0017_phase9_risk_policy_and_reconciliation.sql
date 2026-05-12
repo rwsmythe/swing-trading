@@ -346,11 +346,16 @@ CREATE INDEX ix_account_equity_snapshots_date
 -- §6. ALTER ADD COLUMNs on trades + review_log (no rebuild)
 -- ============================================================================
 
+-- ON DELETE SET NULL per spec §3.6 (Codex R1 Minor #2 fix). Operationally
+-- risk_policy rows are append-only — they never get DELETEd in V1 (the
+-- supersession sequence at §4.1 only flips is_active=0 + sets effective_to
+-- + chains via superseded_by_policy_id). The SET NULL action is the
+-- spec-required schema contract for defensive forward compatibility.
 ALTER TABLE trades ADD COLUMN risk_policy_id_at_lock INTEGER
-    REFERENCES risk_policy(policy_id);
+    REFERENCES risk_policy(policy_id) ON DELETE SET NULL;
 
 ALTER TABLE review_log ADD COLUMN risk_policy_id_at_review_completion INTEGER
-    REFERENCES risk_policy(policy_id);
+    REFERENCES risk_policy(policy_id) ON DELETE SET NULL;
 
 -- ============================================================================
 -- §7. Schema version bump (LAST statement; Codex R1 Critical #1)
