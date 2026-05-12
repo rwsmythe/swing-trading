@@ -162,6 +162,48 @@ def test_dashboard_renders_per_trade_maturity_stage_advisory(app_factory):
     assert "10MA" in body
 
 
+def test_dashboard_renders_maturity_advisory_when_price_cache_returns_empty(
+    tmp_path: Path, monkeypatch,
+):
+    """Codex R1 Major #2 — §4.A.bis must fire even when PriceCache yields
+    no snapshot for a trade (degraded path). The pre-fix gating on
+    ``if snap is not None`` would silently drop the hint.
+    """
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {},
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: True)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+
+    db_path = tmp_path / "phase3e8_b3_degraded.db"
+    ensure_schema(db_path).close()
+    base_cfg = load(Path("swing.config.toml"))
+    cfg = dc_replace(
+        base_cfg, paths=dc_replace(base_cfg.paths, db_path=db_path),
+    )
+    app = create_app(cfg)
+
+    conn = connect(db_path)
+    try:
+        _seed_trade(conn, trade_id=1, ticker="AAAA")
+        insert_snapshot(
+            conn, trade_id=1,
+            snapshot_fields=_snapshot_fields(maturity_stage="pre_+1.5R"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with TestClient(app) as client:
+        r = client.get("/")
+    assert r.status_code == 200
+    body = r.text
+    # Even with zero price snapshots, the maturity hint must still render.
+    assert "Maturity stage pre_+1.5R" in body
+    assert "20MA" in body
+
+
 def test_dashboard_omits_maturity_advisory_for_trade_without_snapshot(
     app_factory,
 ):

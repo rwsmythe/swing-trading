@@ -665,6 +665,61 @@ def test_briefing_composer_omits_r_multiple_stop_tighten_below_2r():
     assert "r_multiple_stop_tighten" not in rules
 
 
+def test_briefing_composer_fires_maturity_hint_when_price_missing():
+    """Codex R1 Major #2 — §4.A.bis (DB-sourced) must fire even when
+    current_price cannot be resolved from candidate.close OR previous_close.
+
+    Discriminating: candidate.close=None AND bars empty → current_price=None.
+    Pre-fix: ``out[t.id] = []`` skip — operator loses the maturity hint.
+    Post-fix: emit only the maturity hint via the price-independent composer.
+    """
+    from swing.pipeline.runner import compose_open_trade_advisories_for_briefing
+
+    trade = _trade(entry=100.0, initial_stop=95.0)
+    candidates = {"ABCD": _candidate(close=None)}  # no candidate close
+    # Empty bars → _previous_close returns None → current_price=None.
+    empty_bars = pd.DataFrame(
+        {"Open": [], "High": [], "Low": [], "Close": [], "Volume": []},
+        index=pd.DatetimeIndex([]),
+    )
+    fetcher = _StubFetcher({"ABCD": empty_bars})
+
+    result = compose_open_trade_advisories_for_briefing(
+        trades=[trade], fetcher=fetcher, candidates_by_ticker=candidates,
+        weather_status="Bullish", stop_advisory_config=_stop_advisory_default(),
+        action_session_date="2026-04-15",
+        maturity_stage_by_trade_id={trade.id: "pre_+1.5R"},
+    )
+
+    rules = {s.rule for s in result[trade.id]}
+    assert "maturity_stage_trail_ma_hint" in rules
+    # Price-dependent rules must NOT have fired under the sentinel-price path.
+    assert "breakeven" not in rules
+    assert "r_multiple_stop_tighten" not in rules
+
+
+def test_briefing_composer_omits_maturity_hint_when_price_and_stage_both_missing():
+    """Discriminating: when current_price is None AND maturity_stage is None
+    too, the briefing emits an empty advisory list (no fallback false-positive)."""
+    from swing.pipeline.runner import compose_open_trade_advisories_for_briefing
+
+    trade = _trade(entry=100.0, initial_stop=95.0)
+    candidates = {"ABCD": _candidate(close=None)}
+    empty_bars = pd.DataFrame(
+        {"Open": [], "High": [], "Low": [], "Close": [], "Volume": []},
+        index=pd.DatetimeIndex([]),
+    )
+    fetcher = _StubFetcher({"ABCD": empty_bars})
+
+    result = compose_open_trade_advisories_for_briefing(
+        trades=[trade], fetcher=fetcher, candidates_by_ticker=candidates,
+        weather_status="Bullish", stop_advisory_config=_stop_advisory_default(),
+        action_session_date="2026-04-15",
+        # maturity_stage_by_trade_id omitted → falls back to None.
+    )
+    assert result[trade.id] == []
+
+
 def test_briefing_composer_dhc_like_does_not_fire_r_multiple_stop_tighten():
     """DHC empirical case (brief §0.3 #13): r=0.85R must NOT fire the
     M.2 rule under default cfg."""

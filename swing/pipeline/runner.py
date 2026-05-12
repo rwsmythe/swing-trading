@@ -985,8 +985,33 @@ def compose_open_trade_advisories_for_briefing(
         # open-position tickers by `_step_evaluate`) → OHLCV last-bar close
         # fallback. Both anchor on the last completed session.
         current_price = cand_close if cand_close is not None else prev_close
+        # 3e.8 Bundle 3 Codex R1 Major #2 — when no current_price is
+        # available, the §4.A.bis maturity-stage advisory should still
+        # fire from the DB-sourced snapshot. Use a sentinel price (0.0)
+        # and the price-independent composer rather than dropping the
+        # trade entirely.
         if current_price is None:
-            out[t.id] = []
+            ctx_mat = AdvisoryContext(
+                as_of_date=action_session_date,
+                current_price=0.0,
+                sma10=None, sma20=None, sma50=None,
+                previous_close=None,
+                weather_status=weather_status,
+                config=stop_advisory_config,
+                maturity_stage=(
+                    maturity_stage_by_trade_id.get(t.id)
+                    if maturity_stage_by_trade_id is not None
+                    else None
+                ),
+            )
+            from swing.trades.advisory import (
+                compute_price_independent_suggestions,
+            )
+            mat_raw = compute_price_independent_suggestions(t, ctx_mat)
+            out[t.id] = [
+                AdvisorySuggestionVM(rule=s.rule, message=s.message)
+                for s in mat_raw
+            ]
             continue
 
         ctx = AdvisoryContext(

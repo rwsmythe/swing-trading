@@ -5,8 +5,11 @@ import pandas as pd
 
 from swing.config import StopAdvisoryConfig
 from swing.data.models import Trade
+import math
+
 from swing.trades.advisory import (
     AdvisoryContext, AdvisorySuggestion, compute_all_suggestions,
+    compute_price_independent_suggestions,
     suggest_breakeven, suggest_trail_ma, suggest_exit_close_below_ma,
     suggest_weather_action, suggest_time_stop,
 )
@@ -226,6 +229,30 @@ def test_suggest_r_multiple_stop_tighten_uses_cfg_multiple():
     s = suggest_r_multiple_stop_tighten(_trade(), ctx2)
     assert s is not None
     assert "≥3.0×" in s.message  # cfg override surfaced in message
+
+
+def test_suggest_r_multiple_stop_tighten_returns_none_on_nan_price():
+    """Codex R1 Major #1 — NaN current_price would silently produce '+nanR'
+    output through ``r_so_far`` without an isfinite guard. Mirrors Bundle 2's
+    parabolic_trim numeric-guard discipline.
+    """
+    from swing.trades.advisory import suggest_r_multiple_stop_tighten
+    ctx = AdvisoryContext(
+        as_of_date="2026-04-15", current_price=math.nan,
+        sma10=None, sma20=None, sma50=None, previous_close=None,
+        weather_status="Bullish", config=StopAdvisoryConfig(),
+    )
+    assert suggest_r_multiple_stop_tighten(_trade(), ctx) is None
+
+
+def test_suggest_r_multiple_stop_tighten_returns_none_on_inf_price():
+    from swing.trades.advisory import suggest_r_multiple_stop_tighten
+    ctx = AdvisoryContext(
+        as_of_date="2026-04-15", current_price=math.inf,
+        sma10=None, sma20=None, sma50=None, previous_close=None,
+        weather_status="Bullish", config=StopAdvisoryConfig(),
+    )
+    assert suggest_r_multiple_stop_tighten(_trade(), ctx) is None
 
 
 def test_suggest_r_multiple_stop_tighten_distinguishes_dhc_lar_boundary():
@@ -576,6 +603,61 @@ def test_compute_all_suggestions_omits_r_multiple_stop_tighten_below_trigger():
     sugs = compute_all_suggestions(_trade(), _ctx(close=195.0))
     rules = [s.rule for s in sugs]
     assert "r_multiple_stop_tighten" not in rules
+
+
+# ----------------------------------------------------------------------
+# 3e.8 Bundle 3 Codex R1 Major #2 — compute_price_independent_suggestions
+# (price-cache-degraded fallback path).
+# ----------------------------------------------------------------------
+
+
+def test_compute_price_independent_suggestions_fires_maturity_hint_with_sentinel_price():
+    """The maturity hint must fire even when ``current_price`` is a sentinel
+    0.0 (no live price snapshot available) — operator still sees the
+    DB-sourced §4.A.bis advisory under PriceCache degradation.
+    """
+    ctx = AdvisoryContext(
+        as_of_date="2026-04-15", current_price=0.0,
+        sma10=None, sma20=None, sma50=None, previous_close=None,
+        weather_status="STALE", config=StopAdvisoryConfig(),
+        maturity_stage="pre_+1.5R",
+    )
+    sugs = compute_price_independent_suggestions(_trade(), ctx)
+    rules = [s.rule for s in sugs]
+    assert rules == ["maturity_stage_trail_ma_hint"]
+
+
+def test_compute_price_independent_suggestions_omits_when_stage_is_none():
+    ctx = AdvisoryContext(
+        as_of_date="2026-04-15", current_price=0.0,
+        sma10=None, sma20=None, sma50=None, previous_close=None,
+        weather_status="STALE", config=StopAdvisoryConfig(),
+        maturity_stage=None,
+    )
+    sugs = compute_price_independent_suggestions(_trade(), ctx)
+    assert sugs == []
+
+
+def test_compute_price_independent_suggestions_excludes_price_dependent_rules():
+    """Discriminating: even when r_so_far(trade, 0.0) would be a large
+    negative R, the price-dependent rules MUST NOT be included in this
+    function's output. Pre-fix would have e.g. accidentally included
+    breakeven / trail_ma if implemented as a generic filter."""
+    ctx = AdvisoryContext(
+        as_of_date="2026-04-15", current_price=0.0,
+        sma10=190.0, sma20=185.0, sma50=180.0,
+        previous_close=None, weather_status="Bullish",
+        config=StopAdvisoryConfig(),
+        maturity_stage="pre_+1.5R",
+    )
+    sugs = compute_price_independent_suggestions(_trade(), ctx)
+    rules = {s.rule for s in sugs}
+    assert "breakeven" not in rules
+    assert "trail_10ma" not in rules
+    assert "trail_20ma" not in rules
+    assert "trim_into_strength" not in rules
+    assert "r_multiple_stop_tighten" not in rules
+    assert "maturity_stage_trail_ma_hint" in rules
 
 
 def _trade(*, current_stop: float = 170.0, entry: float = 180.0, days: int = 0) -> Trade:

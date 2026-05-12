@@ -316,7 +316,15 @@ def suggest_r_multiple_stop_tighten(
     they may both fire concurrently for trades crossing +2R with stop still
     below entry, which is the intended behavioral overlap (brief §0.3 #4).
     """
+    # Codex R1 Major #1 — defensive numeric guard. ``r_so_far`` returns NaN
+    # when ``ctx.current_price`` is NaN; ``nan < 2.0`` is False so a bare
+    # comparison lets NaN sneak past + the rule emits "+nanR" output. Mirrors
+    # the Bundle 2 ``suggest_parabolic_trim`` isfinite discipline.
+    if not math.isfinite(ctx.current_price):
+        return None
     r = r_so_far(trade, ctx.current_price)
+    if not math.isfinite(r):
+        return None
     if r < ctx.config.tighten_at_r_multiple:
         return None
     return AdvisorySuggestion(
@@ -327,6 +335,31 @@ def suggest_r_multiple_stop_tighten(
             f"tightening trail to lock in majority of gain"
         ),
     )
+
+
+def compute_price_independent_suggestions(
+    trade: Trade, ctx: AdvisoryContext,
+) -> list[AdvisorySuggestion]:
+    """Subset of advisory rules that do NOT consume ``ctx.current_price``.
+
+    Used by composition layers when no live price snapshot is available
+    (PriceCache degraded; OHLCV fetch failed; etc.) so DB-sourced advisories
+    still fire. Currently V1: only §4.A.bis ``suggest_maturity_stage_trail_ma_hint``
+    is price-independent. Future price-independent rules should be appended
+    here.
+
+    Codex R1 Major #2 closure (3e.8 Bundle 3): pre-fix, the 5 web/briefing
+    composition sites gated ALL advisories on ``snap is not None``, which
+    silently dropped §4.A.bis under PriceCache degradation. Per brief §0.3 #13
+    + §5 Surface 1: the maturity hint must fire for every open trade with
+    non-NULL maturity_stage regardless of price availability.
+
+    Caller passes an ``AdvisoryContext`` constructed with a sentinel
+    ``current_price`` (e.g., 0.0) — none of the rules called here read it.
+    """
+    sugs: list[AdvisorySuggestion | None] = []
+    sugs.append(suggest_maturity_stage_trail_ma_hint(trade, ctx))
+    return [s for s in sugs if s is not None]
 
 
 def compute_all_suggestions(trade: Trade, ctx: AdvisoryContext) -> list[AdvisorySuggestion]:

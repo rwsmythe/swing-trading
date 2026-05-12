@@ -980,7 +980,17 @@ def build_dashboard(
             has_been_trimmed=bool(exits_by_trade.get(t.id)),
             maturity_stage=_trade_snap.maturity_stage if _trade_snap else None,
         )
-        raw = compute_all_suggestions(t, ctx_adv) if snap else []
+        # Codex R1 Major #2 (Bundle 3) — DB-sourced advisories (§4.A.bis)
+        # must fire even when PriceCache is degraded. Run the price-
+        # independent subset always; full advisory composition only when
+        # a live price snapshot is available.
+        if snap is not None:
+            raw = compute_all_suggestions(t, ctx_adv)
+        else:
+            from swing.trades.advisory import (
+                compute_price_independent_suggestions,
+            )
+            raw = compute_price_independent_suggestions(t, ctx_adv)
         advisories_tuple = tuple(
             AdvisorySuggestionVM(rule=s.rule, message=s.message) for s in raw
         )
