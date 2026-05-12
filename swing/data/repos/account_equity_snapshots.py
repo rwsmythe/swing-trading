@@ -3,14 +3,15 @@
 Phase 9 Sub-bundle C T-C.2 + spec §3.5 + plan §B file map.
 
 Pure CRUD inside the caller's transaction scope — repo functions DO NOT
-call ``conn.commit()`` (Finviz I1 lesson + caller-controlled transaction
-discipline; the service layer ``swing/trades/account_equity_snapshots.py``
-owns BEGIN IMMEDIATE / COMMIT / ROLLBACK per plan §0.5 #6).
+commit (Finviz I1 lesson + caller-controlled transaction discipline; the
+service layer ``swing/trades/account_equity_snapshots.py`` owns BEGIN
+IMMEDIATE / COMMIT / ROLLBACK per plan §0.5 #6).
 
-UPSERT is SELECT-then-UPDATE-or-INSERT (NOT ``INSERT OR REPLACE`` per
-CLAUDE.md SQLite REPLACE gotcha + plan §A.8 baseline) so the snapshot_id PK
-is preserved across re-record for the same ``(snapshot_date, source)`` —
-defensive forward compatibility for any future FK referrer.
+UPSERT is SELECT-then-UPDATE-or-INSERT (NOT the SQLite ``REPLACE``
+shorthand per CLAUDE.md SQLite gotcha + plan §A.8 baseline) so the
+snapshot_id PK is preserved across re-record for the same
+``(snapshot_date, source)`` — defensive forward compatibility for any
+future FK referrer.
 
 Source-ladder precedence per spec §3.5 + §11.4 (Phase 10 hand-off):
 ``schwab_api`` > ``tos_csv`` > ``manual`` at the same snapshot_date. The
@@ -92,9 +93,9 @@ def upsert_snapshot(
 
     PK preservation is the binding contract — re-record for the same
     ``(snapshot_date, source)`` UPDATEs the existing row's mutable columns
-    in place; never DELETE+INSERT. Per CLAUDE.md SQLite REPLACE gotcha:
-    ``INSERT OR REPLACE`` would CASCADE-WIPE any child FK referrers + reissue
-    a new PK. The UPSERT path here defends against both.
+    in place; never DELETE+INSERT. Per CLAUDE.md SQLite gotcha, the
+    ``REPLACE`` shorthand would CASCADE-WIPE any child FK referrers +
+    reissue a new PK. The UPSERT path here defends against both.
 
     Returns: snapshot_id of the row (existing if updated, new if inserted).
     """

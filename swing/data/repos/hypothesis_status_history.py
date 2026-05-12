@@ -3,8 +3,8 @@
 Phase 9 Sub-bundle C T-C.3 + spec §3.4 + plan §B file map.
 
 Pure CRUD inside the caller's transaction scope — repo functions DO NOT
-call ``conn.commit()`` (Finviz I1 lesson + caller-controlled transaction
-discipline; the service layer
+commit (Finviz I1 lesson + caller-controlled transaction discipline; the
+service layer
 ``swing/trades/hypothesis.py:update_hypothesis_status_with_audit`` owns
 BEGIN IMMEDIATE / COMMIT / ROLLBACK per plan §A.1 8-step transactional
 sequence).

@@ -115,19 +115,39 @@ def test_returns_none_when_section_present_but_net_liq_row_missing() -> None:
 
 
 def test_returns_none_when_value_unparsable() -> None:
-    """Unparsable values fall through ``_parse_tos_amount`` to 0.0.
+    """Codex Round 1 Major #2 fix: unparsable values now return None.
 
-    The parser distinguishes 'missing' (returns None) from 'present-but-
-    0' (returns 0.0) — this test pins the latter.
+    Previously the parser delegated to ``_parse_tos_amount``, which
+    returns 0.0 for unparsable input — that would surface as a false-
+    positive equity_delta discrepancy emit (delta = journal_equity - 0).
+    The strict parse path returns None so the caller treats it as
+    'source-side equity unavailable' + skips the emit (T-C.6 contract).
     """
     csv_text = (
         "Account Summary\n"
         "Net Liquidating Value,not-a-number\n"
     )
     result = extract_account_summary_net_liq(csv_text)
-    # _parse_tos_amount returns 0.0 on unparsable input; we get a row but
-    # the value is 0.0 (NOT None — section + row are both present).
-    assert result == 0.0
+    assert result is None
+
+
+def test_returns_none_when_value_is_dash_placeholder() -> None:
+    """`--` is the TOS placeholder for missing/inactive metrics."""
+    csv_text = (
+        "Account Summary\n"
+        "Net Liquidating Value,--\n"
+    )
+    result = extract_account_summary_net_liq(csv_text)
+    assert result is None
+
+
+def test_returns_none_when_value_is_na() -> None:
+    csv_text = (
+        "Account Summary\n"
+        'Net Liquidating Value,"N/A"\n'
+    )
+    result = extract_account_summary_net_liq(csv_text)
+    assert result is None
 
 
 def test_scans_only_the_account_summary_section() -> None:

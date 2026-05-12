@@ -459,3 +459,148 @@ def test_hypothesis_statuses_matches_dataclass_enum() -> None:
     assert HYPOTHESIS_STATUSES == (
         "active", "paused", "closed-escaped", "closed-target-met",
     )
+
+
+# ============================================================================
+# §9 — Codex R1 Major #3: post-migration synth-predecessor
+# ============================================================================
+#
+# A NEW hypothesis_registry row added POST-migration has no seed history
+# row (the migration 0017 seed runs ONCE per existing row at v16→v17
+# transition). On the FIRST transition for such a hypothesis, the
+# service synthesizes the missing predecessor open-interval row inline
+# so the audit trail captures the initial-status interval that the
+# hypothesis WAS in before the transition. Without the synth path, the
+# audit log would silently omit the initial-status period.
+
+
+def _insert_post_migration_hypothesis(
+    conn: sqlite3.Connection, *, created_at: str = "2026-05-10",
+    name_suffix: str = "",
+) -> int:
+    """Insert a new hypothesis_registry row that LACKS a seed history row.
+
+    Mirrors the operator-/web-form pathway that bypasses migration
+    seeding. Returns the new id. The fixture commits the INSERT so the
+    subsequent service call (which rejects caller-held tx) succeeds.
+    """
+    cur = conn.execute(
+        "INSERT INTO hypothesis_registry "
+        "(name, statement, target_sample_size, decision_criteria, "
+        " consecutive_loss_tripwire, absolute_loss_tripwire_pct, created_at) "
+        "VALUES (?, ?, 20, 'criteria', 3, 25.0, ?)",
+        (f"post-mig-test{name_suffix}", "unused for test", created_at),
+    )
+    rid = int(cur.lastrowid)
+    conn.commit()
+    return rid
+
+
+def test_synth_predecessor_when_no_seed_history_row(
+    conn: sqlite3.Connection,
+) -> None:
+    """First transition on a post-migration hypothesis: service synthesizes
+    the missing predecessor open-interval row INSIDE the transaction.
+    """
+    hyp_id = _insert_post_migration_hypothesis(conn)
+    # Verify the precondition: no history row exists.
+    pre_rows = list_history_for_hypothesis(conn, hyp_id)
+    assert len(pre_rows) == 0
+
+    result = update_hypothesis_status_with_audit(
+        conn,
+        hypothesis_id=hyp_id,
+        new_status="paused",
+        change_reason="first-ever transition",
+    )
+    assert result == "transition"
+
+    # Post: two history rows — the synthesized predecessor + the new row.
+    post_rows = list_history_for_hypothesis(conn, hyp_id)
+    assert len(post_rows) == 2
+
+    seed_row, new_row = post_rows[0], post_rows[1]
+    # Synthesized predecessor: status = old (active), closed at the
+    # transition instant, change_reason explicit + self-documenting.
+    assert seed_row.status == "active"
+    assert seed_row.effective_from == "2026-05-10T00:00:00.000"
+    assert seed_row.effective_to is not None
+    assert seed_row.change_reason is not None
+    assert "auto-synthesized" in seed_row.change_reason
+    # The new transition row picks up at the same instant the synth row
+    # closes (continuous timeline).
+    assert new_row.status == "paused"
+    assert new_row.effective_from == seed_row.effective_to
+    assert new_row.effective_to is None
+    assert new_row.change_reason == "first-ever transition"
+
+
+def test_synth_predecessor_preserves_audit_chain_invariants(
+    conn: sqlite3.Connection,
+) -> None:
+    """Post-synthesis: get_current_status returns the new row's data;
+    partial-unique index holds (exactly one open-interval row).
+    """
+    hyp_id = _insert_post_migration_hypothesis(conn)
+    update_hypothesis_status_with_audit(
+        conn,
+        hypothesis_id=hyp_id,
+        new_status="paused",
+        change_reason="test",
+    )
+    current = get_current_status(conn, hyp_id)
+    assert current is not None
+    assert current.status == "paused"
+    # Partial-unique: only one row has effective_to IS NULL for this
+    # hypothesis.
+    open_count = conn.execute(
+        "SELECT COUNT(*) FROM hypothesis_status_history "
+        "WHERE hypothesis_id = ? AND effective_to IS NULL",
+        (hyp_id,),
+    ).fetchone()[0]
+    assert open_count == 1
+
+
+def test_synth_predecessor_does_not_fire_for_seeded_hypothesis(
+    conn: sqlite3.Connection,
+) -> None:
+    """Regression-clean: a seeded hypothesis (migration 0017 seed already
+    inserted its open-interval row) does NOT get a synth row on first
+    transition — only the seed → closing + new-open shape.
+    """
+    hyp_id = _first_hypothesis_id(conn)
+    update_hypothesis_status_with_audit(
+        conn,
+        hypothesis_id=hyp_id,
+        new_status="paused",
+        change_reason="r",
+    )
+    rows = list_history_for_hypothesis(conn, hyp_id)
+    # Exactly two: original seed (now closed) + new transition.
+    assert len(rows) == 2
+    # Neither row carries the synth marker.
+    assert "auto-synthesized" not in (rows[0].change_reason or "")
+    assert "auto-synthesized" not in (rows[1].change_reason or "")
+
+
+def test_synth_predecessor_clamps_future_created_at_to_now(
+    conn: sqlite3.Connection,
+) -> None:
+    """Defensive: if registry.created_at is in the FUTURE (clock skew /
+    backfill mistake), the synth predecessor's effective_from clamps to
+    `now` so the dataclass cross-field invariant
+    effective_from <= effective_to holds.
+    """
+    # Insert a hypothesis with a far-future created_at.
+    hyp_id = _insert_post_migration_hypothesis(conn, created_at="2099-12-31")
+    result = update_hypothesis_status_with_audit(
+        conn,
+        hypothesis_id=hyp_id,
+        new_status="paused",
+        change_reason="r",
+    )
+    assert result == "transition"
+    rows = list_history_for_hypothesis(conn, hyp_id)
+    seed_row = rows[0]
+    # effective_from clamped to now (== effective_to in the seed row).
+    assert seed_row.effective_from == seed_row.effective_to

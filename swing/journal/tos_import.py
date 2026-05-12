@@ -233,14 +233,18 @@ def extract_account_summary_net_liq(csv_text: str) -> float | None:
         ...
 
     The leading currency symbol + thousands separators + double-quote
-    wrapping are stripped via ``_parse_tos_amount``. Negative-form
-    parens (unlikely for net-liq but defensive) are honored.
+    wrapping are stripped. Negative-form parens (unlikely for net-liq
+    but defensive) are honored.
 
     Returns:
       The parsed net-liq REAL on success.
       ``None`` if the section is absent OR the ``Net Liquidating Value``
-      row is missing — caller treats None as "source-side equity
-      unavailable" + skips the equity_delta emit (T-C.6 contract).
+      row is missing OR the row is present but its value is unparsable
+      (e.g., ``not-a-number``) — caller treats None as "source-side
+      equity unavailable" + skips the equity_delta emit (T-C.6
+      contract). Codex Round 1 Major #2 fix: previously fell back to
+      ``_parse_tos_amount``'s 0.0 sentinel for unparsable values, which
+      surfaced as a false-positive equity_delta = full-journal emit.
     """
     in_summary = False
     for raw_line in csv_text.splitlines():
@@ -267,7 +271,22 @@ def extract_account_summary_net_liq(csv_text: str) -> float | None:
         field_name = row[0].strip()
         value_raw = row[1].strip()
         if field_name == "Net Liquidating Value":
-            return _parse_tos_amount(value_raw)
+            # Strict parse — distinguish 'unparsable' from 'present-and-0'.
+            # _parse_tos_amount returns 0.0 for both, which would emit a
+            # spurious equity_delta of (journal - 0). Pre-strip and try
+            # float() ourselves; on failure return None per the
+            # 'source-side equity unavailable' contract above.
+            cleaned = value_raw
+            negative = cleaned.startswith("(") and cleaned.endswith(")")
+            cleaned = cleaned.strip("()").replace("$", "").replace(",", "")
+            cleaned = cleaned.strip()
+            if cleaned in ("", "--", "N/A"):
+                return None
+            try:
+                v = float(cleaned)
+            except ValueError:
+                return None
+            return -v if negative else v
     return None
 
 

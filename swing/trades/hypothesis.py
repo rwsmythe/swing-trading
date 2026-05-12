@@ -100,6 +100,28 @@ class HypothesisStatusTransitionError(ValueError):
     """
 
 
+def _normalize_to_ms_day_start(value: str) -> str:
+    """Coerce a hypothesis_registry.created_at value to ms-precision
+    day-start anchor (mirrors the migration 0017 seed pattern).
+
+    Migration 0008 stores created_at as a date-only ``YYYY-MM-DD``
+    string; the migration 0017 seed normalizes that to
+    ``YYYY-MM-DDT00:00:00.000``. Post-migration hypotheses may have an
+    arbitrary value here, including a full datetime; this helper keeps
+    the seed effective_from format uniform so the partial-unique +
+    chronology invariants hold.
+    """
+    s = (value or "").strip()
+    if not s:
+        # Defensive fallback: empty created_at → epoch ms-precision day.
+        return "1970-01-01T00:00:00.000"
+    # Take the date portion (first 10 chars: YYYY-MM-DD) and append the
+    # day-start anchor. If the input is malformed, the dataclass
+    # __post_init__ cross-field check still catches downstream errors.
+    date_part = s[:10]
+    return f"{date_part}T00:00:00.000"
+
+
 def update_hypothesis_status_with_audit(
     conn: sqlite3.Connection,
     *,
@@ -144,16 +166,19 @@ def update_hypothesis_status_with_audit(
     # Step 2: BEGIN IMMEDIATE (acquires the write lock first).
     conn.execute("BEGIN IMMEDIATE")
     try:
-        # Step 3: SELECT current status under the lock.
+        # Step 3: SELECT current status under the lock. We additionally
+        # pull created_at to support the post-migration-seed synthesis
+        # path below (Codex R1 Major #3 fix).
         row = conn.execute(
-            "SELECT status FROM hypothesis_registry WHERE id = ?",
+            "SELECT status, created_at FROM hypothesis_registry "
+            "WHERE id = ?",
             (hypothesis_id,),
         ).fetchone()
         if row is None:
             # ROLLBACK + raise; we never reached the audit append.
             conn.rollback()
             raise ValueError(f"hypothesis {hypothesis_id} not found")
-        current_status = row[0]
+        current_status, registry_created_at = row[0], row[1]
 
         # Step 4: identity transition → noop sentinel.
         if current_status == new_status:
@@ -170,13 +195,47 @@ def update_hypothesis_status_with_audit(
                 f"{sorted(allowed_to) or '(none — terminal)'}"
             )
 
-        # Step 5: close prior open-interval row.
+        # Step 5: close prior open-interval row. Capture rowcount so we
+        # can detect a post-migration hypothesis that lacks the
+        # migration seed (Codex R1 Major #3 fix). The migration seeded
+        # ONCE per existing hypothesis_registry row; new rows added
+        # post-migration via direct SQL or future create-hypothesis web
+        # forms have NO history row + would otherwise lose their
+        # initial-status audit interval on first transition.
         now = now_ms()
-        update_close_open_interval(
+        closed = update_close_open_interval(
             conn,
             hypothesis_id=hypothesis_id,
             effective_to=now,
         )
+
+        if closed == 0:
+            # No open interval found — synthesize the missing predecessor
+            # so the audit trail captures the initial status interval
+            # before this transition. Mirrors the migration seed shape:
+            # effective_from = day-start anchor of registry.created_at,
+            # effective_to = now, status = current_status (the OLD
+            # status), change_reason = explicit self-documenting marker.
+            seed_effective_from = _normalize_to_ms_day_start(
+                registry_created_at
+            )
+            # Guard: if registry.created_at is itself after `now` (clock
+            # skew / mistaken backfill), clamp to `now` so the dataclass
+            # cross-field invariant effective_from <= effective_to holds.
+            if seed_effective_from > now:
+                seed_effective_from = now
+            insert_history(
+                conn,
+                hypothesis_id=hypothesis_id,
+                status=current_status,
+                effective_from=seed_effective_from,
+                effective_to=now,
+                change_reason=(
+                    "auto-synthesized predecessor "
+                    "(post-migration hypothesis lacked seed history row)"
+                ),
+                recorded_at=now,
+            )
 
         # Step 6: INSERT new open-interval row.
         insert_history(
