@@ -3,11 +3,26 @@
 Parser splits the multi-section export by labels. Extractors consume normalized
 columns and yield CashMovement / TosFill records. `reconcile_tos` returns a
 ReconciliationReport — caller (CLI) decides what to commit.
+
+Phase 9 Sub-bundle B (T-B.2) extends ``reconcile_tos`` with an optional
+emitter seam: when a caller supplies ``run_id`` + ``emitter``, each
+detected discrepancy is forwarded to the emitter callable so the service
+layer (``swing/trades/reconciliation.py:run_tos_reconciliation``) can
+persist ``reconciliation_discrepancies`` rows inside the outer BEGIN
+IMMEDIATE transaction per spec §3.3.3. When ``run_id`` + ``emitter`` are
+None, behavior matches the pre-refactor regression-clean baseline —
+``ReconciliationReport`` is the canonical return shape and the existing
+CLI invocation continues to work.
+
+The function also accepts EITHER ``db_path`` (legacy path: function opens
+its own conn) OR ``conn`` (Phase 9 service-layer path: caller owns the
+conn + the surrounding transaction).
 """
 from __future__ import annotations
 
 import csv
-from collections.abc import Iterable
+import sqlite3
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from io import StringIO
@@ -323,8 +338,54 @@ def extract_stock_fills(
 
 
 def reconcile_tos(
-    *, db_path: Path, tos_text: str, price_tolerance: float = 0.01,
+    *,
+    db_path: Path | None = None,
+    tos_text: str,
+    price_tolerance: float = 0.01,
+    conn: sqlite3.Connection | None = None,
+    run_id: int | None = None,
+    emitter: Callable[..., int] | None = None,
 ) -> ReconciliationReport:
+    """Reconcile a TOS Account Statement against the journal.
+
+    Args:
+        db_path: legacy path — function opens its own connection. Mutually
+            exclusive with ``conn``.
+        tos_text: full TOS CSV content (multi-section export).
+        price_tolerance: dollar threshold for price-mismatch detection;
+            strict-greater-than convention at the comparison site (existing
+            ``swing/journal/tos_import.py:365``). LOCKED at 0.01 USD default
+            for V1 per plan T-B.3 (Codex R2 Major #3 fix banked in plan §A).
+        conn: Phase 9 service-layer path — caller owns the conn AND the
+            surrounding ``BEGIN IMMEDIATE`` transaction per spec §3.3.3.
+            Mutually exclusive with ``db_path``.
+        run_id: parent ``reconciliation_runs.run_id`` for the emit seam.
+            Required when ``emitter`` is provided; harmless when both None.
+        emitter: callable invoked once per detected discrepancy. Signature:
+            ``emitter(*, discrepancy_type, run_id, **fields) -> int``.
+            Returns the inserted ``discrepancy_id`` (or any int — the
+            return value is currently informational; future readers may
+            use it for cross-discrepancy linking). When None, no emit
+            happens — legacy regression-clean behavior is preserved.
+
+    Returns:
+        ``ReconciliationReport`` dataclass with the matched / unmatched /
+        price_mismatch / already_reconciled bucket lists + cash movement
+        lists + per-fill ``FillDecision`` trail. Return shape is preserved
+        from the pre-refactor baseline.
+
+    The emitter is Phase 9's seam between detection and persistence. T-B.2
+    establishes the seam; T-B.3..T-B.6 wire individual discrepancy types
+    through it.
+    """
+    if (db_path is None) == (conn is None):
+        raise ValueError(
+            "reconcile_tos requires exactly one of {db_path, conn}; got "
+            f"db_path={db_path!r}, conn={conn!r}"
+        )
+    if emitter is not None and run_id is None:
+        raise ValueError("emitter requires run_id (parent reconciliation_runs row)")
+
     sections = parse_tos_export(tos_text)
     cash_rows = sections.get("Cash Balance", [])
     fills_rows = sections.get("Account Trade History", [])
@@ -338,7 +399,9 @@ def reconcile_tos(
     fills = sorted(extract_stock_fills(fills_rows), key=lambda f: (f.date, f.time))
 
     report = ReconciliationReport()
-    conn = connect(db_path)
+    owns_conn = conn is None
+    if owns_conn:
+        conn = connect(db_path)
     try:
         for c in cash_candidates:
             if c.ref and find_by_ref(conn, c.ref) is not None:
@@ -428,7 +491,8 @@ def reconcile_tos(
                     _record(f, "matched", None)
                     within_batch_alloc[t.id or 0] = already_allocated + f.qty
     finally:
-        conn.close()
+        if owns_conn:
+            conn.close()
     return report
 
 
