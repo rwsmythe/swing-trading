@@ -179,3 +179,27 @@ def test_hypothesis_paused_to_active_round_trip(tmp_path: Path):
         "--status", "active", "--reason", "resume",
     ])
     assert a.exit_code == 0
+
+
+def test_hypothesis_update_identity_returns_info_not_error(tmp_path: Path):
+    """Phase 9 T-C.4: identity transition (current == new) returns INFO,
+    NOT a transition error.
+
+    Per spec §3.4.1 R3 Minor #1 + plan §A.1 step 4: the legacy repo
+    function REJECTED identity transitions with a transition error; the
+    new service helper treats them as NoOpIdentityTransition, returns
+    sentinel, CLI prints an INFO line + exits 0.
+    """
+    runner, cfg = _setup(tmp_path)
+    list_r = runner.invoke(main, ["--config", str(cfg), "hypothesis", "list"])
+    line = next(ln for ln in list_r.output.splitlines() if "A+ baseline" in ln)
+    hid = next(tok for tok in line.split() if tok.isdigit())
+
+    # All seeded hypotheses start as `active`. Identity transition.
+    r = runner.invoke(main, [
+        "--config", str(cfg), "hypothesis", "update", hid,
+        "--status", "active", "--reason", "redundant",
+    ])
+    assert r.exit_code == 0, r.output
+    assert "already active" in r.output
+    assert "info:" in r.output

@@ -2290,44 +2290,51 @@ def hypothesis_update_cmd(ctx: click.Context, hypothesis_id: int,
                           new_status: str, reason: str) -> None:
     """Update a hypothesis's status. Records change with timestamp + reason.
 
-    Allowed transitions per brief §4.6:
+    Allowed transitions per brief §4.6 + plan §A.1 + spec §3.4.1:
       active   -> paused | closed-escaped | closed-target-met
       paused   -> active | closed-escaped
       closed-escaped -> active
       closed-target-met -> (terminal — no reopen via CLI)
-    """
-    from datetime import datetime as _dt
 
+    Phase 9 Sub-bundle C T-C.4: this handler routes through the new
+    service helper ``swing/trades/hypothesis.py:update_hypothesis_status_with_audit``
+    which (a) appends a hypothesis_status_history audit row in the same
+    transaction as the registry UPDATE, (b) treats identity transitions
+    (current == new) as NoOpIdentityTransition (INFO, not ERROR) per spec
+    §3.4.1 R3 Minor #1.
+    """
     from swing.data.db import connect
-    from swing.data.repos.hypothesis import (
+    from swing.trades.hypothesis import (
         HypothesisStatusTransitionError,
-        update_hypothesis_status,
+        update_hypothesis_status_with_audit,
     )
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
     try:
-        with conn:
-            try:
-                update_hypothesis_status(
-                    conn, hypothesis_id,
-                    new_status=new_status,
-                    reason=reason,
-                    now_iso=_dt.now().isoformat(timespec="seconds"),
-                )
-            except HypothesisStatusTransitionError as exc:
-                # Make the error message explicit so the test (and
-                # operator) can tell it's a transition issue, not a
-                # generic value error.
-                raise click.ClickException(f"transition not allowed: {exc}") from exc
-            except ValueError as exc:
-                raise click.ClickException(str(exc)) from exc
+        try:
+            result = update_hypothesis_status_with_audit(
+                conn,
+                hypothesis_id=hypothesis_id,
+                new_status=new_status,
+                change_reason=reason,
+            )
+        except HypothesisStatusTransitionError as exc:
+            raise click.ClickException(f"transition not allowed: {exc}") from exc
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
     finally:
         conn.close()
-    click.echo(
-        f"hypothesis #{hypothesis_id} -> {new_status} "
-        f"(reason: {reason})"
-    )
+    if result == "noop_identity":
+        click.echo(
+            f"info: hypothesis #{hypothesis_id} already {new_status}; "
+            "no change made"
+        )
+    else:
+        click.echo(
+            f"hypothesis #{hypothesis_id} -> {new_status} "
+            f"(reason: {reason})"
+        )
 
 
 @main.group("finviz")
