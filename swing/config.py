@@ -104,6 +104,12 @@ class StopAdvisoryConfig:
     # doctrine anchor. Fires when (current_price - sma50) / sma50 * 100 >=
     # parabolic_adr_multiple * adr_pct. Default 7.0× ADR per §0.3 #2.
     parabolic_adr_multiple: float = 7.0
+    # 3e.8 Bundle 3 (§M.2) — R-multiple stop-tighten advisory; TLSMW Ch 13 p. 296
+    # doctrine anchor ("when a stock advances 7-8% off the buy point — the
+    # 20% scenario — the smart move is to lock in gains by raising the stop").
+    # Fires when r_so_far(trade, current_price) >= tighten_at_r_multiple. Default
+    # 2.0R is conservatively floored vs the 7%/20% example (=2.86R) per §0.3 #4.
+    tighten_at_r_multiple: float = 2.0
 
     def __post_init__(self) -> None:
         # Codex R2 Major #1 + R3 Major #1 — validate Bundle 2 fields at
@@ -131,6 +137,14 @@ class StopAdvisoryConfig:
             raise ValueError(
                 f"stop_advisory.parabolic_adr_multiple must be a finite value > 0; got "
                 f"{self.parabolic_adr_multiple!r}"
+            )
+        # 3e.8 Bundle 3 (§M.2) — same NaN/inf/non-positive discipline as Bundle 2.
+        # Pathological values would otherwise silently no-op the rule
+        # (`r >= nan` is False) or fire spuriously (`r >= -1` is True at any R).
+        if not _math.isfinite(self.tighten_at_r_multiple) or self.tighten_at_r_multiple <= 0:
+            raise ValueError(
+                f"stop_advisory.tighten_at_r_multiple must be a finite value > 0; got "
+                f"{self.tighten_at_r_multiple!r}"
             )
 
 
