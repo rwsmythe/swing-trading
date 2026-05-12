@@ -179,12 +179,12 @@ def insert_policy(
     consecutive_losses_pause_action: str,
     consecutive_losses_streak_reset: str,
     drawdown_circuit_breaker_enabled: int,
-    drawdown_pause_threshold_R: float | None,
+    drawdown_pause_threshold_R: float | None,  # noqa: N803  -- spec column name
     drawdown_pause_action: str | None,
     drawdown_size_reduction_pct: float | None,
-    drawdown_recovery_threshold_R: float | None,
+    drawdown_recovery_threshold_R: float | None,  # noqa: N803  -- spec column name
     capital_floor_constant_dollars: float,
-    scratch_epsilon_R: float,
+    scratch_epsilon_R: float,  # noqa: N803  -- spec column name
     review_lag_threshold_days: int,
     low_sample_size_threshold_class_a_n: int,
     low_sample_size_threshold_class_b_n: int,
@@ -196,8 +196,8 @@ def insert_policy(
     process_grade_weight_management: float,
     process_grade_weight_exit: float,
     mfe_mae_default_precision_level: str,
-    trail_MA_period_days: int,
-    trail_MA_post_2R_period_days: int | None,
+    trail_MA_period_days: int,  # noqa: N803  -- spec column name
+    trail_MA_post_2R_period_days: int | None,  # noqa: N803  -- spec column name
 ) -> int:
     """Pure INSERT inside the caller's transaction scope.
 

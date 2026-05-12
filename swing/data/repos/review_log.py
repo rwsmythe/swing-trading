@@ -263,7 +263,11 @@ def complete_review_atomic(
                 actual_realized_R_effective=actual,
             )
 
-        # Step 5: UPDATE review_log:
+        # Step 5: UPDATE review_log. Phase 9 T-A.7 adds the
+        # risk_policy_id_at_review_completion stamp — sub-query reads the
+        # active policy_id at completion time (spec §3.1.1). NULL when no
+        # active policy exists (operator manually flipped seed inactive);
+        # legal per spec §9.4 backwards-compatibility contract.
         conn.execute(
             """
             UPDATE review_log SET
@@ -280,7 +284,10 @@ def complete_review_atomic(
                 avg_win_R = ?,
                 avg_loss_R = ?,
                 profit_factor = ?,
-                max_drawdown_R = ?
+                max_drawdown_R = ?,
+                risk_policy_id_at_review_completion = (
+                    SELECT policy_id FROM risk_policy WHERE is_active = 1
+                )
             WHERE review_id = ?
             """,
             (

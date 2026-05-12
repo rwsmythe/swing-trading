@@ -187,8 +187,14 @@ def policy_show(ctx: click.Context) -> None:
     click.echo(f"max_account_risk_per_trade_pct       = {active.max_account_risk_per_trade_pct}")
     click.echo(f"max_concurrent_positions             = {active.max_concurrent_positions}")
     click.echo(f"max_portfolio_heat_pct               = {active.max_portfolio_heat_pct}")
-    click.echo(f"max_sector_concentration_positions   = {active.max_sector_concentration_positions}")
-    click.echo(f"consecutive_losses_pause_threshold   = {active.consecutive_losses_pause_threshold}")
+    click.echo(
+        "max_sector_concentration_positions   = "
+        f"{active.max_sector_concentration_positions}"
+    )
+    click.echo(
+        "consecutive_losses_pause_threshold   = "
+        f"{active.consecutive_losses_pause_threshold}"
+    )
     click.echo(f"consecutive_losses_pause_action      = {active.consecutive_losses_pause_action}")
     click.echo(f"consecutive_losses_streak_reset      = {active.consecutive_losses_streak_reset}")
     click.echo("")
@@ -205,10 +211,22 @@ def policy_show(ctx: click.Context) -> None:
     click.echo("--- Statistics methodology ---")
     click.echo(f"scratch_epsilon_R                    = {active.scratch_epsilon_R}")
     click.echo(f"review_lag_threshold_days            = {active.review_lag_threshold_days}")
-    click.echo(f"low_sample_size_threshold_class_a_n  = {active.low_sample_size_threshold_class_a_n}")
-    click.echo(f"low_sample_size_threshold_class_b_n  = {active.low_sample_size_threshold_class_b_n}")
-    click.echo(f"low_sample_size_threshold_class_c_n  = {active.low_sample_size_threshold_class_c_n}")
-    click.echo(f"low_sample_size_threshold_class_d_n  = {active.low_sample_size_threshold_class_d_n}")
+    click.echo(
+        "low_sample_size_threshold_class_a_n  = "
+        f"{active.low_sample_size_threshold_class_a_n}"
+    )
+    click.echo(
+        "low_sample_size_threshold_class_b_n  = "
+        f"{active.low_sample_size_threshold_class_b_n}"
+    )
+    click.echo(
+        "low_sample_size_threshold_class_c_n  = "
+        f"{active.low_sample_size_threshold_class_c_n}"
+    )
+    click.echo(
+        "low_sample_size_threshold_class_d_n  = "
+        f"{active.low_sample_size_threshold_class_d_n}"
+    )
     click.echo(f"global_confidence_floor_n            = {active.global_confidence_floor_n}")
     click.echo(f"bootstrap_resample_count             = {active.bootstrap_resample_count}")
     click.echo(f"process_grade_weight_entry           = {active.process_grade_weight_entry}")

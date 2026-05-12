@@ -80,11 +80,18 @@ def _req(ticker: str = "AAPL") -> EntryRequest:
 
 
 def _seed_v14(tmp_path: Path) -> sqlite3.Connection:
-    """Phase 7 Sub-B B.1 test fixture: schema migrated through migration 0014
-    so the trades table has all 18 new columns with correct CHECK constraints."""
+    """Phase 7 Sub-B B.1 test fixture: schema migrated through HEAD so the
+    trades table has all post-Phase-7 columns with correct CHECK constraints.
+
+    Phase 9 T-A.7 (2026-05-12): bumped target_version 16 → 17 so
+    record_entry's risk_policy_id_at_lock stamp UPDATE finds the
+    risk_policy table created by migration 0017. The fixture name kept as
+    `_seed_v14` for legacy compatibility (renaming would churn ~50 call
+    sites).
+    """
     db = tmp_path / "test.db"
     conn = sqlite3.connect(db)
-    run_migrations(conn, target_version=16, backup_dir=tmp_path)
+    run_migrations(conn, target_version=17, backup_dir=tmp_path)
     return conn
 
 

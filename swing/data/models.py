@@ -508,16 +508,16 @@ class RiskPolicy:
 
     # Drawdown circuit breaker (5; default opt-in disabled per spec §1.4):
     drawdown_circuit_breaker_enabled: int
-    drawdown_pause_threshold_R: float | None
+    drawdown_pause_threshold_R: float | None  # noqa: N815  -- spec column name
     drawdown_pause_action: str | None
     drawdown_size_reduction_pct: float | None
-    drawdown_recovery_threshold_R: float | None
+    drawdown_recovery_threshold_R: float | None  # noqa: N815  -- spec column name
 
     # Capital + sizing (1):
     capital_floor_constant_dollars: float
 
     # Statistics-methodology (8):
-    scratch_epsilon_R: float
+    scratch_epsilon_R: float  # noqa: N815  -- spec column name
     review_lag_threshold_days: int
     low_sample_size_threshold_class_a_n: int
     low_sample_size_threshold_class_b_n: int
@@ -533,8 +533,8 @@ class RiskPolicy:
 
     # MFE/MAE + trail-MA (3):
     mfe_mae_default_precision_level: str
-    trail_MA_period_days: int
-    trail_MA_post_2R_period_days: int | None
+    trail_MA_period_days: int  # noqa: N815  -- spec column name
+    trail_MA_post_2R_period_days: int | None  # noqa: N815  -- spec column name
 
     _DRAWDOWN_ACTIONS = ("halt_new_entries", "reduce_size")
     _MFE_PRECISION = ("daily_approximate", "intraday_estimated", "intraday_exact")
