@@ -1,21 +1,22 @@
-"""Phase 9 Sub-bundle B — E2E reconciliation integration test.
+"""Phase 9 end-to-end integration test (Sub-bundles B + C).
 
-Per plan §E T-B.8 acceptance criteria:
-- Reconcile a CSV with 1 close_price_mismatch + 1 stop_mismatch +
-  1 position_qty_mismatch + 1 cash_movement_mismatch.
-- 4 discrepancies persisted with correct material_to_review per
-  MATERIAL_BY_TYPE.
-- ``list_unresolved_material_for_active_trades`` returns the
-  active-trade attention rows (close_price + stop + position_qty are
-  MATERIAL=1; cash_movement is MATERIAL=0 + has no trade_id — does NOT
-  appear). The query returns one row per discrepancy; we additionally
-  pin the distinct trades covered = 2 (matches the "2 attention rows"
-  intent in plan §E acceptance criteria).
-- Operator resolves one via CLI → row's resolution + resolved_at
-  updated; parent run's unresolved counter decremented.
+Sub-bundle B (T-B.8): Reconcile a CSV with 1 close_price_mismatch +
+1 stop_mismatch + 1 position_qty_mismatch + 1 cash_movement_mismatch;
+verify 4 discrepancies persisted with correct material_to_review per
+MATERIAL_BY_TYPE; ``list_unresolved_material_for_active_trades``
+returns the active-trade attention rows (close_price + stop +
+position_qty are MATERIAL=1; cash_movement is MATERIAL=0 + has no
+trade_id — does NOT appear); operator resolves one via CLI → row's
+resolution + resolved_at updated; parent run's unresolved counter
+decremented.
 
-This is a Bundle B scope E2E — Sub-bundles C/D/E append their own
-sections to this file when they land (per plan §E T-B.8 file note).
+Sub-bundle C (T-C.5): exercise account_equity_snapshots service +
+hypothesis status audit service + back-recorded flag for >7-day gap +
+identity transition returns noop_identity sentinel + source-ladder
+precedence on get_latest_snapshot_on_or_before.
+
+Sub-bundles D/E append their own sections when they land (per plan §E
+T-B.8 file note).
 """
 from __future__ import annotations
 
@@ -315,5 +316,179 @@ def test_phase9_end_to_end_resolve_via_cli_updates_row(cli_workspace) -> None:
         )
         after = recon_repo.get_run(conn, run_id)
         assert after.unresolved_discrepancies_count == unresolved_before - 1
+    finally:
+        conn.close()
+
+
+# ============================================================================
+# Sub-bundle C E2E (T-C.5) — account_equity_snapshots + hypothesis audit
+# ============================================================================
+
+
+def test_phase9_bundle_c_e2e_account_snapshot_and_hypothesis_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """E2E happy path for Sub-bundle C (plan §F T-C.5 acceptance criteria).
+
+    Exercises:
+      - swing account snapshot via CLI records a row.
+      - Back-recorded flag for a >7-day-past snapshot_date.
+      - source-ladder precedence on get_latest_snapshot_on_or_before
+        (schwab_api > tos_csv > manual at the same date).
+      - swing hypothesis update via CLI rewires through new service:
+        first call writes hypothesis_status_history row + closes prior
+        seed interval + updates registry denorm; identity transition
+        returns INFO + does NOT insert a duplicate row.
+    """
+    from swing.data.datetime_helpers import now_ms
+    from swing.data.repos.account_equity_snapshots import (
+        get_latest_snapshot_on_or_before,
+        insert_snapshot,
+    )
+    from swing.data.repos.hypothesis_status_history import (
+        list_history_for_hypothesis,
+    )
+
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+    project = tmp_path / "project"
+    project.mkdir()
+    home = tmp_path / "home"
+    cfg_path = _minimal_config(project, home)
+    runner = CliRunner()
+    r = runner.invoke(main, ["--config", str(cfg_path), "db-migrate"])
+    assert r.exit_code == 0, r.output
+    db_path = home / "swing-data" / "swing.db"
+
+    # ----- §1: account snapshot CLI happy path --------------------------
+    r1 = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "account", "snapshot",
+        "--equity", "1300",
+        "--date", "2026-05-12",
+        "--notes", "Bundle C E2E S2",
+    ])
+    assert r1.exit_code == 0, r1.output
+    assert "back-recorded" not in r1.output
+
+    # Verify persisted row.
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT snapshot_date, equity_dollars, source, notes "
+            "FROM account_equity_snapshots WHERE snapshot_date = ?",
+            ("2026-05-12",),
+        ).fetchone()
+        assert row == ("2026-05-12", 1300.0, "manual", "Bundle C E2E S2")
+    finally:
+        conn.close()
+
+    # ----- §2: back-recorded advisory for >7-day-past date --------------
+    r2 = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "account", "snapshot",
+        "--equity", "1400",
+        "--date", "2026-01-01",
+        "--notes", "back-record probe",
+    ])
+    assert r2.exit_code == 0, r2.output
+    assert "back-recorded" in r2.output
+
+    # ----- §3: source-ladder precedence (insert tos_csv + schwab_api) ---
+    conn = connect(db_path)
+    try:
+        insert_snapshot(
+            conn,
+            snapshot_date="2026-05-12",
+            equity_dollars=1301.0,
+            source="tos_csv",
+            source_artifact_path="/tmp/probe.csv",
+            recorded_at=now_ms(),
+            recorded_by="operator",
+            notes=None,
+        )
+        insert_snapshot(
+            conn,
+            snapshot_date="2026-05-12",
+            equity_dollars=1302.5,
+            source="schwab_api",
+            source_artifact_path=None,
+            recorded_at=now_ms(),
+            recorded_by="operator",
+            notes=None,
+        )
+        conn.commit()
+        result = get_latest_snapshot_on_or_before(
+            conn, asof_date="2026-05-12", with_provenance=True,
+        )
+        assert result is not None
+        winner, suppressed = result
+        assert winner.source == "schwab_api"
+        assert winner.equity_dollars == 1302.5
+        suppressed_sources = sorted(s.source for s in suppressed)
+        assert suppressed_sources == ["manual", "tos_csv"]
+    finally:
+        conn.close()
+
+    # ----- §4: hypothesis update via CLI writes audit row + denorm -----
+    # The seeded hypothesis is 'active'; transition to 'paused' must
+    # close the prior open-interval row + INSERT a new one + UPDATE the
+    # registry status_changed_at + status_change_reason.
+    list_r = runner.invoke(main, ["--config", str(cfg_path), "hypothesis", "list"])
+    line = next(
+        ln for ln in list_r.output.splitlines() if "A+ baseline" in ln
+    )
+    hid_str = next(tok for tok in line.split() if tok.isdigit())
+    hid = int(hid_str)
+
+    r3 = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "hypothesis", "update", hid_str,
+        "--status", "paused",
+        "--reason", "Bundle C E2E S4",
+    ])
+    assert r3.exit_code == 0, r3.output
+    assert "hypothesis #" in r3.output
+    assert "paused" in r3.output
+
+    conn = connect(db_path)
+    try:
+        rows = list_history_for_hypothesis(conn, hid)
+        assert len(rows) == 2, (
+            f"expected seed + new history row; got {len(rows)}"
+        )
+        seed_row, new_row = rows
+        assert seed_row.status == "active"
+        assert seed_row.effective_to is not None  # now closed
+        assert seed_row.change_reason is None
+        assert new_row.status == "paused"
+        assert new_row.effective_to is None  # open interval
+        assert new_row.change_reason == "Bundle C E2E S4"
+        # Registry denorm in sync.
+        reg = conn.execute(
+            "SELECT status, status_change_reason FROM hypothesis_registry "
+            "WHERE id = ?", (hid,),
+        ).fetchone()
+        assert reg == ("paused", "Bundle C E2E S4")
+    finally:
+        conn.close()
+
+    # ----- §5: identity transition returns INFO ------------------------
+    r4 = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "hypothesis", "update", hid_str,
+        "--status", "paused",
+        "--reason", "redundant",
+    ])
+    assert r4.exit_code == 0, r4.output
+    assert "already paused" in r4.output
+    assert "info:" in r4.output
+
+    # No new history row was inserted (still 2: seed-closed + new-open).
+    conn = connect(db_path)
+    try:
+        rows = list_history_for_hypothesis(conn, hid)
+        assert len(rows) == 2
     finally:
         conn.close()
