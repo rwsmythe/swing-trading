@@ -12,7 +12,11 @@ from pathlib import Path
 # phase 7 state machine + fills first-class (migration 0014)
 # finviz_api_calls table (migration 0015)
 # phase 8 daily_management_records table + planned_target_R column (migration 0016)
-EXPECTED_SCHEMA_VERSION = 16
+# phase 9 risk_policy + reconciliation depth (migration 0017): 5 new tables
+#   (risk_policy / reconciliation_runs / reconciliation_discrepancies /
+#   hypothesis_status_history / account_equity_snapshots) + 2 ALTER ADDs
+#   (trades.risk_policy_id_at_lock + review_log.risk_policy_id_at_review_completion)
+EXPECTED_SCHEMA_VERSION = 17
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 # Phase 7 backup gate (spec §12.1): when migrating to schema_version >= 14,
@@ -43,6 +47,14 @@ PHASE7_EXPECTED_TABLES: set[str] = {
 # Phase 7 set so future maintainers can reason about provenance.
 PHASE8_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
     (PHASE7_EXPECTED_TABLES - {"exits"}) | {"fills", "finviz_api_calls"}
+)
+
+# Phase 9 backup gate (spec §9.3 + plan §A.0): when migrating from v16 → v17+,
+# snapshot the live v16 DB. Adds `daily_management_records` to the post-Phase-8
+# baseline; derive deterministically from PHASE8 set so provenance stays
+# auditable. Filename pattern `swing-pre-phase9-migration-<ISO>.db`.
+PHASE9_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
+    PHASE8_PRE_MIGRATION_EXPECTED_TABLES | {"daily_management_records"}
 )
 
 
@@ -329,6 +341,30 @@ def _create_pre_phase8_migration_backup(
     return backup_path
 
 
+def _create_pre_phase9_migration_backup(
+    src_path: Path, *, dest_dir: Path,
+) -> Path:
+    """Phase 9 mirror of _create_pre_migration_backup with phase9 filename prefix.
+
+    Per spec §9.3 + plan §A.0: backup file pattern
+    ``swing-pre-phase9-migration-<ISO>.db``. SQLite-native Connection.backup()
+    is the only acceptable snapshot mechanism (consistent under live writers).
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = dest_dir / f"swing-pre-phase9-migration-{timestamp}.db"
+    src_conn = sqlite3.connect(src_path)
+    try:
+        dest_conn = sqlite3.connect(backup_path)
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        src_conn.close()
+    return backup_path
+
+
 def _phase8_backup_gate(
     conn: sqlite3.Connection,
     *,
@@ -370,6 +406,48 @@ def _phase8_backup_gate(
         ) from exc
 
 
+def _phase9_backup_gate(
+    conn: sqlite3.Connection,
+    *,
+    current_version: int,
+    target_version: int,
+    backup_dir: Path | None,
+) -> None:
+    """Phase 9 spec §9.3 backup-before-migrate gate (plan §A.0).
+
+    Fires only when ``current_version == 16 AND target_version >= 17`` —
+    i.e., a real production v16 DB about to receive Phase 9's migration 0017.
+    Mutually exclusive with ``_phase7_backup_gate`` and ``_phase8_backup_gate``
+    by construction (current_version == 13 vs 15 vs 16); all three gates can
+    coexist without conflict. Filename: ``swing-pre-phase9-migration-<ISO>.db``
+    (NOT phase7 / phase8 prefix).
+    """
+    if target_version < 17 or current_version != 16:
+        return
+    src_path = _resolve_main_db_path(conn)
+    if src_path is None:
+        raise MigrationBackupRequiredException(
+            "pre-Phase-9 backup gate requires a file-backed source DB; "
+            "in-memory connections cannot be snapshotted."
+        )
+    if backup_dir is None:
+        backup_dir = src_path.parent
+    try:
+        backup_path = _create_pre_phase9_migration_backup(
+            src_path, dest_dir=backup_dir,
+        )
+        _verify_backup_integrity(
+            backup_path,
+            expected_tables=PHASE9_PRE_MIGRATION_EXPECTED_TABLES,
+        )
+    except MigrationBackupRequiredException:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise MigrationBackupRequiredException(
+            f"pre-Phase-9 backup failed: {exc}"
+        ) from exc
+
+
 def run_migrations(
     conn: sqlite3.Connection,
     *,
@@ -401,6 +479,12 @@ def run_migrations(
         backup_dir=backup_dir,
     )
     _phase8_backup_gate(
+        conn,
+        current_version=current,
+        target_version=target_version,
+        backup_dir=backup_dir,
+    )
+    _phase9_backup_gate(
         conn,
         current_version=current,
         target_version=target_version,
