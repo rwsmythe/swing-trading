@@ -365,6 +365,49 @@ def list_open_position_active_snapshots(
     return [_row_to_record(r) for r in rows]
 
 
+def select_latest_active_snapshot_for_trade(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+) -> DailyManagementRecord | None:
+    """Return the LATEST active daily_snapshot row for ``trade_id``,
+    clamped to its most-recent ``data_asof_session``.
+
+    Mirrors ``list_open_position_active_snapshots``'s latest-session clamp
+    + ``is_superseded=0`` tier-within-session selector. Used by 3e.8 Bundle 3
+    composition surfaces that need a single trade's maturity_stage without
+    knowing the session anchor (per-trade VM builders: build_open_positions_row,
+    build_open_positions_expanded, build_trade_detail_vm).
+
+    Returns ``None`` when no active snapshot exists (e.g., trade just opened
+    and no pipeline run has stamped a daily_snapshot yet) — caller's rule
+    layer is expected to no-op on the absent-snapshot path.
+
+    Distinct from ``select_active_snapshot`` (which requires the caller to
+    supply ``data_asof_session``); this helper bypasses that requirement by
+    SELECT MAX-clamping the session at the DB layer.
+    """
+    qualified_cols = ", ".join(
+        f"dmr.{c.strip()}" for c in _DMR_SELECT_COLS.split(",")
+    )
+    row = conn.execute(
+        f"SELECT {qualified_cols} "
+        f"FROM daily_management_records dmr "
+        f"WHERE dmr.trade_id = ? "
+        f"  AND dmr.record_type = 'daily_snapshot' "
+        f"  AND dmr.is_superseded = 0 "
+        f"  AND dmr.data_asof_session = ("
+        f"    SELECT MAX(d2.data_asof_session) "
+        f"    FROM daily_management_records d2 "
+        f"    WHERE d2.trade_id = ? "
+        f"      AND d2.record_type = 'daily_snapshot' "
+        f"      AND d2.is_superseded = 0"
+        f"  )",
+        (trade_id, trade_id),
+    ).fetchone()
+    return _row_to_record(row) if row else None
+
+
 def insert_snapshot(
     conn: sqlite3.Connection,
     *,
