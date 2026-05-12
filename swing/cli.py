@@ -2431,5 +2431,84 @@ def finviz_status_cmd(ctx: click.Context, limit: int) -> None:
         )
 
 
+@main.group("account")
+def account_group() -> None:
+    """Account-level operator surfaces (V1: equity snapshots only).
+
+    Phase 9 Sub-bundle C T-C.2. Spec §3.5 + §4.4 V1 cadence: operator
+    records account net-liquidation snapshots manually (CLI). V2 surfaces
+    Schwab API + TOS-CSV co-emission of snapshots with `source` enum
+    values reserved at the schema.
+    """
+
+
+@account_group.command("snapshot")
+@click.option(
+    "--equity", "equity_dollars", type=float, required=True,
+    help="Account net-liquidation value (REAL, > 0).",
+)
+@click.option(
+    "--date", "snapshot_date_str", default=None,
+    help="Snapshot date YYYY-MM-DD; defaults to last completed NYSE "
+         "session per spec §4.4 + §A.9.",
+)
+@click.option(
+    "--notes", default=None,
+    help="Optional operator free-text note.",
+)
+@click.pass_context
+def account_snapshot_cmd(
+    ctx: click.Context,
+    equity_dollars: float,
+    snapshot_date_str: str | None,
+    notes: str | None,
+) -> None:
+    """Record an account equity snapshot (source=manual).
+
+    UPSERT semantics keyed on (snapshot_date, source=manual): re-recording
+    for the same date updates the row in place (PK preserved). For
+    snapshot_dates >7 days in the past relative to today, the CLI prints
+    an advisory note + sets the back-recorded flag at read-time (per
+    spec §3.5 GAP-FLAGGED policy).
+    """
+    from datetime import date as _date
+
+    from swing.data.db import connect
+    from swing.trades.account_equity_snapshots import (
+        is_back_recorded,
+        record_snapshot,
+    )
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        try:
+            snap = record_snapshot(
+                conn,
+                equity_dollars=equity_dollars,
+                snapshot_date=snapshot_date_str,
+                notes=notes,
+            )
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+    finally:
+        conn.close()
+
+    click.echo(
+        f"snapshot #{snap.snapshot_id}: {snap.snapshot_date}  "
+        f"${snap.equity_dollars:.2f}  source={snap.source}"
+    )
+    back = is_back_recorded(
+        snapshot_date=snap.snapshot_date,
+        recorded_at=snap.recorded_at,
+    )
+    today = _date.today().isoformat()
+    if back:
+        click.echo(
+            f"  (back-recorded: snapshot_date {snap.snapshot_date} is "
+            f">7 days before today {today})"
+        )
+
+
 if __name__ == "__main__":  # pragma: no cover
     main()

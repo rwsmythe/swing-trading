@@ -1043,3 +1043,123 @@ class ReconciliationDiscrepancy:
                     f"resolution={self.resolution!r} requires non-empty "
                     "resolution_reason"
                 )
+
+
+# ===========================================================================
+# Phase 9 Sub-bundle C — hypothesis_status_history + account_equity_snapshots.
+# Per plan §B file map (T-C.2 + T-C.3) + spec §3.4 / §3.5.
+#
+# Both dataclasses are frozen and carry ``__post_init__`` validators that
+# defend beyond schema-level CHECKs (per plan §I item #7 + Bundle 2/3 +
+# Bundle A/B precedent):
+#
+#   - enum validation on TEXT fields
+#   - NaN/inf rejection on REAL fields
+#   - cross-field invariants (effective_to >= effective_from when both set)
+#
+# Defense-in-depth on top of migration 0017's SQL CHECK constraints.
+# ===========================================================================
+
+
+_AES_SOURCES = ("manual", "tos_csv", "schwab_api")
+
+# Mirror of `hypothesis_registry.status` enum + migration 0017 CHECK.
+_HYPOTHESIS_STATUSES = (
+    "active",
+    "paused",
+    "closed-escaped",
+    "closed-target-met",
+)
+
+
+@dataclass(frozen=True)
+class AccountEquitySnapshot:
+    """One operator-recorded account net-liquidation snapshot.
+
+    Spec §3.5 (8 columns). UPSERT semantics keyed on ``(snapshot_date,
+    source)`` via SELECT-then-UPDATE-or-INSERT in the repo (NOT
+    ``INSERT OR REPLACE`` per CLAUDE.md SQLite REPLACE gotcha — PK must be
+    preserved across re-record so any future FK referrers stay intact).
+    """
+
+    snapshot_id: int | None  # None pre-INSERT
+    snapshot_date: str  # ISO date YYYY-MM-DD
+    equity_dollars: float
+    source: str
+    source_artifact_path: str | None
+    recorded_at: str  # ISO datetime, naive-UTC, ms-precision
+    recorded_by: str
+    notes: str | None
+
+    def __post_init__(self) -> None:
+        import math
+
+        if self.source not in _AES_SOURCES:
+            raise ValueError(
+                f"source must be one of {_AES_SOURCES}; got {self.source!r}"
+            )
+        if math.isnan(self.equity_dollars) or math.isinf(self.equity_dollars):
+            raise ValueError(
+                f"equity_dollars must be finite; got {self.equity_dollars}"
+            )
+        if self.equity_dollars <= 0:
+            raise ValueError(
+                f"equity_dollars must be > 0 (matches SQL CHECK); "
+                f"got {self.equity_dollars}"
+            )
+        if not self.recorded_by or not self.recorded_by.strip():
+            raise ValueError("recorded_by must be a non-empty identifier")
+        # snapshot_date format: YYYY-MM-DD (loose check; the SQL column is
+        # TEXT NOT NULL with no format CHECK, so the dataclass enforces the
+        # operator-meaningful shape).
+        if (
+            len(self.snapshot_date) != 10
+            or self.snapshot_date[4] != "-"
+            or self.snapshot_date[7] != "-"
+        ):
+            raise ValueError(
+                f"snapshot_date must be YYYY-MM-DD; got {self.snapshot_date!r}"
+            )
+
+
+@dataclass(frozen=True)
+class HypothesisStatusHistory:
+    """One row of the append-only hypothesis_status_history audit trail.
+
+    Spec §3.4 (7 columns). Append-only via service helper
+    ``swing/trades/hypothesis.py:update_hypothesis_status_with_audit`` which
+    closes the prior open-interval row (``effective_to = now_ms``) then
+    INSERTs the new row in a single transaction.
+
+    Invariants:
+
+      - ``effective_to >= effective_from`` when both non-NULL (chronology).
+      - Open intervals have ``effective_to IS NULL`` (partial-unique index
+        enforces ONE such row per hypothesis at SQL level; the dataclass
+        does NOT re-derive that — it's row-grain validation only).
+    """
+
+    history_id: int | None  # None pre-INSERT
+    hypothesis_id: int
+    status: str
+    effective_from: str  # ISO datetime, ms-precision
+    effective_to: str | None  # ISO datetime, ms-precision; NULL = open
+    change_reason: str | None
+    recorded_at: str  # ISO datetime, ms-precision
+
+    def __post_init__(self) -> None:
+        if self.status not in _HYPOTHESIS_STATUSES:
+            raise ValueError(
+                f"status must be one of {_HYPOTHESIS_STATUSES}; "
+                f"got {self.status!r}"
+            )
+        if (
+            self.effective_to is not None
+            and self.effective_to < self.effective_from
+        ):
+            raise ValueError(
+                f"effective_to ({self.effective_to!r}) must be >= "
+                f"effective_from ({self.effective_from!r}) "
+                "(TEXT lexicographic ordering preserves chronology under "
+                "naive-UTC millisecond-precision per spec §9.3)"
+            )
