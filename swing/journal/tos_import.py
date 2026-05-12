@@ -559,18 +559,16 @@ def reconcile_tos(
             if emitter is None:
                 return
             # Phase 9 within-run dedup tuple per spec §5.1 R3 Major #4.
-            # The trade/fill/cash IDs disambiguate trade-linked emits;
-            # orphan-fill types (unmatched_open_fill / unmatched_close_fill
-            # with trade_id=None + fill_id=None) need source-payload
-            # identity in the key so two real fills for the same ticker
-            # but different date / qty / price don't collapse into one
-            # discrepancy row (Codex R2 M#1 fix).
+            # Trade-linked emits with a fill_id pin disambiguate via the
+            # PK chain. Emits WITHOUT a fill_id (orphan unmatched fills
+            # AND trade-attributed overfill closes — Codex R2 M#1 + R3
+            # M#1) need source-payload identity in the key so two
+            # distinct source fills don't collapse into one discrepancy
+            # row. Same applies to cash_movement_mismatch when
+            # cash_movement_id is None (defensive). When all three IDs
+            # are set, the PK chain is sufficient.
             payload_disambiguator: tuple = ()
-            if (
-                trade_id is None
-                and fill_id is None
-                and cash_movement_id is None
-            ):
+            if fill_id is None and cash_movement_id is None:
                 payload_disambiguator = (
                     None if actual is None else (
                         actual.get("fill_date"),

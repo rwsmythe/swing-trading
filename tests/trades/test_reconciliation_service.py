@@ -700,6 +700,72 @@ def test_orphan_unmatched_open_fills_distinct_payloads_dedup_separately(
     assert qtys == [5, 7]
 
 
+def test_multiple_overfill_close_distinct_payloads_dedup_separately(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Codex R3 M#1 — multiple overfill CLOSE fills on the same trade
+    with distinct (date, qty, price) must produce DISTINCT discrepancy
+    rows. Pre-fix, the orphan payload disambiguator only applied when
+    ALL THREE id slots were None; after R2 fix shifted trade_id=t.id
+    on the overfill branch, the disambiguator stopped applying and
+    distinct excess fills shared the dedup key.
+    """
+    from swing.data.models import Fill, Trade
+    from swing.data.repos.fills import insert_fill_with_event
+    from swing.data.repos.trades import insert_trade_with_event
+
+    entry_ts = "2026-05-10T09:30:00"
+    with conn:
+        tid = insert_trade_with_event(
+            conn,
+            Trade(
+                id=None, ticker="OVR2", entry_date="2026-05-10",
+                entry_price=10.0, initial_shares=5,
+                initial_stop=9.0, current_stop=9.0,
+                state="entered",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None, trade_origin="manual_off_pipeline",
+                pre_trade_locked_at=entry_ts,
+            ),
+            event_ts=entry_ts, rationale="seed",
+        )
+        insert_fill_with_event(
+            conn,
+            Fill(
+                fill_id=None, trade_id=tid, fill_datetime=entry_ts,
+                action="entry", quantity=5.0, price=10.0,
+            ),
+            event_ts=entry_ts,
+        )
+
+    # Two distinct CLOSE fills, each individually exceeding remaining
+    # open size after within-batch cumulative reaches the cap.
+    csv = tmp_path / "tos.csv"
+    csv.write_text(
+        "Account Trade History\n"
+        "Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,"
+        "Price,Net Price,Order Type\n"
+        # First close fills the cap (5 shares); second overfills.
+        "2026-05-12 10:00:00,STOCK,SELL,-5,CLOSING,OVR2,,,,11.0000,11.0000,MKT\n"
+        "2026-05-12 11:00:00,STOCK,SELL,-3,CLOSING,OVR2,,,,11.5000,11.5000,MKT\n"
+        "2026-05-12 12:00:00,STOCK,SELL,-2,CLOSING,OVR2,,,,12.0000,12.0000,MKT\n",
+        encoding="utf-8",
+    )
+    out = run_tos_reconciliation(conn, csv_path=csv)
+    ds = recon_repo.list_discrepancies_for_run(conn, out.run_id)
+    ucf = [d for d in ds
+           if d.discrepancy_type == "unmatched_close_fill"
+           and d.trade_id == tid]
+    # Both overfill fills (3 + 2 shares at different prices) must
+    # produce DISTINCT discrepancies, not collapse to one.
+    assert len(ucf) == 2, (
+        f"distinct overfill CLOSE fills on same trade must produce 2 "
+        f"rows; got {len(ucf)}"
+    )
+    qtys = sorted(json.loads(d.actual_value_json)["qty"] for d in ucf)
+    assert qtys == [2, 3]
+
+
 def test_overfill_close_attributes_to_trade_id(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
