@@ -130,7 +130,8 @@ def _emit_sector_tamper_audit(
     cached_industry: str,
     form_sector: str,
     form_industry: str,
-    session_iso: str,
+    cand_session_iso: str,
+    run_session_iso: str,
     field_name: str,
 ) -> int:
     """Phase 9 Sub-bundle D Task D.2 — emit ad-hoc system_audit
@@ -149,8 +150,17 @@ def _emit_sector_tamper_audit(
 
     Spec §3.3.1 ``sector_tamper`` JSON shapes:
       expected = {"sector": cached_sector, "industry": cached_industry,
-                  "session": session_iso}
+                  "session": cand_session_iso}     # cached candidate anchor
       actual   = {"sector": form_sector, "industry": form_industry}
+
+    Plan §A.4.1: reconciliation_run row's ``period_{start,end}`` =
+    ``run_session_iso`` (today's ``action_session_for_run(now())``) —
+    describes WHEN the audit happened. Distinct from
+    ``cand_session_iso`` which is the cached candidate's
+    ``eval_run.action_session_date`` (i.e., the session anchor for the
+    data the operator saw at form-render time). The two MAY differ when
+    the form was rendered before today's pipeline run completed (Codex
+    R1 Major #1 anchor-alignment fix).
 
     ``MATERIAL_BY_TYPE['sector_tamper'] = 0`` per spec §3.3.2 V1
     advisory; V2 elevates when sector-concentration becomes a hard
@@ -171,7 +181,7 @@ def _emit_sector_tamper_audit(
         {
             "sector": cached_sector,
             "industry": cached_industry,
-            "session": session_iso,
+            "session": cand_session_iso,
         },
         separators=(",", ":"),
     )
@@ -188,8 +198,8 @@ def _emit_sector_tamper_audit(
                 source="system_audit",
                 started_ts=started_ts,
                 state="running",
-                period_start=session_iso,
-                period_end=session_iso,
+                period_start=run_session_iso,
+                period_end=run_session_iso,
             )
             disc_id = insert_discrepancy(
                 conn,
@@ -597,45 +607,79 @@ def entry_post(
     # hardening (mirrors chart_pattern hardening pattern; recon at
     # docs/phase9-bundle-D-task-D0-recon.md).
     #
-    # Lookup cached candidate by ``(ticker, action_session_for_run(now()))``
-    # per spec §7. If a cached row exists AND form-submitted sector or
-    # industry doesn't match the cached value, reject with HTTP 400 +
-    # HTMX-friendly error fragment AND emit a ``sector_tamper`` discrepancy
-    # inside an ad-hoc ``reconciliation_runs`` row (``source='system_audit'``,
-    # ``state='completed'``) — audit row commits in a SEPARATE TRANSACTION
-    # so it persists even though the entry POST is rejected.
+    # Codex R1 fix (Critical #1 + Major #1):
+    # - Critical: predicate previously required BOTH cached AND form value
+    #   truthy to flag a mismatch; a tampered POST with blank sector
+    #   (e.g., sector="" + industry=correct, or sector="" alone) silently
+    #   bypassed the check. Tightened to strict ``cached != form`` for
+    #   each field — empty form value when cached has a value IS a tamper.
+    # - Major: form-render anchors hidden sector/industry to
+    #   ``latest_evaluation_run_id`` (watchlist) or
+    #   ``latest_completed_pipeline_run.evaluation_run_id`` (hyp-recs)
+    #   per swing/web/view_models/trades.py:379-396 — NOT today's
+    #   action_session. Drift between the two anchors (stale pipeline,
+    #   pre-session pipeline run, mid-walk DB) lets a tamper attempt
+    #   slip past the today-anchored POST-time lookup. Re-anchor POST
+    #   lookup to mirror the SAME anchor the form-render used so form +
+    #   POST agree on the cached row being compared against.
     #
     # Backward-compat: empty form sector AND industry (CLI / bare cURL
     # callers that don't emit the hidden inputs) → skip the check entirely.
-    # Off-pipeline ticker (no cached row for today's action_session) →
+    # Off-pipeline ticker (no cached row under the form-render anchor) →
     # skip the check (mirrors chart_pattern's ``cp_anchor_value is None``
     # early-out).
     if sector or industry:
         from swing.evaluation.dates import action_session_for_run
-        session_iso = action_session_for_run(datetime.now()).isoformat()
+        from swing.web.view_models.dashboard import (
+            latest_completed_pipeline_run,
+            latest_evaluation_run_id,
+        )
+        # Today's action session — used for the reconciliation_run's
+        # period_{start,end} (audit-run timeframe, per plan §A.4.1).
+        today_session_iso = (
+            action_session_for_run(datetime.now()).isoformat()
+        )
         _conn = connect(cfg.paths.db_path)
         try:
-            _cand_row = _conn.execute(
-                "SELECT c.sector, c.industry FROM candidates c "
-                "JOIN evaluation_runs e "
-                "ON c.evaluation_run_id = e.id "
-                "WHERE c.ticker = ? AND e.action_session_date = ? "
-                "ORDER BY e.run_ts DESC, e.id DESC "
-                "LIMIT 1",
-                (ticker.upper(), session_iso),
-            ).fetchone()
+            # Mirror form-render anchor selection at
+            # swing/web/view_models/trades.py:379-385. Form + POST MUST
+            # use the same anchor — Codex R1 Major #1.
+            if origin_coerced == "hyp-recs":
+                _binding = latest_completed_pipeline_run(_conn)
+                _eval_id = (
+                    _binding.evaluation_run_id if _binding else None
+                )
+            else:
+                _eval_id = latest_evaluation_run_id(_conn)
+            if _eval_id is not None:
+                _cand_row = _conn.execute(
+                    "SELECT c.sector, c.industry, "
+                    "e.action_session_date "
+                    "FROM candidates c "
+                    "JOIN evaluation_runs e "
+                    "ON c.evaluation_run_id = e.id "
+                    "WHERE c.evaluation_run_id = ? AND c.ticker = ? "
+                    "LIMIT 1",
+                    (_eval_id, ticker.upper()),
+                ).fetchone()
+            else:
+                _cand_row = None
         finally:
             _conn.close()
         if _cand_row is not None:
             cached_sector = _cand_row[0] or ""
             cached_industry = _cand_row[1] or ""
+            # Spec §3.3.1 ``session`` is the cached candidate's anchor —
+            # carry the eval_run's action_session_date verbatim (matches
+            # form-render's anchor and the data the operator saw).
+            cand_session_iso = _cand_row[2] or today_session_iso
             mismatch_field: str | None = None
-            if cached_sector and sector and cached_sector != sector:
+            # Codex R1 Critical #1: strict ``!=`` comparison — empty
+            # form value against non-empty cached IS a tamper (blank-
+            # field bypass closed).
+            if cached_sector != sector:
                 mismatch_field = "sector"
-            elif (
-                cached_industry and industry
-                and cached_industry != industry
-            ):
+            elif cached_industry != industry:
                 mismatch_field = "industry"
             if mismatch_field is not None:
                 # T-D.2 — emit ad-hoc system_audit reconciliation_run +
@@ -644,6 +688,14 @@ def entry_post(
                 # what happens to the rejected entry POST — record_entry
                 # is never invoked on this path, so no entry-tx is open
                 # to interleave with the audit-tx.
+                #
+                # cand_session_iso: spec §3.3.1 ``expected.session`` —
+                # the cached candidate's anchor (eval_run's
+                # action_session_date), matching the data the operator
+                # saw at form-render time.
+                # today_session_iso: plan §A.4.1 — the
+                # reconciliation_run row's ``period_{start,end}``
+                # describing WHEN the audit happened (today).
                 _emit_sector_tamper_audit(
                     cfg=cfg,
                     ticker=ticker.upper(),
@@ -651,7 +703,8 @@ def entry_post(
                     cached_industry=cached_industry,
                     form_sector=sector,
                     form_industry=industry,
-                    session_iso=session_iso,
+                    cand_session_iso=cand_session_iso,
+                    run_session_iso=today_session_iso,
                     field_name=mismatch_field,
                 )
                 return _rerender_entry_form_with_error(

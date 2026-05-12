@@ -658,3 +658,189 @@ def test_audit_row_persists_across_session_separation(
     assert run_state[0] == "completed", run_state[0]
     assert disc_count == 1, disc_count
 
+
+# =====================================================================
+# Codex R1 Critical #1 regression coverage — blank-field tamper bypass.
+# Pre-fix predicate ``cached_sector and sector and cached_sector !=
+# sector`` skipped the check when EITHER side was empty. Post-fix
+# strict ``cached_sector != sector`` rejects any deviation, including
+# blank-form-vs-non-empty-cached.
+# =====================================================================
+
+
+def test_post_entry_with_blank_sector_vs_non_empty_cached_rejects(
+    seeded_db, monkeypatch,
+):
+    """Tamper-by-blanking: cached sector is non-empty but form posts
+    sector="" + industry=correct. Pre-fix this bypassed the check
+    silently. Post-fix: rejected (field_name='sector', actual.sector="").
+    """
+    cfg, cfg_path = seeded_db
+    _seed_candidate_with_sector_industry(
+        cfg.paths.db_path,
+        ticker="TAMP",
+        sector="Healthcare",
+        industry="Biotechnology",
+    )
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = _post_entry(
+            client,
+            sector="",  # blanked
+            industry="Biotechnology",
+        )
+    assert resp.status_code == 400, (
+        f"Expected 400 (blank-sector tamper rejection), got "
+        f"{resp.status_code}. Body[:500]: {resp.text[:500]!r}"
+    )
+    conn = connect(cfg.paths.db_path)
+    try:
+        rows = conn.execute(
+            "SELECT field_name, actual_value_json "
+            "FROM reconciliation_discrepancies "
+            "WHERE discrepancy_type='sector_tamper'"
+        ).fetchall()
+        trade_count = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE ticker='TAMP'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert trade_count == 0
+    assert len(rows) == 1, rows
+    field_name, act_json = rows[0]
+    assert field_name == "sector"
+    act = json.loads(act_json)
+    assert act == {"sector": "", "industry": "Biotechnology"}, act
+
+
+def test_post_entry_with_blank_industry_vs_non_empty_cached_rejects(
+    seeded_db, monkeypatch,
+):
+    """Symmetric to the sector-blank tamper: form sector matches cached
+    + industry posted as "". Cached industry is non-empty → rejected
+    on the industry branch.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_candidate_with_sector_industry(
+        cfg.paths.db_path,
+        ticker="TAMP",
+        sector="Healthcare",
+        industry="Biotechnology",
+    )
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = _post_entry(
+            client,
+            sector="Healthcare",
+            industry="",  # blanked
+        )
+    assert resp.status_code == 400
+    conn = connect(cfg.paths.db_path)
+    try:
+        rows = conn.execute(
+            "SELECT field_name, actual_value_json "
+            "FROM reconciliation_discrepancies "
+            "WHERE discrepancy_type='sector_tamper'"
+        ).fetchall()
+        trade_count = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE ticker='TAMP'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert trade_count == 0
+    assert len(rows) == 1, rows
+    field_name, act_json = rows[0]
+    assert field_name == "industry"
+    act = json.loads(act_json)
+    assert act == {"sector": "Healthcare", "industry": ""}, act
+
+
+# =====================================================================
+# Codex R1 Major #1 regression coverage — form-render anchor alignment.
+# The POST-time cached-candidate lookup must use the SAME anchor as the
+# form-render (latest_evaluation_run_id for watchlist origin /
+# latest_completed_pipeline_run.evaluation_run_id for hyp-recs). A
+# stale-pipeline scenario (today's action_session has NO eval but a
+# prior eval exists) must still trigger the tamper check against the
+# stale row — pre-fix the today-anchored lookup found nothing and
+# silently accepted the tampered POST.
+# =====================================================================
+
+
+def test_stale_pipeline_form_render_anchor_used_at_post(
+    seeded_db, monkeypatch,
+):
+    """Stale-pipeline scenario: today's action_session has NO eval_run
+    (the most recent eval is from a prior session). Pre-fix the
+    POST-time lookup keyed on today's session found nothing and
+    silently accepted any tampered sector/industry. Post-fix: POST
+    mirrors form-render's ``latest_evaluation_run_id`` anchor and
+    finds the stale row → strict comparison fires.
+
+    Audit row's ``expected.session`` carries the STALE eval's
+    action_session_date (the data the operator actually saw), NOT
+    today's session. This is the Codex R1 Major #1 alignment fix.
+    """
+    cfg, cfg_path = seeded_db
+    # Seed an eval_run + candidate anchored to a prior session (NOT
+    # today). ``action_session_date`` deliberately != today.
+    stale_session = "2026-04-01"
+    _seed_candidate_with_sector_industry(
+        cfg.paths.db_path,
+        ticker="TAMP",
+        sector="Healthcare",
+        industry="Biotechnology",
+        action_session_iso=stale_session,
+    )
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = _post_entry(
+            client,
+            sector="Technology",  # tampered
+            industry="Biotechnology",
+        )
+    assert resp.status_code == 400, (
+        f"Expected 400 (stale-pipeline tamper rejection), got "
+        f"{resp.status_code}. Body[:500]: {resp.text[:500]!r}"
+    )
+    conn = connect(cfg.paths.db_path)
+    try:
+        runs = conn.execute(
+            "SELECT source, state, period_start, period_end "
+            "FROM reconciliation_runs"
+        ).fetchall()
+        rows = conn.execute(
+            "SELECT field_name, expected_value_json, "
+            "actual_value_json "
+            "FROM reconciliation_discrepancies "
+            "WHERE discrepancy_type='sector_tamper'"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert len(runs) == 1
+    source, state, period_start, period_end = runs[0]
+    # Run's period_{start,end} are TODAY's action_session per plan §A.4.1
+    # — they describe WHEN the audit happened, not the cached data's
+    # anchor.
+    expected_today = _today_action_session_iso()
+    assert source == "system_audit"
+    assert state == "completed"
+    assert period_start == expected_today, (period_start, expected_today)
+    assert period_end == expected_today
+    assert len(rows) == 1
+    field_name, exp_json, act_json = rows[0]
+    assert field_name == "sector"
+    exp = json.loads(exp_json)
+    # Discrepancy's expected.session reflects the cached candidate's
+    # eval_run.action_session_date (stale), NOT today.
+    assert exp["session"] == stale_session, (
+        f"expected.session must carry the stale eval anchor "
+        f"({stale_session!r}); got {exp['session']!r}"
+    )
+    assert exp["sector"] == "Healthcare"
+    act = json.loads(act_json)
+    assert act == {"sector": "Technology", "industry": "Biotechnology"}
+
