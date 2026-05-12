@@ -101,6 +101,59 @@ def _list_all_exitshape_via_fills(
     return out
 
 
+def _apply_toml_divergence_check(ctx: click.Context) -> None:
+    """Phase 9 T-A.5 — post-schema-validation TOML divergence hook.
+
+    Per Codex R3 M#1 architectural fix (plan §A.5.1): swing/config.py:load()
+    REMAINS PURE; the divergence check moved here. Invoked from the
+    @main.callback BEFORE every CLI subcommand EXCEPT db-migrate (which is
+    the path that brings the DB to v17; running the check before the
+    migration completes is the failure mode the helper's pre-v17
+    silent-skip guards against — but the CLI ALSO skips defensively to
+    avoid even opening the DB).
+
+    On divergence: emits a stderr advisory line (mirrors pip / git
+    divergence-warning pattern per spec §3.1.3 R3 Minor #2) AND rebinds
+    ctx.obj["config"] to the corrected immutable Config. Subsequent CLI
+    handler reads of cfg.account.risk_equity_floor see the policy value,
+    NOT the stale TOML value.
+    """
+    from swing.trades.risk_policy import check_and_reconcile_toml_divergence
+
+    cfg = ctx.obj["config"]
+    db_path = cfg.paths.db_path
+    if not db_path.exists():
+        # Pre-migrate state — divergence check has nothing to compare against.
+        return
+    conn = sqlite3.connect(db_path)
+    try:
+        new_cfg, divergence = check_and_reconcile_toml_divergence(conn, cfg)
+    finally:
+        conn.close()
+    if divergence is not None:
+        click.echo(
+            f"NOTE: TOML diverges from risk_policy: "
+            f"cfg.account.risk_equity_floor={divergence['toml_value']} vs "
+            f"risk_policy.capital_floor_constant_dollars={divergence['policy_value']}; "
+            f"risk_policy is authoritative. To make TOML canonical, run: "
+            f"swing config policy import-from-toml --field capital_floor_constant_dollars",
+            err=True,
+        )
+        ctx.obj["config"] = new_cfg
+
+
+# Subcommands that MUST NOT trigger the divergence hook. db-migrate is the
+# canonical path that brings DB to v17; running the divergence check before
+# the migration completes would either (a) silent-skip wastefully (the
+# helper's pre-v17 path) or (b) surface a confusing advisory before the
+# very table the operator is about to create exists. db-backup is a
+# pure-IO operation with no policy semantics; skip too.
+_DIVERGENCE_HOOK_SKIP_SUBCOMMANDS: frozenset[str] = frozenset({
+    "db-migrate",
+    "db-backup",
+})
+
+
 @click.group()
 @click.option("--config", "config_path", default="swing.config.toml",
               help="Path to swing.config.toml")
@@ -110,6 +163,8 @@ def main(ctx: click.Context, config_path: str) -> None:
     ctx.ensure_object(dict)
     ctx.obj["config"] = load_config(Path(config_path))
     ctx.obj["config_path"] = Path(config_path)
+    if ctx.invoked_subcommand not in _DIVERGENCE_HOOK_SKIP_SUBCOMMANDS:
+        _apply_toml_divergence_check(ctx)
 
 
 main.add_command(config_group)
@@ -140,8 +195,74 @@ def db_migrate(ctx: click.Context) -> None:
             src.close()
         click.echo(f"Backup: {backup_path}")
 
+    # Pre-version snoop so we can detect the v16 → v17 first-time landing
+    # and ratify the migration's hard-coded seed against the operator's
+    # actual swing.config.toml values (Codex R1 Major #1 fix). The
+    # ratification ONLY fires on the v16 → v17 transition; subsequent
+    # db-migrate invocations leave the active policy alone.
+    pre_version = 0
+    if db_path.exists():
+        _probe = _sqlite3.connect(db_path)
+        try:
+            _row = _probe.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name='schema_version'"
+            ).fetchone()
+            if _row is not None:
+                _row2 = _probe.execute(
+                    "SELECT version FROM schema_version"
+                ).fetchone()
+                pre_version = int(_row2[0]) if _row2 else 0
+        finally:
+            _probe.close()
+
     conn = ensure_schema(db_path)
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+    if pre_version <= 16 and version >= 17:
+        # First-time v17 landing: ratify the migration's hard-coded seed
+        # against cfg.{risk.max_risk_pct, position_limits.hard_cap_open,
+        # account.risk_equity_floor, review.review_window_days} per spec
+        # §3.1.3 SEED MAP. The migration cannot Python-eval cfg at
+        # executescript time; this post-migration step is the canonical
+        # cfg-derived seed.
+        #
+        # Codex R2 M#2 fix: ratify against the EFFECTIVE cfg (apply_overrides
+        # over the raw load result) so any pre-Phase-9 user-config.toml
+        # overrides for risk_equity_floor land in the seed too. Codex R2 M#3
+        # fix: ratification failure raises ClickException (exits non-zero)
+        # — leaving the DB at v17 with a wrong seed is worse than failing
+        # the migrate command + asking the operator to fix the underlying
+        # config error before re-running.
+        from swing.config_overrides import apply_overrides
+        from swing.trades.risk_policy import (
+            ratify_seed_from_cfg_on_v17_landing,
+        )
+        effective_cfg = apply_overrides(cfg)
+        try:
+            ratified_id = ratify_seed_from_cfg_on_v17_landing(
+                conn, effective_cfg,
+            )
+            if ratified_id is not None:
+                click.echo(
+                    f"Phase 9 ratification: superseded migration's hard-coded "
+                    f"seed (policy_id=1) with cfg-derived values; new active "
+                    f"policy_id={ratified_id}."
+                )
+        except Exception as exc:
+            conn.close()
+            raise click.ClickException(
+                f"Phase 9 seed ratification failed: {exc}. The DB is at "
+                f"v17 but the active policy seed may not match your "
+                f"effective swing.config.toml + user-config.toml values. "
+                f"Investigate the cfg field that failed validation, fix it, "
+                f"then run the per-field repair path (the v17 ratification "
+                f"will NOT re-fire on subsequent `swing db-migrate` because "
+                f"pre_version is now 17). All four spec §3.1.3 mirrored "
+                f"fields are repairable via `swing config policy "
+                f"import-from-toml --field <name>` for: "
+                f"capital_floor_constant_dollars, max_concurrent_positions, "
+                f"review_lag_threshold_days, max_account_risk_per_trade_pct."
+            ) from exc
     conn.close()
     click.echo(f"DB at {db_path} - schema version {version}")
 

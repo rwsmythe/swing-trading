@@ -346,6 +346,20 @@ def record_entry(
             trade_id = insert_trade_with_event(
                 conn, trade, event_ts=req.event_ts, rationale=req.rationale,
             )
+            # Phase 9 T-A.7 — stamp risk_policy_id_at_lock from the active
+            # policy in the SAME transaction. Spec §3.1.1: preserves
+            # at-trade-time semantics for capital_floor / scratch_epsilon /
+            # trail-MA periods even when the policy is later superseded.
+            # When no active policy exists (operator manually flipped seed
+            # inactive), the SELECT sub-query returns NULL → column stays
+            # NULL; spec §9.4 backwards-compatibility contract says NULL is
+            # legal and read paths fall back to current active policy.
+            conn.execute(
+                "UPDATE trades SET risk_policy_id_at_lock = "
+                "(SELECT policy_id FROM risk_policy WHERE is_active = 1) "
+                "WHERE id = ?",
+                (trade_id,),
+            )
             # Phase 7 Sub-B B.3 — atomic first entry-fill insert in the
             # SAME transaction as the trade row. The fill's
             # _recompute_aggregates updates trades.current_size,

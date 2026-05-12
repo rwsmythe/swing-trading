@@ -153,7 +153,37 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
         docs_url=None, redoc_url=None,
         lifespan=lifespan,
     )
-    app.state.cfg = cfg
+    # Phase 9 T-A.5: post-schema-validation TOML divergence hook.
+    # Per Codex R3 M#1 architectural fix (plan §A.5.1): swing/config.py:load()
+    # REMAINS PURE — divergence reconciliation lives here, AFTER the DB has
+    # been brought to v17 by run_server's connect() call (or the test's
+    # ensure_schema fixture). When divergent, app.state.cfg is the corrected
+    # immutable Config (frozen-dataclass replace; original cfg unchanged).
+    # Pre-v17 / no-active-policy DBs silently return (cfg, None) — the helper
+    # tolerates fresh / partially-migrated test fixtures without crashing.
+    import sqlite3 as _sqlite3
+    try:
+        _conn = _sqlite3.connect(cfg.paths.db_path)
+    except _sqlite3.OperationalError:
+        # DB path doesn't exist or can't be opened — defer to the connect()
+        # gate at run_server / first request. Use raw cfg here so the app
+        # can still construct (pre-migration test fixtures need this).
+        app.state.cfg = cfg
+    else:
+        try:
+            from swing.trades.risk_policy import (
+                check_and_reconcile_toml_divergence,
+            )
+            new_cfg, divergence = check_and_reconcile_toml_divergence(_conn, cfg)
+        finally:
+            _conn.close()
+        if divergence is not None:
+            log.warning(
+                "TOML diverges from risk_policy at web app startup: %s; "
+                "app.state.cfg corrected to risk_policy value.",
+                divergence,
+            )
+        app.state.cfg = new_cfg
     app.state.cfg_path = cfg_path
     app.state.price_cache = PriceCache(cfg)
     app.state.ohlcv_cache = OhlcvCache(cfg)     # NEW — Phase 3d §3.5
