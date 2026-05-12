@@ -34,14 +34,16 @@ def _rerender_entry_form_with_error(
 
 ## §3 What sector/industry tamper hardening (T-D.1 + T-D.2) inherits
 
-| chart_pattern | sector/industry tamper (T-D.1 + T-D.2) |
+**Note (Codex R2 amendment 2026-05-12):** the table row that originally read "Cached lookup keyed on `(ticker, action_session_for_run(now()))` — no hidden run_id anchor" has been superseded. Sector/industry now ALSO uses a hidden anchor (`sector_industry_evaluation_run_id`) mirroring chart_pattern's `pipeline_run_id` anchor. §4 below carries the binding description.
+
+| chart_pattern | sector/industry tamper (T-D.1 + T-D.2 + R2 anchor) |
 |---|---|
-| Hidden inputs `chart_pattern_algo`, `..._confidence`, `..._pipeline_run_id`, `..._operator`, `..._operator_other` | Hidden inputs already present: `sector` + `industry` (per `swing/web/view_models/trades.py:340-396` form-render path) — populated from `candidates` table at form-render via the `latest_evaluation_run_id` (watchlist) or `pipeline_eval_id` (hyp-recs) anchor |
-| Cached-only consumption gate keyed on `(pipeline_run_id, ticker)` hidden anchor | Cached lookup keyed on `(ticker, action_session_for_run(now()))` per spec §7 step 2 — no hidden run_id anchor; session is the natural anchor at POST-time |
+| Hidden inputs `chart_pattern_algo`, `..._confidence`, `..._pipeline_run_id`, `..._operator`, `..._operator_other` | Hidden inputs: `sector`, `industry`, and (R2) `sector_industry_evaluation_run_id` (per `swing/web/view_models/trades.py:340-409` form-render path) — populated from `candidates` table at form-render via the `latest_evaluation_run_id` (watchlist) or `pipeline_eval_id` (hyp-recs) anchor; the anchor field carries the eval_run_id used to derive those values |
+| Cached-only consumption gate keyed on `(pipeline_run_id, ticker)` hidden anchor | **POST-time lookup keyed on `(sector_industry_evaluation_run_id, ticker)` hidden anchor** (Codex R2 Major #1 fix). Form-render + POST agree on the exact cached row being compared against; no TOCTOU window. |
 | Reject via `_rerender_entry_form_with_error` (HTTP 400) | Same helper, HTTP 400, HTMX swap-enabled per `base.html.j2` `responseHandling` override (CLAUDE.md gotcha) |
 | Form-render values flow AS-IS into `EntryRequest` on match | Same: form sector/industry flow into `EntryRequest.sector` + `.industry` on match |
-| No audit-trail emission (advisory-only at the route layer) | **T-D.2 adds:** ad-hoc `reconciliation_runs` row with `source='system_audit'`, `state='completed'`, `period_start=period_end=action_session_iso` + `sector_tamper` discrepancy with `material_to_review=MATERIAL_BY_TYPE['sector_tamper'] = 0`. Committed in a SEPARATE TRANSACTION before the rejection response renders, so the audit persists even though the entry POST is rejected. |
-| `pattern_classifications`-keyed lookup repo: `get_classification(conn, pipeline_run_id, ticker)` | `candidates`-keyed lookup via direct SELECT (no dedicated repo function needed) — joined on `evaluation_runs.action_session_date` |
+| No audit-trail emission (advisory-only at the route layer) | **T-D.2 adds:** ad-hoc `reconciliation_runs` row with `source='system_audit'`, `state='completed'`, `period_start=period_end=action_session_for_run(now())` + `sector_tamper` discrepancy with `material_to_review=MATERIAL_BY_TYPE['sector_tamper'] = 0`. Committed in a SEPARATE TRANSACTION before the rejection response renders, so the audit persists even though the entry POST is rejected. |
+| `pattern_classifications`-keyed lookup repo: `get_classification(conn, pipeline_run_id, ticker)` | `candidates`-keyed lookup via direct SELECT — joined to `evaluation_runs` to also surface the cached candidate's `action_session_date` for the audit JSON's `expected.session` field |
 
 ## §4 Cached candidate lookup query at POST time
 

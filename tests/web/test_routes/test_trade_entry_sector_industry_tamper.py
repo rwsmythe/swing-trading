@@ -80,9 +80,14 @@ def _seed_candidate_with_sector_industry(
 
     Returns ``(evaluation_run_id, candidate_id)``.
 
-    The action_session anchor defaults to ``action_session_for_run(now())``
-    so the route's POST-time lookup (which uses that same helper) finds
-    the row.
+    Post-Codex-R2: the POST-time lookup keys on a hidden form-emitted
+    ``sector_industry_evaluation_run_id`` anchor, NOT on
+    ``action_session_date``. Tests should pass the returned
+    ``evaluation_run_id`` as ``sector_industry_evaluation_run_id`` in
+    the POST payload to exercise the strict-comparison path. The
+    ``action_session_iso`` parameter defaults to today's session so
+    the audit row's ``expected.session`` field (which still reflects
+    the candidate's eval anchor) matches a stable per-test value.
     """
     session = action_session_iso or _today_action_session_iso()
     conn = ensure_schema(db_path)
@@ -941,6 +946,120 @@ def test_post_entry_with_tampered_anchor_rejects_without_audit_emit(
     assert recon_count == 0, recon_count
     assert disc_count == 0, disc_count
     assert trade_count == 0
+
+
+# =====================================================================
+# Codex R3 Critical #1 — soft-warn confirm must round-trip the anchor.
+# Without round-trip the ``force=true`` resubmit arrives with no anchor
+# and falls into the bare-cURL skip path, silently accepting tampered
+# sector/industry on the confirm submit.
+# =====================================================================
+
+
+def test_soft_warn_confirm_round_trip_preserves_anchor_and_blocks_tamper(
+    seeded_db, monkeypatch,
+):
+    """First POST trips soft_warn (4 open trades + 5th submit). Confirm
+    fragment MUST carry ``sector_industry_evaluation_run_id`` as a hidden
+    input. Second POST (force=true) with tampered sector → strict
+    comparison fires via the round-tripped anchor → 400 + audit row.
+
+    Discriminating: pre-fix the confirm fragment dropped the anchor,
+    the force=true POST arrived with no anchor, the anchor-absent path
+    skipped the tamper check, and the tampered Trade row persisted. The
+    test asserts (a) anchor present in confirm fragment, (b) force=true
+    with tampered sector returns 400, (c) audit row emitted, (d) no
+    trade row inserted.
+    """
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+
+    cfg, cfg_path = seeded_db
+    eval_id, _ = _seed_candidate_with_sector_industry(
+        cfg.paths.db_path,
+        ticker="TAMP",
+        sector="Healthcare",
+        industry="Biotechnology",
+    )
+    # Seed enough open trades to trip soft_warn (default soft_warn_open=4).
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            for i, tk in enumerate(("TK1", "TK2", "TK3", "TK4")):
+                insert_trade_with_event(conn, Trade(
+                    id=None, ticker=tk, entry_date="2026-04-20",
+                    entry_price=100.0, initial_shares=1,
+                    initial_stop=95.0, current_stop=95.0,
+                    state="entered",
+                    watchlist_entry_target=None,
+                    watchlist_initial_stop=None,
+                    notes=None,
+                ), event_ts=f"2026-04-20T09:30:0{i}")
+    finally:
+        conn.close()
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        # First POST: matching sector/industry + anchor → no tamper;
+        # but soft_warn fires.
+        r1 = _post_entry(
+            client,
+            sector="Healthcare",
+            industry="Biotechnology",
+            sector_industry_evaluation_run_id=eval_id,
+        )
+        assert r1.status_code == 200, r1.text
+        assert "Soft cap reached" in r1.text, (
+            f"Expected soft-warn confirm fragment. Body[:600]: "
+            f"{r1.text[:600]!r}"
+        )
+        # Confirm fragment MUST carry the anchor as a hidden input.
+        anchor_input = (
+            f'<input type="hidden" name="sector_industry_evaluation_run_id" '
+            f'value="{eval_id}">'
+        )
+        assert anchor_input in r1.text, (
+            f"Soft-warn confirm fragment dropped the anchor — Codex R3 "
+            f"Critical #1 regression. Expected {anchor_input!r} in body. "
+            f"Body[:1200]: {r1.text[:1200]!r}"
+        )
+        # Second POST: force=true with TAMPERED sector → anchor is
+        # round-tripped by the operator's browser submitting the
+        # confirm form. We simulate that by passing the anchor
+        # explicitly here (real browser does it via the rendered
+        # hidden input).
+        r2 = _post_entry(
+            client,
+            sector="Technology",  # tampered on confirm submit
+            industry="Biotechnology",
+            sector_industry_evaluation_run_id=eval_id,
+            force="true",
+        )
+    assert r2.status_code == 400, (
+        f"Expected 400 (tamper rejection on force=true confirm), got "
+        f"{r2.status_code}. Body[:600]: {r2.text[:600]!r}"
+    )
+    conn = connect(cfg.paths.db_path)
+    try:
+        trade_count = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE ticker='TAMP'"
+        ).fetchone()[0]
+        disc_rows = conn.execute(
+            "SELECT field_name, actual_value_json FROM "
+            "reconciliation_discrepancies "
+            "WHERE discrepancy_type='sector_tamper'"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert trade_count == 0, (
+        f"Expected 0 trade rows on tamper rejection during force=true "
+        f"confirm; got {trade_count}."
+    )
+    assert len(disc_rows) == 1, disc_rows
+    field_name, act_json = disc_rows[0]
+    assert field_name == "sector"
+    act = json.loads(act_json)
+    assert act == {"sector": "Technology", "industry": "Biotechnology"}
 
 
 def test_post_entry_with_bogus_anchor_pointing_at_nonexistent_eval_rejects(

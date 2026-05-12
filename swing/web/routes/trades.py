@@ -927,6 +927,19 @@ def entry_post(
                 # these keys auto-emits hidden inputs.
                 "sector": sector,
                 "industry": industry,
+                # Phase 9 Sub-bundle D Codex R3 Critical #1 — the
+                # sector/industry tamper-hardening anchor must also
+                # round-trip through soft-warn confirm. Without it the
+                # ``force=true`` resubmit arrives with no anchor and
+                # falls into the bare-cURL backward-compat skip path,
+                # silently accepting tampered sector/industry on the
+                # confirm submit. Re-emit as "" when None so the hidden
+                # input is consistent with the form's GET render.
+                "sector_industry_evaluation_run_id": (
+                    sector_industry_evaluation_run_id
+                    if sector_industry_evaluation_run_id is not None
+                    else ""
+                ),
                 # Phase 4.5 — hypothesis_label must round-trip through
                 # the soft-warn confirm so the force=true resubmit
                 # persists the SAME label the operator saw at first
