@@ -52,6 +52,29 @@ def test_advisory_context_has_been_trimmed_defaults_to_false():
 
 
 # ----------------------------------------------------------------------
+# 3e.8 Bundle 3 — AdvisoryContext.maturity_stage field (§4.A.bis hint)
+# ----------------------------------------------------------------------
+
+def test_advisory_context_accepts_maturity_stage_field():
+    ctx = AdvisoryContext(
+        as_of_date="2026-04-15", current_price=100.0,
+        sma10=None, sma20=None, sma50=None, previous_close=None,
+        weather_status="Bullish", config=StopAdvisoryConfig(),
+        maturity_stage="pre_+1.5R",
+    )
+    assert ctx.maturity_stage == "pre_+1.5R"
+
+
+def test_advisory_context_maturity_stage_defaults_to_none():
+    ctx = AdvisoryContext(
+        as_of_date="2026-04-15", current_price=100.0,
+        sma10=None, sma20=None, sma50=None, previous_close=None,
+        weather_status="Bullish", config=StopAdvisoryConfig(),
+    )
+    assert ctx.maturity_stage is None
+
+
+# ----------------------------------------------------------------------
 # 3e.8 Bundle 2 — §4.B suggest_trim_into_strength
 # Entry 180, initial_stop 170 → 1R = $10. +1R fires at price ≥ 190.
 # ----------------------------------------------------------------------

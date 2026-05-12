@@ -36,6 +36,15 @@ class AdvisoryContext:
     # fills they already query for remaining-shares math; default False so
     # legacy unit-test fixtures continue to fire the rule.
     has_been_trimmed: bool = False
+    # 3e.8 Bundle 3 — Phase 8 daily-management maturity stage from the
+    # trade's active daily_snapshot. Drives suggest_maturity_stage_trail_ma_hint
+    # (§4.A.bis): operator-policy maturity-stage → recommended-trail-MA hint
+    # per Tier-3 #6. Expected enum (None | "pre_+1.5R" | "+1.5R_to_+2R" |
+    # ">=+2R_trail_eligible") matches ``compute_maturity_stage``. None when no
+    # active snapshot exists (e.g., trade just opened pre-pipeline-run) → rule
+    # no-ops; default None keeps legacy callers (test fixtures + pre-Bundle-3
+    # composition sites) green.
+    maturity_stage: str | None = None
 
 
 @dataclass(frozen=True)
