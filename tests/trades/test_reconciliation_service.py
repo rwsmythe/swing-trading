@@ -889,3 +889,363 @@ def test_overfill_close_attributes_to_trade_id(
     # Confirm the canonical query picks it up.
     active = recon_repo.list_unresolved_material_for_active_trades(conn)
     assert any(d.discrepancy_id == e.discrepancy_id for d in active)
+
+
+# ============================================================================
+# §10 — T-C.6 equity_delta cross-bundle wiring
+# ============================================================================
+#
+# Per dispatch brief §0.5 #5 + spec §3.3.1 + §3.5. After the existing
+# emitter loop + before update_run_completed, the service computes
+# source-side net-liq (Account Summary section) + journal-side equity
+# (account_equity_snapshots.get_latest_snapshot_on_or_before(period_end))
+# and emits an equity_delta discrepancy when BOTH sides are available AND
+# abs(delta) > $10.00 (strict GT; boundary at exactly $10.00 is NOT-emit).
+
+
+_TOS_CSV_WITH_ACCOUNT_SUMMARY = """\
+Account Trade History
+Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+2026-05-12 10:00:00,STOCK,BUY,+10,OPENING,ABC,,,,10.0500,10.0500,MKT
+
+Account Summary
+Net Liquidating Value,"$1,400.00"
+Stock Buying Power,"$1,000.00"
+"""
+
+
+def _seed_equity_snapshot(
+    conn: sqlite3.Connection, *, snapshot_date: str, equity: float,
+) -> None:
+    """Seed a manual equity snapshot for source-ladder fallback testing."""
+    from swing.data.repos.account_equity_snapshots import insert_snapshot
+
+    insert_snapshot(
+        conn,
+        snapshot_date=snapshot_date,
+        equity_dollars=equity,
+        source="manual",
+        source_artifact_path=None,
+        recorded_at=now_ms(),
+        recorded_by="operator",
+        notes=None,
+    )
+    conn.commit()
+
+
+def test_equity_delta_emit_when_both_sides_available_and_above_threshold(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Source net-liq $1400; journal snapshot $1300 → delta = -$100 → emit."""
+    _seed_entry(
+        conn, ticker="ABC", entry_date="2026-05-12",
+        entry_price=10.05, shares=10, initial_stop=9.00,
+    )
+    _seed_equity_snapshot(conn, snapshot_date="2026-05-12", equity=1300.0)
+
+    csv = tmp_path / "tos_with_summary.csv"
+    csv.write_text(_TOS_CSV_WITH_ACCOUNT_SUMMARY, encoding="utf-8")
+    out = run_tos_reconciliation(
+        conn, csv_path=csv, period_end="2026-05-12",
+    )
+    assert out.state == "completed"
+    # Both sides populated on the run row.
+    assert out.account_equity_source_dollars == 1400.0
+    assert out.account_equity_journal_dollars == 1300.0
+    assert out.equity_delta_dollars == pytest.approx(-100.0)
+    # equity_delta discrepancy row exists for this run.
+    rows = recon_repo.list_discrepancies_for_run(conn, out.run_id)
+    eqd = [r for r in rows if r.discrepancy_type == "equity_delta"]
+    assert len(eqd) == 1
+    e = eqd[0]
+    # Run-grain: no trade_id / fill_id / cash_movement_id / ticker.
+    assert e.trade_id is None
+    assert e.fill_id is None
+    assert e.cash_movement_id is None
+    assert e.ticker is None
+    assert e.field_name == "net_liquidating_value"
+    assert e.material_to_review == 0  # spec §3.3.1
+    # JSON shapes per spec §3.3.1.
+    expected = json.loads(e.expected_value_json)
+    actual = json.loads(e.actual_value_json)
+    assert expected == {"equity_dollars": 1300.0}
+    assert actual == {"equity_dollars": 1400.0}
+
+
+def test_equity_delta_not_emit_when_journal_snapshot_missing(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """No snapshot for period_end → run.equity_journal NULL → no emit."""
+    _seed_entry(
+        conn, ticker="ABC", entry_date="2026-05-12",
+        entry_price=10.05, shares=10, initial_stop=9.00,
+    )
+    # NOTE: no snapshot seeded.
+    csv = tmp_path / "tos_with_summary.csv"
+    csv.write_text(_TOS_CSV_WITH_ACCOUNT_SUMMARY, encoding="utf-8")
+    out = run_tos_reconciliation(
+        conn, csv_path=csv, period_end="2026-05-12",
+    )
+    assert out.state == "completed"
+    assert out.account_equity_source_dollars == 1400.0
+    assert out.account_equity_journal_dollars is None
+    assert out.equity_delta_dollars is None
+    rows = recon_repo.list_discrepancies_for_run(conn, out.run_id)
+    assert not any(r.discrepancy_type == "equity_delta" for r in rows)
+
+
+def test_equity_delta_not_emit_when_source_section_missing(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """CSV with no Account Summary section → no emit + journal NULL."""
+    _seed_entry(
+        conn, ticker="ABC", entry_date="2026-05-12",
+        entry_price=10.05, shares=10, initial_stop=9.00,
+    )
+    _seed_equity_snapshot(conn, snapshot_date="2026-05-12", equity=1300.0)
+    # Use the simple CSV (no Account Summary).
+    csv = tmp_path / "tos_simple.csv"
+    csv.write_text(_SIMPLE_TOS_CSV, encoding="utf-8")
+    out = run_tos_reconciliation(
+        conn, csv_path=csv, period_end="2026-05-12",
+    )
+    assert out.state == "completed"
+    assert out.account_equity_source_dollars is None
+    # journal side IS computable but the spec persists journal-side
+    # independently. T-C.6 contract: both columns + delta wired together;
+    # NULL on one side implies NULL on delta + no emit.
+    assert out.equity_delta_dollars is None
+    rows = recon_repo.list_discrepancies_for_run(conn, out.run_id)
+    assert not any(r.discrepancy_type == "equity_delta" for r in rows)
+
+
+def test_equity_delta_boundary_strictly_above_ten_dollars_emits(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """abs(delta) = $10.01 → EMIT (strict GT)."""
+    _seed_entry(
+        conn, ticker="ABC", entry_date="2026-05-12",
+        entry_price=10.05, shares=10, initial_stop=9.00,
+    )
+    _seed_equity_snapshot(conn, snapshot_date="2026-05-12", equity=1389.99)
+
+    csv_text = _TOS_CSV_WITH_ACCOUNT_SUMMARY  # source = $1400.00
+    # delta = journal 1389.99 - source 1400.00 = -10.01 → |delta|=10.01 → emit
+    csv = tmp_path / "tos.csv"
+    csv.write_text(csv_text, encoding="utf-8")
+    out = run_tos_reconciliation(
+        conn, csv_path=csv, period_end="2026-05-12",
+    )
+    assert out.equity_delta_dollars == pytest.approx(-10.01)
+    rows = recon_repo.list_discrepancies_for_run(conn, out.run_id)
+    assert any(r.discrepancy_type == "equity_delta" for r in rows)
+
+
+def test_equity_delta_boundary_at_exactly_ten_dollars_does_not_emit(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """abs(delta) = $10.00 → NO emit (strict GT)."""
+    _seed_entry(
+        conn, ticker="ABC", entry_date="2026-05-12",
+        entry_price=10.05, shares=10, initial_stop=9.00,
+    )
+    _seed_equity_snapshot(conn, snapshot_date="2026-05-12", equity=1390.0)
+
+    csv_text = _TOS_CSV_WITH_ACCOUNT_SUMMARY  # source = $1400.00
+    # delta = 1390 - 1400 = -10.00 → |delta|=10.00 → NOT-emit
+    csv = tmp_path / "tos.csv"
+    csv.write_text(csv_text, encoding="utf-8")
+    out = run_tos_reconciliation(
+        conn, csv_path=csv, period_end="2026-05-12",
+    )
+    assert out.equity_delta_dollars == pytest.approx(-10.0)
+    rows = recon_repo.list_discrepancies_for_run(conn, out.run_id)
+    assert not any(r.discrepancy_type == "equity_delta" for r in rows)
+
+
+def test_equity_delta_boundary_below_threshold_does_not_emit(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """abs(delta) = $9.99 → NO emit."""
+    _seed_entry(
+        conn, ticker="ABC", entry_date="2026-05-12",
+        entry_price=10.05, shares=10, initial_stop=9.00,
+    )
+    _seed_equity_snapshot(conn, snapshot_date="2026-05-12", equity=1390.01)
+    csv_text = _TOS_CSV_WITH_ACCOUNT_SUMMARY  # source = $1400.00
+    # delta = 1390.01 - 1400.00 = -9.99 → no emit
+    csv = tmp_path / "tos.csv"
+    csv.write_text(csv_text, encoding="utf-8")
+    out = run_tos_reconciliation(
+        conn, csv_path=csv, period_end="2026-05-12",
+    )
+    assert out.equity_delta_dollars == pytest.approx(-9.99)
+    rows = recon_repo.list_discrepancies_for_run(conn, out.run_id)
+    assert not any(r.discrepancy_type == "equity_delta" for r in rows)
+
+
+def test_equity_delta_uses_source_ladder_for_journal_snapshot(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Journal-side equity uses get_latest_snapshot_on_or_before with
+    source-ladder precedence (schwab_api > tos_csv > manual)."""
+    from swing.data.repos.account_equity_snapshots import insert_snapshot
+
+    _seed_entry(
+        conn, ticker="ABC", entry_date="2026-05-12",
+        entry_price=10.05, shares=10, initial_stop=9.00,
+    )
+    # Three snapshots same date: manual $1300, tos_csv $1320, schwab_api
+    # $1350. The schwab_api row must win.
+    insert_snapshot(
+        conn, snapshot_date="2026-05-12", equity_dollars=1300.0,
+        source="manual", source_artifact_path=None,
+        recorded_at=now_ms(), recorded_by="operator", notes=None,
+    )
+    insert_snapshot(
+        conn, snapshot_date="2026-05-12", equity_dollars=1320.0,
+        source="tos_csv", source_artifact_path=None,
+        recorded_at=now_ms(), recorded_by="operator", notes=None,
+    )
+    insert_snapshot(
+        conn, snapshot_date="2026-05-12", equity_dollars=1350.0,
+        source="schwab_api", source_artifact_path=None,
+        recorded_at=now_ms(), recorded_by="operator", notes=None,
+    )
+    conn.commit()
+
+    csv = tmp_path / "tos.csv"
+    csv.write_text(_TOS_CSV_WITH_ACCOUNT_SUMMARY, encoding="utf-8")  # source $1400
+    out = run_tos_reconciliation(
+        conn, csv_path=csv, period_end="2026-05-12",
+    )
+    assert out.account_equity_journal_dollars == 1350.0  # schwab_api wins
+    assert out.equity_delta_dollars == pytest.approx(1350.0 - 1400.0)
+
+
+def test_equity_delta_uses_snapshot_on_or_before_period_end(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Period_end 2026-05-15 + snapshot dated 2026-05-12 → journal = $1300."""
+    _seed_entry(
+        conn, ticker="ABC", entry_date="2026-05-12",
+        entry_price=10.05, shares=10, initial_stop=9.00,
+    )
+    _seed_equity_snapshot(conn, snapshot_date="2026-05-12", equity=1300.0)
+    csv = tmp_path / "tos.csv"
+    csv.write_text(_TOS_CSV_WITH_ACCOUNT_SUMMARY, encoding="utf-8")  # source $1400
+    out = run_tos_reconciliation(
+        conn, csv_path=csv, period_end="2026-05-15",
+    )
+    assert out.account_equity_journal_dollars == 1300.0  # 5/12 snap <= 5/15
+    assert out.equity_delta_dollars == pytest.approx(-100.0)
+
+
+def test_equity_delta_skips_snapshot_dated_after_period_end(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Snapshot dated AFTER period_end → not consumed → journal NULL → no emit."""
+    _seed_entry(
+        conn, ticker="ABC", entry_date="2026-05-12",
+        entry_price=10.05, shares=10, initial_stop=9.00,
+    )
+    _seed_equity_snapshot(conn, snapshot_date="2026-05-20", equity=1300.0)
+    csv = tmp_path / "tos.csv"
+    csv.write_text(_TOS_CSV_WITH_ACCOUNT_SUMMARY, encoding="utf-8")
+    out = run_tos_reconciliation(
+        conn, csv_path=csv, period_end="2026-05-12",
+    )
+    assert out.account_equity_journal_dollars is None
+    assert out.equity_delta_dollars is None
+    rows = recon_repo.list_discrepancies_for_run(conn, out.run_id)
+    assert not any(r.discrepancy_type == "equity_delta" for r in rows)
+
+
+def test_equity_delta_dedup_single_row_per_run(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Even though the equity_delta computation runs once per run, the
+    within-run dedup tuple shape (All-None) MUST emit exactly one row.
+
+    This guards against any future code path that might invoke the
+    emitter twice (e.g., Schwab-API + TOS-CSV co-emission in V2).
+    """
+    _seed_entry(
+        conn, ticker="ABC", entry_date="2026-05-12",
+        entry_price=10.05, shares=10, initial_stop=9.00,
+    )
+    _seed_equity_snapshot(conn, snapshot_date="2026-05-12", equity=1300.0)
+    csv = tmp_path / "tos.csv"
+    csv.write_text(_TOS_CSV_WITH_ACCOUNT_SUMMARY, encoding="utf-8")
+    out = run_tos_reconciliation(
+        conn, csv_path=csv, period_end="2026-05-12",
+    )
+    rows = recon_repo.list_discrepancies_for_run(conn, out.run_id)
+    eqd = [r for r in rows if r.discrepancy_type == "equity_delta"]
+    assert len(eqd) == 1, (
+        f"expected exactly one equity_delta row per run; got {len(eqd)}"
+    )
+
+
+def test_equity_delta_not_emit_when_source_is_nan_or_inf(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Codex R2 Major #1 regression: a corrupted Net Liquidating Value
+    (NaN / inf literal) MUST NOT poison the run row or emit a discrepancy.
+
+    The parser-level fix returns None on non-finite; the service-level
+    consequence is the same as 'source-side unavailable' — both equity
+    columns + delta stay NULL + no equity_delta emit.
+    """
+    _seed_entry(
+        conn, ticker="ABC", entry_date="2026-05-12",
+        entry_price=10.05, shares=10, initial_stop=9.00,
+    )
+    _seed_equity_snapshot(conn, snapshot_date="2026-05-12", equity=1300.0)
+    poisoned_csv = (
+        "Account Trade History\n"
+        "Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type\n"
+        "2026-05-12 10:00:00,STOCK,BUY,+10,OPENING,ABC,,,,10.0500,10.0500,MKT\n"
+        "\n"
+        "Account Summary\n"
+        "Net Liquidating Value,NaN\n"
+    )
+    csv = tmp_path / "tos_nan.csv"
+    csv.write_text(poisoned_csv, encoding="utf-8")
+    out = run_tos_reconciliation(
+        conn, csv_path=csv, period_end="2026-05-12",
+    )
+    assert out.state == "completed"
+    assert out.account_equity_source_dollars is None
+    assert out.equity_delta_dollars is None
+    rows = recon_repo.list_discrepancies_for_run(conn, out.run_id)
+    assert not any(r.discrepancy_type == "equity_delta" for r in rows)
+
+
+def test_equity_delta_path_does_not_affect_non_equity_runs(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Regression-clean: a CSV without Account Summary + no snapshot
+    produces the same 4-or-fewer discrepancies as before T-C.6 wiring.
+
+    The Bundle B operator-witnessed gate used the operator's real-world
+    Schwab/TOS export (5 stop_mismatch rows). Bundle C MUST NOT regress
+    that path. We verify with a fixture that BOTH lacks the Account
+    Summary section AND has no journal-side snapshot.
+    """
+    _seed_entry(
+        conn, ticker="ABC", entry_date="2026-05-12",
+        entry_price=10.05, shares=10, initial_stop=9.00,
+    )
+    csv = tmp_path / "tos_simple.csv"
+    csv.write_text(_SIMPLE_TOS_CSV, encoding="utf-8")
+    out = run_tos_reconciliation(
+        conn, csv_path=csv, period_end="2026-05-12",
+    )
+    assert out.state == "completed"
+    rows = recon_repo.list_discrepancies_for_run(conn, out.run_id)
+    assert not any(r.discrepancy_type == "equity_delta" for r in rows)
+    # And the run-row equity columns are NULL.
+    assert out.account_equity_source_dollars is None
+    assert out.account_equity_journal_dollars is None
+    assert out.equity_delta_dollars is None

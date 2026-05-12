@@ -4,6 +4,7 @@ Per backend brief §4.6 + §5 watch items.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -12,9 +13,29 @@ from swing.cli import main
 from tests.cli.test_cli_eval import _minimal_config
 
 
-def _setup(tmp_path):
+def _setup(tmp_path, monkeypatch=None):
+    """Build a fresh CLI + cfg fixture.
+
+    Codex R2 Minor #3 hardening: per CLAUDE.md gotcha ("Tests that
+    exercise write_user_overrides MUST monkeypatch USERPROFILE + HOME"),
+    we monkeypatch both env vars before invoking CLI commands that may
+    trigger the v17 TOML divergence check (which reads
+    ``~/swing-data/user-config.toml`` via _user_home()). The hypothesis
+    update path does not directly write user_overrides but the CLI
+    startup hook can read it; defensive monkeypatch prevents any
+    inadvertent pollution of the operator's real config file.
+    """
     project = tmp_path / "project"; project.mkdir()
     home = tmp_path / "home"; home.mkdir()
+    if monkeypatch is not None:
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.setenv("HOME", str(home))
+    else:
+        # Fallback for callers that did not pass monkeypatch (legacy
+        # signature preservation). Mutates os.environ directly; the
+        # subsequent test invocations honor it.
+        os.environ["USERPROFILE"] = str(home)
+        os.environ["HOME"] = str(home)
     cfg = _minimal_config(project, home)
     runner = CliRunner()
     runner.invoke(main, ["--config", str(cfg), "db-migrate"])
@@ -179,3 +200,27 @@ def test_hypothesis_paused_to_active_round_trip(tmp_path: Path):
         "--status", "active", "--reason", "resume",
     ])
     assert a.exit_code == 0
+
+
+def test_hypothesis_update_identity_returns_info_not_error(tmp_path: Path):
+    """Phase 9 T-C.4: identity transition (current == new) returns INFO,
+    NOT a transition error.
+
+    Per spec §3.4.1 R3 Minor #1 + plan §A.1 step 4: the legacy repo
+    function REJECTED identity transitions with a transition error; the
+    new service helper treats them as NoOpIdentityTransition, returns
+    sentinel, CLI prints an INFO line + exits 0.
+    """
+    runner, cfg = _setup(tmp_path)
+    list_r = runner.invoke(main, ["--config", str(cfg), "hypothesis", "list"])
+    line = next(ln for ln in list_r.output.splitlines() if "A+ baseline" in ln)
+    hid = next(tok for tok in line.split() if tok.isdigit())
+
+    # All seeded hypotheses start as `active`. Identity transition.
+    r = runner.invoke(main, [
+        "--config", str(cfg), "hypothesis", "update", hid,
+        "--status", "active", "--reason", "redundant",
+    ])
+    assert r.exit_code == 0, r.output
+    assert "already active" in r.output
+    assert "info:" in r.output

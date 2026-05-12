@@ -2290,44 +2290,51 @@ def hypothesis_update_cmd(ctx: click.Context, hypothesis_id: int,
                           new_status: str, reason: str) -> None:
     """Update a hypothesis's status. Records change with timestamp + reason.
 
-    Allowed transitions per brief §4.6:
+    Allowed transitions per brief §4.6 + plan §A.1 + spec §3.4.1:
       active   -> paused | closed-escaped | closed-target-met
       paused   -> active | closed-escaped
       closed-escaped -> active
       closed-target-met -> (terminal — no reopen via CLI)
-    """
-    from datetime import datetime as _dt
 
+    Phase 9 Sub-bundle C T-C.4: this handler routes through the new
+    service helper ``swing/trades/hypothesis.py:update_hypothesis_status_with_audit``
+    which (a) appends a hypothesis_status_history audit row in the same
+    transaction as the registry UPDATE, (b) treats identity transitions
+    (current == new) as NoOpIdentityTransition (INFO, not ERROR) per spec
+    §3.4.1 R3 Minor #1.
+    """
     from swing.data.db import connect
-    from swing.data.repos.hypothesis import (
+    from swing.trades.hypothesis import (
         HypothesisStatusTransitionError,
-        update_hypothesis_status,
+        update_hypothesis_status_with_audit,
     )
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
     try:
-        with conn:
-            try:
-                update_hypothesis_status(
-                    conn, hypothesis_id,
-                    new_status=new_status,
-                    reason=reason,
-                    now_iso=_dt.now().isoformat(timespec="seconds"),
-                )
-            except HypothesisStatusTransitionError as exc:
-                # Make the error message explicit so the test (and
-                # operator) can tell it's a transition issue, not a
-                # generic value error.
-                raise click.ClickException(f"transition not allowed: {exc}") from exc
-            except ValueError as exc:
-                raise click.ClickException(str(exc)) from exc
+        try:
+            result = update_hypothesis_status_with_audit(
+                conn,
+                hypothesis_id=hypothesis_id,
+                new_status=new_status,
+                change_reason=reason,
+            )
+        except HypothesisStatusTransitionError as exc:
+            raise click.ClickException(f"transition not allowed: {exc}") from exc
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
     finally:
         conn.close()
-    click.echo(
-        f"hypothesis #{hypothesis_id} -> {new_status} "
-        f"(reason: {reason})"
-    )
+    if result == "noop_identity":
+        click.echo(
+            f"info: hypothesis #{hypothesis_id} already {new_status}; "
+            "no change made"
+        )
+    else:
+        click.echo(
+            f"hypothesis #{hypothesis_id} -> {new_status} "
+            f"(reason: {reason})"
+        )
 
 
 @main.group("finviz")
@@ -2428,6 +2435,85 @@ def finviz_status_cmd(ctx: click.Context, limit: int) -> None:
         click.echo(
             f"{r.ts:<22} {r.status:<26} "
             f"{rc!s:>5} {rt:>9} {rl!s:>7} {sig}"
+        )
+
+
+@main.group("account")
+def account_group() -> None:
+    """Account-level operator surfaces (V1: equity snapshots only).
+
+    Phase 9 Sub-bundle C T-C.2. Spec §3.5 + §4.4 V1 cadence: operator
+    records account net-liquidation snapshots manually (CLI). V2 surfaces
+    Schwab API + TOS-CSV co-emission of snapshots with `source` enum
+    values reserved at the schema.
+    """
+
+
+@account_group.command("snapshot")
+@click.option(
+    "--equity", "equity_dollars", type=float, required=True,
+    help="Account net-liquidation value (REAL, > 0).",
+)
+@click.option(
+    "--date", "snapshot_date_str", default=None,
+    help="Snapshot date YYYY-MM-DD; defaults to last completed NYSE "
+         "session per spec §4.4 + §A.9.",
+)
+@click.option(
+    "--notes", default=None,
+    help="Optional operator free-text note.",
+)
+@click.pass_context
+def account_snapshot_cmd(
+    ctx: click.Context,
+    equity_dollars: float,
+    snapshot_date_str: str | None,
+    notes: str | None,
+) -> None:
+    """Record an account equity snapshot (source=manual).
+
+    UPSERT semantics keyed on (snapshot_date, source=manual): re-recording
+    for the same date updates the row in place (PK preserved). For
+    snapshot_dates >7 days in the past relative to today, the CLI prints
+    an advisory note + sets the back-recorded flag at read-time (per
+    spec §3.5 GAP-FLAGGED policy).
+    """
+    from datetime import date as _date
+
+    from swing.data.db import connect
+    from swing.trades.account_equity_snapshots import (
+        is_back_recorded,
+        record_snapshot,
+    )
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        try:
+            snap = record_snapshot(
+                conn,
+                equity_dollars=equity_dollars,
+                snapshot_date=snapshot_date_str,
+                notes=notes,
+            )
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+    finally:
+        conn.close()
+
+    click.echo(
+        f"snapshot #{snap.snapshot_id}: {snap.snapshot_date}  "
+        f"${snap.equity_dollars:.2f}  source={snap.source}"
+    )
+    back = is_back_recorded(
+        snapshot_date=snap.snapshot_date,
+        recorded_at=snap.recorded_at,
+    )
+    today = _date.today().isoformat()
+    if back:
+        click.echo(
+            f"  (back-recorded: snapshot_date {snap.snapshot_date} is "
+            f">7 days before today {today})"
         )
 
 

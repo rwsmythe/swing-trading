@@ -215,6 +215,91 @@ def _parse_tos_amount(raw: str) -> float:
     return -v if neg else v
 
 
+def extract_account_summary_net_liq(csv_text: str) -> float | None:
+    """Extract Net Liquidating Value from the TOS Account Summary section.
+
+    Phase 9 Sub-bundle C T-C.6 cross-bundle wiring (dispatch brief §0.5
+    #5; spec §3.5 + §3.3.1 equity_delta).
+
+    Real-world Schwab/TOS multi-day exports place an `Account Summary`
+    section near the bottom of the file, with a header-only label line
+    followed by 2-column flat `<Field>,<Value>` rows (NOT a tabular
+    section with a CSV header). Sample observed across 4 production
+    exports at `thinkorswim/*.csv`:
+
+        Account Summary
+        Net Liquidating Value,"$2,015.01"
+        Stock Buying Power,"$1,254.04"
+        ...
+
+    The leading currency symbol + thousands separators + double-quote
+    wrapping are stripped. Negative-form parens (unlikely for net-liq
+    but defensive) are honored.
+
+    Returns:
+      The parsed net-liq REAL on success.
+      ``None`` if the section is absent OR the ``Net Liquidating Value``
+      row is missing OR the row is present but its value is unparsable
+      (e.g., ``not-a-number``) — caller treats None as "source-side
+      equity unavailable" + skips the equity_delta emit (T-C.6
+      contract). Codex Round 1 Major #2 fix: previously fell back to
+      ``_parse_tos_amount``'s 0.0 sentinel for unparsable values, which
+      surfaced as a false-positive equity_delta = full-journal emit.
+    """
+    in_summary = False
+    for raw_line in csv_text.splitlines():
+        stripped = raw_line.strip()
+        label = _section_label_for_line(stripped)
+        if label is not None:
+            in_summary = (label == "Account Summary")
+            continue
+        if not in_summary:
+            continue
+        if not stripped:
+            # Blank line inside / at end of section — keep scanning
+            # subsequent lines (real exports trail Account Summary with
+            # a blank line before the next labelled section).
+            continue
+        # 2-column row: Field,Value. Use csv reader to honor quoting
+        # rules around values like "$2,015.01".
+        try:
+            row = next(csv.reader(StringIO(raw_line)))
+        except StopIteration:
+            continue
+        if len(row) < 2:
+            continue
+        field_name = row[0].strip()
+        value_raw = row[1].strip()
+        if field_name == "Net Liquidating Value":
+            # Strict parse — distinguish 'unparsable' from 'present-and-0'.
+            # _parse_tos_amount returns 0.0 for both, which would emit a
+            # spurious equity_delta of (journal - 0). Pre-strip and try
+            # float() ourselves; on failure return None per the
+            # 'source-side equity unavailable' contract above.
+            cleaned = value_raw
+            negative = cleaned.startswith("(") and cleaned.endswith(")")
+            cleaned = cleaned.strip("()").replace("$", "").replace(",", "")
+            cleaned = cleaned.strip()
+            if cleaned in ("", "--", "N/A"):
+                return None
+            try:
+                v = float(cleaned)
+            except ValueError:
+                return None
+            # Codex R2 Major #1: reject NaN / inf. float() happily accepts
+            # 'nan', 'inf', 'infinity' (case-insensitive). Letting either
+            # propagate into account_equity_source_dollars +
+            # equity_delta_dollars would (a) violate the ReconciliationRun
+            # dataclass's finite-value invariant on hydrate-after-commit,
+            # (b) produce invalid JSON ('NaN'/'Infinity' literals are not
+            # RFC-7159 conformant) if the equity_delta discrepancy emits.
+            import math
+            if not math.isfinite(v):
+                return None
+            return -v if negative else v
+    return None
+
+
 def extract_cash_movements(rows: Iterable[dict]) -> list[CashMovement]:
     """Extract deposits/withdrawals from the Cash Balance section.
 
