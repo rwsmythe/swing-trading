@@ -225,11 +225,23 @@ def db_migrate(ctx: click.Context) -> None:
         # §3.1.3 SEED MAP. The migration cannot Python-eval cfg at
         # executescript time; this post-migration step is the canonical
         # cfg-derived seed.
+        #
+        # Codex R2 M#2 fix: ratify against the EFFECTIVE cfg (apply_overrides
+        # over the raw load result) so any pre-Phase-9 user-config.toml
+        # overrides for risk_equity_floor land in the seed too. Codex R2 M#3
+        # fix: ratification failure raises ClickException (exits non-zero)
+        # — leaving the DB at v17 with a wrong seed is worse than failing
+        # the migrate command + asking the operator to fix the underlying
+        # config error before re-running.
+        from swing.config_overrides import apply_overrides
         from swing.trades.risk_policy import (
             ratify_seed_from_cfg_on_v17_landing,
         )
+        effective_cfg = apply_overrides(cfg)
         try:
-            ratified_id = ratify_seed_from_cfg_on_v17_landing(conn, cfg)
+            ratified_id = ratify_seed_from_cfg_on_v17_landing(
+                conn, effective_cfg,
+            )
             if ratified_id is not None:
                 click.echo(
                     f"Phase 9 ratification: superseded migration's hard-coded "
@@ -237,13 +249,17 @@ def db_migrate(ctx: click.Context) -> None:
                     f"policy_id={ratified_id}."
                 )
         except Exception as exc:
-            click.echo(
-                f"WARNING: Phase 9 seed ratification failed: {exc}; "
-                f"the migration's hard-coded seed remains active. Run "
+            conn.close()
+            raise click.ClickException(
+                f"Phase 9 seed ratification failed: {exc}. The DB is at "
+                f"v17 but the active policy seed may not match your "
+                f"effective swing.config.toml + user-config.toml values. "
+                f"Investigate the cfg field that failed validation, fix it, "
+                f"then re-run `swing db-migrate` (the v17 ratification will "
+                f"NOT re-fire because pre_version is now 17 — instead run "
                 f"`swing config policy import-from-toml` per field to "
-                f"reconcile manually.",
-                err=True,
-            )
+                f"reconcile after fixing the cfg)."
+            ) from exc
     conn.close()
     click.echo(f"DB at {db_path} - schema version {version}")
 

@@ -14,11 +14,13 @@ from tests.cli.test_cli_eval import _minimal_config
 
 
 @pytest.fixture
-def cfg_path(tmp_path: Path) -> Path:
+def cfg_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     project = tmp_path / "project"
     project.mkdir()
     home = tmp_path / "home"
     home.mkdir()
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
     return _minimal_config(project, home)
 
 

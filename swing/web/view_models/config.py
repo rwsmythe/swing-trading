@@ -82,7 +82,13 @@ def build_config_vm(
     if conn is not None:
         from swing.trades.risk_policy import check_and_reconcile_toml_divergence
         try:
-            _, divergence = check_and_reconcile_toml_divergence(conn, eff)
+            # silent=True per Codex R2 Minor #1 — per-render probe must NOT
+            # spam logs. Startup hooks emit the warning exactly once at
+            # process start; the persistent banner here is the operator
+            # surface for ongoing divergence.
+            _, divergence = check_and_reconcile_toml_divergence(
+                conn, eff, silent=True,
+            )
         except Exception:
             # Defensive — banner missing on transient DB error is preferable
             # to a 500 on /config.

@@ -21,13 +21,15 @@ from tests.cli.test_cli_eval import _minimal_config
 
 
 @pytest.fixture
-def divergent_setup(tmp_path: Path):
+def divergent_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Build a v17 DB whose risk_policy.capital_floor_constant_dollars (7500)
     diverges from cfg.account.risk_equity_floor (5000)."""
     project = tmp_path / "project"
     project.mkdir()
     home = tmp_path / "home"
     home.mkdir()
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
     cfg_path = _minimal_config(project, home)
     # First, migrate to v17 with risk_equity_floor=7500 (matches seed).
     cfg = load_cfg(cfg_path)

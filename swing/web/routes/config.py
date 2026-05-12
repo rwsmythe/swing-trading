@@ -157,4 +157,37 @@ async def config_reset(request: Request, field_path: str):
     if field_path not in _FIELD_PATHS:
         raise HTTPException(status_code=404, detail=f"unknown field: {field_path}")
     delete_user_override(field_path)
+
+    # Phase 9 Codex R2 Major #1 fix: when the reset field has a risk_policy
+    # mirror, cascade the post-reset effective value to the active policy.
+    # Otherwise reset recreates the divergence the cfg-cascade closed.
+    if field_path in _RISK_POLICY_CASCADE_MAP:
+        from swing.trades.risk_policy import supersede_active_policy
+
+        # Re-read the post-reset effective cfg (override is gone).
+        post_reset_cfg = apply_overrides(request.app.state.cfg)
+        section, attr = field_path.split(".")
+        post_reset_value = getattr(getattr(post_reset_cfg, section), attr)
+        policy_field = _RISK_POLICY_CASCADE_MAP[field_path]
+        cascade_conn = sqlite3.connect(request.app.state.cfg.paths.db_path)
+        try:
+            supersede_active_policy(
+                cascade_conn,
+                field_updates={policy_field: post_reset_value},
+                source="cfg_cascade",
+                notes=(
+                    f"reset {field_path} to {post_reset_value} via "
+                    f"POST /config/reset/{field_path}"
+                ),
+            )
+        except Exception:
+            log.exception(
+                "Phase 9 Codex R2 M#1: reset-cascade to risk_policy "
+                "failed; user-config override deleted but policy NOT "
+                "updated. Operator: run `swing config policy "
+                "import-from-toml --field %s` to reconcile.",
+                policy_field,
+            )
+        finally:
+            cascade_conn.close()
     return _save_redirect_response(request)

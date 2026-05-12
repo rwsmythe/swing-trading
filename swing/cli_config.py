@@ -135,6 +135,57 @@ def config_reset(ctx: click.Context, field_path: str) -> None:
     delete_user_override(field_path)
     click.echo(f"Reset {field_path} (now reads from default/tracked).")
 
+    # Phase 9 Codex R2 Major #1 fix: when the reset field has a risk_policy
+    # mirror, cascade the post-reset effective value to the active policy.
+    # Otherwise reset recreates the very divergence the cfg-cascade closed.
+    if field_path in _CONFIG_SET_RISK_POLICY_CASCADE_MAP:
+        from swing.config import load as load_cfg_raw
+        from swing.config_overrides import apply_overrides
+        from swing.data.db import connect
+        from swing.trades.risk_policy import supersede_active_policy
+
+        # Re-load + apply remaining overrides to get the post-reset value
+        # (the override we just deleted is gone; the rest still apply).
+        post_reset_cfg = apply_overrides(load_cfg_raw(ctx.obj["config_path"]))
+        section, attr = field_path.split(".")
+        post_reset_value = getattr(getattr(post_reset_cfg, section), attr)
+        policy_field = _CONFIG_SET_RISK_POLICY_CASCADE_MAP[field_path]
+        try:
+            cascade_conn = connect(post_reset_cfg.paths.db_path)
+        except Exception as exc:
+            click.echo(
+                f"WARNING: could not open DB for risk_policy reset cascade "
+                f"({exc}); user-config override deleted but risk_policy NOT "
+                f"updated. Run `swing config policy import-from-toml --field "
+                f"{policy_field}` to reconcile.",
+                err=True,
+            )
+            return
+        try:
+            new_id = supersede_active_policy(
+                cascade_conn,
+                field_updates={policy_field: post_reset_value},
+                source="cfg_cascade",
+                notes=(
+                    f"reset {field_path} to {post_reset_value} via "
+                    f"`swing config reset`"
+                ),
+            )
+            click.echo(
+                f"Cascaded reset to risk_policy: new policy_id={new_id} "
+                f"with {policy_field}={post_reset_value}"
+            )
+        except Exception as exc:
+            click.echo(
+                f"WARNING: risk_policy reset cascade failed ({exc}); "
+                f"override deleted but risk_policy NOT updated. Run "
+                f"`swing config policy import-from-toml --field "
+                f"{policy_field}` to reconcile.",
+                err=True,
+            )
+        finally:
+            cascade_conn.close()
+
 
 # ============================================================================
 # Phase 9 T-A.6 — `swing config policy {show,set,import-from-toml,history}`.

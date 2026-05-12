@@ -224,7 +224,7 @@ def read_active_policy(conn: sqlite3.Connection) -> RiskPolicy:
 
 
 def check_and_reconcile_toml_divergence(
-    conn: sqlite3.Connection, cfg,
+    conn: sqlite3.Connection, cfg, *, silent: bool = False,
 ) -> tuple[object, dict | None]:
     """Post-schema-validation startup hook (plan §A.5.1; Codex R3 M#1).
 
@@ -289,14 +289,20 @@ def check_and_reconcile_toml_divergence(
     if abs(toml_v - policy_v) < 1e-9:
         return cfg, None
 
-    logger.warning(
-        "TOML diverges from risk_policy: "
-        "cfg.account.risk_equity_floor=%s vs "
-        "risk_policy.capital_floor_constant_dollars=%s; risk_policy is "
-        "authoritative. To make TOML canonical, run: "
-        "swing config policy import-from-toml --field capital_floor_constant_dollars",
-        toml_v, policy_v,
-    )
+    if not silent:
+        # Codex R2 Minor #1: ``silent=True`` is used by the per-render
+        # /config-page divergence probe so persistent hand-edit divergence
+        # doesn't spam logs on every refresh. Startup hooks (CLI / web
+        # lifespan) keep the default ``silent=False`` so the warning fires
+        # exactly once at process start.
+        logger.warning(
+            "TOML diverges from risk_policy: "
+            "cfg.account.risk_equity_floor=%s vs "
+            "risk_policy.capital_floor_constant_dollars=%s; risk_policy is "
+            "authoritative. To make TOML canonical, run: "
+            "swing config policy import-from-toml --field capital_floor_constant_dollars",
+            toml_v, policy_v,
+        )
     new_account = dataclasses.replace(
         cfg.account, risk_equity_floor=policy_v,
     )
