@@ -28,7 +28,11 @@ from pathlib import Path
 from swing.data.datetime_helpers import now_ms
 from swing.data.models import ReconciliationRun
 from swing.data.repos import reconciliation as repo
-from swing.journal.tos_import import reconcile_tos
+from swing.journal.tos_import import (
+    extract_stock_fills,
+    parse_tos_export,
+    reconcile_tos,
+)
 
 # Spec §3.3 CHECK enum (10 values).
 DISCREPANCY_TYPES: tuple[str, ...] = (
@@ -161,6 +165,26 @@ def run_tos_reconciliation(
         return str(d)
     period_end_str = _ds(period_end)
     period_start_str = _ds(period_start)
+
+    # Codex R4 M#1 fix: per plan §A.10 + spec §10.6, period_end defaults
+    # to the max fill date in the parsed CSV when caller omits it. The
+    # filename is operator-controlled and unreliable; last-fill-date is
+    # the meaningful data-derived default.
+    if period_end_str is None:
+        try:
+            _sections = parse_tos_export(csv_text)
+            _fills = extract_stock_fills(
+                _sections.get("Account Trade History", [])
+            )
+            _dates = [f.date for f in _fills if f.date]
+            if _dates:
+                period_end_str = max(_dates)
+        except Exception:
+            # Best-effort default; if the parse breaks here, the same
+            # parse will surface inside reconcile_tos and the failure-
+            # path UPDATE will capture it. period_end stays None for
+            # this run.
+            pass
 
     started_ts = now_ms()
 

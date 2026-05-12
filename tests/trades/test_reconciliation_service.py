@@ -766,6 +766,56 @@ def test_multiple_overfill_close_distinct_payloads_dedup_separately(
     assert qtys == [2, 3]
 
 
+def test_period_end_defaults_to_max_fill_date(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Codex R4 M#1 — when CLI omits --period-end, the service defaults
+    period_end to the max fill date in the parsed CSV per plan §A.10 +
+    spec §10.6 (filename is operator-controlled; last-fill-date is the
+    meaningful data-derived default).
+    """
+    csv = tmp_path / "tos.csv"
+    csv.write_text(
+        "Account Trade History\n"
+        "Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,"
+        "Price,Net Price,Order Type\n"
+        "2026-05-10 10:00:00,STOCK,BUY,+5,OPENING,A,,,,40.0000,40.0000,MKT\n"
+        "2026-05-12 11:00:00,STOCK,BUY,+5,OPENING,B,,,,50.0000,50.0000,MKT\n"
+        "2026-05-11 12:00:00,STOCK,BUY,+5,OPENING,C,,,,60.0000,60.0000,MKT\n",
+        encoding="utf-8",
+    )
+    out = run_tos_reconciliation(conn, csv_path=csv)
+    assert out.period_end == "2026-05-12"
+
+
+def test_period_end_omitted_no_fills_stays_none(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Degenerate input: CSV with no fills → period_end stays None."""
+    csv = tmp_path / "tos.csv"
+    csv.write_text("", encoding="utf-8")
+    out = run_tos_reconciliation(conn, csv_path=csv)
+    assert out.period_end is None
+
+
+def test_period_end_explicit_wins_over_default(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Operator-supplied --period-end overrides the data-derived default."""
+    csv = tmp_path / "tos.csv"
+    csv.write_text(
+        "Account Trade History\n"
+        "Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,"
+        "Price,Net Price,Order Type\n"
+        "2026-05-12 11:00:00,STOCK,BUY,+5,OPENING,X,,,,50.0000,50.0000,MKT\n",
+        encoding="utf-8",
+    )
+    out = run_tos_reconciliation(
+        conn, csv_path=csv, period_end="2026-05-30",
+    )
+    assert out.period_end == "2026-05-30"
+
+
 def test_overfill_close_attributes_to_trade_id(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:
