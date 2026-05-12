@@ -382,6 +382,14 @@ def entry_post(
     # bare cURL) keep working.
     sector: str = Form(""),
     industry: str = Form(""),
+    # Phase 9 Bundle D — sector/industry tamper-hardening anchor (Codex
+    # R2 Major #1 fix). Carries the form-render's evaluation_run_id so
+    # POST validation reaches the same authoritative candidate row the
+    # operator saw. None when the form-render found no cached candidate
+    # OR when the form posts no anchor (bare cURL / CLI tests) — both
+    # cases route to the backward-compat skip path. Mirrors
+    # chart_pattern's pipeline_run_id hidden anchor.
+    sector_industry_evaluation_run_id: int | None = Form(None),
     # Phase 4.5 — hypothesis_label snapshot from hidden form field
     # populated by build_entry_form_vm at form-render time (snapshot-
     # at-entry-surface ToCToU pattern). Default "" so existing form
@@ -607,124 +615,125 @@ def entry_post(
     # hardening (mirrors chart_pattern hardening pattern; recon at
     # docs/phase9-bundle-D-task-D0-recon.md).
     #
-    # Codex R1 fix (Critical #1 + Major #1):
-    # - Critical: predicate previously required BOTH cached AND form value
-    #   truthy to flag a mismatch; a tampered POST with blank sector
-    #   (e.g., sector="" + industry=correct, or sector="" alone) silently
-    #   bypassed the check. Tightened to strict ``cached != form`` for
-    #   each field — empty form value when cached has a value IS a tamper.
-    # - Major: form-render anchors hidden sector/industry to
-    #   ``latest_evaluation_run_id`` (watchlist) or
-    #   ``latest_completed_pipeline_run.evaluation_run_id`` (hyp-recs)
-    #   per swing/web/view_models/trades.py:379-396 — NOT today's
-    #   action_session. Drift between the two anchors (stale pipeline,
-    #   pre-session pipeline run, mid-walk DB) lets a tamper attempt
-    #   slip past the today-anchored POST-time lookup. Re-anchor POST
-    #   lookup to mirror the SAME anchor the form-render used so form +
-    #   POST agree on the cached row being compared against.
+    # Codex R2 fix (Critical #1 + Major #1 + #2): the form-render emits
+    # an explicit ``sector_industry_evaluation_run_id`` hidden anchor
+    # (analogous to chart_pattern's ``classification_pipeline_run_id``).
+    # POST validates against that exact eval_run's candidate row — NOT
+    # a POST-time recomputation of "latest". This closes:
     #
-    # Backward-compat: empty form sector AND industry (CLI / bare cURL
-    # callers that don't emit the hidden inputs) → skip the check entirely.
-    # Off-pipeline ticker (no cached row under the form-render anchor) →
-    # skip the check (mirrors chart_pattern's ``cp_anchor_value is None``
-    # early-out).
-    if sector or industry:
+    # - R2 Critical #1: previously the both-blank check was an outer
+    #   guard that bypassed the entire tamper check; a tampered HTMX
+    #   POST with both sector="" + industry="" silently passed. The
+    #   anchor flip changes the backward-compat path: if NO anchor was
+    #   posted (bare cURL / CLI not going through the form), skip the
+    #   check entirely; otherwise — including both-blank with a valid
+    #   posted anchor — strict comparison fires.
+    # - R2 Major #1: anchor stability across GET → POST. A pipeline run
+    #   landing between form render and submit can no longer (a)
+    #   false-reject a legitimate POST against the freshly-landed row
+    #   nor (b) false-accept a tampered POST whose values happen to
+    #   match the new row.
+    # - R2 Major #2: the implementation now matches the chart_pattern-
+    #   mirror semantics named in plan §A.4 + spec §7 (extension);
+    #   plan §A.4 + the D0 recon note are updated in this commit.
+    if sector_industry_evaluation_run_id is not None:
         from swing.evaluation.dates import action_session_for_run
-        from swing.web.view_models.dashboard import (
-            latest_completed_pipeline_run,
-            latest_evaluation_run_id,
-        )
-        # Today's action session — used for the reconciliation_run's
-        # period_{start,end} (audit-run timeframe, per plan §A.4.1).
         today_session_iso = (
             action_session_for_run(datetime.now()).isoformat()
         )
         _conn = connect(cfg.paths.db_path)
         try:
-            # Mirror form-render anchor selection at
-            # swing/web/view_models/trades.py:379-385. Form + POST MUST
-            # use the same anchor — Codex R1 Major #1.
-            if origin_coerced == "hyp-recs":
-                _binding = latest_completed_pipeline_run(_conn)
-                _eval_id = (
-                    _binding.evaluation_run_id if _binding else None
-                )
-            else:
-                _eval_id = latest_evaluation_run_id(_conn)
-            if _eval_id is not None:
-                _cand_row = _conn.execute(
-                    "SELECT c.sector, c.industry, "
-                    "e.action_session_date "
-                    "FROM candidates c "
-                    "JOIN evaluation_runs e "
-                    "ON c.evaluation_run_id = e.id "
-                    "WHERE c.evaluation_run_id = ? AND c.ticker = ? "
-                    "LIMIT 1",
-                    (_eval_id, ticker.upper()),
-                ).fetchone()
-            else:
-                _cand_row = None
+            _cand_row = _conn.execute(
+                "SELECT c.sector, c.industry, "
+                "e.action_session_date "
+                "FROM candidates c "
+                "JOIN evaluation_runs e "
+                "ON c.evaluation_run_id = e.id "
+                "WHERE c.evaluation_run_id = ? AND c.ticker = ? "
+                "LIMIT 1",
+                (sector_industry_evaluation_run_id, ticker.upper()),
+            ).fetchone()
         finally:
             _conn.close()
-        if _cand_row is not None:
-            cached_sector = _cand_row[0] or ""
-            cached_industry = _cand_row[1] or ""
-            # Spec §3.3.1 ``session`` is the cached candidate's anchor —
-            # carry the eval_run's action_session_date verbatim (matches
-            # form-render's anchor and the data the operator saw).
-            cand_session_iso = _cand_row[2] or today_session_iso
-            mismatch_field: str | None = None
-            # Codex R1 Critical #1: strict ``!=`` comparison — empty
-            # form value against non-empty cached IS a tamper (blank-
-            # field bypass closed).
-            if cached_sector != sector:
-                mismatch_field = "sector"
-            elif cached_industry != industry:
-                mismatch_field = "industry"
-            if mismatch_field is not None:
-                # T-D.2 — emit ad-hoc system_audit reconciliation_run +
-                # sector_tamper discrepancy in a SEPARATE TRANSACTION
-                # (plan §A.4.1). The audit must persist regardless of
-                # what happens to the rejected entry POST — record_entry
-                # is never invoked on this path, so no entry-tx is open
-                # to interleave with the audit-tx.
-                #
-                # cand_session_iso: spec §3.3.1 ``expected.session`` —
-                # the cached candidate's anchor (eval_run's
-                # action_session_date), matching the data the operator
-                # saw at form-render time.
-                # today_session_iso: plan §A.4.1 — the
-                # reconciliation_run row's ``period_{start,end}``
-                # describing WHEN the audit happened (today).
-                _emit_sector_tamper_audit(
-                    cfg=cfg,
-                    ticker=ticker.upper(),
-                    cached_sector=cached_sector,
-                    cached_industry=cached_industry,
-                    form_sector=sector,
-                    form_industry=industry,
-                    cand_session_iso=cand_session_iso,
-                    run_session_iso=today_session_iso,
-                    field_name=mismatch_field,
-                )
-                return _rerender_entry_form_with_error(
-                    request=request, templates=templates, cfg=cfg,
-                    cache=cache, executor=executor,
-                    ticker=ticker, entry_date=entry_date,
-                    entry_price=entry_price, shares=shares,
-                    initial_stop=initial_stop,
-                    rationale=rationale, notes=notes,
-                    error_message=(
-                        f"Trade entry rejected: {mismatch_field} "
-                        f"mismatch for {ticker.upper()}. Cached "
-                        f"sector={cached_sector!r} industry="
-                        f"{cached_industry!r}; form submitted "
-                        f"sector={sector!r} industry={industry!r}. "
-                        f"Re-render the form or update the pipeline "
-                        f"candidate; audit row recorded for review."
-                    ),
-                    origin=origin_coerced,
-                )
+        if _cand_row is None:
+            # Posted anchor doesn't reference an existing candidate row
+            # for this ticker — tampered or operator-supplied bogus
+            # eval_run_id. Reject without emitting an audit row (no
+            # cached values to attribute the discrepancy against).
+            return _rerender_entry_form_with_error(
+                request=request, templates=templates, cfg=cfg,
+                cache=cache, executor=executor,
+                ticker=ticker, entry_date=entry_date,
+                entry_price=entry_price, shares=shares,
+                initial_stop=initial_stop,
+                rationale=rationale, notes=notes,
+                error_message=(
+                    "sector/industry anchor rejected: no cached "
+                    f"candidate exists for {ticker.upper()} under "
+                    f"evaluation_run_id="
+                    f"{sector_industry_evaluation_run_id}. Re-render "
+                    "the form to bind a current anchor."
+                ),
+                origin=origin_coerced,
+            )
+        cached_sector = _cand_row[0] or ""
+        cached_industry = _cand_row[1] or ""
+        # Spec §3.3.1 ``session`` is the cached candidate's anchor —
+        # carry the eval_run's action_session_date verbatim (matches
+        # form-render's anchor and the data the operator saw).
+        cand_session_iso = _cand_row[2] or today_session_iso
+        mismatch_field: str | None = None
+        # Strict ``!=`` comparison — empty form value against
+        # non-empty cached IS a tamper (R1 Critical #1 close
+        # preserved); both-blank-with-cached-non-empty fires here.
+        if cached_sector != sector:
+            mismatch_field = "sector"
+        elif cached_industry != industry:
+            mismatch_field = "industry"
+        if mismatch_field is not None:
+            # T-D.2 — emit ad-hoc system_audit reconciliation_run +
+            # sector_tamper discrepancy in a SEPARATE TRANSACTION
+            # (plan §A.4.1). The audit must persist regardless of
+            # what happens to the rejected entry POST — record_entry
+            # is never invoked on this path, so no entry-tx is open
+            # to interleave with the audit-tx.
+            #
+            # cand_session_iso: spec §3.3.1 ``expected.session`` —
+            # the cached candidate's anchor (eval_run's
+            # action_session_date), matching the data the operator
+            # saw at form-render time.
+            # today_session_iso: plan §A.4.1 — the
+            # reconciliation_run row's ``period_{start,end}``
+            # describing WHEN the audit happened (today).
+            _emit_sector_tamper_audit(
+                cfg=cfg,
+                ticker=ticker.upper(),
+                cached_sector=cached_sector,
+                cached_industry=cached_industry,
+                form_sector=sector,
+                form_industry=industry,
+                cand_session_iso=cand_session_iso,
+                run_session_iso=today_session_iso,
+                field_name=mismatch_field,
+            )
+            return _rerender_entry_form_with_error(
+                request=request, templates=templates, cfg=cfg,
+                cache=cache, executor=executor,
+                ticker=ticker, entry_date=entry_date,
+                entry_price=entry_price, shares=shares,
+                initial_stop=initial_stop,
+                rationale=rationale, notes=notes,
+                error_message=(
+                    f"Trade entry rejected: {mismatch_field} "
+                    f"mismatch for {ticker.upper()}. Cached "
+                    f"sector={cached_sector!r} industry="
+                    f"{cached_industry!r}; form submitted "
+                    f"sector={sector!r} industry={industry!r}. "
+                    f"Re-render the form or update the pipeline "
+                    f"candidate; audit row recorded for review."
+                ),
+                origin=origin_coerced,
+            )
 
     # Phase 7 Sub-C C.3 — emotional_state_pre_trade JSON-encoding.
     # Matches CLI's `_json.dumps(list(emotional_state))` (swing/cli.py).

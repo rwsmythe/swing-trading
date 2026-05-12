@@ -52,7 +52,18 @@ def _patch_price_cache_with_snapshot(monkeypatch):
 
 
 def _today_action_session_iso() -> str:
-    """Return the same anchor the route uses for the cached lookup."""
+    """Return today's action_session_for_run(now()) ISO date.
+
+    Used as the reconciliation_run's period_{start,end} for audit rows
+    emitted on tamper rejection (plan §A.4.1: WHEN the audit happened).
+    Note: post-Codex-R2 the cached-candidate lookup at POST time
+    anchors on a hidden form-emitted ``sector_industry_evaluation_run_id``
+    (mirroring chart_pattern's anchor pattern), NOT this session date.
+    The discrepancy's ``expected.session`` field carries the cached
+    candidate's eval_run.action_session_date (matches what the operator
+    saw at form-render time), which MAY differ from this value when
+    the pipeline is stale.
+    """
     return action_session_for_run(datetime.now()).isoformat()
 
 
@@ -161,7 +172,7 @@ def test_post_entry_with_matching_sector_industry_proceeds(
     emitted (no audit needed on the happy path).
     """
     cfg, cfg_path = seeded_db
-    _seed_candidate_with_sector_industry(
+    eval_id, _ = _seed_candidate_with_sector_industry(
         cfg.paths.db_path,
         ticker="TAMP",
         sector="Technology",
@@ -174,6 +185,7 @@ def test_post_entry_with_matching_sector_industry_proceeds(
             client,
             sector="Technology",
             industry="Software-Application",
+            sector_industry_evaluation_run_id=eval_id,
         )
     assert resp.status_code == 200, (
         f"Expected 200 on matching sector/industry, got "
@@ -221,7 +233,7 @@ def test_post_entry_with_sector_mismatch_rejects_400(
     'sector'; NO trade row inserted.
     """
     cfg, cfg_path = seeded_db
-    _seed_candidate_with_sector_industry(
+    eval_id, _ = _seed_candidate_with_sector_industry(
         cfg.paths.db_path,
         ticker="TAMP",
         sector="Healthcare",
@@ -234,6 +246,7 @@ def test_post_entry_with_sector_mismatch_rejects_400(
             client,
             sector="Technology",  # tampered: doesn't match cached
             industry="Biotechnology",  # matches cached
+            sector_industry_evaluation_run_id=eval_id,
         )
     assert resp.status_code == 400, (
         f"Expected 400 (sector tamper rejection), got {resp.status_code}. "
@@ -271,7 +284,7 @@ def test_post_entry_with_industry_mismatch_rejects_400(
     form sector matches cached + industry differs → reject 400.
     """
     cfg, cfg_path = seeded_db
-    _seed_candidate_with_sector_industry(
+    eval_id, _ = _seed_candidate_with_sector_industry(
         cfg.paths.db_path,
         ticker="TAMP",
         sector="Healthcare",
@@ -284,6 +297,7 @@ def test_post_entry_with_industry_mismatch_rejects_400(
             client,
             sector="Healthcare",  # matches cached
             industry="Medical-Devices",  # tampered: doesn't match cached
+            sector_industry_evaluation_run_id=eval_id,
         )
     assert resp.status_code == 400, (
         f"Expected 400 (industry tamper rejection), got {resp.status_code}. "
@@ -324,7 +338,7 @@ def test_post_entry_with_empty_sector_industry_skips_tamper_check(
     would break on every test that touches a cached ticker.
     """
     cfg, cfg_path = seeded_db
-    _seed_candidate_with_sector_industry(
+    eval_id, _ = _seed_candidate_with_sector_industry(
         cfg.paths.db_path,
         ticker="TAMP",
         sector="Healthcare",
@@ -443,7 +457,7 @@ def test_sector_mismatch_emits_system_audit_reconciliation_run(
     reconciliation_discrepancies has +1 row of type 'sector_tamper'."
     """
     cfg, cfg_path = seeded_db
-    _seed_candidate_with_sector_industry(
+    eval_id, _ = _seed_candidate_with_sector_industry(
         cfg.paths.db_path,
         ticker="TAMP",
         sector="Healthcare",
@@ -456,6 +470,7 @@ def test_sector_mismatch_emits_system_audit_reconciliation_run(
             client,
             sector="Technology",  # tampered
             industry="Biotechnology",
+            sector_industry_evaluation_run_id=eval_id,
         )
     assert resp.status_code == 400
     conn = connect(cfg.paths.db_path)
@@ -479,8 +494,8 @@ def test_sector_mismatch_emits_system_audit_reconciliation_run(
     run_id, source, state, period_start, period_end = runs[0]
     assert source == "system_audit", source
     assert state == "completed", state
-    # Spec §3.3.1 + plan §A.4.1: period_start = period_end =
-    # action_session_for_run(now()).
+    # Plan §A.4.1: period_start = period_end =
+    # action_session_for_run(now()) — describes WHEN the audit happened.
     expected_session = _today_action_session_iso()
     assert period_start == expected_session, (period_start, expected_session)
     assert period_end == expected_session, (period_end, expected_session)
@@ -531,7 +546,7 @@ def test_industry_mismatch_emits_audit_with_field_name_industry(
     ``field_name='sector'`` would fail here.
     """
     cfg, cfg_path = seeded_db
-    _seed_candidate_with_sector_industry(
+    eval_id, _ = _seed_candidate_with_sector_industry(
         cfg.paths.db_path,
         ticker="TAMP",
         sector="Healthcare",
@@ -544,6 +559,7 @@ def test_industry_mismatch_emits_audit_with_field_name_industry(
             client,
             sector="Healthcare",
             industry="Medical-Devices",  # tampered
+            sector_industry_evaluation_run_id=eval_id,
         )
     assert resp.status_code == 400
     conn = connect(cfg.paths.db_path)
@@ -577,7 +593,7 @@ def test_both_mismatch_short_circuits_to_sector(seeded_db, monkeypatch):
     (two rows) would fail here.
     """
     cfg, cfg_path = seeded_db
-    _seed_candidate_with_sector_industry(
+    eval_id, _ = _seed_candidate_with_sector_industry(
         cfg.paths.db_path,
         ticker="TAMP",
         sector="Healthcare",
@@ -590,6 +606,7 @@ def test_both_mismatch_short_circuits_to_sector(seeded_db, monkeypatch):
             client,
             sector="Technology",  # tampered
             industry="Software-Application",  # also tampered
+            sector_industry_evaluation_run_id=eval_id,
         )
     assert resp.status_code == 400
     conn = connect(cfg.paths.db_path)
@@ -627,7 +644,7 @@ def test_audit_row_persists_across_session_separation(
     commit) would fail here.
     """
     cfg, cfg_path = seeded_db
-    _seed_candidate_with_sector_industry(
+    eval_id, _ = _seed_candidate_with_sector_industry(
         cfg.paths.db_path,
         ticker="TAMP",
         sector="Healthcare",
@@ -640,6 +657,7 @@ def test_audit_row_persists_across_session_separation(
             client,
             sector="Technology",
             industry="Biotechnology",
+            sector_industry_evaluation_run_id=eval_id,
         )
     assert resp.status_code == 400
     # Fresh connection — verify the row truly persisted to disk.
@@ -676,7 +694,7 @@ def test_post_entry_with_blank_sector_vs_non_empty_cached_rejects(
     silently. Post-fix: rejected (field_name='sector', actual.sector="").
     """
     cfg, cfg_path = seeded_db
-    _seed_candidate_with_sector_industry(
+    eval_id, _ = _seed_candidate_with_sector_industry(
         cfg.paths.db_path,
         ticker="TAMP",
         sector="Healthcare",
@@ -689,6 +707,7 @@ def test_post_entry_with_blank_sector_vs_non_empty_cached_rejects(
             client,
             sector="",  # blanked
             industry="Biotechnology",
+            sector_industry_evaluation_run_id=eval_id,
         )
     assert resp.status_code == 400, (
         f"Expected 400 (blank-sector tamper rejection), got "
@@ -722,7 +741,7 @@ def test_post_entry_with_blank_industry_vs_non_empty_cached_rejects(
     on the industry branch.
     """
     cfg, cfg_path = seeded_db
-    _seed_candidate_with_sector_industry(
+    eval_id, _ = _seed_candidate_with_sector_industry(
         cfg.paths.db_path,
         ticker="TAMP",
         sector="Healthcare",
@@ -735,6 +754,7 @@ def test_post_entry_with_blank_industry_vs_non_empty_cached_rejects(
             client,
             sector="Healthcare",
             industry="",  # blanked
+            sector_industry_evaluation_run_id=eval_id,
         )
     assert resp.status_code == 400
     conn = connect(cfg.paths.db_path)
@@ -787,7 +807,7 @@ def test_stale_pipeline_form_render_anchor_used_at_post(
     # Seed an eval_run + candidate anchored to a prior session (NOT
     # today). ``action_session_date`` deliberately != today.
     stale_session = "2026-04-01"
-    _seed_candidate_with_sector_industry(
+    eval_id, _ = _seed_candidate_with_sector_industry(
         cfg.paths.db_path,
         ticker="TAMP",
         sector="Healthcare",
@@ -801,6 +821,7 @@ def test_stale_pipeline_form_render_anchor_used_at_post(
             client,
             sector="Technology",  # tampered
             industry="Biotechnology",
+            sector_industry_evaluation_run_id=eval_id,
         )
     assert resp.status_code == 400, (
         f"Expected 400 (stale-pipeline tamper rejection), got "
@@ -843,4 +864,127 @@ def test_stale_pipeline_form_render_anchor_used_at_post(
     assert exp["sector"] == "Healthcare"
     act = json.loads(act_json)
     assert act == {"sector": "Technology", "industry": "Biotechnology"}
+
+
+# =====================================================================
+# Codex R2 — explicit anchor + tampered-anchor rejection. A POST that
+# supplies an evaluation_run_id which references no candidate row for
+# the ticker is itself a tampering signal — reject without emitting an
+# audit row (no cached values to attribute the discrepancy against).
+# =====================================================================
+
+
+def test_post_entry_with_tampered_anchor_rejects_without_audit_emit(
+    seeded_db, monkeypatch,
+):
+    """A tampered POST sends ``sector_industry_evaluation_run_id``
+    pointing at an eval_id that has NO candidate row for this ticker.
+    The route rejects with 400 and emits NO audit row (the anchor is
+    forged; there is no cached value to compare against).
+
+    Discriminating: a regression that silently skipped the check on
+    "no candidate row found" — accepting the tampered POST as if the
+    anchor were the bare-cURL skip path — would let this case slip
+    through.
+    """
+    cfg, cfg_path = seeded_db
+    # Seed a candidate for ticker AAA so eval_id is a valid foreign
+    # key reference, but it has NO entry for ticker TAMP.
+    eval_id, _ = _seed_candidate_with_sector_industry(
+        cfg.paths.db_path,
+        ticker="AAA",
+        sector="Healthcare",
+        industry="Biotechnology",
+    )
+    # Also seed a watchlist row for TAMP so the rerender path has data.
+    conn = ensure_schema(cfg.paths.db_path)
+    try:
+        conn.execute(
+            "INSERT INTO watchlist (ticker, added_date, "
+            "last_qualified_date, status, qualification_count, "
+            "not_qualified_streak, last_data_asof_date, entry_target, "
+            "last_close) VALUES ('TAMP', '2026-04-01', ?, 'watch', "
+            "1, 0, ?, 11.0, 10.0)",
+            (_today_action_session_iso(), _today_action_session_iso()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = _post_entry(
+            client,
+            sector="Anything",
+            industry="Anything-Else",
+            sector_industry_evaluation_run_id=eval_id,  # references AAA, not TAMP
+        )
+    assert resp.status_code == 400, (
+        f"Expected 400 (tampered-anchor rejection), got "
+        f"{resp.status_code}. Body[:500]: {resp.text[:500]!r}"
+    )
+    conn = connect(cfg.paths.db_path)
+    try:
+        # No audit row — we can't emit a sector_tamper discrepancy
+        # without cached values to compare against.
+        recon_count = conn.execute(
+            "SELECT COUNT(*) FROM reconciliation_runs"
+        ).fetchone()[0]
+        disc_count = conn.execute(
+            "SELECT COUNT(*) FROM reconciliation_discrepancies"
+        ).fetchone()[0]
+        trade_count = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE ticker='TAMP'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert recon_count == 0, recon_count
+    assert disc_count == 0, disc_count
+    assert trade_count == 0
+
+
+def test_post_entry_with_bogus_anchor_pointing_at_nonexistent_eval_rejects(
+    seeded_db, monkeypatch,
+):
+    """A POST that posts an eval_id which doesn't exist in
+    evaluation_runs at all → same rejection shape as the tampered
+    valid-eval-id case above. No FK violation; no 500; clean 400.
+    """
+    cfg, cfg_path = seeded_db
+    # Seed a watchlist row for TAMP.
+    conn = ensure_schema(cfg.paths.db_path)
+    try:
+        conn.execute(
+            "INSERT INTO watchlist (ticker, added_date, "
+            "last_qualified_date, status, qualification_count, "
+            "not_qualified_streak, last_data_asof_date, entry_target, "
+            "last_close) VALUES ('TAMP', '2026-04-01', ?, 'watch', "
+            "1, 0, ?, 11.0, 10.0)",
+            (_today_action_session_iso(), _today_action_session_iso()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = _post_entry(
+            client,
+            sector="Anything",
+            industry="Anything-Else",
+            sector_industry_evaluation_run_id=999_999,
+        )
+    assert resp.status_code == 400
+    conn = connect(cfg.paths.db_path)
+    try:
+        recon_count = conn.execute(
+            "SELECT COUNT(*) FROM reconciliation_runs"
+        ).fetchone()[0]
+        trade_count = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE ticker='TAMP'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert recon_count == 0
+    assert trade_count == 0
 

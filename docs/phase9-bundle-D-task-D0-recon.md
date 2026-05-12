@@ -45,20 +45,35 @@ def _rerender_entry_form_with_error(
 
 ## §4 Cached candidate lookup query at POST time
 
-Per spec §7 + plan §A.4 wording (`(ticker, action_session)`), the POST-time lookup queries `candidates` joined to `evaluation_runs` on the action-session anchor:
+**(Codex R2 Major #1 + #2 amendment 2026-05-12; supersedes original recon wording.)**
+
+Original recon wording (preserved for context): a today-anchored lookup keyed on `(ticker, action_session_for_run(now()))` joined to `evaluation_runs.action_session_date`.
+
+**Codex R2 found two problems with the today-anchored design:**
+
+1. **Anchor drift between form-render and POST.** The form-render at `swing/web/view_models/trades.py:392-409` populates the hidden `sector`/`industry` inputs from `latest_evaluation_run_id` (watchlist origin) or `latest_completed_pipeline_run.evaluation_run_id` (hyp-recs origin) — NOT today's action_session. A stale-pipeline scenario (today's `action_session_for_run(now())` has no eval_run yet) would render the form with stale-eval values and then POST-validation would find no today-anchored row → silently accept any tampered POST.
+
+2. **TOCTOU race between GET and POST.** Even if today's eval_run exists at form-render time, a fresh pipeline landing between GET and POST changes the authoritative "latest" candidate. A POST-time recompute would compare against the NEW row, not the one the operator saw.
+
+**Resolution (BINDING; mirrors chart_pattern's `pipeline_run_id` hidden anchor):**
+
+- The form template emits a new hidden input `sector_industry_evaluation_run_id` carrying the EXACT evaluation_run_id the form-render used to populate sector/industry (`swing/web/view_models/trades.py` populates `TradeEntryFormVM.sector_industry_evaluation_run_id`; `swing/web/templates/partials/trade_entry_form.html.j2` renders it).
+- The POST handler accepts `sector_industry_evaluation_run_id: int | None = Form(None)` and uses it as the authoritative anchor for the cached-candidate lookup:
 
 ```sql
-SELECT c.sector, c.industry
+SELECT c.sector, c.industry, e.action_session_date
 FROM candidates c
 JOIN evaluation_runs e ON c.evaluation_run_id = e.id
-WHERE c.ticker = ? AND e.action_session_date = ?
-ORDER BY e.run_ts DESC, e.id DESC
+WHERE c.evaluation_run_id = ? AND c.ticker = ?
 LIMIT 1
 ```
 
-`action_session_date` is the session the evaluation TARGETED (forward-looking session-anchor at pipeline-run time). At POST time, the same anchor is `action_session_for_run(now()).isoformat()`. Tiebreaker `(run_ts DESC, id DESC)` for the rare same-day-multi-eval case.
+- The audit JSON's `expected.session` field carries the cached `eval_run.action_session_date` (matches what the operator saw at form-render time). The `reconciliation_runs` row's `period_start = period_end = action_session_for_run(now())` per plan §A.4.1 (describes WHEN the audit happened, distinct from the cached data's anchor).
 
-**Backward-compat:** if the query returns no row (off-pipeline ticker, fresh install, mid-walk DB before any eval has run for today's session), the tamper check is SKIPPED — same shape as chart_pattern's `cp_anchor_value is None` early-out. The entry proceeds with operator-supplied sector/industry; no rejection, no audit row.
+**Backward-compat:**
+
+- **Anchor absent (`None`)** — bare cURL / CLI / any caller not going through the form template: skip the check entirely. The hidden input is the form-flow signal; absence of anchor is the bare-cURL backward-compat path.
+- **Anchor present but references no candidate row for `(eval_id, ticker)`** — tampered or stale anchor: reject with 400 + descriptive error message. No audit row is emitted (no cached values to attribute the discrepancy against). The error guidance instructs the operator to re-render the form to bind a current anchor.
 
 ## §5 Field selection: sector vs industry mismatch — TWO discrete code paths
 

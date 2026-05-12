@@ -245,6 +245,19 @@ class TradeEntryFormVM:
     # (graceful degradation per brief §5.8).
     sector: str = ""
     industry: str = ""
+    # Phase 9 Sub-bundle D Codex R2 Major #1 — explicit evaluation_run_id
+    # anchor that carries the form-render's candidate binding through
+    # to POST validation. Mirrors chart_pattern's
+    # ``chart_pattern_classification_pipeline_run_id`` hidden-anchor
+    # pattern (Phase 5 spec §3.6). Form-render binds to the candidate
+    # the operator is shown; POST validates ``(eval_run_id, ticker)``
+    # against that exact row so a pipeline run landing between GET +
+    # POST cannot cause false-reject (form's snapshot drifts from
+    # new authoritative) or false-accept (tampered POST matches the
+    # new row instead of the one the operator saw). None when the
+    # form-render found no cached candidate — POST treats absence as
+    # the bare-cURL backward-compat skip path.
+    sector_industry_evaluation_run_id: int | None = None
     # Spec §3.8b — origin discriminator. Whitelist-validated at the
     # request boundary by ``_coerce_origin``; unknown values default
     # to 'watchlist' so existing watchlist callers (no ?origin=) keep
@@ -383,6 +396,7 @@ def build_entry_form_vm(
                     latest_evaluation_run_id,
                 )
                 sector_eval_id = latest_evaluation_run_id(conn)
+            cand_eval_id_for_si_anchor: int | None = None
             if sector_eval_id is not None:
                 cand_row = conn.execute(
                     """SELECT sector, industry, pivot, initial_stop FROM candidates
@@ -394,6 +408,10 @@ def build_entry_form_vm(
                     cand_industry = cand_row[1] or ""
                     cand_pivot = cand_row[2]
                     cand_initial_stop = cand_row[3]
+                    # Phase 9 Bundle D Codex R2 Major #1 — capture the
+                    # exact eval anchor the form is rendering with so
+                    # POST validation reaches the same authoritative row.
+                    cand_eval_id_for_si_anchor = sector_eval_id
             # Phase 4.5 — resolve active hypothesis recommendation label
             # at form-render (snapshot-at-entry-surface). Same matcher
             # chain the CLI uses (swing/cli.py:trade_entry_cmd via the
@@ -512,6 +530,7 @@ def build_entry_form_vm(
         chart_pattern_classification_pipeline_run_id=cp_anchor,
         sector=cand_sector,
         industry=cand_industry,
+        sector_industry_evaluation_run_id=cand_eval_id_for_si_anchor,
         origin=coerced_origin,
         pipeline_finished_at=(
             pipeline_finished_at if coerced_origin == "hyp-recs" else None

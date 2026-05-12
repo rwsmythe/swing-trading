@@ -608,6 +608,11 @@ def test_phase9_bundle_d_e2e_sector_tamper_audit_surfaces_in_cli_list(
     )
     payload["sector"] = "Technology"  # tampered
     payload["industry"] = "Biotechnology"
+    # Phase 9 Bundle D Codex R2 Major #1: the form-render-anchor field
+    # carries the cached candidate's evaluation_run_id. POST validates
+    # against that exact row so a fresh pipeline run between GET + POST
+    # can't false-reject / false-accept.
+    payload["sector_industry_evaluation_run_id"] = str(eval_id)
     with TestClient(app, raise_server_exceptions=False) as client:
         resp = client.post(
             "/trades/entry", data=payload,
