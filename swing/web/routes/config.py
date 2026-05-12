@@ -161,16 +161,50 @@ async def config_reset(request: Request, field_path: str):
     # Phase 9 Codex R2 Major #1 fix: when the reset field has a risk_policy
     # mirror, cascade the post-reset effective value to the active policy.
     # Otherwise reset recreates the divergence the cfg-cascade closed.
+    #
+    # Codex R3 M#2 fix: re-load the RAW tracked cfg (NOT app.state.cfg —
+    # that may have been corrected by the startup divergence hook to the
+    # policy value, which would make reset cascade the policy value back
+    # into policy instead of falling back to tracked TOML).
     if field_path in _RISK_POLICY_CASCADE_MAP:
+        from swing.config import load as load_cfg_raw
+        from swing.data.repos.risk_policy import (
+            NoActivePolicyError,
+            get_active_policy,
+        )
         from swing.trades.risk_policy import supersede_active_policy
 
-        # Re-read the post-reset effective cfg (override is gone).
-        post_reset_cfg = apply_overrides(request.app.state.cfg)
+        cfg_path = request.app.state.cfg_path
+        if cfg_path is None:
+            log.warning(
+                "Phase 9 Codex R3 M#2: web reset-cascade requires "
+                "app.state.cfg_path; skipping cascade for %s.",
+                field_path,
+            )
+            return _save_redirect_response(request)
+        # The override we just deleted is gone; remaining overrides still
+        # apply via apply_overrides over the freshly-loaded raw cfg.
+        post_reset_cfg = apply_overrides(load_cfg_raw(cfg_path))
         section, attr = field_path.split(".")
         post_reset_value = getattr(getattr(post_reset_cfg, section), attr)
         policy_field = _RISK_POLICY_CASCADE_MAP[field_path]
-        cascade_conn = sqlite3.connect(request.app.state.cfg.paths.db_path)
+        cascade_conn = sqlite3.connect(post_reset_cfg.paths.db_path)
         try:
+            # Codex R3 M#3 fix: skip cascade when post-reset value already
+            # matches active policy (avoid no-op audit-chain pollution).
+            try:
+                active_now = get_active_policy(cascade_conn)
+            except NoActivePolicyError:
+                active_now = None
+            if active_now is not None:
+                active_value = getattr(active_now, policy_field)
+                if isinstance(active_value, float) and isinstance(
+                    post_reset_value, float,
+                ):
+                    if abs(active_value - post_reset_value) < 1e-9:
+                        return _save_redirect_response(request)
+                elif active_value == post_reset_value:
+                    return _save_redirect_response(request)
             supersede_active_policy(
                 cascade_conn,
                 field_updates={policy_field: post_reset_value},

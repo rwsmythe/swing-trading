@@ -255,10 +255,13 @@ def db_migrate(ctx: click.Context) -> None:
                 f"v17 but the active policy seed may not match your "
                 f"effective swing.config.toml + user-config.toml values. "
                 f"Investigate the cfg field that failed validation, fix it, "
-                f"then re-run `swing db-migrate` (the v17 ratification will "
-                f"NOT re-fire because pre_version is now 17 — instead run "
-                f"`swing config policy import-from-toml` per field to "
-                f"reconcile after fixing the cfg)."
+                f"then run the per-field repair path (the v17 ratification "
+                f"will NOT re-fire on subsequent `swing db-migrate` because "
+                f"pre_version is now 17). All four spec §3.1.3 mirrored "
+                f"fields are repairable via `swing config policy "
+                f"import-from-toml --field <name>` for: "
+                f"capital_floor_constant_dollars, max_concurrent_positions, "
+                f"review_lag_threshold_days, max_account_risk_per_trade_pct."
             ) from exc
     conn.close()
     click.echo(f"DB at {db_path} - schema version {version}")

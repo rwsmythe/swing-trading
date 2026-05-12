@@ -90,6 +90,10 @@ def config_set(ctx: click.Context, field_path: str, raw_value: str, force: bool)
     # surfaces the gap.
     if field_path in _CONFIG_SET_RISK_POLICY_CASCADE_MAP:
         from swing.data.db import connect
+        from swing.data.repos.risk_policy import (
+            NoActivePolicyError,
+            get_active_policy,
+        )
         from swing.trades.risk_policy import supersede_active_policy
 
         cfg = ctx.obj["config"]
@@ -106,6 +110,22 @@ def config_set(ctx: click.Context, field_path: str, raw_value: str, force: bool)
             )
             return
         try:
+            # Codex R3 M#3 fix: skip cascade when submitted value already
+            # matches the active policy (avoid no-op audit-chain pollution
+            # when operator sets the field to the existing canonical value).
+            try:
+                active_now = get_active_policy(cascade_conn)
+            except NoActivePolicyError:
+                active_now = None
+            if active_now is not None:
+                active_value = getattr(active_now, policy_field)
+                if isinstance(active_value, float) and isinstance(
+                    coerced, float,
+                ):
+                    if abs(active_value - coerced) < 1e-9:
+                        return
+                elif active_value == coerced:
+                    return
             new_id = supersede_active_policy(
                 cascade_conn,
                 field_updates={policy_field: coerced},
@@ -142,6 +162,10 @@ def config_reset(ctx: click.Context, field_path: str) -> None:
         from swing.config import load as load_cfg_raw
         from swing.config_overrides import apply_overrides
         from swing.data.db import connect
+        from swing.data.repos.risk_policy import (
+            NoActivePolicyError,
+            get_active_policy,
+        )
         from swing.trades.risk_policy import supersede_active_policy
 
         # Re-load + apply remaining overrides to get the post-reset value
@@ -162,6 +186,24 @@ def config_reset(ctx: click.Context, field_path: str) -> None:
             )
             return
         try:
+            # Codex R3 M#3 fix: skip cascade when post-reset value already
+            # matches the active policy (avoids polluting the audit chain
+            # with no-op supersessions when the operator clicks reset on a
+            # field whose user-config override didn't actually exist OR
+            # whose value happened to match the active policy).
+            try:
+                active_now = get_active_policy(cascade_conn)
+            except NoActivePolicyError:
+                active_now = None
+            if active_now is not None:
+                active_value = getattr(active_now, policy_field)
+                if isinstance(active_value, float) and isinstance(
+                    post_reset_value, float,
+                ):
+                    if abs(active_value - post_reset_value) < 1e-9:
+                        return
+                elif active_value == post_reset_value:
+                    return
             new_id = supersede_active_policy(
                 cascade_conn,
                 field_updates={policy_field: post_reset_value},
@@ -229,13 +271,21 @@ _POLICY_FIELD_COERCERS: dict[str, type] = {
 }
 _POLICY_FIELD_NAMES: tuple[str, ...] = tuple(_POLICY_FIELD_COERCERS.keys())
 
-# Fields that have a Phase-5-surfaced cfg counterpart (eligible for
-# `import-from-toml`). Per spec §3.1.3: only ONE field in V1 (the operator
-# can extend post-V1 by mapping additional cfg paths to risk_policy
-# columns; we keep the map minimal to avoid silent drift).
-_TOML_MIRROR_MAP: dict[str, tuple[str, str]] = {
-    # risk_policy column → (cfg section, cfg attribute)
-    "capital_floor_constant_dollars": ("account", "risk_equity_floor"),
+# Fields that have a cfg.toml counterpart eligible for `import-from-toml`.
+# Per spec §3.1.3 SEED MAP four risk_policy columns mirror cfg values; the
+# Phase 5 config-page surfaces ONE of those (account.risk_equity_floor),
+# but ALL FOUR are valid `import-from-toml` targets for the v17 ratification
+# operator-repair path (Codex R3 Major #1 fix — repair must cover the same
+# fields ratification does, otherwise the failure-recovery instructions in
+# `swing db-migrate` are incomplete).
+_TOML_MIRROR_MAP: dict[str, tuple[str, str, type]] = {
+    # risk_policy column → (cfg section, cfg attribute, dtype hint)
+    "capital_floor_constant_dollars": ("account", "risk_equity_floor", float),
+    "max_concurrent_positions": ("position_limits", "hard_cap_open", int),
+    "review_lag_threshold_days": ("review", "review_window_days", int),
+    # max_account_risk_per_trade_pct = cfg.risk.max_risk_pct × 100 — needs
+    # transformation, handled inline below.
+    "max_account_risk_per_trade_pct": ("risk", "max_risk_pct", float),
 }
 
 
@@ -414,17 +464,23 @@ def policy_import_from_toml(
     if field not in _TOML_MIRROR_MAP:
         raise click.ClickException(
             f"field {field!r} has no TOML counterpart (not mirrored to cfg "
-            "in V1; spec §3.1.3 lists only capital_floor_constant_dollars)"
+            "per spec §3.1.3 SEED MAP)"
         )
     # Re-load the raw TOML — ctx.obj['config'] may have been corrected by
     # the divergence hook, which would then make `import-from-toml` a no-op.
     # The operator's intent for import-from-toml is "promote the TOML value
     # to canonical", so we MUST read from the raw TOML before the hook
-    # rewrites it.
+    # rewrites it. Apply user-config overrides too (R2 M#2 lesson — operator
+    # may have set the value via Phase 5 / `swing config set`).
     from swing.config import load as load_cfg_raw
-    raw_cfg = load_cfg_raw(ctx.obj["config_path"])
-    section, attr = _TOML_MIRROR_MAP[field]
+    from swing.config_overrides import apply_overrides
+    raw_cfg = apply_overrides(load_cfg_raw(ctx.obj["config_path"]))
+    section, attr, _dtype = _TOML_MIRROR_MAP[field]
     cfg_value = getattr(getattr(raw_cfg, section), attr)
+    # Spec §3.1.3 max_account_risk_per_trade_pct uses percent form; cfg
+    # stores fraction (0.005 = 0.5%). Multiply at the boundary.
+    if field == "max_account_risk_per_trade_pct":
+        cfg_value = cfg_value * 100.0
 
     conn = connect(raw_cfg.paths.db_path)
     try:
@@ -432,8 +488,9 @@ def policy_import_from_toml(
             conn,
             field_updates={field: cfg_value},
             notes=notes or (
-                f"import-from-toml: cfg.{section}.{attr}={cfg_value} → "
-                f"risk_policy.{field}"
+                f"import-from-toml: cfg.{section}.{attr}"
+                f"{' × 100' if field == 'max_account_risk_per_trade_pct' else ''}"
+                f" → risk_policy.{field}={cfg_value}"
             ),
             source="import_from_toml",
         )
