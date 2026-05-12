@@ -18,23 +18,17 @@ prioritized over rollback purity.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import sqlite3
-from collections.abc import Iterable
 from datetime import date
 from pathlib import Path
 
 from swing.data.datetime_helpers import now_ms
-from swing.data.models import ReconciliationDiscrepancy, ReconciliationRun
+from swing.data.models import ReconciliationRun
 from swing.data.repos import reconciliation as repo
-from swing.journal.tos_import import (
-    ReconciliationReport,
-    extract_stock_fills,
-    parse_tos_export,
-    reconcile_tos,
-)
-
+from swing.journal.tos_import import reconcile_tos
 
 # Spec §3.3 CHECK enum (10 values).
 DISCREPANCY_TYPES: tuple[str, ...] = (
@@ -309,10 +303,8 @@ def run_tos_reconciliation(
         # re-raise. The spec §3.3.3 failure-path is for exceptions
         # DURING reconcile_tos; outer-layer failures (DDL drift,
         # constraint surprises) get rollback semantics.
-        try:
+        with contextlib.suppress(sqlite3.Error):
             conn.rollback()
-        except sqlite3.Error:
-            pass
         raise
 
     out = repo.get_run(conn, run_id)
@@ -399,10 +391,8 @@ def resolve_discrepancy(
             )
         conn.commit()
     except Exception:
-        try:
+        with contextlib.suppress(sqlite3.Error):
             conn.rollback()
-        except sqlite3.Error:
-            pass
         raise
 
 

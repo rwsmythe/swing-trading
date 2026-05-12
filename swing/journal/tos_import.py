@@ -342,6 +342,11 @@ def extract_stock_fills(
     return out
 
 
+def _row_get(row: dict, key: str) -> str:
+    """Trimmed string accessor for a row dict; '' on missing/None."""
+    return (row.get(key) or "").strip()
+
+
 def extract_equity_positions(
     rows: Iterable[dict],
 ) -> dict[str, float]:
@@ -357,18 +362,17 @@ def extract_equity_positions(
     """
     out: dict[str, float] = {}
     for row in rows:
-        def get(key: str) -> str:
-            return (row.get(key) or "").strip()
-
-        ticker = (get("Symbol") or get("Instrument") or "").upper()
+        ticker = (
+            _row_get(row, "Symbol") or _row_get(row, "Instrument")
+        ).upper()
         if not ticker:
             continue
         # Filter option rows defensively — Equities section sometimes
         # carries option holdings on real-world exports.
-        exp = (get("Exp") or "").strip()
+        exp = _row_get(row, "Exp")
         if exp and exp != "--":
             continue
-        qty_raw = get("Qty") or get("Quantity")
+        qty_raw = _row_get(row, "Qty") or _row_get(row, "Quantity")
         if not qty_raw or qty_raw in ("--", "N/A"):
             continue
         # Schwab/TOS may emit signed quantities (+/-) like Account Trade
@@ -403,18 +407,15 @@ def extract_stop_orders(
     """
     out: dict[str, tuple[float, str | None]] = {}
     for row in rows:
-        def get(key: str) -> str:
-            return (row.get(key) or "").strip()
-
-        status = get("Status").upper()
-        side = get("Side").upper()
-        pos_effect = (get("Pos Effect") or get("Pos") or "").upper()
-        otype = (
-            get("Order Type")
-            or get("Type")
-            or ""
+        status = _row_get(row, "Status").upper()
+        side = _row_get(row, "Side").upper()
+        pos_effect = (
+            _row_get(row, "Pos Effect") or _row_get(row, "Pos")
         ).upper()
-        spread = get("Spread").upper()
+        otype = (
+            _row_get(row, "Order Type") or _row_get(row, "Type")
+        ).upper()
+        spread = _row_get(row, "Spread").upper()
 
         if not status.startswith("WORKING"):
             continue
@@ -427,26 +428,32 @@ def extract_stop_orders(
         if spread not in ("", "STOCK"):
             continue
 
-        ticker = get("Symbol").upper()
+        ticker = _row_get(row, "Symbol").upper()
         if not ticker:
             continue
         if ticker in out:
             # First match wins; skip subsequent.
             continue
         try:
-            price = _parse_tos_amount(get("Price") or get("PRICE"))
+            price = _parse_tos_amount(
+                _row_get(row, "Price") or _row_get(row, "PRICE")
+            )
         except ValueError:
             continue
         if price <= 0:
             continue
         order_id_raw = (
-            get("Ref #")
-            or get("Order #")
-            or get("Order Id")
-            or get("REF #")
+            _row_get(row, "Ref #")
+            or _row_get(row, "Order #")
+            or _row_get(row, "Order Id")
+            or _row_get(row, "REF #")
         )
         # Strip Excel-style ="..." wrapper (mirrors extract_cash_movements).
-        order_id_clean = order_id_raw.strip("=").strip('"').strip() if order_id_raw else ""
+        order_id_clean = (
+            order_id_raw.strip("=").strip('"').strip()
+            if order_id_raw
+            else ""
+        )
         order_id = order_id_clean or None
         out[ticker] = (price, order_id)
     return out

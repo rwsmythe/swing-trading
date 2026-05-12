@@ -20,7 +20,6 @@ from swing.data.models import (
     ReconciliationRun,
 )
 
-
 _RUN_SELECT_COLUMNS = (
     "run_id, source, source_artifact_path, source_artifact_sha256, "
     "period_start, period_end, started_ts, finished_ts, state, "
