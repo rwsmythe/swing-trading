@@ -6,6 +6,73 @@
 
 ---
 
+## 2026-05-12 Phase 9 Sub-bundle D/E candidate: Schwab "since-inception" Account Statement ingestion
+
+**Observation (operator-witnessed gate Sub-bundle C 2026-05-12):** Operator's "since-inception" Schwab Account Statement export `thinkorswim/2026-05-12-AccountStatementInception.csv` is structurally richer than the 7-day Account Statement Bundle B's `extract_account_summary_net_liq` (T-C.6) consumes. The inception export's full section inventory:
+
+| Section | Bundle B/C consumes | V2 ingestion candidate use |
+|---|---|---|
+| Cash Balance (full inception history) | partially (cash_movements only) | seed `cash_movements` retroactively from inception; reconcile against existing rows for any pre-Phase-7 gaps |
+| Account Order History | yes (Bundle B `extract_stop_orders` — banked Bundle E parser-gap fix pending) | richer inception sample for the Bundle E parser fix's regression corpus |
+| Account Trade History | partially (Bundle B's `extract_stock_fills`) | full-history fill reconciliation against the journal's `fills` table for any pre-Phase-7 gaps |
+| Equities (current open positions snapshot) | no | could seed `position_qty_mismatch` baselines or feed Phase 10 dashboard's open-position MTM |
+| Profits and Losses (per-position YTD aggregates) | no | could seed `realized_R` cross-checks against Phase 6 `review_log` aggregates |
+| Account Summary (current Net Liq + buying power) | yes (Bundle C T-C.6 `extract_account_summary_net_liq`) | unchanged |
+
+**Concrete use cases:**
+
+1. **Cash movements historical seed.** Bundle B's reconciliation already extracts cash_movements from any TOS export. The inception export covers the full history; ingesting it would seed the `cash_movements` table with deposits/withdrawals since account inception (verified via the operator-witnessed gate: 2 deposits of $100 each on 3/30/26 + 4/29/26 totaling $200 are in the production cash_movements; inception export would surface the same + any prior we missed).
+2. **Account equity snapshots historical series.** Per-statement Net Liq values from prior monthly statements could seed an `account_equity_snapshots` historical series, giving Phase 10 metrics dashboard a real cash-basis vs MTM trajectory rather than just current point-in-time.
+3. **Fills audit against the journal.** Account Trade History since inception could audit the `fills` table for any pre-Phase-7 fills missing from the journal (especially historical trades where operator may not have manually backfilled).
+4. **Equity_delta historical baseline.** Bundle C's T-C.6 wires equity_delta for present-day reconciliation; an inception ingestion could backfill equity_delta history.
+
+**Scope notes:**
+
+- The existing `swing/journal/tos_import.py` parsing infrastructure is already there for the 7-day export shape. The inception export uses the same column structures + section headers (verified during operator-witnessed gate); the diff is the date range (full inception vs 7 days). The parser may "just work" against the inception export with minor section-specific handling.
+- Section "Profits and Losses" is NEW to consume — not currently parsed. Would need a new extractor.
+- Section "Equities" (current open positions snapshot) is NEW to consume — not currently parsed (Bundle B's `extract_equity_positions` parses ONLY the qty column for `position_qty_mismatch`; the Trade Price + Mark + Mark Value columns are not extracted).
+- The 4 prior sample exports in `thinkorswim/` are 7-day; the inception export is the first multi-month sample. Bundle D/E or post-Phase-9 work could leverage it.
+
+**Cross-references:**
+- Schwab inception export: `thinkorswim/2026-05-12-AccountStatementInception.csv` (untracked, ~20 KB).
+- Operator-witnessed gate Sub-bundle C 2026-05-12 — equity reconciliation discussion that surfaced this candidate.
+- Bundle B's `extract_stop_orders` + `extract_stock_fills` + `extract_equity_positions` + Bundle C's `extract_account_summary_net_liq` in `swing/journal/tos_import.py`.
+- Phase 10 metrics dashboard (brainstorm `fe6cb45`; writing-plans pending post-Phase-9) §3 `live_capital_denominator_dollars` (R1 M2 + R3 M1 lock) — would benefit directly from historical cash basis + MTM series.
+- V2.1 §VII.F source-of-truth correction protocol (if ingestion changes invariants).
+
+**Operator-paced; not orchestrator-blocking.** Phase 9 Sub-bundles D + E + Phase 10 brainstorm are higher-priority; this ingestion candidate sequences behind in-flight phases.
+
+---
+
+## 2026-05-12 Phase 9 / V2 candidate: account_equity_snapshots semantic formalization (cash-basis vs net-liq)
+
+**Observation (operator-witnessed gate Sub-bundle C 2026-05-12):** Bundle C's T-C.6 equity_delta wiring revealed a semantic ambiguity in `account_equity_snapshots.equity_dollars`. The operator stored `$2000` representing "cash basis since inception" (deposits − withdrawals); Schwab's Account Summary reports `$2014.36` as Net Liquidating Value (cash basis + realized P&L + unrealized MTM). The equity_delta column then surfaces as ≈ -(YTD P/L) which is informative but ambiguous — the operator must mentally distinguish what `equity_dollars` meant when each snapshot was taken.
+
+**Concrete impact:**
+
+If Bundle C had stored `$2014.36` (MTM), equity_delta would be near zero and the comparison would surface only Schwab-vs-journal drift (e.g., parser-gap stops, missing fills). If it stored `$2000` (cash basis), equity_delta ≈ Schwab's YTD P/L — informative for "where is my P&L?" but not the spec's apparent intent (which is "where do my equity numbers disagree?").
+
+The operator's clarification post-gate established that V1 stored cash basis, not MTM — but V1's spec/CLI doesn't force the disambiguation. Future operator could store either value at different times, producing inconsistent equity_delta interpretation.
+
+**V2 hardening options:**
+
+1. **Add `kind` discriminator** to `account_equity_snapshots` (`'cash_basis'` / `'net_liq'` / `'cash_balance'` — 3-value CHECK enum). Bundle B's reconciliation T-C.6 then compares like-to-like: if snapshot is `kind='net_liq'`, compare directly to Schwab's Net Liq; if `kind='cash_basis'`, compute expected_net_liq = cash_basis + realized + unrealized (using journal-computed P&L) and compare to Schwab's Net Liq. Equity_delta becomes meaningful regardless of kind.
+2. **Distinct columns** instead of `kind` discriminator: `equity_cash_basis_dollars`, `equity_net_liq_dollars`, `equity_cash_balance_dollars`. Operator inputs whichever they have visibility into; reconciliation does multi-axis comparison.
+3. **Auto-derive cash basis from `cash_movements`.** If `cash_movements` is fully populated (deposit / withdrawal kinds), cash basis = SUM(deposit amounts) − SUM(withdrawal amounts). Then operator doesn't even need to input cash basis — only MTM observations. Requires the Schwab inception-CSV ingestion above to seed cash_movements fully.
+4. **Defer / accept V1.** Keep `equity_dollars` ambiguous; document operator convention in CLI help text + operator-facing reference; resolve via Phase 10 metrics dashboard's prescribed convention.
+
+**Recommendation:** option 3 (auto-derive cash basis from `cash_movements`) sequenced AFTER the Schwab inception-CSV ingestion task above. Cleanest data model + lowest operator burden. Option 1 (kind discriminator) is a fallback if cash_movements completeness can't be guaranteed.
+
+**Cross-references:**
+- Bundle C return report §6 (R1 M#1 equity_delta sign convention ACCEPT-WITH-RATIONALE).
+- Bundle C operator-witnessed gate S6 + post-gate equity reconciliation discussion 2026-05-12.
+- Spec `docs/superpowers/specs/2026-05-06-phase9-risk-policy-reconciliation-design.md` §3.5 + §3.2 + §3.3.1 equity_delta JSON shape.
+- Phase 10 metrics dashboard `live_capital_denominator_dollars` spec (R1 M2 + R3 M1 lock) — uses similar split semantic (constant vs live).
+
+**Operator-paced; not orchestrator-blocking.** Sequences behind Schwab inception-CSV ingestion (above) for option 3 path.
+
+---
+
 ## 2026-05-12 Phase 9 Sub-bundle E polish: Account Order History multi-line parser gap (operator-witnessed gate finding)
 
 **Observation (operator-witnessed gate finding 2026-05-12):** Phase 9 Sub-bundle B's `stop_mismatch` detection emitted 5 false-positive discrepancies during the operator-witnessed gate when reconciling the operator's real-world Schwab/TOS export `thinkorswim/2026-05-12-AccountStatement.csv` against the production journal. All 5 open trades (DHC/YOU/VSAT/CVGI/LAR) were flagged "no broker working stop" despite working stops being placed at Schwab with prices matching journal `current_stop` values exactly.
