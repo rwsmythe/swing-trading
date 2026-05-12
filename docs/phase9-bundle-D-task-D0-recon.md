@@ -107,27 +107,41 @@ No table has an upsert on a unique key in Bundle D's emit path; no `INSERT OR RE
 
 ## §8 Composition surfaces for T-D.2's audit emit
 
-Bundle D adds one private helper in `swing/web/routes/trades.py`:
+**(Codex R2 + R3 amendment 2026-05-12; supersedes the original draft signature.)**
+
+Bundle D adds one private helper in `swing/web/routes/trades.py`. The helper opens its OWN connection (not a caller-supplied `conn`) so the audit row's transaction is fully independent of any other connection lifecycle and persists regardless of what happens to the rejected entry POST:
 
 ```python
 def _emit_sector_tamper_audit(
-    conn: sqlite3.Connection,
     *,
+    cfg,
     ticker: str,
     cached_sector: str,
     cached_industry: str,
     form_sector: str,
     form_industry: str,
-    session_iso: str,
+    cand_session_iso: str,
+    run_session_iso: str,
     field_name: str,
 ) -> int:
     """Emit ad-hoc system_audit reconciliation_run + sector_tamper
     discrepancy on tamper rejection. Returns the discrepancy_id for
-    test assertions / log-line plumbing. Owns its own transaction
-    via `with conn:` — caller must NOT hold one."""
+    test assertions / log-line plumbing. Owns its own connection +
+    ``with conn:`` deferred transaction (SEPARATE TRANSACTION from any
+    entry-POST tx).
+
+    ``cand_session_iso`` carries the cached candidate's
+    ``eval_run.action_session_date`` for the audit JSON's
+    ``expected.session`` (matches what the operator saw at form-render
+    time). ``run_session_iso`` carries today's
+    ``action_session_for_run(now())`` for the reconciliation_run row's
+    ``period_{start,end}`` (describes WHEN the audit happened per plan
+    §A.4.1). The two MAY differ when the form was rendered before
+    today's pipeline run completed; both fields are kept distinct so a
+    future maintainer cannot collapse them by accident."""
 ```
 
-`^def _emit_sector_tamper_audit` → 1 match in `swing/web/routes/trades.py`. No cross-module duplication.
+`^def _emit_sector_tamper_audit` → 1 match in `swing/web/routes/trades.py`. No cross-module duplication. The helper consumes Bundle B's repo entry points (`insert_run` + `insert_discrepancy` + `update_run_completed`) directly per plan §A.4 + Sub-bundle B return report §10 #1; does NOT route through Bundle B's `run_tos_reconciliation` service (which is `source='tos_csv'` only).
 
 ---
 
