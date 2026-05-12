@@ -1349,10 +1349,20 @@ def check_and_reconcile_toml_divergence(conn, cfg) -> tuple["Config", dict | Non
         divergence; a new Config (via dataclasses.replace) when divergent.
     """
     import dataclasses
+    # First check schema version — only proceed with the divergence read when
+    # the schema is at or past v17 (Codex R5 Minor #1 fix — was previously
+    # catching all sqlite3.OperationalError, which could mask real post-v17
+    # failures like DB lock or missing columns).
+    cur = conn.execute("SELECT version FROM schema_version")
+    row = cur.fetchone()
+    if row is None or row[0] < 17:
+        # Pre-v17 schema; risk_policy table not yet present. Skip silently
+        # to keep `swing db-migrate` + fresh-DB fixtures unblocked.
+        return cfg, None
     try:
         active = repo.get_active_policy(conn)
-    except (repo.NoActivePolicyError, sqlite3.OperationalError):
-        # OperationalError covers pre-v17 fixtures where risk_policy table is absent.
+    except repo.NoActivePolicyError:
+        # v17 schema present but no is_active=1 row (test fixture pre-seed).
         return cfg, None
 
     toml_v = cfg.account.risk_equity_floor
