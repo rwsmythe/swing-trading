@@ -32,7 +32,11 @@ from pathlib import Path
 from swing.data.db import connect
 from swing.data.models import CashMovement
 from swing.data.repos.cash import find_by_ref
-from swing.data.repos.trades import find_any_open_trade, find_open_trade_by_match
+from swing.data.repos.trades import (
+    find_any_open_trade,
+    find_open_trade_by_match,
+    list_open_trades,
+)
 
 _SECTION_LABELS = (
     "Cash Balance",
@@ -338,6 +342,75 @@ def extract_stock_fills(
     return out
 
 
+def extract_stop_orders(
+    rows: Iterable[dict],
+) -> dict[str, tuple[float, str | None]]:
+    """Extract WORKING SELL TO CLOSE STP rows from Account Order History.
+
+    Per spec §6.2 — Phase 9 T-B.4. Returns a dict keyed by ticker with
+    (working_stop_price, order_id_or_none) values. When multiple
+    WORKING stops exist for the same ticker (rare; e.g., stacked
+    bracket orders), the FIRST match wins — best-effort. Operator
+    can disambiguate post-emit via the journal.
+
+    Match criteria (case-insensitive on all string fields):
+      Status         starts with "WORKING"
+      Side           contains "SELL"
+      Pos Effect     contains "CLOSE" or "TO CLOSE"
+      Order Type/Type contains "STP" or "STOP"
+      Spread         empty or "STOCK"
+    """
+    out: dict[str, tuple[float, str | None]] = {}
+    for row in rows:
+        def get(key: str) -> str:
+            return (row.get(key) or "").strip()
+
+        status = get("Status").upper()
+        side = get("Side").upper()
+        pos_effect = (get("Pos Effect") or get("Pos") or "").upper()
+        otype = (
+            get("Order Type")
+            or get("Type")
+            or ""
+        ).upper()
+        spread = get("Spread").upper()
+
+        if not status.startswith("WORKING"):
+            continue
+        if "SELL" not in side:
+            continue
+        if "CLOSE" not in pos_effect:
+            continue
+        if "STP" not in otype and "STOP" not in otype:
+            continue
+        if spread not in ("", "STOCK"):
+            continue
+
+        ticker = get("Symbol").upper()
+        if not ticker:
+            continue
+        if ticker in out:
+            # First match wins; skip subsequent.
+            continue
+        try:
+            price = _parse_tos_amount(get("Price") or get("PRICE"))
+        except ValueError:
+            continue
+        if price <= 0:
+            continue
+        order_id_raw = (
+            get("Ref #")
+            or get("Order #")
+            or get("Order Id")
+            or get("REF #")
+        )
+        # Strip Excel-style ="..." wrapper (mirrors extract_cash_movements).
+        order_id_clean = order_id_raw.strip("=").strip('"').strip() if order_id_raw else ""
+        order_id = order_id_clean or None
+        out[ticker] = (price, order_id)
+    return out
+
+
 def reconcile_tos(
     *,
     db_path: Path | None = None,
@@ -390,8 +463,10 @@ def reconcile_tos(
     sections = parse_tos_export(tos_text)
     cash_rows = sections.get("Cash Balance", [])
     fills_rows = sections.get("Account Trade History", [])
+    order_rows = sections.get("Account Order History", [])
 
     cash_candidates = extract_cash_movements(cash_rows)
+    stop_orders = extract_stop_orders(order_rows)
     # Sort fills by (date, time) so claim-tracking is deterministic across
     # CSV row orderings: a TOS export where the afternoon row appears before
     # the morning row must still attribute the morning CLOSE to the morning
@@ -581,10 +656,95 @@ def reconcile_tos(
                                 delta_text=f"${delta_signed:+.2f} price difference",
                                 material_to_review=1,
                             )
+
+        # Phase 9 T-B.4: stop_mismatch detection per spec §6.2.
+        # Three sub-cases enumerated below; each emits via the seam.
+        # Only runs when there's at least one stop_order parsed OR open
+        # trades present — the absence-of-broker-stop branch needs the
+        # open-trade enumeration regardless.
+        if emitter is not None and (stop_orders or True):
+            _emit_stop_mismatches(
+                conn,
+                stop_orders=stop_orders,
+                price_tolerance=price_tolerance,
+                emit=_emit,
+            )
     finally:
         if owns_conn:
             conn.close()
     return report
+
+
+def _emit_stop_mismatches(
+    conn,
+    *,
+    stop_orders: dict[str, tuple[float, str | None]],
+    price_tolerance: float,
+    emit: Callable[..., None],
+) -> None:
+    """Emit stop_mismatch discrepancies per spec §6.2 + plan §A.2 T-B.4.
+
+    Three sub-cases:
+      1. Open trade journal stop != TOS working stop (delta > tolerance).
+      2. Open trade with NO TOS working stop (operator forgot at broker).
+      3. TOS working stop with no matching open journal trade (orphan).
+
+    Strict-greater-than convention preserved at the boundary (exact /
+    within / at-boundary all NO-emit; outside emits) per spec §6.2.
+    """
+    open_trades = list_open_trades(conn)
+    open_by_ticker = {t.ticker: t for t in open_trades}
+
+    # Cases 1 + 2 — per-open-trade.
+    for t in open_trades:
+        tos_stop = stop_orders.get(t.ticker)
+        if tos_stop is None:
+            # Case 2: open trade with NO TOS working stop.
+            emit(
+                discrepancy_type="stop_mismatch",
+                trade_id=t.id,
+                fill_id=None,
+                ticker=t.ticker,
+                field_name="current_stop",
+                expected={"current_stop": t.current_stop},
+                actual={"working_stop_price": None, "order_id": None},
+                delta_text="no broker working stop",
+                material_to_review=1,
+            )
+            continue
+        tos_price, tos_order_id = tos_stop
+        if abs(t.current_stop - tos_price) > price_tolerance:
+            # Case 1: stop value disagreement.
+            delta_signed = tos_price - t.current_stop
+            emit(
+                discrepancy_type="stop_mismatch",
+                trade_id=t.id,
+                fill_id=None,
+                ticker=t.ticker,
+                field_name="current_stop",
+                expected={"current_stop": t.current_stop},
+                actual={"working_stop_price": tos_price,
+                        "order_id": tos_order_id},
+                delta_text=f"${delta_signed:+.2f} stop difference",
+                material_to_review=1,
+            )
+
+    # Case 3: orphan TOS working stop with no matching journal open trade.
+    for ticker, (tos_price, tos_order_id) in stop_orders.items():
+        if ticker in open_by_ticker:
+            continue
+        emit(
+            discrepancy_type="stop_mismatch",
+            trade_id=None,
+            fill_id=None,
+            ticker=ticker,
+            field_name="current_stop",
+            expected={},
+            actual={"working_stop_price": tos_price,
+                    "order_id": tos_order_id},
+            delta_text="orphan broker working stop",
+            material_to_review=1,
+        )
 
 
 def _matches_closed_trade(

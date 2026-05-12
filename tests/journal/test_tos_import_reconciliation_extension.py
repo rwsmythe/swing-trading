@@ -164,6 +164,10 @@ def db_with_schema(tmp_path: Path) -> Path:
 # ===========================================================================
 
 
+def _entry_emits(captured: list[dict]) -> list[dict]:
+    return [c for c in captured if c["discrepancy_type"] == "entry_price_mismatch"]
+
+
 def test_entry_price_mismatch_exact_match_no_emit(
     db_with_schema: Path,
 ) -> None:
@@ -180,7 +184,7 @@ def test_entry_price_mismatch_exact_match_no_emit(
         text = _tos_open(ticker="ABC", date="2026-05-12", qty=10, price=10.00)
         captured, emit = _make_capture_emitter()
         reconcile_tos(conn=conn, tos_text=text, run_id=1, emitter=emit)
-        assert captured == []
+        assert _entry_emits(captured) == []
     finally:
         conn.close()
 
@@ -201,7 +205,7 @@ def test_entry_price_mismatch_within_tolerance_no_emit(
         text = _tos_open(ticker="ABC", date="2026-05-12", qty=10, price=10.005)
         captured, emit = _make_capture_emitter()
         reconcile_tos(conn=conn, tos_text=text, run_id=1, emitter=emit)
-        assert captured == []
+        assert _entry_emits(captured) == []
     finally:
         conn.close()
 
@@ -223,7 +227,7 @@ def test_entry_price_mismatch_at_boundary_no_emit(
         text = _tos_open(ticker="ABC", date="2026-05-12", qty=10, price=10.01)
         captured, emit = _make_capture_emitter()
         reconcile_tos(conn=conn, tos_text=text, run_id=1, emitter=emit)
-        assert captured == []
+        assert _entry_emits(captured) == []
     finally:
         conn.close()
 
@@ -244,8 +248,9 @@ def test_entry_price_mismatch_outside_tolerance_emits(
         text = _tos_open(ticker="ABC", date="2026-05-12", qty=10, price=10.02)
         captured, emit = _make_capture_emitter()
         reconcile_tos(conn=conn, tos_text=text, run_id=1, emitter=emit)
-        assert len(captured) == 1
-        e = captured[0]
+        epms = _entry_emits(captured)
+        assert len(epms) == 1
+        e = epms[0]
         assert e["discrepancy_type"] == "entry_price_mismatch"
         assert e["run_id"] == 1
         assert e["trade_id"] == tid
@@ -281,8 +286,9 @@ def test_entry_price_mismatch_negative_delta_emits_negative_sign(
         text = _tos_open(ticker="ABC", date="2026-05-12", qty=10, price=9.95)
         captured, emit = _make_capture_emitter()
         reconcile_tos(conn=conn, tos_text=text, run_id=1, emitter=emit)
-        assert len(captured) == 1
-        assert captured[0]["delta_text"] == "$-0.05 price difference"
+        epms = _entry_emits(captured)
+        assert len(epms) == 1
+        assert epms[0]["delta_text"] == "$-0.05 price difference"
     finally:
         conn.close()
 
@@ -450,6 +456,195 @@ def test_no_emit_when_emitter_none(db_with_schema: Path) -> None:
 # ===========================================================================
 # §4 — within-run dedup (spec §5.1 R3 Major #4) — pinned via duplicate
 # rows in the same CSV.
+# ===========================================================================
+
+
+# ===========================================================================
+# §5 — stop_mismatch detection (spec §6.2 + §3.3.1) — Task B.4
+# ===========================================================================
+
+
+_TOS_STOP_ORDER_TEMPLATE = """\
+Account Order History
+Notes,Time Placed,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Order Type,TIF,Mark,Status
+,2026-05-12 09:30:00,STOCK,SELL,-{qty},TO CLOSE,{ticker},,,STOCK,{price:.4f},STP,GTC,11.00,WORKING
+"""
+
+
+def _tos_stop_order(*, ticker: str, qty: int, price: float) -> str:
+    return _TOS_STOP_ORDER_TEMPLATE.format(
+        qty=qty, ticker=ticker, price=price,
+    )
+
+
+def test_stop_mismatch_exact_match_no_emit(db_with_schema: Path) -> None:
+    conn = sqlite3.connect(db_with_schema)
+    try:
+        _seed_entry(
+            conn, ticker="ABC", entry_date="2026-05-10",
+            entry_price=10.00, shares=10, initial_stop=9.00,
+        )
+        text = _tos_stop_order(ticker="ABC", qty=10, price=9.00)
+        captured, emit = _make_capture_emitter()
+        reconcile_tos(conn=conn, tos_text=text, run_id=1, emitter=emit)
+        sms = [c for c in captured if c["discrepancy_type"] == "stop_mismatch"]
+        assert sms == []
+    finally:
+        conn.close()
+
+
+def test_stop_mismatch_at_boundary_no_emit(db_with_schema: Path) -> None:
+    """delta = tolerance (0.01) MUST NOT emit (strict >)."""
+    conn = sqlite3.connect(db_with_schema)
+    try:
+        _seed_entry(
+            conn, ticker="ABC", entry_date="2026-05-10",
+            entry_price=10.00, shares=10, initial_stop=9.00,
+        )
+        text = _tos_stop_order(ticker="ABC", qty=10, price=9.01)
+        captured, emit = _make_capture_emitter()
+        reconcile_tos(conn=conn, tos_text=text, run_id=1, emitter=emit)
+        sms = [c for c in captured if c["discrepancy_type"] == "stop_mismatch"]
+        assert sms == []
+    finally:
+        conn.close()
+
+
+def test_stop_mismatch_outside_tolerance_emits(db_with_schema: Path) -> None:
+    conn = sqlite3.connect(db_with_schema)
+    try:
+        tid = _seed_entry(
+            conn, ticker="ABC", entry_date="2026-05-10",
+            entry_price=10.00, shares=10, initial_stop=9.00,
+        )
+        text = _tos_stop_order(ticker="ABC", qty=10, price=8.50)
+        captured, emit = _make_capture_emitter()
+        reconcile_tos(conn=conn, tos_text=text, run_id=1, emitter=emit)
+        sms = [c for c in captured if c["discrepancy_type"] == "stop_mismatch"]
+        assert len(sms) == 1
+        e = sms[0]
+        assert e["trade_id"] == tid
+        assert e["ticker"] == "ABC"
+        assert e["field_name"] == "current_stop"
+        assert e["material_to_review"] == 1
+        expected = json.loads(e["expected_value_json"])
+        actual = json.loads(e["actual_value_json"])
+        assert expected == {"current_stop": 9.00}
+        assert actual == {"working_stop_price": 8.50, "order_id": None}
+        assert "stop difference" in e["delta_text"]
+    finally:
+        conn.close()
+
+
+def test_stop_mismatch_open_trade_without_broker_stop_emits(
+    db_with_schema: Path,
+) -> None:
+    """Spec §6.2: open trade with no TOS working stop → emit
+    stop_mismatch with actual=null/null.
+    """
+    conn = sqlite3.connect(db_with_schema)
+    try:
+        tid = _seed_entry(
+            conn, ticker="ABC", entry_date="2026-05-10",
+            entry_price=10.00, shares=10, initial_stop=9.00,
+        )
+        # NO Account Order History section in this CSV — open trade
+        # remains without a corresponding broker working stop.
+        text = "Cash Balance\n"  # empty cash section keeps parse_tos_export happy
+        captured, emit = _make_capture_emitter()
+        reconcile_tos(conn=conn, tos_text=text, run_id=1, emitter=emit)
+        sms = [c for c in captured if c["discrepancy_type"] == "stop_mismatch"]
+        assert len(sms) == 1
+        e = sms[0]
+        assert e["trade_id"] == tid
+        assert e["ticker"] == "ABC"
+        actual = json.loads(e["actual_value_json"])
+        assert actual == {"working_stop_price": None, "order_id": None}
+        assert e["delta_text"] == "no broker working stop"
+    finally:
+        conn.close()
+
+
+def test_stop_mismatch_orphan_broker_stop_no_journal_trade(
+    db_with_schema: Path,
+) -> None:
+    """Spec §6.2: TOS working stop with no matching journal open trade →
+    emit stop_mismatch with expected={} (orphan), trade_id=None.
+    """
+    conn = sqlite3.connect(db_with_schema)
+    try:
+        # No journal trades; only a TOS working stop on ABC.
+        text = _tos_stop_order(ticker="XYZ", qty=5, price=20.00)
+        captured, emit = _make_capture_emitter()
+        reconcile_tos(conn=conn, tos_text=text, run_id=1, emitter=emit)
+        sms = [c for c in captured if c["discrepancy_type"] == "stop_mismatch"]
+        assert len(sms) == 1
+        e = sms[0]
+        assert e["trade_id"] is None
+        assert e["ticker"] == "XYZ"
+        expected = json.loads(e["expected_value_json"])
+        actual = json.loads(e["actual_value_json"])
+        assert expected == {}
+        assert actual == {"working_stop_price": 20.00, "order_id": None}
+        assert e["delta_text"] == "orphan broker working stop"
+    finally:
+        conn.close()
+
+
+def test_stop_orders_extractor_filters_non_working(
+    db_with_schema: Path,
+) -> None:
+    """Only Status=WORKING rows count. FILLED / CANCELED stops are
+    historical and don't represent an active broker order.
+    """
+    conn = sqlite3.connect(db_with_schema)
+    try:
+        _seed_entry(
+            conn, ticker="ABC", entry_date="2026-05-10",
+            entry_price=10.00, shares=10, initial_stop=9.00,
+        )
+        # Account Order History with FILLED stop (not WORKING).
+        text = (
+            "Account Order History\n"
+            "Notes,Time Placed,Spread,Side,Qty,Pos Effect,Symbol,"
+            "Exp,Strike,Type,Price,Order Type,TIF,Mark,Status\n"
+            ",2026-05-12 09:30:00,STOCK,SELL,-10,TO CLOSE,ABC,,,STOCK,"
+            "9.00,STP,GTC,11.00,FILLED\n"
+        )
+        captured, emit = _make_capture_emitter()
+        reconcile_tos(conn=conn, tos_text=text, run_id=1, emitter=emit)
+        # FILLED is filtered out → trade has no broker working stop →
+        # case-2 emit (no broker stop).
+        sms = [c for c in captured if c["discrepancy_type"] == "stop_mismatch"]
+        assert len(sms) == 1
+        actual = json.loads(sms[0]["actual_value_json"])
+        assert actual == {"working_stop_price": None, "order_id": None}
+    finally:
+        conn.close()
+
+
+def test_stop_mismatch_no_emit_when_emitter_none(
+    db_with_schema: Path,
+) -> None:
+    """Legacy CLI path (emitter=None) does NOT trigger the open-trade
+    stop-pass — the bucket-list-only behavior is preserved.
+    """
+    conn = sqlite3.connect(db_with_schema)
+    try:
+        _seed_entry(
+            conn, ticker="ABC", entry_date="2026-05-10",
+            entry_price=10.00, shares=10, initial_stop=9.00,
+        )
+        text = _tos_stop_order(ticker="ABC", qty=10, price=8.50)
+        report = reconcile_tos(conn=conn, tos_text=text)
+        assert report.new_cash_movements == []
+        assert report.matched_fills == []
+    finally:
+        conn.close()
+
+
+# ===========================================================================
+# §99 — within-run dedup pinned via duplicate rows in same CSV.
 # ===========================================================================
 
 
