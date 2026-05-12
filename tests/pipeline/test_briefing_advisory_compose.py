@@ -698,6 +698,52 @@ def test_briefing_composer_fires_maturity_hint_when_price_missing():
     assert "r_multiple_stop_tighten" not in rules
 
 
+def test_briefing_composer_fires_maturity_hint_when_fetcher_raises():
+    """Codex R2 Major #1 — fetcher exception branch must NOT silently drop
+    §4.A.bis. The price-independent helper's stated contract includes
+    "OHLCV fetch failed" as a covered degradation path.
+
+    Discriminating: `raise_for={ticker}` so `fetcher.get()` raises; the
+    pre-fix `out[t.id] = []` early-return would yield an empty list.
+    Post-fix: the maturity hint is emitted via the sentinel-price fallback.
+    """
+    from swing.pipeline.runner import compose_open_trade_advisories_for_briefing
+
+    trade = _trade(entry=100.0, initial_stop=95.0)
+    candidates = {"ABCD": _candidate(close=105.0)}
+    fetcher = _StubFetcher({}, raise_for={"ABCD"})  # any get() raises
+
+    result = compose_open_trade_advisories_for_briefing(
+        trades=[trade], fetcher=fetcher, candidates_by_ticker=candidates,
+        weather_status="Bullish", stop_advisory_config=_stop_advisory_default(),
+        action_session_date="2026-04-15",
+        maturity_stage_by_trade_id={trade.id: ">=+2R_trail_eligible"},
+    )
+
+    rules = {s.rule for s in result[trade.id]}
+    assert rules == {"maturity_stage_trail_ma_hint"}
+    msg = result[trade.id][0].message
+    assert "10MA" in msg  # >=+2R_trail_eligible → 10MA per §0.3 #2
+
+
+def test_briefing_composer_empty_list_when_fetcher_raises_and_stage_unknown():
+    """Discriminating: no maturity_stage supplied → no fallback false-positive
+    on fetcher exception."""
+    from swing.pipeline.runner import compose_open_trade_advisories_for_briefing
+
+    trade = _trade(entry=100.0, initial_stop=95.0)
+    candidates = {"ABCD": _candidate(close=105.0)}
+    fetcher = _StubFetcher({}, raise_for={"ABCD"})
+
+    result = compose_open_trade_advisories_for_briefing(
+        trades=[trade], fetcher=fetcher, candidates_by_ticker=candidates,
+        weather_status="Bullish", stop_advisory_config=_stop_advisory_default(),
+        action_session_date="2026-04-15",
+        # maturity_stage_by_trade_id omitted.
+    )
+    assert result[trade.id] == []
+
+
 def test_briefing_composer_omits_maturity_hint_when_price_and_stage_both_missing():
     """Discriminating: when current_price is None AND maturity_stage is None
     too, the briefing emits an empty advisory list (no fallback false-positive)."""

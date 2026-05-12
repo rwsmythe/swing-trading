@@ -970,7 +970,32 @@ def compose_open_trade_advisories_for_briefing(
                 "briefing advisory: fetcher.get failed for %s: %s",
                 t.ticker, exc,
             )
-            out[t.id] = []
+            # Codex R2 Major #1 — even on fetcher failure, the DB-sourced
+            # §4.A.bis maturity-stage hint should fire (the helper's stated
+            # contract at swing/trades/advisory.py compute_price_independent_suggestions
+            # says "PriceCache degraded; OHLCV fetch failed; etc."). Pre-fix
+            # ``out[t.id] = []`` skip silently dropped the hint here.
+            ctx_mat = AdvisoryContext(
+                as_of_date=action_session_date,
+                current_price=0.0,
+                sma10=None, sma20=None, sma50=None,
+                previous_close=None,
+                weather_status=weather_status,
+                config=stop_advisory_config,
+                maturity_stage=(
+                    maturity_stage_by_trade_id.get(t.id)
+                    if maturity_stage_by_trade_id is not None
+                    else None
+                ),
+            )
+            from swing.trades.advisory import (
+                compute_price_independent_suggestions,
+            )
+            mat_raw = compute_price_independent_suggestions(t, ctx_mat)
+            out[t.id] = [
+                AdvisorySuggestionVM(rule=s.rule, message=s.message)
+                for s in mat_raw
+            ]
             continue
 
         smas = _compute_smas(bars, [10, 20, 50])
