@@ -150,6 +150,22 @@ def test_returns_none_when_value_is_na() -> None:
     assert result is None
 
 
+def test_returns_none_for_nan_literal() -> None:
+    """Codex R2 Major #1: ``float('nan')`` parses; we must reject."""
+    for spelling in ("nan", "NaN", "NAN"):
+        csv_text = f"Account Summary\nNet Liquidating Value,{spelling}\n"
+        result = extract_account_summary_net_liq(csv_text)
+        assert result is None, f"non-finite {spelling!r} must be rejected"
+
+
+def test_returns_none_for_inf_literal() -> None:
+    """Codex R2 Major #1: ``float('inf')`` / ``float('-inf')`` parse; reject."""
+    for spelling in ("inf", "-inf", "infinity", "Infinity"):
+        csv_text = f"Account Summary\nNet Liquidating Value,{spelling}\n"
+        result = extract_account_summary_net_liq(csv_text)
+        assert result is None, f"non-finite {spelling!r} must be rejected"
+
+
 def test_scans_only_the_account_summary_section() -> None:
     """A `Net Liquidating Value` row in a different section is ignored.
 

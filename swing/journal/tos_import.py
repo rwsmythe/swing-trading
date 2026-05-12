@@ -286,6 +286,16 @@ def extract_account_summary_net_liq(csv_text: str) -> float | None:
                 v = float(cleaned)
             except ValueError:
                 return None
+            # Codex R2 Major #1: reject NaN / inf. float() happily accepts
+            # 'nan', 'inf', 'infinity' (case-insensitive). Letting either
+            # propagate into account_equity_source_dollars +
+            # equity_delta_dollars would (a) violate the ReconciliationRun
+            # dataclass's finite-value invariant on hydrate-after-commit,
+            # (b) produce invalid JSON ('NaN'/'Infinity' literals are not
+            # RFC-7159 conformant) if the equity_delta discrepancy emits.
+            import math
+            if not math.isfinite(v):
+                return None
             return -v if negative else v
     return None
 

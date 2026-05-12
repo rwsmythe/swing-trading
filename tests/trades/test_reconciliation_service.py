@@ -1187,6 +1187,41 @@ def test_equity_delta_dedup_single_row_per_run(
     )
 
 
+def test_equity_delta_not_emit_when_source_is_nan_or_inf(
+    conn: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    """Codex R2 Major #1 regression: a corrupted Net Liquidating Value
+    (NaN / inf literal) MUST NOT poison the run row or emit a discrepancy.
+
+    The parser-level fix returns None on non-finite; the service-level
+    consequence is the same as 'source-side unavailable' — both equity
+    columns + delta stay NULL + no equity_delta emit.
+    """
+    _seed_entry(
+        conn, ticker="ABC", entry_date="2026-05-12",
+        entry_price=10.05, shares=10, initial_stop=9.00,
+    )
+    _seed_equity_snapshot(conn, snapshot_date="2026-05-12", equity=1300.0)
+    poisoned_csv = (
+        "Account Trade History\n"
+        "Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type\n"
+        "2026-05-12 10:00:00,STOCK,BUY,+10,OPENING,ABC,,,,10.0500,10.0500,MKT\n"
+        "\n"
+        "Account Summary\n"
+        "Net Liquidating Value,NaN\n"
+    )
+    csv = tmp_path / "tos_nan.csv"
+    csv.write_text(poisoned_csv, encoding="utf-8")
+    out = run_tos_reconciliation(
+        conn, csv_path=csv, period_end="2026-05-12",
+    )
+    assert out.state == "completed"
+    assert out.account_equity_source_dollars is None
+    assert out.equity_delta_dollars is None
+    rows = recon_repo.list_discrepancies_for_run(conn, out.run_id)
+    assert not any(r.discrepancy_type == "equity_delta" for r in rows)
+
+
 def test_equity_delta_path_does_not_affect_non_equity_runs(
     conn: sqlite3.Connection, tmp_path: Path,
 ) -> None:

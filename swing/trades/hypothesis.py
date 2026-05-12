@@ -51,12 +51,22 @@ to INFO.
 from __future__ import annotations
 
 import sqlite3
+from datetime import date
 from typing import Literal
 
 from swing.data.datetime_helpers import now_ms
 from swing.data.repos.hypothesis_status_history import (
     insert_history,
     update_close_open_interval,
+)
+
+# Codex R2 Minor #2 — promoted from inline literal so operators + future
+# code paths can filter synthesized predecessors via exact-string match.
+# Any drift in the marker text is grep-discoverable; the discriminating
+# test asserts equality, not substring.
+SYNTH_PREDECESSOR_CHANGE_REASON: str = (
+    "auto-synthesized predecessor "
+    "(post-migration hypothesis lacked seed history row)"
 )
 
 # Mirrors hypothesis_registry CHECK enum (migration 0008) + the
@@ -100,7 +110,7 @@ class HypothesisStatusTransitionError(ValueError):
     """
 
 
-def _normalize_to_ms_day_start(value: str) -> str:
+def _normalize_to_ms_day_start(value: str, *, fallback: str | None = None) -> str:
     """Coerce a hypothesis_registry.created_at value to ms-precision
     day-start anchor (mirrors the migration 0017 seed pattern).
 
@@ -110,16 +120,26 @@ def _normalize_to_ms_day_start(value: str) -> str:
     arbitrary value here, including a full datetime; this helper keeps
     the seed effective_from format uniform so the partial-unique +
     chronology invariants hold.
+
+    Codex R2 Minor #1 hardening: strict ISO-date validation on the first
+    10 chars. If the date prefix is malformed (e.g., garbage created_at
+    from a stale migration), fall back to ``fallback`` (caller passes
+    ``now_ms()`` to clamp); if neither is valid the dataclass
+    cross-field check rejects downstream.
     """
     s = (value or "").strip()
-    if not s:
-        # Defensive fallback: empty created_at → epoch ms-precision day.
-        return "1970-01-01T00:00:00.000"
-    # Take the date portion (first 10 chars: YYYY-MM-DD) and append the
-    # day-start anchor. If the input is malformed, the dataclass
-    # __post_init__ cross-field check still catches downstream errors.
-    date_part = s[:10]
-    return f"{date_part}T00:00:00.000"
+    if s:
+        # Validate the first 10 chars as a real ISO YYYY-MM-DD date.
+        date_part = s[:10]
+        try:
+            date.fromisoformat(date_part)
+            return f"{date_part}T00:00:00.000"
+        except ValueError:
+            pass
+    if fallback is not None:
+        return fallback
+    # Defensive fallback: empty + no caller fallback → epoch day.
+    return "1970-01-01T00:00:00.000"
 
 
 def update_hypothesis_status_with_audit(
@@ -217,7 +237,7 @@ def update_hypothesis_status_with_audit(
             # effective_to = now, status = current_status (the OLD
             # status), change_reason = explicit self-documenting marker.
             seed_effective_from = _normalize_to_ms_day_start(
-                registry_created_at
+                registry_created_at, fallback=now,
             )
             # Guard: if registry.created_at is itself after `now` (clock
             # skew / mistaken backfill), clamp to `now` so the dataclass
@@ -230,10 +250,7 @@ def update_hypothesis_status_with_audit(
                 status=current_status,
                 effective_from=seed_effective_from,
                 effective_to=now,
-                change_reason=(
-                    "auto-synthesized predecessor "
-                    "(post-migration hypothesis lacked seed history row)"
-                ),
+                change_reason=SYNTH_PREDECESSOR_CHANGE_REASON,
                 recorded_at=now,
             )
 
@@ -270,6 +287,7 @@ def update_hypothesis_status_with_audit(
 
 __all__ = [
     "HYPOTHESIS_STATUSES",
+    "SYNTH_PREDECESSOR_CHANGE_REASON",
     "CallerHeldTransactionError",
     "HypothesisStatusTransitionError",
     "update_hypothesis_status_with_audit",

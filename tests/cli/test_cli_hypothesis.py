@@ -4,6 +4,7 @@ Per backend brief §4.6 + §5 watch items.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -12,9 +13,29 @@ from swing.cli import main
 from tests.cli.test_cli_eval import _minimal_config
 
 
-def _setup(tmp_path):
+def _setup(tmp_path, monkeypatch=None):
+    """Build a fresh CLI + cfg fixture.
+
+    Codex R2 Minor #3 hardening: per CLAUDE.md gotcha ("Tests that
+    exercise write_user_overrides MUST monkeypatch USERPROFILE + HOME"),
+    we monkeypatch both env vars before invoking CLI commands that may
+    trigger the v17 TOML divergence check (which reads
+    ``~/swing-data/user-config.toml`` via _user_home()). The hypothesis
+    update path does not directly write user_overrides but the CLI
+    startup hook can read it; defensive monkeypatch prevents any
+    inadvertent pollution of the operator's real config file.
+    """
     project = tmp_path / "project"; project.mkdir()
     home = tmp_path / "home"; home.mkdir()
+    if monkeypatch is not None:
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.setenv("HOME", str(home))
+    else:
+        # Fallback for callers that did not pass monkeypatch (legacy
+        # signature preservation). Mutates os.environ directly; the
+        # subsequent test invocations honor it.
+        os.environ["USERPROFILE"] = str(home)
+        os.environ["HOME"] = str(home)
     cfg = _minimal_config(project, home)
     runner = CliRunner()
     runner.invoke(main, ["--config", str(cfg), "db-migrate"])

@@ -32,6 +32,7 @@ from swing.trades.hypothesis import (
     CallerHeldTransactionError,
     HYPOTHESIS_STATUSES,
     HypothesisStatusTransitionError,
+    SYNTH_PREDECESSOR_CHANGE_REASON,
     update_hypothesis_status_with_audit,
 )
 
@@ -521,12 +522,12 @@ def test_synth_predecessor_when_no_seed_history_row(
 
     seed_row, new_row = post_rows[0], post_rows[1]
     # Synthesized predecessor: status = old (active), closed at the
-    # transition instant, change_reason explicit + self-documenting.
+    # transition instant, change_reason exact-match against the
+    # promoted module constant (Codex R2 Minor #2 hardening).
     assert seed_row.status == "active"
     assert seed_row.effective_from == "2026-05-10T00:00:00.000"
     assert seed_row.effective_to is not None
-    assert seed_row.change_reason is not None
-    assert "auto-synthesized" in seed_row.change_reason
+    assert seed_row.change_reason == SYNTH_PREDECESSOR_CHANGE_REASON
     # The new transition row picks up at the same instant the synth row
     # closes (continuous timeline).
     assert new_row.status == "paused"
@@ -604,3 +605,30 @@ def test_synth_predecessor_clamps_future_created_at_to_now(
     seed_row = rows[0]
     # effective_from clamped to now (== effective_to in the seed row).
     assert seed_row.effective_from == seed_row.effective_to
+
+
+def test_synth_predecessor_falls_back_to_now_for_malformed_created_at(
+    conn: sqlite3.Connection,
+) -> None:
+    """Codex R2 Minor #1: _normalize_to_ms_day_start strictly validates
+    the date prefix as ISO YYYY-MM-DD; malformed garbage falls back to
+    `now_ms()` so the dataclass invariant holds.
+    """
+    # Insert a hypothesis with a garbage created_at value.
+    hyp_id = _insert_post_migration_hypothesis(
+        conn, created_at="garbage-not-a-date",
+    )
+    result = update_hypothesis_status_with_audit(
+        conn,
+        hypothesis_id=hyp_id,
+        new_status="paused",
+        change_reason="r",
+    )
+    assert result == "transition"
+    rows = list_history_for_hypothesis(conn, hyp_id)
+    seed_row = rows[0]
+    # Fallback path: effective_from == now → effective_from == effective_to.
+    assert seed_row.effective_from == seed_row.effective_to
+    # Confirm it's a valid ms-ISO datetime (not the malformed garbage).
+    assert "T" in seed_row.effective_from
+    assert len(seed_row.effective_from) == len("2026-05-12T00:00:00.000")
