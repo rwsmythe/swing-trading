@@ -3,11 +3,27 @@
 Parser splits the multi-section export by labels. Extractors consume normalized
 columns and yield CashMovement / TosFill records. `reconcile_tos` returns a
 ReconciliationReport — caller (CLI) decides what to commit.
+
+Phase 9 Sub-bundle B (T-B.2) extends ``reconcile_tos`` with an optional
+emitter seam: when a caller supplies ``run_id`` + ``emitter``, each
+detected discrepancy is forwarded to the emitter callable so the service
+layer (``swing/trades/reconciliation.py:run_tos_reconciliation``) can
+persist ``reconciliation_discrepancies`` rows inside the outer BEGIN
+IMMEDIATE transaction per spec §3.3.3. When ``run_id`` + ``emitter`` are
+None, behavior matches the pre-refactor regression-clean baseline —
+``ReconciliationReport`` is the canonical return shape and the existing
+CLI invocation continues to work.
+
+The function also accepts EITHER ``db_path`` (legacy path: function opens
+its own conn) OR ``conn`` (Phase 9 service-layer path: caller owns the
+conn + the surrounding transaction).
 """
 from __future__ import annotations
 
 import csv
-from collections.abc import Iterable
+import json
+import sqlite3
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from io import StringIO
@@ -16,7 +32,11 @@ from pathlib import Path
 from swing.data.db import connect
 from swing.data.models import CashMovement
 from swing.data.repos.cash import find_by_ref
-from swing.data.repos.trades import find_any_open_trade, find_open_trade_by_match
+from swing.data.repos.trades import (
+    find_any_open_trade,
+    find_open_trade_by_match,
+    list_open_trades,
+)
 
 _SECTION_LABELS = (
     "Cash Balance",
@@ -322,14 +342,181 @@ def extract_stock_fills(
     return out
 
 
+def _row_get(row: dict, key: str) -> str:
+    """Trimmed string accessor for a row dict; '' on missing/None."""
+    return (row.get(key) or "").strip()
+
+
+def extract_equity_positions(
+    rows: Iterable[dict],
+) -> dict[str, float]:
+    """Extract position quantities from the Equities section.
+
+    Per spec §6.3 — Phase 9 T-B.5. Returns ``dict[ticker → qty]`` of
+    long-positive shares. TOS Equities section columns vary across
+    export shapes; we look for ``Symbol`` + ``Qty`` (or ``Quantity``).
+
+    Excludes rows with empty or zero-qty values; aggregates multiple
+    rows for the same ticker by SUMMING (defensive against multi-lot
+    rendering — rare for V1 but harmless).
+    """
+    out: dict[str, float] = {}
+    for row in rows:
+        ticker = (
+            _row_get(row, "Symbol") or _row_get(row, "Instrument")
+        ).upper()
+        if not ticker:
+            continue
+        # Filter option rows defensively — Equities section sometimes
+        # carries option holdings on real-world exports.
+        exp = _row_get(row, "Exp")
+        if exp and exp != "--":
+            continue
+        qty_raw = _row_get(row, "Qty") or _row_get(row, "Quantity")
+        if not qty_raw or qty_raw in ("--", "N/A"):
+            continue
+        # Schwab/TOS may emit signed quantities (+/-) like Account Trade
+        # History; long positions are positive, but we abs() to be lenient.
+        try:
+            qty = abs(float(qty_raw.replace(",", "").lstrip("+")))
+        except ValueError:
+            continue
+        if qty == 0:
+            continue
+        out[ticker] = out.get(ticker, 0.0) + qty
+    return out
+
+
+def extract_stop_orders(
+    rows: Iterable[dict],
+) -> dict[str, tuple[float, str | None]]:
+    """Extract WORKING SELL TO CLOSE STP rows from Account Order History.
+
+    Per spec §6.2 — Phase 9 T-B.4. Returns a dict keyed by ticker with
+    (working_stop_price, order_id_or_none) values. When multiple
+    WORKING stops exist for the same ticker (rare; e.g., stacked
+    bracket orders), the FIRST match wins — best-effort. Operator
+    can disambiguate post-emit via the journal.
+
+    Match criteria (case-insensitive on all string fields):
+      Status         starts with "WORKING"
+      Side           contains "SELL"
+      Pos Effect     contains "CLOSE" or "TO CLOSE"
+      Order Type/Type contains "STP" or "STOP"
+      Spread         empty or "STOCK"
+    """
+    out: dict[str, tuple[float, str | None]] = {}
+    for row in rows:
+        status = _row_get(row, "Status").upper()
+        side = _row_get(row, "Side").upper()
+        pos_effect = (
+            _row_get(row, "Pos Effect") or _row_get(row, "Pos")
+        ).upper()
+        otype = (
+            _row_get(row, "Order Type") or _row_get(row, "Type")
+        ).upper()
+        spread = _row_get(row, "Spread").upper()
+
+        if not status.startswith("WORKING"):
+            continue
+        if "SELL" not in side:
+            continue
+        if "CLOSE" not in pos_effect:
+            continue
+        if "STP" not in otype and "STOP" not in otype:
+            continue
+        if spread not in ("", "STOCK"):
+            continue
+
+        ticker = _row_get(row, "Symbol").upper()
+        if not ticker:
+            continue
+        if ticker in out:
+            # First match wins; skip subsequent.
+            continue
+        try:
+            price = _parse_tos_amount(
+                _row_get(row, "Price") or _row_get(row, "PRICE")
+            )
+        except ValueError:
+            continue
+        if price <= 0:
+            continue
+        order_id_raw = (
+            _row_get(row, "Ref #")
+            or _row_get(row, "Order #")
+            or _row_get(row, "Order Id")
+            or _row_get(row, "REF #")
+        )
+        # Strip Excel-style ="..." wrapper (mirrors extract_cash_movements).
+        order_id_clean = (
+            order_id_raw.strip("=").strip('"').strip()
+            if order_id_raw
+            else ""
+        )
+        order_id = order_id_clean or None
+        out[ticker] = (price, order_id)
+    return out
+
+
 def reconcile_tos(
-    *, db_path: Path, tos_text: str, price_tolerance: float = 0.01,
+    *,
+    db_path: Path | None = None,
+    tos_text: str,
+    price_tolerance: float = 0.01,
+    conn: sqlite3.Connection | None = None,
+    run_id: int | None = None,
+    emitter: Callable[..., int] | None = None,
 ) -> ReconciliationReport:
+    """Reconcile a TOS Account Statement against the journal.
+
+    Args:
+        db_path: legacy path — function opens its own connection. Mutually
+            exclusive with ``conn``.
+        tos_text: full TOS CSV content (multi-section export).
+        price_tolerance: dollar threshold for price-mismatch detection;
+            strict-greater-than convention at the comparison site (existing
+            ``swing/journal/tos_import.py:365``). LOCKED at 0.01 USD default
+            for V1 per plan T-B.3 (Codex R2 Major #3 fix banked in plan §A).
+        conn: Phase 9 service-layer path — caller owns the conn AND the
+            surrounding ``BEGIN IMMEDIATE`` transaction per spec §3.3.3.
+            Mutually exclusive with ``db_path``.
+        run_id: parent ``reconciliation_runs.run_id`` for the emit seam.
+            Required when ``emitter`` is provided; harmless when both None.
+        emitter: callable invoked once per detected discrepancy. Signature:
+            ``emitter(*, discrepancy_type, run_id, **fields) -> int``.
+            Returns the inserted ``discrepancy_id`` (or any int — the
+            return value is currently informational; future readers may
+            use it for cross-discrepancy linking). When None, no emit
+            happens — legacy regression-clean behavior is preserved.
+
+    Returns:
+        ``ReconciliationReport`` dataclass with the matched / unmatched /
+        price_mismatch / already_reconciled bucket lists + cash movement
+        lists + per-fill ``FillDecision`` trail. Return shape is preserved
+        from the pre-refactor baseline.
+
+    The emitter is Phase 9's seam between detection and persistence. T-B.2
+    establishes the seam; T-B.3..T-B.6 wire individual discrepancy types
+    through it.
+    """
+    if (db_path is None) == (conn is None):
+        raise ValueError(
+            "reconcile_tos requires exactly one of {db_path, conn}; got "
+            f"db_path={db_path!r}, conn={conn!r}"
+        )
+    if emitter is not None and run_id is None:
+        raise ValueError("emitter requires run_id (parent reconciliation_runs row)")
+
     sections = parse_tos_export(tos_text)
     cash_rows = sections.get("Cash Balance", [])
     fills_rows = sections.get("Account Trade History", [])
+    order_rows = sections.get("Account Order History", [])
+    equities_rows = sections.get("Equities", [])
 
     cash_candidates = extract_cash_movements(cash_rows)
+    stop_orders = extract_stop_orders(order_rows)
+    equity_positions = extract_equity_positions(equities_rows)
     # Sort fills by (date, time) so claim-tracking is deterministic across
     # CSV row orderings: a TOS export where the afternoon row appears before
     # the morning row must still attribute the morning CLOSE to the morning
@@ -338,22 +525,127 @@ def reconcile_tos(
     fills = sorted(extract_stock_fills(fills_rows), key=lambda f: (f.date, f.time))
 
     report = ReconciliationReport()
-    conn = connect(db_path)
+    owns_conn = conn is None
+    if owns_conn:
+        conn = connect(db_path)
     try:
-        for c in cash_candidates:
-            if c.ref and find_by_ref(conn, c.ref) is not None:
-                report.duplicate_cash_movements.append(c)
-            else:
-                report.new_cash_movements.append(c)
-
         within_batch_alloc: dict[int, int] = {}
         claimed_exit_ids: set[int] = set()
+        # Phase 9 within-run dedup tuple set: (trade_id, type, field_name)
+        # per plan §A.2 + spec §5.1 R3 Major #4. ``None`` trade_id keeps
+        # orphan unmatched fills distinct via their ticker (coerced into
+        # a sentinel-string tuple slot below).
+        emitted_keys: set[tuple] = set()
 
         def _record(f: TosFill, outcome: str, journal_price: float | None) -> None:
             report.fill_decisions.append(FillDecision(
                 fill=f, outcome=outcome,
                 journal_price=journal_price, tolerance=price_tolerance,
             ))
+
+        def _emit(
+            *,
+            discrepancy_type: str,
+            trade_id: int | None,
+            field_name: str,
+            ticker: str | None = None,
+            fill_id: int | None = None,
+            cash_movement_id: int | None = None,
+            expected: dict | None = None,
+            actual: dict | None = None,
+            delta_text: str | None = None,
+            material_to_review: int = 1,
+        ) -> None:
+            if emitter is None:
+                return
+            # Phase 9 within-run dedup tuple per spec §5.1 R3 Major #4.
+            # Trade-linked emits with a fill_id pin disambiguate via the
+            # PK chain. Emits WITHOUT a fill_id (orphan unmatched fills
+            # AND trade-attributed overfill closes — Codex R2 M#1 + R3
+            # M#1) need source-payload identity in the key so two
+            # distinct source fills don't collapse into one discrepancy
+            # row. Same applies to cash_movement_mismatch when
+            # cash_movement_id is None (defensive). When all three IDs
+            # are set, the PK chain is sufficient.
+            payload_disambiguator: tuple = ()
+            if fill_id is None and cash_movement_id is None:
+                payload_disambiguator = (
+                    None if actual is None else (
+                        actual.get("fill_date"),
+                        actual.get("qty"),
+                        actual.get("price"),
+                    ),
+                )
+            dedup_key = (
+                trade_id,
+                discrepancy_type,
+                field_name,
+                ticker,
+                fill_id,
+                cash_movement_id,
+                payload_disambiguator,
+            )
+            if dedup_key in emitted_keys:
+                return
+            emitted_keys.add(dedup_key)
+            emitter(
+                discrepancy_type=discrepancy_type,
+                run_id=run_id,
+                trade_id=trade_id,
+                fill_id=fill_id,
+                cash_movement_id=cash_movement_id,
+                ticker=ticker,
+                field_name=field_name,
+                expected_value_json=(
+                    json.dumps(expected, sort_keys=True) if expected is not None else None
+                ),
+                actual_value_json=(
+                    json.dumps(actual, sort_keys=True) if actual is not None else None
+                ),
+                delta_text=delta_text,
+                material_to_review=material_to_review,
+            )
+
+        for c in cash_candidates:
+            existing = find_by_ref(conn, c.ref) if c.ref else None
+            if existing is not None:
+                report.duplicate_cash_movements.append(c)
+                # Phase 9 T-B.6: cash_movement_mismatch per spec §6.4.
+                # Compare amount + kind on duplicate REF#; emit when
+                # they disagree. material_to_review=0 (cash flow
+                # doesn't bear on trade review per spec §3.3.1).
+                if (
+                    abs(existing.amount - c.amount) > 1e-9
+                    or existing.kind != c.kind
+                ) and emitter is not None:
+                    _emit(
+                        discrepancy_type="cash_movement_mismatch",
+                        trade_id=None,
+                        cash_movement_id=existing.id,
+                        ticker=None,
+                        field_name=(
+                            "amount" if existing.kind == c.kind else "kind"
+                        ),
+                        expected={
+                            "amount": existing.amount,
+                            "kind": existing.kind,
+                            "ref": existing.ref,
+                        },
+                        actual={
+                            "amount": c.amount,
+                            "kind": c.kind,
+                            "ref": c.ref,
+                        },
+                        delta_text=(
+                            f"${c.amount - existing.amount:+.2f} amount "
+                            "difference"
+                            if existing.kind == c.kind
+                            else f"kind {existing.kind!r} vs {c.kind!r}"
+                        ),
+                        material_to_review=0,
+                    )
+            else:
+                report.new_cash_movements.append(c)
 
         for f in fills:
             if f.open_close == "OPEN":
@@ -365,6 +657,24 @@ def reconcile_tos(
                     if abs(t.entry_price - f.price) > price_tolerance:
                         report.price_mismatch_fills.append(f)
                         _record(f, "price_mismatch", t.entry_price)
+                        # Phase 9 T-B.3: entry_price_mismatch emit per spec
+                        # §6.1 + §3.3.1. Strict > tolerance per existing
+                        # convention (exact / within-tolerance / boundary
+                        # delta=tolerance all NO-emit; outside emits).
+                        entry_fill_id = _find_entry_fill_id(conn, trade_id=t.id)
+                        delta_signed = f.price - t.entry_price
+                        _emit(
+                            discrepancy_type="entry_price_mismatch",
+                            trade_id=t.id,
+                            fill_id=entry_fill_id,
+                            ticker=f.ticker,
+                            field_name="price",
+                            expected={"price": t.entry_price,
+                                      "entry_date": t.entry_date},
+                            actual={"price": f.price, "fill_date": f.date},
+                            delta_text=f"${delta_signed:+.2f} price difference",
+                            material_to_review=1,
+                        )
                     else:
                         report.matched_fills.append(f)
                         _record(f, "matched", t.entry_price)
@@ -381,6 +691,27 @@ def reconcile_tos(
                 else:
                     report.unmatched_open_fills.append(f)
                     _record(f, "unmatched_open", None)
+                    # Phase 9 T-B.6 / Codex R1 M#1 fix: TOS open fill with
+                    # no matching journal trade → emit unmatched_open_fill
+                    # per spec §6.5 + §3.3.1. trade_id=NULL (no journal
+                    # entry); material_to_review=1 (operator action
+                    # required to journal the missed entry).
+                    _emit(
+                        discrepancy_type="unmatched_open_fill",
+                        trade_id=None,
+                        ticker=f.ticker,
+                        field_name="fill",
+                        expected={},
+                        actual={
+                            "price": f.price, "qty": f.qty,
+                            "ticker": f.ticker, "fill_date": f.date,
+                        },
+                        delta_text=(
+                            f"TOS open fill {f.ticker} {f.qty}@${f.price:.4f} "
+                            "with no journal entry"
+                        ),
+                        material_to_review=1,
+                    )
             else:
                 t = find_any_open_trade(conn, ticker=f.ticker)
                 # Historical re-import detection: a CLOSE fill whose
@@ -408,6 +739,24 @@ def reconcile_tos(
                 if t is None:
                     report.unmatched_close_fills.append(f)
                     _record(f, "unmatched_close", None)
+                    # Codex R1 M#1 fix — unmatched_close_fill emit per
+                    # spec §6.5 + §3.3.1.
+                    _emit(
+                        discrepancy_type="unmatched_close_fill",
+                        trade_id=None,
+                        ticker=f.ticker,
+                        field_name="fill",
+                        expected={},
+                        actual={
+                            "price": f.price, "qty": f.qty,
+                            "ticker": f.ticker, "fill_date": f.date,
+                        },
+                        delta_text=(
+                            f"TOS close fill {f.ticker} {f.qty}@${f.price:.4f} "
+                            "with no journal trade"
+                        ),
+                        material_to_review=1,
+                    )
                     continue
                 # Phase 7 B.9: exits table dropped (migration 0014). Sum
                 # quantities of all non-entry fills (trim/exit/stop) — that
@@ -423,13 +772,225 @@ def reconcile_tos(
                 if cumulative > t.initial_shares:
                     report.unmatched_close_fills.append(f)
                     _record(f, "unmatched_close", None)
+                    # Codex R1 M#1 + R2 M#2 fix — unmatched_close_fill
+                    # emit per spec §6.5 + §3.3.1. ATTRIBUTE the
+                    # discrepancy to the live open trade (trade_id=t.id)
+                    # so the active-trade attention query surfaces it.
+                    # The CANONICAL #1 query JOINs trades; trade_id=NULL
+                    # rows are silently dropped from the surface (spec
+                    # §3.3.2 R2 M#2). An overfill close on a known
+                    # journal trade is exactly the kind of live-divergence
+                    # operators need flagged.
+                    _emit(
+                        discrepancy_type="unmatched_close_fill",
+                        trade_id=t.id,
+                        ticker=f.ticker,
+                        field_name="fill",
+                        expected={},
+                        actual={
+                            "price": f.price, "qty": f.qty,
+                            "ticker": f.ticker, "fill_date": f.date,
+                        },
+                        delta_text=(
+                            f"TOS close fill {f.ticker} {f.qty}@${f.price:.4f} "
+                            "exceeds remaining journal open size"
+                        ),
+                        material_to_review=1,
+                    )
                 else:
                     report.matched_fills.append(f)
                     _record(f, "matched", None)
                     within_batch_alloc[t.id or 0] = already_allocated + f.qty
+                    # Phase 9 T-B.3: close_price_mismatch emit per spec
+                    # §6.1 + §3.3.1. Best-effort journal exit-fill lookup
+                    # by (trade_id, date, qty) — if found AND price delta
+                    # > tolerance, emit. Strict > convention preserved.
+                    je = _find_journal_exit_for_close(
+                        conn, trade_id=t.id, date=f.date, qty=f.qty,
+                    )
+                    if je is not None:
+                        je_fill_id, je_price = je
+                        if abs(je_price - f.price) > price_tolerance:
+                            delta_signed = f.price - je_price
+                            _emit(
+                                discrepancy_type="close_price_mismatch",
+                                trade_id=t.id,
+                                fill_id=je_fill_id,
+                                ticker=f.ticker,
+                                field_name="price",
+                                expected={"price": je_price,
+                                          "exit_date": f.date},
+                                actual={"price": f.price, "fill_date": f.date},
+                                delta_text=f"${delta_signed:+.2f} price difference",
+                                material_to_review=1,
+                            )
+
+        # Phase 9 T-B.4: stop_mismatch detection per spec §6.2.
+        # Three sub-cases enumerated below; each emits via the seam.
+        # Only runs when there's at least one stop_order parsed OR open
+        # trades present — the absence-of-broker-stop branch needs the
+        # open-trade enumeration regardless.
+        if emitter is not None:
+            _emit_stop_mismatches(
+                conn,
+                stop_orders=stop_orders,
+                price_tolerance=price_tolerance,
+                emit=_emit,
+            )
+            # Phase 9 T-B.5: position_qty_mismatch detection per spec §6.3.
+            _emit_position_qty_mismatches(
+                conn,
+                equity_positions=equity_positions,
+                emit=_emit,
+            )
     finally:
-        conn.close()
+        if owns_conn:
+            conn.close()
     return report
+
+
+def _emit_stop_mismatches(
+    conn,
+    *,
+    stop_orders: dict[str, tuple[float, str | None]],
+    price_tolerance: float,
+    emit: Callable[..., None],
+) -> None:
+    """Emit stop_mismatch discrepancies per spec §6.2 + plan §A.2 T-B.4.
+
+    Three sub-cases:
+      1. Open trade journal stop != TOS working stop (delta > tolerance).
+      2. Open trade with NO TOS working stop (operator forgot at broker).
+      3. TOS working stop with no matching open journal trade (orphan).
+
+    Strict-greater-than convention preserved at the boundary (exact /
+    within / at-boundary all NO-emit; outside emits) per spec §6.2.
+    """
+    open_trades = list_open_trades(conn)
+    open_by_ticker = {t.ticker: t for t in open_trades}
+
+    # Cases 1 + 2 — per-open-trade.
+    for t in open_trades:
+        tos_stop = stop_orders.get(t.ticker)
+        if tos_stop is None:
+            # Case 2: open trade with NO TOS working stop.
+            emit(
+                discrepancy_type="stop_mismatch",
+                trade_id=t.id,
+                fill_id=None,
+                ticker=t.ticker,
+                field_name="current_stop",
+                expected={"current_stop": t.current_stop},
+                actual={"working_stop_price": None, "order_id": None},
+                delta_text="no broker working stop",
+                material_to_review=1,
+            )
+            continue
+        tos_price, tos_order_id = tos_stop
+        if abs(t.current_stop - tos_price) > price_tolerance:
+            # Case 1: stop value disagreement.
+            delta_signed = tos_price - t.current_stop
+            emit(
+                discrepancy_type="stop_mismatch",
+                trade_id=t.id,
+                fill_id=None,
+                ticker=t.ticker,
+                field_name="current_stop",
+                expected={"current_stop": t.current_stop},
+                actual={"working_stop_price": tos_price,
+                        "order_id": tos_order_id},
+                delta_text=f"${delta_signed:+.2f} stop difference",
+                material_to_review=1,
+            )
+
+    # Case 3: orphan TOS working stop with no matching journal open trade.
+    for ticker, (tos_price, tos_order_id) in stop_orders.items():
+        if ticker in open_by_ticker:
+            continue
+        emit(
+            discrepancy_type="stop_mismatch",
+            trade_id=None,
+            fill_id=None,
+            ticker=ticker,
+            field_name="current_stop",
+            expected={},
+            actual={"working_stop_price": tos_price,
+                    "order_id": tos_order_id},
+            delta_text="orphan broker working stop",
+            material_to_review=1,
+        )
+
+
+def _emit_position_qty_mismatches(
+    conn,
+    *,
+    equity_positions: dict[str, float],
+    emit: Callable[..., None],
+) -> None:
+    """Emit position_qty_mismatch discrepancies per spec §6.3 + T-B.5.
+
+    Three sub-cases:
+      1. Open trade journal current_size != TOS qty → emit.
+      2. Open trade with NO TOS qty (broker shows zero) → emit
+         actual_value_json={"qty": 0} (silent close at broker).
+      3. TOS qty with no matching journal open trade → emit
+         trade_id=NULL + ticker populated (entry never journaled).
+
+    All material_to_review=1 per spec §6.3 (live broker/journal
+    divergence on position size is most urgent).
+    """
+    open_trades = list_open_trades(conn)
+    open_by_ticker = {t.ticker: t for t in open_trades}
+
+    # Cases 1 + 2 — per-open-trade.
+    for t in open_trades:
+        tos_qty = equity_positions.get(t.ticker)
+        journal_qty = float(t.current_size)
+        if tos_qty is None:
+            # Case 2: broker shows zero for a ticker we have open.
+            emit(
+                discrepancy_type="position_qty_mismatch",
+                trade_id=t.id,
+                fill_id=None,
+                ticker=t.ticker,
+                field_name="qty",
+                expected={"qty": journal_qty},
+                actual={"qty": 0.0},
+                delta_text=f"{journal_qty:g} vs 0 shares",
+                material_to_review=1,
+            )
+            continue
+        if abs(journal_qty - tos_qty) > 1e-9:
+            # Case 1: qty disagreement (fractional shares tolerance is
+            # 1e-9; V1 long-only integer shares makes this a strict-not-
+            # equal check in practice).
+            emit(
+                discrepancy_type="position_qty_mismatch",
+                trade_id=t.id,
+                fill_id=None,
+                ticker=t.ticker,
+                field_name="qty",
+                expected={"qty": journal_qty},
+                actual={"qty": tos_qty},
+                delta_text=f"{journal_qty:g} vs {tos_qty:g} shares",
+                material_to_review=1,
+            )
+
+    # Case 3: orphan TOS qty.
+    for ticker, tos_qty in equity_positions.items():
+        if ticker in open_by_ticker:
+            continue
+        emit(
+            discrepancy_type="position_qty_mismatch",
+            trade_id=None,
+            fill_id=None,
+            ticker=ticker,
+            field_name="qty",
+            expected={"qty": 0.0},
+            actual={"qty": tos_qty},
+            delta_text=f"0 vs {tos_qty:g} shares (orphan broker holding)",
+            material_to_review=1,
+        )
 
 
 def _matches_closed_trade(
@@ -508,3 +1069,50 @@ def _find_unclaimed_recorded_exit(
         if abs(fill_price - price) <= price_tolerance:
             return fill_id
     return None
+
+
+def _find_entry_fill_id(conn, *, trade_id: int) -> int | None:
+    """Look up the journal entry-fill PK for a given trade_id.
+
+    Returns the fill_id of the row with ``action='entry'`` on the trade.
+    Phase 7 invariant: every Phase-7-era trade has exactly one entry fill
+    (Phase 7 plan §5.1.1). Returns None when no entry fill exists
+    (Phase 6-or-earlier ad-hoc trades pre-state-machine).
+    """
+    row = conn.execute(
+        "SELECT fill_id FROM fills "
+        "WHERE trade_id = ? AND action = 'entry' "
+        "ORDER BY fill_id ASC LIMIT 1",
+        (trade_id,),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _find_journal_exit_for_close(
+    conn, *, trade_id: int, date: str, qty: int,
+) -> tuple[int, float] | None:
+    """Find a journal exit fill matching (trade_id, date, qty) for close-price
+    comparison. Returns (fill_id, price) or None.
+
+    Phase 9 spec §6.1: when a TOS CLOSE fill is matched against an open
+    trade, the close_price_mismatch emit needs the journal-side exit fill's
+    price for comparison. We lookup by (trade_id, fill_datetime YYYY-MM-DD
+    prefix, quantity) — price-permissive so the mismatch can be detected.
+    Multiple matches return the first (price agreement is strong signal of
+    same fill; lookup-time non-uniqueness is uncommon enough to defer
+    sophisticated disambiguation to V2).
+
+    Returns None when no exit fill exists yet (TOS fill being matched
+    purely off the trade's open_size — common when the operator imports
+    the CSV BEFORE recording the journal exit; spec §6.1 then has nothing
+    to compare against so no discrepancy emit).
+    """
+    row = conn.execute(
+        "SELECT fill_id, price FROM fills "
+        "WHERE trade_id = ? AND action != 'entry' "
+        "  AND substr(fill_datetime, 1, 10) = ? "
+        "  AND quantity = ? "
+        "ORDER BY fill_id ASC LIMIT 1",
+        (trade_id, date, qty),
+    ).fetchone()
+    return (row[0], row[1]) if row else None

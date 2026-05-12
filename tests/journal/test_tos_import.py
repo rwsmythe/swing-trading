@@ -936,3 +936,118 @@ def test_fill_decisions_journal_price_semantics(tmp_path: Path):
     # output is consistent with the routing decision threshold.
     for d in report.fill_decisions:
         assert d.tolerance == 0.01
+
+
+# ===========================================================================
+# Phase 9 T-B.2: emitter-seam refactor regression coverage.
+#
+# The new signature adds 3 optional kwargs (conn, run_id, emitter). When
+# none are provided, behavior is byte-identical to pre-refactor. The
+# discriminating tests below pin the seam contract.
+# ===========================================================================
+
+
+def test_t_b_2_backwards_compat_db_path_path_unchanged(tmp_path: Path):
+    """Existing CLI invocation (db_path + tos_text) still works.
+
+    Regression-clean per plan T-B.2 acceptance criteria.
+    """
+    from swing.data.db import ensure_schema
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+    text = FIXTURE.read_text(encoding="utf-8")
+    report = reconcile_tos(db_path=db, tos_text=text)
+    assert isinstance(report, ReconciliationReport)
+    # Same expectations as the pre-refactor baseline.
+    assert len(report.new_cash_movements) == 2
+
+
+def test_t_b_2_caller_owned_conn_path(tmp_path: Path):
+    """Phase 9 service-layer path: caller passes its own conn.
+
+    The function uses the caller's conn (does NOT open or close another).
+    Behavior is otherwise identical to the db_path path when run_id +
+    emitter are None.
+    """
+    from swing.data.db import ensure_schema
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+    conn = sqlite3.connect(db)
+    try:
+        text = FIXTURE.read_text(encoding="utf-8")
+        report = reconcile_tos(conn=conn, tos_text=text)
+        assert isinstance(report, ReconciliationReport)
+        assert len(report.new_cash_movements) == 2
+        # Conn must remain usable post-call (we own it).
+        conn.execute("SELECT 1").fetchone()
+    finally:
+        conn.close()
+
+
+def test_t_b_2_rejects_both_db_path_and_conn(tmp_path: Path):
+    """Exactly one of {db_path, conn} required (mutual exclusion)."""
+    import pytest
+
+    from swing.data.db import ensure_schema
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+    conn = sqlite3.connect(db)
+    try:
+        with pytest.raises(ValueError, match="exactly one of"):
+            reconcile_tos(db_path=db, conn=conn, tos_text="")
+    finally:
+        conn.close()
+
+
+def test_t_b_2_rejects_neither_db_path_nor_conn(tmp_path: Path):
+    import pytest
+
+    with pytest.raises(ValueError, match="exactly one of"):
+        reconcile_tos(tos_text="")
+
+
+def test_t_b_2_emitter_requires_run_id(tmp_path: Path):
+    """Emitter without run_id is an obvious caller bug — reject early."""
+    import pytest
+
+    from swing.data.db import ensure_schema
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+    conn = sqlite3.connect(db)
+    try:
+        def _emit(**kw):
+            return 0
+
+        with pytest.raises(ValueError, match="emitter requires run_id"):
+            reconcile_tos(conn=conn, tos_text="", emitter=_emit)
+    finally:
+        conn.close()
+
+
+def test_t_b_2_emitter_skipped_on_empty_csv(tmp_path: Path):
+    """Empty-detection CSV (no fills, no equities, no orders, no cash) →
+    no emits.
+
+    Post-T-B.3..T-B.6, reconcile_tos wires emits for entry_price /
+    close_price / stop / position_qty / cash_movement / unmatched
+    discrepancy types. The seam still respects the boundary that NO
+    detection signal means NO emits — this test pins that invariant via
+    a CSV with no recognized section content.
+    """
+    from swing.data.db import ensure_schema
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+    conn = sqlite3.connect(db)
+    try:
+        emit_calls: list[dict] = []
+
+        def _emit(**kw):
+            emit_calls.append(kw)
+            return len(emit_calls)
+
+        # CSV with no fills, no orders, no equities, no cash → no emits.
+        empty_text = "Cash Balance\n\nAccount Trade History\n\n"
+        reconcile_tos(conn=conn, tos_text=empty_text, run_id=1, emitter=_emit)
+        assert emit_calls == []
+    finally:
+        conn.close()
