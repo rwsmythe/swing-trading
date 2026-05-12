@@ -464,3 +464,317 @@ class FinvizApiCall:
     rate_limit_remaining: int | None
     signature_hash: str | None
     error_message: str | None
+
+
+# ============================================================================
+# Phase 9 — risk_policy / reconciliation / hypothesis_status_history /
+# account_equity_snapshots dataclass models.
+# ============================================================================
+
+
+@dataclass(frozen=True)
+class RiskPolicy:
+    """Versioned snapshot of operator-tunable risk constants (spec §3.1; 34 fields).
+
+    Per spec §3.1 + plan §A.0.1 reconciliation: 34 columns, NOT 28 — the spec's
+    "28 columns" subtotal is a brainstorm-phase miscount; the column LIST is the
+    binding artifact (Codex R1 Major #2 fix).
+
+    ``__post_init__`` validates beyond what SQL CHECK can enforce (NaN/inf
+    rejection on REAL fields per Bundle 2/3 pattern; cross-field drawdown
+    enable invariants per spec §3.1 R1 Major #7; sum-to-1.0 process_grade_weight
+    cross-field per spec §3.1 R1 Minor #4). This is defense-in-depth on top of
+    the schema-level CHECKs in 0017 — the dataclass is the binding artifact for
+    service-layer construction.
+    """
+
+    # Metadata (7):
+    policy_id: int
+    effective_from: str
+    effective_to: str | None
+    is_active: int
+    superseded_by_policy_id: int | None
+    created_at: str
+    policy_notes: str | None
+
+    # Trading-risk (7):
+    max_account_risk_per_trade_pct: float
+    max_concurrent_positions: int
+    max_portfolio_heat_pct: float
+    max_sector_concentration_positions: int
+    consecutive_losses_pause_threshold: int
+    consecutive_losses_pause_action: str
+    consecutive_losses_streak_reset: str
+
+    # Drawdown circuit breaker (5; default opt-in disabled per spec §1.4):
+    drawdown_circuit_breaker_enabled: int
+    drawdown_pause_threshold_R: float | None
+    drawdown_pause_action: str | None
+    drawdown_size_reduction_pct: float | None
+    drawdown_recovery_threshold_R: float | None
+
+    # Capital + sizing (1):
+    capital_floor_constant_dollars: float
+
+    # Statistics-methodology (8):
+    scratch_epsilon_R: float
+    review_lag_threshold_days: int
+    low_sample_size_threshold_class_a_n: int
+    low_sample_size_threshold_class_b_n: int
+    low_sample_size_threshold_class_c_n: int
+    low_sample_size_threshold_class_d_n: int
+    global_confidence_floor_n: int
+    bootstrap_resample_count: int
+
+    # Process-grade weights (3; sum to 1.0):
+    process_grade_weight_entry: float
+    process_grade_weight_management: float
+    process_grade_weight_exit: float
+
+    # MFE/MAE + trail-MA (3):
+    mfe_mae_default_precision_level: str
+    trail_MA_period_days: int
+    trail_MA_post_2R_period_days: int | None
+
+    _DRAWDOWN_ACTIONS = ("halt_new_entries", "reduce_size")
+    _MFE_PRECISION = ("daily_approximate", "intraday_estimated", "intraday_exact")
+    _CONSEC_PAUSE = ("review_required",)
+    _CONSEC_RESET = ("review_completed",)
+
+    def __post_init__(self) -> None:
+        import math
+
+        # NaN / inf rejection on every REAL field that's bound non-None.
+        _real_fields = (
+            ("max_account_risk_per_trade_pct", self.max_account_risk_per_trade_pct),
+            ("max_portfolio_heat_pct", self.max_portfolio_heat_pct),
+            ("drawdown_pause_threshold_R", self.drawdown_pause_threshold_R),
+            ("drawdown_size_reduction_pct", self.drawdown_size_reduction_pct),
+            ("drawdown_recovery_threshold_R", self.drawdown_recovery_threshold_R),
+            ("capital_floor_constant_dollars", self.capital_floor_constant_dollars),
+            ("scratch_epsilon_R", self.scratch_epsilon_R),
+            ("process_grade_weight_entry", self.process_grade_weight_entry),
+            ("process_grade_weight_management", self.process_grade_weight_management),
+            ("process_grade_weight_exit", self.process_grade_weight_exit),
+        )
+        for name, value in _real_fields:
+            if value is None:
+                continue
+            if not math.isfinite(value):
+                raise ValueError(
+                    f"{name} not finite (NaN/inf rejected); got {value!r}"
+                )
+
+        # Range checks (mirror SQL CHECKs but with clearer error messages).
+        if self.max_account_risk_per_trade_pct <= 0:
+            raise ValueError(
+                "max_account_risk_per_trade_pct must be > 0; got "
+                f"{self.max_account_risk_per_trade_pct}"
+            )
+        if self.max_concurrent_positions <= 0:
+            raise ValueError(
+                f"max_concurrent_positions must be > 0; got "
+                f"{self.max_concurrent_positions}"
+            )
+        if self.max_portfolio_heat_pct <= 0:
+            raise ValueError(
+                f"max_portfolio_heat_pct must be > 0; got "
+                f"{self.max_portfolio_heat_pct}"
+            )
+        if self.max_sector_concentration_positions <= 0:
+            raise ValueError(
+                "max_sector_concentration_positions must be > 0; got "
+                f"{self.max_sector_concentration_positions}"
+            )
+        if self.consecutive_losses_pause_threshold <= 0:
+            raise ValueError(
+                "consecutive_losses_pause_threshold must be > 0; got "
+                f"{self.consecutive_losses_pause_threshold}"
+            )
+        if self.capital_floor_constant_dollars <= 0:
+            raise ValueError(
+                "capital_floor_constant_dollars must be > 0; got "
+                f"{self.capital_floor_constant_dollars}"
+            )
+        if self.scratch_epsilon_R <= 0:
+            raise ValueError(
+                f"scratch_epsilon_R must be > 0; got {self.scratch_epsilon_R}"
+            )
+        if self.review_lag_threshold_days <= 0:
+            raise ValueError(
+                "review_lag_threshold_days must be > 0; got "
+                f"{self.review_lag_threshold_days}"
+            )
+        for fname, fval in (
+            ("low_sample_size_threshold_class_a_n", self.low_sample_size_threshold_class_a_n),
+            ("low_sample_size_threshold_class_b_n", self.low_sample_size_threshold_class_b_n),
+            ("low_sample_size_threshold_class_c_n", self.low_sample_size_threshold_class_c_n),
+            ("low_sample_size_threshold_class_d_n", self.low_sample_size_threshold_class_d_n),
+            ("global_confidence_floor_n", self.global_confidence_floor_n),
+            ("bootstrap_resample_count", self.bootstrap_resample_count),
+            ("trail_MA_period_days", self.trail_MA_period_days),
+        ):
+            if fval <= 0:
+                raise ValueError(f"{fname} must be > 0; got {fval}")
+        if (
+            self.trail_MA_post_2R_period_days is not None
+            and self.trail_MA_post_2R_period_days <= 0
+        ):
+            raise ValueError(
+                "trail_MA_post_2R_period_days must be > 0 or None; got "
+                f"{self.trail_MA_post_2R_period_days}"
+            )
+
+        # Enum validation.
+        if self.consecutive_losses_pause_action not in self._CONSEC_PAUSE:
+            raise ValueError(
+                f"consecutive_losses_pause_action must be in {self._CONSEC_PAUSE}; "
+                f"got {self.consecutive_losses_pause_action!r}"
+            )
+        if self.consecutive_losses_streak_reset not in self._CONSEC_RESET:
+            raise ValueError(
+                f"consecutive_losses_streak_reset must be in {self._CONSEC_RESET}; "
+                f"got {self.consecutive_losses_streak_reset!r}"
+            )
+        if self.mfe_mae_default_precision_level not in self._MFE_PRECISION:
+            raise ValueError(
+                "mfe_mae_default_precision_level must be in "
+                f"{self._MFE_PRECISION}; got "
+                f"{self.mfe_mae_default_precision_level!r}"
+            )
+
+        # Process-grade weights: each in (0, 1) AND sum to 1.0 ±1e-9.
+        for fname, fval in (
+            ("process_grade_weight_entry", self.process_grade_weight_entry),
+            ("process_grade_weight_management", self.process_grade_weight_management),
+            ("process_grade_weight_exit", self.process_grade_weight_exit),
+        ):
+            if not (0.0 < fval < 1.0):
+                raise ValueError(f"{fname} must be in (0, 1); got {fval}")
+        weight_sum = (
+            self.process_grade_weight_entry
+            + self.process_grade_weight_management
+            + self.process_grade_weight_exit
+        )
+        if abs(weight_sum - 1.0) >= 1e-9:
+            raise ValueError(
+                "process_grade_weight_{entry,management,exit} must sum to 1.0 "
+                f"(±1e-9); got {weight_sum} from "
+                f"({self.process_grade_weight_entry}, "
+                f"{self.process_grade_weight_management}, "
+                f"{self.process_grade_weight_exit})"
+            )
+
+        # Drawdown sign convention (Phase 10 §2 + spec §3.1 R1 Major #7).
+        if (
+            self.drawdown_pause_threshold_R is not None
+            and self.drawdown_pause_threshold_R >= 0
+        ):
+            raise ValueError(
+                "drawdown_pause_threshold_R must be < 0 or None (Phase 10 sign "
+                f"convention); got {self.drawdown_pause_threshold_R}"
+            )
+        if (
+            self.drawdown_recovery_threshold_R is not None
+            and self.drawdown_recovery_threshold_R >= 0
+        ):
+            raise ValueError(
+                "drawdown_recovery_threshold_R must be < 0 or None (Phase 10 sign "
+                f"convention); got {self.drawdown_recovery_threshold_R}"
+            )
+        if self.drawdown_pause_action is not None and (
+            self.drawdown_pause_action not in self._DRAWDOWN_ACTIONS
+        ):
+            raise ValueError(
+                f"drawdown_pause_action must be in {self._DRAWDOWN_ACTIONS} or "
+                f"None; got {self.drawdown_pause_action!r}"
+            )
+        if self.drawdown_size_reduction_pct is not None and not (
+            0.0 < self.drawdown_size_reduction_pct <= 1.0
+        ):
+            raise ValueError(
+                "drawdown_size_reduction_pct must be in (0, 1] or None; got "
+                f"{self.drawdown_size_reduction_pct}"
+            )
+
+        # Cross-field: when drawdown_circuit_breaker_enabled, all conditional
+        # fields must be set (spec §3.1 enforce-when-enabled validator path).
+        if self.drawdown_circuit_breaker_enabled == 1:
+            missing = []
+            if self.drawdown_pause_threshold_R is None:
+                missing.append("drawdown_pause_threshold_R")
+            if self.drawdown_pause_action is None:
+                missing.append("drawdown_pause_action")
+            if self.drawdown_recovery_threshold_R is None:
+                missing.append("drawdown_recovery_threshold_R")
+            if missing:
+                raise ValueError(
+                    "drawdown_circuit_breaker_enabled=1 requires non-null "
+                    f"fields: {missing}"
+                )
+            if (
+                self.drawdown_pause_action == "reduce_size"
+                and self.drawdown_size_reduction_pct is None
+            ):
+                raise ValueError(
+                    "drawdown_size_reduction_pct is required when "
+                    "drawdown_pause_action='reduce_size'"
+                )
+
+    def field_copy_excluding_pk_and_timeline(self) -> dict:
+        """Return a dict of all non-PK / non-timeline fields for a copy-with-overrides
+        successor INSERT during supersession.
+
+        Excludes: ``policy_id`` (auto-assigned by INSERT), ``effective_from``
+        (set by service to ``now_ms``), ``effective_to`` (NULL on successor),
+        ``is_active`` (1 on successor), ``superseded_by_policy_id`` (NULL on
+        successor; set in step 5 of the 6-step supersession sequence per
+        spec §4.1), ``created_at`` (set by service to ``now_ms``).
+
+        Used by ``swing/trades/risk_policy.py:supersede_active_policy`` to
+        copy predecessor field values then apply the operator's
+        ``field_updates`` overlay.
+        """
+        excluded = {
+            "policy_id",
+            "effective_from",
+            "effective_to",
+            "is_active",
+            "superseded_by_policy_id",
+            "created_at",
+        }
+        return {
+            f: getattr(self, f)
+            for f in (
+                # All 28 non-PK / non-timeline fields preserved on copy.
+                "policy_notes",
+                "max_account_risk_per_trade_pct",
+                "max_concurrent_positions",
+                "max_portfolio_heat_pct",
+                "max_sector_concentration_positions",
+                "consecutive_losses_pause_threshold",
+                "consecutive_losses_pause_action",
+                "consecutive_losses_streak_reset",
+                "drawdown_circuit_breaker_enabled",
+                "drawdown_pause_threshold_R",
+                "drawdown_pause_action",
+                "drawdown_size_reduction_pct",
+                "drawdown_recovery_threshold_R",
+                "capital_floor_constant_dollars",
+                "scratch_epsilon_R",
+                "review_lag_threshold_days",
+                "low_sample_size_threshold_class_a_n",
+                "low_sample_size_threshold_class_b_n",
+                "low_sample_size_threshold_class_c_n",
+                "low_sample_size_threshold_class_d_n",
+                "global_confidence_floor_n",
+                "bootstrap_resample_count",
+                "process_grade_weight_entry",
+                "process_grade_weight_management",
+                "process_grade_weight_exit",
+                "mfe_mae_default_precision_level",
+                "trail_MA_period_days",
+                "trail_MA_post_2R_period_days",
+            )
+            if f not in excluded  # safety: keep the excluded list authoritative
+        }
