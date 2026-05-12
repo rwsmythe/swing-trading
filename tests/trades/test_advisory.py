@@ -5,8 +5,11 @@ import pandas as pd
 
 from swing.config import StopAdvisoryConfig
 from swing.data.models import Trade
+import math
+
 from swing.trades.advisory import (
     AdvisoryContext, AdvisorySuggestion, compute_all_suggestions,
+    compute_price_independent_suggestions,
     suggest_breakeven, suggest_trail_ma, suggest_exit_close_below_ma,
     suggest_weather_action, suggest_time_stop,
 )
@@ -49,6 +52,237 @@ def test_advisory_context_has_been_trimmed_defaults_to_false():
         weather_status="Bullish", config=StopAdvisoryConfig(),
     )
     assert ctx.has_been_trimmed is False
+
+
+# ----------------------------------------------------------------------
+# 3e.8 Bundle 3 — AdvisoryContext.maturity_stage field (§4.A.bis hint)
+# ----------------------------------------------------------------------
+
+def test_advisory_context_accepts_maturity_stage_field():
+    ctx = AdvisoryContext(
+        as_of_date="2026-04-15", current_price=100.0,
+        sma10=None, sma20=None, sma50=None, previous_close=None,
+        weather_status="Bullish", config=StopAdvisoryConfig(),
+        maturity_stage="pre_+1.5R",
+    )
+    assert ctx.maturity_stage == "pre_+1.5R"
+
+
+def test_advisory_context_maturity_stage_defaults_to_none():
+    ctx = AdvisoryContext(
+        as_of_date="2026-04-15", current_price=100.0,
+        sma10=None, sma20=None, sma50=None, previous_close=None,
+        weather_status="Bullish", config=StopAdvisoryConfig(),
+    )
+    assert ctx.maturity_stage is None
+
+
+# ----------------------------------------------------------------------
+# 3e.8 Bundle 3 — §4.A.bis suggest_maturity_stage_trail_ma_hint
+# Operator-policy mapping per Tier-3 #6 (brief §0.3 #2):
+#   "pre_+1.5R"               → "20MA"
+#   "+1.5R_to_+2R"            → "20MA"
+#   ">=+2R_trail_eligible"    → "10MA"
+#   None / unknown            → no-op
+# ----------------------------------------------------------------------
+
+def _ctx_maturity(stage: str | None) -> AdvisoryContext:
+    return AdvisoryContext(
+        as_of_date="2026-04-15", current_price=195.0,
+        sma10=None, sma20=None, sma50=None, previous_close=None,
+        weather_status="Bullish", config=StopAdvisoryConfig(),
+        maturity_stage=stage,
+    )
+
+
+def test_suggest_maturity_stage_trail_ma_hint_returns_none_when_stage_is_none():
+    from swing.trades.advisory import suggest_maturity_stage_trail_ma_hint
+    assert suggest_maturity_stage_trail_ma_hint(_trade(), _ctx_maturity(None)) is None
+
+
+def test_suggest_maturity_stage_trail_ma_hint_pre_1_5r_recommends_20ma():
+    from swing.trades.advisory import suggest_maturity_stage_trail_ma_hint
+    s = suggest_maturity_stage_trail_ma_hint(_trade(), _ctx_maturity("pre_+1.5R"))
+    assert s is not None
+    assert s.rule == "maturity_stage_trail_ma_hint"
+    assert "20MA" in s.message
+    assert "10MA" not in s.message
+    assert "pre_+1.5R" in s.message
+
+
+def test_suggest_maturity_stage_trail_ma_hint_1_5r_to_2r_recommends_20ma():
+    from swing.trades.advisory import suggest_maturity_stage_trail_ma_hint
+    s = suggest_maturity_stage_trail_ma_hint(
+        _trade(), _ctx_maturity("+1.5R_to_+2R"),
+    )
+    assert s is not None
+    assert "20MA" in s.message
+    assert "10MA" not in s.message
+    assert "+1.5R_to_+2R" in s.message
+
+
+def test_suggest_maturity_stage_trail_ma_hint_2r_plus_recommends_10ma():
+    """Operator-locked: well-mature → tighter trail unlocked."""
+    from swing.trades.advisory import suggest_maturity_stage_trail_ma_hint
+    s = suggest_maturity_stage_trail_ma_hint(
+        _trade(), _ctx_maturity(">=+2R_trail_eligible"),
+    )
+    assert s is not None
+    assert "10MA" in s.message
+    assert ">=+2R_trail_eligible" in s.message
+
+
+def test_suggest_maturity_stage_trail_ma_hint_unknown_stage_returns_none():
+    """Defensive: future compute_maturity_stage enum additions (V2) no-op
+    rather than raising — operator sees nothing until rule is updated."""
+    from swing.trades.advisory import suggest_maturity_stage_trail_ma_hint
+    s = suggest_maturity_stage_trail_ma_hint(
+        _trade(), _ctx_maturity("very_well_mature_v2_tier"),
+    )
+    assert s is None
+
+
+def test_suggest_maturity_stage_trail_ma_hint_message_format():
+    """Pre-empt-regression-test-arithmetic: pin exact message wording so
+    Codex / operator can grep for it across composition surfaces."""
+    from swing.trades.advisory import suggest_maturity_stage_trail_ma_hint
+    s = suggest_maturity_stage_trail_ma_hint(
+        _trade(), _ctx_maturity(">=+2R_trail_eligible"),
+    )
+    assert s is not None
+    assert s.message == (
+        "Maturity stage >=+2R_trail_eligible — "
+        "recommended trail-MA: 10MA"
+    )
+
+
+# ----------------------------------------------------------------------
+# 3e.8 Bundle 3 — §M.2 suggest_r_multiple_stop_tighten
+# Entry 180, initial_stop 170 → 1R = $10.
+# Default tighten_at_r_multiple = 2.0 → fires at price ≥ 200.
+# Discriminating fixtures (per operator-memory feedback_regression_test_arithmetic.md):
+#   close=199.99 → 1.999R (no fire)
+#   close=200.00 → 2.000R (fires at trigger)
+#   close=210.00 → 3.000R (fires above trigger)
+# ----------------------------------------------------------------------
+
+
+def test_suggest_r_multiple_stop_tighten_returns_none_below_trigger():
+    from swing.trades.advisory import suggest_r_multiple_stop_tighten
+    s = suggest_r_multiple_stop_tighten(_trade(), _ctx(close=199.99))
+    assert s is None
+
+
+def test_suggest_r_multiple_stop_tighten_fires_at_trigger():
+    from swing.trades.advisory import suggest_r_multiple_stop_tighten
+    s = suggest_r_multiple_stop_tighten(_trade(), _ctx(close=200.0))
+    assert s is not None
+    assert s.rule == "r_multiple_stop_tighten"
+
+
+def test_suggest_r_multiple_stop_tighten_fires_above_trigger():
+    from swing.trades.advisory import suggest_r_multiple_stop_tighten
+    s = suggest_r_multiple_stop_tighten(_trade(), _ctx(close=210.0))
+    assert s is not None
+    assert "+3.00R" in s.message
+
+
+def test_suggest_r_multiple_stop_tighten_fires_regardless_of_stop_position():
+    """Brief §0.3 #4: "Fires regardless of current stop position (e.g.,
+    still fires when current_stop is already at breakeven — the second
+    half of the message 'tighten trail' remains actionable)."
+    """
+    from swing.trades.advisory import suggest_r_multiple_stop_tighten
+    # current_stop already at breakeven (180) — rule must still fire.
+    trade = _trade(current_stop=180.0)
+    s = suggest_r_multiple_stop_tighten(trade, _ctx(close=200.0))
+    assert s is not None
+
+
+def test_suggest_r_multiple_stop_tighten_message_format():
+    """Pin exact message wording per brief §0.3 #4 template."""
+    from swing.trades.advisory import suggest_r_multiple_stop_tighten
+    s = suggest_r_multiple_stop_tighten(_trade(), _ctx(close=210.0))
+    assert s is not None
+    assert s.message == (
+        "At +3.00R (≥2.0× stop) — Minervini M.2: consider moving "
+        "stop to breakeven OR tightening trail to lock in majority of gain"
+    )
+
+
+def test_suggest_r_multiple_stop_tighten_uses_cfg_multiple():
+    """Cfg override (3.0R) shifts the trigger; +2.5R no longer fires."""
+    from swing.trades.advisory import suggest_r_multiple_stop_tighten
+    cfg = StopAdvisoryConfig(tighten_at_r_multiple=3.0)
+    ctx = AdvisoryContext(
+        as_of_date="2026-04-15", current_price=205.0,  # +2.5R
+        sma10=None, sma20=None, sma50=None, previous_close=None,
+        weather_status="Bullish", config=cfg,
+    )
+    assert suggest_r_multiple_stop_tighten(_trade(), ctx) is None
+    # +3.0R → 210.0; +3.5R → 215.0 fires.
+    ctx2 = AdvisoryContext(
+        as_of_date="2026-04-15", current_price=215.0,
+        sma10=None, sma20=None, sma50=None, previous_close=None,
+        weather_status="Bullish", config=cfg,
+    )
+    s = suggest_r_multiple_stop_tighten(_trade(), ctx2)
+    assert s is not None
+    assert "≥3.0×" in s.message  # cfg override surfaced in message
+
+
+def test_suggest_r_multiple_stop_tighten_returns_none_on_nan_price():
+    """Codex R1 Major #1 — NaN current_price would silently produce '+nanR'
+    output through ``r_so_far`` without an isfinite guard. Mirrors Bundle 2's
+    parabolic_trim numeric-guard discipline.
+    """
+    from swing.trades.advisory import suggest_r_multiple_stop_tighten
+    ctx = AdvisoryContext(
+        as_of_date="2026-04-15", current_price=math.nan,
+        sma10=None, sma20=None, sma50=None, previous_close=None,
+        weather_status="Bullish", config=StopAdvisoryConfig(),
+    )
+    assert suggest_r_multiple_stop_tighten(_trade(), ctx) is None
+
+
+def test_suggest_r_multiple_stop_tighten_returns_none_on_inf_price():
+    from swing.trades.advisory import suggest_r_multiple_stop_tighten
+    ctx = AdvisoryContext(
+        as_of_date="2026-04-15", current_price=math.inf,
+        sma10=None, sma20=None, sma50=None, previous_close=None,
+        weather_status="Bullish", config=StopAdvisoryConfig(),
+    )
+    assert suggest_r_multiple_stop_tighten(_trade(), ctx) is None
+
+
+def test_suggest_r_multiple_stop_tighten_distinguishes_dhc_lar_boundary():
+    """Discriminating regression-arithmetic per brief §4.2 + §0.3 #13:
+    DHC's empirical state (r=0.85R) must NOT fire under default cfg
+    (2.0R trigger); LAR's empirical state (r=0.06R) also must not fire.
+    """
+    from swing.trades.advisory import suggest_r_multiple_stop_tighten
+    # DHC-like: entry 180 stop 170 → 1R=$10; r=0.85R means price 188.50.
+    s_dhc = suggest_r_multiple_stop_tighten(_trade(), _ctx(close=188.50))
+    assert s_dhc is None
+    # LAR-like: r=0.06R means price 180.60.
+    s_lar = suggest_r_multiple_stop_tighten(_trade(), _ctx(close=180.60))
+    assert s_lar is None
+
+
+def test_suggest_maturity_stage_trail_ma_hint_distinguishes_stages():
+    """Discriminating test (operator-memory feedback_regression_test_arithmetic.md):
+    same trade, two different maturity stages must yield different MAs."""
+    from swing.trades.advisory import suggest_maturity_stage_trail_ma_hint
+    s_pre = suggest_maturity_stage_trail_ma_hint(
+        _trade(), _ctx_maturity("pre_+1.5R"),
+    )
+    s_mature = suggest_maturity_stage_trail_ma_hint(
+        _trade(), _ctx_maturity(">=+2R_trail_eligible"),
+    )
+    assert s_pre is not None and s_mature is not None
+    assert "20MA" in s_pre.message
+    assert "10MA" in s_mature.message
+    assert s_pre.message != s_mature.message
 
 
 # ----------------------------------------------------------------------
@@ -336,6 +570,94 @@ def test_compute_all_suggestions_includes_parabolic_trim():
     )
     rules = [s.rule for s in sugs]
     assert "parabolic_trim" in rules
+
+
+def test_compute_all_suggestions_includes_maturity_stage_trail_ma_hint():
+    """3e.8 Bundle 3 — §4.A.bis fires when maturity_stage is supplied."""
+    ctx = AdvisoryContext(
+        as_of_date="2026-04-15", current_price=195.0,
+        sma10=None, sma20=None, sma50=None, previous_close=None,
+        weather_status="Bullish", config=StopAdvisoryConfig(),
+        maturity_stage="pre_+1.5R",
+    )
+    sugs = compute_all_suggestions(_trade(), ctx)
+    rules = [s.rule for s in sugs]
+    assert "maturity_stage_trail_ma_hint" in rules
+
+
+def test_compute_all_suggestions_omits_maturity_stage_hint_when_none():
+    """3e.8 Bundle 3 — default maturity_stage=None silently no-ops."""
+    sugs = compute_all_suggestions(_trade(), _ctx(close=195.0))
+    rules = [s.rule for s in sugs]
+    assert "maturity_stage_trail_ma_hint" not in rules
+
+
+def test_compute_all_suggestions_includes_r_multiple_stop_tighten():
+    """3e.8 Bundle 3 — §M.2 fires at +2R default trigger."""
+    sugs = compute_all_suggestions(_trade(), _ctx(close=200.0))
+    rules = [s.rule for s in sugs]
+    assert "r_multiple_stop_tighten" in rules
+
+
+def test_compute_all_suggestions_omits_r_multiple_stop_tighten_below_trigger():
+    sugs = compute_all_suggestions(_trade(), _ctx(close=195.0))
+    rules = [s.rule for s in sugs]
+    assert "r_multiple_stop_tighten" not in rules
+
+
+# ----------------------------------------------------------------------
+# 3e.8 Bundle 3 Codex R1 Major #2 — compute_price_independent_suggestions
+# (price-cache-degraded fallback path).
+# ----------------------------------------------------------------------
+
+
+def test_compute_price_independent_suggestions_fires_maturity_hint_with_sentinel_price():
+    """The maturity hint must fire even when ``current_price`` is a sentinel
+    0.0 (no live price snapshot available) — operator still sees the
+    DB-sourced §4.A.bis advisory under PriceCache degradation.
+    """
+    ctx = AdvisoryContext(
+        as_of_date="2026-04-15", current_price=0.0,
+        sma10=None, sma20=None, sma50=None, previous_close=None,
+        weather_status="STALE", config=StopAdvisoryConfig(),
+        maturity_stage="pre_+1.5R",
+    )
+    sugs = compute_price_independent_suggestions(_trade(), ctx)
+    rules = [s.rule for s in sugs]
+    assert rules == ["maturity_stage_trail_ma_hint"]
+
+
+def test_compute_price_independent_suggestions_omits_when_stage_is_none():
+    ctx = AdvisoryContext(
+        as_of_date="2026-04-15", current_price=0.0,
+        sma10=None, sma20=None, sma50=None, previous_close=None,
+        weather_status="STALE", config=StopAdvisoryConfig(),
+        maturity_stage=None,
+    )
+    sugs = compute_price_independent_suggestions(_trade(), ctx)
+    assert sugs == []
+
+
+def test_compute_price_independent_suggestions_excludes_price_dependent_rules():
+    """Discriminating: even when r_so_far(trade, 0.0) would be a large
+    negative R, the price-dependent rules MUST NOT be included in this
+    function's output. Pre-fix would have e.g. accidentally included
+    breakeven / trail_ma if implemented as a generic filter."""
+    ctx = AdvisoryContext(
+        as_of_date="2026-04-15", current_price=0.0,
+        sma10=190.0, sma20=185.0, sma50=180.0,
+        previous_close=None, weather_status="Bullish",
+        config=StopAdvisoryConfig(),
+        maturity_stage="pre_+1.5R",
+    )
+    sugs = compute_price_independent_suggestions(_trade(), ctx)
+    rules = {s.rule for s in sugs}
+    assert "breakeven" not in rules
+    assert "trail_10ma" not in rules
+    assert "trail_20ma" not in rules
+    assert "trim_into_strength" not in rules
+    assert "r_multiple_stop_tighten" not in rules
+    assert "maturity_stage_trail_ma_hint" in rules
 
 
 def _trade(*, current_stop: float = 170.0, entry: float = 180.0, days: int = 0) -> Trade:

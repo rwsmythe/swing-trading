@@ -155,6 +155,15 @@ def build_open_positions_row(
             # is forward-looking; querying by action_session silently fails
             # on weekend/holiday gaps.
             weather = get_latest(conn, ticker=cfg.rs.benchmark_ticker)
+            # 3e.8 Bundle 3 — per-trade active snapshot for the §4.A.bis
+            # maturity_stage advisory. Latest-session-clamped reader; returns
+            # None if no snapshot exists (rule no-ops).
+            from swing.data.repos.daily_management import (
+                select_latest_active_snapshot_for_trade,
+            )
+            _active_snap = select_latest_active_snapshot_for_trade(
+                conn, trade_id=trade.id,
+            )
             # Polish-bundle 2026-05-09 Family A — single-row variant of the
             # dashboard's batched call; passes a one-element list. Empty input
             # short-circuits per helper contract, so trade.id=None is also
@@ -179,25 +188,36 @@ def build_open_positions_row(
     weather_status = weather.status if weather else "STALE"
 
     advisories: tuple[AdvisorySuggestionVM, ...] = ()
+    # 3e.8 Bundle 2 — adr_pct from OhlcvBundle; has_been_trimmed from
+    # the same non_entry_fills already used for remaining-shares math.
+    # 3e.8 Bundle 3 Codex R1 Major #2 — DB-sourced §4.A.bis must fire
+    # even when PriceCache is degraded; run the price-independent subset
+    # always when maturity_stage is known.
+    ctx = AdvisoryContext(
+        as_of_date=action_session,
+        current_price=snapshot.price if snapshot is not None else 0.0,
+        sma10=bundle.sma10 if bundle else None,
+        sma20=bundle.sma20 if bundle else None,
+        sma50=bundle.sma50 if bundle else None,
+        previous_close=bundle.previous_close if bundle else None,
+        weather_status=weather_status,
+        config=cfg.stop_advisory,
+        adr_pct=bundle.adr_pct if bundle else None,
+        has_been_trimmed=bool(non_entry_fills),
+        maturity_stage=(
+            _active_snap.maturity_stage if _active_snap else None
+        ),
+    )
     if snapshot is not None:
-        # 3e.8 Bundle 2 — adr_pct from OhlcvBundle; has_been_trimmed from
-        # the same non_entry_fills already used for remaining-shares math.
-        ctx = AdvisoryContext(
-            as_of_date=action_session,
-            current_price=snapshot.price,
-            sma10=bundle.sma10 if bundle else None,
-            sma20=bundle.sma20 if bundle else None,
-            sma50=bundle.sma50 if bundle else None,
-            previous_close=bundle.previous_close if bundle else None,
-            weather_status=weather_status,
-            config=cfg.stop_advisory,
-            adr_pct=bundle.adr_pct if bundle else None,
-            has_been_trimmed=bool(non_entry_fills),
-        )
         raw = compute_all_suggestions(trade, ctx)
-        advisories = tuple(
-            AdvisorySuggestionVM(rule=s.rule, message=s.message) for s in raw
+    else:
+        from swing.trades.advisory import (
+            compute_price_independent_suggestions,
         )
+        raw = compute_price_independent_suggestions(trade, ctx)
+    advisories = tuple(
+        AdvisorySuggestionVM(rule=s.rule, message=s.message) for s in raw
+    )
 
     return _open_positions_row_vm(
         trade=trade,
@@ -297,24 +317,41 @@ def build_open_positions_expanded(
         # snapshot.
         fills = list_fills_for_trade(conn, trade.id)
         has_been_trimmed = any(f.action != "entry" for f in fills)
+        # 3e.8 Bundle 3 — per-trade active snapshot for §4.A.bis maturity_stage.
+        from swing.data.repos.daily_management import (
+            select_latest_active_snapshot_for_trade,
+        )
+        _active_snap = select_latest_active_snapshot_for_trade(
+            conn, trade_id=trade.id,
+        )
+        # 3e.8 Bundle 3 Codex R1 Major #2 — §4.A.bis fires regardless of
+        # price availability; build context always, choose composer by snap.
+        ctx = AdvisoryContext(
+            as_of_date=action_session,
+            current_price=snap.price if snap is not None else 0.0,
+            sma10=bundle.sma10 if bundle else None,
+            sma20=bundle.sma20 if bundle else None,
+            sma50=bundle.sma50 if bundle else None,
+            previous_close=bundle.previous_close if bundle else None,
+            weather_status=weather_status,
+            config=cfg.stop_advisory,
+            adr_pct=bundle.adr_pct if bundle else None,
+            has_been_trimmed=has_been_trimmed,
+            maturity_stage=(
+                _active_snap.maturity_stage if _active_snap else None
+            ),
+        )
         if snap is not None:
-            ctx = AdvisoryContext(
-                as_of_date=action_session,
-                current_price=snap.price,
-                sma10=bundle.sma10 if bundle else None,
-                sma20=bundle.sma20 if bundle else None,
-                sma50=bundle.sma50 if bundle else None,
-                previous_close=bundle.previous_close if bundle else None,
-                weather_status=weather_status,
-                config=cfg.stop_advisory,
-                adr_pct=bundle.adr_pct if bundle else None,
-                has_been_trimmed=has_been_trimmed,
-            )
             raw = compute_all_suggestions(trade, ctx)
-            advisories = tuple(
-                AdvisorySuggestionVM(rule=s.rule, message=s.message)
-                for s in raw
+        else:
+            from swing.trades.advisory import (
+                compute_price_independent_suggestions,
             )
+            raw = compute_price_independent_suggestions(trade, ctx)
+        advisories = tuple(
+            AdvisorySuggestionVM(rule=s.rule, message=s.message)
+            for s in raw
+        )
 
     binding = latest_completed_pipeline_run(conn)
     if binding is None:

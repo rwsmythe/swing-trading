@@ -890,6 +890,7 @@ def compose_open_trade_advisories_for_briefing(
     action_session_date: str,
     data_asof_date: str | None = None,
     trimmed_trade_ids: set[int] | None = None,
+    maturity_stage_by_trade_id: dict[int, str | None] | None = None,
 ) -> dict[int, list[AdvisorySuggestionVM]]:
     """Compose per-trade advisories for the pipeline briefing renderer.
 
@@ -969,7 +970,32 @@ def compose_open_trade_advisories_for_briefing(
                 "briefing advisory: fetcher.get failed for %s: %s",
                 t.ticker, exc,
             )
-            out[t.id] = []
+            # Codex R2 Major #1 — even on fetcher failure, the DB-sourced
+            # §4.A.bis maturity-stage hint should fire (the helper's stated
+            # contract at swing/trades/advisory.py compute_price_independent_suggestions
+            # says "PriceCache degraded; OHLCV fetch failed; etc."). Pre-fix
+            # ``out[t.id] = []`` skip silently dropped the hint here.
+            ctx_mat = AdvisoryContext(
+                as_of_date=action_session_date,
+                current_price=0.0,
+                sma10=None, sma20=None, sma50=None,
+                previous_close=None,
+                weather_status=weather_status,
+                config=stop_advisory_config,
+                maturity_stage=(
+                    maturity_stage_by_trade_id.get(t.id)
+                    if maturity_stage_by_trade_id is not None
+                    else None
+                ),
+            )
+            from swing.trades.advisory import (
+                compute_price_independent_suggestions,
+            )
+            mat_raw = compute_price_independent_suggestions(t, ctx_mat)
+            out[t.id] = [
+                AdvisorySuggestionVM(rule=s.rule, message=s.message)
+                for s in mat_raw
+            ]
             continue
 
         smas = _compute_smas(bars, [10, 20, 50])
@@ -984,8 +1010,33 @@ def compose_open_trade_advisories_for_briefing(
         # open-position tickers by `_step_evaluate`) → OHLCV last-bar close
         # fallback. Both anchor on the last completed session.
         current_price = cand_close if cand_close is not None else prev_close
+        # 3e.8 Bundle 3 Codex R1 Major #2 — when no current_price is
+        # available, the §4.A.bis maturity-stage advisory should still
+        # fire from the DB-sourced snapshot. Use a sentinel price (0.0)
+        # and the price-independent composer rather than dropping the
+        # trade entirely.
         if current_price is None:
-            out[t.id] = []
+            ctx_mat = AdvisoryContext(
+                as_of_date=action_session_date,
+                current_price=0.0,
+                sma10=None, sma20=None, sma50=None,
+                previous_close=None,
+                weather_status=weather_status,
+                config=stop_advisory_config,
+                maturity_stage=(
+                    maturity_stage_by_trade_id.get(t.id)
+                    if maturity_stage_by_trade_id is not None
+                    else None
+                ),
+            )
+            from swing.trades.advisory import (
+                compute_price_independent_suggestions,
+            )
+            mat_raw = compute_price_independent_suggestions(t, ctx_mat)
+            out[t.id] = [
+                AdvisorySuggestionVM(rule=s.rule, message=s.message)
+                for s in mat_raw
+            ]
             continue
 
         ctx = AdvisoryContext(
@@ -1002,6 +1053,15 @@ def compose_open_trade_advisories_for_briefing(
                 t.id in trimmed_trade_ids
                 if trimmed_trade_ids is not None
                 else False
+            ),
+            # 3e.8 Bundle 3 — caller supplies a {trade_id: maturity_stage} map
+            # built from the same ``list_open_position_active_snapshots`` read
+            # ``_step_export`` performs for ``daily_mgmt_snapshots``. Missing
+            # trade_id ⇒ None ⇒ rule no-ops.
+            maturity_stage=(
+                maturity_stage_by_trade_id.get(t.id)
+                if maturity_stage_by_trade_id is not None
+                else None
             ),
         )
         raw = compute_all_suggestions(t, ctx)
@@ -1153,6 +1213,14 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
         trimmed_trade_ids: set[int] = {
             f.trade_id for f in list_all_fills(conn) if f.action != "entry"
         }
+        # 3e.8 Bundle 3 — build {trade_id: maturity_stage} alongside the
+        # daily_mgmt_snapshots read above so the briefing composer can fire
+        # the §4.A.bis maturity-stage advisory. Reuses the SAME snapshot list
+        # the briefing renderer's daily-management section consumes — single
+        # source of truth.
+        maturity_stage_by_trade_id: dict[int, str | None] = {
+            s.trade_id: s.maturity_stage for s in daily_mgmt_snapshots
+        }
     finally:
         conn.close()
 
@@ -1185,6 +1253,7 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
             action_session_date=action_session.isoformat(),
             data_asof_date=data_asof,
             trimmed_trade_ids=trimmed_trade_ids,
+            maturity_stage_by_trade_id=maturity_stage_by_trade_id,
         )
     else:
         open_trade_advisories = {}

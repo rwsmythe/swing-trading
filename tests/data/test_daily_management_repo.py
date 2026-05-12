@@ -29,6 +29,7 @@ from swing.data.repos.daily_management import (
     list_open_position_active_snapshots,
     select_active_snapshot,
     select_history,
+    select_latest_active_snapshot_for_trade,
     tier_upgrade_snapshot,
     upsert_snapshot,
 )
@@ -370,6 +371,85 @@ def test_list_open_position_active_snapshots_returns_only_latest_per_trade(
     assert snaps[0].data_asof_session == "2026-05-07", (
         f"latest session must win; got {snaps[0].data_asof_session}"
     )
+
+
+# ----------------------------------------------------------------------
+# 3e.8 Bundle 3 — select_latest_active_snapshot_for_trade (per-trade
+# variant of list_open_position_active_snapshots; powers VM builders that
+# need a single trade's maturity_stage without knowing the session anchor).
+# ----------------------------------------------------------------------
+
+
+def test_select_latest_active_snapshot_for_trade_returns_none_when_no_snapshot(
+    conn: sqlite3.Connection,
+) -> None:
+    """No snapshots exist for the trade → returns None (rule layer no-ops)."""
+    rec = select_latest_active_snapshot_for_trade(conn, trade_id=1)
+    assert rec is None
+
+
+def test_select_latest_active_snapshot_for_trade_returns_only_latest_session(
+    conn: sqlite3.Connection,
+) -> None:
+    """Mirrors list_open_position_active_snapshots's latest-session clamp.
+
+    Pre-fix (no MAX subquery): would return the EARLIEST session OR all rows.
+    Post-fix: clamps to MAX(data_asof_session) for the trade.
+    """
+    fields_d1 = _full_snapshot_fields(data_asof_session="2026-05-05")
+    fields_d1["maturity_stage"] = "pre_+1.5R"
+    fields_d2 = _full_snapshot_fields(data_asof_session="2026-05-07")
+    fields_d2["maturity_stage"] = ">=+2R_trail_eligible"
+    insert_snapshot(conn, trade_id=1, snapshot_fields=fields_d1)
+    insert_snapshot(conn, trade_id=1, snapshot_fields=fields_d2)
+
+    rec = select_latest_active_snapshot_for_trade(conn, trade_id=1)
+    assert rec is not None
+    assert rec.data_asof_session == "2026-05-07"
+    assert rec.maturity_stage == ">=+2R_trail_eligible"
+
+
+def test_select_latest_active_snapshot_for_trade_excludes_superseded(
+    conn: sqlite3.Connection,
+) -> None:
+    """is_superseded=1 rows are filtered out even when their session is latest."""
+    fields = _full_snapshot_fields(data_asof_session="2026-05-07")
+    rec_id = insert_snapshot(conn, trade_id=1, snapshot_fields=fields)
+    conn.execute(
+        "UPDATE daily_management_records SET is_superseded = 1 "
+        "WHERE management_record_id = ?",
+        (rec_id,),
+    )
+    rec = select_latest_active_snapshot_for_trade(conn, trade_id=1)
+    assert rec is None
+
+
+def test_select_latest_active_snapshot_for_trade_excludes_event_log(
+    conn: sqlite3.Connection,
+) -> None:
+    """Only ``record_type='daily_snapshot'`` rows; event_log rows ignored."""
+    el = _minimal_event_log_fields(data_asof_session="2026-05-07")
+    insert_event_log(conn, trade_id=1, event_log_fields=el)
+    rec = select_latest_active_snapshot_for_trade(conn, trade_id=1)
+    assert rec is None
+
+
+def test_select_latest_active_snapshot_for_trade_scopes_to_requested_trade(
+    conn: sqlite3.Connection,
+) -> None:
+    """Discriminating test: another trade's snapshot must NOT leak through."""
+    _seed_minimal_trade(conn, trade_id=2)
+    fields1 = _full_snapshot_fields(data_asof_session="2026-05-07")
+    fields1["maturity_stage"] = "pre_+1.5R"
+    insert_snapshot(conn, trade_id=1, snapshot_fields=fields1)
+    fields2 = _full_snapshot_fields(data_asof_session="2026-05-07")
+    fields2["maturity_stage"] = ">=+2R_trail_eligible"
+    insert_snapshot(conn, trade_id=2, snapshot_fields=fields2)
+
+    rec1 = select_latest_active_snapshot_for_trade(conn, trade_id=1)
+    rec2 = select_latest_active_snapshot_for_trade(conn, trade_id=2)
+    assert rec1 is not None and rec1.maturity_stage == "pre_+1.5R"
+    assert rec2 is not None and rec2.maturity_stage == ">=+2R_trail_eligible"
 
 
 # ---- T2.3: upsert_snapshot + tier_upgrade_snapshot --------------------------
