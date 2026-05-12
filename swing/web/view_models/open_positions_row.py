@@ -155,6 +155,15 @@ def build_open_positions_row(
             # is forward-looking; querying by action_session silently fails
             # on weekend/holiday gaps.
             weather = get_latest(conn, ticker=cfg.rs.benchmark_ticker)
+            # 3e.8 Bundle 3 — per-trade active snapshot for the §4.A.bis
+            # maturity_stage advisory. Latest-session-clamped reader; returns
+            # None if no snapshot exists (rule no-ops).
+            from swing.data.repos.daily_management import (
+                select_latest_active_snapshot_for_trade,
+            )
+            _active_snap = select_latest_active_snapshot_for_trade(
+                conn, trade_id=trade.id,
+            )
             # Polish-bundle 2026-05-09 Family A — single-row variant of the
             # dashboard's batched call; passes a one-element list. Empty input
             # short-circuits per helper contract, so trade.id=None is also
@@ -193,6 +202,9 @@ def build_open_positions_row(
             config=cfg.stop_advisory,
             adr_pct=bundle.adr_pct if bundle else None,
             has_been_trimmed=bool(non_entry_fills),
+            maturity_stage=(
+                _active_snap.maturity_stage if _active_snap else None
+            ),
         )
         raw = compute_all_suggestions(trade, ctx)
         advisories = tuple(
@@ -297,6 +309,13 @@ def build_open_positions_expanded(
         # snapshot.
         fills = list_fills_for_trade(conn, trade.id)
         has_been_trimmed = any(f.action != "entry" for f in fills)
+        # 3e.8 Bundle 3 — per-trade active snapshot for §4.A.bis maturity_stage.
+        from swing.data.repos.daily_management import (
+            select_latest_active_snapshot_for_trade,
+        )
+        _active_snap = select_latest_active_snapshot_for_trade(
+            conn, trade_id=trade.id,
+        )
         if snap is not None:
             ctx = AdvisoryContext(
                 as_of_date=action_session,
@@ -309,6 +328,9 @@ def build_open_positions_expanded(
                 config=cfg.stop_advisory,
                 adr_pct=bundle.adr_pct if bundle else None,
                 has_been_trimmed=has_been_trimmed,
+                maturity_stage=(
+                    _active_snap.maturity_stage if _active_snap else None
+                ),
             )
             raw = compute_all_suggestions(trade, ctx)
             advisories = tuple(

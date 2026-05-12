@@ -905,9 +905,19 @@ def build_trade_detail_vm(
             # action_session"). Read inside the same snapshot so the advisory
             # composition sees a consistent view.
             weather = None
+            # 3e.8 Bundle 3 — per-trade active snapshot for §4.A.bis maturity_stage
+            # hint. Loaded inside the same read snapshot as fills + weather so the
+            # advisory composition sees a consistent view.
+            active_snap = None
             if cache is not None and trade.state in _ACTIVE_STATES:
                 from swing.data.repos.weather import get_latest
                 weather = get_latest(conn, ticker=cfg.rs.benchmark_ticker)
+                from swing.data.repos.daily_management import (
+                    select_latest_active_snapshot_for_trade,
+                )
+                active_snap = select_latest_active_snapshot_for_trade(
+                    conn, trade_id=trade_id,
+                )
     finally:
         conn.close()
 
@@ -960,6 +970,9 @@ def build_trade_detail_vm(
                 config=cfg.stop_advisory,
                 adr_pct=bundle.adr_pct if bundle else None,
                 has_been_trimmed=has_been_trimmed,
+                maturity_stage=(
+                    active_snap.maturity_stage if active_snap else None
+                ),
             )
             raw = compute_all_suggestions(trade, ctx)
             advisories = tuple(

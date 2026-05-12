@@ -763,6 +763,7 @@ def build_dashboard(
             # immediately after a successful operator submit.
             from swing.data.repos.daily_management import (
                 has_update_today_for_trades,
+                list_open_position_active_snapshots,
             )
             from swing.evaluation.dates import last_completed_session
             mgmt_session_date = last_completed_session(now).isoformat()
@@ -771,6 +772,15 @@ def build_dashboard(
                 [t.id for t in open_trades if t.id is not None],
                 session_date=mgmt_session_date,
             )
+            # 3e.8 Bundle 3 — per-trade maturity_stage drives the §4.A.bis
+            # ``suggest_maturity_stage_trail_ma_hint`` advisory. Loaded inside
+            # this same ``with conn:`` so the advisory composition loop below
+            # sees a consistent read snapshot. The Phase 8 tile feed (later
+            # in the function) reuses the same list rather than re-opening a
+            # second connection — consolidates the two daily-management
+            # reads onto one snapshot.
+            active_snapshots = list_open_position_active_snapshots(conn)
+            snap_by_trade_id = {s.trade_id: s for s in active_snapshots}
             # Latest pipeline run — two independent reads so an in-flight run
             # (finished_ts IS NULL) doesn't mask the last-known-good completion.
             # `last_pipeline_ts` = most-recent COMPLETED run's finished_ts
@@ -952,6 +962,11 @@ def build_dashboard(
         # has been trimmed iff any non-entry fill exists for it
         # (exits_by_trade rows are sourced from non-entry fills via
         # `_list_all_exitshape_via_fills`).
+        # 3e.8 Bundle 3 — maturity_stage from the per-trade active snapshot
+        # already loaded into ``snap_by_trade_id`` above. None when the trade
+        # has no active snapshot yet (just-opened pre-pipeline-run) — rule
+        # no-ops per §0.3 #6.
+        _trade_snap = snap_by_trade_id.get(t.id)
         ctx_adv = AdvisoryContext(
             as_of_date=action_session,
             current_price=snap.price if snap else 0.0,
@@ -963,6 +978,7 @@ def build_dashboard(
             config=cfg.stop_advisory,
             adr_pct=bundle.adr_pct if bundle else None,
             has_been_trimmed=bool(exits_by_trade.get(t.id)),
+            maturity_stage=_trade_snap.maturity_stage if _trade_snap else None,
         )
         raw = compute_all_suggestions(t, ctx_adv) if snap else []
         advisories_tuple = tuple(
@@ -1114,27 +1130,17 @@ def build_dashboard(
     finally:
         conn2.close()
 
-    # Phase 8 Task 5.1 — daily-management tile list. Open the DB once more to
-    # query the active-snapshot feed; JOIN with the open-trades collection
-    # already in scope so each tile resolves §5.6 live values from the
-    # trades-row authoritative source (current_stop, state,
-    # planned_target_R) and time-series values from the snapshot row.
-    from swing.data.repos.daily_management import (
-        list_open_position_active_snapshots,
-    )
+    # Phase 8 Task 5.1 — daily-management tile list. Reuses the
+    # ``active_snapshots`` list already loaded inside the earlier
+    # ``with conn:`` block (Bundle 3 consolidation) so the tile feed and
+    # the advisory composition share one read snapshot.
     from swing.web.view_models.trades import DailyManagementTileVM
 
     daily_management_tiles: tuple[DailyManagementTileVM, ...] = ()
     open_trades_by_id = {t.id: t for t in open_trades if t.id is not None}
     if open_trades_by_id:
-        conn3 = connect(cfg.paths.db_path)
-        try:
-            with conn3:
-                snapshots = list_open_position_active_snapshots(conn3)
-        finally:
-            conn3.close()
         tiles: list[DailyManagementTileVM] = []
-        for snap in snapshots:
+        for snap in active_snapshots:
             trade = open_trades_by_id.get(snap.trade_id)
             if trade is None:
                 # Defensive: snapshot's open-trade JOIN diverges from the
