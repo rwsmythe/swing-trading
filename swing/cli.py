@@ -1645,6 +1645,254 @@ def journal_cash_cmd(ctx, deposit, withdraw, date_str, ref, note):
     click.echo(f"Cash {kind} #{cid}: ${amount:.2f}{f' ref={ref}' if ref else ''}")
 
 
+@journal_group.command("reconcile-tos")
+@click.option(
+    "--csv-path", "csv_path", required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Path to TOS Account Statement CSV.",
+)
+@click.option(
+    "--period-end", default=None,
+    help="Reconciliation period inclusive upper bound (YYYY-MM-DD).",
+)
+@click.option(
+    "--period-start", default=None,
+    help="Reconciliation period inclusive lower bound (YYYY-MM-DD).",
+)
+@click.option("--notes", default=None, help="Free-text operator note.")
+@click.option(
+    "--price-tolerance", type=float, default=0.01,
+    help="Dollar threshold for price-mismatch detection (strict-greater-than).",
+)
+@click.pass_context
+def journal_reconcile_tos_cmd(
+    ctx, csv_path, period_end, period_start, notes, price_tolerance,
+):
+    """Reconcile a TOS Account Statement against the journal (Phase 9).
+
+    Drives ``swing.trades.reconciliation.run_tos_reconciliation`` —
+    INSERTs a ``reconciliation_runs`` row with discrepancies persisted
+    in ``reconciliation_discrepancies``. Failure-path PRESERVES the
+    row with ``state='failed'`` per spec §3.3.3.
+    """
+    from pathlib import Path as _Path
+
+    from swing.data.db import connect
+    from swing.trades.reconciliation import run_tos_reconciliation
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        run = run_tos_reconciliation(
+            conn,
+            csv_path=_Path(csv_path),
+            period_end=period_end,
+            period_start=period_start,
+            notes=notes,
+            price_tolerance=price_tolerance,
+        )
+    finally:
+        conn.close()
+
+    click.echo(
+        f"Reconciliation run #{run.run_id}: state={run.state} "
+        f"discrepancies={run.discrepancies_count or 0} "
+        f"unresolved={run.unresolved_discrepancies_count or 0}"
+    )
+    if run.error_message:
+        click.echo(f"Error: {run.error_message}", err=True)
+        ctx.exit(1)
+    if run.summary_json:
+        import json as _json
+        try:
+            summary = _json.loads(run.summary_json)
+            for k in sorted(summary.keys()):
+                click.echo(f"  {k}: {summary[k]}")
+        except (ValueError, TypeError):
+            pass
+
+
+@journal_group.command("import-tos")
+@click.option(
+    "--csv-path", "csv_path", required=True,
+    type=click.Path(exists=True, dir_okay=False),
+)
+@click.option("--period-end", default=None)
+@click.option("--period-start", default=None)
+@click.option("--notes", default=None)
+@click.option("--price-tolerance", type=float, default=0.01)
+@click.pass_context
+def journal_import_tos_cmd(
+    ctx, csv_path, period_end, period_start, notes, price_tolerance,
+):
+    """Deprecated alias for ``swing journal reconcile-tos``.
+
+    V1 retains this alias for one phase; alias removed in V2 per plan
+    §A.2.2. Operator-visible stderr WARNING fires on every invocation.
+    """
+    click.echo(
+        "WARNING: `swing journal import-tos` is deprecated; "
+        "use `swing journal reconcile-tos` instead.",
+        err=True,
+    )
+    ctx.invoke(
+        journal_reconcile_tos_cmd,
+        csv_path=csv_path,
+        period_end=period_end,
+        period_start=period_start,
+        notes=notes,
+        price_tolerance=price_tolerance,
+    )
+
+
+@journal_group.group("discrepancy")
+def discrepancy_group() -> None:
+    """Phase 9 reconciliation discrepancy review + resolution."""
+
+
+@discrepancy_group.command("list")
+@click.option("--unresolved", is_flag=True, help="Only show unresolved rows.")
+@click.option(
+    "--material", is_flag=True,
+    help="Only show rows with material_to_review=1.",
+)
+@click.option(
+    "--trade-id", type=int, default=None, help="Filter to a specific trade.",
+)
+@click.option("--limit", type=int, default=50, help="Max rows to show.")
+@click.pass_context
+def discrepancy_list_cmd(ctx, unresolved, material, trade_id, limit):
+    """List reconciliation discrepancies with optional filters."""
+    from swing.data.db import connect
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        where = []
+        params: list = []
+        if unresolved:
+            where.append("resolution = 'unresolved'")
+        if material:
+            where.append("material_to_review = 1")
+        if trade_id is not None:
+            where.append("trade_id = ?")
+            params.append(trade_id)
+        sql = (
+            "SELECT discrepancy_id, run_id, discrepancy_type, trade_id, "
+            "ticker, field_name, material_to_review, resolution, delta_text "
+            "FROM reconciliation_discrepancies"
+        )
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY discrepancy_id DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        click.echo("(no discrepancies)")
+        return
+    click.echo(
+        f"{'ID':>5} {'Run':>4} {'Type':<22} {'Trade':>6} "
+        f"{'Ticker':<8} {'Field':<14} {'Mat':>3} {'Resolution':<22} Delta"
+    )
+    for r in rows:
+        did, rid, dtype, tid, tk, fn, mat, res, dt = r
+        click.echo(
+            f"{did:>5} {rid:>4} {dtype:<22} "
+            f"{(tid if tid is not None else '-'):>6} "
+            f"{(tk or '-'):<8} {fn:<14} {mat:>3} {res:<22} {dt or ''}"
+        )
+
+
+@discrepancy_group.command("show")
+@click.argument("discrepancy_id", type=int)
+@click.pass_context
+def discrepancy_show_cmd(ctx, discrepancy_id):
+    """Print full detail for a single discrepancy."""
+    from swing.data.db import connect
+    from swing.data.repos.reconciliation import get_discrepancy
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        d = get_discrepancy(conn, discrepancy_id)
+    finally:
+        conn.close()
+    if d is None:
+        raise click.ClickException(f"discrepancy {discrepancy_id} not found")
+    click.echo(f"discrepancy_id: {d.discrepancy_id}")
+    click.echo(f"run_id:         {d.run_id}")
+    click.echo(f"type:           {d.discrepancy_type}")
+    click.echo(f"trade_id:       {d.trade_id}")
+    click.echo(f"fill_id:        {d.fill_id}")
+    click.echo(f"cash_id:        {d.cash_movement_id}")
+    click.echo(f"ticker:         {d.ticker}")
+    click.echo(f"field:          {d.field_name}")
+    click.echo(f"material:       {d.material_to_review}")
+    click.echo(f"expected:       {d.expected_value_json}")
+    click.echo(f"actual:         {d.actual_value_json}")
+    click.echo(f"delta:          {d.delta_text}")
+    click.echo(f"resolution:     {d.resolution}")
+    click.echo(f"reason:         {d.resolution_reason}")
+    click.echo(f"resolved_at:    {d.resolved_at}")
+    click.echo(f"resolved_by:    {d.resolved_by}")
+    click.echo(f"mistake_tag:    {d.mistake_tag_assigned}")
+    click.echo(f"created_at:     {d.created_at}")
+
+
+@discrepancy_group.command("resolve")
+@click.argument("discrepancy_id", type=int)
+@click.option(
+    "--resolution",
+    type=click.Choice([
+        "journal_corrected", "source_treated_canonical",
+        "manual_override", "acknowledged_immaterial",
+    ]),
+    required=True,
+)
+@click.option(
+    "--reason", default=None,
+    help="Required for journal_corrected / source_treated_canonical / "
+         "manual_override; optional for acknowledged_immaterial.",
+)
+@click.option(
+    "--material", type=click.IntRange(0, 1), default=None,
+    help="Optional override of material_to_review (0 or 1).",
+)
+@click.option(
+    "--mistake-tag", default=None,
+    help="Optional mistake_tag from review.py vocabulary.",
+)
+@click.pass_context
+def discrepancy_resolve_cmd(
+    ctx, discrepancy_id, resolution, reason, material, mistake_tag,
+):
+    """Resolve a discrepancy with an operator-supplied resolution + reason."""
+    from swing.data.db import connect
+    from swing.trades.reconciliation import resolve_discrepancy
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        try:
+            resolve_discrepancy(
+                conn,
+                discrepancy_id=discrepancy_id,
+                resolution=resolution,
+                resolution_reason=reason,
+                mistake_tag_assigned=mistake_tag,
+                material_to_review=material,
+            )
+        except ValueError as e:
+            raise click.ClickException(str(e)) from None
+    finally:
+        conn.close()
+    click.echo(
+        f"Discrepancy {discrepancy_id} resolved: resolution={resolution}"
+    )
+
+
 @main.command("tos-import")
 @click.option("--csv", "csv_path", required=True, type=click.Path(exists=True, dir_okay=False))
 @click.option("--dry-run", is_flag=True, help="Print report without committing anything")
