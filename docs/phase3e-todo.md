@@ -1117,36 +1117,27 @@ Per project baseline-tracking convention: when bundled in, update `docs/orchestr
 
 **Cross-refs:** §3e.8 §4.B + §4.K + §4.D. Brief at `docs/3e8-bundle-2-sell-side-advisories-brief.md`.
 
-### Bundle 3 — Maturity-stage hint + M.2 R-multiple stop-tighten hint (Option δ) — DISPATCH-READY POST-BUNDLE-2
+### Bundle 3 — Maturity-stage hint + M.2 R-multiple stop-tighten hint (Option δ) — **SHIPPED 2026-05-11** at `ea95bc8` (worktree dispatch; 10 commits = 7 task-impl + 2 Codex-fix + 1 return-report; 3 Codex rounds NO_NEW_CRITICAL_MAJOR)
 
-**Trigger:** Bundle 2 ships. Operator commission.
+> **Outcome:** SHIPPED via worktree dispatch on `3e8-bundle-3-maturity-and-stop-tighten-hints` branch from BASELINE_SHA `9d5cfb1`. Two new sell-side advisory rules closing the operator-locked subset of the 3e.8 advisory-expansion arc: (1) **§4.A.bis** `suggest_maturity_stage_trail_ma_hint` — informational hint per Tier-3 #6 (`pre_+1.5R` / `+1.5R_to_+2R` → `20MA`; `>=+2R_trail_eligible` → `10MA`); does NOT suppress existing trail advisories. (2) **M.2** `suggest_r_multiple_stop_tighten` — doctrine-anchored to TLSMW Ch 13 p. 296 verbatim (default `tighten_at_r_multiple = 2.0R`). Both advisory-message-only; no schema; no V2.1 §VII.F routing. `AdvisoryContext` gains `maturity_stage: str | None` field; `StopAdvisoryConfig` gains `tighten_at_r_multiple` cfg key with `__post_init__` NaN/inf/non-positive rejection. New `select_latest_active_snapshot_for_trade` repo helper at [`swing/data/repos/daily_management.py`](../swing/data/repos/daily_management.py) (Task C.0 extraction). 6 composition surfaces threaded (web ×4 + pipeline briefing + CLI); CLI gains `--maturity-stage` flag with enum-constrained choices. Codex chain 3 rounds → NO_NEW_CRITICAL_MAJOR (R1 0/2/0 → R2 0/1/0 → R3 0/0/0; convergent). Operator-witnessed gate via Chrome MCP S1+S2+S3+S4+S5+S6+S7 ALL PASS — §4.A.bis fires on all 5 open trades with "Maturity stage pre_+1.5R — recommended trail-MA: 20MA"; M.2 correctly suppressed everywhere (max R is DHC 0.82R, VSAT 0.64R); LAR carries Bundle 2 parabolic + Bundle 3 maturity hint together; CLI `--maturity-stage` flag verified accept-with-flag / suppress-without; fresh worktree pipeline run (session 2026-05-12) emitted briefing.md with §4.A.bis advisory line per open trade verbatim. Test count 2278 → 2328 (+51); ruff baseline 18 unchanged. **2 V2 lessons banked separately below.**
 
-**Reframing (operator-locked 2026-05-10 post-§4.G):** Originally §4.A.bis only (maturity-stage MA hint). Reframed to Option δ (hybrid) — TWO complementary advisories addressing different operator questions.
+**Operator design locks** (operator handoff brief 2026-05-11 locked Option δ scope + cfg defaults; this brief locked remaining minor questions):
+- §4.A.bis fires informationally; does NOT suppress existing trail_10ma / trail_20ma. Full classification-altering §4.A remains banked-without-gate.
+- §4.A.bis is operator-policy maturity-stage-driven; doctrine-faithful stock-speed-driven version (per DST D.3) is V2 (requires new schema).
+- M.2 default `tighten_at_r_multiple = 2.0R` (conservative floor; TLSMW example = 2.86R for 7%/20%).
 
-**Scope (TWO advisories):**
+**Codex Major findings resolved** (3 majors total across 2 rounds):
+- R1 #1: NaN guard on M.2 rule (mirrors Bundle 2 parabolic isfinite discipline).
+- R1 #2: **`compute_price_independent_suggestions` helper** introduced. §4.A.bis is the only price-independent rule today (DB-sourced, not PriceCache-dependent); fires even under PriceCache degradation. Architectural fix banked as V2 lesson on degradation pathways. Threaded across 5 web/pipeline composition sites.
+- R2 #1: Briefing composer's fetcher-exception branch also emits the maturity hint (not just `current_price is None` path).
 
-1. **§4.A.bis — Maturity-stage MA hint (operator-policy per Tier-3 #6):**
-   - Trigger: read `maturity_stage` from active snapshot
-   - Emit: `"Maturity stage {stage} → recommended trail-MA: {20MA | 10MA}"`
-   - Doctrine basis: project-policy hybrid of M.2 + D.3 (not pure-doctrine in either thread)
-   - Does NOT suppress existing `trail_10MA` / `trail_20MA` advisories
-   - Effort: ~2-3 hr
+**Brief deviations banked for orchestrator learning:**
+- §4.A.bis message glyph: implementer used em-dash `—` instead of brief's arrow `→` for consistency with existing advisory message convention ("Trail stop up to $X — 0.3% below 10MA"). Right call.
+- Brief §0.2 file-attribution error: `build_open_positions_expanded` lives in `swing/web/view_models/open_positions_row.py`, NOT `dashboard.py`. Implementer addressed at actual location. Lesson banked V2 #2 below.
 
-2. **NEW — M.2 R-multiple stop-tighten hint (doctrine per TLSMW Ch 13 p. 296):**
-   - Trigger: `r_so_far >= cfg.stop_advisory.tighten_at_r_multiple` (default 2.0R, operator-tunable; rough match to TLSMW 7%/20% example = 2.86R)
-   - Emit: `"At +X.YR (≥{K}× stop) — Minervini M.2: consider moving stop to breakeven OR tightening trail to lock in majority of gain"`
-   - Doctrine basis: directly TLSMW-anchored (Ch 13 p. 296 verbatim quote in `reference/methodology/minervini-sell-side-rules.md` M.2 section)
-   - Effort: ~1-2 hr
+**Pre-existing test failures noted:** 3 tests in `tests/integration/test_phase8_pipeline_walkthrough.py` fail on main HEAD `622c669` PRE-Bundle-3 with same error ("archive returned None" → no daily_snapshot rows). NOT Bundle 3 regressions; banked for separate triage.
 
-**Total bundle effort:** ~4-5 hr. Both advisory-message-only; no V2.1 §VII.F.
-
-**Why hybrid (operator decision rationale):** The two advisories answer different operator questions:
-- §4.A.bis answers "which trail-MA should I use?" (MFE-anchored maturity stage)
-- M.2 hint answers "should I tighten anything yet?" (live R-multiple)
-
-For DHC's current state (open_R=0.85, MFE=0.88R, pre_+1.5R) NEITHER would fire yet — both activate at meaningful operator-decision moments going forward.
-
-**Cross-refs:** §3e.8 §4.A.bis (alternative formulation of §4.A); `reference/methodology/minervini-sell-side-rules.md` M.2 (doctrine source for the new R-multiple stop-tighten hint).
+**Cross-refs:** §3e.8 §4.A.bis + new M.2 rule. Brief at `docs/3e8-bundle-3-maturity-and-stop-tighten-hints-brief.md`. Return report at `docs/3e8-bundle-3-return-report.md`.
 
 ### Deferred §4.H — Sector RS check (second-source gate)
 
@@ -1253,3 +1244,58 @@ The two V2 watch items banked at the 2026-05-11 Bundle 1 section above carry for
 - Bundle 2 SHIPPED entry above (line ~1108)
 - `docs/3e8-bundle-2-sell-side-advisories-brief.md` §0.2 (5-site enumeration that missed CLI; §0.3 #4 V2 hand-duplication acceptance)
 - `swing/cli.py:trade_advisory_cmd` — the 6th composition site
+
+---
+
+## 2026-05-11 V2 watch items + lessons banked from 3e.8 Bundle 3 ship
+
+### V2 — Price-independent vs price-dependent advisory degradation pathways differ
+
+**Banked from:** Bundle 3 Codex R1 Major #2 (`compute_price_independent_suggestions` helper introduction; orchestrator triage 2026-05-11).
+
+**Symptom:** Before R1 fix, when PriceCache was degraded (live price unavailable), ALL advisory rules silently no-opped because the entire advisory composition was gated on having a valid `current_price`. But §4.A.bis (maturity_stage_trail_ma_hint) reads `maturity_stage` from DB and does NOT consume `ctx.current_price` — so it should still fire even when PriceCache fails. The original composition path conflated "price unavailable" with "skip ALL advisories", which masked DB-sourced advisories like §4.A.bis.
+
+**Architectural fix (Bundle 3 R1 M#2):** `compute_price_independent_suggestions` helper splits the rule set into two tiers:
+- **Price-independent rules** (e.g., §4.A.bis): fire when `AdvisoryContext` has the relevant DB-sourced fields populated; do NOT require valid `current_price`.
+- **Price-dependent rules** (existing breakeven, trail_*, exit_below_*, weather, time_stop, Bundle 2's trim_into_strength + planned_target_r_hit + parabolic_trim): require valid `current_price`; no-op when PriceCache is degraded.
+
+**Generalized lesson:** When adding new advisory rules in future bundles, classify the rule by data dependencies:
+- If the rule's predicate consumes ONLY DB-sourced fields (from `AdvisoryContext` or `trade` model), it's price-independent — must remain visible under PriceCache degradation.
+- If the rule's predicate consumes `ctx.current_price` (directly or via `r_so_far`), it's price-dependent — correctly no-ops under degradation.
+
+The current 11-rule advisory surface is:
+- Price-independent: §4.A.bis maturity_stage_trail_ma_hint (1 rule).
+- Price-dependent: breakeven, trail_10ma, trail_20ma, exit_below_10ma, exit_below_20ma, exit_below_50ma, weather, time_stop, trim_into_strength, planned_target_r_hit, parabolic_trim, r_multiple_stop_tighten (12 rules including Bundle 3's M.2 trigger via `r_so_far`).
+
+**Pre-empt in future dispatches:** writing-plans phase classifies each new rule + verifies it lands in the appropriate composition tier. Discriminating test: simulate PriceCache degradation; assert price-independent rules still fire while price-dependent rules no-op.
+
+**Promotion candidate to CLAUDE.md gotcha:** consider promoting "advisory degradation must differentiate price-independent vs price-dependent rules — the `compute_price_independent_suggestions` split is the canonical pattern" as a gotcha if a third bundle adds a price-independent rule. For now, lesson lives here.
+
+### V2 — Orchestrator brief composition-surface enumeration must use `def build_*` grep, not caller-site grep
+
+**Banked from:** Bundle 3 brief §0.2 file-attribution error (orchestrator triage 2026-05-11).
+
+**Symptom:** Bundle 3 brief §0.2 listed `build_open_positions_expanded` as living in `swing/web/view_models/dashboard.py`. Actual location: `swing/web/view_models/open_positions_row.py`. The implementer addressed the function at its actual location without surfacing the discrepancy. Brief inaccuracy did not block dispatch but creates rot-risk for future bundles that grep the brief looking for canonical surface enumerations.
+
+**Root cause:** orchestrator's grep in §0.2 of Bundle 3 was scoped too broadly (matched any file referencing the function NAME) rather than the file containing the function DEFINITION. The brief recorded a CALLER location, not a DEFINITION location.
+
+**Generalized lesson:** When orchestrator briefs enumerate function locations, the grep MUST scope to definitions:
+```
+grep -rn "^def build_" swing/web/view_models/
+# Or, more targeted:
+grep -rn "def build_open_positions_expanded" swing/
+```
+NOT:
+```
+grep -rn "build_open_positions_expanded" swing/  # matches both definitions AND callers
+```
+
+**Pre-empt in future dispatches:** writing-plans phase enumeration step uses `^def` anchored patterns for function locations; verify each location is a definition (the line starts with `def` or `class`, not a call).
+
+### Cross-references
+
+- Bundle 3 SHIPPED entry above (line ~1152)
+- `docs/3e8-bundle-3-maturity-and-stop-tighten-hints-brief.md` §0.2 (file-attribution error documented; addressed at actual location by implementer)
+- `docs/3e8-bundle-3-return-report.md` §7 (process deviation: inline TDD per task family; not surfaced to orchestrator mid-flight)
+- `swing/trades/advisory.py:compute_price_independent_suggestions` — canonical pattern for advisory-degradation split
+- `swing/web/view_models/open_positions_row.py:build_open_positions_expanded` — corrected location (NOT dashboard.py as brief §0.2 stated)
