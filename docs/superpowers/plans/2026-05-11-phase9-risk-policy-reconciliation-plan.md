@@ -120,7 +120,31 @@ Bulk + web deferred per spec §10.5. Out-of-scope for V1 per same.
 
 **Resolution (BINDING for sub-bundle A):** the cfg-mirror cascade is implemented in T-A.5 — when Phase 5 config-page edit lands a change to `cfg.account.risk_equity_floor`, the route ALSO calls `swing/trades/risk_policy.py:supersede_active_policy(conn, *, field_updates={"capital_floor_constant_dollars": new_value}, source="cfg_cascade", notes="...")`. The cfg-mirror logic lives in the existing Phase 5 route handler (no new route); the cascade is a one-liner call into the new service. **Other cfg fields** (`web.chase_factor`, `pipeline.chart_top_n_watch`) DO NOT cascade — they have no risk_policy correspondence per spec §3.1.3.
 
-**§A.5.1 startup TOML divergence detection:** the startup banner divergence detection lives in `swing/config.py:load_config` (extension). On startup, after loading swing.config.toml, the code reads `risk_policy.is_active=1.capital_floor_constant_dollars` (raising informatively if v17 schema missing — backwards-compatibility guard); compares to `cfg.account.risk_equity_floor`; if different, logs WARNING + sets `cfg.account.risk_equity_floor = risk_policy_value` (in-memory override; TOML file untouched per spec §3.1.3 R2 Major #5). Discriminating test T-A.5.4 sets a divergent TOML value + asserts WARNING log + in-memory cfg matches risk_policy + TOML file unmodified.
+**§A.5.1 startup TOML divergence detection (Codex R3 Major #1 fix — architecturally revised):** the original plan had `swing/config.py:load_config` itself perform a DB-read divergence check and mutate `cfg.account.risk_equity_floor` in-place. This is NOT executable against the current architecture for three concrete reasons:
+
+1. **`Config` and `Account` are frozen dataclasses** (verified at `swing/config.py:10`, `swing/config.py:23`, `swing/config.py:266`+; the project uses `@dataclass(frozen=True)` extensively for cfg). In-place attribute mutation raises `FrozenInstanceError`.
+2. **`load(config_path)` is a pure function with no DB connection parameter** (verified at `swing/config.py:308`). Adding a `conn` parameter changes the public API of the config loader.
+3. **CLI command lifecycle:** CLI handlers call `load_config()` BEFORE invoking `ensure_schema` (verified at `swing/cli.py:111`, `swing/cli.py:120`, `swing/cli.py:143`). Reading risk_policy from inside `load_config` would fail on (a) fresh DBs that have not yet migrated, (b) tests that monkey-patch a TOML path but use no DB at all, and (c) the `swing db-migrate` invocation itself which is supposed to bring the DB to v17.
+
+**Revised disposition (BINDING for T-A.5 + T-A.5-tests):**
+
+- `swing/config.py:load(config_path)` REMAINS PURE — no DB connection parameter, no risk_policy read. The function returns the immutable `Config` from TOML as today.
+- A NEW helper `swing/trades/risk_policy.py:check_and_reconcile_toml_divergence(conn, cfg) -> tuple[Config, dict | None]` performs the divergence check. Returns `(new_config, divergence_info_or_None)`. When divergent, builds a corrected `Config` via `dataclasses.replace(cfg, account=dataclasses.replace(cfg.account, risk_equity_floor=policy_value))`; logs WARNING; returns the new immutable Config + divergence dict. When not divergent, returns `(cfg, None)`.
+- The divergence check is invoked at TWO post-schema-validation hook points:
+  - **CLI entry hook** in `swing/cli.py`: AFTER `ensure_schema(conn)` succeeds AND AFTER `load_config()` succeeds, a small startup sequence calls `check_and_reconcile_toml_divergence(conn, cfg)` to derive the corrected `cfg`. The CLI handler's local `cfg` variable is rebound to the corrected Config (since Config is immutable, the variable rebind is the only valid mutation surface). The divergence dict (if non-None) drives the stderr advisory banner per spec §3.1.3 R3 Minor #2.
+  - **Web app startup** in `swing/web/app.py` (or wherever the FastAPI lifespan hook lives): same pattern. The web app's `app.state.cfg` is set to the corrected Config after divergence check.
+- **The `db-migrate` CLI command** explicitly DOES NOT call the divergence check (since it's the path that brings the DB to v17; running divergence check before v17 is reached is the failure mode Codex flagged). Plan T-A.5 verifies via discriminating test that `swing db-migrate` from v16 → v17 succeeds with NO divergence-check side effect.
+- **Fresh-DB / test fixtures** that don't have a risk_policy table yet (v16 schema or earlier) skip the divergence check entirely. The helper handles this via try/except `NoActivePolicyError` (or sniff schema_version) and returns `(cfg, None)` silently for pre-v17 DBs.
+
+**Discriminating test T-A.5.4 (revised per Codex R3 M#1):** sets a divergent TOML value + invokes CLI command that triggers the post-schema-validation hook + asserts (a) WARNING log fires, (b) the returned corrected Config has `account.risk_equity_floor == policy_value`, (c) the original `cfg` from `load()` is unchanged (`is` identity test against the frozen dataclass), (d) TOML file on disk unmodified. Mirror test T-A.5.5: invoke `swing db-migrate` on a v16 DB; assert it succeeds with NO divergence check triggered (no WARNING log).
+
+**Impact on T-A.5 and §B file map:** T-A.5 file modifications are revised:
+- `swing/config.py` — UNCHANGED public API; no DB-read added. (Was previously planned to be modified.)
+- `swing/cli.py` — extension at every CLI handler that needs a divergence-corrected cfg: invoke the helper after `ensure_schema`; rebind local `cfg` to the corrected value.
+- `swing/web/app.py` (or lifespan/middleware) — same pattern at startup; sets `app.state.cfg` to corrected Config.
+- `swing/trades/risk_policy.py` — `check_and_reconcile_toml_divergence(conn, cfg)` helper replaces the prior `apply_toml_divergence_correction(conn, cfg)` function.
+
+The §B file map "modify `swing/config.py`" line is REMOVED from T-A.5; the cfg-cascade for Phase 5 config-page edits (the *other* §A.5 concern) still touches `swing/web/routes/config.py` but NOT `swing/config.py`.
 
 ### §A.6 Test count projection bias
 
@@ -201,7 +225,7 @@ Lives in **new helper `swing/data/datetime_helpers.py:now_ms` + `validate_ms_iso
 | `swing/data/datetime_helpers.py` | `now_ms() -> str` + `validate_ms_iso(s: str) -> str` per §A.11. Imported by all Phase 9 services. |
 | `swing/data/repos/risk_policy.py` | Public API: `insert_policy(conn, *, policy_fields) -> int` (pure INSERT inside caller's transaction); `update_policy_active_flag(conn, *, policy_id, is_active, effective_to, superseded_by_policy_id) -> None` (pure UPDATE inside caller's transaction); `get_active_policy(conn) -> RiskPolicy` (raises `NoActivePolicyError` if zero rows match `is_active=1`); `get_policy_by_id(conn, policy_id) -> RiskPolicy | None`; `list_policy_history(conn, *, limit=None) -> list[RiskPolicy]` (ORDER BY effective_from DESC, policy_id DESC per spec §3.1 tiebreaker). |
 | `swing/data/models.py` (EXTEND) | NEW dataclasses: `RiskPolicy` (28 fields matching schema; `__post_init__` validator per dispatch brief §0.3 #4 + Bundle 2/3 pattern — NaN/inf rejection on REAL fields, CHECK-IN enum validation, sum-to-1.0 for process_grade_weight_*); `ReconciliationRun`; `ReconciliationDiscrepancy`; `HypothesisStatusHistory`; `AccountEquitySnapshot`. |
-| `swing/trades/risk_policy.py` | Service entry-points. Public API: `supersede_active_policy(conn, *, field_updates: dict, notes: str | None = None, source: Literal["cli","cfg_cascade","import_from_toml"]="cli") -> int` (6-step transactional sequence per spec §4.1; rejects caller-held transaction; returns new policy_id); `read_active_policy(conn) -> RiskPolicy` (delegates to repo); `apply_toml_divergence_correction(conn, cfg) -> dict | None` (returns `{"field": ..., "toml_value": ..., "policy_value": ...}` when divergence detected; called at startup from `swing/config.py:load_config`); `seed_initial_policy(conn, cfg) -> int` (called from migration runner OR migration SQL — see T-A.1; idempotent — no-ops if `risk_policy.is_active=1` row exists). |
+| `swing/trades/risk_policy.py` | Service entry-points. Public API: `supersede_active_policy(conn, *, field_updates: dict, notes: str | None = None, source: Literal["cli","cfg_cascade","import_from_toml"]="cli") -> int` (6-step transactional sequence per spec §4.1; rejects caller-held transaction; returns new policy_id); `read_active_policy(conn) -> RiskPolicy` (delegates to repo); `check_and_reconcile_toml_divergence(conn, cfg) -> tuple[Config, dict | None]` (per §A.5.1 — returns corrected immutable Config via `dataclasses.replace` + divergence dict when divergent; returns `(cfg, None)` for pre-v17 / no-active-policy fixtures; called from CLI + web app startup AFTER `ensure_schema`; NEVER from inside `swing/config.py:load`); `seed_initial_policy(conn, cfg) -> int` (called from migration runner OR migration SQL — see T-A.1; idempotent — no-ops if `risk_policy.is_active=1` row exists). |
 | `swing/data/repos/reconciliation.py` | Public API: `insert_run(conn, *, run_fields) -> int`; `update_run_completed(conn, *, run_id, summary_fields) -> None`; `update_run_failed(conn, *, run_id, error_message) -> None`; `insert_discrepancy(conn, *, discrepancy_fields) -> int`; `update_discrepancy_resolution(conn, *, discrepancy_id, resolution, resolution_reason, resolved_by, resolved_at) -> None`; `get_run(conn, run_id) -> ReconciliationRun | None`; `get_discrepancy(conn, discrepancy_id) -> ReconciliationDiscrepancy | None`; `list_recent_runs(conn, *, limit=10) -> list[ReconciliationRun]` (two-read pattern per spec §3.2 — separate query for most-recent-COMPLETED + most-recent-STARTED); `list_discrepancies_for_run(conn, run_id) -> list[ReconciliationDiscrepancy]`; `list_unresolved_material_for_active_trades(conn) -> list[ReconciliationDiscrepancy]` (drives §5.1 CANONICAL #1 query); `list_unresolved_material_for_closed_trades(conn) -> list[ReconciliationDiscrepancy]` (drives §5.1 CANONICAL #2 query); `count_runs_for_artifact_sha256(conn, sha256) -> int` (advisory for re-run detection). |
 | `swing/trades/reconciliation.py` | Service entry-point. Public API: `run_tos_reconciliation(conn, *, csv_path: Path, period_end: date | None = None, notes: str | None = None) -> ReconciliationRun` (per §A.2 contract); rejects caller-held transaction. `resolve_discrepancy(conn, *, discrepancy_id: int, resolution: str, resolution_reason: str | None = None) -> None` (validator rejects missing reason when resolution requires it per spec §3.3 nullability rule); `MATERIAL_BY_TYPE: dict[str, int]` lookup constant (10 entries per spec §3.3.1; emitter consults at INSERT time). `DISCREPANCY_TYPES: tuple[str, ...]` constant (10 entries per spec §3.3 CHECK enum). `RESOLUTION_TYPES: tuple[str, ...]` constant (5 entries per spec §3.3 CHECK enum). |
 | `swing/data/repos/account_equity_snapshots.py` | Public API: `insert_snapshot(conn, *, snapshot_fields) -> int`; `upsert_snapshot(conn, *, snapshot_fields) -> int` (SELECT-then-UPDATE-or-INSERT per spec §3.5; preserves PK on UPDATE); `get_latest_snapshot_on_or_before(conn, *, asof_date: date, with_provenance: bool = False) -> AccountEquitySnapshot | tuple[AccountEquitySnapshot, list[AccountEquitySnapshot]] | None` (source-ladder precedence per spec §3.5 + §11.4; with_provenance returns (winner, suppressed_rows) per R4 Minor #3); `list_snapshots(conn, *, limit=20) -> list[AccountEquitySnapshot]`. |
@@ -236,7 +260,9 @@ Lives in **new helper `swing/data/datetime_helpers.py:now_ms` + `validate_ms_iso
 | `swing/data/db.py` | EXPECTED_SCHEMA_VERSION 16 → 17. No other change (existing migration runner + backup gate handles 0017 automatically). |
 | `swing/journal/tos_import.py` | REFACTOR `reconcile_tos` signature to accept `*, run_id: int, emitter: Callable[..., int]` per §A.2 + add stop-order extraction (Account Order History parsing per spec §6.2) + add equities section parsing (per spec §6.3) + add close-price comparison on matched close-fills (per spec §6.1) + add cash_movement amount/kind comparison (per spec §6.4). Preserves `ReconciliationReport` dataclass return shape. |
 | `swing/cli.py` | ADD new commands: `swing config policy` group (show / set / import-from-toml / history) + `swing account snapshot` + `swing journal discrepancy` group (list / show / resolve). RENAME `swing journal import-tos` → `swing journal reconcile-tos` + deprecation alias. UPDATE `swing hypothesis update` to route through new service helper (delete inline repo call). |
-| `swing/config.py` | EXTEND `load_config` to call `swing/trades/risk_policy.py:apply_toml_divergence_correction` post-load; log WARNING + override in-memory cfg if divergent; do NOT write to TOML. ADD startup-banner divergence surface (stderr advisory line; mirrors `pip` / `git` divergence-warning pattern per spec §3.1.3 R3 Minor #2). |
+| `swing/config.py` | **UNCHANGED (Codex R3 Major #1 fix).** Per §A.5.1 revision: `load(config_path)` remains pure with no DB connection parameter. The divergence check is moved to post-schema-validation hooks in CLI + web app startup. Frozen-dataclass mutation removed from plan. |
+| `swing/cli.py` (additional) | ADD post-schema-validation hook at every CLI handler that needs a divergence-corrected cfg: after `ensure_schema(conn)` + `load_config()` both succeed, invoke `swing/trades/risk_policy.py:check_and_reconcile_toml_divergence(conn, cfg)` + rebind local `cfg` to the corrected Config + emit stderr advisory line when divergence dict is non-None. `swing db-migrate` CLI handler explicitly SKIPS this hook (the path that brings DB to v17). |
+| `swing/web/app.py` (or lifespan/middleware) | ADD post-`ensure_schema` startup hook invoking `check_and_reconcile_toml_divergence` + setting `app.state.cfg` to the corrected Config. |
 | `swing/trades/entry.py` | EXTEND `entry_create` to stamp `trades.risk_policy_id_at_lock = (SELECT policy_id FROM risk_policy WHERE is_active = 1)` at pre_trade_locked_at time (within existing transaction; no new transaction). |
 | `swing/data/repos/review_log.py` | EXTEND `complete_review_atomic` to set `risk_policy_id_at_review_completion = (SELECT policy_id FROM risk_policy WHERE is_active = 1)` at completion-time (within existing transaction). |
 | `swing/web/routes/trades.py` | ADD sector/industry tamper rejection at trade entry POST per §A.4 (mirrors chart_pattern hardening); emit `sector_tamper` discrepancy in ad-hoc reconciliation_run on rejection path. |
@@ -511,7 +537,9 @@ def test_risk_policy_seed_row_exists(conn: sqlite3.Connection):
 def test_risk_policy_active_partial_unique_index(conn: sqlite3.Connection):
     """Forbids two non-superseded rows simultaneously per spec §3.1.2."""
     # Already one row is_active=1 (seed). Inserting a second should fail.
-    with pytest.raises(sqlite3.IntegrityError, match="ux_risk_policy_active"):
+    # SQLite's actual error message is "UNIQUE constraint failed: risk_policy.is_active"
+    # (NOT the index name; Codex R3 Minor #1 fix).
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
         conn.execute(
             "INSERT INTO risk_policy (effective_from, is_active, created_at, "
             "max_account_risk_per_trade_pct, max_concurrent_positions, "
@@ -1090,30 +1118,50 @@ def test_read_active_policy_delegates(conn):
     assert p.policy_id == 1
 
 
-def test_apply_toml_divergence_correction_no_divergence(conn, cfg_fixture):
+def test_check_and_reconcile_toml_divergence_no_divergence(conn, cfg_fixture):
     """When TOML risk_equity_floor matches risk_policy.capital_floor_constant_dollars,
-    returns None (no divergence)."""
-    from swing.trades.risk_policy import apply_toml_divergence_correction
-    cfg_fixture.account.risk_equity_floor = 7500.0
-    result = apply_toml_divergence_correction(conn, cfg_fixture)
-    assert result is None
+    returns (cfg, None) — original config unchanged."""
+    from swing.trades.risk_policy import check_and_reconcile_toml_divergence
+    # cfg_fixture starts with risk_equity_floor=7500.0 matching the seed.
+    new_cfg, divergence = check_and_reconcile_toml_divergence(conn, cfg_fixture)
+    assert divergence is None
+    assert new_cfg is cfg_fixture  # identity test — no replacement when no divergence
 
 
-def test_apply_toml_divergence_correction_with_divergence(conn, cfg_fixture, caplog):
-    """When TOML diverges, return divergence dict + log WARNING + override in-memory cfg."""
-    from swing.trades.risk_policy import apply_toml_divergence_correction
-    cfg_fixture.account.risk_equity_floor = 5000.0
+def test_check_and_reconcile_toml_divergence_with_divergence(conn, cfg_fixture_5000, caplog):
+    """When TOML diverges, return (corrected_cfg, divergence_dict). Original cfg unchanged
+    per Codex R3 M#1 frozen-dataclass discipline."""
+    from swing.trades.risk_policy import check_and_reconcile_toml_divergence
+    original = cfg_fixture_5000  # risk_equity_floor=5000.0
     with caplog.at_level("WARNING"):
-        result = apply_toml_divergence_correction(conn, cfg_fixture)
-    assert result == {
+        new_cfg, divergence = check_and_reconcile_toml_divergence(conn, original)
+    assert divergence == {
         "field": "capital_floor_constant_dollars",
         "toml_value": 5000.0,
         "policy_value": 7500.0,
     }
     assert "TOML diverges from risk_policy" in caplog.text
-    # In-memory cfg corrected.
-    assert cfg_fixture.account.risk_equity_floor == 7500.0
-    # ... and TOML file unchanged — verified via direct file read in fuller test.
+    # New corrected Config has updated value.
+    assert new_cfg.account.risk_equity_floor == 7500.0
+    # Original cfg UNCHANGED (frozen dataclass; immutability preserved).
+    assert original.account.risk_equity_floor == 5000.0
+    # new_cfg is a different object from original.
+    assert new_cfg is not original
+
+
+def test_check_and_reconcile_toml_divergence_pre_v17_silent_skip(tmp_path):
+    """On a pre-v17 DB (no risk_policy table), the helper returns (cfg, None)
+    silently — does NOT raise. Ensures `db-migrate` can run without hitting
+    a divergence check that depends on the very schema it's about to create."""
+    from swing.data.db import init_db_at_version
+    from swing.trades.risk_policy import check_and_reconcile_toml_divergence
+    # init_db_at_version is a test helper that stops migrations at the named version;
+    # implementer wires per Phase 8 plan precedent if not already present.
+    pre_v17_conn = init_db_at_version(tmp_path / "pre_v17.db", target_version=16)
+    cfg = _fixture_cfg(risk_equity_floor=5000.0)
+    new_cfg, divergence = check_and_reconcile_toml_divergence(pre_v17_conn, cfg)
+    assert divergence is None
+    assert new_cfg is cfg
 
 
 @pytest.fixture
@@ -1124,12 +1172,23 @@ def conn(tmp_path):
 
 @pytest.fixture
 def cfg_fixture():
-    """Returns a mock cfg with .account.risk_equity_floor settable."""
-    class _Account:
-        risk_equity_floor: float = 7500.0
-    class _Cfg:
-        account = _Account()
-    return _Cfg()
+    """Returns a real frozen Config dataclass with risk_equity_floor=7500.0 (matches seed)."""
+    return _fixture_cfg(risk_equity_floor=7500.0)
+
+
+@pytest.fixture
+def cfg_fixture_5000():
+    """Returns a real frozen Config with risk_equity_floor=5000.0 (diverges from seed)."""
+    return _fixture_cfg(risk_equity_floor=5000.0)
+
+
+def _fixture_cfg(*, risk_equity_floor: float):
+    """Builds a minimal valid Config (frozen) for divergence tests. Implementer
+    wires the full builder per the existing Config dataclass tree at swing/config.py;
+    this stub indicates the test pattern."""
+    from swing.config import Config, Account  # frozen dataclasses
+    # ... build minimal Config via the actual frozen-dataclass constructors.
+    raise NotImplementedError("implementer wires per existing Config tree shape")
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1276,25 +1335,30 @@ def read_active_policy(conn: sqlite3.Connection) -> RiskPolicy:
     return repo.get_active_policy(conn)
 
 
-def apply_toml_divergence_correction(conn, cfg) -> dict | None:
-    """Called at startup from swing/config.py:load_config.
+def check_and_reconcile_toml_divergence(conn, cfg) -> tuple["Config", dict | None]:
+    """Called at startup from CLI command handlers + web app lifespan AFTER
+    `ensure_schema` has brought the DB to v17. Per Codex R3 M#1 fix:
+    - `swing/config.py:load(config_path)` remains pure (no DB read in load).
+    - This helper performs the DB read + divergence check.
+    - Config is a frozen dataclass; corrected cfg is built via `dataclasses.replace`.
+    - On a pre-v17 DB or no-active-policy (test fixtures, fresh DBs): returns
+      (cfg, None) silently. NEVER raises.
 
-    If cfg.account.risk_equity_floor differs from risk_policy.is_active=1's
-    capital_floor_constant_dollars, log WARNING + override in-memory cfg
-    (TOML file unchanged) + return divergence dict for startup-banner display.
-
-    Returns None when no divergence.
+    Returns:
+        (new_cfg, divergence_dict_or_None). new_cfg is `cfg` itself when no
+        divergence; a new Config (via dataclasses.replace) when divergent.
     """
+    import dataclasses
     try:
         active = repo.get_active_policy(conn)
-    except repo.NoActivePolicyError:
-        logger.warning("risk_policy table empty or no is_active=1 row; TOML divergence check skipped")
-        return None
+    except (repo.NoActivePolicyError, sqlite3.OperationalError):
+        # OperationalError covers pre-v17 fixtures where risk_policy table is absent.
+        return cfg, None
 
     toml_v = cfg.account.risk_equity_floor
     policy_v = active.capital_floor_constant_dollars
     if abs(toml_v - policy_v) < 1e-9:
-        return None
+        return cfg, None
 
     logger.warning(
         "TOML diverges from risk_policy: cfg.account.risk_equity_floor=%s vs "
@@ -1302,12 +1366,14 @@ def apply_toml_divergence_correction(conn, cfg) -> dict | None:
         "To make TOML canonical, run: swing config policy import-from-toml --field capital_floor_constant_dollars",
         toml_v, policy_v,
     )
-    cfg.account.risk_equity_floor = policy_v  # override in-memory
-    return {
+    new_account = dataclasses.replace(cfg.account, risk_equity_floor=policy_v)
+    new_cfg = dataclasses.replace(cfg, account=new_account)
+    divergence = {
         "field": "capital_floor_constant_dollars",
         "toml_value": toml_v,
         "policy_value": policy_v,
     }
+    return new_cfg, divergence
 
 
 def seed_initial_policy(conn, cfg) -> int:
