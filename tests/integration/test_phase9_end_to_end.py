@@ -492,3 +492,191 @@ def test_phase9_bundle_c_e2e_account_snapshot_and_hypothesis_audit(
         assert len(rows) == 2
     finally:
         conn.close()
+
+
+# ============================================================================
+# Sub-bundle D E2E (T-D.3) — sector/industry tamper hardening
+# ============================================================================
+
+
+def test_phase9_bundle_d_e2e_sector_tamper_audit_surfaces_in_cli_list(
+    cli_workspace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """E2E for Sub-bundle D per plan §G T-D.3 acceptance criteria.
+
+    1. Seed a cached candidate row for ticker TAMP with sector=Healthcare
+       + industry=Biotechnology anchored to today's action_session_for_run(now()).
+    2. Operator submits a tamper-attempt entry POST via TestClient with
+       sector=Technology (mismatched).
+    3. Verify HTTP 400 rejection + a single ``sector_tamper`` discrepancy
+       row persists with the spec §3.3.1 JSON shape.
+    4. Invoke ``swing journal discrepancy list`` via CLI and verify the
+       ``sector_tamper`` row surfaces in the output — confirming the
+       full operator-facing audit-trail loop (route emit → CLI surface).
+
+    Note: this test exercises both the web POST + the CLI list surface
+    in a single workspace. The cli_workspace fixture provides an
+    already-migrated DB at v17; we open the same DB via TestClient +
+    via CliRunner sequentially.
+    """
+    from datetime import datetime as _dt
+
+    from fastapi.testclient import TestClient
+
+    from swing.config import load as load_config
+    from swing.evaluation.dates import action_session_for_run
+    from swing.web.app import create_app
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+    from tests.web.conftest import full_phase7_entry_payload
+
+    runner, cfg_path, db_path, tmp_path = cli_workspace
+    cfg = load_config(cfg_path)
+    session_iso = action_session_for_run(_dt.now()).isoformat()
+
+    # ----- §1: Seed the cached candidate row + watchlist row. ----------
+    conn = connect(db_path)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO watchlist (ticker, added_date, "
+                "last_qualified_date, status, qualification_count, "
+                "not_qualified_streak, last_data_asof_date, "
+                "entry_target, last_close) VALUES "
+                "('TAMP', '2026-04-01', ?, 'watch', 1, 0, ?, "
+                "11.0, 10.0)",
+                (session_iso, session_iso),
+            )
+            cur = conn.execute(
+                "INSERT INTO evaluation_runs (run_ts, data_asof_date, "
+                "action_session_date, finviz_csv_path, "
+                "tickers_evaluated, aplus_count, watch_count, "
+                "skip_count, excluded_count, error_count) "
+                "VALUES (?, ?, ?, NULL, 1, 1, 0, 0, 0, 0)",
+                (f"{session_iso}T08:00:00", session_iso, session_iso),
+            )
+            eval_id = int(cur.lastrowid)
+            conn.execute(
+                "INSERT INTO pipeline_runs (started_ts, finished_ts, "
+                "trigger, data_asof_date, action_session_date, state, "
+                "lease_token, evaluation_run_id) "
+                "VALUES (?, ?, 'manual', ?, ?, 'complete', "
+                "'tok-d3', ?)",
+                (
+                    f"{session_iso}T08:00:00",
+                    f"{session_iso}T09:00:00",
+                    session_iso,
+                    session_iso,
+                    eval_id,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO candidates (evaluation_run_id, ticker, "
+                "bucket, close, pivot, initial_stop, adr_pct, "
+                "tight_streak, pullback_pct, prior_trend_pct, "
+                "rs_rank, rs_return_12w_vs_spy, rs_method, "
+                "pattern_tag, notes, sector, industry) "
+                "VALUES (?, 'TAMP', 'watch', 10.0, 10.0, 9.5, 2.0, "
+                "5, NULL, NULL, NULL, NULL, 'fallback_spy', NULL, "
+                "NULL, 'Healthcare', 'Biotechnology')",
+                (eval_id,),
+            )
+    finally:
+        conn.close()
+
+    # ----- §2: Tamper-attempt POST via TestClient. ---------------------
+    monkeypatch.setattr(
+        PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            t: PriceSnapshot(
+                ticker=t, price=10.5, asof=_dt.now(),
+                is_stale=False, source="live",
+            ) for t in tickers
+        },
+    )
+    monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
+    monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+    app = create_app(cfg, cfg_path)
+    payload = full_phase7_entry_payload(
+        ticker="TAMP",
+        entry_date="2026-04-26",
+        entry_price="10.0",
+        shares="1",
+        initial_stop="9.0",
+        rationale="aplus-setup",
+        notes="",
+    )
+    payload["sector"] = "Technology"  # tampered
+    payload["industry"] = "Biotechnology"
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = client.post(
+            "/trades/entry", data=payload,
+            headers={"HX-Request": "true"},
+        )
+    assert resp.status_code == 400, (
+        f"Expected 400 (sector tamper rejection), got "
+        f"{resp.status_code}. Body[:500]: {resp.text[:500]!r}"
+    )
+    # No trade row inserted (entry POST rejected).
+    conn = connect(db_path)
+    try:
+        trade_count = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE ticker='TAMP'"
+        ).fetchone()[0]
+        # Audit row + discrepancy persisted.
+        runs = conn.execute(
+            "SELECT run_id, source, state FROM reconciliation_runs "
+            "ORDER BY run_id DESC"
+        ).fetchall()
+        sector_tamper_disc = conn.execute(
+            "SELECT discrepancy_id, ticker, field_name, "
+            "material_to_review, resolution "
+            "FROM reconciliation_discrepancies "
+            "WHERE discrepancy_type='sector_tamper'"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert trade_count == 0
+    assert len(runs) >= 1
+    audit_run = next((r for r in runs if r[1] == "system_audit"), None)
+    assert audit_run is not None, runs
+    assert audit_run[2] == "completed"
+    assert len(sector_tamper_disc) == 1, sector_tamper_disc
+    disc_id, disc_ticker, field_name, material, resolution = (
+        sector_tamper_disc[0]
+    )
+    assert disc_ticker == "TAMP"
+    assert field_name == "sector"
+    assert material == 0  # V1 advisory
+    assert resolution == "unresolved"
+
+    # ----- §3: swing journal discrepancy list surfaces the row. ---------
+    r = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "journal", "discrepancy", "list",
+    ])
+    assert r.exit_code == 0, r.output
+    # Type column + ticker + field_name surface in the CLI table.
+    assert "sector_tamper" in r.output
+    assert "TAMP" in r.output
+    assert "sector" in r.output
+
+    # --unresolved + --material filters: this row is advisory (mat=0)
+    # so --material excludes it; --unresolved includes it.
+    r_unres = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "journal", "discrepancy", "list", "--unresolved",
+    ])
+    assert r_unres.exit_code == 0, r_unres.output
+    assert "sector_tamper" in r_unres.output
+
+    r_mat = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "journal", "discrepancy", "list", "--material",
+    ])
+    assert r_mat.exit_code == 0, r_mat.output
+    # sector_tamper is material=0 V1 — should NOT appear under --material.
+    assert "sector_tamper" not in r_mat.output, (
+        f"sector_tamper should be filtered out by --material (V1 "
+        f"advisory, material=0). Output: {r_mat.output!r}"
+    )
