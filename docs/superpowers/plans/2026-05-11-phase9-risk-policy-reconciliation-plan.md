@@ -24,6 +24,25 @@ These are findings from the §0 empirical audit (Step 5 pre-plan grep recon per 
 
 **Spec ambiguity disposition:** ACCEPT-WITH-RATIONALE per brief §1.1; flagged in return-report orchestrator-triage section. Pattern complement to Phase 8 plan §A.0 (same family — spec drafted before the prior phase's migration-number bump landed).
 
+### §A.0.1 risk_policy column count reconciliation (Codex R1 Major #2 fix)
+
+**Spec §3.1 said:** "**Field count:** 28 columns (7 metadata + supersession + 13 trading-risk + 5 statistics-methodology grade weights, etc.)."
+
+**Empirical finding (Codex R1 Major #2):** counting the spec §3.1 column TABLE produces 34 distinct field names:
+- 7 metadata: policy_id, effective_from, effective_to, is_active, superseded_by_policy_id, created_at, policy_notes.
+- 7 trading-risk: max_account_risk_per_trade_pct, max_concurrent_positions, max_portfolio_heat_pct, max_sector_concentration_positions, consecutive_losses_pause_threshold, consecutive_losses_pause_action, consecutive_losses_streak_reset.
+- 5 drawdown circuit breaker: drawdown_circuit_breaker_enabled, drawdown_pause_threshold_R, drawdown_pause_action, drawdown_size_reduction_pct, drawdown_recovery_threshold_R.
+- 1 capital: capital_floor_constant_dollars.
+- 9 statistics-methodology: scratch_epsilon_R, review_lag_threshold_days, low_sample_size_threshold_class_a/b/c/d_n, global_confidence_floor_n, bootstrap_resample_count.
+- 3 grade weights: process_grade_weight_entry / management / exit.
+- 3 MFE/MAE + trail-MA: mfe_mae_default_precision_level, trail_MA_period_days, trail_MA_post_2R_period_days.
+
+Total: 7+7+5+1+9+3+3 = **34 columns**.
+
+**Resolution (BINDING for T-A.1 + T-A.3):** the column LIST is the binding artifact; the spec's "28 columns" subtotal is a brainstorm-phase miscount. All plan tests + DDL + dataclass assert/check 34 columns. Migration DDL implements all 34 columns per the spec column table. The miscount does NOT change the schema — it changes the assertion target in tests.
+
+**Spec ambiguity disposition:** ACCEPT-WITH-RATIONALE; flagged in return-report orchestrator-triage section. Spec text's "28 columns" subtotal is corrected at writing-plans dispatch time without amending the spec; spec column list (the actual binding artifact) is preserved.
+
 ### §A.1 Hypothesis-status audit service module placement
 
 **Spec §3.4.1 said:** "every code path that UPDATEs `hypothesis_registry.status` MUST flow through a single `hypothesis_repo.update_status_with_audit(...)` helper."
@@ -65,9 +84,9 @@ The existing repo-level function is called from EXACTLY ONE site per grep recon:
 6. Per-discrepancy emission inside same transaction via emitter callable (close_price_mismatch, stop_mismatch, position_qty_mismatch, cash_movement_mismatch, entry_price_mismatch, unmatched_open_fill, unmatched_close_fill, equity_delta per §6.1–§6.4).
 7. UPDATE `reconciliation_runs SET state='completed', finished_ts=now, discrepancies_count=N, unresolved_discrepancies_count=N, trades_reconciled_count=..., fills_reconciled_count=..., summary_json=..., account_equity_*=...`.
 8. COMMIT.
-9. Failure-path: ROLLBACK + INSERT a NEW row with `state='failed'` + `error_message` so the operator sees what happened (mirrors Phase 8 pipeline_runs failure semantics; note this is a SECOND row outside the failed transaction, not an UPDATE inside it).
+9. Failure-path (per spec §3.3.3, Codex R1 Major #1 fix — was previously specified as ROLLBACK+INSERT-new-row; corrected to match spec): catch the exception inside the same transaction → UPDATE the existing run row's `state='failed', finished_ts=now, error_message=str(e)` → COMMIT. The run row is PRESERVED so the operator sees what failed (mirrors `pipeline_runs` failure semantics). Discrepancies emitted prior to the failure are RETAINED inside the same commit as the failed-state UPDATE. This implies the BEGIN IMMEDIATE wraps step 4 (INSERT run row) + step 6 (emitter inserts) + step 7-or-9 (UPDATE state); a single transaction with two possible terminal UPDATEs.
 
-**§A.2.1 cash_movements + fills inline-insert disposition:** the existing inline INSERTs of cash_movements + new fills inside `reconcile_tos` are RETAINED inside the new outer transaction (they execute against the same `conn` inside the `run_tos_reconciliation` service's BEGIN IMMEDIATE). Atomicity is preserved: a single reconciliation run either persists ALL of (run row, discrepancies, new cash_movements, new fills) OR none of them. Discriminating regression test T-B.6.5 injects an exception between fills-insert and reconciliation_runs UPDATE → asserts run row absent, fills absent, cash_movements absent.
+**§A.2.1 cash_movements + fills inline-insert disposition:** the existing inline INSERTs of cash_movements + new fills inside `reconcile_tos` are RETAINED inside the new outer transaction. **Failure-path consequence (per Codex R1 Major #1 fix):** on exception, the same UPDATE-to-failed semantics apply — cash_movements + fills inserted PRIOR to the exception ARE PRESERVED in the committed transaction alongside the failed-state UPDATE. Operator-visible UX: a failed reconciliation may have partial data persisted (some fills imported successfully before the parse error hit a later row). This is intentional per spec §3.3.3 — audit-trail integrity prioritized over rollback purity. Discriminating regression test T-B.6.5: inject a synthetic exception AFTER emitter has fired for 2 discrepancies; assert run row present with state='failed' + error_message populated + 2 discrepancy rows present + transaction NOT in_transaction post-call.
 
 **§A.2.2 CLI rename:** existing CLI `swing journal import-tos` is **RENAMED** to `swing journal reconcile-tos` per spec §4.2 wording. Backwards-compatibility: short-window deprecation alias for one phase (V1 Phase 9 ships both names; alias prints deprecation warning to stderr; alias removed in V2). Discriminating test T-B.7.3 verifies both invocations route to the same service.
 
@@ -178,7 +197,7 @@ Lives in **new helper `swing/data/datetime_helpers.py:now_ms` + `validate_ms_iso
 
 | Path | Responsibility |
 |---|---|
-| `swing/data/migrations/0017_phase9_risk_policy_and_reconciliation.sql` | Schema bump v16 → v17: CREATE TABLE `risk_policy` (28 columns per spec §3.1) + 2 indexes + INSERT seed `policy_id=1`. CREATE TABLE `reconciliation_runs` (17 columns per spec §3.2) + 3 indexes. CREATE TABLE `reconciliation_discrepancies` (18 columns per spec §3.3) + 4 indexes. CREATE TABLE `hypothesis_status_history` (7 columns per spec §3.4) + 2 indexes + INSERT seed rows (one per existing hypothesis_registry row). CREATE TABLE `account_equity_snapshots` (8 columns per spec §3.5) + 2 indexes. ALTER TABLE `trades` ADD COLUMN `risk_policy_id_at_lock INTEGER REFERENCES risk_policy(policy_id)`. ALTER TABLE `review_log` ADD COLUMN `risk_policy_id_at_review_completion INTEGER REFERENCES risk_policy(policy_id)`. UPDATE schema_version SET version = 17. |
+| `swing/data/migrations/0017_phase9_risk_policy_and_reconciliation.sql` | Schema bump v16 → v17: CREATE TABLE `risk_policy` (**34 columns** — spec §3.1's "28 columns" subtotal is a brainstorm-phase miscount; the actual column LIST in spec §3.1 enumerates 34 distinct fields, which is the binding artifact per Codex R1 Major #2 fix — see §A.0 for the count reconciliation) + 2 indexes + INSERT seed `policy_id=1`. CREATE TABLE `reconciliation_runs` (17 columns per spec §3.2) + 3 indexes. CREATE TABLE `reconciliation_discrepancies` (18 columns per spec §3.3) + 4 indexes. CREATE TABLE `hypothesis_status_history` (7 columns per spec §3.4) + 2 indexes + INSERT seed rows (one per existing hypothesis_registry row). CREATE TABLE `account_equity_snapshots` (8 columns per spec §3.5) + 2 indexes. ALTER TABLE `trades` ADD COLUMN `risk_policy_id_at_lock INTEGER REFERENCES risk_policy(policy_id)`. ALTER TABLE `review_log` ADD COLUMN `risk_policy_id_at_review_completion INTEGER REFERENCES risk_policy(policy_id)`. UPDATE schema_version SET version = 17. |
 | `swing/data/datetime_helpers.py` | `now_ms() -> str` + `validate_ms_iso(s: str) -> str` per §A.11. Imported by all Phase 9 services. |
 | `swing/data/repos/risk_policy.py` | Public API: `insert_policy(conn, *, policy_fields) -> int` (pure INSERT inside caller's transaction); `update_policy_active_flag(conn, *, policy_id, is_active, effective_to, superseded_by_policy_id) -> None` (pure UPDATE inside caller's transaction); `get_active_policy(conn) -> RiskPolicy` (raises `NoActivePolicyError` if zero rows match `is_active=1`); `get_policy_by_id(conn, policy_id) -> RiskPolicy | None`; `list_policy_history(conn, *, limit=None) -> list[RiskPolicy]` (ORDER BY effective_from DESC, policy_id DESC per spec §3.1 tiebreaker). |
 | `swing/data/models.py` (EXTEND) | NEW dataclasses: `RiskPolicy` (28 fields matching schema; `__post_init__` validator per dispatch brief §0.3 #4 + Bundle 2/3 pattern — NaN/inf rejection on REAL fields, CHECK-IN enum validation, sum-to-1.0 for process_grade_weight_*); `ReconciliationRun`; `ReconciliationDiscrepancy`; `HypothesisStatusHistory`; `AccountEquitySnapshot`. |
@@ -242,13 +261,15 @@ Plan decomposes into 5 sub-bundles for executing-plans dispatch. Orchestrator di
 
 | Sub-bundle | Scope | Tasks | Cross-bundle dependencies |
 |---|---|---|---|
-| **A — risk_policy foundation** | Migration 0017 (PARTIAL — risk_policy table only); risk_policy repo + service + CLI; cfg-mirror cascade; trades.risk_policy_id_at_lock stamp at Phase 7 entry; review_log.risk_policy_id_at_review_completion stamp at Phase 6 review complete. | T-A.0 … T-A.7 | None — bottom of dependency stack. |
-| **B — reconciliation depth** | Migration 0017 (PARTIAL — reconciliation_runs + reconciliation_discrepancies tables); reconciliation repo + service; tos_import.py refactor (close-price + stop + equities + cash-movement compares); CLI `journal reconcile-tos` + `journal discrepancy`; `list_unresolved_material_for_active_trades` + `list_unresolved_material_for_closed_trades` queries. | T-B.0 … T-B.8 | Depends on A (risk_policy must exist for `is_active=1` reads to work; reconciliation service uses risk_policy `scratch_epsilon_R` for win/loss classification in summary_json). |
-| **C — hypothesis_status_history + account_equity_snapshots** | Migration 0017 (PARTIAL — hypothesis_status_history + account_equity_snapshots tables + seed rows); repos + services; CLI `account snapshot`; rewire `swing hypothesis update` through new service helper. | T-C.0 … T-C.5 | Depends on A (migration 0017 framework + datetime helpers). Independent of B. |
-| **D — sector/industry tamper hardening** | Route-layer rejection at `/trades/entry` POST; ad-hoc reconciliation_run emission on rejection; mirrors chart_pattern hardening pattern. | T-D.0 … T-D.3 | Depends on A (risk_policy seed) + B (reconciliation_runs + reconciliation_discrepancies tables; sector_tamper discrepancy emitter). |
+| **A — schema + risk_policy foundation** | **COMPLETE migration 0017** (all 5 new tables + 2 ALTER ADDs + risk_policy seed row + hypothesis_status_history seed rows + indexes — landed atomically in T-A.1); risk_policy repo + service + CLI; cfg-mirror cascade; trades.risk_policy_id_at_lock stamp at Phase 7 entry; review_log.risk_policy_id_at_review_completion stamp at Phase 6 review complete. | T-A.0 … T-A.7 | None — bottom of dependency stack. |
+| **B — reconciliation depth** | Reconciliation repo + service (consumes tables landed in A); tos_import.py refactor (close-price + stop + equities + cash-movement compares); CLI `journal reconcile-tos` + `journal discrepancy`; `list_unresolved_material_for_active_trades` + `list_unresolved_material_for_closed_trades` queries. **No migration edits.** | T-B.0 … T-B.8 | Depends on A (migration landed; risk_policy + reconciliation_runs + reconciliation_discrepancies tables exist). |
+| **C — hypothesis_status_history + account_equity_snapshots** | Repos + services (consume tables + seed rows landed in A); CLI `account snapshot`; rewire `swing hypothesis update` through new service helper. **No migration edits.** | T-C.0 … T-C.5 | Depends on A (migration landed; hypothesis_status_history seeded; account_equity_snapshots table exists). Independent of B. |
+| **D — sector/industry tamper hardening** | Route-layer rejection at `/trades/entry` POST; ad-hoc reconciliation_run emission on rejection; mirrors chart_pattern hardening pattern. | T-D.0 … T-D.3 | Depends on A (risk_policy seed) + B (reconciliation_runs + reconciliation_discrepancies tables consumed via service entry). |
 | **E — final polish + Phase 10 hand-off prep** | E2E integration test; CLAUDE.md gotcha promotion; docs/cycle-checklist.md update; orchestrator-context.md lesson capture; Phase 10 hand-off note in plan return report. | T-E.0 … T-E.2 | Depends on A + B + C + D (final polish across all surfaces). |
 
-**Migration ordering convention:** the SINGLE migration file `0017_phase9_risk_policy_and_reconciliation.sql` is landed atomically in T-A.1 (sub-bundle A's first schema task). All five new tables + 2 ALTER ADDs are created in this one file (per spec §9.1 "single migration"). Sub-bundles B / C / D / E ship code that consumes the schema; they DO NOT modify the migration. Discriminating test T-A.1.6 verifies the migration creates all 5 tables + 2 columns in a single executescript pass.
+**Migration atomicity (Codex R1 Critical #1 fix):** the SINGLE migration file `0017_phase9_risk_policy_and_reconciliation.sql` is landed **complete-and-atomic** in T-A.1 (sub-bundle A's first schema task). All five new tables + 2 ALTER ADDs + risk_policy seed + hypothesis_status_history seed rows + indexes are created in this one file. The `UPDATE schema_version SET version = 17` happens at the END of that same file — **`EXPECTED_SCHEMA_VERSION` is bumped to 17 ONLY AFTER all schema work for the phase is in the migration file**. Sub-bundles B / C / D / E ship code that consumes the schema; they DO NOT modify the migration. This avoids the "schema_version bumped to 17 mid-phase while later sub-bundles still need to add tables" failure mode: if A shipped to production with only risk_policy created + version 17 stamped, then later B/C migration edits to `0017_*` would NEVER apply on the production DB (runner skips migrations with `version <= current`).
+
+**Why a "schema bundle 0" wasn't carved out separately:** the alternative was a dedicated "Bundle 0 — migration only" with everything else (A through E) gated on its merge. Rejected because: (1) the migration depends on the risk_policy seed values from cfg, which is service-layer logic in T-A.4 (`seed_initial_policy` lives in `swing/trades/risk_policy.py`); the seed row in the migration is a literal INSERT with hardcoded cfg defaults, and the helper is for post-Phase-9 ratification paths; (2) operator-witnessed verification of the migration is best paired with the smallest-possible read surface (sub-bundle A's `swing config policy show`) — separate gates would add ceremony without catching anything. Discriminating test T-A.1.6 verifies the migration creates all 5 tables + 2 columns + all seed rows in a single executescript pass.
 
 **Operator-witnessed gate sequencing:** sub-bundle A ships with its own gate (5 surfaces); B with 6 surfaces (includes A's surfaces + reconciliation-specific); C with 4 surfaces (account snapshot CLI + hypothesis status audit + read-path); D with 3 surfaces (sector/industry rejection + audit-row persistence); E is one combined E2E surface. Brief drafting for each sub-bundle codifies the surfaces.
 
@@ -429,11 +450,13 @@ def test_schema_version_is_17(conn: sqlite3.Connection):
     assert row[0] == 17
 
 
-def test_risk_policy_table_exists_with_28_columns(conn: sqlite3.Connection):
+def test_risk_policy_table_exists_with_34_columns(conn: sqlite3.Connection):
     cur = conn.execute("PRAGMA table_info(risk_policy)")
     cols = [r[1] for r in cur.fetchall()]
-    # Per spec §3.1 — 28 columns total
-    assert len(cols) == 28
+    # Per spec §3.1 column list — 34 columns total. Spec text's "28 columns"
+    # subtotal is a brainstorm-phase miscount per Codex R1 Major #2 fix; the
+    # column LIST in spec §3.1 is the binding artifact (34 distinct fields).
+    assert len(cols) == 34
     expected = {
         "policy_id", "effective_from", "effective_to", "is_active",
         "superseded_by_policy_id", "created_at", "policy_notes",
@@ -631,7 +654,9 @@ ALTER TABLE review_log ADD COLUMN risk_policy_id_at_review_completion INTEGER RE
 UPDATE schema_version SET version = 17;
 ```
 
-NOTE: The migration file is built CUMULATIVELY across sub-bundles A/B/C — B appends reconciliation tables to the SAME 0017 file; C appends hypothesis + account_equity tables to the SAME 0017 file. Plan T-A.1 lands the initial risk_policy + ALTERs; T-B.0 + T-C.0 + T-C.1 extend the file. Executing-plans dispatch must merge edits cleanly within a single file (test fixtures pin to the cumulative final shape).
+**Migration is COMPLETE-AND-ATOMIC at this task (Codex R1 Critical #1 fix).** T-A.1 lands ALL Phase 9 schema in this single file: risk_policy table + 2 indexes + seed; reconciliation_runs table + 3 indexes (per spec §3.2); reconciliation_discrepancies table + 4 indexes (per spec §3.3); hypothesis_status_history table + 2 indexes + per-hypothesis seed rows (per spec §3.4); account_equity_snapshots table + 2 indexes (per spec §3.5); 2 ALTER ADDs on trades + review_log. `UPDATE schema_version SET version = 17` is the LAST statement. Sub-bundles B/C/D/E DO NOT touch this file — they ship code that consumes the already-landed schema. Discriminating test T-A.1.6 (added below this step list) verifies all 5 tables + 2 columns + all seed rows + all 13 indexes (2+3+4+2+2) are present in a single post-T-A.1 DB.
+
+**Test scope at T-A.1:** the test file `tests/data/test_migration_0017.py` lands with FULL coverage in T-A.1: 6 tests in the initial skeleton above + 4 tests verifying reconciliation tables (T-B.0 originally; moved into T-A.1 per the fix) + 4 tests verifying hypothesis_status_history table + seed rows (T-C.0 / T-C.1 originally; moved into T-A.1) + 3 tests verifying account_equity_snapshots table (T-C.0 originally; moved into T-A.1). T-B.0 / T-C.0 / T-C.1 are repurposed below as **read-only verification tasks** consuming the already-landed schema; they do NOT add DDL.
 
 - [ ] **Step 4: Bump EXPECTED_SCHEMA_VERSION**
 
@@ -1395,34 +1420,33 @@ git commit -m "feat(trades): Task A.7 — Phase 7 entry + Phase 6 review-complet
 - S5: `swing journal discrepancy resolve <id> --resolution journal_corrected --reason "..."` updates the row; `resolved_at` server-stamped.
 - S6: `list_unresolved_material_for_active_trades` returns the open-trade alert set; `list_unresolved_material_for_closed_trades` returns the closed-trade attention set (per spec §5.1 canonical queries).
 
-### Task B.0: Migration 0017 extension — reconciliation_runs + reconciliation_discrepancies
+### Task B.0: Verify reconciliation schema from sub-bundle A migration (read-only)
 
 **Files:**
-- Modify: `swing/data/migrations/0017_phase9_risk_policy_and_reconciliation.sql` (APPEND tables + indexes)
-- Test: extend `tests/data/test_migration_0017.py` (add 4 tests for reconciliation tables)
+- Test: `tests/data/test_phase9_reconciliation_schema_verification.py` (consumer-side schema verification)
 
-**Depends on:** T-A.1 (migration framework + risk_policy seeded).
+**Depends on:** T-A.1 (migration already landed reconciliation_runs + reconciliation_discrepancies).
+
+**Repurposed per Codex R1 Critical #1 fix:** the migration itself was completed atomically in T-A.1. This task adds a CONSUMER-SIDE verification that the schema sub-bundle B depends on is correctly provisioned before B's repo + service tasks build on it. No DDL changes.
 
 **Acceptance criteria:**
-- `reconciliation_runs` table with 17 columns per spec §3.2.
-- 3 indexes: `ix_reconciliation_runs_started_ts`, `ix_reconciliation_runs_state` (partial), `ix_reconciliation_runs_source` (composite).
-- `reconciliation_discrepancies` table with 18 columns per spec §3.3.
-- 4 indexes including partials per spec §3.3.
-- FK CASCADE on `reconciliation_discrepancies.run_id` → `reconciliation_runs(run_id)`.
-- FK SET NULL on `trade_id`, `fill_id`, `cash_movement_id`, `linked_daily_management_record_id`.
-- CHECK constraints on `discrepancy_type`, `resolution` enums per spec §3.3.
-- Migration is idempotent.
+- `reconciliation_runs` table exists with 17 columns per spec §3.2 (verified via PRAGMA table_info).
+- 3 indexes present: `ix_reconciliation_runs_started_ts`, `ix_reconciliation_runs_state` (partial), `ix_reconciliation_runs_source` (composite). Verified via `PRAGMA index_list(reconciliation_runs)`.
+- `reconciliation_discrepancies` table exists with 18 columns per spec §3.3.
+- 4 indexes present including partials per spec §3.3.
+- FK CASCADE on `reconciliation_discrepancies.run_id` → `reconciliation_runs(run_id)`: insert run + discrepancy + DELETE run + assert discrepancy absent.
+- FK SET NULL on `trade_id`, `fill_id`, `cash_movement_id`, `linked_daily_management_record_id`: insert discrepancy referencing a trade + DELETE trade + assert discrepancy row survives with NULL trade_id.
+- CHECK constraints on `discrepancy_type`, `resolution` enums per spec §3.3 reject invalid values.
 
 (Step-by-step TDD cycle abbreviated.)
 
-- [ ] **Step 1: Write failing tests for new tables**
-- [ ] **Step 2: Append SQL to 0017 migration file**
-- [ ] **Step 3: Verify all migration tests pass**
-- [ ] **Step 4: Commit**
+- [ ] **Step 1: Write schema-verification tests**
+- [ ] **Step 2: Verify tests pass against the v17 schema landed by T-A.1**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add swing/data/migrations/0017_phase9_risk_policy_and_reconciliation.sql tests/data/test_migration_0017.py
-git commit -m "feat(data): Task B.0 — migration 0017 reconciliation_runs + reconciliation_discrepancies tables"
+git add tests/data/test_phase9_reconciliation_schema_verification.py
+git commit -m "test(data): Task B.0 — verify reconciliation schema from T-A.1 migration (consumer-side)"
 ```
 
 ### Task B.1: Reconciliation dataclasses + repo
@@ -1523,10 +1547,11 @@ git commit -m "feat(journal): Task B.3 — close_price_mismatch + entry_price_mi
 **Acceptance criteria per spec §6.2:**
 - Parse Account Order History section; extract WORKING SELL TO CLOSE STP rows.
 - Output: `list[(ticker, working_stop_price, order_id_or_none)]`.
-- For each open trade with current_stop: compare. Mismatch (within tolerance) → emit `stop_mismatch`.
+- For each open trade with current_stop: compare. **Mismatch (`abs(trades.current_stop - broker_working_stop) > price_tolerance`, i.e., difference OUTSIDE tolerance) → emit `stop_mismatch`** (Codex R1 Major #3 fix — earlier wording read "within tolerance" which was inverted; per spec §6.2 mismatch fires when the delta exceeds tolerance).
 - Open trade with NO broker stop → emit with `actual_value_json={"working_stop_price": null, "order_id": null}`.
 - Broker stop with NO matching journal trade → emit with `expected_value_json={}` (orphan).
 - All three scenarios material=1.
+- Discriminating test pattern: exact match (delta = 0) → NO emission; within tolerance (delta = tolerance/2) → NO emission; at tolerance boundary (delta = tolerance) → boundary behavior locked at writing-plans-dispatch time (recommended: NOT emit at boundary, EMIT for delta > tolerance — half-open interval); outside tolerance (delta = 2 * tolerance) → EMIT.
 
 (Step-by-step abbreviated.)
 
@@ -1576,7 +1601,7 @@ git commit -m "feat(journal): Task B.5 — position_qty_mismatch via Equities se
 
 **Acceptance criteria per spec §6.4 + §A.2:**
 - Cash_movement_mismatch detection: when REF# duplicate but amount or kind differs, emit `cash_movement_mismatch` (material=0 — cash flow doesn't bear on trade review).
-- `swing/trades/reconciliation.py:run_tos_reconciliation` orchestrates the full flow: BEGIN IMMEDIATE → INSERT run row → call refactored reconcile_tos with run_id + emitter → on success, UPDATE run state='completed'; on exception, ROLLBACK + INSERT fresh row with state='failed' + error_message.
+- `swing/trades/reconciliation.py:run_tos_reconciliation` orchestrates the full flow per §A.2 + spec §3.3.3: BEGIN IMMEDIATE → INSERT run row → call refactored reconcile_tos with run_id + emitter → on success, UPDATE run state='completed' + summary fields → COMMIT. **On exception (Codex R1 Major #1 fix):** catch inside the same transaction → UPDATE the existing run row's `state='failed', finished_ts=now, error_message=str(e)` → COMMIT. Run row preserved; discrepancies / fills / cash_movements emitted prior to failure are PRESERVED alongside the failed-state UPDATE per spec audit-trail-integrity-over-rollback-purity disposition.
 - Service rejects caller-held transaction.
 - `MATERIAL_BY_TYPE` lookup constant defined per spec §3.3.1.
 - Within-run dedup via in-memory set (Phase 9 spec §5.1 R3 Major #4 fix).
@@ -1585,7 +1610,7 @@ git commit -m "feat(journal): Task B.5 — position_qty_mismatch via Equities se
 (Step-by-step abbreviated; complex task — implementer breaks into TDD micro-cycles.)
 
 - [ ] **Step 1-15: TDD cycles per spec §3.3.1 type table**
-- [ ] **Step 16: Failure-path test (synthetic exception → state='failed' row)**
+- [ ] **Step 16: Failure-path test per spec §3.3.3 + Codex R1 M#1 fix — inject synthetic exception AFTER emitter has fired for ≥1 discrepancy; assert: (a) reconciliation_runs row PRESENT with state='failed' (NOT absent), (b) error_message populated, (c) discrepancies emitted prior to failure ARE PRESERVED, (d) conn.in_transaction == False post-call. Pre-fix expectation (the spec-deviating original plan): row would be absent with discrepancies rolled back. Post-fix expectation: row present with state='failed' + partial discrepancies committed. This is the discriminating distinction.**
 - [ ] **Step 17: Within-run dedup test**
 - [ ] **Step 18: Caller-tx rejection test**
 - [ ] **Step 19: Commit**
@@ -1656,13 +1681,14 @@ git commit -m "test(integration): Task B.8 — reconciliation E2E with all 4 dis
 - S3: `swing hypothesis update --hypothesis VIR --status paused --reason "..."` writes hypothesis_status_history row AND closes prior open interval; rejects identity transitions with INFO-level message.
 - S4: Read-path: `get_latest_snapshot_on_or_before(asof=today)` returns the most-recent snapshot under source-ladder precedence.
 
-### Task C.0: Migration 0017 extension — hypothesis_status_history + account_equity_snapshots tables
+### Task C.0: Verify hypothesis_status_history + account_equity_snapshots schema from sub-bundle A (read-only)
 
 **Files:**
-- Modify: `swing/data/migrations/0017_phase9_risk_policy_and_reconciliation.sql` (APPEND)
-- Test: extend `tests/data/test_migration_0017.py`
+- Test: `tests/data/test_phase9_audit_tables_schema_verification.py` (consumer-side schema verification)
 
 **Depends on:** T-A.1.
+
+**Repurposed per Codex R1 Critical #1 fix:** migration landed atomically in T-A.1. This task verifies sub-bundle C dependencies before C builds repo + service tasks.
 
 **Acceptance criteria:**
 - `hypothesis_status_history` (7 columns) + 2 indexes per spec §3.4.
@@ -1671,41 +1697,39 @@ git commit -m "test(integration): Task B.8 — reconciliation E2E with all 4 dis
 - Unique index `(snapshot_date, source)` per spec §3.5.
 - FK CASCADE on `hypothesis_status_history.hypothesis_id` → `hypothesis_registry(id)`.
 
-(Step-by-step abbreviated.)
-
-- [ ] **Step 1-5: TDD cycle**
-- [ ] **Step 6: Commit**
+- [ ] **Step 1: Write schema-verification tests (PRAGMA-driven)**
+- [ ] **Step 2: Verify tests pass against the v17 schema landed by T-A.1**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add swing/data/migrations/0017_phase9_risk_policy_and_reconciliation.sql tests/data/test_migration_0017.py
-git commit -m "feat(data): Task C.0 — migration 0017 hypothesis_status_history + account_equity_snapshots tables"
+git add tests/data/test_phase9_audit_tables_schema_verification.py
+git commit -m "test(data): Task C.0 — verify hypothesis_status_history + account_equity_snapshots schema from T-A.1"
 ```
 
-### Task C.1: Migration 0017 extension — hypothesis_status_history seed rows
+### Task C.1: Verify hypothesis_status_history seed rows from sub-bundle A migration (read-only)
 
 **Files:**
-- Modify: `swing/data/migrations/0017_phase9_risk_policy_and_reconciliation.sql` (APPEND seed INSERT)
-- Test: extend `tests/data/test_migration_0017.py` (verify one history row per hypothesis_registry row)
+- Test: `tests/data/test_phase9_hypothesis_seed_verification.py`
 
-**Depends on:** T-C.0.
+**Depends on:** T-A.1 (migration seeded hypothesis_status_history rows from existing hypothesis_registry rows).
+
+**Repurposed per Codex R1 Critical #1 fix:** migration seed rows landed in T-A.1. This task verifies the seed shape post-T-A.1.
 
 **Acceptance criteria per spec §3.4.1 R3 Major #2:**
-- Seed migration inserts one history row per existing hypothesis_registry row.
-- `effective_from = strftime('%Y-%m-%dT00:00:00.000', hypothesis_registry.created_at)` (normalizes date-only to millisecond form per validator policy).
-- `effective_to = NULL` (current row).
-- `status = hypothesis_registry.status`.
-- `change_reason = NULL` (seed).
-- `recorded_at = strftime('%Y-%m-%dT%H:%M:%f', 'now')` (migration apply time).
-- Discriminating test: production DB has 4 hypotheses → seed produces 4 history rows, all with effective_to=NULL.
+- Production DB has N hypotheses → post-migration, N rows exist in hypothesis_status_history with effective_to IS NULL.
+- For each seed row: `effective_from` matches `strftime('%Y-%m-%dT00:00:00.000', hypothesis_registry.created_at)` (date-only normalized to millisecond form).
+- `status` matches `hypothesis_registry.status`.
+- `change_reason IS NULL` (seed).
+- `recorded_at` is a valid millisecond-precision ISO datetime.
+- Discriminating test: insert a NEW hypothesis_registry row post-migration; assert it does NOT auto-get a history row (seed runs ONCE; service helper handles post-migration insertions).
 
-(Step-by-step abbreviated.)
-
-- [ ] **Step 1-4: TDD cycle**
-- [ ] **Step 5: Commit**
+- [ ] **Step 1: Write seed-verification tests**
+- [ ] **Step 2: Verify pass**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add swing/data/migrations/0017_phase9_risk_policy_and_reconciliation.sql tests/data/test_migration_0017.py
-git commit -m "feat(data): Task C.1 — migration 0017 hypothesis_status_history seed rows"
+git add tests/data/test_phase9_hypothesis_seed_verification.py
+git commit -m "test(data): Task C.1 — verify hypothesis_status_history seed rows from T-A.1 migration"
 ```
 
 ### Task C.2: account_equity_snapshots repo + service + CLI
