@@ -55,8 +55,8 @@ CLI path unchanged (`--current-price` is required). +6 discriminating tests.
 ## 4. Test count delta
 
 - Pre-Bundle-3 baseline (HEAD `622c669` on `main`): 2278 fast tests collected; 2277 passed + 1 skipped on a CLEAN main (3 pre-existing failures in `tests/integration/test_phase8_pipeline_walkthrough.py` due to environmental `ohlcv archive returned None` — verified pre-existing on `main`, NOT a Bundle 3 regression).
-- Post-Bundle-3 fast suite (excluding pre-existing-failing file): expected 2319+ passed (delta TBD on final suite run).
-- Brief estimated +12-18. Actual delta: ~+46 (well over estimate, similar to Bundle 2's overshoot via Codex defensive-hardening tests).
+- **Post-Bundle-3 fast suite (excluding the 3 pre-existing-failing integration tests):** 2328 passed, 1 skipped, 10 deselected in 315s.
+- Delta: +51 new tests landed (over brief estimate of +12-18; matches Bundle 2's overshoot pattern from Codex defensive-hardening rounds).
 
 New test files / additions:
 - `tests/test_config_stop_advisory_bundle3.py` (+7 cfg tests — default + validator rejections for zero/negative/NaN/inf + toml round-trip)
@@ -82,7 +82,7 @@ The Codex chain validated test-suite coverage on:
 - §M.2 correctly no-ops under DHC-empirical r=0.85R
 - click.Choice rejects invalid `--maturity-stage` values
 
-S7 (pytest + ruff) confirmed local: GREEN (2319+ passed, 1 skipped; ruff 18 unchanged).
+S7 (pytest + ruff) confirmed local: GREEN (2328 passed, 1 skipped excluding 3 pre-existing failures; ruff 18 unchanged).
 
 ## 7. Per-task-family deviations from the brief
 
