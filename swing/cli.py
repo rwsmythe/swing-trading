@@ -866,11 +866,22 @@ def trade_stop_adjust_cmd(ctx, trade_id, new_stop, rationale, notes, force):
 @click.option("--previous-close", type=float, default=None)
 @click.option("--adr-pct", type=float, default=None,
               help="trailing ~20-bar ADR%; drives §4.D parabolic_trim")
+@click.option(
+    "--maturity-stage",
+    type=click.Choice(
+        ["pre_+1.5R", "+1.5R_to_+2R", ">=+2R_trail_eligible"],
+        case_sensitive=True,
+    ),
+    default=None,
+    help=("Phase 8 daily-management maturity stage; drives §4.A.bis "
+          "maturity_stage_trail_ma_hint advisory. Omit to skip the hint."),
+)
 @click.option("--weather", default="Bullish")
 @click.option("--as-of-date", default=None, help="default: today")
 @click.pass_context
 def trade_advisory_cmd(ctx, trade_id, current_price, sma10, sma20, sma50,
-                        previous_close, adr_pct, weather, as_of_date):
+                        previous_close, adr_pct, maturity_stage, weather,
+                        as_of_date):
     """Print stop-advisory suggestions for an open trade."""
     from datetime import date as _date
 
@@ -902,6 +913,7 @@ def trade_advisory_cmd(ctx, trade_id, current_price, sma10, sma20, sma50,
         config=cfg.stop_advisory,
         adr_pct=adr_pct,
         has_been_trimmed=has_been_trimmed,
+        maturity_stage=maturity_stage,
     )
     sugs = compute_all_suggestions(trade, ctx_a)
     if not sugs:
