@@ -214,7 +214,7 @@ Lives in **new helper `swing/data/datetime_helpers.py:now_ms` + `validate_ms_iso
 | `tests/data/test_risk_policy_repo.py` | risk_policy repo tests: insert_policy + get_active_policy + tiebreaker ORDER BY + list_policy_history. |
 | `tests/trades/test_risk_policy_service.py` | risk_policy service tests: supersede_active_policy 6-step sequence + rejects caller-held transaction + RiskPolicy `__post_init__` validator (NaN/inf, CHECK enum, sum-to-1.0 cross-field, drawdown sign convention) + idempotency (no-op when fields match active row — V1 default is NO short-circuit per spec §4.1, but the test verifies actively-WRITTEN no-change rows are still distinct policy_ids); apply_toml_divergence_correction; seed_initial_policy idempotence. |
 | `tests/data/test_reconciliation_repo.py` | reconciliation repo tests: insert_run + update_run_completed + update_run_failed + insert_discrepancy + list_recent_runs two-read pattern (most-recent-completed vs most-recent-started); list_unresolved_material_for_active_trades query semantics; list_unresolved_material_for_closed_trades query semantics; count_runs_for_artifact_sha256 advisory. |
-| `tests/trades/test_reconciliation_service.py` | reconciliation service tests: run_tos_reconciliation against fixture CSVs covering each discrepancy type (close_price_mismatch, stop_mismatch, position_qty_mismatch, cash_movement_mismatch, entry_price_mismatch, unmatched_open_fill, unmatched_close_fill, equity_delta); failure-path emits separate `state='failed'` row; within-run dedup verification; resolve_discrepancy lifecycle; MATERIAL_BY_TYPE lookup correctness; rejects caller-held transaction. |
+| `tests/trades/test_reconciliation_service.py` | reconciliation service tests: run_tos_reconciliation against fixture CSVs covering each discrepancy type (close_price_mismatch, stop_mismatch, position_qty_mismatch, cash_movement_mismatch, entry_price_mismatch, unmatched_open_fill, unmatched_close_fill, equity_delta); **failure-path preserves the existing run row + UPDATEs `state='failed'` per spec §3.3.3 (Codex R1 Major #1 + R2 Major #2 fix — NOT a separate row); pre-failure emitted discrepancies + cash_movements + fills are PRESERVED alongside the failed-state UPDATE within the same commit**; within-run dedup verification; resolve_discrepancy lifecycle; MATERIAL_BY_TYPE lookup correctness; rejects caller-held transaction. |
 | `tests/data/test_account_equity_snapshots_repo.py` | repo tests: insert + upsert + PK preservation + source-ladder precedence in get_latest_snapshot_on_or_before + with_provenance shape + back-recorded flag. |
 | `tests/trades/test_account_equity_snapshots_service.py` | service tests: record_snapshot defaults snapshot_date to last_completed_session; back-recorded flag past 7-day threshold; rejects caller-held transaction. |
 | `tests/data/test_hypothesis_status_history_repo.py` | repo tests: insert_history + update_close_open_interval + get_current_status + list_history_for_hypothesis ordering. |
@@ -418,7 +418,7 @@ git commit -m "feat(data): Task A.0 — naive-UTC millisecond-precision datetime
 **Files:**
 - Create: `swing/data/migrations/0017_phase9_risk_policy_and_reconciliation.sql`
 - Modify: `swing/data/db.py` (EXPECTED_SCHEMA_VERSION 16 → 17)
-- Test: `tests/data/test_migration_0017.py` (initial scope — risk_policy + 2 ALTERs + seed)
+- Test: `tests/data/test_migration_0017.py` (FULL scope — all 5 tables + 2 ALTERs + risk_policy seed + hypothesis_status_history seed rows per Codex R1 Critical #1 fix)
 - Test: `tests/data/test_migration_0017_runner_discipline.py`
 
 **Depends on:** T-A.0.
@@ -427,8 +427,19 @@ git commit -m "feat(data): Task A.0 — naive-UTC millisecond-precision datetime
 
 ```python
 # tests/data/test_migration_0017.py
-"""Test 0017 migration round-trip (risk_policy scope; reconciliation/hypothesis/
-account_equity tables tested in later tasks)."""
+"""Test 0017 migration round-trip — FULL scope per Codex R1 Critical #1 fix.
+
+Covers ALL Phase 9 schema landed atomically by T-A.1: risk_policy + indexes +
+seed; reconciliation_runs + indexes; reconciliation_discrepancies + indexes;
+hypothesis_status_history + indexes + per-hypothesis seed rows;
+account_equity_snapshots + indexes; trades.risk_policy_id_at_lock column;
+review_log.risk_policy_id_at_review_completion column; schema_version = 17.
+
+The test scaffold below shows the risk_policy + ALTER coverage; the full file
+adds analogous tests for reconciliation_runs (per spec §3.2), reconciliation_
+discrepancies (per spec §3.3), hypothesis_status_history + seed rows (per spec
+§3.4), account_equity_snapshots (per spec §3.5). Implementer expands the
+scaffold to FULL coverage in T-A.1; no later task adds DDL or test cases."""
 
 import sqlite3
 from pathlib import Path
@@ -555,16 +566,19 @@ def test_legacy_trades_have_null_risk_policy_id_at_lock(conn: sqlite3.Connection
 Run: `pytest tests/data/test_migration_0017.py -v`
 Expected: FAIL (migration file doesn't exist; EXPECTED_SCHEMA_VERSION is 16).
 
-- [ ] **Step 3: Implement migration file**
+- [ ] **Step 3: Implement migration file (COMPLETE-AND-ATOMIC per Codex R1 Critical #1 fix)**
 
-Create `swing/data/migrations/0017_phase9_risk_policy_and_reconciliation.sql` per spec §3.1 schema sketch — 28 columns + 2 indexes + seed row. Use SQL `strftime('%Y-%m-%dT%H:%M:%f', 'now')` for seed `effective_from` + `created_at` per §A.11. (FULL DDL drafting is executing-plans territory; the implementer derives from spec §3.1 column table verbatim.)
+Create `swing/data/migrations/0017_phase9_risk_policy_and_reconciliation.sql` per spec §3 schema sketches — **all 5 new tables + 2 ALTER ADDs + all seed rows + all 13 indexes** (the spec §A.0.1-reconciled 34-column risk_policy + 17-column reconciliation_runs + 18-column reconciliation_discrepancies + 7-column hypothesis_status_history + 8-column account_equity_snapshots). Use SQL `strftime('%Y-%m-%dT%H:%M:%f', 'now')` for all seed timestamps per §A.11. (FULL DDL drafting is executing-plans territory; the implementer derives from spec §3.1–§3.5 column tables verbatim.)
 
-Key migration content (illustrative skeleton — implementer fills column DDL):
+Key migration content (illustrative SKELETON for risk_policy only — implementer expands to all 5 tables + ALTERs + seeds per spec §3.1–§3.5 column tables):
 
 ```sql
 -- 0017_phase9_risk_policy_and_reconciliation.sql
--- Schema bump v16 -> v17. Adds risk_policy + (B/C bundles add reconciliation_runs +
--- reconciliation_discrepancies + hypothesis_status_history + account_equity_snapshots).
+-- Schema bump v16 -> v17 LANDED ATOMICALLY (per Codex R1 Critical #1 fix).
+-- Single file creates: risk_policy + reconciliation_runs + reconciliation_discrepancies +
+-- hypothesis_status_history + account_equity_snapshots, plus 2 ALTER ADD columns on
+-- trades + review_log, plus all seed rows (risk_policy.policy_id=1 + one
+-- hypothesis_status_history row per existing hypothesis_registry row).
 -- Per spec §9.2 mechanic: CREATE TABLE / CREATE INDEX / ALTER ADD COLUMN — no rebuilds.
 
 -- Phase 7 hotfix 283d4fa discipline: foreign_keys=OFF wraps executescript at runner.
@@ -642,21 +656,27 @@ INSERT INTO risk_policy (
     0.40, 0.35, 0.25, 'daily_approximate', 21
 );
 
+-- IMPLEMENTER EXPANDS: append CREATE TABLE statements for the remaining
+-- 4 tables (reconciliation_runs / reconciliation_discrepancies /
+-- hypothesis_status_history / account_equity_snapshots) per spec §3.2–§3.5
+-- column tables, plus their indexes (3+4+2+2 = 11 additional indexes).
+
 -- ALTER TABLE ADDs (no rebuild)
 ALTER TABLE trades ADD COLUMN risk_policy_id_at_lock INTEGER REFERENCES risk_policy(policy_id);
 ALTER TABLE review_log ADD COLUMN risk_policy_id_at_review_completion INTEGER REFERENCES risk_policy(policy_id);
 
--- B/C bundles append: reconciliation_runs + reconciliation_discrepancies +
--- hypothesis_status_history + account_equity_snapshots + their indexes +
--- hypothesis_status_history seed rows.
--- (See T-B.0 + T-C.0 + T-C.1 for the additional DDL added to THIS file.)
+-- IMPLEMENTER EXPANDS: append seed INSERT for hypothesis_status_history per
+-- spec §3.4.1 R3 Major #2 (one row per hypothesis_registry row; effective_from
+-- = strftime('%Y-%m-%dT00:00:00.000', hypothesis_registry.created_at);
+-- effective_to = NULL; status = current registry status; change_reason = NULL;
+-- recorded_at = strftime('%Y-%m-%dT%H:%M:%f', 'now')).
 
 UPDATE schema_version SET version = 17;
 ```
 
 **Migration is COMPLETE-AND-ATOMIC at this task (Codex R1 Critical #1 fix).** T-A.1 lands ALL Phase 9 schema in this single file: risk_policy table + 2 indexes + seed; reconciliation_runs table + 3 indexes (per spec §3.2); reconciliation_discrepancies table + 4 indexes (per spec §3.3); hypothesis_status_history table + 2 indexes + per-hypothesis seed rows (per spec §3.4); account_equity_snapshots table + 2 indexes (per spec §3.5); 2 ALTER ADDs on trades + review_log. `UPDATE schema_version SET version = 17` is the LAST statement. Sub-bundles B/C/D/E DO NOT touch this file — they ship code that consumes the already-landed schema. Discriminating test T-A.1.6 (added below this step list) verifies all 5 tables + 2 columns + all seed rows + all 13 indexes (2+3+4+2+2) are present in a single post-T-A.1 DB.
 
-**Test scope at T-A.1:** the test file `tests/data/test_migration_0017.py` lands with FULL coverage in T-A.1: 6 tests in the initial skeleton above + 4 tests verifying reconciliation tables (T-B.0 originally; moved into T-A.1 per the fix) + 4 tests verifying hypothesis_status_history table + seed rows (T-C.0 / T-C.1 originally; moved into T-A.1) + 3 tests verifying account_equity_snapshots table (T-C.0 originally; moved into T-A.1). T-B.0 / T-C.0 / T-C.1 are repurposed below as **read-only verification tasks** consuming the already-landed schema; they do NOT add DDL.
+**Test scope at T-A.1:** the test file `tests/data/test_migration_0017.py` lands with FULL coverage in T-A.1. The scaffold above shows the risk_policy + ALTERs + legacy-trade tests (7 tests). Implementer adds analogous tests for reconciliation_runs (4 tests verifying 17-col table + 3 indexes + FK CASCADE on discrepancies + CHECK enums) + reconciliation_discrepancies (verified alongside) + hypothesis_status_history (4 tests verifying 7-col table + 2 indexes + partial-unique-current-row index + per-hypothesis seed rows present + effective_to IS NULL on seeds) + account_equity_snapshots (3 tests verifying 8-col table + 2 indexes + unique-snapshot_date-source). Total: ~18 tests in T-A.1. Sub-bundles B/C/D/E DO NOT add migration tests; their consumer-side verification tasks (T-B.0 / T-C.0 / T-C.1) add 1-3 read-only schema-verification tests each against the v17 schema landed here.
 
 - [ ] **Step 4: Bump EXPECTED_SCHEMA_VERSION**
 
@@ -665,7 +685,7 @@ Modify `swing/data/db.py:15`: `EXPECTED_SCHEMA_VERSION = 16` → `EXPECTED_SCHEM
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `pytest tests/data/test_migration_0017.py -v`
-Expected: PASS (all 6 tests in initial scope; remaining tests added in T-B.0 / T-C.0 / T-C.1).
+Expected: PASS (all ~18 tests covering the COMPLETE Phase 9 schema landed atomically in this task per Codex R1 Critical #1 fix; T-B.0 / T-C.0 / T-C.1 add only consumer-side read-only schema verification tests in separate test files).
 
 - [ ] **Step 6: Commit**
 
@@ -1414,7 +1434,7 @@ git commit -m "feat(trades): Task A.7 — Phase 7 entry + Phase 6 review-complet
 
 **Sub-bundle B surfaces 6 operator-witnessed gates:**
 - S1: Post-A-merge baseline; risk_policy + entry/review stamps green.
-- S2: Migration 0017 extension creates reconciliation_runs + reconciliation_discrepancies; backup gate not re-fired (already fired in A).
+- S2: Consumer-side schema verification (T-B.0) passes against the COMPLETE migration 0017 already landed in sub-bundle A (all 5 tables already present at v17; no new migration; B ships repo + service + CLI on top).
 - S3: `swing journal reconcile-tos --csv-path data/fixtures/sample.csv` runs end-to-end; reconciliation_runs row + discrepancy rows persisted.
 - S4: Deliberate price-mismatch CSV produces close_price_mismatch + entry_price_mismatch discrepancies; `swing journal discrepancy list` shows them.
 - S5: `swing journal discrepancy resolve <id> --resolution journal_corrected --reason "..."` updates the row; `resolved_at` server-stamped.
@@ -1517,11 +1537,11 @@ git commit -m "refactor(journal): Task B.2 — extract emitter seam in reconcile
 **Depends on:** T-B.2.
 
 **Acceptance criteria per spec §6.1:**
-- When a matched close-fill has `abs(tos_price - journal_exit_fill_price) > price_tolerance`, emit `close_price_mismatch` discrepancy via `emitter(discrepancy_type='close_price_mismatch', trade_id=t, fill_id=f, expected_value_json={...}, actual_value_json={...}, material_to_review=1, ticker=..., field_name='price')`.
+- When a matched close-fill has `abs(tos_price - journal_exit_fill_price) > price_tolerance` (strict greater-than per existing convention at `swing/journal/tos_import.py:365`), emit `close_price_mismatch` discrepancy via `emitter(discrepancy_type='close_price_mismatch', trade_id=t, fill_id=f, expected_value_json={...}, actual_value_json={...}, material_to_review=1, ticker=..., field_name='price')`.
 - Same pattern for OPEN-fill (entry_price_mismatch — existing path).
-- `price_tolerance` resolves from `cfg.reconciliation.price_tolerance` (existing) OR `risk_policy.scratch_epsilon_R * entry_price` (TBD — implementer picks one; preferred: existing cfg tolerance for V1 stability).
-- delta_text rendered as `"$N.NN price difference"`.
-- Fixture CSVs cover exact + tolerance-boundary + mismatch cases.
+- **`price_tolerance` LOCKED for V1 (Codex R2 Major #3 fix — was previously left as TBD with two candidate sources):** uses the existing function parameter `reconcile_tos(..., price_tolerance: float = 0.01, ...)` at `swing/journal/tos_import.py:326`. No new cfg field added in Phase 9 (avoiding cfg-vs-risk_policy ambiguity per spec §3.1.3 + risk_policy-mirror discipline). No `risk_policy.scratch_epsilon_R * entry_price` derivation in V1 (deferred to V2 — scratch_epsilon is R-unit threshold for win/loss classification, not price-tolerance dollars; the conflation was incorrect in the original plan text). The existing default 0.01 USD is the V1 binding; operator override path is the same function parameter via the CLI's `--price-tolerance` flag (which writing-plans codifies if not already present; otherwise inherits existing behavior — implementer verifies at T-B.7).
+- delta_text rendered as `"$N.NN price difference"` (signed).
+- Fixture CSVs cover: exact match (delta = 0) → NO emission; within tolerance (delta = 0.005) → NO emission; at boundary (delta = 0.01) → NO emission per strict-greater-than convention; outside tolerance (delta = 0.02) → EMIT. This is the discriminating boundary pattern.
 
 (Step-by-step abbreviated.)
 
@@ -1551,7 +1571,7 @@ git commit -m "feat(journal): Task B.3 — close_price_mismatch + entry_price_mi
 - Open trade with NO broker stop → emit with `actual_value_json={"working_stop_price": null, "order_id": null}`.
 - Broker stop with NO matching journal trade → emit with `expected_value_json={}` (orphan).
 - All three scenarios material=1.
-- Discriminating test pattern: exact match (delta = 0) → NO emission; within tolerance (delta = tolerance/2) → NO emission; at tolerance boundary (delta = tolerance) → boundary behavior locked at writing-plans-dispatch time (recommended: NOT emit at boundary, EMIT for delta > tolerance — half-open interval); outside tolerance (delta = 2 * tolerance) → EMIT.
+- Discriminating test pattern (mirrors T-B.3 close-price-mismatch boundary convention; uses same `price_tolerance` parameter at `swing/journal/tos_import.py:326`, default 0.01): exact match (delta = 0) → NO emission; within tolerance (delta = 0.005) → NO emission; at boundary (delta = 0.01) → NO emission per existing strict-greater-than convention at `swing/journal/tos_import.py:365`; outside tolerance (delta = 0.02) → EMIT.
 
 (Step-by-step abbreviated.)
 
@@ -1676,7 +1696,7 @@ git commit -m "test(integration): Task B.8 — reconciliation E2E with all 4 dis
 **Goal:** Schema (hypothesis_status_history + account_equity_snapshots — APPENDED to migration 0017) + repos + services + CLI `account snapshot` + rewire `swing hypothesis update` through new service helper.
 
 **Sub-bundle C surfaces 4 operator-witnessed gates:**
-- S1: Migration 0017 extension creates new tables + seeds hypothesis_status_history rows (one per existing hypothesis_registry row).
+- S1: Consumer-side schema verification (T-C.0 + T-C.1) passes against the COMPLETE migration 0017 already landed in sub-bundle A (hypothesis_status_history + account_equity_snapshots tables already present at v17; seed rows already inserted; no new migration; C ships repo + service + CLI on top).
 - S2: `swing account snapshot --equity 1300` writes row; `swing account snapshot --equity 1400 --date 2026-04-01` upserts.
 - S3: `swing hypothesis update --hypothesis VIR --status paused --reason "..."` writes hypothesis_status_history row AND closes prior open interval; rejects identity transitions with INFO-level message.
 - S4: Read-path: `get_latest_snapshot_on_or_before(asof=today)` returns the most-recent snapshot under source-ladder precedence.
