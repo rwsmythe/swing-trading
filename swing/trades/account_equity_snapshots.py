@@ -26,13 +26,12 @@ Back-recorded flag (spec §3.5 + plan §B file map):
 from __future__ import annotations
 
 import sqlite3
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
 from swing.data.datetime_helpers import now_ms
 from swing.data.models import AccountEquitySnapshot
 from swing.data.repos import account_equity_snapshots as repo
 from swing.evaluation.dates import last_completed_session
-
 
 BACK_RECORD_THRESHOLD_DAYS: int = 7
 

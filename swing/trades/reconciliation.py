@@ -28,7 +28,11 @@ from pathlib import Path
 from swing.data.datetime_helpers import now_ms
 from swing.data.models import ReconciliationRun
 from swing.data.repos import reconciliation as repo
+from swing.data.repos.account_equity_snapshots import (
+    get_latest_snapshot_on_or_before,
+)
 from swing.journal.tos_import import (
+    extract_account_summary_net_liq,
     extract_stock_fills,
     parse_tos_export,
     reconcile_tos,
@@ -80,6 +84,15 @@ MATERIAL_BY_TYPE: dict[str, int] = {
 
 # Operator hardcoded for V1 (resolved_by audit identifier).
 _V1_RESOLVED_BY = "operator"
+
+
+# Phase 9 Sub-bundle C T-C.6 cross-bundle wiring (dispatch brief §0.5 #5).
+# Emit ``equity_delta`` discrepancy when ``abs(source_net_liq -
+# journal_equity) > EQUITY_DELTA_EMIT_THRESHOLD_DOLLARS``. Strict
+# greater-than (boundary at $10.00 is NOT-emit; matches Bundle B's
+# strict-GT precedent on close_price tolerance comparisons). V2 may
+# operator-override via a CLI flag.
+EQUITY_DELTA_EMIT_THRESHOLD_DOLLARS: float = 10.00
 
 
 class CallerHeldTransactionError(RuntimeError):
@@ -325,6 +338,55 @@ def run_tos_reconciliation(
             "new_cash_movements": len(report.new_cash_movements),
             "duplicate_cash_movements": len(report.duplicate_cash_movements),
         }
+
+        # ----- T-C.6: equity_delta cross-bundle wiring -----------------
+        # Per dispatch brief §0.5 #5 + spec §3.5 + §3.3.1: AFTER the
+        # emitter loop + BEFORE update_run_completed, compute the
+        # source-side vs journal-side equity delta. Emit
+        # ``discrepancy_type='equity_delta'`` only when BOTH sides are
+        # available AND the absolute delta exceeds
+        # EQUITY_DELTA_EMIT_THRESHOLD_DOLLARS. Stamp the per-run
+        # equity columns regardless (NULL when either side is None).
+        account_equity_source: float | None = (
+            extract_account_summary_net_liq(csv_text)
+        )
+        account_equity_journal: float | None = None
+        if period_end_str is not None:
+            journal_snap = get_latest_snapshot_on_or_before(
+                conn, asof_date=period_end_str,
+            )
+            if journal_snap is not None:
+                account_equity_journal = journal_snap.equity_dollars
+        equity_delta: float | None = None
+        if (
+            account_equity_source is not None
+            and account_equity_journal is not None
+        ):
+            # Spec §3.3.1 sign convention: journal MINUS source. Result is
+            # also persisted on reconciliation_runs.equity_delta_dollars.
+            equity_delta = account_equity_journal - account_equity_source
+            if abs(equity_delta) > EQUITY_DELTA_EMIT_THRESHOLD_DOLLARS:
+                # equity_delta is run-grain: trade_id / fill_id /
+                # cash_movement_id / ticker all None per spec §3.3 +
+                # §3.3.1. Within-run dedup tuple naturally collapses to
+                # a single row (one equity_delta per run).
+                _emit_to_db(
+                    run_id=run_id,
+                    discrepancy_type="equity_delta",
+                    field_name="net_liquidating_value",
+                    expected_value_json=json.dumps(
+                        {"equity_dollars": account_equity_journal},
+                        sort_keys=True,
+                    ),
+                    actual_value_json=json.dumps(
+                        {"equity_dollars": account_equity_source},
+                        sort_keys=True,
+                    ),
+                    delta_text=(
+                        f"${equity_delta:+.2f} (journal minus source)"
+                    ),
+                )
+
         finished_ts = now_ms()
         if finished_ts < started_ts:
             finished_ts = started_ts
@@ -339,6 +401,9 @@ def run_tos_reconciliation(
                 "unresolved_discrepancies_count"
             ],
             summary_json=json.dumps(summary, sort_keys=True),
+            account_equity_journal_dollars=account_equity_journal,
+            account_equity_source_dollars=account_equity_source,
+            equity_delta_dollars=equity_delta,
         )
         conn.commit()
     except CallerHeldTransactionError:

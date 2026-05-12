@@ -215,6 +215,62 @@ def _parse_tos_amount(raw: str) -> float:
     return -v if neg else v
 
 
+def extract_account_summary_net_liq(csv_text: str) -> float | None:
+    """Extract Net Liquidating Value from the TOS Account Summary section.
+
+    Phase 9 Sub-bundle C T-C.6 cross-bundle wiring (dispatch brief §0.5
+    #5; spec §3.5 + §3.3.1 equity_delta).
+
+    Real-world Schwab/TOS multi-day exports place an `Account Summary`
+    section near the bottom of the file, with a header-only label line
+    followed by 2-column flat `<Field>,<Value>` rows (NOT a tabular
+    section with a CSV header). Sample observed across 4 production
+    exports at `thinkorswim/*.csv`:
+
+        Account Summary
+        Net Liquidating Value,"$2,015.01"
+        Stock Buying Power,"$1,254.04"
+        ...
+
+    The leading currency symbol + thousands separators + double-quote
+    wrapping are stripped via ``_parse_tos_amount``. Negative-form
+    parens (unlikely for net-liq but defensive) are honored.
+
+    Returns:
+      The parsed net-liq REAL on success.
+      ``None`` if the section is absent OR the ``Net Liquidating Value``
+      row is missing — caller treats None as "source-side equity
+      unavailable" + skips the equity_delta emit (T-C.6 contract).
+    """
+    in_summary = False
+    for raw_line in csv_text.splitlines():
+        stripped = raw_line.strip()
+        label = _section_label_for_line(stripped)
+        if label is not None:
+            in_summary = (label == "Account Summary")
+            continue
+        if not in_summary:
+            continue
+        if not stripped:
+            # Blank line inside / at end of section — keep scanning
+            # subsequent lines (real exports trail Account Summary with
+            # a blank line before the next labelled section).
+            continue
+        # 2-column row: Field,Value. Use csv reader to honor quoting
+        # rules around values like "$2,015.01".
+        try:
+            row = next(csv.reader(StringIO(raw_line)))
+        except StopIteration:
+            continue
+        if len(row) < 2:
+            continue
+        field_name = row[0].strip()
+        value_raw = row[1].strip()
+        if field_name == "Net Liquidating Value":
+            return _parse_tos_amount(value_raw)
+    return None
+
+
 def extract_cash_movements(rows: Iterable[dict]) -> list[CashMovement]:
     """Extract deposits/withdrawals from the Cash Balance section.
 

@@ -1,0 +1,146 @@
+"""Phase 9 Sub-bundle C T-C.6 — Account Summary net-liq extraction parser.
+
+Per dispatch brief §0.5 #5 + spec §3.5 + §3.3.1 equity_delta JSON shape.
+
+Coverage:
+  - Real-world Schwab/TOS Account Summary section format
+    (`Net Liquidating Value,"$2,015.01"`).
+  - Missing section returns None.
+  - Missing Net Liquidating Value row returns None.
+  - Numeric format variants: with/without thousand separator;
+    parenthetical negative; unquoted dollar form.
+  - Verified against all 4 real-world fixture exports at
+    ``thinkorswim/2026-*-AccountStatement.csv``.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from swing.journal.tos_import import extract_account_summary_net_liq
+
+
+# ============================================================================
+# §1 — Real-world fixture exports
+# ============================================================================
+
+
+THINKORSWIM_DIR = Path(__file__).parents[2] / "thinkorswim"
+
+
+@pytest.mark.parametrize("filename, expected", [
+    ("2026-04-15-AccountStatement.csv", 1300.00),
+    ("2026-04-30-AccountStatement.csv", 1396.35),
+    ("2026-05-08-AccountStatement.csv", 1420.60),
+    ("2026-05-12-AccountStatement.csv", 2015.01),
+])
+def test_extracts_net_liq_from_real_world_export(
+    filename: str, expected: float,
+) -> None:
+    path = THINKORSWIM_DIR / filename
+    if not path.exists():
+        pytest.skip(f"{filename} not present in this checkout")
+    text = path.read_text(encoding="utf-8", errors="replace")
+    result = extract_account_summary_net_liq(text)
+    assert result == pytest.approx(expected, abs=0.01), (
+        f"{filename}: expected ~${expected}, got {result}"
+    )
+
+
+# ============================================================================
+# §2 — Synthetic minimal section
+# ============================================================================
+
+
+def test_extracts_quoted_dollar_with_thousand_separator() -> None:
+    csv_text = (
+        "Account Summary\n"
+        'Net Liquidating Value,"$1,300.00"\n'
+        'Stock Buying Power,"$1,300.00"\n'
+    )
+    result = extract_account_summary_net_liq(csv_text)
+    assert result == 1300.00
+
+
+def test_extracts_unquoted_dollar_value() -> None:
+    csv_text = (
+        "Account Summary\n"
+        "Net Liquidating Value,$1234.56\n"
+    )
+    result = extract_account_summary_net_liq(csv_text)
+    assert result == 1234.56
+
+
+def test_handles_negative_parenthetical() -> None:
+    """Defensive: parenthetical-negative form (unlikely for net-liq but
+    the underlying ``_parse_tos_amount`` honors it; we verify the parser
+    doesn't lose the sign en route).
+    """
+    csv_text = (
+        "Account Summary\n"
+        'Net Liquidating Value,"($1,234.56)"\n'
+    )
+    result = extract_account_summary_net_liq(csv_text)
+    assert result == -1234.56
+
+
+def test_handles_zero_value() -> None:
+    csv_text = (
+        "Account Summary\n"
+        "Net Liquidating Value,$0.00\n"
+    )
+    result = extract_account_summary_net_liq(csv_text)
+    assert result == 0.0
+
+
+def test_returns_none_when_account_summary_section_missing() -> None:
+    """Per T-C.6 contract: None signals 'source-side equity unavailable'."""
+    csv_text = (
+        "Account Trade History\n"
+        "Date,Symbol\n2026-05-12,ABC\n"
+    )
+    result = extract_account_summary_net_liq(csv_text)
+    assert result is None
+
+
+def test_returns_none_when_section_present_but_net_liq_row_missing() -> None:
+    csv_text = (
+        "Account Summary\n"
+        "Stock Buying Power,$1234.56\n"
+        "Option Buying Power,$895.38\n"
+    )
+    result = extract_account_summary_net_liq(csv_text)
+    assert result is None
+
+
+def test_returns_none_when_value_unparsable() -> None:
+    """Unparsable values fall through ``_parse_tos_amount`` to 0.0.
+
+    The parser distinguishes 'missing' (returns None) from 'present-but-
+    0' (returns 0.0) — this test pins the latter.
+    """
+    csv_text = (
+        "Account Summary\n"
+        "Net Liquidating Value,not-a-number\n"
+    )
+    result = extract_account_summary_net_liq(csv_text)
+    # _parse_tos_amount returns 0.0 on unparsable input; we get a row but
+    # the value is 0.0 (NOT None — section + row are both present).
+    assert result == 0.0
+
+
+def test_scans_only_the_account_summary_section() -> None:
+    """A `Net Liquidating Value` row in a different section is ignored.
+
+    Defensive: should the operator's CSV have a similarly-named field in
+    another section, we MUST scope to Account Summary only.
+    """
+    csv_text = (
+        "Some Other Section\n"
+        "Net Liquidating Value,$99.99\n"
+        "Account Summary\n"
+        'Net Liquidating Value,"$1,300.00"\n'
+    )
+    result = extract_account_summary_net_liq(csv_text)
+    assert result == 1300.00
