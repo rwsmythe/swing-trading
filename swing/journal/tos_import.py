@@ -21,6 +21,7 @@ conn + the surrounding transaction).
 from __future__ import annotations
 
 import csv
+import json
 import sqlite3
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -411,12 +412,61 @@ def reconcile_tos(
 
         within_batch_alloc: dict[int, int] = {}
         claimed_exit_ids: set[int] = set()
+        # Phase 9 within-run dedup tuple set: (trade_id, type, field_name)
+        # per plan §A.2 + spec §5.1 R3 Major #4. ``None`` trade_id keeps
+        # orphan unmatched fills distinct via their ticker (coerced into
+        # a sentinel-string tuple slot below).
+        emitted_keys: set[tuple] = set()
 
         def _record(f: TosFill, outcome: str, journal_price: float | None) -> None:
             report.fill_decisions.append(FillDecision(
                 fill=f, outcome=outcome,
                 journal_price=journal_price, tolerance=price_tolerance,
             ))
+
+        def _emit(
+            *,
+            discrepancy_type: str,
+            trade_id: int | None,
+            field_name: str,
+            ticker: str | None = None,
+            fill_id: int | None = None,
+            cash_movement_id: int | None = None,
+            expected: dict | None = None,
+            actual: dict | None = None,
+            delta_text: str | None = None,
+            material_to_review: int = 1,
+        ) -> None:
+            if emitter is None:
+                return
+            dedup_key = (
+                trade_id,
+                discrepancy_type,
+                field_name,
+                ticker,
+                fill_id,
+                cash_movement_id,
+            )
+            if dedup_key in emitted_keys:
+                return
+            emitted_keys.add(dedup_key)
+            emitter(
+                discrepancy_type=discrepancy_type,
+                run_id=run_id,
+                trade_id=trade_id,
+                fill_id=fill_id,
+                cash_movement_id=cash_movement_id,
+                ticker=ticker,
+                field_name=field_name,
+                expected_value_json=(
+                    json.dumps(expected, sort_keys=True) if expected is not None else None
+                ),
+                actual_value_json=(
+                    json.dumps(actual, sort_keys=True) if actual is not None else None
+                ),
+                delta_text=delta_text,
+                material_to_review=material_to_review,
+            )
 
         for f in fills:
             if f.open_close == "OPEN":
@@ -428,6 +478,24 @@ def reconcile_tos(
                     if abs(t.entry_price - f.price) > price_tolerance:
                         report.price_mismatch_fills.append(f)
                         _record(f, "price_mismatch", t.entry_price)
+                        # Phase 9 T-B.3: entry_price_mismatch emit per spec
+                        # §6.1 + §3.3.1. Strict > tolerance per existing
+                        # convention (exact / within-tolerance / boundary
+                        # delta=tolerance all NO-emit; outside emits).
+                        entry_fill_id = _find_entry_fill_id(conn, trade_id=t.id)
+                        delta_signed = f.price - t.entry_price
+                        _emit(
+                            discrepancy_type="entry_price_mismatch",
+                            trade_id=t.id,
+                            fill_id=entry_fill_id,
+                            ticker=f.ticker,
+                            field_name="price",
+                            expected={"price": t.entry_price,
+                                      "entry_date": t.entry_date},
+                            actual={"price": f.price, "fill_date": f.date},
+                            delta_text=f"${delta_signed:+.2f} price difference",
+                            material_to_review=1,
+                        )
                     else:
                         report.matched_fills.append(f)
                         _record(f, "matched", t.entry_price)
@@ -490,6 +558,29 @@ def reconcile_tos(
                     report.matched_fills.append(f)
                     _record(f, "matched", None)
                     within_batch_alloc[t.id or 0] = already_allocated + f.qty
+                    # Phase 9 T-B.3: close_price_mismatch emit per spec
+                    # §6.1 + §3.3.1. Best-effort journal exit-fill lookup
+                    # by (trade_id, date, qty) — if found AND price delta
+                    # > tolerance, emit. Strict > convention preserved.
+                    je = _find_journal_exit_for_close(
+                        conn, trade_id=t.id, date=f.date, qty=f.qty,
+                    )
+                    if je is not None:
+                        je_fill_id, je_price = je
+                        if abs(je_price - f.price) > price_tolerance:
+                            delta_signed = f.price - je_price
+                            _emit(
+                                discrepancy_type="close_price_mismatch",
+                                trade_id=t.id,
+                                fill_id=je_fill_id,
+                                ticker=f.ticker,
+                                field_name="price",
+                                expected={"price": je_price,
+                                          "exit_date": f.date},
+                                actual={"price": f.price, "fill_date": f.date},
+                                delta_text=f"${delta_signed:+.2f} price difference",
+                                material_to_review=1,
+                            )
     finally:
         if owns_conn:
             conn.close()
@@ -572,3 +663,50 @@ def _find_unclaimed_recorded_exit(
         if abs(fill_price - price) <= price_tolerance:
             return fill_id
     return None
+
+
+def _find_entry_fill_id(conn, *, trade_id: int) -> int | None:
+    """Look up the journal entry-fill PK for a given trade_id.
+
+    Returns the fill_id of the row with ``action='entry'`` on the trade.
+    Phase 7 invariant: every Phase-7-era trade has exactly one entry fill
+    (Phase 7 plan §5.1.1). Returns None when no entry fill exists
+    (Phase 6-or-earlier ad-hoc trades pre-state-machine).
+    """
+    row = conn.execute(
+        "SELECT fill_id FROM fills "
+        "WHERE trade_id = ? AND action = 'entry' "
+        "ORDER BY fill_id ASC LIMIT 1",
+        (trade_id,),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _find_journal_exit_for_close(
+    conn, *, trade_id: int, date: str, qty: int,
+) -> tuple[int, float] | None:
+    """Find a journal exit fill matching (trade_id, date, qty) for close-price
+    comparison. Returns (fill_id, price) or None.
+
+    Phase 9 spec §6.1: when a TOS CLOSE fill is matched against an open
+    trade, the close_price_mismatch emit needs the journal-side exit fill's
+    price for comparison. We lookup by (trade_id, fill_datetime YYYY-MM-DD
+    prefix, quantity) — price-permissive so the mismatch can be detected.
+    Multiple matches return the first (price agreement is strong signal of
+    same fill; lookup-time non-uniqueness is uncommon enough to defer
+    sophisticated disambiguation to V2).
+
+    Returns None when no exit fill exists yet (TOS fill being matched
+    purely off the trade's open_size — common when the operator imports
+    the CSV BEFORE recording the journal exit; spec §6.1 then has nothing
+    to compare against so no discrepancy emit).
+    """
+    row = conn.execute(
+        "SELECT fill_id, price FROM fills "
+        "WHERE trade_id = ? AND action != 'entry' "
+        "  AND substr(fill_datetime, 1, 10) = ? "
+        "  AND quantity = ? "
+        "ORDER BY fill_id ASC LIMIT 1",
+        (trade_id, date, qty),
+    ).fetchone()
+    return (row[0], row[1]) if row else None
