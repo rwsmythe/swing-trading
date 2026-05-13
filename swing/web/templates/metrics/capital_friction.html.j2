@@ -138,7 +138,7 @@
         <td>{{ p.concurrent_open_positions }}</td>
         <td>
           <span class="badge badge-{{ p.capital_denominator_badge|lower }}">{{ p.capital_denominator_badge }}</span>
-          <br><span class="muted" title="{{ p.capital_denominator_badge_text }}">${{ "%.2f"|format(p.capital_denominator_dollars) }}</span>
+          <br><span class="muted" data-badge-text="trend-{{ p.pipeline_run_id }}">{{ p.capital_denominator_badge_text }}</span>
         </td>
       </tr>
       {% endfor %}

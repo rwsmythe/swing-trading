@@ -210,30 +210,22 @@ def test_compute_capital_friction_no_snapshot_returns_provisional_badge(conn):
 
 
 def test_capital_denominator_badge_text_matches_plan_a6_line_233_format(conn):
-    """Plan §A.6 line 233 BINDING (Codex R1 M#1 fix): badge_text follows
-    the locked format ``"PROVISIONAL: $X,XXX floor used as live-capital
-    fallback (no snapshot ≤ {asof_date})"``."""
+    """Plan §A.6 line 233 BINDING (Codex R1 M#1 + R2 m#2 fix): badge_text
+    matches the locked format EXACTLY (full-string equality, not just
+    substring containment)."""
     _seed_open_trade(conn, trade_id=1, ticker="AAA")
     result = compute_capital_friction(conn, asof_date=date(2026, 5, 12))
-    # Discriminating: assert exact substrings per plan §A.6 line 233.
-    assert "PROVISIONAL:" in result.capital_denominator_badge_text
-    assert "$7,500.00" in result.capital_denominator_badge_text
-    assert "floor used as live-capital fallback" in (
-        result.capital_denominator_badge_text
+    # EXACT string match per plan §A.6 line 233 LOCK.
+    assert result.capital_denominator_badge_text == (
+        "PROVISIONAL: $7,500.00 floor used as live-capital fallback "
+        "(no snapshot ≤ 2026-05-12)"
     )
-    assert "no snapshot ≤ 2026-05-12" in (
-        result.capital_denominator_badge_text
-    )
-    # Seed a snapshot — text should switch to LIVE format.
+    # Seed a snapshot — text should switch to LIVE format exact-match.
     _seed_snapshot(conn, snapshot_date="2026-05-12", equity_dollars=2000.0)
     result2 = compute_capital_friction(conn, asof_date=date(2026, 5, 12))
-    assert "LIVE:" in result2.capital_denominator_badge_text
-    assert "$2,000.00" in result2.capital_denominator_badge_text
-    assert "account_equity_snapshots" in (
-        result2.capital_denominator_badge_text
-    )
-    assert "on-or-before 2026-05-12" in (
-        result2.capital_denominator_badge_text
+    assert result2.capital_denominator_badge_text == (
+        "LIVE: $2,000.00 equity from account_equity_snapshots "
+        "on-or-before 2026-05-12"
     )
 
 

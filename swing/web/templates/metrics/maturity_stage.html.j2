@@ -83,8 +83,8 @@
           {{ "%.2f"|format(row.position_capital_utilization_pct) }}%
           {% else %}<em>—</em>{% endif %}
           <span class="badge badge-{{ row.capital_denominator_badge|lower }}"
-                data-badge="row-utilization-{{ row.trade_id }}"
-                title="{{ row.capital_denominator_badge_text }}">{{ row.capital_denominator_badge }}</span>
+                data-badge="row-utilization-{{ row.trade_id }}">{{ row.capital_denominator_badge }}</span>
+          <br><span class="muted" data-badge-text="row-utilization-{{ row.trade_id }}">{{ row.capital_denominator_badge_text }}</span>
         </td>
         <td>
           {% if row.position_portfolio_heat_contribution_dollars is not none %}

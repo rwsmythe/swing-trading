@@ -629,6 +629,37 @@ def test_capital_friction_registered_in_app_routes(seeded_db):
     assert "/metrics/capital-friction" in route_paths
 
 
+def test_capital_friction_renders_provisional_badge_text_inline_not_hover_only(
+    seeded_db,
+):
+    """Plan §A.6 line 233 BINDING + Codex R2 M#1+M#2: badge_text MUST
+    render as VISIBLE inline text NOT hidden in a title attribute (mobile +
+    non-mouse usage)."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/capital-friction")
+    body = r.text
+    # Page-level: PROVISIONAL explanatory text inline.
+    asof_today = "no snapshot"  # part of the format
+    assert 'data-badge-text="capital-denominator"' in body, (
+        "Page-level capital-denominator badge_text missing inline marker"
+    )
+    assert asof_today in body, (
+        "Plan §A.6 line 233 PROVISIONAL explanatory text MUST render inline"
+    )
+    # Discriminating: the text MUST appear as a span content, NOT a title.
+    import re
+    title_matches = re.findall(
+        r'title="PROVISIONAL[^"]*"', body,
+    )
+    assert title_matches == [], (
+        f"badge_text MUST NOT live in `title=` only (hover-only fails "
+        f"mobile + non-mouse per plan §A.6 line 233 LOCK); got "
+        f"title='PROVISIONAL...' matches: {title_matches[:2]}"
+    )
+
+
 def test_capital_friction_renders_no_color_only_badges(seeded_db):
     """Per spec §4.9 + plan §A.9 BINDING: badges are TEXT-only."""
     cfg, cfg_path = seeded_db
@@ -713,6 +744,42 @@ def test_maturity_stage_registered_in_app_routes(seeded_db):
     app = create_app(cfg, cfg_path)
     route_paths = {r.path for r in app.routes if hasattr(r, "path")}
     assert "/metrics/maturity-stage" in route_paths
+
+
+def test_maturity_stage_renders_per_row_badge_text_inline_not_hover_only(
+    seeded_db,
+):
+    """Plan §A.6 line 233 + Codex R2 M#1: per-row badge_text MUST render
+    as VISIBLE inline text NOT hidden in a `title` attribute."""
+    from swing.data.db import connect
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO trades (id, ticker, entry_date, entry_price, "
+                "initial_shares, initial_stop, current_stop, state, sector, "
+                "industry, trade_origin, pre_trade_locked_at, current_size, "
+                "current_avg_cost) VALUES (1, 'AAA', '2026-05-01', 10.0, "
+                "100, 9.0, 9.0, 'managing', 'S', 'I', 'manual_off_pipeline', "
+                "'2026-05-01T09:30:00', 100, 10.0)"
+            )
+    finally:
+        conn.close()
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/maturity-stage")
+    body = r.text
+    assert 'data-badge-text="row-utilization-1"' in body, (
+        "Per-row capital-denominator badge_text MUST render inline"
+    )
+    # Discriminating: no title=PROVISIONAL... only.
+    import re
+    title_matches = re.findall(r'title="PROVISIONAL[^"]*"', body)
+    assert title_matches == [], (
+        f"badge_text MUST NOT live in `title=` only on maturity-stage row; "
+        f"got: {title_matches[:2]}"
+    )
 
 
 def test_maturity_stage_renders_no_color_only_badges(seeded_db):

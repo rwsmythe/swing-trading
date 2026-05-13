@@ -69,7 +69,12 @@ class IdentificationFunnelPoint:
     run_date: str  # ISO YYYY-MM-DD — session anchor for the run
     aplus_identifications_per_run: int
     aplus_trades_taken_per_run: int
-    aplus_take_rate_per_run: float | None  # PROPORTION [0, 1]
+    # PROPORTION ≥ 0. Codex R1 M#3 fix: values >1.0 are allowed (and
+    # NOT clamped) to surface data-quality / attribution anomalies
+    # (e.g., trade.origin=pipeline_aplus on a session that emitted 0
+    # A+ identifications). Suppressed (None + suppressed_text) when 0
+    # A+ identifications per spec §A.20.
+    aplus_take_rate_per_run: float | None
     aplus_take_rate_suppressed_text: str | None
     watch_identifications_per_run: int
     watch_trades_taken_per_run: int
