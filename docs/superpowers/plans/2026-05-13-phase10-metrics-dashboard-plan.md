@@ -261,6 +261,11 @@ class SuppressedMetric:
 class HonestyBadges:
     confidence_floor_warning: bool   # spec §5 — visible when n < global_confidence_floor_n
     low_confidence_warning: bool     # spec §5 — visible when 3 ≤ n < 5
+    # Sub-bundle A amendment (R1 Major #1 fix): added to convey the spec §5.4
+    # "rolling window not yet at N" cadence badge. True when Class D's
+    # effective_n is in the partial-window band (5 ≤ effective_n < N).
+    # Defaults False so Class A/B/C call sites stay backward compatible.
+    window_not_full_warning: bool = False
 
 class HonestyClass(StrEnum):
     A = "rate"           # Wilson CI; spec §5.1
@@ -273,6 +278,7 @@ def bootstrap_ci_mean(
     *, samples: list[float], resample_count: int, alpha: float = 0.05, rng_seed: int | None = None,
 ) -> BootstrapCI: ...
 def suppress_for_n(*, metric_name: str, n: int, klass: HonestyClass, policy: RiskPolicy) -> SuppressedMetric | None: ...
+def badges_for_n(*, n: int, policy: RiskPolicy) -> HonestyBadges: ...   # Sub-bundle A R2 Minor #1 — public badge composition for view-model layers
 def render_class_a(*, k: int, n: int, policy: RiskPolicy, metric_name: str) -> WilsonCI | SuppressedMetric: ...
 def render_class_b(*, samples: list[float], policy: RiskPolicy, metric_name: str) -> BootstrapCI | SuppressedMetric: ...
 def render_class_c(
@@ -294,7 +300,14 @@ def render_class_d(
        - "B" → BootstrapCI (mean metric in window, e.g., process_grade_rolling_N)
        - "C" → float | None (ratio metric; suppress without diversity)
        - "point" → float | None (sum-only metric, e.g., mistake_cost_R_rolling_N_total)
-       Third str = "rolling line drawable" / "show points only" per spec §5.4 cadence-vs-confidence decoupling.
+       Third str = "rolling line drawable" once the line CAN be drawn
+       (effective_n >= 5) — Sub-bundle A R1 Major #1 corrected the prior
+       wording that allowed "show points only" in the partial-window band.
+       The partial-window cadence signal (5 <= effective_n < N) is now
+       conveyed via ``HonestyBadges.window_not_full_warning`` instead. The
+       SuppressedMetric return covers the effective_n<5 line-absent case;
+       the 3-tuple branch always returns drawability_text="rolling line
+       drawable".
     """
     ...
 ```
@@ -305,7 +318,7 @@ def render_class_d(
 
 **Bootstrap implementation:** `random.Random(rng_seed)` for determinism in tests; default `rng_seed=None` (non-deterministic in production). Percentile method: sort the resampled means + take `[α/2 * R, (1-α/2) * R]` indices. R from `policy.bootstrap_resample_count`.
 
-**Decoupling discipline (spec §5 R3 M2 + R4 M1):** `suppress_for_n` reads `policy.global_confidence_floor_n` to decide BADGE visibility, NOT cohort target_sample_size. Class-D `render_class_d` returns a 3-tuple that decouples WINDOW-FULLNESS (effective_n vs N) from CONFIDENCE-FLOOR (effective_n vs global_confidence_floor_n) — they are SEPARATE badges per spec §5.4.
+**Decoupling discipline (spec §5 R3 M2 + R4 M1):** `suppress_for_n` is the SUPPRESSION dispatcher only — it reads each class's `policy.low_sample_size_threshold_class_X_n` floor to decide whether the metric is rendered at all. BADGE visibility (confidence_floor / low_confidence / window_not_full) is a separate concern handled by `badges_for_n` (consumed by `render_class_a/b/c` callers and by `render_class_d` itself). `badges_for_n` reads `policy.global_confidence_floor_n` for the confidence_floor badge — NOT cohort `target_sample_size`. Class-D `render_class_d` returns a 3-tuple that decouples WINDOW-FULLNESS (effective_n vs N, surfaced via `HonestyBadges.window_not_full_warning`) from CONFIDENCE-FLOOR (effective_n vs global_confidence_floor_n, surfaced via `HonestyBadges.confidence_floor_warning`) — they are SEPARATE badges per spec §5.4. Sub-bundle A R2 Minor #1 + R3 Major #1 amendments: `badges_for_n` made public + added to this §A.7 binding interface so Sub-bundles B-E compose badges via the shared helper rather than duplicating per-surface logic.
 
 ### §A.8 Composition surfaces for new fields on base-layout VMs (CLAUDE.md gotcha defense)
 
@@ -824,8 +837,14 @@ git commit -m "feat(metrics): scaffold swing/metrics module skeleton (Phase 10 S
 - `test_render_class_b_bootstrap_with_warning_below_floor`: same.
 - `test_render_class_c_no_wins_returns_suppressed`: spec §5.3 "Insufficient outcome diversity".
 - `test_render_class_c_no_losses_returns_suppressed`: same.
-- `test_render_class_d_window_full_below_floor`: line drawable + confidence_floor_warning.
-- `test_render_class_d_partial_window`: line not drawable; window-narrowing badge + confidence_floor_warning.
+- `test_render_class_d_window_full_below_floor`: line drawable +
+  confidence_floor_warning (effective_n=N=10 → window_not_full=False).
+- `test_render_class_d_partial_window`: line drawable
+  (5 <= effective_n < N) + window_not_full_warning=True +
+  confidence_floor_warning=True per spec §5.4 second band. Sub-bundle A
+  R1 Major #1 amended the prior "line not drawable" wording to match the
+  spec — line IS drawable from effective_n>=5; the partial-window state
+  is conveyed via the new ``HonestyBadges.window_not_full_warning`` field.
 - `test_post_init_rejects_nan_inf`: WilsonCI(point=float('nan'), ...) raises; same for inf.
 - `test_post_init_rejects_lower_above_point`: assertion error.
 

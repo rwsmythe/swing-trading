@@ -327,6 +327,9 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
         journal as journal_route,
     )
     from swing.web.routes import (
+        metrics as metrics_route,
+    )
+    from swing.web.routes import (
         pipeline as pipeline_route,
     )
     from swing.web.routes import (
@@ -345,5 +348,6 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
     app.include_router(trades_route.router)
     app.include_router(recommendations_route.router)
     app.include_router(config_route.router)
+    app.include_router(metrics_route.router)
 
     return app
