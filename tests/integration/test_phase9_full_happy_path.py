@@ -423,8 +423,8 @@ def test_phase9_full_happy_path_across_all_sub_bundles(
 
     # =========================================================================
     # §7: final attention surface.
-    # Pre-resolve active-trade material count = 3 (verified at §2).
-    # §3 resolved 1 ⇒ 2 remain.
+    # Pre-resolve active-trade material count = 5 (verified at §2).
+    # §3 resolved 1 ⇒ 4 remain.
     # §6 sector_tamper (material=0) MUST NOT appear.
     # =========================================================================
     conn = connect(db_path)
