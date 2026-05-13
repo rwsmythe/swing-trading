@@ -1,0 +1,119 @@
+{% extends "base.html.j2" %}
+{% block title %}Tier-comparison — Swing Trading{% endblock %}
+{% block content %}
+<section class="metrics-tier-comparison">
+  <h1>Tier-comparison metrics</h1>
+  <p class="muted">
+    Spec §4.3 — 4 pre-registered hypothesis cohorts side-by-side with
+    Wilson win-rate CI + Bootstrap expectancy CI + per-non-A+ relative-to-
+    A+ ratio. Per spec §3.3 R1 M3 LOCK: the CI-overlap descriptor below
+    is TEXT (not a boolean significance flag — at our sample size n=4–20
+    per cohort, Wilson CI overlap is not a between-cohort significance
+    test).
+  </p>
+
+  <p class="discrepancy-filter-toggle">
+    {#- Codex R1 M#1 fix: use relative query toggle per dispatch brief §0.12
+        + electives amendment §2 acceptance "<a href=...?exclude_discrepancies=1>"
+        verbatim. Relative href ALSO survives root-path / mounted-app deployments
+        which absolute /metrics/... would break under. -#}
+    {% if vm.result.exclude_unresolved_discrepancies_active %}
+    <a href="?">Show all trades (currently hiding trades with unresolved discrepancies)</a>
+    {% if vm.result.excluded_trades_count > 0 %}
+    <span class="muted">(excluded {{ vm.result.excluded_trades_count }} trades with unresolved discrepancies)</span>
+    {% endif %}
+    {% else %}
+    <a href="?exclude_discrepancies=1">Hide trades with unresolved discrepancies</a>
+    {% endif %}
+  </p>
+
+  <table class="metric-grid tier-comparison">
+    <thead>
+      <tr>
+        <th>Metric</th>
+        {% for cohort in vm.result.cohorts %}
+        <th data-cohort-name="{{ cohort.cohort_name }}">
+          {{ cohort.cohort_name }}
+          <br><span class="muted">n = {{ cohort.n_closed }} / target {{ cohort.target_sample_size }}</span>
+          {% if cohort.legacy_trades_count > 0 %}
+          <br><span class="muted">({{ cohort.legacy_trades_count }} legacy)</span>
+          {% endif %}
+        </th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      <tr class="metric-row metric-class-a">
+        <td>Win rate (Wilson CI)</td>
+        {% for cohort in vm.result.cohorts %}
+        <td>
+          {% if cohort.win_rate.__class__.__name__ == 'SuppressedMetric' %}
+          <em>{{ cohort.win_rate.placeholder_text }}</em>
+          {% else %}
+          <strong>{{ "%.3f"|format(cohort.win_rate.point) }}</strong>
+          <span class="muted">[{{ "%.3f"|format(cohort.win_rate.lower) }},
+            {{ "%.3f"|format(cohort.win_rate.upper) }}]</span>
+          <br><span class="muted">{{ cohort.n_wins }} / {{ cohort.n_closed }}</span>
+          {% with badges = cohort.badges %}
+          {% include "metrics/partials/honesty_badges.html.j2" %}
+          {% endwith %}
+          {% endif %}
+        </td>
+        {% endfor %}
+      </tr>
+      <tr class="metric-row metric-class-b">
+        <td>Expectancy R (Bootstrap CI)</td>
+        {% for cohort in vm.result.cohorts %}
+        <td>
+          {% if cohort.expectancy.__class__.__name__ == 'SuppressedMetric' %}
+          <em>{{ cohort.expectancy.placeholder_text }}</em>
+          {% else %}
+          <strong>{{ "%.3f"|format(cohort.expectancy.point) }}</strong>
+          <span class="muted">[{{ "%.3f"|format(cohort.expectancy.lower) }},
+            {{ "%.3f"|format(cohort.expectancy.upper) }}]</span>
+          {% with badges = cohort.badges %}
+          {% include "metrics/partials/honesty_badges.html.j2" %}
+          {% endwith %}
+          {% endif %}
+        </td>
+        {% endfor %}
+      </tr>
+      <tr class="metric-row tier-comparison-relative">
+        <td>Relative to A+ baseline (% of A+ expectancy)</td>
+        {% for cohort in vm.result.cohorts %}
+        <td>
+          {% set rel = vm.result.cohort_relative_to_aplus_pct[cohort.cohort_name] %}
+          {% if rel is none %}
+          <span class="muted">—</span>
+          {% else %}
+          <strong>{{ "%.1f"|format(rel) }}%</strong>
+          {% endif %}
+        </td>
+        {% endfor %}
+      </tr>
+      <tr class="metric-row tier-comparison-decision-criteria">
+        <td>Decision criteria (frozen at migration 0008)</td>
+        {% for cohort in vm.result.cohorts %}
+        <td><span class="muted">{{ cohort.decision_criteria }}</span></td>
+        {% endfor %}
+      </tr>
+    </tbody>
+  </table>
+
+  <section class="cohort-ci-overlap-descriptor">
+    <h2>Wilson CI overlap descriptor</h2>
+    <p class="muted">
+      Per spec §3.3 R1 M3 LOCK: TEXT-only descriptor; NOT a between-cohort
+      significance test (the correct test would be paired-difference or
+      chi-square on classification × outcome, requiring per-cohort sample
+      sizes ≥20–30). Surfaces the bounds + overlap word; operator judges.
+    </p>
+    <p class="descriptor-text
+      {% if vm.result.overlap_descriptor_suppressed %}descriptor-suppressed{% endif %}">
+      {% if vm.result.overlap_descriptor_suppressed %}<em>{% endif %}
+      {{ vm.result.cohort_ci_overlap_descriptor }}
+      {% if vm.result.overlap_descriptor_suppressed %}</em>{% endif %}
+    </p>
+  </section>
+</section>
+{% endblock %}

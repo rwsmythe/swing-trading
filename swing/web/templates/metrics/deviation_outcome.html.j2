@@ -1,0 +1,68 @@
+{% extends "base.html.j2" %}
+{% block title %}Deviation-outcome — Swing Trading{% endblock %}
+{% block content %}
+<section class="metrics-deviation-outcome">
+  <h1>Deviation-outcome metrics</h1>
+  <p class="muted">
+    Spec §4.7 — per-cohort deviation-from-A+-doctrine taxonomy with
+    expectancy relative to baseline and the cohort's frozen decision
+    criterion text from migration 0008. Per spec §3.7 R1 M4 LOCK: the
+    decision-criterion text is rendered verbatim — V1 has NO automated
+    pass/fail evaluation; operator reads + judges.
+  </p>
+
+  <p class="discrepancy-filter-toggle">
+    {#- Codex R1 M#1 fix: relative query toggle (matches the tier-comparison
+        sibling). -#}
+    {% if vm.result.exclude_unresolved_discrepancies_active %}
+    <a href="?">Show all trades (currently hiding trades with unresolved discrepancies)</a>
+    {% if vm.result.excluded_trades_count > 0 %}
+    <span class="muted">(excluded {{ vm.result.excluded_trades_count }} trades with unresolved discrepancies)</span>
+    {% endif %}
+    {% else %}
+    <a href="?exclude_discrepancies=1">Hide trades with unresolved discrepancies</a>
+    {% endif %}
+  </p>
+
+  <table class="metric-grid deviation-outcome">
+    <thead>
+      <tr>
+        <th>Cohort</th>
+        <th>Sample size</th>
+        <th>Doctrine deviation class</th>
+        <th>Expectancy relative to A+ (% delta)</th>
+        <th>Decision-criterion evaluation</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in vm.result.rows %}
+      <tr class="metric-row deviation-row
+        {% if row.row_suppressed %}suppressed{% endif %}"
+        data-cohort-name="{{ row.cohort_name }}">
+        <td>{{ row.cohort_name }}</td>
+        <td>
+          <strong>{{ row.n_closed }}</strong>
+          <span class="muted">/ target {{ row.target_sample_size }}</span>
+        </td>
+        <td><span class="deviation-class">{{ row.doctrine_deviation_class }}</span></td>
+        <td>
+          {% if row.row_suppressed %}
+          <em>n too low (current: {{ row.n_closed }}, need: ≥5)</em>
+          {% elif row.expectancy_relative_to_aplus_pct is none %}
+          <span class="muted">—</span>
+          {% else %}
+          {% set delta = row.expectancy_relative_to_aplus_pct %}
+          <strong>{% if delta >= 0 %}+{% endif %}{{ "%.1f"|format(delta) }}%</strong>
+          {% endif %}
+        </td>
+        <td>
+          <span class="decision-criterion-text">
+            {{ row.decision_criterion_evaluation_text }}
+          </span>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

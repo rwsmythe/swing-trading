@@ -15,10 +15,16 @@ import sqlite3
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 
+from swing.web.view_models.metrics.deviation_outcome import (
+    build_deviation_outcome_vm,
+)
 from swing.web.view_models.metrics.hypothesis_progress_card import (
     build_hypothesis_progress_card_vm,
 )
 from swing.web.view_models.metrics.index import build_metrics_index_vm
+from swing.web.view_models.metrics.tier_comparison import (
+    build_tier_comparison_vm,
+)
 from swing.web.view_models.metrics.trade_process_card import (
     build_trade_process_card_vm,
 )
@@ -55,6 +61,68 @@ def metrics_trade_process(
     vm = build_trade_process_card_vm(cfg=cfg, active_cohort_key=cohort)
     return request.app.state.templates.TemplateResponse(
         request, "metrics/trade_process_card.html.j2", {"vm": vm},
+    )
+
+
+@router.get("/metrics/tier-comparison", response_class=HTMLResponse)
+def metrics_tier_comparison(
+    request: Request,
+    exclude_discrepancies: int = Query(default=0),
+):
+    """Spec §4.3 tier-comparison view — Sub-bundle C Task T-C.2.
+
+    Renders the 4 registered hypothesis_registry cohorts side-by-side
+    with Wilson win-rate CI + Bootstrap expectancy CI + per-non-A+
+    ``cohort_relative_to_aplus_pct`` + single ``cohort_ci_overlap_descriptor``
+    TEXT block. Per spec §3.3 R1 M3 LOCK: descriptor is TEXT (NOT
+    boolean). Per spec §4.3 surface LOCK: cohort cells suppress at n<5.
+
+    Per T-C.5 elective (electives amendment §2): ``?exclude_discrepancies=1``
+    filters trades with unresolved material reconciliation discrepancies
+    out of the cohort aggregates before classification. Any truthy
+    integer activates the filter; missing parameter or ``0`` keeps it
+    inactive. Per plan §A.9 + §I.6 LOCK: static-render link, NOT
+    HTMX OOB-swap.
+    """
+    cfg = request.app.state.cfg
+    vm = build_tier_comparison_vm(
+        cfg=cfg,
+        exclude_unresolved_discrepancies=bool(exclude_discrepancies),
+    )
+    return request.app.state.templates.TemplateResponse(
+        request, "metrics/tier_comparison.html.j2", {"vm": vm},
+    )
+
+
+@router.get("/metrics/deviation-outcome", response_class=HTMLResponse)
+def metrics_deviation_outcome(
+    request: Request,
+    exclude_discrepancies: int = Query(default=0),
+):
+    """Spec §4.7 deviation-outcome view — Sub-bundle C Task T-C.3.
+
+    Renders the 4 registered hypothesis_registry cohorts as rows with
+    each cohort's ``doctrine_deviation_class`` enum +
+    ``expectancy_relative_to_aplus_pct`` (PERCENT delta with sign) +
+    ``decision_criterion_evaluation_text`` rendered verbatim from the
+    migration 0008 seed.
+
+    Per spec §3.7 R1 M4 LOCK: NO automated decision-criterion evaluation
+    in V1 — operator reads + judges. Per spec §4.7 surface LOCK: cohort
+    row stays VISIBLE at n<5 (showing deviation-class + criterion text);
+    the relative-pct cell shows "n too low" placeholder.
+
+    Per T-C.5 elective (electives amendment §2): ``?exclude_discrepancies=1``
+    filters trades with unresolved material reconciliation discrepancies
+    out of the cohort aggregates before classification.
+    """
+    cfg = request.app.state.cfg
+    vm = build_deviation_outcome_vm(
+        cfg=cfg,
+        exclude_unresolved_discrepancies=bool(exclude_discrepancies),
+    )
+    return request.app.state.templates.TemplateResponse(
+        request, "metrics/deviation_outcome.html.j2", {"vm": vm},
     )
 
 

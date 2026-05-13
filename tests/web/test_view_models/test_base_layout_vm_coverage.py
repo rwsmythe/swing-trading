@@ -47,6 +47,11 @@ _SUB_VM_EXCLUSIONS: frozenset[str] = frozenset({
     # HypothesisProgressCardVM page VMs):
     "CohortTabVM",             # per-cohort tab descriptor on trade-process card
     "CohortProgressVM",        # per-cohort row on hypothesis-progress card
+    # Sub-bundle C did NOT introduce any new sub-VMs ending in `VM` —
+    # cohort-level data lives in :class:`swing.metrics.tier.CohortStatistics`
+    # (outside the view_models/metrics auto-discovery scope), and
+    # TierComparisonVM / DeviationOutcomeVM are themselves PAGE VMs
+    # (extend BaseLayoutVM).
 })
 
 
