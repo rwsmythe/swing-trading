@@ -528,10 +528,11 @@ def compute_capital_friction(
     cycle_days = _capital_cycle_time_days(conn)
 
     # Latest pipeline_run snapshot for per-run blocked_rate.
+    # Codex R3 m#1: deterministic ordering on tied started_ts via id DESC.
     latest = conn.execute(
         "SELECT id, evaluation_run_id FROM pipeline_runs "
         "WHERE state = 'complete' AND evaluation_run_id IS NOT NULL "
-        "ORDER BY started_ts DESC LIMIT 1"
+        "ORDER BY started_ts DESC, id DESC LIMIT 1"
     ).fetchone()
     if latest is not None:
         latest_run_id = int(latest[0])

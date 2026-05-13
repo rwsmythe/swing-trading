@@ -629,6 +629,67 @@ def test_capital_friction_registered_in_app_routes(seeded_db):
     assert "/metrics/capital-friction" in route_paths
 
 
+def test_capital_friction_trend_row_renders_badge_text_inline(seeded_db):
+    """Plan §A.6 + Codex R3 m#2: trend-row badge_text MUST render as
+    VISIBLE inline text (NOT hidden in title attribute) per the same
+    LOCK as page-level. Seeds ≥5 trading-session runs to unsuppress the
+    trend table."""
+    from datetime import datetime as _dt
+    import exchange_calendars
+    import pandas as pd
+    from swing.data.db import connect
+    from swing.evaluation.dates import last_completed_session
+
+    cfg, cfg_path = seeded_db
+    cal = exchange_calendars.get_calendar("XNYS")
+    asof = last_completed_session(_dt.now())
+    sessions = sorted({
+        ts.date().isoformat()
+        for ts in cal.sessions_window(pd.Timestamp(asof), -5)
+    })
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            for i, sd in enumerate(sessions, start=1):
+                conn.execute(
+                    "INSERT INTO evaluation_runs (id, run_ts, "
+                    "data_asof_date, action_session_date, "
+                    "tickers_evaluated, aplus_count, watch_count, "
+                    "skip_count, excluded_count, error_count) VALUES "
+                    "(?, ?, ?, ?, 0, 0, 0, 0, 0, 0)",
+                    (i, sd + "T13:00:00", sd, sd),
+                )
+                conn.execute(
+                    "INSERT INTO pipeline_runs (id, started_ts, "
+                    "finished_ts, trigger, data_asof_date, "
+                    "action_session_date, state, lease_token, "
+                    "evaluation_run_id) VALUES "
+                    "(?, ?, ?, 'manual', ?, ?, 'complete', 'tok', ?)",
+                    (i, sd + "T13:00:00", sd + "T13:30:00", sd, sd, i),
+                )
+    finally:
+        conn.close()
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/capital-friction")
+    body = r.text
+    assert r.status_code == 200
+    # Trend rendered → 5 trend-row data-badge-text markers present.
+    import re
+    trend_markers = re.findall(
+        r'data-badge-text="trend-(\d+)"', body,
+    )
+    assert len(trend_markers) >= 5, (
+        f"Expected ≥5 trend-row badge_text markers; got: {trend_markers}"
+    )
+    # No title-only badge_text leaks for trend rows.
+    title_matches = re.findall(r'title="PROVISIONAL[^"]*"', body)
+    assert title_matches == [], (
+        f"Trend-row badge_text MUST NOT be hidden in title attribute; "
+        f"got: {title_matches[:2]}"
+    )
+
+
 def test_capital_friction_renders_provisional_badge_text_inline_not_hover_only(
     seeded_db,
 ):
