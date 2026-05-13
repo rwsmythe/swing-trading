@@ -6,6 +6,67 @@
 
 ---
 
+## 2026-05-12 Phase 9 closer: Sub-bundle E lessons banked + Phase 10 writing-plans hand-off note
+
+**Phase 9 arc SHIPPED 2026-05-12** (Sub-bundles A → B → C → D → E). Bundle E shipped as `phase9-bundle-E-polish-and-phase10-handoff` worktree dispatch (T-E.0 combined E2E happy path + T-E.1 CLAUDE.md gotcha promotion ratification + T-E.2 this hand-off note + T-E.3 cross-bundle Account Order History multi-line parser fix). Plan §H Task E.2 acceptance verified: `ruff check swing/ --statistics` returns 18 E501 (unchanged from Sub-bundle A baseline; zero new violations across A+B+C+D+E).
+
+### Phase 10 writing-plans hand-off (binding inputs from Phase 9 spec §11)
+
+Phase 10 writing-plans dispatch follows Phase 9 close. Phase 9 design choices Phase 10 needs to know about:
+
+**§11.1 Risk_Policy as the source for metric defaults at dashboard read-time.** Phase 10 dashboard reads LIVE policy (`risk_policy.is_active=1`) for: `low_sample_size_threshold_class_*_n` (suppression at render); `global_confidence_floor_n` (n=20 floor); `bootstrap_resample_count` (CI computation); `process_grade_weight_*` (weight reconstitution if stamp absent on legacy review_log rows). Phase 10 dashboard reads AT-TRADE-TIME policy (`trades.risk_policy_id_at_lock`) for: `capital_floor_constant_dollars` (preserves historical-trade interpretation under capital-floor change); `scratch_epsilon_R` (preserves win/loss/scratch classification under threshold change); trade-grain metrics that need policy-as-of-trade-time semantics. Locked decision per spec §3.1.1: the per-row stamp on trades + review_log enables this at-trade-time vs live-time distinction. **Schema ready; Phase 10 wires the queries.**
+
+**§11.2 Reconciliation discrepancy surface for metrics-data-quality reporting.** Phase 9 ships `reconciliation_runs` + `reconciliation_discrepancies` + the canonical query `list_unresolved_material_for_active_trades` (with closed-trade companion). Phase 10+ writing-plans may add a "reconciliation status" badge on dashboard / journal review surfaces. Recommended Phase 10+ surfaces: (a) dashboard top "N unresolved material discrepancies" badge (links to discrepancy list); (b) per-trade detail "Trade X has unresolved reconciliation discrepancies" indicator; (c) per-cohort metrics view optional filter "exclude trades with unresolved discrepancies" for sample-purity. **Schema scopes the LEFT JOIN pattern per spec §5.3; Phase 10+ implements the rendering.**
+
+**§11.3 Hypothesis status history surfaces.** Phase 10 §3.2 surfaces "single most-recent transition only" in V1; full history requires Phase 9's `hypothesis_status_history` audit table. Phase 10 writing-plans uses the new table to render: (a) per-hypothesis transition timeline (active → paused → active → closed-target-met); (b) cohort-level "active period" calculations (excludes paused intervals from rate-metric numerators if operator opts in). **Schema sufficient; Phase 10 wires the queries via `list_history_for_hypothesis` + cohort-aggregation helpers.**
+
+**§11.4 account_equity_snapshots resolution for `live_capital_denominator_dollars`.** Phase 10 §6.2 + §3.4 capital-friction metrics depend on a unified denominator. Phase 9 ships the table + the source-ladder discipline (schwab_api > tos_csv > manual). Phase 10 metric layer resolves:
+
+```sql
+live_capital_denominator_dollars(asof_date) :=
+  COALESCE(
+    (SELECT equity_dollars FROM account_equity_snapshots
+       WHERE snapshot_date <= asof_date
+       ORDER BY snapshot_date DESC,
+                CASE source WHEN 'schwab_api' THEN 1
+                            WHEN 'tos_csv' THEN 2
+                            WHEN 'manual' THEN 3 END ASC
+       LIMIT 1),
+    (SELECT capital_floor_constant_dollars FROM risk_policy WHERE is_active = 1)
+  )
+```
+
+Source ladder enforces broker-authoritative > csv > manual when same date has multiple rows. Fallback to `risk_policy.capital_floor_constant_dollars` when no snapshot exists at-or-before asof_date (Phase 10 §2 split-policy PROVISIONAL). **`get_latest_snapshot_on_or_before` already implements the source-ladder + provenance; Phase 10 consumes it.**
+
+**§11.5 Phase 9 capture-needs already accommodated for Phase 10.** Phase 10 §6.3 enumerated capture-needs beyond Phase 8/9 plans: (a) per-pipeline-run capital-utilization aggregate — Phase 10+ writing-plans territory; uses Phase 9 `account_equity_snapshots` for live denominator; NOT a Phase 9 column; (b) benchmark series capture (Phase 10 §8.3 open question) — OUT of Phase 9 scope; orchestrator triages separately; (c) Corporate_Actions MVP (Phase 10 §8.4 open question) — OUT of Phase 9 scope; orchestrator triages separately; (d) daily account equity capture (Phase 10 §8.2 open question) — SATISFIED by Phase 9 `account_equity_snapshots`.
+
+### Phase 9 final ruff sweep (T-E.2 acceptance criterion 1)
+
+`ruff check swing/ --statistics` returns **18 E501** (line-too-long only). Unchanged from:
+- Pre-Phase-9 baseline at HEAD `622c669` (verified 2026-05-11 in Phase 9 writing-plans return report §6).
+- Sub-bundle A landing at `6c8f3a9`.
+- Sub-bundle B landing at `e96834a`.
+- Sub-bundle C landing at `e5d5892`.
+- Sub-bundle D landing at `4894688` + housekeeping `6ba1925`.
+- Sub-bundle E task family commits.
+
+**Phase 9 introduces ZERO new ruff violations** across +500+ lines of consumer-side code + 5 new tables' worth of repo functions + 4 new service modules + ~430+ new fast tests.
+
+### Phase 9 closing summary (for orchestrator)
+
+- 5 sub-bundles SHIPPED across 2026-05-12 (one calendar day end-to-end).
+- ~430+ new fast tests across the arc; cumulative fast suite 2462 → ~2766 at Bundle E close.
+- Schema version v16 → v17 in atomic landing at Sub-bundle A T-A.1; v17 unchanged through B/C/D/E (consumer-side only).
+- 1 single ACCEPT-WITH-RATIONALE position banked across the arc (Sub-bundle C R1 M#1 equity_delta sign convention; brief-vs-spec cosmetic — implementation correctly followed spec).
+- 6 CLAUDE.md gotchas promoted (3 Sub-bundle A at `de10601` + 2 Sub-bundle D at `6ba1925` + 1 Sub-bundle E at T-E.1).
+- 1 spec amendment pending V2.1 §VII.F routing (Sub-bundle D's §7 supersession to chart_pattern-mirror hidden-anchor pattern; recon doc `docs/phase9-bundle-D-task-D0-recon.md` carries the binding design).
+- 1 spec amendment pending V2.1 §VII.F routing (Sub-bundle E T-E.3's §6.2 supersession to multi-line group parser; recon doc `docs/phase9-bundle-E-task-E3-parser-recon.md` carries the binding design).
+- 2 V2 candidates banked at this file (Schwab inception-CSV ingestion; account_equity_snapshots semantic formalization).
+
+**Phase 10 writing-plans dispatch is unblocked.** Orchestrator queues Phase 10 writing-plans next per spec at `docs/superpowers/specs/2026-05-06-phase10-metrics-dashboard-design.md`. Brainstorm already SHIPPED 2026-05-06 at `fe6cb45`. Phase 10 reads this hand-off note's binding inputs.
+
+---
+
 ## 2026-05-12 Phase 9 Sub-bundle D/E candidate: Schwab "since-inception" Account Statement ingestion
 
 **Observation (operator-witnessed gate Sub-bundle C 2026-05-12):** Operator's "since-inception" Schwab Account Statement export `thinkorswim/2026-05-12-AccountStatementInception.csv` is structurally richer than the 7-day Account Statement Bundle B's `extract_account_summary_net_liq` (T-C.6) consumes. The inception export's full section inventory:
