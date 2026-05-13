@@ -261,6 +261,11 @@ class SuppressedMetric:
 class HonestyBadges:
     confidence_floor_warning: bool   # spec §5 — visible when n < global_confidence_floor_n
     low_confidence_warning: bool     # spec §5 — visible when 3 ≤ n < 5
+    # Sub-bundle A amendment (R1 Major #1 fix): added to convey the spec §5.4
+    # "rolling window not yet at N" cadence badge. True when Class D's
+    # effective_n is in the partial-window band (5 ≤ effective_n < N).
+    # Defaults False so Class A/B/C call sites stay backward compatible.
+    window_not_full_warning: bool = False
 
 class HonestyClass(StrEnum):
     A = "rate"           # Wilson CI; spec §5.1
@@ -294,7 +299,14 @@ def render_class_d(
        - "B" → BootstrapCI (mean metric in window, e.g., process_grade_rolling_N)
        - "C" → float | None (ratio metric; suppress without diversity)
        - "point" → float | None (sum-only metric, e.g., mistake_cost_R_rolling_N_total)
-       Third str = "rolling line drawable" / "show points only" per spec §5.4 cadence-vs-confidence decoupling.
+       Third str = "rolling line drawable" once the line CAN be drawn
+       (effective_n >= 5) — Sub-bundle A R1 Major #1 corrected the prior
+       wording that allowed "show points only" in the partial-window band.
+       The partial-window cadence signal (5 <= effective_n < N) is now
+       conveyed via ``HonestyBadges.window_not_full_warning`` instead. The
+       SuppressedMetric return covers the effective_n<5 line-absent case;
+       the 3-tuple branch always returns drawability_text="rolling line
+       drawable".
     """
     ...
 ```
@@ -824,8 +836,14 @@ git commit -m "feat(metrics): scaffold swing/metrics module skeleton (Phase 10 S
 - `test_render_class_b_bootstrap_with_warning_below_floor`: same.
 - `test_render_class_c_no_wins_returns_suppressed`: spec §5.3 "Insufficient outcome diversity".
 - `test_render_class_c_no_losses_returns_suppressed`: same.
-- `test_render_class_d_window_full_below_floor`: line drawable + confidence_floor_warning.
-- `test_render_class_d_partial_window`: line not drawable; window-narrowing badge + confidence_floor_warning.
+- `test_render_class_d_window_full_below_floor`: line drawable +
+  confidence_floor_warning (effective_n=N=10 → window_not_full=False).
+- `test_render_class_d_partial_window`: line drawable
+  (5 <= effective_n < N) + window_not_full_warning=True +
+  confidence_floor_warning=True per spec §5.4 second band. Sub-bundle A
+  R1 Major #1 amended the prior "line not drawable" wording to match the
+  spec — line IS drawable from effective_n>=5; the partial-window state
+  is conveyed via the new ``HonestyBadges.window_not_full_warning`` field.
 - `test_post_init_rejects_nan_inf`: WilsonCI(point=float('nan'), ...) raises; same for inf.
 - `test_post_init_rejects_lower_above_point`: assertion error.
 

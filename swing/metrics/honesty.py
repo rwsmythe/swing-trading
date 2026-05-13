@@ -484,6 +484,12 @@ def render_class_d(
             f"render_class_d underlying_class must be one of "
             f"'A'|'B'|'C'|'point'; got {underlying_class!r}"
         )
+    # Codex R2 Minor #2 fix: validate window_n > 0 so the
+    # window_not_full_warning predicate (effective_n < window_n) cannot
+    # behave nonsensically for caller-supplied non-positive values.
+    # Mirrors rolling_window_samples's window_size validation.
+    if window_n <= 0:
+        raise ValueError(f"render_class_d window_n must be > 0; got {window_n!r}")
     effective_n = len(samples_in_window)
     if effective_n < CLASS_D_LINE_DRAW_FLOOR:
         return SuppressedMetric(

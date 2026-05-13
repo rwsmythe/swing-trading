@@ -444,6 +444,18 @@ def test_render_class_d_point_branch_rejects_nan_sample(spec_default_policy):
         )
 
 
+def test_render_class_d_rejects_invalid_window_n(spec_default_policy):
+    """Codex R2 Minor #2: window_n <= 0 raises ValueError."""
+    with pytest.raises(ValueError, match="window_n must be > 0"):
+        render_class_d(
+            samples_in_window=[1.0] * 5,
+            window_n=0,
+            policy=spec_default_policy,
+            metric_name="bogus",
+            underlying_class="B",
+        )
+
+
 def test_badges_for_n_is_public(spec_default_policy):
     """Codex R1 Minor #1: shared badge helper is public so view-model
     layers don't import a private helper or duplicate badge rules."""

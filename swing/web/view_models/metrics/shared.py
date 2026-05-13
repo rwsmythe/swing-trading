@@ -64,20 +64,29 @@ class BaseLayoutVM:
 
 @dataclass(frozen=True)
 class ConfidenceBadgeVM:
-    """Per-metric confidence-floor + low-confidence badge rendering.
+    """Per-metric confidence-floor + low-confidence + window-not-full badge
+    rendering.
 
     Composed alongside a metric value (WilsonCI/BootstrapCI/point) at the
-    template layer. Both flags can be True (3 <= n < 5 + below
-    global_confidence_floor_n) — at our current n state this is the
-    common case.
+    template layer. Multiple flags can be True simultaneously per spec §5
+    decoupling discipline: ``low_confidence`` (3 <= n < 5),
+    ``confidence_floor_warning`` (n < global_confidence_floor_n), and the
+    Class-D cadence flag ``window_not_full_warning`` (5 <= effective_n < N).
+
+    Codex R2 Minor #1 fix: ``window_not_full_warning`` field added so
+    Sub-bundle E's process-grade-trend surface can convey the spec §5.4
+    "rolling window not yet at N" badge without inventing per-surface
+    extension fields. Defaults False so existing surfaces don't need to
+    populate it.
     """
 
     low_confidence: bool
     confidence_floor_warning: bool
     text: str
+    window_not_full_warning: bool = False
 
     def __post_init__(self) -> None:
-        # text may be empty for the "no badge" rendering path (both flags
+        # text may be empty for the "no badge" rendering path (all flags
         # False); discriminating tests in T-A.6 cover the truthy + non-
         # truthy cases.
         pass

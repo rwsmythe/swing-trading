@@ -95,6 +95,29 @@ def test_confidence_badge_text_format():
     assert vm.text == "low confidence (n=4)"
 
 
+def test_confidence_badge_window_not_full_flag_default_false():
+    """Codex R2 Minor #1: ConfidenceBadgeVM carries the spec §5.4
+    'rolling window not yet at N' cadence flag with default False so
+    Class A/B/C surfaces don't need to populate it."""
+    vm = ConfidenceBadgeVM(
+        low_confidence=False,
+        confidence_floor_warning=False,
+        text="",
+    )
+    assert vm.window_not_full_warning is False
+
+
+def test_confidence_badge_window_not_full_flag_set_true():
+    """When set True, the field renders the spec §5.4 cadence-only badge."""
+    vm = ConfidenceBadgeVM(
+        low_confidence=False,
+        confidence_floor_warning=True,
+        text="rolling window not yet at N=10",
+        window_not_full_warning=True,
+    )
+    assert vm.window_not_full_warning is True
+
+
 def test_confidence_badge_both_flags_compatible():
     """At our current n=5..20 state, BOTH flags can be True simultaneously.
 
