@@ -15,6 +15,9 @@ import sqlite3
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 
+from swing.web.view_models.metrics.deviation_outcome import (
+    build_deviation_outcome_vm,
+)
 from swing.web.view_models.metrics.hypothesis_progress_card import (
     build_hypothesis_progress_card_vm,
 )
@@ -75,6 +78,28 @@ def metrics_tier_comparison(request: Request):
     vm = build_tier_comparison_vm(cfg=cfg)
     return request.app.state.templates.TemplateResponse(
         request, "metrics/tier_comparison.html.j2", {"vm": vm},
+    )
+
+
+@router.get("/metrics/deviation-outcome", response_class=HTMLResponse)
+def metrics_deviation_outcome(request: Request):
+    """Spec §4.7 deviation-outcome view — Sub-bundle C Task T-C.3.
+
+    Renders the 4 registered hypothesis_registry cohorts as rows with
+    each cohort's ``doctrine_deviation_class`` enum +
+    ``expectancy_relative_to_aplus_pct`` (PERCENT delta with sign) +
+    ``decision_criterion_evaluation_text`` rendered verbatim from the
+    migration 0008 seed.
+
+    Per spec §3.7 R1 M4 LOCK: NO automated decision-criterion evaluation
+    in V1 — operator reads + judges. Per spec §4.7 surface LOCK: cohort
+    row stays VISIBLE at n<5 (showing deviation-class + criterion text);
+    the relative-pct cell shows "n too low" placeholder.
+    """
+    cfg = request.app.state.cfg
+    vm = build_deviation_outcome_vm(cfg=cfg)
+    return request.app.state.templates.TemplateResponse(
+        request, "metrics/deviation_outcome.html.j2", {"vm": vm},
     )
 
 

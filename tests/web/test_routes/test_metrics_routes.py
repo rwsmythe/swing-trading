@@ -357,6 +357,123 @@ def test_tier_comparison_renders_no_color_only_badges(seeded_db):
         )
 
 
+# ---------------------------------------------------------------------------
+# Sub-bundle C Task T-C.3: GET /metrics/deviation-outcome
+# ---------------------------------------------------------------------------
+
+def test_deviation_outcome_endpoint_returns_200(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/deviation-outcome")
+    assert r.status_code == 200
+    assert "Deviation-outcome metrics" in r.text
+
+
+def test_deviation_outcome_renders_4_cohort_rows_or_placeholders(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/deviation-outcome")
+    body = r.text
+    for cohort in (
+        "A+ baseline",
+        "Near-A+ defensible: extension test",
+        "Sub-A+ VCP-not-formed",
+        "Capital-blocked: smaller-position test",
+    ):
+        assert f'data-cohort-name="{cohort}"' in body, (
+            f"missing cohort row anchor for {cohort!r}"
+        )
+    # At zero trades each row shows the "n too low" placeholder for the
+    # relative-pct cell (template renders italic <em> per spec §5.6).
+    assert "n too low" in body
+
+
+def test_deviation_outcome_renders_doctrine_deviation_class_enum(seeded_db):
+    """Per spec §3.7 row 1: enum values surface on the rendered page."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/deviation-outcome")
+    body = r.text
+    for enum_value in (
+        "baseline",
+        "missing_proximity_20ma",
+        "missing_tightness_or_vcp_volume_contraction",
+        "smaller_than_standard_position",
+    ):
+        assert enum_value in body, f"missing doctrine_deviation_class: {enum_value}"
+
+
+def test_deviation_outcome_renders_decision_criteria_seed_text(seeded_db):
+    """Spec §3.7 R1 M4 + dispatch brief §0.11 LOCK: seed text verbatim."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/deviation-outcome")
+    body = r.text
+    # `>` is HTML-escaped to `&gt;` — check substrings that survive escaping.
+    assert "lower-bound Wilson CI on win rate" in body
+    assert "Mean R-multiple within 25% of A+ baseline mean" in body
+    assert "Confirm negative mean R-multiple" in body
+    assert "defensibility of smaller-position approach" in body
+
+
+def test_deviation_outcome_decision_criterion_text_has_no_automated_evaluation(
+    seeded_db,
+):
+    """Per spec §3.7 R1 M4 LOCK: NO automated pass/fail. The page must
+    NOT surface "Pass:" / "Fail:" / "criterion met:" / "current: ..."
+    synthesis blocks alongside the seed criterion."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/deviation-outcome")
+    body = r.text
+    for forbidden in (
+        "criterion met:",
+        "criterion_met:",
+        ">Pass<",
+        ">Fail<",
+        "Pass: yes",
+        "Pass: no",
+        "Fail: yes",
+        "Fail: no",
+    ):
+        assert forbidden not in body, (
+            f"automated evaluation drift: {forbidden!r} in body"
+        )
+
+
+def test_deviation_outcome_extends_base_layout(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/deviation-outcome")
+    assert 'class="topbar"' in r.text
+
+
+def test_deviation_outcome_registered_in_app_routes(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    route_paths = {r.path for r in app.routes if hasattr(r, "path")}
+    assert "/metrics/deviation-outcome" in route_paths
+
+
+def test_deviation_outcome_renders_no_color_only_badges(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/deviation-outcome")
+    body = r.text
+    for forbidden in ("background:red", "background:green", "color:red",
+                      "color:green"):
+        assert forbidden not in body, (
+            f"color-only inline style {forbidden!r} present"
+        )
+
+
 def test_trade_process_renders_no_color_only_badges(seeded_db):
     """Per spec §4.9 + plan §A.9: badges render as TEXT inline, never
     color-only. Sanity check: at our default-tab n=0, NO badges are
