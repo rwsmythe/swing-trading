@@ -1,0 +1,94 @@
+﻿Account Statement for <account> (Individual) since 3/16/26 through 4/14/26
+
+Cash Balance
+DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE
+3/16/26,19:00:00,BAL,,Cash balance at the start of business day 17.03 CST,,,,"1,200.00"
+3/17/26,19:00:00,BAL,,Cash balance at the start of business day 18.03 CST,,,,"1,200.00"
+3/18/26,19:00:00,BAL,,Cash balance at the start of business day 19.03 CST,,,,"1,200.00"
+3/19/26,19:00:00,BAL,,Cash balance at the start of business day 20.03 CST,,,,"1,200.00"
+3/20/26,19:00:00,BAL,,Cash balance at the start of business day 21.03 CST,,,,"1,200.00"
+3/21/26,19:00:00,BAL,,Cash balance at the start of business day 22.03 CST,,,,"1,200.00"
+3/22/26,19:00:00,BAL,,Cash balance at the start of business day 23.03 CST,,,,"1,200.00"
+3/23/26,19:00:00,BAL,,Cash balance at the start of business day 24.03 CST,,,,"1,200.00"
+3/24/26,19:00:00,BAL,,Cash balance at the start of business day 25.03 CST,,,,"1,200.00"
+3/25/26,19:00:00,BAL,,Cash balance at the start of business day 26.03 CST,,,,"1,200.00"
+3/26/26,19:00:00,BAL,,Cash balance at the start of business day 27.03 CST,,,,"1,200.00"
+3/27/26,19:00:00,BAL,,Cash balance at the start of business day 28.03 CST,,,,"1,200.00"
+3/28/26,19:00:00,BAL,,Cash balance at the start of business day 29.03 CST,,,,"1,200.00"
+3/29/26,19:00:00,BAL,,Cash balance at the start of business day 30.03 CST,,,,"1,200.00"
+3/30/26,19:00:00,BAL,,Cash balance at the start of business day 31.03 CST,,,,"1,200.00"
+3/31/26,19:00:00,BAL,,Cash balance at the start of business day 01.04 CST,,,,"1,200.00"
+3/30/26,21:00:28,CRC,="115520131470","Tfr NAVY FEDERAL CREDI, COURTNEY A SMYTH 100.0 US$",,,100.00,"1,300.00"
+4/1/26,19:00:00,BAL,,Cash balance at the start of business day 02.04 CST,,,,"1,300.00"
+4/2/26,19:00:00,BAL,,Cash balance at the start of business day 03.04 CST,,,,"1,300.00"
+4/3/26,19:00:00,BAL,,Cash balance at the start of business day 04.04 CST,,,,"1,300.00"
+4/4/26,19:00:00,BAL,,Cash balance at the start of business day 05.04 CST,,,,"1,300.00"
+4/5/26,19:00:00,BAL,,Cash balance at the start of business day 06.04 CST,,,,"1,300.00"
+4/6/26,19:00:00,BAL,,Cash balance at the start of business day 07.04 CST,,,,"1,300.00"
+4/7/26,19:00:00,BAL,,Cash balance at the start of business day 08.04 CST,,,,"1,300.00"
+4/8/26,19:00:00,BAL,,Cash balance at the start of business day 09.04 CST,,,,"1,300.00"
+4/9/26,19:00:00,BAL,,Cash balance at the start of business day 10.04 CST,,,,"1,300.00"
+4/10/26,19:00:00,BAL,,Cash balance at the start of business day 11.04 CST,,,,"1,300.00"
+4/11/26,19:00:00,BAL,,Cash balance at the start of business day 12.04 CST,,,,"1,300.00"
+4/12/26,19:00:00,BAL,,Cash balance at the start of business day 13.04 CST,,,,"1,300.00"
+4/13/26,19:00:00,BAL,,Cash balance at the start of business day 14.04 CST,,,,"1,300.00"
+4/14/26,19:00:00,BAL,,Cash balance at the start of business day 15.04 CST,,,,"1,300.00"
+,,,,TOTAL,,,$100.00,"$1,300.00"
+
+Futures Statements
+Trade Date,Exec Date,Exec Time,Type,Ref #,Description,Misc Fees,Commissions & Fees,Amount,Balance
+3/16/26,3/16/26,19:00:00,BAL,--,Futures cash balance at the start of business day 17.03 CST,--,--,--,0.00
+3/17/26,3/17/26,19:00:00,BAL,--,Futures cash balance at the start of business day 18.03 CST,--,--,--,0.00
+3/18/26,3/18/26,19:00:00,BAL,--,Futures cash balance at the start of business day 19.03 CST,--,--,--,0.00
+3/19/26,3/19/26,19:00:00,BAL,--,Futures cash balance at the start of business day 20.03 CST,--,--,--,0.00
+3/20/26,3/20/26,19:00:00,BAL,--,Futures cash balance at the start of business day 21.03 CST,--,--,--,0.00
+3/21/26,3/21/26,19:00:00,BAL,--,Futures cash balance at the start of business day 22.03 CST,--,--,--,0.00
+3/22/26,3/22/26,19:00:00,BAL,--,Futures cash balance at the start of business day 23.03 CST,--,--,--,0.00
+3/23/26,3/23/26,19:00:00,BAL,--,Futures cash balance at the start of business day 24.03 CST,--,--,--,0.00
+3/24/26,3/24/26,19:00:00,BAL,--,Futures cash balance at the start of business day 25.03 CST,--,--,--,0.00
+3/25/26,3/25/26,19:00:00,BAL,--,Futures cash balance at the start of business day 26.03 CST,--,--,--,0.00
+3/26/26,3/26/26,19:00:00,BAL,--,Futures cash balance at the start of business day 27.03 CST,--,--,--,0.00
+3/27/26,3/27/26,19:00:00,BAL,--,Futures cash balance at the start of business day 28.03 CST,--,--,--,0.00
+3/28/26,3/28/26,19:00:00,BAL,--,Futures cash balance at the start of business day 29.03 CST,--,--,--,0.00
+3/29/26,3/29/26,19:00:00,BAL,--,Futures cash balance at the start of business day 30.03 CST,--,--,--,0.00
+3/30/26,3/30/26,19:00:00,BAL,--,Futures cash balance at the start of business day 31.03 CST,--,--,--,0.00
+3/31/26,3/31/26,19:00:00,BAL,--,Futures cash balance at the start of business day 01.04 CST,--,--,--,0.00
+4/1/26,4/1/26,19:00:00,BAL,--,Futures cash balance at the start of business day 02.04 CST,--,--,--,0.00
+4/2/26,4/2/26,19:00:00,BAL,--,Futures cash balance at the start of business day 03.04 CST,--,--,--,0.00
+4/3/26,4/3/26,19:00:00,BAL,--,Futures cash balance at the start of business day 04.04 CST,--,--,--,0.00
+4/4/26,4/4/26,19:00:00,BAL,--,Futures cash balance at the start of business day 05.04 CST,--,--,--,0.00
+4/5/26,4/5/26,19:00:00,BAL,--,Futures cash balance at the start of business day 06.04 CST,--,--,--,0.00
+4/6/26,4/6/26,19:00:00,BAL,--,Futures cash balance at the start of business day 07.04 CST,--,--,--,0.00
+4/7/26,4/7/26,19:00:00,BAL,--,Futures cash balance at the start of business day 08.04 CST,--,--,--,0.00
+4/8/26,4/8/26,19:00:00,BAL,--,Futures cash balance at the start of business day 09.04 CST,--,--,--,0.00
+4/9/26,4/9/26,19:00:00,BAL,--,Futures cash balance at the start of business day 10.04 CST,--,--,--,0.00
+4/10/26,4/10/26,19:00:00,BAL,--,Futures cash balance at the start of business day 11.04 CST,--,--,--,0.00
+4/11/26,4/11/26,19:00:00,BAL,--,Futures cash balance at the start of business day 12.04 CST,--,--,--,0.00
+4/12/26,4/12/26,19:00:00,BAL,--,Futures cash balance at the start of business day 13.04 CST,--,--,--,0.00
+4/13/26,4/13/26,19:00:00,BAL,--,Futures cash balance at the start of business day 14.04 CST,--,--,--,0.00
+4/14/26,4/14/26,19:00:00,BAL,--,Futures cash balance at the start of business day 15.04 CST,--,--,--,0.00
+
+Forex Statements
+,Date,Time,Type,Ref #,Description,Commissions & Fees,Amount,Amount(USD),Balance
+
+"Crypto # (Crypto offered by Charles Schwab Premier Bank, SSB) Statements"
+Trade Date,Exec Date,Exec Time,Type,Ref #,Description,Commissions & Fees,Amount,Balance
+
+ 
+"Total Cash $1,300.00"
+
+
+Account Order History
+Notes,,Time Placed,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,PRICE,,TIF,Status
+
+Account Trade History
+,Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+
+Account Summary
+Net Liquidating Value,"$1,300.00"
+Stock Buying Power,"$1,300.00"
+Option Buying Power,"$1,300.00"
+Equity Commissions & Fees YTD,$0.00
+Futures Commissions & Fees YTD,$0.00
+Crypto Trading Fees YTD,N/A
+Total Commissions & Fees YTD,$0.00

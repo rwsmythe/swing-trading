@@ -1,0 +1,111 @@
+﻿Account Statement for <account> (Individual) since 5/2/26 through 5/8/26
+
+Cash Balance
+DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE
+5/2/26,19:00:00,BAL,,Cash balance at the start of business day 03.05 CST,,,,967.54
+5/3/26,19:00:00,BAL,,Cash balance at the start of business day 04.05 CST,,,,967.54
+5/4/26,09:41:09,TRD,="1006232573049",BOT +2 YOU @56.295,,,-112.59,854.95
+5/4/26,19:00:00,BAL,,Cash balance at the start of business day 05.05 CST,,,,854.95
+5/5/26,19:00:00,BAL,,Cash balance at the start of business day 06.05 CST,,,,854.95
+5/6/26,03:31:08,TRD,="1006251280276",BOT +2 VSAT @65.685,,,-131.37,723.58
+5/6/26,03:31:33,TRD,="1006250248373",SOLD -5 CC @24.61,,,123.05,846.63
+5/6/26,19:00:00,BAL,,Cash balance at the start of business day 07.05 CST,,,,846.63
+5/7/26,06:02:14,TRD,="1006274941280",BOT +3 SGML @23.87,,,-71.61,775.02
+5/7/26,19:00:00,BAL,,Cash balance at the start of business day 08.05 CST,,,,775.02
+5/8/26,05:23:57,TRD,="1006290355394",BOT +20 CVGI @5.2244,,,-104.49,670.53
+5/8/26,06:33:22,TRD,="1006292859358",SOLD -3 SGML @21.8201,,,65.46,735.99
+5/8/26,06:52:18,TRD,="1006293421955",BOT +7 LAR @11.7066,,,-81.95,654.04
+5/8/26,19:00:00,BAL,,Cash balance at the start of business day 09.05 CST,,,,654.04
+,,,,TOTAL,,,($313.50),$654.04
+
+Futures Statements
+Trade Date,Exec Date,Exec Time,Type,Ref #,Description,Misc Fees,Commissions & Fees,Amount,Balance
+5/2/26,5/2/26,19:00:00,BAL,--,Futures cash balance at the start of business day 03.05 CST,--,--,--,0.00
+5/3/26,5/3/26,19:00:00,BAL,--,Futures cash balance at the start of business day 04.05 CST,--,--,--,0.00
+5/4/26,5/4/26,19:00:00,BAL,--,Futures cash balance at the start of business day 05.05 CST,--,--,--,0.00
+5/5/26,5/5/26,19:00:00,BAL,--,Futures cash balance at the start of business day 06.05 CST,--,--,--,0.00
+5/6/26,5/6/26,19:00:00,BAL,--,Futures cash balance at the start of business day 07.05 CST,--,--,--,0.00
+5/7/26,5/7/26,19:00:00,BAL,--,Futures cash balance at the start of business day 08.05 CST,--,--,--,0.00
+5/8/26,5/8/26,19:00:00,BAL,--,Futures cash balance at the start of business day 09.05 CST,--,--,--,0.00
+
+Forex Statements
+,Date,Time,Type,Ref #,Description,Commissions & Fees,Amount,Amount(USD),Balance
+
+"Crypto # (Crypto offered by Charles Schwab Premier Bank, SSB) Statements"
+Trade Date,Exec Date,Exec Time,Type,Ref #,Description,Commissions & Fees,Amount,Balance
+
+ 
+Total Cash $654.04
+
+
+Account Order History
+Notes,,Time Placed,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,PRICE,,TIF,Status
+,,5/8/26 06:57:12,STOCK,SELL,-7,TO CLOSE,LAR,,,STOCK,~,MKT,GTC,WORKING
+,,,,,,,,,,,7.00,STP,STD,
+,,5/8/26 06:52:18,STOCK,BUY,+7,TO OPEN,LAR,,,STOCK,11.73,LMT,DAY,FILLED
+,,5/8/26 06:33:22,STOCK,SELL,-3,TO CLOSE,SGML,,,STOCK,21.82,LMT,DAY,FILLED
+,,5/8/26 05:59:29,STOCK,SELL,-39,TO CLOSE,DHC,,,STOCK,~,MKT,GTC,WAIT TRG
+,,,RE #1006250248363,,,,,,,,7.49,STP,STD,
+,,,TRG BY #1006137040022,,,,,,,,,,,
+,,5/8/26 05:58:44,STOCK,SELL,-2,TO CLOSE,VSAT,,,STOCK,~,MKT,GTC,WAIT TRG
+,,,RE #1006251280277,,,,,,,,54.11,STP,STD,
+,,,TRG BY #1006251280276,,,,,,,,,,,
+,,5/8/26 05:48:31,STOCK,SELL,-3,TO CLOSE,SGML,,,STOCK,~,MKT,GTC,CANCELED
+,,,RE #1006291073939,,,,,,,,20.52,STP,STD,
+,,5/8/26 05:46:30,STOCK,SELL,-3,TO CLOSE,SGML,,,STOCK,~,MKT,GTC,CANCELED
+,,,RE #1006274941510,,,,,,,,20.80,STP,STD,
+,,5/8/26 05:30:27,STOCK,SELL,-20,TO CLOSE,CVGI,,,STOCK,~,MKT,GTC,WORKING
+,,,,,,,,,,,3.67,STP,STD,
+,,5/8/26 05:23:57,STOCK,BUY,+20,TO OPEN,CVGI,,,STOCK,5.30,LMT,GTC,FILLED
+,,5/7/26 22:52:13,STOCK,SELL,-2,TO CLOSE,YOU,,,STOCK,~,MKT,GTC,WORKING
+,,,RE #1006250248383,,,,,,,,54.06,STP,STD,
+,,5/7/26 06:06:17,STOCK,SELL,-3,TO CLOSE,SGML,,,STOCK,~,MKT,GTC,CANCELED
+,,,,,,,,,,,11.63,STP,STD,
+,,5/7/26 06:02:14,STOCK,BUY,+3,TO OPEN,SGML,,,STOCK,23.95,LMT,DAY,FILLED
+,,5/6/26 03:31:08,STOCK,BUY,+2,TO OPEN,VSAT,,,STOCK,67.98,LMT,GTC,FILLED
+,,5/6/26 03:31:08,STOCK,SELL,-2,TO CLOSE,VSAT,,,STOCK,~,MKT,GTC,CANCELED
+,,,TRG BY #1006251280276,,,,,,,,54.11,STP,STD,
+,,5/6/26 00:13:51,STOCK,SELL,-2,TO CLOSE,YOU,,,STOCK,~,MKT,GTC,CANCELED
+,,,RE #1006232573136,,,,,,,,53.08,STP,STD,
+,,5/4/26 09:42:18,STOCK,SELL,-2,TO CLOSE,YOU,,,STOCK,~,MKT,GTC,CANCELED
+,,,,,,,,,,,45.38,STP,STD,
+,,5/4/26 09:41:09,STOCK,BUY,+2,TO OPEN,YOU,,,STOCK,57.38,LMT,GTC,FILLED
+
+Account Trade History
+,Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+,5/8/26 06:52:18,STOCK,BUY,+7,TO OPEN,LAR,,,STOCK,11.7066,11.7066,LMT
+,5/8/26 06:33:22,STOCK,SELL,-3,TO CLOSE,SGML,,,STOCK,21.8201,21.8201,LMT
+,5/8/26 05:23:57,STOCK,BUY,+20,TO OPEN,CVGI,,,STOCK,5.2244,5.2244,LMT
+,5/7/26 06:02:14,STOCK,BUY,+3,TO OPEN,SGML,,,STOCK,23.87,23.87,LMT
+,5/6/26 03:31:08,STOCK,BUY,+2,TO OPEN,VSAT,,,STOCK,65.685,65.685,LMT
+,5/4/26 09:41:09,STOCK,BUY,+2,TO OPEN,YOU,,,STOCK,56.295,56.295,LMT
+
+Equities
+Symbol,Description,Qty,Trade Price,Mark,Mark Value
+VSAT,VIASAT INC,+2,65.685,70.01,$140.02
+CVGI,COMMERCIAL VEH GROUP,+20,5.2244,5.10,$102.00
+LAR,LITHIUM ARGENTINA AG,+7,11.7066,11.68,$81.76
+DHC,DIVERSIFIED HEALTHCA REIT,+39,7.58,8.44,$329.16
+YOU,CLEAR SECURE INC A,+2,56.295,56.81,$113.62
+,OVERALL TOTALS,,,,$766.56
+
+Profits and Losses
+Symbol,Description,P/L Open,P/L %,P/L Day,P/L YTD,P/L Diff,Margin Req,Mark Value
+CC,CHEMOURS CO,$0.00,0.00%,$0.00,($11.80),($15.60),$0.00,$0.00
+CVGI,COMMERCIAL VEH GROUP,($2.49),-2.38%,$0.00,($2.49),($2.49),$0.00,$102.00
+DHC,DIVERSIFIED HEALTHCA REIT,$33.54,+11.35%,($0.39),$33.54,$23.40,$0.00,$329.16
+LAR,LITHIUM ARGENTINA AG,($0.19),-0.23%,$0.00,($0.19),($0.19),$0.00,$81.76
+SGML,SIGMA LITHIUM CORP,$0.00,0.00%,$0.00,($6.15),($6.15),$0.00,$0.00
+VIR,VIR BIOTECHNOLOGY IN,$0.00,0.00%,$0.00,($1.99),$0.00,$0.00,$0.00
+VSAT,VIASAT INC,$8.65,+6.58%,$0.00,$8.65,$8.65,$0.00,$140.02
+YOU,CLEAR SECURE INC A,$1.03,+0.91%,$0.00,$1.03,$1.03,$0.00,$113.62
+,OVERALL TOTALS,$40.54,+5.58%,($0.39),$20.60,$8.65,$0.00,$766.56
+
+Account Summary
+Net Liquidating Value,"$1,420.60"
+Stock Buying Power,$654.04
+Option Buying Power,$654.04
+Equity Commissions & Fees YTD,$0.00
+Futures Commissions & Fees YTD,$0.00
+Crypto Trading Fees YTD,N/A
+Total Commissions & Fees YTD,$0.00
