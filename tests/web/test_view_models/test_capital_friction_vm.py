@@ -122,6 +122,7 @@ def test_vm_requires_non_empty_footnote() -> None:
         capital_feasibility_pressure_index=None,
         capital_denominator_dollars=7500.0,
         capital_denominator_badge="PROVISIONAL",
+        capital_denominator_badge_text="PROVISIONAL: placeholder",
         trend_runs=(),
         trend_suppressed=True,
         trend_suppressed_text="placeholder",

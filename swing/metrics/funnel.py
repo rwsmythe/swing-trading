@@ -92,11 +92,16 @@ class IdentificationFunnelPoint:
                     "aplus_take_rate_per_run must be finite; got "
                     f"{self.aplus_take_rate_per_run!r}"
                 )
-            if not (0.0 <= self.aplus_take_rate_per_run <= 1.0):
+            if self.aplus_take_rate_per_run < 0.0:
                 raise ValueError(
-                    "aplus_take_rate_per_run must be in [0, 1]; got "
+                    "aplus_take_rate_per_run must be >= 0; got "
                     f"{self.aplus_take_rate_per_run!r}"
                 )
+            # Codex R1 Major #3 fix: NO upper bound on the rate. Values >1
+            # are honest signals of data-quality / attribution anomalies
+            # (e.g., trade.origin=pipeline_aplus on a session where the run
+            # emitted zero A+ identifications). Suppressing OR clamping
+            # would hide the anomaly.
 
 
 @dataclass(frozen=True)
@@ -222,23 +227,28 @@ def compute_identification_funnel(
         )
 
     placeholders = ",".join("?" for _ in session_dates)
+    # Plan §G T-D.5 line 1498 BINDING: `pipeline_runs.started_ts.date()`
+    # matched against the session list — NOT data_asof_date. Caught at
+    # Codex R1 Major #2. Window inclusion + trade-locked_at match both
+    # anchor on the run's start-timestamp date.
     rows = conn.execute(
         f"SELECT id, started_ts, data_asof_date, evaluation_run_id "
         f"FROM pipeline_runs "
         f"WHERE state = 'complete' "
-        f"AND data_asof_date IN ({placeholders}) "
+        f"AND substr(started_ts, 1, 10) IN ({placeholders}) "
         f"ORDER BY started_ts ASC, id ASC",
         session_dates,
     ).fetchall()
 
     points: list[IdentificationFunnelPoint] = []
-    for run_id, _started_ts, run_date, eval_id in rows:
+    for run_id, started_ts, _data_asof, eval_id in rows:
+        run_session_date = str(started_ts)[:10]
         aplus_id, aplus_taken, watch_id, watch_taken = (
             _compute_per_run_aggregate(
                 conn,
                 pipeline_run_id=int(run_id),
                 evaluation_run_id=int(eval_id) if eval_id is not None else None,
-                run_session_date=str(run_date),
+                run_session_date=run_session_date,
             )
         )
         if aplus_id <= 0:
@@ -247,13 +257,17 @@ def compute_identification_funnel(
                 APLUS_TAKE_RATE_ZERO_APLUS_SUPPRESSED_TEXT
             )
         else:
+            # Codex R1 Major #3 fix: do NOT clamp the rate to [0, 1].
+            # An honest >1.0 surfaces data-quality anomalies (a trade with
+            # origin='pipeline_aplus' on a session where 0 A+ identifications
+            # were emitted — operator override OR identification-vs-trade
+            # attribution defect). Validate non-negative + finite only.
             take_rate = aplus_taken / aplus_id
-            take_rate = max(0.0, min(1.0, take_rate))
             suppressed = None
         points.append(
             IdentificationFunnelPoint(
                 pipeline_run_id=int(run_id),
-                run_date=str(run_date),
+                run_date=run_session_date,
                 aplus_identifications_per_run=aplus_id,
                 aplus_trades_taken_per_run=aplus_taken,
                 aplus_take_rate_per_run=take_rate,

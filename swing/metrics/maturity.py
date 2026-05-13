@@ -32,6 +32,7 @@ from swing.data.repos.daily_management import (
     list_open_position_active_snapshots,
 )
 from swing.evaluation.dates import last_completed_session
+from swing.metrics.capital import format_capital_denominator_badge_text
 from swing.metrics.equity_resolver import (
     resolve_live_capital_denominator_dollars,
 )
@@ -70,7 +71,10 @@ class MaturityStageRow:
     # Capital-utilization (dynamic PROVISIONAL/LIVE per row).
     position_capital_utilization_pct: float | None  # PERCENT
     position_portfolio_heat_contribution_dollars: float | None
+    capital_denominator_dollars: float
     capital_denominator_badge: Literal["PROVISIONAL", "LIVE"]
+    # Plan §A.6 line 233 BINDING (Codex R1 M#1) — fallback-explanation text.
+    capital_denominator_badge_text: str
 
     def __post_init__(self) -> None:
         if self.trade_id < 1:
@@ -95,6 +99,21 @@ class MaturityStageRow:
             raise ValueError(
                 "capital_denominator_badge must be 'PROVISIONAL' or 'LIVE'; "
                 f"got {self.capital_denominator_badge!r}"
+            )
+        if not math.isfinite(self.capital_denominator_dollars):
+            raise ValueError(
+                "capital_denominator_dollars must be finite; got "
+                f"{self.capital_denominator_dollars!r}"
+            )
+        if self.capital_denominator_dollars <= 0:
+            raise ValueError(
+                "capital_denominator_dollars must be > 0; got "
+                f"{self.capital_denominator_dollars!r}"
+            )
+        if not self.capital_denominator_badge_text:
+            raise ValueError(
+                "capital_denominator_badge_text must be non-empty "
+                "(plan §A.6 line 233 BINDING)"
             )
 
 
@@ -145,16 +164,26 @@ def compute_maturity_stage(
     # Also load every open trade — so the surface still renders rows for
     # trades that have NO active snapshot yet (e.g., entered-no-fill
     # between pipeline runs). Per spec §4.5 empty-state semantics.
+    # Codex R1 Minor #1 fix: include entry_price so the utilization
+    # fallback matches capital.py's COALESCE(current_avg_cost,
+    # entry_price) pattern (avoid mis-reporting 0% utilization when
+    # current_avg_cost is NULL for entered-no-fill state).
     trade_rows = conn.execute(
         "SELECT id, ticker, current_stop, planned_target_R, current_size, "
-        "current_avg_cost FROM trades "
+        "current_avg_cost, entry_price FROM trades "
         "WHERE state IN ('entered', 'managing', 'partial_exited') "
         "ORDER BY id ASC"
     ).fetchall()
 
     rows: list[MaturityStageRow] = []
     counts: dict[str, int] = {}
-    for trade_id, ticker, t_stop, t_planned_r, t_size, t_avg_cost in trade_rows:
+    for (trade_id, ticker, t_stop, t_planned_r, t_size, t_avg_cost,
+         t_entry_price) in trade_rows:
+        # Use entry_price when current_avg_cost is NULL (matches capital.py
+        # numerator semantics; Codex R1 m#1 fix).
+        effective_avg_cost = (
+            t_avg_cost if t_avg_cost is not None else t_entry_price
+        )
         snap = by_trade_id.get(trade_id)
         # Resolve row's asof_date — snapshot's session if present, else
         # the page's asof_date (backward-looking).
@@ -191,7 +220,10 @@ def compute_maturity_stage(
                 util_pct = stored_util
             else:
                 util_pct = _compute_position_util_pct(
-                    avg_cost=(t_avg_cost if t_avg_cost is not None else 0.0),
+                    avg_cost=(
+                        effective_avg_cost
+                        if effective_avg_cost is not None else 0.0
+                    ),
                     size=t_size if t_size is not None else 0.0,
                     denom=denom_dollars,
                 )
@@ -201,11 +233,14 @@ def compute_maturity_stage(
             mae = None
             stop_val = t_stop
             heat_contrib = _compute_heat_contrib(
-                avg_cost=t_avg_cost, size=t_size, stop=t_stop,
+                avg_cost=effective_avg_cost, size=t_size, stop=t_stop,
             )
             trail_ma_price = None
             util_pct = _compute_position_util_pct(
-                avg_cost=(t_avg_cost if t_avg_cost is not None else 0.0),
+                avg_cost=(
+                    effective_avg_cost
+                    if effective_avg_cost is not None else 0.0
+                ),
                 size=t_size if t_size is not None else 0.0,
                 denom=denom_dollars,
             )
@@ -228,7 +263,15 @@ def compute_maturity_stage(
                 trail_MA_eligibility_flag=eligibility,
                 position_capital_utilization_pct=util_pct,
                 position_portfolio_heat_contribution_dollars=heat_contrib,
+                capital_denominator_dollars=denom_dollars,
                 capital_denominator_badge=denom_badge,
+                capital_denominator_badge_text=(
+                    format_capital_denominator_badge_text(
+                        badge=denom_badge,
+                        denominator_dollars=denom_dollars,
+                        asof_date=row_asof,
+                    )
+                ),
             )
         )
         key = stage if stage is not None else "(unstaged)"

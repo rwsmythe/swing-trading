@@ -15,6 +15,7 @@
     Capital denominator: $<span data-field="capital-denominator-dollars">{{ "%.2f"|format(vm.result.capital_denominator_dollars) }}</span>
     <span class="badge badge-{{ vm.result.capital_denominator_badge|lower }}"
           data-badge="capital-denominator">{{ vm.result.capital_denominator_badge }}</span>
+    <br><span class="muted" data-badge-text="capital-denominator">{{ vm.result.capital_denominator_badge_text }}</span>
   </p>
 
   <h2>Point-in-time gauges</h2>
@@ -137,6 +138,7 @@
         <td>{{ p.concurrent_open_positions }}</td>
         <td>
           <span class="badge badge-{{ p.capital_denominator_badge|lower }}">{{ p.capital_denominator_badge }}</span>
+          <br><span class="muted" title="{{ p.capital_denominator_badge_text }}">${{ "%.2f"|format(p.capital_denominator_dollars) }}</span>
         </td>
       </tr>
       {% endfor %}

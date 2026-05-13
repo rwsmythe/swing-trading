@@ -220,7 +220,9 @@ def test_dataclass_post_init_rejects_invalid_inputs():
         trail_MA_eligibility_flag=None,
         position_capital_utilization_pct=None,
         position_portfolio_heat_contribution_dollars=None,
+        capital_denominator_dollars=7500.0,
         capital_denominator_badge="PROVISIONAL",
+        capital_denominator_badge_text="PROVISIONAL: placeholder",
     )
     with pytest.raises(ValueError, match="finite"):
         MaturityStageRow(

@@ -112,6 +112,7 @@ class CapitalFrictionTrendPoint:
     capital_feasibility_pressure_index: float | None
     capital_denominator_dollars: float
     capital_denominator_badge: Literal["PROVISIONAL", "LIVE"]
+    capital_denominator_badge_text: str  # Plan §A.6 line 233 (Codex R1 M#1)
 
     def __post_init__(self) -> None:
         if self.pipeline_run_id < 1:
@@ -150,6 +151,11 @@ class CapitalFrictionTrendPoint:
                 "capital_denominator_badge must be 'PROVISIONAL' or 'LIVE'; "
                 f"got {self.capital_denominator_badge!r}"
             )
+        if not self.capital_denominator_badge_text:
+            raise ValueError(
+                "capital_denominator_badge_text must be non-empty "
+                "(plan §A.6 line 233 BINDING)"
+            )
 
 
 @dataclass(frozen=True)
@@ -173,6 +179,13 @@ class CapitalFrictionResult:
     # PROVISIONAL/LIVE dynamic badge (plan §A.6)
     capital_denominator_dollars: float
     capital_denominator_badge: Literal["PROVISIONAL", "LIVE"]
+    # Plan §A.6 line 233 BINDING — fallback-explanation text rendered
+    # inline alongside the metric value (Codex R1 Major #1 fix). Format:
+    #   PROVISIONAL → "PROVISIONAL: $7,500 floor used as live-capital
+    #                  fallback (no snapshot ≤ {asof_date})"
+    #   LIVE        → "LIVE: $X.XX equity from account_equity_snapshots
+    #                  on-or-before {asof_date}"
+    capital_denominator_badge_text: str
 
     # Multi-run trend (spec §4.4; plan §A.0.1)
     trend_runs: tuple[CapitalFrictionTrendPoint, ...]
@@ -216,6 +229,11 @@ class CapitalFrictionResult:
             raise ValueError(
                 "capital_denominator_badge must be 'PROVISIONAL' or 'LIVE'; "
                 f"got {self.capital_denominator_badge!r}"
+            )
+        if not self.capital_denominator_badge_text:
+            raise ValueError(
+                "capital_denominator_badge_text must be non-empty (plan §A.6 "
+                "line 233 BINDING)"
             )
         if (
             self.risk_feasibility_blocked_rate is not None
@@ -442,12 +460,16 @@ def _list_runs_in_trend_window(
     # on calendar version; normalize to ascending ISO-string list.
     session_dates = sorted({ts.date().isoformat() for ts in sessions})
     placeholders = ",".join("?" for _ in session_dates)
+    # Plan §G T-D.5 + §A.6 line 231 BINDING: match by
+    # ``substr(started_ts, 1, 10)`` NOT ``data_asof_date``. The two differ
+    # on weekend/holiday runs + the plan pins the run's start-timestamp
+    # date as the session anchor for trend windowing.
     rows = conn.execute(
         f"SELECT id, started_ts, data_asof_date, evaluation_run_id "
         f"FROM pipeline_runs "
         f"WHERE state = 'complete' "
-        f"AND data_asof_date IN ({placeholders}) "
-        f"ORDER BY id ASC",
+        f"AND substr(started_ts, 1, 10) IN ({placeholders}) "
+        f"ORDER BY started_ts ASC, id ASC",
         session_dates,
     ).fetchall()
     return [(int(r[0]), str(r[1]), str(r[2]),
@@ -458,6 +480,31 @@ def _list_runs_in_trend_window(
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
+
+def format_capital_denominator_badge_text(
+    *,
+    badge: Literal["PROVISIONAL", "LIVE"],
+    denominator_dollars: float,
+    asof_date: date | str,
+) -> str:
+    """Plan §A.6 line 233 BINDING text format (Codex R1 Major #1).
+
+    PROVISIONAL: "PROVISIONAL: $X,XXX floor used as live-capital fallback
+                  (no snapshot ≤ {asof_date})"
+    LIVE:        "LIVE: $X,XXX equity from account_equity_snapshots
+                  on-or-before {asof_date}"
+    """
+    asof_str = asof_date.isoformat() if isinstance(asof_date, date) else str(asof_date)
+    if badge == "PROVISIONAL":
+        return (
+            f"PROVISIONAL: ${denominator_dollars:,.2f} floor used as "
+            f"live-capital fallback (no snapshot ≤ {asof_str})"
+        )
+    return (
+        f"LIVE: ${denominator_dollars:,.2f} equity from "
+        f"account_equity_snapshots on-or-before {asof_str}"
+    )
+
 
 def compute_capital_friction(
     conn: sqlite3.Connection, *, asof_date: date,
@@ -516,13 +563,40 @@ def compute_capital_friction(
                 None,
                 "N/A — 0 would-have-qualified candidates this run",
             )
-        # Per §A.0.1: utilization + heat at historical run use CURRENT
-        # trade state (best-effort historical reconstruction). Denominator
-        # is the live denominator resolved at the run's session-date.
+        # Per §A.0.1 + plan §A.6 line 231: utilization + heat at historical
+        # run use CURRENT trade state. Denominator resolved at the run's
+        # ACTUAL start-timestamp date (NOT data_asof_date) per plan §A.6
+        # §4.6 LOCK — caught at Codex R1 Major #2.
         try:
-            run_asof = date.fromisoformat(data_asof)
-        except ValueError:
-            run_asof = asof_date
+            run_asof = date.fromisoformat(started_ts[:10])
+        except (ValueError, IndexError):
+            # Codex R1 minor #2 fix: rather than silently fall back to
+            # page asof (and risk a misleading LIVE/PROVISIONAL badge),
+            # suppress the denominator-dependent fields for the row.
+            trend_points.append(
+                CapitalFrictionTrendPoint(
+                    pipeline_run_id=run_id,
+                    run_date=data_asof,
+                    risk_feasibility_blocked_rate=r_rate,
+                    risk_feasibility_blocked_rate_suppressed_text=r_suppr,
+                    current_capital_utilization_pct=None,
+                    current_portfolio_heat_pct=None,
+                    concurrent_open_positions=_count_open_at_run(
+                        conn, started_ts=started_ts,
+                    ),
+                    capital_feasibility_pressure_index=None,
+                    capital_denominator_dollars=denom_dollars,
+                    capital_denominator_badge=denom_badge,
+                    capital_denominator_badge_text=(
+                        format_capital_denominator_badge_text(
+                            badge=denom_badge,
+                            denominator_dollars=denom_dollars,
+                            asof_date=asof_date,
+                        )
+                    ),
+                )
+            )
+            continue
         run_denom, run_badge = resolve_live_capital_denominator_dollars(
             conn, asof_date=run_asof,
             at_trade_time_policy=live_policy,
@@ -541,7 +615,7 @@ def compute_capital_friction(
         trend_points.append(
             CapitalFrictionTrendPoint(
                 pipeline_run_id=run_id,
-                run_date=data_asof,
+                run_date=run_asof.isoformat(),
                 risk_feasibility_blocked_rate=r_rate,
                 risk_feasibility_blocked_rate_suppressed_text=r_suppr,
                 current_capital_utilization_pct=run_util_pct,
@@ -550,6 +624,13 @@ def compute_capital_friction(
                 capital_feasibility_pressure_index=run_pressure,
                 capital_denominator_dollars=run_denom,
                 capital_denominator_badge=run_badge,
+                capital_denominator_badge_text=(
+                    format_capital_denominator_badge_text(
+                        badge=run_badge,
+                        denominator_dollars=run_denom,
+                        asof_date=run_asof,
+                    )
+                ),
             )
         )
     trend_suppressed = len(trend_points) < TREND_MIN_RUNS
@@ -571,6 +652,11 @@ def compute_capital_friction(
         capital_feasibility_pressure_index=pressure,
         capital_denominator_dollars=denom_dollars,
         capital_denominator_badge=denom_badge,
+        capital_denominator_badge_text=format_capital_denominator_badge_text(
+            badge=denom_badge,
+            denominator_dollars=denom_dollars,
+            asof_date=asof_date,
+        ),
         trend_runs=tuple(trend_points),
         trend_suppressed=trend_suppressed,
         trend_suppressed_text=trend_suppressed_text,

@@ -209,6 +209,34 @@ def test_compute_capital_friction_no_snapshot_returns_provisional_badge(conn):
     assert result.capital_denominator_dollars == 7500.0
 
 
+def test_capital_denominator_badge_text_matches_plan_a6_line_233_format(conn):
+    """Plan §A.6 line 233 BINDING (Codex R1 M#1 fix): badge_text follows
+    the locked format ``"PROVISIONAL: $X,XXX floor used as live-capital
+    fallback (no snapshot ≤ {asof_date})"``."""
+    _seed_open_trade(conn, trade_id=1, ticker="AAA")
+    result = compute_capital_friction(conn, asof_date=date(2026, 5, 12))
+    # Discriminating: assert exact substrings per plan §A.6 line 233.
+    assert "PROVISIONAL:" in result.capital_denominator_badge_text
+    assert "$7,500.00" in result.capital_denominator_badge_text
+    assert "floor used as live-capital fallback" in (
+        result.capital_denominator_badge_text
+    )
+    assert "no snapshot ≤ 2026-05-12" in (
+        result.capital_denominator_badge_text
+    )
+    # Seed a snapshot — text should switch to LIVE format.
+    _seed_snapshot(conn, snapshot_date="2026-05-12", equity_dollars=2000.0)
+    result2 = compute_capital_friction(conn, asof_date=date(2026, 5, 12))
+    assert "LIVE:" in result2.capital_denominator_badge_text
+    assert "$2,000.00" in result2.capital_denominator_badge_text
+    assert "account_equity_snapshots" in (
+        result2.capital_denominator_badge_text
+    )
+    assert "on-or-before 2026-05-12" in (
+        result2.capital_denominator_badge_text
+    )
+
+
 def test_compute_capital_friction_with_snapshot_returns_live_badge(conn):
     """With a snapshot on-or-before asof_date, badge = LIVE and
     denominator = snapshot.equity_dollars (per plan §A.6 shipped code; NOT
@@ -556,30 +584,38 @@ def test_compute_capital_friction_historical_trend_uses_current_trade_state(
     initial_shares=100. Run R1 happened at trade-open time.
     Query for R1 → utilization computed against current_size=200.
     """
-    eval_id = _seed_evaluation_run(conn, run_id=1, run_ts="2026-04-01T13:00",
-                                   data_asof="2026-03-31",
-                                   action_session="2026-04-01")
-    _seed_pipeline_run(conn, run_id=1, started_ts="2026-04-01T13:00:00",
-                       evaluation_run_id=eval_id)
+    asof = date(2026, 5, 12)
+    sessions = _trading_sessions(asof, 5)
+    # First session (oldest) is R1 — the trade was locked at that session.
+    r1_session = sessions[0]
+    eval_id = _seed_evaluation_run(
+        conn, run_id=1, run_ts=r1_session + "T13:00",
+        data_asof=r1_session, action_session=r1_session,
+    )
+    _seed_pipeline_run(
+        conn, run_id=1, started_ts=r1_session + "T13:00:00",
+        data_asof=r1_session, action_session=r1_session,
+        evaluation_run_id=eval_id,
+    )
     # Trade with current_size=200 (changed since R1).
     _seed_open_trade(conn, trade_id=1, ticker="AAA",
                      entry_price=37.5, initial_shares=100,
                      current_size=200.0, current_avg_cost=37.5,
                      initial_stop=33.75,
-                     pre_trade_locked_at="2026-04-01T09:30:00",
+                     pre_trade_locked_at=r1_session + "T09:30:00",
                      last_fill_at=None)
-    # Need ≥5 runs for trend to render — seed 4 more.
-    for i in range(2, 6):
+    # Seed 4 more runs on subsequent trading sessions.
+    for i, sd in enumerate(sessions[1:], start=2):
         _seed_evaluation_run(
-            conn, run_id=i, run_ts=f"2026-04-{i:02d}T13:00",
-            data_asof=f"2026-04-{i - 1:02d}",
-            action_session=f"2026-04-{i:02d}",
+            conn, run_id=i, run_ts=sd + "T13:00",
+            data_asof=sd, action_session=sd,
         )
         _seed_pipeline_run(
-            conn, run_id=i, started_ts=f"2026-04-{i:02d}T13:00:00",
+            conn, run_id=i, started_ts=sd + "T13:00:00",
+            data_asof=sd, action_session=sd,
             evaluation_run_id=i,
         )
-    result = compute_capital_friction(conn, asof_date=date(2026, 5, 12))
+    result = compute_capital_friction(conn, asof_date=asof)
     # Find run R1 in trend.
     r1_points = [
         p for p in result.trend_runs if p.pipeline_run_id == 1
@@ -606,40 +642,48 @@ def test_concurrent_open_positions_at_historical_run_uses_open_at_pre_trade_lock
     """Plan §A.0.1 Codex R3 Major #2 (relocated from D.5): historical
     ``concurrent_open_positions`` uses ``pre_trade_locked_at <= run.started_ts
     AND (last_fill_at IS NULL OR last_fill_at >= run.started_ts)``."""
-    # Run R1 at 2026-04-15.
-    eval_id = _seed_evaluation_run(conn, run_id=1, run_ts="2026-04-15T13:00",
-                                   data_asof="2026-04-14",
-                                   action_session="2026-04-15")
-    _seed_pipeline_run(conn, run_id=1, started_ts="2026-04-15T13:00:00",
-                       evaluation_run_id=eval_id)
+    asof = date(2026, 5, 12)
+    sessions = _trading_sessions(asof, 5)
+    r1_session = sessions[2]  # middle of window
+    eval_id = _seed_evaluation_run(
+        conn, run_id=1, run_ts=r1_session + "T13:00",
+        data_asof=r1_session, action_session=r1_session,
+    )
+    _seed_pipeline_run(
+        conn, run_id=1, started_ts=r1_session + "T13:00:00",
+        data_asof=r1_session, action_session=r1_session,
+        evaluation_run_id=eval_id,
+    )
     # Trade T1: locked before R1, no fill_at yet (still open at R1).
     _seed_open_trade(conn, trade_id=1, ticker="OPEN1",
-                     pre_trade_locked_at="2026-04-10T09:30:00",
+                     pre_trade_locked_at=sessions[0] + "T09:30:00",
                      last_fill_at=None)
     # Trade T2: locked AFTER R1 (not open at R1).
     _seed_open_trade(conn, trade_id=2, ticker="OPEN2",
-                     pre_trade_locked_at="2026-04-20T09:30:00",
+                     pre_trade_locked_at=sessions[4] + "T09:30:00",
                      last_fill_at=None)
     # Trade T3: locked before R1, closed BEFORE R1.
     _seed_closed_trade(conn, trade_id=3, ticker="CLOSED",
-                       pre_trade_locked_at="2026-04-01T09:30:00",
-                       last_fill_at="2026-04-10T15:30:00")
+                       pre_trade_locked_at=sessions[0] + "T09:30:00",
+                       last_fill_at=sessions[1] + "T15:30:00")
     # Trade T4: locked before R1, closed AFTER R1 — still open at R1.
     _seed_closed_trade(conn, trade_id=4, ticker="LATER",
-                       pre_trade_locked_at="2026-04-05T09:30:00",
-                       last_fill_at="2026-04-20T15:30:00")
+                       pre_trade_locked_at=sessions[1] + "T09:30:00",
+                       last_fill_at=sessions[3] + "T15:30:00")
     # Need ≥5 runs.
-    for i in range(2, 6):
+    for i, sd in enumerate(sessions, start=2):
+        if sd == r1_session:
+            continue
         _seed_evaluation_run(
-            conn, run_id=i, run_ts=f"2026-04-{i + 15:02d}T13:00",
-            data_asof=f"2026-04-{i + 14:02d}",
-            action_session=f"2026-04-{i + 15:02d}",
+            conn, run_id=i, run_ts=sd + "T13:00",
+            data_asof=sd, action_session=sd,
         )
         _seed_pipeline_run(
-            conn, run_id=i, started_ts=f"2026-04-{i + 15:02d}T13:00:00",
+            conn, run_id=i, started_ts=sd + "T13:00:00",
+            data_asof=sd, action_session=sd,
             evaluation_run_id=i,
         )
-    result = compute_capital_friction(conn, asof_date=date(2026, 5, 12))
+    result = compute_capital_friction(conn, asof_date=asof)
     r1_points = [p for p in result.trend_runs if p.pipeline_run_id == 1]
     assert len(r1_points) == 1
     r1 = r1_points[0]
@@ -686,16 +730,28 @@ def test_compute_capital_friction_returns_asof_date_field(conn):
 # Trend suppression + §A.0.1 disclaimer-required tests
 # ---------------------------------------------------------------------------
 
+def _trading_sessions(end: date, n: int) -> list[str]:
+    """Return n most-recent NYSE trading session ISO dates ending at `end`."""
+    import exchange_calendars
+    import pandas as pd
+    cal = exchange_calendars.get_calendar("XNYS")
+    return sorted({
+        ts.date().isoformat()
+        for ts in cal.sessions_window(pd.Timestamp(end), -n)
+    })
+
+
 def test_trend_suppressed_below_5_runs(conn):
     """Spec §4.4: multi-run trend suppressed at <5 runs."""
-    for i in range(1, 4):  # 3 runs
+    sessions = _trading_sessions(date(2026, 5, 12), 3)
+    for i, sd in enumerate(sessions, start=1):
         _seed_evaluation_run(
-            conn, run_id=i, run_ts=f"2026-05-{i:02d}T13:00",
-            data_asof=f"2026-04-{30 - 4 + i:02d}",
-            action_session=f"2026-05-{i:02d}",
+            conn, run_id=i, run_ts=sd + "T13:00",
+            data_asof=sd, action_session=sd,
         )
         _seed_pipeline_run(
-            conn, run_id=i, started_ts=f"2026-05-{i:02d}T13:00:00",
+            conn, run_id=i, started_ts=sd + "T13:00:00",
+            data_asof=sd, action_session=sd,
             evaluation_run_id=i,
         )
     result = compute_capital_friction(conn, asof_date=date(2026, 5, 12))
@@ -705,14 +761,15 @@ def test_trend_suppressed_below_5_runs(conn):
 
 def test_trend_rendered_at_5_runs(conn):
     """Spec §4.4: trend rendered once n≥5 runs."""
-    for i in range(1, 6):
+    sessions = _trading_sessions(date(2026, 5, 12), 5)
+    for i, sd in enumerate(sessions, start=1):
         _seed_evaluation_run(
-            conn, run_id=i, run_ts=f"2026-05-{i:02d}T13:00",
-            data_asof=f"2026-04-{30 - 6 + i:02d}",
-            action_session=f"2026-05-{i:02d}",
+            conn, run_id=i, run_ts=sd + "T13:00",
+            data_asof=sd, action_session=sd,
         )
         _seed_pipeline_run(
-            conn, run_id=i, started_ts=f"2026-05-{i:02d}T13:00:00",
+            conn, run_id=i, started_ts=sd + "T13:00:00",
+            data_asof=sd, action_session=sd,
             evaluation_run_id=i,
         )
     result = compute_capital_friction(conn, asof_date=date(2026, 5, 12))
@@ -736,6 +793,7 @@ def test_dataclass_post_init_rejects_nan_or_inf():
         capital_feasibility_pressure_index=None,
         capital_denominator_dollars=7500.0,
         capital_denominator_badge="PROVISIONAL",
+        capital_denominator_badge_text="PROVISIONAL: $7,500.00 placeholder",
         trend_runs=(),
         trend_suppressed=True,
         trend_suppressed_text="placeholder",

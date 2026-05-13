@@ -297,12 +297,100 @@ def test_dataclass_post_init_rejects_invalid_inputs():
         IdentificationFunnelPoint(
             **{**base, "aplus_identifications_per_run": -1}
         )
+    # Codex R1 Major #3 fix: >1.0 is ALLOWED (honest signal of anomaly).
+    # Validator only rejects negative + non-finite values.
+    IdentificationFunnelPoint(**{**base, "aplus_take_rate_per_run": 1.5})
     with pytest.raises(ValueError, match="aplus_take_rate_per_run"):
         IdentificationFunnelPoint(
-            **{**base, "aplus_take_rate_per_run": 1.5}
+            **{**base, "aplus_take_rate_per_run": -0.1}
+        )
+    with pytest.raises(ValueError, match="finite"):
+        IdentificationFunnelPoint(
+            **{**base, "aplus_take_rate_per_run": float("nan")}
         )
 
 
 def test_trend_window_constant_is_30():
     assert TRADING_DAYS_WINDOW == 30
     assert TREND_MIN_RUNS == 10
+
+
+def test_funnel_window_anchors_on_started_ts_not_data_asof_date(conn):
+    """Codex R1 Major #2 fix: plan §G T-D.5 line 1498 BINDING — window
+    inclusion is keyed on ``started_ts.date()`` NOT ``data_asof_date``.
+
+    Discriminating: seed a run whose started_ts is on a trading session
+    in the window but data_asof_date is OUTSIDE the window. With the
+    correct binding (started_ts), the run is INCLUDED. With the bug
+    (data_asof_date), it would be excluded."""
+    asof = date(2026, 5, 12)
+    # Use exchange_calendars to find a trading day within the window.
+    import exchange_calendars as xcals
+    import pandas as pd
+    cal = xcals.get_calendar("XNYS")
+    sessions = sorted({
+        ts.date().isoformat()
+        for ts in cal.sessions_window(pd.Timestamp(asof), -10)
+    })
+    in_window_session = sessions[5]  # mid-window
+    # data_asof_date points OUTSIDE the 10-session window (way back).
+    way_back = "2024-01-01"
+    conn.execute(
+        "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+        "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+        "skip_count, excluded_count, error_count) VALUES "
+        "(?, ?, ?, ?, 0, 5, 0, 0, 0, 0)",
+        (1, in_window_session + "T13:00:00", way_back, in_window_session),
+    )
+    conn.execute(
+        "INSERT INTO pipeline_runs (id, started_ts, finished_ts, trigger, "
+        "data_asof_date, action_session_date, state, lease_token, "
+        "evaluation_run_id) VALUES "
+        "(?, ?, ?, 'manual', ?, ?, 'complete', 'tok', ?)",
+        (1, in_window_session + "T13:00:00", in_window_session + "T13:30",
+         way_back, in_window_session, 1),
+    )
+    # Seed 5 A+ candidates on the run.
+    for i in range(5):
+        _seed_candidate(conn, candidate_id=10 + i, evaluation_run_id=1,
+                        ticker=f"AAA{i}", bucket="aplus")
+    result = compute_identification_funnel(
+        conn, asof_date=asof, run_window=10,
+    )
+    # With the fix, the run is included in the window (started_ts.date()
+    # matches a session in window) — assert presence.
+    assert len(result.trend_runs) == 1, (
+        f"Run with started_ts in window but data_asof_date OUTSIDE window "
+        f"MUST be included (plan §G T-D.5 BINDING — keyed on started_ts); "
+        f"got: {result.trend_runs}"
+    )
+    pt = result.trend_runs[0]
+    # run_date reflects started_ts.date() not data_asof_date.
+    assert pt.run_date == in_window_session
+    assert pt.aplus_identifications_per_run == 5
+
+
+def test_aplus_take_rate_not_clamped_at_1_when_anomaly(conn):
+    """Codex R1 Major #3 fix: rate > 1.0 surfaces honestly (not clamped)
+    so data-quality / attribution anomalies stay visible."""
+    _seed_run(conn, run_id=1, run_date="2026-05-08")
+    # Seed 2 A+ candidates BUT 3 trades attributed to A+ origin on this
+    # session — an anomaly (e.g., manual origin override).
+    _seed_candidate(conn, candidate_id=1, evaluation_run_id=1,
+                    ticker="AAA", bucket="aplus")
+    _seed_candidate(conn, candidate_id=2, evaluation_run_id=1,
+                    ticker="BBB", bucket="aplus")
+    for tid, ticker in [(10, "AAA"), (11, "BBB"), (12, "CCC")]:
+        _seed_trade(conn, trade_id=tid, ticker=ticker,
+                    trade_origin="pipeline_aplus",
+                    pre_trade_locked_at="2026-05-08T09:30:00")
+    result = compute_identification_funnel(
+        conn, asof_date=date(2026, 5, 12),
+    )
+    pt = result.trend_runs[0]
+    # 3/2 = 1.5 — NOT clamped to 1.0 (Codex R1 M#3 fix).
+    assert pt.aplus_take_rate_per_run == pytest.approx(1.5), (
+        f"Plan/spec semantics + Codex R1 M#3 fix: rate must surface as "
+        f"1.5 (3 taken / 2 identified), NOT clamp to 1.0. Got: "
+        f"{pt.aplus_take_rate_per_run!r}"
+    )
