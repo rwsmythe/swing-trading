@@ -379,6 +379,33 @@ def _build_rolling_rate_line_points(
     return tuple(out)
 
 
+def _build_rolling_sum_line_points(
+    samples: list[float | None], window_size: int,
+) -> tuple[RollingLinePoint, ...]:
+    """Per-position rolling SUM for "point" (sum-only) metrics.
+
+    Codex R1 Major #1 fix: ``mistake_cost_R_rolling_N_total`` is a
+    SUM-class metric per §A.21 — the rendered value-slot via
+    ``render_class_d`` returns the window SUM (not mean), but the LINE
+    points were previously built via :func:`_build_rolling_line_points`
+    (mean). Plotting the mean line while reporting the sum value-slot
+    is misleading. Sum-class metrics get a dedicated rolling-sum line.
+
+    Per-position value is ``sum(finite_window_samples)`` over the most-
+    recent ``window_size`` positions up to and including ``i``.
+    Operational floor (matching the mean-line + rate-line paths): line is
+    suppressed (None) until the window has at least 3 non-None samples.
+    """
+    out: list[RollingLinePoint] = []
+    for i in range(len(samples)):
+        window = _rolling_window_at_position(samples, i, window_size)
+        if len(window) < 3:
+            out.append(RollingLinePoint(ordinal=i, value=None))
+        else:
+            out.append(RollingLinePoint(ordinal=i, value=float(sum(window))))
+    return tuple(out)
+
+
 def _render_metric_series(
     *,
     metric_name: str,
@@ -418,7 +445,15 @@ def _render_metric_series(
         line_points = _build_rolling_rate_line_points(
             events_per_position, window_size,
         )
+    elif underlying_class == "point":
+        # Codex R1 Major #1 fix: sum-class metrics (e.g.,
+        # mistake_cost_R_rolling_N_total) plot rolling SUM, NOT rolling
+        # mean, so the line matches the rendered value slot.
+        line_points = _build_rolling_sum_line_points(
+            samples_per_position, window_size,
+        )
     else:
+        # underlying_class in {"B", "C"} → rolling mean line.
         line_points = _build_rolling_line_points(
             samples_per_position, window_size,
         )

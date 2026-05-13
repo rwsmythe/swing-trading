@@ -438,6 +438,41 @@ def test_rolling_line_points_emit_per_position(
         assert series.line_points[i].value == pytest.approx(3.0)
 
 
+def test_rolling_line_points_class_point_renders_as_sum_not_mean(
+    conn: sqlite3.Connection,
+) -> None:
+    """Codex R1 Major #1 fix: ``mistake_cost_R_rolling_N_total`` is a
+    SUM-class metric per §A.21 — the rolling LINE plots window SUM (NOT
+    window MEAN). The rendered value-slot via ``render_class_d`` returns
+    the window sum; if the line plotted the mean, the chart would be
+    misleading vs the value slot.
+    """
+    # 5 reviewed trades with mistake costs 1.0/2.0/3.0/4.0/5.0 each.
+    # window_size=10 so the last window holds all 5; expected sum = 15.0.
+    # actual_R = realized_R_if_plan_followed - mistake_cost, so set
+    # realized_R_if_plan_followed = mistake_cost (plan), and actual=0 via
+    # exit_price = entry_price (10.0).
+    costs = [1.0, 2.0, 3.0, 4.0, 5.0]
+    for i, cost in enumerate(costs):
+        day = i + 1
+        _seed_reviewed_trade(
+            conn, trade_id=i + 1, ticker=f"T{i:03d}",
+            process_grade="B",
+            realized_R_if_plan_followed=cost,  # actual=0 → cost = plan
+            exit_price=10.0,
+            reviewed_at=f"2026-04-{day:02d}T16:00:00",
+            last_fill_at=f"2026-04-{day:02d}T15:30:00",
+        )
+    series = compute_process_grade_trend(conn).rolling_series[
+        "mistake_cost_R_rolling_N_total"
+    ]
+    assert len(series.line_points) == 5
+    # Position 4 — window holds all 5 cost values; sum = 15.0 (NOT mean 3.0).
+    assert series.line_points[-1].value == pytest.approx(15.0)
+    # Position 2 — window holds [1.0, 2.0, 3.0]; sum = 6.0 (NOT mean 2.0).
+    assert series.line_points[2].value == pytest.approx(6.0)
+
+
 def test_rolling_line_points_class_A_renders_as_rate_not_mean(  # noqa: N802
     conn: sqlite3.Connection,
 ) -> None:
