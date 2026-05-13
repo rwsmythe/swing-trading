@@ -4,7 +4,7 @@
 
 **Goal:** Implement the Phase 10 metrics dashboard per spec `docs/superpowers/specs/2026-05-06-phase10-metrics-design.md` — 8 metric categories (§3.1–§3.8) consumed by 8 dashboard surfaces (§4.1–§4.8) under one shared low-sample-size honesty policy (§5), with ZERO new schema (all metric inputs derivable from shipped v17).
 
-**Architecture:** New module `swing/metrics/` (parallel to `swing/recommendations/` + `swing/evaluation/`) holds the shared honesty-policy utility + metric-aggregation helpers + per-cohort filter helper. New view-models in `swing/web/view_models/metrics/` (one file per surface, mirroring spec §4 surface boundaries). New routes in `swing/web/routes/metrics.py` (one router; 8 GET endpoints + 0 POST endpoints in V1). Templates in `swing/web/templates/metrics/`. Risk_policy reads split: LIVE policy (`is_active=1`) for statistical thresholds + bootstrap config + process-grade weights; AT-TRADE-TIME policy (`trades.risk_policy_id_at_lock` JOIN) for `capital_floor_constant_dollars` + `scratch_epsilon_R`. PROVISIONAL badge contract is dynamic per `account_equity_snapshots.get_latest_snapshot_on_or_before(asof_date)`: PROVISIONAL when no snapshot exists; LIVE when snapshot covers asof_date.
+**Architecture:** New module `swing/metrics/` (parallel to `swing/recommendations/` + `swing/evaluation/`) holds the shared honesty-policy utility + metric-aggregation helpers + per-cohort filter helper. New view-models in `swing/web/view_models/metrics/` (one file per surface, mirroring spec §4 surface boundaries). New routes in `swing/web/routes/metrics.py` (one router; 9 GET endpoints in V1 = 8 surface endpoints + 1 umbrella `/metrics` index navigator; 0 POST endpoints). Templates in `swing/web/templates/metrics/`. Risk_policy reads split: LIVE policy (`is_active=1`) for statistical thresholds + bootstrap config + process-grade weights; AT-TRADE-TIME policy (`trades.risk_policy_id_at_lock` JOIN) for `capital_floor_constant_dollars` + `scratch_epsilon_R`. PROVISIONAL badge contract is dynamic per `account_equity_snapshots.get_latest_snapshot_on_or_before(asof_date)`: PROVISIONAL when no snapshot exists; LIVE when snapshot covers asof_date.
 
 **Tech Stack:** Python 3.11+ / FastAPI / Starlette 1.0 / Jinja2 / HTMX 2.x / SQLite 3 (no schema change in V1) / pytest / ruff. Statistical primitives: pure-Python Wilson CI (no scipy dep) + percentile bootstrap (1000 resamples default; configurable per `risk_policy.bootstrap_resample_count`). NO matplotlib in V1 surfaces (§4.8 line chart rendered as inline SVG via Jinja or plain CSS-styled `<table>` per Sub-bundle E orchestrator-decision; defers matplotlib mathtext gotcha entirely).
 
@@ -59,13 +59,30 @@ Pre-plan grep of `swing/data/migrations/0001_*.sql` through `0017_*.sql` + `swin
 
 **`vwap_entry` derivation:** `sum(price * quantity) / sum(quantity)` over `fills.action='entry'`. Single-fill entries reduce to that fill's price.
 
-### §A.0.1 Phase 10 V1 capture-need shortfalls (from spec §6.3)
+### §A.0.1 Phase 10 V1 capture-need shortfalls (from spec §6.3) + historical-reconstruction limitation (Codex R1 Major #5 fix)
 
 Two §6.3 capture-needs are NOT shipped + are NOT closed by Phase 10 V1:
 
 1. **Per-pipeline-run capital-utilization aggregate** (spec §6.3 (a)): the spec proposed either a `pipeline_runs_metrics_capital_aggregate` table OR `pipeline_runs` ALTERs. **Phase 10 V1 derives on-the-fly via JOIN** of `pipeline_runs.started_ts` → `account_equity_snapshots.get_latest_snapshot_on_or_before(started_ts.date())` + `trades` open-at-timestamp. NO new columns. Defer aggregation table to V2 if multi-run trend queries become slow (>500ms p95 on dashboard). Lock in §I.7.
 
 2. **Per-pipeline-run identification-vs-trade-funnel snapshot** (spec §6.3 (b)): same on-the-fly JOIN against `candidates` + `pipeline_runs` + `trades.trade_origin`. NO new columns. Lock in §I.7.
+
+**Historical-reconstruction limitation (binding for Tasks D.1 + D.2 + D.5 + D.6):**
+
+For HISTORICAL multi-run trends (e.g., `risk_feasibility_blocked_rate` over the last 30 runs; `aplus_take_rate_per_run` over rolling 30-trading-day window), the on-the-fly JOIN consumes the CURRENT state of `trades` (current_size, current_avg_cost, current_stop, current_state). It DOES NOT reconstruct the historical state of those columns at the time of the run. Specifically:
+
+- A trade opened at run N's session date with size=100; size changed to 200 via a fill at run N+5's session date → query for run N's `current_capital_utilization_pct` uses size=200 (NOT size=100).
+- A trade with stop adjusted from $50 to $45 between runs N and N+1 → query for run N's portfolio-heat aggregate uses stop=$45 (NOT stop=$50).
+- A trade closed between runs N and N+1 → query for run N's `concurrent_open_positions` count EXCLUDES the trade (since `state='closed'` filter applies to current state).
+
+**V1 lock:** historical multi-run trends are computed BEST-EFFORT against current trade state. The TODAY's-run point-in-time gauge is fully accurate; historical trend points are approximate. Render trends with a disclosure footnote: `"Trend computed from current trade state; historical points approximate where state has changed since the run."`
+
+**Discriminating tests** (binding in Task D.5):
+- `test_historical_funnel_uses_current_trade_state`: seed run R1 + trade T1 at R1's session with origin='pipeline_aplus'; advance to run R2; query for R1's `aplus_trades_taken_per_run` → assert T1 counted (uses CURRENT trade state — `pre_trade_locked_at` matches R1.session even though state may have evolved).
+- `test_historical_capital_friction_disclaimer_renders`: trend section renders the footnote text.
+- `test_historical_capital_friction_concurrent_open_at_run_uses_open_at_pre_trade_locked_at_only`: count trades with `pre_trade_locked_at <= run.started_ts AND (last_fill_at IS NULL OR last_fill_at >= run.started_ts)` — best-effort proxy for "open at run time".
+
+**True historical reconstruction is V2 scope** — would require either (a) a `pipeline_runs_open_trade_snapshot` table written by `_step_evaluate` per-run, OR (b) per-run replay of fills + stop_adjust events up to `run.started_ts`. Both are non-trivial; defer until trend-accuracy becomes operator-relevant.
 
 Items §6.3 (c) (corporate actions) + (d) (daily account equity capture) are each their own orchestrator-decision pending per §A.4 below; both default to OUT of Phase 10 V1.
 
@@ -167,6 +184,28 @@ Phase 10 dashboard reads risk_policy at TWO different scopes per metric. The spl
 
 **Edge case: legacy trade with `risk_policy_id_at_lock IS NULL`** (pre-Phase-9 trades). Per Phase 9 Sub-bundle A migration 0017, the ALTER added the column NULLABLE; legacy rows have NULL. For these, AT-TRADE-TIME policy resolution falls back to LIVE policy with a `[legacy: pre-Phase-9 trade]` annotation rendered alongside the metric value. Lock in §I.3.
 
+### §A.5.1 Cohort-aggregate `cumulative_R_pct_of_capital` semantics (Codex R1 Major #2 fix)
+
+Spec §3.2 governance metric `cumulative_R_pct_of_capital` is a COHORT-AGGREGATE — sum over all closed trades in the cohort. Trades in the cohort may have been stamped under DIFFERENT `risk_policy_id_at_lock` values (operator may have superseded the policy between trades).
+
+**Locked formula** (binding for Task B.4):
+
+```
+cumulative_R_pct_of_capital(cohort) =
+    sum over trades t in cohort of:
+        ( t.realized_pnl_dollars / at_trade_time_policy(t).capital_floor_constant_dollars )
+```
+
+Per-trade contribution is divided by ITS at-trade-time floor; contributions then summed. Preserves historical-trade interpretation under capital-floor supersession (per spec §1.3 pre-registration discipline + §A.5 split-policy lock).
+
+**REJECTED alternatives** (would silently re-classify historical state):
+- Naive sum-then-divide using LIVE policy: `sum(realized_pnl_dollars) / live_policy.capital_floor` — re-classifies every prior trade's contribution if operator supersedes policy.
+- Average policies across trades + single-divide: `sum(realized_pnl_dollars) / mean(at_trade_time_floors)` — algebraic identity broken; result depends on trade ordering at boundary epsilons.
+
+`distance_to_absolute_loss_tripwire` inherits the same lock since it directly references `cumulative_R_pct_of_capital`. Per spec §3.2: `distance_to_absolute_loss_tripwire = absolute_loss_tripwire_pct - abs(min(0, cumulative_R_pct_of_capital))` — `absolute_loss_tripwire_pct` is migration-locked on `hypothesis_registry`, NOT settable; only the `cumulative_R_pct_of_capital` denominator semantics are at issue.
+
+**Discriminating test** (binding in Task B.4): see `test_vm_cumulative_R_uses_per_trade_at_trade_time_capital_floor` for the multi-policy fixture pattern.
+
 ### §A.6 Dynamic PROVISIONAL badge contract (spec §0.5 §11.4 lock)
 
 Per spec §2 split-policy + Phase 9 Sub-bundle C `account_equity_snapshots`, the PROVISIONAL badge on §3.4 + §3.5 operational metrics is DYNAMIC, not static.
@@ -185,10 +224,11 @@ def resolve_live_capital_denominator_dollars(
 
 `get_latest_snapshot_on_or_before` is `swing/data/repos/account_equity_snapshots.py:130` (shipped Phase 9 Sub-bundle C). The source-ladder (`schwab_api > tos_csv > manual`) is internal to that helper.
 
-**Per-surface application:**
-- §4.4 capital-friction: apply per `asof_date = today's NYSE session` (spec §3.4 calls it "point-in-time"). Use `swing.evaluation.action_session_for_run(datetime.now())` for today's session anchor.
-- §4.5 maturity-stage: apply per `asof_date = trade's most recent daily_management_records.review_date` (the snapshot anchor). Falls back to today if trade has no snapshot rows yet.
-- §4.6 identification-funnel: per-run capital aggregate uses `asof_date = pipeline_run.started_ts.date()`.
+**Per-surface application** (Codex R1 Major #3 fix — backward-looking anchor everywhere snapshot-related per §A.15 to avoid session-anchor read/write mismatch gotcha):
+
+- §4.4 capital-friction: apply per `asof_date = swing.evaluation.last_completed_session(datetime.now())` (BACKWARD-looking; aligns with snapshot writer's anchor per Phase 9 Sub-bundle C spec §A.9). The "point-in-time" gauge then reflects "the most recent completed session for which a snapshot could exist." Forward-looking `action_session_for_run` is REJECTED here because it would silently miss snapshots recorded on the most-recently-closed session during pre-market hours.
+- §4.5 maturity-stage: apply per `asof_date = last_completed_session(datetime.now())` for the ROW-LEVEL fallback denominator IF the trade has no `daily_management_records.review_date` snapshot yet; OTHERWISE use the trade's most recent `daily_management_records.review_date` (which is itself written via `last_completed_session` per Phase 8 spec §4.5 — same anchor family).
+- §4.6 identification-funnel: per-run capital aggregate uses `asof_date = pipeline_run.started_ts.date()` — exception case where the asof_date is the run's actual start timestamp, NOT a session helper. The snapshot lookup `get_latest_snapshot_on_or_before(asof_date)` then naturally returns the latest snapshot ≤ that timestamp's date. No session-anchor mismatch since asof_date IS the timestamp itself.
 
 **Badge-render rule** (per spec §4.9): the PROVISIONAL badge is a TEXT badge inline alongside the metric value, never color-only. Suppression text format for the provisional case: `"PROVISIONAL: $7,500 floor used as live-capital fallback (no snapshot ≤ {asof_date})"`. Lock in §I.4.
 
@@ -239,8 +279,23 @@ def render_class_c(
     *, value: float | None, n: int, n_wins: int, n_losses: int, policy: RiskPolicy, metric_name: str
 ) -> tuple[float | None, HonestyBadges] | SuppressedMetric: ...
 def render_class_d(
-    *, samples_in_window: list[float], window_n: int, policy: RiskPolicy, metric_name: str
-) -> tuple[float | None, HonestyBadges, str] | SuppressedMetric: ...  # third str = "rolling line drawable" / "show points only"
+    *,
+    samples_in_window: list[float],
+    window_n: int,
+    policy: RiskPolicy,
+    metric_name: str,
+    underlying_class: Literal["A", "B", "C", "point"],
+    wins_in_window: int | None = None,   # required when underlying_class == "A" or "C"
+    losses_in_window: int | None = None,  # required when underlying_class == "C"
+) -> tuple[WilsonCI | BootstrapCI | float | None, HonestyBadges, str] | SuppressedMetric:
+    """Per §A.21: VALUE slot shape depends on underlying_class:
+       - "A" → WilsonCI (rate metric in window, e.g., disqualifying_violation_rate_rolling_N)
+       - "B" → BootstrapCI (mean metric in window, e.g., process_grade_rolling_N)
+       - "C" → float | None (ratio metric; suppress without diversity)
+       - "point" → float | None (sum-only metric, e.g., mistake_cost_R_rolling_N_total)
+       Third str = "rolling line drawable" / "show points only" per spec §5.4 cadence-vs-confidence decoupling.
+    """
+    ...
 ```
 
 **Dataclass `__post_init__` validators** (per Phase 9 forward-binding lesson §0.3 #1): `WilsonCI.__post_init__` rejects NaN/inf on point/lower/upper + asserts `lower ≤ point ≤ upper`. `BootstrapCI.__post_init__` same + asserts `resample_count ≥ 1`. `SuppressedMetric.__post_init__` asserts `n ≥ 0` AND `n_required ≥ 1`.
@@ -291,6 +346,24 @@ Spec §3.2 currently surfaces `latest_status_change_metadata` as "single most-re
 **Phase 10 V1 SUPERSEDES the spec §3.2 V1-limitation** per dispatch brief §0.5 §11.3 default. Surface §4.2 hypothesis-progress card renders FULL transition timeline as a small inline `<ol>` ordered by `effective_from DESC`, capped at the last 5 transitions per cohort (V1 cap; UI brevity). Prior transitions accessible via a per-cohort drill-down `GET /metrics/hypothesis-progress/{hypothesis_id}/history` (V2 candidate; defer if not needed at gate time).
 
 **Spec amendment pending V2.1 §VII.F routing:** banked at return report §6 — the spec text needs an amendment removing the V1-limitation note since the consumer-side gap is closed. Same supersession-recon pattern as Phase 9 Sub-bundle D §7 (sector_industry anchor) + Sub-bundle E §6.2 (multi-line parser).
+
+### §A.11.1 Cohort-temporal-filter inclusion policy for paused intervals (Codex R1 Major #4 fix)
+
+`hypothesis_status_history` (Phase 9 Sub-bundle C) records cohort transitions through `active → paused → active → closed-escaped/closed-target-met`. Phase 10 cohort metrics aggregate trades labeled with the cohort's name regardless of when the cohort was paused. Spec §3.2 + §4.2 + §3.3 + §3.7 are SILENT on whether trades stamped during a paused interval should count toward cohort metrics.
+
+**Locked V1 policy** (binding for Tasks B.1 + B.4 + C.1 + C.2 + C.3): include ALL trades labeled with the cohort regardless of cohort status at trade-time. Rationale:
+
+1. The trade carries the operator's INTENT-at-entry — by stamping the cohort on `trades.hypothesis_label`, the operator declared "this trade belongs to this cohort." Pausing the cohort thereafter does not retroactively un-classify trades.
+2. The status-change event is a GOVERNANCE signal (operator's decision to pause investigation) — it is NOT a measurement-validity signal.
+3. Excluding paused-period trades would silently shrink cohort sample sizes + change CI computations + change tripwire-distance + create an attack surface for cohort-game-by-pausing.
+
+**V2 candidate** (banked, NOT V1 scope): operator-elective per-cohort filter "Exclude trades stamped during paused intervals" — useful for the §0.4 §11.2 (c) "exclude unresolved discrepancies" filter family. Both filters share the same UI shape: a per-cohort toggle on the §4.1 trade-process card surface. Defer.
+
+**Discriminating tests** (binding in Task B.1):
+- `test_cohort_metrics_include_trades_during_paused_interval`: seed cohort with status history active@t0 → paused@t1 → active@t2; seed trade stamped at `pre_trade_locked_at=t1.5` (during paused interval); assert trade IS in cohort_n_closed + contributes to expectancy_R + counts toward consecutive_loss_run.
+- `test_hypothesis_progress_card_renders_paused_status_history_alongside_metrics`: timeline shows the active→paused→active transitions; metric cells reflect ALL trades.
+
+**Spec lock**: this is an EXPLICIT V1 policy choice, NOT a spec amendment — spec §3.2 + §3.3 + §3.7 are silent on the question. Document in plan §A as the locked V1 disposition; if operator at integration triage prefers paused-period exclusion, plan §A revises before Sub-bundle B dispatch.
 
 ### §A.12 Test fixture USERPROFILE+HOME monkeypatch — applies IFF write-side scope added
 
@@ -356,33 +429,41 @@ Phase 10 Sub-bundle E adds a global "N unresolved material discrepancies" badge 
 
 ### §A.19 Spec §3.4 `risk_feasibility_blocked_rate` computation (criterion-table query)
 
-Spec §3.4 metric definition: `count(candidates with risk_feasibility=False) / count(candidates with all_other_criteria=True) per pipeline run`. The denominator is the subtle part: "candidates with all OTHER criteria True" (i.e., they would have qualified except for risk_feasibility).
+Spec §3.4 metric definition: `count(candidates with risk_feasibility=False) / count(candidates with all_other_criteria=True) per pipeline run`. The metric measures "of the candidates that would have qualified except for risk_feasibility, what fraction were blocked by risk_feasibility?" — both numerator AND denominator MUST share the "all OTHER criteria pass" predicate; otherwise candidates failing risk_feasibility AND additional criteria inflate the numerator + the rate exceeds 100%.
+
+**Locked Codex R1 Major #1 fix:** numerator restricted to "fails risk_feasibility AND all other criteria pass" — matches spec semantics + bounds the rate to [0, 1].
 
 **Implementation pattern** (locked in `swing/metrics/capital.py`):
 
 ```sql
--- numerator: candidates per run that failed risk_feasibility
-SELECT cr.candidate_id
-FROM criterion_results cr
-JOIN candidates c ON c.id = cr.candidate_id
-WHERE c.evaluation_run_id = :run_id
-  AND cr.criterion_name = 'risk_feasibility'
-  AND cr.result = 'fail'
-
 -- denominator: candidates per run where ALL criteria except risk_feasibility passed
--- (equivalently: candidate has zero failing criteria EXCEPT risk_feasibility)
-SELECT c.id
-FROM candidates c
-WHERE c.evaluation_run_id = :run_id
-  AND NOT EXISTS (
-    SELECT 1 FROM criterion_results cr2
-    WHERE cr2.candidate_id = c.id
-      AND cr2.criterion_name <> 'risk_feasibility'
-      AND cr2.result = 'fail'
-  )
+-- (equivalently: candidate has zero failing criteria EXCEPT risk_feasibility — risk_feasibility itself
+--  may pass OR fail; both states qualify the candidate as "would-have-qualified-except-for-risk")
+WITH would_have_qualified_except_risk AS (
+  SELECT c.id AS candidate_id
+  FROM candidates c
+  WHERE c.evaluation_run_id = :run_id
+    AND NOT EXISTS (
+      SELECT 1 FROM criterion_results cr2
+      WHERE cr2.candidate_id = c.id
+        AND cr2.criterion_name <> :risk_feasibility_name
+        AND cr2.result = 'fail'
+    )
+)
+-- numerator: candidates in the would-have-qualified set that ALSO fail risk_feasibility
+SELECT
+  (SELECT COUNT(*) FROM would_have_qualified_except_risk w
+     JOIN criterion_results cr ON cr.candidate_id = w.candidate_id
+     WHERE cr.criterion_name = :risk_feasibility_name AND cr.result = 'fail') AS numerator,
+  (SELECT COUNT(*) FROM would_have_qualified_except_risk) AS denominator
 ```
 
-`risk_feasibility` criterion name source: `swing/evaluation/criteria/risk_feasibility.py:7:NAME = "risk_feasibility"`. Lock the constant import in `swing/metrics/capital.py` to avoid string-literal drift.
+`:risk_feasibility_name` parameter sourced from `from swing.evaluation.criteria.risk_feasibility import NAME` to avoid string-literal drift.
+
+**Discriminating tests** (binding in Task D.1):
+- `test_risk_feasibility_blocked_rate_excludes_candidates_failing_other_criteria`: seed candidate that fails risk_feasibility AND fails MA-stack → NOT in numerator; rate stays bounded.
+- `test_risk_feasibility_blocked_rate_at_most_1`: every candidate either fails risk_feasibility (and nothing else) or passes risk_feasibility (and nothing else) → rate ∈ [0, 1].
+- `test_risk_feasibility_blocked_rate_at_zero_qualifying_returns_suppressed`: zero candidates would-have-qualified → return suppressed text "N/A — 0 would-have-qualified candidates this run" (NOT 0/0 = NaN).
 
 ### §A.20 Spec §3.6 `aplus_take_rate_per_run` denominator (zero-A+ runs)
 
@@ -390,13 +471,43 @@ Spec §3.6 `aplus_take_rate_per_run = aplus_trades_taken_per_run / aplus_identif
 
 Same handling for `watch_take_rate_per_run`.
 
-### §A.21 Spec §3.8 `mistake_cost_R_rolling_N_total` Class assignment
+### §A.21 Spec §3.8 rolling metric Class assignments (Codex R1 Major #6 fix — match spec §5.2 verbatim)
 
-Spec §3.8 lists 7 rolling metrics; spec §5.4 Class D applies to "rolling-window metrics". Per spec §5.4 dispatcher signature: each rolling metric per spec §3.8 inherits Class D — but `mistake_cost_R_rolling_N_total` (a SUM not a MEAN) is a quantity-bucket Class B per spec §5.2 framing of "mean / sum-over-fixed-denominator". Spec §5.7 cross-check ("every metric in §3 has a class assignment per §5.1–§5.4") implies all §3.8 metrics share Class D for window-fullness AND inherit Class B for confidence-floor warning on the per-window value.
+Spec §3.8 lists 7 rolling metrics; spec §5.4 Class D applies to "rolling-window metrics" (window-fullness badge + per-trade-points-always). Spec §5.2 Class B explicitly lists `mistake_cost_R_rolling_N_per_trade` in its applies-to roster ("mean / sum-over-fixed-denominator metrics"). The two classes are NOT mutually exclusive — Class D governs LINE rendering (drawability gating on window-fullness); Class B governs VALUE CI rendering (bootstrap CI on the window's samples for the per-window mean value).
 
-**Phase 10 lock:** for `mistake_cost_R_rolling_N_total` and `mistake_cost_R_rolling_N_per_trade`, use Class D rendering (window-fullness badge + per-trade-points-always) but the value display has NO bootstrap CI (sums + means inside a small window are shown as point estimates; bootstrap on n=10 is misleading anyway). Confidence-floor badge per Class D.
+**Phase 10 lock — spec-conformant (NOT spec-amendment):**
 
-**Subagent guidance:** when Sub-bundle E task implements §3.8 metrics, treat "rolling-window display" as the single discipline; the Class A/B/C taxonomy applies to the underlying aggregate WHEN AGGREGATED OVER THE FULL CLOSED-TRADE COHORT, not over the rolling window. The rolling-window view is a Class D view of underlying cohort metrics.
+| §3.8 metric | Class D rendering (line) | Class B CI rendering (value) |
+|---|---|---|
+| `process_grade_rolling_N` | rolling line + window-fullness/confidence-floor badges per §5.4 | bootstrap CI on the per-window mean per §5.2 |
+| `entry_grade_rolling_N` | same | bootstrap CI on per-window mean |
+| `management_grade_rolling_N` | same | bootstrap CI on per-window mean |
+| `exit_grade_rolling_N` | same | bootstrap CI on per-window mean |
+| `disqualifying_violation_rate_rolling_N` | rolling line per §5.4 | Wilson CI on window's k/n per §5.1 Class A (rate metric, not mean) |
+| `mistake_cost_R_rolling_N_total` | rolling line per §5.4 | point estimate ONLY (sum, not mean — §5.2 framing of "sum-over-fixed-denominator" doesn't yield a bootstrap CI on a window sum; alternative point estimate is the V1 honest rendering) — this is the ONE deliberate spec-conformance deviation, banked as a V2.1 §VII.F amendment candidate at return report §6 |
+| `mistake_cost_R_rolling_N_per_trade` | rolling line per §5.4 | bootstrap CI on per-window mean per §5.2 |
+
+**Bootstrap on small windows (N=10) yields wide intervals — that is the HONEST signal.** Spec §5 R3 M2 lock decouples window-fullness from confidence-floor for exactly this reason: a 10-trade window CAN draw a line (cadence signal); the confidence-floor warning persists until effective_n ≥ 20 (statistical signal); the bootstrap CI conveys interval width at the current effective_n.
+
+**`honesty.py:render_class_d` extension** (binding for Task A.1 + Task E.1): the 3-tuple return shape (value, badges, drawability_text) per §A.7 is preserved; the VALUE field carries either `BootstrapCI` (when Class B CI applies) OR `WilsonCI` (when Class A applies) OR `float | None` (when only point estimate per `mistake_cost_R_rolling_N_total` exception). Updated `render_class_d` signature per §A.7:
+
+```python
+def render_class_d(
+    *, samples_in_window: list[float], window_n: int, policy: RiskPolicy, metric_name: str,
+    underlying_class: Literal["A", "B", "C", "point"],
+    wins_in_window: int | None = None,  # Class A only
+    losses_in_window: int | None = None,  # Class C only
+) -> ... # 3-tuple with VALUE in shape per underlying_class
+```
+
+**Discriminating tests** (binding in Task A.1 + Task E.1):
+- `test_render_class_d_with_underlying_b_returns_bootstrap_ci_in_value_slot`.
+- `test_render_class_d_with_underlying_a_returns_wilson_ci_in_value_slot`.
+- `test_render_class_d_with_underlying_point_returns_float_in_value_slot`.
+- `test_mistake_cost_R_rolling_N_per_trade_renders_with_bootstrap_ci`: assert BootstrapCI returned in value slot.
+- `test_mistake_cost_R_rolling_N_total_renders_point_only`: assert float returned (no CI).
+
+**Banked as V2.1 §VII.F amendment candidate at return report §6:** the spec §3.8 + §5.2 mapping for `mistake_cost_R_rolling_N_total` (sum-class with bootstrap CI) is ambiguous — V1 renders as point-only; operator may revise.
 
 ### §A.22 Test count + ruff baseline (worktree-side)
 
@@ -981,7 +1092,8 @@ git commit -m "feat(metrics): scaffold swing/metrics module skeleton (Phase 10 S
 - `test_vm_renders_4_cohorts_always`: even with 0 trades.
 - `test_vm_progress_pct_at_zero_trades_is_0_pct`.
 - `test_vm_consecutive_loss_run_at_zero_trades_is_0`.
-- `test_vm_cumulative_R_uses_7500_constant_denominator`: seed trade with realized R = -0.5, planned_risk_budget_dollars=$100; assert cumulative_R_pct_of_capital = -50/7500 = -0.667%.
+- `test_vm_cumulative_R_uses_per_trade_at_trade_time_capital_floor`: seed 2 trades — trade A stamped under policy_id=1 (capital_floor=$7500) with realized P&L -$50; trade B stamped under policy_id=2 (capital_floor=$10000) with realized P&L -$100. Supersede to active policy_id=3 (capital_floor=$5000). Assert cumulative_R_pct_of_capital = -50/7500 + -100/10000 = -0.667% + -1.000% = -1.667% (NOT -150/5000 = -3.000% from naive live-policy aggregation, NOT -150/8750 = -1.714% from average-policy aggregation). Discriminating against both alternative implementations.
+- `test_vm_cumulative_R_pre_phase9_legacy_trade_uses_live_floor_with_annotation`: seed trade with risk_policy_id_at_lock=NULL; assert per-trade contribution uses LIVE policy floor + annotation flag is set (per §A.5 fallback rule).
 - `test_vm_distance_to_loss_tripwire_decrements_per_loss`: seed cohort with consecutive_loss_tripwire=3 + 2 consecutive losses; assert distance=1.
 - `test_vm_transition_timeline_renders_full_history_capped_5`: seed 7 history rows; assert returns latest 5.
 - `test_vm_decision_criteria_renders_seed_text_verbatim`: per Task B.0 recon doc.
@@ -989,7 +1101,7 @@ git commit -m "feat(metrics): scaffold swing/metrics module skeleton (Phase 10 S
 **Suggested commit shape:** `feat(metrics): §3.2 hypothesis-progress card VM (T-B.4)`
 
 **Watch items:**
-- Per §A.5: governance metrics use AT-TRADE-TIME `capital_floor_constant_dollars`. For cohort-aggregate metrics (cumulative R), this means the denominator can vary if trades in the cohort were stamped under different policies. V1 lock: use the AVERAGE of at-trade-time capital_floor across the cohort's trades, OR pin to LIVE policy's capital_floor for cohort-aggregate (operator-decision; default per spec §1.3 pre-registration discipline + §A.5: use LIVE policy's `capital_floor_constant_dollars` for cohort-aggregate denominator since aggregation is governance-time, NOT trade-time). Lock decision in this task; document in plan §A revision if Codex disputes.
+- Per §A.5 + §A.5.1 (Codex R1 Major #2 fix): governance metrics use AT-TRADE-TIME `capital_floor_constant_dollars`. For cohort-aggregate `cumulative_R_pct_of_capital`, compute as `sum(per_trade.realized_pnl_dollars / per_trade.at_trade_time_capital_floor)` — per-trade contribution divided by ITS at-trade-time floor, then summed. NEVER average policies across trades + NEVER pin to LIVE policy. This preserves historical-trade interpretation under capital-floor supersession (per spec §1.3 pre-registration discipline). Discriminating test required — see §A.5.1 lock + Task B.4 acceptance below.
 - Per §A.11: full transition history supersedes spec §3.2 V1-limitation note. Spec amendment pending V2.1 §VII.F.
 
 ### Task B.5: Hypothesis-progress card route + template
@@ -1245,7 +1357,8 @@ Document findings in recon notes.
 
 **Acceptance criteria:**
 - Function `compute_identification_funnel(conn, *, run_window: int = 30) -> IdentificationFunnelResult` returns per-run aggregates + 30-day rolling trend.
-- Per-run: aplus_identifications_per_run / aplus_trades_taken_per_run / aplus_take_rate_per_run / watch_identifications_per_run / watch_trades_taken_per_run / watch_take_rate_per_run.
+- Per-run (spec §3.6 verbatim): aplus_identifications_per_run / aplus_trades_taken_per_run / aplus_take_rate_per_run / watch_identifications_per_run / watch_trades_taken_per_run.
+- Codex R1 Minor #2 lock: spec §3.6 does NOT define `watch_take_rate_per_run`. V1 surfaces watch identifications + watch taken counts ONLY; NO derived watch_take_rate. If operator wants symmetric watch take-rate at integration triage, plan §A revises before Sub-bundle D dispatch. (Banked as V2 candidate at return report §6.)
 - aplus_take_rate_per_run zero-denominator handling per §A.20 (suppressed text "N/A — 0 A+ identifications this run").
 - 30-trading-day trend computed via `swing.evaluation.action_session_for_run` family (NYSE session calendar).
 - Per spec §4.6: trend suppressed at <10 runs.
@@ -1520,32 +1633,216 @@ Every spec §3 metric + §4 surface + §5 honesty class + §6 capture-need is ma
 | §8 open questions | Disposed per §A.4. |
 | §9 phasing | Phase 10 consumes Phase 8 + Phase 9 capture; locked per §A.0. |
 
-### §J.2 Grep-verification commands (executing-plans dispatch acceptance gate)
+### §J.1.1 Per-metric coverage matrix (Codex R1 Minor #1 fix)
 
-```bash
-# Verify ZERO new schema
-ls swing/data/migrations/0018_*.sql 2>/dev/null && echo "FAIL: unexpected migration" || echo "OK: no new migration"
-python -c "from swing.data.db import EXPECTED_SCHEMA_VERSION; assert EXPECTED_SCHEMA_VERSION == 17, EXPECTED_SCHEMA_VERSION"
+The §J.1 section-level matrix above is supplemented here with a per-metric mapping. Catches missed individual metrics like `giveback_R_winner_to_loser` or `latest_status_change_metadata`.
 
-# Verify module placement
-ls swing/metrics/__init__.py
-ls swing/web/view_models/metrics/__init__.py
-ls swing/web/routes/metrics.py
-ls swing/web/templates/metrics/
+**§3.1 trade-process (22 metrics):**
 
-# Verify no INSERT OR REPLACE in new code
-grep -rn "INSERT OR REPLACE\|REPLACE INTO" swing/metrics/ swing/web/view_models/metrics/ swing/web/routes/metrics.py | tee /tmp/replace-check
-# expected: empty
+| Metric | Honesty class (per Task B.1 matrix) | Surface | Task |
+|---|---|---|---|
+| realized_R | B | §4.1 | B.1+B.2+B.3 |
+| gross_realized_R | B | §4.1 | B.1+B.2+B.3 |
+| expectancy_R | B | §4.1 | B.1+B.2+B.3 |
+| win_rate | A | §4.1 | B.1+B.2+B.3 |
+| loss_rate | A | §4.1 | B.1+B.2+B.3 |
+| scratch_rate | A | §4.1 | B.1+B.2+B.3 |
+| avg_win_R | B | §4.1 | B.1+B.2+B.3 |
+| avg_loss_R | B | §4.1 | B.1+B.2+B.3 |
+| profit_factor | C | §4.1 | B.1+B.2+B.3 |
+| payoff_ratio | C | §4.1 | B.1+B.2+B.3 |
+| MFE_R (closed) | B | §4.1 | B.1+B.2+B.3 |
+| MAE_R (closed) | B | §4.1 | B.1+B.2+B.3 |
+| capture_ratio | B | §4.1 | B.1+B.2+B.3 |
+| giveback_R_winner | B | §4.1 | B.1+B.2+B.3 |
+| giveback_R_winner_to_loser | B | §4.1 | B.1+B.2+B.3 |
+| entry_adverse_slippage_R | B | §4.1 | B.1+B.2+B.3 |
+| mistake_cost_R (cohort sum) | B | §4.1 | B.1+B.2+B.3 |
+| lucky_violation_R (cohort sum) | B | §4.1 | B.1+B.2+B.3 |
+| process_grade (distribution) | A per-grade | §4.1 | B.1+B.2+B.3 |
+| disqualifying_process_violation_rate | A | §4.1 | B.1+B.2+B.3 |
+| holding_period_days | B | §4.1 | B.1+B.2+B.3 |
+| mistake_tag_frequency | A per-tag | §4.1 | B.1+B.2+B.3 |
 
-# Verify base-layout VM coverage regression
-python -m pytest tests/web/test_view_models/test_base_layout_vm_coverage.py -v
+**§3.2 per-cohort governance (10 metrics):**
 
-# Verify per-bundle integration tests
-python -m pytest tests/integration/test_phase10_*.py -v
+| Metric | Class | Surface | Task |
+|---|---|---|---|
+| cohort_n_closed | (governance — no class) | §4.2 | B.4+B.5 |
+| cohort_progress_pct | (governance) | §4.2 | B.4+B.5 |
+| cohort_expectancy_R | B | §4.1 + §4.2 | B.1+B.4 |
+| consecutive_loss_run | (governance) | §4.2 | B.4+B.5 |
+| distance_to_loss_tripwire | (governance) | §4.2 | B.4+B.5 |
+| cumulative_R_pct_of_capital | (governance — per §A.5.1 lock) | §4.2 | B.4+B.5 |
+| distance_to_absolute_loss_tripwire | (governance — inherits §A.5.1 lock) | §4.2 | B.4+B.5 |
+| cohort_status | (passthrough) | §4.2 | B.4+B.5 |
+| decision_criteria_evaluation | (rendered text) | §4.2 + §4.7 | B.4+B.5+C.1 |
+| latest_status_change_metadata | (rendered timeline per §A.11) | §4.2 | B.4+B.5 |
 
-# Verify ruff baseline UNCHANGED
-ruff check swing/ 2>&1 | tail -1  # expect "Found 18 errors."
+**§3.3 tier-comparison (4 metrics):**
+
+| Metric | Class | Surface | Task |
+|---|---|---|---|
+| cohort_win_rate_with_CI | A | §4.3 | C.1+C.2 |
+| cohort_expectancy_with_CI | B | §4.3 | C.1+C.2 |
+| cohort_relative_to_aplus | B (relative) | §4.3 | C.1+C.2 |
+| cohort_ci_overlap_descriptor | TEXT (no class; per spec §3.3 R1 M3) | §4.3 | C.1+C.2 |
+
+**§3.4 capital-friction (6 metrics):**
+
+| Metric | Class | Surface | Task |
+|---|---|---|---|
+| risk_feasibility_blocked_rate | A (per spec §A.19 fix) | §4.4 | D.1+D.2 |
+| current_capital_utilization_pct | (PROVISIONAL/LIVE point-in-time per §A.6) | §4.4 | D.1+D.2 |
+| current_portfolio_heat_pct | (PROVISIONAL/LIVE) | §4.4 | D.1+D.2 |
+| capital_cycle_time_days | B | §4.4 | D.1+D.2 |
+| concurrent_open_positions | (count; no class) | §4.4 | D.1+D.2 |
+| capital_feasibility_pressure_index | (composite; inherits PROVISIONAL) | §4.4 | D.1+D.2 |
+
+**§3.5 maturity-stage (6 metrics):**
+
+| Metric | Class | Surface | Task |
+|---|---|---|---|
+| maturity_stage | (per-position enum; no class) | §4.5 | D.3+D.4 |
+| open_MFE_R_to_date | (per-position; no class) | §4.5 | D.3+D.4 |
+| open_MAE_R_to_date | (per-position; no class) | §4.5 | D.3+D.4 |
+| trail_MA_eligibility_flag | (per-position boolean; no class) | §4.5 | D.3+D.4 |
+| position_capital_utilization_pct | (PROVISIONAL/LIVE per-position) | §4.5 | D.3+D.4 |
+| position_portfolio_heat_contribution_dollars | (per-position; no class) | §4.5 | D.3+D.4 |
+
+**§3.6 identification-vs-trade-funnel (6 metrics):**
+
+| Metric | Class | Surface | Task |
+|---|---|---|---|
+| aplus_identifications_per_run | (per-run count; spec §5.5 special case) | §4.6 | D.5+D.6 |
+| aplus_trades_taken_per_run | (per-run count) | §4.6 | D.5+D.6 |
+| aplus_take_rate_per_run | A on trend; per-run as point | §4.6 | D.5+D.6 |
+| watch_identifications_per_run | (per-run count) | §4.6 | D.5+D.6 |
+| watch_trades_taken_per_run | (per-run count) | §4.6 | D.5+D.6 |
+| aplus_funnel_30d_trend | A on trend window | §4.6 | D.5+D.6 |
+
+**§3.7 deviation-outcome (3 metrics):**
+
+| Metric | Class | Surface | Task |
+|---|---|---|---|
+| cohort_doctrine_deviation_class | (rendered enum; no class) | §4.7 | C.1+C.3 |
+| cohort_expectancy_relative_to_aplus_pct | B | §4.7 | C.1+C.3 |
+| cohort_decision_criterion_evaluation_text | TEXT (per spec §3.7 R1 M4) | §4.7 | C.1+C.3 |
+
+**§3.8 process-grade-trend (7 metrics; per §A.21 Class assignments):**
+
+| Metric | Class D drawability | Underlying class | Surface | Task |
+|---|---|---|---|---|
+| process_grade_rolling_N | D | B (bootstrap CI) | §4.8 | E.1+E.2 |
+| entry_grade_rolling_N | D | B | §4.8 | E.1+E.2 |
+| management_grade_rolling_N | D | B | §4.8 | E.1+E.2 |
+| exit_grade_rolling_N | D | B | §4.8 | E.1+E.2 |
+| disqualifying_violation_rate_rolling_N | D | A (Wilson CI) | §4.8 | E.1+E.2 |
+| mistake_cost_R_rolling_N_total | D | point (per §A.21 V2.1 §VII.F amendment candidate) | §4.8 | E.1+E.2 |
+| mistake_cost_R_rolling_N_per_trade | D | B | §4.8 | E.1+E.2 |
+
+**Total: 64 individual metrics across §3.1–§3.8.** Every metric mapped to a class assignment + a surface + a task. §3.9 deferred metrics (9 entries) are NOT in V1 scope per spec §3.9.
+
+### §J.2 Verification suite (cross-platform; executing-plans dispatch acceptance gate)
+
+Codex R1 Major #7 fix: prior version was Bash-only with `/dev/null`, `tail -1`, and narrow grep scope. Rewritten as Python invocations + project's standard tools (ruff, pytest) which are cross-platform native. Run from worktree root.
+
+```python
+# verify_phase10.py — runnable on Windows PowerShell, gitbash, or POSIX shell
+import pathlib, re, subprocess, sys
+
+ROOT = pathlib.Path(__file__).resolve().parent
+
+# 1. ZERO new migration
+unexpected = list((ROOT / "swing/data/migrations").glob("0018_*.sql"))
+assert not unexpected, f"FAIL: unexpected migration {unexpected}"
+
+# 2. EXPECTED_SCHEMA_VERSION still 17
+sys.path.insert(0, str(ROOT))
+from swing.data.db import EXPECTED_SCHEMA_VERSION
+assert EXPECTED_SCHEMA_VERSION == 17, EXPECTED_SCHEMA_VERSION
+
+# 3. Module placement
+required = [
+    "swing/metrics/__init__.py",
+    "swing/web/view_models/metrics/__init__.py",
+    "swing/web/routes/metrics.py",
+    "swing/web/templates/metrics/index.html.j2",
+]
+for p in required:
+    assert (ROOT / p).exists(), f"FAIL: missing {p}"
+
+# 4. NO INSERT OR REPLACE — broad scope across ALL Phase 10 modified + created files
+PHASE10_SCOPE = [
+    "swing/metrics",
+    "swing/web/view_models/metrics",
+    "swing/web/routes/metrics.py",
+    "swing/web/templates/metrics",
+    # MODIFIED shared files per §B (broaden per Codex R1 Major #7):
+    "swing/web/view_models/dashboard.py",
+    "swing/web/view_models/pipeline.py",
+    "swing/web/view_models/journal.py",
+    "swing/web/view_models/watchlist.py",
+    "swing/web/view_models/config.py",
+    "swing/web/view_models/error.py",
+    "swing/web/templates/base.html.j2",
+]
+pattern = re.compile(r"INSERT\s+OR\s+REPLACE|\bREPLACE\s+INTO\b", re.IGNORECASE)
+violations = []
+for scope in PHASE10_SCOPE:
+    target = ROOT / scope
+    paths = [target] if target.is_file() else target.rglob("*")
+    for p in paths:
+        if not p.is_file() or p.suffix not in (".py", ".sql", ".j2"):
+            continue
+        text = p.read_text(encoding="utf-8")
+        if pattern.search(text):
+            violations.append(str(p.relative_to(ROOT)))
+assert not violations, f"FAIL: INSERT OR REPLACE found in: {violations}"
+
+# 5. base-layout VM coverage regression test
+result = subprocess.run(
+    [sys.executable, "-m", "pytest",
+     "tests/web/test_view_models/test_base_layout_vm_coverage.py", "-v", "--tb=short"],
+    cwd=ROOT, capture_output=True, text=True,
+)
+assert result.returncode == 0, f"FAIL: base-layout VM coverage regression\n{result.stdout}\n{result.stderr}"
+
+# 6. Per-bundle integration tests
+for bundle in ("a", "b", "c", "d", "e"):
+    test_file = ROOT / f"tests/integration/test_phase10_bundle_{bundle}_e2e.py"
+    if test_file.exists():
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", str(test_file), "-v", "--tb=short"],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"FAIL: bundle {bundle} E2E\n{result.stdout}\n{result.stderr}"
+
+# 7. Combined Phase 10 E2E
+combined = ROOT / "tests/integration/test_phase10_metrics_e2e.py"
+if combined.exists():
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", str(combined), "-v", "--tb=short"],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, f"FAIL: combined E2E\n{result.stdout}\n{result.stderr}"
+
+# 8. Ruff baseline still 18 (E501 only)
+result = subprocess.run(
+    ["ruff", "check", "swing/"], cwd=ROOT, capture_output=True, text=True,
+)
+# ruff exits 1 when issues found; that's expected at baseline 18
+match = re.search(r"Found (\d+) errors?\.", result.stdout + result.stderr)
+assert match is not None, f"FAIL: ruff output not parseable: {result.stdout}\n{result.stderr}"
+count = int(match.group(1))
+assert count == 18, f"FAIL: ruff baseline drift {count} != 18"
+
+print("OK: Phase 10 verification suite passed")
 ```
+
+Save as `verify_phase10.py` at worktree root + invoke `python verify_phase10.py` at end of each sub-bundle dispatch as the executing-plans inline gate. The Phase 10 SUB-BUNDLE-A integration sweep task (T-A.9) lands this script; subsequent sub-bundles inherit it unchanged.
+
+Why not native PowerShell or Bash: pytest + ruff + the schema-version Python import are the cross-platform load-bearing checks; wrapping them in a single Python script avoids shell-syntax-divergence + allows the `INSERT OR REPLACE` regex to span all Phase 10 scope files (including SHARED files modified per §B which Bash-grep with hardcoded `swing/metrics/` paths would miss — Codex R1 Major #7 specific catch).
 
 ### §J.3 Test count projection
 
