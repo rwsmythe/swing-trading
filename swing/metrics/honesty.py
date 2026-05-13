@@ -111,6 +111,11 @@ class SuppressedMetric:
 class HonestyBadges:
     confidence_floor_warning: bool   # spec §5 — visible when n < global_confidence_floor_n
     low_confidence_warning: bool     # spec §5 — visible when 3 <= n < 5
+    # Codex R1 Major #1 fix: spec §5.4 specifies a "rolling window not yet
+    # at N" badge for Class D when 5 <= effective_n < N. Defaults False
+    # for Class A/B/C (where the concept doesn't apply); render_class_d
+    # populates True in the partial-window band.
+    window_not_full_warning: bool = False
 
 
 class HonestyClass(StrEnum):
@@ -298,17 +303,32 @@ def suppress_for_n(
 # Per-class render dispatchers
 # ---------------------------------------------------------------------------
 
-def _badges_for_n(*, n: int, policy: RiskPolicy) -> HonestyBadges:
+def badges_for_n(*, n: int, policy: RiskPolicy) -> HonestyBadges:
     """Confidence-floor badge composition per spec §5 decoupling discipline.
 
     - ``low_confidence_warning`` = True when 3 <= n < 5 (point-with-warning band).
     - ``confidence_floor_warning`` = True when n < ``global_confidence_floor_n``
       (CI rendered but interval too wide to be a headline).
+    - ``window_not_full_warning`` = False (only Class D populates True via
+      :func:`render_class_d` in the partial-window band).
+
+    Public per Codex R1 Minor #1: downstream view-model layers in
+    Sub-bundles B/C/D need a shared badge-composition helper so badge
+    rules can't drift across surfaces. Re-exported via this module's
+    public surface; the same callable serves render_class_a/b/c/d
+    internally.
     """
     return HonestyBadges(
         confidence_floor_warning=n < int(policy.global_confidence_floor_n),
         low_confidence_warning=3 <= n < 5,
     )
+
+
+# Backward-compat private alias preserved for any in-tree callers that
+# referenced the original name during Sub-bundle A landing; remove in V2
+# once all callers migrate. Discriminating test in T-A.1 covers public
+# `badges_for_n`.
+_badges_for_n = badges_for_n
 
 
 def render_class_a(
@@ -435,19 +455,29 @@ def render_class_d(
         mistake_cost_R_rolling_N_total).
 
     ``drawability_text`` is one of:
-      - "rolling line drawable" — line should be rendered.
-      - "show points only" — line suppressed; per-trade markers only.
+      - "rolling line drawable" — line should be rendered (effective_n >= 5).
+      - "show points only" — line suppressed; per-trade markers only
+        (effective_n < 5; this branch returns SuppressedMetric, not the
+        3-tuple, so callers receiving the tuple always get
+        "rolling line drawable").
 
-    Cadence vs confidence decoupling (spec §5.4):
-      - effective_n < ``CLASS_D_LINE_DRAW_FLOOR`` (5) → SuppressedMetric for
-        the per-window VALUE (line suppressed; per-trade markers always
-        shown at the template layer).
-      - effective_n >= 5 → value rendered + ``HonestyBadges``:
-        - ``confidence_floor_warning`` True when effective_n <
-          ``global_confidence_floor_n``;
-        - ``low_confidence_warning`` True when 3 <= effective_n < 5
-          (unreachable here since suppression hits at <5; left True-able
-          per the badge contract for completeness).
+    Cadence vs confidence decoupling (spec §5.4, four bands):
+      - effective_n < 5 → SuppressedMetric (line absent; markers visible at
+        template layer).
+      - 5 <= effective_n < N → 3-tuple with line drawable +
+        ``window_not_full_warning=True`` (spec "rolling window not yet at N"
+        badge) + ``confidence_floor_warning=True``.
+      - N <= effective_n < global_confidence_floor_n → 3-tuple with line
+        drawable + ``window_not_full_warning=False`` +
+        ``confidence_floor_warning=True``.
+      - effective_n >= global_confidence_floor_n → 3-tuple with line drawable
+        + all warning badges False.
+
+    Codex R1 Major #1 fix: the prior implementation suppressed
+    drawability_text to "show points only" in the 5<=effective_n<N band,
+    contradicting spec §5.4 (line MUST be drawable from effective_n>=5).
+    The fix preserves the §A.7 3-tuple shape; the "rolling window not yet
+    at N" cadence signal moved to ``HonestyBadges.window_not_full_warning``.
     """
     if underlying_class not in {"A", "B", "C", "point"}:
         raise ValueError(
@@ -467,10 +497,15 @@ def render_class_d(
             ),
         )
 
-    badges = _badges_for_n(n=effective_n, policy=policy)
-    drawability_text = (
-        "rolling line drawable" if effective_n >= window_n else "show points only"
+    base_badges = badges_for_n(n=effective_n, policy=policy)
+    badges = HonestyBadges(
+        confidence_floor_warning=base_badges.confidence_floor_warning,
+        low_confidence_warning=base_badges.low_confidence_warning,
+        window_not_full_warning=effective_n < window_n,
     )
+    # Spec §5.4: once effective_n >= 5 the rolling line IS drawable; the
+    # "window not yet at N" state is conveyed via the badges field.
+    drawability_text = "rolling line drawable"
 
     value: WilsonCI | BootstrapCI | float | None
     if underlying_class == "A":
@@ -517,6 +552,11 @@ def render_class_d(
         # raw sum (NOT mean) so the §4.8 secondary-axis surface renders the
         # mistake-cost trajectory honestly. V2.1 §VII.F amendment candidate
         # may add a sum-class with bootstrap CI on the window sum.
+        # Codex R1 Minor #2 fix: validate samples are finite before summing
+        # so NaN/inf in a window can't silently propagate through to a
+        # rendered point value.
+        for i, x in enumerate(samples_in_window):
+            _check_finite(f"samples_in_window[{i}]", float(x))
         value = float(sum(samples_in_window))
 
     return (value, badges, drawability_text)

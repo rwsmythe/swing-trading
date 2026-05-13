@@ -365,8 +365,17 @@ def test_render_class_d_effective_n_below_5_suppressed(spec_default_policy):
     assert result.n_required == 5
 
 
-def test_render_class_d_underlying_b_at_5_returns_show_points_only(spec_default_policy):
-    """effective_n=5 + window_n=10 → drawability 'show points only' (window not full)."""
+def test_render_class_d_underlying_b_at_5_line_drawable_partial_window(
+    spec_default_policy,
+):
+    """effective_n=5 + window_n=10 → drawability 'rolling line drawable'
+    + window_not_full_warning=True (spec §5.4 second band: 5<=eff<N).
+
+    Codex R1 Major #1 regression: prior implementation suppressed
+    drawability_text to 'show points only' in this band, contradicting
+    the spec's "Render rolling line + window-narrowing badge" requirement.
+    Discriminating test pins the spec-correct behavior.
+    """
     samples = [0.5, 0.6, 0.7, 0.8, 0.9]
     result = render_class_d(
         samples_in_window=samples,
@@ -378,12 +387,14 @@ def test_render_class_d_underlying_b_at_5_returns_show_points_only(spec_default_
     assert isinstance(result, tuple)
     value, badges, drawability = result
     assert isinstance(value, BootstrapCI)
-    assert drawability == "show points only"
+    assert drawability == "rolling line drawable"
+    assert badges.window_not_full_warning is True  # 5 < N=10
     assert badges.confidence_floor_warning is True  # 5 < 20
 
 
 def test_render_class_d_underlying_b_at_window_full_drawable(spec_default_policy):
-    """effective_n=window_n=10 → drawability 'rolling line drawable'."""
+    """effective_n=window_n=10 → drawability 'rolling line drawable',
+    window_not_full_warning=False, confidence_floor_warning=True (10<20)."""
     samples = [0.5] * 10
     result = render_class_d(
         samples_in_window=samples,
@@ -395,11 +406,13 @@ def test_render_class_d_underlying_b_at_window_full_drawable(spec_default_policy
     assert isinstance(result, tuple)
     _, badges, drawability = result
     assert drawability == "rolling line drawable"
+    assert badges.window_not_full_warning is False
     assert badges.confidence_floor_warning is True  # 10 < 20
 
 
 def test_render_class_d_underlying_b_above_global_floor_drops_warning(spec_default_policy):
-    """effective_n=20 → confidence_floor_warning dropped."""
+    """effective_n=20 → both window_not_full_warning AND
+    confidence_floor_warning dropped (spec §5.4 fourth band)."""
     samples = [0.5] * 20
     result = render_class_d(
         samples_in_window=samples,
@@ -411,6 +424,35 @@ def test_render_class_d_underlying_b_above_global_floor_drops_warning(spec_defau
     assert isinstance(result, tuple)
     _, badges, _ = result
     assert badges.confidence_floor_warning is False
+    assert badges.window_not_full_warning is False
+
+
+def test_render_class_d_point_branch_rejects_nan_sample(spec_default_policy):
+    """Codex R1 Minor #2: 'point' branch validates samples for NaN/inf.
+
+    Prior version would silently sum NaN into the rendered value; fix
+    surfaces ValueError before the sum.
+    """
+    samples = [0.1, float("nan"), 0.3, 0.4, 0.5]
+    with pytest.raises(ValueError, match="must be finite"):
+        render_class_d(
+            samples_in_window=samples,
+            window_n=10,
+            policy=spec_default_policy,
+            metric_name="mistake_cost_R_rolling_N_total",
+            underlying_class="point",
+        )
+
+
+def test_badges_for_n_is_public(spec_default_policy):
+    """Codex R1 Minor #1: shared badge helper is public so view-model
+    layers don't import a private helper or duplicate badge rules."""
+    from swing.metrics.honesty import badges_for_n
+
+    badges = badges_for_n(n=10, policy=spec_default_policy)
+    assert badges.confidence_floor_warning is True   # 10 < 20
+    assert badges.low_confidence_warning is False    # 10 not in [3, 5)
+    assert badges.window_not_full_warning is False   # default for non-D classes
 
 
 def test_render_class_d_underlying_a_returns_wilson_ci(spec_default_policy):
