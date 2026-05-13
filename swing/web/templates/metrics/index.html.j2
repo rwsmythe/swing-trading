@@ -1,0 +1,20 @@
+{% extends "base.html.j2" %}
+{% block content %}
+<section class="metrics-index">
+  <h1>Metrics dashboard</h1>
+  <p class="muted">
+    Phase 10 surfaces — per spec §4.1-§4.8. Per-surface routes light up
+    as Sub-bundles B/C/D/E ship.
+  </p>
+  <ul class="metrics-tiles">
+    {% for surface in vm.surfaces %}
+    <li class="metrics-tile">
+      <a href="{{ surface.path }}">
+        <h3>{{ surface.label }}</h3>
+        <p>{{ surface.description }}</p>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}
