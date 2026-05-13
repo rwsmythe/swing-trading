@@ -1485,6 +1485,7 @@ Document findings in recon notes.
 - `test_compute_funnel_zero_aplus_identifications_returns_suppressed_take_rate`.
 - `test_compute_funnel_trend_at_5_runs_suppressed`.
 - `test_compute_funnel_trend_at_10_runs_renders`.
+- `test_funnel_trend_30_sessions_inclusive_of_end` (Codex R5 Minor #1 / R6 Minor #1 list-mirror): seed 31 sessions of runs ending at `last_completed_session(now)`; assert the trend window contains only the most-recent 30 sessions (off-by-one defense).
 - `test_historical_funnel_uses_current_trade_state` (Codex R2 Major #4 / §A.0.1): seed run R1 + trade T1 with origin='pipeline_aplus' at R1's session; advance to R2; query for R1's `aplus_trades_taken_per_run` → assert T1 counted via current trade state (`pre_trade_locked_at` matches R1.session) NOT historical reconstruction.
 - (Codex R3 Major #2 fix: `test_historical_funnel_concurrent_open_at_run_uses_open_at_pre_trade_locked_at_only` MOVED to Task D.1 since `concurrent_open_positions` is a capital-friction metric, NOT a funnel metric.)
 
