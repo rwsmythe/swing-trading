@@ -441,14 +441,15 @@ Spec §3.4 metric definition: `count(candidates with risk_feasibility=False) / c
 
 **Locked Codex R1 Major #1 fix:** numerator restricted to "fails risk_feasibility AND all other criteria pass" — matches spec semantics + bounds the rate to [0, 1].
 
-**Implementation pattern** (locked in `swing/metrics/capital.py`; Codex R2 Major #3 fix — `na` is fail-equivalent for "all_other_criteria=True"):
+**Implementation pattern** (locked in `swing/metrics/capital.py`):
 
-The `criterion_results.result` enum is `('pass', 'fail', 'na')` per `swing/data/migrations/0001_phase1_initial.sql:52`. Spec §3.4 reads "all_other_criteria=True" — only `result='pass'` qualifies. Both `'fail'` and `'na'` disqualify a candidate from the would-have-qualified denominator.
+The `criterion_results.result` enum is `('pass', 'fail', 'na')` per `swing/data/migrations/0001_phase1_initial.sql:52`. Spec §3.4 reads "all_other_criteria=True" — only `result='pass'` qualifies. Both `'fail'` and `'na'` disqualify a candidate from the would-have-qualified denominator (Codex R2 Major #3 lock).
+
+**Codex R4 Major #3 lock — `risk_feasibility='na'` is "not assessed", excluded from BOTH sides:** a candidate with `risk_feasibility` result `'na'` is NOT a subject of the BLOCKED rate (the criterion was not evaluated, so we cannot say it was "blocked"). Filter denominator to candidates with `risk_feasibility` result in `('pass', 'fail')` ONLY.
 
 ```sql
--- denominator: candidates per run where ALL non-risk_feasibility criteria PASS
--- (Codex R2 Major #3: 'na' result is NOT 'pass' — must be excluded; the predicate
---  is "no non-risk criterion has result <> 'pass'", which excludes both 'fail' and 'na')
+-- denominator: candidates per run where (a) ALL non-risk_feasibility criteria PASS,
+-- AND (b) risk_feasibility itself is either 'pass' or 'fail' (NOT 'na' — Codex R4 Major #3).
 WITH would_have_qualified_except_risk AS (
   SELECT c.id AS candidate_id
   FROM candidates c
@@ -459,11 +460,15 @@ WITH would_have_qualified_except_risk AS (
         AND cr2.criterion_name <> :risk_feasibility_name
         AND cr2.result <> 'pass'
     )
+    AND EXISTS (
+      SELECT 1 FROM criterion_results cr3
+      WHERE cr3.candidate_id = c.id
+        AND cr3.criterion_name = :risk_feasibility_name
+        AND cr3.result IN ('pass', 'fail')
+    )
 )
--- numerator: candidates in the would-have-qualified set that ALSO fail risk_feasibility
--- (numerator uses 'fail' specifically since the metric measures BLOCKED-by-risk-feasibility;
---  a 'na' on risk_feasibility itself is not "blocked" — it's "not assessed";
---  na on risk_feasibility excludes the candidate from being a Subject of this metric.)
+-- numerator: candidates in the would-have-qualified-AND-risk-was-assessed set
+-- that fail risk_feasibility.
 SELECT
   (SELECT COUNT(*) FROM would_have_qualified_except_risk w
      JOIN criterion_results cr ON cr.candidate_id = w.candidate_id
@@ -478,12 +483,47 @@ SELECT
 - Database corruption / partial restore.
 - Future `_step_evaluate` refactor that introduces lazy-materialization (V2 risk).
 
-**Defensive guard** (binding in `swing/metrics/capital.py`): the helper exposes a `EXPECTED_CRITERIA_NAMES` constant (set of criterion_name values written by the canonical pipeline; sourced via `swing.evaluation.criteria.*.NAME` imports at module load). On query, the helper computes `actual_criteria_count` per candidate via a `COUNT(DISTINCT criterion_name) FROM criterion_results WHERE candidate_id = c.id`. Candidates with `actual_criteria_count < len(EXPECTED_CRITERIA_NAMES)` are EXCLUDED from BOTH numerator AND denominator + a `WARNING` log line is emitted: `"risk_feasibility_blocked_rate: candidate_id=X has incomplete criterion_results (got N expected M); excluding from rate computation"`.
+**Defensive guard** (binding in `swing/metrics/capital.py`; Codex R4 Major #1+#2 fix — set-membership comparison + correct enumeration):
+
+The helper exposes a `EXPECTED_CRITERIA_NAMES: frozenset[str]` constant. The shipped evaluators emit names via mixed conventions (per `swing/evaluation/criteria/*.py` recon):
+
+```python
+# swing/metrics/capital.py
+from swing.evaluation.criteria import (
+    adr, ma_stack_short, orderliness, prior_trend, proximity, pullback,
+    risk_feasibility, tightness, trend_template, vcp,
+)
+
+EXPECTED_CRITERIA_NAMES: frozenset[str] = frozenset({
+    adr.NAME,                       # "adr"
+    ma_stack_short.STACK_NAME,      # "ma_stack_10_20_50"
+    ma_stack_short.RISING_NAME,     # "ma_short_rising"
+    orderliness.NAME,               # "orderliness"
+    prior_trend.NAME,               # "prior_trend"
+    proximity.NAME,                 # "proximity_20ma"
+    pullback.NAME,                  # "pullback"
+    risk_feasibility.NAME,          # "risk_feasibility"
+    tightness.NAME,                 # "tightness"
+    vcp.NAME,                       # "vcp_volume_contraction"
+    *trend_template.CHECK_NAMES,    # 8 entries TT1_..._above_150_200 through TT8_rs_rank
+})
+# Total: 18 expected criterion_name values.
+```
+
+**Set-membership guard** (Codex R4 Major #2): the helper computes `actual_names_for_candidate = {row.criterion_name for row in criterion_results WHERE candidate_id=c.id}`. Candidates with `not EXPECTED_CRITERIA_NAMES.issubset(actual_names_for_candidate)` are EXCLUDED from BOTH numerator AND denominator + `WARNING` log emitted: `"risk_feasibility_blocked_rate: candidate_id=X missing expected criteria {missing_set}; excluding from rate computation"`.
+
+This catches BOTH (a) "missing required criterion" AND (b) "extra unknown criterion in the row but missing one of the expected" — the count-only check would have been fooled by case (b).
+
+**Unexpected-name advisory** (Codex R4 Major #2 follow-up): when `actual_names_for_candidate - EXPECTED_CRITERIA_NAMES` is non-empty (extra unknown criteria present), emit a SEPARATE INFO log: `"risk_feasibility_blocked_rate: candidate_id=X has unexpected criterion names {extra_set}; included anyway"`. Does NOT exclude the candidate (extras don't change the rate semantics; only missing required names do). V2 candidate: tighten to exclude on extras when criterion-set is locked.
 
 **Discriminating tests** (binding in Task D.1):
 - `test_risk_feasibility_blocked_rate_excludes_candidates_failing_other_criteria`: seed candidate that fails risk_feasibility AND fails MA-stack → NOT in numerator; rate stays bounded.
 - `test_risk_feasibility_blocked_rate_excludes_candidates_with_na_on_other_criteria` (Codex R2 Major #3): seed candidate that fails risk_feasibility AND has another criterion `result='na'` → NOT in denominator (since `na` is not `pass`); assert rate excludes it.
-- `test_risk_feasibility_blocked_rate_excludes_candidates_with_partial_criteria_rows` (Codex R3 Major #3): seed candidate with only 3 of N expected criterion_results rows → excluded from BOTH numerator AND denominator; assert WARNING log line emitted naming candidate_id + actual_count + expected_count.
+- `test_risk_feasibility_blocked_rate_excludes_candidates_with_na_on_risk_feasibility` (Codex R4 Major #3): seed candidate with all-other-criteria=pass AND `risk_feasibility` result `'na'` → excluded from BOTH numerator AND denominator (na on risk_feasibility = "not assessed" ≠ blocked).
+- `test_risk_feasibility_blocked_rate_excludes_candidates_with_partial_criteria_rows` (Codex R3 Major #3 + R4 Major #2): seed candidate with only 3 of 18 EXPECTED_CRITERIA_NAMES rows → excluded from BOTH numerator AND denominator; assert WARNING log line emitted naming candidate_id + missing_set.
+- `test_risk_feasibility_blocked_rate_set_membership_guard_catches_missing_plus_extra` (Codex R4 Major #2): seed candidate with 18 criterion_results rows where 1 expected name is missing AND 1 unknown name is present (counts match expected count = 18, but membership is wrong) → excluded from numerator AND denominator + WARNING log emitted. Discriminates set-membership guard against count-only guard.
+- `test_risk_feasibility_blocked_rate_extra_names_logs_info_not_excluded` (Codex R4 Major #2): seed candidate with all 18 expected names present + 1 extra unknown name → INCLUDED in computation + INFO log emitted naming the extra.
+- `test_risk_feasibility_blocked_rate_expected_criteria_names_set_matches_pipeline_writer` (Codex R4 Major #1): assert `EXPECTED_CRITERIA_NAMES == {names actually written by _step_evaluate when given a synthetic candidate that exercises all evaluators}` — pins the constant against the pipeline. Discriminates against `*.NAME` undercount (Codex R4 Major #1 catch).
 - `test_risk_feasibility_blocked_rate_at_most_1`: every candidate either fails risk_feasibility (and others pass) or passes risk_feasibility (and others pass) → rate ∈ [0, 1].
 - `test_risk_feasibility_blocked_rate_at_zero_qualifying_returns_suppressed`: zero candidates would-have-qualified → return suppressed text "N/A — 0 would-have-qualified candidates this run" (NOT 0/0 = NaN).
 
@@ -551,13 +591,16 @@ Locked rationale:
 - **D next**: operational/live-state surfaces (capital-friction + maturity-stage + identification-funnel). Exercises PROVISIONAL/LIVE dynamic badge (per §A.6) + per-pipeline-run on-the-fly aggregation (per §A.0.1). Highest schema-coverage bundle.
 - **E last**: process-grade-trend + reconciliation badge + Phase 11 hand-off prep. Smallest scope but locks the cross-bundle base-layout banner integration (per §A.18).
 
-**Cross-bundle dependency graph:**
+**Cross-bundle dependency graph** (Codex R4 Minor #1 update — reflects §A.18 restructure):
 - A → {B, C, D, E} (honesty utility module is binding interface).
 - A → {B, C, D, E} (`BaseLayoutVM` mixin is binding base-class).
+- A → {B, C, D, E} (`swing/metrics/discrepancies.py:count_unresolved_material` from Task A.7.1 is consumed by every metrics-VM constructor for `unresolved_material_discrepancies_count` field population).
 - B → C (cohort scaffolding reuse; non-binding but recommended).
 - B → D (per-cohort filter helper reuse).
 - D → E (PROVISIONAL/LIVE resolver pattern reuse for per-run aggregation).
-- All → §A.18 reconciliation badge: every existing base-layout VM constructor MUST be updated in E to populate `vm.unresolved_material_discrepancies_count`. Cross-cuts every prior bundle's surfaces; E is the integration site.
+- §A.18 reconciliation badge — TWO populating paths (Codex R2 Major #6 restructure):
+  - **Metrics VMs (A index, B trade-process + hyp-progress, C tier + deviation, D capital + maturity + funnel, E process-grade-trend)**: each metrics-VM constructor populates `vm.unresolved_material_discrepancies_count = count_unresolved_material(conn)` FROM ITS SUB-BUNDLE LANDING — NO retrofit in E.
+  - **Existing 6 base-layout VMs (Dashboard, Pipeline, Journal, Watchlist, Config, PageError)**: field added + populated in Sub-bundle E Task E.3 (the ONLY retrofit step). The cross-bundle pin is the un-skipped `test_existing_dashboard_vm_has_unresolved_material_field` from T-A.7.
 
 ### §A.24 Operator-paced action items (NOT writing-plans blockers)
 
@@ -1416,7 +1459,7 @@ Document findings in recon notes.
 - Per-run (spec §3.6 verbatim): aplus_identifications_per_run / aplus_trades_taken_per_run / aplus_take_rate_per_run / watch_identifications_per_run / watch_trades_taken_per_run.
 - Codex R1 Minor #2 lock: spec §3.6 does NOT define `watch_take_rate_per_run`. V1 surfaces watch identifications + watch taken counts ONLY; NO derived watch_take_rate. If operator wants symmetric watch take-rate at integration triage, plan §A revises before Sub-bundle D dispatch. (Banked as V2 candidate at return report §6.)
 - aplus_take_rate_per_run zero-denominator handling per §A.20 (suppressed text "N/A — 0 A+ identifications this run").
-- 30-trading-day trend computed via `swing.evaluation.action_session_for_run` family (NYSE session calendar).
+- 30-trading-day trend (Codex R4 Minor #2 specificity): the trend WINDOW spans the most recent 30 NYSE trading sessions ending at `swing.evaluation.last_completed_session(datetime.now())` (backward-looking per §A.15). Sessions enumerated via `exchange_calendars.get_calendar('XNYS').sessions_in_range(start, end)` per existing project pattern. Per-run aggregation uses `pipeline_runs.started_ts.date()` matched against the session list; runs whose `started_ts.date()` falls outside the 30-session window are excluded. NO use of forward-looking `action_session_for_run` for the trend window — that would shift the boundary on session transition + create the read/write anchor mismatch family (§A.15 binding).
 - Per spec §4.6: trend suppressed at <10 runs.
 
 **Discriminating tests:**
