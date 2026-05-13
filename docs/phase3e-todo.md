@@ -6,6 +6,31 @@
 
 ---
 
+## 2026-05-13 §8.4 Corporate_Actions MVP — standalone post-Phase-10 dispatch (deferred per Phase 10 electives amendment)
+
+**Decision (operator 2026-05-13 post-Phase-10-writing-plans-merge):** §8.4 Corporate_Actions MVP defers to a standalone post-Phase-10 dispatch. Phase 10 plan §A.0 ZERO-new-schema lock preserved; Phase 10 V1 arc shape stays at 5 sub-bundles A→B→C→D→E with 39 tasks (4 other electives propagated; see `docs/phase10-electives-amendment.md`).
+
+**Scope when dispatched (per Phase 10 spec §8.4 + plan §A.4 cost estimate):**
+- New `corporate_actions` table: columns approximately `(id, ticker, action_type, action_date, ratio_numerator, ratio_denominator, notes, recorded_at, source)`. Action types: `split`, `dividend`, `ticker_change`, `delisting`. `0018_*.sql` migration bumping `EXPECTED_SCHEMA_VERSION` 17 → 18.
+- New CLI surface: `swing corporate-action {record,list,resolve}` group (mirrors Phase 9 `swing journal discrepancy` shape).
+- Manual reconcile flow: operator-driven; defensive logging only; NO automated price-adjustment in V1 (per spec §8.4 recommendation).
+- Estimated ~3-6hr executing-plans wall-clock; brainstorm + writing-plans + executing-plans full cycle since schema work merits independent Codex rigor.
+
+**Rationale for standalone (not Phase 10 V1):**
+- Phase 10 V1 is read-side dominant (metrics dashboard atop v17 schema); §A.0 ZERO-new-schema lock was a Codex-converged 6-round decision.
+- Bundling §8.4 into Phase 10 V1 as "Sub-bundle F" would break the §A.0 lock + add ~3-6hr + 1 new table + 1 CLI surface to the executing-plans arc. Operator chose to preserve §A.0 lock + preserve Phase 10 arc shape.
+- §8.4 ships first among Phase 11 candidates (along with Schwab API Phase A, inception-CSV ingestion, snapshot semantics formalization — see Phase 10 plan §10 hand-off + return-report §10).
+
+**Sequencing:** standalone dispatch unblocks AFTER Phase 10 V1 closes (all 5 sub-bundles A→B→C→D→E integrated). Standalone dispatch may run in parallel with other Phase 11 candidates per orchestrator + operator triage.
+
+**Cross-references:**
+- Phase 10 spec §8.4 (orchestrator-decision open question; brainstorm recommendation = DEFENSIVE log-only).
+- Phase 10 plan §A.4 disposition (default DEFER; operator decision 2026-05-13 confirms defer-as-standalone).
+- Phase 10 electives amendment `docs/phase10-electives-amendment.md` §5.
+- v1.1-alternate F-019 corporate-action interaction concern (anchored spec §8.4 risk framing).
+
+---
+
 ## 2026-05-12 Phase 9 closer: Sub-bundle E lessons banked + Phase 10 writing-plans hand-off note
 
 **Phase 9 arc SHIPPED 2026-05-12** (Sub-bundles A → B → C → D → E). Bundle E shipped as `phase9-bundle-E-polish-and-phase10-handoff` worktree dispatch (T-E.0 combined E2E happy path + T-E.1 CLAUDE.md gotcha promotion ratification + T-E.2 this hand-off note + T-E.3 cross-bundle Account Order History multi-line parser fix). Plan §H Task E.2 acceptance verified: `ruff check swing/ --statistics` returns 18 E501 (unchanged from Sub-bundle A baseline; zero new violations across A+B+C+D+E).
