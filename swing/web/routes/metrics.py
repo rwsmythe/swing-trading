@@ -19,6 +19,9 @@ from swing.web.view_models.metrics.hypothesis_progress_card import (
     build_hypothesis_progress_card_vm,
 )
 from swing.web.view_models.metrics.index import build_metrics_index_vm
+from swing.web.view_models.metrics.tier_comparison import (
+    build_tier_comparison_vm,
+)
 from swing.web.view_models.metrics.trade_process_card import (
     build_trade_process_card_vm,
 )
@@ -55,6 +58,23 @@ def metrics_trade_process(
     vm = build_trade_process_card_vm(cfg=cfg, active_cohort_key=cohort)
     return request.app.state.templates.TemplateResponse(
         request, "metrics/trade_process_card.html.j2", {"vm": vm},
+    )
+
+
+@router.get("/metrics/tier-comparison", response_class=HTMLResponse)
+def metrics_tier_comparison(request: Request):
+    """Spec §4.3 tier-comparison view — Sub-bundle C Task T-C.2.
+
+    Renders the 4 registered hypothesis_registry cohorts side-by-side
+    with Wilson win-rate CI + Bootstrap expectancy CI + per-non-A+
+    ``cohort_relative_to_aplus_pct`` + single ``cohort_ci_overlap_descriptor``
+    TEXT block. Per spec §3.3 R1 M3 LOCK: descriptor is TEXT (NOT
+    boolean). Per spec §4.3 surface LOCK: cohort cells suppress at n<5.
+    """
+    cfg = request.app.state.cfg
+    vm = build_tier_comparison_vm(cfg=cfg)
+    return request.app.state.templates.TemplateResponse(
+        request, "metrics/tier_comparison.html.j2", {"vm": vm},
     )
 
 

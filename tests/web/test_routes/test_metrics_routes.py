@@ -260,6 +260,103 @@ def test_hypothesis_progress_extends_base_layout(seeded_db):
     assert 'class="topbar"' in r.text
 
 
+# ---------------------------------------------------------------------------
+# Sub-bundle C Task T-C.2: GET /metrics/tier-comparison
+# ---------------------------------------------------------------------------
+
+def test_tier_comparison_endpoint_returns_200(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/tier-comparison")
+    assert r.status_code == 200
+    assert "Tier-comparison metrics" in r.text
+
+
+def test_tier_comparison_renders_4_cohort_columns(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/tier-comparison")
+    assert r.status_code == 200
+    # Each cohort's column header anchors via data-cohort-name attribute.
+    for cohort in (
+        "A+ baseline",
+        "Near-A+ defensible: extension test",
+        "Sub-A+ VCP-not-formed",
+        "Capital-blocked: smaller-position test",
+    ):
+        assert f'data-cohort-name="{cohort}"' in r.text, (
+            f"missing cohort column header for {cohort!r}"
+        )
+
+
+def test_tier_comparison_at_zero_trades_renders_descriptor_suppression_text(
+    seeded_db,
+):
+    """Per spec §4.3 worked example: at our current state all CIs are
+    suppressed + descriptor renders the "Insufficient cohort samples"
+    placeholder."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/tier-comparison")
+    assert r.status_code == 200
+    body = r.text
+    # Spec §5.6 italic placeholder format for cohort cells.
+    assert "n too low" in body
+    # Descriptor suppression placeholder per dispatch brief §0.10 LOCK.
+    assert "Insufficient cohort samples" in body
+
+
+def test_tier_comparison_extends_base_layout(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/tier-comparison")
+    assert 'class="topbar"' in r.text
+
+
+def test_tier_comparison_registered_in_app_routes(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    route_paths = {r.path for r in app.routes if hasattr(r, "path")}
+    assert "/metrics/tier-comparison" in route_paths
+
+
+def test_tier_comparison_descriptor_text_does_not_contain_boolean_keys(
+    seeded_db,
+):
+    """Per spec §3.3 R1 M3 LOCK: descriptor is TEXT (NOT boolean / p-value).
+
+    Even at zero trades the suppression placeholder is TEXT — no
+    `classification_quality_flag` / `significant` / `p =` leak through."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/tier-comparison")
+    body = r.text.lower()
+    assert "classification_quality_flag" not in body
+    assert ">significant<" not in body
+    assert "p-value" not in body
+    assert ">p =<" not in body
+
+
+def test_tier_comparison_renders_no_color_only_badges(seeded_db):
+    """Per spec §4.9 + plan §A.9: badges are TEXT-only (no inline color
+    style)."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/tier-comparison")
+    body = r.text
+    for forbidden in ("background:red", "background:green", "color:red",
+                      "color:green"):
+        assert forbidden not in body, (
+            f"color-only inline style {forbidden!r} present"
+        )
+
+
 def test_trade_process_renders_no_color_only_badges(seeded_db):
     """Per spec §4.9 + plan §A.9: badges render as TEXT inline, never
     color-only. Sanity check: at our default-tab n=0, NO badges are
