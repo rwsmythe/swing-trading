@@ -3,10 +3,13 @@
 Implements the §A.7 honesty utility interface (binding for Sub-bundles B-E).
 
 Honesty classes (per spec §5.1-§5.4):
-- A (rate): Wilson CI on k/n proportion; suppress below ``policy.low_sample_size_threshold_class_a_n``.
-- B (mean): bootstrap CI on samples; suppress below ``policy.low_sample_size_threshold_class_b_n``.
-- C (ratio): point estimate (no CI in V1); suppress below ``policy.low_sample_size_threshold_class_c_n``
-  OR when win-loss diversity insufficient.
+- A (rate): Wilson CI on k/n proportion; suppress below the class-A
+  threshold (``policy.low_sample_size_threshold_class_a_n``).
+- B (mean): bootstrap CI on samples; suppress below the class-B
+  threshold (``policy.low_sample_size_threshold_class_b_n``).
+- C (ratio): point estimate (no CI in V1); suppress below the class-C
+  threshold (``policy.low_sample_size_threshold_class_c_n``) OR when
+  win-loss diversity insufficient.
 - D (trend): rolling-window line; spec-locked effective_n>=5 threshold for line drawability,
   ``policy.low_sample_size_threshold_class_d_n`` for window-fullness badge,
   ``policy.global_confidence_floor_n`` for confidence-floor warning.

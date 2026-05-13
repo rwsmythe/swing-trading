@@ -21,13 +21,16 @@ from swing.web.app import create_app
 from swing.web.price_cache import PriceCache
 
 
-# Expected nav order — Reviews inserted between Journal and Pipeline.
+# Expected nav order — Reviews inserted between Journal and Pipeline;
+# Metrics inserted between Pipeline and Config (Phase 10 Sub-bundle A T-A.8
+# adds the metrics navigator entry).
 EXPECTED_NAV_HREFS = [
     "/",
     "/watchlist",
     "/journal",
     "/reviews/pending",
     "/pipeline",
+    "/metrics",
     "/config",
 ]
 
