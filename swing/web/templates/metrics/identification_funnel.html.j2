@@ -1,0 +1,56 @@
+{% extends "base.html.j2" %}
+{% block title %}Identification-vs-trade funnel — Swing Trading{% endblock %}
+{% block content %}
+<section class="metrics-identification-funnel">
+  <h1>Identification-vs-trade funnel</h1>
+  <p class="muted">
+    Spec §4.6 — per-pipeline-run stacked bars (A+ identified vs taken)
+    over the most-recent {{ vm.result.trend_window_sessions }} NYSE
+    trading sessions. Multi-run trend requires ≥10 runs to render.
+  </p>
+
+  <p class="muted">Asof: {{ vm.result.asof_date }}</p>
+
+  {% if vm.result.trend_suppressed %}
+  <p><em data-field="trend-suppression">{{ vm.result.trend_suppressed_text }}</em></p>
+  {% else %}
+  <h2>Per-run aggregates</h2>
+  <table class="metric-grid identification-funnel-table">
+    <thead>
+      <tr>
+        <th>Run</th>
+        <th>Date</th>
+        <th>A+ identified</th>
+        <th>A+ taken</th>
+        <th>A+ take-rate</th>
+        <th>Watch identified</th>
+        <th>Watch taken</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in vm.result.trend_runs %}
+      <tr data-run-id="{{ p.pipeline_run_id }}">
+        <td>#{{ p.pipeline_run_id }}</td>
+        <td>{{ p.run_date }}</td>
+        <td>{{ p.aplus_identifications_per_run }}</td>
+        <td>{{ p.aplus_trades_taken_per_run }}</td>
+        <td data-cell="aplus_take_rate">
+          {% if p.aplus_take_rate_per_run is not none %}
+          <strong>{{ "%.1f"|format(p.aplus_take_rate_per_run * 100.0) }}%</strong>
+          {% else %}
+          <em data-suppressed="aplus_take_rate">{{ p.aplus_take_rate_suppressed_text }}</em>
+          {% endif %}
+        </td>
+        <td>{{ p.watch_identifications_per_run }}</td>
+        <td>{{ p.watch_trades_taken_per_run }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p class="muted historical-disclosure">
+    <em data-footnote="historical-disclosure">{{ vm.historical_disclosure_footnote }}</em>
+  </p>
+  {% endif %}
+</section>
+{% endblock %}

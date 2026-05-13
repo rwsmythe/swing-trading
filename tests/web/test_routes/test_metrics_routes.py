@@ -726,3 +726,153 @@ def test_maturity_stage_renders_no_color_only_badges(seeded_db):
         assert forbidden not in body, (
             f"color-only inline style {forbidden!r} present"
         )
+
+
+# ---------------------------------------------------------------------------
+# Sub-bundle D Task T-D.6: GET /metrics/identification-funnel
+# ---------------------------------------------------------------------------
+
+def test_identification_funnel_endpoint_returns_200(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/identification-funnel")
+    assert r.status_code == 200
+    assert "Identification-vs-trade funnel" in r.text
+
+
+def test_identification_funnel_trend_suppressed_below_10_runs(seeded_db):
+    """Spec §4.6 + plan §G T-D.6: trend suppressed below 10 runs."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/identification-funnel")
+    body = r.text
+    # Discriminating: pin to the trend-suppression marker per lesson #20.
+    assert 'data-field="trend-suppression"' in body
+
+
+def test_identification_funnel_renders_per_run_bars(seeded_db):
+    """Seed ≥10 runs → table renders with the trend rows."""
+    from datetime import datetime as _dt
+    import exchange_calendars
+    import pandas as pd
+    from swing.data.db import connect
+    from swing.evaluation.dates import last_completed_session
+
+    cfg, cfg_path = seeded_db
+    cal = exchange_calendars.get_calendar("XNYS")
+    asof = last_completed_session(_dt.now())
+    sessions = sorted({
+        ts.date().isoformat()
+        for ts in cal.sessions_window(pd.Timestamp(asof), -10)
+    })
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            for i, sd in enumerate(sessions, start=1):
+                conn.execute(
+                    "INSERT INTO evaluation_runs (id, run_ts, "
+                    "data_asof_date, action_session_date, "
+                    "tickers_evaluated, aplus_count, watch_count, "
+                    "skip_count, excluded_count, error_count) VALUES "
+                    "(?, ?, ?, ?, 0, 0, 0, 0, 0, 0)",
+                    (i, sd + "T13:00:00", sd, sd),
+                )
+                conn.execute(
+                    "INSERT INTO pipeline_runs (id, started_ts, "
+                    "finished_ts, trigger, data_asof_date, "
+                    "action_session_date, state, lease_token, "
+                    "evaluation_run_id) VALUES "
+                    "(?, ?, ?, 'manual', ?, ?, 'complete', 'tok', ?)",
+                    (i, sd + "T13:00:00", sd + "T13:30:00", sd, sd, i),
+                )
+    finally:
+        conn.close()
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/identification-funnel")
+    body = r.text
+    assert r.status_code == 200
+    # Trend rendered → per-run rows present.
+    assert "<table" in body
+    assert "data-run-id=" in body
+
+
+def test_identification_funnel_renders_historical_disclosure_footnote_in_trend_section(
+    seeded_db,
+):
+    """Plan §A.0.1 + dispatch brief §0.10 BINDING (Codex R2 Major #4):
+    EXACT verbatim footnote text in trend section."""
+    from datetime import datetime as _dt
+    import exchange_calendars
+    import pandas as pd
+    from swing.data.db import connect
+    from swing.evaluation.dates import last_completed_session
+
+    cfg, cfg_path = seeded_db
+    cal = exchange_calendars.get_calendar("XNYS")
+    asof = last_completed_session(_dt.now())
+    sessions = sorted({
+        ts.date().isoformat()
+        for ts in cal.sessions_window(pd.Timestamp(asof), -10)
+    })
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            for i, sd in enumerate(sessions, start=1):
+                conn.execute(
+                    "INSERT INTO evaluation_runs (id, run_ts, "
+                    "data_asof_date, action_session_date, "
+                    "tickers_evaluated, aplus_count, watch_count, "
+                    "skip_count, excluded_count, error_count) VALUES "
+                    "(?, ?, ?, ?, 0, 0, 0, 0, 0, 0)",
+                    (i, sd + "T13:00:00", sd, sd),
+                )
+                conn.execute(
+                    "INSERT INTO pipeline_runs (id, started_ts, "
+                    "finished_ts, trigger, data_asof_date, "
+                    "action_session_date, state, lease_token, "
+                    "evaluation_run_id) VALUES "
+                    "(?, ?, ?, 'manual', ?, ?, 'complete', 'tok', ?)",
+                    (i, sd + "T13:00:00", sd + "T13:30:00", sd, sd, i),
+                )
+    finally:
+        conn.close()
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/identification-funnel")
+    body = r.text
+    expected_footnote = (
+        "Trend computed from current trade state; historical points "
+        "approximate where state has changed since the run."
+    )
+    assert expected_footnote in body
+    assert 'data-footnote="historical-disclosure"' in body
+
+
+def test_identification_funnel_extends_base_layout(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/identification-funnel")
+    assert 'class="topbar"' in r.text
+
+
+def test_identification_funnel_registered_in_app_routes(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    route_paths = {r.path for r in app.routes if hasattr(r, "path")}
+    assert "/metrics/identification-funnel" in route_paths
+
+
+def test_identification_funnel_no_watch_take_rate_field_in_body(seeded_db):
+    """Spec §3.6 R1 M#2 LOCK + plan §G T-D.5: NO `watch_take_rate`
+    anywhere in the rendered template body."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/identification-funnel")
+    body = r.text.lower()
+    assert "watch_take_rate" not in body
+    assert "watch-take-rate" not in body

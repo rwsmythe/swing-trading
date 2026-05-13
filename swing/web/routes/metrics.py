@@ -24,6 +24,9 @@ from swing.web.view_models.metrics.deviation_outcome import (
 from swing.web.view_models.metrics.hypothesis_progress_card import (
     build_hypothesis_progress_card_vm,
 )
+from swing.web.view_models.metrics.identification_funnel import (
+    build_identification_funnel_vm,
+)
 from swing.web.view_models.metrics.index import build_metrics_index_vm
 from swing.web.view_models.metrics.maturity_stage import (
     build_maturity_stage_vm,
@@ -179,6 +182,28 @@ def metrics_maturity_stage(request: Request):
     vm = build_maturity_stage_vm(cfg=cfg)
     return request.app.state.templates.TemplateResponse(
         request, "metrics/maturity_stage.html.j2", {"vm": vm},
+    )
+
+
+@router.get("/metrics/identification-funnel", response_class=HTMLResponse)
+def metrics_identification_funnel(request: Request):
+    """Spec §4.6 identification-vs-trade-funnel view — Sub-bundle D T-D.6.
+
+    Renders per-pipeline-run aggregates (A+ identifications / A+ trades
+    taken / A+ take-rate suppressed-or-rendered; watch identifications +
+    watch trades — NO watch_take_rate per spec §3.6 R1 M#2 LOCK) over the
+    most-recent 30 NYSE trading sessions ending at backward-looking
+    ``last_completed_session(now)`` (plan §A.15 + §G T-D.5).
+
+    Per plan §A.0.1 + dispatch brief §0.10 BINDING: trend section renders
+    the verbatim historical-reconstruction disclosure footnote.
+
+    Per plan §A.9 + §I.6 LOCK: pure server-rendered HTML.
+    """
+    cfg = request.app.state.cfg
+    vm = build_identification_funnel_vm(cfg=cfg)
+    return request.app.state.templates.TemplateResponse(
+        request, "metrics/identification_funnel.html.j2", {"vm": vm},
     )
 
 
