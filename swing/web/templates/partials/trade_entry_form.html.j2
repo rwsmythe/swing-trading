@@ -74,6 +74,17 @@
           <span>{{ vm.industry or "—" }}</span>
           <input type="hidden" name="industry" value="{{ vm.industry }}">
         </div>
+        {#- Phase 9 Bundle D — sector/industry tamper-hardening anchor.
+            Carries the form-render's evaluation_run_id so POST
+            validation reaches the same authoritative candidate row
+            the operator saw (Codex R2 Major #1 fix; mirrors
+            chart_pattern's pipeline_run_id anchor pattern). Empty value
+            when no cached candidate exists at form-render time — POST
+            treats absence as the bare-cURL backward-compat skip. -#}
+        <input type="hidden" name="sector_industry_evaluation_run_id"
+               value="{{ vm.sector_industry_evaluation_run_id
+                         if vm.sector_industry_evaluation_run_id is not none
+                         else '' }}">
         <div><label>Hypothesis:</label>
           <span>{{ vm.hypothesis_label or "(none)" }}</span>
           <input type="hidden" name="hypothesis_label" value="{{ vm.hypothesis_label or '' }}">
