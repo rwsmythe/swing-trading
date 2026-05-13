@@ -473,15 +473,23 @@ SELECT
 
 `:risk_feasibility_name` parameter sourced from `from swing.evaluation.criteria.risk_feasibility import NAME` to avoid string-literal drift.
 
+**Completeness assumption** (Codex R3 Major #3): the `NOT EXISTS ... result <> 'pass'` predicate treats a MISSING criterion row (no row at all in `criterion_results` for a given candidate × criterion_name) as IMPLICIT pass. That is correct ONLY when `criterion_results` is fully materialized by `_step_evaluate` (the canonical pipeline writer) for every candidate. Production pipeline writes ALL criteria for every candidate per current evaluation logic; partial materialization can only happen via:
+- Custom-inserted candidate rows bypassing `_step_evaluate` (operator-supplied; should never happen in V1).
+- Database corruption / partial restore.
+- Future `_step_evaluate` refactor that introduces lazy-materialization (V2 risk).
+
+**Defensive guard** (binding in `swing/metrics/capital.py`): the helper exposes a `EXPECTED_CRITERIA_NAMES` constant (set of criterion_name values written by the canonical pipeline; sourced via `swing.evaluation.criteria.*.NAME` imports at module load). On query, the helper computes `actual_criteria_count` per candidate via a `COUNT(DISTINCT criterion_name) FROM criterion_results WHERE candidate_id = c.id`. Candidates with `actual_criteria_count < len(EXPECTED_CRITERIA_NAMES)` are EXCLUDED from BOTH numerator AND denominator + a `WARNING` log line is emitted: `"risk_feasibility_blocked_rate: candidate_id=X has incomplete criterion_results (got N expected M); excluding from rate computation"`.
+
 **Discriminating tests** (binding in Task D.1):
 - `test_risk_feasibility_blocked_rate_excludes_candidates_failing_other_criteria`: seed candidate that fails risk_feasibility AND fails MA-stack → NOT in numerator; rate stays bounded.
 - `test_risk_feasibility_blocked_rate_excludes_candidates_with_na_on_other_criteria` (Codex R2 Major #3): seed candidate that fails risk_feasibility AND has another criterion `result='na'` → NOT in denominator (since `na` is not `pass`); assert rate excludes it.
+- `test_risk_feasibility_blocked_rate_excludes_candidates_with_partial_criteria_rows` (Codex R3 Major #3): seed candidate with only 3 of N expected criterion_results rows → excluded from BOTH numerator AND denominator; assert WARNING log line emitted naming candidate_id + actual_count + expected_count.
 - `test_risk_feasibility_blocked_rate_at_most_1`: every candidate either fails risk_feasibility (and others pass) or passes risk_feasibility (and others pass) → rate ∈ [0, 1].
 - `test_risk_feasibility_blocked_rate_at_zero_qualifying_returns_suppressed`: zero candidates would-have-qualified → return suppressed text "N/A — 0 would-have-qualified candidates this run" (NOT 0/0 = NaN).
 
 ### §A.20 Spec §3.6 `aplus_take_rate_per_run` denominator (zero-A+ runs)
 
-Spec §3.6 `aplus_take_rate_per_run = aplus_trades_taken_per_run / aplus_identifications_per_run`. When a run has 0 A+ identifications, the denominator is 0. Per spec §5.3 ratio class: render as suppressed `"N/A — 0 A+ identifications this run"` (NOT 0.0, NOT NaN, NOT +inf).
+Spec §3.6 `aplus_take_rate_per_run = aplus_trades_taken_per_run / aplus_identifications_per_run`. When a run has 0 A+ identifications, the denominator is 0. Per spec §5.5 per-pipeline-run special case: rendered as a per-run point estimate (Class A applies to the trend-window-n; the per-run snapshot itself is rate-class but not subject to standard suppression). Codex R3 Minor #1 citation fix: spec classifies aplus_take_rate_per_run as Class A (rate metric) per spec §5.1 + the §5.5 per-run special case — NOT spec §5.3 (ratio class with win-loss diversity, which applies to profit_factor / payoff_ratio). The zero-denominator behavior remains: render suppressed `"N/A — 0 A+ identifications this run"` (NOT 0.0, NOT NaN, NOT +inf).
 
 No `watch_take_rate_per_run` in V1 (Codex R2 Major #2 fix; spec §3.6 does not define it; banked as V2 candidate per Codex R1 Minor #2 + Task D.5 acceptance).
 
@@ -506,12 +514,10 @@ Spec §3.8 lists 7 rolling metrics; spec §5.4 Class D applies to "rolling-windo
 **`honesty.py:render_class_d` extension** (binding for Task A.1 + Task E.1): the 3-tuple return shape (value, badges, drawability_text) per §A.7 is preserved; the VALUE field carries either `BootstrapCI` (when Class B CI applies) OR `WilsonCI` (when Class A applies) OR `float | None` (when only point estimate per `mistake_cost_R_rolling_N_total` exception). Updated `render_class_d` signature per §A.7:
 
 ```python
-def render_class_d(
-    *, samples_in_window: list[float], window_n: int, policy: RiskPolicy, metric_name: str,
-    underlying_class: Literal["A", "B", "C", "point"],
-    wins_in_window: int | None = None,  # Class A only
-    losses_in_window: int | None = None,  # Class C only
-) -> ... # 3-tuple with VALUE in shape per underlying_class
+# Codex R3 Major #1: §A.21 signature MUST match §A.7 exactly. See §A.7 for canonical
+# `render_class_d(...)` with `events_in_window` (Class A) + `n_wins` / `n_losses` (Class C)
+# parameters. The §A.7 definition is binding; this snippet exists only as a reference
+# pointer.
 ```
 
 **Discriminating tests** (binding in Task A.1 + Task E.1):
@@ -1326,7 +1332,8 @@ Document findings in recon notes.
 - `test_concurrent_open_positions_counts_entered_managing_partial_exited`: 3 states summed.
 - `test_capital_cycle_time_days_zero_closed_returns_none`: edge case.
 - `test_compute_capital_friction_historical_trend_uses_current_trade_state` (Codex R2 Major #4): seed trade T1 opened at run R1 with size=100; advance to R2 + change size to 200 via fill; query for R1 → assert utilization computed against size=200 (CURRENT state, NOT R1-time historical).
-- `test_capital_friction_vm_renders_historical_disclosure_footnote` (Codex R2 Major #4): trend section in CapitalFrictionVM carries footnote text "Trend computed from current trade state; historical points approximate where state has changed since the run."
+- `test_concurrent_open_positions_at_historical_run_uses_open_at_pre_trade_locked_at_only` (Codex R3 Major #2 / §A.0.1; relocated from Task D.5): count trades with `pre_trade_locked_at <= run.started_ts AND (last_fill_at IS NULL OR last_fill_at >= run.started_ts)`; best-effort proxy for "open at run time".
+- (Codex R3 Minor #2 fix: `test_capital_friction_vm_renders_historical_disclosure_footnote` MOVED to Task D.2 — VM/template behavior belongs there, not in compute-layer Task D.1.)
 
 **Suggested commit shape:** `feat(metrics): §3.4 capital-friction computations + dynamic PROVISIONAL contract (T-D.1)`
 
@@ -1419,7 +1426,7 @@ Document findings in recon notes.
 - `test_compute_funnel_trend_at_5_runs_suppressed`.
 - `test_compute_funnel_trend_at_10_runs_renders`.
 - `test_historical_funnel_uses_current_trade_state` (Codex R2 Major #4 / §A.0.1): seed run R1 + trade T1 with origin='pipeline_aplus' at R1's session; advance to R2; query for R1's `aplus_trades_taken_per_run` → assert T1 counted via current trade state (`pre_trade_locked_at` matches R1.session) NOT historical reconstruction.
-- `test_historical_funnel_concurrent_open_at_run_uses_open_at_pre_trade_locked_at_only` (Codex R2 Major #4 / §A.0.1): count trades with `pre_trade_locked_at <= run.started_ts AND (last_fill_at IS NULL OR last_fill_at >= run.started_ts)`; best-effort proxy for "open at run time".
+- (Codex R3 Major #2 fix: `test_historical_funnel_concurrent_open_at_run_uses_open_at_pre_trade_locked_at_only` MOVED to Task D.1 since `concurrent_open_positions` is a capital-friction metric, NOT a funnel metric.)
 
 **Suggested commit shape:** `feat(metrics): §3.6 identification-vs-trade-funnel computations (T-D.5)`
 
@@ -1475,7 +1482,7 @@ Document findings in recon notes.
 Read-only verification of:
 - `swing/data/repos/reconciliation.py:list_unresolved_material_for_active_trades` signature.
 - `swing/data/repos/reconciliation.py:list_unresolved_material_for_closed_trades` signature.
-- All 5 existing base-layout VM constructor signatures (`build_dashboard`, `build_pipeline`, `build_journal`, `build_watchlist`, `build_config_vm`, `PageErrorVM`).
+- All 6 existing base-layout VM constructor signatures (Codex R3 Minor #3 count fix): `build_dashboard`, `build_pipeline`, `build_journal`, `build_watchlist`, `build_config_vm`, `PageErrorVM`.
 
 ### Task E.1: §3.8 process-grade-trend computations — `swing/metrics/process_grade_trend.py`
 
