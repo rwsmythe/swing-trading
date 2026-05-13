@@ -108,9 +108,9 @@ def test_metrics_index_top_nav_link_in_base_layout(seeded_db):
     finally:
         conn.close()
 
-    from swing.web.price_cache import PriceCache
-
     import pytest as _pytest
+
+    from swing.web.price_cache import PriceCache
     monkeypatch = _pytest.MonkeyPatch()
     monkeypatch.setattr(PriceCache, "get_many",
         lambda self, tickers, deadline_seconds, *, executor=None: {})
@@ -490,3 +490,517 @@ def test_trade_process_renders_no_color_only_badges(seeded_db):
             f"Color-only inline style {forbidden!r} present — spec §4.9 "
             "binds badges to TEXT-only rendering"
         )
+
+
+# ---------------------------------------------------------------------------
+# Sub-bundle D Task T-D.2: GET /metrics/capital-friction
+# ---------------------------------------------------------------------------
+
+def test_capital_friction_endpoint_returns_200(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/capital-friction")
+    assert r.status_code == 200
+    assert "Capital-friction metrics" in r.text
+
+
+def test_capital_friction_renders_provisional_text_when_no_snapshot(seeded_db):
+    """Plan §A.6 + dispatch brief §0.8 LOCK: badge renders as TEXT not
+    color-only. Discriminating: exact substring `>PROVISIONAL<` at the
+    capital-denominator badge cell."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/capital-friction")
+    body = r.text
+    # Exact-substring per lesson #20 (body-wide "PROVISIONAL" might collide
+    # with the word "PROVISIONAL fallback" elsewhere). Pin to the badge
+    # element with data-badge="capital-denominator".
+    assert (
+        'data-badge="capital-denominator">PROVISIONAL</span>' in body
+    ), (
+        "Expected exact PROVISIONAL badge at capital-denominator cell; "
+        f"body excerpt: {body[:500]}"
+    )
+
+
+def test_capital_friction_renders_live_when_snapshot_present(seeded_db):
+    """Snapshot on-or-before today → badge flips to LIVE."""
+    from datetime import datetime as _dt
+
+    from swing.data.db import connect
+    from swing.evaluation.dates import last_completed_session
+
+    cfg, cfg_path = seeded_db
+    asof = last_completed_session(_dt.now())
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO account_equity_snapshots (snapshot_date, "
+                "equity_dollars, source, recorded_at, recorded_by) VALUES "
+                "(?, 3000.0, 'manual', ?, 'test')",
+                (asof.isoformat(), asof.isoformat() + "T08:00:00"),
+            )
+    finally:
+        conn.close()
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/capital-friction")
+    body = r.text
+    assert (
+        'data-badge="capital-denominator">LIVE</span>' in body
+    ), (
+        "Expected exact LIVE badge at capital-denominator cell after "
+        f"snapshot write; body excerpt: {body[:500]}"
+    )
+
+
+def test_capital_friction_renders_historical_disclosure_footnote_in_trend_section(
+    seeded_db,
+):
+    """Plan §A.0.1 + dispatch brief §0.10 BINDING (Codex R2 Major #4):
+    EXACT verbatim footnote text in trend section."""
+    from datetime import datetime as _dt
+
+    import exchange_calendars
+    import pandas as pd
+
+    from swing.data.db import connect
+    from swing.evaluation.dates import last_completed_session
+
+    cfg, cfg_path = seeded_db
+    # Seed 5 distinct trading sessions of pipeline_runs to unblock trend.
+    cal = exchange_calendars.get_calendar("XNYS")
+    asof = last_completed_session(_dt.now())
+    sessions = cal.sessions_window(pd.Timestamp(asof), -5)
+    session_dates = sorted({s.date().isoformat() for s in sessions})
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            for i, sd in enumerate(session_dates[:5], start=1):
+                conn.execute(
+                    "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+                    "action_session_date, tickers_evaluated, aplus_count, "
+                    "watch_count, skip_count, excluded_count, error_count) "
+                    "VALUES (?, ?, ?, ?, 0, 0, 0, 0, 0, 0)",
+                    (i, sd + "T13:00:00", sd, sd),
+                )
+                conn.execute(
+                    "INSERT INTO pipeline_runs (id, started_ts, finished_ts, "
+                    "trigger, data_asof_date, action_session_date, state, "
+                    "lease_token, evaluation_run_id) VALUES "
+                    "(?, ?, ?, 'manual', ?, ?, 'complete', 'tok', ?)",
+                    (i, sd + "T13:00:00", sd + "T13:30:00", sd, sd, i),
+                )
+    finally:
+        conn.close()
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/capital-friction")
+    body = r.text
+    # EXACT verbatim footnote per plan §A.0.1.
+    expected_footnote = (
+        "Trend computed from current trade state; historical points "
+        "approximate where state has changed since the run."
+    )
+    assert expected_footnote in body, (
+        f"Expected verbatim §A.0.1 footnote; not found in body. "
+        f"Body excerpt: {body[:1000]}"
+    )
+    # And it must be inside the historical-disclosure marker (pinned to
+    # the trend section per lesson #20).
+    assert 'data-footnote="historical-disclosure"' in body
+
+
+def test_capital_friction_extends_base_layout(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/capital-friction")
+    assert 'class="topbar"' in r.text
+
+
+def test_capital_friction_registered_in_app_routes(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    route_paths = {r.path for r in app.routes if hasattr(r, "path")}
+    assert "/metrics/capital-friction" in route_paths
+
+
+def test_capital_friction_trend_row_renders_badge_text_inline(seeded_db):
+    """Plan §A.6 + Codex R3 m#2: trend-row badge_text MUST render as
+    VISIBLE inline text (NOT hidden in title attribute) per the same
+    LOCK as page-level. Seeds ≥5 trading-session runs to unsuppress the
+    trend table."""
+    from datetime import datetime as _dt
+    import exchange_calendars
+    import pandas as pd
+    from swing.data.db import connect
+    from swing.evaluation.dates import last_completed_session
+
+    cfg, cfg_path = seeded_db
+    cal = exchange_calendars.get_calendar("XNYS")
+    asof = last_completed_session(_dt.now())
+    sessions = sorted({
+        ts.date().isoformat()
+        for ts in cal.sessions_window(pd.Timestamp(asof), -5)
+    })
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            for i, sd in enumerate(sessions, start=1):
+                conn.execute(
+                    "INSERT INTO evaluation_runs (id, run_ts, "
+                    "data_asof_date, action_session_date, "
+                    "tickers_evaluated, aplus_count, watch_count, "
+                    "skip_count, excluded_count, error_count) VALUES "
+                    "(?, ?, ?, ?, 0, 0, 0, 0, 0, 0)",
+                    (i, sd + "T13:00:00", sd, sd),
+                )
+                conn.execute(
+                    "INSERT INTO pipeline_runs (id, started_ts, "
+                    "finished_ts, trigger, data_asof_date, "
+                    "action_session_date, state, lease_token, "
+                    "evaluation_run_id) VALUES "
+                    "(?, ?, ?, 'manual', ?, ?, 'complete', 'tok', ?)",
+                    (i, sd + "T13:00:00", sd + "T13:30:00", sd, sd, i),
+                )
+    finally:
+        conn.close()
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/capital-friction")
+    body = r.text
+    assert r.status_code == 200
+    # Trend rendered → 5 trend-row data-badge-text markers present.
+    import re
+    trend_markers = re.findall(
+        r'data-badge-text="trend-(\d+)"', body,
+    )
+    assert len(trend_markers) >= 5, (
+        f"Expected ≥5 trend-row badge_text markers; got: {trend_markers}"
+    )
+    # No title-only badge_text leaks for trend rows.
+    title_matches = re.findall(r'title="PROVISIONAL[^"]*"', body)
+    assert title_matches == [], (
+        f"Trend-row badge_text MUST NOT be hidden in title attribute; "
+        f"got: {title_matches[:2]}"
+    )
+
+
+def test_capital_friction_renders_provisional_badge_text_inline_not_hover_only(
+    seeded_db,
+):
+    """Plan §A.6 line 233 BINDING + Codex R2 M#1+M#2: badge_text MUST
+    render as VISIBLE inline text NOT hidden in a title attribute (mobile +
+    non-mouse usage)."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/capital-friction")
+    body = r.text
+    # Page-level: PROVISIONAL explanatory text inline.
+    asof_today = "no snapshot"  # part of the format
+    assert 'data-badge-text="capital-denominator"' in body, (
+        "Page-level capital-denominator badge_text missing inline marker"
+    )
+    assert asof_today in body, (
+        "Plan §A.6 line 233 PROVISIONAL explanatory text MUST render inline"
+    )
+    # Discriminating: the text MUST appear as a span content, NOT a title.
+    import re
+    title_matches = re.findall(
+        r'title="PROVISIONAL[^"]*"', body,
+    )
+    assert title_matches == [], (
+        f"badge_text MUST NOT live in `title=` only (hover-only fails "
+        f"mobile + non-mouse per plan §A.6 line 233 LOCK); got "
+        f"title='PROVISIONAL...' matches: {title_matches[:2]}"
+    )
+
+
+def test_capital_friction_renders_no_color_only_badges(seeded_db):
+    """Per spec §4.9 + plan §A.9 BINDING: badges are TEXT-only."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/capital-friction")
+    body = r.text
+    for forbidden in ("background:red", "background:green", "color:red",
+                      "color:green"):
+        assert forbidden not in body, (
+            f"color-only inline style {forbidden!r} present"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Sub-bundle D Task T-D.4: GET /metrics/maturity-stage
+# ---------------------------------------------------------------------------
+
+def test_maturity_stage_endpoint_returns_200(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/maturity-stage")
+    assert r.status_code == 200
+    assert "Maturity-stage metrics" in r.text
+
+
+def test_maturity_stage_zero_open_renders_placeholder(seeded_db):
+    """Spec §4.5 empty-state: 'No open positions to manage.'"""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/maturity-stage")
+    assert "No open positions to manage." in r.text
+    # Discriminating: pin to the empty-state marker per lesson #20.
+    assert 'data-empty-state="maturity-stage"' in r.text
+
+
+def test_maturity_stage_renders_per_row_with_em_dash_for_null_capture_need(
+    seeded_db,
+):
+    """Plan §G T-D.4 + spec §4.5: NULL trail_MA_candidate_price + NULL
+    planned_target_R render `"—"` placeholder (NOT '[Phase 8 capture
+    pending]')."""
+    from swing.data.db import connect
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO trades (id, ticker, entry_date, entry_price, "
+                "initial_shares, initial_stop, current_stop, state, sector, "
+                "industry, trade_origin, pre_trade_locked_at, current_size, "
+                "current_avg_cost) VALUES (1, 'AAA', '2026-05-01', 10.0, "
+                "100, 9.0, 9.0, 'managing', 'S', 'I', 'manual_off_pipeline', "
+                "'2026-05-01T09:30:00', 100, 10.0)"
+            )
+    finally:
+        conn.close()
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/maturity-stage")
+    body = r.text
+    assert r.status_code == 200
+    # Forbidden text per plan §G T-D.4 acceptance.
+    assert "[Phase 8 capture pending]" not in body
+    # Each Phase-8 capture-need cell renders the `<em>—</em>` placeholder.
+    assert 'data-cell="planned_target_R"' in body
+    assert 'data-cell="trail_MA_candidate_price"' in body
+
+
+def test_maturity_stage_extends_base_layout(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/maturity-stage")
+    assert 'class="topbar"' in r.text
+
+
+def test_maturity_stage_registered_in_app_routes(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    route_paths = {r.path for r in app.routes if hasattr(r, "path")}
+    assert "/metrics/maturity-stage" in route_paths
+
+
+def test_maturity_stage_renders_per_row_badge_text_inline_not_hover_only(
+    seeded_db,
+):
+    """Plan §A.6 line 233 + Codex R2 M#1: per-row badge_text MUST render
+    as VISIBLE inline text NOT hidden in a `title` attribute."""
+    from swing.data.db import connect
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO trades (id, ticker, entry_date, entry_price, "
+                "initial_shares, initial_stop, current_stop, state, sector, "
+                "industry, trade_origin, pre_trade_locked_at, current_size, "
+                "current_avg_cost) VALUES (1, 'AAA', '2026-05-01', 10.0, "
+                "100, 9.0, 9.0, 'managing', 'S', 'I', 'manual_off_pipeline', "
+                "'2026-05-01T09:30:00', 100, 10.0)"
+            )
+    finally:
+        conn.close()
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/maturity-stage")
+    body = r.text
+    assert 'data-badge-text="row-utilization-1"' in body, (
+        "Per-row capital-denominator badge_text MUST render inline"
+    )
+    # Discriminating: no title=PROVISIONAL... only.
+    import re
+    title_matches = re.findall(r'title="PROVISIONAL[^"]*"', body)
+    assert title_matches == [], (
+        f"badge_text MUST NOT live in `title=` only on maturity-stage row; "
+        f"got: {title_matches[:2]}"
+    )
+
+
+def test_maturity_stage_renders_no_color_only_badges(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/maturity-stage")
+    body = r.text
+    for forbidden in ("background:red", "background:green", "color:red",
+                      "color:green"):
+        assert forbidden not in body, (
+            f"color-only inline style {forbidden!r} present"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Sub-bundle D Task T-D.6: GET /metrics/identification-funnel
+# ---------------------------------------------------------------------------
+
+def test_identification_funnel_endpoint_returns_200(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/identification-funnel")
+    assert r.status_code == 200
+    assert "Identification-vs-trade funnel" in r.text
+
+
+def test_identification_funnel_trend_suppressed_below_10_runs(seeded_db):
+    """Spec §4.6 + plan §G T-D.6: trend suppressed below 10 runs."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/identification-funnel")
+    body = r.text
+    # Discriminating: pin to the trend-suppression marker per lesson #20.
+    assert 'data-field="trend-suppression"' in body
+
+
+def test_identification_funnel_renders_per_run_bars(seeded_db):
+    """Seed ≥10 runs → table renders with the trend rows."""
+    from datetime import datetime as _dt
+    import exchange_calendars
+    import pandas as pd
+    from swing.data.db import connect
+    from swing.evaluation.dates import last_completed_session
+
+    cfg, cfg_path = seeded_db
+    cal = exchange_calendars.get_calendar("XNYS")
+    asof = last_completed_session(_dt.now())
+    sessions = sorted({
+        ts.date().isoformat()
+        for ts in cal.sessions_window(pd.Timestamp(asof), -10)
+    })
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            for i, sd in enumerate(sessions, start=1):
+                conn.execute(
+                    "INSERT INTO evaluation_runs (id, run_ts, "
+                    "data_asof_date, action_session_date, "
+                    "tickers_evaluated, aplus_count, watch_count, "
+                    "skip_count, excluded_count, error_count) VALUES "
+                    "(?, ?, ?, ?, 0, 0, 0, 0, 0, 0)",
+                    (i, sd + "T13:00:00", sd, sd),
+                )
+                conn.execute(
+                    "INSERT INTO pipeline_runs (id, started_ts, "
+                    "finished_ts, trigger, data_asof_date, "
+                    "action_session_date, state, lease_token, "
+                    "evaluation_run_id) VALUES "
+                    "(?, ?, ?, 'manual', ?, ?, 'complete', 'tok', ?)",
+                    (i, sd + "T13:00:00", sd + "T13:30:00", sd, sd, i),
+                )
+    finally:
+        conn.close()
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/identification-funnel")
+    body = r.text
+    assert r.status_code == 200
+    # Trend rendered → per-run rows present.
+    assert "<table" in body
+    assert "data-run-id=" in body
+
+
+def test_identification_funnel_renders_historical_disclosure_footnote_in_trend_section(
+    seeded_db,
+):
+    """Plan §A.0.1 + dispatch brief §0.10 BINDING (Codex R2 Major #4):
+    EXACT verbatim footnote text in trend section."""
+    from datetime import datetime as _dt
+    import exchange_calendars
+    import pandas as pd
+    from swing.data.db import connect
+    from swing.evaluation.dates import last_completed_session
+
+    cfg, cfg_path = seeded_db
+    cal = exchange_calendars.get_calendar("XNYS")
+    asof = last_completed_session(_dt.now())
+    sessions = sorted({
+        ts.date().isoformat()
+        for ts in cal.sessions_window(pd.Timestamp(asof), -10)
+    })
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            for i, sd in enumerate(sessions, start=1):
+                conn.execute(
+                    "INSERT INTO evaluation_runs (id, run_ts, "
+                    "data_asof_date, action_session_date, "
+                    "tickers_evaluated, aplus_count, watch_count, "
+                    "skip_count, excluded_count, error_count) VALUES "
+                    "(?, ?, ?, ?, 0, 0, 0, 0, 0, 0)",
+                    (i, sd + "T13:00:00", sd, sd),
+                )
+                conn.execute(
+                    "INSERT INTO pipeline_runs (id, started_ts, "
+                    "finished_ts, trigger, data_asof_date, "
+                    "action_session_date, state, lease_token, "
+                    "evaluation_run_id) VALUES "
+                    "(?, ?, ?, 'manual', ?, ?, 'complete', 'tok', ?)",
+                    (i, sd + "T13:00:00", sd + "T13:30:00", sd, sd, i),
+                )
+    finally:
+        conn.close()
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/identification-funnel")
+    body = r.text
+    expected_footnote = (
+        "Trend computed from current trade state; historical points "
+        "approximate where state has changed since the run."
+    )
+    assert expected_footnote in body
+    assert 'data-footnote="historical-disclosure"' in body
+
+
+def test_identification_funnel_extends_base_layout(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/identification-funnel")
+    assert 'class="topbar"' in r.text
+
+
+def test_identification_funnel_registered_in_app_routes(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    route_paths = {r.path for r in app.routes if hasattr(r, "path")}
+    assert "/metrics/identification-funnel" in route_paths
+
+
+def test_identification_funnel_no_watch_take_rate_field_in_body(seeded_db):
+    """Spec §3.6 R1 M#2 LOCK + plan §G T-D.5: NO `watch_take_rate`
+    anywhere in the rendered template body."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/identification-funnel")
+    body = r.text.lower()
+    assert "watch_take_rate" not in body
+    assert "watch-take-rate" not in body
