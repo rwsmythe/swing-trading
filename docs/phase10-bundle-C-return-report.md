@@ -127,23 +127,30 @@ Baseline (worktree-side at `5bddb02`): **2961 passed + 6 skipped** (3
 pre-existing `tests/integration/test_phase8_pipeline_walkthrough.py`
 failures inherited; NOT Sub-bundle C regressions).
 
-Sub-bundle C delta: **+80 fast tests** (final 3041 passed + 6 skipped;
-3 pre-existing failures unchanged).
+Final post-R1-fix run: **3045 passed + 6 skipped + 3 pre-existing
+failures** (5:15 wall-clock; pytest exit 1 expected because of the
+pre-existing failures).
 
-Within projected band +34..+56 lower bound but well above the upper
-estimate — matches Sub-bundle A (+128) + Sub-bundle B (+73) precedent
-for discriminating-test-rich Phase 10 work.
+Sub-bundle C delta: **+84 fast tests**.
+
+Above projected band +34..+56 (~50% overshoot) — matches Sub-bundle A
+(+128) + Sub-bundle B (+73) precedent for discriminating-test-rich
+Phase 10 work.
 
 Breakdown:
-- T-C.1 (`tests/metrics/test_tier.py`): +30 tests.
+- T-C.1 (`tests/metrics/test_tier.py`): 30 tests.
 - T-C.2 (`tests/web/test_view_models/test_tier_comparison_vm.py` +
-  `tests/web/test_routes/test_metrics_routes.py` additions): +15 tests.
+  `tests/web/test_routes/test_metrics_routes.py` additions): 8 VM +
+  7 route = 15 tests.
 - T-C.3 (`tests/web/test_view_models/test_deviation_outcome_vm.py` +
-  route additions): +16 tests.
-- T-C.4 (`tests/integration/test_phase10_bundle_c_e2e.py`): +4 tests.
-- T-C.5 (`tests/metrics/test_cohort_filter.py`): +14 tests.
-- R1 Major #1 + #2 follow-up regressions (in `test_phase10_bundle_c_e2e.py`): **+4 tests**
-  (2 toggle-href + 2 exact-percent-substring discriminating regressions).
+  route additions): 8 VM + 8 route = 16 tests.
+- T-C.4 (`tests/integration/test_phase10_bundle_c_e2e.py`): 4 tests.
+- T-C.5 (`tests/metrics/test_cohort_filter.py`): 14 tests.
+- R1 fix follow-up regressions (in `test_phase10_bundle_c_e2e.py`):
+  **4 tests** (2 toggle-href relative-form + 2 exact-percent-substring
+  discriminating regressions).
+- Cumulative test additions touching `tests/web/test_view_models/test_base_layout_vm_coverage.py`:
+  exclusion-set comment extended (no new tests).
 
 ### §3.2 Ruff baseline
 
@@ -167,10 +174,10 @@ Per plan §A.0 LOCK + §I.1 BINDING preserved.
 **PENDING orchestrator-driven gate.**
 
 - **S1 (inline)** — pytest fast-suite + ruff + `verify_phase10.py`:
-  - `python -m pytest -m "not slow" -q`: 3041 passed + 6 skipped + 3
-    pre-existing failures (`test_phase8_pipeline_walkthrough.py` —
+  - `python -m pytest -m "not slow" -q`: **3045 passed + 6 skipped + 3
+    pre-existing failures** (`test_phase8_pipeline_walkthrough.py` —
     "archive returned None" family; NOT Sub-bundle C regressions per
-    dispatch brief §0.4).
+    dispatch brief §0.4). 5:15 wall-clock on Windows / Python 3.14.
   - `ruff check swing/ --statistics`: 18 E501 (baseline unchanged).
   - `python verify_phase10.py`: exit 0.
   - **PASS** (inline).
