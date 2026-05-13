@@ -1364,12 +1364,17 @@ Document findings in recon notes.
 - `concurrent_open_positions` count.
 - `capital_feasibility_pressure_index` composite; inherits PROVISIONAL badge from utilization input.
 
-**Discriminating tests** (Codex R2 Minor #2 alignment with §A.19 lock):
+**Discriminating tests** (Codex R5 Major #1 — full §A.19 test list mirrored here):
 - `test_compute_capital_friction_no_snapshot_returns_provisional_badge`: empty `account_equity_snapshots` → all live-capital-dependent metrics carry PROVISIONAL badge.
 - `test_compute_capital_friction_with_snapshot_returns_live_badge`: seed snapshot $2000 ≤ asof_date → LIVE badge.
 - `test_risk_feasibility_blocked_rate_uses_constant_not_string_literal`: assert `from swing.evaluation.criteria.risk_feasibility import NAME` import is present.
 - `test_risk_feasibility_blocked_rate_excludes_candidates_failing_other_criteria` (per §A.19): seed candidate that fails risk_feasibility AND fails MA-stack → NOT in numerator; rate stays bounded.
 - `test_risk_feasibility_blocked_rate_excludes_candidates_with_na_on_other_criteria` (per §A.19 Codex R2 Major #3): seed candidate with `result='na'` on a non-risk criterion → excluded from denominator.
+- `test_risk_feasibility_blocked_rate_excludes_candidates_with_na_on_risk_feasibility` (per §A.19 Codex R4 Major #3): seed candidate with all-other-criteria=pass AND `risk_feasibility` result `'na'` → excluded from BOTH numerator AND denominator.
+- `test_risk_feasibility_blocked_rate_excludes_candidates_with_partial_criteria_rows` (per §A.19 Codex R3 Major #3 + R4 Major #2): seed candidate with only 3 of 18 EXPECTED_CRITERIA_NAMES rows → excluded from BOTH numerator AND denominator + WARNING log emitted naming candidate_id + missing_set.
+- `test_risk_feasibility_blocked_rate_set_membership_guard_catches_missing_plus_extra` (per §A.19 Codex R4 Major #2): seed candidate with 18 criterion_results rows where 1 expected name is missing AND 1 unknown name is present (count matches expected = 18, but membership wrong) → excluded + WARNING log emitted. Discriminates set-membership guard against count-only guard.
+- `test_risk_feasibility_blocked_rate_extra_names_logs_info_not_excluded` (per §A.19 Codex R4 Major #2): seed candidate with all 18 expected names + 1 extra unknown name → INCLUDED in computation + INFO log emitted.
+- `test_risk_feasibility_blocked_rate_expected_criteria_names_set_matches_pipeline_writer` (per §A.19 Codex R4 Major #1): assert `EXPECTED_CRITERIA_NAMES` set matches names actually written by `_step_evaluate` for a synthetic candidate. Discriminates against `*.NAME`-only undercount.
 - `test_risk_feasibility_blocked_rate_at_most_1` (per §A.19): rate bounded to [0, 1].
 - `test_risk_feasibility_blocked_rate_at_zero_qualifying_returns_suppressed` (per §A.19): zero would-have-qualified → suppressed text "N/A — 0 would-have-qualified candidates this run".
 - `test_concurrent_open_positions_counts_entered_managing_partial_exited`: 3 states summed.
@@ -1459,7 +1464,19 @@ Document findings in recon notes.
 - Per-run (spec §3.6 verbatim): aplus_identifications_per_run / aplus_trades_taken_per_run / aplus_take_rate_per_run / watch_identifications_per_run / watch_trades_taken_per_run.
 - Codex R1 Minor #2 lock: spec §3.6 does NOT define `watch_take_rate_per_run`. V1 surfaces watch identifications + watch taken counts ONLY; NO derived watch_take_rate. If operator wants symmetric watch take-rate at integration triage, plan §A revises before Sub-bundle D dispatch. (Banked as V2 candidate at return report §6.)
 - aplus_take_rate_per_run zero-denominator handling per §A.20 (suppressed text "N/A — 0 A+ identifications this run").
-- 30-trading-day trend (Codex R4 Minor #2 specificity): the trend WINDOW spans the most recent 30 NYSE trading sessions ending at `swing.evaluation.last_completed_session(datetime.now())` (backward-looking per §A.15). Sessions enumerated via `exchange_calendars.get_calendar('XNYS').sessions_in_range(start, end)` per existing project pattern. Per-run aggregation uses `pipeline_runs.started_ts.date()` matched against the session list; runs whose `started_ts.date()` falls outside the 30-session window are excluded. NO use of forward-looking `action_session_for_run` for the trend window — that would shift the boundary on session transition + create the read/write anchor mismatch family (§A.15 binding).
+- 30-trading-day trend (Codex R4 Minor #2 + R5 Minor #1 specificity): the trend WINDOW spans the LAST 30 NYSE TRADING SESSIONS ending at `end = last_completed_session(datetime.now())` (inclusive of `end`; backward-looking per §A.15). Window derivation:
+  ```python
+  cal = exchange_calendars.get_calendar('XNYS')
+  end = swing.evaluation.last_completed_session(datetime.now())  # date
+  # Walk BACKWARD from `end` collecting up to 30 sessions inclusive of `end`.
+  # Off-by-one defense: use sessions_window(end, count=-30) which returns the
+  # 30 most-recent sessions ending at `end` (inclusive), or fewer when calendar
+  # history is shorter. Fallback: cal.sessions_in_range(cal.minus_session_label(end, 29), end)
+  # which returns sessions in [end - 29 sessions, end] inclusive.
+  sessions = cal.sessions_window(pd.Timestamp(end), -30)
+  TRADING_DAYS_WINDOW = 30
+  ```
+  Per-run aggregation uses `pipeline_runs.started_ts.date()` matched against the session list; runs whose `started_ts.date()` falls outside the 30-session window are excluded. NO use of forward-looking `action_session_for_run` for the trend window — that would shift the boundary on session transition + create the read/write anchor mismatch family (§A.15 binding). Discriminating test: `test_funnel_trend_30_sessions_inclusive_of_end` seeds 31 sessions of runs + asserts only the most-recent 30 are in the trend.
 - Per spec §4.6: trend suppressed at <10 runs.
 
 **Discriminating tests:**
