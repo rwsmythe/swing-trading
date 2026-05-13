@@ -6,6 +6,56 @@
 
 ---
 
+## 2026-05-13 Phase 10 Sub-bundle D ship: 5 spec amendments + 4 forward-binding lessons (FIRST PROVISIONAL/LIVE dynamic contract)
+
+**Sub-bundle D SHIPPED 2026-05-13** at `a71cc24` (integration merge of `phase10-bundle-D-capital-maturity-funnel`). 12 commits = 7 task-impl (T-D.1..T-D.7) + 3 Codex-fix (R1+R2+R3) + 2 return-report; **3 Codex rounds → NO_NEW_CRITICAL_MAJOR** convergent tapering. ZERO Critical + ZERO ACCEPT-WITH-RATIONALE.
+
+Tests: 3045 worktree-side → 3147 (+102 net; upper end of +67..+104 projection; matches Sub-bundle A +128 / B +73 / C +84 overshoot precedent). S1 inline gate ~6:00 wall-clock. Ruff 18 unchanged. Schema v17 unchanged.
+
+### 5 V2.1 §VII.F amendment candidates (return report §5)
+
+1. **D1: Dispatch brief §0.8 PROVISIONAL/LIVE math wording.** Brief said `LIVE: denominator = max(capital_floor_constant_dollars, snapshot.equity_dollars)`. Plan §A.6 line 222 + the shipped `resolve_live_capital_denominator_dollars` (Sub-bundle A) return `snapshot.equity_dollars` directly (NO max-with-floor). Implementation followed plan + shipped code. **Amendment:** brief §0.8 wording should remove the `max()` qualifier.
+
+2. **D2: Plan §A.19 SQL references `criterion_results.criterion_name`; actual schema is `candidate_criteria`.** Plan §A.19 lines 463-490 use `criterion_results cr ON cr.candidate_id ...` in the worked SQL example. Actual schema table (migration 0001:48) is `candidate_criteria` with the same column names. Implementation uses `candidate_criteria`. **Amendment:** plan §A.19 should match actual table name OR clarify the example is logical pseudo-schema.
+
+3. **D3: Capital-friction trend window size not explicitly pinned.** Plan §G T-D.1 + spec §4.4 do not explicitly pin the multi-run trend window size for capital-friction (spec §4.4 only specifies "≥5 runs"). Implementation reused the funnel surface's 30-trading-session window for operator-readability parity. **Amendment:** plan §G T-D.1 wording — add explicit window-size lock.
+
+4. **D4: `MaturityStageRow` carries `capital_denominator_dollars` + `capital_denominator_badge_text` fields not in plan §G T-D.3 acceptance.** Per Codex R1 M#1 + R2 M#1 fixes (verbatim plan §A.6 line 233 inline-text LOCK required visibility per-row), the dataclass gains both fields beyond what plan §G T-D.3 enumerated. **Amendment:** plan §G T-D.3 acceptance criteria.
+
+5. **D5: `IdentificationFunnelPoint.aplus_take_rate_per_run` is NOT clamped to [0, 1].** Per Codex R1 M#3 fix, the rate is honestly emitted as `aplus_taken / aplus_id` without bounding. Plan §G T-D.5 + spec §3.6 say "proportion" implying [0, 1] in typical reading. **Amendment:** clarify "≥0; values >1 surface as data-quality anomaly signals (not clamped)" — see lesson #25.
+
+### 4 forward-binding lessons for Sub-bundle E dispatch (return report §9; #23-#26 in cumulative catalog)
+
+1. **#23 (NEW from D R1 M#1):** Plan-prescribed verbatim explanatory text MUST surface through a dedicated dataclass FIELD + template rendering target (NOT a `title="..."` hover-only attribute, which fails mobile + non-mouse usage AND loses audit-trail intent). Discriminating-test pattern: assert `data-{marker}=` substring in body PLUS assert `title="{format_prefix}"` substring absent. Forward-relevance for Sub-bundle E: process-grade-trend chart annotations + reconciliation badge text MUST follow this pattern.
+
+2. **#24 (NEW from D R1 M#2):** Session-anchor read/write mismatch family extension — when a plan pins per-run aggregation on `pipeline_runs.started_ts.date()`, the implementation MUST use exactly that column (NOT `data_asof_date`, NOT `action_session_date`). These diverge on weekend/holiday runs in ways that silently drop or misbucket historical data points. Discriminating-test pattern: seed a row with `started_ts` and `data_asof_date` divergent, assert correct inclusion.
+
+3. **#25 (NEW from D R1 M#3):** Bounded-range metrics MUST distinguish mathematically-bounded cases (e.g., `num <= denom` by SQL construction → rate ∈ [0, 1] guaranteed) from two-source aggregates (numerator + denominator independently computed → ratio can exceed 1 in anomaly cases). Clamping the latter HIDES data-quality issues. Pattern: bounded-by-construction → assert bounds; two-source → allow honest values + add anomaly badge surface. Forward-relevance for Sub-bundle E: process_grade aggregates may face the same.
+
+4. **#26 (NEW from D R3 m#1):** SQL `ORDER BY` clauses on potentially-tied columns MUST include a deterministic tiebreaker (typically `id DESC`). Plan + Codex consistently catch nondeterminism in latest-record queries.
+
+### Production-state observation (not blocking)
+
+Maturity-stage surface renders 4 of 5 open positions (DHC/YOU/VSAT/CVGI shown; **LAR missing**). Production has 5 open trades per Phase 9 + Phase 10 prior gates. Root cause: `swing/data/repos/daily_management.list_open_position_active_snapshots(conn)` clamps to latest `data_asof_session` per trade; LAR has no recent daily_management snapshot covering current session. This is a **daily-management capture gap** at the operator-flow level, NOT a code regression. Operator may record fresh LAR snapshot via daily-management surface to surface LAR in maturity-stage.
+
+### Post-merge state
+
+- HEAD on main: `a71cc24` (integration merge) + housekeeping commit (this entry).
+- Active risk_policy: `policy_id=5` (unchanged through Sub-bundles A+B+C+D).
+- Cross-bundle pin at T-A.7 (still SKIPPED): un-skip lands at Sub-bundle E T-E.3 retrofit of 6 existing base-layout VMs.
+- Sub-bundle E executing-plans dispatch UNBLOCKED (CLOSES Phase 10).
+- Cumulative pending V2.1 §VII.F amendment candidates: **22** entering Sub-bundle E (was 17 entering D; +5 this dispatch). Phase 10 arc cumulative ACCEPT-WITH-RATIONALE: ZERO (cleanest 4-bundle arc state in project history).
+- 6 worktree husks pending cleanup-script (4 Phase 9 still-registered + 1 Sub-bundle C orphan + 1 Sub-bundle D orphan).
+
+### Cross-references
+
+- Sub-bundle D return report: `docs/phase10-bundle-D-return-report.md`.
+- Sub-bundle D dispatch brief: `docs/phase10-bundle-D-executing-plans-dispatch-brief.md`.
+- Plan §G (lines 1354-1550) consumed; AMENDED §A.6 + §A.7 + §A.18 + §A.19 + §A.20 from Sub-bundle A inherited.
+- Phase 10 plan: `docs/superpowers/plans/2026-05-13-phase10-metrics-dashboard-plan.md`.
+
+---
+
 ## 2026-05-13 Phase 10 Sub-bundle C ship: 5 spec amendments + 3 forward-binding lessons + cleanup-script gap surfaced
 
 **Sub-bundle C SHIPPED 2026-05-13** at `a814006` (integration merge of `phase10-bundle-C-tier-and-deviation`). 8 commits = 5 task-impl (T-C.1..T-C.5) + 1 Codex-fix + 2 return-report; **2 Codex rounds → NO_NEW_CRITICAL_MAJOR** — ties FASTEST Phase 10 chain (B + Phase 9 E precedent). ZERO Critical + ZERO ACCEPT-WITH-RATIONALE.
