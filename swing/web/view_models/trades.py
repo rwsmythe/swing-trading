@@ -658,11 +658,15 @@ class ReviewVM:
     mistake_cost_R_display: float | None = None  # noqa: N815
     lucky_violation_R_display: float | None = None  # noqa: N815
 
+    # Phase 10 Sub-bundle E T-E.3 — unresolved-material discrepancy banner.
+    unresolved_material_discrepancies_count: int = 0
+
 
 def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
     """Build the review-page VM. Returns None if trade not found, not closed,
     or already reviewed (V1 single-review-per-trade per brief §3.2).
     """
+    from swing.metrics.discrepancies import count_unresolved_material
     from swing.trades.review import (
         DISQUALIFYING_VIOLATIONS,
         MISTAKE_TAGS,
@@ -691,6 +695,7 @@ def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
                 f for f in list_fills_for_trade(conn, trade_id)
                 if f.action != "entry"
             ]
+            unresolved_material_count = count_unresolved_material(conn)
     finally:
         conn.close()
     exits = tuple(_fill_to_exit_like(f, trade) for f in non_entry_fills)
@@ -727,6 +732,7 @@ def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
         disqualifying_violations_reference=DISQUALIFYING_VIOLATIONS,
         mistake_cost_R_display=mistake_cost_R_display,
         lucky_violation_R_display=lucky_violation_R_display,
+        unresolved_material_discrepancies_count=unresolved_material_count,
     )
 
 
@@ -745,6 +751,8 @@ class CadenceCompleteVM:
     price_source_degraded: bool = False
     price_source_degraded_until: str | None = None
     ohlcv_source_degraded: bool = False
+    # Phase 10 Sub-bundle E T-E.3 — unresolved-material discrepancy banner.
+    unresolved_material_discrepancies_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -757,10 +765,13 @@ class ReviewsPendingVM:
     price_source_degraded: bool = False
     price_source_degraded_until: str | None = None
     ohlcv_source_degraded: bool = False
+    # Phase 10 Sub-bundle E T-E.3 — unresolved-material discrepancy banner.
+    unresolved_material_discrepancies_count: int = 0
 
 
 def build_reviews_pending_vm(*, cfg: Config) -> ReviewsPendingVM:
     from swing.data.repos.review_log import list_unreviewed_closed_trades
+    from swing.metrics.discrepancies import count_unresolved_material
     conn = connect(cfg.paths.db_path)
     try:
         # Spec §3.1: list-view shows ALL closed-unreviewed (window_days=None).
@@ -769,17 +780,20 @@ def build_reviews_pending_vm(*, cfg: Config) -> ReviewsPendingVM:
         trades = list_unreviewed_closed_trades(
             conn, window_days=None, today_iso=None,
         )
+        unresolved_material_count = count_unresolved_material(conn)
     finally:
         conn.close()
     return ReviewsPendingVM(
         trades=tuple(trades),
         window_days=cfg.review.review_window_days,
+        unresolved_material_discrepancies_count=unresolved_material_count,
     )
 
 
 def build_cadence_complete_vm(*, review_id: int, cfg: Config) -> CadenceCompleteVM | None:
     """Returns None for unknown review or already-completed review (404 in route)."""
     from swing.data.repos.review_log import get
+    from swing.metrics.discrepancies import count_unresolved_material
     conn = connect(cfg.paths.db_path)
     try:
         review = get(conn, review_id)
@@ -810,12 +824,14 @@ def build_cadence_complete_vm(*, review_id: int, cfg: Config) -> CadenceComplete
             period_start=review.period_start,
             period_end=review.period_end,
         ))
+        unresolved_material_count = count_unresolved_material(conn)
     finally:
         conn.close()
     return CadenceCompleteVM(
         review=review,
         n_closed_trades_in_period=n,
         trades_during_period=trades_during_period,
+        unresolved_material_discrepancies_count=unresolved_material_count,
     )
 
 
@@ -891,6 +907,8 @@ class TradeDetailVM:
     price_source_degraded: bool = False
     price_source_degraded_until: str | None = None
     ohlcv_source_degraded: bool = False
+    # Phase 10 Sub-bundle E T-E.3 — global discrepancy banner counter (header).
+    unresolved_material_discrepancies_count: int = 0
 
 
 def _load_audit_entries(
@@ -948,6 +966,7 @@ def build_trade_detail_vm(
     (closed trades render the "No advisories." empty state per B.AC.4).
     """
     from swing.data.repos.fills import get_authoritative_entry_fill
+    from swing.metrics.discrepancies import count_unresolved_material
 
     conn = connect(cfg.paths.db_path)
     try:
@@ -958,6 +977,7 @@ def build_trade_detail_vm(
             fills = tuple(list_fills_for_trade(conn, trade_id))
             audit_entries = _load_audit_entries(conn, trade_id)
             entry_fill = get_authoritative_entry_fill(conn, trade_id)
+            unresolved_material_count = count_unresolved_material(conn)
             # Latest weather — pipeline writer stamps `data_asof_date` on
             # weather rows, so read-only UIs MUST use get_latest (per CLAUDE.md
             # "Weather lookup in read-only UIs must NOT query by
@@ -1077,6 +1097,7 @@ def build_trade_detail_vm(
         audit_entries=audit_entries,
         fills=fills,
         advisories=advisories,
+        unresolved_material_discrepancies_count=unresolved_material_count,
     )
 
 

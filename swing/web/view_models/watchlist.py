@@ -40,6 +40,8 @@ class WatchlistVM:
     price_source_degraded_until: str | None
     stale_banner: str | None = None   # placeholder — populated only on the main dashboard
     ohlcv_source_degraded: bool = False              # NEW (Phase 3d §3.4)
+    # Phase 10 Sub-bundle E T-E.3 — unresolved-material discrepancy banner.
+    unresolved_material_discrepancies_count: int = 0
     # Spec §3.5 (Phase 4 Task 4.2): SIBLING to flag_tags. {ticker: 'flag (0.78)'}
     # for chart-scope tickers with detected flag patterns. Default empty dict so
     # VMs constructed without classifications (tests, fixtures, code paths
@@ -85,6 +87,8 @@ class WatchlistExpandedVM:
 
 
 def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
+    from swing.metrics.discrepancies import count_unresolved_material
+
     now = datetime.now()
     conn = connect(cfg.paths.db_path)
     try:
@@ -118,6 +122,7 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
                 )
             else:
                 classifications = {}
+            unresolved = count_unresolved_material(conn)
     finally:
         conn.close()
     by_ticker = {c.ticker: c for c in candidates}
@@ -146,6 +151,7 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
             degraded_until.isoformat(timespec="seconds") if degraded_until else None
         ),
         pattern_tags=pattern_tags,
+        unresolved_material_discrepancies_count=unresolved,
     )
 
 

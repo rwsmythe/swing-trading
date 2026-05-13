@@ -107,6 +107,8 @@ class JournalVM:
     price_source_degraded: bool = False
     price_source_degraded_until: str | None = None
     ohlcv_source_degraded: bool = False              # NEW (Phase 3d §3.4)
+    # Phase 10 Sub-bundle E T-E.3 — unresolved-material discrepancy banner.
+    unresolved_material_discrepancies_count: int = 0
 
 
 def build_journal(*, cfg: Config, period: str = "month") -> JournalVM:
@@ -114,6 +116,8 @@ def build_journal(*, cfg: Config, period: str = "month") -> JournalVM:
         raise ValueError(
             f"unknown period {period!r}; allowed: {sorted(_ALLOWED_PERIODS)}"
         )
+    from swing.metrics.discrepancies import count_unresolved_material
+
     today = date.today()
     conn = connect(cfg.paths.db_path)
     try:
@@ -124,6 +128,7 @@ def build_journal(*, cfg: Config, period: str = "month") -> JournalVM:
             # adapters retire.
             exits = _list_all_exitshape_via_fills(conn)
             weather = list_weather_runs(conn)
+            unresolved = count_unresolved_material(conn)
     finally:
         conn.close()
     # Filter trades to the selected period.
@@ -136,4 +141,5 @@ def build_journal(*, cfg: Config, period: str = "month") -> JournalVM:
         period=period, stats=stats, flags=list(flags),
         trades=list(filtered),
         session_date=today.isoformat(),
+        unresolved_material_discrepancies_count=unresolved,
     )

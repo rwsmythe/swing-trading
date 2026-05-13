@@ -104,14 +104,6 @@ def test_all_metrics_vms_have_base_layout_fields():
         )
 
 
-@pytest.mark.skip(
-    reason=(
-        "Sub-bundle E T-E.3 adds unresolved_material_discrepancies_count to "
-        "DashboardVM/PipelineVM/JournalVM/WatchlistVM/ConfigVM/PageErrorVM "
-        "per plan §A.18 + §I.5; this test is the cross-bundle pin — "
-        "un-skipped + verified passing in Sub-bundle E."
-    ),
-)
 def test_existing_dashboard_vm_has_unresolved_material_field():
     """Cross-bundle pin per plan §A.18 + §I.5.
 

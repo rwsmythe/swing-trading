@@ -21,15 +21,20 @@ class PipelineVM:
     price_source_degraded: bool = False
     price_source_degraded_until: str | None = None
     ohlcv_source_degraded: bool = False              # NEW (Phase 3d §3.4)
+    # Phase 10 Sub-bundle E T-E.3 — unresolved-material discrepancy banner.
+    unresolved_material_discrepancies_count: int = 0
 
 
 def build_pipeline(*, cfg: Config, limit: int = 10, ohlcv_degraded: bool = False) -> PipelineVM:
+    from swing.metrics.discrepancies import count_unresolved_material
+
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
             runs = list_recent_runs(conn, limit=limit)
             active = find_active_run(conn)
             stale = active if (active is not None and is_stale_eligible(active, cfg)) else None
+            unresolved = count_unresolved_material(conn)
     finally:
         conn.close()
     return PipelineVM(
@@ -37,4 +42,5 @@ def build_pipeline(*, cfg: Config, limit: int = 10, ohlcv_degraded: bool = False
         recent_runs=list(runs),
         stale_run=stale,
         ohlcv_source_degraded=ohlcv_degraded,            # NEW (Phase 3d §3.4)
+        unresolved_material_discrepancies_count=unresolved,
     )
