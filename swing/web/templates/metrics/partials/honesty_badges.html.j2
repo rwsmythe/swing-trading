@@ -1,0 +1,9 @@
+{#- Shared honesty-badge rendering for Class A/B/C/D metrics.
+    Per spec §4.9: badges render as TEXT inline (NOT color-only).
+    Caller passes ``badges`` (a swing.metrics.honesty.HonestyBadges) in
+    context. -#}
+{% if badges %}
+  {% if badges.confidence_floor_warning %}<span class="badge badge-warn-floor" title="below confidence floor (n<20)">below confidence floor (n&lt;20)</span>{% endif %}
+  {% if badges.low_confidence_warning %}<span class="badge badge-low-confidence" title="low confidence (n=3 or 4)">low confidence (n=3 or 4)</span>{% endif %}
+  {% if badges.window_not_full_warning %}<span class="badge badge-window-not-full" title="rolling window not yet at N">rolling window not yet at N</span>{% endif %}
+{% endif %}

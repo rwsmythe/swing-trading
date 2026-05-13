@@ -1,0 +1,13 @@
+{#- Class B mean-metric row: BootstrapCI OR suppression placeholder. -#}
+<tr class="metric-row metric-class-b {% if cell.value.__class__.__name__ == 'SuppressedMetric' %}suppressed{% endif %}">
+  <td>{{ cell.name }}</td>
+  {% if cell.value.__class__.__name__ == 'SuppressedMetric' %}
+  <td colspan="3"><em>{{ cell.value.placeholder_text }}</em></td>
+  <td></td>
+  {% else %}
+  <td>{{ "%.3f"|format(cell.value.point) }}</td>
+  <td>{{ "%.3f"|format(cell.value.lower) }}</td>
+  <td>{{ "%.3f"|format(cell.value.upper) }}</td>
+  <td>{% with badges = cell.badges %}{% include "metrics/partials/honesty_badges.html.j2" %}{% endwith %}</td>
+  {% endif %}
+</tr>

@@ -647,6 +647,17 @@ class ReviewVM:
     price_source_degraded_until: str | None = None
     ohlcv_source_degraded: bool = False
 
+    # Phase 10 Sub-bundle B Task T-B.7 (electives amendment §2): per-trade
+    # derived mistake_cost_R + lucky_violation_R values surfaced
+    # symmetrically on the review form. Computed at VM build time via the
+    # Phase 6 helpers (``swing/trades/review.py``) from
+    # ``trade.realized_R_if_plan_followed`` + ``actual_realized_R_effective``.
+    # Both render as ``None`` when ``realized_R_if_plan_followed IS NULL``
+    # (operator did not record a counterfactual at review-form save time)
+    # OR when the value is 0.0 (plan-followed-exactly).
+    mistake_cost_R_display: float | None = None  # noqa: N815
+    lucky_violation_R_display: float | None = None  # noqa: N815
+
 
 def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
     """Build the review-page VM. Returns None if trade not found, not closed,
@@ -656,6 +667,8 @@ def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
         DISQUALIFYING_VIOLATIONS,
         MISTAKE_TAGS,
         compute_actual_realized_R_effective,
+        compute_lucky_violation_R,
+        compute_mistake_cost_R,
     )
 
     conn = connect(cfg.paths.db_path)
@@ -682,11 +695,38 @@ def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
         conn.close()
     exits = tuple(_fill_to_exit_like(f, trade) for f in non_entry_fills)
     actual_r = compute_actual_realized_R_effective(trade, list(exits))
+
+    # Phase 10 T-B.7 elective (per electives amendment §2): derive per-trade
+    # mistake_cost_R + lucky_violation_R via Phase 6 helpers. Both surface
+    # as None when realized_R_if_plan_followed is NULL OR when the
+    # computed value equals 0.0 (plan-followed-exactly). The "—" placeholder
+    # rendering at the template layer keys on the None value.
+    mistake_cost_raw = compute_mistake_cost_R(
+        realized_R_if_plan_followed=trade.realized_R_if_plan_followed,
+        actual_realized_R_effective=actual_r,
+    )
+    lucky_violation_raw = compute_lucky_violation_R(
+        realized_R_if_plan_followed=trade.realized_R_if_plan_followed,
+        actual_realized_R_effective=actual_r,
+    )
+    mistake_cost_R_display = (  # noqa: N806
+        None
+        if trade.realized_R_if_plan_followed is None or mistake_cost_raw == 0.0
+        else mistake_cost_raw
+    )
+    lucky_violation_R_display = (  # noqa: N806
+        None
+        if trade.realized_R_if_plan_followed is None
+        or lucky_violation_raw == 0.0
+        else lucky_violation_raw
+    )
     return ReviewVM(
         trade=trade,
         actual_realized_R_effective=actual_r,
         mistake_tag_categories=MISTAKE_TAGS,
         disqualifying_violations_reference=DISQUALIFYING_VIOLATIONS,
+        mistake_cost_R_display=mistake_cost_R_display,
+        lucky_violation_R_display=lucky_violation_R_display,
     )
 
 
