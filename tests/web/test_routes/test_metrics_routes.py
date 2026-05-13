@@ -122,3 +122,101 @@ def test_metrics_index_top_nav_link_in_base_layout(seeded_db):
     monkeypatch.undo()
     assert r.status_code == 200
     assert 'href="/metrics"' in r.text
+
+
+# ---------------------------------------------------------------------------
+# Sub-bundle B Task T-B.3: GET /metrics/trade-process
+# ---------------------------------------------------------------------------
+
+def test_trade_process_endpoint_returns_200(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/trade-process")
+    assert r.status_code == 200
+    assert "Trade-process metrics" in r.text
+
+
+def test_trade_process_renders_all_5_tabs_in_html_body(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/trade-process")
+    assert r.status_code == 200
+    # All 4 registered cohort names + the "All closed trades" toggle label.
+    for label in (
+        "A+ baseline",
+        "Near-A+ defensible: extension test",
+        "Sub-A+ VCP-not-formed",
+        "Capital-blocked: smaller-position test",
+        "All closed trades",
+    ):
+        assert label in r.text, f"missing cohort tab label: {label}"
+
+
+def test_trade_process_default_active_is_first_cohort(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/trade-process")
+    # Default-active marker should target the FIRST cohort, NOT "all".
+    assert 'data-cohort-key="A+ baseline"' in r.text
+
+
+def test_trade_process_at_zero_trades_renders_suppression_placeholders_in_html(
+    seeded_db,
+):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/trade-process")
+    assert r.status_code == 200
+    # Spec §5.6 suppression text format.
+    assert "n too low" in r.text
+
+
+def test_trade_process_extends_base_layout(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/trade-process")
+    assert r.status_code == 200
+    assert 'class="topbar"' in r.text
+
+
+def test_trade_process_cohort_query_param_selects_active_tab(seeded_db):
+    """Operator-supplied ``?cohort=<name>`` selects the active tab."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(
+            "/metrics/trade-process",
+            params={"cohort": "Sub-A+ VCP-not-formed"},
+        )
+    assert r.status_code == 200
+    assert 'data-cohort-key="Sub-A+ VCP-not-formed"' in r.text
+
+
+def test_trade_process_registered_in_app_routes(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    route_paths = {r.path for r in app.routes if hasattr(r, "path")}
+    assert "/metrics/trade-process" in route_paths
+
+
+def test_trade_process_renders_no_color_only_badges(seeded_db):
+    """Per spec §4.9 + plan §A.9: badges render as TEXT inline, never
+    color-only. Sanity check: at our default-tab n=0, NO badges are
+    expected to render (everything suppressed), but the literal text
+    'background:red' or similar should never appear in the body."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/trade-process")
+    body = r.text
+    for forbidden in ("background:red", "background:green", "color:red",
+                      "color:green"):
+        assert forbidden not in body, (
+            f"Color-only inline style {forbidden!r} present — spec §4.9 "
+            "binds badges to TEXT-only rendering"
+        )

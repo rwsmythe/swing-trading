@@ -1,0 +1,117 @@
+{% extends "base.html.j2" %}
+{% block title %}Trade-process metrics — Swing Trading{% endblock %}
+{% block content %}
+<section class="metrics-trade-process">
+  <h1>Trade-process metrics</h1>
+  <p class="muted">
+    Spec §4.1 — per-cohort closed-trade metrics across the 4 pre-registered
+    hypothesis cohorts + "All closed trades" toggle. Per spec §5 honesty
+    policy: metrics suppressed under the per-class sample-size floor; CI
+    + warning badges render inline.
+  </p>
+
+  {% include "metrics/partials/cohort_tabs.html.j2" %}
+
+  {% set ns = namespace(active=none) %}
+  {% for tab in vm.cohort_tabs %}
+    {% if tab.is_active %}{% set ns.active = tab %}{% endif %}
+  {% endfor %}
+  {% set active = ns.active %}
+
+  {% if active is not none %}
+  <section class="metrics-active-cohort" data-cohort-key="{{ active.cohort_key }}">
+    <h2>{{ active.label }} <span class="muted">({{ active.n_closed }} closed)</span></h2>
+
+    {% if active.metrics.legacy_trades_count > 0 %}
+    <p class="muted legacy-annotation">
+      {{ active.metrics.legacy_trades_count }} legacy pre-Phase-9 trade(s)
+      contribute under LIVE policy fallback (NULL risk_policy_id_at_lock).
+    </p>
+    {% endif %}
+
+    <h3>Headline (Class B means)</h3>
+    <table class="metric-grid">
+      <thead><tr><th>Metric</th><th>Value</th><th>Lower</th><th>Upper</th><th>Badges</th></tr></thead>
+      <tbody>
+        {% for cell in [
+          active.metrics.realized_R,
+          active.metrics.expectancy_R,
+          active.metrics.gross_realized_R,
+          active.metrics.avg_win_R,
+          active.metrics.avg_loss_R,
+          active.metrics.mfe_R,
+          active.metrics.mae_R,
+          active.metrics.capture_ratio,
+          active.metrics.giveback_R_winner,
+          active.metrics.giveback_R_winner_to_loser,
+          active.metrics.entry_adverse_slippage_R,
+          active.metrics.holding_period_days,
+          active.metrics.mistake_cost_R_per_trade,
+          active.metrics.lucky_violation_R_per_trade,
+        ] %}
+        {% include "metrics/partials/metric_row_b.html.j2" %}
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <h3>Rate metrics (Class A — Wilson CI)</h3>
+    <table class="metric-grid">
+      <thead><tr><th>Metric</th><th>k / n</th><th>Rate</th><th>Lower</th><th>Upper</th><th>Badges</th></tr></thead>
+      <tbody>
+        {% for cell in [
+          active.metrics.win_rate,
+          active.metrics.loss_rate,
+          active.metrics.scratch_rate,
+          active.metrics.disqualifying_process_violation_rate,
+        ] %}
+        {% include "metrics/partials/metric_row_a.html.j2" %}
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <h3>Ratio metrics (Class C — point estimates)</h3>
+    <table class="metric-grid">
+      <thead><tr><th>Metric</th><th>Value</th><th>n / wins / losses</th><th>Badges</th></tr></thead>
+      <tbody>
+        {% for cell in [active.metrics.profit_factor, active.metrics.payoff_ratio] %}
+        {% include "metrics/partials/metric_row_c.html.j2" %}
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <h3>Cohort sums (per spec §3.1 mistake-cost / lucky-violation totals)</h3>
+    <ul class="point-totals">
+      <li><strong>{{ active.metrics.mistake_cost_R_total.name }}:</strong>
+          {{ "%.2f"|format(active.metrics.mistake_cost_R_total.value) }} R
+          (cohort sum over {{ active.metrics.n_closed }} closed trades)</li>
+      <li><strong>{{ active.metrics.lucky_violation_R_total.name }}:</strong>
+          {{ "%.2f"|format(active.metrics.lucky_violation_R_total.value) }} R</li>
+    </ul>
+
+    <h3>Process-grade distribution</h3>
+    <table class="metric-grid">
+      <thead><tr><th>Grade</th><th>k / n</th><th>Rate</th><th>Lower</th><th>Upper</th><th>Badges</th></tr></thead>
+      <tbody>
+        {% for grade, cell in active.metrics.process_grade_distribution.items() %}
+        {% include "metrics/partials/metric_row_a.html.j2" %}
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <h3>Mistake-tag frequency</h3>
+    {% if active.metrics.mistake_tag_frequency %}
+    <table class="metric-grid">
+      <thead><tr><th>Tag</th><th>k / n</th><th>Rate</th><th>Lower</th><th>Upper</th><th>Badges</th></tr></thead>
+      <tbody>
+        {% for tag, cell in active.metrics.mistake_tag_frequency.items() %}
+        {% include "metrics/partials/metric_row_a.html.j2" %}
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">No mistake tags recorded yet for this cohort.</p>
+    {% endif %}
+  </section>
+  {% endif %}
+</section>
+{% endblock %}

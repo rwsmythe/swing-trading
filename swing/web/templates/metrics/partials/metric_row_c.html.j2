@@ -1,0 +1,16 @@
+{#- Class C ratio-metric row: point value OR suppression placeholder. -#}
+<tr class="metric-row metric-class-c {% if cell.value.__class__.__name__ == 'SuppressedMetric' %}suppressed{% endif %}">
+  <td>{{ cell.name }}</td>
+  {% if cell.value.__class__.__name__ == 'SuppressedMetric' %}
+  <td colspan="2"><em>{{ cell.value.placeholder_text }}</em></td>
+  <td></td>
+  {% elif cell.value is none %}
+  <td><em>—</em></td>
+  <td>{{ cell.sample_n }} / {{ cell.n_wins }} / {{ cell.n_losses }}</td>
+  <td></td>
+  {% else %}
+  <td>{{ "%.3f"|format(cell.value) }}</td>
+  <td>{{ cell.sample_n }} / {{ cell.n_wins }} / {{ cell.n_losses }}</td>
+  <td>{% with badges = cell.badges %}{% include "metrics/partials/honesty_badges.html.j2" %}{% endwith %}</td>
+  {% endif %}
+</tr>

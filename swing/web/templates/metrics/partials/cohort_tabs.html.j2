@@ -1,0 +1,15 @@
+{#- Shared per-cohort tab nav (plan §A.9 LOCK: pure server-rendered <a>
+    anchors with query-string ?cohort=<name>, NOT HTMX OOB-swap). -#}
+<nav class="cohort-tabs" aria-label="Cohort tabs">
+  <ul>
+    {% for tab in vm.cohort_tabs %}
+    <li class="cohort-tab {% if tab.is_active %}active{% endif %}">
+      <a href="?cohort={{ tab.cohort_key|urlencode }}"
+         {% if tab.is_active %}aria-current="page"{% endif %}>
+        <span class="cohort-tab-label">{{ tab.label }}</span>
+        <span class="cohort-tab-count muted">({{ tab.n_closed }})</span>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+</nav>

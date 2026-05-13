@@ -1,0 +1,15 @@
+{#- Class A rate-metric row: WilsonCI OR suppression placeholder.
+    Per spec §5.6: suppression renders as italic placeholder text. -#}
+<tr class="metric-row metric-class-a {% if cell.value.__class__.__name__ == 'SuppressedMetric' %}suppressed{% endif %}">
+  <td>{{ cell.name }}</td>
+  {% if cell.value.__class__.__name__ == 'SuppressedMetric' %}
+  <td colspan="4"><em>{{ cell.value.placeholder_text }}</em></td>
+  <td></td>
+  {% else %}
+  <td>{{ cell.events_k }} / {{ cell.sample_n }}</td>
+  <td>{{ "%.3f"|format(cell.value.point) }}</td>
+  <td>{{ "%.3f"|format(cell.value.lower) }}</td>
+  <td>{{ "%.3f"|format(cell.value.upper) }}</td>
+  <td>{% with badges = cell.badges %}{% include "metrics/partials/honesty_badges.html.j2" %}{% endwith %}</td>
+  {% endif %}
+</tr>

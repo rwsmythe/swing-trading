@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import sqlite3
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 
 from swing.web.view_models.metrics.index import build_metrics_index_vm
+from swing.web.view_models.metrics.trade_process_card import (
+    build_trade_process_card_vm,
+)
 
 router = APIRouter()
 
@@ -31,4 +34,22 @@ def metrics_index(request: Request):
         conn.close()
     return request.app.state.templates.TemplateResponse(
         request, "metrics/index.html.j2", {"vm": vm},
+    )
+
+
+@router.get("/metrics/trade-process", response_class=HTMLResponse)
+def metrics_trade_process(
+    request: Request,
+    cohort: str | None = Query(default=None),
+):
+    """Spec §4.1 trade-process card — Sub-bundle B Task T-B.3.
+
+    Renders 5 cohort tabs (4 registry cohorts + "All closed trades").
+    The active tab is operator-selected via ``?cohort=<name>``;
+    default-active is the FIRST cohort per spec §4.1 binding.
+    """
+    cfg = request.app.state.cfg
+    vm = build_trade_process_card_vm(cfg=cfg, active_cohort_key=cohort)
+    return request.app.state.templates.TemplateResponse(
+        request, "metrics/trade_process_card.html.j2", {"vm": vm},
     )
