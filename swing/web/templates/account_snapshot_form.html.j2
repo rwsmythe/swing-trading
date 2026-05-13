@@ -1,0 +1,62 @@
+{% extends "base.html.j2" %}
+{% block title %}Record account snapshot — Swing Trading{% endblock %}
+{% block content %}
+<section class="account-snapshot-form">
+  <h1>Record account snapshot</h1>
+  <p class="muted">
+    Phase 10 manual ``account_equity_snapshots`` capture surface (electives
+    amendment §2 / spec §8.2). Server-stamps ``snapshot_date`` from
+    <code>last_completed_session(now)</code> at handler entry (Phase 8
+    server-stamping discipline). Source defaults to <code>manual</code>;
+    Schwab API integration (Phase 11 candidate) would override.
+  </p>
+
+  {% if vm.error_message %}
+  <aside class="banner banner-error"
+         data-form-error="account-snapshot">
+    {{ vm.error_message }}
+  </aside>
+  {% endif %}
+
+  <form method="post"
+        action="/account/snapshot"
+        hx-post="/account/snapshot"
+        hx-headers='{"HX-Request": "true"}'>
+    {# Phase 8 server-stamping discipline: snapshot_date is computed at
+       handler entry from ``last_completed_session(datetime.now())`` and
+       persisted from THAT value. The display-only span shows the value
+       the server will use; operator cannot tamper. No hidden input. #}
+    <p>
+      <label for="snapshot_date_display">Snapshot date</label><br>
+      <span id="snapshot_date_display"
+            class="muted"
+            data-field="snapshot_date_display">{{ vm.snapshot_date_display }}</span>
+      <br>
+      <em class="muted">Server-stamped from last_completed_session(now); not editable.</em>
+    </p>
+
+    <p>
+      <label for="equity_dollars">Equity (USD)</label><br>
+      <input type="number"
+             id="equity_dollars"
+             name="equity_dollars"
+             step="0.01"
+             required
+             value="{{ vm.equity_dollars_value }}">
+    </p>
+
+    <p>
+      <label for="note">Note (optional)</label><br>
+      <input type="text"
+             id="note"
+             name="note"
+             maxlength="500"
+             value="{{ vm.note_value }}">
+    </p>
+
+    <p>
+      <button type="submit">Record snapshot</button>
+    </p>
+  </form>
+</section>
+{% endblock %}

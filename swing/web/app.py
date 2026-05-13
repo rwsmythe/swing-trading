@@ -318,6 +318,9 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=_static_dir()), name="static")
 
     from swing.web.routes import (
+        account as account_route,
+    )
+    from swing.web.routes import (
         config as config_route,
     )
     from swing.web.routes import (
@@ -349,5 +352,6 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
     app.include_router(recommendations_route.router)
     app.include_router(config_route.router)
     app.include_router(metrics_route.router)
+    app.include_router(account_route.router)
 
     return app
