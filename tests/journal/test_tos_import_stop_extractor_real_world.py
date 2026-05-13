@@ -81,6 +81,11 @@ def test_extract_stop_orders_2026_04_30_base_prefix_skipped() -> None:
     assert "CC" in stops
     cc_price, cc_order_id = stops["CC"]
     assert cc_price == 20.51
+    # Codex R1 Major #2 contract (recon doc §2.D): the CC winning
+    # continuation has Spread="" (the third line `,,,,,,,,,,,20.51,STP,,`);
+    # the predecessor row carries `TRG BY #1006193131983` in Spread which
+    # MUST NOT leak as the order_id. Either way, cc_order_id is None.
+    assert cc_order_id is None
     assert "DHC" in stops
     dhc_price, dhc_order_id = stops["DHC"]
     assert dhc_price == 7.06
@@ -239,6 +244,93 @@ def test_reconcile_2026_05_12_zero_stop_mismatch_when_stops_match(
         )
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# §4 — Codex R1 Major #1 regression: duplicate-unnamed-column robustness.
+# Schwab/TOS Account Order History uses TWO unnamed columns; a future Schwab
+# drift adding a THIRD unnamed column (or shuffling positions) MUST NOT
+# regress the STP-marker scan. The post-fix parser renames every duplicate /
+# empty header to ``col_<idx>`` + scans EVERY such slot for the STP marker.
+# Pre-fix the parser relied on a narrow ``row[""]`` lookup which DictReader
+# collapsed to a single column slot.
+# ---------------------------------------------------------------------------
+
+
+_EXTRA_UNNAMED_COLUMN_FIXTURE = (
+    "Account Order History\n"
+    # THREE unnamed columns (one between Notes/Time Placed, one between
+    # PRICE/TIF, one between TIF/Status) — Schwab drift simulation.
+    "Notes,,Time Placed,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,"
+    "Type,PRICE,,TIF,,Status\n"
+    # Header row + continuation: identical shape with one extra blank
+    # cell to keep the STP marker in a positional unnamed slot.
+    ",,5/11/26 23:09:41,STOCK,SELL,-20,TO CLOSE,CVGI,,,STOCK,~,MKT,GTC,,WORKING\n"
+    ",,,RE #1006290692715,,,,,,,,4.36,STP,STD,,\n"
+)
+
+
+def test_extract_stop_orders_extra_unnamed_column_drift() -> None:
+    """Codex R1 Major #1 regression: a Schwab export with an EXTRA blank
+    header column inserted into the Account Order History block MUST NOT
+    regress the STP marker scan. Pre-fix the parser relied on
+    ``row[""]`` which DictReader collapsed to the last unnamed column —
+    a shifted STP slot silently broke marker detection. Post-fix all
+    duplicate/empty headers are renamed to ``col_<idx>`` + the marker
+    scan iterates every such slot.
+    """
+    sections = parse_tos_export(_EXTRA_UNNAMED_COLUMN_FIXTURE)
+    rows = sections["Account Order History"]
+    stops = extract_stop_orders(rows)
+    assert stops == {"CVGI": (4.36, "1006290692715")}, (
+        f"expected CVGI stop extracted under extra-blank-column drift; "
+        f"got {stops!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# §5 — Codex R1 Major #2 regression: ``TRG BY #...`` MUST NOT leak as
+# the stop's order_id. Builds a synthetic 2-line group whose continuation
+# row carries the trigger reference in Spread + a numeric STP price.
+# Pre-fix ``_clean_order_id("TRG BY #999")`` returned ``"TRG BY #999"``;
+# post-fix it returns ``None``.
+# ---------------------------------------------------------------------------
+
+
+_TRG_BY_ONLY_CONTINUATION_FIXTURE = (
+    "Account Order History\n"
+    "Notes,,Time Placed,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,"
+    "Type,PRICE,,TIF,Status\n"
+    # Header row (MKT WORKING) + a single continuation row whose Spread
+    # carries TRG BY #999 (NOT a RE # prefix) AND a numeric STP price.
+    # Pre-fix the order_id would have leaked as 'TRG BY #999'.
+    ",,5/11/26 23:09:41,STOCK,SELL,-20,TO CLOSE,XYZ,,,STOCK,~,MKT,GTC,WORKING\n"
+    ",,,TRG BY #999,,,,,,,,50.00,STP,STD,\n"
+)
+
+
+def test_extract_stop_orders_trg_by_only_in_continuation_returns_none_order_id() -> None:
+    """Codex R1 Major #2 contract: a continuation row carrying ONLY
+    ``TRG BY #...`` (no ``RE #`` prefix) is a trigger-order reference,
+    NOT a stop order id. ``_clean_order_id`` MUST reject it and the
+    emitted stop MUST have ``order_id=None``.
+
+    Pre-fix the order_id was leaked literally as ``"TRG BY #999"`` —
+    downstream callers would have surfaced it as if it were a Schwab
+    order id, silently misrepresenting the broker order chain in any
+    operator-visible artifact (discrepancy delta_text, audit emit JSON).
+    """
+    sections = parse_tos_export(_TRG_BY_ONLY_CONTINUATION_FIXTURE)
+    rows = sections["Account Order History"]
+    stops = extract_stop_orders(rows)
+    assert "XYZ" in stops, stops
+    xyz_price, xyz_order_id = stops["XYZ"]
+    assert xyz_price == 50.00
+    # Critical: TRG BY reference MUST NOT leak as order_id.
+    assert xyz_order_id is None, (
+        f"_clean_order_id leaked TRG BY reference as order_id={xyz_order_id!r}; "
+        f"expected None per recon doc §2.D contract"
+    )
 
 
 def test_reconcile_2026_04_30_cc_uses_absolute_trigger_not_base(

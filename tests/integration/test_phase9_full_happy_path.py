@@ -210,6 +210,16 @@ def test_phase9_full_happy_path_across_all_sub_bundles(
         # Pick the first material+active discrepancy to resolve (any of the 3).
         target_to_resolve = active_pre[0]
         target_did = target_to_resolve.discrepancy_id
+        # Codex R1 Minor #1: capture parent run's unresolved-counter
+        # pre-resolve so §3's resolution-side assertion can verify the
+        # decrement (counter -- contract per ``run_tos_reconciliation``
+        # at swing/trades/reconciliation.py:497-502).
+        parent_run_unresolved_pre = conn.execute(
+            "SELECT unresolved_discrepancies_count FROM reconciliation_runs "
+            "WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()[0]
+        assert parent_run_unresolved_pre is not None and parent_run_unresolved_pre > 0
     finally:
         conn.close()
 
@@ -230,6 +240,21 @@ def test_phase9_full_happy_path_across_all_sub_bundles(
         assert d_after.resolution == "journal_corrected"
         assert d_after.resolved_at is not None
         assert d_after.resolved_by == "operator"
+        # Codex R1 Minor #1: parent run's unresolved counter -- (docstring
+        # §3 line "parent run counter --"). Pre-fix the test did not
+        # assert this; with the no-op rollback at swing/trades/
+        # reconciliation.py:497-502 disabled the counter would stay at
+        # parent_run_unresolved_pre and this assertion would fail.
+        parent_run_unresolved_post = conn.execute(
+            "SELECT unresolved_discrepancies_count FROM reconciliation_runs "
+            "WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()[0]
+        assert parent_run_unresolved_post == parent_run_unresolved_pre - 1, (
+            f"parent run unresolved counter must decrement by 1 on resolve "
+            f"(pre={parent_run_unresolved_pre}, "
+            f"post={parent_run_unresolved_post})"
+        )
     finally:
         conn.close()
 

@@ -86,12 +86,16 @@ def _is_qualifying_stop_header(row: dict) -> bool:
 
 
 def _has_stp_marker(row: dict) -> bool:
-    """STP/STOP found in Order Type, Type, OR the empty-key column."""
+    """STP/STOP found in Order Type, Type, OR ANY positional unnamed-
+    column slot (post-dedupe ``col_<idx>`` keys; Codex R1 Major #1)."""
 
 
 def _clean_order_id(raw: str) -> str | None:
     """Strip Excel-style ="..." wrapper + leading 'RE #' / 'RE#' prefix.
-    Returns None when nothing meaningful remains."""
+    Returns None when nothing meaningful remains, when the value starts
+    with ``TRG BY`` (trigger-order reference — NOT a stop order id;
+    Codex R1 Major #2 + recon doc §2.D), or when the post-strip remainder
+    is not a bare alphanumeric token."""
 
 
 def _try_parse_stp_continuation_price(row: dict) -> float | None:
@@ -110,6 +114,16 @@ def _try_parse_stp_continuation_price(row: dict) -> float | None:
    - **Single-row shape (Bundle B synthetic):** if `_has_stp_marker(row)` is True → the row itself carries the STP trigger. Read `Price` (or `PRICE`) directly, reject `BASE-` prefix, parse, emit `(price, order_id_from_dedicated_columns)`.
    - **Multi-line shape (real-world):** else scan continuation rows from `idx + 1` forward; stop at next dated header (`Time Placed != ""`) OR end of list. For each continuation, try `_try_parse_stp_continuation_price(cont)`; the FIRST numeric (non-BASE-) STP price wins. Order id comes from the matching continuation's `Spread` column (which carries `RE #<id>` or a `TRG BY #...` reference or blank); `_clean_order_id` returns `None` when no `RE #` prefix is present.
 5. If no numeric STP trigger is found among continuations (e.g., only a `BASE-` reference with no absolute follow-up) → emit nothing for this header. The downstream `reconcile_tos` then routes this as the "no broker working stop" discrepancy path. **A wrong number is worse than the existing discrepancy emission**; falling back is the conservative safety net.
+
+### §3.A Duplicate / empty CSV-header dedupe (Codex R1 Major #1)
+
+Real-world Schwab/TOS Account Order History headers carry TWO unnamed columns: `Notes,,Time Placed,Spread,...,PRICE,,TIF,Status`. Bare `csv.DictReader` overwrites duplicate keys, so `row[""]` returns only the LAST unnamed column's value. If Schwab adds another blank header (column drift), the STP marker position shifts out of the slot the parser expects and `_has_stp_marker` silently regresses to the pre-T-E.3 false-positive behavior.
+
+`parse_tos_export` now reads the header line via `csv.reader`, renames each duplicate / empty header to `col_<idx>` (preserving the ORIGINAL position), then `dict(zip(fieldnames, row))` constructs row dicts. Downstream `_has_stp_marker` + `_try_parse_stp_continuation_price` consult every `col_*` slot via a new `_iter_unnamed_column_values` helper. This robustness pattern survives arbitrary additional blank-column drift on the Schwab side.
+
+### §3.B `TRG BY` rejection in `_clean_order_id` (Codex R1 Major #2)
+
+Per §2.D the `TRG BY #...` reference identifies the TRIGGER order, NOT the stop's own order id. Pre-fix `_clean_order_id` only stripped `RE #` / `RE#` / `=` / `"` wrappers — a continuation whose `Spread` carried `TRG BY #999` AND a numeric STP price (no `BASE-` prefix) would have leaked the literal `"TRG BY #999"` as the stop's `order_id`. Post-fix the helper rejects `TRG BY` outright + requires the post-strip remainder be a bare alphanumeric token (digits/letters/`-`/`_`); anything else returns `None`. The §2.D 4/30 CC case (winning continuation has empty Spread) is unaffected at the price-extraction site but the existing test now also asserts `cc_order_id is None`.
 
 ## §4 Spec §6.2 supersession note
 
@@ -132,15 +146,17 @@ All 4 exports have account number `27097300SCHW` replaced with the literal `<acc
 
 ## §6 Test coverage
 
-`tests/journal/test_tos_import_stop_extractor_real_world.py` — 7 discriminating tests:
+`tests/journal/test_tos_import_stop_extractor_real_world.py` — 9 discriminating tests:
 
 | Test | Asserts |
 |---|---|
 | `test_extract_stop_orders_2026_05_12_five_working_stops` | Exact dict shape with 5 entries including LAR's `order_id=None` and YOU's `order_id='1006250248383'` |
 | `test_extract_stop_orders_2026_04_15_empty_section` | Empty section → `{}` (no exceptions) |
-| `test_extract_stop_orders_2026_04_30_base_prefix_skipped` | CC at 20.51 NOT 6.74; DHC at 7.06 with `RE #` order id |
+| `test_extract_stop_orders_2026_04_30_base_prefix_skipped` | CC at 20.51 NOT 6.74 AND `cc_order_id is None` (Codex R1 Major #2 contract); DHC at 7.06 with `RE #` order id |
 | `test_extract_stop_orders_2026_05_08_wait_trg_and_working` | Exact dict shape with LAR (WORKING) + DHC/VSAT (WAIT TRG) + CVGI/YOU (WORKING); CANCELED SGML absent |
 | `test_extract_stop_orders_synthetic_single_row_format` | Bundle B synthetic single-row format still parses (backwards-compat) |
+| `test_extract_stop_orders_extra_unnamed_column_drift` | Codex R1 Major #1 regression — Schwab-drift simulation with an EXTRA blank header column STILL extracts the STP price via the `col_<idx>` rename + multi-slot marker scan |
+| `test_extract_stop_orders_trg_by_only_in_continuation_returns_none_order_id` | Codex R1 Major #2 regression — continuation row carrying ONLY `TRG BY #999` (no `RE #`) AND a numeric STP price emits the price but `order_id=None`; pre-fix the order_id would have leaked as `"TRG BY #999"` |
 | `test_reconcile_2026_05_12_zero_stop_mismatch_when_stops_match` | Full reconciliation against fixture-DB journal seeded with 5 open trades matching the broker stops → ZERO `stop_mismatch` emits (pre-fix this emitted 5 false positives) |
 | `test_reconcile_2026_04_30_cc_uses_absolute_trigger_not_base` | Full reconciliation against fixture-DB journal seeded with CC at $20.51 → ZERO `stop_mismatch` emits for CC (parser extracted 20.51 not 6.74) |
 
