@@ -285,11 +285,12 @@ def render_class_d(
     policy: RiskPolicy,
     metric_name: str,
     underlying_class: Literal["A", "B", "C", "point"],
-    wins_in_window: int | None = None,   # required when underlying_class == "A" or "C"
-    losses_in_window: int | None = None,  # required when underlying_class == "C"
+    events_in_window: int | None = None,   # required when underlying_class == "A" — generic k-of-n count (Codex R2 Minor #1: not "wins"; e.g., disqualifying_violation count)
+    n_wins: int | None = None,             # required when underlying_class == "C" — payoff-ratio numerator-side count
+    n_losses: int | None = None,           # required when underlying_class == "C" — payoff-ratio denominator-side count
 ) -> tuple[WilsonCI | BootstrapCI | float | None, HonestyBadges, str] | SuppressedMetric:
     """Per §A.21: VALUE slot shape depends on underlying_class:
-       - "A" → WilsonCI (rate metric in window, e.g., disqualifying_violation_rate_rolling_N)
+       - "A" → WilsonCI (rate metric in window; events_in_window is the generic k count, e.g., disqualifying_violation_rate_rolling_N count)
        - "B" → BootstrapCI (mean metric in window, e.g., process_grade_rolling_N)
        - "C" → float | None (ratio metric; suppress without diversity)
        - "point" → float | None (sum-only metric, e.g., mistake_cost_R_rolling_N_total)
@@ -416,14 +417,21 @@ CLAUDE.md user-memory `project_capital_risk_floor.md` records the operator's men
 
 **Phase 10 lock:** governance metrics (§3.2 `cumulative_R_pct_of_capital`, `distance_to_absolute_loss_tripwire`) read `capital_floor_constant_dollars` from AT-TRADE-TIME risk_policy (per §A.5). Operational metrics (§3.4 + §3.5) use the dynamic PROVISIONAL/LIVE resolver (per §A.6) which falls back to `capital_floor_constant_dollars` (NOT `max($7,500, actual)`) when no snapshot exists — the user-memory `max(...)` semantic is the operator's mental model, NOT a system-computed value. Operator may record snapshots at any cadence to flip PROVISIONAL → LIVE per their own `actual_account_balance` mental model.
 
-### §A.18 Reconciliation-discrepancy badge composition path (per §0.5 §11.2 (a))
+### §A.18 Reconciliation-discrepancy badge composition path (per §0.5 §11.2 (a)) — Codex R2 Major #6 restructured
 
-Phase 10 Sub-bundle E adds a global "N unresolved material discrepancies" badge surfaced in `base.html.j2` (rendered alongside the `vm.stale_banner` block — same precedent). Composition:
+Phase 10 adds a global "N unresolved material discrepancies" badge surfaced in `base.html.j2` (rendered alongside the `vm.stale_banner` block — same precedent). Codex R2 Major #6 catch: prior plan placed `swing/metrics/discrepancies.py` + the helper in Sub-bundle E, BUT each metrics VM in Sub-bundles B/C/D landed BEFORE E and would have to be retrofitted. Restructured composition:
 
-1. Add field `vm.unresolved_material_discrepancies_count: int = 0` to `BaseLayoutVM` (per §A.8 + §I.5).
-2. Add helper `swing/metrics/discrepancies.py:count_unresolved_material(conn) -> int` that wraps `swing/data/repos/reconciliation.py:list_unresolved_material_for_active_trades` + `list_unresolved_material_for_closed_trades` and returns `len(...)` summed.
-3. Update EVERY existing base-layout VM constructor (`build_dashboard`, `build_pipeline`, `build_journal`, `build_watchlist`, `build_config_vm`, `PageErrorVM`, all 9 new metrics VMs) to populate the field via the helper.
-4. `base.html.j2` renders `{% if vm.unresolved_material_discrepancies_count > 0 %}<div class="banner">⚠ {{ vm.unresolved_material_discrepancies_count }} unresolved material reconciliation discrepancies — <a href="/journal/discrepancies">review</a></div>{% endif %}`.
+1. **Sub-bundle A** lands `swing/metrics/discrepancies.py:count_unresolved_material(conn) -> int` (helper) + `BaseLayoutVM.unresolved_material_discrepancies_count: int = 0` field. The helper wraps `swing/data/repos/reconciliation.py:list_unresolved_material_for_active_trades` + `list_unresolved_material_for_closed_trades` and returns `len(...)` summed.
+2. **Sub-bundles B + C + D** — each new metrics VM constructor populates the field via the helper FROM THE START (`unresolved_material_discrepancies_count=count_unresolved_material(conn)` in every `build_*_vm` and `MetricsIndexVM` constructor). NO retrofit required in E.
+3. **Sub-bundle E** lands the `base.html.j2` banner block + updates the 6 EXISTING base-layout VM constructors (`build_dashboard`, `build_pipeline`, `build_journal`, `build_watchlist`, `build_config_vm`, `PageErrorVM`) to populate the field. Cross-bundle pin via the discriminating regression test in Task A.7 (un-skipped at E.3).
+
+`base.html.j2` rendering (Sub-bundle E):
+
+```jinja2
+{% if vm.unresolved_material_discrepancies_count > 0 %}
+<div class="banner">⚠ {{ vm.unresolved_material_discrepancies_count }} unresolved material reconciliation discrepancies — <a href="/journal/discrepancies">review</a></div>
+{% endif %}
+```
 
 **Note on (b) + (c) per §A.4 default-disposition: DEFER** — the per-trade indicator + per-cohort filter are NOT in V1.
 
@@ -433,12 +441,14 @@ Spec §3.4 metric definition: `count(candidates with risk_feasibility=False) / c
 
 **Locked Codex R1 Major #1 fix:** numerator restricted to "fails risk_feasibility AND all other criteria pass" — matches spec semantics + bounds the rate to [0, 1].
 
-**Implementation pattern** (locked in `swing/metrics/capital.py`):
+**Implementation pattern** (locked in `swing/metrics/capital.py`; Codex R2 Major #3 fix — `na` is fail-equivalent for "all_other_criteria=True"):
+
+The `criterion_results.result` enum is `('pass', 'fail', 'na')` per `swing/data/migrations/0001_phase1_initial.sql:52`. Spec §3.4 reads "all_other_criteria=True" — only `result='pass'` qualifies. Both `'fail'` and `'na'` disqualify a candidate from the would-have-qualified denominator.
 
 ```sql
--- denominator: candidates per run where ALL criteria except risk_feasibility passed
--- (equivalently: candidate has zero failing criteria EXCEPT risk_feasibility — risk_feasibility itself
---  may pass OR fail; both states qualify the candidate as "would-have-qualified-except-for-risk")
+-- denominator: candidates per run where ALL non-risk_feasibility criteria PASS
+-- (Codex R2 Major #3: 'na' result is NOT 'pass' — must be excluded; the predicate
+--  is "no non-risk criterion has result <> 'pass'", which excludes both 'fail' and 'na')
 WITH would_have_qualified_except_risk AS (
   SELECT c.id AS candidate_id
   FROM candidates c
@@ -447,10 +457,13 @@ WITH would_have_qualified_except_risk AS (
       SELECT 1 FROM criterion_results cr2
       WHERE cr2.candidate_id = c.id
         AND cr2.criterion_name <> :risk_feasibility_name
-        AND cr2.result = 'fail'
+        AND cr2.result <> 'pass'
     )
 )
 -- numerator: candidates in the would-have-qualified set that ALSO fail risk_feasibility
+-- (numerator uses 'fail' specifically since the metric measures BLOCKED-by-risk-feasibility;
+--  a 'na' on risk_feasibility itself is not "blocked" — it's "not assessed";
+--  na on risk_feasibility excludes the candidate from being a Subject of this metric.)
 SELECT
   (SELECT COUNT(*) FROM would_have_qualified_except_risk w
      JOIN criterion_results cr ON cr.candidate_id = w.candidate_id
@@ -462,14 +475,15 @@ SELECT
 
 **Discriminating tests** (binding in Task D.1):
 - `test_risk_feasibility_blocked_rate_excludes_candidates_failing_other_criteria`: seed candidate that fails risk_feasibility AND fails MA-stack → NOT in numerator; rate stays bounded.
-- `test_risk_feasibility_blocked_rate_at_most_1`: every candidate either fails risk_feasibility (and nothing else) or passes risk_feasibility (and nothing else) → rate ∈ [0, 1].
+- `test_risk_feasibility_blocked_rate_excludes_candidates_with_na_on_other_criteria` (Codex R2 Major #3): seed candidate that fails risk_feasibility AND has another criterion `result='na'` → NOT in denominator (since `na` is not `pass`); assert rate excludes it.
+- `test_risk_feasibility_blocked_rate_at_most_1`: every candidate either fails risk_feasibility (and others pass) or passes risk_feasibility (and others pass) → rate ∈ [0, 1].
 - `test_risk_feasibility_blocked_rate_at_zero_qualifying_returns_suppressed`: zero candidates would-have-qualified → return suppressed text "N/A — 0 would-have-qualified candidates this run" (NOT 0/0 = NaN).
 
 ### §A.20 Spec §3.6 `aplus_take_rate_per_run` denominator (zero-A+ runs)
 
 Spec §3.6 `aplus_take_rate_per_run = aplus_trades_taken_per_run / aplus_identifications_per_run`. When a run has 0 A+ identifications, the denominator is 0. Per spec §5.3 ratio class: render as suppressed `"N/A — 0 A+ identifications this run"` (NOT 0.0, NOT NaN, NOT +inf).
 
-Same handling for `watch_take_rate_per_run`.
+No `watch_take_rate_per_run` in V1 (Codex R2 Major #2 fix; spec §3.6 does not define it; banked as V2 candidate per Codex R1 Minor #2 + Task D.5 acceptance).
 
 ### §A.21 Spec §3.8 rolling metric Class assignments (Codex R1 Major #6 fix — match spec §5.2 verbatim)
 
@@ -617,6 +631,9 @@ Locked rationale:
 - `tests/web/test_view_models/test_base_layout_vm_coverage.py` — discriminating regression per §A.8.
 - `tests/web/test_routes/test_metrics_routes.py` — TestClient per-endpoint smoke + 200 + base-layout-render verification.
 - `tests/integration/test_phase10_metrics_e2e.py` — end-to-end happy path (Sub-bundle E task).
+
+**Verification script** (Codex R2 Major #5):
+- `verify_phase10.py` — worktree-root cross-platform verification suite per §J.2 (Sub-bundle A T-A.9 lands; subsequent sub-bundles inherit + invoke at end of dispatch).
 
 ### Files to MODIFY
 
@@ -869,7 +886,7 @@ git commit -m "feat(metrics): scaffold swing/metrics module skeleton (Phase 10 S
 - Create: `tests/web/test_view_models/test_metrics_shared_vms.py`.
 
 **Acceptance criteria:**
-- `BaseLayoutVM` `@dataclass(frozen=True)` mixin with all 5 base-layout fields (`session_date: str`, `stale_banner: bool = False`, `price_source_degraded: bool = False`, `price_source_degraded_until: str | None = None`, `ohlcv_source_degraded: bool = False`) + the new Phase 10 field `unresolved_material_discrepancies_count: int = 0` (per §A.18; Sub-bundle E populates).
+- `BaseLayoutVM` `@dataclass(frozen=True)` mixin with all 5 base-layout fields (`session_date: str`, `stale_banner: bool = False`, `price_source_degraded: bool = False`, `price_source_degraded_until: str | None = None`, `ohlcv_source_degraded: bool = False`) + the new Phase 10 field `unresolved_material_discrepancies_count: int = 0` (per §A.18 Codex R2 Major #6 restructure; populated by every metrics-VM constructor from Sub-bundle A onward via `swing/metrics/discrepancies.py:count_unresolved_material(conn)`; existing 6 base-layout VMs get the field add + populate in Sub-bundle E Task E.3).
 - `ConfidenceBadgeVM` dataclass with `low_confidence: bool`, `confidence_floor_warning: bool`, `text: str` (rendered text for the badge).
 - `ProvisionalBadgeVM` dataclass with `is_provisional: bool`, `text: str` (rendered text per §A.6).
 - `SuppressionRowVM` dataclass with `metric_name: str`, `placeholder_text: str` (per spec §5.6 format).
@@ -904,6 +921,29 @@ git commit -m "feat(metrics): scaffold swing/metrics module skeleton (Phase 10 S
 **Watch items:**
 - The skipped `test_existing_dashboard_vm_has_unresolved_material_field` is the cross-bundle pin for Sub-bundle E's integration step. Sub-bundle E un-skips + verifies pass.
 
+### Task A.7.1: Discrepancies helper — `swing/metrics/discrepancies.py:count_unresolved_material` (Codex R2 Major #6 restructure)
+
+**Files:**
+- Modify: `swing/metrics/discrepancies.py` (full implementation; was empty placeholder from T-A.0).
+- Create: `tests/metrics/test_discrepancies.py`.
+
+**Acceptance criteria:**
+- Function `count_unresolved_material(conn) -> int` returns `len(list_unresolved_material_for_active_trades(conn)) + len(list_unresolved_material_for_closed_trades(conn))`.
+- Reads ONLY; no writes; no transaction owned.
+- Returns 0 when both lists empty.
+
+**Discriminating tests:**
+- `test_count_unresolved_material_zero_when_no_discrepancies`.
+- `test_count_unresolved_material_returns_sum_of_active_plus_closed`: seed 2 unresolved-material on active trades + 1 unresolved-material on closed trades → returns 3.
+- `test_count_unresolved_material_excludes_resolved`: seed `resolution='acknowledged_immaterial'` → not counted.
+- `test_count_unresolved_material_excludes_immaterial`: seed `material_to_review=0` → not counted.
+
+**Suggested commit shape:** `feat(metrics): discrepancies helper — count_unresolved_material (T-A.7.1)`
+
+**Watch items:**
+- Helper performance: invoked on EVERY base-layout page load (per §A.18 + §I.5). Bench at Sub-bundle E gate; if >50ms p95, V2 candidate to add lightweight cache via `app.state` with 30s TTL. NOT a V1 lock.
+- Cross-bundle dependency: every metrics VM constructor in Sub-bundles A (index VM in T-A.8) + B + C + D + E populates `unresolved_material_discrepancies_count=count_unresolved_material(conn)` from the start (Codex R2 Major #6 restructure — eliminates per-metrics-VM retrofit in E).
+
 ### Task A.8: Metrics index page — `GET /metrics`
 
 **Files:**
@@ -914,7 +954,7 @@ git commit -m "feat(metrics): scaffold swing/metrics module skeleton (Phase 10 S
 - Create: `tests/web/test_routes/test_metrics_routes.py` (smoke for `/metrics` only; per-surface tests added in B/C/D/E).
 
 **Acceptance criteria:**
-- `MetricsIndexVM` extends `BaseLayoutVM`; carries `surfaces: list[tuple[str, str, str]]` of (path, label, description) tuples for the 8 surfaces.
+- `MetricsIndexVM` extends `BaseLayoutVM`; carries `surfaces: list[tuple[str, str, str]]` of (path, label, description) tuples for the 8 surfaces. Constructor populates `unresolved_material_discrepancies_count=count_unresolved_material(conn)` per §A.18 Codex R2 Major #6 restructure.
 - Route `GET /metrics` returns 200 + HTML; renders 8 navigator tiles + the "Currently in: PROVISIONAL fallback" banner when applicable (delegated to base.html.j2's existing banner block).
 - Template extends `base.html.j2`.
 - TestClient smoke: `client.get("/metrics")` returns 200; body contains all 8 surface labels.
@@ -930,18 +970,20 @@ git commit -m "feat(metrics): scaffold swing/metrics module skeleton (Phase 10 S
 - Per §A.9: NO HTMX OOB-swap on this surface; pure server-rendered HTML.
 - Per spec §4.9 BINDING: operator-witnessed verification gate — Sub-bundle A has 0 surfaces by default per §C; Task A.8 introduces 1 (the index) so add it to Sub-bundle A's gate.
 
-### Task A.9: Sub-bundle A integration test + ruff sweep
+### Task A.9: Sub-bundle A integration test + verify_phase10.py + ruff sweep
 
 **Files:**
+- Create: `verify_phase10.py` at worktree root (Codex R2 Major #5; see §J.2 for full script body).
 - Modify: existing `tests/metrics/*` collection to assert all helpers cleanly importable + composable.
 - Run ruff sweep + fix any new issues.
 
 **Acceptance criteria:**
+- `python verify_phase10.py` exits 0 (the cross-platform verification suite).
 - `python -m pytest -m "not slow" -q` passes — projected baseline 2767 + ~35..55 new = ~2802..2822 fast tests.
 - `ruff check swing/` baseline UNCHANGED at 18.
 - All `swing/metrics/*.py` files pass ruff.
 
-**Suggested commit shape:** `chore(metrics): Sub-bundle A integration sweep (T-A.9)`
+**Suggested commit shape:** `chore(metrics): Sub-bundle A integration sweep + verify_phase10.py (T-A.9)`
 
 **Operator-witnessed gate (Sub-bundle A):**
 - S1 (inline): pytest fast-tests pass; ruff baseline 18.
@@ -1273,13 +1315,18 @@ Document findings in recon notes.
 - `concurrent_open_positions` count.
 - `capital_feasibility_pressure_index` composite; inherits PROVISIONAL badge from utilization input.
 
-**Discriminating tests:**
+**Discriminating tests** (Codex R2 Minor #2 alignment with §A.19 lock):
 - `test_compute_capital_friction_no_snapshot_returns_provisional_badge`: empty `account_equity_snapshots` → all live-capital-dependent metrics carry PROVISIONAL badge.
 - `test_compute_capital_friction_with_snapshot_returns_live_badge`: seed snapshot $2000 ≤ asof_date → LIVE badge.
 - `test_risk_feasibility_blocked_rate_uses_constant_not_string_literal`: assert `from swing.evaluation.criteria.risk_feasibility import NAME` import is present.
-- `test_risk_feasibility_blocked_rate_denominator_excludes_other_failing_criteria`: seed candidate that fails risk_feasibility AND fails MA-stack → NOT in denominator (only "would have qualified except for risk_feasibility" candidates count).
+- `test_risk_feasibility_blocked_rate_excludes_candidates_failing_other_criteria` (per §A.19): seed candidate that fails risk_feasibility AND fails MA-stack → NOT in numerator; rate stays bounded.
+- `test_risk_feasibility_blocked_rate_excludes_candidates_with_na_on_other_criteria` (per §A.19 Codex R2 Major #3): seed candidate with `result='na'` on a non-risk criterion → excluded from denominator.
+- `test_risk_feasibility_blocked_rate_at_most_1` (per §A.19): rate bounded to [0, 1].
+- `test_risk_feasibility_blocked_rate_at_zero_qualifying_returns_suppressed` (per §A.19): zero would-have-qualified → suppressed text "N/A — 0 would-have-qualified candidates this run".
 - `test_concurrent_open_positions_counts_entered_managing_partial_exited`: 3 states summed.
 - `test_capital_cycle_time_days_zero_closed_returns_none`: edge case.
+- `test_compute_capital_friction_historical_trend_uses_current_trade_state` (Codex R2 Major #4): seed trade T1 opened at run R1 with size=100; advance to R2 + change size to 200 via fill; query for R1 → assert utilization computed against size=200 (CURRENT state, NOT R1-time historical).
+- `test_capital_friction_vm_renders_historical_disclosure_footnote` (Codex R2 Major #4): trend section in CapitalFrictionVM carries footnote text "Trend computed from current trade state; historical points approximate where state has changed since the run."
 
 **Suggested commit shape:** `feat(metrics): §3.4 capital-friction computations + dynamic PROVISIONAL contract (T-D.1)`
 
@@ -1299,11 +1346,13 @@ Document findings in recon notes.
 - `CapitalFrictionVM` extends `BaseLayoutVM`.
 - Renders point-in-time gauges + multi-run trend (suppressed at <5 runs per spec §4.4).
 - PROVISIONAL badges as TEXT inline per §A.6 + spec §4.9.
+- Renders historical-reconstruction disclosure footnote in trend section per §A.0.1 (Codex R2 Major #4): "Trend computed from current trade state; historical points approximate where state has changed since the run."
 
 **Discriminating tests:**
 - `test_capital_friction_endpoint_returns_200`.
 - `test_capital_friction_renders_provisional_text_when_no_snapshot`.
 - `test_capital_friction_renders_live_when_snapshot_present`.
+- `test_capital_friction_renders_historical_disclosure_footnote_in_trend_section` (Codex R2 Major #4).
 
 **Suggested commit shape:** `feat(metrics): capital-friction VM + route + template (T-D.2)`
 
@@ -1369,6 +1418,8 @@ Document findings in recon notes.
 - `test_compute_funnel_zero_aplus_identifications_returns_suppressed_take_rate`.
 - `test_compute_funnel_trend_at_5_runs_suppressed`.
 - `test_compute_funnel_trend_at_10_runs_renders`.
+- `test_historical_funnel_uses_current_trade_state` (Codex R2 Major #4 / §A.0.1): seed run R1 + trade T1 with origin='pipeline_aplus' at R1's session; advance to R2; query for R1's `aplus_trades_taken_per_run` → assert T1 counted via current trade state (`pre_trade_locked_at` matches R1.session) NOT historical reconstruction.
+- `test_historical_funnel_concurrent_open_at_run_uses_open_at_pre_trade_locked_at_only` (Codex R2 Major #4 / §A.0.1): count trades with `pre_trade_locked_at <= run.started_ts AND (last_fill_at IS NULL OR last_fill_at >= run.started_ts)`; best-effort proxy for "open at run time".
 
 **Suggested commit shape:** `feat(metrics): §3.6 identification-vs-trade-funnel computations (T-D.5)`
 
@@ -1386,11 +1437,13 @@ Document findings in recon notes.
 **Acceptance criteria:**
 - `IdentificationFunnelVM` extends `BaseLayoutVM`.
 - Renders per-run stacked bar (count of A+ identified vs taken; ratio = take rate) + 30-day rolling trend line (suppressed when <10 runs).
+- Renders historical-reconstruction disclosure footnote in trend section per §A.0.1 (Codex R2 Major #4) — same footnote text as CapitalFrictionVM.
 
 **Discriminating tests:**
 - `test_identification_funnel_endpoint_returns_200`.
 - `test_identification_funnel_renders_per_run_bars`.
 - `test_identification_funnel_trend_suppressed_below_10_runs`.
+- `test_identification_funnel_renders_historical_disclosure_footnote_in_trend_section` (Codex R2 Major #4).
 
 **Suggested commit shape:** `feat(metrics): identification-funnel VM + route + template (T-D.6)`
 
@@ -1434,8 +1487,10 @@ Read-only verification of:
 - Function `compute_process_grade_trend(conn, *, window_size: int = 10) -> ProcessGradeTrendResult` returns dataclass with: per-trade markers (one per closed-and-reviewed trade ordered by review date) + rolling lines for process_grade / entry_grade / management_grade / exit_grade / disqualifying_violation_rate / mistake_cost_R_total / mistake_cost_R_per_trade.
 - N=10 HARDCODED (per spec §8.5 lock + §A.4); reads from caller-passed `window_size` for testability but production callsite passes 10.
 - Numeric grade encoding: A=4, B=3, C=2, D=1, F=0.
-- Per spec §5.4 Class D rendering applied via `render_class_d` from honesty.py.
-- §A.21 lock: rolling-window display IS the discipline; per-window value has NO bootstrap CI.
+- Per spec §5.4 Class D rendering applied via `render_class_d` from honesty.py with `underlying_class` parameter per §A.21 (Codex R2 Major #1 fix). Per-metric mapping per §A.21 matrix:
+  - `process_grade_rolling_N`, `entry_grade_rolling_N`, `management_grade_rolling_N`, `exit_grade_rolling_N`, `mistake_cost_R_rolling_N_per_trade` → `underlying_class="B"` (BootstrapCI on window samples).
+  - `disqualifying_violation_rate_rolling_N` → `underlying_class="A"` (WilsonCI on window k/n; pass `events_in_window=count(disqualifying=1)` per Codex R2 Minor #1 fix).
+  - `mistake_cost_R_rolling_N_total` → `underlying_class="point"` (point estimate only; spec-conformance deviation banked at return report §6 as V2.1 §VII.F amendment candidate).
 
 **Discriminating tests:**
 - `test_compute_process_grade_trend_zero_trades_returns_all_suppressed`.
@@ -1443,6 +1498,10 @@ Read-only verification of:
 - `test_compute_process_grade_trend_10_trades_window_10_full_window_below_floor`: full window + confidence-floor warning persists.
 - `test_compute_process_grade_trend_20_trades_drops_confidence_floor_warning`.
 - `test_grade_letter_to_numeric_encoding`: A=4, F=0, etc.
+- `test_process_grade_rolling_N_value_slot_carries_BootstrapCI`: assert `render_class_d(..., underlying_class="B")` returns `BootstrapCI` in value slot (Codex R2 Major #1).
+- `test_disqualifying_violation_rate_rolling_N_value_slot_carries_WilsonCI`: assert `underlying_class="A"` + `events_in_window=k` → `WilsonCI` in value slot.
+- `test_mistake_cost_R_rolling_N_total_value_slot_carries_float_only`: assert `underlying_class="point"` → bare float in value slot (no CI; per §A.21 spec-conformance deviation).
+- `test_mistake_cost_R_rolling_N_per_trade_value_slot_carries_BootstrapCI`: assert spec §5.2 Class B rendering applied per §A.21.
 
 **Suggested commit shape:** `feat(metrics): §3.8 process-grade-trend computations (T-E.1)`
 
@@ -1471,42 +1530,45 @@ Read-only verification of:
 **Watch items:**
 - §A.10 lock: NO matplotlib in V1. If operator at integration triage prefers matplotlib PNG, plan §A revises to (β) and Sub-bundle E gains a chart-rendering task that inherits the matplotlib mathtext gotcha (CLAUDE.md) — visual verification non-optional.
 
-### Task E.3: Reconciliation discrepancy badge integration — base.html.j2 + every base-layout VM
+### Task E.3: Reconciliation discrepancy badge integration — base.html.j2 + 6 EXISTING base-layout VMs (Codex R2 Major #6 restructured)
 
 **Files:**
-- Modify: `swing/web/templates/base.html.j2` (add the unresolved-material banner block).
-- Modify: `swing/web/view_models/dashboard.py` (`DashboardVM` field add + `build_dashboard` populate).
+- Modify: `swing/web/templates/base.html.j2` (add the unresolved-material banner block per §A.18 rendering snippet).
+- Modify: `swing/web/view_models/dashboard.py` (`DashboardVM` field add + `build_dashboard` populate via `count_unresolved_material(conn)`).
 - Modify: `swing/web/view_models/pipeline.py` (`PipelineVM` + `build_pipeline`).
 - Modify: `swing/web/view_models/journal.py` (`JournalVM` + `build_journal`).
 - Modify: `swing/web/view_models/watchlist.py` (`WatchlistVM` + `build_watchlist`).
 - Modify: `swing/web/view_models/config.py` (`ConfigVM` + `build_config_vm`).
 - Modify: `swing/web/view_models/error.py` (`PageErrorVM`).
-- Modify: `swing/metrics/discrepancies.py` (helper).
-- Create: `tests/metrics/test_discrepancies.py`.
-- Modify: `tests/web/test_view_models/test_base_layout_vm_coverage.py` (un-skip the cross-bundle pin from Task A.7).
-- Modify: `tests/web/test_routes/test_metrics_routes.py` (assert all 9 metrics surfaces render with the banner field present).
+- Modify: `tests/web/test_view_models/test_base_layout_vm_coverage.py` (un-skip the cross-bundle pin from Task A.7 — `test_existing_dashboard_vm_has_unresolved_material_field`).
+- Modify: `tests/web/test_routes/test_metrics_routes.py` (assert all 9 metrics surfaces render with the banner field present + banner-fires-when-count>0 / banner-absent-when-count=0).
+
+**NOT modified at this task** (Codex R2 Major #6 — restructure eliminated):
+- `swing/metrics/discrepancies.py` — helper LANDED in Sub-bundle A T-A.7.1 (NOT this task).
+- `tests/metrics/test_discrepancies.py` — LANDED in T-A.7.1.
+- `swing/web/view_models/metrics/*.py` — each metrics VM ALREADY populates the field from its Sub-bundle landing (A index in T-A.8; B trade-process + hypothesis-progress in T-B.2 + T-B.4; C tier + deviation in T-C.2 + T-C.3; D capital + maturity + funnel in T-D.2 + T-D.4 + T-D.6; E process-grade-trend in T-E.2). This task only retrofits the 6 EXISTING base-layout VMs.
 
 **Acceptance criteria:**
-- `swing/metrics/discrepancies.py:count_unresolved_material(conn) -> int` sums active + closed trade unresolved-material discrepancies.
-- `BaseLayoutVM.unresolved_material_discrepancies_count: int = 0` field added per §A.6 (already in place since Sub-bundle A; this task POPULATES it).
-- Every existing base-layout VM constructor populates the field via the helper.
-- `base.html.j2` renders banner block per §A.18 step 4.
+- `BaseLayoutVM.unresolved_material_discrepancies_count` field already in place since Sub-bundle A T-A.6; this task adds it to the 6 EXISTING base-layout VM dataclasses + populates via the helper from T-A.7.1.
+- `base.html.j2` renders banner block per §A.18 rendering snippet.
 - Cross-bundle regression test (un-skipped from Task A.7) passes.
 - TestClient assertions verify banner renders when N>0; absent when N=0.
 
-**Discriminating tests:**
-- `test_count_unresolved_material_returns_sum_of_active_plus_closed`.
-- `test_count_unresolved_material_excludes_resolved`.
-- `test_count_unresolved_material_excludes_immaterial`.
-- `test_dashboard_vm_carries_unresolved_material_count`.
-- `test_base_layout_renders_banner_when_count_gt_0`: TestClient + seed discrepancy + assert banner string in response body.
-- `test_base_layout_omits_banner_when_count_eq_0`: assert banner absent.
+**Discriminating tests** (banked-in or new):
+- `test_dashboard_vm_carries_unresolved_material_count` (NEW).
+- `test_pipeline_vm_carries_unresolved_material_count` (NEW).
+- `test_journal_vm_carries_unresolved_material_count` (NEW).
+- `test_watchlist_vm_carries_unresolved_material_count` (NEW).
+- `test_config_vm_carries_unresolved_material_count` (NEW).
+- `test_error_vm_carries_unresolved_material_count` (NEW).
+- `test_base_layout_renders_banner_when_count_gt_0` (NEW): TestClient + seed discrepancy + assert banner string in response body across all 6 + 9 = 15 base-layout pages.
+- `test_base_layout_omits_banner_when_count_eq_0` (NEW): assert banner absent.
+- `test_existing_dashboard_vm_has_unresolved_material_field` (un-skip from T-A.7).
 
-**Suggested commit shape:** `feat(metrics): unresolved-material discrepancy banner — cross-bundle base-layout integration (T-E.3)`
+**Suggested commit shape:** `feat(metrics): unresolved-material discrepancy banner — base.html.j2 + 6 existing base-layout VMs (T-E.3)`
 
 **Watch items:**
-- §A.18 + §I.5 lock: 6 existing base-layout VMs + 9 new metrics VMs = 15 total VM constructors that must populate the field. Cross-bundle integration risk; the Task A.7 regression test is the catch.
-- Helper performance: `count_unresolved_material` runs on EVERY page load. Bench at the gate; if >50ms p95, add a lightweight cache via `app.state` with 30s TTL. V2 candidate; not V1 lock.
+- §A.18 Codex R2 Major #6 restructure means the metrics VMs from Sub-bundles A/B/C/D/E ALREADY populate the field at landing. This task closes the 6 existing base-layout VMs only. Cross-bundle integration risk reduced from "15 retrofits in E" to "6 retrofits in E + 9 land-ready in A/B/C/D/E"; the Task A.7 regression test is the catch.
 
 ### Task E.4: Phase 11 hand-off note + final integration test + ruff sweep
 
