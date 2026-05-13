@@ -29,7 +29,6 @@ from swing.journal.tos_import import (
     reconcile_tos,
 )
 
-
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "tos"
 
 
