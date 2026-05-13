@@ -24,7 +24,7 @@ Per plan §A.9 + §I.6 LOCK: pure server-rendered HTML.
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 
 from swing.config import Config

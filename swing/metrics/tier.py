@@ -478,7 +478,7 @@ def _compute_cohort_stats(
     n_losses = 0
     legacy_count = 0
     for t in trades:
-        realized_R, cls, is_legacy = _per_trade_realized_R(conn, t)
+        realized_R, cls, is_legacy = _per_trade_realized_R(conn, t)  # noqa: N806
         if is_legacy:
             legacy_count += 1
         if cls == "win":
@@ -692,13 +692,12 @@ def compute_deviation_outcome(
         # - cohort or A+ has SuppressedMetric expectancy (n<5);
         # - aplus_point == 0 (division-by-zero defense).
         rel: float | None
-        if name == APLUS_COHORT:
-            rel = None
-        elif not isinstance(c.expectancy, BootstrapCI):
-            rel = None
-        elif aplus_point is None:
-            rel = None
-        elif aplus_point == 0.0:
+        if (
+            name == APLUS_COHORT
+            or not isinstance(c.expectancy, BootstrapCI)
+            or aplus_point is None
+            or aplus_point == 0.0
+        ):
             rel = None
         else:
             rel_candidate = (
