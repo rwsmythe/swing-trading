@@ -641,3 +641,88 @@ def test_capital_friction_renders_no_color_only_badges(seeded_db):
         assert forbidden not in body, (
             f"color-only inline style {forbidden!r} present"
         )
+
+
+# ---------------------------------------------------------------------------
+# Sub-bundle D Task T-D.4: GET /metrics/maturity-stage
+# ---------------------------------------------------------------------------
+
+def test_maturity_stage_endpoint_returns_200(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/maturity-stage")
+    assert r.status_code == 200
+    assert "Maturity-stage metrics" in r.text
+
+
+def test_maturity_stage_zero_open_renders_placeholder(seeded_db):
+    """Spec §4.5 empty-state: 'No open positions to manage.'"""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/maturity-stage")
+    assert "No open positions to manage." in r.text
+    # Discriminating: pin to the empty-state marker per lesson #20.
+    assert 'data-empty-state="maturity-stage"' in r.text
+
+
+def test_maturity_stage_renders_per_row_with_em_dash_for_null_capture_need(
+    seeded_db,
+):
+    """Plan §G T-D.4 + spec §4.5: NULL trail_MA_candidate_price + NULL
+    planned_target_R render `"—"` placeholder (NOT '[Phase 8 capture
+    pending]')."""
+    from swing.data.db import connect
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO trades (id, ticker, entry_date, entry_price, "
+                "initial_shares, initial_stop, current_stop, state, sector, "
+                "industry, trade_origin, pre_trade_locked_at, current_size, "
+                "current_avg_cost) VALUES (1, 'AAA', '2026-05-01', 10.0, "
+                "100, 9.0, 9.0, 'managing', 'S', 'I', 'manual_off_pipeline', "
+                "'2026-05-01T09:30:00', 100, 10.0)"
+            )
+    finally:
+        conn.close()
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/maturity-stage")
+    body = r.text
+    assert r.status_code == 200
+    # Forbidden text per plan §G T-D.4 acceptance.
+    assert "[Phase 8 capture pending]" not in body
+    # Each Phase-8 capture-need cell renders the `<em>—</em>` placeholder.
+    assert 'data-cell="planned_target_R"' in body
+    assert 'data-cell="trail_MA_candidate_price"' in body
+
+
+def test_maturity_stage_extends_base_layout(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/maturity-stage")
+    assert 'class="topbar"' in r.text
+
+
+def test_maturity_stage_registered_in_app_routes(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    route_paths = {r.path for r in app.routes if hasattr(r, "path")}
+    assert "/metrics/maturity-stage" in route_paths
+
+
+def test_maturity_stage_renders_no_color_only_badges(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/maturity-stage")
+    body = r.text
+    for forbidden in ("background:red", "background:green", "color:red",
+                      "color:green"):
+        assert forbidden not in body, (
+            f"color-only inline style {forbidden!r} present"
+        )

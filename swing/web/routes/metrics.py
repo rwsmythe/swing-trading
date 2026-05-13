@@ -25,6 +25,9 @@ from swing.web.view_models.metrics.hypothesis_progress_card import (
     build_hypothesis_progress_card_vm,
 )
 from swing.web.view_models.metrics.index import build_metrics_index_vm
+from swing.web.view_models.metrics.maturity_stage import (
+    build_maturity_stage_vm,
+)
 from swing.web.view_models.metrics.tier_comparison import (
     build_tier_comparison_vm,
 )
@@ -151,6 +154,31 @@ def metrics_capital_friction(request: Request):
     vm = build_capital_friction_vm(cfg=cfg)
     return request.app.state.templates.TemplateResponse(
         request, "metrics/capital_friction.html.j2", {"vm": vm},
+    )
+
+
+@router.get("/metrics/maturity-stage", response_class=HTMLResponse)
+def metrics_maturity_stage(request: Request):
+    """Spec §4.5 maturity-stage view — Sub-bundle D Task T-D.4.
+
+    Renders per-open-position table sorted by maturity_stage with stage
+    enum + open_MFE_R/MAE_R + current_stop + planned_target_R + trail-MA
+    eligibility + position_capital_utilization_pct (with PROVISIONAL/LIVE
+    per-row badge) + position_portfolio_heat_contribution_dollars.
+
+    Per spec §4.5 + plan §G T-D.4 acceptance: NULL Phase-8-capture-need
+    cells (``trail_MA_candidate_price``, ``planned_target_R``) render
+    ``"—"`` placeholder (NOT "[Phase 8 capture pending]" — Phase 8 IS
+    shipped; NULL is a data-state, not a capture-state).
+
+    Empty-state placeholder: ``"No open positions to manage."``
+
+    Per plan §A.9 + §I.6 LOCK: pure server-rendered HTML.
+    """
+    cfg = request.app.state.cfg
+    vm = build_maturity_stage_vm(cfg=cfg)
+    return request.app.state.templates.TemplateResponse(
+        request, "metrics/maturity_stage.html.j2", {"vm": vm},
     )
 
 

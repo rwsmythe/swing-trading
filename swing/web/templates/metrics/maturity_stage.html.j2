@@ -1,0 +1,110 @@
+{% extends "base.html.j2" %}
+{% block title %}Maturity-stage — Swing Trading{% endblock %}
+{% block content %}
+<section class="metrics-maturity-stage">
+  <h1>Maturity-stage metrics</h1>
+  <p class="muted">
+    Spec §4.5 — per-open-position table sorted by maturity stage. Drives
+    the daily-management surface (Phase 8 capture). Trail-MA eligibility
+    only fires when <code>open_MFE_R_to_date ≥ +2.0R</code> AND
+    <code>current_stop &lt; trail_MA_candidate_price</code>.
+  </p>
+
+  <p class="muted">
+    Asof: {{ vm.result.asof_date }} ·
+    Open positions: {{ vm.result.rows|length }}
+  </p>
+
+  {% if vm.result.rows|length == 0 %}
+  <p><em data-empty-state="maturity-stage">No open positions to manage.</em></p>
+  {% else %}
+
+  <h2>Per-position breakdown</h2>
+  <table class="metric-grid maturity-stage-table">
+    <thead>
+      <tr>
+        <th>Ticker</th>
+        <th>Stage</th>
+        <th>MFE (R)</th>
+        <th>MAE (R)</th>
+        <th>Stop</th>
+        <th>Planned target (R)</th>
+        <th>Trail-MA candidate price</th>
+        <th>Trail-MA eligible</th>
+        <th>Utilization</th>
+        <th>Heat contrib ($)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in vm.result.rows %}
+      <tr data-trade-id="{{ row.trade_id }}" data-stage="{{ row.maturity_stage or 'unstaged' }}">
+        <td><strong>{{ row.ticker }}</strong></td>
+        <td>
+          {% if row.maturity_stage %}
+          {{ row.maturity_stage }}
+          {% else %}<em>—</em>{% endif %}
+        </td>
+        <td>
+          {% if row.open_MFE_R_to_date is not none %}
+          {{ "%.2f"|format(row.open_MFE_R_to_date) }}
+          {% else %}<em>—</em>{% endif %}
+        </td>
+        <td>
+          {% if row.open_MAE_R_to_date is not none %}
+          {{ "%.2f"|format(row.open_MAE_R_to_date) }}
+          {% else %}<em>—</em>{% endif %}
+        </td>
+        <td>
+          {% if row.current_stop is not none %}
+          ${{ "%.2f"|format(row.current_stop) }}
+          {% else %}<em>—</em>{% endif %}
+        </td>
+        <td data-cell="planned_target_R">
+          {% if row.planned_target_R is not none %}
+          {{ "%.2f"|format(row.planned_target_R) }}
+          {% else %}<em>—</em>{% endif %}
+        </td>
+        <td data-cell="trail_MA_candidate_price">
+          {% if row.trail_MA_candidate_price is not none %}
+          ${{ "%.2f"|format(row.trail_MA_candidate_price) }}
+          {% else %}<em>—</em>{% endif %}
+        </td>
+        <td data-cell="trail_MA_eligibility_flag">
+          {% if row.trail_MA_eligibility_flag is none %}
+          <em>—</em>
+          {% elif row.trail_MA_eligibility_flag %}
+          <strong>Yes</strong>
+          {% else %}
+          No
+          {% endif %}
+        </td>
+        <td>
+          {% if row.position_capital_utilization_pct is not none %}
+          {{ "%.2f"|format(row.position_capital_utilization_pct) }}%
+          {% else %}<em>—</em>{% endif %}
+          <span class="badge badge-{{ row.capital_denominator_badge|lower }}"
+                data-badge="row-utilization-{{ row.trade_id }}">{{ row.capital_denominator_badge }}</span>
+        </td>
+        <td>
+          {% if row.position_portfolio_heat_contribution_dollars is not none %}
+          ${{ "%.2f"|format(row.position_portfolio_heat_contribution_dollars) }}
+          {% else %}<em>—</em>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>Count by stage</h2>
+  <table class="metric-grid maturity-stage-counts">
+    <thead><tr><th>Stage</th><th>Count</th></tr></thead>
+    <tbody>
+      {% for stage, count in vm.result.count_by_stage.items() %}
+      <tr><td>{{ stage }}</td><td>{{ count }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% endif %}
+</section>
+{% endblock %}
