@@ -66,16 +66,26 @@ def build_deviation_outcome_vm(
     *,
     cfg: Config,
     conn: sqlite3.Connection | None = None,
+    exclude_unresolved_discrepancies: bool = False,
 ) -> DeviationOutcomeVM:
     """Build the deviation-outcome VM eagerly populating discrepancies field
-    per plan §A.18 + §I.5."""
+    per plan §A.18 + §I.5.
+
+    Per T-C.5 elective (electives amendment §2): when
+    ``exclude_unresolved_discrepancies=True``, trades with unresolved
+    material reconciliation discrepancies are filtered out of the cohort
+    aggregates (delegated to :func:`compute_deviation_outcome`).
+    """
     own_conn = conn is None
     if own_conn:
         conn = connect(cfg.paths.db_path)
     assert conn is not None
     try:
         unresolved = count_unresolved_material(conn)
-        result = compute_deviation_outcome(conn)
+        result = compute_deviation_outcome(
+            conn,
+            exclude_unresolved_discrepancies=exclude_unresolved_discrepancies,
+        )
     finally:
         if own_conn:
             conn.close()

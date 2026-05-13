@@ -66,16 +66,28 @@ def build_tier_comparison_vm(
     *,
     cfg: Config,
     conn: sqlite3.Connection | None = None,
+    exclude_unresolved_discrepancies: bool = False,
 ) -> TierComparisonVM:
     """Build the tier-comparison VM eagerly populating discrepancies field
-    per plan §A.18 + §I.5."""
+    per plan §A.18 + §I.5.
+
+    Per T-C.5 elective (electives amendment §2): when
+    ``exclude_unresolved_discrepancies=True``, trades with unresolved
+    material reconciliation discrepancies are filtered out of the cohort
+    aggregates. The result's ``excluded_trades_count`` field carries the
+    excluded count for template-side rendering of the
+    "(excluded N trades with unresolved discrepancies)" context line.
+    """
     own_conn = conn is None
     if own_conn:
         conn = connect(cfg.paths.db_path)
     assert conn is not None
     try:
         unresolved = count_unresolved_material(conn)
-        result = compute_tier_comparison(conn)
+        result = compute_tier_comparison(
+            conn,
+            exclude_unresolved_discrepancies=exclude_unresolved_discrepancies,
+        )
     finally:
         if own_conn:
             conn.close()

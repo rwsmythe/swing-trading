@@ -55,7 +55,10 @@ from dataclasses import dataclass
 
 from swing.data.models import RiskPolicy, Trade
 from swing.data.repos.fills import list_fills_for_trade
-from swing.metrics.cohort import list_closed_trades_for_cohort
+from swing.metrics.cohort import (
+    filter_trades_without_unresolved_material_discrepancies,
+    list_closed_trades_for_cohort,
+)
 from swing.metrics.honesty import (
     BootstrapCI,
     HonestyBadges,
@@ -298,6 +301,11 @@ class TierComparisonResult:
     cohort_relative_to_aplus_pct: dict[str, float | None]
     cohort_ci_overlap_descriptor: str
     overlap_descriptor_suppressed: bool
+    # T-C.5 elective: filter-active state surfaced for template-side
+    # rendering of the "Excluded N trades with unresolved discrepancies"
+    # context line. Defaults False/0 when filter inactive.
+    exclude_unresolved_discrepancies_active: bool = False
+    excluded_trades_count: int = 0
 
     def __post_init__(self) -> None:
         if len(self.cohorts) != len(TAXONOMY_COHORTS):
@@ -329,6 +337,11 @@ class TierComparisonResult:
                 "TierComparisonResult.cohort_ci_overlap_descriptor must be "
                 "non-empty (rendered text always; suppression placeholder "
                 "fills the slot when descriptor is suppressed)"
+            )
+        if self.excluded_trades_count < 0:
+            raise ValueError(
+                "TierComparisonResult.excluded_trades_count must be >= 0; "
+                f"got {self.excluded_trades_count!r}"
             )
 
 
@@ -404,6 +417,9 @@ class DeviationOutcomeResult:
     """
 
     rows: tuple[DeviationOutcomeRow, ...]
+    # T-C.5 elective: filter-active state surfaced for template-side rendering.
+    exclude_unresolved_discrepancies_active: bool = False
+    excluded_trades_count: int = 0
 
     def __post_init__(self) -> None:
         if len(self.rows) != len(TAXONOMY_COHORTS):
@@ -417,6 +433,11 @@ class DeviationOutcomeResult:
             raise ValueError(
                 "DeviationOutcomeResult.rows must be in TAXONOMY_COHORTS "
                 f"order; got {seen!r}"
+            )
+        if self.excluded_trades_count < 0:
+            raise ValueError(
+                "DeviationOutcomeResult.excluded_trades_count must be >= 0; "
+                f"got {self.excluded_trades_count!r}"
             )
 
 
@@ -569,6 +590,8 @@ def _format_ci_overlap_descriptor(
 
 def compute_tier_comparison(
     conn: sqlite3.Connection,
+    *,
+    exclude_unresolved_discrepancies: bool = False,
 ) -> TierComparisonResult:
     """Compute the §3.3 tier-comparison aggregate.
 
@@ -576,16 +599,27 @@ def compute_tier_comparison(
     registered cohorts (orphan-labeled trades EXCLUDED). Cohort columns
     render in :data:`TAXONOMY_COHORTS` order.
 
-    T-C.5 elective extends this signature with
-    ``exclude_unresolved_discrepancies: bool = False`` (NOT in T-C.1
-    scope — separate task lands the helper + parameter).
+    Per T-C.5 elective (electives amendment §2): when
+    ``exclude_unresolved_discrepancies=True``, trades with unresolved
+    material reconciliation discrepancies are filtered out BEFORE
+    classification. The filter may bring a cohort below
+    :data:`COHORT_MINIMUM_N` and re-trigger surface-level suppression —
+    the discriminating regression test
+    ``test_filter_re_suppresses_when_n_drops_below_5`` pins this cascade.
     """
     live_policy = read_live_policy(conn)
     cohort_meta = _load_cohort_meta(conn)
 
     cohorts: list[CohortStatistics] = []
+    total_excluded = 0
     for name in TAXONOMY_COHORTS:
         trades = list_closed_trades_for_cohort(conn, hypothesis_label=name)
+        if exclude_unresolved_discrepancies:
+            pre_filter_n = len(trades)
+            trades = filter_trades_without_unresolved_material_discrepancies(
+                conn, trades,
+            )
+            total_excluded += pre_filter_n - len(trades)
         meta = cohort_meta.get(name)
         if meta is None:
             # Defensive: hypothesis_registry seed missing the cohort name
@@ -648,11 +682,15 @@ def compute_tier_comparison(
         cohort_relative_to_aplus_pct=relative_map,
         cohort_ci_overlap_descriptor=descriptor_text,
         overlap_descriptor_suppressed=descriptor_suppressed,
+        exclude_unresolved_discrepancies_active=exclude_unresolved_discrepancies,
+        excluded_trades_count=total_excluded,
     )
 
 
 def compute_deviation_outcome(
     conn: sqlite3.Connection,
+    *,
+    exclude_unresolved_discrepancies: bool = False,
 ) -> DeviationOutcomeResult:
     """Compute the §3.7 deviation-outcome aggregate.
 
@@ -669,11 +707,15 @@ def compute_deviation_outcome(
     deviation_class + decision-criterion text) — the relative-expectancy
     cell is suppressed, NOT the whole row.
 
-    T-C.5 elective extends this signature with
-    ``exclude_unresolved_discrepancies: bool = False`` (NOT in T-C.1
-    scope — separate task lands the helper + parameter).
+    Per T-C.5 elective (electives amendment §2): when
+    ``exclude_unresolved_discrepancies=True``, trades with unresolved
+    material reconciliation discrepancies are filtered out BEFORE
+    classification (delegates to :func:`compute_tier_comparison`).
     """
-    tier = compute_tier_comparison(conn)
+    tier = compute_tier_comparison(
+        conn,
+        exclude_unresolved_discrepancies=exclude_unresolved_discrepancies,
+    )
     by_name = {c.cohort_name: c for c in tier.cohorts}
     aplus = by_name[APLUS_COHORT]
     aplus_point: float | None = None
@@ -718,4 +760,10 @@ def compute_deviation_outcome(
             ),
         )
 
-    return DeviationOutcomeResult(rows=tuple(rows))
+    return DeviationOutcomeResult(
+        rows=tuple(rows),
+        exclude_unresolved_discrepancies_active=(
+            tier.exclude_unresolved_discrepancies_active
+        ),
+        excluded_trades_count=tier.excluded_trades_count,
+    )

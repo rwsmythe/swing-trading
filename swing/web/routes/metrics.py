@@ -65,7 +65,10 @@ def metrics_trade_process(
 
 
 @router.get("/metrics/tier-comparison", response_class=HTMLResponse)
-def metrics_tier_comparison(request: Request):
+def metrics_tier_comparison(
+    request: Request,
+    exclude_discrepancies: int = Query(default=0),
+):
     """Spec §4.3 tier-comparison view — Sub-bundle C Task T-C.2.
 
     Renders the 4 registered hypothesis_registry cohorts side-by-side
@@ -73,16 +76,29 @@ def metrics_tier_comparison(request: Request):
     ``cohort_relative_to_aplus_pct`` + single ``cohort_ci_overlap_descriptor``
     TEXT block. Per spec §3.3 R1 M3 LOCK: descriptor is TEXT (NOT
     boolean). Per spec §4.3 surface LOCK: cohort cells suppress at n<5.
+
+    Per T-C.5 elective (electives amendment §2): ``?exclude_discrepancies=1``
+    filters trades with unresolved material reconciliation discrepancies
+    out of the cohort aggregates before classification. Any truthy
+    integer activates the filter; missing parameter or ``0`` keeps it
+    inactive. Per plan §A.9 + §I.6 LOCK: static-render link, NOT
+    HTMX OOB-swap.
     """
     cfg = request.app.state.cfg
-    vm = build_tier_comparison_vm(cfg=cfg)
+    vm = build_tier_comparison_vm(
+        cfg=cfg,
+        exclude_unresolved_discrepancies=bool(exclude_discrepancies),
+    )
     return request.app.state.templates.TemplateResponse(
         request, "metrics/tier_comparison.html.j2", {"vm": vm},
     )
 
 
 @router.get("/metrics/deviation-outcome", response_class=HTMLResponse)
-def metrics_deviation_outcome(request: Request):
+def metrics_deviation_outcome(
+    request: Request,
+    exclude_discrepancies: int = Query(default=0),
+):
     """Spec §4.7 deviation-outcome view — Sub-bundle C Task T-C.3.
 
     Renders the 4 registered hypothesis_registry cohorts as rows with
@@ -95,9 +111,16 @@ def metrics_deviation_outcome(request: Request):
     in V1 — operator reads + judges. Per spec §4.7 surface LOCK: cohort
     row stays VISIBLE at n<5 (showing deviation-class + criterion text);
     the relative-pct cell shows "n too low" placeholder.
+
+    Per T-C.5 elective (electives amendment §2): ``?exclude_discrepancies=1``
+    filters trades with unresolved material reconciliation discrepancies
+    out of the cohort aggregates before classification.
     """
     cfg = request.app.state.cfg
-    vm = build_deviation_outcome_vm(cfg=cfg)
+    vm = build_deviation_outcome_vm(
+        cfg=cfg,
+        exclude_unresolved_discrepancies=bool(exclude_discrepancies),
+    )
     return request.app.state.templates.TemplateResponse(
         request, "metrics/deviation_outcome.html.j2", {"vm": vm},
     )

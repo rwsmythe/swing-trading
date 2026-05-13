@@ -116,3 +116,54 @@ def count_per_cohort(conn: sqlite3.Connection) -> dict[str, int]:
             # "(unregistered cohort)" placeholder. Include in returned dict.
             cohort_counts[label] = int(count)
     return cohort_counts
+
+
+# ---------------------------------------------------------------------------
+# T-C.5 elective — per-cohort discrepancy filter
+# ---------------------------------------------------------------------------
+
+def filter_trades_without_unresolved_material_discrepancies(
+    conn: sqlite3.Connection, trades: list[Trade],
+) -> list[Trade]:
+    """Return the subset of trades that have ZERO unresolved material
+    reconciliation discrepancies.
+
+    Per electives amendment §2 Task C.5 acceptance (with the helper's
+    intent — the amendment text uses "resolution IS NULL" loosely; the
+    Phase 9 schema actually stores ``resolution`` as NOT NULL with the
+    sentinel value ``'unresolved'`` as the default):
+
+    - INCLUDE trades with no discrepancy rows.
+    - INCLUDE trades whose discrepancies are ALL resolved
+      (``resolution != 'unresolved'`` — i.e. one of
+      ``'journal_corrected'`` / ``'source_treated_canonical'`` /
+      ``'manual_override'`` / ``'acknowledged_immaterial'``).
+    - INCLUDE trades whose discrepancies are non-material
+      (``material_to_review = 0``).
+    - EXCLUDE trades with at least one discrepancy row where
+      ``material_to_review = 1 AND resolution = 'unresolved'``.
+
+    Mirrors :func:`swing.data.repos.reconciliation.list_unresolved_material_for_active_trades`
+    semantics so the global banner count + this per-cohort filter agree
+    on which discrepancies count as "unresolved + material".
+
+    Single-query: SELECT DISTINCT trade_id FROM reconciliation_discrepancies
+    WHERE material_to_review=1 AND resolution='unresolved' AND trade_id
+    IS NOT NULL; exclude those ``trade_id``s from the input list.
+
+    Orphan-emit discrepancies (``trade_id IS NULL`` — sector_tamper /
+    equity_delta / cash_movement_mismatch without a trade attribution per
+    Phase 9 Sub-bundle B) do NOT affect this filter (they cannot exclude
+    a specific trade); they remain counted by the global
+    ``unresolved_material_discrepancies_count`` banner.
+    """
+    if not trades:
+        return list(trades)
+    rows = conn.execute(
+        "SELECT DISTINCT trade_id FROM reconciliation_discrepancies "
+        "WHERE material_to_review = 1 "
+        "  AND resolution = 'unresolved' "
+        "  AND trade_id IS NOT NULL",
+    ).fetchall()
+    excluded_ids = {int(r[0]) for r in rows}
+    return [t for t in trades if t.id not in excluded_ids]

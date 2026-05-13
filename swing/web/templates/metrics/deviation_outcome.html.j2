@@ -11,6 +11,17 @@
     pass/fail evaluation; operator reads + judges.
   </p>
 
+  <p class="discrepancy-filter-toggle">
+    {% if vm.result.exclude_unresolved_discrepancies_active %}
+    <a href="/metrics/deviation-outcome">Show all trades (currently hiding trades with unresolved discrepancies)</a>
+    {% if vm.result.excluded_trades_count > 0 %}
+    <span class="muted">(excluded {{ vm.result.excluded_trades_count }} trades with unresolved discrepancies)</span>
+    {% endif %}
+    {% else %}
+    <a href="/metrics/deviation-outcome?exclude_discrepancies=1">Hide trades with unresolved discrepancies</a>
+    {% endif %}
+  </p>
+
   <table class="metric-grid deviation-outcome">
     <thead>
       <tr>
