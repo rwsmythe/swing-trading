@@ -6,6 +6,50 @@
 
 ---
 
+## 2026-05-13 Phase 10 Sub-bundle A ship: spec amendments + forward-binding lessons + V2 candidates banked
+
+**Sub-bundle A SHIPPED 2026-05-13** at `096de83` (integration merge of `phase10-bundle-A-shared-honesty-utility`). 15 commits = 11 task-impl + 3 Codex-fix + 1 return-report; 4 Codex rounds → NO_NEW_CRITICAL_MAJOR; ZERO Critical + ZERO ACCEPT-WITH-RATIONALE; +128 fast tests (2767 → 2895); ruff 18 unchanged; schema v17 unchanged.
+
+### 3 V2.1 §VII.F amendment candidates (plan-text corrections; banked from return report §8)
+
+1. **Plan §D Task A.1 Wilson CI reference value drift.** Plan acceptance criterion locked `k=2,n=4 → [0.094, 0.901]` (Wilson-with-continuity-correction); implementation chose standard Wilson (yields `[0.150, 0.850]`); plan's other two reference values `k=0,n=20 → [0.000, 0.161]` + `k=20,n=20 → [0.839, 1.000]` match standard Wilson exactly. Plan §D Task A.1 should be amended to either (a) correct the k=2,n=4 reference to `[0.150, 0.850]` (matches standard Wilson; downstream comparable to `statsmodels.stats.proportion_confint(method='wilson')`); OR (b) explicitly require Wilson-with-continuity-correction + update implementation. Implementer chose (a) per Wikipedia primary formula + statsmodels-default alignment. **V2.1 §VII.F routing recommended:** standalone amendment dispatch or fold into Phase 10 plan revision.
+
+2. **Plan §A.5 `read_at_trade_time_policy` signature.** Plan signature `read_at_trade_time_policy(conn, *, trade: Trade) -> RiskPolicy` assumes `Trade` dataclass carries `risk_policy_id_at_lock` field. Phase 9 Sub-bundle A added the column via ALTER but did NOT extend `Trade` dataclass (`_TRADE_SELECT_COLS` in `swing/data/repos/trades.py` omits it). Implementation signature is `read_at_trade_time_policy(conn, *, policy_id_stamp: int | None) -> tuple[RiskPolicy, bool]` with two convenience accessors `get_trade_policy_id_stamp(conn, *, trade_id: int)` + `get_review_policy_id_stamp(conn, *, review_id: int)` added in `swing/metrics/policy.py`. Sub-bundle B consumers fetch the stamp from DB then pass into resolver. Plan §A.5 to be amended to match implementation; OR alternatively V2-disruptive option: extend `Trade` dataclass to include `risk_policy_id_at_lock` (every existing consumer accepts new field).
+
+3. **Plan §A.6 `BaseLayoutVM.stale_banner` type.** Plan says `stale_banner: bool = False`; implementation chose `stale_banner: str | None = None` to match existing base-layout VM pattern (`DashboardVM`/`PipelineVM`/`JournalVM`/`WatchlistVM`/`ConfigVM` all use `str | None`). `base.html.j2` renders `{% if vm.stale_banner %}` + included partial does `{{ vm.stale_banner }}` (substitutes banner text). With `bool = False` the rendered banner would be literal "True"/"False" text. Plan §A.6 to be amended to `str | None = None`.
+
+### Plan §A.7 + §D Task A.1 amendments ALREADY APPLIED in-tree
+
+Codex R2 + R3 caught the SAME failure-mode twice (plan-text drift from code interface changes). Implementer amended plan §A.7 + §D Task A.1 IN THE WORKTREE during Codex R2 + R3 fix commits (`e32f71c` + `75dd63f`). These are NOT pending amendments — they LANDED at merge `096de83`. The 3 candidates above are SEPARATE from those (plan-text-vs-impl divergences caught at return-report-time, not at Codex-time).
+
+### 2 forward-binding lessons for Sub-bundle B+ dispatch (banked from return report §10)
+
+1. **Plan §A.7 binding-interface amendments flow into plan text in SAME commit as code change.** Codex R2 Major #1 + R3 Major #1 in Sub-bundle A caught the SAME failure-mode twice: code-level interface changes (adding `HonestyBadges.window_not_full_warning` in R1; making `badges_for_n` public in R1) were NOT reflected in binding plan §A.7 text, even though Sub-bundles B-E read §A.7 as binding. **Pre-empt for Sub-bundle B+ dispatch brief §0.5:** when implementer changes any §A.7-listed interface element (HonestyBadges fields, function signatures, Decoupling discipline assignment), update plan §A.7 IN THE SAME COMMIT. Brief watch item: "if implementer adds new public function / dataclass field / signature param in `swing/metrics/honesty.py`, plan §A.7 binding interface MUST update in-tree to match."
+
+2. **Statistical helpers with multiple textbook-correct variants need explicit spec pin at writing-plans time.** Wilson CI standard-vs-continuity-correction divergence (deviation #1 above) is a textbook ambiguity. Plan §A.7 cited "Wikipedia formula" but Wikipedia documents BOTH variants; plan's reference values mixed the two. **Pre-empt for future writing-plans dispatches:** any statistical helper that has multiple textbook-correct implementations (Wilson CI, bootstrap CI tail-handling, bias-correction, Wilson-vs-Agresti-Coull, etc.) needs an EXPLICIT formula pin in the plan with a citation to Wikipedia section, scipy/statsmodels function name, or equivalent. Add to writing-plans §5 watch items: "for statistical helpers, plan §A.7 names the SPECIFIC variant + cites Wikipedia/scipy/statsmodels function name to disambiguate."
+
+### 2 V2 candidates banked (from return report §7)
+
+1. **`count_unresolved_material` widen to include orphan-emit discrepancies.** Current implementation returns ONLY trade-attributed discrepancies (underlying repo helpers JOIN on trades). Orphan-emit discrepancies (sector_tamper / equity_delta / cash_movement_mismatch with NULL trade_id from Phase 9 Sub-bundle D's sector_tamper audit + Sub-bundle C's equity_delta) are EXCLUDED from the count. Discriminating regression test `tests/metrics/test_discrepancies.py::test_count_unresolved_material_excludes_orphan_emit_no_trade` pins V1 behavior. V2 could widen via separate sub-query joining on the run-attribution side.
+
+2. **`render_class_d` "point" branch hardcodes sum semantics.** Implementation hardcodes sum semantics per §A.21 + §J.1.1 for `mistake_cost_R_rolling_N_total`. Other future "point" callers (if any) needing mean semantics would need a new helper or a parameter to switch aggregation. Banked at the §A.21 V2.1 §VII.F amendment candidate; consider when Sub-bundle E lands the §3.8 process-grade-trend surface.
+
+### Post-merge state
+
+- HEAD on main: `096de83` (integration merge) + housekeeping commit (this entry).
+- Active risk_policy: `policy_id=5` (Option C revert; `max_account_risk_per_trade_pct=0.5` cfg-aligned per operator decision 2026-05-13). Policy chain: 1 (seed) → 2 (operator test) → 3 (S2.bis divergence) → 4 (S2.bis revert) → **5 (Option C revert; ACTIVE)**.
+- Cross-bundle pin at T-A.7 (still SKIPPED): un-skip lands at Sub-bundle E T-E.3 retrofit of 6 existing base-layout VMs.
+- Sub-bundle B executing-plans dispatch UNBLOCKED.
+
+### Cross-references
+
+- Sub-bundle A return report: `docs/phase10-bundle-A-return-report.md`.
+- Plan §A.7 + §D Task A.1 (AMENDED in-tree at `e32f71c` + `75dd63f`).
+- Phase 10 plan: `docs/superpowers/plans/2026-05-13-phase10-metrics-dashboard-plan.md`.
+- Electives amendment: `docs/phase10-electives-amendment.md` (Sub-bundle B will propagate T-B.7 elective).
+
+---
+
 ## 2026-05-13 §8.4 Corporate_Actions MVP — standalone post-Phase-10 dispatch (deferred per Phase 10 electives amendment)
 
 **Decision (operator 2026-05-13 post-Phase-10-writing-plans-merge):** §8.4 Corporate_Actions MVP defers to a standalone post-Phase-10 dispatch. Phase 10 plan §A.0 ZERO-new-schema lock preserved; Phase 10 V1 arc shape stays at 5 sub-bundles A→B→C→D→E with 39 tasks (4 other electives propagated; see `docs/phase10-electives-amendment.md`).
