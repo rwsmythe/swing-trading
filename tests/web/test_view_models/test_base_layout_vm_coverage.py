@@ -43,6 +43,10 @@ _SUB_VM_EXCLUSIONS: frozenset[str] = frozenset({
     "ConfidenceBadgeVM",
     "ProvisionalBadgeVM",
     "SuppressionRowVM",
+    # Sub-bundle B sub-VMs (composed into TradeProcessCardVM /
+    # HypothesisProgressCardVM page VMs):
+    "CohortTabVM",             # per-cohort tab descriptor on trade-process card
+    "CohortProgressVM",        # per-cohort row on hypothesis-progress card
 })
 
 
