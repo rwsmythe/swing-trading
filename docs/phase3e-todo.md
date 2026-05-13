@@ -6,6 +6,103 @@
 
 ---
 
+## 2026-05-13 Phase 10 Sub-bundle C ship: 5 spec amendments + 3 forward-binding lessons + cleanup-script gap surfaced
+
+**Sub-bundle C SHIPPED 2026-05-13** at `a814006` (integration merge of `phase10-bundle-C-tier-and-deviation`). 8 commits = 5 task-impl (T-C.1..T-C.5) + 1 Codex-fix + 2 return-report; **2 Codex rounds → NO_NEW_CRITICAL_MAJOR** — ties FASTEST Phase 10 chain (B + Phase 9 E precedent). ZERO Critical + ZERO ACCEPT-WITH-RATIONALE.
+
+Tests: 2961 worktree-side → 3045 (+84 new; ~3048 main post-merge from 2964 baseline; above projection +34..+56; matches Sub-bundle A +128 + B +73 overshoot precedent). Ruff 18 unchanged. Schema v17 unchanged.
+
+### 5 V2.1 §VII.F amendment candidates (return report §5)
+
+1. **T-C.1 `cohort_relative_to_aplus` rendering.** Spec §3.3 row 147 defines as `cohort_expectancy_R / aplus_expectancy_R - 1` (delta proportion); dispatch brief §0.9 LOCK specified PERCENT raw-ratio `cohort_expectancy / aplus_expectancy * 100`. Implementation followed brief (binding implementer-facing artifact). Two semantically distinct metrics exist at the same numeric value: §3.3's "what fraction of A+ does this cohort achieve?" (0–200% typical) vs §3.7's "how far above/below A+" (-100% to +∞%). **Amendment:** spec §3.3 + §3.7 text should explicitly state rendering-unit semantics + the two-metric split.
+
+2. **T-C.1 `cohort_doctrine_deviation_class` baseline enum value.** Spec §3.7 row 205 uses `"0"` as A+ baseline cohort's deviation class; implementation uses `"baseline"` string. Rationale: text field rendering; integer "0" would visually collide with the descriptive enum strings + operator's mental model that baseline IS a class label. Test pins `"baseline"` for A+. **Amendment:** cosmetic spec wording.
+
+3. **T-C.5 filter SQL predicate.** Electives amendment §2 specified `resolution IS NULL`; schema reality (Phase 9 migration 0017) stores resolution as NOT NULL with sentinel `'unresolved'` enum default. Implementation uses `resolution = 'unresolved'` matching `swing/data/repos/reconciliation.py:list_unresolved_material_for_active_trades` Phase 9 Sub-bundle B convention. **Amendment:** electives amendment §2 wording.
+
+4. **T-C.5 filter threading.** Amendment specified `CohortFilter` enum OR new bool param on tier + deviation VMs. Implementation chose bool throughout (compute + VM + route layers). Filter applied AT COMPUTE LAYER (before classification) so surface-locked cohort suppression cascade fires correctly when filter brings n<5. **Amendment:** minor; aligns with "new bool param" alternative.
+
+5. **T-C.5 toggle href shape.** Amendment showed `<a href="/metrics/tier-comparison?exclude_discrepancies=1">` (absolute path). Implementation uses relative query href `<a href="?exclude_discrepancies=1">` + `<a href="?">` (Codex R1 M#1 fix). Relative form is more robust under mounted-app / root-path deployments. **Amendment:** illustrative-vs-binding-shape clarification.
+
+### 3 forward-binding lessons for Sub-bundle D dispatch (return report §9; #20-#22 in cumulative catalog)
+
+1. **#20: body-wide unit-substring assertions are non-discriminating when seed text contains the same substring** (e.g., decision-criteria contains literal `%` from "win rate > 30%"). Discriminating-test pattern: seed a specific worked example + assert the EXACT rendered numeric+unit substring at the cell location, NOT a body-wide `unit_string in body` check. Forward-relevance for Sub-bundle D: capital-friction percent-unit metrics + PROVISIONAL/LIVE badge text should follow this pattern.
+
+2. **#21: toggle/filter links use relative query href** (`href="?key=value"` to set + `href="?"` to clear) rather than absolute path hrefs. Survives mounted-app / root-path deployments. Forward-relevance: capital-friction + identification-funnel + maturity-stage surfaces may need similar per-cohort or per-stage filter toggles.
+
+3. **#22: per-cohort filters affecting cell suppression MUST be applied at compute layer** (before surface-locked suppression cascade fires). Applying at VM-layer post-compute would require duplicating suppression logic. Discriminating test: seed cohort with N>=5 where K trades have filter-trigger condition; filter-active brings cohort to (N-K) AND re-triggers suppression if (N-K) < surface floor.
+
+### Cleanup-script gap surfaced (operator-decided 2026-05-13)
+
+Operator verified the cleanup-script (`cleanup-locked-scratch-dirs.ps1`) catches **only orphaned** worktree dirs (deregistered from `git worktree list` but on-disk dir remains). Currently registered worktrees are by-design skipped (lines 215-234 short-circuit on `$isRegistered = $true`). The 4 remaining Phase 9 husks (B/C/D/E) are still registered and require `git worktree remove --force` first (deregisters; likely fails at on-disk delete due to ACL lock → produces orphan → script catches on next run). **Operator concurred with option 2: extend script with `-DeregisterFirst` switch** that drives `git worktree remove --force` against matched paths before orphan-discovery. **DEFERRED as separate orchestrator dispatch on `main`** (read-side, non-blocking, separate PR from Phase 10 sub-bundles). 5 husks pending after this dispatch (4 Phase 9 + new Phase 10 Sub-bundle C).
+
+### Test-runtime concern surfaced 2026-05-13
+
+Fast pytest suite at 3045 tests is 5:15 wall-clock (~103ms/test average; slow for unit-style). Orchestrator recommendation queued: (1) `pytest --durations=30` profile pass; (2) `pytest-xdist -n auto` parallelization (highest ROI; ~3-5x wall-clock reduction at zero coverage cost); (3) session-scoped schema fixtures audit. **DEFERRED as separate orchestrator dispatch.** Reduce-tests-with-coverage-preservation is the WRONG frame — each test exists as a discriminating-pin; the real lever is eliminating per-test fixture overhead.
+
+### Post-merge state
+
+- HEAD on main: `a814006` (integration merge) + housekeeping commit (this entry).
+- Active risk_policy: `policy_id=5` (Option C revert from Sub-bundle A; unchanged through Sub-bundle B + C).
+- Cross-bundle pin at T-A.7 (still SKIPPED): un-skip lands at Sub-bundle E T-E.3 retrofit of 6 existing base-layout VMs.
+- Sub-bundle D executing-plans dispatch UNBLOCKED.
+- Pending V2.1 §VII.F amendment candidates cumulative: **17** entering Sub-bundle D (was 12 entering C; +5 this dispatch). Phase 10 arc cumulative ACCEPT-WITH-RATIONALE: ZERO (A+B+C clean record).
+
+### Cross-references
+
+- Sub-bundle C return report: `docs/phase10-bundle-C-return-report.md`.
+- Sub-bundle C dispatch brief: `docs/phase10-bundle-C-executing-plans-dispatch-brief.md`.
+- Plan §F (lines 1257-1334) consumed verbatim; AMENDED §A.7 + §A.18 + §A.5.1 from Sub-bundle A inherited.
+- Phase 10 plan: `docs/superpowers/plans/2026-05-13-phase10-metrics-dashboard-plan.md`.
+- Electives amendment §2 Task C.5: `docs/phase10-electives-amendment.md`.
+
+---
+
+## 2026-05-13 Post-Phase-10 standalone dispatches (deferred per operator decision; sequence AFTER Phase 10 Sub-bundles D + E ship)
+
+Operator decision 2026-05-13 (mid-Phase-10, post-Sub-bundle-C-ship): two operational improvements surfaced during the Sub-bundle C dispatch + post-ship triage. Both are **read-side / infrastructure-side**, non-blocking for Sub-bundles D + E, and **DEFERRED as separate orchestrator dispatches AFTER Phase 10 completes** (Sub-bundle E ship closes the phase).
+
+### Item 1 — Extend `cleanup-locked-scratch-dirs.ps1` with `-DeregisterFirst` switch
+
+**Problem:** the script's worktree-orphan discovery (lines 215-234) currently catches ONLY orphaned worktree dirs (deregistered from `git worktree list` but on-disk dir remains due to Windows `.tmp/pytest-of-rwsmy/` ACL-lock pattern). Worktrees that are still registered in `git worktree list` are by-design skipped. The standard post-merge workflow is two-step: (a) operator/orchestrator runs `git worktree remove --force`; (b) if on-disk delete fails (ACL lock), the dir is now orphaned + the cleanup-script catches it on next run. Workflow gap: between step (a) and step (b), the operator's environment carries registered husks indefinitely if step (a) is skipped.
+
+**Evidence:** at handoff 2026-05-13 mid-Phase-10, 11 worktree husks were pending operator cleanup-script per the handoff brief enumeration. After the operator's cleanup pass, 4 Phase 9 husks remained (B/C/D/E) because they were still git-registered (step (a) was never run on them). Operator confirmed cleanup-script-as-shipped does not catch them.
+
+**Proposed extension:** add a `-DeregisterFirst` switch that drives `git worktree remove --force` against paths matching `^.worktrees/phase\d+-.*` (or accepts an explicit list) before the orphan-discovery pass. After deregistration completes, the existing orphan-discovery pass picks up the now-orphaned dirs + cleans them.
+
+**Estimated effort:** ~30-45 min orchestrator-or-implementer dispatch on `main`. Read-side / infrastructure-side; no production-code impact; cannot conflict with Phase 10 sub-bundle worktrees (D + E will run on their own worktree branches with their own husks).
+
+**Sequencing:** AFTER Sub-bundle E ship closes Phase 10. Avoids worktree-management changes mid-arc.
+
+### Item 2 — Test-runtime analysis + improvements (zero-coverage-loss interventions)
+
+**Problem:** fast pytest suite is at 3045 tests / ~5:15 wall-clock on Windows + Python 3.14 (Sub-bundle C post-ship). Per-test overhead average is ~103ms which is slow for unit-style tests (typical: 10-30ms). Going to ~3100+ tests at Sub-bundle D + E ship pushes past 6 min wall-clock. Operator surfaced 2026-05-13 the concern that approaching 3000 tests is making the dev-loop test-feedback latency painful.
+
+**Wrong frame:** "reduce tests to retain coverage" — each test exists as a discriminating-pin for a Codex finding or regression-prevention assertion; deletion re-opens closed risks. The right frame is **eliminate per-test fixture overhead**, not test count.
+
+**Recommended interventions in order of ROI (zero coverage loss):**
+
+1. **Profile first (5 min, zero risk):** `pytest --durations=30` to identify the 80/20 hotspots. Without profiling, every other intervention is guessing.
+2. **`pytest-xdist` parallelization (highest ROI; estimated ~3-5x wall-clock reduction):** single-line dependency add + `-n auto` in pyproject. With 8+ cores this is a 5 min → ~90s win at zero coverage cost. Risks: SQLite contention (file-based DBs need per-worker tmp dirs — `tmp_path_factory` already gives this); shared `pipeline_runs` lease tests need careful scoping. Most of the suite is already worker-safe by construction.
+3. **Session/module-scoped schema fixtures:** large fraction of tests do `tmp_path → ensure_schema(conn) → seed → assert`. `ensure_schema` walks all 17 migrations on every call. Caching a fresh-DB template at session scope + `shutil.copy()` per test is ~10-50ms saved per test × thousands of tests = several minutes recovered. Medium-impact; fixture refactor required.
+4. **TestClient lifespan audit:** `with TestClient(app) as client:` enters lifespan (starts `price_fetch_executor`); plain `TestClient(app)` does not. Many web tests use the `with` form even when they don't need the executor. Mechanical sweep.
+5. **Audit duplicate discriminating-tests:** some Phase 9 + 10 Codex rounds added 2-3 tests pinning the same invariant via different fixtures. Manual audit; small wins; some risk of removing a real pin (requires careful per-test review).
+6. **Move E2E integration tests behind `slow` marker:** `tests/integration/test_phase8_pipeline_walkthrough.py` already slow-marked. Audit `tests/integration/` for others. Doesn't reduce coverage, just reduces fast-suite footprint.
+
+**Expected outcome:** profile + xdist together likely 5 min → ~1-1.5 min with zero coverage loss. Fixture-scope refactor adds another 30-60s reduction.
+
+**Estimated effort:** ~1-2 hr orchestrator profile pass + ~30 min xdist integration + ~2-4 hr fixture-scope refactor if profile evidence warrants. Dispatch as a standalone read-side / infrastructure-side bundle.
+
+**Sequencing:** AFTER Sub-bundle E ship closes Phase 10. Avoids test-runner / fixture changes mid-arc that could mask Codex-detectable regressions in Sub-bundle D + E.
+
+### Cross-references
+
+- Sub-bundle C return report §7 #7-#8 (this bundle surfaced the gap).
+- Cleanup-script: `cleanup-locked-scratch-dirs.ps1` lines 215-234 (orphan-only discovery branch).
+- Test-runtime baseline: 2964 → 3045 worktree-side at Sub-bundle C ship (~5:15 wall-clock).
+
+---
+
 ## 2026-05-13 Phase 10 Sub-bundle B ship: 5 spec amendments + 2 forward-binding lessons + 4 V2 candidates banked
 
 **Sub-bundle B SHIPPED 2026-05-13** at `6ed0f35` (integration merge of `phase10-bundle-B-trade-process-and-hypothesis-progress`). 9 commits = 7 task-impl (T-B.1..T-B.7 incl. T-B.7 elective) + 1 Codex-fix + 1 return-report; **2 Codex rounds → NO_NEW_CRITICAL_MAJOR** — FASTEST Phase 10 chain (matches Phase 9 Sub-bundle E precedent). ZERO Critical + ZERO ACCEPT-WITH-RATIONALE.
