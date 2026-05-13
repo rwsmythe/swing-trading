@@ -6,6 +6,56 @@
 
 ---
 
+## 2026-05-13 Phase 10 Sub-bundle B ship: 5 spec amendments + 2 forward-binding lessons + 4 V2 candidates banked
+
+**Sub-bundle B SHIPPED 2026-05-13** at `6ed0f35` (integration merge of `phase10-bundle-B-trade-process-and-hypothesis-progress`). 9 commits = 7 task-impl (T-B.1..T-B.7 incl. T-B.7 elective) + 1 Codex-fix + 1 return-report; **2 Codex rounds → NO_NEW_CRITICAL_MAJOR** — FASTEST Phase 10 chain (matches Phase 9 Sub-bundle E precedent). ZERO Critical + ZERO ACCEPT-WITH-RATIONALE.
+
+Tests: 2895 worktree-side → 2951 (+73 new tests; +56 net; matches +46..+75 dispatch brief projection); 2899 → 2960 main HEAD. Ruff 18 unchanged. Schema v17 unchanged.
+
+### 5 V2.1 §VII.F amendment candidates (4 from return report §5 + 1 surfaced at orchestrator-driven gate)
+
+1. **Plan §E Task B.1 acceptance text — `mistake_cost_R` aggregator source.** Plan said "prefer `review_log.total_mistake_cost_R` aggregate when present; fall back to per-trade compute when absent"; implementation always recomputes per-trade because `review_log` is **CADENCE-grain** (one row per daily/weekly/monthly review window covering N trades) with NO per-trade foreign key. The cadence aggregate CANNOT be cleanly mapped onto a cohort-grain sum at the metrics layer. Discriminating regression test `test_mistake_cost_R_recomputes_per_trade_ignoring_review_log_aggregate` pins the per-trade-recompute behavior. **Amendment:** plan §E Task B.1 should say "always re-compute via Phase 6 helpers; cohort-grain sum is reproducible from per-trade fields." V2 candidate: add `review_log_trade_links` audit table; cohort aggregator could then prefer frozen review-time values for already-reviewed trades + recompute only for unreviewed.
+
+2. **Plan §E Task B.2 acceptance text — sentinel value for "All closed trades" toggle.** Plan didn't specify a URL-parameter sentinel. Implementation uses `__all__` as the sentinel (`?cohort=__all__`) to avoid collision with any legitimate cohort name containing the literal "all". Documented in the module docstring. **Amendment:** plan §E Task B.2 should include the sentinel choice explicitly.
+
+3. **Plan §A.5.1 + spec §3.2 `cumulative_R_pct_of_capital` rendering unit.** Plan §A.5.1 specifies the metric as "proportion" (dimensionless); implementation stores + surfaces in **PERCENT units** (e.g., `-1.667` means `-1.667%`, NOT `-1.667 ratio` = `-166.7%`) because spec §3.2 `distance_to_absolute_loss_tripwire = absolute_loss_tripwire_pct - abs(min(0, cumulative_R_pct_of_capital))` requires comparing against `absolute_loss_tripwire_pct` which is in percent units per migration 0008 (e.g., `5.0` = `5%`). Conversion `sum(dimensionless ratios) * 100` happens inside `_build_cohort_vm`. **Amendment:** plan §A.5.1 + spec §3.2 should explicitly state the rendering unit.
+
+4. **Electives amendment §2 Task B.7 acceptance text — existing display assumption.** Amendment said the new field renders "symmetrically alongside the existing `mistake_cost_R` display." Empirical verification of the Phase 6 template showed there was **NO pre-existing `mistake_cost_R` display** — only the operator-input form for `realized_R_if_plan_followed`. Implementation surfaces BOTH `mistake_cost_R` AND `lucky_violation_R` as derived display values in a new `<dl class="counterfactual-pair">` block placed BEFORE the existing form. Symmetric rendering criterion is met WITHIN the new block. **Amendment:** electives amendment §2 should be corrected: "the new block surfaces BOTH `mistake_cost_R` AND `lucky_violation_R` as derived per-trade display values; the existing form is unchanged."
+
+5. **(GATE-SURFACED 2026-05-13)** **Plan §E Task B.2 acceptance text — cohort-tab enumeration scope.** Plan said `test_vm_renders_4_cohort_tabs_plus_all_toggle` expecting "5 tabs total" (4 registered + "all"). Implementation surfaces 7 tabs at production gate (4 pre-registered + 2 orphan-label + "All") because production has 2 orphan-labeled closed trades ("inaugural trade test" with 1 closed VIR + "Sub-A+ VCP-not-formed (watch); failed: proximity_20ma, tightness" with 2 closed). Hiding orphan-labeled cohorts would hide closed-trade data from the operator. **Sensible deviation; not banked in return report but caught at orchestrator-driven S2 gate via Chrome MCP read_page.** **Amendment:** plan §E Task B.2 should say "render tabs for ALL distinct `hypothesis_label` values across closed trades (registered + orphan) + "All" toggle; default-active is FIRST registered cohort regardless of orphan presence."
+
+### 2 forward-binding lessons for Sub-bundle C dispatch (return report §8)
+
+1. **Cadence-grain audit tables CANNOT be cleanly mapped to cohort-grain metrics without per-trade FK.** Sub-bundle B R1 Major #1 surfaced the mismatch between `review_log` (cadence-grain, no trade FK) and cohort-grain `mistake_cost_R` sum. If Sub-bundle C (tier-comparison + deviation-outcome) or future sub-bundles encounter similar cadence-grain audit columns (e.g., `reconciliation_runs.summary_json` for cohort-grain "data-quality" gating), document the mismatch + always re-compute from per-trade source data. **Discriminating-test pattern** (canonical regression-pin): plant a conflicting cadence row + assert metric reflects per-trade compute, NOT the planted aggregate. Sub-bundle C dispatch brief §0.5/§0.6 should add this as forward-binding lesson #18.
+
+2. **Unit-semantic precision needs explicit rendering pin (percent vs proportion).** Sub-bundle B's `cumulative_R_pct_of_capital` rendered in PERCENT units to match the `absolute_loss_tripwire_pct` comparison. Future tier-comparison metrics (`cohort_relative_to_aplus`, `cohort_expectancy_relative_to_aplus_pct`) likely face the same: explicit rendering-unit pin in the VM + template + discriminating test is required at writing-plans time. Sub-bundle C dispatch brief §0.5/§0.6 should add this as forward-binding lesson #19.
+
+### 4 V2 candidates banked (return report §7)
+
+1. **`review_log_trade_links` audit table** — would unlock cadence-prefer for already-reviewed trades; recompute only for unreviewed. Connects to Phase 11 candidate scoping.
+2. **Per-cohort "exclude paused-interval trades" filter** — same UI pattern as Sub-bundle C's T-C.5 "exclude trades with unresolved discrepancies" filter family. Sub-bundle C may surface the reuse pattern when T-C.5 lands.
+3. **`mistake_cost_R_per_trade` Class B representation alongside cohort sum** — implementation surfaces BOTH `MetricCellB` (Class B mean) AND `PointMetricCell` (cohort sum); spec §3.1 only enumerates "cohort sum." V2 candidate: clarify spec or drop the Class B representation if redundant.
+4. **`canonicalize_hypothesis_label` query-time canonicalization** — `list_trades_for_cohort` already canonicalizes; verify that `count_per_cohort` orphan-label fallback path also canonicalizes (current implementation uses the registry's stored name directly + the orphan label as-is from `trades.hypothesis_label`). Edge case: an orphan trade with a non-canonicalized stored label might appear separately from a canonicalized-form match. Low risk in V1 (writer canonicalizes at persist time); banked for V2 audit.
+
+### Post-merge state
+
+- HEAD on main: `6ed0f35` (integration merge) + housekeeping commit (this entry).
+- Active risk_policy: `policy_id=5` (Option C revert from Sub-bundle A; unchanged through Sub-bundle B).
+- Cross-bundle pin at T-A.7 (still SKIPPED): un-skip lands at Sub-bundle E T-E.3 retrofit of 6 existing base-layout VMs.
+- Sub-bundle C executing-plans dispatch UNBLOCKED.
+- Sub-bundle B added 4 new sub-VM exclusions to `tests/web/test_view_models/test_base_layout_vm_coverage.py::_SUB_VM_EXCLUSIONS`: `CohortTabVM`, `CohortProgressVM`, plus the existing `ConfidenceBadgeVM` / `ProvisionalBadgeVM` / `SuppressionRowVM`. Sub-bundle C dispatch brief should propagate the pattern: new sub-VMs ending in `VM` that compose into a page VM (not BaseLayoutVM-extending) should be added to the exclusion set in the same commit.
+
+### Cross-references
+
+- Sub-bundle B return report: `docs/phase10-bundle-B-return-report.md`.
+- Plan §E (lines 1063-1254; AMENDED at integration triage per amendments #1, #2, #5 above + §A.5.1 percent-unit clarification #3).
+- Phase 10 plan: `docs/superpowers/plans/2026-05-13-phase10-metrics-dashboard-plan.md`.
+- Electives amendment §2: `docs/phase10-electives-amendment.md` (amendment #4 above corrects "existing display" assumption).
+- Sub-bundle C dispatch brief: TBD (orchestrator drafts post-merge; will propagate T-C.5 elective + 2 NEW forward-binding lessons + Sub-bundle A AMENDED §A.7 interface).
+- Pending V2.1 §VII.F spec amendments cumulative count: **12** (2 Phase 9 D/E + 3 Sub-bundle A + 4 Sub-bundle B return-report + 1 Sub-bundle B gate-surfaced + 2 Sub-bundle A return-report orphans-from-Phase-10-spec).
+
+---
+
 ## 2026-05-13 Phase 10 Sub-bundle A ship: spec amendments + forward-binding lessons + V2 candidates banked
 
 **Sub-bundle A SHIPPED 2026-05-13** at `096de83` (integration merge of `phase10-bundle-A-shared-honesty-utility`). 15 commits = 11 task-impl + 3 Codex-fix + 1 return-report; 4 Codex rounds → NO_NEW_CRITICAL_MAJOR; ZERO Critical + ZERO ACCEPT-WITH-RATIONALE; +128 fast tests (2767 → 2895); ruff 18 unchanged; schema v17 unchanged.
