@@ -1,0 +1,58 @@
+﻿Account Statement for <account> (Individual) since 4/29/26 through 4/29/26
+
+Cash Balance
+DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE
+4/29/26,19:00:00,BAL,,Cash balance at the start of business day 30.04 CST,,,,"1,002.39"
+4/30/26,06:18:31,TRD,="1006193131983",BOT +5 CC @26.9699,,,-134.85,867.54
+4/29/26,20:49:54,CRC,="117872135649","Tfr NAVY FEDERAL CREDI, COURTNEY A SMYTH 100.0 US$",,,100.00,967.54
+,,,,TOTAL,,,($34.85),$967.54
+
+Futures Statements
+Trade Date,Exec Date,Exec Time,Type,Ref #,Description,Misc Fees,Commissions & Fees,Amount,Balance
+4/29/26,4/29/26,19:00:00,BAL,--,Futures cash balance at the start of business day 30.04 CST,--,--,--,0.00
+
+Forex Statements
+,Date,Time,Type,Ref #,Description,Commissions & Fees,Amount,Amount(USD),Balance
+
+"Crypto # (Crypto offered by Charles Schwab Premier Bank, SSB) Statements"
+Trade Date,Exec Date,Exec Time,Type,Ref #,Description,Commissions & Fees,Amount,Balance
+
+ 
+Total Cash $967.54
+
+
+Account Order History
+Notes,,Time Placed,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,PRICE,,TIF,Status
+,,4/30/26 06:18:31,STOCK,BUY,+5,TO OPEN,CC,,,STOCK,27.25,LMT,GTC,FILLED
+,,4/30/26 06:18:31,STOCK,SELL,-5,TO CLOSE,CC,,,STOCK,~,MKT,GTC,WORKING
+,,,TRG BY #1006193131983,,,,,,,,BASE-6.74,STP,STD,
+,,,,,,,,,,,20.51,STP,,
+,,4/27/26 06:42:38,STOCK,SELL,-39,TO CLOSE,DHC,,,STOCK,~,MKT,GTC,WORKING
+,,,RE #1006137040023,,,,,,,,7.06,STP,STD,
+,,,TRG BY #1006137040022,,,,,,,,,,,
+
+Account Trade History
+,Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+,4/30/26 06:18:31,STOCK,BUY,+5,TO OPEN,CC,,,STOCK,26.9699,26.9699,LMT
+
+Equities
+Symbol,Description,Qty,Trade Price,Mark,Mark Value
+CC,CHEMOURS CO,+5,26.9699,26.95,$134.75
+DHC,DIVERSIFIED HEALTHCA REIT,+39,7.58,7.54,$294.06
+,OVERALL TOTALS,,,,$428.81
+
+Profits and Losses
+Symbol,Description,P/L Open,P/L %,P/L Day,P/L YTD,P/L Diff,Margin Req,Mark Value
+CC,CHEMOURS CO,($0.10),-0.07%,($0.10),($0.10),$0.00,$0.00,$134.75
+DHC,DIVERSIFIED HEALTHCA REIT,($1.56),-0.53%,($1.17),($1.56),$0.00,$0.00,$294.06
+VIR,VIR BIOTECHNOLOGY IN,$0.00,0.00%,$0.00,($1.99),$0.00,$0.00,$0.00
+,OVERALL TOTALS,($1.66),-0.39%,($1.27),($3.65),$0.00,$0.00,$428.81
+
+Account Summary
+Net Liquidating Value,"$1,396.35"
+Stock Buying Power,$967.54
+Option Buying Power,$867.54
+Equity Commissions & Fees YTD,$0.00
+Futures Commissions & Fees YTD,$0.00
+Crypto Trading Fees YTD,N/A
+Total Commissions & Fees YTD,$0.00

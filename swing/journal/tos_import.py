@@ -472,75 +472,205 @@ def extract_equity_positions(
     return out
 
 
+def _is_qualifying_stop_header(row: dict) -> bool:
+    """A dated header row qualifies as a SELL-TO-CLOSE stop candidate when:
+      Status         starts with "WORKING" or "WAIT TRG"
+      Side           contains "SELL"
+      Pos Effect     contains "CLOSE" / "TO CLOSE"
+      Spread         empty or "STOCK"
+    The Order Type / Type narrowing is performed by the caller because
+    the real-world multi-line group's header carries Type=STOCK and the
+    empty-marker column = "MKT" (the STP trigger lives on a continuation
+    row); the synthetic single-row format carries STP directly on the
+    header.
+    """
+    status = _row_get(row, "Status").upper()
+    side = _row_get(row, "Side").upper()
+    pos_effect = (
+        _row_get(row, "Pos Effect") or _row_get(row, "Pos")
+    ).upper()
+    spread = _row_get(row, "Spread").upper()
+    if not (status.startswith("WORKING") or status.startswith("WAIT TRG")):
+        return False
+    if "SELL" not in side:
+        return False
+    if "CLOSE" not in pos_effect:
+        return False
+    return spread in ("", "STOCK")
+
+
+def _has_stp_marker(row: dict) -> bool:
+    """Detect an STP marker anywhere in a row — Order Type / Type column
+    OR the empty-key column (real-world export's order-type column).
+    Used both for the synthetic single-row format AND for continuation
+    rows in a multi-line group."""
+    candidates = (
+        _row_get(row, "Order Type"),
+        _row_get(row, "Type"),
+        _row_get(row, ""),  # real-world empty-key marker column
+    )
+    return any(
+        "STP" in c.upper() or "STOP" in c.upper()
+        for c in candidates
+        if c
+    )
+
+
+def _clean_order_id(raw: str) -> str | None:
+    """Strip Excel-style ="..." wrapper + ``RE #`` prefix; return None
+    when nothing meaningful remains.
+
+    Real-world continuation rows carry the order id in the Spread column
+    as ``RE #1006290692715``. Synthetic format carries it in dedicated
+    Ref # / Order # / Order Id columns (already bare).
+    """
+    if not raw:
+        return None
+    cleaned = raw.strip("=").strip('"').strip()
+    # Strip leading "RE #" / "RE#" prefix (real-world continuation Spread).
+    upper = cleaned.upper()
+    if upper.startswith("RE #"):
+        cleaned = cleaned[4:].strip()
+    elif upper.startswith("RE#"):
+        cleaned = cleaned[3:].strip()
+    return cleaned or None
+
+
+def _try_parse_stp_continuation_price(row: dict) -> float | None:
+    """Return the numeric STP trigger price on a continuation row, or
+    None if the row has no STP marker, no price, or a ``BASE-``-prefixed
+    reference price (conditional-order base — NOT the actual trigger).
+
+    The 4/30 CC working order ships as a 3-line group: header (MKT) +
+    ``BASE-6.74 STP STD`` (reference base; ``TRG BY #...`` in Spread) +
+    ``20.51 STP`` absolute trigger. We want 20.51, not 6.74 — hence the
+    BASE- guard.
+    """
+    if not _has_stp_marker(row):
+        return None
+    price_raw = _row_get(row, "Price") or _row_get(row, "PRICE")
+    if not price_raw:
+        return None
+    if price_raw.upper().startswith("BASE-"):
+        return None
+    try:
+        price = _parse_tos_amount(price_raw)
+    except ValueError:
+        return None
+    if price <= 0:
+        return None
+    return price
+
+
 def extract_stop_orders(
     rows: Iterable[dict],
 ) -> dict[str, tuple[float, str | None]]:
-    """Extract WORKING SELL TO CLOSE STP rows from Account Order History.
+    """Extract working SELL TO CLOSE STP rows from Account Order History.
 
-    Per spec §6.2 — Phase 9 T-B.4. Returns a dict keyed by ticker with
-    (working_stop_price, order_id_or_none) values. When multiple
-    WORKING stops exist for the same ticker (rare; e.g., stacked
-    bracket orders), the FIRST match wins — best-effort. Operator
-    can disambiguate post-emit via the journal.
+    Per spec §6.2 — Phase 9 T-B.4 (single-row format) extended by Phase 9
+    Sub-bundle E T-E.3 (multi-line group format observed in real-world
+    Schwab/TOS exports). See ``docs/phase9-bundle-E-task-E3-parser-recon.md``
+    for the §6.2 supersession.
 
-    Match criteria (case-insensitive on all string fields):
-      Status         starts with "WORKING"
-      Side           contains "SELL"
-      Pos Effect     contains "CLOSE" or "TO CLOSE"
-      Order Type/Type contains "STP" or "STOP"
-      Spread         empty or "STOCK"
+    Returns a dict keyed by ticker with (working_stop_price,
+    order_id_or_none) values. When multiple WORKING (or WAIT TRG) stops
+    exist for the same ticker (rare; e.g., stacked bracket orders), the
+    FIRST match wins — best-effort. Operator can disambiguate post-emit
+    via the journal.
+
+    Supports two row shapes:
+
+    1. Single-row (Bundle B synthetic + any future flat export). Row
+       carries Status=WORKING/WAIT TRG, Side=SELL, Pos Effect=TO CLOSE,
+       Spread=STOCK/empty, AND its own Order Type/Type contains STP.
+       Price + Ref # / Order # are read directly from the same row.
+
+    2. Multi-line group (real-world Schwab/TOS, observed 2026-05-12 +
+       3 historical exports). Header row carries dated Time Placed +
+       Status=WORKING/WAIT TRG + Side=SELL + Pos Effect=TO CLOSE +
+       Spread=STOCK + Type=STOCK + empty-key marker=MKT. Continuation
+       row(s) follow with blank Time Placed; the first continuation row
+       containing a numeric (non-``BASE-``-prefixed) STP price wins.
+       The order id is extracted from the matching continuation row's
+       Spread column (``RE #<id>``); rows without a ``RE #`` prefix
+       yield order_id=None (matches the synthetic format's behavior
+       when the dedicated columns are absent).
+
+    Status filter widened to include both ``WORKING`` AND ``WAIT TRG``
+    (conditional-armed-but-not-yet-triggered stops) — both indicate a
+    placed broker stop. ``CANCELED`` + ``FILLED`` remain excluded
+    (historical artifacts, not active broker orders).
     """
     out: dict[str, tuple[float, str | None]] = {}
-    for row in rows:
-        status = _row_get(row, "Status").upper()
-        side = _row_get(row, "Side").upper()
-        pos_effect = (
-            _row_get(row, "Pos Effect") or _row_get(row, "Pos")
-        ).upper()
-        otype = (
-            _row_get(row, "Order Type") or _row_get(row, "Type")
-        ).upper()
-        spread = _row_get(row, "Spread").upper()
 
-        if not status.startswith("WORKING"):
+    # Materialize for indexed look-ahead (continuation rows are read
+    # contiguously after a header row until the next dated row).
+    row_list = list(rows)
+
+    for idx, row in enumerate(row_list):
+        # Header rows have a non-empty Time Placed; continuation rows
+        # have blank Time Placed. Skip continuations during outer scan.
+        time_placed = _row_get(row, "Time Placed")
+        if not time_placed:
             continue
-        if "SELL" not in side:
-            continue
-        if "CLOSE" not in pos_effect:
-            continue
-        if "STP" not in otype and "STOP" not in otype:
-            continue
-        if spread not in ("", "STOCK"):
+
+        if not _is_qualifying_stop_header(row):
             continue
 
         ticker = _row_get(row, "Symbol").upper()
         if not ticker:
             continue
         if ticker in out:
-            # First match wins; skip subsequent.
+            # First qualifying header wins; subsequent same-ticker
+            # rows (including CANCELED predecessors) skipped.
             continue
-        try:
-            price = _parse_tos_amount(
-                _row_get(row, "Price") or _row_get(row, "PRICE")
+
+        # Single-row shape: header carries STP directly + a numeric
+        # Price. Use the header's own price + dedicated order-id
+        # columns.
+        if _has_stp_marker(row):
+            price_raw = _row_get(row, "Price") or _row_get(row, "PRICE")
+            if not price_raw or price_raw.upper().startswith("BASE-"):
+                continue
+            try:
+                price = _parse_tos_amount(price_raw)
+            except ValueError:
+                continue
+            if price <= 0:
+                continue
+            order_id_raw = (
+                _row_get(row, "Ref #")
+                or _row_get(row, "Order #")
+                or _row_get(row, "Order Id")
+                or _row_get(row, "REF #")
             )
-        except ValueError:
+            out[ticker] = (price, _clean_order_id(order_id_raw))
             continue
-        if price <= 0:
-            continue
-        order_id_raw = (
-            _row_get(row, "Ref #")
-            or _row_get(row, "Order #")
-            or _row_get(row, "Order Id")
-            or _row_get(row, "REF #")
-        )
-        # Strip Excel-style ="..." wrapper (mirrors extract_cash_movements).
-        order_id_clean = (
-            order_id_raw.strip("=").strip('"').strip()
-            if order_id_raw
-            else ""
-        )
-        order_id = order_id_clean or None
-        out[ticker] = (price, order_id)
+
+        # Multi-line shape: header is MKT-typed; scan continuation rows
+        # for the first numeric STP trigger. Stop at the next dated
+        # header row OR end of section.
+        for cont_idx in range(idx + 1, len(row_list)):
+            cont = row_list[cont_idx]
+            if _row_get(cont, "Time Placed"):
+                # Next dated header — end of this group.
+                break
+            price = _try_parse_stp_continuation_price(cont)
+            if price is None:
+                # Could be a TRG BY #... reference row or an
+                # all-blank row — keep scanning until we find the
+                # numeric STP trigger or hit the next dated header.
+                continue
+            order_id = _clean_order_id(_row_get(cont, "Spread"))
+            out[ticker] = (price, order_id)
+            break
+        # If no numeric STP found among the continuation rows (e.g.,
+        # only a BASE- reference with no absolute follow-up), best-
+        # effort behavior is to emit nothing for this header — the
+        # trigger price is unknown and a wrong number is worse than
+        # falling back to the "no broker working stop" discrepancy
+        # path.
+
     return out
 
 
