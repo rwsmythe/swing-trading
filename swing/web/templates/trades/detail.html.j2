@@ -26,6 +26,38 @@
   State: {{ state_badge(vm.state) }}
 </div>
 
+{# Phase 10 Sub-bundle E T-E.6 — per-trade reconciliation discrepancy indicator.
+   Hides entirely when no unresolved material discrepancies exist for this trade.
+   Orphan-emit discrepancies (sector_tamper / equity_delta / cash_movement_mismatch
+   without trade_id) are excluded by ``list_unresolved_material_for_trade``. #}
+{% if vm.unresolved_material_discrepancies %}
+<details class="trade-unresolved-discrepancies"
+         data-indicator="unresolved-material-discrepancies"
+         data-trade-id="{{ vm.trade.id }}"
+         data-count="{{ vm.unresolved_material_discrepancies|length }}">
+  <summary>
+    ⚠ Unresolved reconciliation
+    {% if vm.unresolved_material_discrepancies|length == 1 -%}
+    discrepancy
+    {%- else -%}
+    discrepancies
+    {%- endif %}
+    ({{ vm.unresolved_material_discrepancies|length }})
+  </summary>
+  <ul>
+    {% for d in vm.unresolved_material_discrepancies %}
+    <li data-discrepancy-id="{{ d.discrepancy_id }}"
+        data-discrepancy-type="{{ d.type }}">
+      <strong>{{ d.type }}</strong> on <code>{{ d.field_name }}</code>:
+      expected <code>{{ d.expected }}</code>;
+      actual <code>{{ d.actual }}</code>
+      ({{ d.period_end }})
+    </li>
+    {% endfor %}
+  </ul>
+</details>
+{% endif %}
+
 <dl class="trade-summary">
   <dt>Entry date</dt><dd>{{ vm.trade.entry_date }}</dd>
   <dt>Entry price</dt><dd>${{ "%.2f"|format(vm.trade.entry_price) }}</dd>
