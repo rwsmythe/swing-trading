@@ -4,5 +4,39 @@
 <h1>Post-trade review: {{ vm.trade.ticker }} (#{{ vm.trade.id }})</h1>
 <p>Entry {{ vm.trade.entry_date }} @ ${{ "%.2f"|format(vm.trade.entry_price) }};
    actual realized R = {{ "%.2f"|format(vm.actual_realized_R_effective) }}</p>
+
+{# Phase 10 Sub-bundle B T-B.7 elective (per electives amendment §2):
+   surface mistake_cost_R + lucky_violation_R symmetrically. Both
+   computed from realized_R_if_plan_followed + actual_realized_R_effective
+   at VM build time via the Phase 6 helpers. Both render "—" when the
+   counterfactual is NULL OR when the value equals 0.0
+   (plan-followed-exactly). #}
+<div class="review-counterfactual" data-role="t-b-7-display">
+  <dl class="counterfactual-pair">
+    <dt>Mistake cost (R)</dt>
+    <dd data-field="mistake_cost_R">
+      {% if vm.mistake_cost_R_display is none %}
+        <span class="muted">—</span>
+      {% else %}
+        {{ "%.2f"|format(vm.mistake_cost_R_display) }}
+      {% endif %}
+    </dd>
+    <dt>Lucky violation (R)</dt>
+    <dd data-field="lucky_violation_R">
+      {% if vm.lucky_violation_R_display is none %}
+        <span class="muted">—</span>
+      {% else %}
+        {{ "%.2f"|format(vm.lucky_violation_R_display) }}
+      {% endif %}
+    </dd>
+  </dl>
+  <p class="muted">
+    Derived from <code>realized_R_if_plan_followed</code> (operator-entered
+    counterfactual) + actual realized R. Both fields render "—" when no
+    counterfactual is recorded OR when the value is 0 (plan followed
+    exactly). Symmetric pair per spec §7.1 / §8.6.
+  </p>
+</div>
+
 {% include "partials/review_form.html.j2" %}
 {% endblock %}
