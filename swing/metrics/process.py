@@ -69,6 +69,11 @@ _ONE_DAY = timedelta(days=1)
 # Per-trade classification & derivation helpers
 # ---------------------------------------------------------------------------
 
+_VALID_CLASSIFICATIONS: frozenset[str] = frozenset(
+    {"win", "loss", "scratch", "undefined"},
+)
+
+
 @dataclass(frozen=True)
 class _TradeMetricInputs:
     """Per-trade pre-computed inputs threaded into the cohort aggregator.
@@ -91,6 +96,41 @@ class _TradeMetricInputs:
     scratch_epsilon_R: float  # noqa: N815  # at-trade-time stamp
     is_legacy_stamp: bool  # True if fallback to LIVE policy applied
     holding_period_days: int | None
+
+    def __post_init__(self) -> None:
+        # Phase 9 forward-binding lesson #1 — validate finite + invariants
+        # on every new dataclass. The cohort aggregator loops over these
+        # rows millions of times across V2 scale; a NaN slipping through
+        # would silently poison Bootstrap CI quantile selection.
+        for name, value in (
+            ("realized_R", self.realized_R),
+            ("gross_realized_R", self.gross_realized_R),
+            ("planned_risk_budget_dollars", self.planned_risk_budget_dollars),
+            ("risk_per_share", self.risk_per_share),
+            ("net_pnl_dollars", self.net_pnl_dollars),
+            ("gross_pnl_dollars", self.gross_pnl_dollars),
+            ("vwap_entry", self.vwap_entry),
+        ):
+            if value is not None and not math.isfinite(float(value)):
+                raise ValueError(
+                    f"_TradeMetricInputs.{name} must be finite (NaN/inf "
+                    f"rejected); got {value!r}"
+                )
+        if not math.isfinite(self.scratch_epsilon_R) or self.scratch_epsilon_R <= 0:
+            raise ValueError(
+                "_TradeMetricInputs.scratch_epsilon_R must be finite and > 0; "
+                f"got {self.scratch_epsilon_R!r}"
+            )
+        if self.classification not in _VALID_CLASSIFICATIONS:
+            raise ValueError(
+                f"_TradeMetricInputs.classification must be one of "
+                f"{_VALID_CLASSIFICATIONS}; got {self.classification!r}"
+            )
+        if self.holding_period_days is not None and self.holding_period_days < 0:
+            raise ValueError(
+                "_TradeMetricInputs.holding_period_days must be >= 0; got "
+                f"{self.holding_period_days!r}"
+            )
 
 
 def _classify(realized_R: float | None, scratch_epsilon: float) -> str:  # noqa: N803
@@ -181,7 +221,6 @@ def _holding_period_trading_days(trade: Trade) -> int | None:
 def _prepare_trade_inputs(
     conn: sqlite3.Connection,
     trade: Trade,
-    live_policy: RiskPolicy,
 ) -> _TradeMetricInputs:
     """Build the per-trade computation inputs for cohort aggregation.
 
@@ -524,7 +563,7 @@ def compute_trade_process_metrics(  # noqa: PLR0915 — orchestrator function ov
     )
 
     inputs: list[_TradeMetricInputs] = [
-        _prepare_trade_inputs(conn, t, live_policy) for t in trades
+        _prepare_trade_inputs(conn, t) for t in trades
     ]
     n_closed = len(inputs)
     legacy_count = sum(1 for x in inputs if x.is_legacy_stamp)
@@ -608,6 +647,32 @@ def compute_trade_process_metrics(  # noqa: PLR0915 — orchestrator function ov
     ]
 
     # mistake_cost / lucky_violation per-trade values (cohort SUM + cohort MEAN).
+    #
+    # Design choice — banked as plan-deviation in return report §5:
+    # The plan §E Task B.1 acceptance language describes "prefer
+    # review_log aggregate when present; fall back to per-trade compute
+    # when absent." Empirical verification: ``review_log`` is a
+    # CADENCE-grain table (one row per daily/weekly/monthly review
+    # window covering N trades reviewed during that period). It carries
+    # `total_mistake_cost_R` + `total_lucky_violation_R` as the
+    # cadence-grain SUM over the N trades reviewed in that window.
+    # There is NO per-trade FK from review_log → trades; a reviewed
+    # trade may appear in 0, 1, or several cadence-grain review_log
+    # rows depending on which review windows touched it. Therefore the
+    # cadence-grain aggregate CANNOT be cleanly mapped onto a
+    # cohort-grain sum at this layer.
+    #
+    # Per spec §3.1 + §7: the per-trade value derivation is fully
+    # reproducible from ``trades.realized_R_if_plan_followed`` +
+    # ``actual_realized_R_effective`` via the Phase 6 helpers below.
+    # Re-computing is correct, deterministic, and matches the spec
+    # formula verbatim. The review_log columns serve cadence-review
+    # continuity (operator's weekly/monthly review surface), not cohort
+    # metric aggregation. V2 candidate: if Phase 6 review_log gains a
+    # per-trade audit table (e.g., `review_log_trade_links`), the
+    # cohort aggregator could prefer the frozen review-time values for
+    # already-reviewed trades + recompute only for unreviewed trades —
+    # banked at return report §7.
     mistake_costs = [
         compute_mistake_cost_R(
             realized_R_if_plan_followed=x.trade.realized_R_if_plan_followed,

@@ -545,6 +545,55 @@ def test_mistake_cost_R_cohort_sum_via_phase6_helper(
     assert result.lucky_violation_R_total.value == pytest.approx(1.50, abs=0.01)
 
 
+def test_mistake_cost_R_recomputes_per_trade_ignoring_review_log_aggregate(
+    conn: sqlite3.Connection,
+) -> None:
+    """Codex R1 Major #1 — design choice banked at return report §5.
+
+    The plan §E Task B.1 acceptance text discusses "preferring review_log
+    aggregate when present"; empirical verification (see
+    swing/metrics/process.py docstring at the cohort sum loop) shows
+    review_log is CADENCE-grain (one row per review window, NOT per
+    trade) + carries no trade-grain FK. The cohort-sum aggregator
+    therefore ALWAYS re-computes per-trade via Phase 6 helpers from
+    ``trades.realized_R_if_plan_followed`` + ``actual_realized_R_effective``.
+
+    Discriminating test: seed a closed trade with realized_R_if_plan=2.0
+    + actual=+0.5 (so per-trade compute → 1.5R mistake cost) +
+    EXPLICITLY insert a review_log row with total_mistake_cost_R=99.0
+    covering the same period. Assert the cohort metric reflects the
+    PER-TRADE compute (1.5R), NOT the review_log aggregate (99.0R).
+    """
+    _seed_full_trade(
+        conn, trade_id=1, ticker="DISC",
+        entry_price=10.0, initial_stop=9.0, initial_shares=100,
+        exit_price=10.50,  # +0.5R actual
+        realized_R_if_plan_followed=2.0,  # plan +2.0R → mistake = 1.5R
+        reviewed_at="2026-04-15T10:00:00",
+    )
+    # Plant a review_log row with conflicting totals — if the
+    # cohort aggregator preferred this source, the cohort sum would be
+    # 99.0R (not 1.5R). The discriminating assertion below rejects that
+    # path.
+    conn.execute(
+        "INSERT INTO review_log (review_type, period_start, period_end, "
+        "scheduled_date, completed_date, skipped, duration_minutes, "
+        "n_trades_reviewed, total_mistake_cost_R, total_lucky_violation_R, "
+        "primary_lesson, next_period_focus, created_at) VALUES "
+        "('weekly', '2026-04-13', '2026-04-19', '2026-04-19', "
+        "'2026-04-19T10:00:00', 0, 30, 1, 99.0, 0.0, "
+        "'discriminating', NULL, '2026-04-19T10:00:00')",
+    )
+    conn.commit()
+
+    result = compute_trade_process_metrics(
+        conn, hypothesis_label="A+ baseline",
+    )
+    # mistake_cost_R_total = per-trade sum = 1.5R, NOT review_log aggregate
+    # 99.0R.
+    assert result.mistake_cost_R_total.value == pytest.approx(1.5, abs=0.01)
+
+
 def test_mistake_cost_R_zero_when_plan_unspecified(
     conn: sqlite3.Connection,
 ) -> None:

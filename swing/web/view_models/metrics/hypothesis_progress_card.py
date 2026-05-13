@@ -46,6 +46,11 @@ from swing.web.view_models.metrics.shared import BaseLayoutVM
 TRANSITION_TIMELINE_CAP: int = 5
 
 
+_HYPOTHESIS_STATUSES: frozenset[str] = frozenset(
+    {"active", "paused", "closed-escaped", "closed-target-met"},
+)
+
+
 @dataclass(frozen=True)
 class TransitionEntry:
     """Single transition row for timeline rendering."""
@@ -54,6 +59,29 @@ class TransitionEntry:
     effective_from: str
     effective_to: str | None
     change_reason: str | None
+
+    def __post_init__(self) -> None:
+        # Phase 9 forward-binding lesson #1: validate every new dataclass.
+        if self.status not in _HYPOTHESIS_STATUSES:
+            raise ValueError(
+                f"TransitionEntry.status must be one of {_HYPOTHESIS_STATUSES}; "
+                f"got {self.status!r}"
+            )
+        if not self.effective_from:
+            raise ValueError(
+                "TransitionEntry.effective_from must be non-empty"
+            )
+        # Mirror the HypothesisStatusHistory invariant (TEXT lexicographic
+        # ordering preserves chronology per spec §9.3).
+        if (
+            self.effective_to is not None
+            and self.effective_to < self.effective_from
+        ):
+            raise ValueError(
+                "TransitionEntry.effective_to must be >= effective_from "
+                f"(got effective_from={self.effective_from!r}, "
+                f"effective_to={self.effective_to!r})"
+            )
 
     @classmethod
     def from_history(cls, h: HypothesisStatusHistory) -> TransitionEntry:
@@ -158,6 +186,23 @@ class HypothesisProgressCardVM(BaseLayoutVM):
     """
 
     cohorts: tuple[CohortProgressVM, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        # Phase 9 forward-binding lesson #1: validate page-VM invariant.
+        # ALWAYS-shown governance surface ⇒ every cohort registered in
+        # hypothesis_registry MUST appear here (operator-readable at any n).
+        if not isinstance(self.cohorts, tuple):
+            raise TypeError(
+                "HypothesisProgressCardVM.cohorts must be a tuple; got "
+                f"{type(self.cohorts).__name__}"
+            )
+        if len(self.cohorts) < 1:
+            raise ValueError(
+                "HypothesisProgressCardVM.cohorts must be non-empty; the "
+                "governance surface ALWAYS shows every registered cohort "
+                "(per spec §4.2 binding 'no n<3 suppression')"
+            )
 
 
 # ---------------------------------------------------------------------------
