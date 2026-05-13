@@ -13,13 +13,17 @@
   </p>
 
   <p class="discrepancy-filter-toggle">
+    {#- Codex R1 M#1 fix: use relative query toggle per dispatch brief §0.12
+        + electives amendment §2 acceptance "<a href=...?exclude_discrepancies=1>"
+        verbatim. Relative href ALSO survives root-path / mounted-app deployments
+        which absolute /metrics/... would break under. -#}
     {% if vm.result.exclude_unresolved_discrepancies_active %}
-    <a href="/metrics/tier-comparison">Show all trades (currently hiding trades with unresolved discrepancies)</a>
+    <a href="?">Show all trades (currently hiding trades with unresolved discrepancies)</a>
     {% if vm.result.excluded_trades_count > 0 %}
     <span class="muted">(excluded {{ vm.result.excluded_trades_count }} trades with unresolved discrepancies)</span>
     {% endif %}
     {% else %}
-    <a href="/metrics/tier-comparison?exclude_discrepancies=1">Hide trades with unresolved discrepancies</a>
+    <a href="?exclude_discrepancies=1">Hide trades with unresolved discrepancies</a>
     {% endif %}
   </p>
 

@@ -326,3 +326,160 @@ def test_e2e_deviation_outcome_browser_rendering_smoke(cfg_and_path) -> None:
     assert "%" in body
     # Decision-criterion seed text verbatim for each registered cohort.
     assert "lower-bound Wilson CI on win rate" in body
+
+
+# ---------------------------------------------------------------------------
+# Codex R1 M#2: discriminating percent-unit rendering pin
+# ---------------------------------------------------------------------------
+
+def _seed_aplus_2R_subaplus_05R(conn: sqlite3.Connection) -> None:
+    """Seed exactly the §0.9 LOCK worked example: A+ n=5 with realized_R=2.0
+    each; Sub-A+ n=5 with realized_R=0.5 each. Bootstrap point mean is
+    deterministic from constant samples (= sample mean).
+
+    Expected per dispatch brief §0.9 LOCK:
+    - Tier-comparison: ``cohort_relative_to_aplus_pct`` = 25.0
+      (rendered "25.0%").
+    - Deviation-outcome: ``cohort_expectancy_relative_to_aplus_pct`` =
+      -75.0 (rendered "-75.0%").
+    """
+    with conn:
+        for i in range(5):
+            _seed_trade(
+                conn, trade_id=100 + i, ticker=f"A{i}",
+                hypothesis_label=APLUS_COHORT,
+                realized_pnl_dollars=200.0,
+                last_fill_at=f"2026-04-{i + 1:02d}T15:30:00",
+            )
+        for i in range(5):
+            _seed_trade(
+                conn, trade_id=200 + i, ticker=f"S{i}",
+                hypothesis_label=SUB_APLUS_COHORT,
+                realized_pnl_dollars=50.0,
+                last_fill_at=f"2026-04-{10 + i:02d}T15:30:00",
+            )
+
+
+def test_e2e_tier_comparison_renders_exact_percent_substring_for_lock_example(
+    cfg_and_path,
+) -> None:
+    """Codex R1 M#2 fix: pin the EXACT rendered substring for the §0.9 LOCK
+    worked example (cohort_relative_to_aplus_pct = 25.0 → "25.0%").
+
+    Discriminates against:
+    - missing "%" unit (just "25.0" → ratio interpretation drift);
+    - wrong sign convention "-75.0%" (delta interpretation);
+    - wrong precision "25%" (no decimal);
+    - inverted ratio "75.0%" (aplus / cohort).
+
+    The decision-criteria text contains a literal "30%" and "25%" so
+    the body-wide `"%" in body` substring check is not discriminating
+    on its own — this test pins the exact "25.0%" substring rendered by
+    the cohort_relative_to_aplus row.
+    """
+    cfg, cfg_path = cfg_and_path
+    conn = sqlite3.connect(cfg.paths.db_path)
+    _seed_aplus_2R_subaplus_05R(conn)
+    conn.close()
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/tier-comparison")
+    body = r.text
+    # Exact substring per §0.9 LOCK raw-ratio percent for Sub-A+ at 25% of
+    # A+ baseline. The "Relative to A+" row anchors the location.
+    assert "25.0%" in body, (
+        "Expected '25.0%' (Sub-A+ raw-ratio percent-of-A+) in rendered "
+        "body; got body without the locked substring"
+    )
+    # Discriminate: rendered text should NOT contain the delta-interpretation
+    # value "-75.0%" on this surface (that's §3.7 / deviation-outcome).
+    assert "-75.0%" not in body, (
+        "Tier-comparison should NOT render the delta-percent for Sub-A+ "
+        "(that's deviation-outcome); raw-ratio percent is the §3.3 LOCK"
+    )
+    # And NOT the inverted ratio.
+    assert "75.0%" not in body or body.count("75.0%") == 0, (
+        "Tier-comparison should NOT render 75.0% for Sub-A+ (would be "
+        "inverted ratio aplus/cohort)"
+    )
+
+
+def test_e2e_deviation_outcome_renders_exact_percent_substring_for_lock_example(
+    cfg_and_path,
+) -> None:
+    """Codex R1 M#2 fix: pin the EXACT rendered substring for the §0.9 LOCK
+    worked example (cohort_expectancy_relative_to_aplus_pct = -75.0 →
+    "-75.0%").
+
+    Discriminates against:
+    - missing "%" unit ("-75.0" → ratio interpretation drift);
+    - wrong sign convention "+25.0%" (raw-ratio percent-of-A+ interpretation);
+    - missing minus sign "75.0%" (sign-drop drift).
+    """
+    cfg, cfg_path = cfg_and_path
+    conn = sqlite3.connect(cfg.paths.db_path)
+    _seed_aplus_2R_subaplus_05R(conn)
+    conn.close()
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/deviation-outcome")
+    body = r.text
+    # Exact substring per §0.9 LOCK delta-percent for Sub-A+ at -75% of
+    # baseline.
+    assert "-75.0%" in body, (
+        "Expected '-75.0%' (Sub-A+ delta-percent below A+) in rendered "
+        "deviation-outcome body"
+    )
+    # Discriminate: rendered text should NOT contain the raw-ratio
+    # interpretation value "25.0%" on this surface (that's §3.3 /
+    # tier-comparison).
+    assert "25.0%" not in body, (
+        "Deviation-outcome should NOT render 25.0% for Sub-A+ (that's "
+        "tier-comparison raw-ratio; deviation-outcome is delta-percent)"
+    )
+
+
+def test_e2e_tier_comparison_toggle_href_is_relative(cfg_and_path) -> None:
+    """Codex R1 M#1 fix: toggle link must be a relative query href (no
+    absolute /metrics/... path) per dispatch brief §0.12 + electives
+    amendment §2 acceptance verbatim. Relative href survives
+    mounted-app / root-path deployments which an absolute one would
+    break under.
+    """
+    cfg, cfg_path = cfg_and_path
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r_off = client.get("/metrics/tier-comparison")
+        r_on = client.get("/metrics/tier-comparison?exclude_discrepancies=1")
+    # Filter-off: link to enable filter is relative.
+    assert 'href="?exclude_discrepancies=1"' in r_off.text, (
+        "Filter-off toggle should be a relative query href "
+        "(?exclude_discrepancies=1); got body without the locked relative form"
+    )
+    # Filter-on: link to disable filter is relative.
+    assert 'href="?"' in r_on.text, (
+        "Filter-on toggle should be a relative query href "
+        "(?) to drop the param; got body without the locked relative form"
+    )
+    # Discriminate against absolute /metrics/... hrefs.
+    assert (
+        'href="/metrics/tier-comparison?exclude_discrepancies=1"' not in r_off.text
+    )
+    assert 'href="/metrics/tier-comparison"' not in r_on.text
+
+
+def test_e2e_deviation_outcome_toggle_href_is_relative(cfg_and_path) -> None:
+    """Codex R1 M#1 fix: mirror of tier-comparison href check."""
+    cfg, cfg_path = cfg_and_path
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r_off = client.get("/metrics/deviation-outcome")
+        r_on = client.get("/metrics/deviation-outcome?exclude_discrepancies=1")
+    assert 'href="?exclude_discrepancies=1"' in r_off.text
+    assert 'href="?"' in r_on.text
+    assert (
+        'href="/metrics/deviation-outcome?exclude_discrepancies=1"' not in r_off.text
+    )
+    assert 'href="/metrics/deviation-outcome"' not in r_on.text

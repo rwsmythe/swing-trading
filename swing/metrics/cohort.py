@@ -154,8 +154,15 @@ def filter_trades_without_unresolved_material_discrepancies(
     Orphan-emit discrepancies (``trade_id IS NULL`` — sector_tamper /
     equity_delta / cash_movement_mismatch without a trade attribution per
     Phase 9 Sub-bundle B) do NOT affect this filter (they cannot exclude
-    a specific trade); they remain counted by the global
-    ``unresolved_material_discrepancies_count`` banner.
+    a specific trade). Codex R1 Minor #1 follow-up: they are ALSO excluded
+    from the global ``unresolved_material_discrepancies_count`` banner
+    today — :func:`swing.metrics.discrepancies.count_unresolved_material`
+    JOINs on ``trades.id`` per the V1 SCOPE LIMITATION documented in
+    ``swing/metrics/discrepancies.py`` (banked V2 candidate: include
+    orphan discrepancies via a separate sub-query). The filter helper's
+    behavior here remains correct in isolation (filtering trades), and
+    no banner/filter divergence exists at V1 because both consume the
+    "trade-attributed only" subset.
     """
     if not trades:
         return list(trades)
