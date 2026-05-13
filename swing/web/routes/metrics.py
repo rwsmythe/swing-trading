@@ -15,6 +15,9 @@ import sqlite3
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 
+from swing.web.view_models.metrics.hypothesis_progress_card import (
+    build_hypothesis_progress_card_vm,
+)
 from swing.web.view_models.metrics.index import build_metrics_index_vm
 from swing.web.view_models.metrics.trade_process_card import (
     build_trade_process_card_vm,
@@ -52,4 +55,20 @@ def metrics_trade_process(
     vm = build_trade_process_card_vm(cfg=cfg, active_cohort_key=cohort)
     return request.app.state.templates.TemplateResponse(
         request, "metrics/trade_process_card.html.j2", {"vm": vm},
+    )
+
+
+@router.get("/metrics/hypothesis-progress", response_class=HTMLResponse)
+def metrics_hypothesis_progress(request: Request):
+    """Spec §4.2 hypothesis-progress card — Sub-bundle B Task T-B.5.
+
+    Renders the 4 hypothesis_registry cohorts in a row layout with
+    progress bars, tripwire indicators, decision_criteria text, and the
+    last 5 transition-history entries newest-first (per plan §A.11
+    supersession of spec §3.2 V1-limitation).
+    """
+    cfg = request.app.state.cfg
+    vm = build_hypothesis_progress_card_vm(cfg=cfg)
+    return request.app.state.templates.TemplateResponse(
+        request, "metrics/hypothesis_progress_card.html.j2", {"vm": vm},
     )

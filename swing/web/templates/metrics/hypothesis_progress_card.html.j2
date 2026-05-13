@@ -1,0 +1,73 @@
+{% extends "base.html.j2" %}
+{% block title %}Hypothesis progress — Swing Trading{% endblock %}
+{% block content %}
+<section class="metrics-hypothesis-progress">
+  <h1>Hypothesis-progress card</h1>
+  <p class="muted">
+    Spec §4.2 governance surface — 4 pre-registered hypothesis cohorts
+    with progress bars + tripwire indicators + decision-criteria text +
+    full transition history (last 5 entries, newest-first per plan
+    §A.11). ALWAYS rendered regardless of cohort sample size.
+  </p>
+
+  <ul class="cohort-row">
+    {% for cohort in vm.cohorts %}
+    <li class="cohort-cell" data-cohort-id="{{ cohort.hypothesis_id }}">
+      <h2>{{ cohort.cohort_name }}</h2>
+      <p class="cohort-statement muted">{{ cohort.statement }}</p>
+
+      <p class="cohort-status">
+        Status: <strong>{{ cohort.status }}</strong>
+        {% if cohort.legacy_trades_count > 0 %}
+        <span class="muted">({{ cohort.legacy_trades_count }} legacy pre-Phase-9)</span>
+        {% endif %}
+      </p>
+
+      <p class="cohort-progress">
+        Progress:
+        <strong>{{ cohort.n_closed }} / {{ cohort.target_sample_size }}</strong>
+        ({{ "%.0f%%"|format(cohort.progress_pct * 100) }})
+      </p>
+      <progress max="{{ cohort.target_sample_size }}" value="{{ cohort.n_closed }}">
+        {{ cohort.n_closed }}/{{ cohort.target_sample_size }}
+      </progress>
+
+      <p class="cohort-tripwire">
+        Consecutive-loss tripwire:
+        <strong>{{ cohort.consecutive_loss_run }} / {{ cohort.consecutive_loss_tripwire }}</strong>
+        — distance: <strong>{{ cohort.distance_to_loss_tripwire }}</strong>
+      </p>
+
+      <p class="cohort-cum-r">
+        Cumulative R as % of capital:
+        <strong>{{ "%.2f%%"|format(cohort.cumulative_R_pct_of_capital) }}</strong>
+        — distance to absolute-loss tripwire ({{ "%.1f%%"|format(cohort.absolute_loss_tripwire_pct) }}):
+        <strong>{{ "%.2f%%"|format(cohort.distance_to_absolute_loss_tripwire) }}</strong>
+      </p>
+
+      <details class="cohort-decision-criteria">
+        <summary>Decision criteria</summary>
+        <p>{{ cohort.decision_criteria }}</p>
+      </details>
+
+      {% if cohort.transition_timeline %}
+      <details class="cohort-timeline">
+        <summary>Transition timeline (last {{ cohort.transition_timeline|length }})</summary>
+        <ol>
+          {% for t in cohort.transition_timeline %}
+          <li>
+            <strong>{{ t.status }}</strong> from {{ t.effective_from }}
+            {% if t.effective_to %}to {{ t.effective_to }}{% else %}(current){% endif %}
+            {% if t.change_reason %}— <em>{{ t.change_reason }}</em>{% endif %}
+          </li>
+          {% endfor %}
+        </ol>
+      </details>
+      {% else %}
+      <p class="muted">No transition history yet.</p>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

@@ -204,6 +204,62 @@ def test_trade_process_registered_in_app_routes(seeded_db):
     assert "/metrics/trade-process" in route_paths
 
 
+# ---------------------------------------------------------------------------
+# Sub-bundle B Task T-B.5: GET /metrics/hypothesis-progress
+# ---------------------------------------------------------------------------
+
+def test_hypothesis_progress_endpoint_returns_200(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/hypothesis-progress")
+    assert r.status_code == 200
+    assert "Hypothesis-progress card" in r.text
+
+
+def test_hypothesis_progress_renders_all_4_cohorts(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/hypothesis-progress")
+    assert r.status_code == 200
+    for label in (
+        "A+ baseline",
+        "Near-A+ defensible: extension test",
+        "Sub-A+ VCP-not-formed",
+        "Capital-blocked: smaller-position test",
+    ):
+        assert label in r.text, f"missing cohort cell: {label}"
+
+
+def test_hypothesis_progress_renders_decision_criteria_text(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/hypothesis-progress")
+    body = r.text
+    # HTML-escaped `>` → `&gt;`; check segments that survive escaping.
+    assert "lower-bound Wilson CI on win rate" in body
+    assert "Mean R-multiple within 25% of A+ baseline mean" in body
+    assert "Confirm negative mean R-multiple" in body
+    assert "defensibility of smaller-position approach" in body
+
+
+def test_hypothesis_progress_registered_in_app_routes(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    route_paths = {r.path for r in app.routes if hasattr(r, "path")}
+    assert "/metrics/hypothesis-progress" in route_paths
+
+
+def test_hypothesis_progress_extends_base_layout(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/hypothesis-progress")
+    assert 'class="topbar"' in r.text
+
+
 def test_trade_process_renders_no_color_only_badges(seeded_db):
     """Per spec §4.9 + plan §A.9: badges render as TEXT inline, never
     color-only. Sanity check: at our default-tab n=0, NO badges are
