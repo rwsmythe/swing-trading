@@ -278,6 +278,7 @@ def bootstrap_ci_mean(
     *, samples: list[float], resample_count: int, alpha: float = 0.05, rng_seed: int | None = None,
 ) -> BootstrapCI: ...
 def suppress_for_n(*, metric_name: str, n: int, klass: HonestyClass, policy: RiskPolicy) -> SuppressedMetric | None: ...
+def badges_for_n(*, n: int, policy: RiskPolicy) -> HonestyBadges: ...   # Sub-bundle A R2 Minor #1 — public badge composition for view-model layers
 def render_class_a(*, k: int, n: int, policy: RiskPolicy, metric_name: str) -> WilsonCI | SuppressedMetric: ...
 def render_class_b(*, samples: list[float], policy: RiskPolicy, metric_name: str) -> BootstrapCI | SuppressedMetric: ...
 def render_class_c(
@@ -317,7 +318,7 @@ def render_class_d(
 
 **Bootstrap implementation:** `random.Random(rng_seed)` for determinism in tests; default `rng_seed=None` (non-deterministic in production). Percentile method: sort the resampled means + take `[α/2 * R, (1-α/2) * R]` indices. R from `policy.bootstrap_resample_count`.
 
-**Decoupling discipline (spec §5 R3 M2 + R4 M1):** `suppress_for_n` reads `policy.global_confidence_floor_n` to decide BADGE visibility, NOT cohort target_sample_size. Class-D `render_class_d` returns a 3-tuple that decouples WINDOW-FULLNESS (effective_n vs N) from CONFIDENCE-FLOOR (effective_n vs global_confidence_floor_n) — they are SEPARATE badges per spec §5.4.
+**Decoupling discipline (spec §5 R3 M2 + R4 M1):** `suppress_for_n` is the SUPPRESSION dispatcher only — it reads each class's `policy.low_sample_size_threshold_class_X_n` floor to decide whether the metric is rendered at all. BADGE visibility (confidence_floor / low_confidence / window_not_full) is a separate concern handled by `badges_for_n` (consumed by `render_class_a/b/c` callers and by `render_class_d` itself). `badges_for_n` reads `policy.global_confidence_floor_n` for the confidence_floor badge — NOT cohort `target_sample_size`. Class-D `render_class_d` returns a 3-tuple that decouples WINDOW-FULLNESS (effective_n vs N, surfaced via `HonestyBadges.window_not_full_warning`) from CONFIDENCE-FLOOR (effective_n vs global_confidence_floor_n, surfaced via `HonestyBadges.confidence_floor_warning`) — they are SEPARATE badges per spec §5.4. Sub-bundle A R2 Minor #1 + R3 Major #1 amendments: `badges_for_n` made public + added to this §A.7 binding interface so Sub-bundles B-E compose badges via the shared helper rather than duplicating per-surface logic.
 
 ### §A.8 Composition surfaces for new fields on base-layout VMs (CLAUDE.md gotcha defense)
 

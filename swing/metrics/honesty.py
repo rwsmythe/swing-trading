@@ -342,13 +342,14 @@ def render_class_a(
 
     - n < class-A floor → SuppressedMetric.
     - n >= floor → WilsonCI (point + lower + upper). Badge composition is the
-      caller's responsibility via ``_badges_for_n`` or its analogue —
+      caller's responsibility via the public ``badges_for_n`` helper —
       Class A's WilsonCI is value-carrying only; badges layered at the
       view-model level so the same WilsonCI can be rendered with or without
       warnings (per spec §5 R3 M2 decoupling).
 
-    Codex R2 Minor #1 note: the signature is deliberately VALUE-ONLY; per-
-    surface VMs compose ``HonestyBadges`` alongside via ``_badges_for_n``.
+    The render_class_a signature is deliberately VALUE-ONLY; per-surface
+    VMs compose ``HonestyBadges`` alongside via the shared public
+    ``badges_for_n`` helper (Codex R1 Minor #1 + R3 Minor #1 amendments).
     """
     suppressed = suppress_for_n(
         metric_name=metric_name, n=n, klass=HonestyClass.A, policy=policy,
