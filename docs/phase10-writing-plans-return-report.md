@@ -3,21 +3,19 @@
 **Dispatch:** `docs/phase10-writing-plans-dispatch-brief.md` (commit `4539011`).
 **Branch:** `phase10-writing-plans` (worktree `.worktrees/phase10-writing-plans/`).
 **Skill:** `copowers:writing-plans` (wraps `superpowers:writing-plans` + Codex MCP adversarial review).
-**Status:** APPROVED for orchestrator integration triage. Codex chain at MAX_ROUNDS=5 with all Critical+Major resolved in-tree (ZERO ACCEPT-WITH-RATIONALE).
+**Status:** APPROVED for orchestrator integration triage. Codex chain reached **NO_NEW_CRITICAL_MAJOR at Round 6** (operator overrode default MAX_ROUNDS=5 to continue until clean). ZERO ACCEPT-WITH-RATIONALE positions banked.
 
 ---
 
 ## §1 Final HEAD on branch
 
 ```
-7f84fd3 docs(phase10): Phase 10 writing-plans — Codex R5 fix — 1 Major + 1 Minor
+154a66f docs(phase10): Phase 10 writing-plans — Codex R6 fix — 1 Minor (NO_NEW_CRITICAL_MAJOR reached)
 ```
 
-Branch is 6 commits ahead of dispatch baseline `4539011` (which was main HEAD when the brief landed; remained main HEAD through the worktree-creation step).
+Branch is **8 commits ahead** of dispatch baseline `4539011` after this return-report rewrite commit lands.
 
 ## §2 Commit count breakdown
-
-6 commits total on branch:
 
 | Commit | Type | Summary |
 |---|---|---|
@@ -26,33 +24,35 @@ Branch is 6 commits ahead of dispatch baseline `4539011` (which was main HEAD wh
 | `3a6c32c` | Codex R2 fix | 6 Major + 2 Minor addressed |
 | `4607121` | Codex R3 fix | 3 Major + 3 Minor addressed |
 | `6bb357e` | Codex R4 fix | 3 Major + 2 Minor addressed |
-| `7f84fd3` | Codex R5 fix | 1 Major + 1 Minor addressed (at MAX_ROUNDS boundary) |
+| `7f84fd3` | Codex R5 fix | 1 Major + 1 Minor addressed (at original MAX_ROUNDS boundary) |
+| `b28a7d4` | return-report v1 | Initial return report drafted at R5 boundary |
+| `154a66f` | Codex R6 fix | 1 Minor addressed → NO_NEW_CRITICAL_MAJOR verdict |
+| (this commit) | return-report v2 | Final return report with R6 chain |
 
-Final plan size: **2007 lines** (within projected 1500-2500 range from dispatch brief §6).
+**Final plan size: 2008 lines** (within projected 1500-2500 range from dispatch brief §6).
 
-Return-report commit pending (this file; lands after the final ruff/test sweep notation below; appended to branch as commit #7).
-
-## §3 Codex round chain
-
-Convergent tapering shape across 5 substantive rounds:
+## §3 Codex round chain — full convergent tapering
 
 ```
 R1: 0 Critical / 7 Major / 4 Minor → ISSUES_FOUND
 R2: 0 Critical / 6 Major / 2 Minor → ISSUES_FOUND
 R3: 0 Critical / 3 Major / 3 Minor → ISSUES_FOUND
 R4: 0 Critical / 3 Major / 2 Minor → ISSUES_FOUND
-R5: 0 Critical / 1 Major / 1 Minor → ISSUES_FOUND (MAX_ROUNDS terminator; both items resolved in-tree pre-termination)
+R5: 0 Critical / 1 Major / 1 Minor → ISSUES_FOUND  (original MAX_ROUNDS=5 boundary; operator overrode to continue)
+R6: 0 Critical / 0 Major / 1 Minor → NO_NEW_CRITICAL_MAJOR
 ```
 
-Critical+Major progression: 7→6→3→3→1 (monotonic decrease; healthy convergence).
+Major-finding progression: **7 → 6 → 3 → 3 → 1 → 0** (monotonic decrease; healthy convergence).
 
-**ZERO Critical findings** across the entire chain — first phase 10 writing-plans dispatch + matches Phase 9 Sub-bundle E + Sub-bundle D (post-resolution) + Sub-bundle B + C "ZERO Critical" pattern.
+**ZERO Critical findings** across the entire chain — matches Phase 9 Sub-bundle E + Sub-bundle D (post-resolution) + Sub-bundle B + C "ZERO Critical" pattern.
 
 **Codex thread ID** (preserved for any post-ship audit): `019e1fed-3c0a-74f2-8a16-b01ec95240fd`.
 
+**Total findings resolved: 20 Major + 13 Minor across 6 rounds** = 33 issues addressed in-tree, ZERO ACCEPT-WITH-RATIONALE positions banked. R5→R6 transition was the cleanest: every R5 issue (1 Major + 1 Minor) resolved with surgical edits requiring no further design changes.
+
 ## §4 Plan task decomposition rationale
 
-5 sub-bundles A → B → C → D → E with 33 tasks total. Per dispatch brief §1.2 + §A.23.
+5 sub-bundles A → B → C → D → E with **33 tasks total** per dispatch brief §1.2 + plan §A.23:
 
 | Sub-bundle | Scope | Task count | Gate surfaces | Est. dispatch hr |
 |---|---|---|---|---|
@@ -65,13 +65,13 @@ Critical+Major progression: 7→6→3→3→1 (monotonic decrease; healthy conve
 **Per-bundle gate session ≤ 6 surfaces** (dispatch brief §1.3 budget); all 5 bundles fit one operator gate session each.
 
 **Cross-bundle dependencies (binding per §A.23):**
-- A → {B,C,D,E}: honesty utility + BaseLayoutVM mixin + discrepancies helper.
+- A → {B,C,D,E}: honesty utility + BaseLayoutVM mixin + discrepancies helper interface contracts.
 - B → C (cohort scaffolding reuse; non-binding).
 - B → D (per-cohort filter helper reuse).
-- D → E (PROVISIONAL/LIVE resolver pattern reuse).
-- §A.18 reconciliation badge — dual-path: metrics VMs populate from sub-bundle landing; existing 6 base-layout VMs retrofit in E (Codex R2 Major #6 restructure).
+- D → E (PROVISIONAL/LIVE resolver pattern reuse for per-run aggregation).
+- §A.18 reconciliation badge — **dual-path** (Codex R2 Major #6 restructure): metrics VMs populate from sub-bundle landing; existing 6 base-layout VMs retrofit in E.
 
-Total cumulative test projection: **+180..+285 fast tests across the arc** (final ~2947..~3052; below Phase 9's +503 because Phase 10 has zero schema work).
+**Total cumulative test projection: +180..+285 fast tests across the arc** (final ~2947..~3052; below Phase 9's +503 because Phase 10 has zero schema work).
 
 ## §5 Open-questions disposition (spec §8 + dispatch brief §0.4 + §0.5)
 
@@ -92,11 +92,11 @@ All 7 spec §8 + 6 dispatch-brief §0.4/§0.5 questions disposed in plan §A.4 +
 | §0.5 §11.3 V1 supersession (full hypothesis history) | YES — supersede spec §3.2 V1-limit | NO (Phase 9 Sub-bundle C closed the gap) |
 | §0.5 §11.4 dynamic PROVISIONAL badge | LOCKED per §A.6 | NO |
 
-Plan accepts all default dispositions; flags 5 orchestrator-decision-pending items for integration triage. None are writing-plans blockers.
+Plan accepts all default dispositions; flags **5 orchestrator-decision-pending items** for integration triage. None are writing-plans blockers.
 
 ## §6 Codex Major findings ACCEPTED with rationale
 
-**ZERO ACCEPT-WITH-RATIONALE positions banked.** Every one of the 20 Major findings across R1+R2+R3+R4+R5 was resolved with a code-content fix, NOT an "accept-with-rationale" position. This matches the cleanest Phase 9 arc bundles (D + E). Same posture: when Codex flagged something material, the plan was wrong + got fixed.
+**ZERO ACCEPT-WITH-RATIONALE positions banked.** Every one of the 20 Major findings across R1+R2+R3+R4+R5 was resolved with a code-content fix, NOT an "accept-with-rationale" position. R6 closed with 0 Major findings. This matches the cleanest Phase 9 arc bundles (D + E).
 
 **One spec-amendment-pending position banked at §A.21:** the spec §3.8 + §5.2 mapping for `mistake_cost_R_rolling_N_total` (sum-class with bootstrap CI) is ambiguous; V1 renders as point-only. Banked as V2.1 §VII.F amendment candidate; should be raised at Phase 10 V2.1 review or as a standalone amendment dispatch. Same recon-doc-supersession pattern as Phase 9 Sub-bundle D §7 sector_industry anchor + Sub-bundle E §6.2 multi-line parser.
 
@@ -116,14 +116,14 @@ Plan accepts all default dispositions; flags 5 orchestrator-decision-pending ite
 - **§A.10 — §4.8 chart rendering: inline SVG default-disposition** (avoids matplotlib mathtext gotcha entirely).
 - **§A.11 — Hypothesis-progress card supersedes spec §3.2 V1-limitation** (Phase 9 Sub-bundle C closed the gap).
 - **§A.11.1 — Paused-status temporal semantics** (Codex R1 Major #4 fix): V1 includes ALL trades labeled with cohort regardless of cohort status at trade-time.
-- **§A.19 — `risk_feasibility_blocked_rate` SQL** (Codex R1 Major #1 + R2 Major #3 + R3 Major #3 + R4 Majors #1+#2+#3 fix sequence): correct numerator predicate; `na`-on-other-criteria fail-equivalent; partial-criterion-row defensive guard with set-membership; `na`-on-risk-feasibility excluded.
+- **§A.19 — `risk_feasibility_blocked_rate` SQL** (Codex R1 Major #1 + R2 Major #3 + R3 Major #3 + R4 Majors #1+#2+#3 fix sequence): correct numerator predicate; `na`-on-other-criteria fail-equivalent; partial-criterion-row defensive guard with set-membership; `na`-on-risk-feasibility excluded; `EXPECTED_CRITERIA_NAMES` enumerated explicitly across all 18 names emitted by canonical pipeline writer.
 - **§A.21 — §3.8 rolling-metric Class assignments** (Codex R1 Major #6 + R3 Major #1 + R5 Major #1): per-metric `underlying_class` mapping mirroring spec §5.2 Class B; one explicit deviation (`mistake_cost_R_rolling_N_total` point-only) banked as V2.1 §VII.F amendment candidate.
 
 ## §8 Watch items for orchestrator (lock before executing-plans dispatch)
 
 1. **Sub-bundle A is foundational + binds B/C/D/E.** Dispatch A first; B/C/D/E can mock-against-A's interface. Failure to land A's interface contracts (`honesty.py`, `BaseLayoutVM`, `discrepancies.py:count_unresolved_material`) per §A.7 + §A.8 + §A.18 will cascade into B/C/D/E rework.
 
-2. **Five orchestrator-decision-pending items** at integration triage (per §5 above). Each is enumerated with default-disposition + cost-if-elected. Operator elections at integration triage may add tasks to specific sub-bundles before dispatch.
+2. **Five orchestrator-decision-pending items** at integration triage (per §5 above). Each enumerated with default-disposition + cost-if-elected. Operator elections at integration triage may add tasks to specific sub-bundles before dispatch.
 
 3. **`verify_phase10.py` must land in T-A.9.** Cross-platform Python script per §J.2 is the executing-plans dispatch acceptance gate. Subsequent sub-bundles inherit + invoke at end of dispatch.
 
@@ -143,11 +143,11 @@ Plan accepts all default dispositions; flags 5 orchestrator-decision-pending ite
 
 ## §9 Worktree teardown status
 
-Worktree created at `.worktrees/phase10-writing-plans/` per dispatch brief §2.1. Branch `phase10-writing-plans` 6 commits ahead of `main` (will be 7 after this return-report commit lands).
+Worktree created at `.worktrees/phase10-writing-plans/` per dispatch brief §2.1. Branch `phase10-writing-plans` 8 commits ahead of `main` after this return-report rewrite lands.
 
 **Marker file** at `c:/Users/rwsmy/swing-trading/.copowers-subagent-active` will be removed at Step 10 of dispatch brief §5 (after this return report commits + before signaling orchestrator).
 
-**Worktree teardown follows orchestrator-decision pattern** per Phase 6/7/8/9 lessons (orchestrator-context "Lessons captured"): expected ACL-locked husk on Windows after merge; orchestrator commands the cleanup post-merge.
+**Worktree teardown follows orchestrator-decision pattern** per Phase 6/7/8/9 lessons: expected ACL-locked husk on Windows after merge; orchestrator commands the cleanup post-merge.
 
 **No push to origin from worktree** per dispatch brief constraints. Orchestrator owns merge + integration.
 
@@ -183,11 +183,13 @@ NONE arise from writing-plans alone (no code shipped this dispatch). Will surfac
 
 1. **Empirical schema verification is structurally non-optional + must verify-via-derivation, NOT just direct-column-presence.** Initial Explore-agent recon flagged 9 "MISSING" columns in the v17 schema. Direct verification revealed all 9 are DERIVABLE from shipped helpers (`derived_metrics.py`, `equity.py`, `review.py`). Without the verify-via-derivation pass, the plan would have proposed schema additions that contradict §A.0's lock. Generalization for future writing-plans dispatches: every "MISSING" finding from a recon agent MUST be re-verified by the plan author before being written into a plan §A finding.
 
-2. **Codex propagation lag** between §A locks + per-task acceptance criteria: every §A revision in R1-R4 needed mirror updates in the relevant Task acceptance + test list. R5 caught the last propagation gap (§A.19 tests not mirrored in Task D.1 list). Future writing-plans: when updating a §A lock, search-grep for ALL referencing tasks + update their test lists in the same commit.
+2. **Codex propagation lag** between §A locks + per-task acceptance criteria: every §A revision in R1-R4 needed mirror updates in the relevant Task acceptance + test list. R5 caught the last propagation gap (§A.19 tests not mirrored in Task D.1 list); R6 caught a residual list-mirror omission (§A.20 / Task D.5 trend test). Future writing-plans: when updating a §A lock, search-grep for ALL referencing tasks + update their test lists in the same commit.
 
 3. **Cross-bundle restructure (§A.18 R2 Major #6)** showed the value of moving foundational helpers to Sub-bundle A even when the user-facing surface lands in Sub-bundle E. Eliminates per-metrics-VM retrofit in E + makes the cross-bundle pin a clean "field exists by definition + populated from start" rather than "every VM constructor must be touched in E".
 
 4. **Spec-conformance vs spec-amendment posture**: a single deliberate deviation from spec (§A.21 `mistake_cost_R_rolling_N_total` point-only) is acceptable when (a) flagged explicitly in plan §A, (b) banked as V2.1 §VII.F amendment candidate at return report, (c) NOT described as "spec-conformant" in plan task acceptance. Codex R1 caught the original draft's silent deviation; R5 propagation pass made the deviation EXPLICIT in test acceptance.
+
+5. **Operator-overridable MAX_ROUNDS budget**: copowers default config caps at MAX_ROUNDS=5. R5 ended with 1 Major + 1 Minor outstanding which were addressed in-tree pre-termination. Operator opted to continue past the budget; R6 surfaced 1 Minor (test list consistency) + verdict NO_NEW_CRITICAL_MAJOR. Lesson for future dispatches: when the R5 outstanding-issue count is small + clearly tractable, an additional R6 round is high-value (catches residual propagation gaps from the R5 fixes themselves).
 
 ### §11.3 Phase 9 forward-binding lesson application checklist (CLAUDE.md Gotchas + dispatch brief §0.3 + §7)
 
