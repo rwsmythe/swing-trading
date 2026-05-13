@@ -108,9 +108,9 @@ def test_metrics_index_top_nav_link_in_base_layout(seeded_db):
     finally:
         conn.close()
 
-    from swing.web.price_cache import PriceCache
-
     import pytest as _pytest
+
+    from swing.web.price_cache import PriceCache
     monkeypatch = _pytest.MonkeyPatch()
     monkeypatch.setattr(PriceCache, "get_many",
         lambda self, tickers, deadline_seconds, *, executor=None: {})
@@ -489,4 +489,155 @@ def test_trade_process_renders_no_color_only_badges(seeded_db):
         assert forbidden not in body, (
             f"Color-only inline style {forbidden!r} present — spec §4.9 "
             "binds badges to TEXT-only rendering"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Sub-bundle D Task T-D.2: GET /metrics/capital-friction
+# ---------------------------------------------------------------------------
+
+def test_capital_friction_endpoint_returns_200(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/capital-friction")
+    assert r.status_code == 200
+    assert "Capital-friction metrics" in r.text
+
+
+def test_capital_friction_renders_provisional_text_when_no_snapshot(seeded_db):
+    """Plan §A.6 + dispatch brief §0.8 LOCK: badge renders as TEXT not
+    color-only. Discriminating: exact substring `>PROVISIONAL<` at the
+    capital-denominator badge cell."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/capital-friction")
+    body = r.text
+    # Exact-substring per lesson #20 (body-wide "PROVISIONAL" might collide
+    # with the word "PROVISIONAL fallback" elsewhere). Pin to the badge
+    # element with data-badge="capital-denominator".
+    assert (
+        'data-badge="capital-denominator">PROVISIONAL</span>' in body
+    ), (
+        "Expected exact PROVISIONAL badge at capital-denominator cell; "
+        f"body excerpt: {body[:500]}"
+    )
+
+
+def test_capital_friction_renders_live_when_snapshot_present(seeded_db):
+    """Snapshot on-or-before today → badge flips to LIVE."""
+    from datetime import datetime as _dt
+
+    from swing.data.db import connect
+    from swing.evaluation.dates import last_completed_session
+
+    cfg, cfg_path = seeded_db
+    asof = last_completed_session(_dt.now())
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO account_equity_snapshots (snapshot_date, "
+                "equity_dollars, source, recorded_at, recorded_by) VALUES "
+                "(?, 3000.0, 'manual', ?, 'test')",
+                (asof.isoformat(), asof.isoformat() + "T08:00:00"),
+            )
+    finally:
+        conn.close()
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/capital-friction")
+    body = r.text
+    assert (
+        'data-badge="capital-denominator">LIVE</span>' in body
+    ), (
+        "Expected exact LIVE badge at capital-denominator cell after "
+        f"snapshot write; body excerpt: {body[:500]}"
+    )
+
+
+def test_capital_friction_renders_historical_disclosure_footnote_in_trend_section(
+    seeded_db,
+):
+    """Plan §A.0.1 + dispatch brief §0.10 BINDING (Codex R2 Major #4):
+    EXACT verbatim footnote text in trend section."""
+    from datetime import datetime as _dt
+
+    import exchange_calendars
+    import pandas as pd
+
+    from swing.data.db import connect
+    from swing.evaluation.dates import last_completed_session
+
+    cfg, cfg_path = seeded_db
+    # Seed 5 distinct trading sessions of pipeline_runs to unblock trend.
+    cal = exchange_calendars.get_calendar("XNYS")
+    asof = last_completed_session(_dt.now())
+    sessions = cal.sessions_window(pd.Timestamp(asof), -5)
+    session_dates = sorted({s.date().isoformat() for s in sessions})
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            for i, sd in enumerate(session_dates[:5], start=1):
+                conn.execute(
+                    "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+                    "action_session_date, tickers_evaluated, aplus_count, "
+                    "watch_count, skip_count, excluded_count, error_count) "
+                    "VALUES (?, ?, ?, ?, 0, 0, 0, 0, 0, 0)",
+                    (i, sd + "T13:00:00", sd, sd),
+                )
+                conn.execute(
+                    "INSERT INTO pipeline_runs (id, started_ts, finished_ts, "
+                    "trigger, data_asof_date, action_session_date, state, "
+                    "lease_token, evaluation_run_id) VALUES "
+                    "(?, ?, ?, 'manual', ?, ?, 'complete', 'tok', ?)",
+                    (i, sd + "T13:00:00", sd + "T13:30:00", sd, sd, i),
+                )
+    finally:
+        conn.close()
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/capital-friction")
+    body = r.text
+    # EXACT verbatim footnote per plan §A.0.1.
+    expected_footnote = (
+        "Trend computed from current trade state; historical points "
+        "approximate where state has changed since the run."
+    )
+    assert expected_footnote in body, (
+        f"Expected verbatim §A.0.1 footnote; not found in body. "
+        f"Body excerpt: {body[:1000]}"
+    )
+    # And it must be inside the historical-disclosure marker (pinned to
+    # the trend section per lesson #20).
+    assert 'data-footnote="historical-disclosure"' in body
+
+
+def test_capital_friction_extends_base_layout(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/capital-friction")
+    assert 'class="topbar"' in r.text
+
+
+def test_capital_friction_registered_in_app_routes(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    route_paths = {r.path for r in app.routes if hasattr(r, "path")}
+    assert "/metrics/capital-friction" in route_paths
+
+
+def test_capital_friction_renders_no_color_only_badges(seeded_db):
+    """Per spec §4.9 + plan §A.9 BINDING: badges are TEXT-only."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/capital-friction")
+    body = r.text
+    for forbidden in ("background:red", "background:green", "color:red",
+                      "color:green"):
+        assert forbidden not in body, (
+            f"color-only inline style {forbidden!r} present"
         )

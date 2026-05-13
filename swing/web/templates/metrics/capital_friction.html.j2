@@ -1,0 +1,150 @@
+{% extends "base.html.j2" %}
+{% block title %}Capital-friction — Swing Trading{% endblock %}
+{% block content %}
+<section class="metrics-capital-friction">
+  <h1>Capital-friction metrics</h1>
+  <p class="muted">
+    Spec §4.4 — point-in-time gauges + multi-run trend. Operational
+    metrics; live capital denominator dynamic per plan §A.6 (PROVISIONAL
+    when no <code>account_equity_snapshots</code> row covers the asof
+    date; LIVE when a snapshot does).
+  </p>
+
+  <p class="muted">
+    Asof: {{ vm.result.asof_date }} ·
+    Capital denominator: $<span data-field="capital-denominator-dollars">{{ "%.2f"|format(vm.result.capital_denominator_dollars) }}</span>
+    <span class="badge badge-{{ vm.result.capital_denominator_badge|lower }}"
+          data-badge="capital-denominator">{{ vm.result.capital_denominator_badge }}</span>
+  </p>
+
+  <h2>Point-in-time gauges</h2>
+  <table class="metric-grid capital-friction-gauges">
+    <thead>
+      <tr><th>Metric</th><th>Value</th><th>Badge</th></tr>
+    </thead>
+    <tbody>
+      <tr data-metric="current_capital_utilization_pct">
+        <td>Current capital utilization</td>
+        <td>
+          {% if vm.result.current_capital_utilization_pct is not none %}
+          <strong>{{ "%.2f"|format(vm.result.current_capital_utilization_pct) }}%</strong>
+          {% else %}
+          <em>—</em>
+          {% endif %}
+        </td>
+        <td>
+          <span class="badge badge-{{ vm.result.capital_denominator_badge|lower }}"
+                data-badge="utilization-denominator">{{ vm.result.capital_denominator_badge }}</span>
+        </td>
+      </tr>
+      <tr data-metric="current_portfolio_heat_pct">
+        <td>Current portfolio heat</td>
+        <td>
+          {% if vm.result.current_portfolio_heat_pct is not none %}
+          <strong>{{ "%.2f"|format(vm.result.current_portfolio_heat_pct) }}%</strong>
+          {% else %}
+          <em>—</em>
+          {% endif %}
+        </td>
+        <td>
+          <span class="badge badge-{{ vm.result.capital_denominator_badge|lower }}"
+                data-badge="heat-denominator">{{ vm.result.capital_denominator_badge }}</span>
+        </td>
+      </tr>
+      <tr data-metric="concurrent_open_positions">
+        <td>Concurrent open positions</td>
+        <td><strong>{{ vm.result.concurrent_open_positions }}</strong></td>
+        <td></td>
+      </tr>
+      <tr data-metric="capital_cycle_time_days">
+        <td>Capital cycle time (mean, days)</td>
+        <td>
+          {% if vm.result.capital_cycle_time_days is not none %}
+          <strong>{{ "%.2f"|format(vm.result.capital_cycle_time_days) }} days</strong>
+          {% else %}
+          <em>[capital_cycle_time_days: no closed trades]</em>
+          {% endif %}
+        </td>
+        <td></td>
+      </tr>
+      <tr data-metric="risk_feasibility_blocked_rate">
+        <td>Risk-feasibility blocked rate (latest run)</td>
+        <td>
+          {% if vm.result.risk_feasibility_blocked_rate is not none %}
+          <strong>{{ "%.1f"|format(vm.result.risk_feasibility_blocked_rate * 100.0) }}%</strong>
+          <span class="muted">({{ "%.3f"|format(vm.result.risk_feasibility_blocked_rate) }} of qualifying)</span>
+          {% else %}
+          <em>{{ vm.result.risk_feasibility_blocked_rate_suppressed_text }}</em>
+          {% endif %}
+        </td>
+        <td></td>
+      </tr>
+      <tr data-metric="capital_feasibility_pressure_index">
+        <td>Capital-feasibility pressure index (composite)</td>
+        <td>
+          {% if vm.result.capital_feasibility_pressure_index is not none %}
+          <strong>{{ "%.3f"|format(vm.result.capital_feasibility_pressure_index) }}</strong>
+          {% else %}
+          <em>—</em>
+          {% endif %}
+        </td>
+        <td>
+          <span class="badge badge-{{ vm.result.capital_denominator_badge|lower }}"
+                data-badge="pressure-denominator">{{ vm.result.capital_denominator_badge }}</span>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Multi-run trend</h2>
+  {% if vm.result.trend_suppressed %}
+  <p><em data-field="trend-suppression">{{ vm.result.trend_suppressed_text }}</em></p>
+  {% else %}
+  <table class="metric-grid capital-friction-trend">
+    <thead>
+      <tr>
+        <th>Run</th>
+        <th>Date</th>
+        <th>Blocked rate</th>
+        <th>Utilization %</th>
+        <th>Heat %</th>
+        <th>Open positions</th>
+        <th>Badge</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in vm.result.trend_runs %}
+      <tr data-run-id="{{ p.pipeline_run_id }}">
+        <td>#{{ p.pipeline_run_id }}</td>
+        <td>{{ p.run_date }}</td>
+        <td>
+          {% if p.risk_feasibility_blocked_rate is not none %}
+          {{ "%.1f"|format(p.risk_feasibility_blocked_rate * 100.0) }}%
+          {% else %}
+          <em>—</em>
+          {% endif %}
+        </td>
+        <td>
+          {% if p.current_capital_utilization_pct is not none %}
+          {{ "%.2f"|format(p.current_capital_utilization_pct) }}%
+          {% else %}<em>—</em>{% endif %}
+        </td>
+        <td>
+          {% if p.current_portfolio_heat_pct is not none %}
+          {{ "%.2f"|format(p.current_portfolio_heat_pct) }}%
+          {% else %}<em>—</em>{% endif %}
+        </td>
+        <td>{{ p.concurrent_open_positions }}</td>
+        <td>
+          <span class="badge badge-{{ p.capital_denominator_badge|lower }}">{{ p.capital_denominator_badge }}</span>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted historical-disclosure">
+    <em data-footnote="historical-disclosure">{{ vm.historical_disclosure_footnote }}</em>
+  </p>
+  {% endif %}
+</section>
+{% endblock %}

@@ -15,6 +15,9 @@ import sqlite3
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 
+from swing.web.view_models.metrics.capital_friction import (
+    build_capital_friction_vm,
+)
 from swing.web.view_models.metrics.deviation_outcome import (
     build_deviation_outcome_vm,
 )
@@ -123,6 +126,31 @@ def metrics_deviation_outcome(
     )
     return request.app.state.templates.TemplateResponse(
         request, "metrics/deviation_outcome.html.j2", {"vm": vm},
+    )
+
+
+@router.get("/metrics/capital-friction", response_class=HTMLResponse)
+def metrics_capital_friction(request: Request):
+    """Spec §4.4 capital-friction view — Sub-bundle D Task T-D.2.
+
+    Renders point-in-time gauges (current_capital_utilization_pct +
+    current_portfolio_heat_pct + concurrent_open_positions +
+    capital_cycle_time_days + risk_feasibility_blocked_rate +
+    capital_feasibility_pressure_index) with PROVISIONAL/LIVE dynamic
+    badge per plan §A.6 + spec §4.9 TEXT-only LOCK.
+
+    Multi-run trend (30-trading-session window ending at backward-looking
+    ``last_completed_session(now)``) suppressed at <5 runs per spec §4.4;
+    when rendered, the §A.0.1 historical-reconstruction disclosure
+    footnote appears verbatim below the trend table.
+
+    Per plan §A.9 + §I.6 LOCK: pure server-rendered HTML; NO HTMX
+    OOB-swap, NO HX-Redirect, NO embedded forms.
+    """
+    cfg = request.app.state.cfg
+    vm = build_capital_friction_vm(cfg=cfg)
+    return request.app.state.templates.TemplateResponse(
+        request, "metrics/capital_friction.html.j2", {"vm": vm},
     )
 
 
