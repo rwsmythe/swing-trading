@@ -16,7 +16,12 @@ from pathlib import Path
 #   (risk_policy / reconciliation_runs / reconciliation_discrepancies /
 #   hypothesis_status_history / account_equity_snapshots) + 2 ALTER ADDs
 #   (trades.risk_policy_id_at_lock + review_log.risk_policy_id_at_review_completion)
-EXPECTED_SCHEMA_VERSION = 17
+# phase 11 schwab API integration (migration 0018): schwab_api_calls audit
+#   table + 2 ALTER ADDs (account_equity_snapshots.schwab_account_hash +
+#   reconciliation_runs.schwab_api_call_id). Migration opens with explicit
+#   BEGIN; / COMMIT; per Codex R1 Critical #1 (executescript implicit COMMIT
+#   gotcha) — sets new discipline for all future migrations.
+EXPECTED_SCHEMA_VERSION = 18
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 # Phase 7 backup gate (spec §12.1): when migrating to schema_version >= 14,

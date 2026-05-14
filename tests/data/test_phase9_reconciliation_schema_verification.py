@@ -41,6 +41,11 @@ _RECON_RUNS_EXPECTED_COLS: frozenset[str] = frozenset({
     "fills_reconciled_count", "discrepancies_count",
     "unresolved_discrepancies_count", "summary_json", "error_message",
     "notes",
+    # Phase 11 (migration 0018) ALTER ADD COLUMN: schwab_api_call_id INTEGER
+    # NULLABLE FK to schwab_api_calls(call_id) ON DELETE SET NULL. Bundle B
+    # consumer-side contract retained (the 19 originals still present); new
+    # column is additive.
+    "schwab_api_call_id",
 })
 
 
@@ -48,7 +53,10 @@ def test_reconciliation_runs_has_19_columns(conn: sqlite3.Connection) -> None:
     """Plan §E says 17; migration LIST enumerates 19 (binding).
 
     Per dispatch brief §0.5 #1 + Codex R1 Major #2 precedent: column LIST
-    is binding; subtotal text is advisory.
+    is binding; subtotal text is advisory. Phase 11 added a 20th column
+    (schwab_api_call_id); the test name retains the pre-Phase-11 number
+    for git-history continuity but the LIST + count below tracks current
+    HEAD (20).
     """
     cur = conn.execute("PRAGMA table_info(reconciliation_runs)")
     cols = {r[1] for r in cur.fetchall()}
@@ -56,7 +64,7 @@ def test_reconciliation_runs_has_19_columns(conn: sqlite3.Connection) -> None:
         f"column drift; missing {_RECON_RUNS_EXPECTED_COLS - cols}; "
         f"extra {cols - _RECON_RUNS_EXPECTED_COLS}"
     )
-    assert len(cols) == 19
+    assert len(cols) == 20  # Phase 11: 19 -> 20 (schwab_api_call_id ALTER)
 
 
 def test_reconciliation_runs_indexes_present(conn: sqlite3.Connection) -> None:

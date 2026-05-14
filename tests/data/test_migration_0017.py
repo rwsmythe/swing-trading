@@ -39,13 +39,14 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 # ============================================================================
 
 
-def test_expected_schema_version_constant_is_17() -> None:
-    assert EXPECTED_SCHEMA_VERSION == 17
+def test_expected_schema_version_constant_is_18() -> None:
+    # ensure_schema walks to HEAD; Phase 11 migration 0018 advanced to 18.
+    assert EXPECTED_SCHEMA_VERSION == 18
 
 
-def test_schema_version_row_is_17(conn: sqlite3.Connection) -> None:
+def test_schema_version_row_is_18(conn: sqlite3.Connection) -> None:
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row[0] == 17
+    assert row[0] == 18
 
 
 # ============================================================================
@@ -217,7 +218,10 @@ _RECON_RUNS_EXPECTED_COLS: frozenset[str] = frozenset({
 # spec §3.2 lists 17 columns total; "error_message" + "notes" + the 14
 # enumerated above + run_id = 17. The frozenset above lists the 16 metric/
 # state columns; error_message + notes are added below.
-_RECON_RUNS_EXPECTED_COLS = _RECON_RUNS_EXPECTED_COLS | {"error_message", "notes"}
+# Phase 11 (migration 0018) ALTER ADD: schwab_api_call_id FK NULLABLE.
+_RECON_RUNS_EXPECTED_COLS = _RECON_RUNS_EXPECTED_COLS | {
+    "error_message", "notes", "schwab_api_call_id",
+}
 
 
 def test_reconciliation_runs_table_exists_with_19_columns(
@@ -525,19 +529,23 @@ def test_hypothesis_status_history_fk_cascade_from_registry(
 _AES_EXPECTED_COLS: frozenset[str] = frozenset({
     "snapshot_id", "snapshot_date", "equity_dollars", "source",
     "source_artifact_path", "recorded_at", "recorded_by", "notes",
+    # Phase 11 (migration 0018) ALTER ADD: schwab_account_hash TEXT NULLABLE.
+    "schwab_account_hash",
 })
 
 
 def test_account_equity_snapshots_table_exists_with_8_columns(
     conn: sqlite3.Connection,
 ) -> None:
+    # Test name preserved for git-history continuity; Phase 11 added a 9th
+    # column (schwab_account_hash) so the count assertion below tracks HEAD.
     cur = conn.execute("PRAGMA table_info(account_equity_snapshots)")
     cols = {r[1] for r in cur.fetchall()}
     assert cols == _AES_EXPECTED_COLS, (
         f"column drift; missing {_AES_EXPECTED_COLS - cols}; "
         f"extra {cols - _AES_EXPECTED_COLS}"
     )
-    assert len(cols) == 8
+    assert len(cols) == 9  # Phase 11: 8 -> 9 (schwab_account_hash ALTER)
 
 
 def test_account_equity_snapshots_unique_date_source(
