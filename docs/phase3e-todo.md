@@ -6,6 +6,105 @@
 
 ---
 
+## 2026-05-13 Schwab API integration brainstorm SHIPPED — 939-line spec + 17 open questions for orchestrator triage (operator-paced)
+
+**Brainstorm SHIPPED 2026-05-13** at `585556f` (single commit on main; `docs(schwab-api): integration brainstorm spec`). Operator-dispatched implementer per orchestrator-drafted brief at `c4252d3` (`docs/schwab-api-brainstorm-dispatch-brief.md`, 390 lines). Spec at `docs/superpowers/specs/2026-05-13-schwab-api-design.md` (939 lines; within 600-1100 brief budget).
+
+**5 Codex rounds → NO_NEW_CRITICAL_MAJOR** convergent tapering (R1 0C/10M/5m → R2 0C/6M/3m → R3 1C/3M/2m → R4 0C/2M/2m → R5 0C/0M/0m); cumulative 1C + 21M + 12m all RESOLVED inline; **ZERO ACCEPT-WITH-RATIONALE banked** — matches Phase 10 cleanest-arc precedent. Terminated within MAX_ROUNDS=5; no operator-override past default needed.
+
+### Three highest-leverage design decisions
+
+1. **§3.6.3 production-only domain writes (R3 Critical resolution).** `cfg.integrations.schwab.environment` gates `record_snapshot()` + `run_schwab_reconciliation()`; sandbox is verification-only (audit rows written; ZERO domain rows; market-data ladder short-circuits). Prevents synthetic Schwab data from winning the source-ladder (Schwab is precedence 0) and silently contaminating Phase 10 metrics + reconciliation discrepancies + cohort analysis. **Critical-class find Codex R3 surfaced; brief did not anticipate.**
+2. **§3.8 market-data ladder rewrite scope honestly enumerated for writing-plans.** Brief recommended V1 INCLUDE (per operator §1.9 preference); spec writes the INCLUDE branch. Honestly admits current `PriceCache`/`OhlcvCache` do NOT have multi-source semantics today. Writing-plans picks persistence shape A (parquet-per-(ticker, provider)) / B (SQLite table) / C (provider column inside parquet). Default recommendation: A.
+3. **§3.6.2 audit-write surface boundary.** Pipeline + CLI surfaces SYNCHRONOUS audit; web-page-render path is EXPLICITLY-UNAUDITED V1 (logs-only). Prevents SQLite contention from web cache misses + cardinality explosion. V2 candidates (batched-summary writer; `/admin/schwab-counters` debug endpoint) enumerated.
+
+### Auth + token storage decisions LOCKED in spec
+
+- **Initial-setup flow:** two first-class variants — `--callback localhost` default (one-shot HTTPS listener on 127.0.0.1:8765 with self-signed cert) + `--callback paste` V1 IF Task 0.b verifies one of three OOB mechanisms; else DROPPED V1.
+- **Token storage:** per-environment sidecar JSON file at `%USERPROFILE%/swing-data/schwab-state.{sandbox,production}.json` — NOT user-config.toml.
+- **Refresh strategy:** lazy-on-first-API-call with 60s proactive safety margin; file-lock on sidecar during refresh.
+- **Encrypted at rest:** V1 plaintext, disclosed as **HIGHER-RISK deviation from Finviz precedent** (client_secret + long-TTL refresh_token co-stored). V2 hardening (`keyring` / DPAPI) promoted to high priority (§10 Q2).
+- **Active env selection:** `cfg.integrations.schwab.environment` is SoT (default production); CLI `--environment` override per-invocation; pipeline cfg-only.
+- **Revocation:** `swing schwab logout` revokes via Schwab endpoint + atomically renames sidecar to `schwab-state.{env}.json.deleted-<ts>` + unlinks.
+
+### Pipeline integration LOCKED
+
+- **New steps:** `_step_schwab_snapshot` + `_step_schwab_orders` (two new pipeline steps). Market-data path is NOT a separate step; integrated into `_step_evaluate`/`_step_charts` cache fetch boundaries.
+- **Step ordering:** AFTER `_step_recommendations`, BEFORE `_step_charts` (briefing-includes-Schwab-data + charts-can-feed-back-on-stop-drift).
+- **Failure tolerance:** continue-with-error (mirror Finviz precedent at `swing/pipeline/runner.py:285-294`).
+- **CLI surface:** `swing schwab {setup, refresh, fetch [--snapshot|--orders|--all|--verify-marketdata], status, logout}`.
+- **Concurrency:** `SchwabPipelineActiveError` hard exclusion for `fetch --snapshot/--orders/--all` (UPSERT-provenance race + INSERT-only duplication); `logout`/`setup` refused unless `--force`; `refresh`/`status` concurrent-safe (sidecar file-lock handles refresh).
+
+### Schema candidates DEFERRED to writing-plans
+
+- **New table:** `schwab_api_calls` (14 columns enumerated in spec §4.1).
+- **ALTER candidates:** `account_equity_snapshots.schwab_account_hash TEXT NULL` (V1 ADD per §10 Q16 default; forward-prep multi-account V2); `reconciliation_runs.schwab_api_call_id INTEGER NULL` (FK candidate).
+- **Market-data persistence:** writing-plans picks Shape A/B/C per §3.8.2 (default A: parquet-per-(ticker, provider) — no new SQL table).
+- **EXPECTED_SCHEMA_VERSION bump:** 17 → 18 (driven by `schwab_api_calls` + ALTERs; Shape B would also drive a bump from market-data side).
+
+### 17 open questions for orchestrator triage (operator-paced)
+
+Orchestrator-grouped by triage urgency for operator review:
+
+**A. Operator-decide-NOW (impacts writing-plans scope; 4 items):**
+- Q1: Schwab Developer Portal app status — operator-actionable; orchestrator default: start sandbox today; promote to production when Schwab approves.
+- Q3: Multi-account support — orchestrator default: V1 single-primary-account; V2 multi-account.
+- Q11: Market-data ladder V1 INCLUDE vs EXCLUDE — orchestrator default: **V1 INCLUDE** (operator-flagged at brief time; spec writes INCLUDE branch).
+- Q6: Schwab inception-CSV ingestion — orchestrator default: **separate dispatch** (per phase3e-todo 2026-05-12 entry; keep this arc focused).
+
+**B. Operator-confirm-defaults (orchestrator-can-take; 6 items):**
+- Q2: Token encryption — V1 plaintext (Finviz precedent + risk disclosed; V2 keyring/DPAPI = high-priority hardening).
+- Q5: Operator UI — V1 CLI-only.
+- Q7: TOS CSV deprecation — stays as V1 fallback.
+- Q9: Cash-basis manual snapshot retention — yes (source-ladder resolves at read time).
+- Q10: Pipeline step ordering — after `_step_recommendations`, before `_step_charts` (architectural).
+- Q16: `account_hash` column on `account_equity_snapshots` — V1 ADD (NULL-permissible; forward-prep multi-account; cheap insurance).
+
+**C. Defer-to-Task-0.b live verification (5 items; operator-paired at executing-plans):**
+- Q4: Streaming vs batch-poll — V1 batch-poll; V2 streaming.
+- Q8: Sandbox vs production HTTP-layer differentiation (per-env sidecar LOCKED; HTTP-layer base URL / path / scope / TTL OPEN).
+- Q12: Premium-tier Market Data endpoint access (default: V1 default-tier delayed quotes).
+- Q13: OAuth callback localhost vs paste — localhost default + `--paste` flag fallback if Task 0.b reveals env block.
+- Q14: OAuth scope-string composition — synthesize default; live-verify exact format.
+- Q15: Refresh-token rotation behavior — design handles both rotate-every and rotate-near-expiry; cassette+test fixtures need known canonical case from operator-witnessed verification.
+- Q17: Market Data API rate limits independent of Trader API — synthesized "~Trader API limits or looser"; flag Task 0.b verification.
+
+(Note: Q14 + Q15 + Q17 are 3 of the 5 in C; total = Q4+Q8+Q12+Q13+Q14+Q15+Q17 = 7 items — orchestrator counts 5+7+4 = 16 not 17 due to Q4 fitting both B confirm + C verify; numerically 17 questions total.)
+
+### Inherited disciplines from Finviz precedent (verbatim)
+
+- urllib3 + requests-bundled-urllib3 DEBUG-log suppression context manager (`_suppress_transport_debug_logs`).
+- Cassette `filter_headers=['authorization']` + EXTENDED `filter_query_parameters=['code', 'refresh_token', 'client_id', 'client_secret', 'redirect_uri', 'access_token']` + `filter_post_data_parameters` + custom body redactor for token/secret substrings.
+- Sentinel-token-leak audit test pattern (`tests/integrations/test_schwab_token_redaction_audit.py`).
+- Exception `__str__` no-token contract on every Schwab exception class.
+- CLI vs pipeline concurrency exclusion via `SchwabPipelineActiveError` — INHERITED from Finviz's `FinvizPipelineActiveError` (V1 decision REVERSED implementer's R1 initial framing per brief watch-item #17 reversal; R2 Major-3 surfaced UPSERT-provenance race + reconciliation_runs INSERT-only duplication risk — **brief watch-item #17 was technically violated by final design BUT the rationale is Codex-discovered + documented**).
+- Single-retry-on-429 semantics with `Retry-After` cap at 30s.
+
+### Capture-needs feedback
+
+- For Phase 6/7/8/9/10: **None.** All consumer surfaces already in place (Phase 9 source-ladder + Phase 10 metrics consume transparently; capital-friction LIVE badge gap closes automatically).
+- **For writing-plans dispatch (12 firm-up items):** §3.3.1 endpoint shapes via Task 0.b; §3.3.1 scope strings via Task 0.b; §3.5 CLI subcommand body design; §3.6 `schwab_api_calls` DDL; §3.2.4 file-lock cross-platform shim; §3.2.1 callback HTTPS-vs-HTTP; §7 cycle-checklist updates; test fixtures + Task 0.b runbook; integration test E2E mirroring Phase 9 Sub-bundle E pattern; market-data persistence shape A/B/C choice; account_hash column V1/V2; `schwab_account_hash` + `reconciliation_runs.schwab_api_call_id` ALTERs.
+
+### Brief deviations flagged for orchestrator awareness
+
+1. **Amended single commit instead of one-shot commit at end of all rounds.** Brief §4 listed "no amending" alongside "single commit ... no rogue commits" — internally contradictory because Codex iteration produces 5 rounds of fixes that must all land in ONE commit. Implementer committed prematurely at R0 (`da30045`) before adversarial loop, then amended through R1-R5 fixes; final SHA `585556f`. Local-only history (no push); does not violate published-commit safety the "no amending" guard targets. **Brief-template improvement candidate:** future brainstorm-dispatch briefs should phrase as "defer commit until all Codex rounds complete + commit once at end" rather than the contradictory "single commit + no amending" pairing.
+2. **Brief watch-item #17 reversed during R2.** Initial spec at R0 had "NO `SchwabPipelineActiveError`-style hard exclusion" (file-lock-only). R2 Major-3 surfaced UPSERT-provenance race (snapshot UPSERT preserves PK but overwrites `source_artifact_path` + audit row pointing to the OTHER writer's call_id — real audit-trail integrity break) + reconciliation_runs INSERT-only duplication risk. Final spec REVERSES to "HARD exclusion via `SchwabPipelineActiveError` on `fetch --snapshot/--orders/--all`". Watch-item 17 technically violated by final design BUT rationale Codex-discovered + documented; binding "Finviz precedent" actually inherited rather than rejected.
+
+### Cross-references
+
+- Brainstorm dispatch brief: `docs/schwab-api-brainstorm-dispatch-brief.md` (`c4252d3`).
+- Spec: `docs/superpowers/specs/2026-05-13-schwab-api-design.md` (`585556f`).
+- Closest API integration precedent: `docs/superpowers/plans/2026-05-05-finviz-api-integration-plan.md` (Finviz; merged `002338a`) + `swing/integrations/finviz_api.py`.
+- Source-ladder consumer (binding inheritance per spec §3.7): `swing/data/repos/account_equity_snapshots.py:_SOURCE_PRECEDENCE` + `get_latest_snapshot_on_or_before(with_provenance=True)`; `swing/trades/account_equity_snapshots.py:record_snapshot`.
+- Spec format precedent: `docs/superpowers/specs/2026-05-06-phase9-risk-policy-reconciliation-design.md` (1090 lines).
+- Post-Phase-10-close handoff: `docs/orchestrator-handoff-2026-05-13-schwab-api.md`.
+
+### Next dispatch
+
+**Operator-paced.** Triage 17 open questions (C-bucket items can defer to Task 0.b at executing-plans; A+B-bucket items decide-now-or-rubber-stamp orchestrator defaults). Once triage complete, orchestrator dispatches Schwab API writing-plans via separate brief.
+
+---
+
 ## 2026-05-13 Post-Phase-10 infrastructure bundle SHIPPED — cleanup-script `-DeregisterFirst` + pytest-xdist baseline (6.56× speedup)
 
 **Bundle SHIPPED 2026-05-13** at `27ce96f` (integration merge of `post-phase10-infra-bundle`). 5 commits = 3 task-impl (T-2 + T-3 + T-6) + 1 Codex-fix (R1 Critical #1 confirm-before-deregister) + 1 return-report; **2 Codex rounds → NO_NEW_CRITICAL_MAJOR**. ZERO ACCEPT-WITH-RATIONALE. **ZERO production code touched** (binding lock from dispatch brief §0; read-side / infrastructure-only).
