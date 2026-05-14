@@ -6,6 +6,52 @@
 
 ---
 
+## 2026-05-13 Trade exit review form — stale "Phase 7 will auto-derive" promise + counterfactual still operator-input
+
+**Symptom (operator-surfaced 2026-05-13):** trade exit review form's "Counterfactual (optional)" fieldset displays helper text:
+
+> "What R would you have realized if you'd followed your original plan exactly? (Phase 7 will auto-derive this from Fills.)"
+
+Source: [`swing/web/templates/partials/review_form.html.j2:66-67`](../swing/web/templates/partials/review_form.html.j2#L66-L67). The promise is from Phase 6 design (form authored before Phase 7 shipped); Phase 7 SHIPPED 2026-05-05 at `c617777` (per CLAUDE.md status line) but did NOT wire counterfactual auto-derivation. The `realized_R_if_plan_followed` field remains an operator-input column on `trades` (per `swing/data/repos/trades.py:427+445`); only the DOWNSTREAM `mistake_cost_R` + `lucky_violation_R` are derived (per `swing/trades/review.py:158-174`) — but only IF operator manually fills in `realized_R_if_plan_followed`.
+
+**Phase 7 deliverables actually shipped** (per CLAUDE.md status + grep): state machine (`swing/trades/state.py`), origin tracking (`swing/trades/origin.py`), derived-metrics infrastructure (`swing/trades/derived_metrics.py`), Fills first-class (`fills` table + repo). **Counterfactual auto-derivation NOT in scope of any shipped Phase 7 task.**
+
+### Two-part fix candidate
+
+**(a) Immediate polish (trivial; ~5-line change in one template):**
+
+Update `swing/web/templates/partials/review_form.html.j2:66-67` to remove the stale Phase 7 reference. Replace with current-state-honest helper text. Two phrasing options:
+
+- Minimal: drop the parenthetical entirely. Helper text becomes just "What R would you have realized if you'd followed your original plan exactly?"
+- Forward-looking: "What R would you have realized if you'd followed your original plan exactly? (Auto-derivation from Fills is a future enhancement; manual entry V1.)"
+
+Operator preference TBD; orchestrator default = forward-looking phrasing (preserves the deferred-derivation intent for future implementer).
+
+**(b) V2 design dispatch (actual auto-derivation):**
+
+Define what "R if plan followed" means when plan-followed conditions can take multiple shapes:
+- Trade stopped via violation: counterfactual = R at original planned stop (operator EXITED above-stop manually).
+- Trade target hit but operator exited early: counterfactual = R at planned target.
+- Trade trailed out: counterfactual = R at planned trail-MA exit.
+- Trade closed for non-plan reason: counterfactual = ?
+
+Each scenario needs a deterministic mapping from `Fills` + `trades.planned_*` columns + `trade_events` history → counterfactual R. Likely a new helper in `swing/trades/derived_metrics.py` consuming the existing infrastructure.
+
+**Schwab API arc adjacency:** Schwab API integration may strengthen this — Schwab returns authoritative fill timing/price granular enough to support more sophisticated counterfactual computations (e.g., "R if you had exited at the same intraday timestamp where you actually exited but at the planned-stop price"). Could be V2-bundled with Schwab market-data ladder OR remain standalone.
+
+### Recommended disposition
+
+- **(a) Polish** = trivial; bundle into next polish-bundle dispatch (or fold into Schwab API executing-plans Sub-bundle E if Schwab arc surfaces other near-by template touch-ups).
+- **(b) Design** = standalone V2 dispatch (not Schwab-arc-bundled; needs its own brainstorm to lock the counterfactual semantics). Operator-paced.
+
+### Cross-references
+
+- Phase 6 source-of-promise: `docs/superpowers/plans/2026-05-02-phase6-post-trade-review-plan.md`.
+- Phase 7 actual deliverables: `swing/trades/state.py` + `swing/trades/derived_metrics.py` + migration `0014_phase7_state_machine_and_fills.sql`.
+- Existing manual-entry consumer: `swing/trades/review.py:158-174` (`compute_mistake_cost_R` + `compute_lucky_violation_R`).
+
+---
+
 ## 2026-05-13 Schwab API Q18 build-vs-buy disposition LOCKED — COA B = `schwabdev`
 
 **Brainstorm-spec gap surfaced post-triage.** The 2026-05-13 brainstorm spec at `585556f` implicitly chose COA C (roll our own) by enumerating `swing/integrations/schwab/` sub-package + `SchwabClient` + sidecar JSON token storage + custom file-lock + custom OAuth flow as the V1 architecture, **without ever explicitly comparing against the two community-maintained Python wrappers it lists in §12 references** (`schwab-py`, `schwabdev`). Operator surfaced the gap immediately after orchestrator drafted the writing-plans dispatch brief at `5bf425d`; orchestrator researched both libraries' OAuth implementations + presented tradeoff matrix; operator confirmed COA B on 2026-05-13.
