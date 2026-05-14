@@ -125,16 +125,34 @@ These BLOCK each downstream sub-bundle dispatch until completed (operator-paired
 - **Operator-manual DB backup** before first `swing db-migrate` run that lands 0018 (no auto-gate fires per §C.5; cycle-checklist update covers).
 - **NO CLAUDE.md gotchas promoted YET** — plan §J.1-§J.6 enumerate 6 entries that Bundle D T-D.4 will land at executing-plans time.
 
+### Operator-provided distilled Schwab API references (tracked at `reference/schwab-api/`)
+
+Operator created 2026-05-13 via parallel instance: 4 distilled markdown files derived from saved Schwab Developer Portal HTML pages (raw HTML at `reference/SchwabAPI/`, gitignored as bulk reference per same posture as `reference/Books/`). The distilled MDs are tracked + small + canonical:
+
+- `reference/schwab-api/account-documentation.md` — Trader API account/order/transaction documentation digest.
+- `reference/schwab-api/account-specification.md` — Trader API account/order/transaction OpenAPI / response-shape specification.
+- `reference/schwab-api/market-data-documentation.md` — Market Data API quotes/pricehistory documentation digest.
+- `reference/schwab-api/market-data-specification.md` — Market Data API OpenAPI / response-shape specification.
+
+**Orchestrator action item — BINDING for ALL future Schwab API executing-plans dispatch briefs (Sub-bundle A through D):** include `reference/schwab-api/` in the brief's §0 reads list. These distilled references are HIGHER-FIDELITY than the synthesized §E endpoint catalog in the spec/plan because they're derived directly from Schwab's published documentation. **Implications for Task 0.b verification gates:**
+
+- May materially reduce operator-paired live verification burden for Q8 (HTTP-layer differentiation: base URL / path / scope), Q14 (OAuth scope-string composition), Q17 (Market Data API rate limits), and the §E synthesized endpoint shapes flagged with `[VERIFY]` tags.
+- Implementer should consult `reference/schwab-api/` FIRST during Task 0.b — many `[VERIFY]` items may already be answered in the distilled references; only items NOT covered need live API verification.
+- Spec + plan §E + §D do NOT cite these references (operator created them after writing-plans shipped). The executing-plans dispatch briefs are the right surface to thread them in.
+
+**Plan + spec amendment posture:** spec §E + plan §E + plan §D §D.1-§D.6 may benefit from a future amendment-pass to cite the distilled refs explicitly. Operator-paced; not blocking executing-plans dispatch (the executing-plans brief threading + Task 0.b runbook update is sufficient).
+
 ### Cross-references
 
 - Brainstorm spec: `docs/superpowers/specs/2026-05-13-schwab-api-design.md` (`585556f`).
 - Writing-plans dispatch brief: `docs/schwab-api-writing-plans-dispatch-brief.md` (`5bf425d` + `9fd50e6` COA B amendment).
 - Plan: `docs/superpowers/plans/2026-05-13-schwab-api-integration-plan.md` (`7faab72`).
+- **Operator-provided Schwab API distilled references:** `reference/schwab-api/{account,market-data}-{documentation,specification}.md` (4 files).
 - Sub-bundle A executing-plans dispatch brief: TBD (orchestrator drafts; operator-paced).
 
 ### Next dispatch
 
-**Sub-bundle A executing-plans dispatch UNBLOCKED.** Operator-paced. Orchestrator drafts the executing-plans brief when operator commissions. Plan §K T-A.0.b runbook covers the operator-paired Task 0.b live API verification gate that blocks Sub-bundle A dispatch start.
+**Sub-bundle A executing-plans dispatch UNBLOCKED.** Operator-paced. Orchestrator drafts the executing-plans brief when operator commissions. Plan §K T-A.0.b runbook covers the operator-paired Task 0.b live API verification gate that blocks Sub-bundle A dispatch start. **`reference/schwab-api/` distilled refs go into the dispatch brief's §0 reads + may pre-answer several §D items** (orchestrator pre-checks at draft time).
 
 **Threading reminder:** review-form polish task (per phase3e-todo entry "Trade exit review form — stale Phase 7 will auto-derive promise") goes into Sub-bundle D's executing-plans dispatch brief at draft time per operator-locked 2026-05-13 disposition.
 
