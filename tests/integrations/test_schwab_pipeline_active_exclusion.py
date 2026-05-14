@@ -254,12 +254,63 @@ def test_b6_09_refresh_NOT_protected(isolated_db, invoke_cli, monkeypatch):
     assert "Pipeline run" not in result.output
 
 
-@pytest.mark.skip(
-    reason="Cross-bundle pin: un-skip at T-C.5 once `fetch --verify-marketdata` ships",
-)
-def test_b6_10_fetch_verify_marketdata_NOT_protected():
+def test_b6_10_fetch_verify_marketdata_NOT_protected(
+    isolated_db, invoke_cli, monkeypatch,
+):
     """`swing schwab fetch --verify-marketdata` while pipeline running:
     SUCCEEDS (verification-only, cache writes skipped regardless of env).
 
-    Un-skip at T-C.5 when Sub-bundle C ships the --verify-marketdata flag.
+    Un-skipped at T-C.5 per dispatch brief: --verify-marketdata is in the
+    3-safe-subcommands list (plan §H.10) + does NOT enforce the pipeline-
+    active exclusion. Operator must be able to run market-data verification
+    against a stuck/running pipeline lease.
+
+    Discriminating: with a planted `state='running'` pipeline_runs row,
+    the CLI invocation MUST NOT emit "Pipeline run" / "in flight"
+    substring. quotes + price_history stubs are pre-wired to return
+    success shapes so the test verifies the GATE BYPASS, not network
+    reachability.
     """
+    _plant_running_pipeline(isolated_db)
+    cfg = _make_cfg(db_path=isolated_db)
+    mock_client = _stub_schwabdev(monkeypatch)
+    # Add quotes + price_history stubs (T-C.5 surface).
+    quotes_resp = MagicMock()
+    quotes_resp.json.return_value = {
+        "AAPL": {
+            "quote": {
+                "lastPrice": 100.0, "bidPrice": 99.0, "askPrice": 101.0,
+                "mark": 100.0, "quoteTime": "2026-05-14T15:30:00Z",
+                "delayed": False,
+            },
+        },
+    }
+    quotes_resp.status_code = 200
+    quotes_resp.headers = {}
+    mock_client.quotes.return_value = quotes_resp
+
+    ph_resp = MagicMock()
+    ph_resp.json.return_value = {
+        "empty": False,
+        "symbol": "AAPL",
+        "candles": [
+            {
+                "datetime": 1747094400000,
+                "open": 100.0, "high": 101.0, "low": 99.0,
+                "close": 100.5, "volume": 1_000_000,
+            },
+            {
+                "datetime": 1747180800000,
+                "open": 100.5, "high": 102.0, "low": 100.0,
+                "close": 101.5, "volume": 1_100_000,
+            },
+        ],
+    }
+    ph_resp.status_code = 200
+    ph_resp.headers = {}
+    mock_client.price_history.return_value = ph_resp
+
+    result = invoke_cli(cfg, "fetch", "--verify-marketdata")
+    # Pipeline-active gate MUST NOT fire.
+    assert "Pipeline run" not in result.output
+    assert "in flight" not in result.output
