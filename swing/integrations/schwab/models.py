@@ -21,8 +21,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any
-
 
 # Per `reference/schwabdev/api-calls.md` L124 + Phase 9 Sub-bundle E
 # real-world fixture observation: WAIT_TRG (placed-but-not-yet-armed

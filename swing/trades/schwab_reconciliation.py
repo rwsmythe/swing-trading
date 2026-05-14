@@ -62,7 +62,9 @@ _STOP_ORDER_TYPES = frozenset({"STOP", "STOP_LIMIT", "TRAILING_STOP", "TRAILING_
 
 
 # Working/armed status values that count for active stop-detection.
-_ACTIVE_STOP_STATUSES = frozenset({"WORKING", "WAIT_TRG", "ACCEPTED", "PENDING_ACTIVATION", "QUEUED"})
+_ACTIVE_STOP_STATUSES = frozenset({
+    "WORKING", "WAIT_TRG", "ACCEPTED", "PENDING_ACTIVATION", "QUEUED",
+})
 
 
 # Price-tolerance for fill matching (matches Phase 9 Sub-bundle B default).

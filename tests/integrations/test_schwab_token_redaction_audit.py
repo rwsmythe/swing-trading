@@ -904,17 +904,258 @@ def test_22_swing_schwab_logout_output_sentinel_redacted(
 # ============================================================================
 
 
-@pytest.mark.skip(
-    reason="Cross-bundle pin: un-skip at T-B.8 once Trader API cassettes recorded",
-)
-def test_23_cross_bundle_pin_trader_api_cassette_redaction():
-    """T-B.0.b cassette recording — verify operator-paired live recordings
-    of Trader API endpoints do NOT contain token bytes.
+# T-B.8 — Bundle B sentinel-leak coverage. Un-skipped at Sub-bundle B ship.
+# Tests exercise each Trader-API trader.py wrapper with a sentinel-tainted
+# response payload + sentinel-tainted error_message AND assert ZERO leakage
+# through (a) caplog captures of `Schwabdev*` loggers + (b) the
+# schwab_api_calls audit `error_message` column. Phase-2 live cassette
+# recording (T-B.0.b §6) will add a real-response variant; V1 ships with
+# the synthetic-fixture coverage as the binding test surface.
 
-    Un-skip at T-B.8 when Bundle B closes. The test loads each committed
-    Trader-API cassette + greps for: 32-hex runs, base64-shaped runs, the
-    sentinel string used at record time. ZERO matches required.
+
+def test_23_trader_api_wrapper_does_not_leak_sentinel_through_audit_or_caplog(
+    tmp_path, caplog,
+):
+    """T-B.8 — Trader-API wrappers redact sentinels in audit error_message
+    + caplog records.
+
+    Discriminating: plant a Layer-0 sentinel as account_hash + emit a
+    schwabdev-level log record containing the sentinel; invoke
+    get_account_details with a 401 response whose body contains the
+    sentinel; assert (a) no sentinel in any audit error_message; (b) no
+    sentinel in any captured caplog record from `Schwabdev*` loggers.
     """
+    import logging as _logging
+    import sqlite3 as _sqlite3
+    from unittest.mock import MagicMock as _MagicMock
+
+    from swing.data.db import ensure_schema
+    from swing.integrations.schwab.client import (
+        SchwabAuthError,
+        ensure_schwab_log_redaction_factory_installed,
+        register_schwab_secrets,
+    )
+    from swing.integrations.schwab.trader import get_account_details
+
+    conn = ensure_schema(tmp_path / "trader-redaction.db")
+
+    sentinel = "SENTINEL_TRADER_LEAK_PROBE_" + uuid.uuid4().hex[:8]
+    register_schwab_secrets([sentinel])
+    ensure_schwab_log_redaction_factory_installed()
+
+    # Build a Response-like that returns a 401 with the sentinel echoed in body.
+    err_resp = _MagicMock()
+    err_resp.json.return_value = {"errors": [{"message": f"failed for {sentinel}"}]}
+    err_resp.status_code = 401
+    err_resp.headers = {}
+    client = _MagicMock()
+    client.account_details.return_value = err_resp
+
+    # Emit a schwabdev-prefixed log record carrying the sentinel.
+    sl = _logging.getLogger("Schwabdev")
+    with caplog.at_level(_logging.DEBUG, logger="Schwabdev"):
+        sl.warning("token rotate failed: %s", sentinel)
+        try:
+            get_account_details(
+                client, conn, account_hash=sentinel,
+                surface="cli", environment="production",
+            )
+        except SchwabAuthError:
+            pass
+
+    # (a) audit error_message has no sentinel.
+    rows = conn.execute(
+        "SELECT error_message FROM schwab_api_calls "
+        "WHERE error_message IS NOT NULL"
+    ).fetchall()
+    for r in rows:
+        assert sentinel not in (r[0] or ""), (
+            f"Trader-API audit row leaked sentinel: {r[0]!r}"
+        )
+    # (b) caplog records have no sentinel in the message after factory redaction.
+    for record in caplog.records:
+        if record.name.startswith("Schwabdev"):
+            assert sentinel not in record.getMessage(), (
+                f"Schwabdev logger record leaked sentinel: {record.getMessage()!r}"
+            )
+
+
+def test_23b_trader_api_get_account_orders_audit_no_sentinel(tmp_path):
+    """T-B.8 — get_account_orders sentinel coverage.
+
+    Plants account_hash sentinel + sentinel-tainted 401 response body;
+    asserts the audit error_message column does NOT contain the sentinel
+    after the wrapper's redact-then-truncate flow.
+    """
+    import sqlite3 as _sqlite3
+    from unittest.mock import MagicMock as _MagicMock
+
+    from swing.data.db import ensure_schema
+    from swing.integrations.schwab.client import (
+        SchwabAuthError,
+        ensure_schwab_log_redaction_factory_installed,
+        register_schwab_secrets,
+    )
+    from swing.integrations.schwab.trader import get_account_orders
+
+    conn = ensure_schema(tmp_path / "trader-orders-redaction.db")
+    sentinel = "SENTINEL_ORDERS_PROBE_" + uuid.uuid4().hex[:8]
+    register_schwab_secrets([sentinel])
+    ensure_schwab_log_redaction_factory_installed()
+
+    err_resp = _MagicMock()
+    err_resp.json.return_value = {"error": f"path /accounts/{sentinel}/orders failed"}
+    err_resp.status_code = 401
+    err_resp.headers = {}
+    client = _MagicMock()
+    client.account_orders.return_value = err_resp
+
+    try:
+        get_account_orders(
+            client, conn, account_hash=sentinel,
+            from_entered_time="2026-05-07T00:00:00.000Z",
+            to_entered_time="2026-05-14T00:00:00.000Z",
+            surface="cli", environment="production",
+        )
+    except SchwabAuthError:
+        pass
+
+    rows = conn.execute(
+        "SELECT error_message FROM schwab_api_calls "
+        "WHERE error_message IS NOT NULL"
+    ).fetchall()
+    for r in rows:
+        assert sentinel not in (r[0] or ""), (
+            f"get_account_orders audit leaked sentinel: {r[0]!r}"
+        )
+
+
+def test_23c_trader_api_get_account_transactions_audit_no_sentinel(tmp_path):
+    """T-B.8 — get_account_transactions sentinel coverage."""
+    from unittest.mock import MagicMock as _MagicMock
+
+    from swing.data.db import ensure_schema
+    from swing.integrations.schwab.client import (
+        SchwabAuthError,
+        ensure_schwab_log_redaction_factory_installed,
+        register_schwab_secrets,
+    )
+    from swing.integrations.schwab.trader import get_account_transactions
+
+    conn = ensure_schema(tmp_path / "trader-tx-redaction.db")
+    sentinel = "SENTINEL_TX_PROBE_" + uuid.uuid4().hex[:8]
+    register_schwab_secrets([sentinel])
+    ensure_schwab_log_redaction_factory_installed()
+
+    err_resp = _MagicMock()
+    err_resp.json.return_value = {"error": f"path /accounts/{sentinel}/transactions failed"}
+    err_resp.status_code = 401
+    err_resp.headers = {}
+    client = _MagicMock()
+    client.transactions.return_value = err_resp
+
+    try:
+        get_account_transactions(
+            client, conn, account_hash=sentinel,
+            start_date="2026-05-07T00:00:00.000Z",
+            end_date="2026-05-14T00:00:00.000Z",
+            surface="cli", environment="production",
+        )
+    except SchwabAuthError:
+        pass
+
+    rows = conn.execute(
+        "SELECT error_message FROM schwab_api_calls "
+        "WHERE error_message IS NOT NULL"
+    ).fetchall()
+    for r in rows:
+        assert sentinel not in (r[0] or ""), (
+            f"get_account_transactions audit leaked sentinel: {r[0]!r}"
+        )
+
+
+def test_23d_reconciliation_run_audit_link_does_not_leak_sentinel(tmp_path):
+    """T-B.8 — link_reconciliation_run audit-link path covers the sentinel
+    Trader-API discipline through the reconciliation_runs cross-table link.
+    """
+    from unittest.mock import MagicMock as _MagicMock
+
+    from swing.data.db import ensure_schema
+    from swing.integrations.schwab.client import (
+        SchwabAuthError,
+        ensure_schwab_log_redaction_factory_installed,
+        register_schwab_secrets,
+    )
+    from swing.integrations.schwab.pipeline_steps import _step_schwab_orders
+
+    conn = ensure_schema(tmp_path / "trader-recon-link.db")
+    sentinel = "SENTINEL_RECON_PROBE_" + uuid.uuid4().hex[:8]
+    register_schwab_secrets([sentinel])
+    ensure_schwab_log_redaction_factory_installed()
+
+    # Successful response with sentinel in field that would surface to error
+    # paths if shape-validation fails.
+    ok_resp = _MagicMock()
+    ok_resp.json.return_value = []
+    ok_resp.status_code = 200
+    ok_resp.headers = {}
+    details_resp = _MagicMock()
+    details_resp.json.return_value = {
+        "securitiesAccount": {
+            "currentBalances": {
+                "liquidationValue": 2000.0,
+                "cashBalance": 100.0,
+                "buyingPower": 4000.0,
+            },
+            "positions": [],
+        },
+    }
+    details_resp.status_code = 200
+    details_resp.headers = {}
+    sd_client = _MagicMock()
+    sd_client.account_orders.return_value = ok_resp
+    sd_client.transactions.return_value = ok_resp
+    sd_client.account_details.return_value = details_resp
+
+    from types import SimpleNamespace
+    cfg = SimpleNamespace(
+        integrations=SimpleNamespace(
+            schwab=SimpleNamespace(
+                environment="production",
+                account_hash=sentinel,  # sentinel-as-account_hash
+                lookback_days=7,
+                timeout_seconds=30.0,
+                marketdata_ladder_enabled=True,
+                callback_url="https://127.0.0.1",
+            ),
+        ),
+    )
+    result = _step_schwab_orders(
+        conn, cfg, pipeline_run_id=None, client=sd_client,
+    )
+    assert result["status"] == "completed"
+
+    # No audit row's error_message OR source_artifact_path should contain
+    # the sentinel.
+    rows = conn.execute(
+        "SELECT error_message FROM schwab_api_calls "
+        "WHERE error_message IS NOT NULL"
+    ).fetchall()
+    for r in rows:
+        assert sentinel not in (r[0] or ""), (
+            f"orders-step audit leaked sentinel: {r[0]!r}"
+        )
+    # Same check on the reconciliation_runs row.
+    recon_rows = conn.execute(
+        "SELECT source_artifact_path, error_message, notes "
+        "FROM reconciliation_runs"
+    ).fetchall()
+    for r in recon_rows:
+        for field in r:
+            if field:
+                assert sentinel not in field, (
+                    f"reconciliation_run row leaked sentinel in: {field!r}"
+                )
 
 
 @pytest.mark.skip(

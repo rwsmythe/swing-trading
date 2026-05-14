@@ -337,7 +337,7 @@ def get_account_orders(
     status: str | None = None,
     max_results: int | None = None,
 ) -> list[SchwabOrderResponse]:
-    """Fetch `Client.account_orders(account_hash, from_entered_time, to_entered_time, status=status, max_results=max_results)`.
+    """Fetch ``Client.account_orders(...)`` via schwabdev's 21-status enum wrapper.
 
     Plan §E.2 row 3 deviation banked (T-B.0.b recon §5 §C): kwarg is `status`,
     NOT `status_filter`. Wrapper passes verbatim.

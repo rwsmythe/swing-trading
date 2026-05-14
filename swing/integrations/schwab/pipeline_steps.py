@@ -41,8 +41,6 @@ import sqlite3
 from datetime import datetime
 from typing import Any
 
-from swing.data.datetime_helpers import now_ms
-from swing.data.repos import schwab_api_calls as schwab_repo
 from swing.evaluation.dates import last_completed_session
 from swing.integrations.schwab import audit_service
 from swing.integrations.schwab.client import (

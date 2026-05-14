@@ -587,6 +587,7 @@ def _build_schwabdev_client_for_fetch(
     re-loads the persisted tokens DB without re-prompting.
     """
     import schwabdev
+
     from swing.integrations.schwab.client import (
         _suppress_transport_debug_logs,
         ensure_schwab_log_redaction_factory_installed,
