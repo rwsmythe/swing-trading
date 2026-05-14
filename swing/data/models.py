@@ -1,6 +1,7 @@
 """Dataclass representations of DB rows."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date
 
@@ -1162,4 +1163,106 @@ class HypothesisStatusHistory:
                 f"effective_from ({self.effective_from!r}) "
                 "(TEXT lexicographic ordering preserves chronology under "
                 "naive-UTC millisecond-precision per spec §9.3)"
+            )
+
+
+# ============================================================================
+# Phase 11 — Schwab API integration audit row (migration 0018).
+# ============================================================================
+
+
+_SCHWAB_VALID_ENDPOINTS = frozenset({
+    "oauth.code_exchange", "oauth.refresh", "oauth.revoke",
+    "accounts.linked", "accounts.details",
+    "accounts.orders.list", "accounts.transactions.list",
+    "marketdata.quotes", "marketdata.pricehistory",
+})
+
+_SCHWAB_VALID_STATUSES = frozenset({
+    "in_flight", "success", "error",
+    "auth_failed", "rate_limited", "concurrent_refresh",
+})
+
+_SCHWAB_SIGNATURE_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+@dataclass(frozen=True)
+class SchwabApiCall:
+    """Audit row for one Schwab API call (migration 0018, plan §H.7).
+
+    Captures the per-call observability surface required by spec §3 and the
+    operator's dashboard / CLI surfaces. Validators are defense-in-depth on
+    top of the SQL CHECK constraints in 0018 — the dataclass is the binding
+    artifact for service-layer construction at T-A.9.
+
+    ``signature_hash`` is None for in-flight / error rows; populated on
+    completed-payload rows as a 64-char lowercase hex SHA-256 digest of the
+    relevant response body slice (drift-detection consumer per Finviz
+    precedent).
+
+    ``http_status`` is None for never-reached cases (auth_failed before
+    request, concurrent_refresh aborted, etc.); 100-599 inclusive when set
+    per RFC 9110 status-code range.
+
+    ``rate_limit_remaining`` is best-effort (None when Schwab does not
+    include the header or response is unparseable); no constraint per plan
+    §H.7.
+
+    Caller-controlled tx discipline lives in the repo layer
+    (``swing/data/repos/schwab_api_calls.py``); the service layer at T-A.9
+    will own BEGIN IMMEDIATE / COMMIT / ROLLBACK.
+    """
+
+    call_id: int | None  # None pre-INSERT.
+    ts: str  # ISO 8601, naive datetime per Finviz / Phase 9 convention.
+    endpoint: str
+    http_status: int | None
+    response_time_ms: int | None
+    rate_limit_remaining: int | None
+    signature_hash: str | None
+    status: str
+    error_message: str | None
+    linked_snapshot_id: int | None
+    linked_reconciliation_run_id: int | None
+    pipeline_run_id: int | None
+    surface: str
+    environment: str
+
+    def __post_init__(self) -> None:
+        if self.endpoint not in _SCHWAB_VALID_ENDPOINTS:
+            raise ValueError(
+                f"endpoint must be in {sorted(_SCHWAB_VALID_ENDPOINTS)}, "
+                f"got {self.endpoint!r}"
+            )
+        if self.status not in _SCHWAB_VALID_STATUSES:
+            raise ValueError(
+                f"status must be in {sorted(_SCHWAB_VALID_STATUSES)}, "
+                f"got {self.status!r}"
+            )
+        if self.surface not in ("pipeline", "cli"):
+            raise ValueError(
+                f"surface must be 'pipeline' or 'cli', got {self.surface!r}"
+            )
+        if self.environment not in ("sandbox", "production"):
+            raise ValueError(
+                "environment must be 'sandbox' or 'production', "
+                f"got {self.environment!r}"
+            )
+        if self.http_status is not None and not (100 <= self.http_status < 600):
+            raise ValueError(
+                "http_status must be None or 100-599 (RFC 9110), "
+                f"got {self.http_status}"
+            )
+        if self.response_time_ms is not None and self.response_time_ms < 0:
+            raise ValueError(
+                "response_time_ms must be None or >= 0, "
+                f"got {self.response_time_ms}"
+            )
+        if (
+            self.signature_hash is not None
+            and not _SCHWAB_SIGNATURE_HASH_RE.fullmatch(self.signature_hash)
+        ):
+            raise ValueError(
+                "signature_hash must be None or 64-char lowercase hex, "
+                f"got {self.signature_hash!r}"
             )
