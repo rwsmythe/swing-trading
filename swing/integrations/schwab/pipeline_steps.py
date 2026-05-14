@@ -177,44 +177,25 @@ def _step_schwab_snapshot(
         }
 
     if client is None:
-        # Codex R1 M#2 fix — pipeline-internal call without an explicit
-        # client. V1 pipeline-internal Schwab fetching is best-effort + opt-in
-        # via the `swing schwab fetch` CLI surface as primary entry point.
-        # The pipeline step records an advisory audit row + returns
-        # 'skipped_no_client' rather than raising, so the nightly pipeline
-        # never aborts.
+        # Codex R1 M#2 + R2 M#1 fix — pipeline-internal call without an
+        # explicit client. V1 pipeline-internal Schwab fetching is best-
+        # effort + opt-in via the `swing schwab fetch` CLI surface. We
+        # log + return WITHOUT writing an audit row — writing an
+        # audit row with status='error' would pollute degraded-health
+        # surfaces that key off the latest Schwab API call status (the
+        # nightly pipeline would otherwise appear to be in a persistent
+        # error state even though the step intentionally skipped).
         try:
             client = _build_default_client(cfg, environment)
         except SchwabConfigMissingError:
-            ts = _now_iso_ms()
-            call_id = audit_service.record_call_start(
-                conn,
-                ts=ts,
-                endpoint="accounts.details",
-                pipeline_run_id=pipeline_run_id,
-                surface=surface,
-                environment=environment,
-            )
-            audit_service.record_call_finish(
-                conn,
-                call_id=call_id,
-                http_status=None,
-                response_time_ms=0,
-                rate_limit_remaining=None,
-                signature_hash=None,
-                status="error",
-                error_message=(
-                    "<pipeline-internal call needs pre-built schwabdev "
-                    "client; use `swing schwab fetch --snapshot` instead>"
-                ),
-            )
             log.info(
                 "_step_schwab_snapshot: skipped (no client supplied "
-                "pipeline-internally)"
+                "pipeline-internally; use `swing schwab fetch --snapshot` "
+                "CLI as primary entry point)"
             )
             return {
                 "status": "skipped_no_client",
-                "call_id": call_id,
+                "call_id": None,
                 "snapshot_id": None,
                 "error": "no client supplied pipeline-internally",
             }
@@ -281,6 +262,12 @@ def _step_schwab_snapshot(
         "WHERE snapshot_date = ? AND source = 'schwab_api' LIMIT 1",
         (snapshot_date.isoformat(),),
     ).fetchone()
+    # Codex R1 M#8 — refuse overwrite when existing same-day row has a
+    # DIFFERENT non-NULL schwab_account_hash. Codex R2 m#1 note: NULL
+    # hash rows are recovery candidates (crash-window per §H.4.1.bis);
+    # ALLOW the current call to proceed AND fill in the NULL hash via
+    # the combined-tx2 stamp. This is the intentional asymmetry —
+    # NULL → fill (recovery), differing → block (flip protection).
     if (
         existing_row is not None
         and existing_row[0] is not None
@@ -428,41 +415,20 @@ def _step_schwab_orders(
         }
 
     if client is None:
-        # Codex R1 M#2 fix — pipeline-internal orders path mirrors the
-        # snapshot path. Records advisory audit row + returns
-        # 'skipped_no_client' rather than raising.
+        # Codex R2 M#1 fix — pipeline-internal no-client skip is silent
+        # (no audit row written) to avoid polluting degraded-health
+        # surfaces with persistent 'error' rows on every nightly run.
         try:
             client = _build_default_client(cfg, environment)
         except SchwabConfigMissingError:
-            ts = _now_iso_ms()
-            call_id = audit_service.record_call_start(
-                conn,
-                ts=ts,
-                endpoint="accounts.orders.list",
-                pipeline_run_id=pipeline_run_id,
-                surface=surface,
-                environment=environment,
-            )
-            audit_service.record_call_finish(
-                conn,
-                call_id=call_id,
-                http_status=None,
-                response_time_ms=0,
-                rate_limit_remaining=None,
-                signature_hash=None,
-                status="error",
-                error_message=(
-                    "<pipeline-internal call needs pre-built schwabdev "
-                    "client; use `swing schwab fetch --orders` instead>"
-                ),
-            )
             log.info(
                 "_step_schwab_orders: skipped (no client supplied "
-                "pipeline-internally)"
+                "pipeline-internally; use `swing schwab fetch --orders` "
+                "CLI as primary entry point)"
             )
             return {
                 "status": "skipped_no_client",
-                "call_ids": [call_id],
+                "call_ids": [],
                 "reconciliation_run_id": None,
                 "error": "no client supplied pipeline-internally",
             }

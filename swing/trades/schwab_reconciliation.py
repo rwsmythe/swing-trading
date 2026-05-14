@@ -69,11 +69,14 @@ _ACTIVE_STOP_STATUSES = frozenset({
 
 
 # Schwab transaction-type sets for cash_movement_mismatch matching.
+# Codex R2 M#3 fix — ELECTRONIC_FUND is direction-ambiguous (Schwab uses
+# it for both inbound + outbound EFTs); we list it in BOTH sets and use
+# the sign of `net_amount` to disambiguate at match time.
 _SCHWAB_DEPOSIT_TYPES = frozenset({
     "ACH_RECEIPT", "WIRE_IN", "CASH_RECEIPT", "ELECTRONIC_FUND",
 })
 _SCHWAB_WITHDRAW_TYPES = frozenset({
-    "ACH_DISBURSEMENT", "WIRE_OUT", "CASH_DISBURSEMENT",
+    "ACH_DISBURSEMENT", "WIRE_OUT", "CASH_DISBURSEMENT", "ELECTRONIC_FUND",
 })
 
 
@@ -492,11 +495,23 @@ def run_schwab_reconciliation(
                 _SCHWAB_DEPOSIT_TYPES if cm.kind == "deposit"
                 else _SCHWAB_WITHDRAW_TYPES
             )
+            # Codex R2 M#3 — sign-based direction validation. Schwab's
+            # `ELECTRONIC_FUND` (and potentially future ambiguous types)
+            # appears in BOTH deposit + withdraw sets; the sign of
+            # tx.net_amount disambiguates: positive = inflow (deposit
+            # candidate); negative = outflow (withdraw candidate).
+            want_sign_positive = (cm.kind == "deposit")
             match_idx = None
             for idx, tx in enumerate(schwab_transactions):
                 if idx in _matched_schwab_tx:
                     continue
                 if tx.type not in expected_types:
+                    continue
+                # Sign validation for ambiguous types.
+                if (
+                    (want_sign_positive and tx.net_amount < 0)
+                    or (not want_sign_positive and tx.net_amount > 0)
+                ):
                     continue
                 # Schwab transaction_date is normalized to YYYY-MM-DD.
                 if tx.transaction_date != cm.date:

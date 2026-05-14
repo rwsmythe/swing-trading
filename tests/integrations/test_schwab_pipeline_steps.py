@@ -1105,37 +1105,49 @@ def test_b3_14_snapshot_same_day_account_hash_flip_refuses_overwrite(v18_conn):
     assert len(advisory_rows) >= 1
 
 
-def test_b3_15_snapshot_pipeline_internal_no_client_skipped_no_advisory(v18_conn):
-    """Codex R1 M#2 — pipeline-internal call without client returns
-    'skipped_no_client' + records advisory audit row + does NOT raise.
+def test_b3_15_snapshot_pipeline_internal_no_client_silent_skip(v18_conn):
+    """Codex R2 M#1 — pipeline-internal no-client skip is SILENT (no audit
+    row) to avoid polluting degraded-health surfaces on nightly runs.
+
+    Discriminating: pre-R2-fix wrote an advisory audit row with
+    status='error', which would have shown up as a persistent failure
+    on every nightly pipeline run. Post-R2-fix: log-only; ZERO new
+    schwab_api_calls rows.
     """
     cfg = _make_cfg(environment="production")
-    # NOTE: passing client=None triggers the M#2 path via _build_default_client
-    # raising SchwabConfigMissingError, which is caught + folded into advisory.
+    pre_count = v18_conn.execute(
+        "SELECT COUNT(*) FROM schwab_api_calls"
+    ).fetchone()[0]
     r = _step_schwab_snapshot(
         v18_conn, cfg, pipeline_run_id=None, client=None,
     )
     assert r["status"] == "skipped_no_client"
     assert r["snapshot_id"] is None
-    # Advisory audit row exists with status='error'.
-    row = v18_conn.execute(
-        "SELECT status, error_message FROM schwab_api_calls "
-        "WHERE call_id = ?",
-        (r["call_id"],),
-    ).fetchone()
-    assert row[0] == "error"
-    assert "pipeline-internal" in (row[1] or "")
+    assert r["call_id"] is None
+    # NO audit row written.
+    post_count = v18_conn.execute(
+        "SELECT COUNT(*) FROM schwab_api_calls"
+    ).fetchone()[0]
+    assert post_count == pre_count
 
 
-def test_b4_21_orders_pipeline_internal_no_client_skipped(v18_conn):
-    """Codex R1 M#2 — orders mirror of snapshot 'skipped_no_client' path."""
+def test_b4_21_orders_pipeline_internal_no_client_silent_skip(v18_conn):
+    """Codex R2 M#1 — orders mirror of snapshot silent-skip contract."""
     cfg = _make_cfg(environment="production")
+    pre_count = v18_conn.execute(
+        "SELECT COUNT(*) FROM schwab_api_calls"
+    ).fetchone()[0]
     r = _step_schwab_orders(
         v18_conn, cfg, pipeline_run_id=None, client=None,
     )
     assert r["status"] == "skipped_no_client"
     assert r["reconciliation_run_id"] is None
-    assert len(r["call_ids"]) == 1
+    assert r["call_ids"] == []
+    # ZERO audit rows written.
+    post_count = v18_conn.execute(
+        "SELECT COUNT(*) FROM schwab_api_calls"
+    ).fetchone()[0]
+    assert post_count == pre_count
 
 
 def test_b4_22_reconciliation_failure_path_preserves_run_row_in_same_tx(v18_conn, monkeypatch):
@@ -1287,6 +1299,98 @@ def test_b4_24_reconciliation_cash_movement_matched_NOT_emitted(v18_conn):
     ).fetchall()
     types = [r[0] for r in rows]
     assert "cash_movement_mismatch" not in types
+
+
+def test_b4_26_cash_movement_matcher_sign_based_for_ambiguous_types(v18_conn):
+    """Codex R2 M#3 — ELECTRONIC_FUND (and future ambiguous types) match
+    direction by sign of net_amount, NOT just type.
+
+    Discriminating: plant a WITHDRAW journal cash_movement on 2026-05-12
+    + a Schwab `ELECTRONIC_FUND` transaction with NEGATIVE net_amount
+    (outbound EFT). Pre-R2-fix would have classified ELECTRONIC_FUND as
+    deposit-only, causing the matcher to MISS the withdraw + falsely emit
+    cash_movement_mismatch. Post-fix: matched via sign-based direction
+    check; NO discrepancy emitted.
+    """
+    v18_conn.execute(
+        "INSERT INTO cash_movements (date, kind, amount, ref, note) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("2026-05-12", "withdraw", 500.0, "EFT_REF_456", None),
+    )
+    v18_conn.commit()
+
+    from swing.integrations.schwab.models import SchwabTransactionResponse
+    schwab_tx = [SchwabTransactionResponse(
+        transaction_id="T200",
+        transaction_date="2026-05-12",
+        type="ELECTRONIC_FUND",
+        net_amount=-500.0,  # outbound: negative
+        description="EFT withdraw",
+    )]
+    schwab_account = SimpleNamespace(
+        account_hash="abc", net_liquidating_value=2000.0, positions=[],
+        cash=0.0, buying_power=0.0,
+    )
+    out = run_schwab_reconciliation(
+        v18_conn,
+        account_hash="abc",
+        period_start="2026-05-07",
+        period_end="2026-05-14",
+        schwab_orders=[],
+        schwab_transactions=schwab_tx,
+        schwab_account=schwab_account,
+    )
+    rows = v18_conn.execute(
+        "SELECT discrepancy_type FROM reconciliation_discrepancies "
+        "WHERE run_id = ?",
+        (out.run_id,),
+    ).fetchall()
+    types = [r[0] for r in rows]
+    assert "cash_movement_mismatch" not in types
+
+
+def test_b4_27_cash_movement_matcher_sign_rejects_wrong_direction(v18_conn):
+    """Counter-example: WRONG-sign Schwab tx must NOT match.
+
+    Plant a WITHDRAW journal cash_movement + a Schwab ELECTRONIC_FUND with
+    POSITIVE net_amount (inbound EFT). Direction mismatch → no match →
+    cash_movement_mismatch IS emitted.
+    """
+    v18_conn.execute(
+        "INSERT INTO cash_movements (date, kind, amount, ref, note) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("2026-05-12", "withdraw", 500.0, "EFT_REF_456", None),
+    )
+    v18_conn.commit()
+
+    from swing.integrations.schwab.models import SchwabTransactionResponse
+    schwab_tx = [SchwabTransactionResponse(
+        transaction_id="T201",
+        transaction_date="2026-05-12",
+        type="ELECTRONIC_FUND",
+        net_amount=500.0,  # positive: inbound, NOT a withdraw match
+        description="EFT deposit",
+    )]
+    schwab_account = SimpleNamespace(
+        account_hash="abc", net_liquidating_value=2000.0, positions=[],
+        cash=0.0, buying_power=0.0,
+    )
+    out = run_schwab_reconciliation(
+        v18_conn,
+        account_hash="abc",
+        period_start="2026-05-07",
+        period_end="2026-05-14",
+        schwab_orders=[],
+        schwab_transactions=schwab_tx,
+        schwab_account=schwab_account,
+    )
+    rows = v18_conn.execute(
+        "SELECT discrepancy_type FROM reconciliation_discrepancies "
+        "WHERE run_id = ?",
+        (out.run_id,),
+    ).fetchall()
+    types = [r[0] for r in rows]
+    assert "cash_movement_mismatch" in types
 
 
 def test_b4_25_mapper_resilience_orders_without_legs_skipped_not_raised(v18_conn):
