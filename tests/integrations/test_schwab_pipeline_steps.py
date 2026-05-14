@@ -553,7 +553,11 @@ def test_b4_02_orders_sandbox_short_circuits_reconciliation(v18_conn):
 
 
 def test_b4_03_orders_no_account_hash_cli_surface_writes_advisory(v18_conn):
-    """CLI surface: account_hash=None writes advisory audit row."""
+    """CLI surface: account_hash=None writes advisory audit row.
+
+    Codex R4 m#2 — assert audit row's full content per the snapshot
+    companion test (status, error_message, call_ids correspond).
+    """
     cfg = _make_cfg(account_hash=None)
     client = MagicMock()
 
@@ -565,8 +569,19 @@ def test_b4_03_orders_no_account_hash_cli_surface_writes_advisory(v18_conn):
     client.transactions.assert_not_called()
     client.account_details.assert_not_called()
     assert _recon_count(v18_conn) == 0
-    # CLI: advisory audit row written.
+
+    # CLI: 1 advisory audit row written with full discriminating content.
     assert _audit_count(v18_conn) == 1
+    assert len(result["call_ids"]) == 1
+    row = v18_conn.execute(
+        "SELECT status, error_message, endpoint, surface "
+        "FROM schwab_api_calls WHERE call_id = ?",
+        (result["call_ids"][0],),
+    ).fetchone()
+    assert row[0] == "error"
+    assert "account_hash not configured" in (row[1] or "")
+    assert row[2] == "accounts.orders.list"
+    assert row[3] == "cli"
 
 
 def test_b4_03b_orders_no_account_hash_pipeline_surface_silent_skip(v18_conn):

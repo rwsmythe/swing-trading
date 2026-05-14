@@ -124,26 +124,39 @@ def _step_schwab_snapshot(
 ) -> dict:
     """Pipeline step: fetch `accounts.details` + record snapshot under production.
 
-    Algorithm per plan §H.4.1:
+    Algorithm per plan §H.4.1 (with Codex R1-R4 fixes applied):
       1. Read cfg.integrations.schwab.{environment, account_hash}.
-      2. If account_hash is None: write a no-op advisory audit row + return.
-      3. Invoke `get_account_details(client, ...)` — this writes the audit
-         row INSERT/UPDATE lifecycle internally.
-      4. On Trader-API failure: caller's audit row reflects it; step returns
-         + the pipeline runner continues.
-      5. On success: extract NLV from the response.
-      6. Production-only gate (per plan §A.3):
+      2. If account_hash is None:
+         - surface='pipeline': silent-skip (log only, NO audit row;
+           Codex R3 M#1 fix — avoids degraded-health surface pollution).
+         - surface='cli': write advisory error audit row (operator-
+           actionable signal).
+         Return 'skipped_no_account_hash'.
+      3. If client is None: silent-skip (log only, NO audit row;
+         Codex R2 M#1 + R3 M#1 + M#2 fix). Returns 'skipped_no_client'.
+      4. Check for same-day account_hash flip protection (Codex R1 M#8);
+         refuse overwrite + emit advisory audit row if existing same-day
+         schwab_api snapshot has a DIFFERENT non-NULL schwab_account_hash.
+         Returns 'failed' with error='account_hash_flip_same_day'.
+      5. Invoke `get_account_details(client, ...)` — this writes the audit
+         row INSERT/UPDATE lifecycle internally (includes silent-failure
+         post-call token-state validation per Codex R1 M#4 + audit-row
+         closure on typed SchwabApiError per Codex R1 M#3).
+      6. On Trader-API failure: caller's audit row reflects it; step
+         returns 'failed' (pipeline runner continues).
+      7. On success: extract NLV from the response.
+      8. Production-only gate (per plan §A.3):
          - If env='production': invoke `record_snapshot(source='schwab_api',
            ...)` + `link_snapshot_and_stamp_account_hash` combined tx2.
          - If env='sandbox': skip domain writes; audit row stays
-           `linked_snapshot_id=NULL`.
+           `linked_snapshot_id=NULL`. Returns 'sandbox_audit_only'.
 
     Caller MUST NOT hold an open transaction (the snapshot service rejects).
 
     Returns:
         dict with keys: `status` ∈ {'completed', 'skipped_no_account_hash',
-        'failed', 'sandbox_audit_only'}; `call_id` (or None); `snapshot_id`
-        (or None); `error` (or None).
+        'skipped_no_client', 'failed', 'sandbox_audit_only'}; `call_id`
+        (or None); `snapshot_id` (or None); `error` (or None).
     """
     if conn.in_transaction:
         raise SnapshotCallerHeldTxError(
@@ -393,21 +406,32 @@ def _step_schwab_orders(
 ) -> dict:
     """Pipeline step: fetch orders + transactions + details; reconcile.
 
-    Algorithm per plan §H.4.2:
+    Algorithm per plan §H.4.2 (with Codex R1-R4 fixes):
       1. Read cfg.{environment, account_hash, lookback_days}.
-      2. If account_hash is None: advisory audit row + return.
-      3. Compute period_end = last_completed_session(now()); period_start =
-         period_end - lookback_days.
-      4. Three sequential Trader-API calls: orders → transactions → details.
-      5. On any failure: audit row reflects + step returns (pipeline continues).
-      6. Production-only gate: invoke `run_schwab_reconciliation` + UPDATE all
-         3 audit rows with the reconciliation_run_id via `link_reconciliation_run`.
-      7. Sandbox: skip reconciliation; audit rows stay `linked_reconciliation_run_id=NULL`.
+      2. If account_hash is None:
+         - surface='pipeline': silent-skip (NO audit row);
+         - surface='cli': write advisory error audit row.
+         Returns 'skipped_no_account_hash'.
+      3. If client is None: silent-skip (NO audit row). Returns
+         'skipped_no_client'.
+      4. Compute period_end = last_completed_session(now());
+         period_start = period_end - lookback_days.
+      5. Three sequential Trader-API calls: orders → transactions →
+         details. Each writes its own audit row via the trader wrappers.
+      6. On any Trader-API failure: audit row reflects; step returns
+         'failed' (pipeline continues).
+      7. Production-only gate: invoke `run_schwab_reconciliation` +
+         UPDATE all 3 audit rows with the reconciliation_run_id via
+         `link_reconciliation_run`. Failure-path PRESERVES the run row
+         + partial discrepancies (Codex R1 M#5).
+      8. Sandbox: skip reconciliation; audit rows stay
+         `linked_reconciliation_run_id=NULL`. Returns 'sandbox_audit_only'.
 
     Returns:
         dict with `status` ∈ {'completed', 'skipped_no_account_hash',
-        'failed', 'sandbox_audit_only'}; `call_ids` list (one per call
-        made); `reconciliation_run_id` (or None); `error` (or None).
+        'skipped_no_client', 'failed', 'sandbox_audit_only'}; `call_ids`
+        list (one per Trader-API call made; empty list for skip paths);
+        `reconciliation_run_id` (or None); `error` (or None).
     """
     if conn.in_transaction:
         from swing.trades.schwab_reconciliation import (

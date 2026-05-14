@@ -685,6 +685,45 @@ def schwab_fetch(
         except SchwabPipelineActiveError as exc:
             raise click.ClickException(str(exc)) from exc
 
+        # Codex R4 M#1 fix — preflight account_hash BEFORE prompting for
+        # credentials. If account_hash is missing, exit with the
+        # operator-actionable advisory immediately; do NOT waste operator
+        # typing on a flow that can't complete. The pipeline-step layer
+        # will emit a CLI-surface advisory audit row when invoked, but
+        # we short-circuit BEFORE the client construction so the audit
+        # row is the only side-effect of a no-account-hash CLI invocation.
+        if not cfg.integrations.schwab.account_hash:
+            # Emit the advisory audit row directly (mirror what
+            # _step_schwab_snapshot/_step_schwab_orders would do under
+            # surface='cli'); operator gets a uniform observability
+            # surface across both pipeline + CLI paths.
+            from swing.integrations.schwab import audit_service
+            from swing.integrations.schwab.auth import _now_ms_iso
+            call_id = audit_service.record_call_start(
+                conn,
+                ts=_now_ms_iso(),
+                endpoint="accounts.details",
+                pipeline_run_id=None,
+                surface="cli",
+                environment=env,
+            )
+            audit_service.record_call_finish(
+                conn,
+                call_id=call_id,
+                http_status=None,
+                response_time_ms=0,
+                rate_limit_remaining=None,
+                signature_hash=None,
+                status="error",
+                error_message=(
+                    "<account_hash not configured; run `swing schwab setup` first>"
+                ),
+            )
+            raise click.ClickException(
+                f"Schwab account_hash not configured. "
+                f"Run `swing schwab setup --environment {env}` first.",
+            )
+
         # Prompt for credentials.
         client_id = click.prompt("Schwab app client_id", type=str).strip()
         client_secret = click.prompt(

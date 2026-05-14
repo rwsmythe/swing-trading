@@ -307,6 +307,42 @@ def test_b5_09_fetch_orders_pipeline_active_hard_exclusion(
     assert result.exit_code != 0
 
 
+def test_b5_11_fetch_preflights_account_hash_before_credentials(
+    isolated_db, invoke_cli, monkeypatch,
+):
+    """Codex R4 M#1 — preflight account_hash before prompting for
+    credentials + before constructing schwabdev client.
+
+    Discriminating: cfg has account_hash=None. CLI MUST exit non-zero
+    BEFORE prompting (CliRunner input is irrelevant). Audit row IS
+    written with the operator-actionable advisory message. Pre-fix the
+    CLI would prompt + construct client + fail later inside the step,
+    or fail in client construction when tokens are missing — wasting
+    operator typing on a flow that can't complete.
+    """
+    cfg = _make_cfg(db_path=isolated_db, account_hash=None)
+    _stub_schwabdev_client(monkeypatch)
+    # Provide credentials anyway — they should NOT be consumed because the
+    # preflight check fires first.
+    result = invoke_cli(cfg, "fetch", "--snapshot", input_str="cid\ncsecret\n")
+    assert result.exit_code != 0
+    assert "account_hash" in result.output
+
+    # Advisory audit row written.
+    conn = sqlite3.connect(isolated_db)
+    try:
+        rows = conn.execute(
+            "SELECT status, error_message, surface, endpoint "
+            "FROM schwab_api_calls"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == "error"
+        assert "account_hash not configured" in (rows[0][1] or "")
+        assert rows[0][2] == "cli"
+    finally:
+        conn.close()
+
+
 def test_b5_10_fetch_all_pipeline_active_hard_exclusion(
     isolated_db, invoke_cli, monkeypatch,
 ):
