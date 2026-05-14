@@ -28,7 +28,7 @@
 
 ### §0.3 Operator-confirmed triage of spec §10 open questions (BINDING for plan scope)
 
-The spec enumerated 17 open questions in §10. Orchestrator triaged with operator on 2026-05-13 (per `docs/phase3e-todo.md` 2026-05-13 entry "Schwab API integration brainstorm SHIPPED"). **All dispositions LOCKED for writing-plans scope:**
+The spec enumerated 17 open questions in §10. Orchestrator triaged with operator on 2026-05-13 (per `docs/phase3e-todo.md` 2026-05-13 entry "Schwab API integration brainstorm SHIPPED"). **An 18th question (build-vs-buy) was missed by the brainstorm + surfaced post-triage; operator decided on 2026-05-13 (see §0.3a below).** **All dispositions LOCKED for writing-plans scope:**
 
 | # | Spec §10 question | Triaged disposition (BINDING) |
 |---|---|---|
@@ -51,6 +51,65 @@ The spec enumerated 17 open questions in §10. Orchestrator triaged with operato
 | **Q17** | Market Data API rate limits independent of Trader API | **DEFERRED to Task 0.b.** Synthesize "~Trader API limits or looser"; flag verification gate. |
 
 **Plan §A posture:** document each Q1-Q17 disposition explicitly per spec-question, citing the triage record (this brief §0.3 + the phase3e-todo entry). Q8 + Q12 + Q13 + Q14 + Q15 + Q17 must be flagged as **§D open questions for orchestrator (binding for executing-plans Task 0.b)** so the executing-plans implementer halts at Task 0.b until operator-paired live verification completes.
+
+### §0.3a Q18 — build-vs-buy (LOCKED: COA B = `schwabdev`)
+
+**Brainstorm-spec gap that orchestrator missed at first triage.** The spec implicitly chose COA C (roll our own) by enumerating `swing/integrations/schwab/` sub-package + `SchwabClient` + sidecar JSON token storage + custom file-lock + custom OAuth flow as the V1 architecture, without ever explicitly comparing against the two community-maintained Python wrappers it lists in §12 references (`schwab-py`, `schwabdev`). Operator surfaced the gap post-triage; orchestrator researched both libraries' OAuth implementations + presented tradeoff matrix; operator confirmed **COA B (use `schwabdev`)** on 2026-05-13.
+
+**LOCKED disposition:**
+
+- **Library:** [`schwabdev`](https://github.com/tylerebowers/Schwabdev) (Tyler Bowers; tylerebowers/Schwabdev) added as project dependency.
+- **Wrapping discipline:** new `swing/integrations/schwab/` sub-package wraps `schwabdev.Client` thinly to enforce project gotcha discipline:
+  - Production-only domain writes gate per spec §3.6.3 (caller-side enforcement around `record_snapshot()` + `run_schwab_reconciliation()`).
+  - `schwab_api_calls` audit-row INSERT/UPDATE around schwabdev calls per spec §3.6.1.
+  - Source-ladder write integration via `record_snapshot(source='schwab_api', ...)` + reconciliation_run INSERT (Phase 9 Sub-bundle C consumers per §0.4 below).
+  - Token-redaction audit test on schwabdev's logger surface (verify schwabdev does NOT log tokens; one known caveat: schwabdev's `tokens.py` line ~338 logs `response.text` on auth failure which could include token-related error details — wrap-side verification required).
+
+**Why COA B over COA A or C** (per orchestrator research findings; full table in phase3e-todo 2026-05-13 entry "Schwab API Q18 build-vs-buy disposition"):
+
+- **schwabdev's OAuth implementation is materially better-designed than schwab-py's:** SQLite with `BEGIN EXCLUSIVE` cross-process atomic storage (vs schwab-py's no-locks JSON); explicit `if new_refresh_token: self.refresh_token = new_refresh_token` rotation handling (vs schwab-py's opaque authlib passthrough); hybrid lazy + proactive refresh strategy with separate 61s access threshold + 3630s refresh threshold (vs schwab-py's lazy-only with 300s leeway); optional Fernet encryption-at-rest available (vs schwab-py plaintext default).
+- These exactly match what spec §3.2.2-3.2.4 was going to design from scratch in COA C.
+- COA C would have re-implemented OAuth + token storage + refresh + concurrency from scratch — high implementation risk for security-critical code.
+- COA A (`schwab-py`) has battle-tested maturity (~1.5k stars; Alex Golec tda-api lineage) BUT its OAuth implementation has design gaps schwabdev does not (no concurrency protection; opaque rotation; lazy-only refresh).
+
+**Spec sections that COA B SUPERSEDES — plan author re-derives in plan §A or §H:**
+
+| Spec section | COA C posture (what spec says) | COA B posture (what plan implements) |
+|---|---|---|
+| §3.1 module layout | `swing/integrations/schwab/` sub-package with custom `SchwabClient` | `swing/integrations/schwab/` sub-package with thin wrapper around `schwabdev.Client` |
+| §3.2.1 setup flow | Two variants: `--callback localhost` (one-shot HTTPS listener on 127.0.0.1:8765) + `--callback paste` | **Paste-back only V1** (schwabdev does not ship localhost listener; operator pastes once at `swing schwab setup` per env). Q13 disposition simplifies — paste-back is the V1 path; localhost is a V2 candidate if operator surfaces friction. |
+| §3.2.2 token storage | Per-environment sidecar JSON file at `%USERPROFILE%/swing-data/schwab-state.{sandbox,production}.json` | Per-environment SQLite DB at `%USERPROFILE%/swing-data/schwab-tokens.{sandbox,production}.db` (path passed to `Tokens(tokens_db=...)`); schwabdev manages schema + atomicity. |
+| §3.2.3 token-refresh | Lazy-on-first-API-call with 60s proactive safety margin; file-lock during refresh | Schwabdev's hybrid lazy (per-request `update_tokens()`) + proactive (async `_checker()` every 30s) + 61s/3630s separate thresholds. **Better than spec.** |
+| §3.2.4 concurrency | Custom file-lock cross-platform shim (`msvcrt.locking` Windows / `fcntl.flock` POSIX) | Schwabdev's `threading.RLock` (in-process) + SQLite `BEGIN EXCLUSIVE` (cross-process). **Custom file-lock shim NOT NEEDED.** Plan §B file map removes the file-lock module. |
+| §3.2.5 revocation | `swing schwab logout` revokes via Schwab endpoint + atomically renames sidecar JSON to `*.deleted-<ts>` + unlinks | Same operator UX (`swing schwab logout`); implementation deletes the SQLite DB or wipes its rows — plan-author picks. |
+| §3.3.1 endpoint catalog (Trader API) | URL pattern + HTTP method + headers + params + response shape per endpoint | We call schwabdev `Client.account_details(...)`, `Client.account_orders(...)`, `Client.transactions(...)` etc. Plan §E enumerates schwabdev method signatures + return shapes (mirror Finviz §E format adapted to library calls); raw HTTP details deferred to schwabdev's docs. |
+| §3.3.2 endpoint catalog (Market Data API) | Same per-endpoint detail | Same — call schwabdev `Client.quotes(...)`, `Client.price_history(...)` etc. |
+| §3.5 CLI surface | `swing schwab {setup, refresh, fetch, status, logout}` | Same CLI surface; setup wraps schwabdev's auth flow (paste-back); refresh wraps schwabdev's `update_tokens(force_refresh_token=True)`; status reads from `schwab_api_calls` audit + schwabdev's `Tokens` DB metadata. |
+| §5 token redaction | Custom `_suppress_transport_debug_logs` context manager + cassette `filter_headers=['authorization']` + `filter_query_parameters` + `filter_post_data_parameters` + custom body redactor + sentinel-token-leak audit test | Same cassette discipline (still own `pytest-recording` config). DEBUG-log suppression context manager STILL applies (urllib3 logs the request URL regardless of which library issues it). Sentinel-token-leak audit test STILL required + adds verification that schwabdev's own logger does not leak tokens (one known caveat: line ~338 logs `response.text` on auth failure). Plan §J CLAUDE.md additions document the schwabdev wrapping discipline. |
+| §3.6.3 production-only domain writes | `cfg.integrations.schwab.environment` gates `record_snapshot()` + `run_schwab_reconciliation()` | **UNCHANGED.** Caller-side gate before invoking schwabdev calls + before invoking source-ladder writes. Discriminating tests unchanged. |
+| §3.6.1 audit lifecycle (`schwab_api_calls`) | INSERT in_flight → schwabdev call → UPDATE final status + linked rows | **UNCHANGED.** Wrap each schwabdev call with INSERT-then-UPDATE pattern. |
+| §3.7 source-ladder write path | INHERITED from Phase 9 Sub-bundle C; no re-design | **UNCHANGED.** schwabdev returns parsed response data; we map to `record_snapshot(source='schwab_api', ...)` + reconciliation_run INSERT verbatim. |
+| §3.8 market-data ladder | yfinance fallback discipline preserved per §3.8.4; Schwab-via-our-client first | **UNCHANGED in design.** Schwab-via-schwabdev first; yfinance fallback same. Persistence shape A/B/C decision unchanged. |
+| §10 Q2 token encryption | V1 plaintext; V2 keyring/DPAPI | **OPTIONAL Fernet encryption now AVAILABLE V1 if operator wants.** Schwabdev accepts `encryption=<key>` constructor parameter; operator-provided 32-byte URL-safe base64 key. Plan §A flags this as a now-V1-feasible upgrade — orchestrator can take the V1 plaintext default OR operator can elect Fernet at writing-plans review. **Plan-author recommendation: V1 plaintext per spec disposition + V2 Fernet path documented.** |
+| §10 Q13 callback localhost vs paste | Localhost default + `--paste` flag fallback | **Paste-only V1 (schwabdev constraint).** Plan §A documents the deviation from spec disposition; operator confirmed acceptable post-Q18 decision (paste-once-at-setup is operator-paced, not load-bearing). |
+| §10 Q15 refresh-token rotation | Design handles both rotate-every and rotate-near-expiry; cassette case from operator-witnessed verification | **Schwabdev handles rotation explicitly** (`if new_refresh_token: self.refresh_token = new_refresh_token` at tokens.py:207). Operator-paired Task 0.b verification simplified — observe whether Schwab rotates + verify schwabdev persists the new token + record one cassette per case observed. |
+
+**Spec sections UNAFFECTED by COA B** (plan implements per spec verbatim):
+
+- §3.4 pipeline integration architecture (steps + ordering + failure tolerance + concurrency exclusion via `SchwabPipelineActiveError`).
+- §3.6 audit trail (`schwab_api_calls` table; INSERT/UPDATE lifecycle).
+- §3.6.2 audit-write surface boundary (pipeline + CLI synchronous; web-page-render explicitly-unaudited).
+- §3.6.3 production-only domain writes.
+- §3.7 source-ladder write path.
+- §3.8 market-data ladder design (V1 INCLUDE branch).
+- §4 schema candidates (`schwab_api_calls` table + ALTERs).
+- §6 failure-mode catalog.
+- §7 operator setup flow + cycle-checklist.
+- §9 watch items.
+
+**New plan §B addition:** `pyproject.toml` adds `schwabdev>=<version>` to `[project.dependencies]` (NOT dev-extras — schwabdev is a runtime dependency for the integration). Plan author picks pinned version + checks for any conflicting transitive deps (`requests` likely; verify version range).
+
+**New plan §K verification gate:** schwabdev's own logger output verified token-redaction-safe at integration-test level (sentinel-token via DEBUG log capture; assert sentinel absent from all log records including schwabdev's loggers).
 
 ### §0.4 Phase 9 + Phase 10 source-ladder consumer (BINDING — DO NOT re-design)
 
@@ -238,7 +297,11 @@ For Codex rounds — pass these as targeted prompts to `copowers:adversarial-cri
 9. **Empty-API-response handling.** Plan §H + §Tasks enumerate the append-or-fall-back pattern per CLAUDE.md gotcha — empty Schwab response does NOT clobber existing data; logs + records `schwab_api_calls.status='error'`.
 10. **Market-data ladder persistence shape decision.** Plan §A picks Shape A/B/C per spec §3.8.2 + justifies + enumerates downstream impact (cache layer rewrite scope).
 11. **`schwab_api_calls` audit-write surface boundary.** Plan §H + §Tasks explicitly enumerate that pipeline + CLI surfaces emit synchronous audit rows; web-page-render surface does NOT (logs-only V1 per spec §3.6.2).
-12. **Sub-bundle decomposition rationale.** Plan §0 documents why N sub-bundles + per-bundle scope. Inter-bundle dependencies enumerated (e.g., Sub-bundle B depends on Sub-bundle A's auth flow being shipped).
+12. **Sub-bundle decomposition rationale.** Plan §0 documents why N sub-bundles + per-bundle scope. Inter-bundle dependencies enumerated (e.g., Sub-bundle B depends on Sub-bundle A's auth flow being shipped). **COA B impact:** sub-bundle scopes shrink relative to spec §0.7 estimate — Sub-bundle A no longer designs OAuth from scratch; auth + token storage become "wrap schwabdev's `Tokens` class with our gotcha discipline." Plan-author re-estimates per-bundle scope under COA B.
+
+12a. **COA B integration completeness.** Plan §A explicitly enumerates which schwabdev features we use vs which we ignore (e.g., `ClientAsync` vs sync `Client`; streaming `_checker` vs not; encryption-at-rest vs plaintext). Plan §H walks through each schwabdev call we make, what we wrap around it, and what we DON'T let it do (e.g., DO NOT use schwabdev's logging passthrough; install our own log filter).
+
+12b. **schwabdev wrapping discipline acceptance criteria.** Plan §K + §Tasks acceptance criteria explicitly include: (a) sentinel-token-leak audit covers schwabdev's loggers (one known caveat: `tokens.py:~338` logs `response.text` on auth failure); (b) production-only domain writes gate enforced caller-side BEFORE any schwabdev call that triggers a domain write; (c) audit-row INSERT-then-UPDATE lifecycle wraps EVERY schwabdev call.
 13. **Q1 production-tier disposition wired through.** Plan acceptance criteria for executing-plans Task 0.b runbook accounts for production-only V1 (operator confirmed at triage); sandbox registration deferred to operator-decision at Task 0.b. Default Task 0.b path is production-only verification.
 14. **Q11 V1 INCLUDE market-data ladder design surface.** Plan §B + §H enumerate the cache layer rewrite scope; honest about current `PriceCache`/`OhlcvCache` not having multi-source semantics today; persistence shape A/B/C decision impact on cache layer code.
 15. **Q16 `schwab_account_hash` column V1 ADD.** Plan §C migration SQL + plan acceptance criteria for the single-account → multi-account forward-prep posture. Column populated for `source='schwab_api'` rows; NULL for non-Schwab sources.

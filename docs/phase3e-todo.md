@@ -6,6 +6,87 @@
 
 ---
 
+## 2026-05-13 Schwab API Q18 build-vs-buy disposition LOCKED — COA B = `schwabdev`
+
+**Brainstorm-spec gap surfaced post-triage.** The 2026-05-13 brainstorm spec at `585556f` implicitly chose COA C (roll our own) by enumerating `swing/integrations/schwab/` sub-package + `SchwabClient` + sidecar JSON token storage + custom file-lock + custom OAuth flow as the V1 architecture, **without ever explicitly comparing against the two community-maintained Python wrappers it lists in §12 references** (`schwab-py`, `schwabdev`). Operator surfaced the gap immediately after orchestrator drafted the writing-plans dispatch brief at `5bf425d`; orchestrator researched both libraries' OAuth implementations + presented tradeoff matrix; operator confirmed COA B on 2026-05-13.
+
+### Three-way comparison (orchestrator research findings)
+
+Library OAuth + token-handling implementation comparison (sourced from `alexgolec/schwab-py:schwab/auth.py` + `tylerebowers/Schwabdev:schwabdev/{client,tokens}.py` direct fetch):
+
+| Dimension | schwab-py (COA A) | schwabdev (COA B) | Wins |
+|---|---|---|---|
+| Storage | JSON file; **no atomicity** (raw `open(..., 'w')`) | SQLite with `BEGIN EXCLUSIVE` transaction; atomic replacement across processes | **schwabdev** — matches our spec §3.2.4 file-lock intent with stronger semantics |
+| Refresh strategy | Lazy only (authlib-driven) | Hybrid: lazy per-request `update_tokens()` + proactive async `_checker()` every 30s | **schwabdev** — matches spec §3.2.3 design intent exactly |
+| Safety margin | 300s leeway (authlib `leeway=300`) | 61s access threshold + 3630s refresh threshold (separate tracking; tunable) | **schwabdev** — explicit + testable thresholds |
+| Refresh-token rotation | Opaque passthrough (whatever authlib gives the callback) | Explicit `if new_refresh_token: self.refresh_token = new_refresh_token` + immediate persist | **schwabdev** — explicit handling simplifies spec Q15 verification |
+| Concurrency | **None** (no file locks, no thread locks) | `threading.RLock` (in-process) + SQLite `BEGIN EXCLUSIVE` (cross-process) | **schwabdev** — solves spec §3.2.4 file-lock requirement out of box |
+| Encryption at rest | Not visible | Optional Fernet cipher (operator provides 32-byte URL-safe base64 key; `enc:` prefix in DB) | **schwabdev** — spec Q2 V2 hardening optionally available V1 |
+| Callback flow | Both: localhost (Flask listener) + paste-back fallback + Jupyter auto-detect | Paste-back only (with optional `webbrowser.open()`) | **schwab-py** — both modes; schwabdev requires paste-once at setup |
+| Token logging audit | `register_redactions(token)` registered after fetch (extent unclear beyond fetched code) | No tokens logged directly; one caveat: `tokens.py:~338` logs `response.text` on auth failure (could include token-related error details) | schwab-py has explicit redaction call site; both need our wrapping audit |
+| Maturity | ~1.5k stars; Alex Golec's tda-api lineage; battle-tested | Newer; smaller community; less battle-tested | **schwab-py** — wider user base |
+
+**Streaming use case clarification:** Both libraries support Schwab's WebSocket streaming API. Per community consensus, streaming is primarily a day-trading feature (low-latency tick data, Level-I/II order books, real-time order push notifications). For this project's daily-pipeline-cadence swing trading, streaming is V2-deferrable (Q4 disposition: V1 batch-poll). Neither library forecloses streaming — both make it available if V2 wants intraday position monitoring or real-time stop-violation alerts.
+
+### LOCKED disposition: COA B (schwabdev)
+
+Operator decision rationale: spec §3.2.2-3.2.4 design intent (atomic storage + cross-process locking + hybrid refresh + explicit rotation handling) is exactly what schwabdev already ships. Re-implementing those from scratch in COA C is high implementation risk for security-critical OAuth code; using a library where the maintainer cares about exactly the right details + has SQLite-backed atomic storage is more defensible than rolling our own. COA A's wider community is offset by COA A's design gaps (no concurrency protection; opaque rotation; lazy-only refresh).
+
+**Tradeoff accepted:** schwabdev's paste-only callback flow (no localhost listener) — operator pastes once at `swing schwab setup` per env, never again. Spec Q13 disposition simplifies to paste-back V1; localhost listener becomes V2 candidate if operator surfaces friction post-V1.
+
+### Spec sections SUPERSEDED by COA B
+
+Per writing-plans dispatch brief §0.3a (commit `<post-COA-B-update>`): plan author re-derives in plan §A or §H —
+
+- §3.1 module layout: still `swing/integrations/schwab/` sub-package; now thin wrapper around `schwabdev.Client`.
+- §3.2.1 setup flow: paste-back only V1 (was both modes).
+- §3.2.2 token storage: per-environment SQLite DB at `%USERPROFILE%/swing-data/schwab-tokens.{sandbox,production}.db` (was JSON sidecar).
+- §3.2.3 refresh strategy: schwabdev's hybrid lazy + proactive 30s `_checker()` + 61s/3630s thresholds (better than spec).
+- §3.2.4 concurrency: schwabdev's `RLock` + SQLite `BEGIN EXCLUSIVE` (custom file-lock shim NOT NEEDED).
+- §3.3.1 + §3.3.2 endpoint catalogs: call schwabdev `Client` methods (`account_details`, `account_orders`, `transactions`, `quotes`, `price_history`); raw HTTP details deferred to schwabdev docs.
+- §3.5 CLI subcommand bodies: wrap schwabdev's auth flow (paste-back) + `update_tokens(force_refresh_token=True)`.
+- §5 token redaction: cassette discipline + DEBUG-log suppression context manager STILL apply; sentinel-token-leak audit STILL required + extends to verifying schwabdev's loggers don't leak (one known caveat: `tokens.py:~338` `response.text` on auth failure).
+- §10 Q2 token encryption: optional Fernet now AVAILABLE V1 if operator wants (default V1 plaintext per spec disposition; operator may elect Fernet at writing-plans review).
+- §10 Q13 callback localhost vs paste: paste-only V1 (schwabdev constraint; operator confirmed acceptable).
+- §10 Q15 refresh-token rotation: schwabdev handles explicitly; Task 0.b verification simplifies to "observe rotation behavior + record one cassette per case."
+
+### Spec sections UNAFFECTED by COA B
+
+- §3.4 pipeline integration architecture (steps + ordering + failure tolerance + `SchwabPipelineActiveError`).
+- §3.6 audit trail (`schwab_api_calls` table + INSERT/UPDATE lifecycle).
+- §3.6.2 audit-write surface boundary.
+- §3.6.3 production-only domain writes.
+- §3.7 source-ladder write path.
+- §3.8 market-data ladder design (V1 INCLUDE branch).
+- §4 schema candidates (`schwab_api_calls` table + ALTERs).
+- §6 failure-mode catalog.
+- §7 operator setup flow + cycle-checklist.
+- §9 watch items.
+
+### Plan-scope impact
+
+- New runtime dependency: `schwabdev>=<version>` added to `[project.dependencies]` (NOT dev-extras).
+- Sub-bundle scopes shrink relative to spec §0.7 estimate — Sub-bundle A no longer designs OAuth from scratch; auth + token storage become "wrap schwabdev's `Tokens` class with our gotcha discipline."
+- Plan §B file map removes the file-lock module (no longer needed).
+- New plan §K verification gate: schwabdev's own logger output verified token-redaction-safe at integration-test level.
+
+### Brief-template improvement candidate (orchestrator-side learning)
+
+Future brainstorm dispatch briefs for any "integrate external system X" scope MUST include an explicit build-vs-buy question (Q18-equivalent) in §1 strategic-context OR §2 brainstorm scope. The Schwab brainstorm brief silently assumed "we'll roll our own per Finviz precedent" without surfacing the question. The Finviz precedent itself was COA C because no Finviz Elite Python wrapper existed at brainstorm time; Schwab has TWO mature wrappers + the question deserved first-class treatment. Brief author (orchestrator) caught this only after operator pushback post-brainstorm.
+
+### Cross-references
+
+- Brainstorm spec: `docs/superpowers/specs/2026-05-13-schwab-api-design.md` (`585556f`).
+- Writing-plans dispatch brief (updated with §0.3a Q18 disposition): `docs/schwab-api-writing-plans-dispatch-brief.md` (`<post-COA-B-update>`).
+- schwabdev source consulted: `tylerebowers/Schwabdev:schwabdev/{client,tokens}.py` (raw GitHub fetch via WebFetch 2026-05-13).
+- schwab-py source consulted: `alexgolec/schwab-py:schwab/auth.py` (raw GitHub fetch via WebFetch 2026-05-13).
+
+### Next dispatch
+
+**Operator-paced.** Writing-plans dispatch brief now reflects Q18 = COA B; operator dispatches when ready.
+
+---
+
 ## 2026-05-13 Schwab API integration brainstorm SHIPPED — 939-line spec + 17 open questions for orchestrator triage (operator-paced)
 
 **Brainstorm SHIPPED 2026-05-13** at `585556f` (single commit on main; `docs(schwab-api): integration brainstorm spec`). Operator-dispatched implementer per orchestrator-drafted brief at `c4252d3` (`docs/schwab-api-brainstorm-dispatch-brief.md`, 390 lines). Spec at `docs/superpowers/specs/2026-05-13-schwab-api-design.md` (939 lines; within 600-1100 brief budget).
