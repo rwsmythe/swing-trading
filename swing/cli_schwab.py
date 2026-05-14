@@ -1,22 +1,33 @@
 """Click CLI for Schwab API integration (Sub-bundle A T-A.4 setup +
-T-A.5 refresh/logout/status — future).
+T-A.5 refresh/logout + T-A.6 status).
 
 V1 (T-A.4): `swing schwab setup` runs the OAuth paste-back flow against the
-operator's per-env tokens DB. T-A.5 adds `refresh`, `logout`, `status`
-subcommands to this same group.
+operator's per-env tokens DB. T-A.5 adds `refresh`, `logout` subcommands.
+T-A.6 adds `status` — READ-ONLY metadata surface (no schwabdev.Client
+construction, no operator prompts, no `--force` flag).
 
-Algorithm + error handling per plan §H.1 + recon doc §4 (T-A.4 impact).
-Token sentinel + audit-row redaction discipline per CLAUDE.md gotchas +
-plan §H.5.
+Algorithm + error handling per plan §H.1 + recon doc §4 (T-A.4 impact)
++ §6.bis (T-A.5/T-A.6 phase-2 live-library findings on tokens-file JSON
+shape). Token sentinel + audit-row redaction discipline per CLAUDE.md
+gotchas + plan §H.5.
 
 Sister-module to `swing/cli_config.py` — mirrors the click.Group + per-
 subcommand decorator style.
 """
 from __future__ import annotations
 
+import json
+import sqlite3
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
 import click
 
+from swing.config_user import _user_home
+from swing.config_validation import mask_sensitive_value
 from swing.data.db import connect
+from swing.data.repos import schwab_api_calls as schwab_repo
 from swing.integrations.schwab.auth import (
     force_refresh,
     revoke_and_delete,
@@ -29,6 +40,12 @@ from swing.integrations.schwab.client import (
     SchwabPipelineActiveError,
     SchwabRefreshTokenExpiredError,
 )
+
+# Refresh-token validity is 7 days per recon §2.11 + troubleshooting.md L64-68.
+_REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 3600
+
+# Limit on schwab_api_calls rows surfaced in `swing schwab status` output.
+_RECENT_CALLS_LIMIT = 5
 
 
 @click.group("schwab", help="Schwab API integration (V1 OAuth paste-back + status).")
@@ -328,3 +345,278 @@ def schwab_logout(
             f"Tokens DB renamed to {result['deleted_path']} "
             f"(24h recovery window).",
         )
+
+
+def _parse_iso_datetime(s: str) -> datetime | None:
+    """Best-effort ISO 8601 parse. Returns None if unparseable.
+
+    Tokens file uses ``datetime.now(timezone.utc).isoformat()`` style
+    timestamps (with tzinfo). Use `fromisoformat` which handles
+    `2026-05-14T11:28:13.234697+00:00` on Python 3.11+.
+    """
+    try:
+        return datetime.fromisoformat(s)
+    except (ValueError, TypeError):
+        return None
+
+
+def _format_duration(seconds: float) -> str:
+    """Render a positive duration as `Xd Yh` / `Xh Ym` / `Xm Ys` / `Xs`.
+
+    Used for both "valid for N remaining" and "expired N ago" — the caller
+    determines positivity and prefixes accordingly.
+    """
+    total = int(seconds)
+    if total < 0:
+        total = -total
+    if total >= 86400:
+        days = total // 86400
+        hours = (total % 86400) // 3600
+        return f"{days}d {hours}h"
+    if total >= 3600:
+        hours = total // 3600
+        minutes = (total % 3600) // 60
+        return f"{hours}h {minutes}m"
+    if total >= 60:
+        minutes = total // 60
+        secs = total % 60
+        return f"{minutes}m {secs}s"
+    return f"{total}s"
+
+
+def _render_token_validity(
+    *,
+    issued_label: str,
+    issued_iso: str | None,
+    ttl_seconds: int,
+    now: datetime,
+    expired_advice: str,
+) -> str:
+    """Render one token-validity line.
+
+    `issued_label` is the operator-facing prefix ("Access token" or
+    "Refresh token"). `expired_advice` is the operator-actionable message
+    appended when the token is past its TTL — for access_token, "run
+    `swing schwab refresh`"; for refresh_token, "run `swing schwab setup`".
+
+    Sensitive token bytes are NEVER touched here — this function consumes
+    only the `*_issued` ISO timestamps and computes derived metadata.
+    """
+    if not issued_iso:
+        return f"{issued_label}:    (no issued timestamp; tokens file may be malformed)"
+    issued_dt = _parse_iso_datetime(issued_iso)
+    if issued_dt is None:
+        return f"{issued_label}:    (cannot parse issued timestamp)"
+    # Normalize to UTC for comparison.
+    if issued_dt.tzinfo is None:
+        issued_dt = issued_dt.replace(tzinfo=UTC)
+    expires_dt = issued_dt + timedelta(seconds=ttl_seconds)
+    delta_seconds = (expires_dt - now).total_seconds()
+    expires_iso = expires_dt.isoformat(timespec="seconds")
+    if delta_seconds > 0:
+        remaining = _format_duration(delta_seconds)
+        return (
+            f"{issued_label}:    issued {issued_dt.isoformat(timespec='seconds')}, "
+            f"valid for {remaining} remaining (expires {expires_iso})"
+        )
+    expired_for = _format_duration(-delta_seconds)
+    return (
+        f"{issued_label}:    expired {expired_for} ago "
+        f"(expired at {expires_iso}); {expired_advice}"
+    )
+
+
+def _read_tokens_metadata(tokens_path: Path) -> tuple[dict | None, str | None]:
+    """Read + parse the tokens JSON file.
+
+    Returns ``(payload, error_message)``. On success: ``(payload, None)``.
+    On missing file: ``(None, None)`` (caller distinguishes via Path.exists).
+    On parse failure: ``(None, "<error description>")``.
+
+    SECURITY: this function returns the FULL payload including token
+    bytes. The caller MUST consume only ``access_token_issued`` +
+    ``refresh_token_issued`` + ``token_dictionary.expires_in`` and MUST
+    NOT echo other keys (access_token / refresh_token / id_token).
+    """
+    try:
+        with open(tokens_path) as f:
+            payload = json.load(f)
+    except json.JSONDecodeError as exc:
+        return None, f"<tokens file unreadable: invalid JSON: {exc.msg}>"
+    except OSError as exc:
+        return None, f"<tokens file unreadable: {type(exc).__name__}>"
+    if not isinstance(payload, dict):
+        return None, "<tokens file unparseable: top-level not a JSON object>"
+    return payload, None
+
+
+def _render_recent_calls(
+    conn: sqlite3.Connection,
+    *,
+    env: str,
+    limit: int,
+) -> str:
+    """Render the Recent API calls section.
+
+    Queries ``schwab_api_calls`` filtered by environment, newest-first,
+    capped at `limit`. Renders as a small fixed-width table.
+    """
+    # Use a wide-open since_ts (epoch beginning) — we want the LIMIT to
+    # constrain the result, not a time window.
+    rows = schwab_repo.list_recent_calls(
+        conn,
+        since_ts="1970-01-01T00:00:00",
+        surface_filter=None,
+        environment_filter=env,
+        limit=limit,
+    )
+    lines = [f"Recent API calls (last {limit}):"]
+    if not rows:
+        lines.append("  (no API calls yet)")
+        return "\n".join(lines)
+    for r in rows:
+        http = r.http_status if r.http_status is not None else "—"
+        lines.append(
+            f"  call_id={r.call_id}  {r.ts}  {r.endpoint}  "
+            f"{r.status}  http={http}",
+        )
+    return "\n".join(lines)
+
+
+def render_status(
+    *,
+    cfg: Any,
+    env: str,
+    tokens_path: Path,
+    now: datetime,
+    conn: sqlite3.Connection,
+) -> str:
+    """Pure rendering helper for `swing schwab status` output.
+
+    Sections per dispatch brief + spec §3.5:
+      1. Environment header.
+      2. cfg + tokens-file metadata (account_hash masked; tokens DB path
+         + size if present).
+      3. Token validity (access + refresh remaining or expired-ago).
+      4. Recent API calls (last N, filtered by env).
+
+    NEVER echoes access_token / refresh_token / id_token bytes.
+
+    Caller controls connection; this function does NOT close conn.
+    """
+    out: list[str] = []
+    header = f"Schwab integration status (environment: {env})"
+    out.append(header)
+    out.append("=" * len(header))
+    out.append("")
+
+    # Section 2 — cfg + tokens-file metadata.
+    schwab_cfg = getattr(cfg.integrations, "schwab", None)
+    account_hash = getattr(schwab_cfg, "account_hash", None) if schwab_cfg else None
+    if account_hash:
+        out.append(
+            f"account_hash:    {mask_sensitive_value(account_hash)} (masked)",
+        )
+    else:
+        out.append(
+            "account_hash:    (not set; run `swing schwab setup`)",
+        )
+
+    if tokens_path.exists():
+        try:
+            size = tokens_path.stat().st_size
+        except OSError:
+            size = -1
+        size_str = f"{size} bytes" if size >= 0 else "(unknown size)"
+        out.append(f"Tokens DB:       {tokens_path} ({size_str})")
+    else:
+        out.append(
+            f"Tokens DB:       {tokens_path} "
+            "(not present; run `swing schwab setup`)",
+        )
+    out.append("")
+
+    # Section 3 — token validity.
+    if tokens_path.exists():
+        payload, parse_err = _read_tokens_metadata(tokens_path)
+        if parse_err is not None:
+            out.append(f"Token validity:  {parse_err}")
+            out.append(
+                "                 Re-run `swing schwab setup` to recover.",
+            )
+        elif payload is not None:
+            access_issued = payload.get("access_token_issued")
+            refresh_issued = payload.get("refresh_token_issued")
+            token_dict = payload.get("token_dictionary") or {}
+            expires_in = token_dict.get("expires_in")
+            try:
+                access_ttl = int(expires_in) if expires_in is not None else 1800
+            except (TypeError, ValueError):
+                access_ttl = 1800
+            out.append(_render_token_validity(
+                issued_label="Access token",
+                issued_iso=access_issued,
+                ttl_seconds=access_ttl,
+                now=now,
+                expired_advice="run `swing schwab refresh` to rotate",
+            ))
+            out.append(_render_token_validity(
+                issued_label="Refresh token",
+                issued_iso=refresh_issued,
+                ttl_seconds=_REFRESH_TOKEN_TTL_SECONDS,
+                now=now,
+                expired_advice="run `swing schwab setup` to re-auth",
+            ))
+    out.append("")
+
+    # Section 4 — recent API calls.
+    out.append(_render_recent_calls(conn, env=env, limit=_RECENT_CALLS_LIMIT))
+
+    return "\n".join(out)
+
+
+@schwab_group.command("status")
+@click.option(
+    "--environment",
+    "environment",
+    type=click.Choice(["sandbox", "production"], case_sensitive=False),
+    default=None,
+    help=(
+        "Override cfg.integrations.schwab.environment for this status call. "
+        "Defaults to the cfg-active env."
+    ),
+)
+@click.pass_context
+def schwab_status(
+    ctx: click.Context, environment: str | None,
+) -> None:
+    """Show Schwab integration status: env, account_hash, tokens DB metadata,
+    token validity, recent API calls.
+
+    READ-ONLY surface — no schwabdev.Client construction, no operator prompts,
+    no `--force` flag. Plan §H.5 sentinel-leak discipline preserved: access /
+    refresh / id token bytes NEVER appear in stdout — only derived metadata
+    (issued timestamps + expiry deltas).
+    """
+    # Apply user-config.toml overrides so account_hash + environment +
+    # callback_url come through; mirrors web routes + cli_config pattern.
+    from swing.config_overrides import apply_overrides
+    cfg = apply_overrides(ctx.obj["config"])
+    env = (environment or cfg.integrations.schwab.environment).lower()
+
+    # D3 pattern from T-A.4 hotfix: connect() validates schema BEFORE any
+    # output — fail fast on schema mismatch.
+    conn = connect(cfg.paths.db_path)
+    try:
+        tokens_path = _user_home() / "swing-data" / f"schwab-tokens.{env}.db"
+        now = datetime.now(UTC)
+        output = render_status(
+            cfg=cfg,
+            env=env,
+            tokens_path=tokens_path,
+            now=now,
+            conn=conn,
+        )
+        click.echo(output)
+    finally:
+        conn.close()
