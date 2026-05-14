@@ -17,9 +17,10 @@ import collections
 import logging
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import Executor, Future, wait
 from dataclasses import dataclass
+from typing import Any
 
 from swing.config import Config
 from swing.pipeline import ohlcv as ohlcv_mod
@@ -38,6 +39,12 @@ class OhlcvBundle:
     Default None so any code that constructs OhlcvBundle without supplying
     it (e.g., older test fixtures, hand-built bundles) continues to work
     with the rule silently no-opping.
+
+    Schwab Sub-bundle C T-C.4 — ``provider`` provenance tag added (mirrors
+    ``PriceSnapshot.provider`` shape). None (legacy / not set) | 'schwab_api'
+    (ladder returned Schwab-success path) | 'yfinance' (ladder yfinance
+    fallback path OR pre-ladder direct yfinance fetch). DISTINCT from any
+    TTL-state / freshness field; documents data origin only.
     """
     sma10: float | None
     sma20: float | None
@@ -45,10 +52,24 @@ class OhlcvBundle:
     previous_close: float | None
     fetched_at: float
     adr_pct: float | None = None
+    provider: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.provider is not None:
+            if not isinstance(self.provider, str):
+                raise TypeError(
+                    "OhlcvBundle.provider must be str or None; got "
+                    f"{type(self.provider).__name__}"
+                )
+            if self.provider not in ("schwab_api", "yfinance"):
+                raise ValueError(
+                    "OhlcvBundle.provider must be one of None | "
+                    f"'schwab_api' | 'yfinance'; got {self.provider!r}"
+                )
 
     @classmethod
     def empty(cls, fetched_at: float) -> OhlcvBundle:
-        return cls(None, None, None, None, fetched_at, None)
+        return cls(None, None, None, None, fetched_at, None, None)
 
 
 class OhlcvCache:
@@ -63,6 +84,35 @@ class OhlcvCache:
         # Sliding window of recent outcomes (True = failure). Matches PriceCache.
         self._failure_window: collections.deque[bool] = collections.deque(maxlen=20)
         self._degraded_until: float | None = None
+        # Schwab Sub-bundle C T-C.4: optional ladder-aware bars fetcher. When
+        # None (default), the worker uses the legacy `ohlcv_mod.fetch_daily_bars`
+        # path (yfinance via archive). When set, the worker invokes the
+        # callable which MUST return `(bars_df_or_none, provider_tag)` where
+        # `provider_tag` is 'schwab_api' or 'yfinance'. The provider tag is
+        # stamped onto the resulting OhlcvBundle. Sandbox short-circuit + auth
+        # fall-through live INSIDE the ladder; cache stays env-agnostic.
+        self._ladder_bars_fetcher: (
+            Callable[[str], tuple[Any, str]] | None
+        ) = None
+
+    def set_ladder_bars_fetcher(
+        self,
+        fetcher: Callable[[str], tuple[Any, str]] | None,
+    ) -> None:
+        """Install (or clear) a ladder-aware bars-fetch callable.
+
+        ``fetcher`` must accept the ticker symbol and return
+        ``(bars_df_or_none, provider: str)`` where ``provider`` is
+        ``'schwab_api'`` or ``'yfinance'``. When set, the cache's worker
+        invokes this callable instead of ``ohlcv_mod.fetch_daily_bars``;
+        the returned ``bars`` are fed through the same SMA / ADR
+        computation pipeline and the provider tag is stamped onto the
+        resulting ``OhlcvBundle``.
+
+        Passing ``None`` reverts to the legacy yfinance-only worker path
+        (used by existing OhlcvCache tests that don't exercise the ladder).
+        """
+        self._ladder_bars_fetcher = fetcher
 
     # ---------- public API ----------
 
@@ -231,15 +281,26 @@ class OhlcvCache:
         (delisted symbol, bad ticker, no history) which is an operator issue,
         not a source issue, and MUST NOT trip the global breaker.
 
-        Pure return — does NOT touch self._store (R1 Critical 1)."""
+        Pure return — does NOT touch self._store (R1 Critical 1).
+
+        Schwab Sub-bundle C T-C.4: when a ladder bars fetcher is installed
+        via `set_ladder_bars_fetcher`, the worker delegates to it; the
+        returned provider tag is stamped onto the resulting OhlcvBundle.
+        Otherwise the legacy `ohlcv_mod.fetch_daily_bars` path runs (provider
+        tag remains None for backward compatibility).
+        """
         with self._sema:
+            provider_tag: str | None = None
             try:
-                bars = ohlcv_mod.fetch_daily_bars(
-                    ticker,
-                    n_bars=60,
-                    cache_dir=self._cfg.paths.prices_cache_dir,
-                    archive_history_days=self._cfg.archive.archive_history_days,
-                )
+                if self._ladder_bars_fetcher is not None:
+                    bars, provider_tag = self._ladder_bars_fetcher(ticker)
+                else:
+                    bars = ohlcv_mod.fetch_daily_bars(
+                        ticker,
+                        n_bars=60,
+                        cache_dir=self._cfg.paths.prices_cache_dir,
+                        archive_history_days=self._cfg.archive.archive_history_days,
+                    )
             except Exception as exc:
                 log.warning("ohlcv fetch raised for %s: %s", ticker, exc)
                 return OhlcvBundle.empty(fetched_at=time.monotonic()), False
@@ -257,6 +318,7 @@ class OhlcvCache:
                 previous_close=prev,
                 fetched_at=now,
                 adr_pct=adr_pct,
+                provider=provider_tag,
             ), True
 
     def _record_outcome(self, *, success: bool) -> None:
