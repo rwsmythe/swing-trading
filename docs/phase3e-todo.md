@@ -39,10 +39,10 @@ Each scenario needs a deterministic mapping from `Fills` + `trades.planned_*` co
 
 **Schwab API arc adjacency:** Schwab API integration may strengthen this — Schwab returns authoritative fill timing/price granular enough to support more sophisticated counterfactual computations (e.g., "R if you had exited at the same intraday timestamp where you actually exited but at the planned-stop price"). Could be V2-bundled with Schwab market-data ladder OR remain standalone.
 
-### Recommended disposition
+### Disposition
 
-- **(a) Polish** = trivial; bundle into next polish-bundle dispatch (or fold into Schwab API executing-plans Sub-bundle E if Schwab arc surfaces other near-by template touch-ups).
-- **(b) Design** = standalone V2 dispatch (not Schwab-arc-bundled; needs its own brainstorm to lock the counterfactual semantics). Operator-paced.
+- **(a) Polish — LOCKED 2026-05-13:** bundled into Schwab API executing-plans **last sub-bundle** (likely Sub-bundle E "polish" per writing-plans dispatch brief §0.7 guidance, but plan author picks final shape; orchestrator threads this task into whichever sub-bundle ships last). **Orchestrator action item:** when writing-plans implementer returns the plan, amend the LAST sub-bundle's executing-plans dispatch brief to include the polish task — update `swing/web/templates/partials/review_form.html.j2:66-67` to drop the stale "(Phase 7 will auto-derive this from Fills.)" parenthetical; replace with forward-looking phrasing per orchestrator default ("Auto-derivation from Fills is a future enhancement; manual entry V1.") OR per operator preference at that triage. NOT added to writing-plans dispatch brief mid-flight (writing-plans implementer dispatched ~2026-05-13 +20min before this triage; mid-flight scope changes cause re-runs).
+- **(b) Design** = standalone V2 dispatch (not Schwab-arc-bundled; needs its own brainstorm to lock the counterfactual semantics across stopped/target/trailed/non-plan exit shapes). Operator-paced.
 
 ### Cross-references
 
