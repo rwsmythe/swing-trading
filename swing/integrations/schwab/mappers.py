@@ -501,7 +501,10 @@ def map_price_history_to_window(
         )
 
     candles = response.get("candles", [])
-    empty_flag = bool(response.get("empty", False))
+    # Codex R1 Minor #2: `bool(...)` would treat "false" / 0 / "anything"
+    # as truthy/falsy by Python coercion rules; only the JSON-boolean true
+    # should trigger the empty-flag path. Use explicit identity check.
+    empty_flag = response.get("empty") is True
 
     if not isinstance(candles, list):
         raise SchwabSchemaParityError(

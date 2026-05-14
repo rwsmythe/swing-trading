@@ -18,15 +18,50 @@ T-C.0.b recon doc §3.1 + dispatch brief §0.5 #1 binding.
 from __future__ import annotations
 
 import inspect
+from inspect import Parameter
 from pathlib import Path
 
 import schwabdev
 
 
 def _kwarg_names(method) -> set[str]:
-    """Return the set of parameter names accepted as kwargs (excluding `self`)."""
+    """Return the set of parameter names accepted as kwargs (excluding `self`).
+
+    Codex R1 Minor #1: pin Parameter.kind explicitly so that future schwabdev
+    upgrades that add `**kwargs` (VAR_KEYWORD) or make a param positional-only
+    (POSITIONAL_ONLY) cannot mask the camelCase/snake_case kwarg set this test
+    is meant to assert on.
+
+    Only ``POSITIONAL_OR_KEYWORD`` and ``KEYWORD_ONLY`` parameters are
+    addressable by keyword name from the caller; ``VAR_POSITIONAL`` (*args)
+    and ``VAR_KEYWORD`` (**kwargs) are NOT included in the returned set —
+    the companion ``_assert_no_var_keyword`` guards against the latter.
+    """
     sig = inspect.signature(method)
-    return {name for name in sig.parameters if name != "self"}
+    return {
+        name for name, param in sig.parameters.items()
+        if name != "self" and param.kind in (
+            Parameter.POSITIONAL_OR_KEYWORD,
+            Parameter.KEYWORD_ONLY,
+        )
+    }
+
+
+def _assert_no_var_keyword(method, *, name: str) -> None:
+    """Codex R1 Minor #1: a future schwabdev signature with ``**kwargs`` would
+    silently accept ANY kwarg name, masking a kwarg-name regression. Assert
+    no ``VAR_KEYWORD`` parameter is present on the schwabdev methods we pin.
+    """
+    sig = inspect.signature(method)
+    var_keyword_params = [
+        p.name for p in sig.parameters.values()
+        if p.kind == Parameter.VAR_KEYWORD
+    ]
+    assert not var_keyword_params, (
+        f"schwabdev.Client.{name} has VAR_KEYWORD parameter(s) "
+        f"{var_keyword_params!r} — a **kwargs sink would mask kwarg-name "
+        "regressions. Pin against this drift."
+    )
 
 
 def test_quotes_kwargs_snake_case() -> None:
@@ -43,6 +78,7 @@ def test_quotes_kwargs_snake_case() -> None:
         "Update swing/integrations/schwab/marketdata.py:get_quotes_batch kwarg "
         "names to match."
     )
+    _assert_no_var_keyword(schwabdev.Client.quotes, name="quotes")
 
 
 def test_price_history_kwargs_camel_case() -> None:
@@ -73,6 +109,7 @@ def test_price_history_kwargs_camel_case() -> None:
         "get_price_history kwarg names to match. CamelCase discipline per "
         "Sub-bundle B 2026-05-14 gate-caught defect."
     )
+    _assert_no_var_keyword(schwabdev.Client.price_history, name="price_history")
 
 
 def test_no_snake_case_price_history_kwargs_in_marketdata_calls() -> None:

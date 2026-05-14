@@ -433,6 +433,60 @@ def test_08_map_price_history_explicit_empty_flag_true_raises():
     assert exc_info.value.status_code == 204
 
 
+def test_08b_map_price_history_empty_string_false_is_not_truthy():
+    """Codex R1 Minor #2: `empty_flag = bool(response.get("empty", False))` is
+    too loose — the string ``"false"`` (which a non-conformant upstream MIGHT
+    send instead of the JSON-boolean ``false``) coerces to truthy under
+    ``bool()``, falsely tripping the empty path. Post-fix uses
+    ``empty is True`` so only the JSON-boolean ``True`` fires the path.
+
+    Discriminating: response with ``empty="false"`` (string) and one valid
+    candle MUST yield a populated window (NOT raise 204).
+    """
+    from swing.integrations.schwab.mappers import (
+        map_price_history_to_window,
+    )
+
+    response = {
+        "symbol": "AAPL",
+        "empty": "false",  # STRING, not bool — coerces to True under bool()
+        "candles": [
+            {
+                "open": 100.0, "high": 105.0, "low": 98.0, "close": 102.0,
+                "volume": 12345, "datetime": 1715692800000,
+            },
+        ],
+    }
+    # Pre-fix: `bool("false")` → True → raises SchwabApiError(204).
+    # Post-fix: `"false" is True` → False → returns populated window.
+    window = map_price_history_to_window(response, ticker="AAPL")
+    assert len(window.bars) == 1
+    assert window.bars[0].close == 102.0
+
+
+def test_08c_map_price_history_empty_one_int_is_not_truthy():
+    """Codex R1 Minor #2 companion: ``empty=1`` (truthy int from a malformed
+    upstream) MUST NOT trigger the empty path under the post-fix
+    ``is True`` check. Only the JSON-boolean ``True`` should fire.
+    """
+    from swing.integrations.schwab.mappers import (
+        map_price_history_to_window,
+    )
+
+    response = {
+        "symbol": "AAPL",
+        "empty": 1,  # truthy int — coerces to True under bool()
+        "candles": [
+            {
+                "open": 100.0, "high": 105.0, "low": 98.0, "close": 102.0,
+                "volume": 12345, "datetime": 1715692800000,
+            },
+        ],
+    }
+    window = map_price_history_to_window(response, ticker="AAPL")
+    assert len(window.bars) == 1
+
+
 # ============================================================================
 # Endpoint wrappers — get_quotes_batch
 # ============================================================================
