@@ -516,6 +516,28 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
             # the ladder fires under production env + writes `surface=
             # 'pipeline'` audit rows; sandbox short-circuit lives in the
             # ladder layer per T-C.3 LOCK.
+            #
+            # Codex R1 Major #5 DISPOSITION (ACCEPT-WITH-RATIONALE V1):
+            # `_ohlcv_cache` is intentionally not wired into `_step_charts`
+            # in V1. `_step_charts` consumes OHLCV via
+            # `fetcher.get(ticker, ...)` → `swing/pipeline/ohlcv.py:fetch_daily_bars`
+            # → `swing/data/ohlcv_archive.py:read_or_fetch_archive` (legacy
+            # `{TICKER}.parquet` path). Post-M#3 ladder fixes, Schwab-sourced
+            # bars are persisted to `{TICKER}.schwab_api.parquet` (Shape A),
+            # but `read_or_fetch_archive` reads the legacy path exclusively.
+            # Explicit wiring of `_ohlcv_cache` into `_step_charts` requires:
+            #   (a) a sweeping refactor of fetcher.get's weekly-refresh +
+            #       archive_history_days semantics to align with the ladder's
+            #       window semantics;
+            #   (b) reconciling the in-memory shape (capitalized columns +
+            #       DatetimeIndex from `to_dataframe()`) against the legacy
+            #       fetcher's identical-but-archive-managed shape;
+            #   (c) per-cache locking + lifecycle semantics for the
+            #       OhlcvCache that today is single-threaded per request.
+            # Deferred to V2. The OhlcvCache is constructed (and exercised
+            # by unit tests via direct invocation) so V2 wiring is a
+            # one-line addition. Leading-underscore variable `_ohlcv_cache`
+            # documents the intentional non-consumption.
             schwab_client = _construct_pipeline_schwab_client(cfg)
             price_cache, _ohlcv_cache = _install_pipeline_marketdata_caches(
                 cfg, schwab_client, pipeline_run_id=lease.run_id,
