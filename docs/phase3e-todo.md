@@ -1782,3 +1782,59 @@ grep -rn "build_open_positions_expanded" swing/  # matches both definitions AND 
 - `docs/3e8-bundle-3-return-report.md` §7 (process deviation: inline TDD per task family; not surfaced to orchestrator mid-flight)
 - `swing/trades/advisory.py:compute_price_independent_suggestions` — canonical pattern for advisory-degradation split
 - `swing/web/view_models/open_positions_row.py:build_open_positions_expanded` — corrected location (NOT dashboard.py as brief §0.2 stated)
+
+---
+
+## 2026-05-13 Phase 10 closer — Phase 11 hand-off
+
+Sub-bundle E SHIPPED (T-E.0..T-E.4 + T-E.5 + T-E.6 electives). Phase 10 CLOSED.
+
+### Capture-needs surfaced during Phase 10 implementation (V2.1 §VII.F amendments pending)
+
+Cumulative pending V2.1 §VII.F amendments at Phase 10 close (27+):
+
+- (A T-A.7 + R2/R3) plan §A.7 binding-interface amendments (3): Wilson CI standard-vs-continuity-correction; `read_at_trade_time_policy` policy_id_stamp shape; `BaseLayoutVM.stale_banner` `str | None` vs `bool` (matches existing pattern).
+- (B) plan-text deviations (5): T-B.1 `mistake_cost_R` cadence-grain rejection; T-B.2 `ALL_COHORTS_KEY='__all__'`; T-B.4 `cumulative_R_pct_of_capital` PERCENT units; T-B.7 display-block placement; T-B.2 7 cohort tabs (4 pre-registered + 2 orphan-label + "All").
+- (C) plan-text deviations (5): T-C.1 cohort_relative_to_aplus rendering; T-C.1 doctrine_deviation_class baseline enum; T-C.5 filter SQL predicate; T-C.5 threading; T-C.5 toggle href shape.
+- (D) plan-text deviations (5): D1 PROVISIONAL/LIVE math; D2 `candidate_criteria` vs `criterion_results.criterion_name`; D3 capital-friction trend window size; D4 `MaturityStageRow` per-row badge fields; D5 `aplus_take_rate_per_run` un-clamped.
+- (E NEW) plan-text deviations (4):
+  1. T-E.3 `ConfigPageVM` (not `ConfigVM` per brief §0.11).
+  2. T-E.3 retrofitted 10 base-layout VMs (6 plan-named + 4 additional whose templates extend base.html.j2: ReviewVM / CadenceCompleteVM / ReviewsPendingVM / TradeDetailVM). Defense-in-depth per CLAUDE.md "base.html.j2 is shared" gotcha.
+  3. T-E.5 service function is `record_snapshot` (NOT `record_snapshot_with_audit` per brief §0.5); Phase 9 Sub-bundle C ship-time naming preserved.
+  4. T-E.1 N=10 + global_confidence_floor_n=20 + spec §5.4 "drops at n>=20": with the §A.4 N=10 LOCK the confidence-floor warning NEVER drops via the production callsite by construction. Implementation matches the locked behavior; spec wording could be amended to make the conditional dependence explicit. Discriminating test exercises window_size=20 to verify the band semantics are reachable.
+
+- (D R2 M#1 banked at D) Phase 9 §7 sector_industry anchor + Phase 9 §6.2 multi-line parser amendments still pending.
+
+**Total V2.1 §VII.F amendments pending: 27** (3 A + 5 B + 5 C + 5 D + 4 E + 2 Phase 9 = 24 Phase 10 + Phase 9 amendments banked).
+
+### Operator-decision items pending Phase 11
+
+1. **§8.4 Corporate_Actions MVP** — DEFERRED at Phase 10 electives triage (electives amendment §5). Banked at this section's existing 2026-05-13 entry. Phase 11 candidate.
+
+2. **Schwab API Phase A** — operational metrics in Sub-bundle D (capital-friction + maturity-stage PROVISIONAL/LIVE) consume the Phase 9 Sub-bundle C `account_equity_snapshots` table. Schwab API integration (future phase) would write `source='schwab_api'` snapshots that outrank `source='manual'` per the spec §A.9 source ladder. Pre-Phase-11 triage decision: operator-paced.
+
+3. **`mistake_cost_R_rolling_N_total` sum-class with bootstrap CI** — §A.21 spec-conformance deviation banked at writing-plans + carried through E T-E.1. Sub-bundle E ships "point" class (bare float); V2 may add sum-class with bootstrap CI on the window sum.
+
+4. **Schwab inception-CSV ingestion** + **`account_equity_snapshots.equity_dollars` cash-basis vs MTM semantic formalization** (both banked at 2026-05-12 Phase 9 Sub-bundle C entry). Phase 11 candidates.
+
+### Post-Phase-10 standalone dispatches (UNBLOCKED by Phase 10 close)
+
+Per dispatch brief §1 + §7 watch items:
+
+1. **Cleanup-script `-DeregisterFirst` extension** — Phase 9 husks (B/C/D/E) + Phase 10 Sub-bundle C/D/E orphan husks remain still-registered. Standalone dispatch will extend cleanup-script with a `-DeregisterFirst` switch + clear all pending husks.
+2. **Test-runtime xdist + fixture-scope analysis** — fast suite at ~6:45 wall-clock at 3300+ tests; recommendation: profile → pytest-xdist → fixture-scope refactor for ~3-5x wall-clock reduction at zero coverage cost.
+3. **§8.4 Corporate_Actions MVP** — schema-introducing standalone dispatch (new `corporate_actions` table + `0018_*.sql` migration + CLI surface + manual reconcile flow). Preserves Phase 10 §A.0 ZERO-new-schema lock; Phase 9 Sub-bundle A precedent (schema-introducing bundles get their own scoped review).
+
+### V2 candidates banked at Phase 10 ship
+
+1. **Orphan-emit discrepancy attribution surface** — Phase 9 Sub-bundle B per-run dedup allows orphan emits (discrepancies not attributed to a specific trade_id). Global discrepancy badge (T-E.3) counts these; per-trade indicator (T-E.6) does NOT. V2: "orphan discrepancy detail page" surfacing trade-less discrepancies.
+2. **`render_class_d` "point" branch mean-semantics switch** (banked from Sub-bundle A return report §7). V2 may add sum-class semantics with bootstrap CI.
+3. **Per-cohort "exclude trades stamped during paused intervals" filter** (banked from Sub-bundle B + electives amendment §7). Same UI shape as T-C.5; same VM pattern. Phase 11 candidate.
+
+### Cross-references
+
+- Phase 10 plan: `docs/superpowers/plans/2026-05-13-phase10-metrics-dashboard-plan.md` (HEAD `a34c00d`).
+- Phase 10 electives amendment: `docs/phase10-electives-amendment.md`.
+- Phase 10 spec: `docs/superpowers/specs/2026-05-06-phase10-metrics-design.md`.
+- Sub-bundle E dispatch brief: `docs/phase10-bundle-E-executing-plans-dispatch-brief.md`.
+- Sub-bundle E return report: `docs/phase10-bundle-E-return-report.md`.

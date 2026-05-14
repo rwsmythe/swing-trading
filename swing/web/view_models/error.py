@@ -16,3 +16,9 @@ class PageErrorVM:
     status_code: int = 400
     detail: str = "Invalid request"
     ohlcv_source_degraded: bool = False              # NEW (Phase 3d §3.4)
+    # Phase 10 Sub-bundle E T-E.3 — unresolved-material discrepancy banner
+    # count (plan §A.18 + §I.5). Default 0 keeps the error page's banner
+    # block suppressed; production error handlers may opt in by passing
+    # the helper result. Per the cross-bundle pin's regression test the
+    # FIELD NAME is the binding artifact.
+    unresolved_material_discrepancies_count: int = 0

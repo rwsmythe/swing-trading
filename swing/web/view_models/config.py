@@ -42,6 +42,8 @@ class ConfigPageVM:
     # Populated by build_config_vm via a fresh DB read against the active
     # risk_policy. None means no divergence (banner suppressed).
     risk_policy_divergence: dict | None = None
+    # Phase 10 Sub-bundle E T-E.3 — unresolved-material discrepancy banner.
+    unresolved_material_discrepancies_count: int = 0
 
 
 def _current_value(cfg: Config, spec: FieldSpec) -> Any:
@@ -79,7 +81,9 @@ def build_config_vm(
             hard_refuse_max=spec.hard_refuse_max,
         ))
     divergence: dict | None = None
+    unresolved_count = 0
     if conn is not None:
+        from swing.metrics.discrepancies import count_unresolved_material
         from swing.trades.risk_policy import check_and_reconcile_toml_divergence
         try:
             # silent=True per Codex R2 Minor #1 — per-render probe must NOT
@@ -93,9 +97,14 @@ def build_config_vm(
             # Defensive — banner missing on transient DB error is preferable
             # to a 500 on /config.
             divergence = None
+        try:
+            unresolved_count = count_unresolved_material(conn)
+        except Exception:
+            unresolved_count = 0
     return ConfigPageVM(
         rows=rows,
         saved=saved,
         session_date=date.today().isoformat(),
         risk_policy_divergence=divergence,
+        unresolved_material_discrepancies_count=unresolved_count,
     )

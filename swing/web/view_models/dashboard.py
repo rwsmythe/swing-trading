@@ -349,6 +349,8 @@ class DashboardVM:
     daily_card: CadenceCardVM | None = None
     weekly_card: CadenceCardVM | None = None
     monthly_card: CadenceCardVM | None = None
+    # Phase 10 Sub-bundle E T-E.3 — unresolved-material discrepancy banner.
+    unresolved_material_discrepancies_count: int = 0
     # Phase 8 Task 5.1 — per-open-position daily-management tiles. Built from
     # ``list_open_position_active_snapshots(conn) + JOIN trades-row`` per
     # spec §7.1 + §5.6 read-precedence ladder. Empty tuple when no open
@@ -897,6 +899,9 @@ def build_dashboard(
                 )
             else:
                 classifications = {}
+            # Phase 10 Sub-bundle E T-E.3 — base-layout discrepancy banner.
+            from swing.metrics.discrepancies import count_unresolved_material
+            unresolved_material_count = count_unresolved_material(conn)
     finally:
         conn.close()
 
@@ -1258,6 +1263,7 @@ def build_dashboard(
         weekly_card=cadence_cards["weekly"],
         monthly_card=cadence_cards["monthly"],
         daily_management_tiles=daily_management_tiles,
+        unresolved_material_discrepancies_count=unresolved_material_count,
     )
 
 

@@ -31,6 +31,9 @@ from swing.web.view_models.metrics.index import build_metrics_index_vm
 from swing.web.view_models.metrics.maturity_stage import (
     build_maturity_stage_vm,
 )
+from swing.web.view_models.metrics.process_grade_trend import (
+    build_process_grade_trend_vm,
+)
 from swing.web.view_models.metrics.tier_comparison import (
     build_tier_comparison_vm,
 )
@@ -204,6 +207,24 @@ def metrics_identification_funnel(request: Request):
     vm = build_identification_funnel_vm(cfg=cfg)
     return request.app.state.templates.TemplateResponse(
         request, "metrics/identification_funnel.html.j2", {"vm": vm},
+    )
+
+
+@router.get("/metrics/process-grade-trend", response_class=HTMLResponse)
+def metrics_process_grade_trend(request: Request):
+    """Spec §4.8 process-grade-trend view — Sub-bundle E Task T-E.2.
+
+    Renders the per-trade marker line chart + 7-metric rolling table per
+    §A.21 + §5.4 + §4.8. Inline SVG per plan §A.10 LOCK (NO matplotlib);
+    badges + drawability text surface as SEPARATE template elements per
+    forward-binding lesson #23.
+
+    Per plan §A.9 + §I.6 LOCK: pure server-rendered HTML.
+    """
+    cfg = request.app.state.cfg
+    vm = build_process_grade_trend_vm(cfg=cfg)
+    return request.app.state.templates.TemplateResponse(
+        request, "metrics/process_grade_trend.html.j2", {"vm": vm},
     )
 
 

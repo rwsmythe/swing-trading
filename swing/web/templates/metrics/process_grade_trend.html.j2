@@ -1,0 +1,121 @@
+{% extends "base.html.j2" %}
+{% block title %}Process-grade trend — Swing Trading{% endblock %}
+{% block content %}
+<section class="metrics-process-grade-trend">
+  <h1>Process-grade trend</h1>
+  <p class="muted">
+    Spec §4.8 — rolling-N closed-trades trend across process / entry /
+    management / exit grades + disqualifying-violation rate + mistake-cost
+    R. Grades render on a numeric encoding
+    <strong>A=4, B=3, C=2, D=1, F=0</strong>. Per-trade markers always
+    appear; the rolling line draws once the window has &ge;5 effective
+    samples (spec §5.4 line band).
+  </p>
+
+  <p class="muted">
+    Window size: N={{ vm.window_size }} · Closed-reviewed trades:
+    {{ vm.per_trade_markers|length }}
+  </p>
+
+  {% if vm.per_trade_markers|length == 0 %}
+  <p><em data-empty-state="process-grade-trend">No closed-reviewed trades to plot.</em></p>
+  {% else %}
+
+  <h2>Grade chart</h2>
+  <svg viewBox="0 0 {{ vm.svg_width }} {{ vm.svg_height }}"
+       xmlns="http://www.w3.org/2000/svg"
+       class="process-grade-trend-chart"
+       width="{{ vm.svg_width }}"
+       height="{{ vm.svg_height }}">
+    {# Axis labels per lesson #19 — grade numeric encoding visible inline. #}
+    <g class="grade-axis-labels" data-marker="grade-axis-encoding">
+      {% for value, label in vm.grade_axis_labels %}
+      <text x="6"
+            y="{{ vm.svg_margin_top + ((4.0 - value) / 4.0) * (vm.svg_height - vm.svg_margin_top - vm.svg_margin_bottom) + 4 }}"
+            class="muted">{{ label }}</text>
+      {% endfor %}
+    </g>
+    {# Per-trade markers — always rendered for trades with a grade letter. #}
+    {% for marker in vm.per_trade_markers %}
+      {% if marker.svg_y is not none %}
+      <circle cx="{{ "%.2f"|format(marker.svg_x) }}"
+              cy="{{ "%.2f"|format(marker.svg_y) }}"
+              r="4"
+              data-trade-id="{{ marker.trade_id }}"
+              data-grade="{{ marker.process_grade_letter }}"
+              data-disqualifying="{{ marker.disqualifying }}"
+              class="process-grade-marker">
+        <title>{{ marker.ticker }} ({{ marker.review_date }}) — grade {{ marker.process_grade_letter }} = {{ "%.1f"|format(marker.process_grade_numeric) }}</title>
+      </circle>
+      {% endif %}
+    {% endfor %}
+    {# Per-metric rolling polylines — drawn only when the §5.4 line band fires
+       AND we have at least two non-None rolling-mean points. #}
+    {% for series in vm.rolling_series %}
+      {% if series.is_drawable %}
+      <polyline points="{{ series.svg_polyline_points }}"
+                fill="none"
+                stroke-width="1.5"
+                data-series="{{ series.metric_name }}"
+                class="process-grade-rolling-line metric-{{ series.metric_name }}" />
+      {% endif %}
+    {% endfor %}
+  </svg>
+
+  <h2>Per-metric rolling window (most recent)</h2>
+  <table class="metric-grid process-grade-trend-table">
+    <thead>
+      <tr>
+        <th>Metric</th>
+        <th>Class</th>
+        <th>Value</th>
+        <th>CI</th>
+        <th>Cadence</th>
+        <th>Window</th>
+        <th>Confidence</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for series in vm.rolling_series %}
+      <tr data-metric="{{ series.metric_name }}"
+          data-suppressed="{{ '1' if series.is_suppressed else '0' }}">
+        <td>{{ series.metric_name }}</td>
+        <td>{{ series.underlying_class }}</td>
+        {% if series.is_suppressed %}
+        <td colspan="2">
+          <em data-marker="suppressed-{{ series.metric_name }}">{{ series.suppressed_placeholder }}</em>
+        </td>
+        <td colspan="3"></td>
+        {% else %}
+        <td>{{ series.point_value_text or "—" }}</td>
+        <td>
+          {% if series.ci_lower_text and series.ci_upper_text %}
+          [{{ series.ci_lower_text }}, {{ series.ci_upper_text }}]
+          {% else %}<em>—</em>{% endif %}
+        </td>
+        <td>
+          {% if series.drawability_text %}
+          <span class="muted" data-marker="drawability-{{ series.metric_name }}">{{ series.drawability_text }}</span>
+          {% else %}<em>—</em>{% endif %}
+        </td>
+        <td>
+          {% if series.window_not_full_warning_text %}
+          <span class="badge badge-warn"
+                data-marker="window-warning-{{ series.metric_name }}">{{ series.window_not_full_warning_text }}</span>
+          {% else %}<em>—</em>{% endif %}
+        </td>
+        <td>
+          {% if series.confidence_floor_warning_text %}
+          <span class="badge badge-warn"
+                data-marker="floor-warning-{{ series.metric_name }}">{{ series.confidence_floor_warning_text }}</span>
+          {% else %}<em>—</em>{% endif %}
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% endif %}
+</section>
+{% endblock %}

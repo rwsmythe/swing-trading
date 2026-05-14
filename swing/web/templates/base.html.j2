@@ -88,6 +88,24 @@
   {% if vm.ohlcv_source_degraded %}
     {% include "partials/ohlcv_degraded_banner.html.j2" %}
   {% endif %}
+  {# Phase 10 Sub-bundle E T-E.3 — global reconciliation discrepancy banner.
+     Renders when any unresolved-material discrepancies are attributed to
+     active or closed trades (orphan-emit discrepancies are out of scope
+     per ``swing/metrics/discrepancies.py``'s V1 limitation). #}
+  {% if (vm.unresolved_material_discrepancies_count|default(0)) > 0 %}
+  <aside class="banner banner-warn"
+         data-banner="unresolved-material-discrepancies"
+         data-count="{{ vm.unresolved_material_discrepancies_count }}">
+    <span class="banner-glyph" aria-hidden="true">⚠</span>
+    <strong>{{ vm.unresolved_material_discrepancies_count }} unresolved material reconciliation
+      {% if vm.unresolved_material_discrepancies_count == 1 -%}
+      discrepancy
+      {%- else -%}
+      discrepancies
+      {%- endif %}.</strong>
+    Resolve via <code>swing journal discrepancy</code> CLI.
+  </aside>
+  {% endif %}
   <main>
     {% block content %}{% endblock %}
   </main>
