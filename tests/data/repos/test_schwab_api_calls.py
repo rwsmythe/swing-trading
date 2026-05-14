@@ -251,6 +251,65 @@ def test_rate_limit_remaining_validator_rejects_bool_and_non_int() -> None:
     SchwabApiCall(**_valid_kwargs(rate_limit_remaining=100))
 
 
+def test_http_status_rejects_float_and_bool() -> None:
+    """Codex R3 Minor #1: http_status field is typed `int | None` but the
+    pre-fix validator only checked the range `100 <= self.http_status < 600`.
+    `200.5` (float) silently passed the range check (200.5 < 600 is True),
+    and `True` passed by virtue of being an int-subclass that equals 1
+    (BUT 1 fails the >= 100 check, so True was rejected by accident; False
+    similarly). The real footgun is FLOAT acceptance — a callsite that
+    accidentally passes `time.time()` or a parsed JSON number with decimal
+    point would silently persist a non-int into the audit row.
+
+    Discriminating: pre-fix `200.5` passed; post-fix raises ValueError.
+    """
+    # Rejected: float (the actual Codex finding).
+    with pytest.raises(ValueError, match="http_status"):
+        SchwabApiCall(**_valid_kwargs(http_status=200.5))
+    with pytest.raises(ValueError, match="http_status"):
+        SchwabApiCall(**_valid_kwargs(http_status=404.0))
+    # Rejected: bool (int subclass; explicit guard).
+    with pytest.raises(ValueError, match="http_status"):
+        SchwabApiCall(**_valid_kwargs(http_status=True))
+    with pytest.raises(ValueError, match="http_status"):
+        SchwabApiCall(**_valid_kwargs(http_status=False))
+    # Rejected: str.
+    with pytest.raises(ValueError, match="http_status"):
+        SchwabApiCall(**_valid_kwargs(http_status="200"))
+    # Accepted: None / 100 / 599 / typical real codes.
+    SchwabApiCall(**_valid_kwargs(http_status=None))
+    SchwabApiCall(**_valid_kwargs(http_status=100))
+    SchwabApiCall(**_valid_kwargs(http_status=599))
+    SchwabApiCall(**_valid_kwargs(http_status=200))
+
+
+def test_response_time_ms_rejects_float_and_bool() -> None:
+    """Codex R3 Minor #1: response_time_ms field is typed `int | None` but
+    the pre-fix validator only checked `< 0`. `1.5` (float) silently passed
+    (1.5 < 0 is False). Post-fix: explicit bool + non-int guard raises
+    ValueError.
+
+    Discriminating: pre-fix `1.5` passed; post-fix raises ValueError.
+    """
+    # Rejected: float (the actual Codex finding).
+    with pytest.raises(ValueError, match="response_time_ms"):
+        SchwabApiCall(**_valid_kwargs(response_time_ms=1.5))
+    with pytest.raises(ValueError, match="response_time_ms"):
+        SchwabApiCall(**_valid_kwargs(response_time_ms=145.0))
+    # Rejected: bool (int subclass; explicit guard).
+    with pytest.raises(ValueError, match="response_time_ms"):
+        SchwabApiCall(**_valid_kwargs(response_time_ms=True))
+    with pytest.raises(ValueError, match="response_time_ms"):
+        SchwabApiCall(**_valid_kwargs(response_time_ms=False))
+    # Rejected: str.
+    with pytest.raises(ValueError, match="response_time_ms"):
+        SchwabApiCall(**_valid_kwargs(response_time_ms="100"))
+    # Accepted: None / 0 / positive int.
+    SchwabApiCall(**_valid_kwargs(response_time_ms=None))
+    SchwabApiCall(**_valid_kwargs(response_time_ms=0))
+    SchwabApiCall(**_valid_kwargs(response_time_ms=1000))
+
+
 def test_error_message_validator_rejects_non_string_accepts_none_and_string() -> None:
     """error_message: None or str. No length cap (redaction layer truncates)."""
     with pytest.raises(ValueError, match="error_message"):

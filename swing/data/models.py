@@ -1267,16 +1267,35 @@ class SchwabApiCall:
                 "environment must be 'sandbox' or 'production', "
                 f"got {self.environment!r}"
             )
-        if self.http_status is not None and not (100 <= self.http_status < 600):
-            raise ValueError(
-                "http_status must be None or 100-599 (RFC 9110), "
-                f"got {self.http_status}"
-            )
-        if self.response_time_ms is not None and self.response_time_ms < 0:
-            raise ValueError(
-                "response_time_ms must be None or >= 0, "
-                f"got {self.response_time_ms}"
-            )
+        # Codex R3 Minor #1: bool is an int subclass; reject explicitly.
+        # Non-int values (e.g. float 200.5) raise controlled ValueError
+        # instead of silently passing the range check.
+        if self.http_status is not None:
+            if isinstance(self.http_status, bool) or not isinstance(
+                self.http_status, int
+            ):
+                raise ValueError(
+                    "http_status must be None or int (not bool), "
+                    f"got {type(self.http_status).__name__}"
+                )
+            if not (100 <= self.http_status < 600):
+                raise ValueError(
+                    "http_status must be None or 100-599 (RFC 9110), "
+                    f"got {self.http_status}"
+                )
+        if self.response_time_ms is not None:
+            if isinstance(self.response_time_ms, bool) or not isinstance(
+                self.response_time_ms, int
+            ):
+                raise ValueError(
+                    "response_time_ms must be None or int (not bool), "
+                    f"got {type(self.response_time_ms).__name__}"
+                )
+            if self.response_time_ms < 0:
+                raise ValueError(
+                    "response_time_ms must be None or >= 0, "
+                    f"got {self.response_time_ms}"
+                )
         if (
             self.signature_hash is not None
             and not _SCHWAB_SIGNATURE_HASH_RE.fullmatch(self.signature_hash)

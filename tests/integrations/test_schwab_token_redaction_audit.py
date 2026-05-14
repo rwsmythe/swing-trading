@@ -1006,3 +1006,72 @@ def test_27_redacted_excerpt_still_applies_layer1_heuristic_when_unregistered():
         f"Layer-1 heuristic regression — token-shaped string leaked: {redacted!r}"
     )
     assert "<REDACTED>" in redacted
+
+
+# ============================================================================
+# Codex R3 Major #1 — redact-then-truncate (truncation-boundary leak)
+# ============================================================================
+
+
+def test_28_redacted_excerpt_redacts_before_truncating_boundary_straddle():
+    """Codex R3 Major #1: `_redacted_excerpt` MUST redact the FULL message
+    BEFORE truncating to `max_chars`. Otherwise, if a registered secret
+    straddles the truncation boundary, Layer-0 exact-replace cannot match
+    the partial-prefix that survives in the buffer + Layer-1 regex may
+    not catch the short prefix either, leaking secret bytes into the
+    audit row.
+
+    Discriminating construction:
+      - Register a 64-char sentinel.
+      - Construct an exception whose `str(exc)` is `prefix + sentinel + suffix`
+        where `prefix` consumes enough bytes that the sentinel STRADDLES
+        the 80-char truncation boundary (start byte ~47, so the boundary
+        cuts the sentinel mid-string).
+      - Pre-fix: `raw[:max_chars]` truncates first → only `prefix + sentinel[:N]`
+        survives → Layer-0's `.replace(full_sentinel, ...)` cannot match
+        the partial → first N chars of sentinel LEAK through.
+      - Post-fix: redact full message first → `<REDACTED>` substitutes for
+        the entire sentinel → truncation operates on already-redacted string
+        → NO partial-prefix can survive.
+
+    Assertion: NO partial-prefix of the sentinel (>= 8 contiguous chars from
+    the sentinel) appears in the output. The 8-char floor is a conservative
+    "any substring long enough to be recognizably part of the secret".
+    """
+    from swing.integrations.schwab.auth import _redacted_excerpt
+
+    # 64-char sentinel; charset deliberately chosen to fall BELOW Layer-1's
+    # base64 heuristic floor: the suffix contains `!@#$%&` which BREAK the
+    # contiguous-base64 run, so even at 64 chars the heuristic cannot match.
+    # This isolates the test to Layer-0 (registered-secret) coverage —
+    # ensuring the assertion would FAIL pre-fix and PASS post-fix.
+    sentinel = "SENTINEL_TRUNCATE_BOUNDARY_qrst!uvwx@yz#aaaa$bbbb%cccc&ddddd123x"
+    assert len(sentinel) == 64
+    register_schwab_secrets([sentinel])
+
+    # Body prefix sized so sentinel starts at exc-str byte ~47 and extends
+    # past 80, straddling the truncation boundary in the MIDDLE.
+    body_prefix = "Auth-failure context bytes filling the buffer: "
+    assert len(body_prefix) == 47
+    msg = body_prefix + sentinel + " (trailing context dropped after truncation)"
+
+    exc = RuntimeError(msg)
+
+    redacted = _redacted_excerpt(exc)
+
+    # Output bounded by the audit-row column budget.
+    assert len(redacted) <= 80, (
+        f"Truncation cap not enforced; got len={len(redacted)}: {redacted!r}"
+    )
+
+    # Discriminating: NO partial-prefix of the sentinel (>= 8 contiguous
+    # chars) may appear in the output. Pre-fix the truncation-first path
+    # would leave a ~30-char partial-prefix of the sentinel visible.
+    # Post-fix the full sentinel is replaced by `<REDACTED>` first.
+    min_partial_len = 8
+    for start in range(len(sentinel) - min_partial_len + 1):
+        partial = sentinel[start : start + min_partial_len]
+        assert partial not in redacted, (
+            f"Partial sentinel prefix {partial!r} (start={start}) leaked "
+            f"through truncation-first path: {redacted!r}"
+        )

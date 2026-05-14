@@ -118,13 +118,25 @@ def _redacted_excerpt(exc: BaseException, *, max_chars: int = 80) -> str:
     Keep the exception class name as the primary identifier — the message
     itself is best-effort context only. Bounded length so an upstream library
     cannot blow out the audit table.
+
+    Codex R3 Major #1 fix: REDACT FIRST, TRUNCATE AFTER. If a registered
+    secret straddles the `max_chars` byte boundary in the raw string, a
+    pre-redaction truncation would leave only a partial-prefix of the secret
+    in the buffer — Layer-0's exact-replace cannot match a partial substring
+    and Layer-1's heuristic regex might not catch a short prefix either,
+    leaking secret bytes into the audit row. `_redact_error_message_for_audit`
+    internally bounds its input to 500 chars (per plan §H.8
+    `_make_redactor_from_global`) so passing the full untruncated message is
+    safe; the outer 80-char truncation is the audit-row-column-budget cap
+    applied to the ALREADY-redacted string.
     """
     raw = f"{type(exc).__name__}: {exc!s}"
-    truncated = raw[:max_chars]
-    # Layer-0 exact-replace from _GLOBAL_KNOWN_SECRETS + Layer-1 heuristic regex.
+    # Layer-0 exact-replace from _GLOBAL_KNOWN_SECRETS + Layer-1 heuristic
+    # regex applied to the FULL message BEFORE truncation.
     from swing.integrations.schwab.client import _redact_error_message_for_audit
 
-    return _redact_error_message_for_audit(truncated)
+    redacted = _redact_error_message_for_audit(raw)
+    return redacted[:max_chars]
 
 
 def setup_paste_flow(
