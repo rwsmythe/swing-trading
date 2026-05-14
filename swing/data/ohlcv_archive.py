@@ -349,6 +349,13 @@ def resolve_ohlcv_window(
     cache_dir = Path(cache_dir)
     ticker_u = ticker.upper()
 
+    # Codex R1 Major #1: wire one-shot legacy migration into the read path so
+    # existing {TICKER}.parquet archives are automatically migrated to Shape
+    # A on FIRST read. Idempotent — subsequent invocations no-op when the
+    # legacy file is absent (case 3: new-only).
+    if cache_dir.exists():
+        _backward_compat_rename(ticker_u, cache_dir=cache_dir)
+
     # Read both providers' parquet files (if present), accumulate rows by
     # (asof_date, provider). Reading returns a fresh DataFrame so we keep
     # provider attribution on a per-row basis.

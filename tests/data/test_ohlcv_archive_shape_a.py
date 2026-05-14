@@ -649,6 +649,63 @@ def test_backward_compat_rename_normalizes_real_legacy_datetimeindex_shape(
     assert float(df.iloc[0]["close"]) == 100.0
 
 
+def test_resolve_ohlcv_window_auto_migrates_legacy_archive_on_first_read(
+    tmp_path,
+):
+    """**Codex R1 Major #1 discriminating test:** plant a legacy
+    DatetimeIndex ``{TICKER}.parquet`` (no Shape A files present); invoke
+    ``resolve_ohlcv_window`` cold (no manual ``_backward_compat_rename``
+    call); assert (a) the rename fired automatically, (b) the result reads
+    the new ``.yfinance.parquet`` file with rows present.
+
+    Pre-fix behavior: ``_backward_compat_rename`` was dead code in
+    production (only callable from tests); cold read returns empty.
+    Post-fix behavior: read-path invokes the migration helper so first read
+    triggers normalization + Shape A write, and rows surface.
+
+    Second invocation MUST be a no-op (idempotent migration helper).
+    """
+    from swing.data.ohlcv_archive import resolve_ohlcv_window
+
+    legacy = _mk_legacy_datetimeindex_window(
+        ["2026-01-02", "2026-01-03"], close=100.0,
+    )
+    old_path = tmp_path / "AAPL.parquet"
+    legacy.to_parquet(old_path)
+    new_path = tmp_path / "AAPL.yfinance.parquet"
+    # Pre-state: only legacy file present.
+    assert old_path.exists()
+    assert not new_path.exists()
+
+    # Cold read — no explicit migration call. The read path MUST migrate.
+    df, provenance = resolve_ohlcv_window(
+        "AAPL", start="2026-01-01", end="2026-01-10", cache_dir=tmp_path,
+    )
+
+    # KEY assertion: read returned rows (would be 0 if migration not wired in).
+    assert len(df) == 2, (
+        "resolve_ohlcv_window did NOT auto-migrate legacy archive on first "
+        f"read — got {len(df)} rows (expected 2). Codex R1 Major #1: "
+        "_backward_compat_rename must be wired into the read path."
+    )
+    assert sorted(df["asof_date"].tolist()) == ["2026-01-02", "2026-01-03"]
+    assert set(provenance.values()) == {"yfinance"}
+
+    # Post-state: migration completed — new file present, old file gone.
+    assert new_path.exists()
+    assert not old_path.exists()
+
+    # Second invocation is a no-op (mtime of new file unchanged).
+    mtime_after_first = new_path.stat().st_mtime_ns
+    df2, _ = resolve_ohlcv_window(
+        "AAPL", start="2026-01-01", end="2026-01-10", cache_dir=tmp_path,
+    )
+    assert new_path.stat().st_mtime_ns == mtime_after_first, (
+        "second cold read mutated the yfinance.parquet — idempotency violated"
+    )
+    assert len(df2) == 2
+
+
 def test_backward_compat_rename_merges_legacy_datetimeindex_with_shape_a(
     tmp_path,
 ):
