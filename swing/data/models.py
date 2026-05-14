@@ -1320,14 +1320,22 @@ class SchwabApiCall:
 
         # rate_limit_remaining: None or non-negative int. No upper bound
         # per plan §H.7 (best-effort header echo).
-        if (
-            self.rate_limit_remaining is not None
-            and self.rate_limit_remaining < 0
-        ):
-            raise ValueError(
-                "rate_limit_remaining must be None or >= 0, "
-                f"got {self.rate_limit_remaining}"
-            )
+        # Codex R2 Minor #1: bool is an int subclass in Python; reject
+        # explicitly. Non-int values raise controlled ValueError instead of
+        # TypeError on the `< 0` comparison.
+        if self.rate_limit_remaining is not None:
+            if isinstance(self.rate_limit_remaining, bool) or not isinstance(
+                self.rate_limit_remaining, int
+            ):
+                raise ValueError(
+                    "rate_limit_remaining must be None or int (not bool), "
+                    f"got {type(self.rate_limit_remaining).__name__}"
+                )
+            if self.rate_limit_remaining < 0:
+                raise ValueError(
+                    "rate_limit_remaining must be None or >= 0, "
+                    f"got {self.rate_limit_remaining}"
+                )
 
         # error_message: None or string. No length cap at this layer
         # (rendering layer truncates per redaction discipline).

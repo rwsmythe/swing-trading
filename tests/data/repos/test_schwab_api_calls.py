@@ -225,6 +225,32 @@ def test_rate_limit_remaining_validator_rejects_negative_accepts_none_and_zero_p
     SchwabApiCall(**_valid_kwargs(rate_limit_remaining=999_999))
 
 
+def test_rate_limit_remaining_validator_rejects_bool_and_non_int() -> None:
+    """Codex R2 Minor #1: bool is an int subclass; reject explicitly.
+    Non-int values (str, float) must raise controlled ValueError, NOT
+    TypeError on the `< 0` comparison.
+
+    Discriminating: pre-fix the validator only checked `< 0`. `True`
+    passed (bool < 0 is False); `"5"` and `1.5` would either be accepted
+    (when comparable to 0) or raise TypeError. Post-fix all three raise
+    ValueError with "rate_limit_remaining" in the message.
+    """
+    # Rejected: bool is int subclass.
+    with pytest.raises(ValueError, match="rate_limit_remaining"):
+        SchwabApiCall(**_valid_kwargs(rate_limit_remaining=True))
+    with pytest.raises(ValueError, match="rate_limit_remaining"):
+        SchwabApiCall(**_valid_kwargs(rate_limit_remaining=False))
+    # Rejected: str / float — controlled ValueError, not TypeError.
+    with pytest.raises(ValueError, match="rate_limit_remaining"):
+        SchwabApiCall(**_valid_kwargs(rate_limit_remaining="5"))
+    with pytest.raises(ValueError, match="rate_limit_remaining"):
+        SchwabApiCall(**_valid_kwargs(rate_limit_remaining=1.5))
+    # Accepted: None / 0 / positive int.
+    SchwabApiCall(**_valid_kwargs(rate_limit_remaining=None))
+    SchwabApiCall(**_valid_kwargs(rate_limit_remaining=0))
+    SchwabApiCall(**_valid_kwargs(rate_limit_remaining=100))
+
+
 def test_error_message_validator_rejects_non_string_accepts_none_and_string() -> None:
     """error_message: None or str. No length cap (redaction layer truncates)."""
     with pytest.raises(ValueError, match="error_message"):

@@ -109,19 +109,22 @@ def _stub_call_account_linked(client: Any) -> Any:
 def _redacted_excerpt(exc: BaseException, *, max_chars: int = 80) -> str:
     """Sanitise an exception message for audit-row + operator-visible echo.
 
-    Strip any token-shaped substrings. Keep the exception class name as the
-    primary identifier — the message itself is best-effort context only.
-    Bounded length so an upstream library cannot blow out the audit table.
+    Delegates to `swing.integrations.schwab.client._redact_error_message_for_audit`
+    so every audit-row `error_message` write benefits from BOTH Layer-0
+    exact-replace against `_GLOBAL_KNOWN_SECRETS` (catches SHORT registered
+    secrets that the heuristic regex would miss — e.g. a 14-char client_id)
+    AND Layer-1 heuristic regex (hex 32+, base64 24+). Codex R2 Major #1 fix.
+
+    Keep the exception class name as the primary identifier — the message
+    itself is best-effort context only. Bounded length so an upstream library
+    cannot blow out the audit table.
     """
     raw = f"{type(exc).__name__}: {exc!s}"
     truncated = raw[:max_chars]
-    # Defense-in-depth: scrub any long alphanumeric runs that could be
-    # token-shaped (32+ chars). schwabdev tokens are typically 30+ chars
-    # base64-shaped; the regex in `_redact_message` covers `/`, `=`, `:`
-    # delimiters but a free-text exception message may include them bare.
-    import re
+    # Layer-0 exact-replace from _GLOBAL_KNOWN_SECRETS + Layer-1 heuristic regex.
+    from swing.integrations.schwab.client import _redact_error_message_for_audit
 
-    return re.sub(r"[A-Za-z0-9_+/=\-]{24,}", "<REDACTED>", truncated)
+    return _redact_error_message_for_audit(truncated)
 
 
 def setup_paste_flow(

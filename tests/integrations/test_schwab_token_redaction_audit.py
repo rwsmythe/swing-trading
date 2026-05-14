@@ -924,3 +924,85 @@ def test_24_cross_bundle_pin_market_data_api_cassette_redaction():
     """T-C.0.b cassette recording — Market Data API cassette token-leak
     audit. Un-skip at T-C.7 when Bundle C closes.
     """
+
+
+# ============================================================================
+# Codex R2 Major #1 — auth._redacted_excerpt delegates to Layer-0 helper
+# ============================================================================
+
+
+def test_25_redacted_excerpt_layer0_catches_short_registered_secret():
+    """Codex R2 Major #1: `_redacted_excerpt` MUST delegate to
+    `_redact_error_message_for_audit` so Layer-0 exact-replace against
+    `_GLOBAL_KNOWN_SECRETS` catches SHORT registered secrets that the
+    Layer-1 heuristic regex (24+ chars) would miss.
+
+    Discriminating: plant a 14-char registered sentinel (below the 24+
+    heuristic floor). Pre-fix the 24+ regex in auth._redacted_excerpt
+    would miss it; post-fix Layer-0 exact-replace catches it.
+    """
+    from swing.integrations.schwab.auth import _redacted_excerpt
+
+    # 13 chars; contains `.` and `!` which break the pre-fix auth.py regex
+    # charset `[A-Za-z0-9_+/=\-]{24,}` (period and exclamation are not in it),
+    # so this sentinel surrounded by spaces is missed by Layer-1 entirely.
+    short_secret = "sh0rt.S3cr3t!"
+    assert len(short_secret) == 13
+    register_schwab_secrets([short_secret])
+
+    exc = RuntimeError(f"auth failed; client says {short_secret} expired")
+    redacted = _redacted_excerpt(exc)
+
+    assert short_secret not in redacted, (
+        f"Short registered secret leaked through _redacted_excerpt: {redacted!r}"
+    )
+    assert "<REDACTED>" in redacted
+
+
+def test_26_redacted_excerpt_without_registration_layer1_misses_short_sentinel():
+    """Counter-example to test_25: WITHOUT registration, the Layer-1
+    heuristic regex CANNOT catch a 14-char sentinel — proving that
+    Layer-0 exact-replace (test_25) is the actual catcher.
+
+    Discriminating: identical sentinel as test_25 but NOT registered.
+    Layer-1 regex floor is 24 chars (base64) / 32 (hex); a 14-char
+    sentinel falls below both. The sentinel SHOULD leak through, which
+    is exactly why Layer-0 registration is required for short secrets.
+    """
+    from swing.integrations.schwab.auth import _redacted_excerpt
+
+    # Same charset-gap sentinel as test_25 (13 chars, contains `.` + `!`).
+    short_secret = "sh0rt.S3cr3t!"
+    # Do NOT register — heuristic-only path.
+
+    exc = RuntimeError(f"auth failed; client says {short_secret} expired")
+    redacted = _redacted_excerpt(exc)
+
+    # Sentinel survives heuristic regex (the gap that Layer-0 closes).
+    assert short_secret in redacted, (
+        "Counter-example precondition: 13-char sentinel with charset-gap "
+        "characters must survive heuristic-only redaction. If this assertion "
+        "fails, the Layer-1 regex charset changed and test_25 needs "
+        f"re-thinking. Got: {redacted!r}"
+    )
+
+
+def test_27_redacted_excerpt_still_applies_layer1_heuristic_when_unregistered():
+    """Regression pin: even without registration, the Layer-1 heuristic
+    regex MUST still fire on token-shaped strings (24+ base64 / 32+ hex).
+    Post-fix verifies that delegating to `_redact_error_message_for_audit`
+    does NOT regress the heuristic coverage.
+    """
+    from swing.integrations.schwab.auth import _redacted_excerpt
+
+    # 40-char base64-shaped string — matches Layer-1 regex; not registered.
+    long_token = "abcDEFghiJKLmnoPQRstuVWXyz0123456789+/=A"
+    assert len(long_token) >= 24
+
+    exc = RuntimeError(f"transient failure with token {long_token}")
+    redacted = _redacted_excerpt(exc)
+
+    assert long_token not in redacted, (
+        f"Layer-1 heuristic regression — token-shaped string leaked: {redacted!r}"
+    )
+    assert "<REDACTED>" in redacted
