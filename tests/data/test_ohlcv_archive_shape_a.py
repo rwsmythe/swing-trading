@@ -137,6 +137,27 @@ def test_write_window_none_window_does_not_create_file(tmp_path):
     assert not (tmp_path / "AAPL.schwab_api.parquet").exists()
 
 
+def test_write_window_non_dataframe_raises_typeerror(tmp_path):
+    """**Codex R3 Minor #2 discriminating test.**
+
+    A non-empty non-DataFrame input (e.g., a string the caller passed in
+    error) must raise a clear ``TypeError`` rather than an obscure
+    ``AttributeError: 'str' object has no attribute 'columns'`` when the
+    merge branch tries to inspect ``window.columns``.
+
+    Empty/None paths remain forgiving (``len(\"\") == 0`` short-circuits
+    via the existing empty-window guard) — only the type guard fires on
+    a genuinely non-empty type mismatch.
+    """
+    from swing.data.ohlcv_archive import write_window
+
+    with pytest.raises(TypeError, match=r"write_window expects pd\.DataFrame"):
+        write_window("AAPL", "not a df", "schwab_api", cache_dir=tmp_path)
+
+    # No file created on rejection.
+    assert not (tmp_path / "AAPL.schwab_api.parquet").exists()
+
+
 def test_write_window_empty_does_not_clobber_existing_file(tmp_path):
     """**HIGH-VALUE DISCRIMINATING TEST** (per dispatch brief plan §A.9 #11):
     File present (populated) + empty df invoked → file UNCHANGED on disk.

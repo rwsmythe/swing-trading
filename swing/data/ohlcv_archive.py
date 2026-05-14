@@ -324,6 +324,17 @@ def write_window(
     if n_rows == 0:
         return
 
+    # Codex R3 Minor #2: type-guard non-DataFrame inputs before subsequent
+    # `.columns` access (merge branch below). The empty/None paths above
+    # accept any falsy or `len`-able object so the early-exit contract is
+    # forgiving; here we surface a clear error for the genuine-non-empty
+    # type-mismatch case rather than failing with a cryptic
+    # ``AttributeError: 'str' object has no attribute 'columns'``.
+    if not isinstance(window, pd.DataFrame):
+        raise TypeError(
+            f"write_window expects pd.DataFrame, got {type(window).__name__}"
+        )
+
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = _shape_a_path(cache_dir, ticker, provider)
