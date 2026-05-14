@@ -158,6 +158,218 @@ def _maybe_weekly_backup(cfg: Config) -> None:
         log.warning("weekly backup prune failed (continuing pipeline): %s", exc)
 
 
+def _construct_pipeline_schwab_client(cfg) -> object | None:
+    """Construct a `schwabdev.Client` instance for pipeline-internal use.
+
+    Phase 11 Sub-bundle C T-C.6 — pipeline-internal market-data ladder wiring.
+    Pipeline cannot prompt for client_id / client_secret (those are CLI-only
+    surfaces); neither V1 nor V2 stores them in cfg (sensitive). So this
+    helper returns ``None`` by default, matching the precedent established
+    by ``swing/integrations/schwab/pipeline_steps.py:_build_default_client``.
+
+    Tests monkeypatch this function to inject a MagicMock client. When a
+    client IS returned, the ladder hooks installed by
+    ``_install_pipeline_marketdata_caches`` route through the T-C.1 wrappers
+    with ``surface='pipeline'``. When ``None``, the ladder gracefully falls
+    through to yfinance (per T-C.3 test #15) and zero ``schwab_api_calls``
+    rows are written.
+
+    V2 enhancement (banked): the pipeline could read tokens from
+    ``~/swing-data/schwab-tokens.{env}.db`` AND credentials from a
+    machine-scoped env var (e.g. ``SWING_SCHWAB_CLIENT_ID`` /
+    ``SWING_SCHWAB_CLIENT_SECRET``) — but the V1 design point is that
+    pipeline-internal Schwab fetching is best-effort + opt-in via CLI as
+    primary entry. See ``_build_default_client`` for the full rationale.
+    """
+    return None
+
+
+def _install_pipeline_marketdata_caches(
+    cfg, schwab_client: object | None, pipeline_run_id: int | None,
+) -> tuple[object | None, object | None]:
+    """Construct PriceCache + OhlcvCache + install Schwab-market-data ladder hooks.
+
+    Per Phase 11 Sub-bundle C T-C.6 dispatch brief §0.5 pre-emption #5 +
+    plan §H.6: when the operator has tokens for ``cfg.integrations.schwab.
+    environment`` AND ``cfg.integrations.schwab.marketdata_ladder_enabled``
+    is True, route pipeline-internal quote + window fetches through the
+    ladder so the audit table records ``surface='pipeline'`` rows.
+
+    Algorithm:
+      1. If ``schwab_client is None`` → return (None, None) (no caches
+         constructed; pipeline retains existing PriceFetcher / yfinance
+         path; ZERO ``schwab_api_calls`` rows written).
+      2. Otherwise: construct ``PriceCache(cfg)`` + ``OhlcvCache(cfg)``;
+         install ladder hooks via ``set_ladder_fetcher`` /
+         ``set_ladder_bars_fetcher``; each hook closes over
+         ``(cfg, schwab_client, pipeline_run_id, surface='pipeline')`` +
+         opens a fresh ``conn`` per invocation (audit-service wrappers
+         require ``conn``).
+
+    Sandbox short-circuit lives INSIDE the ladder (per T-C.3 §H.6.1 LOCK);
+    this helper unconditionally installs the hook regardless of env. The
+    ladder layer does the env check + falls through to yfinance with
+    ``provider='yfinance'`` + ZERO audit rows when env != 'production'.
+
+    Single-Client-instance discipline (dispatch brief §0.5 pre-emption #6):
+    the same ``schwab_client`` is shared by both PriceCache + OhlcvCache
+    via captured closures. No duplicate construction.
+
+    Returns:
+        ``(price_cache, ohlcv_cache)`` — both ``None`` when no client.
+
+    Note V1 scope: while both PriceCache + OhlcvCache are constructed when a
+    schwab_client is present, only the PriceCache is actually consumed by the
+    pipeline runner's existing callsites (open-trade-ticker warm in
+    ``_step_evaluate``). OhlcvCache is built so that V2 wiring of the
+    pipeline's OHLCV path through the ladder is a one-line addition. The
+    OhlcvCache's ladder hook is exercised by unit tests via direct invocation
+    of the returned cache instance.
+    """
+    if schwab_client is None:
+        return None, None
+
+    from swing.integrations.schwab.marketdata_ladder import (
+        fetch_quote_via_ladder,
+        fetch_window_via_ladder,
+    )
+    from swing.web.ohlcv_cache import OhlcvCache
+    from swing.web.price_cache import PriceCache
+
+    price_cache = PriceCache(cfg)
+    ohlcv_cache = OhlcvCache(cfg)
+
+    def _yf_quote_fallback(ticker: str):
+        # Best-effort yfinance fallback for the ladder. The cache layer
+        # absorbs errors; if this raises, the ladder catches + the cache
+        # falls back to last_close via its own machinery. The ladder
+        # expects a PriceSnapshot return per T-C.3 contract.
+        from datetime import datetime as _dt2
+
+        from swing.web.price_cache import PriceSnapshot
+        price = price_cache._fetch_live_price(ticker)
+        return PriceSnapshot(
+            ticker=ticker, price=price, asof=_dt2.now(),
+            is_stale=False, source="live", provider="yfinance",
+        )
+
+    def _quote_hook(ticker: str) -> tuple[float, str]:
+        # PriceCache `set_ladder_fetcher` contract: (price, provider).
+        # The cache stamps `source='live'` itself; we only return the
+        # numeric price + provider tag.
+        conn = connect(cfg.paths.db_path)
+        try:
+            snap, provider_tag = fetch_quote_via_ladder(
+                ticker,
+                cfg=cfg,
+                schwab_client=schwab_client,
+                yfinance_fallback_fn=_yf_quote_fallback,
+                conn=conn,
+                surface="pipeline",
+                pipeline_run_id=pipeline_run_id,
+            )
+        finally:
+            conn.close()
+        return (snap.price, provider_tag)
+
+    def _yf_window_fallback(ticker: str, start, end):
+        # Window-ladder yfinance fallback. The ladder expects a window-
+        # shaped object; the cache's bars fetcher contract returns the
+        # bars frame + provider. We satisfy both by returning the same
+        # object the legacy ohlcv worker would have built — a pandas
+        # DataFrame via the project's archive helper.
+        from swing.pipeline import ohlcv as ohlcv_mod
+        bars = ohlcv_mod.fetch_daily_bars(
+            ticker,
+            n_bars=60,
+            cache_dir=cfg.paths.prices_cache_dir,
+            archive_history_days=cfg.archive.archive_history_days,
+        )
+        # Ladder window fallback returns a window-shaped object — the
+        # cache worker also expects a bars-shaped object. The cache's
+        # `set_ladder_bars_fetcher` wraps this hook so the cache receives
+        # (bars, provider); we return the bars directly here + the
+        # outer `_bars_hook` re-packs into the cache's expected shape.
+        return bars
+
+    def _bars_hook(ticker: str):
+        # OhlcvCache `set_ladder_bars_fetcher` contract:
+        # (bars_df_or_none, provider). Window-ladder returns
+        # (window_or_bars, provider_tag); we pass through verbatim since
+        # both sides accept a pandas-DataFrame-or-None shape.
+        conn = connect(cfg.paths.db_path)
+        try:
+            window, provider_tag = fetch_window_via_ladder(
+                ticker,
+                start=None, end=None,
+                cfg=cfg,
+                schwab_client=schwab_client,
+                yfinance_fallback_fn=_yf_window_fallback,
+                conn=conn,
+                surface="pipeline",
+                pipeline_run_id=pipeline_run_id,
+            )
+        finally:
+            conn.close()
+        # When provider='yfinance', `window` is whatever the yfinance
+        # fallback returned (bars DataFrame). When provider='schwab_api',
+        # `window` is a SchwabPriceHistoryWindow — convert to bars-shape
+        # via the T-C.1 mapper's `to_dataframe()` helper.
+        if provider_tag == "schwab_api" and hasattr(window, "to_dataframe"):
+            bars = window.to_dataframe()
+        else:
+            bars = window
+        return (bars, provider_tag)
+
+    price_cache.set_ladder_fetcher(_quote_hook)
+    ohlcv_cache.set_ladder_bars_fetcher(_bars_hook)
+
+    return price_cache, ohlcv_cache
+
+
+def _warm_pipeline_marketdata(
+    *,
+    cfg,
+    price_cache,
+    held_tickers: list[str],
+) -> None:
+    """Warm the marketdata ladder for open-trade tickers under pipeline lease.
+
+    Phase 11 Sub-bundle C T-C.6 — invoke ``PriceCache.get(ticker)`` for each
+    open-trade ticker so the ladder fires + writes ``surface='pipeline'``
+    audit rows under production. Sandbox short-circuit at the ladder layer
+    means ZERO ``schwab_api_calls`` rows are written under
+    ``cfg.environment='sandbox'``.
+
+    Pipeline-internal call sites with no installed cache (``price_cache=None``
+    when no schwab_client could be constructed) are no-ops — the existing
+    yfinance-only PriceFetcher path continues to populate
+    ``candidates.close`` per the existing _step_evaluate semantics.
+
+    Cache TTL provides the test-#4 hit-rate property: invoking this twice
+    within the cache TTL (`cfg.web.price_cache_ttl_seconds`, default 120s)
+    causes the second call to hit cache for already-fetched tickers, so the
+    ladder fires fewer times on the second run.
+
+    Failures here MUST NOT abort the pipeline — best-effort. The PriceCache's
+    own machinery falls back to last-close on per-ticker failure; this
+    wrapper additionally catches any framework-level exception.
+    """
+    if price_cache is None or not held_tickers:
+        return
+    for ticker in held_tickers:
+        try:
+            # PriceCache.get hits the ladder hook (which uses surface='pipeline')
+            # on a miss; on a hit (TTL-warm) returns immediately without
+            # invoking the ladder.
+            price_cache.get(ticker)
+        except Exception as exc:
+            log.warning(
+                "pipeline marketdata warm failed for %s: %s",
+                ticker, type(exc).__name__,
+            )
+
+
 def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
     """Synchronous pipeline run. Caller owns the process — heartbeat is in this thread."""
     _maybe_weekly_backup(cfg)
@@ -293,6 +505,22 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 # not abort here either — preserve fallback semantics.
                 log.warning("finviz_fetch programming error (continuing): %s", exc)
 
+            # Phase 11 Sub-bundle C T-C.6 — construct + install market-data
+            # ladder hooks for pipeline-internal use. Pipeline cannot prompt
+            # for credentials, so `_construct_pipeline_schwab_client` returns
+            # None by default (matches `_step_schwab_snapshot` precedent);
+            # tests monkeypatch the constructor to inject a mock client. When
+            # client is None → caches are None → `_step_evaluate` warm is a
+            # no-op + the existing PriceFetcher/yfinance path remains
+            # authoritative for candidates.close. When client is provided,
+            # the ladder fires under production env + writes `surface=
+            # 'pipeline'` audit rows; sandbox short-circuit lives in the
+            # ladder layer per T-C.3 LOCK.
+            schwab_client = _construct_pipeline_schwab_client(cfg)
+            price_cache, _ohlcv_cache = _install_pipeline_marketdata_caches(
+                cfg, schwab_client, pipeline_run_id=lease.run_id,
+            )
+
             lease.step("evaluate")
             try:
                 eval_run_id = _step_evaluate(
@@ -300,6 +528,7 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                     universe=universe, universe_hash=universe_hash,
                     run_now=run_now, action_session=action_session,
                     lease=lease,
+                    price_cache=price_cache,
                 )
                 lease.status(evaluation_status="ok")
             except LeaseRevokedError:
@@ -484,6 +713,7 @@ def lease_data_asof(cfg: Config, lease: Lease) -> str:
 def _step_evaluate(
     *, cfg, fetcher, csv_path: Path, universe, universe_hash: str,
     run_now: _dt, action_session: _date, lease: Lease,
+    price_cache=None,
 ) -> int:
     lease.verify_held()
     import pandas as pd
@@ -526,6 +756,19 @@ def _step_evaluate(
         if t not in seen:
             tickers.append(t)
             seen.add(t)
+
+    # Phase 11 Sub-bundle C T-C.6 — invoke the market-data ladder for each
+    # open-trade ticker via the (optional) installed PriceCache. When
+    # `price_cache is None` (no schwab_client constructed), this is a no-op
+    # and the existing PriceFetcher / yfinance path continues to populate
+    # candidates.close downstream. When the cache IS installed AND
+    # env='production' AND ladder_enabled=True, the ladder fires + writes
+    # `surface='pipeline'` audit rows. Sandbox short-circuit at ladder
+    # layer → ZERO audit rows. NO new pipeline step; NO step-ordering
+    # change; minimal additive call at the existing held_tickers boundary.
+    _warm_pipeline_marketdata(
+        cfg=cfg, price_cache=price_cache, held_tickers=held_tickers,
+    )
 
     spy_return = 0.0
     spy_df = fetcher.get(cfg.rs.benchmark_ticker, lookback_days=365, as_of_date=None)
