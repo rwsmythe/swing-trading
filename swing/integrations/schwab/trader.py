@@ -357,9 +357,14 @@ def get_account_orders(
     to_str = _schwab_iso(to_entered_time)
 
     return _call_endpoint(
+        # NOTE: schwabdev 2.5.1 uses camelCase kwarg `maxResults` — NOT
+        # `max_results`. Live verification 2026-05-14 caught this mismatch
+        # via TypeError. Discriminating test at
+        # tests/integrations/test_schwab_trader_kwarg_signatures.py pins
+        # all 4 trader methods against inspect.signature(schwabdev.Client.X).
         client_method=lambda: client.account_orders(
             account_hash, from_str, to_str,
-            status=status, max_results=max_results,
+            status=status, maxResults=max_results,
         ),
         endpoint="accounts.orders.list",
         conn=conn,
