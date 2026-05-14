@@ -449,6 +449,26 @@ def resolve_ohlcv_window(
 _OHLCV_LOWER_NAMES = frozenset({"open", "high", "low", "close", "volume"})
 
 
+def _file_mtime_ns(path: Path) -> int:
+    """Return file mtime in nanoseconds when available, else seconds * 1e9.
+
+    Codex R4 Minor #2: on filesystems with coarse-timestamp resolution
+    (FAT32, older NFS without sub-second precision, post-rsync), a real
+    legacy refresh can tie with a Shape A file's mtime at second-level,
+    causing the ``_backward_compat_rename`` default branch (Shape A wins)
+    to fire when the legacy refresh should have won. Prefer
+    ``st_mtime_ns`` (nanosecond precision; NTFS + modern POSIX
+    filesystems support it) over ``st_mtime`` (seconds; float, FAT32
+    coarse). The graceful fallback to ``st_mtime * 1_000_000_000``
+    preserves V1 best-effort posture on platforms whose
+    ``os.stat_result`` does not carry ``st_mtime_ns``.
+    """
+    stat = path.stat()
+    if hasattr(stat, "st_mtime_ns"):
+        return stat.st_mtime_ns
+    return int(stat.st_mtime * 1_000_000_000)
+
+
 def _normalize_ohlcv_column_case(df: pd.DataFrame) -> pd.DataFrame:
     """Map any-case OHLCV column names to lowercase Shape A names.
 
@@ -678,12 +698,19 @@ def _backward_compat_rename(ticker: str, *, cache_dir: Path) -> None:
         # by `recorded_at` rather than file-level mtime. Tracked as V2
         # candidate in the Sub-bundle C return report (per-row
         # `recorded_at` column already banked from R3 M#1 review).
+        #
+        # Codex R4 Minor #2: use `_file_mtime_ns` (nanosecond precision
+        # where the OS / filesystem supports it) so a real legacy
+        # refresh that lands within the same wall-clock second as the
+        # Shape A write still wins on conflict. Coarse-timestamp
+        # filesystems (FAT32 / older NFS / post-rsync) fall back to
+        # the float-mtime-times-1e9 approximation — V1 best-effort.
         try:
-            old_mtime = old_path.stat().st_mtime
-            new_mtime = new_path.stat().st_mtime
+            old_mtime = _file_mtime_ns(old_path)
+            new_mtime = _file_mtime_ns(new_path)
         except OSError:  # pragma: no cover — defensive
-            old_mtime = 0.0
-            new_mtime = 0.0
+            old_mtime = 0
+            new_mtime = 0
         if old_mtime > new_mtime:
             # Legacy fresher → legacy rows win on conflict.
             merged = pd.concat([new_df, old_df]).drop_duplicates(

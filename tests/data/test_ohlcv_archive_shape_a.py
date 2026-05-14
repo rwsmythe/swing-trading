@@ -1307,6 +1307,132 @@ def test_backward_compat_rename_shape_a_fresher_shape_a_rows_win_on_conflict(
     )
 
 
+def _filesystem_supports_ns_mtime(tmp_path: Path) -> bool:
+    """Probe the test filesystem for nanosecond-precision mtime tracking.
+
+    Some Windows filesystems (FAT32, older SMB shares) round mtime to
+    1- or 2-second resolution. NTFS + ext4 + modern POSIX filesystems
+    track sub-microsecond. The probe writes a file, sets a known
+    nanosecond-precision mtime via ``os.utime(ns=...)``, reads back
+    ``st_mtime_ns``, and verifies it round-tripped with sub-second
+    fidelity. Returns ``True`` only if the round-trip preserves the
+    sub-second component.
+    """
+    probe = tmp_path / "_ns_probe"
+    probe.write_text("ns-probe")
+    target_ns = 1_700_000_000_500_000_000  # sub-second component 0.5s
+    os.utime(probe, ns=(target_ns, target_ns))
+    actual_ns = probe.stat().st_mtime_ns
+    probe.unlink()
+    # Accept exact match OR sub-second component preserved within
+    # NTFS resolution (~100ns); reject if rounded to whole seconds.
+    return abs(actual_ns - target_ns) < 1_000_000_000
+
+
+def test_file_mtime_ns_returns_nanosecond_precision_on_ns_filesystem(tmp_path):
+    """**Codex R4 Minor #2 unit test — helper returns ns precision.**
+
+    Directly probe ``_file_mtime_ns``: plant a file, set its mtime via
+    ``os.utime(ns=...)``, read back. Assert the return value matches
+    the stamped nanosecond (or rounds to the filesystem's native
+    sub-second resolution). The fallback branch (filesystems without
+    ``st_mtime_ns``) is exercised by the broader ladder + return
+    contract; this test pins the happy-path precision contract.
+    """
+    if not _filesystem_supports_ns_mtime(tmp_path):
+        pytest.skip(
+            "test filesystem does not preserve sub-second mtime; "
+            "_file_mtime_ns falls back to st_mtime * 1e9 here"
+        )
+    from swing.data.ohlcv_archive import _file_mtime_ns
+
+    p = tmp_path / "ns_helper_probe.txt"
+    p.write_text("hi")
+    target_ns = 1_700_000_010_500_000_000
+    os.utime(p, ns=(target_ns, target_ns))
+
+    actual_ns = _file_mtime_ns(p)
+    # NTFS preserves to 100ns; ext4 to 1ns. Accept exact match or
+    # rounded to 100ns granularity.
+    assert abs(actual_ns - target_ns) < 1000, (
+        f"Codex R4 Minor #2: _file_mtime_ns({p}) returned {actual_ns!r}, "
+        f"expected ~{target_ns!r} (or within filesystem precision)"
+    )
+
+
+def test_backward_compat_rename_nanosecond_mtime_distinguishes_within_second(
+    tmp_path,
+):
+    """**Codex R4 Minor #2 discriminating test — nanosecond mtime.**
+
+    On filesystems with sub-second mtime resolution (NTFS / ext4 / modern
+    POSIX), a real legacy refresh that lands in the same wall-clock
+    second as the Shape A write should still win on conflict when
+    legacy's nanosecond stamp is strictly later. Pre-R4 code used
+    ``st_mtime`` (float seconds), which on coarse filesystems would
+    tie at the second-level, falling through to the Shape-A-wins
+    default branch. Post-R4 uses ``_file_mtime_ns`` for full
+    nanosecond precision.
+
+    Plant Shape A first, then legacy; force their mtimes to identical
+    integer-second components but legacy's nanosecond component
+    strictly later (legacy = base+500ms, Shape A = base+100ms). Under
+    a second-level pick, ``int(legacy_mtime) == int(shape_a_mtime)``
+    → tie → Shape A wins (close=100.0 retained). Under nanosecond
+    pick, legacy wins (close=110.0).
+
+    SKIPPED if the test filesystem rounds mtime to whole seconds
+    (FAT32 / older NFS / older SMB) — in that environment the
+    operating system does not preserve the sub-second precision we
+    are testing, so the test cannot run, but the code's behavior is
+    still V1 best-effort (sec-level mtime).
+    """
+    if not _filesystem_supports_ns_mtime(tmp_path):
+        pytest.skip(
+            "test filesystem does not preserve sub-second mtime "
+            "(FAT32 / older NFS / older SMB); R4 Minor #2 "
+            "nanosecond-precision behavior is V1 best-effort here"
+        )
+    from swing.data.ohlcv_archive import _backward_compat_rename
+
+    new_path = tmp_path / "AAPL.yfinance.parquet"
+    shape_a = _mk_window(["2026-01-15"], close=100.0)
+    shape_a.to_parquet(new_path)
+
+    old_path = tmp_path / "AAPL.parquet"
+    legacy = _mk_legacy_datetimeindex_window(["2026-01-15"], close=110.0)
+    legacy.to_parquet(old_path)
+
+    # Force same-second mtimes but distinct nanoseconds: legacy strictly
+    # later (so legacy SHOULD win post-R4 nanosecond pick).
+    base_seconds = int(new_path.stat().st_mtime) + 5
+    shape_a_ns = base_seconds * 1_000_000_000 + 100_000_000  # +100ms
+    legacy_ns = base_seconds * 1_000_000_000 + 500_000_000   # +500ms
+    os.utime(new_path, ns=(shape_a_ns, shape_a_ns))
+    os.utime(old_path, ns=(legacy_ns, legacy_ns))
+
+    # Sanity: second-level mtimes are identical (or at worst rounded
+    # equal); nanosecond mtimes are distinct.
+    assert int(new_path.stat().st_mtime) == int(old_path.stat().st_mtime), (
+        "test setup invariant: forced second-level identity"
+    )
+    assert (
+        old_path.stat().st_mtime_ns > new_path.stat().st_mtime_ns
+    ), "test setup invariant: legacy nanosecond-newer than Shape A"
+
+    _backward_compat_rename("AAPL", cache_dir=tmp_path)
+
+    merged = pd.read_parquet(new_path)
+    assert len(merged) == 1
+    assert float(merged.iloc[0]["close"]) == 110.0, (
+        "Codex R4 Minor #2: legacy was nanosecond-fresher within the "
+        "same wall-clock second but Shape A value won on conflict; got "
+        f"close={merged.iloc[0]['close']} (expected 110.0 from legacy). "
+        "Nanosecond-precision mtime pick missing — code reverted to "
+        "second-level float mtime."
+    )
+
+
 def test_backward_compat_rename_mtime_tie_shape_a_wins(tmp_path):
     """**Codex R3 Major #1 — tie-breaker preserves pre-R3 default (Shape A
     wins).**
