@@ -50,3 +50,12 @@ research/harness/*/smoke-out/
 # Covers per-phase (.tmp-phase4/ etc.) and per-verify (.tmp-orchestrator-verify/,
 # .tmp-mathtext-verify/, .tmp-manual/, etc.) variants under one glob.
 .tmp-*/
+
+# Bulk reference artifacts (operator-local-only per phase3e-todo 2026-05-13
+# "Minervini + body-of-knowledge reference review" entry tracking-decision).
+# Source-of-truth curated extracts at reference/methodology/ ARE tracked
+# (small + hand-curated). The bulk PDF + pymupdf4llm-converted MD + figures
+# stay local-only (~110 MB combined) — too large + too auto-generated for
+# repo tracking; review-dispatches consume operator's local copy.
+reference/Books/
+reference/minervini/
