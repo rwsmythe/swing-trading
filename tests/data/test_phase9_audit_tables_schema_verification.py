@@ -134,6 +134,11 @@ _AES_EXPECTED_COLS: frozenset[str] = frozenset({
     "recorded_at",
     "recorded_by",
     "notes",
+    # Phase 11 (migration 0018) ALTER ADD COLUMN: schwab_account_hash TEXT
+    # NULLABLE. Audit-side attribution to schwab_api_calls. Bundle C
+    # consumer-side contract retained (the 8 originals still present); new
+    # column is additive.
+    "schwab_account_hash",
 })
 
 
@@ -147,7 +152,8 @@ def test_account_equity_snapshots_has_eight_columns_for_consumer(
         f"Bundle C consumer schema drift on account_equity_snapshots; "
         f"missing={_AES_EXPECTED_COLS - cols}; extra={cols - _AES_EXPECTED_COLS}"
     )
-    assert len(cols) == 8
+    # Phase 11 (migration 0018) added schwab_account_hash → 9 columns.
+    assert len(cols) == 9
 
 
 def test_account_equity_snapshots_pk_is_snapshot_id_autoincrement(

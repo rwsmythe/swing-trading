@@ -16,6 +16,10 @@ class FieldSpec:
     hard_refuse_max: Any | None
     soft_warn_min: Any | None
     soft_warn_max: Any | None
+    # Sub-bundle A T-A.2 — `masked=True` triggers asterisk masking in CLI
+    # `swing config show` + web VM rendering for sensitive fields (e.g.,
+    # account_hash). Default False preserves existing call-sites.
+    masked: bool = False
 
 
 @dataclass(frozen=True)
@@ -64,10 +68,45 @@ FIELD_REGISTRY: tuple[FieldSpec, ...] = (
         hard_refuse_min=0.0, hard_refuse_max=None,
         soft_warn_min=1000.0, soft_warn_max=25000.0,
     ),
+    # Sub-bundle A T-A.2 — Schwab account_hash is sensitive; FIELD_REGISTRY
+    # surfaces it as a `masked=True` entry so CLI `swing config show` + web VM
+    # render the masked form (first 3 + asterisks + last 2). NOT editable via
+    # `swing config set` (Schwab account_hash is written via `swing schwab setup`
+    # in T-A.4); the registry entry is read-only/display-only for masking.
+    FieldSpec(
+        path="integrations.schwab.account_hash",
+        label="Schwab account hash",
+        description=(
+            "Operator's Schwab linked-account hashValue (sensitive). Set via "
+            "`swing schwab setup`. Displayed masked here."
+        ),
+        type=str, default=None,
+        hard_refuse_min=None, hard_refuse_max=None,
+        soft_warn_min=None, soft_warn_max=None,
+        masked=True,
+    ),
 )
 
 
 _BY_PATH: dict[str, FieldSpec] = {s.path: s for s in FIELD_REGISTRY}
+
+
+def mask_sensitive_value(value: Any) -> str:
+    """Mask a sensitive value for CLI/VM rendering.
+
+    Pattern: first 3 chars verbatim + 3 asterisks + last 2 chars verbatim
+    (e.g., "1A2***9F" — matches spec §3.5 mock).
+
+    - ``None`` -> ``"(not set)"``
+    - Values shorter than 5 chars -> rendered verbatim (cannot mask sensibly;
+      operator misconfiguration surfaced rather than hidden silently).
+    """
+    if value is None:
+        return "(not set)"
+    s = str(value)
+    if len(s) < 5:
+        return s
+    return f"{s[:3]}***{s[-2:]}"
 
 
 def get_spec(field_path: str) -> FieldSpec:
@@ -92,6 +131,11 @@ def coerce_value(field_path: str, raw_value: str) -> Any:
         return int(f)
     if spec.type is float:
         return float(raw_value)
+    if spec.type is str:
+        # Sub-bundle A T-A.2 — str passthrough for masked display-only entries
+        # (e.g., integrations.schwab.account_hash). No further coercion; the
+        # CLI/web caller layer is responsible for any normalization.
+        return raw_value
     raise ValueError(f"unsupported type for {field_path}: {spec.type}")
 
 

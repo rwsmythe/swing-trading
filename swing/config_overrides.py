@@ -14,7 +14,14 @@ from swing.config import Config
 from swing.config_user import load_user_overrides
 
 # V1 field paths — keep in lockstep with config_validation.FIELD_REGISTRY.
-_V1_PATHS = ("web.chase_factor", "pipeline.chart_top_n_watch", "account.risk_equity_floor")
+# `integrations.schwab.account_hash` added Sub-bundle A T-A.2 (masked display
+# entry; NOT user-editable via `swing config set`).
+_V1_PATHS = (
+    "web.chase_factor",
+    "pipeline.chart_top_n_watch",
+    "account.risk_equity_floor",
+    "integrations.schwab.account_hash",
+)
 
 
 class _Missing:
@@ -77,8 +84,38 @@ def apply_overrides(base_cfg: Config) -> Config:
         # one day and 'v=152&...' the next forks the audit history under two
         # `screen_query` keys, defeating drift detection.
         new_finviz = replace(new_finviz, screen_query=str(fv_query).lstrip("?"))
-    if new_finviz is not base_cfg.integrations.finviz:
-        new_integrations = replace(base_cfg.integrations, finviz=new_finviz)
+
+    # integrations.schwab overrides — 4 user-config-only fields per Sub-bundle A
+    # T-A.2 plan §A.6 + recon §2.9 (environment / account_hash / lookback_days /
+    # callback_url). timeout_seconds + marketdata_ladder_enabled live in tracked
+    # swing.config.toml and are NOT user-overridable (matches Finviz pattern).
+    new_schwab = base_cfg.integrations.schwab
+    sw_env = _get(overrides, "integrations.schwab.environment")
+    if not isinstance(sw_env, _Missing):
+        new_schwab = replace(new_schwab, environment=str(sw_env))
+    sw_hash = _get(overrides, "integrations.schwab.account_hash")
+    if not isinstance(sw_hash, _Missing):
+        # Preserve None (explicit clear); else coerce to str.
+        new_schwab = replace(
+            new_schwab,
+            account_hash=None if sw_hash is None else str(sw_hash),
+        )
+    sw_lookback = _get(overrides, "integrations.schwab.lookback_days")
+    if not isinstance(sw_lookback, _Missing):
+        new_schwab = replace(new_schwab, lookback_days=int(sw_lookback))
+    sw_callback = _get(overrides, "integrations.schwab.callback_url")
+    if not isinstance(sw_callback, _Missing):
+        new_schwab = replace(new_schwab, callback_url=str(sw_callback))
+
+    if (
+        new_finviz is not base_cfg.integrations.finviz
+        or new_schwab is not base_cfg.integrations.schwab
+    ):
+        new_integrations = replace(
+            base_cfg.integrations,
+            finviz=new_finviz,
+            schwab=new_schwab,
+        )
 
     return replace(
         base_cfg,
@@ -102,7 +139,11 @@ def get_field_source(base_cfg: Config, field_path: str) -> Literal["default", "t
         return "override"
     from swing.config_validation import FIELD_REGISTRY
     spec = next(s for s in FIELD_REGISTRY if s.path == field_path)
-    section, key = field_path.split(".")
-    section_obj = getattr(base_cfg, section)
-    base_value = getattr(section_obj, key)
+    # Sub-bundle A T-A.2 — walk N-part dotted path (e.g.,
+    # 'integrations.schwab.account_hash') to support nested sub-dataclasses.
+    parts = field_path.split(".")
+    cursor: Any = base_cfg
+    for part in parts:
+        cursor = getattr(cursor, part)
+    base_value = cursor
     return "tracked" if base_value != spec.default else "default"

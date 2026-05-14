@@ -219,6 +219,133 @@ def test_recon_run_accepts_completed_with_finished_and_summary() -> None:
     assert r.discrepancies_count == 3
 
 
+# ---------------------------------------------------------------------------
+# Codex R1 Major #5 — schwab_api_call_id field validator + round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_recon_run_schwab_api_call_id_defaults_to_none() -> None:
+    """schwab_api_call_id is an optional trailing field; default None
+    preserves backward-compat with tos_csv runs.
+    """
+    r = _make_run()
+    assert r.schwab_api_call_id is None
+
+
+def test_recon_run_accepts_positive_schwab_api_call_id() -> None:
+    r = _make_run(schwab_api_call_id=42)
+    assert r.schwab_api_call_id == 42
+
+
+def test_recon_run_rejects_zero_negative_or_non_int_schwab_api_call_id() -> None:
+    """Codex R1 Major #5: zero / negative / non-int / bool rejected."""
+    with pytest.raises(ValueError, match="schwab_api_call_id"):
+        _make_run(schwab_api_call_id=0)
+    with pytest.raises(ValueError, match="schwab_api_call_id"):
+        _make_run(schwab_api_call_id=-1)
+    with pytest.raises(ValueError, match="schwab_api_call_id"):
+        _make_run(schwab_api_call_id="1")
+    with pytest.raises(ValueError, match="schwab_api_call_id"):
+        _make_run(schwab_api_call_id=True)
+
+
+def test_insert_run_round_trips_schwab_api_call_id_when_set(
+    conn: sqlite3.Connection,
+) -> None:
+    """Codex R1 Major #5: insert_run accepts schwab_api_call_id, persists
+    to DB, get_run returns it on the dataclass.
+
+    To satisfy the FK ON DELETE SET NULL constraint, first seed a real
+    schwab_api_calls row + use its call_id.
+    """
+    # Seed a pipeline_runs row + schwab_api_calls row to satisfy FKs.
+    cur = conn.execute(
+        "INSERT INTO pipeline_runs ("
+        "started_ts, trigger, data_asof_date, action_session_date, "
+        "state, lease_token"
+        ") VALUES (?, ?, ?, ?, ?, ?)",
+        ("2026-05-13T08:00:00", "manual", "2026-05-12", "2026-05-13",
+         "running", "test-token"),
+    )
+    pipeline_run_id = int(cur.lastrowid)
+    cur = conn.execute(
+        "INSERT INTO schwab_api_calls ("
+        "ts, endpoint, status, pipeline_run_id, surface, environment"
+        ") VALUES (?, ?, ?, ?, ?, ?)",
+        ("2026-05-13T12:00:00", "accounts.transactions.list", "success",
+         pipeline_run_id, "pipeline", "sandbox"),
+    )
+    call_id = int(cur.lastrowid)
+
+    rid = repo.insert_run(
+        conn,
+        source="schwab_api",
+        started_ts="2026-05-13T12:00:00",
+        schwab_api_call_id=call_id,
+    )
+    r = repo.get_run(conn, rid)
+    assert r is not None
+    assert r.schwab_api_call_id == call_id
+
+
+def test_insert_run_round_trips_schwab_api_call_id_none_when_omitted(
+    conn: sqlite3.Connection,
+) -> None:
+    """Codex R1 Major #5: insert_run with schwab_api_call_id omitted
+    persists NULL + round-trips as None.
+    """
+    rid = repo.insert_run(
+        conn,
+        source="tos_csv",
+        started_ts="2026-05-13T12:00:00",
+    )
+    r = repo.get_run(conn, rid)
+    assert r is not None
+    assert r.schwab_api_call_id is None
+
+
+def test_insert_run_schwab_api_call_id_fk_set_null_on_delete(
+    conn: sqlite3.Connection,
+) -> None:
+    """Codex R1 Major #5: FK ON DELETE SET NULL per migration 0018.
+    When the parent schwab_api_calls row is deleted, the reconciliation
+    run's schwab_api_call_id flips to NULL (not the run row itself).
+    """
+    # Seed parent rows.
+    cur = conn.execute(
+        "INSERT INTO pipeline_runs ("
+        "started_ts, trigger, data_asof_date, action_session_date, "
+        "state, lease_token"
+        ") VALUES (?, ?, ?, ?, ?, ?)",
+        ("2026-05-13T08:00:00", "manual", "2026-05-12", "2026-05-13",
+         "running", "test-token"),
+    )
+    pipeline_run_id = int(cur.lastrowid)
+    cur = conn.execute(
+        "INSERT INTO schwab_api_calls ("
+        "ts, endpoint, status, pipeline_run_id, surface, environment"
+        ") VALUES (?, ?, ?, ?, ?, ?)",
+        ("2026-05-13T12:00:00", "accounts.transactions.list", "success",
+         pipeline_run_id, "pipeline", "sandbox"),
+    )
+    call_id = int(cur.lastrowid)
+
+    rid = repo.insert_run(
+        conn,
+        source="schwab_api",
+        started_ts="2026-05-13T12:00:00",
+        schwab_api_call_id=call_id,
+    )
+    # Delete the parent schwab_api_calls row.
+    conn.execute("DELETE FROM schwab_api_calls WHERE call_id = ?", (call_id,))
+    # Reconciliation run still exists; schwab_api_call_id is now NULL.
+    r = repo.get_run(conn, rid)
+    assert r is not None, "reconciliation run MUST survive parent delete"
+    assert r.schwab_api_call_id is None, (
+        "FK ON DELETE SET NULL should have nulled the link"
+    )
+
+
 # ===========================================================================
 # §2 — ReconciliationDiscrepancy dataclass validator
 # ===========================================================================

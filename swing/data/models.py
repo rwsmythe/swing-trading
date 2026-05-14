@@ -1,6 +1,7 @@
 """Dataclass representations of DB rows."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date
 
@@ -850,6 +851,12 @@ class ReconciliationRun:
     summary_json: str | None
     error_message: str | None
     notes: str | None
+    # Codex R1 Major #5 — schwab_api_call_id ALTER added by migration 0018
+    # (FK ON DELETE SET NULL → schwab_api_calls.call_id). Bundle B+
+    # `run_tos_reconciliation` writes via the new Schwab transactions
+    # endpoint will populate this; tos_csv runs leave NULL. Field ordered
+    # LAST (Phase 9 §H.4 positional-instantiation preservation precedent).
+    schwab_api_call_id: int | None = None
 
     def __post_init__(self) -> None:
         import math
@@ -919,6 +926,19 @@ class ReconciliationRun:
         if self.state == "failed" and not self.error_message:
             raise ValueError(
                 "state='failed' requires non-empty error_message"
+            )
+
+        # Codex R1 Major #5 — schwab_api_call_id validator (None or
+        # positive int). FK is enforced at SQL layer; this catches
+        # construction-time slip (zero / negative / wrong type).
+        if self.schwab_api_call_id is not None and (
+            isinstance(self.schwab_api_call_id, bool)
+            or not isinstance(self.schwab_api_call_id, int)
+            or self.schwab_api_call_id <= 0
+        ):
+            raise ValueError(
+                "schwab_api_call_id must be None or positive int, "
+                f"got {self.schwab_api_call_id!r}"
             )
 
 
@@ -1163,3 +1183,202 @@ class HypothesisStatusHistory:
                 "(TEXT lexicographic ordering preserves chronology under "
                 "naive-UTC millisecond-precision per spec §9.3)"
             )
+
+
+# ============================================================================
+# Phase 11 — Schwab API integration audit row (migration 0018).
+# ============================================================================
+
+
+_SCHWAB_VALID_ENDPOINTS = frozenset({
+    "oauth.code_exchange", "oauth.refresh", "oauth.revoke",
+    "accounts.linked", "accounts.details",
+    "accounts.orders.list", "accounts.transactions.list",
+    "marketdata.quotes", "marketdata.pricehistory",
+})
+
+_SCHWAB_VALID_STATUSES = frozenset({
+    "in_flight", "success", "error",
+    "auth_failed", "rate_limited", "concurrent_refresh",
+})
+
+_SCHWAB_SIGNATURE_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+@dataclass(frozen=True)
+class SchwabApiCall:
+    """Audit row for one Schwab API call (migration 0018, plan §H.7).
+
+    Captures the per-call observability surface required by spec §3 and the
+    operator's dashboard / CLI surfaces. Validators are defense-in-depth on
+    top of the SQL CHECK constraints in 0018 — the dataclass is the binding
+    artifact for service-layer construction at T-A.9.
+
+    ``signature_hash`` is None for in-flight / error rows; populated on
+    completed-payload rows as a 64-char lowercase hex SHA-256 digest of the
+    relevant response body slice (drift-detection consumer per Finviz
+    precedent).
+
+    ``http_status`` is None for never-reached cases (auth_failed before
+    request, concurrent_refresh aborted, etc.); 100-599 inclusive when set
+    per RFC 9110 status-code range.
+
+    ``rate_limit_remaining`` is best-effort (None when Schwab does not
+    include the header or response is unparseable); no constraint per plan
+    §H.7.
+
+    Caller-controlled tx discipline lives in the repo layer
+    (``swing/data/repos/schwab_api_calls.py``); the service layer at T-A.9
+    will own BEGIN IMMEDIATE / COMMIT / ROLLBACK.
+    """
+
+    call_id: int | None  # None pre-INSERT.
+    ts: str  # ISO 8601, naive datetime per Finviz / Phase 9 convention.
+    endpoint: str
+    http_status: int | None
+    response_time_ms: int | None
+    rate_limit_remaining: int | None
+    signature_hash: str | None
+    status: str
+    error_message: str | None
+    linked_snapshot_id: int | None
+    linked_reconciliation_run_id: int | None
+    pipeline_run_id: int | None
+    surface: str
+    environment: str
+
+    def __post_init__(self) -> None:
+        if self.endpoint not in _SCHWAB_VALID_ENDPOINTS:
+            raise ValueError(
+                f"endpoint must be in {sorted(_SCHWAB_VALID_ENDPOINTS)}, "
+                f"got {self.endpoint!r}"
+            )
+        if self.status not in _SCHWAB_VALID_STATUSES:
+            raise ValueError(
+                f"status must be in {sorted(_SCHWAB_VALID_STATUSES)}, "
+                f"got {self.status!r}"
+            )
+        if self.surface not in ("pipeline", "cli"):
+            raise ValueError(
+                f"surface must be 'pipeline' or 'cli', got {self.surface!r}"
+            )
+        if self.environment not in ("sandbox", "production"):
+            raise ValueError(
+                "environment must be 'sandbox' or 'production', "
+                f"got {self.environment!r}"
+            )
+        # Codex R3 Minor #1: bool is an int subclass; reject explicitly.
+        # Non-int values (e.g. float 200.5) raise controlled ValueError
+        # instead of silently passing the range check.
+        if self.http_status is not None:
+            if isinstance(self.http_status, bool) or not isinstance(
+                self.http_status, int
+            ):
+                raise ValueError(
+                    "http_status must be None or int (not bool), "
+                    f"got {type(self.http_status).__name__}"
+                )
+            if not (100 <= self.http_status < 600):
+                raise ValueError(
+                    "http_status must be None or 100-599 (RFC 9110), "
+                    f"got {self.http_status}"
+                )
+        if self.response_time_ms is not None:
+            if isinstance(self.response_time_ms, bool) or not isinstance(
+                self.response_time_ms, int
+            ):
+                raise ValueError(
+                    "response_time_ms must be None or int (not bool), "
+                    f"got {type(self.response_time_ms).__name__}"
+                )
+            if self.response_time_ms < 0:
+                raise ValueError(
+                    "response_time_ms must be None or >= 0, "
+                    f"got {self.response_time_ms}"
+                )
+        if (
+            self.signature_hash is not None
+            and not _SCHWAB_SIGNATURE_HASH_RE.fullmatch(self.signature_hash)
+        ):
+            raise ValueError(
+                "signature_hash must be None or 64-char lowercase hex, "
+                f"got {self.signature_hash!r}"
+            )
+        # Codex R1 Major #4 — close validator-coverage gap for the 7
+        # remaining audit columns. Plan §B.1 + §H.7 specified validators
+        # across all 14 audit columns; the prior implementation only
+        # covered the 7 enum/range/regex ones. The remaining 7 columns
+        # below enforce per-field defense-in-depth on top of the SQL
+        # constraints in migration 0018.
+
+        # call_id: None pre-INSERT; positive int post-INSERT.
+        if self.call_id is not None and (
+            isinstance(self.call_id, bool)
+            or not isinstance(self.call_id, int)
+            or self.call_id <= 0
+        ):
+            raise ValueError(
+                f"call_id must be None or positive int, got {self.call_id!r}"
+            )
+
+        # ts: non-empty string parseable by datetime.fromisoformat
+        # (permissive ISO 8601 acceptance; covers `YYYY-MM-DDTHH:MM:SS`
+        # naked + microsecond-precision + ±HH:MM offsets per Phase 9
+        # spec §9.3 timestamp convention).
+        if not isinstance(self.ts, str) or not self.ts:
+            raise ValueError(
+                f"ts must be non-empty ISO 8601 string, got {self.ts!r}"
+            )
+        try:
+            from datetime import datetime as _dt
+            _dt.fromisoformat(self.ts)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"ts must be ISO 8601 parseable, got {self.ts!r}"
+            ) from exc
+
+        # rate_limit_remaining: None or non-negative int. No upper bound
+        # per plan §H.7 (best-effort header echo).
+        # Codex R2 Minor #1: bool is an int subclass in Python; reject
+        # explicitly. Non-int values raise controlled ValueError instead of
+        # TypeError on the `< 0` comparison.
+        if self.rate_limit_remaining is not None:
+            if isinstance(self.rate_limit_remaining, bool) or not isinstance(
+                self.rate_limit_remaining, int
+            ):
+                raise ValueError(
+                    "rate_limit_remaining must be None or int (not bool), "
+                    f"got {type(self.rate_limit_remaining).__name__}"
+                )
+            if self.rate_limit_remaining < 0:
+                raise ValueError(
+                    "rate_limit_remaining must be None or >= 0, "
+                    f"got {self.rate_limit_remaining}"
+                )
+
+        # error_message: None or string. No length cap at this layer
+        # (rendering layer truncates per redaction discipline).
+        if (
+            self.error_message is not None
+            and not isinstance(self.error_message, str)
+        ):
+            raise ValueError(
+                f"error_message must be None or str, "
+                f"got {type(self.error_message).__name__}"
+            )
+
+        # linked_snapshot_id / linked_reconciliation_run_id /
+        # pipeline_run_id: each None or positive int. FK satisfaction
+        # is enforced at the SQL layer; per-field validator catches
+        # construction-time slip (zero / negative / wrong type).
+        for fname, fval in (
+            ("linked_snapshot_id", self.linked_snapshot_id),
+            ("linked_reconciliation_run_id", self.linked_reconciliation_run_id),
+            ("pipeline_run_id", self.pipeline_run_id),
+        ):
+            if fval is not None and (
+                isinstance(fval, bool) or not isinstance(fval, int) or fval <= 0
+            ):
+                raise ValueError(
+                    f"{fname} must be None or positive int, got {fval!r}"
+                )
