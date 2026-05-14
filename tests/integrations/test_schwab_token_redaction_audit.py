@@ -1625,3 +1625,199 @@ def test_28_redacted_excerpt_redacts_before_truncating_boundary_straddle():
             f"Partial sentinel prefix {partial!r} (start={start}) leaked "
             f"through truncation-first path: {redacted!r}"
         )
+
+
+# ============================================================================
+# Codex R1 Major #6 — sentinels emitted FROM INSIDE the schwabdev call
+# ============================================================================
+#
+# Prior T-C.7 tests (test_24 + test_25) emit Schwabdev-logger records BEFORE
+# invoking the wrapper. Codex R1 Major #6 flagged that these tests do not
+# prove sentinels emitted from INSIDE schwabdev's quotes/price_history are
+# suppressed when those emissions happen as a side-effect of the actual
+# method call.
+#
+# These tests close that gap by attaching a side_effect to the MagicMock
+# `quotes` / `price_history` method that emits a Schwabdev-logger warning
+# carrying the sentinel WHEN CALLED. The wrapper consumes the response
+# normally; we then assert ZERO sentinel leakage through caplog + audit.
+
+
+def test_27_marketdata_quotes_sentinel_emitted_from_inside_call_is_redacted(
+    tmp_path, caplog,
+):
+    """Codex R1 Major #6 discriminating test: schwabdev's `quotes` method
+    emits a sentinel-bearing log record DURING the call (side-effect on
+    invocation). Wrapper MUST NOT leak the sentinel into caplog records
+    from `Schwabdev*` loggers (Layer-2 factory replacement covers this) NOR
+    into the audit `error_message` column.
+
+    Discriminates against the pre-Major-#6 testing pattern where sentinels
+    were emitted BEFORE the wrapper call — that pattern doesn't exercise
+    the wrapper's logger-context during the call window.
+    """
+    import logging as _logging
+    from unittest.mock import MagicMock as _MagicMock
+
+    from swing.data.db import ensure_schema
+    from swing.integrations.schwab.client import (
+        ensure_schwab_log_redaction_factory_installed,
+        register_schwab_secrets,
+    )
+    from swing.integrations.schwab.marketdata import get_quotes_batch
+
+    conn = ensure_schema(tmp_path / "marketdata-quotes-inside-call.db")
+
+    sentinel = "SENTINEL_QUOTES_INSIDE_" + uuid.uuid4().hex[:8]
+    register_schwab_secrets([sentinel])
+    ensure_schwab_log_redaction_factory_installed()
+
+    # Side-effect: emit a Schwabdev logger record carrying the sentinel
+    # WHEN `quotes(...)` is called. Then return a normal 200 response.
+    schwabdev_logger = _logging.getLogger("Schwabdev.tokens")
+
+    def fake_quotes(symbols=None, fields=None, indicative=False):
+        # Mirrors schwabdev's internal token-refresh logging shape.
+        schwabdev_logger.warning(
+            f"quotes call dispatch — token refresh complete; token={sentinel}"
+        )
+        resp = _MagicMock()
+        resp.status_code = 200
+        # Return a populated quote so the wrapper's success path runs end-to-end.
+        resp.json.return_value = {
+            "AAPL": {
+                "quote": {
+                    "lastPrice": 100.0,
+                    "bidPrice": 99.5,
+                    "askPrice": 100.5,
+                    "mark": 100.0,
+                    "quoteTimeInLong": 1715692800000,
+                    "delayed": False,
+                },
+            },
+        }
+        resp.elapsed = _MagicMock()
+        resp.elapsed.total_seconds.return_value = 0.05
+        resp.headers = {}
+        return resp
+
+    client = _MagicMock()
+    client.quotes.side_effect = fake_quotes
+
+    with caplog.at_level(_logging.DEBUG, logger="Schwabdev"):
+        get_quotes_batch(
+            client, conn, ["AAPL"],
+            surface="cli", environment="production",
+        )
+
+    # Discriminating: sentinel absent from ALL caplog records (any logger).
+    for rec in caplog.records:
+        msg = rec.getMessage()
+        assert sentinel not in msg, (
+            f"caplog leaked sentinel from inside-call emission "
+            f"(logger={rec.name!r}): {msg!r}"
+        )
+        # Also assert against the formatted `.message` (some records may
+        # carry the formatted form alongside the args-based getMessage).
+        formatted = getattr(rec, "message", "") or ""
+        assert sentinel not in formatted, (
+            f"caplog.message leaked sentinel (logger={rec.name!r}): "
+            f"{formatted!r}"
+        )
+
+    # Audit `error_message` must also not carry the sentinel (defensive —
+    # the call succeeded, so error_message likely None; assert anyway).
+    rows = conn.execute(
+        "SELECT error_message FROM schwab_api_calls "
+        "WHERE error_message IS NOT NULL"
+    ).fetchall()
+    for r in rows:
+        assert sentinel not in (r[0] or ""), (
+            f"audit error_message leaked inside-call sentinel: {r[0]!r}"
+        )
+
+
+def test_28_marketdata_price_history_sentinel_emitted_from_inside_call_is_redacted(
+    tmp_path, caplog,
+):
+    """Codex R1 Major #6 discriminating test (price_history twin of test_27):
+    schwabdev's `price_history` method emits a sentinel-bearing log record
+    DURING the call. Wrapper MUST NOT leak the sentinel via caplog or audit.
+    """
+    import logging as _logging
+    from unittest.mock import MagicMock as _MagicMock
+
+    from swing.data.db import ensure_schema
+    from swing.integrations.schwab.client import (
+        ensure_schwab_log_redaction_factory_installed,
+        register_schwab_secrets,
+    )
+    from swing.integrations.schwab.marketdata import get_price_history
+
+    conn = ensure_schema(tmp_path / "marketdata-ph-inside-call.db")
+
+    sentinel = "SENTINEL_PH_INSIDE_" + uuid.uuid4().hex[:8]
+    register_schwab_secrets([sentinel])
+    ensure_schwab_log_redaction_factory_installed()
+
+    schwabdev_logger = _logging.getLogger("Schwabdev.marketdata")
+
+    def fake_price_history(
+        symbol=None, periodType=None, period=None,
+        frequencyType=None, frequency=None,
+        startDate=None, endDate=None,
+        needExtendedHoursData=None, needPreviousClose=None,
+    ):
+        schwabdev_logger.warning(
+            f"price_history dispatch — token refresh complete; "
+            f"token={sentinel}; symbol={symbol}"
+        )
+        resp = _MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "candles": [
+                {
+                    "datetime": 1715692800000,
+                    "open": 100.0, "high": 105.0, "low": 98.0, "close": 102.0,
+                    "volume": 12345,
+                },
+            ],
+            "empty": False,
+            "symbol": symbol or "AAPL",
+        }
+        resp.elapsed = _MagicMock()
+        resp.elapsed.total_seconds.return_value = 0.05
+        resp.headers = {}
+        return resp
+
+    client = _MagicMock()
+    client.price_history.side_effect = fake_price_history
+
+    with caplog.at_level(_logging.DEBUG, logger="Schwabdev"):
+        get_price_history(
+            client, conn, "AAPL",
+            period_type="day", period=10,
+            frequency_type="minute", frequency=1,
+            surface="cli", environment="production",
+        )
+
+    for rec in caplog.records:
+        msg = rec.getMessage()
+        assert sentinel not in msg, (
+            f"caplog leaked sentinel from inside-call emission "
+            f"(logger={rec.name!r}): {msg!r}"
+        )
+        formatted = getattr(rec, "message", "") or ""
+        assert sentinel not in formatted, (
+            f"caplog.message leaked sentinel (logger={rec.name!r}): "
+            f"{formatted!r}"
+        )
+
+    rows = conn.execute(
+        "SELECT error_message FROM schwab_api_calls "
+        "WHERE error_message IS NOT NULL"
+    ).fetchall()
+    for r in rows:
+        assert sentinel not in (r[0] or ""), (
+            f"audit error_message leaked inside-call sentinel: {r[0]!r}"
+        )
