@@ -17,11 +17,17 @@ from __future__ import annotations
 import click
 
 from swing.data.db import connect
-from swing.integrations.schwab.auth import setup_paste_flow
+from swing.integrations.schwab.auth import (
+    force_refresh,
+    revoke_and_delete,
+    setup_paste_flow,
+)
 from swing.integrations.schwab.client import (
+    SchwabApiError,
     SchwabAuthError,
     SchwabConfigMissingError,
     SchwabPipelineActiveError,
+    SchwabRefreshTokenExpiredError,
 )
 
 
@@ -170,3 +176,155 @@ def schwab_setup(
         "Do not back this file up to cloud storage / shared filesystems. "
         "To revoke: `swing schwab logout`.",
     )
+
+
+@schwab_group.command("refresh")
+@click.option(
+    "--environment",
+    "environment",
+    type=click.Choice(["sandbox", "production"], case_sensitive=False),
+    default=None,
+    help="Tier: sandbox or production. Defaults to cfg.integrations.schwab.environment.",
+)
+# CONCURRENT-SAFE per Codex R1 Minor #3: refresh has NO `--force` flag.
+# schwabdev's RLock + SQLite file lock on the tokens_file handle the inner
+# race naturally; gating on pipeline-active would block a legitimate refresh
+# during a long-running pipeline. The discriminating test
+# `test_refresh_does_not_accept_force_flag` pins this contract.
+@click.pass_context
+def schwab_refresh(
+    ctx: click.Context, environment: str | None,
+) -> None:
+    """Force-rotate the access_token using the existing refresh_token.
+
+    Prompts for client_id + client_secret (the tokens DB does NOT carry
+    these — schwabdev requires them at every Client construction).
+
+    Concurrent-safe — no `--force` flag. schwabdev's RLock + SQLite file
+    lock handle the inner race naturally.
+
+    Audit row at endpoint='oauth.refresh' is observable via the standard
+    `schwab_api_calls` query surface.
+    """
+    cfg = ctx.obj["config"]
+    env = environment or cfg.integrations.schwab.environment
+
+    # D3 pattern from T-A.4 hotfix: connect() validates schema BEFORE
+    # operator credential prompt — fail fast on schema mismatch.
+    conn = connect(cfg.paths.db_path)
+    try:
+        client_id = click.prompt("Schwab app client_id", type=str).strip()
+        client_secret = click.prompt(
+            "Schwab app client_secret", type=str, hide_input=True,
+        ).strip()
+        if not client_id:
+            raise click.ClickException("client_id is required (non-empty).")
+        if not client_secret:
+            raise click.ClickException("client_secret is required (non-empty).")
+
+        try:
+            result = force_refresh(
+                cfg=cfg,
+                environment=env,
+                client_id=client_id,
+                client_secret=client_secret,
+                conn=conn,
+            )
+        except SchwabRefreshTokenExpiredError as exc:
+            raise click.ClickException(
+                f"Refresh token has expired or been revoked. Run "
+                f"`swing schwab setup --environment {env}` to re-auth.\n"
+                f"Detail: {exc}",
+            ) from exc
+        except SchwabAuthError as exc:
+            raise click.ClickException(
+                f"Authentication failed during refresh: {exc}",
+            ) from exc
+        except SchwabApiError as exc:
+            raise click.ClickException(
+                f"Refresh failed (transient/network): {exc}",
+            ) from exc
+        except SchwabConfigMissingError as exc:
+            raise click.ClickException(str(exc)) from exc
+    finally:
+        conn.close()
+
+    click.echo(
+        f"Refresh complete. Tokens DB at {result['tokens_path']}.",
+    )
+
+
+@schwab_group.command("logout")
+@click.option(
+    "--environment",
+    "environment",
+    type=click.Choice(["sandbox", "production"], case_sensitive=False),
+    default=None,
+    help="Tier: sandbox or production. Defaults to cfg.integrations.schwab.environment.",
+)
+@click.option(
+    "--force",
+    "force",
+    is_flag=True,
+    default=False,
+    help="Bypass the pipeline-active concurrency exclusion (use only when sure).",
+)
+@click.pass_context
+def schwab_logout(
+    ctx: click.Context, environment: str | None, force: bool,
+) -> None:
+    """Revoke the refresh_token at Schwab + atomically rename the per-env
+    tokens DB to `<path>.deleted-<ts>` for a 24h recovery window.
+
+    Prompts for client_id + client_secret (needed for the
+    POST /v1/oauth/revoke Basic-auth header).
+
+    The local rename happens REGARDLESS of revoke success/failure — the
+    operator's intent on `logout` is "deactivate this device's tokens
+    locally" and revocation-at-Schwab is best-effort per plan §E.6.
+    """
+    cfg = ctx.obj["config"]
+    env = environment or cfg.integrations.schwab.environment
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        client_id = click.prompt("Schwab app client_id", type=str).strip()
+        client_secret = click.prompt(
+            "Schwab app client_secret", type=str, hide_input=True,
+        ).strip()
+        if not client_id:
+            raise click.ClickException("client_id is required (non-empty).")
+        if not client_secret:
+            raise click.ClickException("client_secret is required (non-empty).")
+
+        try:
+            result = revoke_and_delete(
+                cfg=cfg,
+                environment=env,
+                client_id=client_id,
+                client_secret=client_secret,
+                conn=conn,
+                force=force,
+            )
+        except SchwabPipelineActiveError as exc:
+            raise click.ClickException(str(exc)) from exc
+        except SchwabApiError as exc:
+            raise click.ClickException(str(exc)) from exc
+        except SchwabConfigMissingError as exc:
+            raise click.ClickException(str(exc)) from exc
+    finally:
+        conn.close()
+
+    if result["revoke_status"] == "success":
+        click.echo(
+            f"Logout complete. Refresh token revoked at Schwab. "
+            f"Tokens DB renamed to {result['deleted_path']} "
+            f"(24h recovery window).",
+        )
+    else:
+        click.echo(
+            f"Logout complete (revoke best-effort failed; "
+            f"local tokens still rotated). "
+            f"Tokens DB renamed to {result['deleted_path']} "
+            f"(24h recovery window).",
+        )

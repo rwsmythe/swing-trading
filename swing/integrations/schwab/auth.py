@@ -36,9 +36,11 @@ from typing import Any
 from swing.config_user import _user_home
 from swing.integrations.schwab import audit_service
 from swing.integrations.schwab.client import (
+    SchwabApiError,
     SchwabAuthError,
     SchwabConfigMissingError,
     SchwabPipelineActiveError,
+    SchwabRefreshTokenExpiredError,
     _suppress_transport_debug_logs,
 )
 
@@ -423,12 +425,370 @@ def setup_paste_flow(
     }
 
 
-def force_refresh(*args: Any, **kwargs: Any) -> Any:
-    """Force-rotate access + refresh tokens — implementation lands in T-A.5."""
-    raise NotImplementedError("force_refresh lands in T-A.5")
+def force_refresh(
+    cfg: Any,
+    environment: str,
+    client_id: str,
+    client_secret: str,
+    conn: sqlite3.Connection,
+) -> dict:
+    """Force-rotate the access_token using the existing refresh_token —
+    plan §H.2 (recon §6.bis live-library deviation).
+
+    Algorithm:
+      1. Server-stamp start_ts at handler entry.
+      2. Validate environment + credentials.
+      3. Resolve per-env tokens DB path.
+      4. INSERT in-flight audit row (oauth.refresh / cli / env).
+      5. Construct schwabdev.Client(...) — Client.__init__ loads existing
+         tokens from `tokens_file` without re-prompting when valid; the
+         daemon-thread checker schwabdev spawns is `daemon=True` so does
+         not block process exit.
+      6. Invoke `client.tokens.update_tokens(force_access_token=True)`.
+
+         DEVIATION from plan §H.2 step 6 (banked as V2.1 §VII.F amendment
+         candidate): plan text + recon §2.4 said `force_refresh_token=True`,
+         but live schwabdev tokens.py L160-198 shows that flag invokes the
+         full OAuth dance (`update_refresh_token` triggers `input()` for
+         the paste-back URL). The V1 semantic of `swing schwab refresh` is
+         "rotate access_token using existing refresh_token without a re-
+         auth prompt" — schwabdev's `force_access_token=True` flag does
+         exactly that (calls `update_access_token` which POSTs to
+         /v1/oauth/token with grant_type=refresh_token).
+
+      7. UPDATE audit row terminal status:
+         * 'success' if update succeeded;
+         * 'auth_failed' for SchwabRefreshTokenExpiredError / SchwabAuthError;
+         * 'error' for SchwabApiError (network / transient);
+         * 'auth_failed' for any other BaseException (defensive).
+      8. On success: return summary with `call_id` + `tokens_path`.
+
+    Concurrent-safe (Codex R1 Minor #3 LOCK): NO pipeline-active gate.
+    schwabdev's RLock + the SQLite file lock on tokens_file handle the
+    race naturally. `refresh` has NO `--force` flag at the CLI layer.
+
+    Raises:
+      * SchwabConfigMissingError — invalid environment or empty credentials.
+      * SchwabRefreshTokenExpiredError — refresh_token expired/revoked.
+      * SchwabAuthError — other authentication failure.
+      * SchwabApiError — non-auth network/transient failure.
+    """
+    # Step 1 — server-stamp BEFORE any I/O.
+    start_ts = _now_ms_iso()
+
+    # Step 2 — validate inputs.
+    if environment not in ("sandbox", "production"):
+        raise SchwabConfigMissingError(
+            f"environment must be 'sandbox' or 'production'; got {environment!r}",
+        )
+    if not client_id or not isinstance(client_id, str) or not client_id.strip():
+        raise SchwabConfigMissingError(
+            "client_id is required (non-empty string)",
+        )
+    if (
+        not client_secret
+        or not isinstance(client_secret, str)
+        or not client_secret.strip()
+    ):
+        raise SchwabConfigMissingError(
+            "client_secret is required (non-empty string)",
+        )
+
+    # Step 3 — resolve per-env tokens path.
+    tokens_path = _resolve_tokens_db_path(environment)
+    tokens_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Step 4 — INSERT in-flight audit row.
+    call_id = audit_service.record_call_start(
+        conn,
+        ts=start_ts,
+        endpoint="oauth.refresh",
+        pipeline_run_id=None,
+        surface="cli",
+        environment=environment,
+    )
+
+    # Step 5+6 — construct Client + invoke update_tokens.
+    call_start = time.monotonic()
+    try:
+        import schwabdev
+        with _suppress_transport_debug_logs():
+            client = schwabdev.Client(
+                app_key=client_id,
+                app_secret=client_secret,
+                callback_url=cfg.integrations.schwab.callback_url,
+                tokens_file=str(tokens_path),
+                timeout=int(cfg.integrations.schwab.timeout_seconds),
+            )
+            # See docstring DEVIATION block — `force_access_token=True` is
+            # the live-library semantic match for "rotate access_token via
+            # refresh_token without re-auth prompt".
+            client.tokens.update_tokens(force_access_token=True)
+        elapsed_ms = int((time.monotonic() - call_start) * 1000)
+    except SchwabRefreshTokenExpiredError as exc:
+        elapsed_ms = int((time.monotonic() - call_start) * 1000)
+        audit_service.record_call_finish(
+            conn,
+            call_id=call_id,
+            http_status=401,
+            status="auth_failed",
+            response_time_ms=elapsed_ms,
+            signature_hash=None,
+            rate_limit_remaining=None,
+            error_message=_redacted_excerpt(exc),
+        )
+        log.warning("schwab refresh: refresh_token expired or revoked")
+        raise
+    except SchwabAuthError as exc:
+        elapsed_ms = int((time.monotonic() - call_start) * 1000)
+        audit_service.record_call_finish(
+            conn,
+            call_id=call_id,
+            http_status=getattr(exc, "status_code", None),
+            status="auth_failed",
+            response_time_ms=elapsed_ms,
+            signature_hash=None,
+            rate_limit_remaining=None,
+            error_message=_redacted_excerpt(exc),
+        )
+        raise
+    except SchwabApiError as exc:
+        elapsed_ms = int((time.monotonic() - call_start) * 1000)
+        audit_service.record_call_finish(
+            conn,
+            call_id=call_id,
+            http_status=None,
+            status="error",
+            response_time_ms=elapsed_ms,
+            signature_hash=None,
+            rate_limit_remaining=None,
+            error_message=_redacted_excerpt(exc),
+        )
+        raise
+    except BaseException as exc:
+        elapsed_ms = int((time.monotonic() - call_start) * 1000)
+        audit_service.record_call_finish(
+            conn,
+            call_id=call_id,
+            http_status=None,
+            status="auth_failed",
+            response_time_ms=elapsed_ms,
+            signature_hash=None,
+            rate_limit_remaining=None,
+            error_message=_redacted_excerpt(exc),
+        )
+        log.warning(
+            "schwab refresh failed (catch-all): %s",
+            type(exc).__name__,
+        )
+        raise SchwabAuthError(
+            500,
+            f"<refresh failed: {type(exc).__name__}>",
+        ) from exc
+
+    # Step 7 (success) — close audit row.
+    audit_service.record_call_finish(
+        conn,
+        call_id=call_id,
+        http_status=200,
+        status="success",
+        response_time_ms=elapsed_ms,
+        signature_hash=None,
+        rate_limit_remaining=None,
+        error_message=None,
+    )
+
+    return {
+        "call_id": call_id,
+        "tokens_path": str(tokens_path),
+        "environment": environment,
+    }
 
 
-def revoke_and_delete(*args: Any, **kwargs: Any) -> Any:
-    """Revoke refresh_token + delete per-env tokens DB — implementation lands
-    in T-A.5."""
-    raise NotImplementedError("revoke_and_delete lands in T-A.5")
+def revoke_and_delete(
+    cfg: Any,
+    environment: str,
+    client_id: str,
+    client_secret: str,
+    conn: sqlite3.Connection,
+    *,
+    force: bool = False,
+) -> dict:
+    """Revoke the refresh_token at Schwab + atomically rename the per-env
+    tokens DB to `<path>.deleted-<ts>` for 24h recovery — plan §F.3 + §H.2
+    revoke surface.
+
+    Algorithm:
+      1. Server-stamp start_ts.
+      2. Refuse if pipeline state='running' UNLESS force=True (mirrors
+         setup; logout DOES have --force).
+      3. Resolve env + tokens path.
+      4. Read existing tokens file → extract refresh_token for revoke body.
+         If file missing/unreadable → audit-row 'error' + raise.
+      5. INSERT in-flight audit row (oauth.revoke / cli / env).
+      6. POST https://api.schwabapi.com/v1/oauth/revoke
+         (form-urlencoded body, Basic auth header).
+         Wrap in try/except — non-200 + network failures tolerated per
+         plan §E.6 (best-effort revocation).
+      7. UPDATE audit row terminal status (success on HTTP 200; error
+         otherwise).
+      8. os.replace(path, path + f'.deleted-{ts}') — same-volume rename,
+         no cross-device-link risk (CLAUDE.md gotcha).
+      9. Return summary dict.
+
+    The rename happens REGARDLESS of revoke success/failure — operator's
+    intent on `logout` is "deactivate this device's tokens locally" and
+    revocation-at-Schwab is best-effort.
+
+    Raises:
+      * SchwabConfigMissingError — invalid environment.
+      * SchwabPipelineActiveError — pipeline running + force=False.
+      * SchwabApiError — tokens file missing (cannot extract refresh_token).
+    """
+    import base64
+    import os
+    from datetime import datetime as _dt
+
+    import requests
+
+    # Step 1.
+    start_ts = _now_ms_iso()
+
+    # Step 2 — validate inputs + pipeline-active check.
+    if environment not in ("sandbox", "production"):
+        raise SchwabConfigMissingError(
+            f"environment must be 'sandbox' or 'production'; got {environment!r}",
+        )
+    if not client_id or not isinstance(client_id, str) or not client_id.strip():
+        raise SchwabConfigMissingError(
+            "client_id is required (non-empty string)",
+        )
+    if (
+        not client_secret
+        or not isinstance(client_secret, str)
+        or not client_secret.strip()
+    ):
+        raise SchwabConfigMissingError(
+            "client_secret is required (non-empty string)",
+        )
+    if not force and _is_pipeline_active(conn):
+        raise SchwabPipelineActiveError(
+            "Pipeline run in progress; cannot run schwab logout. "
+            "Use --force to override.",
+        )
+
+    # Step 3 — resolve tokens path.
+    tokens_path = _resolve_tokens_db_path(environment)
+
+    # Step 4 — read tokens file. If missing/unreadable, surface a clean
+    # error + audit row. We INSERT the in-flight audit row first so the
+    # failure is observable.
+    call_id = audit_service.record_call_start(
+        conn,
+        ts=start_ts,
+        endpoint="oauth.revoke",
+        pipeline_run_id=None,
+        surface="cli",
+        environment=environment,
+    )
+
+    refresh_token: str | None = None
+    file_missing = not tokens_path.exists()
+    if not file_missing:
+        try:
+            import json as _json
+            with open(tokens_path) as f:
+                payload = _json.load(f)
+            refresh_token = payload.get("token_dictionary", {}).get(
+                "refresh_token",
+            )
+        except Exception as exc:
+            log.warning(
+                "schwab logout: tokens file unreadable: %s",
+                type(exc).__name__,
+            )
+            refresh_token = None
+
+    if file_missing or not refresh_token:
+        audit_service.record_call_finish(
+            conn,
+            call_id=call_id,
+            http_status=None,
+            status="error",
+            response_time_ms=0,
+            signature_hash=None,
+            rate_limit_remaining=None,
+            error_message=(
+                "<tokens file missing>" if file_missing
+                else "<refresh_token missing from tokens file>"
+            ),
+        )
+        raise SchwabApiError(
+            f"<cannot logout: tokens file missing or unreadable at {tokens_path}>",
+        )
+
+    # Step 5+6 — POST /v1/oauth/revoke (best-effort).
+    auth_header = base64.b64encode(
+        f"{client_id}:{client_secret}".encode(),
+    ).decode("ascii")
+    headers = {
+        "Authorization": f"Basic {auth_header}",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    data = {
+        "token": refresh_token,
+        "token_type_hint": "refresh_token",
+    }
+    call_start = time.monotonic()
+    http_status: int | None = None
+    revoke_status = "error"
+    revoke_error_message: str | None = None
+    try:
+        with _suppress_transport_debug_logs():
+            response = requests.post(
+                "https://api.schwabapi.com/v1/oauth/revoke",
+                headers=headers,
+                data=data,
+                timeout=int(cfg.integrations.schwab.timeout_seconds),
+            )
+        http_status = getattr(response, "status_code", None)
+        if http_status == 200:
+            revoke_status = "success"
+        else:
+            revoke_status = "error"
+            revoke_error_message = f"<revoke returned HTTP {http_status}>"
+    except BaseException as exc:
+        revoke_status = "error"
+        revoke_error_message = _redacted_excerpt(exc)
+        log.warning(
+            "schwab logout: revoke POST failed: %s",
+            type(exc).__name__,
+        )
+    elapsed_ms = int((time.monotonic() - call_start) * 1000)
+
+    # Step 7 — close audit row.
+    audit_service.record_call_finish(
+        conn,
+        call_id=call_id,
+        http_status=http_status,
+        status=revoke_status,
+        response_time_ms=elapsed_ms,
+        signature_hash=None,
+        rate_limit_remaining=None,
+        error_message=revoke_error_message,
+    )
+
+    # Step 8 — atomic rename. Same-volume → no cross-device-link risk.
+    rename_ts = _dt.now().strftime("%Y%m%dT%H%M%S")
+    deleted_path = tokens_path.with_name(
+        f"{tokens_path.name}.deleted-{rename_ts}",
+    )
+    os.replace(str(tokens_path), str(deleted_path))
+
+    return {
+        "call_id": call_id,
+        "tokens_path": str(tokens_path),
+        "deleted_path": str(deleted_path),
+        "environment": environment,
+        "revoke_status": revoke_status,
+    }
