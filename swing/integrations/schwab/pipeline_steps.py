@@ -177,7 +177,47 @@ def _step_schwab_snapshot(
         }
 
     if client is None:
-        client = _build_default_client(cfg, environment)
+        # Codex R1 M#2 fix — pipeline-internal call without an explicit
+        # client. V1 pipeline-internal Schwab fetching is best-effort + opt-in
+        # via the `swing schwab fetch` CLI surface as primary entry point.
+        # The pipeline step records an advisory audit row + returns
+        # 'skipped_no_client' rather than raising, so the nightly pipeline
+        # never aborts.
+        try:
+            client = _build_default_client(cfg, environment)
+        except SchwabConfigMissingError:
+            ts = _now_iso_ms()
+            call_id = audit_service.record_call_start(
+                conn,
+                ts=ts,
+                endpoint="accounts.details",
+                pipeline_run_id=pipeline_run_id,
+                surface=surface,
+                environment=environment,
+            )
+            audit_service.record_call_finish(
+                conn,
+                call_id=call_id,
+                http_status=None,
+                response_time_ms=0,
+                rate_limit_remaining=None,
+                signature_hash=None,
+                status="error",
+                error_message=(
+                    "<pipeline-internal call needs pre-built schwabdev "
+                    "client; use `swing schwab fetch --snapshot` instead>"
+                ),
+            )
+            log.info(
+                "_step_schwab_snapshot: skipped (no client supplied "
+                "pipeline-internally)"
+            )
+            return {
+                "status": "skipped_no_client",
+                "call_id": call_id,
+                "snapshot_id": None,
+                "error": "no client supplied pipeline-internally",
+            }
 
     # Invoke trader wrapper (writes audit row internally).
     try:
@@ -227,6 +267,61 @@ def _step_schwab_snapshot(
 
     # Compute snapshot_date = last_completed_session(now()) per plan §A.9.
     snapshot_date = last_completed_session(datetime.now())
+
+    # Codex R1 M#8 — account_hash-flip protection. If a same-day
+    # source='schwab_api' snapshot already exists with a DIFFERENT
+    # schwab_account_hash, refuse to overwrite + emit an explicit audit
+    # row. V1 single-primary-account contract means the only way to hit
+    # this is a mid-day cfg flip (operator ran `swing config set
+    # integrations.schwab.account_hash <new>`); the operator-visible
+    # contract is "one account per env per day" — V2 multi-account
+    # supersedes.
+    existing_row = conn.execute(
+        "SELECT schwab_account_hash FROM account_equity_snapshots "
+        "WHERE snapshot_date = ? AND source = 'schwab_api' LIMIT 1",
+        (snapshot_date.isoformat(),),
+    ).fetchone()
+    if (
+        existing_row is not None
+        and existing_row[0] is not None
+        and existing_row[0] != account_hash
+    ):
+        # Emit an additional advisory audit row (status='error') noting the
+        # flip detection. The trader call's own audit row stays
+        # status='success' (the schwabdev call DID succeed; this is a
+        # post-call domain-write guard, NOT an API-side failure).
+        advisory_call_id = audit_service.record_call_start(
+            conn,
+            ts=_now_iso_ms(),
+            endpoint="accounts.details",
+            pipeline_run_id=pipeline_run_id,
+            surface=surface,
+            environment=environment,
+        )
+        audit_service.record_call_finish(
+            conn,
+            call_id=advisory_call_id,
+            http_status=None,
+            response_time_ms=0,
+            rate_limit_remaining=None,
+            signature_hash=None,
+            status="error",
+            error_message=(
+                "<same-day schwab_account_hash flip detected; refusing to "
+                "overwrite existing snapshot — V1 single-primary-account>"
+            ),
+        )
+        log.warning(
+            "_step_schwab_snapshot: account_hash flip detected for %s "
+            "(existing differs from cfg) — refusing overwrite",
+            snapshot_date.isoformat(),
+        )
+        return {
+            "status": "failed",
+            "call_id": call_id,
+            "snapshot_id": None,
+            "error": "account_hash_flip_same_day",
+        }
 
     # tx1 — Phase 9 Sub-bundle C record_snapshot (owns BEGIN IMMEDIATE).
     snapshot = record_snapshot(
@@ -333,7 +428,44 @@ def _step_schwab_orders(
         }
 
     if client is None:
-        client = _build_default_client(cfg, environment)
+        # Codex R1 M#2 fix — pipeline-internal orders path mirrors the
+        # snapshot path. Records advisory audit row + returns
+        # 'skipped_no_client' rather than raising.
+        try:
+            client = _build_default_client(cfg, environment)
+        except SchwabConfigMissingError:
+            ts = _now_iso_ms()
+            call_id = audit_service.record_call_start(
+                conn,
+                ts=ts,
+                endpoint="accounts.orders.list",
+                pipeline_run_id=pipeline_run_id,
+                surface=surface,
+                environment=environment,
+            )
+            audit_service.record_call_finish(
+                conn,
+                call_id=call_id,
+                http_status=None,
+                response_time_ms=0,
+                rate_limit_remaining=None,
+                signature_hash=None,
+                status="error",
+                error_message=(
+                    "<pipeline-internal call needs pre-built schwabdev "
+                    "client; use `swing schwab fetch --orders` instead>"
+                ),
+            )
+            log.info(
+                "_step_schwab_orders: skipped (no client supplied "
+                "pipeline-internally)"
+            )
+            return {
+                "status": "skipped_no_client",
+                "call_ids": [call_id],
+                "reconciliation_run_id": None,
+                "error": "no client supplied pipeline-internally",
+            }
 
     period_end = last_completed_session(datetime.now())
     from datetime import timedelta

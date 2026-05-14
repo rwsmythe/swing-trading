@@ -103,6 +103,13 @@ def _make_cfg(*, environment: str = "production",
     )
 
 
+def _make_client_with_details(nlv: float = 2014.36):
+    """Build a stub schwabdev Client whose account_details returns NLV."""
+    client = MagicMock()
+    client.account_details.return_value = _make_account_details_response(nlv)
+    return client
+
+
 def _make_account_details_response(nlv: float = 2014.36):
     return _mock_response({
         "securitiesAccount": {
@@ -1057,6 +1064,273 @@ def test_b4_19_reconciliation_dedup_within_run(v18_conn):
         (out.run_id,),
     ).fetchall()
     assert len(rows) == 1  # dedup'd to 1
+
+
+def test_b3_14_snapshot_same_day_account_hash_flip_refuses_overwrite(v18_conn):
+    """Codex R1 M#8 — same-day account_hash flip protection.
+
+    Discriminating: first call lands a snapshot with account_hash='HASH_A'.
+    Second call with cfg.account_hash='HASH_B' (flip) MUST refuse to
+    overwrite + emit advisory audit row (status='error'). Pre-fix the
+    second call silently overwrote the row's schwab_account_hash.
+    """
+    # First call: account_hash='HASH_A_'+'0'*58 (64-char total).
+    cfg_a = _make_cfg(environment="production", account_hash="HASH_A" + "0" * 58)
+    r1 = _step_schwab_snapshot(
+        v18_conn, cfg_a, pipeline_run_id=None, client=_make_client_with_details(2014.36),
+    )
+    assert r1["status"] == "completed"
+
+    # Second call: cfg flipped to a DIFFERENT account_hash.
+    cfg_b = _make_cfg(environment="production", account_hash="HASH_B" + "0" * 58)
+    r2 = _step_schwab_snapshot(
+        v18_conn, cfg_b, pipeline_run_id=None, client=_make_client_with_details(2014.36),
+    )
+    assert r2["status"] == "failed"
+    assert r2["error"] == "account_hash_flip_same_day"
+
+    # Existing snapshot's schwab_account_hash is UNCHANGED.
+    snap_hash = v18_conn.execute(
+        "SELECT schwab_account_hash FROM account_equity_snapshots "
+        "WHERE snapshot_id = ?",
+        (r1["snapshot_id"],),
+    ).fetchone()[0]
+    assert snap_hash == cfg_a.integrations.schwab.account_hash
+
+    # An advisory audit row exists with error_message about the flip.
+    advisory_rows = v18_conn.execute(
+        "SELECT error_message FROM schwab_api_calls "
+        "WHERE status = 'error' AND error_message LIKE '%account_hash%flip%'"
+    ).fetchall()
+    assert len(advisory_rows) >= 1
+
+
+def test_b3_15_snapshot_pipeline_internal_no_client_skipped_no_advisory(v18_conn):
+    """Codex R1 M#2 — pipeline-internal call without client returns
+    'skipped_no_client' + records advisory audit row + does NOT raise.
+    """
+    cfg = _make_cfg(environment="production")
+    # NOTE: passing client=None triggers the M#2 path via _build_default_client
+    # raising SchwabConfigMissingError, which is caught + folded into advisory.
+    r = _step_schwab_snapshot(
+        v18_conn, cfg, pipeline_run_id=None, client=None,
+    )
+    assert r["status"] == "skipped_no_client"
+    assert r["snapshot_id"] is None
+    # Advisory audit row exists with status='error'.
+    row = v18_conn.execute(
+        "SELECT status, error_message FROM schwab_api_calls "
+        "WHERE call_id = ?",
+        (r["call_id"],),
+    ).fetchone()
+    assert row[0] == "error"
+    assert "pipeline-internal" in (row[1] or "")
+
+
+def test_b4_21_orders_pipeline_internal_no_client_skipped(v18_conn):
+    """Codex R1 M#2 — orders mirror of snapshot 'skipped_no_client' path."""
+    cfg = _make_cfg(environment="production")
+    r = _step_schwab_orders(
+        v18_conn, cfg, pipeline_run_id=None, client=None,
+    )
+    assert r["status"] == "skipped_no_client"
+    assert r["reconciliation_run_id"] is None
+    assert len(r["call_ids"]) == 1
+
+
+def test_b4_22_reconciliation_failure_path_preserves_run_row_in_same_tx(v18_conn, monkeypatch):
+    """Codex R1 M#5 — failure-path PRESERVES the run row + partial discrepancies
+    in the SAME outer transaction (matches Phase 9 Sub-bundle B contract).
+
+    Discriminating: plant 2 mismatches; patch repo.insert_discrepancy to
+    succeed for the first emit then raise on the second. Post-fix: 1 partial
+    discrepancy preserved + run row state='failed' + finished_ts populated.
+    Pre-fix: the whole tx was rolled back (no partial discrepancy preserved)
+    + a fresh-state row was INSERTed.
+    """
+    _seed_open_trade(v18_conn, ticker="AAPL", current_stop=95.0)
+    _seed_open_trade(v18_conn, ticker="MSFT", current_stop=300.0)
+
+    from swing.integrations.schwab.models import SchwabOrderResponse
+    schwab_orders = [
+        SchwabOrderResponse(
+            order_id="1001", status="WORKING",
+            enter_time="2026-05-12T10:00:00Z",
+            instrument_symbol="AAPL", instruction="SELL",
+            quantity=10.0, order_type="STOP", price=95.50,
+        ),
+        SchwabOrderResponse(
+            order_id="1002", status="WORKING",
+            enter_time="2026-05-12T10:00:00Z",
+            instrument_symbol="MSFT", instruction="SELL",
+            quantity=10.0, order_type="STOP", price=300.50,
+        ),
+    ]
+    schwab_account = SimpleNamespace(
+        account_hash="abc", net_liquidating_value=2000.0, positions=[],
+        cash=0.0, buying_power=0.0,
+    )
+
+    from swing.data.repos import reconciliation as recon_repo
+    orig_insert = recon_repo.insert_discrepancy
+    calls = {"n": 0}
+
+    def explode_on_second(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise RuntimeError("mid-emit explosion at call N=2")
+        return orig_insert(*args, **kwargs)
+
+    monkeypatch.setattr(recon_repo, "insert_discrepancy", explode_on_second)
+    with pytest.raises(RuntimeError):
+        run_schwab_reconciliation(
+            v18_conn,
+            account_hash="abc",
+            period_start="2026-05-07",
+            period_end="2026-05-14",
+            schwab_orders=schwab_orders,
+            schwab_transactions=[],
+            schwab_account=schwab_account,
+        )
+    monkeypatch.setattr(recon_repo, "insert_discrepancy", orig_insert)
+
+    # Exactly ONE reconciliation_run row (NOT two — Codex R1 M#5 fix prevents
+    # the rollback+fresh-insert pattern).
+    runs = v18_conn.execute(
+        "SELECT run_id, state, error_message FROM reconciliation_runs"
+    ).fetchall()
+    assert len(runs) == 1
+    assert runs[0][1] == "failed"
+    assert "explosion" in (runs[0][2] or "")
+
+    # Partial discrepancy PRESERVED (the first emit committed).
+    discrep = v18_conn.execute(
+        "SELECT discrepancy_type FROM reconciliation_discrepancies "
+        "WHERE run_id = ?",
+        (runs[0][0],),
+    ).fetchall()
+    assert len(discrep) == 1
+    assert discrep[0][0] == "stop_mismatch"
+
+
+def test_b4_23_reconciliation_emits_cash_movement_mismatch(v18_conn):
+    """Codex R1 M#6 — cash_movement_mismatch implementation.
+
+    Discriminating: plant a journal cash_movement (deposit $500 on 2026-05-12)
+    + Schwab transactions with NO matching ACH_RECEIPT/WIRE_IN. Emit
+    cash_movement_mismatch with material=MATERIAL_BY_TYPE[cash_movement_mismatch].
+    """
+    # Plant journal cash_movement.
+    v18_conn.execute(
+        "INSERT INTO cash_movements (date, kind, amount, ref, note) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("2026-05-12", "deposit", 500.0, "ACH_REF_123", None),
+    )
+    v18_conn.commit()
+
+    schwab_account = SimpleNamespace(
+        account_hash="abc", net_liquidating_value=2000.0, positions=[],
+        cash=0.0, buying_power=0.0,
+    )
+    out = run_schwab_reconciliation(
+        v18_conn,
+        account_hash="abc",
+        period_start="2026-05-07",
+        period_end="2026-05-14",
+        schwab_orders=[],
+        schwab_transactions=[],  # No matching ACH/WIRE source-side tx.
+        schwab_account=schwab_account,
+    )
+    rows = v18_conn.execute(
+        "SELECT discrepancy_type, material_to_review "
+        "FROM reconciliation_discrepancies WHERE run_id = ?",
+        (out.run_id,),
+    ).fetchall()
+    types = [r[0] for r in rows]
+    assert "cash_movement_mismatch" in types
+
+
+def test_b4_24_reconciliation_cash_movement_matched_NOT_emitted(v18_conn):
+    """Counter-example to test_b4_23 — matched cash_movement does NOT emit."""
+    v18_conn.execute(
+        "INSERT INTO cash_movements (date, kind, amount, ref, note) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("2026-05-12", "deposit", 500.0, "ACH_REF_123", None),
+    )
+    v18_conn.commit()
+
+    from swing.integrations.schwab.models import SchwabTransactionResponse
+    schwab_tx = [SchwabTransactionResponse(
+        transaction_id="T100",
+        transaction_date="2026-05-12",
+        type="ACH_RECEIPT",
+        net_amount=500.0,
+        description="ACH deposit",
+    )]
+    schwab_account = SimpleNamespace(
+        account_hash="abc", net_liquidating_value=2000.0, positions=[],
+        cash=0.0, buying_power=0.0,
+    )
+    out = run_schwab_reconciliation(
+        v18_conn,
+        account_hash="abc",
+        period_start="2026-05-07",
+        period_end="2026-05-14",
+        schwab_orders=[],
+        schwab_transactions=schwab_tx,
+        schwab_account=schwab_account,
+    )
+    rows = v18_conn.execute(
+        "SELECT discrepancy_type FROM reconciliation_discrepancies "
+        "WHERE run_id = ?",
+        (out.run_id,),
+    ).fetchall()
+    types = [r[0] for r in rows]
+    assert "cash_movement_mismatch" not in types
+
+
+def test_b4_25_mapper_resilience_orders_without_legs_skipped_not_raised(v18_conn):
+    """Codex R1 M#9 — mapper resilience.
+
+    Discriminating: orders response includes a row WITHOUT orderLegCollection
+    (e.g., conditional parent). Pre-fix the mapper raised
+    SchwabSchemaParityError + the entire orders fetch failed. Post-fix the
+    mapper SKIPS the non-leg row + continues processing the rest.
+    """
+    from swing.integrations.schwab.mappers import map_orders_to_fill_candidates
+
+    raw_orders = [
+        {  # Valid: has legs.
+            "orderId": 1001, "status": "FILLED",
+            "enteredTime": "2026-05-10T10:00:00Z",
+            "orderType": "MARKET",
+            "orderLegCollection": [{
+                "instruction": "BUY", "quantity": 10,
+                "instrument": {"symbol": "AAPL"},
+            }],
+        },
+        {  # Invalid: missing legs.
+            "orderId": 1002, "status": "WORKING",
+            "enteredTime": "2026-05-10T11:00:00Z",
+            "orderType": "STOP",
+            "price": 95.0,
+            # No "orderLegCollection" key.
+        },
+        {  # Valid: has legs.
+            "orderId": 1003, "status": "FILLED",
+            "enteredTime": "2026-05-10T12:00:00Z",
+            "orderType": "MARKET",
+            "orderLegCollection": [{
+                "instruction": "BUY", "quantity": 5,
+                "instrument": {"symbol": "MSFT"},
+            }],
+        },
+    ]
+    # Should NOT raise. Should skip the invalid row.
+    out = map_orders_to_fill_candidates(raw_orders)
+    assert len(out) == 2  # 1001 + 1003 (1002 skipped silently)
+    assert out[0].order_id == "1001"
+    assert out[1].order_id == "1003"
 
 
 def test_b4_20_reconciliation_persists_account_equity_columns(v18_conn):

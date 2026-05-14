@@ -505,6 +505,60 @@ def test_15_invalid_surface_raises_api_error(v18_conn):
 # ============================================================================
 
 
+def test_17_silent_failure_post_call_token_cleared_triggers_auth_failed(v18_conn):
+    """Codex R1 M#4 — post-call token-state validation.
+
+    Discriminating: client returns a successful Response, but post-call
+    `client.tokens.access_token = None` (silent-failure simulation). Pre-fix
+    the wrapper would record success; post-fix records 'auth_failed'.
+    """
+    client = MagicMock()
+    # Set access_token to a real value at construction
+    client.tokens.access_token = "real_token_pre_call"
+
+    # Mock side_effect to clear the access_token after the call.
+    def side_effect(*args, **kwargs):
+        client.tokens.access_token = None
+        resp = MagicMock()
+        resp.json.return_value = [{"accountNumber": "x", "hashValue": "h"}]
+        resp.status_code = 200
+        resp.headers = {}
+        return resp
+
+    client.account_linked.side_effect = side_effect
+
+    with pytest.raises(SchwabAuthError):
+        get_accounts_linked(
+            client, v18_conn,
+            surface="cli", environment="production",
+        )
+    call_id = _latest_call_id(v18_conn)
+    row = _audit_row(v18_conn, call_id)
+    assert row[7] == "auth_failed"
+
+
+def test_18_schwabdev_raises_typed_schwab_api_error_audit_closes_correctly(v18_conn):
+    """Codex R1 M#3 — schwabdev raises a typed SchwabApiError (NOT a generic
+    BaseException). Pre-fix the audit row was left stuck in_flight; post-fix
+    the row closes correctly to 'auth_failed' / 'rate_limited' / 'error'.
+
+    Discriminating: stub schwabdev call to raise SchwabAuthError directly.
+    Assert: post-call the audit row's status is 'auth_failed' (NOT 'in_flight').
+    """
+    client = MagicMock()
+    client.account_details.side_effect = SchwabAuthError(401, "stub auth fail")
+
+    with pytest.raises(SchwabAuthError):
+        get_account_details(
+            client, v18_conn,
+            account_hash="abc...64charhash",
+            surface="pipeline", environment="production",
+        )
+    call_id = _latest_call_id(v18_conn)
+    row = _audit_row(v18_conn, call_id)
+    assert row[7] == "auth_failed"  # NOT 'in_flight'
+
+
 def test_16_transactions_default_types_is_full_documented_set(v18_conn):
     """Per T-B.0.b recon §3.2 — `types` REQUIRED kwarg; wrapper defaults to
     the documented 15-value set. Verifies the plan §E.2 deviation

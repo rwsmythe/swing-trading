@@ -46,6 +46,7 @@ from swing.data.repos import reconciliation as repo
 from swing.data.repos.account_equity_snapshots import (
     get_latest_snapshot_on_or_before,
 )
+from swing.data.repos.cash import list_cash
 from swing.data.repos.fills import list_fills_for_trade
 from swing.data.repos.trades import list_open_trades
 from swing.trades.reconciliation import (
@@ -64,6 +65,15 @@ _STOP_ORDER_TYPES = frozenset({"STOP", "STOP_LIMIT", "TRAILING_STOP", "TRAILING_
 # Working/armed status values that count for active stop-detection.
 _ACTIVE_STOP_STATUSES = frozenset({
     "WORKING", "WAIT_TRG", "ACCEPTED", "PENDING_ACTIVATION", "QUEUED",
+})
+
+
+# Schwab transaction-type sets for cash_movement_mismatch matching.
+_SCHWAB_DEPOSIT_TYPES = frozenset({
+    "ACH_RECEIPT", "WIRE_IN", "CASH_RECEIPT", "ELECTRONIC_FUND",
+})
+_SCHWAB_WITHDRAW_TYPES = frozenset({
+    "ACH_DISBURSEMENT", "WIRE_OUT", "CASH_DISBURSEMENT",
 })
 
 
@@ -261,12 +271,21 @@ def run_schwab_reconciliation(
         # Sign convention per Phase 9 Sub-bundle C T-C.6 = journal MINUS source.
         equity_delta = journal_equity - source_nlv
 
-    # Pre-read open trades + their fills (read-side; uses implicit auto-tx
-    # if any but won't conflict because we haven't BEGIN-ed yet).
+    # Pre-read open trades + their fills + journal cash_movements (read-side;
+    # uses implicit auto-tx if any but won't conflict because we haven't
+    # BEGIN-ed yet).
     open_trades = list_open_trades(conn)
     trade_fills: dict[int, list] = {
         t.id: list_fills_for_trade(conn, trade_id=t.id) for t in open_trades
     }
+    # Filter journal cash_movements to the reconciliation period.
+    all_journal_cash = list_cash(conn)
+    journal_cash_in_period = [
+        cm for cm in all_journal_cash
+        if (
+            cm.date and period_start <= cm.date <= period_end
+        )
+    ]
 
     counters: dict[str, int] = {
         "discrepancies_count": 0,
@@ -277,7 +296,15 @@ def run_schwab_reconciliation(
     dedup_seen: set = set()
 
     # Outer transaction. We INSERT the run row, emit discrepancies, then
-    # UPDATE state='completed' (or roll back to a separate UPDATE state='failed').
+    # UPDATE state='completed' (or UPDATE state='failed' on mid-emit error).
+    #
+    # Codex R1 M#5 fix — mirror swing/trades/reconciliation.py:run_tos_reconciliation
+    # failure-path semantics per spec §3.3.3: PRESERVE the run row + any
+    # partial discrepancies emitted prior to the failure via UPDATE state='failed'
+    # in the SAME outer transaction, then COMMIT (audit-trail integrity over
+    # rollback purity). The previous design rolled back the whole transaction
+    # and INSERTed a fresh failed-state row, which (a) lost partial discrepancy
+    # rows and (b) diverged from Phase 9 Sub-bundle B's contract.
     run_id: int | None = None
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -448,6 +475,60 @@ def run_schwab_reconciliation(
                         ),
                     )
 
+        # --- 7. Cash-movement mismatch (Codex R1 M#6 fix) ---
+        # For each journal cash_movement in the period, try to match against
+        # a Schwab transaction by (date, amount within tolerance) + the
+        # `kind` -> Schwab-type mapping (deposit -> ACH_RECEIPT/WIRE_IN/...;
+        # withdraw -> ACH_DISBURSEMENT/WIRE_OUT/...). When the journal-side
+        # has a row with no Schwab counterpart, emit cash_movement_mismatch.
+        # V1 conservative: this is the journal-without-source direction;
+        # source-side-without-journal (Schwab has TX not in journal) is a
+        # V2 widening (operator may post-hoc the cash_movement after running
+        # reconciliation).
+        _matched_schwab_tx: set = set()
+        for cm in journal_cash_in_period:
+            j_amount = abs(float(cm.amount))
+            expected_types = (
+                _SCHWAB_DEPOSIT_TYPES if cm.kind == "deposit"
+                else _SCHWAB_WITHDRAW_TYPES
+            )
+            match_idx = None
+            for idx, tx in enumerate(schwab_transactions):
+                if idx in _matched_schwab_tx:
+                    continue
+                if tx.type not in expected_types:
+                    continue
+                # Schwab transaction_date is normalized to YYYY-MM-DD.
+                if tx.transaction_date != cm.date:
+                    continue
+                if abs(abs(tx.net_amount) - j_amount) > price_tolerance:
+                    continue
+                match_idx = idx
+                break
+            if match_idx is None:
+                _emit(
+                    conn,
+                    run_id=run_id,
+                    discrepancy_type="cash_movement_mismatch",
+                    field_name="net_amount",
+                    counters=counters,
+                    dedup_seen=dedup_seen,
+                    cash_movement_id=cm.id,
+                    expected_value_json=json.dumps(
+                        {
+                            "date": cm.date,
+                            "kind": cm.kind,
+                            "amount": cm.amount,
+                        },
+                        sort_keys=True,
+                    ),
+                    actual_value_json=json.dumps(
+                        {"matched": None}, sort_keys=True,
+                    ),
+                )
+            else:
+                _matched_schwab_tx.add(match_idx)
+
         # --- 8. Equity delta ---
         if equity_delta is not None and abs(equity_delta) > EQUITY_DELTA_EMIT_THRESHOLD_DOLLARS:
             _emit(
@@ -490,43 +571,41 @@ def run_schwab_reconciliation(
             equity_delta_dollars=equity_delta,
         )
         conn.commit()
+    except CallerHeldTransactionError:
+        raise
     except Exception as exc:
-        # Outer rollback + separate-tx UPDATE state='failed' per spec §3.3.3.
-        with contextlib.suppress(sqlite3.Error):
-            conn.rollback()
-        if run_id is not None:
-            # Re-INSERT a failed-state run row OR UPDATE if it survived.
-            # The rollback above wiped our run-row INSERT; we re-INSERT
-            # a clean failed-state row so the audit trail records the
-            # attempt. This is the same INSERT-then-UPDATE pattern that
-            # avoids the SQLite implicit-tx pitfall on raw executescript.
+        # Codex R1 M#5 — failure-path PRESERVES the run row + partial
+        # discrepancies inside the SAME outer transaction per spec §3.3.3.
+        # Mirrors run_tos_reconciliation: UPDATE state='failed', COMMIT.
+        # If run_id is None (failure BEFORE the run-row INSERT landed),
+        # rollback semantics apply (outer-layer failure; nothing to preserve).
+        if run_id is None:
+            with contextlib.suppress(sqlite3.Error):
+                conn.rollback()
+            raise
+        try:
+            failed_finished_ts = now_ms()
+            if failed_finished_ts < started_ts:
+                failed_finished_ts = started_ts
+            # Best-effort UPDATE in the same outer transaction. If the BEGIN
+            # IMMEDIATE write-lock was lost (concurrent force_clear), the
+            # update may fail; suppress + commit-or-rollback to avoid
+            # masking the original exception. Either way the original
+            # exception propagates to the caller.
             try:
-                fresh_finished_ts = now_ms()
-                if fresh_finished_ts < started_ts:
-                    fresh_finished_ts = started_ts
-                run_id = repo.insert_run(
+                repo.update_run_failed(
                     conn,
-                    source="schwab_api",
-                    state="failed",
-                    started_ts=started_ts,
-                    source_artifact_path=(
-                        f"schwab_api:call/{schwab_api_call_id}"
-                        if schwab_api_call_id is not None
-                        else "schwab_api:run"
-                    ),
-                    period_start=period_start,
-                    period_end=period_end,
-                    finished_ts=fresh_finished_ts,
-                    account_equity_journal_dollars=journal_equity,
-                    account_equity_source_dollars=source_nlv,
-                    equity_delta_dollars=equity_delta,
+                    run_id=run_id,
+                    finished_ts=failed_finished_ts,
                     error_message=f"{type(exc).__name__}: {exc!s}"[:200],
-                    schwab_api_call_id=schwab_api_call_id,
                 )
                 conn.commit()
-            except Exception:
+            except sqlite3.Error:
                 with contextlib.suppress(sqlite3.Error):
                     conn.rollback()
+        finally:
+            # Always propagate the original exception.
+            pass
         raise
 
     out = repo.get_run(conn, run_id)

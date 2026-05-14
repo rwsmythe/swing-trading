@@ -139,6 +139,93 @@ def _redacted_excerpt(exc: BaseException, *, max_chars: int = 80) -> str:
     return redacted[:max_chars]
 
 
+def construct_authenticated_client(
+    cfg: Any,
+    environment: str,
+    client_id: str,
+    client_secret: str,
+) -> Any:
+    """Construct a `schwabdev.Client(...)` for an EXISTING per-env tokens DB.
+
+    Phase 11 Sub-bundle B T-B.5 + Codex R1 M#7 fix — single-Client-instance
+    discipline: the only place in the project that calls `schwabdev.Client(...)`
+    inside `swing/integrations/schwab/` is HERE + the two pre-existing paths
+    (`setup_paste_flow`, `force_refresh` in this same module). CLI fetch
+    subcommands (`swing/cli_schwab.py:schwab_fetch`) call THIS helper rather
+    than instantiating `schwabdev.Client` directly.
+
+    The helper assumes operator has already run `swing schwab setup` AND
+    the tokens DB persists at `~/swing-data/schwab-tokens.{env}.db`. schwabdev
+    re-loads existing tokens at construction time + schedules background
+    auto-refresh (no consent-URL prompt fires when tokens are present).
+
+    Per Sub-bundle A D1 hotfix lesson: verifies `client.tokens.access_token`
+    is populated post-construction; raises `SchwabAuthError` if not (silent-
+    failure defense; schwabdev does not raise on internal token-rotation
+    failure).
+
+    Caller is expected to pre-register secrets via `register_schwab_secrets`
+    + invoke `ensure_schwab_log_redaction_factory_installed` BEFORE this call
+    so the Layer-2 redactor catches any auth-failure log records emitted
+    during schwabdev's internal construction.
+
+    Returns:
+        Live `schwabdev.Client` instance with populated tokens.
+
+    Raises:
+        SchwabAuthError: post-construction `client.tokens.access_token` is
+            empty / non-string — operator should re-run `swing schwab refresh`
+            or `swing schwab setup`.
+        SchwabConfigMissingError: missing credentials.
+    """
+    if environment not in ("sandbox", "production"):
+        raise SchwabConfigMissingError(
+            f"environment must be 'sandbox' or 'production'; got {environment!r}",
+        )
+    if not client_id or not isinstance(client_id, str) or not client_id.strip():
+        raise SchwabConfigMissingError(
+            "client_id is required (non-empty string)",
+        )
+    if (
+        not client_secret
+        or not isinstance(client_secret, str)
+        or not client_secret.strip()
+    ):
+        raise SchwabConfigMissingError(
+            "client_secret is required (non-empty string)",
+        )
+
+    tokens_path = _resolve_tokens_db_path(environment)
+    tokens_path.parent.mkdir(parents=True, exist_ok=True)
+
+    register_schwab_secrets([client_id, client_secret])
+    ensure_schwab_log_redaction_factory_installed()
+
+    import schwabdev
+    with _suppress_transport_debug_logs():
+        client = schwabdev.Client(
+            app_key=client_id,
+            app_secret=client_secret,
+            callback_url=cfg.integrations.schwab.callback_url,
+            tokens_file=str(tokens_path),
+            timeout=int(cfg.integrations.schwab.timeout_seconds),
+        )
+
+    # Silent-failure defense (D1 hotfix pattern).
+    access = getattr(getattr(client, "tokens", None), "access_token", None)
+    if not access or not isinstance(access, str):
+        raise SchwabAuthError(
+            401,
+            "<schwabdev returned Client without access_token; "
+            "OAuth state may be stale. Run `swing schwab refresh` or "
+            "`swing schwab setup`.>",
+        )
+    refresh = getattr(getattr(client, "tokens", None), "refresh_token", None)
+    register_schwab_secrets([access, refresh])
+
+    return client
+
+
 def setup_paste_flow(
     cfg: Any,
     environment: str,

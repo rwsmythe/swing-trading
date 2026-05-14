@@ -274,6 +274,7 @@ def get_accounts_linked(
         environment=environment,
         pipeline_run_id=pipeline_run_id,
         mapper=_map_accounts_linked_with_empty_check,
+        client=client,
     )
 
 
@@ -321,6 +322,7 @@ def get_account_details(
         mapper=lambda p: map_account_details_to_equity_snapshot_inputs(
             p, account_hash=account_hash,
         ),
+        client=client,
     )
 
 
@@ -365,6 +367,7 @@ def get_account_orders(
         environment=environment,
         pipeline_run_id=pipeline_run_id,
         mapper=map_orders_to_fill_candidates,
+        client=client,
     )
 
 
@@ -406,6 +409,7 @@ def get_account_transactions(
         environment=environment,
         pipeline_run_id=pipeline_run_id,
         mapper=map_transactions_to_cash_movement_candidates,
+        client=client,
     )
 
 
@@ -423,6 +427,7 @@ def _call_endpoint(
     environment: str,
     pipeline_run_id: int | None,
     mapper,
+    client: Any = None,
 ):
     """Invoke the schwabdev method + thread through the audit lifecycle.
 
@@ -471,10 +476,28 @@ def _call_endpoint(
     try:
         with _suppress_transport_debug_logs():
             raw = client_method()
-    except SchwabApiError:
-        # schwabdev or wrapper raised one of our typed errors directly —
-        # close audit + re-raise verbatim.
+    except SchwabApiError as exc:
+        # schwabdev or wrapper raised one of our typed errors directly.
+        # Codex R1 M#3 fix: MUST close the audit row before re-raising,
+        # otherwise the in_flight row never transitions. Classify the
+        # status from the typed exception subclass.
         elapsed_ms = int((time.monotonic() - construction_start) * 1000)
+        if isinstance(exc, SchwabAuthError):
+            status_str = "auth_failed"
+        elif isinstance(exc, SchwabRateLimitError):
+            status_str = "rate_limited"
+        else:
+            status_str = "error"
+        audit_service.record_call_finish(
+            conn,
+            call_id=call_id,
+            http_status=getattr(exc, "status_code", None),
+            response_time_ms=elapsed_ms,
+            rate_limit_remaining=None,
+            signature_hash=None,
+            status=status_str,
+            error_message=_redacted_excerpt(exc),
+        )
         raise
     except BaseException as exc:
         elapsed_ms = int((time.monotonic() - construction_start) * 1000)
@@ -574,6 +597,39 @@ def _call_endpoint(
         raise SchwabSchemaParityError(
             f"<{endpoint}: response mapping failed: {type(exc).__name__}>"
         ) from exc
+
+    # Step 10 — silent-failure post-call token-state validation (Sub-bundle A
+    # M#1 family extension; Codex R1 M#4 fix). If the schwabdev client's
+    # access_token has been explicitly cleared (set to None or empty string)
+    # between call construction + completion, the call's "success" is
+    # suspect — treat as auth_failed. Tolerates MagicMock + similar test
+    # stubs that auto-generate child attrs (the check fires ONLY on
+    # explicit clearance; not on type-mismatch — production schwabdev sets
+    # a real string, MagicMock returns a child MagicMock).
+    if client is not None and hasattr(client, "tokens"):
+        access = getattr(client.tokens, "access_token", "<missing-sentinel>")
+        # Fire only on explicit clear-to-None or clear-to-empty-string.
+        # A child MagicMock attribute will be truthy and not equal "" so
+        # passes through.
+        if access is None or access == "":
+            audit_service.record_call_finish(
+                conn,
+                call_id=call_id,
+                http_status=http_status,
+                response_time_ms=elapsed_ms,
+                rate_limit_remaining=rate_limit_remaining,
+                signature_hash=sig,
+                status="auth_failed",
+                error_message=(
+                    "<post-call client.tokens.access_token cleared "
+                    "(None/empty); schwabdev may have silently dropped "
+                    "auth state>"
+                ),
+            )
+            raise SchwabAuthError(
+                401,
+                f"<{endpoint}: post-call token state invalid>",
+            )
 
     # Step 11 — success audit close. ALL validation passed.
     audit_service.record_call_finish(

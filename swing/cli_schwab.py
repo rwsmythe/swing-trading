@@ -580,44 +580,24 @@ def _build_schwabdev_client_for_fetch(
 ) -> Any:
     """Construct a fresh schwabdev.Client(...) for the fetch subcommands.
 
-    Per Sub-bundle A T-A.0.b §6.bis schwabdev 2.5.1 signature. The fetch
-    subcommands prompt for client_id + client_secret at handler entry
-    (mirror setup/refresh CLI pattern). On second + subsequent invocations
-    within the same operator session, schwabdev's Client(...) constructor
+    Codex R1 M#7 fix — single-Client-instance discipline: delegates to
+    `swing.integrations.schwab.auth.construct_authenticated_client` so the
+    only sites instantiating `schwabdev.Client(...)` are inside
+    `swing/integrations/schwab/auth.py`. The CLI surface no longer
+    constructs the client directly.
+
+    The fetch subcommands prompt for client_id + client_secret at handler
+    entry (mirror setup/refresh CLI pattern). On second + subsequent
+    invocations within the same operator session, schwabdev's Client(...)
     re-loads the persisted tokens DB without re-prompting.
     """
-    import schwabdev
-
-    from swing.integrations.schwab.client import (
-        _suppress_transport_debug_logs,
-        ensure_schwab_log_redaction_factory_installed,
-        register_schwab_secrets,
+    from swing.integrations.schwab.auth import construct_authenticated_client
+    return construct_authenticated_client(
+        cfg=cfg,
+        environment=environment,
+        client_id=client_id,
+        client_secret=client_secret,
     )
-    register_schwab_secrets([client_id, client_secret])
-    ensure_schwab_log_redaction_factory_installed()
-    with _suppress_transport_debug_logs():
-        client = schwabdev.Client(
-            app_key=client_id,
-            app_secret=client_secret,
-            callback_url=cfg.integrations.schwab.callback_url,
-            tokens_file=str(_user_home() / "swing-data" / f"schwab-tokens.{environment}.db"),
-            timeout=int(cfg.integrations.schwab.timeout_seconds),
-        )
-    # Defense-in-depth — surface schwabdev silent-failure if access_token
-    # never populated post-construction (D1 hotfix lesson).
-    access = getattr(getattr(client, "tokens", None), "access_token", None)
-    if not access or not isinstance(access, str):
-        raise SchwabAuthError(
-            401,
-            "<schwabdev returned Client without access_token; "
-            "OAuth state may be stale. Run `swing schwab refresh` or "
-            "`swing schwab setup`.>",
-        )
-    register_schwab_secrets([
-        access,
-        getattr(getattr(client, "tokens", None), "refresh_token", None),
-    ])
-    return client
 
 
 def _check_pipeline_not_running(conn: sqlite3.Connection) -> None:

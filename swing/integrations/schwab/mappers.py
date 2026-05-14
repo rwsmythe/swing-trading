@@ -180,15 +180,31 @@ def map_orders_to_fill_candidates(response: Any) -> list[SchwabOrderResponse]:
         entered_time = _opt(raw, "enteredTime") or _opt(raw, "enterTime") or ""
 
         legs = _opt(raw, "orderLegCollection", [])
+        # Codex R1 M#9 — mapper resilience. Real-world Schwab order responses
+        # may include order types without an orderLegCollection (e.g., parent
+        # conditional orders, multi-leg options legs that we drop because
+        # equities-only). Rather than failing the entire orders fetch on a
+        # single non-leg row, SKIP the row with a structured log entry. The
+        # audit row's signature_hash continues to be shape-derived so drift
+        # is still observable; downstream reconciliation simply has one
+        # fewer matchable order.
         if not isinstance(legs, list) or not legs:
-            raise SchwabSchemaParityError(
-                f"account_orders[{i}]: missing or empty orderLegCollection"
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "map_orders_to_fill_candidates: skipping order %s (idx=%d) "
+                "with missing/empty orderLegCollection",
+                order_id, i,
             )
+            continue
         leg0 = legs[0]
         if not isinstance(leg0, dict):
-            raise SchwabSchemaParityError(
-                f"account_orders[{i}].orderLegCollection[0]: expected dict"
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "map_orders_to_fill_candidates: skipping order %s (idx=%d) "
+                "with non-dict orderLegCollection[0]",
+                order_id, i,
             )
+            continue
         instruction = _opt(leg0, "instruction", "")
         quantity = float(_opt(leg0, "quantity", 0) or 0)
         instrument = _opt(leg0, "instrument", {})
