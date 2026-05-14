@@ -52,6 +52,113 @@ Each scenario needs a deterministic mapping from `Fills` + `trades.planned_*` co
 
 ---
 
+## 2026-05-14 Schwab API Sub-bundle B SHIPPED — Trader API + snapshot/orders/reconciliation pipeline + sandbox-gating (5 Codex rounds + 1 gate-caught fix; 11 commits; first end-to-end Schwab reconciliation in production)
+
+**Sub-bundle B SHIPPED 2026-05-14** at `df29232` (integration merge of `schwab-bundle-B-trader-and-snapshot` worktree branch via `--no-ff` to preserve Codex-fix chain). Branch HEAD `34be84e` (11 commits = 10 implementer + 1 orchestrator-inline gate-caught fix). Operator-dispatched implementer per orchestrator brief at `19622b6`.
+
+**5 Codex rounds → NO_NEW_CRITICAL_MAJOR**; **0 Critical / 15 Major** (14 resolved + 1 ACCEPT-WITH-RATIONALE family — see below); +92 fast tests projected by implementer (will land closer to +94 with the 5 added orchestrator gate-fix tests).
+
+### Operator-paired live gate (Option A; 2026-05-14)
+
+Full S2-S5 live verification against operator's production-tier Schwab account:
+
+| Surface | Result | Key observation |
+|---|---|---|
+| Refresh (bonus A.S4 close) | ✅ | Call 5 `auth_failed` + call 6 `success` retry — honest audit log |
+| S2 `--snapshot` prod | ✅ | **First live source-ladder write**: snapshot_id=4 / NLV $2034.78 / `source='schwab_api'` / `schwab_account_hash` populated / call_id=7 |
+| S3 `--orders` prod | ❌→✅ post-fix `34be84e` | Caught real defect (see below); reconciliation_run_id=8 with 4 real material discrepancies |
+| S4 `--all` prod | ✅ | snapshot_id=5 / NLV $2036.04 / `snapshot_date` rolled to 2026-05-14 between S2 and S4; **same-day-replay UPSERT path NOT exercised live** (cassette unit test covers); reconciliation_run_id=9 with same 4 discrepancies re-emitted |
+| S5 `--snapshot --environment sandbox` | ✅ | call_id=17 / `environment='sandbox'` / `linked_snapshot_id=NULL` / **ZERO new domain rows** — production-only domain writes per spec §3.6.3 verified |
+
+**Sub-bundle B is operationally validated end-to-end against live Schwab Trader API in production.** First Schwab API write to source-ladder; first Schwab-sourced reconciliation_run; first sandbox-gating verified.
+
+### Gate-caught defect + orchestrator-inline fix (commit `34be84e`)
+
+**Defect:** trader.py:362 used snake_case `max_results=max_results` but schwabdev 2.5.1 `Client.account_orders` signature uses camelCase `maxResults=`. Cassette tests didn't catch because they stub the entire schwabdev call (any kwargs accepted).
+
+**Audit + degradation worked correctly** per Sub-bundle A T-A.9 typed-SchwabApiError discipline + R1 M#3 audit-success-fire ordering — both error rows landed with `status='error'`, `http_status=None`, error_message redact-truncated. The defect was JUST the kwarg name.
+
+**Fix:** rename to `maxResults=max_results` + 5 NEW discriminating tests at `tests/integrations/test_schwab_trader_kwarg_signatures.py`:
+- `test_account_linked_no_kwargs_required` — pins zero-param signature.
+- `test_account_details_kwargs_match_schwabdev` — pins `{accountHash, fields}`.
+- `test_account_orders_kwargs_match_schwabdev` — pins `{accountHash, fromEnteredTime, toEnteredTime, maxResults, status}` — the post-fix camelCase.
+- `test_transactions_kwargs_match_schwabdev` — pins `{accountHash, startDate, endDate, types, symbol}`.
+- `test_no_snake_case_kwarg_in_trader_calls` — source-level grep regression defense.
+
+Other 3 trader methods cross-checked + already correct: `account_linked()` no-kwargs; `account_details(account_hash, fields=fields)` where 'fields' matches; `transactions(...)` all positional + `symbol=symbol` matches. **ONLY `account_orders` had the camelCase mismatch.** Skip Codex re-review (mechanical fix; 5-test discipline pin substitutes).
+
+### Three highest-leverage SHIPPED deliverables
+
+1. **Trader API endpoint methods** at `swing/integrations/schwab/trader.py` (4 methods + mappers + models): `get_accounts_linked` / `get_account_details` / `get_account_orders` / `get_account_transactions`. Each wrapped via `_call_endpoint` with audit-row INSERT-then-UPDATE lifecycle from Sub-bundle A T-A.9.
+2. **Pipeline steps** at `swing/integrations/schwab/pipeline_steps.py`: `_step_schwab_snapshot` (production-only via spec §3.6.3 gate) + `_step_schwab_orders` (calls trader methods + invokes new `run_schwab_reconciliation` service). Wired into `swing/pipeline/runner.py` AFTER `_step_recommendations` BEFORE `_step_charts`.
+3. **`run_schwab_reconciliation` service** at `swing/trades/schwab_reconciliation.py`: mirrors Phase 9 Sub-bundle B `run_tos_reconciliation` shape; reuses `MATERIAL_BY_TYPE` lookup + 5 discrepancy types verbatim; failure-path PRESERVES run row (UPDATE state='failed' per spec §3.3.3).
+
+### High-leverage Codex fixes worth flagging at integration triage
+
+- **R1 M#3:** typed `SchwabApiError` audit-row close discipline (`auth_failed`/`rate_limited`/`error` classification before re-raise) — NEW gotcha family.
+- **R1 M#7:** single-Client-instance discipline enforced via new `construct_authenticated_client()` in `auth.py` (cli_schwab now delegates).
+- **R1 M#8:** same-day account_hash-flip guard (refuses on differing non-NULL hash).
+- **R2 M#1:** pipeline-internal silent-skip (log only, NO audit row) for `client=None` — diverges from CLI surface which writes advisory rows.
+- **R5 M#1:** CLI fetch preflight account_hash check before credentials prompt.
+
+### 1 ACCEPT-WITH-RATIONALE family (R2 M#2 + R3 M#2)
+
+**Lease status fields deferred to V2.** Bundle B's ZERO-new-schema scope precluded adding a dedicated `schwab_step_status` lease column; audit row status + `lease.step()` breadcrumb sufficient for V1. Banked for V2.
+
+### Production state delta (post-gate)
+
+- `schwab_api_calls`: 4 → **17** (+13 net: 1 success + 1 auth_failed + 1 success refresh + 1 success snapshot + 2 error orders + 3 success orders re-run + 4 success --all + 1 success sandbox)
+- `account_equity_snapshots`: 3 → **5** (+2: snapshot_id=4 NLV $2034.78 / snapshot_date='2026-05-13'; snapshot_id=5 NLV $2036.04 / snapshot_date='2026-05-14'; both `source='schwab_api'`, both `schwab_account_hash` populated)
+- `reconciliation_runs`: 7 → **9** (+2: runs 8+9 both `source='schwab_api'`, both `schwab_api_call_id` populated, 7-day windows shifted by 1 day)
+- `reconciliation_discrepancies`: 30 → **38** (+8 NEW: 4 each on runs 8+9, same shape — DHC `position_qty_mismatch` + DHC `unmatched_open_fill` + VSAT `entry_price_mismatch` + CVGI `entry_price_mismatch`)
+
+### ⚠ 4 unresolved material discrepancies pending operator triage (with operator-supplied explanations)
+
+These are **real broker-vs-journal divergences** the system surfaced against operator's actual Schwab account (NOT bugs — Phase 9 emit machinery working as designed). Will appear on the dashboard's reconciliation banner per Phase 10 Sub-bundle E T-E.3. Operator-supplied explanations 2026-05-14:
+
+- **DHC `position_qty_mismatch`** + **DHC `unmatched_open_fill`** (rows on runs 8 + 9): operator sold 9 shares today (2026-05-14) as ~25% position reduction (sell into strength). **NOT YET in journal — expected divergence.** Operator-action sequence: (1) record the trim fill via journal CLI; (2) resolve discrepancies as `mistake_corrected`. Sub-bundle B reconciliation correctly surfaced the journal-lag-behind-broker state.
+- **VSAT `entry_price_mismatch`** + **CVGI `entry_price_mismatch`** (rows on runs 8 + 9): probably off by ~$0.01; **journal entry-price misreading mistake** (operator misread actual purchase price at original journal entry). Operator-action sequence: (1) update entry price in journal to match Schwab broker record; (2) resolve discrepancies as `mistake_corrected`.
+
+**8 row IDs total / 4 distinct issues / 2 root causes** (1 NEW operator action not yet journaled + 1 OLD journal-entry-data mistake). All 4 represent EXACTLY the kind of operational signal the source-ladder + reconciliation system was built to surface — Sub-bundle B is doing its job. Resolution is operator-action via journal CLI + `swing journal discrepancy resolve <id> --resolution=mistake_corrected --reason="..."`.
+
+### NEW gotcha-promotion candidate (Sub-bundle D T-D.4 candidate)
+
+**schwabdev camelCase parameter names vs project snake_case convention.** schwabdev uses `accountHash`, `fromEnteredTime`, `toEnteredTime`, `maxResults`, `startDate`, `endDate`, etc. — project convention is snake_case throughout. Wrapper kwargs MUST match schwabdev's camelCase exactly OR they fail at runtime with `TypeError: got an unexpected keyword argument`. Sub-bundle A's lesson #5 ("schwabdev 2.5.1 actual surfaces") covered response shapes but missed this kwarg-naming dimension; B's gate exposed it. **CLAUDE.md gotcha promotion at Sub-bundle D T-D.4:** discriminating-test pattern is to pin every wrapper's kwarg names against `inspect.signature(schwabdev.Client.X)` (Sub-bundle B established the pattern at `tests/integrations/test_schwab_trader_kwarg_signatures.py`); replicate for any future schwabdev wrapper additions.
+
+### NEW V2 candidate banked
+
+**Credential entry UX** (`SCHWAB_CLIENT_ID` / `SCHWAB_CLIENT_SECRET` env-var fallback OR session-cached prompt OR `--client-id` / `--client-secret` CLI flags). Operator prompted for `client_id` + `client_secret` on every CLI invocation in the gate session — by Sub-bundle A T-A.2 design (security posture; not in cfg cascade). Acceptable for V1 but friction-heavy for ops use. Matches Q2 V2 token encryption hardening family.
+
+### Same-day-replay-provenance live-validation deferred
+
+Sub-bundle B same-day-replay-provenance test (plan T-B.3 + T-B.4 R3 Major #4 ACCEPT-WITH-RATIONALE family) pins UPSERT-preserves-snapshot_id + LATEST-writer-wins-source_artifact_path semantics. Live gate (S2 + S4) didn't exercise this path because `last_completed_session(now())` rolled from 2026-05-13 to 2026-05-14 between S2 (12:30 PM PT) and S4 (1:27 PM PT) — `(snapshot_date, source)` UNIQUE INDEX correctly inserted a NEW row instead of UPSERTing. **Cassette unit test in T-B.3 stubs dates to force the same-day path; provenance discipline still locked at unit-test level.** Note for operator: date-resolution semantics may surprise — both gate snapshots resolved to different sessions during your active market hours; worth verifying the `last_completed_session` cutoff if it surprises you.
+
+### Cross-bundle pin status
+
+T-B.8 cross-bundle pin un-skipped at branch-tip (Trader API portion of sentinel-leak audit). 1 cross-bundle pin remaining (T-C.7 Market Data API portion).
+
+### Cross-references
+
+- Brainstorm spec: `docs/superpowers/specs/2026-05-13-schwab-api-design.md` (`585556f`).
+- Plan: `docs/superpowers/plans/2026-05-13-schwab-api-integration-plan.md` (`7faab72`).
+- Sub-bundle B executing-plans dispatch brief: `docs/schwab-bundle-B-executing-plans-dispatch-brief.md` (`19622b6`).
+- Sub-bundle B return report: `docs/schwab-bundle-B-return-report.md` (`0124a76`).
+- Sub-bundle B T-B.0.b recon doc: `docs/schwab-bundle-B-task-B0b-recon.md`.
+- Orchestrator-inline gate-fix: `34be84e` (trader.py:362 maxResults camelCase + 5 discriminating tests).
+- Sub-bundle C executing-plans dispatch brief: TBD (orchestrator drafts; operator-paced).
+
+### Next dispatch
+
+**Sub-bundle C executing-plans dispatch UNBLOCKED.** Operator-paced. Brief drafting MUST consume:
+1. Recon doc §6 + §6.bis as binding LOCKED inputs.
+2. Sub-bundle A's 5 forward-binding lessons (still BINDING for C).
+3. Sub-bundle B's NEW lessons (camelCase kwarg discipline + R1 M#3 typed-SchwabApiError audit-row close + R1 M#7 single-Client-instance via construct_authenticated_client + R1 M#8 same-day account_hash-flip guard + R2 M#1 pipeline-internal silent-skip vs CLI advisory rows + R5 M#1 CLI preflight account_hash check).
+4. `reference/schwabdev/api-calls.md` pre-check for Market Data API method-name + signature pre-answers (Q12 + Q17 likely pre-answerable).
+5. `reference/schwab-api/market-data-{documentation,specification}.md` Schwab Developer Portal canonical docs.
+6. Cross-bundle pin (un-skip at T-C.7).
+
+---
+
 ## 2026-05-14 Schwab API Sub-bundle A SHIPPED — schwabdev wrap + auth + migration 17→18 + audit infrastructure (4 Codex rounds; 19 commits; phase-2 live OAuth executed end-to-end against production)
 
 **Sub-bundle A SHIPPED 2026-05-14** at `5b6e5ba` (integration merge of `schwab-bundle-A-foundational` worktree branch — preserved Codex-fix chain via `--no-ff` per operator note). Operator-dispatched implementer per orchestrator brief at `bd166c5`. Branch HEAD `6550494` (19 commits = 11 task-impl + 1 hotfix bdf82da + 1 phase-2 addendum + 3 Codex-fix + 1 cleanup-script-help-escape + 1 return-report).
