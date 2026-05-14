@@ -385,6 +385,70 @@ def resolve_ohlcv_window(
     return merged_df, provenance
 
 
+def _normalize_legacy_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert a legacy DatetimeIndex archive into Shape A.
+
+    Legacy archives produced by ``read_or_fetch_archive`` /
+    ``_yf_download_window`` carry a DatetimeIndex (date-like, may be named
+    ``Date`` after ``reset_index``) plus capitalized OHLCV columns
+    (``Open``/``High``/``Low``/``Close``/``Volume``). Shape A (consumed by
+    ``resolve_ohlcv_window``) requires:
+
+      - an ``asof_date`` column (ISO ``YYYY-MM-DD`` string) — NOT an index;
+      - lowercase OHLCV column names (``open``/``high``/``low``/``close``/
+        ``volume``) matching ``_mk_window`` in tests + the
+        ``write_window`` writer pattern from ``map_price_history_to_window``.
+
+    Codex R1 Major #2 fix: prior to this helper, ``_backward_compat_rename``
+    only renamed the legacy file without normalizing — Shape A's reader
+    (``resolve_ohlcv_window``) requires an ``asof_date`` column and skips
+    files without one at lines 360-362, so a real legacy archive became
+    INVISIBLE post-rename. Idempotent on already-Shape-A frames.
+    """
+    if "asof_date" in df.columns:
+        return df  # already Shape A — idempotent
+
+    normalized = df.reset_index()
+    # `reset_index` promotes the index to a column; the legacy yfinance shape
+    # names it `Date` (or sometimes `index` for an unnamed DatetimeIndex). Find
+    # the most date-like column and rename it `asof_date`.
+    date_col: str | None = None
+    for candidate in ("Date", "date", "index", "Datetime", "datetime"):
+        if candidate in normalized.columns:
+            date_col = candidate
+            break
+    if date_col is None:
+        # Last-ditch: scan for the first column whose dtype is datetime-like.
+        for col in normalized.columns:
+            if pd.api.types.is_datetime64_any_dtype(normalized[col]):
+                date_col = col
+                break
+    if date_col is None:
+        raise ValueError(
+            "_normalize_legacy_dataframe: cannot identify date column; "
+            f"available columns: {list(normalized.columns)!r}"
+        )
+
+    normalized = normalized.rename(columns={date_col: "asof_date"})
+    # Coerce to ISO date string (mirrors `OhlcvBar.asof_date` + Shape A
+    # convention used elsewhere in this module).
+    normalized["asof_date"] = (
+        pd.to_datetime(normalized["asof_date"]).dt.date.astype(str)
+    )
+
+    # Normalize OHLCV column case to lowercase to match Shape A. Preserves
+    # any non-OHLCV columns verbatim (defensive).
+    rename_map: dict[str, str] = {}
+    for col in normalized.columns:
+        lc = col.lower()
+        if lc in ("open", "high", "low", "close", "volume") and col != lc:
+            rename_map[col] = lc
+    if rename_map:
+        normalized = normalized.rename(columns=rename_map)
+
+    return normalized.reset_index(drop=True)
+
+
 def _backward_compat_rename(ticker: str, *, cache_dir: Path) -> None:
     """One-shot migration of legacy `{TICKER}.parquet` → Shape A
     `{TICKER}.yfinance.parquet`.
@@ -393,24 +457,23 @@ def _backward_compat_rename(ticker: str, *, cache_dir: Path) -> None:
     without data loss:
 
     1. **old-only:** `{TICKER}.parquet` exists, `{TICKER}.yfinance.parquet`
-       absent → rename via `os.replace` (same volume; safe per CLAUDE.md
-       gotcha).
-    2. **both-exist:** MERGE-AND-QUARANTINE — read both, concat-dedupe on
-       `asof_date` keeping the new file's row on conflict (post-Shape-A
-       writes are presumed more recent than the legacy snapshot), write
-       merged back to the new file, rename old to
-       `{TICKER}.parquet.orphan-{timestamp}.parquet`. The orphan file is
-       operator-visible only; the resolver never reads it.
+       absent → NORMALIZE legacy DatetimeIndex/capitalized shape to Shape A
+       (asof_date column + lowercase OHLCV) via
+       ``_normalize_legacy_dataframe``, write to
+       ``{TICKER}.yfinance.parquet``, unlink the old file (same-volume).
+       Codex R1 Major #2 fix: previously a bare ``os.replace`` would have
+       left the post-rename file invisible to ``resolve_ohlcv_window``.
+    2. **both-exist:** MERGE-AND-QUARANTINE — read both, normalize the
+       legacy one first, then concat-dedupe on ``asof_date`` keeping the
+       new file's row on conflict (post-Shape-A writes are presumed more
+       recent than the legacy snapshot), write merged back to the new file,
+       rename old to ``{TICKER}.parquet.orphan-{timestamp}.parquet``. The
+       orphan file is operator-visible only; the resolver never reads it.
     3. **new-only:** already migrated; no-op.
     4. **neither:** no historical data; no-op.
 
     Idempotent: invoking twice on the same ticker drives the post-state to
     case 3 (new-only) on the second call, which is a no-op.
-
-    Note: the legacy `{TICKER}.parquet` shape uses a DatetimeIndex with
-    OHLCV columns (no `asof_date` column). The both-exist branch trusts
-    that the new file's shape will be normalized at write time; the
-    concat-dedupe uses `asof_date` if present and falls back to the index.
     """
     cache_dir = Path(cache_dir)
     ticker_u = ticker.upper()
@@ -421,26 +484,28 @@ def _backward_compat_rename(ticker: str, *, cache_dir: Path) -> None:
     new_exists = new_path.exists()
 
     if old_exists and not new_exists:
-        # Same-volume rename (both paths in `cache_dir`); safe per CLAUDE.md.
-        os.replace(old_path, new_path)
+        # Read + normalize + write to Shape A path; unlink the old file.
+        # We can't just `os.replace` because the legacy shape is invisible
+        # to `resolve_ohlcv_window` (Codex R1 Major #2).
+        old_df = pd.read_parquet(old_path)
+        normalized = _normalize_legacy_dataframe(old_df)
+        _write_archive_atomic(new_path, normalized)
+        with contextlib.suppress(OSError):
+            old_path.unlink()
         return
 
     if old_exists and new_exists:
-        # MERGE-AND-QUARANTINE — preserve every row.
+        # MERGE-AND-QUARANTINE — preserve every row. Normalize legacy first.
         old_df = pd.read_parquet(old_path)
         new_df = pd.read_parquet(new_path)
+        old_df = _normalize_legacy_dataframe(old_df)
+        new_df = _normalize_legacy_dataframe(new_df)  # idempotent on Shape A
 
-        # Determine dedup key: prefer explicit `asof_date` column if both
-        # files have it; otherwise dedup on the index.
-        if "asof_date" in old_df.columns and "asof_date" in new_df.columns:
-            merged = pd.concat([old_df, new_df]).drop_duplicates(
-                subset=["asof_date"], keep="last"
-            )
-            merged = merged.sort_values("asof_date").reset_index(drop=True)
-        else:
-            # Legacy DatetimeIndex shape (or mixed) — dedup on the index.
-            merged = pd.concat([old_df, new_df])
-            merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+        # Both frames now have `asof_date` column; dedup on it.
+        merged = pd.concat([old_df, new_df]).drop_duplicates(
+            subset=["asof_date"], keep="last"
+        )
+        merged = merged.sort_values("asof_date").reset_index(drop=True)
 
         _write_archive_atomic(new_path, merged)
 

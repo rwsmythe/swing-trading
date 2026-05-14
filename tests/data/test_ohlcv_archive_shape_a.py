@@ -535,3 +535,159 @@ def test_high_value_empty_schwab_fallback_preserves_schwab_archive(tmp_path):
         "2026-01-02": "schwab_api",
         "2026-01-03": "yfinance",
     }
+
+
+# ---------- Codex R1 Major #2: legacy DatetimeIndex normalization ------------
+
+
+def _mk_legacy_datetimeindex_window(
+    dates: list[str], close: float = 100.0,
+) -> pd.DataFrame:
+    """Build a legacy-yfinance-archive-shaped DataFrame.
+
+    Mirrors what ``_yf_download_window`` produces + ``_persist_archive_atomic``
+    writes: DatetimeIndex (named ``Date`` after ``reset_index``) + CAPITALIZED
+    OHLCV columns. NOT Shape A (no ``asof_date`` column, capitalized names).
+    """
+    idx = pd.to_datetime(dates)
+    return pd.DataFrame(
+        {
+            "Open": [close] * len(dates),
+            "High": [close + 1.0] * len(dates),
+            "Low": [close - 1.0] * len(dates),
+            "Close": [close] * len(dates),
+            "Volume": [1000] * len(dates),
+        },
+        index=idx,
+    )
+
+
+def test_normalize_legacy_dataframe_converts_datetimeindex_to_shape_a():
+    """Codex R1 Major #2 unit test: ``_normalize_legacy_dataframe`` converts
+    a legacy DatetimeIndex archive (capitalized cols, no ``asof_date``) into
+    Shape A (lowercase cols + ``asof_date`` ISO string column).
+    """
+    from swing.data.ohlcv_archive import _normalize_legacy_dataframe
+
+    legacy = _mk_legacy_datetimeindex_window(["2026-01-02", "2026-01-03"], 100.0)
+    # Pre-state: capitalized cols + DatetimeIndex; NO asof_date column.
+    assert "asof_date" not in legacy.columns
+    assert "Close" in legacy.columns
+    assert pd.api.types.is_datetime64_any_dtype(legacy.index)
+
+    normalized = _normalize_legacy_dataframe(legacy)
+
+    # Post-state: Shape A — `asof_date` ISO-string column + lowercase OHLCV.
+    assert "asof_date" in normalized.columns
+    assert normalized["asof_date"].tolist() == ["2026-01-02", "2026-01-03"]
+    assert all(
+        col in normalized.columns
+        for col in ("open", "high", "low", "close", "volume")
+    )
+    # Capitalized column names removed (renamed to lowercase).
+    for cap in ("Open", "High", "Low", "Close", "Volume"):
+        assert cap not in normalized.columns
+
+
+def test_normalize_legacy_dataframe_is_idempotent_on_shape_a():
+    """Re-invoking on a Shape A frame is a no-op (returns unchanged).
+    Discriminates: post-call the frame has the same columns + values."""
+    from swing.data.ohlcv_archive import _normalize_legacy_dataframe
+
+    shape_a = _mk_window(["2026-01-02"], close=100.0)
+    out = _normalize_legacy_dataframe(shape_a)
+    pd.testing.assert_frame_equal(shape_a, out)
+
+
+def test_backward_compat_rename_normalizes_real_legacy_datetimeindex_shape(
+    tmp_path,
+):
+    """**Codex R1 Major #2 discriminating test:** plant a REAL legacy
+    DatetimeIndex parquet (no ``asof_date`` column; capitalized OHLCV cols);
+    invoke ``_backward_compat_rename``; assert the resulting
+    ``{TICKER}.yfinance.parquet`` is READABLE by ``resolve_ohlcv_window``
+    + returns the rows (under the prior broken behavior, the post-rename
+    file lacks an ``asof_date`` column and ``resolve_ohlcv_window`` skips
+    it at lines 360-362, returning empty).
+
+    Pre-fix behavior: ``resolve_ohlcv_window(...)`` returns empty DataFrame.
+    Post-fix behavior: returns 2 rows attributed to ``'yfinance'`` provider.
+    """
+    from swing.data.ohlcv_archive import (
+        _backward_compat_rename,
+        resolve_ohlcv_window,
+    )
+
+    legacy = _mk_legacy_datetimeindex_window(
+        ["2026-01-02", "2026-01-03"], close=100.0,
+    )
+    old_path = tmp_path / "AAPL.parquet"
+    legacy.to_parquet(old_path)
+    # Sanity: planted file is legacy-shaped (no asof_date column).
+    planted = pd.read_parquet(old_path)
+    assert "asof_date" not in planted.columns
+
+    _backward_compat_rename("AAPL", cache_dir=tmp_path)
+
+    new_path = tmp_path / "AAPL.yfinance.parquet"
+    assert new_path.exists(), "rename failed to produce yfinance parquet"
+    assert not old_path.exists(), "legacy parquet not unlinked post-rename"
+
+    # The KEY discriminating assertion: resolver returns the rows.
+    df, provenance = resolve_ohlcv_window(
+        "AAPL", start="2026-01-01", end="2026-01-10", cache_dir=tmp_path,
+    )
+    assert len(df) == 2, (
+        "_backward_compat_rename did not normalize legacy DatetimeIndex → "
+        "Shape A; resolver sees the file as missing asof_date column and "
+        f"returns 0 rows (post-fix expected 2). Codex R1 Major #2 regression."
+    )
+    assert sorted(df["asof_date"].tolist()) == ["2026-01-02", "2026-01-03"]
+    assert set(provenance.values()) == {"yfinance"}
+    # Lowercase OHLCV columns post-normalization.
+    assert "close" in df.columns
+    assert float(df.iloc[0]["close"]) == 100.0
+
+
+def test_backward_compat_rename_merges_legacy_datetimeindex_with_shape_a(
+    tmp_path,
+):
+    """Both-exist branch when OLD is legacy DatetimeIndex + NEW is Shape A.
+
+    Plant:
+      - Old ``AAPL.parquet`` legacy DatetimeIndex with [01-02 close=100,
+        01-03 close=100].
+      - New ``AAPL.yfinance.parquet`` Shape A with [01-03 close=200,
+        01-04 close=200].
+
+    Post-rename:
+      - Merge: 3 unique dates; 01-03 conflict won by NEW (close=200).
+      - Resolver returns 3 rows attributed to ``'yfinance'``.
+    """
+    from swing.data.ohlcv_archive import (
+        _backward_compat_rename,
+        resolve_ohlcv_window,
+    )
+
+    legacy = _mk_legacy_datetimeindex_window(
+        ["2026-01-02", "2026-01-03"], close=100.0,
+    )
+    shape_a = _mk_window(["2026-01-03", "2026-01-04"], close=200.0)
+    (tmp_path / "AAPL.parquet").write_bytes(b"")  # placeholder for clarity
+    legacy.to_parquet(tmp_path / "AAPL.parquet")
+    shape_a.to_parquet(tmp_path / "AAPL.yfinance.parquet")
+
+    _backward_compat_rename("AAPL", cache_dir=tmp_path)
+
+    df, provenance = resolve_ohlcv_window(
+        "AAPL", start="2026-01-01", end="2026-01-10", cache_dir=tmp_path,
+    )
+    assert sorted(df["asof_date"].tolist()) == [
+        "2026-01-02", "2026-01-03", "2026-01-04",
+    ]
+    by_date = {row.asof_date: row.close for row in df.itertuples()}
+    # 01-03 conflict: new file wins (keep='last' in pd.concat dedup).
+    assert by_date["2026-01-03"] == 200.0
+    assert by_date["2026-01-02"] == 100.0
+    assert by_date["2026-01-04"] == 200.0
+    assert set(provenance.values()) == {"yfinance"}
