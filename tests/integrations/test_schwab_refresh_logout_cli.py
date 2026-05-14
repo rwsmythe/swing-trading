@@ -116,12 +116,27 @@ def tokens_file(home: Path) -> Path:
 class _FakeTokens:
     """Stand-in for `client.tokens` carrying sentinel bytes + the
     `update_tokens(force_access_token=...)` entry point used by `force_refresh`.
+
+    Codex R1 Major #1 — `update_tokens` rotates `access_token` by default
+    (mirrors live schwabdev behavior). Tests that need silent-failure
+    semantics pass `rotate_on_update=False` to simulate schwabdev's
+    suppressed-failure path.
     """
 
-    def __init__(self, *, raise_on_update: BaseException | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        raise_on_update: BaseException | None = None,
+        rotate_on_update: bool = True,
+        rotated_access_token: str = "ROTATED_ACCESS_TOKEN_NEW_VALUE_0123456789",
+        clear_access_on_update: bool = False,
+    ) -> None:
         self.access_token = _SENTINEL_ACCESS_TOKEN
         self.refresh_token = _SENTINEL_REFRESH_TOKEN
         self._raise_on_update = raise_on_update
+        self._rotate_on_update = rotate_on_update
+        self._rotated_access_token = rotated_access_token
+        self._clear_access_on_update = clear_access_on_update
         self.update_call_count = 0
         self.last_update_kwargs: dict | None = None
 
@@ -133,6 +148,11 @@ class _FakeTokens:
         }
         if self._raise_on_update is not None:
             raise self._raise_on_update
+        if self._clear_access_on_update:
+            self.access_token = None
+        elif self._rotate_on_update:
+            self.access_token = self._rotated_access_token
+        # else: leave access_token unchanged (silent-failure simulation).
         return True
 
 
@@ -141,16 +161,36 @@ class _FakeSchwabdevClient:
     block on stdin via Tokens.update_refresh_token; the stub does neither.
     """
 
-    def __init__(self, *args: Any, raise_on_update: BaseException | None = None, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        raise_on_update: BaseException | None = None,
+        rotate_on_update: bool = True,
+        clear_access_on_update: bool = False,
+        **kwargs: Any,
+    ) -> None:
         self._init_kwargs = kwargs
-        self.tokens = _FakeTokens(raise_on_update=raise_on_update)
+        self.tokens = _FakeTokens(
+            raise_on_update=raise_on_update,
+            rotate_on_update=rotate_on_update,
+            clear_access_on_update=clear_access_on_update,
+        )
         self.tokens_file = kwargs.get("tokens_file")
 
 
-def _make_stub(*, raise_on_update: BaseException | None = None):
+def _make_stub(
+    *,
+    raise_on_update: BaseException | None = None,
+    rotate_on_update: bool = True,
+    clear_access_on_update: bool = False,
+):
     def factory(*args: Any, **kwargs: Any) -> _FakeSchwabdevClient:
         return _FakeSchwabdevClient(
-            *args, raise_on_update=raise_on_update, **kwargs,
+            *args,
+            raise_on_update=raise_on_update,
+            rotate_on_update=rotate_on_update,
+            clear_access_on_update=clear_access_on_update,
+            **kwargs,
         )
     return factory
 
@@ -524,3 +564,128 @@ def test_logout_tokens_path_resolves_under_tmp_home(
     siblings = list(home.rglob("schwab-tokens.production.db.deleted-*"))
     assert len(siblings) == 1
     assert str(siblings[0]).startswith(str(home))
+
+
+# ============================================================================
+# Codex R1 Major #1 — force_refresh silent-failure detection (parity with D1)
+# ============================================================================
+
+
+def test_refresh_detects_silent_failure_access_token_cleared(
+    home: Path,
+    cfg_path: Path,
+    tokens_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex R1 Major #1 — schwabdev's `update_tokens` returns normally
+    but leaves `client.tokens.access_token = None` (silent failure
+    suppressed inside schwabdev, mirroring D1 paste-back failure mode).
+    The refresh handler MUST close the audit row as `auth_failed` +
+    raise `SchwabAuthError` rather than reporting success.
+
+    Discriminating: pre-fix the handler closed audit `status='success'`
+    because no exception was raised.
+    """
+    _patch_schwabdev(monkeypatch, _make_stub(clear_access_on_update=True))
+    result = _invoke(
+        cfg_path,
+        ["refresh", "--environment", "production"],
+        input="my_client_id\nmy_client_secret\n",
+    )
+    assert result.exit_code != 0, result.output
+    rows = _read_audit_rows(home / "swing-data" / "swing.db")
+    assert len(rows) == 1
+    assert rows[0]["endpoint"] == "oauth.refresh"
+    assert rows[0]["status"] == "auth_failed", (
+        f"silent-failure (cleared access_token) MUST audit auth_failed; "
+        f"got {rows[0]['status']!r}"
+    )
+    err = rows[0]["error_message"] or ""
+    assert "access_token" in err, (
+        f"audit error_message should mention access_token; got {err!r}"
+    )
+
+
+def test_refresh_rewraps_factory_when_third_party_replaced_it(
+    home: Path,
+    cfg_path: Path,
+    tokens_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex R1 Major #2 — auth.py:force_refresh MUST call
+    `ensure_schwab_log_redaction_factory_installed()` (not just
+    `_install_*_once()`) before invoking schwabdev — otherwise a
+    third-party library that replaced the process-global LogRecord
+    factory after our initial install bypasses redaction.
+
+    Discriminating: install Schwab factory; install no-op third-party
+    factory; invoke refresh; assert post-call factory is OUR factory
+    again (re-wrapped). Pre-fix `_install_*_once` would no-op the
+    second-call install + leave the third-party factory in place.
+    """
+    import logging
+
+    from swing.integrations.schwab.client import (
+        _install_schwab_log_redaction_factory_once,
+        _schwab_record_factory,
+        register_schwab_secrets,
+    )
+
+    # Ensure our factory is installed first.
+    register_schwab_secrets(["my_client_id", "my_client_secret"])
+    _install_schwab_log_redaction_factory_once()
+    assert logging.getLogRecordFactory() is _schwab_record_factory
+
+    # Third-party replaces the factory AFTER our install.
+    def third_party_factory(*args, **kwargs):
+        return logging.LogRecord(*args, **kwargs)
+    logging.setLogRecordFactory(third_party_factory)
+    assert logging.getLogRecordFactory() is third_party_factory
+
+    # Now invoke refresh — handler should re-wrap our factory before the
+    # schwabdev call fires.
+    _patch_schwabdev(monkeypatch, _make_stub())
+    result = _invoke(
+        cfg_path,
+        ["refresh", "--environment", "production"],
+        input="my_client_id\nmy_client_secret\n",
+    )
+    assert result.exit_code == 0, result.output
+    # Discriminating: post-refresh, factory must be OURS again.
+    assert logging.getLogRecordFactory() is _schwab_record_factory, (
+        "auth.py:force_refresh did not call ensure_*; third-party factory "
+        "remained in place + redaction silently disabled"
+    )
+
+
+def test_refresh_detects_silent_failure_access_token_unchanged(
+    home: Path,
+    cfg_path: Path,
+    tokens_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex R1 Major #1 — schwabdev's `update_tokens` returns normally
+    but leaves `client.tokens.access_token` byte-identical to the
+    pre-call value (no rotation actually occurred). The refresh handler
+    MUST close audit as auth_failed + raise.
+
+    Discriminating: pre-fix the handler trusted the return value of
+    schwabdev's update_tokens; an unchanged access_token slipped past
+    as a success.
+    """
+    _patch_schwabdev(monkeypatch, _make_stub(rotate_on_update=False))
+    result = _invoke(
+        cfg_path,
+        ["refresh", "--environment", "production"],
+        input="my_client_id\nmy_client_secret\n",
+    )
+    assert result.exit_code != 0, result.output
+    rows = _read_audit_rows(home / "swing-data" / "swing.db")
+    assert len(rows) == 1
+    assert rows[0]["endpoint"] == "oauth.refresh"
+    assert rows[0]["status"] == "auth_failed", (
+        f"silent-failure (unchanged access_token) MUST audit auth_failed; "
+        f"got {rows[0]['status']!r}"
+    )
+    err = rows[0]["error_message"] or ""
+    assert "unchanged" in err.lower() or "access_token" in err.lower()

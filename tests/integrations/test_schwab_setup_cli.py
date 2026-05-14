@@ -801,3 +801,61 @@ def test_setup_d3_schema_mismatch_exits_before_prompting_credentials(
         f"expected SchemaVersionMismatchError; got "
         f"{type(result.exception).__name__}: {result.exception}"
     )
+
+
+# ============================================================================
+# Codex R1 Major #3 — empty-list accounts.linked MUST audit auth_failed
+# (and NOT success-then-raise)
+# ============================================================================
+
+
+def test_setup_account_linked_empty_list_audits_auth_failed(
+    home: Path, cfg_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex R1 Major #3 — `client.account_linked()` returns `[]`. The
+    audit row for the accounts.linked endpoint MUST be closed as
+    `auth_failed`, NOT `success`-then-raise. Pre-fix ordering closed the
+    success row before the empty-list raise fired, mis-reporting an
+    auth failure as a successful call in the audit table.
+
+    Discriminating: assertions pin (a) status == 'auth_failed' (not
+    'success'), (b) error_message mentions the empty list, (c) exit
+    code is non-zero, (d) NO account_hash persisted to user-config.
+    """
+
+    class _ClientWithEmptyAccounts(_FakeSchwabdevClient):
+        def account_linked(self) -> list[dict]:
+            return []
+
+    def factory(*args: Any, **kwargs: Any) -> _ClientWithEmptyAccounts:
+        return _ClientWithEmptyAccounts(*args, **kwargs)
+
+    _patch_schwabdev(monkeypatch, factory)
+    result = _invoke(
+        cfg_path,
+        ["setup", "--environment", "production"],
+        input="my_client_id\nmy_client_secret\n",
+    )
+    assert result.exit_code != 0, result.output
+    rows = _read_audit_rows(home / "swing-data" / "swing.db")
+    assert len(rows) == 2
+    # The setup audit row is the first one; Client construction succeeded.
+    assert rows[0]["endpoint"] == "oauth.code_exchange"
+    assert rows[0]["status"] == "success"
+    # The accounts.linked row MUST be auth_failed — NOT success.
+    assert rows[1]["endpoint"] == "accounts.linked"
+    assert rows[1]["status"] == "auth_failed", (
+        f"empty-list accounts.linked MUST audit auth_failed (pre-fix bug "
+        f"closed as success then raised); got {rows[1]['status']!r}"
+    )
+    err = rows[1]["error_message"] or ""
+    assert "empty" in err.lower() or "list" in err.lower(), (
+        f"error_message should reference empty-list condition; got {err!r}"
+    )
+    # account_hash NOT persisted (raise short-circuited persistence).
+    overrides = _read_user_overrides(home)
+    assert (
+        "integrations" not in overrides
+        or "schwab" not in overrides.get("integrations", {})
+        or "account_hash" not in overrides["integrations"]["schwab"]
+    )

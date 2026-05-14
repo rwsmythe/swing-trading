@@ -174,6 +174,107 @@ def test_full_valid_instance_constructs() -> None:
 
 
 # ============================================================================
+# Codex R1 Major #4 — close validator-coverage gap on 7 remaining fields
+# ============================================================================
+
+
+def test_call_id_validator_rejects_zero_negative_and_non_int_accepts_none_and_positive() -> None:
+    """call_id: None pre-INSERT (accepted); positive int post-INSERT (accepted).
+    Zero / negative / non-int (e.g. str) rejected.
+    """
+    # Rejected.
+    with pytest.raises(ValueError, match="call_id"):
+        SchwabApiCall(**_valid_kwargs(call_id=0))
+    with pytest.raises(ValueError, match="call_id"):
+        SchwabApiCall(**_valid_kwargs(call_id=-1))
+    with pytest.raises(ValueError, match="call_id"):
+        SchwabApiCall(**_valid_kwargs(call_id="1"))
+    # Booleans are int subclasses in Python; we reject them explicitly.
+    with pytest.raises(ValueError, match="call_id"):
+        SchwabApiCall(**_valid_kwargs(call_id=True))
+    # Accepted.
+    SchwabApiCall(**_valid_kwargs(call_id=None))
+    SchwabApiCall(**_valid_kwargs(call_id=1))
+    SchwabApiCall(**_valid_kwargs(call_id=12345))
+
+
+def test_ts_validator_rejects_empty_and_unparseable_accepts_iso8601() -> None:
+    """ts: non-empty ISO 8601 parseable string. Empty string + None +
+    free-text rejected.
+    """
+    # Rejected.
+    with pytest.raises(ValueError, match="ts"):
+        SchwabApiCall(**_valid_kwargs(ts=""))
+    with pytest.raises(ValueError, match="ts"):
+        SchwabApiCall(**_valid_kwargs(ts=None))
+    with pytest.raises(ValueError, match="ts"):
+        SchwabApiCall(**_valid_kwargs(ts="not-a-timestamp"))
+    # Accepted: naked ISO; with microseconds; with offset.
+    SchwabApiCall(**_valid_kwargs(ts="2026-05-13T12:00:00"))
+    SchwabApiCall(**_valid_kwargs(ts="2026-05-13T12:00:00.123456"))
+    SchwabApiCall(**_valid_kwargs(ts="2026-05-13T12:00:00+00:00"))
+
+
+def test_rate_limit_remaining_validator_rejects_negative_accepts_none_and_zero_plus() -> None:
+    """rate_limit_remaining: None or >= 0; no upper bound."""
+    with pytest.raises(ValueError, match="rate_limit_remaining"):
+        SchwabApiCall(**_valid_kwargs(rate_limit_remaining=-1))
+    SchwabApiCall(**_valid_kwargs(rate_limit_remaining=None))
+    SchwabApiCall(**_valid_kwargs(rate_limit_remaining=0))
+    SchwabApiCall(**_valid_kwargs(rate_limit_remaining=120))
+    SchwabApiCall(**_valid_kwargs(rate_limit_remaining=999_999))
+
+
+def test_error_message_validator_rejects_non_string_accepts_none_and_string() -> None:
+    """error_message: None or str. No length cap (redaction layer truncates)."""
+    with pytest.raises(ValueError, match="error_message"):
+        SchwabApiCall(**_valid_kwargs(error_message=123))
+    with pytest.raises(ValueError, match="error_message"):
+        SchwabApiCall(**_valid_kwargs(error_message=["list", "rejected"]))
+    SchwabApiCall(**_valid_kwargs(error_message=None))
+    SchwabApiCall(**_valid_kwargs(error_message=""))
+    SchwabApiCall(**_valid_kwargs(error_message="<redacted body of 84 bytes>"))
+
+
+def test_linked_snapshot_id_validator() -> None:
+    """linked_snapshot_id: None or positive int. Zero / negative rejected."""
+    with pytest.raises(ValueError, match="linked_snapshot_id"):
+        SchwabApiCall(**_valid_kwargs(linked_snapshot_id=0))
+    with pytest.raises(ValueError, match="linked_snapshot_id"):
+        SchwabApiCall(**_valid_kwargs(linked_snapshot_id=-5))
+    with pytest.raises(ValueError, match="linked_snapshot_id"):
+        SchwabApiCall(**_valid_kwargs(linked_snapshot_id="1"))
+    with pytest.raises(ValueError, match="linked_snapshot_id"):
+        SchwabApiCall(**_valid_kwargs(linked_snapshot_id=True))
+    SchwabApiCall(**_valid_kwargs(linked_snapshot_id=None))
+    SchwabApiCall(**_valid_kwargs(linked_snapshot_id=1))
+
+
+def test_linked_reconciliation_run_id_validator() -> None:
+    """linked_reconciliation_run_id: None or positive int."""
+    with pytest.raises(ValueError, match="linked_reconciliation_run_id"):
+        SchwabApiCall(**_valid_kwargs(linked_reconciliation_run_id=0))
+    with pytest.raises(ValueError, match="linked_reconciliation_run_id"):
+        SchwabApiCall(**_valid_kwargs(linked_reconciliation_run_id=-1))
+    with pytest.raises(ValueError, match="linked_reconciliation_run_id"):
+        SchwabApiCall(**_valid_kwargs(linked_reconciliation_run_id=1.5))
+    SchwabApiCall(**_valid_kwargs(linked_reconciliation_run_id=None))
+    SchwabApiCall(**_valid_kwargs(linked_reconciliation_run_id=7))
+
+
+def test_pipeline_run_id_validator() -> None:
+    """pipeline_run_id: None or positive int."""
+    with pytest.raises(ValueError, match="pipeline_run_id"):
+        SchwabApiCall(**_valid_kwargs(pipeline_run_id=0))
+    with pytest.raises(ValueError, match="pipeline_run_id"):
+        SchwabApiCall(**_valid_kwargs(pipeline_run_id=-2))
+    with pytest.raises(ValueError, match="pipeline_run_id"):
+        SchwabApiCall(**_valid_kwargs(pipeline_run_id="abc"))
+    SchwabApiCall(**_valid_kwargs(pipeline_run_id=None))
+    SchwabApiCall(**_valid_kwargs(pipeline_run_id=42))
+
+
+# ============================================================================
 # B. Repo function tests (10 tests)
 # ============================================================================
 

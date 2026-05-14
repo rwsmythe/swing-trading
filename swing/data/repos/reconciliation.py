@@ -26,7 +26,7 @@ _RUN_SELECT_COLUMNS = (
     "account_equity_journal_dollars, account_equity_source_dollars, "
     "equity_delta_dollars, trades_reconciled_count, fills_reconciled_count, "
     "discrepancies_count, unresolved_discrepancies_count, summary_json, "
-    "error_message, notes"
+    "error_message, notes, schwab_api_call_id"
 )
 
 
@@ -69,6 +69,7 @@ def _row_to_run(row: tuple) -> ReconciliationRun:
         summary_json=row[16],
         error_message=row[17],
         notes=row[18],
+        schwab_api_call_id=row[19],
     )
 
 
@@ -122,11 +123,17 @@ def insert_run(
     summary_json: str | None = None,
     error_message: str | None = None,
     notes: str | None = None,
+    schwab_api_call_id: int | None = None,
 ) -> int:
     """Pure INSERT inside the caller's transaction scope.
 
     Caller owns the surrounding BEGIN IMMEDIATE → COMMIT (service layer
     ``swing/trades/reconciliation.py:run_tos_reconciliation``).
+
+    ``schwab_api_call_id`` (Codex R1 Major #5): added to support Bundle B+
+    Schwab-API-sourced reconciliation runs. FK ON DELETE SET NULL to
+    ``schwab_api_calls.call_id`` per migration 0018. Defaults to None
+    for tos_csv runs (which never have a corresponding Schwab API call).
 
     Returns:
         Newly-assigned ``run_id`` (autoincrement).
@@ -138,15 +145,17 @@ def insert_run(
         "account_equity_journal_dollars, account_equity_source_dollars, "
         "equity_delta_dollars, trades_reconciled_count, "
         "fills_reconciled_count, discrepancies_count, "
-        "unresolved_discrepancies_count, summary_json, error_message, notes"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "unresolved_discrepancies_count, summary_json, error_message, notes, "
+        "schwab_api_call_id"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             source, source_artifact_path, source_artifact_sha256,
             period_start, period_end, started_ts, finished_ts, state,
             account_equity_journal_dollars, account_equity_source_dollars,
             equity_delta_dollars, trades_reconciled_count,
             fills_reconciled_count, discrepancies_count,
-            unresolved_discrepancies_count, summary_json, error_message, notes,
+            unresolved_discrepancies_count, summary_json, error_message,
+            notes, schwab_api_call_id,
         ),
     )
     return cur.lastrowid

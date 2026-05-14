@@ -41,8 +41,8 @@ from swing.integrations.schwab.client import (
     SchwabConfigMissingError,
     SchwabPipelineActiveError,
     SchwabRefreshTokenExpiredError,
-    _install_schwab_log_redaction_factory_once,
     _suppress_transport_debug_logs,
+    ensure_schwab_log_redaction_factory_installed,
     register_schwab_secrets,
 )
 
@@ -209,10 +209,13 @@ def setup_paste_flow(
     # T-A.10 — register cfg-known sensitive bytes BEFORE constructing
     # schwabdev.Client so any log records emitted during construction (incl.
     # the auth-failure paths in schwabdev/tokens.py) flow through the Layer-2
-    # redactor with these secrets already in the registry. The factory
-    # install is idempotent + a true process-singleton.
+    # redactor with these secrets already in the registry. Use
+    # `ensure_schwab_log_redaction_factory_installed()` (R8 M#2 defense)
+    # rather than `_install_*_once()`: if another library replaced the
+    # process-global LogRecord factory after our initial install, the
+    # ensure-helper re-wraps it so redaction stays active for this call.
     register_schwab_secrets([client_id, client_secret])
-    _install_schwab_log_redaction_factory_once()
+    ensure_schwab_log_redaction_factory_installed()
 
     # Step 6 — construct schwabdev.Client(...). Implementation deviation
     # from recon doc §2.1: live schwabdev 2.5.1 uses `tokens_file=`
@@ -340,11 +343,11 @@ def setup_paste_flow(
 
     elapsed_ms = int((time.monotonic() - account_linked_start) * 1000)
 
-    # D2 hotfix (operator-paired phase-2 verification 2026-05-14):
-    # schwabdev's `client.account_linked()` returns a DICT (Schwab error
-    # envelope) when the Client has no valid tokens — NOT a list. The
-    # subsequent `accounts[0]` would raise `KeyError: 0`. Validate shape
-    # explicitly + close the audit row as auth_failed when malformed.
+    # D2 hotfix (operator-paired phase-2 verification 2026-05-14) +
+    # Codex R1 Major #3 — validate ALL shape/empty conditions BEFORE
+    # closing the audit row as success. Prior ordering closed the row
+    # success FIRST + then raised on empty list, mis-reporting an
+    # auth-failure as a successful call in the audit table.
     if not isinstance(accounts, list):
         audit_service.record_call_finish(
             conn,
@@ -363,6 +366,23 @@ def setup_paste_flow(
             500,
             f"<account_linked returned unexpected shape: "
             f"{type(accounts).__name__}>",
+        )
+    # Codex R1 Major #3 — empty-list rejection MUST audit-fail BEFORE
+    # the success close, not after.
+    if not accounts:
+        audit_service.record_call_finish(
+            conn,
+            call_id=call_id_account_linked,
+            http_status=None,
+            status="auth_failed",
+            response_time_ms=elapsed_ms,
+            signature_hash=None,
+            rate_limit_remaining=None,
+            error_message="<account_linked returned empty list>",
+        )
+        raise SchwabAuthError(
+            500,
+            "<account_linked returned empty list; expected at least 1 account>",
         )
     for _idx, _entry in enumerate(accounts):
         if not isinstance(_entry, dict) or "hashValue" not in _entry:
@@ -384,6 +404,7 @@ def setup_paste_flow(
                 f"<account_linked entry {_idx} has unexpected shape>",
             )
 
+    # All shape + non-empty validation passed; safe to record success.
     audit_service.record_call_finish(
         conn,
         call_id=call_id_account_linked,
@@ -395,12 +416,8 @@ def setup_paste_flow(
         error_message=None,
     )
 
-    # Step 9 — pick primary account.
-    if not accounts:
-        raise SchwabAuthError(
-            500,
-            "<account_linked returned empty list; expected at least 1 account>",
-        )
+    # Step 9 — pick primary account. (Empty-list case already handled
+    # pre-success above per Codex R1 Major #3.)
     if len(accounts) == 1:
         chosen = accounts[0]
     else:
@@ -534,9 +551,12 @@ def force_refresh(
     )
 
     # T-A.10 — register cfg-known sensitive bytes BEFORE constructing
-    # schwabdev.Client + invoking update_tokens. Idempotent.
+    # schwabdev.Client + invoking update_tokens. Use `ensure_*` (R8 M#2
+    # defense) so a third-party library that replaced the process-global
+    # LogRecord factory after our initial install gets re-wrapped before
+    # this auth-sensitive call fires.
     register_schwab_secrets([client_id, client_secret])
-    _install_schwab_log_redaction_factory_once()
+    ensure_schwab_log_redaction_factory_installed()
 
     # Step 5+6 — construct Client + invoke update_tokens.
     call_start = time.monotonic()
@@ -549,6 +569,15 @@ def force_refresh(
                 callback_url=cfg.integrations.schwab.callback_url,
                 tokens_file=str(tokens_path),
                 timeout=int(cfg.integrations.schwab.timeout_seconds),
+            )
+            # Codex R1 Major #1 (parity with D1 setup hotfix) — capture
+            # the pre-call access_token so we can detect schwabdev
+            # returning normally without actually rotating it. schwabdev
+            # swallows some refresh failures internally (matching the
+            # D1 paste-back failure mode); a silent failure-to-rotate
+            # MUST close the audit row as auth_failed, not success.
+            pre_call_access_token = getattr(
+                getattr(client, "tokens", None), "access_token", None,
             )
             # See docstring DEVIATION block — `force_access_token=True` is
             # the live-library semantic match for "rotate access_token via
@@ -616,12 +645,68 @@ def force_refresh(
             f"<refresh failed: {type(exc).__name__}>",
         ) from exc
 
+    # Codex R1 Major #1 — silent-failure detection mirroring the D1
+    # setup hotfix. If schwabdev returns normally from update_tokens but
+    # does NOT actually rotate the token (e.g., suppressed-failure path
+    # we cannot see), the post-call `client.tokens.access_token` will
+    # either be (a) empty / None / non-string, OR (b) byte-identical to
+    # the pre-call value. Both cases MUST close the audit row as
+    # auth_failed + raise — otherwise an operator's `swing schwab
+    # refresh` reports success while the underlying token is stale.
+    new_access = getattr(getattr(client, "tokens", None), "access_token", None)
+    new_refresh = getattr(getattr(client, "tokens", None), "refresh_token", None)
+    if not new_access or not isinstance(new_access, str):
+        audit_service.record_call_finish(
+            conn,
+            call_id=call_id,
+            http_status=None,
+            status="auth_failed",
+            response_time_ms=elapsed_ms,
+            signature_hash=None,
+            rate_limit_remaining=None,
+            error_message=(
+                "<schwabdev update_tokens returned without populating "
+                "access_token; refresh likely failed silently>"
+            ),
+        )
+        log.warning(
+            "schwab refresh: update_tokens returned but tokens.access_token "
+            "is missing/empty (silent failure)",
+        )
+        raise SchwabAuthError(
+            401,
+            "<refresh failed: schwabdev returned without rotating "
+            "access_token>",
+        )
+    if pre_call_access_token and new_access == pre_call_access_token:
+        audit_service.record_call_finish(
+            conn,
+            call_id=call_id,
+            http_status=None,
+            status="auth_failed",
+            response_time_ms=elapsed_ms,
+            signature_hash=None,
+            rate_limit_remaining=None,
+            error_message=(
+                "<schwabdev update_tokens returned but access_token "
+                "unchanged from pre-call value; refresh likely failed "
+                "silently>"
+            ),
+        )
+        log.warning(
+            "schwab refresh: update_tokens returned but access_token "
+            "did not change (silent failure)",
+        )
+        raise SchwabAuthError(
+            401,
+            "<refresh failed: schwabdev returned without rotating "
+            "access_token (value unchanged)>",
+        )
+
     # T-A.10 — register the freshly-rotated tokens. The registry is
     # additive: the old access_token already there stays registered (per
     # Codex R3 Major #2 process-global UNION discipline), so any log
     # record that interpolates either old OR new token gets redacted.
-    new_access = getattr(getattr(client, "tokens", None), "access_token", None)
-    new_refresh = getattr(getattr(client, "tokens", None), "refresh_token", None)
     register_schwab_secrets([new_access, new_refresh])
 
     # Step 7 (success) — close audit row.
@@ -764,6 +849,17 @@ def revoke_and_delete(
         raise SchwabApiError(
             f"<cannot logout: tokens file missing or unreadable at {tokens_path}>",
         )
+
+    # Codex R1 Major #2 — register cfg-known sensitive bytes + ensure
+    # the redaction factory is current before the manual POST. The
+    # refresh_token extracted above + client_id + client_secret are
+    # interpolated into the Authorization header / form body — if
+    # `requests`-side debug logging emits them, the LogRecord factory
+    # must redact. `ensure_*` (not `_install_*_once`) catches the case
+    # where another library replaced the process-global factory after
+    # our initial install.
+    register_schwab_secrets([client_id, client_secret, refresh_token])
+    ensure_schwab_log_redaction_factory_installed()
 
     # Step 5+6 — POST /v1/oauth/revoke (best-effort).
     auth_header = base64.b64encode(

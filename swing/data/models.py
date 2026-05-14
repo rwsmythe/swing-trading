@@ -851,6 +851,12 @@ class ReconciliationRun:
     summary_json: str | None
     error_message: str | None
     notes: str | None
+    # Codex R1 Major #5 — schwab_api_call_id ALTER added by migration 0018
+    # (FK ON DELETE SET NULL → schwab_api_calls.call_id). Bundle B+
+    # `run_tos_reconciliation` writes via the new Schwab transactions
+    # endpoint will populate this; tos_csv runs leave NULL. Field ordered
+    # LAST (Phase 9 §H.4 positional-instantiation preservation precedent).
+    schwab_api_call_id: int | None = None
 
     def __post_init__(self) -> None:
         import math
@@ -920,6 +926,19 @@ class ReconciliationRun:
         if self.state == "failed" and not self.error_message:
             raise ValueError(
                 "state='failed' requires non-empty error_message"
+            )
+
+        # Codex R1 Major #5 — schwab_api_call_id validator (None or
+        # positive int). FK is enforced at SQL layer; this catches
+        # construction-time slip (zero / negative / wrong type).
+        if self.schwab_api_call_id is not None and (
+            isinstance(self.schwab_api_call_id, bool)
+            or not isinstance(self.schwab_api_call_id, int)
+            or self.schwab_api_call_id <= 0
+        ):
+            raise ValueError(
+                "schwab_api_call_id must be None or positive int, "
+                f"got {self.schwab_api_call_id!r}"
             )
 
 
@@ -1266,3 +1285,73 @@ class SchwabApiCall:
                 "signature_hash must be None or 64-char lowercase hex, "
                 f"got {self.signature_hash!r}"
             )
+        # Codex R1 Major #4 — close validator-coverage gap for the 7
+        # remaining audit columns. Plan §B.1 + §H.7 specified validators
+        # across all 14 audit columns; the prior implementation only
+        # covered the 7 enum/range/regex ones. The remaining 7 columns
+        # below enforce per-field defense-in-depth on top of the SQL
+        # constraints in migration 0018.
+
+        # call_id: None pre-INSERT; positive int post-INSERT.
+        if self.call_id is not None and (
+            isinstance(self.call_id, bool)
+            or not isinstance(self.call_id, int)
+            or self.call_id <= 0
+        ):
+            raise ValueError(
+                f"call_id must be None or positive int, got {self.call_id!r}"
+            )
+
+        # ts: non-empty string parseable by datetime.fromisoformat
+        # (permissive ISO 8601 acceptance; covers `YYYY-MM-DDTHH:MM:SS`
+        # naked + microsecond-precision + ±HH:MM offsets per Phase 9
+        # spec §9.3 timestamp convention).
+        if not isinstance(self.ts, str) or not self.ts:
+            raise ValueError(
+                f"ts must be non-empty ISO 8601 string, got {self.ts!r}"
+            )
+        try:
+            from datetime import datetime as _dt
+            _dt.fromisoformat(self.ts)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"ts must be ISO 8601 parseable, got {self.ts!r}"
+            ) from exc
+
+        # rate_limit_remaining: None or non-negative int. No upper bound
+        # per plan §H.7 (best-effort header echo).
+        if (
+            self.rate_limit_remaining is not None
+            and self.rate_limit_remaining < 0
+        ):
+            raise ValueError(
+                "rate_limit_remaining must be None or >= 0, "
+                f"got {self.rate_limit_remaining}"
+            )
+
+        # error_message: None or string. No length cap at this layer
+        # (rendering layer truncates per redaction discipline).
+        if (
+            self.error_message is not None
+            and not isinstance(self.error_message, str)
+        ):
+            raise ValueError(
+                f"error_message must be None or str, "
+                f"got {type(self.error_message).__name__}"
+            )
+
+        # linked_snapshot_id / linked_reconciliation_run_id /
+        # pipeline_run_id: each None or positive int. FK satisfaction
+        # is enforced at the SQL layer; per-field validator catches
+        # construction-time slip (zero / negative / wrong type).
+        for fname, fval in (
+            ("linked_snapshot_id", self.linked_snapshot_id),
+            ("linked_reconciliation_run_id", self.linked_reconciliation_run_id),
+            ("pipeline_run_id", self.pipeline_run_id),
+        ):
+            if fval is not None and (
+                isinstance(fval, bool) or not isinstance(fval, int) or fval <= 0
+            ):
+                raise ValueError(
+                    f"{fname} must be None or positive int, got {fval!r}"
+                )
