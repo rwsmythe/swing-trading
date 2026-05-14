@@ -121,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
         "--db-path",
         type=Path,
         default=None,
-        help="Path to swing.db (default: %USERPROFILE%/swing-data/swing.db)",
+        help="Path to swing.db (default: %%USERPROFILE%%/swing-data/swing.db)",
     )
     parser.add_argument(
         "--dry-run",
