@@ -954,6 +954,110 @@ def test_normalize_legacy_dataframe_mixed_shape_lowercases_ohlcv():
     assert out["close"].tolist() == [100.5, 101.5]
 
 
+def test_normalize_legacy_dataframe_case_insensitive_ohlcv_normalization():
+    """**Codex R4 Minor #1 discriminating test — mixed casing.**
+
+    Frame carries ``asof_date`` + ``CLOSE`` (uppercase) + ``open`` (already
+    lowercase) + ``High`` (title) + ``LOW`` (uppercase) + ``Volume`` (title).
+    Pre-R4 behavior (exact title-case keyset): only ``High`` and ``Volume``
+    would be renamed; ``CLOSE`` and ``LOW`` would leak through capitalized;
+    ``open`` would be preserved (already lowercase, never in rename map).
+    Post-R4 behavior: all five OHLCV columns are lowercase in the result,
+    regardless of input casing.
+    """
+    from swing.data.ohlcv_archive import _normalize_legacy_dataframe
+
+    mixed = pd.DataFrame(
+        {
+            "asof_date": ["2026-01-02"],
+            "open": [100.0],
+            "High": [101.0],
+            "LOW": [99.0],
+            "CLOSE": [100.5],
+            "Volume": [1000],
+        }
+    )
+
+    out = _normalize_legacy_dataframe(mixed)
+
+    for lc in ("open", "high", "low", "close", "volume"):
+        assert lc in out.columns, (
+            f"Codex R4 Minor #1: lowercase {lc!r} missing post-normalize "
+            f"under mixed-casing input; got columns={list(out.columns)}"
+        )
+    for orig in ("High", "LOW", "CLOSE", "Volume"):
+        assert orig not in out.columns, (
+            f"Codex R4 Minor #1: original-cased {orig!r} still present "
+            "post-normalize — case-insensitive normalization regressed to "
+            "the R3 exact-title-case keyset"
+        )
+    # Values preserved across the rename.
+    assert float(out["close"].iloc[0]) == 100.5
+    assert float(out["low"].iloc[0]) == 99.0
+    assert int(out["volume"].iloc[0]) == 1000
+
+
+def test_normalize_legacy_dataframe_no_ohlcv_columns_unchanged():
+    """**Codex R4 Minor #1 discriminating test — non-OHLCV frame unchanged.**
+
+    Frame has ``asof_date`` and only non-OHLCV columns. The normalizer must
+    NOT rename anything; the frame returns unchanged (same columns + same
+    values). Pins the no-op branch of the case-insensitive rename loop.
+    """
+    from swing.data.ohlcv_archive import _normalize_legacy_dataframe
+
+    df = pd.DataFrame(
+        {
+            "asof_date": ["2026-01-02", "2026-01-03"],
+            "ticker": ["AAPL", "AAPL"],
+            "some_metric": [1.0, 2.0],
+        }
+    )
+
+    out = _normalize_legacy_dataframe(df)
+
+    assert list(out.columns) == ["asof_date", "ticker", "some_metric"], (
+        "Codex R4 Minor #1: non-OHLCV frame columns mutated "
+        f"unexpectedly; got {list(out.columns)}"
+    )
+    assert out["ticker"].tolist() == ["AAPL", "AAPL"]
+
+
+def test_normalize_legacy_dataframe_non_matching_substrings_preserved():
+    """**Codex R4 Minor #1 discriminating test — non-matching substrings.**
+
+    Frame carries ``asof_date`` + canonical capitalized OHLCV cols plus a
+    non-OHLCV column ``Volume_DAILY`` whose ``.lower()`` is NOT in the
+    canonical OHLCV name set. Pre/post-R4: the canonical OHLCV columns
+    get lowercased; ``Volume_DAILY`` is preserved verbatim (not coerced
+    to lowercase by accident).
+    """
+    from swing.data.ohlcv_archive import _normalize_legacy_dataframe
+
+    df = pd.DataFrame(
+        {
+            "asof_date": ["2026-01-02"],
+            "Open": [100.0],
+            "High": [101.0],
+            "Low": [99.0],
+            "Close": [100.5],
+            "Volume": [1000],
+            "Volume_DAILY": [42],
+        }
+    )
+
+    out = _normalize_legacy_dataframe(df)
+
+    for lc in ("open", "high", "low", "close", "volume"):
+        assert lc in out.columns
+    assert "Volume_DAILY" in out.columns, (
+        "Codex R4 Minor #1: non-OHLCV column 'Volume_DAILY' was "
+        "renamed by an over-broad case-insensitive match — only "
+        "exact OHLCV name matches should be lowercased"
+    )
+    assert int(out["Volume_DAILY"].iloc[0]) == 42
+
+
 def test_backward_compat_rename_normalizes_real_legacy_datetimeindex_shape(
     tmp_path,
 ):

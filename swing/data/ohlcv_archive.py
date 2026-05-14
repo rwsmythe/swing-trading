@@ -446,23 +446,38 @@ def resolve_ohlcv_window(
     return merged_df, provenance
 
 
+_OHLCV_LOWER_NAMES = frozenset({"open", "high", "low", "close", "volume"})
+
+
 def _normalize_ohlcv_column_case(df: pd.DataFrame) -> pd.DataFrame:
-    """Map capitalized OHLCV column names to lowercase Shape A names.
+    """Map any-case OHLCV column names to lowercase Shape A names.
 
     Returns a renamed view (or the unchanged frame if no rename needed).
+
     Codex R3 Minor #1: factored out so the public
     ``normalize_legacy_dataframe`` short-circuit branch (frames that
     already have ``asof_date``) still normalizes mixed-shape OHLCV
     casing rather than passing capitalized names through untouched.
+
+    Codex R4 Minor #1: restored case-insensitive matching. The R3 Minor
+    #1 implementation pinned an exact title-case keyset (``Open``,
+    ``High``, ``Low``, ``Close``, ``Volume``), which narrowed the prior
+    case-insensitive normalization. Mixed-casing frames carrying e.g.
+    ``CLOSE`` (uppercase), ``open`` (already lowercase mixed with
+    capitalized siblings), or other casing variants from V2 broker
+    integrations would leak through untouched. Non-OHLCV columns
+    (e.g. ``Volume_DAILY``) are preserved as-is — only columns whose
+    ``col.lower()`` is in the canonical OHLCV name set are renamed,
+    and only when the lowercase form differs from the original.
     """
-    case_map = {
-        "Open": "open",
-        "High": "high",
-        "Low": "low",
-        "Close": "close",
-        "Volume": "volume",
-    }
-    rename_dict = {k: v for k, v in case_map.items() if k in df.columns}
+    rename_dict: dict[str, str] = {}
+    for col in df.columns:
+        if (
+            isinstance(col, str)
+            and col.lower() in _OHLCV_LOWER_NAMES
+            and col != col.lower()
+        ):
+            rename_dict[col] = col.lower()
     return df.rename(columns=rename_dict) if rename_dict else df
 
 
