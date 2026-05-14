@@ -575,6 +575,228 @@ def render_status(
     return "\n".join(out)
 
 
+def _build_schwabdev_client_for_fetch(
+    cfg: Any, environment: str, client_id: str, client_secret: str,
+) -> Any:
+    """Construct a fresh schwabdev.Client(...) for the fetch subcommands.
+
+    Per Sub-bundle A T-A.0.b §6.bis schwabdev 2.5.1 signature. The fetch
+    subcommands prompt for client_id + client_secret at handler entry
+    (mirror setup/refresh CLI pattern). On second + subsequent invocations
+    within the same operator session, schwabdev's Client(...) constructor
+    re-loads the persisted tokens DB without re-prompting.
+    """
+    import schwabdev
+    from swing.integrations.schwab.client import (
+        _suppress_transport_debug_logs,
+        ensure_schwab_log_redaction_factory_installed,
+        register_schwab_secrets,
+    )
+    register_schwab_secrets([client_id, client_secret])
+    ensure_schwab_log_redaction_factory_installed()
+    with _suppress_transport_debug_logs():
+        client = schwabdev.Client(
+            app_key=client_id,
+            app_secret=client_secret,
+            callback_url=cfg.integrations.schwab.callback_url,
+            tokens_file=str(_user_home() / "swing-data" / f"schwab-tokens.{environment}.db"),
+            timeout=int(cfg.integrations.schwab.timeout_seconds),
+        )
+    # Defense-in-depth — surface schwabdev silent-failure if access_token
+    # never populated post-construction (D1 hotfix lesson).
+    access = getattr(getattr(client, "tokens", None), "access_token", None)
+    if not access or not isinstance(access, str):
+        raise SchwabAuthError(
+            401,
+            "<schwabdev returned Client without access_token; "
+            "OAuth state may be stale. Run `swing schwab refresh` or "
+            "`swing schwab setup`.>",
+        )
+    register_schwab_secrets([
+        access,
+        getattr(getattr(client, "tokens", None), "refresh_token", None),
+    ])
+    return client
+
+
+def _check_pipeline_not_running(conn: sqlite3.Connection) -> None:
+    """Per plan §H.10 — raise SchwabPipelineActiveError if pipeline is in flight.
+
+    Used by `swing schwab fetch {--snapshot|--orders|--all}` per the protected
+    surface table (5 protected + 3 safe). The 3 fetch subcommands are
+    protected (NO --force override) because they write to domain tables
+    that are unsafe under concurrent pipeline-internal writes.
+    """
+    row = conn.execute(
+        "SELECT id FROM pipeline_runs WHERE state = 'running' LIMIT 1",
+    ).fetchone()
+    if row is not None:
+        raise SchwabPipelineActiveError(
+            f"Pipeline run {row[0]} is currently in flight. Refusing to "
+            f"run `swing schwab fetch`. Wait for pipeline to complete or "
+            f"kill it.",
+        )
+
+
+@schwab_group.command("fetch")
+@click.option(
+    "--snapshot", "fetch_snapshot", is_flag=True, default=False,
+    help="Run _step_schwab_snapshot (accounts.details + record_snapshot).",
+)
+@click.option(
+    "--orders", "fetch_orders", is_flag=True, default=False,
+    help="Run _step_schwab_orders (orders + transactions + details + reconcile).",
+)
+@click.option(
+    "--all", "fetch_all", is_flag=True, default=False,
+    help="Run both --snapshot and --orders sequentially.",
+)
+@click.option(
+    "--environment",
+    "environment",
+    type=click.Choice(["sandbox", "production"], case_sensitive=False),
+    default=None,
+    help="Tier override. Defaults to cfg.integrations.schwab.environment.",
+)
+@click.pass_context
+def schwab_fetch(
+    ctx: click.Context,
+    fetch_snapshot: bool,
+    fetch_orders: bool,
+    fetch_all: bool,
+    environment: str | None,
+) -> None:
+    """Run a CLI-driven Schwab data fetch (snapshot, orders, or both).
+
+    Each subcommand prompts for client_id + client_secret (mirroring setup/
+    refresh CLI). On success, the pipeline-step algorithm runs verbatim
+    (production env: writes account_equity_snapshots + reconciliation_runs;
+    sandbox env: audit rows only). Refuses execution if a pipeline is
+    in flight (plan §H.10).
+    """
+    # Validate one of --snapshot/--orders/--all chosen.
+    chosen_count = sum([fetch_snapshot, fetch_orders, fetch_all])
+    if chosen_count == 0:
+        raise click.ClickException(
+            "Choose one of --snapshot, --orders, or --all.",
+        )
+    if chosen_count > 1 and not fetch_all:
+        raise click.ClickException(
+            "Choose only one of --snapshot, --orders, or --all. "
+            "Use --all to run both snapshot + orders.",
+        )
+
+    # Apply user-config.toml overrides best-effort (production path); fall back
+    # to the raw cfg if the helper can't operate on it (test fixtures supply
+    # SimpleNamespace cfgs that bypass the Config dataclass round-trip).
+    try:
+        from swing.config_overrides import apply_overrides
+        cfg = apply_overrides(ctx.obj["config"])
+    except (AttributeError, TypeError):
+        cfg = ctx.obj["config"]
+    env = (environment or cfg.integrations.schwab.environment).lower()
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        # Pipeline-active hard exclusion per plan §H.10 (NO --force override).
+        try:
+            _check_pipeline_not_running(conn)
+        except SchwabPipelineActiveError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+        # Prompt for credentials.
+        client_id = click.prompt("Schwab app client_id", type=str).strip()
+        client_secret = click.prompt(
+            "Schwab app client_secret", type=str, hide_input=True,
+        ).strip()
+        if not client_id:
+            raise click.ClickException("client_id is required (non-empty).")
+        if not client_secret:
+            raise click.ClickException("client_secret is required (non-empty).")
+
+        # Construct schwabdev client.
+        try:
+            sd_client = _build_schwabdev_client_for_fetch(
+                cfg, env, client_id, client_secret,
+            )
+        except SchwabAuthError as exc:
+            raise click.ClickException(
+                f"Authentication failed: {exc}",
+            ) from exc
+        except SchwabConfigMissingError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+        # Override cfg.integrations.schwab.environment when the operator
+        # passed an explicit --environment flag — the pipeline steps read
+        # `cfg.integrations.schwab.environment` for the sandbox-vs-production
+        # gate, so the flag MUST propagate (not just env-string string).
+        if environment and env != cfg.integrations.schwab.environment:
+            from dataclasses import replace as _dc_replace
+            try:
+                new_schwab = _dc_replace(
+                    cfg.integrations.schwab, environment=env,
+                )
+                new_integrations = _dc_replace(
+                    cfg.integrations, schwab=new_schwab,
+                )
+                cfg = _dc_replace(cfg, integrations=new_integrations)
+            except TypeError:
+                # SimpleNamespace test fixture — mutate in place.
+                cfg.integrations.schwab.environment = env
+
+        # Run requested step(s).
+        from swing.integrations.schwab.pipeline_steps import (
+            _step_schwab_orders,
+            _step_schwab_snapshot,
+        )
+
+        results: list[dict] = []
+        do_snapshot = fetch_snapshot or fetch_all
+        do_orders = fetch_orders or fetch_all
+        if do_snapshot:
+            try:
+                r = _step_schwab_snapshot(
+                    conn, cfg, pipeline_run_id=None,
+                    client=sd_client, surface="cli",
+                )
+                results.append({"step": "snapshot", **r})
+            except SchwabApiError as exc:
+                raise click.ClickException(
+                    f"Snapshot step failed: {exc}",
+                ) from exc
+
+        if do_orders:
+            try:
+                r = _step_schwab_orders(
+                    conn, cfg, pipeline_run_id=None,
+                    client=sd_client, surface="cli",
+                )
+                results.append({"step": "orders", **r})
+            except SchwabApiError as exc:
+                raise click.ClickException(
+                    f"Orders step failed: {exc}",
+                ) from exc
+
+        # Echo summary.
+        click.echo(f"Schwab fetch complete (env={env}):")
+        for r in results:
+            step = r.get("step")
+            status = r.get("status")
+            extras = []
+            if r.get("call_id") is not None:
+                extras.append(f"call_id={r['call_id']}")
+            if r.get("call_ids"):
+                extras.append(f"call_ids={r['call_ids']}")
+            if r.get("snapshot_id") is not None:
+                extras.append(f"snapshot_id={r['snapshot_id']}")
+            if r.get("reconciliation_run_id") is not None:
+                extras.append(f"reconciliation_run_id={r['reconciliation_run_id']}")
+            extras_str = "  ".join(extras) if extras else ""
+            click.echo(f"  [{step}] {status}  {extras_str}")
+    finally:
+        conn.close()
+
+
 @schwab_group.command("status")
 @click.option(
     "--environment",
