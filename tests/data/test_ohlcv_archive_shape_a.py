@@ -1041,8 +1041,176 @@ def test_backward_compat_rename_merges_legacy_datetimeindex_with_shape_a(
         "2026-01-02", "2026-01-03", "2026-01-04",
     ]
     by_date = {row.asof_date: row.close for row in df.itertuples()}
-    # 01-03 conflict: new file wins (keep='last' in pd.concat dedup).
+    # 01-03 conflict: Shape A wins under R3 mtime-based pick because the
+    # Shape A file was planted AFTER the legacy file in this fixture, so
+    # new_mtime > old_mtime → Shape A rows win (this also matches the
+    # pre-R3 default behavior, so existing tests stay green).
     assert by_date["2026-01-03"] == 200.0
     assert by_date["2026-01-02"] == 100.0
     assert by_date["2026-01-04"] == 200.0
     assert set(provenance.values()) == {"yfinance"}
+
+
+# ---------- Codex R3 Major #1: mtime-based freshness winner ------------------
+
+
+def test_backward_compat_rename_legacy_fresher_legacy_rows_win_on_conflict(
+    tmp_path,
+):
+    """**Codex R3 Major #1 KEY DISCRIMINATING TEST — legacy fresher wins.**
+
+    Scenario: Shape A ``{TICKER}.yfinance.parquet`` was built from an
+    earlier snapshot (close=100.0 for 2026-01-15). Legacy
+    ``{TICKER}.parquet`` was subsequently refreshed (e.g., yfinance
+    post-split adjustment) and now carries close=110.0 for 2026-01-15.
+    Under V1 copy-not-move semantics, ``read_or_fetch_archive`` is the
+    canonical refresh path for legacy; Shape A must catch up.
+
+    Force legacy mtime to AFTER Shape A mtime via ``os.utime`` to remove
+    filesystem-clock dependency. Assert the post-merge Shape A row for
+    2026-01-15 carries close=110.0 (legacy value won).
+
+    Pre-fix (R2 default): concat order ``[old_df, new_df]`` with
+    ``keep='last'`` → Shape A's stale 100.0 won → yfinance corrections
+    never propagated into Shape A.
+    """
+    from swing.data.ohlcv_archive import _backward_compat_rename
+
+    # Plant Shape A first.
+    new_path = tmp_path / "AAPL.yfinance.parquet"
+    shape_a = _mk_window(["2026-01-15"], close=100.0)
+    shape_a.to_parquet(new_path)
+
+    # Plant legacy with capitalized OHLCV + DatetimeIndex (matches what
+    # read_or_fetch_archive writes). Different close value to detect winner.
+    old_path = tmp_path / "AAPL.parquet"
+    legacy = _mk_legacy_datetimeindex_window(["2026-01-15"], close=110.0)
+    legacy.to_parquet(old_path)
+
+    # Force mtime ordering: legacy STRICTLY AFTER Shape A.
+    new_mtime = new_path.stat().st_mtime
+    os.utime(old_path, (new_mtime + 10.0, new_mtime + 10.0))
+
+    _backward_compat_rename("AAPL", cache_dir=tmp_path)
+
+    merged = pd.read_parquet(new_path)
+    assert len(merged) == 1
+    assert float(merged.iloc[0]["close"]) == 110.0, (
+        "Codex R3 Major #1: legacy was fresher (mtime newer) but Shape A "
+        f"value won on conflict; got close={merged.iloc[0]['close']} "
+        "(expected 110.0 from legacy). mtime-based freshness pick missing."
+    )
+
+
+def test_backward_compat_rename_shape_a_fresher_shape_a_rows_win_on_conflict(
+    tmp_path,
+):
+    """**Codex R3 Major #1 symmetric — Shape A fresher wins.**
+
+    Inverse of the legacy-fresher test: legacy planted first, then Shape A
+    with a different value, with mtime forced so Shape A is strictly fresher.
+    Shape A's value MUST be preserved on conflict (the pre-R3 default
+    behavior; this test pins the symmetric branch).
+    """
+    from swing.data.ohlcv_archive import _backward_compat_rename
+
+    old_path = tmp_path / "AAPL.parquet"
+    legacy = _mk_legacy_datetimeindex_window(["2026-01-15"], close=110.0)
+    legacy.to_parquet(old_path)
+
+    new_path = tmp_path / "AAPL.yfinance.parquet"
+    shape_a = _mk_window(["2026-01-15"], close=100.0)
+    shape_a.to_parquet(new_path)
+
+    # Force mtime ordering: Shape A STRICTLY AFTER legacy.
+    old_mtime = old_path.stat().st_mtime
+    os.utime(new_path, (old_mtime + 10.0, old_mtime + 10.0))
+
+    _backward_compat_rename("AAPL", cache_dir=tmp_path)
+
+    merged = pd.read_parquet(new_path)
+    assert len(merged) == 1
+    assert float(merged.iloc[0]["close"]) == 100.0, (
+        "Codex R3 Major #1: Shape A was fresher (mtime newer) but legacy "
+        f"value won on conflict; got close={merged.iloc[0]['close']} "
+        "(expected 100.0 from Shape A). Default branch broken."
+    )
+
+
+def test_backward_compat_rename_mtime_tie_shape_a_wins(tmp_path):
+    """**Codex R3 Major #1 — tie-breaker preserves pre-R3 default (Shape A
+    wins).**
+
+    Force IDENTICAL mtimes on both files via ``os.utime``. Under the
+    ``old_mtime > new_mtime`` predicate the equal case falls through to
+    the else branch → Shape A rows win (concat order ``[old_df, new_df]``
+    with ``keep='last'``). This preserves backward compatibility with
+    pre-R3 behavior for the common case where both files were touched in
+    the same operation.
+    """
+    from swing.data.ohlcv_archive import _backward_compat_rename
+
+    old_path = tmp_path / "AAPL.parquet"
+    legacy = _mk_legacy_datetimeindex_window(["2026-01-15"], close=110.0)
+    legacy.to_parquet(old_path)
+
+    new_path = tmp_path / "AAPL.yfinance.parquet"
+    shape_a = _mk_window(["2026-01-15"], close=100.0)
+    shape_a.to_parquet(new_path)
+
+    # Force identical mtimes on both files.
+    shared_mtime = old_path.stat().st_mtime + 5.0
+    os.utime(old_path, (shared_mtime, shared_mtime))
+    os.utime(new_path, (shared_mtime, shared_mtime))
+
+    _backward_compat_rename("AAPL", cache_dir=tmp_path)
+
+    merged = pd.read_parquet(new_path)
+    assert len(merged) == 1
+    assert float(merged.iloc[0]["close"]) == 100.0, (
+        "Codex R3 Major #1: mtime tie should default to Shape A wins; "
+        f"got close={merged.iloc[0]['close']} (expected 100.0)."
+    )
+
+
+def test_backward_compat_rename_mtime_freshness_only_affects_conflict_rows(
+    tmp_path,
+):
+    """**Codex R3 Major #1 — mtime ordering does NOT affect disjoint dates.**
+
+    Plant legacy with [2026-01-15 close=110, 2026-01-16 close=110] and
+    Shape A with [2026-01-17 close=100, 2026-01-18 close=100]. No
+    `asof_date` overlap. Force legacy mtime AFTER Shape A (legacy-wins
+    branch). Post-merge MUST contain all 4 dates with their original
+    values — neither side dropped, mtime ordering only matters on
+    conflict.
+    """
+    from swing.data.ohlcv_archive import _backward_compat_rename
+
+    new_path = tmp_path / "AAPL.yfinance.parquet"
+    shape_a = _mk_window(
+        ["2026-01-17", "2026-01-18"], close=100.0,
+    )
+    shape_a.to_parquet(new_path)
+
+    old_path = tmp_path / "AAPL.parquet"
+    legacy = _mk_legacy_datetimeindex_window(
+        ["2026-01-15", "2026-01-16"], close=110.0,
+    )
+    legacy.to_parquet(old_path)
+
+    # Force legacy mtime AFTER Shape A → legacy-wins-on-conflict branch.
+    new_mtime = new_path.stat().st_mtime
+    os.utime(old_path, (new_mtime + 10.0, new_mtime + 10.0))
+
+    _backward_compat_rename("AAPL", cache_dir=tmp_path)
+
+    merged = pd.read_parquet(new_path)
+    assert len(merged) == 4, (
+        f"disjoint-date merge dropped rows; got {len(merged)} (expected 4)"
+    )
+    by_date = {row.asof_date: row.close for row in merged.itertuples()}
+    assert by_date["2026-01-15"] == 110.0
+    assert by_date["2026-01-16"] == 110.0
+    assert by_date["2026-01-17"] == 100.0
+    assert by_date["2026-01-18"] == 100.0

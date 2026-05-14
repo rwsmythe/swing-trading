@@ -533,7 +533,7 @@ def _backward_compat_rename(ticker: str, *, cache_dir: Path) -> None:
     banked in the M#1 R2 fix commit body.
 
     Per plan §H.6.3 + Codex R1 Major #6 + R1 Major #2 + R2 Minor #1 +
-    R2 Major #1 — handles 4 cases without data loss:
+    R2 Major #1 + R3 Major #1 — handles 4 cases without data loss:
 
     1. **old-only:** `{TICKER}.parquet` exists, `{TICKER}.yfinance.parquet`
        absent → NORMALIZE legacy DatetimeIndex/capitalized shape to Shape A
@@ -543,10 +543,27 @@ def _backward_compat_rename(ticker: str, *, cache_dir: Path) -> None:
        R2 Major #1; both files coexist during V1 read-path co-existence).
        Codex R1 Major #2 fix: previously a bare ``os.replace`` would have
        left the post-rename file invisible to ``resolve_ohlcv_window``.
-    2. **both-exist:** MERGE-PRESERVING-BOTH — read both, normalize the
-       legacy one first, then concat-dedupe on ``asof_date`` keeping the
-       new file's row on conflict (post-Shape-A writes are presumed more
-       recent than the legacy snapshot), write merged back to the new file.
+    2. **both-exist:** MERGE-PRESERVING-BOTH with **mtime-based freshness
+       winner** (Codex R3 Major #1). Read both, normalize the legacy one
+       first, then concat-dedupe on ``asof_date`` keyed on which file is
+       fresher by ``Path.stat().st_mtime``:
+
+         - If legacy ``{TICKER}.parquet`` mtime > Shape A mtime → legacy
+           rows win on conflict (concat order ``[new_df, old_df]`` with
+           ``keep='last'``). Closes the "yfinance corrections (e.g.,
+           post-split adjustment) refreshed legacy but Shape A retains
+           stale snapshot" window — legacy is the canonical archive under
+           V1 copy-not-move, so a fresher legacy must propagate forward.
+         - Otherwise (Shape A fresher or tied) → Shape A rows win on
+           conflict (concat order ``[old_df, new_df]`` with
+           ``keep='last'``). This was the pre-R3 default and remains the
+           tie-breaker.
+
+       Trade-off: mtime-based pick assumes the filesystem preserves mtime
+       correctly. Edge cases like rsync/git checkout zeroing mtimes are
+       banked as V2 candidate; in V1 copy-not-move mode the worst-case
+       outcome of a wrong mtime read is "Shape A retains its own value"
+       — the same posture we had before R3, never worse.
        **LEGACY FILE LEFT IN PLACE** (Codex R2 Major #1; quarantine/orphan
        step removed because both files coexist during V1).
     3. **new-only:** already migrated; no-op.
@@ -583,10 +600,31 @@ def _backward_compat_rename(ticker: str, *, cache_dir: Path) -> None:
         old_df = normalize_legacy_dataframe(old_df)
         new_df = normalize_legacy_dataframe(new_df)  # idempotent on Shape A
 
-        # Both frames now have `asof_date` column; dedup on it.
-        merged = pd.concat([old_df, new_df]).drop_duplicates(
-            subset=["asof_date"], keep="last"
-        )
+        # Codex R3 Major #1: mtime-based freshness winner. Under V1
+        # copy-not-move, the legacy parquet may have been refreshed more
+        # recently than Shape A (yfinance refresh post-split, etc.). In
+        # that case legacy rows MUST win on `asof_date` conflicts —
+        # otherwise Shape A retains stale values forever and yfinance
+        # corrections never propagate into the resolver's read path.
+        # `Path.stat().st_mtime` is the standard freshness signal; ties
+        # fall through to Shape-A-wins (the pre-R3 default, preserved
+        # as the tie-breaker for backward compatibility).
+        try:
+            old_mtime = old_path.stat().st_mtime
+            new_mtime = new_path.stat().st_mtime
+        except OSError:  # pragma: no cover — defensive
+            old_mtime = 0.0
+            new_mtime = 0.0
+        if old_mtime > new_mtime:
+            # Legacy fresher → legacy rows win on conflict.
+            merged = pd.concat([new_df, old_df]).drop_duplicates(
+                subset=["asof_date"], keep="last"
+            )
+        else:
+            # Shape A fresher or tied → Shape A rows win on conflict.
+            merged = pd.concat([old_df, new_df]).drop_duplicates(
+                subset=["asof_date"], keep="last"
+            )
         merged = merged.sort_values("asof_date").reset_index(drop=True)
 
         # Idempotency optimization: if the existing Shape A file already
