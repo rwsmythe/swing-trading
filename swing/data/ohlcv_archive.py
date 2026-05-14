@@ -643,6 +643,26 @@ def _backward_compat_rename(ticker: str, *, cache_dir: Path) -> None:
         # `Path.stat().st_mtime` is the standard freshness signal; ties
         # fall through to Shape-A-wins (the pre-R3 default, preserved
         # as the tie-breaker for backward compatibility).
+        #
+        # V1 trade-off note (Codex R4 M#1 ACCEPT-WITH-RATIONALE):
+        # File-level mtime is a coarse signal — it cannot distinguish
+        # per-row freshness. Consequence: if legacy is touched by a
+        # partial refresh, the file-level mtime check lets legacy win
+        # for EVERY overlapping asof_date, including rows the refresh
+        # did not touch (so Shape A's newer-of-truth values for those
+        # rows get rolled back). This is the inverse failure of pre-R3
+        # (Shape-A-always-wins → stale Shape A when legacy is refreshed).
+        # Under V1, the impact is BOUNDED because:
+        #   - read_or_fetch_archive consumers read legacy directly (so
+        #     Shape A merge state does not affect their reads).
+        #   - Shape A consumers (Sub-bundle C ladder + Phase 10 metrics
+        #     if any) see a deterministic merge state that may diverge
+        #     from per-row truth.
+        # V2 resolves both directions by adding a per-row `recorded_at`
+        # column to both archives; the merge then picks per-row winner
+        # by `recorded_at` rather than file-level mtime. Tracked as V2
+        # candidate in the Sub-bundle C return report (per-row
+        # `recorded_at` column already banked from R3 M#1 review).
         try:
             old_mtime = old_path.stat().st_mtime
             new_mtime = new_path.stat().st_mtime
