@@ -788,8 +788,17 @@ def test_m3_schwab_empty_bars_does_not_persist_schwab_parquet(v18_conn, tmp_path
 
 def test_m3_sandbox_short_circuit_still_persists_yfinance(v18_conn, tmp_path):
     """Codex R1 Major #3 — sandbox/disabled short-circuit also writes
-    yfinance content to Shape A archive (so the pipeline's read path sees
-    consistent state across both production and sandbox)."""
+    yfinance content to Shape A archive.
+
+    Scope clarification (Codex R2 Minor #2): "consistent state" applies to
+    the Sub-bundle C cache layer (Shape A consumers — `resolve_ohlcv_window`
+    + future ladder readers). The legacy `read_or_fetch_archive` path
+    consumed by `swing/prices.py`, `swing/pipeline/ohlcv.py`, and
+    `swing/trades/daily_management.py` continues to read the legacy
+    `{TICKER}.parquet` file via `_archive_paths` until the V2 read-path
+    refactor. This test pins Shape A parity across env modes; legacy-path
+    parity is V2 scope.
+    """
     import pandas as pd
 
     from swing.integrations.schwab.models import (
