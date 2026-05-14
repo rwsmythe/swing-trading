@@ -888,6 +888,51 @@ def test_normalize_legacy_dataframe_is_idempotent_on_shape_a():
     pd.testing.assert_frame_equal(shape_a, out)
 
 
+def test_normalize_legacy_dataframe_mixed_shape_lowercases_ohlcv():
+    """**Codex R3 Minor #1 discriminating test — mixed-shape frame.**
+
+    Frame carries ``asof_date`` (Shape A date column) AND capitalized
+    OHLCV columns (``Open``/``High``/``Low``/``Close``/``Volume``). Pre-fix:
+    short-circuit on ``asof_date`` presence returned frame unchanged →
+    capitalized columns leaked into Shape A consumers (resolver,
+    write_window). Post-fix: still short-circuit the date-column work but
+    apply OHLCV case normalization so the result is fully Shape A.
+    """
+    from swing.data.ohlcv_archive import _normalize_legacy_dataframe
+
+    mixed = pd.DataFrame(
+        {
+            "asof_date": ["2026-01-02", "2026-01-03"],
+            "Open": [100.0, 101.0],
+            "High": [101.0, 102.0],
+            "Low": [99.0, 100.0],
+            "Close": [100.5, 101.5],
+            "Volume": [1000, 1100],
+        }
+    )
+
+    out = _normalize_legacy_dataframe(mixed)
+
+    # Lowercase OHLCV columns present.
+    for lc in ("open", "high", "low", "close", "volume"):
+        assert lc in out.columns, (
+            f"Codex R3 Minor #1: lowercase {lc!r} missing post-normalize; "
+            f"got columns={list(out.columns)}"
+        )
+    # Capitalized OHLCV columns gone (renamed, not duplicated).
+    for cap in ("Open", "High", "Low", "Close", "Volume"):
+        assert cap not in out.columns, (
+            f"Codex R3 Minor #1: capitalized {cap!r} still present "
+            "post-normalize — the short-circuit branch did not apply "
+            "case normalization"
+        )
+    # Date column preserved verbatim.
+    assert "asof_date" in out.columns
+    assert out["asof_date"].tolist() == ["2026-01-02", "2026-01-03"]
+    # Values preserved through the rename.
+    assert out["close"].tolist() == [100.5, 101.5]
+
+
 def test_backward_compat_rename_normalizes_real_legacy_datetimeindex_shape(
     tmp_path,
 ):

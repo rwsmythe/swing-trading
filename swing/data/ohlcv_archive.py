@@ -435,6 +435,26 @@ def resolve_ohlcv_window(
     return merged_df, provenance
 
 
+def _normalize_ohlcv_column_case(df: pd.DataFrame) -> pd.DataFrame:
+    """Map capitalized OHLCV column names to lowercase Shape A names.
+
+    Returns a renamed view (or the unchanged frame if no rename needed).
+    Codex R3 Minor #1: factored out so the public
+    ``normalize_legacy_dataframe`` short-circuit branch (frames that
+    already have ``asof_date``) still normalizes mixed-shape OHLCV
+    casing rather than passing capitalized names through untouched.
+    """
+    case_map = {
+        "Open": "open",
+        "High": "high",
+        "Low": "low",
+        "Close": "close",
+        "Volume": "volume",
+    }
+    rename_dict = {k: v for k, v in case_map.items() if k in df.columns}
+    return df.rename(columns=rename_dict) if rename_dict else df
+
+
 def normalize_legacy_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Convert a legacy DatetimeIndex archive into Shape A.
 
@@ -461,9 +481,18 @@ def normalize_legacy_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     (``resolve_ohlcv_window``) requires an ``asof_date`` column and skips
     files without one at lines 360-362, so a real legacy archive became
     INVISIBLE post-rename. Idempotent on already-Shape-A frames.
+
+    Codex R3 Minor #1 fix: a frame may carry ``asof_date`` AND capitalized
+    OHLCV columns (mixed shape — e.g. a partial migration). The pre-R3
+    short-circuit returned such a frame unchanged, leaking capitalized
+    columns into Shape A consumers. Now we ALWAYS apply lowercase OHLCV
+    column normalization, whether or not the date column needs work.
     """
     if "asof_date" in df.columns:
-        return df  # already Shape A — idempotent
+        # Already has asof_date — but still normalize OHLCV column casing
+        # so mixed-shape frames (asof_date + capitalized OHLCV) emerge as
+        # full Shape A.
+        return _normalize_ohlcv_column_case(df)
 
     normalized = df.reset_index()
     # `reset_index` promotes the index to a column; the legacy yfinance shape
@@ -493,15 +522,9 @@ def normalize_legacy_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         pd.to_datetime(normalized["asof_date"]).dt.date.astype(str)
     )
 
-    # Normalize OHLCV column case to lowercase to match Shape A. Preserves
-    # any non-OHLCV columns verbatim (defensive).
-    rename_map: dict[str, str] = {}
-    for col in normalized.columns:
-        lc = col.lower()
-        if lc in ("open", "high", "low", "close", "volume") and col != lc:
-            rename_map[col] = lc
-    if rename_map:
-        normalized = normalized.rename(columns=rename_map)
+    # Normalize OHLCV column case to lowercase to match Shape A. Shared
+    # with the asof_date short-circuit branch (Codex R3 Minor #1).
+    normalized = _normalize_ohlcv_column_case(normalized)
 
     return normalized.reset_index(drop=True)
 
