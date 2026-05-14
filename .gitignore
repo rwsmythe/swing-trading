@@ -64,3 +64,12 @@ reference/minervini/
 # Distilled markdown at reference/schwab-api/ IS tracked — small, hand-curated
 # extract of the same content for use in integration dispatches.
 reference/SchwabAPI/
+
+# Schwab per-env tokens DBs (managed by schwabdev; plaintext OAuth state V1)
+swing-data/schwab-tokens.*.db
+swing-data/schwab-tokens.*.db-journal
+swing-data/schwab-tokens.*.db-shm
+swing-data/schwab-tokens.*.db-wal
+
+# Schwab API audit DB backups (created pre-migration by _apply_migration runner)
+swing-pre-phase11-schwab-migration-*.db
