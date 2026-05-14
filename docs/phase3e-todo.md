@@ -6,6 +6,94 @@
 
 ---
 
+## 2026-05-13 Phase 10 Sub-bundle E ship: CLOSES Phase 10 — arc closer aggregate
+
+**Sub-bundle E SHIPPED 2026-05-13** at `38dbac3` (integration merge of `phase10-bundle-E-process-grade-trend-and-polish`). 8 commits = 6 task-impl (T-E.1..T-E.6 + T-E.4 closer) + 1 Codex-fix + 1 return-report; **2 Codex rounds → NO_NEW_CRITICAL_MAJOR** — ties FASTEST Phase 10 chain (matches Sub-bundle B + C + Phase 9 Sub-bundle E precedent). ZERO Critical + ZERO ACCEPT-WITH-RATIONALE.
+
+Tests: 3147 worktree-side → 3254 (+107 net; ~3257 main HEAD post-merge). Ruff 18 unchanged. Schema v17 unchanged.
+
+**Cross-bundle T-A.7 pin UN-SKIPPED at T-E.3 SAME COMMIT** (`fb6e48a`) — `test_existing_dashboard_vm_has_unresolved_material_field` no longer carries `@pytest.mark.skip` decorator + passes against retrofitted DashboardVM. Plan §H named 6 base-layout VMs to retrofit; implementation retrofitted **10** (defense-in-depth catching 4 additional VMs that extend base.html.j2 per CLAUDE.md gotcha — ReviewVM / CadenceCompleteVM / ReviewsPendingVM / TradeDetailVM).
+
+### 7-surface operator-witnessed gate ALL PASS via Chrome MCP on port 8081
+
+- **S1 inline** pytest+ruff+verify_phase10 PASS at 3254 tests.
+- **S2** `/metrics/process-grade-trend` PASS — spec §4.8 reference + numeric encoding A=4..F=0 visible per lesson #19 + N=10 window + 3 closed-reviewed trades + 7-metric Class column per §A.21 matrix; all 7 metrics suppressed at n=3<5 per spec §5.4; ZERO console errors.
+- **S3 banner FIRES** PASS — planted discrepancy id=1 (DHC #2 stop_mismatch material) → dashboard shows §A.18 banner "1 unresolved material reconciliation discrepancy" + "Resolve via CLI" CLI hint.
+- **S4 banner CLEARS** PASS — reverted discrepancy to acknowledged_immaterial → banner absent from DOM; count=0 restored.
+- **S5** `/metrics` umbrella PASS — 8 tile descriptions verified.
+- **S6 T-E.5 form POST** PASS — `equity_dollars=2000` + note "S6 gate test 2026-05-13" submitted via curl (form_input + computer click did not trigger HTMX events; curl with HX-Request header reproduced operator browser submit semantics) → HTTP 204 + `HX-Redirect: /metrics/capital-friction` per Phase 5 R1 M2 LOCK; snapshot #3 created in DB with server-stamped `snapshot_date='2026-05-13'` per lesson #4 + Phase 8 server-stamping discipline; HX-Redirect target resolves to capital-friction with LIVE badge $2000.00; multi-run trend shows $1800 → $2000 transition by date correctly; ZERO console errors.
+- **S7 T-E.6 trade detail indicator** PASS — DHC #2 with planted discrepancy shows "⚠ Unresolved reconciliation discrepancy (1)" at top per electives §2 Task E.6 acceptance; after revert, indicator section hidden entirely per "hide when empty" rule.
+
+### Production state post-gate
+
+- Snapshot #3 left in production as valid operator cash-basis reading per dispatch brief §7 #11 default (operator can update via CLI any time).
+- Discrepancy id=1 reverted to `acknowledged_immaterial` with reason "post-S3/S4/S7 gate cleanup 2026-05-13".
+- 30 reconciliation_discrepancies all resolved (production state restored).
+
+### Phase 10 arc closer aggregate (return report §9)
+
+| Sub-bundle | Commits | Codex rounds | Tests delta | Critical-resolved | Major-resolved | ACCEPT-WITH-RATIONALE | CLAUDE.md gotchas |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| A | 15 | 4 | +128 | 0 | 3 | 0 | 0 |
+| B | 9 | 2 | +73 | 0 | 2 | 0 | 0 |
+| C | 8 | 2 | +84 | 0 | 2 | 0 | 0 |
+| D | 12 | 3 | +102 | 0 | 5 | 0 | 0 |
+| E | 8 | 2 | +107 | 0 | 1 | 0 | 0 |
+| **Total** | **52** | **13** | **+494** | **0** | **13** | **0** | **0** |
+
+**Phase 10 closer highlights:**
+
+- **52 commits across A+B+C+D+E** (34 task-impl + 12 Codex-fix + 5 return-reports + 1 ruff).
+- **13 Codex rounds total** (4+2+2+3+2).
+- **+494 cumulative fast tests** (final 3254 worktree-side / ~3257 main HEAD; from pre-Phase-9 baseline 1957 → +1297 across Phase 9 + Phase 10).
+- **ZERO Critical findings entire arc.**
+- **ZERO ACCEPT-WITH-RATIONALE banked** — **cleanest 5-bundle arc-final state in project history.** Phase 9 had 4 banked (2 A + 1 B-later-resolved-C + 1 C; D + E clean).
+- **ZERO CLAUDE.md gotchas promoted** — every defect class hit during Phase 10 was already covered by existing gotchas. Phase 9 promoted 6.
+- **27 V2.1 §VII.F amendments pending** (3 A + 5 B + 5 C + 5 D + 4 E + 2 Phase 9 + 3 elsewhere). See T-E.4 "Phase 10 closer" section near end of file for full enumeration.
+- **3 post-Phase-10 standalone dispatches unblocked** (cleanup-script `-DeregisterFirst` + test-runtime xdist + §8.4 Corporate_Actions MVP).
+- **§A.0 ZERO-new-schema LOCK preserved** through entire arc — schema v17 unchanged through Phase 10 V1.
+
+### 8 operator-visible Phase 10 surfaces shipped
+
+1. `GET /metrics` (A T-A.8) — umbrella index.
+2. `GET /metrics/trade-process` (B T-B.3) — 7 cohort tabs × 22 §3.1 metrics.
+3. `GET /metrics/hypothesis-progress` (B T-B.5) — 4 cohort row + tripwire + transition timeline.
+4. `GET /metrics/tier-comparison` (C T-C.2) — 4-cohort Wilson + bootstrap CIs + descriptor.
+5. `GET /metrics/deviation-outcome` (C T-C.3) — doctrine deviation class + decision criterion.
+6. `GET /metrics/capital-friction` (D T-D.2) — 6 §3.4 metrics + PROVISIONAL/LIVE dynamic badge + trend.
+7. `GET /metrics/maturity-stage` (D T-D.4) — per-open-position table.
+8. `GET /metrics/identification-funnel` (D T-D.6) — per-run + 30-trading-session trend.
+9. `GET /metrics/process-grade-trend` (E T-E.2) — per-trade markers + rolling lines per §A.21.
+
+Plus 4 cross-bundle integrations:
+- Reconciliation banner on 10 base-layout pages (E T-E.3 retrofit; A-D inheritance).
+- T-B.7 lucky_violation_R on Phase 6 review form (B elective).
+- T-E.5 web-form snapshot capture at `/account/snapshot` (E elective).
+- T-E.6 per-trade discrepancy indicator on `/trades/{id}` (E elective).
+
+### Phase 11 candidate triage UNBLOCKED
+
+Phase 11 triage owned by operator+orchestrator at next session. Pre-banked candidates enumerated at T-E.4 closer section (line 1788+):
+- §8.4 Corporate_Actions MVP (standalone post-Phase-10).
+- Schwab API Phase A integration.
+- `mistake_cost_R_rolling_N_total` sum-class with bootstrap CI.
+- Schwab inception-CSV ingestion.
+- `account_equity_snapshots.equity_dollars` cash-basis-vs-MTM semantic formalization.
+- Orphan discrepancy detail surface.
+- Per-cohort paused-interval filter (T-C.5 UI pattern reuse).
+- 27 V2.1 §VII.F amendments triage.
+
+### Cross-references
+
+- Sub-bundle E return report: `docs/phase10-bundle-E-return-report.md`.
+- Sub-bundle E dispatch brief: `docs/phase10-bundle-E-executing-plans-dispatch-brief.md`.
+- Phase 10 closer details (T-E.4 commit 4a666d1): bottom of this file at line 1788+.
+- Phase 10 plan: `docs/superpowers/plans/2026-05-13-phase10-metrics-dashboard-plan.md`.
+- Electives amendment: `docs/phase10-electives-amendment.md`.
+- Post-Phase-10 standalone dispatch backlog: 2026-05-13 entries below (cleanup-script + test-runtime).
+
+---
+
 ## 2026-05-13 Phase 10 Sub-bundle D ship: 5 spec amendments + 4 forward-binding lessons (FIRST PROVISIONAL/LIVE dynamic contract)
 
 **Sub-bundle D SHIPPED 2026-05-13** at `a71cc24` (integration merge of `phase10-bundle-D-capital-maturity-funnel`). 12 commits = 7 task-impl (T-D.1..T-D.7) + 3 Codex-fix (R1+R2+R3) + 2 return-report; **3 Codex rounds → NO_NEW_CRITICAL_MAJOR** convergent tapering. ZERO Critical + ZERO ACCEPT-WITH-RATIONALE.
