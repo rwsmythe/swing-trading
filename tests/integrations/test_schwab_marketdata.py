@@ -196,6 +196,77 @@ def test_02_price_history_window_post_init_rejects_invalid_bars():
         )
 
 
+def test_02b_price_history_window_to_dataframe_legacy_shape():
+    """Codex R1 Major #4: ``SchwabPriceHistoryWindow.to_dataframe()`` returns
+    a DataFrame matching the LEGACY yfinance in-memory shape that
+    ``OhlcvCache`` + ``compute_smas`` + chart-step downstream code consume.
+
+    Pre-fix: method did not exist; ``_bars_hook`` in
+    ``swing/pipeline/runner.py:318`` raised AttributeError on Schwab success.
+    Post-fix: returns DatetimeIndex + capitalized OHLCV columns.
+
+    Discriminating: assert (a) index is DatetimeIndex; (b) columns are exactly
+    Open/High/Low/Close/Volume (capitalized); (c) values round-trip from bars;
+    (d) consumable by ``swing.pipeline.ohlcv.compute_smas`` (reads ``Close``).
+    """
+    import pandas as pd
+
+    from swing.integrations.schwab.models import (
+        OhlcvBar,
+        SchwabPriceHistoryWindow,
+    )
+    from swing.pipeline.ohlcv import compute_smas
+
+    bars = [
+        OhlcvBar(asof_date="2026-05-12", open=100.0, high=105.0,
+                 low=98.0, close=102.0, volume=1000),
+        OhlcvBar(asof_date="2026-05-13", open=102.0, high=106.0,
+                 low=100.0, close=104.0, volume=1200),
+        OhlcvBar(asof_date="2026-05-14", open=104.0, high=108.0,
+                 low=102.0, close=106.0, volume=1500),
+    ]
+    window = SchwabPriceHistoryWindow(
+        ticker="AAPL", bars=bars, provider="schwab_api",
+    )
+
+    df = window.to_dataframe()
+
+    # Shape: DatetimeIndex + capitalized OHLCV columns.
+    assert isinstance(df.index, pd.DatetimeIndex), (
+        f"to_dataframe index must be DatetimeIndex (legacy yfinance shape); "
+        f"got {type(df.index).__name__}"
+    )
+    assert list(df.columns) == ["Open", "High", "Low", "Close", "Volume"], (
+        f"to_dataframe columns must match legacy yfinance shape; "
+        f"got {list(df.columns)!r}"
+    )
+
+    # Values round-trip.
+    assert df.iloc[0]["Close"] == 102.0
+    assert df.iloc[-1]["Close"] == 106.0
+    assert df.iloc[0]["Volume"] == 1000
+
+    # Discriminating: consumable by compute_smas (validates capitalized
+    # `Close` column is what downstream code reads).
+    smas = compute_smas(df, [3])
+    # SMA over 3 closes [102, 104, 106] = 104.0
+    assert smas[3] == 104.0
+
+
+def test_02c_price_history_window_to_dataframe_empty_bars_returns_empty_frame():
+    """Codex R1 Major #4 defense-in-depth: empty bars list → empty DataFrame
+    with the canonical column set (mapper raises on empty Schwab response, so
+    this branch is purely defensive)."""
+    from swing.integrations.schwab.models import SchwabPriceHistoryWindow
+
+    window = SchwabPriceHistoryWindow(
+        ticker="AAPL", bars=[], provider="schwab_api",
+    )
+    df = window.to_dataframe()
+    assert len(df) == 0
+    assert list(df.columns) == ["Open", "High", "Low", "Close", "Volume"]
+
+
 # ============================================================================
 # Mapper: map_quotes_to_price_cache_entries
 # ============================================================================

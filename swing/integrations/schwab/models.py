@@ -455,6 +455,48 @@ class SchwabPriceHistoryWindow:
                 )
             prior = bar.asof_date
 
+    def to_dataframe(self):
+        """Convert bars to a DataFrame matching the legacy yfinance in-memory
+        shape consumed by the OHLCV cache + chart-step downstream code.
+
+        Returns a DataFrame with:
+          - DatetimeIndex (named ``Date``) parsed from ``OhlcvBar.asof_date``;
+          - CAPITALIZED OHLCV columns (``Open``/``High``/``Low``/``Close``/
+            ``Volume``) matching what ``swing/pipeline/ohlcv.py:compute_smas``
+            and ``swing/web/ohlcv_cache.py`` consume from the legacy
+            ``_yf_download_window`` shape.
+
+        This is the in-memory shape, NOT the Shape A on-disk shape. Use
+        ``swing.integrations.schwab.marketdata_ladder._schwab_window_to_shape_a_df``
+        (or the inline equivalent in the ladder) when persisting via
+        ``swing.data.ohlcv_archive.write_window``.
+
+        Codex R1 Major #4: previously the OhlcvCache ladder hook called
+        ``window.to_dataframe()`` but this method did not exist, breaking
+        the Schwab success path in ``swing/pipeline/runner.py:_bars_hook``.
+        Empty bars list → empty DataFrame with the canonical column set
+        (defensive; mapper raises before this for empty Schwab responses).
+        """
+        import pandas as pd  # lazy: keep models.py lightweight
+
+        if not self.bars:
+            return pd.DataFrame(
+                columns=["Open", "High", "Low", "Close", "Volume"],
+            )
+
+        idx = pd.to_datetime([bar.asof_date for bar in self.bars])
+        idx.name = "Date"
+        return pd.DataFrame(
+            {
+                "Open": [bar.open for bar in self.bars],
+                "High": [bar.high for bar in self.bars],
+                "Low": [bar.low for bar in self.bars],
+                "Close": [bar.close for bar in self.bars],
+                "Volume": [bar.volume for bar in self.bars],
+            },
+            index=idx,
+        )
+
 
 __all__ = [
     "OhlcvBar",
