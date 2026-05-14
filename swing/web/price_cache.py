@@ -27,6 +27,25 @@ class PriceSnapshot:
     asof: datetime
     is_stale: bool
     source: str   # "live" | "last_close" | "last_close_market_closed"
+    # Provenance tag for Schwab API ladder (Phase 11 Sub-bundle C T-C.3).
+    # Option A: collapsed T-C.4's dataclass extension into T-C.3 per dispatch
+    # brief §0.5 pre-emption #4. Legal values: None (legacy / not set),
+    # 'schwab_api' (returned by marketdata ladder Schwab-success path),
+    # 'yfinance' (returned by marketdata ladder yfinance fallback path).
+    provider: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.provider is not None:
+            if not isinstance(self.provider, str):
+                raise TypeError(
+                    "PriceSnapshot.provider must be str or None; got "
+                    f"{type(self.provider).__name__}"
+                )
+            if self.provider not in ("schwab_api", "yfinance"):
+                raise ValueError(
+                    "PriceSnapshot.provider must be one of None | "
+                    f"'schwab_api' | 'yfinance'; got {self.provider!r}"
+                )
 
 
 class PriceCache:
