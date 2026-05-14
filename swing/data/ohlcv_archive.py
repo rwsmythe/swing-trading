@@ -40,13 +40,23 @@ import logging
 import math
 import os
 import tempfile
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 import yfinance as yf
 
 log = logging.getLogger(__name__)
+
+# Shape A persistence (Schwab API Sub-bundle C T-C.2 / plan §A.8 + §H.6.3):
+# parquet-per-(ticker, provider). LOWER integer = HIGHER priority under
+# `min()`-by-precedence selection in `resolve_ohlcv_window`. Mirrors the
+# Phase 9 Sub-bundle C `_SOURCE_PRECEDENCE` pattern at
+# `swing/data/repos/account_equity_snapshots.py` (schwab_api > yfinance).
+_SOURCE_PRECEDENCE_MARKET_DATA: dict[str, int] = {
+    "schwab_api": 0,
+    "yfinance": 1,
+}
 
 
 def _archive_paths(cache_dir: Path, ticker: str) -> tuple[Path, Path]:
@@ -239,3 +249,207 @@ def read_or_fetch_archive(
             archive = combined
 
     return archive.loc[archive.index.date <= end_date]
+
+
+# ---------------------------------------------------------------------------
+# Shape A persistence (Schwab API Sub-bundle C T-C.2 / plan §H.6.3)
+# ---------------------------------------------------------------------------
+#
+# Files: `{cache_dir}/{TICKER}.{PROVIDER}.parquet` with an explicit
+# `asof_date` column (ISO `YYYY-MM-DD` string per
+# `swing.integrations.schwab.models.OhlcvBar.asof_date`) plus OHLCV columns.
+# Coexists with the legacy `{TICKER}.parquet` shape consumed by
+# `read_or_fetch_archive` above; the one-shot `_backward_compat_rename`
+# migrates the legacy file to `{TICKER}.yfinance.parquet`.
+#
+# `resolve_ohlcv_window` is the read path consumed by the Sub-bundle C
+# ladder (`swing/integrations/schwab/marketdata_ladder.py` — T-C.3); reads
+# both per-provider files (if present), filters to the caller's
+# [start, end] window, then picks the highest-priority row per asof_date.
+
+
+def _shape_a_path(cache_dir: Path, ticker: str, provider: str) -> Path:
+    """Return the Shape A parquet path for `(ticker, provider)`.
+
+    Ticker is uppercased here so callers can pass lowercase without
+    silently splitting the cache (mirrors the existing helper's
+    discipline at `read_or_fetch_archive`).
+    """
+    return cache_dir / f"{ticker.upper()}.{provider}.parquet"
+
+
+def write_window(
+    ticker: str,
+    window: pd.DataFrame | None,
+    provider: str,
+    *,
+    cache_dir: Path,
+) -> None:
+    """Atomically write a Shape A window to
+    `{cache_dir}/{TICKER}.{PROVIDER}.parquet`.
+
+    Empty-window guard (Codex R1 Major #7 + CLAUDE.md "External-API
+    empty-result must be treated as transient"): if `window` is `None` or
+    has zero rows, return WITHOUT touching disk. This prevents the ladder
+    from clobbering a populated parquet when a transient Schwab call
+    returns no candles. The caller (ladder) records the audit row with
+    `status='error'`; this function's contract is "non-empty windows only".
+
+    Defense-in-depth: caller MUST ensure non-empty windows in normal flow;
+    the guard exists so a future regression cannot blank the archive.
+    """
+    if window is None:
+        return
+    # `len()` on a DataFrame returns row count; an explicit `.empty` check
+    # tolerates non-DataFrame falsy inputs the caller might pass in error.
+    try:
+        n_rows = len(window)
+    except TypeError:
+        return
+    if n_rows == 0:
+        return
+
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = _shape_a_path(cache_dir, ticker, provider)
+    _write_archive_atomic(path, window)
+
+
+def resolve_ohlcv_window(
+    ticker: str,
+    *,
+    start: str,
+    end: str,
+    cache_dir: Path,
+) -> tuple[pd.DataFrame, dict[str, str]]:
+    """Resolve the OHLCV window for `ticker` across both provider parquets.
+
+    Reads `{TICKER}.schwab_api.parquet` AND `{TICKER}.yfinance.parquet` from
+    `cache_dir` (whichever are present), filters to ISO-date window
+    `[start, end]` (inclusive on both ends), and selects the highest-
+    priority row per `asof_date` per `_SOURCE_PRECEDENCE_MARKET_DATA`.
+
+    Codex R1 Minor #4: the window filter (`start <= asof_date <= end`) is
+    applied AFTER reading both parquets but BEFORE winner selection so
+    out-of-range rows neither pollute the merge decision nor leak into the
+    return value.
+
+    Args:
+        ticker: ticker symbol; will be uppercased to match write_window.
+        start: ISO `YYYY-MM-DD` window start (inclusive).
+        end: ISO `YYYY-MM-DD` window end (inclusive).
+        cache_dir: archive directory; need not exist.
+
+    Returns:
+        Tuple of (DataFrame indexed 0..n-1 with `asof_date` column +
+        OHLCV columns sorted ascending by `asof_date`,
+        provenance dict mapping `asof_date` -> winning provider name).
+        Empty DataFrame + empty dict when no rows match.
+    """
+    cache_dir = Path(cache_dir)
+    ticker_u = ticker.upper()
+
+    # Read both providers' parquet files (if present), accumulate rows by
+    # (asof_date, provider). Reading returns a fresh DataFrame so we keep
+    # provider attribution on a per-row basis.
+    rows_by_date: dict[str, dict[str, pd.Series]] = {}
+    for provider in ("schwab_api", "yfinance"):
+        path = _shape_a_path(cache_dir, ticker_u, provider)
+        if not path.exists():
+            continue
+        df = pd.read_parquet(path)
+        if df.empty or "asof_date" not in df.columns:
+            continue
+        for _, row in df.iterrows():
+            asof = str(row["asof_date"])
+            rows_by_date.setdefault(asof, {})[provider] = row
+
+    # Merge: filter to [start, end] then pick lowest-precedence provider.
+    merged_rows: list[pd.Series] = []
+    provenance: dict[str, str] = {}
+    for asof_date in sorted(rows_by_date.keys()):
+        if not (start <= asof_date <= end):
+            continue
+        candidates = rows_by_date[asof_date]
+        winner_provider = min(
+            candidates.keys(),
+            key=lambda p: _SOURCE_PRECEDENCE_MARKET_DATA.get(p, 99),
+        )
+        merged_rows.append(candidates[winner_provider])
+        provenance[asof_date] = winner_provider
+
+    if not merged_rows:
+        return pd.DataFrame(), {}
+
+    merged_df = pd.DataFrame(merged_rows).reset_index(drop=True)
+    return merged_df, provenance
+
+
+def _backward_compat_rename(ticker: str, *, cache_dir: Path) -> None:
+    """One-shot migration of legacy `{TICKER}.parquet` → Shape A
+    `{TICKER}.yfinance.parquet`.
+
+    Per plan §H.6.3 + Codex R1 Major #6 + R2 Minor #1 — handles 4 cases
+    without data loss:
+
+    1. **old-only:** `{TICKER}.parquet` exists, `{TICKER}.yfinance.parquet`
+       absent → rename via `os.replace` (same volume; safe per CLAUDE.md
+       gotcha).
+    2. **both-exist:** MERGE-AND-QUARANTINE — read both, concat-dedupe on
+       `asof_date` keeping the new file's row on conflict (post-Shape-A
+       writes are presumed more recent than the legacy snapshot), write
+       merged back to the new file, rename old to
+       `{TICKER}.parquet.orphan-{timestamp}.parquet`. The orphan file is
+       operator-visible only; the resolver never reads it.
+    3. **new-only:** already migrated; no-op.
+    4. **neither:** no historical data; no-op.
+
+    Idempotent: invoking twice on the same ticker drives the post-state to
+    case 3 (new-only) on the second call, which is a no-op.
+
+    Note: the legacy `{TICKER}.parquet` shape uses a DatetimeIndex with
+    OHLCV columns (no `asof_date` column). The both-exist branch trusts
+    that the new file's shape will be normalized at write time; the
+    concat-dedupe uses `asof_date` if present and falls back to the index.
+    """
+    cache_dir = Path(cache_dir)
+    ticker_u = ticker.upper()
+    old_path = cache_dir / f"{ticker_u}.parquet"
+    new_path = cache_dir / f"{ticker_u}.yfinance.parquet"
+
+    old_exists = old_path.exists()
+    new_exists = new_path.exists()
+
+    if old_exists and not new_exists:
+        # Same-volume rename (both paths in `cache_dir`); safe per CLAUDE.md.
+        os.replace(old_path, new_path)
+        return
+
+    if old_exists and new_exists:
+        # MERGE-AND-QUARANTINE — preserve every row.
+        old_df = pd.read_parquet(old_path)
+        new_df = pd.read_parquet(new_path)
+
+        # Determine dedup key: prefer explicit `asof_date` column if both
+        # files have it; otherwise dedup on the index.
+        if "asof_date" in old_df.columns and "asof_date" in new_df.columns:
+            merged = pd.concat([old_df, new_df]).drop_duplicates(
+                subset=["asof_date"], keep="last"
+            )
+            merged = merged.sort_values("asof_date").reset_index(drop=True)
+        else:
+            # Legacy DatetimeIndex shape (or mixed) — dedup on the index.
+            merged = pd.concat([old_df, new_df])
+            merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+
+        _write_archive_atomic(new_path, merged)
+
+        # Quarantine the old file with a UTC timestamp suffix so an operator
+        # can inspect it post-fact. Same-volume rename (`cache_dir` → `cache_dir`).
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        orphan_path = cache_dir / f"{ticker_u}.parquet.orphan-{timestamp}.parquet"
+        os.replace(old_path, orphan_path)
+        return
+
+    # Cases 3 + 4: new-only or neither — no-op.
+    return
