@@ -40,7 +40,7 @@ import logging
 import math
 import os
 import tempfile
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -457,30 +457,49 @@ def _normalize_legacy_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _backward_compat_rename(ticker: str, *, cache_dir: Path) -> None:
-    """One-shot migration of legacy `{TICKER}.parquet` → Shape A
-    `{TICKER}.yfinance.parquet`.
+    """One-shot **non-destructive** replication of legacy `{TICKER}.parquet`
+    → Shape A `{TICKER}.yfinance.parquet`.
 
-    Per plan §H.6.3 + Codex R1 Major #6 + R2 Minor #1 — handles 4 cases
-    without data loss:
+    Per Codex R2 Major #1 — V1 LEAVES the legacy `{TICKER}.parquet` file
+    IN PLACE because ``read_or_fetch_archive`` (consumed by
+    ``swing/prices.py``, ``swing/pipeline/ohlcv.py``, and
+    ``swing/trades/daily_management.py``) reads ONLY the legacy path. A
+    destructive migration (unlink legacy / orphan-rename) would leave V1
+    chart-rendering, daily-management ATR computation, and PriceFetcher
+    callers without any archive on disk — they would refetch from yfinance
+    on every read, defeating the cache. The plan §H.6.3 "rename" terminology
+    is preserved for stability of the symbol; semantics are **copy** in V1.
+
+    **V1 → V2 transition path:** when all consumers of
+    ``read_or_fetch_archive`` have been refactored to consume the Shape A
+    resolver (``resolve_ohlcv_window``), V2 can drop the legacy parquet via
+    ``os.remove(old_path)`` in a one-shot cleanup pass. See V2 candidate
+    banked in the M#1 R2 fix commit body.
+
+    Per plan §H.6.3 + Codex R1 Major #6 + R1 Major #2 + R2 Minor #1 +
+    R2 Major #1 — handles 4 cases without data loss:
 
     1. **old-only:** `{TICKER}.parquet` exists, `{TICKER}.yfinance.parquet`
        absent → NORMALIZE legacy DatetimeIndex/capitalized shape to Shape A
        (asof_date column + lowercase OHLCV) via
        ``_normalize_legacy_dataframe``, write to
-       ``{TICKER}.yfinance.parquet``, unlink the old file (same-volume).
+       ``{TICKER}.yfinance.parquet``. **LEGACY FILE LEFT IN PLACE** (Codex
+       R2 Major #1; both files coexist during V1 read-path co-existence).
        Codex R1 Major #2 fix: previously a bare ``os.replace`` would have
        left the post-rename file invisible to ``resolve_ohlcv_window``.
-    2. **both-exist:** MERGE-AND-QUARANTINE — read both, normalize the
+    2. **both-exist:** MERGE-PRESERVING-BOTH — read both, normalize the
        legacy one first, then concat-dedupe on ``asof_date`` keeping the
        new file's row on conflict (post-Shape-A writes are presumed more
-       recent than the legacy snapshot), write merged back to the new file,
-       rename old to ``{TICKER}.parquet.orphan-{timestamp}.parquet``. The
-       orphan file is operator-visible only; the resolver never reads it.
+       recent than the legacy snapshot), write merged back to the new file.
+       **LEGACY FILE LEFT IN PLACE** (Codex R2 Major #1; quarantine/orphan
+       step removed because both files coexist during V1).
     3. **new-only:** already migrated; no-op.
     4. **neither:** no historical data; no-op.
 
     Idempotent: invoking twice on the same ticker drives the post-state to
-    case 3 (new-only) on the second call, which is a no-op.
+    case 2 (both-exist) on the second call, which merges the legacy file
+    with the existing Shape A file (no-op if both already contain the same
+    content) without losing rows.
     """
     cache_dir = Path(cache_dir)
     ticker_u = ticker.upper()
@@ -491,18 +510,18 @@ def _backward_compat_rename(ticker: str, *, cache_dir: Path) -> None:
     new_exists = new_path.exists()
 
     if old_exists and not new_exists:
-        # Read + normalize + write to Shape A path; unlink the old file.
-        # We can't just `os.replace` because the legacy shape is invisible
-        # to `resolve_ohlcv_window` (Codex R1 Major #2).
+        # Read + normalize + write to Shape A path. **LEGACY FILE LEFT IN PLACE**
+        # (Codex R2 Major #1 copy-not-move) — read_or_fetch_archive still
+        # consumes the legacy path under V1.
         old_df = pd.read_parquet(old_path)
         normalized = _normalize_legacy_dataframe(old_df)
         _write_archive_atomic(new_path, normalized)
-        with contextlib.suppress(OSError):
-            old_path.unlink()
         return
 
     if old_exists and new_exists:
-        # MERGE-AND-QUARANTINE — preserve every row. Normalize legacy first.
+        # MERGE-PRESERVING-BOTH — preserve every row across both files.
+        # Normalize legacy first. **LEGACY FILE LEFT IN PLACE** (Codex R2
+        # Major #1 copy-not-move) — no quarantine/orphan; both files coexist.
         old_df = pd.read_parquet(old_path)
         new_df = pd.read_parquet(new_path)
         old_df = _normalize_legacy_dataframe(old_df)
@@ -514,13 +533,18 @@ def _backward_compat_rename(ticker: str, *, cache_dir: Path) -> None:
         )
         merged = merged.sort_values("asof_date").reset_index(drop=True)
 
-        _write_archive_atomic(new_path, merged)
+        # Idempotency optimization: if the existing Shape A file already
+        # contains every row that the merge produces (i.e. the legacy file's
+        # asof_dates are a subset of the new file's), skip the rewrite to
+        # preserve mtime + avoid spurious churn. Compare by content hash.
+        try:
+            existing_sorted = new_df.sort_values("asof_date").reset_index(drop=True)
+            if existing_sorted.equals(merged):
+                return
+        except (ValueError, TypeError):  # pragma: no cover — defensive
+            pass
 
-        # Quarantine the old file with a UTC timestamp suffix so an operator
-        # can inspect it post-fact. Same-volume rename (`cache_dir` → `cache_dir`).
-        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        orphan_path = cache_dir / f"{ticker_u}.parquet.orphan-{timestamp}.parquet"
-        os.replace(old_path, orphan_path)
+        _write_archive_atomic(new_path, merged)
         return
 
     # Cases 3 + 4: new-only or neither — no-op.

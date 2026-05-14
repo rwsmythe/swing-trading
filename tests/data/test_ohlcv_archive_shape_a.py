@@ -313,36 +313,109 @@ def test_resolve_applies_window_filter_strictly(tmp_path):
 # ---------- _backward_compat_rename ------------------------------------------
 
 
-def test_backward_compat_rename_old_only_renames_to_yfinance(tmp_path):
-    """Old `{TICKER}.parquet` exists; `{TICKER}.yfinance.parquet` absent →
-    rename via `os.replace`. Discriminates against any plain-copy +
-    leave-old or any creation of a new schwab_api file."""
+def test_backward_compat_rename_old_only_replicates_to_yfinance(tmp_path):
+    """**Codex R2 Major #1 — COPY-NOT-MOVE semantics under V1.**
+
+    Old `{TICKER}.parquet` exists; `{TICKER}.yfinance.parquet` absent →
+    REPLICATE legacy content to ``{TICKER}.yfinance.parquet`` while
+    **LEAVING the legacy file IN PLACE**. ``read_or_fetch_archive`` still
+    reads the legacy path under V1; deleting the file would break
+    ``swing/prices.py``, ``swing/pipeline/ohlcv.py``, and
+    ``swing/trades/daily_management.py``.
+
+    Discriminates against any destructive migration (unlink legacy / orphan-
+    rename) and against any plain-copy that doesn't normalize the Shape A
+    target.
+    """
     from swing.data.ohlcv_archive import _backward_compat_rename
 
     old_path = tmp_path / "AAPL.parquet"
     _mk_window(["2026-01-02"], close=100.0).to_parquet(old_path)
+    pre_old_content = pd.read_parquet(old_path)
 
     _backward_compat_rename("AAPL", cache_dir=tmp_path)
 
-    assert not old_path.exists(), "old AAPL.parquet still exists after rename"
+    # KEY Codex R2 Major #1 assertion: legacy file STILL EXISTS UNCHANGED.
+    assert old_path.exists(), (
+        "Codex R2 Major #1: legacy AAPL.parquet was deleted — V1 readers "
+        "(read_or_fetch_archive consumers) would break. Must be copy-not-move."
+    )
+    post_old_content = pd.read_parquet(old_path)
+    pd.testing.assert_frame_equal(
+        pre_old_content.reset_index(drop=True),
+        post_old_content.reset_index(drop=True),
+    )
+
     new_path = tmp_path / "AAPL.yfinance.parquet"
     assert new_path.exists(), "AAPL.yfinance.parquet not created"
     df = pd.read_parquet(new_path)
     assert float(df.iloc[0]["close"]) == 100.0
+    # Shape A: asof_date column normalized.
+    assert "asof_date" in df.columns
 
 
-def test_backward_compat_rename_both_exist_merges_and_quarantines(tmp_path):
-    """Codex R1 Major #6 + R2 Minor #1: both files exist → MERGE-AND-QUARANTINE.
+def test_backward_compat_rename_old_only_legacy_still_readable_by_read_or_fetch(
+    tmp_path,
+):
+    """**Codex R2 Major #1 discriminating test — read-path co-existence.**
+
+    After ``_backward_compat_rename`` runs in old-only mode, the legacy
+    ``{TICKER}.parquet`` MUST still be readable via the V1 reader
+    (``read_or_fetch_archive`` reads ``{TICKER}.parquet`` directly via
+    ``_archive_paths``). This pins the V1 invariant: migration adds the
+    Shape A file but does NOT break the legacy reader.
+
+    Pre-fix (destructive migration): legacy unlinked → reader sees no
+    archive → refetches from yfinance.
+    Post-fix (copy-not-move): legacy in place → reader returns cached data
+    without a yfinance call.
+    """
+    from swing.data.ohlcv_archive import (
+        _archive_paths,
+        _backward_compat_rename,
+        _read_archive,
+    )
+
+    # Plant legacy DatetimeIndex file (matches what read_or_fetch_archive
+    # actually writes — capitalized OHLCV, DatetimeIndex). The reader does
+    # not require asof_date.
+    legacy = pd.DataFrame(
+        {
+            "Open": [100.0],
+            "High": [101.0],
+            "Low": [99.0],
+            "Close": [100.0],
+            "Volume": [1000],
+        },
+        index=pd.to_datetime(["2026-01-02"]),
+    )
+    parquet_path, _ = _archive_paths(tmp_path, "AAPL")
+    legacy.to_parquet(parquet_path)
+
+    _backward_compat_rename("AAPL", cache_dir=tmp_path)
+
+    # Read via the V1 reader's primitive: legacy file MUST still be present.
+    df = _read_archive(parquet_path)
+    assert df is not None, (
+        "Codex R2 Major #1: V1 reader sees legacy file as missing after "
+        "migration — copy-not-move invariant violated"
+    )
+    assert "Close" in df.columns
+    assert float(df["Close"].iloc[0]) == 100.0
+
+
+def test_backward_compat_rename_both_exist_merges_preserving_legacy(tmp_path):
+    """**Codex R2 Major #1 — MERGE-PRESERVING-BOTH (copy-not-move under V1).**
 
     Plant:
       - Old `{TICKER}.parquet` with dates [01-02 close=100, 01-03 close=100].
       - New `{TICKER}.yfinance.parquet` with dates [01-03 close=200, 01-04 close=200].
 
-    Expected post-state:
+    Expected post-state (Codex R2 Major #1 supersedes R1 Major #6 quarantine):
       - `{TICKER}.yfinance.parquet` contains merged content (3 unique dates;
         01-03 row carries new file's row, i.e. close=200 — `keep='last'`).
-      - Orphan file `{TICKER}.parquet.orphan-<timestamp>.parquet` exists.
-      - Old `{TICKER}.parquet` no longer exists.
+      - **Old `{TICKER}.parquet` STILL EXISTS UNCHANGED** (no orphan rename;
+        legacy reader keeps consuming the legacy path under V1).
       - NO data loss (every original row, modulo dedup, preserved).
     """
     from swing.data.ohlcv_archive import _backward_compat_rename
@@ -353,11 +426,28 @@ def test_backward_compat_rename_both_exist_merges_and_quarantines(tmp_path):
     new_df = _mk_window(["2026-01-03", "2026-01-04"], close=200.0)
     old_df.to_parquet(old_path)
     new_df.to_parquet(new_path)
+    pre_old_content = pd.read_parquet(old_path)
 
     _backward_compat_rename("AAPL", cache_dir=tmp_path)
 
-    # Old file is gone (renamed to orphan).
-    assert not old_path.exists()
+    # KEY Codex R2 Major #1 assertion: legacy file STILL EXISTS unchanged.
+    assert old_path.exists(), (
+        "Codex R2 Major #1: legacy AAPL.parquet was deleted in both-exist "
+        "branch — V1 readers would break. Must be merge-preserving-both."
+    )
+    post_old_content = pd.read_parquet(old_path)
+    pd.testing.assert_frame_equal(
+        pre_old_content.reset_index(drop=True),
+        post_old_content.reset_index(drop=True),
+    )
+
+    # No orphan file produced (semantic removed under copy-not-move).
+    orphans = sorted(tmp_path.glob("AAPL.parquet.orphan-*.parquet"))
+    assert orphans == [], (
+        f"Codex R2 Major #1: orphan rename should be GONE under copy-not-move; "
+        f"got orphans={[p.name for p in orphans]}"
+    )
+
     # New file still exists, now with merged content.
     assert new_path.exists()
     merged = pd.read_parquet(new_path).set_index("asof_date")
@@ -371,22 +461,14 @@ def test_backward_compat_rename_both_exist_merges_and_quarantines(tmp_path):
     assert merged.loc["2026-01-02", "close"] == 100.0
     assert merged.loc["2026-01-04", "close"] == 200.0
 
-    # Orphan file present.
-    orphans = sorted(tmp_path.glob("AAPL.parquet.orphan-*.parquet"))
-    assert len(orphans) == 1, (
-        f"expected exactly one orphan file; got {[p.name for p in orphans]}"
-    )
-    orphan_back = pd.read_parquet(orphans[0])
-    # Orphan preserves the pre-merge old-file content verbatim.
-    assert sorted(orphan_back["asof_date"].tolist()) == ["2026-01-02", "2026-01-03"]
-
-    # Resolver MUST NOT read the orphan file.
+    # Resolver still reads the merged content correctly.
     from swing.data.ohlcv_archive import resolve_ohlcv_window
     df, provenance = resolve_ohlcv_window(
         "AAPL", start="2026-01-01", end="2026-01-10", cache_dir=tmp_path
     )
     assert len(df) == 3
-    # All rows attributed to yfinance (orphan not consulted).
+    # All rows attributed to yfinance (legacy file is NOT read by resolver —
+    # only the per-provider Shape A files at .yfinance.parquet / .schwab_api.parquet).
     assert set(provenance.values()) == {"yfinance"}
 
 
@@ -418,8 +500,17 @@ def test_backward_compat_rename_neither_exists_is_noop(tmp_path):
 
 
 def test_backward_compat_rename_is_idempotent(tmp_path):
-    """Codex R1 Major #6: invoke twice; second invocation MUST be no-op
-    because the first transitioned the state to new-only."""
+    """**Codex R2 Major #1 idempotency under copy-not-move.**
+
+    Invoke twice; the second invocation drives the state to case 2
+    (both-exist) because the legacy file is NOT removed. The both-exist
+    branch must detect that the merge would produce identical content and
+    SKIP the rewrite to preserve mtime + avoid spurious churn.
+
+    Pre-fix (R1 destructive): second call hit case 3 (new-only no-op).
+    Post-fix (R2 copy-not-move): second call hits case 2 (both-exist) +
+    detects merge-equivalence + skips rewrite.
+    """
     from swing.data.ohlcv_archive import _backward_compat_rename
 
     old_path = tmp_path / "AAPL.parquet"
@@ -430,6 +521,12 @@ def test_backward_compat_rename_is_idempotent(tmp_path):
     new_path = tmp_path / "AAPL.yfinance.parquet"
     mtime_after_first = new_path.stat().st_mtime_ns
 
+    # Under copy-not-move, both files MUST exist after first call.
+    assert old_path.exists()
+    assert new_path.exists()
+    assert "AAPL.parquet" in files_after_first
+    assert "AAPL.yfinance.parquet" in files_after_first
+
     _backward_compat_rename("AAPL", cache_dir=tmp_path)
 
     files_after_second = sorted(p.name for p in tmp_path.iterdir())
@@ -437,26 +534,37 @@ def test_backward_compat_rename_is_idempotent(tmp_path):
         "second invocation changed the file set — idempotency violated"
     )
     assert new_path.stat().st_mtime_ns == mtime_after_first, (
-        "second invocation rewrote the yfinance.parquet — idempotency violated"
+        "second invocation rewrote the yfinance.parquet — idempotency "
+        "violated (merge-equivalence detection in both-exist branch missing)"
     )
 
 
 def test_backward_compat_rename_uses_same_volume_for_os_replace(tmp_path):
     """CLAUDE.md `os.replace` cross-device gotcha defense-in-depth:
-    both source and destination MUST be inside the SAME `cache_dir`
-    (same volume) so the rename never traverses filesystems."""
+    every `os.replace` call inside `_backward_compat_rename` MUST have
+    source and destination inside the SAME `cache_dir` (same volume).
+
+    Under Codex R2 Major #1 copy-not-move, only `_write_archive_atomic` calls
+    `os.replace` (temp file in cache_dir → final file in cache_dir). The
+    orphan-quarantine rename was removed; we verify all remaining replace
+    operations are still same-volume.
+    """
     from swing.data.ohlcv_archive import _backward_compat_rename
 
     old_path = tmp_path / "AAPL.parquet"
     _mk_window(["2026-01-02"]).to_parquet(old_path)
 
-    # Sentinel: record the dir hosting the rename's destination.
-    captured: dict = {}
+    # Sentinel: record every dir pair hosting a replace operation.
+    captured: list[dict] = []
     real_replace = os.replace
 
     def sentinel_replace(src, dst):
-        captured["src_parent"] = Path(src).parent
-        captured["dst_parent"] = Path(dst).parent
+        captured.append(
+            {
+                "src_parent": Path(src).parent,
+                "dst_parent": Path(dst).parent,
+            }
+        )
         return real_replace(src, dst)
 
     import swing.data.ohlcv_archive as mod
@@ -467,11 +575,17 @@ def test_backward_compat_rename_uses_same_volume_for_os_replace(tmp_path):
     finally:
         mod.os.replace = orig
 
-    assert captured["src_parent"] == tmp_path
-    assert captured["dst_parent"] == tmp_path, (
-        "os.replace destination dir != cache_dir — cross-device link risk per "
-        "CLAUDE.md gotcha"
+    # At least one replace must have fired (the atomic write of the Shape A
+    # file). Every replace must be same-volume.
+    assert len(captured) >= 1, (
+        "expected at least one os.replace call during migration; got 0"
     )
+    for op in captured:
+        assert op["src_parent"] == tmp_path
+        assert op["dst_parent"] == tmp_path, (
+            "os.replace destination dir != cache_dir — cross-device link "
+            "risk per CLAUDE.md gotcha"
+        )
 
 
 # ---------- High-value discriminating: empty-Schwab-does-not-clobber ---------
@@ -631,7 +745,11 @@ def test_backward_compat_rename_normalizes_real_legacy_datetimeindex_shape(
 
     new_path = tmp_path / "AAPL.yfinance.parquet"
     assert new_path.exists(), "rename failed to produce yfinance parquet"
-    assert not old_path.exists(), "legacy parquet not unlinked post-rename"
+    # Codex R2 Major #1 copy-not-move: legacy file STILL EXISTS unchanged.
+    assert old_path.exists(), (
+        "Codex R2 Major #1: legacy parquet was unlinked — copy-not-move "
+        "invariant violated"
+    )
 
     # The KEY discriminating assertion: resolver returns the rows.
     df, provenance = resolve_ohlcv_window(
@@ -691,11 +809,16 @@ def test_resolve_ohlcv_window_auto_migrates_legacy_archive_on_first_read(
     assert sorted(df["asof_date"].tolist()) == ["2026-01-02", "2026-01-03"]
     assert set(provenance.values()) == {"yfinance"}
 
-    # Post-state: migration completed — new file present, old file gone.
+    # Post-state: migration completed — new file present, legacy file
+    # STILL PRESENT under Codex R2 Major #1 copy-not-move.
     assert new_path.exists()
-    assert not old_path.exists()
+    assert old_path.exists(), (
+        "Codex R2 Major #1: legacy parquet was unlinked by auto-migration — "
+        "copy-not-move invariant violated"
+    )
 
-    # Second invocation is a no-op (mtime of new file unchanged).
+    # Second invocation is a no-op (mtime of new file unchanged) — both-exist
+    # branch detects merge-equivalence + skips rewrite.
     mtime_after_first = new_path.stat().st_mtime_ns
     df2, _ = resolve_ohlcv_window(
         "AAPL", start="2026-01-01", end="2026-01-10", cache_dir=tmp_path,
