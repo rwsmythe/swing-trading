@@ -435,8 +435,15 @@ def resolve_ohlcv_window(
     return merged_df, provenance
 
 
-def _normalize_legacy_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+def normalize_legacy_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Convert a legacy DatetimeIndex archive into Shape A.
+
+    **Public helper (promoted from `_normalize_legacy_dataframe` per Codex
+    R2 Minor #1).** Cross-module callers (e.g. the Schwab market-data ladder
+    at `swing/integrations/schwab/marketdata_ladder.py`) consume this to
+    normalize yfinance-shaped fallback windows into Shape A before
+    persisting via `write_window`. The underscore-prefixed alias is
+    preserved for backward compatibility with existing test imports.
 
     Legacy archives produced by ``read_or_fetch_archive`` /
     ``_yf_download_window`` carry a DatetimeIndex (date-like, may be named
@@ -475,7 +482,7 @@ def _normalize_legacy_dataframe(df: pd.DataFrame) -> pd.DataFrame:
                 break
     if date_col is None:
         raise ValueError(
-            "_normalize_legacy_dataframe: cannot identify date column; "
+            "normalize_legacy_dataframe: cannot identify date column; "
             f"available columns: {list(normalized.columns)!r}"
         )
 
@@ -497,6 +504,12 @@ def _normalize_legacy_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         normalized = normalized.rename(columns=rename_map)
 
     return normalized.reset_index(drop=True)
+
+
+# Codex R2 Minor #1: backward-compat alias. Existing tests + the Schwab
+# market-data ladder import the underscore-prefixed name; preserve it so we
+# don't churn unrelated call sites. New code should use the public name.
+_normalize_legacy_dataframe = normalize_legacy_dataframe
 
 
 def _backward_compat_rename(ticker: str, *, cache_dir: Path) -> None:
@@ -525,7 +538,7 @@ def _backward_compat_rename(ticker: str, *, cache_dir: Path) -> None:
     1. **old-only:** `{TICKER}.parquet` exists, `{TICKER}.yfinance.parquet`
        absent → NORMALIZE legacy DatetimeIndex/capitalized shape to Shape A
        (asof_date column + lowercase OHLCV) via
-       ``_normalize_legacy_dataframe``, write to
+       ``normalize_legacy_dataframe``, write to
        ``{TICKER}.yfinance.parquet``. **LEGACY FILE LEFT IN PLACE** (Codex
        R2 Major #1; both files coexist during V1 read-path co-existence).
        Codex R1 Major #2 fix: previously a bare ``os.replace`` would have
@@ -557,7 +570,7 @@ def _backward_compat_rename(ticker: str, *, cache_dir: Path) -> None:
         # (Codex R2 Major #1 copy-not-move) — read_or_fetch_archive still
         # consumes the legacy path under V1.
         old_df = pd.read_parquet(old_path)
-        normalized = _normalize_legacy_dataframe(old_df)
+        normalized = normalize_legacy_dataframe(old_df)
         _write_archive_atomic(new_path, normalized)
         return
 
@@ -567,8 +580,8 @@ def _backward_compat_rename(ticker: str, *, cache_dir: Path) -> None:
         # Major #1 copy-not-move) — no quarantine/orphan; both files coexist.
         old_df = pd.read_parquet(old_path)
         new_df = pd.read_parquet(new_path)
-        old_df = _normalize_legacy_dataframe(old_df)
-        new_df = _normalize_legacy_dataframe(new_df)  # idempotent on Shape A
+        old_df = normalize_legacy_dataframe(old_df)
+        new_df = normalize_legacy_dataframe(new_df)  # idempotent on Shape A
 
         # Both frames now have `asof_date` column; dedup on it.
         merged = pd.concat([old_df, new_df]).drop_duplicates(

@@ -144,11 +144,12 @@ def _yfinance_window_to_shape_a_df(window: Any):
         if not window.bars:
             return None
         return _schwab_window_to_shape_a_df(window)
-    # DataFrame path — normalize via the archive's legacy helper.
+    # DataFrame path — normalize via the archive's public helper
+    # (Codex R2 Minor #1: was `_normalize_legacy_dataframe` private import).
     try:
         import pandas as pd
 
-        from swing.data.ohlcv_archive import _normalize_legacy_dataframe
+        from swing.data.ohlcv_archive import normalize_legacy_dataframe
     except ImportError:  # pragma: no cover — defensive
         return None
     if not isinstance(window, pd.DataFrame):
@@ -156,7 +157,7 @@ def _yfinance_window_to_shape_a_df(window: Any):
     if window.empty:
         return None
     try:
-        return _normalize_legacy_dataframe(window)
+        return normalize_legacy_dataframe(window)
     except (ValueError, KeyError, AttributeError):
         return None
 
