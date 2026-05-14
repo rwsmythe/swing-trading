@@ -614,3 +614,234 @@ def test_15_schwab_client_none_in_production_falls_back_to_yfinance(v18_conn):
     )
     assert tag == "yfinance"
     yf_fallback.assert_called_once_with("AAPL")
+
+
+# ============================================================================
+# Codex R1 Major #3 — Schwab success path persists window to Shape A archive
+# ============================================================================
+
+
+def _make_cfg_with_cache_dir(cache_dir, *, env="production", ladder_enabled=True):
+    """cfg variant carrying `paths.prices_cache_dir` so the archive layer
+    is exercised by the ladder. Mirrors `_make_cfg` shape but with the
+    paths attribute the M#3 fix consults via `_resolve_cache_dir`."""
+    from types import SimpleNamespace as _SN
+    schwab_ns = _SN(
+        environment=env,
+        marketdata_ladder_enabled=ladder_enabled,
+    )
+    integrations_ns = _SN(schwab=schwab_ns)
+    paths_ns = _SN(prices_cache_dir=cache_dir)
+    return _SN(integrations=integrations_ns, paths=paths_ns)
+
+
+def test_m3_schwab_success_persists_to_schwab_api_parquet(v18_conn, tmp_path):
+    """**Codex R1 Major #3 discriminating test:** Schwab returns a
+    populated window; ladder MUST persist via `write_window` to
+    ``{cache_dir}/AAPL.schwab_api.parquet``.
+
+    Pre-fix: ladder returns the window but never calls `write_window` —
+    archive directory remains empty. Post-fix: parquet exists with the
+    Schwab bar's rows.
+    """
+    import pandas as pd
+
+    from swing.data.ohlcv_archive import resolve_ohlcv_window
+
+    cfg = _make_cfg_with_cache_dir(tmp_path, env="production", ladder_enabled=True)
+    schwab = MagicMock()
+    schwab.price_history.return_value = _mock_price_history_response("AAPL")
+    yf_fallback = MagicMock()
+
+    start = datetime(2026, 5, 10)
+    end = datetime(2026, 5, 14)
+    window, tag = fetch_window_via_ladder(
+        "AAPL", start=start, end=end, cfg=cfg, schwab_client=schwab,
+        yfinance_fallback_fn=yf_fallback,
+        conn=v18_conn, surface="pipeline",
+    )
+    assert tag == "schwab_api"
+
+    # Discriminating: schwab_api parquet exists post-call.
+    schwab_path = tmp_path / "AAPL.schwab_api.parquet"
+    assert schwab_path.exists(), (
+        "fetch_window_via_ladder Schwab success path did NOT persist to "
+        "Shape A archive — Codex R1 Major #3 regression."
+    )
+    df = pd.read_parquet(schwab_path)
+    assert len(df) == 1
+    # Mapper produces ISO date "2024-05-14" or "2024-05-14"; the mock
+    # response uses datetime 1715692800000 (2024-05-14 UTC).
+    assert df.iloc[0]["close"] == 102.0
+
+    # resolver picks up the schwab_api parquet and attributes it.
+    df2, provenance = resolve_ohlcv_window(
+        "AAPL", start="2020-01-01", end="2030-01-01", cache_dir=tmp_path,
+    )
+    assert len(df2) == 1
+    assert set(provenance.values()) == {"schwab_api"}
+
+
+def test_m3_yfinance_fallback_persists_to_yfinance_parquet(v18_conn, tmp_path):
+    """Codex R1 Major #3 — yfinance fallback path persists to Shape A
+    ``{cache_dir}/AAPL.yfinance.parquet``.
+
+    Uses a SchwabPriceHistoryWindow as fallback return value (matches the
+    test_04 pattern in this file) so the converter exercises the
+    SchwabPriceHistoryWindow → Shape A path.
+    """
+    import pandas as pd
+
+    from swing.integrations.schwab.models import (
+        OhlcvBar,
+        SchwabPriceHistoryWindow,
+    )
+
+    cfg = _make_cfg_with_cache_dir(tmp_path, env="production", ladder_enabled=True)
+    schwab = MagicMock()
+    # Force schwab side to fail so we hit yfinance fallback.
+    schwab.price_history.return_value = _mock_http_error_response(503)
+
+    yf_window = SchwabPriceHistoryWindow(
+        ticker="AAPL",
+        bars=[OhlcvBar(
+            asof_date="2026-05-13",
+            open=100.0, high=102.0, low=99.0, close=101.0, volume=1000,
+        )],
+        provider="schwab_api",
+    )
+    yf_fallback = MagicMock(return_value=yf_window)
+
+    start = datetime(2026, 5, 10)
+    end = datetime(2026, 5, 14)
+    window, tag = fetch_window_via_ladder(
+        "AAPL", start=start, end=end, cfg=cfg, schwab_client=schwab,
+        yfinance_fallback_fn=yf_fallback,
+        conn=v18_conn, surface="pipeline",
+    )
+    assert tag == "yfinance"
+
+    yf_path = tmp_path / "AAPL.yfinance.parquet"
+    assert yf_path.exists(), (
+        "fetch_window_via_ladder yfinance fallback did NOT persist to "
+        "Shape A archive — Codex R1 Major #3 regression."
+    )
+    df = pd.read_parquet(yf_path)
+    assert len(df) == 1
+    assert df.iloc[0]["asof_date"] == "2026-05-13"
+    assert df.iloc[0]["close"] == 101.0
+
+    # Schwab parquet MUST NOT exist (Schwab call errored).
+    schwab_path = tmp_path / "AAPL.schwab_api.parquet"
+    assert not schwab_path.exists()
+
+
+def test_m3_schwab_empty_bars_does_not_persist_schwab_parquet(v18_conn, tmp_path):
+    """Codex R1 Major #3 + empty-write-guard interaction: when Schwab
+    returns empty bars (mapper raises SchwabApiError 204), the ladder falls
+    back to yfinance. The Schwab parquet MUST NOT be written (mapper raised
+    before we'd attempt; defense-in-depth empty-write guard in write_window).
+    """
+    import pandas as pd
+
+    from swing.integrations.schwab.models import (
+        OhlcvBar,
+        SchwabPriceHistoryWindow,
+    )
+
+    cfg = _make_cfg_with_cache_dir(tmp_path, env="production", ladder_enabled=True)
+    schwab = MagicMock()
+    schwab.price_history.return_value = _mock_price_history_response(
+        "AAPL", empty=True,
+    )
+
+    yf_window = SchwabPriceHistoryWindow(
+        ticker="AAPL",
+        bars=[OhlcvBar(
+            asof_date="2026-05-13",
+            open=100.0, high=102.0, low=99.0, close=101.0, volume=1000,
+        )],
+        provider="schwab_api",
+    )
+    yf_fallback = MagicMock(return_value=yf_window)
+
+    start = datetime(2026, 5, 10)
+    end = datetime(2026, 5, 14)
+    window, tag = fetch_window_via_ladder(
+        "AAPL", start=start, end=end, cfg=cfg, schwab_client=schwab,
+        yfinance_fallback_fn=yf_fallback,
+        conn=v18_conn, surface="pipeline",
+    )
+    assert tag == "yfinance"
+
+    schwab_path = tmp_path / "AAPL.schwab_api.parquet"
+    assert not schwab_path.exists(), (
+        "Schwab empty-bars path created a schwab_api parquet — empty-write "
+        "guard breached."
+    )
+    # yfinance fallback path persisted independently.
+    yf_path = tmp_path / "AAPL.yfinance.parquet"
+    assert yf_path.exists()
+    df = pd.read_parquet(yf_path)
+    assert len(df) == 1
+
+
+def test_m3_sandbox_short_circuit_still_persists_yfinance(v18_conn, tmp_path):
+    """Codex R1 Major #3 — sandbox/disabled short-circuit also writes
+    yfinance content to Shape A archive (so the pipeline's read path sees
+    consistent state across both production and sandbox)."""
+    import pandas as pd
+
+    from swing.integrations.schwab.models import (
+        OhlcvBar,
+        SchwabPriceHistoryWindow,
+    )
+
+    cfg = _make_cfg_with_cache_dir(tmp_path, env="sandbox", ladder_enabled=True)
+    schwab = MagicMock()
+    yf_window = SchwabPriceHistoryWindow(
+        ticker="AAPL",
+        bars=[OhlcvBar(
+            asof_date="2026-05-13",
+            open=100.0, high=102.0, low=99.0, close=101.0, volume=1000,
+        )],
+        provider="schwab_api",
+    )
+    yf_fallback = MagicMock(return_value=yf_window)
+
+    start = datetime(2026, 5, 10)
+    end = datetime(2026, 5, 14)
+    window, tag = fetch_window_via_ladder(
+        "AAPL", start=start, end=end, cfg=cfg, schwab_client=schwab,
+        yfinance_fallback_fn=yf_fallback,
+        conn=v18_conn, surface="pipeline",
+    )
+    assert tag == "yfinance"
+    schwab.price_history.assert_not_called()  # sandbox short-circuit
+
+    yf_path = tmp_path / "AAPL.yfinance.parquet"
+    assert yf_path.exists()
+    df = pd.read_parquet(yf_path)
+    assert df.iloc[0]["close"] == 101.0
+
+
+def test_m3_cfg_without_paths_skips_persistence_gracefully(v18_conn):
+    """Codex R1 Major #3 defense-in-depth: cfg without `paths` attribute
+    (minimal test cfg) MUST NOT crash the ladder — persistence skips
+    silently. Existing tests using `_make_cfg` (no paths attr) rely on this.
+    """
+    cfg = _make_cfg(env="production", ladder_enabled=True)
+    schwab = MagicMock()
+    schwab.price_history.return_value = _mock_price_history_response("AAPL")
+    yf_fallback = MagicMock()
+
+    start = datetime(2026, 5, 10)
+    end = datetime(2026, 5, 14)
+    # Must not raise.
+    window, tag = fetch_window_via_ladder(
+        "AAPL", start=start, end=end, cfg=cfg, schwab_client=schwab,
+        yfinance_fallback_fn=yf_fallback,
+        conn=v18_conn, surface="pipeline",
+    )
+    assert tag == "schwab_api"
+    assert isinstance(window, SchwabPriceHistoryWindow)

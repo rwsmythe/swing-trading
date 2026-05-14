@@ -58,6 +58,7 @@ import logging
 import sqlite3
 from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from swing.integrations.schwab.client import (
@@ -76,6 +77,125 @@ from swing.integrations.schwab.models import (
 from swing.web.price_cache import PriceSnapshot
 
 log = logging.getLogger(__name__)
+
+
+def _resolve_cache_dir(cfg: Any) -> Path | None:
+    """Best-effort lookup of ``cfg.paths.prices_cache_dir``.
+
+    Codex R1 Major #3: persisting Schwab/yfinance window data to the Shape A
+    archive requires a cache directory. Production cfg has
+    ``cfg.paths.prices_cache_dir`` available; minimal test cfgs (SimpleNamespace)
+    may not. Return None when unavailable so the ladder gracefully skips
+    persistence in test scenarios that don't exercise the archive layer.
+    """
+    paths = getattr(cfg, "paths", None)
+    if paths is None:
+        return None
+    cache_dir = getattr(paths, "prices_cache_dir", None)
+    if cache_dir is None:
+        return None
+    return Path(cache_dir)
+
+
+def _schwab_window_to_shape_a_df(window: SchwabPriceHistoryWindow):
+    """Convert a ``SchwabPriceHistoryWindow`` to a Shape A DataFrame
+    (``asof_date`` ISO string column + lowercase OHLCV columns) suitable for
+    ``swing.data.ohlcv_archive.write_window``.
+
+    Distinct from ``SchwabPriceHistoryWindow.to_dataframe()`` (M#4) which
+    returns the IN-MEMORY legacy yfinance shape (DatetimeIndex + capitalized
+    OHLCV) consumed by ``compute_smas`` + chart-step downstream code.
+    """
+    import pandas as pd
+
+    return pd.DataFrame(
+        {
+            "asof_date": [bar.asof_date for bar in window.bars],
+            "open": [bar.open for bar in window.bars],
+            "high": [bar.high for bar in window.bars],
+            "low": [bar.low for bar in window.bars],
+            "close": [bar.close for bar in window.bars],
+            "volume": [bar.volume for bar in window.bars],
+        }
+    )
+
+
+def _yfinance_window_to_shape_a_df(window: Any):
+    """Best-effort conversion of an arbitrary yfinance-fallback return value
+    to a Shape A DataFrame.
+
+    The yfinance fallback for the window ladder may return any of:
+      - DatetimeIndex DataFrame with capitalized OHLCV columns (from
+        ``_yf_download_window`` → ``read_or_fetch_archive`` legacy path);
+      - already-Shape-A DataFrame (some test fixtures);
+      - ``SchwabPriceHistoryWindow`` (some test fixtures use a Schwab dataclass
+        as the fallback return — see ``test_04_window_production_path_empty_bars``);
+      - None or empty.
+
+    Returns None when conversion is infeasible (e.g., empty window, can't
+    detect date column, non-DataFrame). Callers MUST guard the
+    ``write_window`` call against ``None`` (which ``write_window``'s
+    empty-window guard already handles).
+    """
+    if window is None:
+        return None
+    # SchwabPriceHistoryWindow path — use the same converter as Schwab success.
+    if isinstance(window, SchwabPriceHistoryWindow):
+        if not window.bars:
+            return None
+        return _schwab_window_to_shape_a_df(window)
+    # DataFrame path — normalize via the archive's legacy helper.
+    try:
+        import pandas as pd
+
+        from swing.data.ohlcv_archive import _normalize_legacy_dataframe
+    except ImportError:  # pragma: no cover — defensive
+        return None
+    if not isinstance(window, pd.DataFrame):
+        return None
+    if window.empty:
+        return None
+    try:
+        return _normalize_legacy_dataframe(window)
+    except (ValueError, KeyError, AttributeError):
+        return None
+
+
+def _persist_window_to_archive(
+    ticker: str,
+    window: Any,
+    provider: str,
+    cache_dir: Path | None,
+) -> None:
+    """Best-effort persistence of a window to the Shape A archive.
+
+    Codex R1 Major #3 — the ladder previously dropped Schwab-fetched bars on
+    the floor; subsequent reads via ``resolve_ohlcv_window`` saw no
+    schwab_api archive content. Persisting here ensures Schwab-sourced bars
+    survive cross-call/cross-process via the archive layer.
+
+    Failures are LOGGED but never propagated — write failures must not abort
+    the ladder's primary contract (return the window to the caller).
+    """
+    if cache_dir is None or window is None:
+        return
+    if provider == "schwab_api" and isinstance(window, SchwabPriceHistoryWindow):
+        df = _schwab_window_to_shape_a_df(window)
+    elif provider == "yfinance":
+        df = _yfinance_window_to_shape_a_df(window)
+    else:  # pragma: no cover — defensive
+        return
+    if df is None:
+        return
+    try:
+        from swing.data.ohlcv_archive import write_window
+        write_window(ticker, df, provider, cache_dir=cache_dir)
+    except Exception as exc:
+        log.warning(
+            "fetch_window_via_ladder: archive persistence failed for "
+            "%s/%s: %s (continuing)",
+            ticker, provider, type(exc).__name__,
+        )
 
 
 # ============================================================================
@@ -273,9 +393,13 @@ def fetch_window_via_ladder(
         TypeError / ValueError on invalid ticker input.
     """
     ticker = _validate_ticker(ticker)
+    cache_dir = _resolve_cache_dir(cfg)
 
     if not _is_ladder_active(cfg):
         window = yfinance_fallback_fn(ticker, start, end)
+        # Codex R1 Major #3 — persist yfinance window to Shape A archive
+        # so subsequent resolve_ohlcv_window calls see the rows.
+        _persist_window_to_archive(ticker, window, "yfinance", cache_dir)
         return (window, "yfinance")
 
     if schwab_client is None:
@@ -285,6 +409,7 @@ def fetch_window_via_ladder(
             ticker,
         )
         window = yfinance_fallback_fn(ticker, start, end)
+        _persist_window_to_archive(ticker, window, "yfinance", cache_dir)
         return (window, "yfinance")
 
     try:
@@ -305,6 +430,7 @@ def fetch_window_via_ladder(
             ticker, type(exc).__name__,
         )
         window = yfinance_fallback_fn(ticker, start, end)
+        _persist_window_to_archive(ticker, window, "yfinance", cache_dir)
         return (window, "yfinance")
     except Exception:  # pragma: no cover — defensive
         log.warning(
@@ -312,8 +438,13 @@ def fetch_window_via_ladder(
             "for %s; falling back to yfinance", ticker,
         )
         window = yfinance_fallback_fn(ticker, start, end)
+        _persist_window_to_archive(ticker, window, "yfinance", cache_dir)
         return (window, "yfinance")
 
+    # Codex R1 Major #3 — persist Schwab window to Shape A archive on
+    # success so the merge layer in resolve_ohlcv_window can attribute
+    # subsequent reads to schwab_api provenance.
+    _persist_window_to_archive(ticker, schwab_window, "schwab_api", cache_dir)
     return (schwab_window, "schwab_api")
 
 
