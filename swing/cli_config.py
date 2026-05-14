@@ -16,10 +16,14 @@ from swing.config_user import (
 from swing.config_validation import (
     FIELD_REGISTRY,
     coerce_value,
+    mask_sensitive_value,
     validate_field,
 )
 
-_FIELD_PATHS = tuple(s.path for s in FIELD_REGISTRY)
+# Sub-bundle A T-A.2 — masked entries are display-only; they are NOT
+# settable via `swing config set` (operator sets via `swing schwab setup`).
+_EDITABLE_SPECS = tuple(s for s in FIELD_REGISTRY if not s.masked)
+_FIELD_PATHS = tuple(s.path for s in _EDITABLE_SPECS)
 
 
 @click.group("config")
@@ -33,15 +37,25 @@ def config_show(ctx: click.Context) -> None:
     """Print all V1 fields with current value, default, source."""
     base_cfg = ctx.obj["config"]
     eff = apply_overrides(base_cfg)
-    click.echo(f"{'Field':<32} {'Current':<12} {'Default':<12} Source")
-    click.echo("-" * 72)
+    click.echo(f"{'Field':<48} {'Current':<24} {'Default':<14} Source")
+    click.echo("-" * 100)
     for spec in FIELD_REGISTRY:
-        section, key = spec.path.split(".")
-        current = getattr(getattr(eff, section), key)
+        # Sub-bundle A T-A.2 — walk N-part dotted path (e.g.,
+        # 'integrations.schwab.account_hash') for nested sub-dataclasses.
+        cursor: object = eff
+        for part in spec.path.split("."):
+            cursor = getattr(cursor, part)
+        current = cursor
+        if spec.masked:
+            current_display = mask_sensitive_value(current)
+            default_display = mask_sensitive_value(spec.default)
+        else:
+            current_display = str(current)
+            default_display = str(spec.default)
         source = get_field_source(base_cfg, spec.path)
         click.echo(
-            f"{spec.label + ' (' + spec.path + ')':<32} "
-            f"{current!s:<12} {spec.default!s:<12} {source}"
+            f"{spec.label + ' (' + spec.path + ')':<48} "
+            f"{current_display:<24} {default_display:<14} {source}"
         )
 
 

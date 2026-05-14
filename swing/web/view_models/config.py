@@ -7,7 +7,11 @@ from typing import Any
 
 from swing.config import Config
 from swing.config_overrides import apply_overrides, get_field_source
-from swing.config_validation import FIELD_REGISTRY, FieldSpec
+from swing.config_validation import (
+    FIELD_REGISTRY,
+    FieldSpec,
+    mask_sensitive_value,
+)
 
 
 @dataclass(frozen=True)
@@ -47,8 +51,12 @@ class ConfigPageVM:
 
 
 def _current_value(cfg: Config, spec: FieldSpec) -> Any:
-    section, key = spec.path.split(".")
-    return getattr(getattr(cfg, section), key)
+    # Sub-bundle A T-A.2 — walk N-part dotted path for nested sub-dataclass
+    # entries (e.g., 'integrations.schwab.account_hash').
+    cursor: Any = cfg
+    for part in spec.path.split("."):
+        cursor = getattr(cursor, part)
+    return cursor
 
 
 def build_config_vm(
@@ -67,14 +75,29 @@ def build_config_vm(
     eff = apply_overrides(base_cfg)
     rows: list[ConfigFieldRow] = []
     for spec in FIELD_REGISTRY:
+        raw_value = _current_value(eff, spec)
+        # Sub-bundle A T-A.2 — apply masking discipline at render time for
+        # `masked=True` entries (e.g., integrations.schwab.account_hash).
+        if spec.masked:
+            current_value: Any = mask_sensitive_value(raw_value)
+        else:
+            current_value = raw_value
+        # input_kind drives <input type="number" step="...">; str-typed
+        # masked-display entries fall back to "text" (display-only / no edit).
+        if spec.type is int:
+            input_kind = "int"
+        elif spec.type is float:
+            input_kind = "float"
+        else:
+            input_kind = "text"
         rows.append(ConfigFieldRow(
             path=spec.path,
             label=spec.label,
             description=spec.description,
-            current_value=_current_value(eff, spec),
+            current_value=current_value,
             default_value=spec.default,
             source=get_field_source(base_cfg, spec.path),
-            input_kind="int" if spec.type is int else "float",
+            input_kind=input_kind,
             soft_warn_min=spec.soft_warn_min,
             soft_warn_max=spec.soft_warn_max,
             hard_refuse_min=spec.hard_refuse_min,

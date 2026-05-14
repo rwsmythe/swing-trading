@@ -25,7 +25,11 @@ log = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_FIELD_PATHS = tuple(s.path for s in FIELD_REGISTRY)
+# Sub-bundle A T-A.2 — masked entries (e.g., integrations.schwab.account_hash)
+# are display-only in V1; they're not POSTable via /config. Editable surface
+# excludes them by construction.
+_EDITABLE_SPECS = tuple(s for s in FIELD_REGISTRY if not s.masked)
+_FIELD_PATHS = tuple(s.path for s in _EDITABLE_SPECS)
 
 # Phase 9 T-A.5 cfg-mirror cascade map. Keys are FIELD_REGISTRY paths;
 # values are the corresponding risk_policy column. Per spec §3.1.3 only
@@ -103,7 +107,7 @@ async def config_save(request: Request):
     eff_cfg = apply_overrides(base_cfg)
     new_overrides: dict = _copy.deepcopy(load_user_overrides())
     cascade_updates: dict[str, object] = {}
-    for spec in FIELD_REGISTRY:
+    for spec in _EDITABLE_SPECS:
         section, key = spec.path.split(".")
         submitted = coerce_value(spec.path, payload[spec.path])
         current_eff = getattr(getattr(eff_cfg, section), key)

@@ -224,10 +224,96 @@ class FinvizIntegrationConfig:
 
 
 @dataclass(frozen=True)
+class SchwabIntegrationConfig:
+    """Schwab API integration config (Sub-bundle A — schwab-api-integration plan).
+
+    Per plan §A.6 + recon doc `docs/schwab-bundle-A-task-A0b-recon.md` §2.9 +1
+    deviation (6 fields total; `callback_url` added with trailing-slash + HTTPS
+    + localhost validators per schwabdev `setup-guide.md` L23-26 +
+    `troubleshooting.md` L72-78 gotchas).
+
+    Sensitive/operator-specific fields (`environment`, `account_hash`,
+    `lookback_days`, `callback_url`) live in user-config.toml; tracked
+    defaults (`timeout_seconds`, `marketdata_ladder_enabled`) live in
+    swing.config.toml.
+
+    `account_hash` is masked in CLI `swing config show` rendering (first 3 +
+    asterisks + last 2 chars) via FIELD_REGISTRY `masked=True`.
+    """
+    environment: str = "production"
+    account_hash: str | None = None
+    lookback_days: int = 7
+    timeout_seconds: float = 30.0
+    marketdata_ladder_enabled: bool = True
+    callback_url: str = "https://127.0.0.1"
+
+    def __post_init__(self) -> None:
+        import math as _math
+        # environment: enum constraint (no Literal — dataclass + __post_init__).
+        if self.environment not in ("sandbox", "production"):
+            raise ValueError(
+                "integrations.schwab.environment must be 'sandbox' or "
+                f"'production'; got {self.environment!r}"
+            )
+        # account_hash: None | non-empty str. Empty string explicitly rejected
+        # (operator should clear via `swing config reset` not by setting "").
+        if self.account_hash is not None and not isinstance(self.account_hash, str):
+            raise TypeError(
+                "integrations.schwab.account_hash must be str or None; got "
+                f"{type(self.account_hash).__name__}"
+            )
+        if self.account_hash == "":
+            raise ValueError(
+                "integrations.schwab.account_hash must be None or non-empty "
+                "string; got empty string"
+            )
+        # lookback_days: positive int.
+        if not isinstance(self.lookback_days, int) or self.lookback_days < 1:
+            raise ValueError(
+                "integrations.schwab.lookback_days must be int >= 1; got "
+                f"{self.lookback_days!r}"
+            )
+        # timeout_seconds: positive finite float.
+        if (
+            not isinstance(self.timeout_seconds, (int, float))
+            or not _math.isfinite(self.timeout_seconds)
+            or self.timeout_seconds <= 0
+        ):
+            raise ValueError(
+                "integrations.schwab.timeout_seconds must be a positive "
+                f"finite number; got {self.timeout_seconds!r}"
+            )
+        # callback_url: non-empty, https://, no trailing slash, localhost host
+        # (schwabdev setup-guide.md L23-26 + troubleshooting.md L72-78 gotcha).
+        if not self.callback_url:
+            raise ValueError(
+                "integrations.schwab.callback_url must not be empty"
+            )
+        if not self.callback_url.startswith("https://"):
+            raise ValueError(
+                "integrations.schwab.callback_url must start with 'https://'; "
+                f"got {self.callback_url!r}"
+            )
+        if self.callback_url.endswith("/"):
+            raise ValueError(
+                "integrations.schwab.callback_url must not have trailing "
+                f"slash (schwabdev gotcha); got {self.callback_url!r}"
+            )
+        rest = self.callback_url[len("https://"):]
+        host = rest.split(":")[0].split("/")[0]
+        if host not in ("127.0.0.1", "localhost"):
+            raise ValueError(
+                "integrations.schwab.callback_url host must be 127.0.0.1 or "
+                f"localhost (Schwab callback gotcha); got {host!r}"
+            )
+
+
+@dataclass(frozen=True)
 class IntegrationsConfig:
-    """External-API integrations namespace. Future Schwab integration adds a
-    sibling field here following the same per-integration sub-dataclass pattern."""
+    """External-API integrations namespace. Each integration is a sibling
+    sub-dataclass following the same pattern (Finviz Phase 7e; Schwab Sub-bundle A)."""
     finviz: FinvizIntegrationConfig = field(default_factory=FinvizIntegrationConfig)
+    schwab: SchwabIntegrationConfig = field(default_factory=SchwabIntegrationConfig)
 
 
 @dataclass(frozen=True)
@@ -340,6 +426,17 @@ def load(config_path: Path) -> Config:
     raw_finviz.pop("token", None)
     raw_finviz.pop("screen_query", None)
 
+    raw_schwab = dict(raw.get("integrations", {}).get("schwab", {}))
+    # Schwab cfg cascade is split: user-config.toml carries operator-edited
+    # fields (environment, account_hash, lookback_days, callback_url);
+    # swing.config.toml carries tracked defaults (timeout_seconds,
+    # marketdata_ladder_enabled). Drop user-config-only fields defensively if
+    # they appear in the tracked TOML (mirror Finviz token defense).
+    raw_schwab.pop("environment", None)
+    raw_schwab.pop("account_hash", None)
+    raw_schwab.pop("lookback_days", None)
+    raw_schwab.pop("callback_url", None)
+
     return Config(
         paths=paths,
         account=Account(**raw["account"]),
@@ -371,5 +468,6 @@ def load(config_path: Path) -> Config:
         review=ReviewConfig(**raw.get("review", {})),
         integrations=IntegrationsConfig(
             finviz=FinvizIntegrationConfig(**raw_finviz),
+            schwab=SchwabIntegrationConfig(**raw_schwab),
         ),
     )

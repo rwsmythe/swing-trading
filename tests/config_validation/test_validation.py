@@ -14,12 +14,15 @@ from swing.config_validation import (
 # --- Registry shape ---
 
 
-def test_registry_has_three_v1_fields():
+def test_registry_has_expected_v1_fields():
+    """Phase 5 V1 registered 3 editable fields. Sub-bundle A T-A.2 added the
+    masked display-only `integrations.schwab.account_hash` entry."""
     paths = {s.path for s in FIELD_REGISTRY}
     assert paths == {
         "web.chase_factor",
         "pipeline.chart_top_n_watch",
         "account.risk_equity_floor",
+        "integrations.schwab.account_hash",
     }
 
 

@@ -21,14 +21,17 @@ def base_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return load(cfg_path)
 
 
-def test_vm_has_three_rows(base_cfg):
+def test_vm_has_expected_rows(base_cfg):
+    """Phase 5 V1 registered 3 editable rows; Sub-bundle A T-A.2 adds the
+    masked display-only `integrations.schwab.account_hash` row."""
     vm = build_config_vm(base_cfg)
-    assert len(vm.rows) == 3
+    assert len(vm.rows) == 4
     paths = [r.path for r in vm.rows]
     assert paths == [
         "web.chase_factor",
         "pipeline.chart_top_n_watch",
         "account.risk_equity_floor",
+        "integrations.schwab.account_hash",
     ]
 
 

@@ -109,3 +109,18 @@ review_window_days = 7
 # (%USERPROFILE%/swing-data/user-config.toml under [integrations.finviz])
 # — never tracked. timeout_seconds is the per-request HTTP timeout.
 timeout_seconds = 30
+
+[integrations.schwab]
+# Schwab API integration (Sub-bundle A — schwab-api-integration plan).
+# Tracked TOML carries non-sensitive defaults only. environment /
+# account_hash / lookback_days / callback_url live in user-config under
+# [integrations.schwab] (set via `swing schwab setup` or
+# `swing config set integrations.schwab.<field>`).
+#
+# timeout_seconds: HTTP timeout for schwabdev API calls. 30s mirrors Finviz.
+timeout_seconds = 30.0
+# marketdata_ladder_enabled: V1 INCLUDE per writing-plans plan §A.1 Q11.
+# Set to false to suppress Schwab market-data calls (price-quote +
+# price-history) in Sub-bundle C consumer; pipeline + reconciliation still
+# use Schwab account data when this is false.
+marketdata_ladder_enabled = true

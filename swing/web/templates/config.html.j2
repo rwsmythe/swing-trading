@@ -19,33 +19,49 @@
       hx-post="/config" hx-target="#config-form-result" hx-swap="innerHTML"
       hx-headers='{"HX-Request": "true"}'>
   {% for row in vm.rows %}
-    <div class="config-row">
-      <label for="{{ row.path }}">
-        {{ row.label }}
-        <small class="muted">({{ row.path }})</small>
-      </label>
-      <p class="description">{{ row.description }}</p>
-      <input
-        type="number"
-        id="{{ row.path }}"
-        name="{{ row.path }}"
-        value="{{ row.current_value }}"
-        {% if row.input_kind == 'int' %}step="1"{% else %}step="0.001"{% endif %}
-      />
-      <span class="default-value">default: {{ row.default_value }}</span>
-      <span class="source-badge source-{{ row.source }}">{{ row.source }}</span>
-    </div>
+    {% if row.input_kind in ('int', 'float') %}
+      <div class="config-row">
+        <label for="{{ row.path }}">
+          {{ row.label }}
+          <small class="muted">({{ row.path }})</small>
+        </label>
+        <p class="description">{{ row.description }}</p>
+        <input
+          type="number"
+          id="{{ row.path }}"
+          name="{{ row.path }}"
+          value="{{ row.current_value }}"
+          {% if row.input_kind == 'int' %}step="1"{% else %}step="0.001"{% endif %}
+        />
+        <span class="default-value">default: {{ row.default_value }}</span>
+        <span class="source-badge source-{{ row.source }}">{{ row.source }}</span>
+      </div>
+    {% else %}
+      {# Sub-bundle A T-A.2 — masked/display-only rows (e.g. Schwab account
+         hash) render as a read-only summary; not POSTable via /config. #}
+      <div class="config-row config-row-readonly">
+        <label>
+          {{ row.label }}
+          <small class="muted">({{ row.path }})</small>
+        </label>
+        <p class="description">{{ row.description }}</p>
+        <span class="display-value">{{ row.current_value }}</span>
+        <span class="source-badge source-{{ row.source }}">{{ row.source }}</span>
+      </div>
+    {% endif %}
   {% endfor %}
   <button type="submit">Save</button>
 </form>
 <div id="config-form-result"></div>
 
 {% for row in vm.rows %}
-  <form method="post" action="/config/reset/{{ row.path }}"
-        hx-post="/config/reset/{{ row.path }}"
-        hx-headers='{"HX-Request": "true"}'
-        class="reset-form">
-    <button type="submit" class="reset-btn">Reset {{ row.label }}</button>
-  </form>
+  {% if row.input_kind in ('int', 'float') %}
+    <form method="post" action="/config/reset/{{ row.path }}"
+          hx-post="/config/reset/{{ row.path }}"
+          hx-headers='{"HX-Request": "true"}'
+          class="reset-form">
+      <button type="submit" class="reset-btn">Reset {{ row.label }}</button>
+    </form>
+  {% endif %}
 {% endfor %}
 {% endblock %}
