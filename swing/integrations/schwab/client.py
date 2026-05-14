@@ -29,7 +29,8 @@ import contextlib
 import logging
 import re
 import sqlite3
-from collections.abc import Iterator
+import threading
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -42,6 +43,182 @@ if TYPE_CHECKING:
 
 
 log = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Token redaction (T-A.10 — three-layer discipline per plan §H.8)
+# ============================================================================
+#
+# Layer 0 — known-value exact-replace from runtime context (5 long-lived
+#   slots: client_id, client_secret, access_token, refresh_token, account_hash).
+#   `authorization_code` is OMITTED — paste-back-only inside schwabdev's
+#   manual_flow; never observable as a Python string in the wrapper (R4 M#1).
+# Layer 1 — heuristic regex (hex 32+, base64 24+); folded into Layer 0.
+# Layer 2 — `logging.setLogRecordFactory` at record-creation time. Earlier
+#   R5/R6 designs that attached a `logging.Filter` to the root logger are
+#   WRONG per Python's `Logger.callHandlers()` semantics (filters on ancestor
+#   loggers do NOT fire during propagation). R7 Critical #1 redesign moved
+#   to the factory approach which mutates the LogRecord before any handler
+#   reads it.
+#
+# Plan §H.8 binding contract; T-A.10 test file is the discriminating audit.
+
+# Logger-name prefix gating the factory's redaction pass. Plan §H.8 specifies
+# `'schwabdev'`, but live schwabdev 2.5.1 uses `logging.getLogger("Schwabdev")`
+# (capital S; single logger, no hierarchy). Using "Schwabdev" matches the
+# actual library; sub-loggers of the form `Schwabdev.<module>` also match via
+# `startswith`. Banked as plan-text deviation (mirrors the T-A.3 banked
+# `_TRANSPORT_DEBUG_LOGGERS` deviation).
+_SCHWABDEV_LOGGER_PREFIX = "Schwabdev"
+
+# Process-global registry: a single set of all sensitive values seen this
+# process. Lifecycle = process lifetime; never narrowed. Multiple SchwabClient
+# instances (sandbox + production, or sequential setup/refresh/status invocations)
+# all CONTRIBUTE secrets to this set; the LogRecord factory consults the full
+# set at record-creation time. Narrowing the registry per-client would erase
+# earlier clients' secrets — Codex R3 Major #2.
+_GLOBAL_KNOWN_SECRETS: set[str] = set()
+_GLOBAL_FILTER_LOCK = threading.Lock()
+
+# Layer 2 state — process-global factory install.
+_ORIGINAL_RECORD_FACTORY: Callable | None = None
+_FACTORY_INSTALLED = False
+_FACTORY_LOCK = threading.Lock()
+_FACTORY_DEPTH = threading.local()  # thread-local recursion guard (R9 M#1)
+
+
+def register_schwab_secrets(secrets: Iterable[str]) -> None:
+    """Add operator-supplied sensitive values to the global redaction set.
+
+    Called at SchwabClient construction, OAuth setup, refresh — anywhere a
+    new secret enters the runtime. Idempotent under repeat registration.
+    Never removes secrets.
+
+    Values shorter than 4 chars + empty/None values are skipped to avoid
+    polluting the registry with substrings that would over-redact noise.
+    """
+    with _GLOBAL_FILTER_LOCK:
+        for s in secrets:
+            if s and isinstance(s, str) and len(s) >= 4:
+                _GLOBAL_KNOWN_SECRETS.add(s)
+
+
+def _make_redactor_from_global() -> Callable[[str], str]:
+    """Build a redactor closure that reads `_GLOBAL_KNOWN_SECRETS` at each call.
+
+    Snapshots the set at message-redaction time so secrets registered AFTER
+    redactor construction are picked up on the next log record. Three-piece
+    redaction:
+      Layer 0 (in-set) — exact-replace every registered secret.
+      Layer 1a (heuristic) — 32+ contiguous hex characters.
+      Layer 1b (heuristic) — 24+ contiguous base64-shaped characters.
+    """
+    def redact(message: str) -> str:
+        if not message:
+            return message
+        excerpt = message[:500]
+        with _GLOBAL_FILTER_LOCK:
+            secrets = list(_GLOBAL_KNOWN_SECRETS)
+        # Sort longest-first so a longer secret that *contains* a shorter
+        # secret as substring is redacted before the shorter one consumes
+        # part of its bytes.
+        secrets.sort(key=len, reverse=True)
+        for s in secrets:
+            excerpt = excerpt.replace(s, "<REDACTED>")
+        excerpt = re.sub(r"[a-fA-F0-9]{32,}", "<REDACTED>", excerpt)
+        excerpt = re.sub(r"[A-Za-z0-9+/=]{24,}", "<REDACTED>", excerpt)
+        return excerpt
+    return redact
+
+
+def _redact_error_message_for_audit(message: str) -> str:
+    """Layer-1-only redactor for code paths without runtime-context registry.
+
+    Pass-through to the global-set redactor; included as a stable public name
+    so audit-row writers + future test fixtures can pin redaction to the same
+    discipline.
+    """
+    return _make_redactor_from_global()(message)
+
+
+def _schwab_record_factory(*args, **kwargs):
+    """LogRecord factory wrapping the original. Redacts msg+args at
+    creation time for any record whose name starts with the schwabdev
+    prefix. Non-schwabdev records pass through with a single startswith
+    check (microsecond cost).
+
+    R9 Major #1 recursion guard: if a third-party LogRecord factory
+    captures our factory as their `orig` and our `ensure_*` later wraps
+    them again, the chain `ours -> theirs -> ours -> theirs ...` would
+    infinite-recurse. Thread-local `_FACTORY_DEPTH.in_call` short-circuits
+    re-entry.
+
+    R10 Major #1: on re-entry detection, call `logging.LogRecord(*args,
+    **kwargs)` DIRECTLY (NOT `_ORIGINAL_RECORD_FACTORY`) — under the
+    adversarial third-party-wraps-our-factory scenario, `_ORIGINAL` is
+    the third party which would call back into us → loop.
+    """
+    if getattr(_FACTORY_DEPTH, "in_call", False):
+        # Re-entry detected (adversarial chain). Direct stdlib construct;
+        # outer redaction has already mutated the outermost record.
+        return logging.LogRecord(*args, **kwargs)
+    _FACTORY_DEPTH.in_call = True
+    try:
+        record = _ORIGINAL_RECORD_FACTORY(*args, **kwargs)
+        if not record.name.startswith(_SCHWABDEV_LOGGER_PREFIX):
+            return record
+        redactor = _make_redactor_from_global()
+        # Force message interpolation now (so record.msg substitution is final).
+        msg = record.getMessage()
+        record.msg = redactor(msg)
+        record.args = ()  # message already interpolated
+        return record
+    finally:
+        _FACTORY_DEPTH.in_call = False
+
+
+# Tag for chain detection (R9 Major #1 defense-in-depth).
+_schwab_record_factory._is_schwab_factory = True  # type: ignore[attr-defined]
+
+
+def _install_schwab_log_redaction_factory_once() -> None:
+    """Install the LogRecord factory wrapper EXACTLY ONCE per process.
+
+    Idempotent. Stores original factory in `_ORIGINAL_RECORD_FACTORY` for
+    pass-through. Replaces the prior root-logger-filter design (R5/R6) which
+    was incorrect per Python's `Logger.callHandlers()` semantics — filters on
+    ancestor loggers are NOT applied during propagation.
+    """
+    global _ORIGINAL_RECORD_FACTORY, _FACTORY_INSTALLED
+    with _FACTORY_LOCK:
+        if _FACTORY_INSTALLED:
+            return
+        _ORIGINAL_RECORD_FACTORY = logging.getLogRecordFactory()
+        logging.setLogRecordFactory(_schwab_record_factory)
+        _FACTORY_INSTALLED = True
+
+
+def ensure_schwab_log_redaction_factory_installed() -> None:
+    """Re-install Schwab's redaction factory if another library replaced it.
+
+    Codex R8 Major #2 fix: `logging.setLogRecordFactory()` is process-global;
+    any other library calling it AFTER our install silently disables our
+    redaction. SchwabClient should call this BEFORE every schwabdev API
+    invocation; it checks the current factory and re-wraps if needed.
+
+    Idempotent under repeat calls when factory IS already ours. When factory
+    has been replaced, captures the current factory as the new "original" +
+    reinstalls our wrapper around it so we redact + still pass through to
+    whatever the other library wanted.
+    """
+    global _ORIGINAL_RECORD_FACTORY, _FACTORY_INSTALLED
+    with _FACTORY_LOCK:
+        current = logging.getLogRecordFactory()
+        if current is _schwab_record_factory:
+            return  # ours; intact
+        _ORIGINAL_RECORD_FACTORY = current
+        logging.setLogRecordFactory(_schwab_record_factory)
+        _FACTORY_INSTALLED = True  # R11 Minor #2 invariant cleanup
 
 
 # Logger names that may emit URL / response-body content at DEBUG (or higher)
@@ -261,6 +438,20 @@ class SchwabClient:
         # Best-effort headroom telemetry (Bundle B+ populates from response
         # headers when Schwab emits any rate-limit metadata).
         self.last_rate_limit_remaining: int | None = None
+
+        # T-A.10 — contribute cfg-known sensitive bytes to the process-global
+        # redaction registry + install the LogRecord factory once. Tokens
+        # (access_token / refresh_token) are NOT yet known here (they land
+        # after schwabdev.Client construction via auth.py:setup_paste_flow /
+        # force_refresh, which calls `register_schwab_secrets(...)` again).
+        # The factory install is idempotent + process-singleton.
+        cfg_secrets: list[str] = []
+        for attr in ("client_id", "client_secret", "account_hash"):
+            val = getattr(self._cfg, attr, None)
+            if val:
+                cfg_secrets.append(str(val))
+        register_schwab_secrets(cfg_secrets)
+        _install_schwab_log_redaction_factory_once()
 
     def _ensure_schwabdev_client(
         self, app_key: str, app_secret: str,

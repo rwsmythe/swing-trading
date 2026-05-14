@@ -17,6 +17,8 @@ from swing.integrations.schwab.client import (
     SchwabRateLimitError,
     SchwabRefreshTokenExpiredError,
     SchwabSchemaParityError,
+    ensure_schwab_log_redaction_factory_installed,
+    register_schwab_secrets,
 )
 
 __all__ = (
@@ -29,4 +31,6 @@ __all__ = (
     "SchwabSchemaParityError",
     "SchwabConcurrentRefreshError",
     "SchwabPipelineActiveError",
+    "register_schwab_secrets",
+    "ensure_schwab_log_redaction_factory_installed",
 )

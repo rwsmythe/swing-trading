@@ -1,6 +1,7 @@
 """Shared pytest fixtures."""
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -8,6 +9,106 @@ import pandas as pd
 import pytest
 
 from swing.data.models import Fill, Trade
+
+# ============================================================================
+# Schwab API cassette filter (T-A.10 — plan §G.3)
+# ============================================================================
+#
+# pytest-recording / VCR.py configuration applied to any test marked with
+# `@pytest.mark.vcr`. Filters Schwab OAuth + Trader + Market Data sensitive
+# bytes from recorded request URLs / headers / form bodies / response bodies
+# BEFORE the cassette file is written to disk.
+#
+# Per CLAUDE.md gotcha "Finviz Elite API token storage", individual Finviz
+# tests pass `filter_query_parameters=["auth"]` directly to
+# `@pytest.mark.vcr` and override this fixture's broader filter list. The
+# Schwab-shaped filter list below is a SUPERSET of the Finviz `auth` filter
+# so it works for both surfaces.
+
+# 32+ hex-char run, or 24+ base64-shaped run, in any response body chunk.
+_TOKEN_HEX_PATTERN = re.compile(rb"[a-fA-F0-9]{32,}")
+_TOKEN_B64_PATTERN = re.compile(rb"[A-Za-z0-9+/=]{24,}")
+# Field-value scrubber for token-bearing JSON keys in response bodies.
+_RESPONSE_FIELD_SCRUBBERS: tuple[tuple[re.Pattern[bytes], bytes], ...] = (
+    # Quoted JSON field values for tokens / account identifiers. The pattern
+    # matches `"key"\s*:\s*"<value>"` and replaces the value slot.
+    (
+        re.compile(rb'("(?:access_token|refresh_token|client_secret)"\s*:\s*")[^"]*(")'),
+        rb'\1<REDACTED>\2',
+    ),
+    (
+        re.compile(rb'("(?:accountNumber|account_number)"\s*:\s*")[^"]*(")'),
+        rb'\1<REDACTED>\2',
+    ),
+    (
+        re.compile(rb'("(?:accountHash|account_hash|hashValue)"\s*:\s*")[^"]*(")'),
+        rb'\1<HASHED_REDACTED>\2',
+    ),
+)
+
+
+def _redact_schwab_response_body(response: dict) -> dict:
+    """`before_record_response` callback for pytest-recording / VCR.py.
+
+    Mutates the response in-place + returns it. Masks `access_token`,
+    `refresh_token`, `client_secret`, `accountNumber`, `accountHash` field
+    values in JSON bodies + scrubs token-shaped substrings (32+ hex, 24+
+    base64) defense-in-depth.
+
+    Per plan §G.3 lines 908-914.
+    """
+    body = response.get("body", {})
+    raw = body.get("string") if isinstance(body, dict) else None
+    if raw is None:
+        return response
+    if isinstance(raw, str):
+        raw_bytes = raw.encode("utf-8", errors="replace")
+        was_str = True
+    elif isinstance(raw, (bytes, bytearray)):
+        raw_bytes = bytes(raw)
+        was_str = False
+    else:
+        return response
+
+    # Field-value scrub (preserve JSON shape; mask the value slot).
+    for pattern, replacement in _RESPONSE_FIELD_SCRUBBERS:
+        raw_bytes = pattern.sub(replacement, raw_bytes)
+    # Heuristic substring scrub for token-shaped runs NOT already inside a
+    # <REDACTED> marker. Applied after field-value scrub so the masked
+    # placeholders are stable.
+    raw_bytes = _TOKEN_HEX_PATTERN.sub(b"<REDACTED>", raw_bytes)
+    raw_bytes = _TOKEN_B64_PATTERN.sub(b"<REDACTED>", raw_bytes)
+
+    body["string"] = raw_bytes.decode("utf-8", errors="replace") if was_str else raw_bytes
+    response["body"] = body
+    return response
+
+
+@pytest.fixture
+def vcr_config():
+    """pytest-recording / VCR.py configuration applied to any `@pytest.mark.vcr`
+    test that does NOT supply its own filter overrides.
+
+    Filters cover: Authorization / Cookie headers; OAuth query params
+    (`code`, `refresh_token`, `client_id`, `client_secret`, `redirect_uri`,
+    `access_token`, `auth`); OAuth form-body params; response-body token
+    + account-identifier substrings via `_redact_schwab_response_body`.
+
+    Per plan §G.3 lines 886-905 + CLAUDE.md gotcha "Finviz Elite API token
+    storage" precedent.
+    """
+    return {
+        "filter_headers": ["authorization", "cookie", "set-cookie"],
+        "filter_query_parameters": [
+            "code", "refresh_token", "client_id", "client_secret",
+            "redirect_uri", "access_token", "auth",
+        ],
+        "filter_post_data_parameters": [
+            "code", "refresh_token", "client_id", "client_secret",
+            "redirect_uri",
+        ],
+        "before_record_response": _redact_schwab_response_body,
+    }
 
 
 def insert_trade_with_entry_fill(

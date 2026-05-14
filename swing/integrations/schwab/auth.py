@@ -41,7 +41,9 @@ from swing.integrations.schwab.client import (
     SchwabConfigMissingError,
     SchwabPipelineActiveError,
     SchwabRefreshTokenExpiredError,
+    _install_schwab_log_redaction_factory_once,
     _suppress_transport_debug_logs,
+    register_schwab_secrets,
 )
 
 log = logging.getLogger(__name__)
@@ -204,6 +206,14 @@ def setup_paste_flow(
         environment=environment,
     )
 
+    # T-A.10 — register cfg-known sensitive bytes BEFORE constructing
+    # schwabdev.Client so any log records emitted during construction (incl.
+    # the auth-failure paths in schwabdev/tokens.py) flow through the Layer-2
+    # redactor with these secrets already in the registry. The factory
+    # install is idempotent + a true process-singleton.
+    register_schwab_secrets([client_id, client_secret])
+    _install_schwab_log_redaction_factory_once()
+
     # Step 6 — construct schwabdev.Client(...). Implementation deviation
     # from recon doc §2.1: live schwabdev 2.5.1 uses `tokens_file=`
     # (NOT `tokens_db=`) + has NO `open_browser_for_auth=` kwarg.
@@ -276,6 +286,15 @@ def setup_paste_flow(
             "<OAuth exchange failed: schwabdev returned Client without "
             "access_token>",
         )
+
+    # T-A.10 — register the live tokens that schwabdev's Client populated.
+    # Subsequent log records (in this CLI process AND any future schwabdev
+    # API call within the same process via SchwabClient) flow through the
+    # Layer-2 redactor with these tokens in the registry. Best-effort: the
+    # tokens may be empty in adversarial test stubs; `register_schwab_secrets`
+    # ignores empty/short values.
+    refresh_token = getattr(getattr(client, "tokens", None), "refresh_token", None)
+    register_schwab_secrets([access_token, refresh_token])
 
     # Step 7 — happy-path audit close for the setup call.
     audit_service.record_call_finish(
@@ -405,6 +424,12 @@ def setup_paste_flow(
             "<chosen account missing hashValue>",
         )
 
+    # T-A.10 — register the operator's chosen account_hash. Future log
+    # records that interpolate the hash (e.g., request URL contains the
+    # account-hash path segment per Schwab API V2 spec; schwabdev may log
+    # the URL on retry) flow through Layer-2 redaction with the hash known.
+    register_schwab_secrets([account_hash])
+
     # Step 10 — persist via cfg-cascade write. USERPROFILE+HOME monkeypatch
     # in tests; production reads operator's real ~/swing-data/user-config.toml.
     from swing.config_user import load_user_overrides, write_user_overrides
@@ -508,6 +533,11 @@ def force_refresh(
         environment=environment,
     )
 
+    # T-A.10 — register cfg-known sensitive bytes BEFORE constructing
+    # schwabdev.Client + invoking update_tokens. Idempotent.
+    register_schwab_secrets([client_id, client_secret])
+    _install_schwab_log_redaction_factory_once()
+
     # Step 5+6 — construct Client + invoke update_tokens.
     call_start = time.monotonic()
     try:
@@ -585,6 +615,14 @@ def force_refresh(
             500,
             f"<refresh failed: {type(exc).__name__}>",
         ) from exc
+
+    # T-A.10 — register the freshly-rotated tokens. The registry is
+    # additive: the old access_token already there stays registered (per
+    # Codex R3 Major #2 process-global UNION discipline), so any log
+    # record that interpolates either old OR new token gets redacted.
+    new_access = getattr(getattr(client, "tokens", None), "access_token", None)
+    new_refresh = getattr(getattr(client, "tokens", None), "refresh_token", None)
+    register_schwab_secrets([new_access, new_refresh])
 
     # Step 7 (success) — close audit row.
     audit_service.record_call_finish(

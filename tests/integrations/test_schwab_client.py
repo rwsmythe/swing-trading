@@ -250,8 +250,9 @@ def test_suppress_transport_debug_logs_mutes_all_configured_loggers() -> None:
 # ---------- (13) __init__.py re-exports + transport-logger count smoke ----------
 
 def test_subpackage_reexports_all_public_names() -> None:
-    """All 9 public names (SchwabClient + 8 exceptions) importable from the
-    package root via `from swing.integrations.schwab import X`."""
+    """All public names (SchwabClient + 8 exceptions + 2 T-A.10 redactor
+    helpers) importable from the package root via
+    `from swing.integrations.schwab import X`."""
     from swing.integrations import schwab as pkg
 
     expected_names = {
@@ -264,6 +265,9 @@ def test_subpackage_reexports_all_public_names() -> None:
         "SchwabSchemaParityError",
         "SchwabConcurrentRefreshError",
         "SchwabPipelineActiveError",
+        # T-A.10 — public redaction primitives.
+        "register_schwab_secrets",
+        "ensure_schwab_log_redaction_factory_installed",
     }
     for name in expected_names:
         assert hasattr(pkg, name), f"swing.integrations.schwab missing {name}"
