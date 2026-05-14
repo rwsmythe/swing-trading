@@ -52,6 +52,78 @@ Each scenario needs a deterministic mapping from `Fills` + `trades.planned_*` co
 
 ---
 
+## 2026-05-13 schwabdev library distillation SHIPPED — 7 tracked refs at `reference/schwabdev/` + 3 operator-flagged cross-bundle findings
+
+**Distillation SHIPPED 2026-05-13** at `62f5dde` (single commit on main; `docs(schwabdev): distill 7 schwabdev library docs pages into reference/schwabdev/`). Operator-driven via parallel instance, post-Sub-bundle-A-dispatch-brief (`bd166c5`). Sub-bundle A implementer is aware + has taken the findings into account; impacts will be noted in the A return report.
+
+### Tracked distillation files at `reference/schwabdev/`
+
+| File | Size | Coverage highlight |
+|---|---|---|
+| `setup-guide.md` | 6 KB | App registration on developer.schwab.com (callback URL, scopes, "Ready for use" gate); 3-positional `Client` init; first-run paste-back-URL flow |
+| `examples.md` | 35 KB | 8 example files verbatim incl. `capture_callback.py` (custom OAuth flow) + `encrypted_db_setup.py` (Fernet token store) + async variant |
+| `client.md` | 14 KB | Full `Client`/`ClientAsync` constructors (all 8 params); access-token 30-min + refresh-token 7-day lifecycle; auto-refresh scheduling; **rate limits 120/min + 4000 orders/day** |
+| `api-calls.md` | 25 KB | **23 wrapper methods → 23 Schwab REST endpoints with verbatim mapping** (3 accounts + 7 orders + 2 transactions + 1 prefs + 2 quotes + 2 chains + 1 history + 1 movers + 2 markets + 2 instruments) |
+| `streaming.md` | 32 KB | 22 Stream methods incl. 13 subscription helpers; LOGIN handshake captured verbatim; **field-ID translation gap flagged** (no helper in schwabdev; defers to our `reference/schwab-api/market-data-documentation.md`) |
+| `orders.md` | 15 KB | 5 order helpers + 10 payload recipes (schwabdev adds 3 beyond Schwab's 7: Limit Buy stock, Sell Options open-short, Iron Condor 4-leg) — **NOT V1 SCOPE** (order placement is explicit OUT-OF-SCOPE per spec §1.2 + §3.3.3) |
+| `troubleshooting.md` | 8 KB | `unsupported_token_type` → `update_tokens(force_refresh_token=True)`; trailing-slash callback fix; macOS SSL cert; permessage-deflate DNS/proxy fix |
+
+### 3 operator-flagged findings (BINDING for cross-bundle dispatch brief drafting)
+
+**Finding 1: `tokens_file` vs `tokens_db` kwarg name discrepancy.** Setup Guide narrative uses `tokens_file=` parameter name; examples in `examples.md` use `tokens_db=`. **Sub-bundle A T-A.4 + T-A.5 implementer must verify the FINAL kwarg name against schwabdev source before integration** (likely `tokens_db` per examples; setup-guide may be stale doc). Implementer is aware per operator's note; Sub-bundle A return report will record the verified name.
+
+**Cross-bundle impact:** none for B/C/D (they consume the `Client` instance constructed in A; no direct kwarg usage).
+
+**Finding 2: Multi-Client-instance file-locking semantics not documented.** schwabdev's only guidance is "share the same `tokens_db`." Concurrent Client instances with the same `tokens_db` rely on schwabdev's `RLock` + SQLite `BEGIN EXCLUSIVE` per the writing-plans research, but the multi-instance behavior is integration-layer concern.
+
+**Cross-bundle impact:** Sub-bundles B + C + D MUST consume the SAME `Client` instance constructed in Sub-bundle A's wrapper (`swing/integrations/schwab/client.py:SchwabClient`); MUST NOT create additional `schwabdev.Client(...)` instances elsewhere. This is a binding constraint for B/C/D dispatch brief drafting — orchestrator threads it explicitly into each brief.
+
+**Finding 3: 7-day refresh-token expiry forces full re-auth; no programmatic workaround.** schwabdev's auto-refresh covers the 30-min access_token; refresh_token's 7-day TTL means operator must re-run `swing schwab setup` paste-back at minimum every 7 days. No way to extend programmatically.
+
+**Cross-bundle impact across entire arc:**
+- **Sub-bundle A:** T-A.6 `swing schwab status` skeleton SHOULD surface refresh_token validity time-remaining (Sub-bundle A scope per plan §Tasks-A T-A.6 already includes "refresh_token validity displayed").
+- **Sub-bundle D:** `swing schwab status` full surface MUST clearly alert operator when refresh_token expiry is approaching (e.g., ≤24 hr remaining = WARN; ≤2 hr = ERROR + bold red). Bundle D dispatch brief explicitly calls this out.
+- **Sub-bundle D briefing banner:** the `briefing.md` "Schwab integration: degraded" banner per plan §0.1 SHOULD include refresh_token expiry warning when applicable.
+- **Cycle-checklist update:** plan §I.X cycle-checklist additions in Bundle D MUST include "weekly: re-run `swing schwab setup` paste-back if refresh_token approaching 7-day expiry."
+- **CLAUDE.md gotcha promotion in Bundle D T-D.4:** add a Schwab-specific gotcha about the 7-day refresh ceiling.
+
+### Cross-bundle orchestrator-action items (BINDING for Sub-bundle B/C/D dispatch brief drafting)
+
+When orchestrator drafts each subsequent dispatch brief, BIND these:
+
+1. **Include `reference/schwabdev/` in §0 reads** (mirroring the existing `reference/schwab-api/` orchestrator-action item from `abb6177`). Both reference dirs are now binding §0 reads for ALL Sub-bundle B/C/D briefs. `reference/schwabdev/` is the SECOND-tier source-of-truth (library wrapping behavior); `reference/schwab-api/` is the FIRST-tier source-of-truth (Schwab Developer Portal canonical docs).
+
+2. **Pre-check `reference/schwabdev/api-calls.md` for Bundle B + C method-name + signature pre-answers.** 23 wrapper methods documented with verbatim Schwab REST endpoint mappings. Many Bundle B + C `[VERIFY]` tags from plan §E (Trader API + Market Data API) may already be answered there — implementer skips the operator-paired live verification for items already in api-calls.md.
+
+3. **Pre-check `reference/schwabdev/client.md` for Bundle A + B + C rate-limit assumptions.** Documented 120/min + 4000 orders/day. Reduces or pre-answers Q17 (Market Data API rate limits independent of Trader API).
+
+4. **Pre-check `reference/schwabdev/troubleshooting.md` for Bundle D status-surface alert design.** `unsupported_token_type` → `update_tokens(force_refresh_token=True)` is operationally critical for the status surface — should surface as actionable alert with the exact remediation command.
+
+5. **Single-Client-instance discipline (Finding 2):** B/C/D dispatch briefs explicitly enumerate that the SchwabClient instance is constructed in A + consumed (NOT re-constructed) by B/C/D. Discriminating test pattern: search `swing/integrations/schwab/` + assert `schwabdev.Client(...)` is invoked ZERO times outside `client.py:SchwabClient.__init__`.
+
+6. **7-day refresh expiry (Finding 3):** Bundle D dispatch brief MUST include the status-surface alert design + cycle-checklist weekly re-auth reminder + CLAUDE.md gotcha promotion. Operator-attention item across entire arc — surface in operator-witnessed gate criteria for each subsequent bundle ("verify status surface refresh_token validity displayed correctly").
+
+### `streaming.md` content disposition (V2 candidate)
+
+Streaming WebSocket support is **NOT V1 SCOPE** per Q4 disposition (V1 batch-poll). However, the field-ID translation gap flagged in `streaming.md` (no helper in schwabdev; would need `reference/schwab-api/market-data-documentation.md` as a manual translation source) is a **V2 design constraint** — when streaming is added in V2, the field-ID translation layer is a NEW design surface NOT covered by schwabdev's API. Bank for V2 streaming dispatch.
+
+### `orders.md` content disposition (OUT-OF-SCOPE)
+
+Order placement (5 helpers + 10 payload recipes) is **explicit OUT-OF-SCOPE** per spec §1.2 + §3.3.3 (project is operator-discretion-trade-execution; automated order placement out of scope). The orders.md distillation is informational only; NOT consumed by any V1 dispatch.
+
+### Cross-references
+
+- Distillation: `reference/schwabdev/` (7 files; commit `62f5dde`).
+- Sub-bundle A dispatch brief: `docs/schwab-bundle-A-executing-plans-dispatch-brief.md` (`bd166c5`; Sub-bundle A implementer aware of these findings per operator's note).
+- Companion distilled refs: `reference/schwab-api/` (4 files; commit `829dffd`).
+- Plan: `docs/superpowers/plans/2026-05-13-schwab-api-integration-plan.md` (`7faab72`).
+
+### Next dispatch
+
+**Sub-bundle A executing-plans dispatch UNCHANGED** (already commissioned per operator; brief at `bd166c5`; implementer aware of findings per operator's note). Sub-bundle B/C/D dispatch briefs (drafted post-A-ship) will consume these findings as binding §0 reads + cross-bundle constraints.
+
+---
+
 ## 2026-05-13 Schwab API integration writing-plans SHIPPED — 2447-line plan + ZERO open orchestrator-triage questions + 11 Codex rounds (most in project history)
 
 **Plan SHIPPED 2026-05-13** at `7faab72` (single commit on main; `docs(schwab-api): integration writing-plans implementation plan`). Operator-dispatched implementer per orchestrator-drafted brief at `5bf425d` + COA B amendment at `9fd50e6`. Plan at `docs/superpowers/plans/2026-05-13-schwab-api-integration-plan.md` (2447 lines; above 1500-2500 brief budget upper-bound by 0%; acceptable due to 11-round adversarial chain producing additional plan content).
