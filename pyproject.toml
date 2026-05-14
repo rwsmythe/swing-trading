@@ -24,6 +24,7 @@ dev = [
     "pytest>=8",
     "pytest-cov>=5",
     "pytest-recording>=0.13",
+    "pytest-xdist>=3.5.0",
     "ruff>=0.5",
 ]
 charts = ["mplfinance>=0.12"]
@@ -43,7 +44,12 @@ exclude = ["tests*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "-ra --strict-markers -m 'not slow'"
+# pytest-xdist `-n auto` parallelizes the fast suite across logical CPUs.
+# Post-phase10-infra-bundle T-3 (2026-05-13): empirically 415s → ~63s
+# (6.6x speedup) at 3276 fast tests on Windows. Override per-invocation
+# with `-n 0` for debugger workflows (`--pdb`, `-k` with verbose output)
+# or with `-n logical`/`-n N` if `auto` causes contention.
+addopts = "-ra --strict-markers -m 'not slow' -n auto"
 markers = [
     "slow: tests that fetch prices or run the full pipeline (skip by default)",
 ]
