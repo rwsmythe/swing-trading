@@ -60,6 +60,24 @@
   included). Set $true to scan only top-level scratch dirs (legacy behavior
   pre-2026-05-05).
 
+.PARAMETER DeregisterFirst
+  Before running the orphaned-worktree discovery pass, scan `git worktree
+  list` and deregister any STILL-REGISTERED worktree under `.worktrees/` or
+  `.claude/worktrees/` whose name matches the `phase\d+-*` pattern (project
+  phase/sub-bundle dispatches). `git worktree remove --force` deregisters
+  even when the on-disk delete fails due to ACL-lock; the resulting orphan
+  is then picked up by the existing discovery pass and cleaned by the same
+  takeown/icacls/Remove-Item treatment.
+
+  Default $false (preserves shipped behavior — still-registered worktrees
+  are NOT touched). Set $true to clear still-registered husks under the
+  safety filter.
+
+  SAFETY: only paths matching `^.+\.worktrees[\\/]+phase\d+.*` OR
+  `^.+\.claude[\\/]+worktrees[\\/]+phase\d+.*` deregister. Any other
+  worktree (in-flight branches, polish bundles, operator-curated branches)
+  is left alone.
+
 .EXAMPLE
   PS C:\> .\cleanup-locked-scratch-dirs.ps1 -DryRun
   # Discover and report; no destructive actions.
@@ -67,6 +85,16 @@
 .EXAMPLE
   PS C:\> .\cleanup-locked-scratch-dirs.ps1
   # Interactive: discover, report, confirm, then clean.
+
+.EXAMPLE
+  PS C:\> .\cleanup-locked-scratch-dirs.ps1 -DeregisterFirst -DryRun
+  # Report what WOULD be deregistered + what WOULD then be cleaned.
+  # No destructive actions taken.
+
+.EXAMPLE
+  PS C:\> .\cleanup-locked-scratch-dirs.ps1 -DeregisterFirst
+  # Deregister still-registered phase\d+-* worktrees first, then clean all
+  # resulting orphans + any pre-existing locked scratch dirs.
 
 .NOTES
   Background: Two distinct lock-mechanisms produce on-disk dirs that the
@@ -94,8 +122,17 @@ param(
   [switch]$DryRun,
   [string]$GrantUser = "$env:USERDOMAIN\$env:USERNAME",
   [switch]$NoConfirm,
-  [switch]$SkipWorktrees
+  [switch]$SkipWorktrees,
+  [switch]$DeregisterFirst
 )
+
+# Safety filter for -DeregisterFirst (BINDING per post-phase10-infra-bundle
+# dispatch brief §0.6): only branch directories named `phase\d+-*` under
+# `.worktrees/` or `.claude/worktrees/` may be deregistered. Any other path
+# (in-flight branch, operator-curated branch, polish bundle, this bundle's
+# own worktree) is left alone. The pattern is intentionally narrow — defense
+# against accidental deregister of operator work in progress.
+$script:DeregisterPathPattern = '^.+[\\/]+(\.worktrees|\.claude[\\/]+worktrees)[\\/]+phase\d+[-_]'
 
 $ErrorActionPreference = 'Stop'
 
@@ -158,6 +195,98 @@ foreach ($dir in $topLevelDirs) {
       Reason = $reason
     })
   }
+}
+
+# --- Optional pre-pass: deregister still-registered phase\d+-* worktrees ---
+# Added 2026-05-13 per post-phase10-infra-bundle dispatch brief §0.6.
+# When -DeregisterFirst is set, scan `git worktree list` and run
+# `git worktree remove --force <path>` for any registered worktree whose
+# path matches the narrow `phase\d+-*` safety filter. `git worktree remove
+# --force` succeeds at DEREGISTERING even when the on-disk delete fails
+# due to `.tmp/pytest-of-rwsmy/` ACL-lock (that's the expected pattern that
+# leaves the orphan for the subsequent discovery pass to clean). Any
+# deregister error is logged but does NOT abort the loop (the on-disk
+# orphan still ends up in the candidates set).
+if ($DeregisterFirst) {
+  Write-Output "DeregisterFirst: scanning git worktree list for phase\d+-* still-registered worktrees..."
+  try {
+    $worktreeListOutput = & git -C $ProjectRoot worktree list 2>&1
+  } catch {
+    Write-Warning "git worktree list failed: $($_.Exception.Message). Skipping -DeregisterFirst pre-pass."
+    $worktreeListOutput = @()
+  }
+
+  $registeredPathsForDeregister = @()
+  foreach ($line in $worktreeListOutput) {
+    # Format: "<path>  <sha> [<branch>]" — first whitespace-delimited token is path
+    if ($line -match '^(\S+)\s+[a-f0-9]+\s+\[') {
+      $regPath = $matches[1].Trim()
+      try {
+        $resolved = (Resolve-Path -LiteralPath $regPath -ErrorAction Stop).Path
+      } catch {
+        $resolved = $regPath
+      }
+      $registeredPathsForDeregister += $resolved
+    }
+  }
+
+  $deregisterCandidates = @($registeredPathsForDeregister | Where-Object { $_ -match $script:DeregisterPathPattern })
+  $deregisterRejected   = @($registeredPathsForDeregister | Where-Object { $_ -notmatch $script:DeregisterPathPattern })
+
+  if ($deregisterRejected.Count -gt 0) {
+    Write-Output "  Skipping $($deregisterRejected.Count) registered worktree$(if ($deregisterRejected.Count -eq 1) {''} else {'s'}) (does NOT match phase\d+-* safety filter):"
+    foreach ($p in $deregisterRejected) { Write-Output "    [skip] $p" }
+  }
+
+  if ($deregisterCandidates.Count -eq 0) {
+    Write-Output "  No matching phase\d+-* worktrees registered. Nothing to deregister."
+  } else {
+    Write-Output "  Found $($deregisterCandidates.Count) matching phase\d+-* worktree$(if ($deregisterCandidates.Count -eq 1) {''} else {'s'}):"
+    foreach ($p in $deregisterCandidates) { Write-Output "    [match] $p" }
+
+    # Per Codex R1 Critical #1 (post-phase10-infra-bundle 2026-05-13):
+    # `git worktree remove --force` is destructive (it deregisters the
+    # branch from git's index even when the on-disk delete fails). The
+    # existing Read-Host confirmation below gates the takeown/icacls/
+    # Remove-Item phase; the deregister pre-pass needs its OWN confirmation
+    # so an operator who sees an unexpected `phase11-something` worktree
+    # in the candidate list can abort BEFORE git acts on it. Skip the
+    # prompt when -DryRun (already non-destructive) OR -NoConfirm
+    # (operator opted into the scripted re-run path).
+    if (-not $DryRun -and -not $NoConfirm) {
+      $confirm = Read-Host "Proceed with `git worktree remove --force` on the $($deregisterCandidates.Count) candidate$(if ($deregisterCandidates.Count -eq 1) {''} else {'s'}) above? (y/N)"
+      if ($confirm -ne 'y') {
+        Write-Output "  Aborted by user. No worktree was deregistered."
+        Write-Output ""
+        # Skip the loop; orphan-discovery pass below still runs for any
+        # pre-existing orphan dirs even when the operator declines the
+        # deregister batch.
+        $deregisterCandidates = @()
+      }
+    }
+
+    foreach ($p in $deregisterCandidates) {
+      if ($DryRun) {
+        Write-Output "  [DRY-RUN] Would run: git -C `"$ProjectRoot`" worktree remove --force `"$p`""
+        continue
+      }
+      Write-Output "  Deregister: $p"
+      # `git worktree remove --force` returns non-zero when on-disk delete
+      # fails (the .tmp/pytest-of-rwsmy/ ACL-lock pattern). That's
+      # informational — registration is still removed; the orphan path
+      # is then handled by the takeown/icacls treatment below. We do NOT
+      # abort the loop on non-zero exit. Stderr is captured for trace.
+      $deregisterOutput = & git -C $ProjectRoot worktree remove --force $p 2>&1
+      $deregisterExit = $LASTEXITCODE
+      if ($deregisterExit -ne 0) {
+        Write-Output "    git worktree remove exited $deregisterExit (likely ACL-lock on .tmp/pytest-of-rwsmy/; orphan will be picked up by discovery pass):"
+        foreach ($entry in $deregisterOutput) { Write-Output "      $entry" }
+      } else {
+        Write-Output "    deregistered cleanly."
+      }
+    }
+  }
+  Write-Output ""
 }
 
 # --- Discovery: orphaned worktree subdirs (added 2026-05-05) ---
