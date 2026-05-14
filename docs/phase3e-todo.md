@@ -6,6 +6,76 @@
 
 ---
 
+## 2026-05-13 Post-Phase-10 infrastructure bundle SHIPPED — cleanup-script `-DeregisterFirst` + pytest-xdist baseline (6.56× speedup)
+
+**Bundle SHIPPED 2026-05-13** at `27ce96f` (integration merge of `post-phase10-infra-bundle`). 5 commits = 3 task-impl (T-2 + T-3 + T-6) + 1 Codex-fix (R1 Critical #1 confirm-before-deregister) + 1 return-report; **2 Codex rounds → NO_NEW_CRITICAL_MAJOR**. ZERO ACCEPT-WITH-RATIONALE. **ZERO production code touched** (binding lock from dispatch brief §0; read-side / infrastructure-only).
+
+Tests: 3255 → 3283 worktree-side (+28 net). Ruff 18 unchanged. Schema v17 unchanged.
+
+### Key deliverables
+
+**1. `cleanup-locked-scratch-dirs.ps1` `-DeregisterFirst` switch** (default OFF; opt-in):
+- Pre-pass scans `git worktree list` for paths matching `^.+\.worktrees[\\/]+phase\d+.*` OR `^.+\.claude[\\/]+worktrees[\\/]+phase\d+.*`.
+- Presents candidate list to operator + prompts for confirmation BEFORE invoking `git worktree remove --force` (R1 Critical #1 defense-in-depth gate).
+- After deregister loop, existing orphan-discovery pass picks up resulting orphans.
+- Safety filter: BINDING regex strict `phase\d+-*` prefix; rejects non-matching branches.
+- `test_safety_filter_rejects_own_worktree_explicitly` pins that `post-phase10-infra-bundle` itself is REJECTED.
+- DryRun compatibility preserved.
+
+**2. pytest-xdist baseline integration:**
+- Added `pytest-xdist>=3.5.0` to `[project.optional-dependencies].dev`.
+- Configured `[tool.pytest.ini_options].addopts = "-n auto"` (operator override via `-n 0` / `-n logical` / `-n N`).
+- All 3283 tests pass under `-n auto` across 3 independent runs (zero xdist-unsafe state-leak failures).
+
+### Measurement (BINDING per dispatch brief §0.7)
+
+- Serial baseline: **415.17s** (3255 tests).
+- Parallel median (`-n auto`; 3 runs): **63.24s** (3276 tests; #1 60.82s, #2 76.07s, #3 63.24s).
+- **Speedup ratio: 6.56×** (well above 2× minimum + 3-5× projection).
+- Post-R1-fix final sweep: 60.96s at 3283 tests + 5 skipped + 3 pre-existing fails.
+
+### T-1 recon findings + conditional-task disposition
+
+**T-4 (session-scoped schema fixtures) SKIPPED:**
+- `ensure_schema` NOT in `--durations` top-30 (called 254 times but aggregate <0.3% of serial baseline).
+- Risk asymmetry: migration tests + rollback-semantics tests + pre/post-v17 ratify tests would silently break if schema state shared across tests.
+
+**T-5 (TestClient lifespan audit) SKIPPED:**
+- Lifespan footprint is microsecond-level (`ThreadPoolExecutor` constructor + `shutdown(wait=False)`).
+- Top-30 cost is route-execution time, NOT lifespan startup.
+- Audit cost (per-test app.state reachability analysis) exceeds savings.
+
+Both remain backlog-eligible if operator surfaces a specific hotspot later.
+
+### 5 deviations from brief (none require V2.1 §VII.F)
+
+1. §6.1 — 1+3 serial+parallel readings instead of 3+3 (6.56× speedup unambiguous from one baseline + three readings).
+2. §6.2 — Python-side tests reading `.ps1` source (NOT PowerShell Pester); 26 admit/reject corpus tests + 5 source-invariants at zero PowerShell infrastructure cost.
+3. §6.3 — `-n auto` in addopts default (NOT opt-in via CLI); matches operator's stated goal.
+4. §6.4 — integration test file created (was optional per brief).
+5. R1 Critical #1 — confirm-before-deregister gate added in `cdea854` (not in brief; surfaced by Codex as defense-in-depth for the new destructive surface).
+
+### Operator-witnessed gate S2 PENDING
+
+Elevated PowerShell run of `-DeregisterFirst` against the 7 pre-merge husks + 1 new infra-bundle orphan = **8 husks to clear**. Operator-driven — orchestrator surfaces to operator post-merge for plain-chat authorization. Run:
+
+```powershell
+cd c:\Users\rwsmy\swing-trading
+.\cleanup-locked-scratch-dirs.ps1 -DeregisterFirst
+```
+
+### Cross-references
+
+- Return report: `docs/post-phase10-infra-bundle-return-report.md`.
+- Dispatch brief: `docs/post-phase10-infra-bundle-executing-plans-dispatch-brief.md`.
+- Cleanup script: `cleanup-locked-scratch-dirs.ps1` (extended with `-DeregisterFirst` switch).
+
+### Next dispatch
+
+Post-bundle handoff to NEW ORCHESTRATOR INSTANCE for Schwab API integration (multi-day brainstorm + writing-plans + executing-plans cycle). Operator-decided sequencing.
+
+---
+
 ## 2026-05-13 Phase 10 Sub-bundle E ship: CLOSES Phase 10 — arc closer aggregate
 
 **Sub-bundle E SHIPPED 2026-05-13** at `38dbac3` (integration merge of `phase10-bundle-E-process-grade-trend-and-polish`). 8 commits = 6 task-impl (T-E.1..T-E.6 + T-E.4 closer) + 1 Codex-fix + 1 return-report; **2 Codex rounds → NO_NEW_CRITICAL_MAJOR** — ties FASTEST Phase 10 chain (matches Sub-bundle B + C + Phase 9 Sub-bundle E precedent). ZERO Critical + ZERO ACCEPT-WITH-RATIONALE.
