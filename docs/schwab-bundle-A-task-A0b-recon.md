@@ -211,6 +211,73 @@ Per project methodology-correction protocol (V2.1 §VII.F) — orchestrator tria
 
 ---
 
+## §6.bis Phase-2 live verification observations (2026-05-14)
+
+Operator-paired live OAuth paste-back flow executed against operator's actual Schwab production-tier app. Two attempts:
+
+**Attempt 1** (audit `call_id=1` + `2`, manually corrected to `auth_failed` post-hoc) — operator pasted the redirected URL outside Schwab's ~30-second `code` validity window. schwabdev returned `unsupported_token_type / AuthorizationCode has expired`, printed a 2nd consent URL, and the operator's 2nd paste also failed. schwabdev's `Client.__init__` returned WITHOUT raising despite both failures. Our wrapper's success-path audit fire (no token validation) marked both rows `status='success'`. Then `client.account_linked()` returned a dict error envelope; `accounts[0]` blew up with `KeyError: 0`. Hotfix `bdf82da` (D1+D2+D3) addressed:
+
+- **D1:** verify `client.tokens.access_token` is populated post-Client construction; treat empty as `auth_failed`.
+- **D2:** validate `client.account_linked()` returns a list of dicts with `hashValue`; reject error envelopes.
+- **D3:** move `connect()` (schema-version check) BEFORE the credential prompts (UX — fail fast on v17 mismatch before wasting operator typing).
+
+Cleanup script at `scripts/fix_phase2_misleading_audit_rows.py` corrected `call_id=1` + `2` to `status='auth_failed'`.
+
+**Attempt 2** (audit `call_id=3` + `4`) — operator pasted within window, full flow succeeded.
+
+### §6.bis.1 Live observations confirmed
+
+| Item | Live observed value | Resolves recon doc item |
+|---|---|---|
+| Tokens DB on-disk format | **JSON** (NOT SQLite); file starts `{"access_token_issued": "<ISO>", "refresh_token_issued": "<ISO>", "token_dictionary": {"expires_in": 1800, ...}}` | §2.6 inconsistency RESOLVED |
+| File size at first-success | 957 bytes | — |
+| schwabdev kwarg | `tokens_file=` (NOT `tokens_db=`) | §6 §B amendment CONFIRMED via live schwabdev 2.5.1 inspection |
+| schwabdev 2.5.1 signature | `(app_key, app_secret, callback_url='https://127.0.0.1', tokens_file='tokens.json', timeout=10, capture_callback=False, use_session=True, call_on_notify=None)` | DEVIATES from distilled `client.md` (which is STALE relative to installed lib) |
+| `access_token` TTL | `expires_in=1800` (30 minutes) | §2.3 CONFIRMED |
+| Schwab `code` expiry window | ~30 seconds from redirect (Attempt 1 failure confirms) | New live observation |
+| Auto-launch browser | Worked (despite `open_browser_for_auth=` no longer being a kwarg in 2.5.1 — must be default-on internally) | — |
+| Callback Schwab picked | `https://127.0.0.1` root (NOT `:8182` port-bound) | V1 paste-only flow validated |
+| Redirected URL shape | `https://127.0.0.1/?code=<URL-encoded>&session=<UUID>` | `session` UUID query param NOT documented in distilled refs |
+| `client.account_linked()` success shape | List of dicts with `accountNumber` + `hashValue` (matches Schwab REST §1) | schwabdev passes through unchanged |
+| Operator's linked accounts | Single (auto-pick fired; multi-account prompt untested live) | Q3 RESOLVED for operator |
+| `account_hash` length | 64 chars | New live observation |
+| CLI auto-pick echo masking | `E8F...0676` (first-3 + `...` + last-4) | DIVERGES from FIELD_REGISTRY masking |
+| FIELD_REGISTRY masked render | `E8F***76` (first-3 + `***` + last-2) | MATCHES plan §A.6 mock `1A2***9F` exactly |
+| Audit row count after success | 4 rows in `schwab_api_calls`: 2 corrected-to-`auth_failed` + 2 `success` | T-A.8 + T-A.9 lifecycle working end-to-end |
+| `~/swing-data/user-config.toml` | `[integrations.schwab].account_hash` set to 64-char hashValue | T-A.2 + T-A.4 cfg-cascade write working |
+
+### §6.bis.2 Browser-only failure modes observed
+
+- **schwabdev's `Client.__init__` blocks on stdin** — `CliRunner.invoke(input=...)` covers in tests; live operator-paired flow blocks on `input()` inside schwabdev.
+- **`schwabdev.Client(...)` does NOT raise on auth failure** — prints + retries + returns silently. Caller MUST verify post-construction state (`client.tokens.access_token` populated). Hotfix D1 codifies.
+- **schwabdev passes through Schwab's error JSON unchanged** — `account_linked()` returns dict envelope rather than raising. Caller MUST validate shape. Hotfix D2 codifies.
+
+### §6.bis.3 NEW deviations banked beyond §6 §A-§D (post-phase-2)
+
+**§E (new, phase-2):** `schwabdev.Client(...)` 2.5.1 signature does NOT match `reference/schwabdev/client.md`. Distilled doc is STALE relative to installed library. **Implication:** `reference/schwabdev/` should carry a version-pinned header; future re-distill on each pin bump.
+
+**§F (new, phase-2):** Tokens DB content is JSON despite our `.db` file-extension naming. Cosmetic mismatch. V2 candidate: rename to `schwab-tokens.{env}.json` for honesty, OR document the dissonance. V1 accepts.
+
+**§G (new, phase-2):** Two masking surfaces with different rules:
+- CLI auto-pick echo: `first-3 + ... + last-4` (renders `E8F...0676`).
+- FIELD_REGISTRY render: `first-3 + *** + last-2` (renders `E8F***76`).
+V2 cleanup: unify via shared helper.
+
+**§H (new, phase-2):** schwabdev's stdin retry behavior on first paste-back failure prints "refresh token has expired!" + a 2nd consent URL + re-prompts. Operator's empty 2nd input → schwabdev silently returns without raising. Hotfix D1 covers; no further V1 action needed.
+
+### §6.bis.4 Phase-2 audit-row evidence (post-hotfix)
+
+```
+(4, '2026-05-14T01:28:15', 'accounts.linked',     status='success',     http=200, error_message=None)
+(3, '2026-05-14T01:27:39', 'oauth.code_exchange', status='success',     http=200, error_message=None)
+(2, '2026-05-14T01:14:19', 'accounts.linked',     status='auth_failed', http=200, error_message=<corrected via cleanup script>)
+(1, '2026-05-14T01:10:13', 'oauth.code_exchange', status='auth_failed', http=200, error_message=<corrected via cleanup script>)
+```
+
+All `error_message` values are short explanatory strings with NO token bytes — discriminating per T-A.10 sentinel-leak audit binding contract.
+
+---
+
 ## §7 Implementation deviations binding for Sub-bundle A (LOCKED at this dispatch)
 
 This recon doc supersedes the affected plan sections for the duration of Sub-bundle A execution. Per the project's recon-doc-supersession pattern (Phase 9 Sub-bundle D recon doc precedent at `docs/phase9-bundle-D-task-D0-recon.md` §3 note + Phase 9 Sub-bundle E parser recon at `docs/phase9-bundle-E-task-E3-parser-recon.md`).
