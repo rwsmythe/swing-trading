@@ -354,18 +354,22 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 log.warning("recommendations failed: %s", exc)
                 lease.status(recommendations_status="failed")
 
-            # Phase 11 Sub-bundle B (T-B.3 + T-B.4 + Codex R1 M#1 fix) —
-            # Schwab snapshot + orders pipeline steps per plan §H.4.3 ordering:
-            # AFTER _step_recommendations, BEFORE _step_charts. Both are
-            # failure-tolerant per plan §3.4.4: schwabdev exceptions are caught
-            # at the step layer; this `except Exception` wrapper catches
-            # programming errors only. Pipeline-internal use requires the
-            # operator to have run `swing schwab setup` previously (tokens DB
-            # persisted); without an operator-paired schwabdev.Client, the
-            # step falls through gracefully via the account_hash=None advisory
-            # path. V1 design point: pipeline-internal Schwab fetching is
-            # best-effort + opt-in via the `swing schwab fetch` CLI surface
-            # as the primary operator entry point.
+            # Phase 11 Sub-bundle B (T-B.3 + T-B.4 + Codex R1 M#1 + R2 M#1 +
+            # R3 M#1 + M#2 fix) — Schwab snapshot + orders pipeline steps
+            # per plan §H.4.3 ordering: AFTER _step_recommendations, BEFORE
+            # _step_charts. Both are failure-tolerant per plan §3.4.4.
+            #
+            # Pipeline-internal use passes client=None — the step path
+            # falls through to a silent-skip (log only, NO audit row) per
+            # the R2 M#1 + R3 M#1 + M#2 disposition to avoid polluting
+            # degraded-health surfaces with persistent 'error' rows on
+            # every nightly run. V1 design point: pipeline-internal
+            # Schwab fetching is best-effort + opt-in via the `swing
+            # schwab fetch` CLI surface as the primary operator entry
+            # point. Bundle D's status surface uses the lease.step()
+            # breadcrumb name `schwab_snapshot` / `schwab_orders` to
+            # surface "step executed but silent-skipped". V2 adds a
+            # dedicated lease status column.
             lease.step("schwab_snapshot")
             try:
                 from swing.integrations.schwab.pipeline_steps import (

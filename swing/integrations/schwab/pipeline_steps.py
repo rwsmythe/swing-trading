@@ -13,26 +13,41 @@ and `_step_charts` per plan §H.4.3:
     reconciliation_run_id.
 
 Sandbox short-circuit per plan §A.3:
-  - Both steps CALL Schwab + WRITE audit rows under either env.
+  - Both steps CALL Schwab + WRITE audit rows under either env (production
+    or sandbox), when a `client` IS supplied.
   - Domain writes (snapshot, reconciliation_run, discrepancies) are SKIPPED
     when `cfg.integrations.schwab.environment != 'production'`.
 
-The `client` parameter is optional for test injection. In production,
-callers (pipeline runner; CLI `swing schwab fetch` subcommands) construct
-`schwabdev.Client(...)` directly and pass in. The schwabdev Client
-construction is NOT performed inside this module (single-Client-instance
-discipline per plan §A.2).
+The `client` parameter is optional for test injection + CLI use. The
+schwabdev `Client` instance is constructed by:
+  - `swing/integrations/schwab/auth.py:construct_authenticated_client` for
+    the CLI `swing schwab fetch` surface (Bundle B T-B.5).
+  - `auth.py:setup_paste_flow` / `force_refresh` for setup/refresh CLI.
+The pipeline runner currently passes `client=None`; per Codex R2 M#1 +
+R3 M#1 + M#2 fix, the no-client path silent-skips (log only, NO audit
+row) to avoid polluting degraded-health surfaces on every nightly run.
+Pipeline-internal Schwab fetching is best-effort V1 + opt-in via the
+CLI surface as primary operator entry point.
 
 Failure-tolerance per plan §3.4.4:
   - Trader-API failures (auth/rate/etc.) are caught + logged + the step
-    returns without aborting the pipeline. The audit row reflects the
-    failure (`status='auth_failed'` / `'rate_limited'` / `'error'`).
-  - Other exceptions (programming errors, config-missing) propagate so
-    the pipeline runner's per-step `except Exception` catch can decide.
+    returns 'failed' without aborting the pipeline. The audit row
+    reflects the failure (`status='auth_failed'` / `'rate_limited'` /
+    `'error'`).
+  - Programming errors propagate to the pipeline runner's per-step
+    `except Exception` wrapper which logs + continues.
 
-Account-hash-missing path: if `cfg.integrations.schwab.account_hash` is
-None (operator hasn't run `swing schwab setup` yet), the step writes a
-single advisory audit row + returns. No domain writes; no schwabdev call.
+Account-hash-missing path (Codex R3 M#1):
+  - Pipeline surface: silent-skip (log only, NO audit row).
+  - CLI surface: writes advisory error audit row (operator-actionable
+    signal).
+No domain writes; no schwabdev call in either case.
+
+Same-day account_hash flip protection (Codex R1 M#8): if a same-day
+source='schwab_api' snapshot already exists with a DIFFERENT non-NULL
+schwab_account_hash, refuse overwrite + emit a SEPARATE advisory audit
+row. NULL-hash rows are crash-window recovery candidates (§H.4.1.bis);
+the current call fills in the NULL via combined-tx2 stamp.
 """
 from __future__ import annotations
 
@@ -142,9 +157,25 @@ def _step_schwab_snapshot(
     account_hash = schwab_cfg.account_hash
 
     if not account_hash:
-        # No account configured — emit a single advisory audit row + return.
-        # Endpoint='accounts.details' (the call we would have made).
-        # Status='error' with explanatory error_message.
+        # Codex R3 M#1 fix — surface-aware advisory audit row.
+        # Pipeline surface (nightly runner): silent-skip — log only,
+        # NO audit row. Avoids polluting degraded-health surfaces with
+        # persistent 'error' rows when operator hasn't yet run `swing
+        # schwab setup` (fresh / unconfigured install state).
+        # CLI surface: write the advisory error row — operator explicitly
+        # invoked `swing schwab fetch` AND the missing-account-hash is
+        # operator-actionable signal worth surfacing.
+        if surface == "pipeline":
+            log.info(
+                "_step_schwab_snapshot: skipped (account_hash not "
+                "configured; pipeline-internal silent-skip)"
+            )
+            return {
+                "status": "skipped_no_account_hash",
+                "call_id": None,
+                "snapshot_id": None,
+                "error": "account_hash not configured",
+            }
         ts = _now_iso_ms()
         call_id = audit_service.record_call_start(
             conn,
@@ -177,14 +208,24 @@ def _step_schwab_snapshot(
         }
 
     if client is None:
-        # Codex R1 M#2 + R2 M#1 fix — pipeline-internal call without an
+        # Codex R2 M#1 + R3 M#1 + M#2 — pipeline-internal call without an
         # explicit client. V1 pipeline-internal Schwab fetching is best-
         # effort + opt-in via the `swing schwab fetch` CLI surface. We
-        # log + return WITHOUT writing an audit row — writing an
-        # audit row with status='error' would pollute degraded-health
-        # surfaces that key off the latest Schwab API call status (the
-        # nightly pipeline would otherwise appear to be in a persistent
-        # error state even though the step intentionally skipped).
+        # log + return WITHOUT writing an audit row to avoid polluting
+        # degraded-health surfaces with persistent 'error' rows on every
+        # nightly run.
+        #
+        # R3 M#2 ACCEPT-WITH-RATIONALE: Bundle D's degraded-health surface
+        # cannot distinguish "intentionally skipped" from "step never
+        # executed" from `schwab_api_calls` alone. The lease.step()
+        # breadcrumb name (`schwab_snapshot`) + the log entry are the V1
+        # discriminators; Bundle D's status output can query the lease
+        # row's `current_step` to surface the breadcrumb. Adding a
+        # durable status row would require either (a) a new schema
+        # column (violates ZERO-new-schema scope of Bundle B), or (b) a
+        # sentinel-prefixed 'error' row (which Codex R2 M#1 correctly
+        # objected to as health-surface pollution). V2 can add a
+        # dedicated `schwab_step_status` lease field.
         try:
             client = _build_default_client(cfg, environment)
         except SchwabConfigMissingError:
@@ -383,6 +424,20 @@ def _step_schwab_orders(
     lookback_days = int(schwab_cfg.lookback_days)
 
     if not account_hash:
+        # Codex R3 M#1 fix — surface-aware advisory audit row.
+        # Pipeline silent-skip; CLI advisory-row. See _step_schwab_snapshot
+        # for full rationale comment.
+        if surface == "pipeline":
+            log.info(
+                "_step_schwab_orders: skipped (account_hash not "
+                "configured; pipeline-internal silent-skip)"
+            )
+            return {
+                "status": "skipped_no_account_hash",
+                "call_ids": [],
+                "reconciliation_run_id": None,
+                "error": "account_hash not configured",
+            }
         ts = _now_iso_ms()
         call_id = audit_service.record_call_start(
             conn,

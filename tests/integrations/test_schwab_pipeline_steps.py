@@ -213,18 +213,22 @@ def test_b3_02_snapshot_sandbox_short_circuits_domain_write(v18_conn):
     assert row[2] == "sandbox"
 
 
-def test_b3_03_snapshot_no_account_hash_advisory_no_call(v18_conn):
-    """account_hash=None: 1 advisory audit row; ZERO schwabdev calls."""
+def test_b3_03_snapshot_no_account_hash_cli_surface_writes_advisory(v18_conn):
+    """Codex R3 M#1 — surface-aware behavior on missing account_hash.
+
+    CLI surface (operator-explicit fetch): advisory error audit row IS
+    written; ZERO schwabdev calls. Pipeline surface tested separately
+    in test_b3_03_pipeline_silent_skip.
+    """
     cfg = _make_cfg(account_hash=None)
     client = MagicMock()
 
     result = _step_schwab_snapshot(
-        v18_conn, cfg, pipeline_run_id=None, client=client,
+        v18_conn, cfg, pipeline_run_id=None, client=client, surface="cli",
     )
     assert result["status"] == "skipped_no_account_hash"
-    # schwabdev MUST NOT be called.
     client.account_details.assert_not_called()
-    # 1 audit row written with error status.
+    # CLI: 1 audit row written with error status.
     assert _audit_count(v18_conn) == 1
     row = v18_conn.execute(
         "SELECT status, error_message FROM schwab_api_calls WHERE call_id = ?",
@@ -232,8 +236,29 @@ def test_b3_03_snapshot_no_account_hash_advisory_no_call(v18_conn):
     ).fetchone()
     assert row[0] == "error"
     assert "account_hash not configured" in (row[1] or "")
-    # ZERO snapshot rows.
     assert _snapshot_count(v18_conn) == 0
+
+
+def test_b3_03b_snapshot_no_account_hash_pipeline_surface_silent_skip(v18_conn):
+    """Codex R3 M#1 — pipeline surface silent-skips on missing account_hash.
+
+    Discriminating: pipeline surface (nightly runner) on an
+    unconfigured/fresh install MUST NOT write an audit row when the
+    operator hasn't run `swing schwab setup` — degraded-health surfaces
+    would otherwise see persistent 'error' rows on every nightly run.
+    """
+    cfg = _make_cfg(account_hash=None)
+    client = MagicMock()
+
+    pre_count = _audit_count(v18_conn)
+    result = _step_schwab_snapshot(
+        v18_conn, cfg, pipeline_run_id=None, client=client, surface="pipeline",
+    )
+    assert result["status"] == "skipped_no_account_hash"
+    assert result["call_id"] is None
+    client.account_details.assert_not_called()
+    # Pipeline: ZERO audit rows written.
+    assert _audit_count(v18_conn) == pre_count
 
 
 def test_b3_04_snapshot_http_401_pipeline_continues(v18_conn):
@@ -527,19 +552,34 @@ def test_b4_02_orders_sandbox_short_circuits_reconciliation(v18_conn):
     assert _recon_count(v18_conn) == 0
 
 
-def test_b4_03_orders_no_account_hash_advisory_no_calls(v18_conn):
-    """account_hash=None: 1 advisory audit; ZERO schwabdev calls."""
+def test_b4_03_orders_no_account_hash_cli_surface_writes_advisory(v18_conn):
+    """CLI surface: account_hash=None writes advisory audit row."""
     cfg = _make_cfg(account_hash=None)
     client = MagicMock()
 
     result = _step_schwab_orders(
-        v18_conn, cfg, pipeline_run_id=None, client=client,
+        v18_conn, cfg, pipeline_run_id=None, client=client, surface="cli",
     )
     assert result["status"] == "skipped_no_account_hash"
     client.account_orders.assert_not_called()
     client.transactions.assert_not_called()
     client.account_details.assert_not_called()
     assert _recon_count(v18_conn) == 0
+    # CLI: advisory audit row written.
+    assert _audit_count(v18_conn) == 1
+
+
+def test_b4_03b_orders_no_account_hash_pipeline_surface_silent_skip(v18_conn):
+    """Codex R3 M#1 — orders mirror of snapshot pipeline-surface silent-skip."""
+    cfg = _make_cfg(account_hash=None)
+    client = MagicMock()
+    pre_count = _audit_count(v18_conn)
+    result = _step_schwab_orders(
+        v18_conn, cfg, pipeline_run_id=None, client=client, surface="pipeline",
+    )
+    assert result["status"] == "skipped_no_account_hash"
+    assert result["call_ids"] == []
+    assert _audit_count(v18_conn) == pre_count
 
 
 def test_b4_04_orders_first_call_failure_step_failed(v18_conn):

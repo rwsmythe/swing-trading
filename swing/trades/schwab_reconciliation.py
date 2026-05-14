@@ -507,10 +507,13 @@ def run_schwab_reconciliation(
                     continue
                 if tx.type not in expected_types:
                     continue
-                # Sign validation for ambiguous types.
+                # Sign validation for ambiguous types. Strict inequalities
+                # per Codex R3 m#3 — zero net_amount cannot satisfy either
+                # direction (a zero-amount Schwab transaction is not a
+                # valid deposit or withdraw match).
                 if (
-                    (want_sign_positive and tx.net_amount < 0)
-                    or (not want_sign_positive and tx.net_amount > 0)
+                    (want_sign_positive and tx.net_amount <= 0)
+                    or (not want_sign_positive and tx.net_amount >= 0)
                 ):
                     continue
                 # Schwab transaction_date is normalized to YYYY-MM-DD.
