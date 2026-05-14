@@ -105,17 +105,26 @@ def schwab_setup(
     cfg = ctx.obj["config"]
     env = environment or cfg.integrations.schwab.environment
 
-    client_id = click.prompt("Schwab app client_id", type=str).strip()
-    client_secret = click.prompt(
-        "Schwab app client_secret", type=str, hide_input=True,
-    ).strip()
-    if not client_id:
-        raise click.ClickException("client_id is required (non-empty).")
-    if not client_secret:
-        raise click.ClickException("client_secret is required (non-empty).")
-
+    # D3 hotfix (operator-paired phase-2 verification 2026-05-14):
+    # `connect()` raises `SchemaVersionMismatchError` when the DB version
+    # doesn't match `EXPECTED_SCHEMA_VERSION`. Previously the connect()
+    # happened AFTER the click.prompt calls, so an operator on a stale
+    # schema (e.g. v17 when code expects v18) wasted typing credentials
+    # before the migration-required error surfaced. Fail fast: open the
+    # connection (which validates schema) BEFORE prompting. The same
+    # reordering also surfaces `SchwabPipelineActiveError` to the operator
+    # before they type credentials.
     conn = connect(cfg.paths.db_path)
     try:
+        client_id = click.prompt("Schwab app client_id", type=str).strip()
+        client_secret = click.prompt(
+            "Schwab app client_secret", type=str, hide_input=True,
+        ).strip()
+        if not client_id:
+            raise click.ClickException("client_id is required (non-empty).")
+        if not client_secret:
+            raise click.ClickException("client_secret is required (non-empty).")
+
         try:
             result = setup_paste_flow(
                 cfg=cfg,

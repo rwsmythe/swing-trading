@@ -79,28 +79,27 @@ def _is_pipeline_active(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
-def _stub_call_account_linked(client: Any) -> list[dict]:
+def _stub_call_account_linked(client: Any) -> Any:
     """T-A.4 placeholder for the `client.account_linked()` invocation.
 
     Full implementation lands at T-B.1 in `swing/integrations/schwab/trader.py`
     (`get_accounts_linked`). T-A.4 calls schwabdev directly; tests patch
     this function (NOT schwabdev) to bypass the real network call.
 
-    Returns the parsed JSON array `[{accountNumber, hashValue}, ...]`.
+    Returns the parsed JSON payload (expected: list of
+    `{accountNumber, hashValue}` dicts; D2 hotfix — on Schwab auth failure
+    schwabdev's wrapper returns a dict-shaped error envelope instead).
     schwabdev's `Client.account_linked()` returns a `requests.Response`;
-    we accept either a raw list (for stub) or a `.json()`-callable object.
+    we accept either a list/dict (for stub) or a `.json()`-callable object.
+    Validation of the shape happens at the call site so the audit row
+    can carry an `auth_failed` status with a non-leaky error message.
     """
     result = client.account_linked()
-    # Tolerate both raw list-of-dicts (test stubs) and Response-like
-    # objects (real schwabdev). Real schwabdev returns a Response.
+    # Tolerate both raw payloads (test stubs) and Response-like objects
+    # (real schwabdev). Real schwabdev returns a Response.
     if hasattr(result, "json") and callable(result.json):
         return result.json()
-    if isinstance(result, list):
-        return result
-    raise SchwabAuthError(
-        500,
-        f"<unexpected account_linked() return type: {type(result).__name__}>",
-    )
+    return result
 
 
 def _redacted_excerpt(exc: BaseException, *, max_chars: int = 80) -> str:
@@ -244,6 +243,38 @@ def setup_paste_flow(
             f"<schwabdev construction failed: {type(exc).__name__}>",
         ) from exc
 
+    # D1 hotfix (operator-paired phase-2 verification 2026-05-14):
+    # schwabdev.Client(...) does NOT raise on OAuth failure — it prints +
+    # retries internally + returns a Client object regardless. If the OAuth
+    # exchange ultimately failed, `client.tokens.access_token` is None /
+    # empty / non-string. Treat that case as auth_failed (the existing
+    # `try/except BaseException` above never fires because schwabdev
+    # swallowed the exception internally).
+    access_token = getattr(getattr(client, "tokens", None), "access_token", None)
+    if not access_token or not isinstance(access_token, str):
+        audit_service.record_call_finish(
+            conn,
+            call_id=call_id_setup,
+            http_status=None,
+            status="auth_failed",
+            response_time_ms=elapsed_ms,
+            signature_hash=None,
+            rate_limit_remaining=None,
+            error_message=(
+                "<schwabdev returned Client without access_token; "
+                "OAuth exchange likely failed>"
+            ),
+        )
+        log.warning(
+            "schwab setup paste-back returned Client with no access_token "
+            "(OAuth exchange likely failed silently inside schwabdev)",
+        )
+        raise SchwabAuthError(
+            401,
+            "<OAuth exchange failed: schwabdev returned Client without "
+            "access_token>",
+        )
+
     # Step 7 — happy-path audit close for the setup call.
     audit_service.record_call_finish(
         conn,
@@ -287,6 +318,51 @@ def setup_paste_flow(
         ) from exc
 
     elapsed_ms = int((time.monotonic() - account_linked_start) * 1000)
+
+    # D2 hotfix (operator-paired phase-2 verification 2026-05-14):
+    # schwabdev's `client.account_linked()` returns a DICT (Schwab error
+    # envelope) when the Client has no valid tokens — NOT a list. The
+    # subsequent `accounts[0]` would raise `KeyError: 0`. Validate shape
+    # explicitly + close the audit row as auth_failed when malformed.
+    if not isinstance(accounts, list):
+        audit_service.record_call_finish(
+            conn,
+            call_id=call_id_account_linked,
+            http_status=None,
+            status="auth_failed",
+            response_time_ms=elapsed_ms,
+            signature_hash=None,
+            rate_limit_remaining=None,
+            error_message=(
+                f"<account_linked returned {type(accounts).__name__}; "
+                f"expected list>"
+            ),
+        )
+        raise SchwabAuthError(
+            500,
+            f"<account_linked returned unexpected shape: "
+            f"{type(accounts).__name__}>",
+        )
+    for _idx, _entry in enumerate(accounts):
+        if not isinstance(_entry, dict) or "hashValue" not in _entry:
+            audit_service.record_call_finish(
+                conn,
+                call_id=call_id_account_linked,
+                http_status=None,
+                status="auth_failed",
+                response_time_ms=elapsed_ms,
+                signature_hash=None,
+                rate_limit_remaining=None,
+                error_message=(
+                    f"<account_linked entry {_idx} missing hashValue or "
+                    f"not dict>"
+                ),
+            )
+            raise SchwabAuthError(
+                500,
+                f"<account_linked entry {_idx} has unexpected shape>",
+            )
+
     audit_service.record_call_finish(
         conn,
         call_id=call_id_account_linked,

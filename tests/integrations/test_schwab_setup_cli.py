@@ -596,3 +596,208 @@ def test_setup_account_linked_failure_audits_auth_failed(
     assert "integrations" not in overrides or "schwab" not in overrides.get(
         "integrations", {},
     ) or "account_hash" not in overrides["integrations"]["schwab"]
+
+
+# ============================================================================
+# T-A.4 phase-2 hotfix regression tests (2026-05-14)
+# ============================================================================
+
+
+class _FakeTokensEmpty:
+    """Stub for the D1 regression — schwabdev returns a Client whose
+    `tokens.access_token` is missing / empty / non-string.
+    """
+
+    access_token = None
+    refresh_token = None
+
+
+class _FakeSchwabdevClientNoTokens:
+    """D1 regression stub — Client built successfully but OAuth exchange
+    failed silently inside schwabdev (matches operator's 2026-05-14
+    paste-back run where the 30-second code window expired).
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.tokens = _FakeTokensEmpty()
+        self.tokens_file = kwargs.get("tokens_file")
+
+    def account_linked(self) -> list[dict]:
+        # Should never be called; included for shape symmetry.
+        return []
+
+
+def test_setup_d1_schwabdev_client_returns_without_tokens_marked_auth_failed(
+    home: Path, cfg_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D1 regression — schwabdev.Client(...) returns a Client object whose
+    `tokens.access_token` is None / empty / non-string. The original T-A.4
+    implementation incorrectly closed the audit row as `status='success'`
+    because no exception was raised; the hotfix detects the empty token +
+    closes the audit row as `auth_failed` + raises SchwabAuthError.
+    """
+    def factory(*args: Any, **kwargs: Any) -> _FakeSchwabdevClientNoTokens:
+        return _FakeSchwabdevClientNoTokens(*args, **kwargs)
+    _patch_schwabdev(monkeypatch, factory)
+    result = _invoke(
+        cfg_path,
+        ["setup", "--environment", "production"],
+        input="my_client_id\nmy_client_secret\n",
+    )
+    assert result.exit_code != 0, result.output
+    rows = _read_audit_rows(home / "swing-data" / "swing.db")
+    assert len(rows) == 1, (
+        f"expected exactly one audit row (setup; no accounts.linked call); "
+        f"got {len(rows)}: {rows}"
+    )
+    assert rows[0]["status"] == "auth_failed"
+    assert rows[0]["endpoint"] == "oauth.code_exchange"
+    # account_hash NOT persisted.
+    overrides = _read_user_overrides(home)
+    assert (
+        "integrations" not in overrides
+        or "schwab" not in overrides.get("integrations", {})
+        or "account_hash" not in overrides["integrations"]["schwab"]
+    )
+
+
+def test_setup_d2_account_linked_returns_dict_marked_auth_failed(
+    home: Path, cfg_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D2 regression — `client.account_linked()` returns a dict-shaped
+    Schwab error envelope (not a list). The original implementation would
+    crash with `KeyError: 0` on `accounts[0]`; the hotfix detects the
+    unexpected shape + closes audit row as `auth_failed` + raises.
+
+    The first audit row (setup) still ends with `status='success'` because
+    `schwabdev.Client(...)` construction did succeed (test stub).
+    """
+
+    class _ClientWithDictAccounts(_FakeSchwabdevClient):
+        def account_linked(self) -> Any:
+            return {"errors": ["fake error envelope"]}
+
+    def factory(*args: Any, **kwargs: Any) -> _ClientWithDictAccounts:
+        return _ClientWithDictAccounts(*args, **kwargs)
+
+    _patch_schwabdev(monkeypatch, factory)
+    result = _invoke(
+        cfg_path,
+        ["setup", "--environment", "production"],
+        input="my_client_id\nmy_client_secret\n",
+    )
+    assert result.exit_code != 0, result.output
+    rows = _read_audit_rows(home / "swing-data" / "swing.db")
+    assert len(rows) == 2
+    assert rows[0]["status"] == "success", (
+        "setup audit row should still be success (Client construction "
+        "succeeded in the stub)"
+    )
+    assert rows[0]["endpoint"] == "oauth.code_exchange"
+    assert rows[1]["status"] == "auth_failed"
+    assert rows[1]["endpoint"] == "accounts.linked"
+
+
+def test_setup_d2_account_linked_returns_list_with_non_dict_entries_raises(
+    home: Path, cfg_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D2 regression — `client.account_linked()` returns a list whose
+    entries are not dicts (e.g. ['not-a-dict']). Hotfix rejects with
+    auth_failed audit close + SchwabAuthError.
+    """
+
+    class _ClientWithBadListEntries(_FakeSchwabdevClient):
+        def account_linked(self) -> Any:
+            return ["not-a-dict"]
+
+    def factory(*args: Any, **kwargs: Any) -> _ClientWithBadListEntries:
+        return _ClientWithBadListEntries(*args, **kwargs)
+
+    _patch_schwabdev(monkeypatch, factory)
+    result = _invoke(
+        cfg_path,
+        ["setup", "--environment", "production"],
+        input="my_client_id\nmy_client_secret\n",
+    )
+    assert result.exit_code != 0, result.output
+    rows = _read_audit_rows(home / "swing-data" / "swing.db")
+    assert len(rows) == 2
+    assert rows[0]["status"] == "success"
+    assert rows[1]["status"] == "auth_failed"
+    assert rows[1]["endpoint"] == "accounts.linked"
+
+
+def test_setup_d2_account_linked_returns_dict_entries_missing_hashvalue_raises(
+    home: Path, cfg_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D2 regression — `client.account_linked()` returns dicts but they
+    lack the `hashValue` key. Hotfix rejects with auth_failed + raises.
+    """
+
+    class _ClientWithDictsNoHash(_FakeSchwabdevClient):
+        def account_linked(self) -> Any:
+            return [{"accountNumber": "12345678"}]
+
+    def factory(*args: Any, **kwargs: Any) -> _ClientWithDictsNoHash:
+        return _ClientWithDictsNoHash(*args, **kwargs)
+
+    _patch_schwabdev(monkeypatch, factory)
+    result = _invoke(
+        cfg_path,
+        ["setup", "--environment", "production"],
+        input="my_client_id\nmy_client_secret\n",
+    )
+    assert result.exit_code != 0, result.output
+    rows = _read_audit_rows(home / "swing-data" / "swing.db")
+    assert len(rows) == 2
+    assert rows[0]["status"] == "success"
+    assert rows[1]["status"] == "auth_failed"
+    assert rows[1]["endpoint"] == "accounts.linked"
+
+
+def test_setup_d3_schema_mismatch_exits_before_prompting_credentials(
+    home: Path, cfg_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D3 regression — when `connect()` raises `SchemaVersionMismatchError`
+    (DB at older version than `EXPECTED_SCHEMA_VERSION`), the handler MUST
+    exit BEFORE prompting for credentials. The original implementation
+    called click.prompt() before connect(), wasting operator typing on
+    a fail-fast condition the system already knew about.
+
+    Construction: stamp the DB's schema_version to 0 so connect() rejects.
+    schwabdev.Client is still stubbed so an accidental call site reach
+    doesn't drag in real network I/O.
+    """
+    # Corrupt the schema_version so connect() raises.
+    db_path = home / "swing-data" / "swing.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("UPDATE schema_version SET version = 0")
+        conn.commit()
+    finally:
+        conn.close()
+
+    _patch_schwabdev(monkeypatch, _make_schwabdev_stub())
+    # Provide credentials in stdin anyway — they should NOT be consumed
+    # because connect() should raise before click.prompt() runs.
+    result = _invoke(
+        cfg_path,
+        ["setup", "--environment", "production"],
+        input="my_client_id\nmy_client_secret\n",
+    )
+    assert result.exit_code != 0, result.output
+    # The prompt strings MUST NOT appear in output — confirms no prompt was
+    # rendered before the schema-mismatch error.
+    assert "Schwab app client_id" not in result.output, (
+        f"client_id prompt rendered before schema check:\n{result.output}"
+    )
+    assert "Schwab app client_secret" not in result.output, (
+        f"client_secret prompt rendered before schema check:\n{result.output}"
+    )
+    # The exception should be SchemaVersionMismatchError (uncaught in the
+    # handler — bubbles up through CliRunner).
+    from swing.data.db import SchemaVersionMismatchError
+    assert isinstance(result.exception, SchemaVersionMismatchError), (
+        f"expected SchemaVersionMismatchError; got "
+        f"{type(result.exception).__name__}: {result.exception}"
+    )
