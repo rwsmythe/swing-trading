@@ -52,6 +52,118 @@ Each scenario needs a deterministic mapping from `Fills` + `trades.planned_*` co
 
 ---
 
+## 2026-05-14 Schwab API Sub-bundle A SHIPPED — schwabdev wrap + auth + migration 17→18 + audit infrastructure (4 Codex rounds; 19 commits; phase-2 live OAuth executed end-to-end against production)
+
+**Sub-bundle A SHIPPED 2026-05-14** at `5b6e5ba` (integration merge of `schwab-bundle-A-foundational` worktree branch — preserved Codex-fix chain via `--no-ff` per operator note). Operator-dispatched implementer per orchestrator brief at `bd166c5`. Branch HEAD `6550494` (19 commits = 11 task-impl + 1 hotfix bdf82da + 1 phase-2 addendum + 3 Codex-fix + 1 cleanup-script-help-escape + 1 return-report).
+
+**4 Codex rounds → NO_NEW_CRITICAL_MAJOR** convergent shape (R1 0C/5M → R2 0C/1M/1m → R3 0C/1M/1m → R4 0C/0M); **ZERO Critical findings**; **1 ACCEPT-WITH-RATIONALE banked** (R2 Minor #2 `force_refresh` unchanged-token integrity check per plan §H.2 step 6 — operator-facing error already distinguishes "<not rotated>" from "<raised>").
+
+### Three highest-leverage SHIPPED deliverables
+
+1. **Schema migration 17 → 18** (T-A.7) with file-level explicit `BEGIN;`/`COMMIT;` discipline per plan §C.4 — `schwab_api_calls` table (14 columns + 4 indexes + 3 FKs `ON DELETE SET NULL`) + ALTER `account_equity_snapshots.schwab_account_hash TEXT NULL` + ALTER `reconciliation_runs.schwab_api_call_id INTEGER NULL`. Counter-example test locks the discipline (canonical-minus-BEGIN-fixture FAILS rollback). **Forward-binding for migrations 0019+** until runner is updated.
+
+2. **Three-layer token redactor** (T-A.10): Layer 0 known-secret exact-replace from process-global registry (5 long-lived slots: client_id/client_secret/access_token/refresh_token/account_hash) + Layer 1 heuristic regex (hex 32+ / base64 24+) + Layer 2 `logging.setLogRecordFactory()` with recursion guard + factory-replacement defense via `ensure_*` re-wrap. **Logger prefix `"Schwabdev"` (capital S — live schwabdev 2.5.1 deviation from plan §H.8 lowercase)**. R7-R10 chain hardenings encoded with discriminating tests. Cross-bundle pins added for B/C surfaces (`@pytest.mark.skip(reason='un-skip at T-B.8 + T-C.7')`).
+
+3. **`swing/integrations/schwab/` sub-package** with composition over `schwabdev.Client`: 8 typed exception classes; `_suppress_transport_debug_logs` covering 4 transport-debug loggers; audit-service caller-held-tx-rejecting transactional wrappers (`record_call_start`, `record_call_finish`, `link_snapshot_and_stamp_account_hash` combined-tx2, `link_reconciliation_run`).
+
+### CLI subcommands SHIPPED
+
+`swing schwab {setup, refresh, logout, status}` with audit lifecycle wrapping; pipeline-active exclusion (`--force` overrides on setup/logout; refresh has NO `--force` per Codex R1 Minor #3 concurrent-safe); schema-check-fail-fast (T-A.4 hotfix `bdf82da` from phase-2 findings); server-stamped audit timestamps; `account_hash` masking via FIELD_REGISTRY (first-3 + `***` + last-2).
+
+### Phase-2 live verification (2026-05-14; operator-paired end-to-end against production)
+
+OAuth paste-back flow executed end-to-end against operator's production-tier Schwab Developer Portal app:
+- Tokens DB persisted at `~/swing-data/schwab-tokens.production.db` (957-byte JSON despite `.db` extension; valid access + refresh tokens).
+- 64-char `account_hash` auto-picked from `client.account_linked()` + cfg-cascade-written to `~/swing-data/user-config.toml` `[integrations.schwab].account_hash`.
+- 4 production `schwab_api_calls` rows: 2 corrected to `status='auth_failed'` via `scripts/fix_phase2_misleading_audit_rows.py` (idempotent; safe to re-run) + 2 `status='success'`.
+- **7-day refresh-token clock started 2026-05-14** — operator must re-auth by ~2026-05-21 per recon §2.11 (will be threaded into Sub-bundle D status alert design + cycle-checklist update + CLAUDE.md gotcha promotion).
+
+### Tests + ruff + schema deltas
+
+- Tests: ~3287 baseline → expected ~3413 main HEAD (+126 net per return report §3; pending fast-suite run completion to confirm).
+- Ruff: 18 E501 unchanged.
+- Schema: v17 → **v18** (verified `EXPECTED_SCHEMA_VERSION=18` post-merge).
+
+### Operator-witnessed verification gate state
+
+Per dispatch brief §3 + return report §4:
+
+- **S1 pytest fast-suite** PASSED (Codex required green to converge across 4 rounds).
+- **S2 Migration 0018 lands cleanly** PASSED via phase-2 live verification (production swing.db migrated successfully; `schwab_api_calls` table + 2 ALTERs verified).
+- **S3 `swing schwab setup` paste-back** PASSED via phase-2 live verification (end-to-end against operator's production-tier app; tokens DB persisted; `account_hash` cfg-cascade-written).
+- **S4 `swing schwab refresh`** NOT EXPLICITLY DRIVEN — operator-elective (return report notes code-path coverage may be sufficient OR drive at follow-up gate session).
+- **S5 `swing schwab status` skeleton** NOT EXPLICITLY DRIVEN — same operator-elective.
+- **S6 `swing schwab logout`** NOT EXPLICITLY DRIVEN — same operator-elective.
+- **S7 Sentinel-token-leak audit** PASSED inline (24 assertions per T-A.10 GREEN).
+- **S8 ruff baseline** PASSED inline (18 E501 unchanged).
+
+### 13 V2.1 §VII.F amendment candidates banked
+
+8 recon-doc-banked plan deviations (§5.1) + 5 NEW Codex-chain deviations (§5.2). Cumulative pending arc total: **40** entering Sub-bundle B (was 27 at Phase 10 close + 13 from this dispatch). Detailed in return report §5.
+
+### 5 forward-binding lessons for Sub-bundle B (return report §8)
+
+1. **schwabdev's silent-failure-mode discipline** — `Client.__init__` + `update_tokens()` do NOT raise on auth failure; they print + retry + return silently. Wrappers MUST verify post-call state (`client.tokens.access_token` populated + rotated). Discriminating-test pattern: stub schwabdev call to NOT mutate `tokens.access_token`; assert wrapper raises `SchwabAuthError` + audit row `status='auth_failed'`.
+2. **Audit-success-fire ordering** — `record_call_finish(status='success', ...)` MUST fire ONLY after all validation passes (R1 M#3 family). Pattern: validate response shape → validate response content → validate operator-pickable state → fire success audit. Each pre-success rejection path fires `record_call_finish(status='auth_failed')` with redacted `error_message` + raises.
+3. **Pre-call factory-replacement defense** — `ensure_schwab_log_redaction_factory_installed()` (NOT `_install_*`) before every schwabdev API call. Discriminating-test pattern: install third-party factory between two schwab calls; assert second call re-wraps the factory before invoking schwabdev.
+4. **Redact-then-truncate audit-error ordering** — `_redacted_excerpt` MUST redact on FULL `str(exc)` THEN truncate to audit-column-budget. Discriminating-test pattern: register a sentinel that straddles the truncation boundary; assert no partial-prefix survives.
+5. **schwabdev 2.5.1 actual surfaces** (banked from phase-2 live verification):
+   - `Client` ctor: 8 params (`app_key, app_secret, callback_url='https://127.0.0.1', tokens_file='tokens.json', timeout=10, capture_callback=False, use_session=True, call_on_notify=None`).
+   - Tokens DB content: **JSON (NOT SQLite)**; content shape `{access_token_issued, refresh_token_issued, token_dictionary: {access_token, refresh_token, id_token, expires_in: 1800, token_type, scope}}`.
+   - `client.account_linked()` success: list of dicts `[{accountNumber, hashValue}, ...]`.
+   - `client.account_linked()` failure: dict error envelope (NOT a list).
+   - Force-refresh kwarg: `client.update_tokens(force_access_token=True)` (NOT `force_refresh_token=True` which triggers full OAuth dance).
+   - Schwab `code` expiry window: ~30 seconds from redirect.
+   - Logger name: `"Schwabdev"` (capital S).
+   - NO `revoke()` method exposed; use manual `POST /v1/oauth/revoke` (Basic auth + `token=<refresh_token>&token_type_hint=refresh_token` form body).
+
+### Production state post-merge (per return report §6 #4)
+
+- Schema: **v18**.
+- 4 rows in `schwab_api_calls` (2 corrected-to-auth_failed + 2 success).
+- `~/swing-data/schwab-tokens.production.db` exists (JSON, 957 bytes; valid access + refresh tokens).
+- `~/swing-data/user-config.toml` has `[integrations.schwab].account_hash` = 64-char `hashValue`.
+- 7-day refresh-token clock started 2026-05-14 (operator must re-auth by ~2026-05-21).
+
+### Post-merge housekeeping items
+
+1. **`pip install -e .` editable-install pointer refresh** — orchestrator attempted post-merge; **same `swing.exe`-locked rollback as return report §6 #2 footnote** (`WinError 32` — `c:\users\rwsmy\appdata\roaming\python\python314\scripts\swing.exe` is locked by a running process). Editable install remains at pre-merge code; **operator-driven completion required** (stop the locking process — likely operator's own `swing web` instance — then re-run `pip install -e .` from main).
+2. **Worktree husk pending operator cleanup-script** — branch `schwab-bundle-A-foundational` deleted post-merge; on-disk husk at `.worktrees/schwab-bundle-A-foundational/` will be ACL-locked per Phase 6+7+8+9+10 precedent. **9th pending husk** in cleanup-script queue per return report §7. Operator runs `cleanup-locked-scratch-dirs.ps1 -DeregisterFirst` post-merge to clean up.
+3. **Optional gate completion S4/S5/S6** — operator-elective per return report §6 #1; sub-second-cost CLI invocations against operator's existing production tokens DB. Code-path coverage may be sufficient.
+4. **Production audit-row cleanup script** at `scripts/fix_phase2_misleading_audit_rows.py` is idempotent; banked at return report §6 #3 for future archeologists.
+
+### Cross-bundle reminders for B/C/D dispatch brief drafting
+
+- **Single-Client-instance discipline:** B/C/D MUST consume the SAME `SchwabClient` instance from A; MUST NOT create additional `schwabdev.Client(...)` instances elsewhere (per Finding 2 in 2026-05-13 schwabdev distillation entry).
+- **`Schwabdev` capital-S logger prefix:** any logger filtering/inspection in B/C/D MUST use the live capital-S form, NOT the lowercase plan §H.8 assumption.
+- **`ensure_schwab_log_redaction_factory_installed()`** pre-call defense BINDING for every schwabdev API call (Sub-bundle B + C wrappers).
+- **`reference/schwab-bundle-A-task-A0b-recon.md`** (recon doc §6 + §6.bis) is LOCKED input for Sub-bundle B dispatch brief drafting per return report §6 #6.
+- **`ReconciliationRun.schwab_api_call_id`** field already exists at branch-tip (R1 M#5 landed it); Sub-bundle B's `run_schwab_reconciliation` populates it (no re-implement).
+- **Codex chain pre-emption table** (return report §12 #6): Sub-bundle B brief should pre-empt the 4 patterns Sub-bundle A Codex caught — silent-failure post-call validation (M#1 family); audit-success-fire ordering (M#3 family); factory-replacement defense (M#2 family); redact-then-truncate (R3 M#1 family).
+
+### Cross-references
+
+- Brainstorm spec: `docs/superpowers/specs/2026-05-13-schwab-api-design.md` (`585556f`).
+- Plan: `docs/superpowers/plans/2026-05-13-schwab-api-integration-plan.md` (`7faab72`).
+- Sub-bundle A executing-plans dispatch brief: `docs/schwab-bundle-A-executing-plans-dispatch-brief.md` (`bd166c5`).
+- Sub-bundle A return report: `docs/schwab-bundle-A-return-report.md` (`6550494`).
+- Sub-bundle A T-A.0.b recon doc: `docs/schwab-bundle-A-task-A0b-recon.md` (Phase 1 pre-check + Phase 2 operator-paired live verification observations).
+- Production audit-row cleanup script: `scripts/fix_phase2_misleading_audit_rows.py`.
+- Distilled refs consumed: `reference/schwab-api/{account,market-data}-{documentation,specification}.md` + `reference/schwabdev/{setup-guide,examples,client,api-calls,streaming,orders,troubleshooting}.md`.
+
+### Next dispatch
+
+**Sub-bundle B executing-plans dispatch UNBLOCKED.** Operator-paced. Orchestrator drafts the executing-plans brief when operator commissions. Brief drafting MUST consume:
+1. Recon doc §6 + §6.bis as binding LOCKED inputs.
+2. The 5 forward-binding lessons in this entry's "5 forward-binding lessons for Sub-bundle B" section.
+3. Confirmed schwabdev 2.5.1 surfaces (lesson #5 above) — Sub-bundle B's `trader.py` consumes these.
+4. Cross-bundle pins (un-skip-at-T-B.8).
+5. Codex chain pre-emption table (4 patterns to pre-empt).
+6. `reference/schwabdev/api-calls.md` pre-check for Trader API method-name + signature pre-answers (3 accounts + 7 orders + 2 transactions endpoints documented).
+7. `reference/schwab-api/account-{documentation,specification}.md` pre-check for Trader API endpoint shape pre-answers.
+
+---
+
 ## 2026-05-13 schwabdev library distillation SHIPPED — 7 tracked refs at `reference/schwabdev/` + 3 operator-flagged cross-bundle findings
 
 **Distillation SHIPPED 2026-05-13** at `62f5dde` (single commit on main; `docs(schwabdev): distill 7 schwabdev library docs pages into reference/schwabdev/`). Operator-driven via parallel instance, post-Sub-bundle-A-dispatch-brief (`bd166c5`). Sub-bundle A implementer is aware + has taken the findings into account; impacts will be noted in the A return report.
