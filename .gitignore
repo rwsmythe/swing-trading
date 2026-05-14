@@ -59,3 +59,8 @@ research/harness/*/smoke-out/
 # repo tracking; review-dispatches consume operator's local copy.
 reference/Books/
 reference/minervini/
+
+# Saved Schwab Developer Portal HTML pages (~2.4 MB; operator-local-only).
+# Distilled markdown at reference/schwab-api/ IS tracked — small, hand-curated
+# extract of the same content for use in integration dispatches.
+reference/SchwabAPI/

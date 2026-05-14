@@ -52,6 +52,94 @@ Each scenario needs a deterministic mapping from `Fills` + `trades.planned_*` co
 
 ---
 
+## 2026-05-13 Schwab API integration writing-plans SHIPPED — 2447-line plan + ZERO open orchestrator-triage questions + 11 Codex rounds (most in project history)
+
+**Plan SHIPPED 2026-05-13** at `7faab72` (single commit on main; `docs(schwab-api): integration writing-plans implementation plan`). Operator-dispatched implementer per orchestrator-drafted brief at `5bf425d` + COA B amendment at `9fd50e6`. Plan at `docs/superpowers/plans/2026-05-13-schwab-api-integration-plan.md` (2447 lines; above 1500-2500 brief budget upper-bound by 0%; acceptable due to 11-round adversarial chain producing additional plan content).
+
+**11 Codex rounds → NO_NEW_CRITICAL_MAJOR** (most in project history; Phase 9 = 19 across 5 bundles; Phase 10 = 13 across 5 bundles; Schwab single plan = 11). Cumulative findings 2C + 26M + 23m all RESOLVED inline; **1 ACCEPT-WITH-RATIONALE banked** (R3 Major #4 same-day-UPSERT provenance asymmetry — explicit S7 wording covers).
+
+### Two Critical-class finds (both Codex-discovered + RESOLVED in-tree)
+
+1. **R1 Critical #1 — migration atomicity claim contradicted actual runner.** Plan author misread CLAUDE.md's `executescript() implicit COMMIT` gotcha + assumed `_apply_migration` issues explicit BEGIN. It does not. Migration 0018 SQL file now opens with `BEGIN;` + closes with `COMMIT;` to compensate (file-level discipline; runner-level update banked for V2). Forward-binding for migrations 0019+: mirror this pattern until runner is updated.
+2. **R7 Critical #1 — token-redaction filter design based on FALSE Python logging assumption.** Plan author's Layer 2 redactor used `logging.Filter` on root logger; Codex caught that `Logger.callHandlers()` does NOT re-apply ancestor filters during propagation. Fix: switched to `logging.setLogRecordFactory()` approach which catches records at creation time regardless of which logger emits or which handler captures (covers pytest caplog + third-party handlers + lazily-created schwabdev sub-loggers). R7-R10 chain hardened against factory-chaining recursion + reset-fixture contamination + LogRecord direct-call fallback. **One of the deepest design-fix sequences in project history.**
+
+### Sub-bundle decomposition (final shape — 4 sub-bundles per §0.1)
+
+| # | Sub-bundle | Tasks | Tests projected | Inter-bundle deps |
+|---|---|---:|---:|---|
+| **A** | schwabdev wrap + auth + migration 0018 + audit infra + CLI setup/refresh/logout/status skeleton | 11 (T-A.0..T-A.10) | +126 (range +100..+135) | NONE (foundational) |
+| **B** | Trader API + `_step_schwab_snapshot` + `_step_schwab_orders` + `run_schwab_reconciliation` + sandbox-gating + CLI fetch + `SchwabPipelineActiveError` | 9 (T-B.0.b..T-B.8) | +80 (range +75..+95) | A (audit infra + auth + migration) |
+| **C** | Market Data API + Shape A parquet-per-(ticker, provider) + `PriceCache` provider field + cache integration + `--verify-marketdata` CLI + sandbox short-circuit | 8 (T-C.0.b..T-C.7) | +68 (range +60..+80) | A (audit infra + auth); independent of B |
+| **D** | `swing schwab status` full surface + briefing banner + E2E + cycle-checklist + CLAUDE.md + Phase 11 hand-off | 7 (T-D.1..T-D.7) | +19 (range +15..+30) | A + B + C |
+| **Total** | | **35** | **+293 (range +250..+340)** | |
+
+**Strict dispatch ordering: A → B → C → D.** A is BLOCKING for B+C (migration + audit contract); B+C are functionally independent but share files (cli/schwab.py + integrations/schwab/mappers.py — sequential B→C avoids merge conflicts trivially); D is BLOCKING on all three (E2E + handoff).
+
+### Schema posture decisions (§C)
+
+- **Migration 0018:** single atomic file with explicit `BEGIN;` / `COMMIT;` discipline. Creates `schwab_api_calls` table (14 columns + 4 CHECK enums + 4 indexes + 3 FKs `ON DELETE SET NULL`). ALTERs: `account_equity_snapshots ADD COLUMN schwab_account_hash TEXT NULL` (Q16 forward-prep multi-account); `reconciliation_runs ADD COLUMN schwab_api_call_id INTEGER NULL REFERENCES schwab_api_calls(call_id) ON DELETE SET NULL`. UPDATE schema_version 17→18.
+- **EXPECTED_SCHEMA_VERSION bump:** 17 → 18 (T-A.7 implements).
+- **Backup gate:** does NOT auto-fire for 17→18 (R1 Major #1 corrected — existing gate is version-specific to 13→14/15→16/16→17). **Operator-manual backup recommended per §I.1 cycle-checklist update** before first `swing db-migrate` lands 0018.
+- **CHECK enums already permit `'schwab_api'`** (Phase 9 Sub-bundle B + C foresight): `reconciliation_runs.source` line 194 + `account_equity_snapshots.source` line 332 of migration 0017. NO ALTER on either CHECK enum needed.
+
+### Market-data ladder persistence shape decision (V1 INCLUDE branch per Q11)
+
+**Shape A LOCKED** (parquet-per-(ticker, provider)) per spec §3.8.2 default. Justification: cleanest separation; no SQL migration for OHLCV path; resolver code is small (~50 LOC merge); per-provider files operator-greppable; matches Phase 9 source-ladder pattern. Downstream impact: filename change `{TICKER}.parquet` → `{TICKER}.{PROVIDER}.parquet`; new `resolve_ohlcv_window(ticker, start, end)` resolver; `PriceCacheEntry` gains `provider` field DISTINCT from existing `source` TTL-state field; backward-compat handles 4 cases including both-files-exist via MERGE-AND-QUARANTINE.
+
+### Q1-Q18 disposition wiring + plan §D Task 0.b items
+
+**ZERO open questions for orchestrator triage.** All 18 dispositions (Q1-Q18) wired through plan §A.1 + §A.2 acceptance criteria. The 6 §D entries are operator-paired Task 0.b live verification items (NOT open questions for the orchestrator):
+
+- §D.1 Q8 sandbox-vs-production HTTP-layer differentiation (base URL / path / scope / TTL).
+- §D.2 Q12 premium-tier Schwab Market Data endpoint access vs operator's actual subscription tier.
+- §D.3 Q13 residual paste-back UX verification.
+- §D.4 Q14 OAuth scope-string composition (default `readonly`; verify exact format).
+- §D.5 Q15 refresh-token rotation behavior.
+- §D.6 Q17 Market Data API rate limits independent of Trader API.
+
+These BLOCK each downstream sub-bundle dispatch until completed (operator-paired live verification).
+
+### Three highest-leverage plan decisions (return report §3)
+
+1. **Migration 0018 explicit `BEGIN;`/`COMMIT;` discipline at the SQL file level** — corrects the misreading of CLAUDE.md's `executescript()` gotcha; future migrations 0019+ MUST mirror this discipline until the runner is updated.
+2. **Three-layer token redactor with `logging.setLogRecordFactory()` (NOT `logging.Filter`)** — corrects a fundamental Python logging misunderstanding (filters on ancestor loggers do NOT fire during propagation); the factory approach catches records at creation time regardless of which logger emits or which handler captures, covering pytest caplog + third-party handlers + lazily-created schwabdev sub-loggers.
+3. **Production-only domain writes gating matrix across 5 distinct surfaces** — Trader API call-with-audit-no-domain in sandbox; market-data pipeline SKIPs Schwab entirely in sandbox; `--verify-marketdata` env-independent. Prevents sandbox responses from poisoning production metrics via the source-ladder.
+
+### Inherited disciplines from Phase 9 + Phase 10 + Finviz (per return report)
+
+- Source-ladder consumer (no re-design): §A.4 enumerates verbatim consumption; new `run_schwab_reconciliation()` service mirrors `run_tos_reconciliation` shape; reuses Phase 9 Sub-bundle B `MATERIAL_BY_TYPE` lookup.
+- Service-layer transaction discipline: §A.9 #2 + §H.4.1 step 8d combined-tx2 + new audit service `link_snapshot_and_stamp_account_hash` all OWN BEGIN IMMEDIATE; REJECT caller-held tx.
+- Token redaction layering: §G.3 cassette filters + §H.8 three-layer redactor (Layer 0 known-value exact-replace; Layer 1 heuristic regex; Layer 2 setLogRecordFactory wrapper with thread-local recursion guard + ensure_* re-install defense).
+- Server-stamping: §A.9 #4 + §H.1 setup + §H.2 refresh.
+- USERPROFILE+HOME monkeypatch: §A.9 #8 covers BOTH user-config.toml write path AND schwabdev Tokens DB path resolution.
+- Session-anchor read/write alignment: §A.9 #9 uses `last_completed_session(now())` matching Phase 10 capital-friction read predicate.
+
+### Brief deviations from dispatch brief (per return report; ONE flagged)
+
+- Brief §0.7 estimated "Likely Sub-bundle D: Audit trail + observability + `swing schwab status`". Plan FOLDS audit-infra into Sub-bundle A (must land before B+C consume) + leaves status-full-surface in Sub-bundle D-polish. Justified: A must land the audit-row contract that B+C consume; splitting it from B+C would require A to ship a stub-only audit and then re-touch A's files during D, breaking file-isolation discipline. Acceptable deviation; orchestrator concurs.
+
+### Operator-attention items (per return report)
+
+- **`schwabdev>=2.4.0,<3.0.0` version pin** synthesized; T-A.1 pins exact version + verifies method signatures match §E at Task 0.b. Operator-actionable verification item.
+- **6 deferred Task 0.b verification items** enumerated in plan §D — operator-paired live verification BLOCKS each sub-bundle dispatch until completed (Q8 + Q12 + Q13-residual + Q14 + Q15 + Q17).
+- **Operator-manual DB backup** before first `swing db-migrate` run that lands 0018 (no auto-gate fires per §C.5; cycle-checklist update covers).
+- **NO CLAUDE.md gotchas promoted YET** — plan §J.1-§J.6 enumerate 6 entries that Bundle D T-D.4 will land at executing-plans time.
+
+### Cross-references
+
+- Brainstorm spec: `docs/superpowers/specs/2026-05-13-schwab-api-design.md` (`585556f`).
+- Writing-plans dispatch brief: `docs/schwab-api-writing-plans-dispatch-brief.md` (`5bf425d` + `9fd50e6` COA B amendment).
+- Plan: `docs/superpowers/plans/2026-05-13-schwab-api-integration-plan.md` (`7faab72`).
+- Sub-bundle A executing-plans dispatch brief: TBD (orchestrator drafts; operator-paced).
+
+### Next dispatch
+
+**Sub-bundle A executing-plans dispatch UNBLOCKED.** Operator-paced. Orchestrator drafts the executing-plans brief when operator commissions. Plan §K T-A.0.b runbook covers the operator-paired Task 0.b live API verification gate that blocks Sub-bundle A dispatch start.
+
+**Threading reminder:** review-form polish task (per phase3e-todo entry "Trade exit review form — stale Phase 7 will auto-derive promise") goes into Sub-bundle D's executing-plans dispatch brief at draft time per operator-locked 2026-05-13 disposition.
+
+---
+
 ## 2026-05-13 Schwab API Q18 build-vs-buy disposition LOCKED — COA B = `schwabdev`
 
 **Brainstorm-spec gap surfaced post-triage.** The 2026-05-13 brainstorm spec at `585556f` implicitly chose COA C (roll our own) by enumerating `swing/integrations/schwab/` sub-package + `SchwabClient` + sidecar JSON token storage + custom file-lock + custom OAuth flow as the V1 architecture, **without ever explicitly comparing against the two community-maintained Python wrappers it lists in §12 references** (`schwab-py`, `schwabdev`). Operator surfaced the gap immediately after orchestrator drafted the writing-plans dispatch brief at `5bf425d`; orchestrator researched both libraries' OAuth implementations + presented tradeoff matrix; operator confirmed COA B on 2026-05-13.
