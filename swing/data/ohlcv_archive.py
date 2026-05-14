@@ -286,7 +286,22 @@ def write_window(
     cache_dir: Path,
 ) -> None:
     """Atomically write a Shape A window to
-    `{cache_dir}/{TICKER}.{PROVIDER}.parquet`.
+    `{cache_dir}/{TICKER}.{PROVIDER}.parquet`, **merging with any pre-existing
+    rows by `asof_date`** (Codex R2 Major #2).
+
+    Merge semantics: the incoming window is concatenated with the existing
+    parquet (if any), deduped on `asof_date` with `keep='last'` (NEW rows
+    win on conflict), sorted ascending by `asof_date`, then atomically
+    written back. This preserves rows OUTSIDE the fetched window — e.g. a
+    pre-existing 1260-row archive is NOT clobbered when a 60-row Schwab
+    ladder fetch writes a small window.
+
+    Pre-R2 (REPLACE semantics): `_atomic_parquet_write` overwrote the entire
+    file with `window`, silently truncating archive history whenever the
+    incoming window was smaller than the existing file. Scenario:
+    `swing schwab fetch --verify-marketdata --symbols AAPL` triggers a
+    ladder fetch with a tiny verification window → existing 5-year archive
+    replaced with 1-row file → data loss.
 
     Empty-window guard (Codex R1 Major #7 + CLAUDE.md "External-API
     empty-result must be treated as transient"): if `window` is `None` or
@@ -312,6 +327,34 @@ def write_window(
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = _shape_a_path(cache_dir, ticker, provider)
+
+    # Codex R2 Major #2: merge-by-asof_date semantics. If the parquet
+    # already exists, concat existing + new, dedupe keep='last' (new wins on
+    # conflict), sort ascending. Defense-in-depth around missing `asof_date`
+    # column in the incoming window (caller bug) — fall back to REPLACE in
+    # that case after logging, since merging without the dedup key is
+    # ambiguous.
+    if path.exists() and "asof_date" in window.columns:
+        try:
+            existing = pd.read_parquet(path)
+        except (OSError, ValueError) as exc:  # pragma: no cover — defensive
+            log.warning(
+                "write_window: failed to read existing %s for merge "
+                "(%s); falling back to REPLACE", path, exc,
+            )
+            existing = None
+        if existing is not None and "asof_date" in existing.columns:
+            merged = pd.concat([existing, window]).drop_duplicates(
+                subset=["asof_date"], keep="last"
+            )
+            merged = merged.sort_values("asof_date").reset_index(drop=True)
+            _write_archive_atomic(path, merged)
+            return
+
+    # Either path doesn't exist (first write), or the incoming/existing
+    # frame lacks `asof_date` — preserve the prior REPLACE semantics so we
+    # don't drop the write. The dedup-by-asof_date merge requires the
+    # dedup key on both sides.
     _write_archive_atomic(path, window)
 
 

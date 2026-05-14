@@ -172,6 +172,181 @@ def test_write_window_empty_does_not_clobber_existing_file(tmp_path):
     )
 
 
+# ---------- Codex R2 Major #2: write_window merge-by-asof_date semantics -----
+
+
+def test_write_window_merges_preserves_rows_outside_incoming_window(tmp_path):
+    """**Codex R2 Major #2 KEY DISCRIMINATING TEST.**
+
+    Plant `{TICKER}.schwab_api.parquet` with 100 rows spanning
+    [2026-01-01, 2026-04-10]. Call `write_window(ticker, small_window_df,
+    'schwab_api', cache_dir)` where `small_window_df` has 5 rows in
+    [2026-03-01, 2026-03-05]. Post-write parquet MUST have 100 rows (NOT 5):
+    95 rows OUTSIDE the incoming window preserved + 5 NEW rows replacing
+    the originals on the overlapping dates.
+
+    Pre-fix (REPLACE semantics): the parquet had 5 rows after the write —
+    a tiny verification fetch would silently destroy a 5-year archive.
+    Post-fix (merge-by-asof_date): outside-window rows preserved.
+    """
+    from swing.data.ohlcv_archive import write_window
+
+    # 100 rows spanning Jan-Apr 2026 (every weekday-ish; just a count for the
+    # test). All rows mark close=100.0 so we can detect which rows survive.
+    dates_existing = [
+        f"2026-{m:02d}-{d:02d}"
+        for m, days in [(1, 31), (2, 28), (3, 31), (4, 10)]
+        for d in range(1, days + 1)
+    ]
+    assert len(dates_existing) == 100
+    existing_df = _mk_window(dates_existing, close=100.0)
+    write_window("AAPL", existing_df, "schwab_api", cache_dir=tmp_path)
+
+    # Sanity: file has 100 rows pre-call.
+    path = tmp_path / "AAPL.schwab_api.parquet"
+    assert len(pd.read_parquet(path)) == 100
+
+    # Tiny incoming window: 5 rows in March, with DIFFERENT close to detect
+    # which row wins on conflict.
+    small_window = _mk_window(
+        ["2026-03-01", "2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05"],
+        close=999.0,
+    )
+    write_window("AAPL", small_window, "schwab_api", cache_dir=tmp_path)
+
+    # KEY assertion: 100 rows preserved (95 outside + 5 from incoming window).
+    post = pd.read_parquet(path)
+    assert len(post) == 100, (
+        f"Codex R2 Major #2: write_window OVERWROTE the archive — "
+        f"post-write has {len(post)} rows (expected 100). Merge-by-asof_date "
+        "semantics missing."
+    )
+    by_date = {row["asof_date"]: row["close"] for _, row in post.iterrows()}
+    # March 1-5: NEW rows won (close=999.0).
+    for d in ("2026-03-01", "2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05"):
+        assert by_date[d] == 999.0, (
+            f"R2 Major #2: NEW row did not win on conflict for {d} "
+            f"(got close={by_date[d]}; expected 999.0)"
+        )
+    # Outside the incoming window: ORIGINAL rows preserved.
+    for d in ("2026-01-01", "2026-02-15", "2026-03-15", "2026-04-10"):
+        assert by_date[d] == 100.0, (
+            f"R2 Major #2: outside-window row at {d} was dropped or mutated "
+            f"(got close={by_date[d]}; expected 100.0)"
+        )
+
+
+def test_write_window_merge_new_wins_on_overlapping_dates(tmp_path):
+    """Codex R2 Major #2: on overlapping `asof_date`, NEW row wins.
+    `keep='last'` in the dedup. Discriminates against `keep='first'` /
+    no-dedup."""
+    from swing.data.ohlcv_archive import write_window
+
+    write_window(
+        "AAPL",
+        _mk_window(["2026-01-02", "2026-01-03"], close=100.0),
+        "schwab_api",
+        cache_dir=tmp_path,
+    )
+    # All overlapping; new close=200.0 must win.
+    write_window(
+        "AAPL",
+        _mk_window(["2026-01-02", "2026-01-03"], close=200.0),
+        "schwab_api",
+        cache_dir=tmp_path,
+    )
+
+    path = tmp_path / "AAPL.schwab_api.parquet"
+    post = pd.read_parquet(path)
+    assert len(post) == 2, (
+        f"merge produced wrong row count (got {len(post)}; expected 2 "
+        "with all dates overlapping)"
+    )
+    for _, row in post.iterrows():
+        assert row["close"] == 200.0, (
+            f"R2 Major #2: NEW row should win on conflict; got "
+            f"close={row['close']} for asof_date={row['asof_date']}"
+        )
+
+
+def test_write_window_merge_is_sorted_ascending_by_asof_date(tmp_path):
+    """Codex R2 Major #2: merged frame MUST be sorted ascending by
+    `asof_date`. Discriminates against no-sort / descending sort."""
+    from swing.data.ohlcv_archive import write_window
+
+    # Write in random (non-sorted) order.
+    write_window(
+        "AAPL",
+        _mk_window(["2026-01-05", "2026-01-01", "2026-01-03"], close=100.0),
+        "schwab_api",
+        cache_dir=tmp_path,
+    )
+    # Add more out-of-order rows.
+    write_window(
+        "AAPL",
+        _mk_window(["2026-01-04", "2026-01-02"], close=100.0),
+        "schwab_api",
+        cache_dir=tmp_path,
+    )
+
+    path = tmp_path / "AAPL.schwab_api.parquet"
+    post = pd.read_parquet(path)
+    assert list(post["asof_date"]) == [
+        "2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04", "2026-01-05",
+    ], (
+        "R2 Major #2: merged frame NOT sorted ascending by asof_date; "
+        f"got order={list(post['asof_date'])}"
+    )
+
+
+def test_write_window_merge_idempotent_double_write(tmp_path):
+    """Codex R2 Major #2: writing the same df twice produces a single
+    canonical state (deduped) — not 2x rows."""
+    from swing.data.ohlcv_archive import write_window
+
+    df = _mk_window(["2026-01-02", "2026-01-03"], close=100.0)
+    write_window("AAPL", df, "schwab_api", cache_dir=tmp_path)
+    write_window("AAPL", df, "schwab_api", cache_dir=tmp_path)
+
+    path = tmp_path / "AAPL.schwab_api.parquet"
+    post = pd.read_parquet(path)
+    assert len(post) == 2, (
+        f"R2 Major #2: double-write produced {len(post)} rows (expected 2 "
+        "deduped)"
+    )
+    assert sorted(post["asof_date"].tolist()) == ["2026-01-02", "2026-01-03"]
+
+
+def test_write_window_empty_window_with_existing_file_still_no_op(tmp_path):
+    """Codex R2 Major #2 regression guard: the existing empty-write guard
+    (R1 Major #7) MUST still short-circuit BEFORE the merge logic. An empty
+    df with a pre-existing populated parquet leaves the parquet UNCHANGED.
+
+    Pre-existing test ``test_write_window_empty_does_not_clobber_existing_file``
+    covers this for REPLACE semantics; we re-verify it under merge semantics
+    (the empty-write guard short-circuits before the merge branch runs).
+    """
+    from swing.data.ohlcv_archive import write_window
+
+    populated = _mk_window(["2026-01-02", "2026-01-03"], close=100.0)
+    write_window("AAPL", populated, "schwab_api", cache_dir=tmp_path)
+    path = tmp_path / "AAPL.schwab_api.parquet"
+    pre_mtime = path.stat().st_mtime_ns
+    pre_content = pd.read_parquet(path)
+
+    time.sleep(0.01)
+    write_window("AAPL", pd.DataFrame(), "schwab_api", cache_dir=tmp_path)
+
+    post_content = pd.read_parquet(path)
+    pd.testing.assert_frame_equal(
+        pre_content.reset_index(drop=True),
+        post_content.reset_index(drop=True),
+    )
+    assert path.stat().st_mtime_ns == pre_mtime, (
+        "empty-write guard fired AFTER merge — should short-circuit BEFORE"
+    )
+
+
 # ---------- resolve_ohlcv_window: merge + window-filter ----------------------
 
 
