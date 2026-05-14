@@ -833,14 +833,37 @@ Additional patterns observed across the 4 sample exports in `thinkorswim/`:
 
 ---
 
-## 2026-05-12 Low priority: Minervini reference review vs current strategy implementation
+## 2026-05-12 Low priority: Minervini + body-of-knowledge reference review vs current strategy implementation
 
-**Observation (operator-surfaced 2026-05-12):** Two new methodology reference artifacts landed in `reference/minervini/`:
+**Observation (operator-surfaced 2026-05-12; SCOPE EXPANDED 2026-05-13):** New methodology reference artifacts landed in two locations:
+
+`reference/minervini/`:
 - `896159773-Minervini-Trading-Strategy-Deep-Dive.txt` — 91 KB summary of SEPA.
 - `Mark Minervini - Think & Trade Like a Champion-Access Publishing Group (2017).pdf` — Minervini's second book (~6 MB).
 - `think-and-trade-like-a-champion.md` — pymupdf4llm conversion of the PDF (415 KB markdown + 87 figures in `reference/minervini/figures/`).
 
-These supplement the existing `reference/methodology/minervini-trend-template.md` + `reference/methodology/minervini-sell-side-rules.md` source-of-truth extracts but contain broader doctrine + commentary not yet reconciled against current implementation.
+`reference/Books/` (operator-added; **currently untracked in git** — operator decides tracking posture; orchestrator notes for visibility): 14 PDFs each with a converted `<slug>/<slug>.md` + `figures/` subdirectory (pymupdf4llm output). Files:
+- `Trade Like a Stock Market Wizard (2013).pdf` (Minervini PRIME — already cited in 3e.8 investigation as TLSMW Ch 13 p. 296 anchor for M.2 R-multiple stop-tighten).
+- `Mark Minervini - Think & Trade Like a Champion-Access Publishing Group (2017).pdf` (Minervini PRIME; duplicate of `reference/minervini/` copy).
+- `Mind Secrets for Winning - Mark Minervini.pdf` (Minervini PRIME; psychology + discipline emphasis).
+- `momentum_masters mark minirvani.pdf` (Minervini contributor + Boucher + Minervini + Ryan + Zanger; PRIME on momentum-trading patterns + multi-author confirmation).
+- `Stan-Weinstein-Stan-Weinsteins-Secrets-For-Profiting-in-Bull-and-Bear-Markets-McGraw-Hill-1988.pdf` (CONFIRMING — Stage Analysis is the doctrine predecessor underlying both Minervini's trend template + O'Neill's CAN SLIM stage methodology).
+- `trade-like-an-o-neill-disciple-2010.pdf` (Morales/Kacher; CONFIRMING — O'Neill lineage; pivot/pocket-pivot/buyable-gap-up entry doctrine; sister to TLSMW VCP).
+- `In the trading cockpit with the O'Neil disciples ...18,000% in the stock market.pdf` (CONFIRMING/EXTENDING — Morales/Kacher; trade-journal cadence + post-trade analysis discipline).
+- `Insider Buy - Superstocks (2013).pdf` (CONFIRMING — Morales; insider-buying signal as VCP confirmation; sizing emphasis).
+- `Mark Douglas - Trading in the Zone_New.pdf` + `Trading in the Zone - Master the Market with Confidence, Discipline and a Winning Attitude 2000.pdf` (DISCIPLINE/PSYCHOLOGY axis; primary source for "trade the plan not the P&L" framing).
+- `Stock Market Wizards_ Interviews ...Top Stock Traders_1.pdf` + `_2.pdf` + `The New Market Wizards_ Conversations with America's Top Traders.pdf` + `The Little Book of Market Wizards.pdf` (Schwager; BREADTH/ALTERNATIVE — cross-doctrine validation; surfacing where Minervini's posture aligns with vs diverges from broader top-trader consensus).
+- `Trading for a Living - Psychology, Trading Tactics, Money Management 1993.pdf` (Elder; ALTERNATIVE — different framework (technical indicators + triple-screen); useful for surfacing ALTERNATIVES to Minervini's pure-price-action posture).
+- `The Big Secret To Trading Success.pdf` (BREADTH; uncategorized until skim).
+
+These supplement the existing `reference/methodology/minervini-trend-template.md` + `reference/methodology/minervini-sell-side-rules.md` source-of-truth extracts + the Qullamaggie commentary KB at MCP server `localhost:9871` (per memory `reference_qullamaggie_mcp.md`) but contain broader doctrine + commentary not yet reconciled against current implementation.
+
+**Body-of-knowledge hierarchy (operator-locked 2026-05-13):**
+- **PRIME sources:** Minervini (TLSMW + TTLAC + Mind Secrets + Momentum Masters) + Qullamaggie (MCP commentary KB).
+- **CONFIRMING / ADDITIONAL DETAIL sources:** Stan Weinstein (Stage Analysis foundation); O'Neill lineage (Morales/Kacher books).
+- **ALTERNATIVE sources:** Schwager Market Wizards series (cross-doctrine breadth); Elder Trading for a Living (different technical framework); Mark Douglas Trading in the Zone (psychology baseline); The Big Secret To Trading Success.
+
+The hierarchy means: review-dispatch findings classify reference disagreement by source role. **A PRIME-source prescription that current implementation lacks = GAP.** **A PRIME-source prescription that current implementation diverges from = DIVERGES (rationale required).** **A CONFIRMING source aligning with PRIME = strengthens the finding.** **A CONFIRMING source diverging from PRIME = surface as UNCLEAR for operator adjudication.** **An ALTERNATIVE source presenting a different approach = surface as POTENTIAL-ALTERNATIVE (NOT a GAP unless operator wants to consider adopting; informational only).**
 
 **Scope of review (operator-locked focus: entry/exit/stop; NOT limited to these):**
 
@@ -852,22 +875,38 @@ These supplement the existing `reference/methodology/minervini-trend-template.md
 - **Trade journal cadence + post-trade review.** Current: Phase 6 review_log + cadence card; Phase 8 daily_management_records (event_log + daily_snapshot); MFE/MAE precision tiers. Compare to: Minervini's "post-analysis" prescription (Chapter 8 of TLSMW; chapters in TTLAC); win/loss size asymmetry tracking; batting-average framing.
 - **Mental model / discipline (not limited).** Compare current advisory + cadence surfaces to Minervini's psychological framework — pre-trade plan locking, batting-average framing, "trade the plan not the P&L" discipline, post-loss review cadence.
 
-**Output target:** `docs/methodology-review-minervini-2026-MM-DD.md` (or similar dated memo) enumerating divergences + gaps with citations to both reference sources + current-code surfaces. Memo classifies each finding:
-- **MATCHES** (current implementation aligns with reference; no action).
-- **DIVERGES** (current implementation deliberately differs; document rationale or escalate via V2.1 §VII.F).
-- **GAP** (reference prescribes something current implementation lacks; potential Phase 10+ candidate; route through V2.1 §VII.F if production-touching).
-- **UNCLEAR** (reference ambiguous OR current implementation under-specified; flag for operator adjudication).
+**Output target:** `docs/methodology-review-body-of-knowledge-2026-MM-DD.md` (or per-axis split if scope warrants — see dispatch shape below) enumerating divergences + gaps with citations to source role (PRIME / CONFIRMING / ALTERNATIVE) + current-code surfaces. Memo classifies each finding:
+- **MATCHES** (current implementation aligns with PRIME source; CONFIRMING sources also align; no action).
+- **DIVERGES** (current implementation deliberately differs from PRIME; document rationale or escalate via V2.1 §VII.F).
+- **GAP** (PRIME source prescribes something current implementation lacks; potential V1+ candidate; route through V2.1 §VII.F if production-touching).
+- **UNCLEAR** (PRIME source ambiguous OR PRIME-vs-CONFIRMING disagreement; flag for operator adjudication).
+- **POTENTIAL-ALTERNATIVE** (ALTERNATIVE source presents a different approach; informational only; operator decides whether to consider adopting).
 
 **Suggested dispatch shape (when sequenced):**
 
-Best handled as a single research-subagent dispatch (Explore or general-purpose agent), NOT orchestrator-inline. The grep-and-compare work would burn orchestrator context unnecessarily. Implementer brief: read all 3 reference sources + `reference/methodology/minervini-*.md` + grep current implementation surfaces (entry/exit/stop/sizing/portfolio/journal); produce structured memo. Adjudicate findings with operator after first draft.
+Original 3-source scope (~2-4 hr) is now SUPERSEDED by the body-of-knowledge expansion (~14 books + 2 Minervini/methodology source-extracts + Qullamaggie MCP). Single dispatch would burn excessive context + produce an unwieldy memo. **Recommend modular per-axis dispatch:**
 
-**Operator-paced; not orchestrator-blocking.** Phase 9 arc (Sub-bundles B-E) + Phase 10 brainstorm are higher-priority; this review is durable reference work that should sequence behind in-flight phases. Capturing here so the new reference artifacts don't sit unreconciled.
+1. **Axis dispatch 1 — Entry criteria reconciliation.** PRIME inputs: TLSMW Ch 5-7 + TTLAC entry chapters + Momentum Masters + Qullamaggie episodic-breakout commentary. CONFIRMING: Trade Like an O'Neil Disciple + In the Trading Cockpit + Stan Weinstein Stage 2 entry criteria. Compare: `swing/evaluation/` A+ rules + entry form + sector/industry tamper hardening.
+2. **Axis dispatch 2 — Exit criteria reconciliation.** PRIME inputs: TLSMW Ch 11-13 + TTLAC exit chapters + Qullamaggie sell-side commentary + 3e.8 investigation as prior-art baseline. CONFIRMING: O'Neill disciple sell rules. Compare: `swing/trades/exit.py` + 3e.8 Bundle 2 advisories + Phase 6 review-completion bucketing. **Largely covered by 3e.8 investigation; this axis is the smallest incremental dispatch.**
+3. **Axis dispatch 3 — Stop criteria reconciliation.** PRIME inputs: TLSMW Ch 13 (R-multiple stop-tighten anchor already cited in 3e.8 Bundle 3) + TTLAC stop chapters + Qullamaggie trail-MA commentary. CONFIRMING: O'Neill disciple stop discipline. Compare: `swing/trades/stop_adjust.py` + 3e.8 Bundle 3 advisories. **Largely covered by 3e.8 investigation; smallest incremental dispatch.**
+4. **Axis dispatch 4 — Position sizing + portfolio-level risk reconciliation.** PRIME inputs: TLSMW Ch 9 (1.25-2.5% baseline) + TTLAC sizing + Insider Buy Superstocks (sizing emphasis) + Momentum Masters portfolio heat. CONFIRMING: O'Neill disciple position-sizing. ALTERNATIVE: Elder triple-screen sizing (different framework). Compare: `swing/recommendations/compute_shares` + $7500 capital floor + Phase 9 risk_policy fields (`max_account_risk_per_trade_pct`, `max_concurrent_positions`, `max_portfolio_heat_pct`, `max_sector_concentration_positions`).
+5. **Axis dispatch 5 — Trade journal + post-trade review reconciliation.** PRIME inputs: TLSMW Ch 8 ("post-analysis" prescription) + TTLAC review chapters + In the Trading Cockpit (O'Neil disciples journal cadence). CONFIRMING: Trading in the Zone (review discipline). Compare: Phase 6 review_log + Phase 8 daily_management_records + MFE/MAE precision tiers + Phase 10 metrics surfaces.
+6. **Axis dispatch 6 — Mental model + discipline reconciliation.** PRIME inputs: TLSMW + TTLAC mental-game chapters + Mind Secrets for Winning. CONFIRMING: Trading in the Zone (Douglas) + Trading for a Living (Elder) psychology chapters + Schwager Market Wizards interview anti-patterns. Compare: current advisory + cadence surfaces.
+
+Dispatch shape per axis: single research-subagent dispatch (Explore or general-purpose agent), NOT orchestrator-inline. Implementer brief per axis: read PRIME sources for that axis + skim CONFIRMING sources for alignment + spot-check ALTERNATIVE sources + grep current implementation surfaces + produce per-axis memo. Adjudicate findings with operator after each axis ships.
+
+**Operator can elect:** (a) full 6-axis sequence (largest scope; most thorough; ~4-12 hr per axis); (b) skip axes 2 + 3 since 3e.8 investigation already covered them at PRIME-source depth (smallest incremental scope; defer 2+3 unless TTLAC fills 3e.8-deferred items M.1, M.4, §4.A full, §4.C/§4.C.bis); (c) bundled "TTLAC-incremental + body-of-knowledge confirmation" pass (1 dispatch covering only what's NEW since 3e.8 investigation; smallest credible scope; ~4-6 hr).
+
+**Operator-paced; not orchestrator-blocking.** Schwab API arc (in-flight 2026-05-13) + post-Schwab next-arc (TBD) are higher-priority; this review is durable reference work that should sequence behind code-shipping arcs. Capturing here so the body-of-knowledge artifacts don't sit unreconciled.
+
+**Tracking posture for `reference/Books/`:** currently untracked; orchestrator surfaces for operator decision. Options: (a) commit (preserves doctrine-anchor reproducibility for future review-dispatches; +110 MB to repo + figures); (b) keep untracked (smaller repo + assumes operator-local stability of the corpus; review-dispatches need operator's local copy); (c) commit MD-only + .gitignore PDFs (mid-ground; preserves text reference at modest size; figures still tracked since they're cited inline). Operator-paced decision; not orchestrator-blocking.
 
 **Cross-references:**
 - `reference/minervini/think-and-trade-like-a-champion.md` (converted 2026-05-12 via pymupdf4llm).
 - `reference/methodology/minervini-trend-template.md` + `minervini-sell-side-rules.md` (existing source-of-truth extracts).
-- `docs/3e8-sell-side-advisories-investigation.md` (746-line survey of sell-side advisory surface vs Minervini SEPA + DST + Qullamaggie doctrine; SHIPPED 2026-05-10 at `63350ad`; informs the exit/stop comparison axis).
+- `reference/Books/<slug>/<slug>.md` + `figures/` (14 books pymupdf4llm-converted 2026-05-11; operator-added).
+- Qullamaggie commentary KB at MCP server `localhost:9871` (per memory `reference_qullamaggie_mcp.md`; PRIME source).
+- `docs/3e8-sell-side-advisories-investigation.md` (746-line survey of sell-side advisory surface vs Minervini SEPA + DST + Qullamaggie doctrine; SHIPPED 2026-05-10 at `63350ad`; **substantially covers axes 2 + 3** — exit + stop reconciliation; the body-of-knowledge expansion's incremental value over 3e.8 is axes 1 + 4 + 5 + 6 plus TTLAC-fills-3e.8-deferred-items check).
 - `reference/Future Work/2026-04-23-bifurcated-strategic-implementation-proposal-v2.1.md` §VII.F (source-of-truth correction protocol; routes production-touching findings).
 - CLAUDE.md "Strategy" section — `reference/methodology/` is reference-only; any production change driven by methodology reference routes through V2.1 §VII.F.
 
