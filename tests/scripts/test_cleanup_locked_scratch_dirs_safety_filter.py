@@ -141,3 +141,42 @@ def test_script_file_present_with_deregister_first_param() -> None:
     assert "[DRY-RUN] Would run: git -C" in source, (
         "cleanup-locked-scratch-dirs.ps1 missing -DryRun branch for deregister pre-pass"
     )
+
+
+def test_deregister_pre_pass_prompts_for_confirmation_before_git_remove() -> None:
+    """Codex R1 Critical #1 (post-phase10-infra-bundle 2026-05-13):
+    the deregister pre-pass MUST present its candidate list to the
+    operator + prompt for y/N confirmation BEFORE invoking
+    ``git worktree remove --force``. ``-DryRun`` skips the prompt
+    (non-destructive); ``-NoConfirm`` skips it (explicit opt-out).
+    """
+    source = SCRIPT_PATH.read_text(encoding="utf-8")
+
+    # The deregister Read-Host must exist and gate the loop
+    assert "Read-Host \"Proceed with `git worktree remove --force`" in source, (
+        "cleanup-locked-scratch-dirs.ps1 missing the deregister confirmation prompt; "
+        "Codex R1 Critical #1 regression."
+    )
+
+    # The confirmation prompt must come BEFORE the destructive
+    # `git -C $ProjectRoot worktree remove --force $p` call inside the
+    # `foreach ($p in $deregisterCandidates)` loop. Verify ordering by
+    # text position.
+    prompt_idx = source.index("Read-Host \"Proceed with `git worktree remove --force`")
+    # Find the destructive call AFTER the candidates listing (skip the
+    # comment occurrence inside the pre-pass header)
+    git_remove_idx = source.index("& git -C $ProjectRoot worktree remove --force $p")
+    assert prompt_idx < git_remove_idx, (
+        "Confirmation prompt must appear textually BEFORE the destructive "
+        "git worktree remove call inside the deregister loop; ordering "
+        "regression for Codex R1 Critical #1."
+    )
+
+    # DryRun + NoConfirm gates must be on the prompt condition
+    prompt_block = source[prompt_idx - 200 : prompt_idx]
+    assert "-not $DryRun" in prompt_block, (
+        "Deregister confirmation must SKIP under -DryRun (already non-destructive)"
+    )
+    assert "-not $NoConfirm" in prompt_block, (
+        "Deregister confirmation must SKIP under -NoConfirm (scripted re-run opt-out)"
+    )

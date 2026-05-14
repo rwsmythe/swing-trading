@@ -244,6 +244,27 @@ if ($DeregisterFirst) {
     Write-Output "  Found $($deregisterCandidates.Count) matching phase\d+-* worktree$(if ($deregisterCandidates.Count -eq 1) {''} else {'s'}):"
     foreach ($p in $deregisterCandidates) { Write-Output "    [match] $p" }
 
+    # Per Codex R1 Critical #1 (post-phase10-infra-bundle 2026-05-13):
+    # `git worktree remove --force` is destructive (it deregisters the
+    # branch from git's index even when the on-disk delete fails). The
+    # existing Read-Host confirmation below gates the takeown/icacls/
+    # Remove-Item phase; the deregister pre-pass needs its OWN confirmation
+    # so an operator who sees an unexpected `phase11-something` worktree
+    # in the candidate list can abort BEFORE git acts on it. Skip the
+    # prompt when -DryRun (already non-destructive) OR -NoConfirm
+    # (operator opted into the scripted re-run path).
+    if (-not $DryRun -and -not $NoConfirm) {
+      $confirm = Read-Host "Proceed with `git worktree remove --force` on the $($deregisterCandidates.Count) candidate$(if ($deregisterCandidates.Count -eq 1) {''} else {'s'}) above? (y/N)"
+      if ($confirm -ne 'y') {
+        Write-Output "  Aborted by user. No worktree was deregistered."
+        Write-Output ""
+        # Skip the loop; orphan-discovery pass below still runs for any
+        # pre-existing orphan dirs even when the operator declines the
+        # deregister batch.
+        $deregisterCandidates = @()
+      }
+    }
+
     foreach ($p in $deregisterCandidates) {
       if ($DryRun) {
         Write-Output "  [DRY-RUN] Would run: git -C `"$ProjectRoot`" worktree remove --force `"$p`""
