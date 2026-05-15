@@ -1821,3 +1821,275 @@ def test_28_marketdata_price_history_sentinel_emitted_from_inside_call_is_redact
         assert sentinel not in (r[0] or ""), (
             f"audit error_message leaked inside-call sentinel: {r[0]!r}"
         )
+
+
+# ============================================================================
+# Tests 29-30 — T-B.6: cfg-cascade-sourced credential sentinel-leak audit
+# ============================================================================
+#
+# Sub-bundle A's `test_env_var_values_registered_for_redaction` (Test 9 in
+# test_schwab_credential_env_vars.py) + `..._when_short_and_layer1_skips`
+# (Test 9.bis) cover env-var-sourced credentials only. T-B.1 added a
+# Tier-2 cfg-cascade resolution path (env absent → consult
+# `cfg.integrations.schwab.{client_id,client_secret}` from
+# `~/swing-data/user-config.toml`); the cfg-tier branch also calls
+# `register_schwab_secrets` + `ensure_schwab_log_redaction_factory_installed`
+# BEFORE returning. T-B.6 pins that this registration fires for the
+# cfg-cascade path with the SAME discriminating threat-model split as the
+# Sub-bundle A precedent:
+#
+#   * Test 29 (a): long ALL-CAPS sentinel — Layer-1 heuristic catches it
+#     AND Layer-0 registry catches it; end-to-end leak guarantee.
+#   * Test 30 (b): 16-char hyphenated sentinel — BYPASSES Layer-1
+#     (`[A-Za-z]{24+}` for base64-like; hex 32+); ONLY Layer-0 registry
+#     registration scrubs it. If the cfg-tier branch ever stops calling
+#     `register_schwab_secrets`, this test fails.
+#
+# Brief §3 T-B.6 binding scope extension over T-B.1's existing
+# `test_cfg_sentinel_redacted_from_schwabdev_log_records`: T-B.6 covers
+# BOTH caplog (Layer-2 factory) AND audit `error_message` redactor
+# (`_redact_error_message_for_audit` — the standalone fallback that writes
+# to `schwab_api_calls.error_message`). Test 18 above pins this redactor
+# for ad-hoc registered sentinels; Tests 29-30 pin the same guarantee for
+# sentinels that arrived through the cfg-cascade path.
+
+
+def _write_cfg_with_schwab_credentials(
+    tmp_path,
+    *,
+    client_id: str,
+    client_secret: str,
+) -> None:
+    """Write a minimal user-config.toml carrying the T-B.2 schwab credential
+    fields under the cfg-cascade home directory (tmp_path).
+
+    USERPROFILE+HOME monkeypatch is caller's responsibility (CLAUDE.md
+    gotcha — `swing/config_user.py:_user_home` reads them).
+    """
+    swing_data = tmp_path / "swing-data"
+    swing_data.mkdir(parents=True, exist_ok=True)
+    user_cfg = swing_data / "user-config.toml"
+    # Minimal TOML — only the two T-B.2 fields the resolver consults.
+    user_cfg.write_text(
+        "[integrations.schwab]\n"
+        f"client_id = \"{client_id}\"\n"
+        f"client_secret = \"{client_secret}\"\n",
+        encoding="utf-8",
+    )
+
+
+def test_29_cfg_cascade_credentials_registered_for_redaction(
+    tmp_path, monkeypatch, caplog,
+):
+    """T-B.6 Test (a) — sibling to Sub-bundle A's
+    `test_env_var_values_registered_for_redaction` (Test 9 in
+    `test_schwab_credential_env_vars.py`), but credentials sourced via the
+    cfg-cascade path (Tier-2: user-config.toml) instead of env vars.
+
+    Threat model split: this sentinel is long ALL-CAPS with underscores —
+    long enough that Layer-1 base64 heuristic would scrub it WITHOUT
+    requiring registry registration. End-to-end leak guarantee: caplog
+    (Layer-2 factory) AND audit `error_message` redactor (standalone
+    fallback) both scrub the sentinel.
+    """
+    from types import SimpleNamespace
+
+    from swing.integrations.schwab.auth import resolve_credentials_env_or_prompt
+    from swing.integrations.schwab.client import (
+        _redact_error_message_for_audit,
+        ensure_schwab_log_redaction_factory_installed,
+    )
+
+    # CLAUDE.md gotcha: USERPROFILE+HOME both monkeypatched before any
+    # `write_user_overrides` / `load_user_overrides` / cfg-tier resolution
+    # fires; otherwise the cfg write would leak to the operator's real
+    # `~/swing-data/user-config.toml`.
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    # Env-tier MUST be absent so the cascade reaches Tier-2.
+    monkeypatch.delenv("SCHWAB_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SCHWAB_CLIENT_SECRET", raising=False)
+
+    # Long ALL-CAPS sentinels (mirror Sub-bundle A's `_SENTINEL_CLIENT_ID`
+    # shape): 47 chars, alphanumeric + underscores. Layer-1 catches them
+    # via the base64-like `[A-Za-z]{24+}` heuristic; Layer-0 also catches
+    # them via registry. This test pins the end-to-end leak guarantee.
+    cfg_sentinel_id = (
+        "CFG_CASCADE_LONG_CLIENT_ID_SENTINEL_"
+        + uuid.uuid4().hex[:8].upper()
+    )
+    cfg_sentinel_secret = (
+        "CFG_CASCADE_LONG_CLIENT_SECRET_SENTINEL_"
+        + uuid.uuid4().hex[:8].upper()
+    )
+    _write_cfg_with_schwab_credentials(
+        tmp_path,
+        client_id=cfg_sentinel_id,
+        client_secret=cfg_sentinel_secret,
+    )
+
+    # Build a duck-typed cfg that carries the same values the file holds —
+    # `resolve_credentials_env_or_prompt` consults `cfg.integrations.schwab.
+    # {client_id, client_secret}` directly; the user-config.toml file
+    # written above is what an OPERATOR pre-stages, but the resolver reads
+    # the cfg-object's already-loaded fields. We mirror that by passing a
+    # SimpleNamespace shaped the same way (matches T-B.1 cfg-cascade tests'
+    # `_cfg_with` helper at tests/integrations/test_schwab_credential_cascade.py).
+    cfg = SimpleNamespace(
+        integrations=SimpleNamespace(
+            schwab=SimpleNamespace(
+                environment="production",
+                callback_url="https://127.0.0.1",
+                timeout_seconds=10,
+                client_id=cfg_sentinel_id,
+                client_secret=cfg_sentinel_secret,
+            ),
+        ),
+    )
+
+    client_id, client_secret = resolve_credentials_env_or_prompt(
+        cfg, "production", allow_prompt=False,
+    )
+    assert client_id == cfg_sentinel_id
+    assert client_secret == cfg_sentinel_secret
+
+    # Cfg-tier branch MUST have called register_schwab_secrets +
+    # ensure_schwab_log_redaction_factory_installed before returning.
+    # Emit a Schwabdev-prefixed log record interpolating both sentinels +
+    # assert they are scrubbed from caplog.
+    ensure_schwab_log_redaction_factory_installed()
+    schwabdev_logger = logging.getLogger("Schwabdev.test_t_b_6_cfg_long")
+    caplog.set_level(logging.DEBUG, logger="Schwabdev")
+    schwabdev_logger.warning(
+        "test record interpolating cfg-sourced id=%s secret=%s",
+        cfg_sentinel_id,
+        cfg_sentinel_secret,
+    )
+    captured_caplog = "\n".join(r.getMessage() for r in caplog.records)
+    assert cfg_sentinel_id not in captured_caplog, (
+        f"cfg-cascade client_id sentinel leaked into Schwabdev log records "
+        f"— cfg-tier registry registration broken:\n{captured_caplog}"
+    )
+    assert cfg_sentinel_secret not in captured_caplog, (
+        f"cfg-cascade client_secret sentinel leaked into Schwabdev log "
+        f"records — cfg-tier registry registration broken:\n{captured_caplog}"
+    )
+
+    # Audit-row dimension (mirror test_18 above): the standalone redactor
+    # used when writing to `schwab_api_calls.error_message` must also scrub
+    # cfg-cascade-sourced sentinels. This pins that the same process-global
+    # registry that drives Layer-2 also drives audit-row Layer-0 path.
+    audit_message = (
+        f"SchwabAuthError: token={cfg_sentinel_id} secret={cfg_sentinel_secret}"
+    )
+    redacted_audit = _redact_error_message_for_audit(audit_message)
+    assert cfg_sentinel_id not in redacted_audit, (
+        f"cfg-cascade client_id leaked into audit error_message redactor:\n"
+        f"{redacted_audit}"
+    )
+    assert cfg_sentinel_secret not in redacted_audit, (
+        f"cfg-cascade client_secret leaked into audit error_message redactor:\n"
+        f"{redacted_audit}"
+    )
+
+
+def test_30_cfg_cascade_credentials_redacted_when_short_and_layer1_skips(
+    tmp_path, monkeypatch, caplog,
+):
+    """T-B.6 Test (b) — sibling to Sub-bundle A's
+    `test_env_var_values_redacted_when_short_and_layer1_skips` (Test 9.bis
+    in `test_schwab_credential_env_vars.py`), but credentials sourced via
+    the cfg-cascade path.
+
+    Discriminator: short hyphenated sentinels (16 chars; hyphens BREAK both
+    Layer-1 heuristic patterns — `[A-Za-z]{24+}` for base64-like AND
+    `[0-9a-f]{32+}` for hex). Only Layer-0 registry exact-replace scrubs
+    them. If the cfg-tier branch in
+    `swing/integrations/schwab/auth.py:resolve_credentials_env_or_prompt`
+    ever stops calling `register_schwab_secrets`, THIS test fails (Test 29
+    above might still pass via Layer-1 fallback).
+
+    Asserts sentinel absent from BOTH caplog (Layer-2 factory) AND audit
+    `error_message` redactor (standalone fallback) — pins the full
+    cfg-cascade redaction posture.
+    """
+    from types import SimpleNamespace
+
+    from swing.integrations.schwab.auth import resolve_credentials_env_or_prompt
+    from swing.integrations.schwab.client import (
+        _redact_error_message_for_audit,
+        ensure_schwab_log_redaction_factory_installed,
+    )
+
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SCHWAB_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SCHWAB_CLIENT_SECRET", raising=False)
+
+    # Short hyphenated sentinels: 16-18 chars; hyphens break Layer-1's hex
+    # AND base64 patterns (`[A-Za-z]{24+}` rejects strings with `-`;
+    # `[0-9a-f]{32+}` rejects strings with non-hex chars). Mirrors
+    # Sub-bundle A's `_SHORT_SENTINEL_CLIENT_ID = "test-app-id-7f3a"`
+    # shape.
+    cfg_short_id = "cfg-short-id-" + uuid.uuid4().hex[:4]  # 17 chars
+    cfg_short_secret = "cfg-short-sec-" + uuid.uuid4().hex[:4]  # 18 chars
+    _write_cfg_with_schwab_credentials(
+        tmp_path,
+        client_id=cfg_short_id,
+        client_secret=cfg_short_secret,
+    )
+
+    cfg = SimpleNamespace(
+        integrations=SimpleNamespace(
+            schwab=SimpleNamespace(
+                environment="production",
+                callback_url="https://127.0.0.1",
+                timeout_seconds=10,
+                client_id=cfg_short_id,
+                client_secret=cfg_short_secret,
+            ),
+        ),
+    )
+
+    client_id, client_secret = resolve_credentials_env_or_prompt(
+        cfg, "production", allow_prompt=False,
+    )
+    assert client_id == cfg_short_id
+    assert client_secret == cfg_short_secret
+
+    ensure_schwab_log_redaction_factory_installed()
+    schwabdev_logger = logging.getLogger("Schwabdev.test_t_b_6_cfg_short")
+    caplog.set_level(logging.DEBUG, logger="Schwabdev")
+    schwabdev_logger.warning(
+        "test record interpolating short cfg-sourced id=%s secret=%s",
+        cfg_short_id,
+        cfg_short_secret,
+    )
+    captured_caplog = "\n".join(r.getMessage() for r in caplog.records)
+    assert cfg_short_id not in captured_caplog, (
+        f"short cfg-cascade client_id sentinel leaked — cfg-tier "
+        f"register_schwab_secrets broken (Layer-1 cannot save us; sentinel "
+        f"contains hyphens that break the heuristic):\n{captured_caplog}"
+    )
+    assert cfg_short_secret not in captured_caplog, (
+        f"short cfg-cascade client_secret sentinel leaked — cfg-tier "
+        f"register_schwab_secrets broken (Layer-1 cannot save us):\n"
+        f"{captured_caplog}"
+    )
+
+    # Audit-row dimension: same Layer-0-only discriminator applied to the
+    # standalone error_message redactor.
+    audit_message = (
+        f"SchwabAuthError: token={cfg_short_id} secret={cfg_short_secret}"
+    )
+    redacted_audit = _redact_error_message_for_audit(audit_message)
+    assert cfg_short_id not in redacted_audit, (
+        f"short cfg-cascade client_id leaked into audit error_message "
+        f"redactor — Layer-0 registry broken on cfg-tier path:\n"
+        f"{redacted_audit}"
+    )
+    assert cfg_short_secret not in redacted_audit, (
+        f"short cfg-cascade client_secret leaked into audit error_message "
+        f"redactor — Layer-0 registry broken on cfg-tier path:\n"
+        f"{redacted_audit}"
+    )
