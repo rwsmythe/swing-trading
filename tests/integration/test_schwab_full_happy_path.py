@@ -1,4 +1,25 @@
-"""Schwab API arc-closer Sub-bundle D Task T-D.3 — combined E2E happy path.
+"""Schwab API arc-closer Sub-bundle D Task T-D.3 — combined SERVICE-COMPOSITION
+end-to-end happy path (NOT CLI-driven E2E).
+
+Codex R1 Major #4 ACCEPT-WITH-RATIONALE clarification: this test exercises
+the SERVICE-COMPOSITION chain (snapshot → orders → reconciliation →
+market-data → briefing render) in one connection — which the per-CLI
+tests do NOT cover. It deliberately bypasses the `swing schwab` CLI surface
++ pipeline composition; that coverage is provided elsewhere by:
+
+  - `tests/cli/test_schwab_status_d_full_surface.py` — `swing schwab status`
+    CLI surface (T-D.1 + Codex R1 fixes).
+  - `tests/integrations/test_cli_schwab_fetch_verify_marketdata.py` —
+    `swing schwab fetch --verify-marketdata` CLI surface (T-C.5).
+  - `tests/integrations/test_schwab_setup_cli.py` — `swing schwab setup`
+    CLI surface (T-A.4 + Codex R1 M#3 message fix).
+  - `tests/integrations/test_schwab_pipeline_steps.py` — pipeline-internal
+    `_step_schwab_*` invocation under lease.
+
+Adding CLI-level happy-path coverage here would duplicate those tests
+without adding new defect-detection capability. The asymmetry is
+intentional + must be preserved: this test owns the service-composition
+contract; the per-CLI tests own the per-command UX contract.
 
 Plan §Tasks-D T-D.3 + dispatch brief §0.9 + §5.2 T-D.3 row: a SINGLE
 test that exercises the operator's natural workflow across all of the
