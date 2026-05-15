@@ -141,7 +141,7 @@ Per brief §1.5 + §2.8 Sub-bundle C is expected to decompose into 3-4 sub-sub-b
 | `applied_by` | TEXT | NOT NULL | CHECK IN (`'auto'`, `'operator'`); `'auto'` on tier-1 `auto_applied`; `'operator'` on tier-2 + tier-3 |
 | `correction_set_id` | INTEGER | nullable | groups multi-column atomic corrections under one logical correction (§3.1.1); NULL when the correction is single-column (most common) |
 | `superseded_by_correction_id` | INTEGER | nullable | FK → `reconciliation_corrections(correction_id)` self-reference; set when a later override-of-override chains; preserves the override chain |
-| `risk_policy_id_at_correction` | INTEGER | NOT NULL | FK → `risk_policy(policy_id)` ON DELETE SET NULL; Phase 8 R1 M5 lesson — per-row stamp at write time so future policy edits don't reinterpret the validator chain that approved this correction |
+| `risk_policy_id_at_correction` | INTEGER | nullable | FK → `risk_policy(policy_id)` ON DELETE SET NULL; **NULLABLE** to be consistent with `ON DELETE SET NULL` action (Codex R1 Major #3 fix — NOT NULL + SET NULL is internally inconsistent; matches Phase 9 §3.1.1 trades.risk_policy_id_at_lock + review_log.risk_policy_id_at_review_completion precedent which are also nullable + SET NULL). risk_policy is append-only in V1 so DELETE doesn't fire in practice; SET NULL is defensive forward compat. App layer SHOULD populate at write time (Phase 8 R1 M5 lesson — per-row stamp at write time so future policy edits don't reinterpret the validator chain that approved this correction); a defensive backfill of legacy NULL rows is V2 candidate if a Phase 10 metric requires the stamp on every correction row |
 | `schwab_api_call_id` | INTEGER | nullable | FK → `schwab_api_calls(call_id)` ON DELETE SET NULL; the Schwab API call whose response surfaced the source-canonical value used for this correction; NULL when the source is TOS-CSV (not Schwab) or when no specific call is attributable (e.g., classifier ran against cached payload) |
 | `reconciliation_run_id` | INTEGER | NOT NULL | FK → `reconciliation_runs(run_id)` ON DELETE CASCADE (mirrors discrepancy FK; correction is bound to the run that emitted the discrepancy) |
 | `correction_reason` | TEXT | nullable | free-text rationale; auto-filled on `'auto_applied'` rows with classifier-generated description; operator-supplied on `'operator_resolved_ambiguity'` and `'operator_overridden'` rows (REQUIRED on tier-3 per §6.4) |
@@ -162,7 +162,7 @@ Per brief §1.5 + §2.8 Sub-bundle C is expected to decompose into 3-4 sub-sub-b
 
 A small number of correction families operate over multiple columns atomically. Example (`unmatched_open_fill` → `multi_partial_vs_consolidated` resolved via "split-into-partials" operator choice): operator picks split; service deletes the consolidated journal fill + inserts N partial fills. That single operator choice produces multiple `reconciliation_corrections` rows (one per affected fill PK and per column conceptually; the simplification we adopt is one row per affected (table, row_id, field_name)). The `correction_set_id` column groups them: all rows in the same set share a common UUID-like INTEGER (autoincrement seed assigned at set-construction time by the service; first row in set is its own set anchor, subsequent rows reference the anchor row's `correction_id` as `correction_set_id`).
 
-Single-column corrections leave `correction_set_id` NULL (most common). Multi-column corrections set `correction_set_id` on all rows in the set, including the anchor row (anchor row sets `correction_set_id = correction_id` of itself, i.e., set its own anchor). Writing-plans clarifies the exact bind-on-INSERT mechanic (likely two-step: INSERT anchor row → SELECT its `correction_id` → UPDATE anchor row's `correction_set_id` to itself → INSERT remaining rows in set with `correction_set_id` = anchor's `correction_id`).
+Single-column corrections leave `correction_set_id` NULL (most common). Multi-column corrections set `correction_set_id` on all rows in the set; the value is the `correction_id` of the anchor row (the first row INSERTed in the set; subsequent rows reference the anchor row's `correction_id` as `correction_set_id`). The anchor row points back at itself: after the anchor row is INSERTed, it is UPDATEd to set `correction_set_id = correction_id`. Codex R1 Minor #1 fix: this is an **anchor correction id**, not a "UUID-like INTEGER" — the value is the autoincrement-assigned PK of the anchor row, used as a group identifier within the set. Writing-plans clarifies the bind-on-INSERT mechanic (two-step: INSERT anchor row → SELECT its `correction_id` → UPDATE anchor row's `correction_set_id` to itself → INSERT remaining rows in set with `correction_set_id` = anchor's `correction_id`).
 
 #### §3.1.2 Override chain semantics (`superseded_by_correction_id`)
 
@@ -223,7 +223,7 @@ Coverage check against §1.4 production discrepancies: CVGI 41 hits tier-1 (no k
 
    Marks a review row as "post-review correction has been applied to one or more of its constituent fills" so Phase 10 dashboards + operator-facing review-detail surfaces can render the badge `"Frozen aggregates were computed before a reconciliation correction applied on YYYY-MM-DD; the frozen R-multiple may not match current fills"`.
 
-   Mechanic: the auto-correction service (§5) at apply-time queries which `review_log` rows reference (via `trade_id` + (closure logic)) any fill the correction touches; UPDATEs `review_log.superseded_by_correction_id` for each affected review row. Operator can opt to re-review (Phase 6 surface; out of Sub-bundle C scope to wire UI for this — surface in V2). Frozen aggregates remain frozen (per §9.1 LOCK).
+   Mechanic: the auto-correction service (§5) at apply-time queries which `review_log` rows are CADENCE-PERIOD-anchored against the affected fill's owning trade's close date — `review_log` itself is cadence-period-grain with NO `trade_id` column (Phase 6 migration 0013), so the JOIN is via the affected trade's close date falling within the review's `[period_start, period_end]`. Per §5.4 step 9 for the binding lookup SQL sketch. UPDATEs `review_log.superseded_by_correction_id` for each matched review row. Operator can opt to re-review (Phase 6 surface; out of Sub-bundle C scope to wire UI for this — surface in V2). Frozen aggregates remain frozen (per §9.1 LOCK).
 
    ALTER mechanic: `ALTER TABLE review_log ADD COLUMN superseded_by_correction_id INTEGER REFERENCES reconciliation_corrections(correction_id) ON DELETE SET NULL` — nullable column add, no rebuild needed.
 
@@ -503,24 +503,47 @@ Idempotency contract:
 6. For `fills` corrections specifically, call the existing `_recompute_aggregates` (the same path Phase 7 `insert_fill_with_event` uses) so `trades.current_size` / `current_avg_cost` / `last_fill_at` stay consistent.
 7. INSERT one `reconciliation_corrections` row per (affected_table, affected_row_id, field_name) tuple. For multi-column atomic corrections (rare V1), bundle via `correction_set_id` (§3.1.1).
 8. UPDATE `reconciliation_discrepancies` SET `resolution='auto_corrected_from_schwab'`, `resolution_reason=correction_reason`, `resolved_at=NOW`, `resolved_by='auto'`.
-9. UPDATE affected `review_log` rows' `superseded_by_correction_id` to point to the new correction (for closed-reviewed trades' fills). The lookup is: `SELECT review_log.review_id FROM review_log JOIN trades ON review_log.trade_id = trades.id JOIN fills ON fills.trade_id = trades.id WHERE fills.fill_id = <affected_row_id>`. Per §9.1 LOCK frozen aggregates stay frozen; only the FK pointer is set.
+9. UPDATE affected `review_log` rows' `superseded_by_correction_id` to point to the new correction (for closed-reviewed trades' fills). **Codex R1 Major #1 fix (LOCKED):** `review_log` is cadence-period-grain — it has NO `trade_id` column. The shipped schema (migration 0013 lines 44-70) has `(review_type, period_start, period_end, completed_date, ...)`; Phase 6's `complete_review_atomic` helper (`swing/data/repos/review_log.py:213-238`) derives the per-review trade set by joining closed trades whose final exit/close date falls in `[period_start, period_end]`. The Sub-bundle C supersede-lookup mirrors that derivation:
+   - For `affected_table='fills'`: compute the `trade_id` of the affected fill → compute that trade's effective close date (`MAX(fill.fill_datetime)` over its `'exit'`/`'stop'` action fills) → match against review_log rows where `state='completed'` (`completed_date IS NOT NULL`) AND `period_start <= <trade_close_date> <= period_end`.
+   - For `affected_table='trades'` (rare; e.g., stop_mismatch corrections): same trade-close-date derivation against review_log periods.
+   - For `affected_table='cash_movements'` or `'account_equity_snapshots'`: skip — these aren't trade-grain so review_log doesn't reference them.
+   - Concrete SQL sketch (writing-plans verifies + tightens):
+     ```
+     -- For a corrected fill at affected_row_id = <fill_id>:
+     SELECT rl.review_id
+     FROM review_log rl
+     WHERE rl.completed_date IS NOT NULL
+       AND rl.period_start <= <trade_close_date_iso>
+       AND <trade_close_date_iso> <= rl.period_end;
+     ```
+   - Per §9.1 LOCK frozen aggregates stay frozen; only the FK pointer is set on each matched review_log row. If the affected fill belongs to a trade whose close date doesn't fall into any review's period (e.g., the trade is still OPEN at correction time — CVGI 41 path, §10.1), zero `review_log` rows are touched.
 10. Emit one `trade_events` row with `event_type='reconciliation_auto_correct'` (per §3.5) when `affected_table='fills'` AND the affected fill's trade_id is non-NULL. Payload JSON carries the correction details for trade-detail UI consumption.
 11. COMMIT.
 
 Failure-mode contract: any exception between step 4 and step 11 triggers ROLLBACK; the discrepancy stays `unresolved`. Caller (§7 flow pivot) catches `ValidatorRejectedError` specifically and re-routes to tier-2 path with `ambiguity_kind='validator_rejected'`.
 
-### §5.5 Validator chain composition
+### §5.5 Validator chain composition (Codex R1 Major #2 fix — LOCKED)
 
-The service builds the validator chain from:
+**Important clarification:** shipped repo modules (`swing/data/repos/fills.py`, `trades.py`, `cash_movements.py`, `account_equity_snapshots.py`) do NOT currently expose dedicated callable validator functions. The invariants today are enforced primarily via (a) SQLite schema `CHECK` constraints + FK constraints at INSERT/UPDATE time, plus (b) `_recompute_aggregates` invariants triggered indirectly by `insert_fill_with_event` / similar service entry points (e.g., `swing/data/repos/fills.py:79-105`). There is no `def validate_fill(...)` callable a third party can import + dry-run.
 
-- `swing/data/repos/fills.py` — fills validators on quantity / price / trade_id existence + `_recompute_aggregates` invariants
-- `swing/data/repos/trades.py` — trades validators (state transitions, stop validity)
-- `swing/data/repos/cash_movements.py` — cash_movements validators (sign / date / type)
-- `swing/data/repos/account_equity_snapshots.py` — snapshot validators (equity_dollars > 0)
+**Sub-bundle C ships a new shim module** at sub-sub-bundle C.B time: `swing/trades/reconciliation_validators.py`. This shim exposes pure-function dry-run validators that mirror the schema's CHECK + FK constraints WITHOUT performing the actual INSERT/UPDATE:
 
-Phase 6 review_log invariants are NOT validators (they're frozen aggregates by design; auto-correction RETAINS them per §9.1 — only updates the superseded_by pointer).
+| Validator | Mirrors | Surfaces |
+|---|---|---|
+| `validate_fill_correction(conn, fill_id, proposed_updates: dict) -> bool` | migration 0014 `fills` CHECK + FK constraints + Phase 7 `_recompute_aggregates` invariants (post-correction `current_size >= 0`) | for `affected_table='fills'` corrections |
+| `validate_trade_correction(conn, trade_id, proposed_updates: dict) -> bool` | migration 0014 `trades` CHECK + state transitions (`current_stop > 0` etc.) | for `affected_table='trades'` corrections |
+| `validate_cash_movement_correction(conn, movement_id, proposed_updates: dict) -> bool` | shipped `cash_movements` CHECK + FK | for `affected_table='cash_movements'` corrections |
+| `validate_snapshot_correction(conn, snapshot_id, proposed_updates: dict) -> bool` | migration 0017 `account_equity_snapshots.equity_dollars > 0` etc. | for `affected_table='account_equity_snapshots'` corrections |
 
-Phase 9 risk_policy at-trade-time-locked references: when auto-correction touches `fills.price` on an entry fill whose trade has a non-NULL `risk_policy_id_at_lock`, the validator chain consults that policy version's `scratch_epsilon_R` + `max_account_risk_per_trade_pct` (advisory only; not blocking — these are tripwires that surface advisories at Phase 10 dashboard time, not validators that reject corrections).
+Each validator: reads the current row from the conn (no UPDATE) → applies the proposed updates to a Python dict copy → checks the resulting dict against the schema-CHECK-mirror predicates → for `fills`, additionally simulates `_recompute_aggregates`'s aggregate formula via a SELECT-based dry-run → returns True/False (plus a rejection reason on False via a paired-out variable or exception).
+
+**Composition path:** the auto-correction service (`apply_tier1_correction` + inner) composes the right validator based on `affected_table` + invokes BEFORE the actual UPDATE in step 4 (per §5.4 atomic flow). On False return, raises `ValidatorRejectedError` with the rejection reason — caller (§7.1 pivot or §6 CLI) catches + downgrades to tier-2 with `ambiguity_kind='validator_rejected'`.
+
+**Phase 6 review_log invariants are NOT validators** (they're frozen aggregates by design; auto-correction RETAINS them per §9.1 — only updates the superseded_by pointer). The validator chain does NOT consult `review_log` at all.
+
+**Phase 9 risk_policy at-trade-time-locked references** are advisories, NOT validators (per §1.6 lock — advisory ≠ blocking). When auto-correction touches `fills.price` on an entry fill whose trade has a non-NULL `risk_policy_id_at_lock`, the resulting `current_avg_cost` is still computed (and may trip the policy's `scratch_epsilon_R` or `max_account_risk_per_trade_pct` advisory thresholds) — but these surface as Phase 10 dashboard tripwires, NOT as validator rejections. The validator chain stops at schema-CHECK-mirror + FK-existence + Phase 7 aggregate invariants.
+
+**V2 candidate:** refactor the shim into the repo modules themselves so the validator functions become first-class on `swing/data/repos/*.py`. Banked. V1 keeps the validators in `swing/trades/reconciliation_validators.py` to scope the change to Sub-bundle C without touching existing repo files.
 
 ### §5.6 Atomic flow for `apply_tier2_resolution`
 
@@ -614,26 +637,27 @@ Renders the full discrepancy detail + the per-ambiguity_kind candidate choice me
 
 | `ambiguity_kind` | Choice code | Description | Action |
 |---|---|---|---|
-| `multi_partial_vs_consolidated` | `split_into_partials` | Replace journal consolidated fill with N partial fills from Schwab side | DELETE consolidated fill; INSERT N partial fills; `correction_set_id` group |
-| `multi_partial_vs_consolidated` | `consolidate_using_schwab_vwap` | Keep journal consolidated row; UPDATE journal price to Schwab VWAP | UPDATE `fills.price` to Schwab VWAP |
-| `multi_partial_vs_consolidated` | `keep_journal_as_is` | Acknowledge that Schwab partials aggregate to journal's consolidated row; mark `partial_fill_aggregation_acknowledged` | No journal mutation; resolution → `acknowledged_immaterial` with reason flag |
-| `multi_partial_vs_consolidated` | `custom` | Operator supplies arbitrary structured payload | `--custom-value` provides the payload; service applies as multi-column correction |
-| `multi_match_within_window` | `pick_schwab_record_<N>` | Pick the Nth Schwab candidate (N is an index into the candidate list from `show-ambiguity`) | UPDATE journal fields to match Nth candidate |
-| `multi_match_within_window` | `mark_unmatched` | Journal entry has no corresponding broker record | Resolution → `acknowledged_immaterial` with reason flag |
-| `multi_match_within_window` | `custom` | Operator supplies arbitrary payload | `--custom-value` |
-| `unknown_schwab_subtype` | `acknowledge` | Acknowledge + log for V2 code update | Resolution → `acknowledged_immaterial` |
-| `unknown_schwab_subtype` | `custom` | Operator-custom transformation | `--custom-value` |
-| `field_shape_incompatible` | `acknowledge` | Acknowledge + log | Resolution → `acknowledged_immaterial` |
-| `field_shape_incompatible` | `custom` | Operator-custom transformation | `--custom-value` |
-| `schwab_returned_no_match` | `mark_unmatched` | Schwab has no record; journal stays as-is | Resolution → `acknowledged_immaterial` |
-| `schwab_returned_no_match` | `operator_truth` | Operator supplies the real values (e.g., for a manually-entered non-Schwab-routed fill) | `--custom-value` carries the truth; service applies as multi-column correction |
-| `schwab_returned_no_match` | `acknowledge` | Same as `mark_unmatched` but explicit (tier-3 path) | Resolution → `acknowledged_immaterial` |
-| `validator_rejected` | `acknowledge` | Correction would violate invariants; system cannot apply | Resolution → `acknowledged_immaterial` |
-| `validator_rejected` | `operator_alternative` | Operator supplies alternative correction value that passes validators | `--custom-value`; service re-runs validator chain on operator-supplied value |
-| `unsupported` | `operator_truth` | Operator-custom resolution | `--custom-value` |
-| `unsupported` | `acknowledge` | Leave as-is | Resolution → `acknowledged_immaterial` |
+| `multi_partial_vs_consolidated` | `split_into_partials` | Replace journal consolidated fill with N partial fills from Schwab side | DELETE consolidated fill; INSERT N partial fills; `correction_set_id` group; resolution → `operator_resolved_ambiguity` |
+| `multi_partial_vs_consolidated` | `consolidate_using_schwab_vwap` | Keep journal consolidated row; UPDATE journal price to Schwab VWAP | UPDATE `fills.price` to Schwab VWAP; resolution → `operator_resolved_ambiguity` |
+| `multi_partial_vs_consolidated` | `keep_journal_as_is` | Acknowledge that Schwab partials aggregate to journal's consolidated row; operator-acknowledged "journal's aggregation is intentional" | NO journal mutation; INSERT audit row with `correction_action='operator_resolved_ambiguity'` + `correction_choice='keep_journal_as_is'` + `applied_value_json` == `pre_correction_value_json`; resolution → `operator_resolved_ambiguity` |
+| `multi_partial_vs_consolidated` | `custom` | Operator supplies arbitrary structured payload | `--custom-value` provides the payload; service applies as multi-column correction; resolution → `operator_resolved_ambiguity` |
+| `multi_match_within_window` | `pick_schwab_record_<N>` | Pick the Nth Schwab candidate (N is an index into the candidate list from `show-ambiguity`) | UPDATE journal fields to match Nth candidate; resolution → `operator_resolved_ambiguity` |
+| `multi_match_within_window` | `mark_unmatched` | Journal entry has no corresponding broker record (operator decision: keep journal-as-recorded; no Schwab attribution) | NO journal mutation; INSERT audit row with `correction_action='operator_resolved_ambiguity'` + `correction_choice='mark_unmatched'`; resolution → `operator_resolved_ambiguity` |
+| `multi_match_within_window` | `custom` | Operator supplies arbitrary payload | `--custom-value`; resolution → `operator_resolved_ambiguity` |
+| `unknown_schwab_subtype` | `acknowledge` | Acknowledge + log for V2 code update (no mutation; operator opts to defer until classifier widens) | NO journal mutation; INSERT audit row with `correction_action='operator_resolved_ambiguity'` + `correction_choice='acknowledge'` + the unrecognized Schwab subtype string in `correction_reason` so V2 has a discovery surface; resolution → `operator_resolved_ambiguity` |
+| `unknown_schwab_subtype` | `custom` | Operator-custom transformation | `--custom-value`; resolution → `operator_resolved_ambiguity` |
+| `field_shape_incompatible` | `acknowledge` | Acknowledge + log (no mutation) | NO journal mutation; audit row per above; resolution → `operator_resolved_ambiguity` |
+| `field_shape_incompatible` | `custom` | Operator-custom transformation | `--custom-value`; resolution → `operator_resolved_ambiguity` |
+| `schwab_returned_no_match` | `mark_unmatched` | Schwab has no record; operator decides journal stays as-is (e.g., pre-Schwab-arc legacy fill OR non-Schwab-routed broker fill that operator typed-from-memory) | NO journal mutation; audit row with `correction_choice='mark_unmatched'` + operator-supplied reason; resolution → `operator_resolved_ambiguity` |
+| `schwab_returned_no_match` | `operator_truth` | Operator supplies the real values (e.g., a manually-entered non-Schwab-routed fill that needs price/qty correction from operator's records) | `--custom-value` carries the truth; service applies as multi-column correction; resolution → `operator_resolved_ambiguity` |
+| `validator_rejected` | `acknowledge` | Correction would violate invariants; system cannot apply (no mutation; operator opts to leave divergence as-is) | NO journal mutation; audit row records the rejected target value + the validator's rejection reason in `correction_reason`; resolution → `operator_resolved_ambiguity` |
+| `validator_rejected` | `operator_alternative` | Operator supplies alternative correction value that passes validators | `--custom-value`; service re-runs validator chain on operator-supplied value; resolution → `operator_resolved_ambiguity` |
+| `unsupported` | `operator_truth` | Operator-custom resolution | `--custom-value`; resolution → `operator_resolved_ambiguity` |
+| `unsupported` | `acknowledge` | Leave journal as-is (no mutation; classifier didn't know the shape; operator dispositions without applying) | NO journal mutation; audit row with `correction_choice='acknowledge'` + operator-supplied reason explaining; resolution → `operator_resolved_ambiguity` |
 
 Each `<choice_code>` is a binding contract: the service's per-pair handler (per §5.6) is keyed on `(ambiguity_kind, choice_code)`. Writing-plans enumerates the handler-function map; each handler is a small focused function.
+
+**Codex R1 Critical #1 fix (LOCKED):** EVERY tier-2 resolution lands as `resolution='operator_resolved_ambiguity'` + a `reconciliation_corrections` audit row, even when the operator's choice is "no journal mutation" (e.g., `keep_journal_as_is`, `mark_unmatched`, `acknowledge`). The audit row records the operator's explicit no-mutation choice with `applied_value_json` == `pre_correction_value_json` + `correction_action='operator_resolved_ambiguity'` + `correction_choice='<choice_code>'`. This preserves the architectural-pivot intent: every new discrepancy gets an explicit audit-row disposition; `acknowledged_immaterial` is RESERVED for the narrow Tier-3 case where operator declares Schwab itself wrong (§6.4). Earlier brainstorm wording that emitted `acknowledged_immaterial` for "no mutation" tier-2 outcomes would have preserved the operator-triage bypass the bundle closes; the discipline above replaces it.
 
 ### §6.3 Operator workflow
 
@@ -664,35 +688,56 @@ REQUIRES `--reason` (mandatory; operator must explain why Schwab is wrong). Serv
 
 ### §7.1 Pivot at `run_schwab_reconciliation` call site (LOCKED)
 
-The shipped `run_schwab_reconciliation` (Phase 11 Sub-bundle B) currently emits discrepancies + returns. The pivoted flow:
+The shipped `run_schwab_reconciliation` (defined in `swing/trades/schwab_reconciliation.py` — distinct from the TOS-side `swing/trades/reconciliation.py:run_tos_reconciliation`) currently emits discrepancies + returns. The pivoted flow:
 
 ```
 run_schwab_reconciliation(conn, ...) → ReconciliationRun:
   STEP 1 (PHASE 9 PRESERVED): emit discrepancies via existing emitter
   STEP 2 (NEW): for each newly-emitted discrepancy:
-    classification = classify_discrepancy(discrepancy, ...)
-    if classification.tier == 1:
-      try:
-        apply_tier1_correction(conn, discrepancy_id=disc.id, classification=...)
-        counters.tier1_applied += 1
-      except ValidatorRejectedError as e:
-        # Fall through to tier-2 path with validator_rejected.
+    # Per-correction SAVEPOINT (Codex R1 Critical #3 fix):
+    sp_name = f"correction_sp_{disc.id}"
+    conn.execute(f"SAVEPOINT {sp_name}")
+    try:
+      classification = classify_discrepancy(discrepancy, ...)
+      if classification.tier == 1:
+        try:
+          _apply_tier1_correction_inner(conn, discrepancy_id=disc.id, classification=...)
+          conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+          counters.tier1_applied += 1
+        except ValidatorRejectedError as e:
+          # ROLLBACK TO releases the savepoint AND undoes the partial UPDATEs
+          # the inner function made before raising; outer transaction continues.
+          conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+          conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+          # Fall through to tier-2 path with validator_rejected.
+          UPDATE discrepancies SET resolution='pending_ambiguity_resolution',
+            ambiguity_kind='validator_rejected', resolution_reason=str(e)
+          counters.tier2_pending += 1
+      else:  # tier == 2
         UPDATE discrepancies SET resolution='pending_ambiguity_resolution',
-          ambiguity_kind='validator_rejected', resolution_reason=str(e)
+          ambiguity_kind=classification.ambiguity_kind,
+          resolution_reason=classification.correction_reason
+        conn.execute(f"RELEASE SAVEPOINT {sp_name}")
         counters.tier2_pending += 1
-      except Exception as e:
-        # Graceful degradation per Phase 11 lesson #2.
-        WARNING log + leave discrepancy unresolved
-        counters.tier_errored += 1
-    else:  # tier == 2
-      UPDATE discrepancies SET resolution='pending_ambiguity_resolution',
-        ambiguity_kind=classification.ambiguity_kind,
-        resolution_reason=classification.correction_reason
-      counters.tier2_pending += 1
-  STEP 3 (NEW): update run summary_json with counters; commit
+    except Exception as e:
+      # Graceful degradation per Phase 11 lesson #2.
+      # ROLLBACK TO undoes any partial state from this iteration (including
+      # any partial UPDATE that occurred before the exception); the outer
+      # reconciliation transaction is preserved (other discrepancies' applied
+      # corrections + emitted discrepancy rows stay committed at outer commit).
+      conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+      conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+      WARNING log "classifier or apply exception for discrepancy {disc.id}: {e}"
+      # Leave discrepancy as `resolution='unresolved'` — operator dispositions later.
+      counters.tier_errored += 1
+  STEP 3 (NEW): update run summary_json with counters; commit (outer BEGIN IMMEDIATE)
 ```
 
-Critical contract: classification + apply happen INSIDE the run's existing transaction (BEGIN IMMEDIATE is the run's; the auto-correction service's transaction discipline is at the SERVICE-COMPOSED-FROM-OUTSIDE level, not at this nested level — see §7.3 transaction nesting note).
+**Critical contract (Codex R1 Critical #3 fix — LOCKED):** Per-discrepancy SAVEPOINT discipline. The outer reconciliation transaction (started by `BEGIN IMMEDIATE` at the run's entry) owns the commit boundary. Each per-discrepancy classify+apply iteration is wrapped in `SAVEPOINT correction_sp_<id>` / `RELEASE` on success / `ROLLBACK TO ... + RELEASE` on any exception. Without the SAVEPOINT, an exception AFTER `UPDATE fills` but BEFORE the audit row INSERT + discrepancy resolution UPDATE would leave a silent journal mutation when the outer transaction commits. With the SAVEPOINT, ROLLBACK TO undoes the partial journal mutation atomically before falling through to graceful-degradation pathway.
+
+SAVEPOINT names use the discrepancy_id to guarantee uniqueness within the outer transaction (each iteration's savepoint is independent; nested savepoints not required for V1).
+
+Classification + apply happen INSIDE the run's existing outer transaction; the auto-correction service's standalone outer-transaction discipline is at the SERVICE-COMPOSED-FROM-OUTSIDE level (CLI / backfill / tier-2 resolve invocations), not at this nested level (see §7.3 transaction nesting note for the outer/inner split).
 
 ### §7.2 Pivot at `run_tos_reconciliation` call site — OPEN QUESTION
 
@@ -749,7 +794,8 @@ Pipeline-mode invocation: under `surface='pipeline'`, the pipeline step never ra
 Reconciliation: 12 matched, 2 mismatches detected.
   - Tier 1 auto-corrected: 1 (CVGI entry_price_mismatch)
   - Tier 2 pending operator review: 1 (DHC unmatched_open_fill — multi_partial_vs_consolidated)
-Run resolution-resolve-ambiguity with: swing journal discrepancy list-pending-ambiguities
+View pending ambiguities: swing journal discrepancy list-pending-ambiguities
+Resolve a specific one: swing journal discrepancy resolve-ambiguity <discrepancy_id> --choice <code> --reason <text>
 ```
 
 The CLI output ALSO surfaces in `briefing.md` per Phase 11 Sub-bundle D briefing.md banner pattern: a new section "Reconciliation status" enumerates pending tier-2 count + recent tier-1 applied count. Writing-plans wires.
@@ -784,13 +830,36 @@ Re-running `swing journal reconcile-backfill --apply` is safe: discrepancies who
 
 ### §8.4 Classifier source-payload sourcing
 
-The backfill needs source_payload (Schwab API responses) to classify. At backfill time, the original Schwab API call that emitted the discrepancy is preserved via `reconciliation_runs.schwab_api_call_id` FK → `schwab_api_calls.signature_hash` + response body cached.
+The backfill needs source_payload (Schwab API responses) to classify. The shipped `schwab_api_calls` audit table records the CALL metadata (endpoint, status, timing, signature hash) but NOT the FULL RESPONSE BODY. The reconciliation logic at run time consumed the response inline + emitted small slices into the discrepancy's `expected_value_json` + `actual_value_json`. Per Codex R1 verification of shipped emitter at `swing/trades/schwab_reconciliation.py:439-449`: unmatched_open_fill emits `actual_value_json={"matched": null}` and NO partials/candidate enumeration. The persisted JSON is insufficient for any tier-1 classification beyond "Schwab returned no single-fill match"; it cannot distinguish `multi_partial_vs_consolidated` vs `multi_match_within_window` vs genuine `schwab_returned_no_match` cases.
 
-Hmm — actually no. The shipped `schwab_api_calls` audit table records the CALL but not the FULL RESPONSE BODY. The reconciliation logic at run time consumed the response inline. The discrepancy carries `expected_value_json` + `actual_value_json` (small slices of the response), not the full payload.
+**Decision (LOCKED — Codex R1 Critical #2 fix):** the backfill source-payload sourcing is a **two-pass** contract:
 
-**Decision (LOCKED):** the backfill classifies using ONLY the discrepancy's own `expected_value_json` + `actual_value_json` + journal row state at backfill time. For discrepancies whose payload doesn't suffice for tier-1 classification, the backfill MAY re-call Schwab API (consumes a new `schwab_api_calls` audit row with `surface='cli'` + `linked_correction_id` set if a correction is ultimately written). For the existing 3 production discrepancies, the JSON shapes preserved at emit time are sufficient — see §10 worked examples.
+1. **Pass 1 — persisted-JSON-only classification.** Read the discrepancy's `expected_value_json` + `actual_value_json` + the journal row referenced by FK. Run the classifier. For most discrepancy types where the persisted JSON carries enough signal (e.g., `entry_price_mismatch` carries `{"price": X}` on both sides — CVGI 41 path), the classifier emits a definitive tier-1 or tier-2 result here. Pass 1 needs ZERO Schwab API calls.
 
-V2 candidate: a separate API response cache table that preserves full Schwab API response bodies for backfill replay. Banked.
+2. **Pass 2 — re-fetch Schwab when Pass 1 emits `ambiguity_kind='unsupported'` or persisted JSON is provably insufficient.** For `unmatched_open_fill` / `unmatched_close_fill` discrepancies with `actual_value_json={"matched": null}` (the persisted shape on shipped emitter), Pass 1 cannot distinguish partials-vs-no-match-vs-multi-match. Pass 2 re-fetches Schwab via `swing/integrations/schwab/trader.py` for the relevant (ticker, date-window) and re-runs the appropriate sub-classifier with the fuller payload. Each Pass 2 fetch consumes one `schwab_api_calls` audit row with `surface='cli'` (operator-initiated backfill) + `linked_correction_id` set when a correction is ultimately written. Per Phase 11 sandbox gating (§9.7), under `environment='sandbox'` Pass 2 returns no domain data; the classifier emits tier-2 `unsupported` with rationale "sandbox: cannot re-fetch source-canonical payload".
+
+3. **Pass 2 failure-mode.** If the Schwab re-fetch fails (auth_failed / rate_limited / network error), the classifier emits tier-2 `unsupported` with rationale "Pass 2 re-fetch failed: <reason>". Discrepancy stays unresolved-pending-ambiguity; operator can re-run backfill later OR resolve via `swing journal discrepancy resolve-ambiguity` manually.
+
+4. **Per-discrepancy-type table — which discrepancies need Pass 2?**
+
+| `discrepancy_type` | Pass-1 sufficient? | Why |
+|---|---|---|
+| `entry_price_mismatch` | YES — `{"price": X}` shapes on both sides; tier-1 deterministic | shipped emitter at `schwab_reconciliation.py:469-474` |
+| `close_price_mismatch` | YES — same shape | shipped emitter at `schwab_reconciliation.py:455-479` |
+| `stop_mismatch` | LIKELY (persisted price values + journal `current_stop`) | writing-plans verifies |
+| `position_qty_mismatch` | LIKELY (persisted qty values) | writing-plans verifies |
+| `unmatched_open_fill` | NO — Pass 2 required | shipped emitter persists `{"matched": null}` only (lines 439-449) |
+| `unmatched_close_fill` | NO — same as above | symmetric emitter |
+| `cash_movement_mismatch` | LIKELY (persisted amount + date) | writing-plans verifies |
+| `equity_delta` | YES — persisted equity values | shipped emitter at `swing/trades/reconciliation.py:373-388` |
+| `sector_tamper` | YES — no Schwab data dependency | sector data is journal-side only |
+| `snapshot_mismatch` | LIKELY (persisted snapshot fields) | writing-plans verifies |
+
+Of the three production discrepancies (CVGI 41 + DHC 39 + VSAT 40): CVGI 41 is `entry_price_mismatch` → Pass 1 sufficient. DHC 39 + VSAT 40 are `unmatched_open_fill` → Pass 2 required.
+
+5. **Idempotency under Pass 2.** Re-running the backfill against an already-resolved discrepancy is a no-op (skip per §8.3); but re-running against a Pass-2-pending discrepancy that previously failed Pass-2-fetch DOES re-fetch Schwab. Each re-fetch produces a new `schwab_api_calls` audit row — this is intentional and provides a fetch-history trail.
+
+V2 candidate: a separate API response cache table that preserves full Schwab API response bodies for backfill replay, eliminating Pass 2 re-fetches for already-fetched window. Banked at `docs/phase3e-todo.md` for post-Phase-12 standalone dispatch.
 
 ### §8.5 Backfill flow
 
@@ -878,14 +947,16 @@ Auto-correction service constructs its own Schwab client (when needed) via the e
 - `trade_id=<CVGI trade>`
 - `fill_id=9`
 - `ticker='CVGI'`
-- `expected_value_json={"entry_price": 5.23}` (journal value at emit time)
-- `actual_value_json={"entry_price": 5.30}` (Schwab value at emit time)
-- `delta_text='+$0.07'`
+- `expected_value_json={"price": 5.23}` (journal value at emit time per shipped emitter `swing/trades/schwab_reconciliation.py:469-474` — Codex R1 Major #4 verification)
+- `actual_value_json={"price": 5.30}` (Schwab value at emit time per same shipped emitter)
+- `delta_text='+$0.07 (schwab minus journal)'` (matches shipped emitter format at `schwab_reconciliation.py:475-478`)
 - `material_to_review=1`
 - `resolution='unresolved'`
 
+**Backfill Pass 1 (§8.4) — persisted JSON sufficient:** `entry_price_mismatch` is Pass-1-sufficient per §8.4 table: the persisted `expected_value_json={"price": 5.23}` + `actual_value_json={"price": 5.30}` carry the deterministic information the classifier needs. Pass 2 not required. Zero `schwab_api_calls` audit rows consumed by the classifier.
+
 **Classifier (§4.3.1 entry_price_mismatch sub-classifier):**
-- INPUT: discrepancy, source_payload reconstructed from `actual_value_json` (the Schwab transaction with price=$5.30 for (CVGI, date D, quantity Q)), journal_row = `fills.fill_id=9` row.
+- INPUT: discrepancy, source_payload = `actual_value_json={"price": 5.30}` plus the matching Schwab transaction's (ticker, date, qty) implied by the discrepancy's FK to journal `fills.fill_id=9`, journal_row = the `fills.fill_id=9` row.
 - LOGIC: (ticker, date, quantity) match exactly between journal and source; only price differs.
 - VALIDATOR DRY-RUN: `{'price': 5.30}` against fills validators → price > 0 ✓; `_recompute_aggregates` updates `trades.current_avg_cost` to $5.30 (single entry fill); no negative current_size; no FK breaks. PASSES.
 - OUTPUT: `ClassificationResult(tier=1, ambiguity_kind=None, correction_target={'price': 5.30}, correction_reason="entry_price_mismatch on (CVGI, fill_id=9): journal $5.23 vs Schwab $5.30; single-fill match; tier-1 auto-correct", candidate_choices=None)`.
@@ -914,7 +985,7 @@ Auto-correction service constructs its own Schwab client (when needed) via the e
    - `reconciliation_run_id=<current run>`
    - `correction_reason="entry_price_mismatch ... tier-1 auto-correct"`
 7. UPDATE `reconciliation_discrepancies SET resolution='auto_corrected_from_schwab', resolution_reason=..., resolved_at=<now>, resolved_by='auto' WHERE discrepancy_id=41`.
-8. SELECT `review_log` rows where trade_id = <CVGI> (CVGI is OPEN trade, so 0 reviews — empty result; skip).
+8. Compute CVGI trade's close date — CVGI is OPEN at this time (no exit/stop fills), so the trade has no close date; the review_log cadence-period lookup (per §5.4 step 9 SQL sketch) returns 0 rows; no `review_log.superseded_by_correction_id` UPDATEs. (Walkthrough applies the §5.4 step 9 mechanic correctly even when the result is empty.)
 9. INSERT `trade_events` row: `event_type='reconciliation_auto_correct'`, payload carries correction details.
 10. COMMIT.
 
@@ -934,12 +1005,22 @@ Auto-correction service constructs its own Schwab client (when needed) via the e
 - `reconciliation_discrepancies.discrepancy_id=39`
 - `discrepancy_type='unmatched_open_fill'`
 - `trade_id=<DHC trade>`, `fill_id=2`, `ticker='DHC'`
-- `expected_value_json={"open_fill_qty": 39, "open_fill_price": 7.58, "date": "2026-04-27"}`
-- `actual_value_json={"matched": null, "schwab_partial_fills_candidate": [{"qty": 20, "price": 7.57, ...}, {"qty": 19, "price": 7.59, ...}]}` (this is the shape the Schwab payload may carry — actual shape verified at writing-plans time against the Phase 11 trader.py extract)
+- `expected_value_json={"qty": 39.0, "price": 7.58, "action": "entry"}` (shipped emitter shape at `schwab_reconciliation.py:439-449`)
+- `actual_value_json={"matched": null}` (shipped emitter persists null-match only; NO partials info — Codex R1 Critical #2 verification against shipped code)
 - `material_to_review=1`, `resolution='unresolved'`
 
-**Classifier (§4.3.2 unmatched_open_fill sub-classifier):**
-- INPUT: discrepancy, source_payload = 2 partial fills summing to qty=39, journal_row = single fill_id=2 with qty=39.
+**Backfill Pass 1 (persisted-JSON-only classification — §8.4):**
+- Pass 1 inputs: discrepancy + journal_row (the `fills.fill_id=2` row at $7.58 × 39).
+- Pass 1 LOGIC: `actual_value_json={"matched": null}` gives the classifier no candidate enumeration; cannot distinguish partial-vs-no-match. Per §8.4 Pass-1 vs Pass-2 contract, the classifier flags this case as requiring Pass 2.
+- Pass 1 OUTPUT (interim, NOT the final classification): tier=2, `ambiguity_kind='unsupported'`, with metadata flag `pass_2_required=True`.
+
+**Backfill Pass 2 (re-fetch Schwab — §8.4):**
+- Pass 2 fetches Schwab via the existing `swing/integrations/schwab/trader.py:get_transactions(...)` (or its V1 equivalent — writing-plans verifies signature) for `(ticker='DHC', start_date='2026-04-27', end_date='2026-04-27')`. Writes a `schwab_api_calls` audit row with `surface='cli'` (backfill is operator-invoked CLI), `endpoint='accounts.transactions.list'`, plus all the existing audit columns.
+- Pass 2 receives the full Schwab transaction list. Sub-classifier (§4.3.2 unmatched_open_fill) re-evaluates: if Schwab payload has 2 partials summing to qty=39 → tier=2, `ambiguity_kind='multi_partial_vs_consolidated'`. (If Schwab still has no record → tier=2, `ambiguity_kind='schwab_returned_no_match'`. If Schwab has exactly 1 single transaction with different price → redirect to `entry_price_mismatch` sub-classifier — tier=1 candidate.)
+- Pass 2 OUTPUT (assume the 2-partials case): `ClassificationResult(tier=2, ambiguity_kind='multi_partial_vs_consolidated', correction_target=None, ...)`.
+
+**Classifier (§4.3.2 unmatched_open_fill sub-classifier) — final under Pass 2:**
+- INPUT: discrepancy, source_payload from Pass 2 re-fetch (2 partial fills summing to qty=39), journal_row = single fill_id=2 with qty=39.
 - LOGIC: source_payload has 2 transactions whose total quantity matches journal_row.quantity → tier=2, `ambiguity_kind='multi_partial_vs_consolidated'`.
 - OUTPUT: `ClassificationResult(tier=2, ambiguity_kind='multi_partial_vs_consolidated', correction_target=None, correction_reason="unmatched_open_fill on (DHC, fill_id=2): journal consolidated qty=39 @ $7.58; Schwab has 2 partials (20 @ $7.57; 19 @ $7.59); operator must choose split or VWAP-consolidate or acknowledge.", candidate_choices=[{"code": "split_into_partials", "description": "Replace journal fill with 2 partial fills"}, {"code": "consolidate_using_schwab_vwap", "description": "Keep journal consolidated; update price to Schwab VWAP $7.58 (= ((20×7.57)+(19×7.59))/39)"}, {"code": "keep_journal_as_is", "description": "Acknowledge partial-fill aggregation"}, {"code": "custom", "description": "Operator-supplied payload"}])`.
 
@@ -973,7 +1054,7 @@ Auto-correction service constructs its own Schwab client (when needed) via the e
    - `correction_reason=<operator reason>`
    - Other fields per §3.1
 7. UPDATE `reconciliation_discrepancies SET resolution='operator_resolved_ambiguity', resolved_at=<now>, resolved_by='operator'`.
-8. UPDATE `review_log.superseded_by_correction_id` for any review_log rows referencing trade=<DHC> AND closure includes fill 2. DHC is OPEN at time of dispatch — no review_log rows; skip.
+8. UPDATE `review_log.superseded_by_correction_id` via the §5.4 step 9 cadence-period-anchored lookup: compute DHC trade's close date (DHC is OPEN at time of dispatch → no close date), match against review_log periods. Zero rows matched → no review_log UPDATEs. (Same pattern as §10.1 step 8.)
 9. INSERT `trade_events` row.
 10. COMMIT.
 
@@ -995,12 +1076,14 @@ This is the more invasive path; the VWAP path is the operator-friendly default a
 - `reconciliation_discrepancies.discrepancy_id=40`
 - `discrepancy_type='unmatched_open_fill'`
 - `trade_id=<VSAT trade>`, `fill_id=6`, `ticker='VSAT'`
-- `expected_value_json={"open_fill_qty": 2, "open_fill_price": 65.69, "date": "2026-05-06"}`
-- `actual_value_json={"matched": null}` (Schwab returned no match at emit time; payload doesn't carry partials info)
-- `manual_entry_confidence='low'` on the underlying fill
+- `expected_value_json={"qty": 2.0, "price": 65.69, "action": "entry"}` (shipped emitter shape at `schwab_reconciliation.py:439-449`)
+- `actual_value_json={"matched": null}` (shipped emitter persists null-match only)
+- `manual_entry_confidence='low'` on the underlying fill (operator-self-flagged; NOT classifier input — see "manual_entry_confidence note" below)
 - `material_to_review=1`, `resolution='unresolved'`
 
-**Classifier behavior depends on actual Schwab payload at classification time:**
+**Backfill Pass 1 (§8.4) — persisted JSON insufficient:** `unmatched_open_fill` with `actual_value_json={"matched": null}` is Pass-1-insufficient per §8.4 table. Pass 1 emits interim tier=2 `unsupported` with `pass_2_required=True`. Backfill proceeds to Pass 2.
+
+**Backfill Pass 2 (§8.4) — re-fetch Schwab transactions for (VSAT, 2026-05-06):** consumes one `schwab_api_calls` audit row with `surface='cli'`. Three downstream classifier paths depending on actual Schwab payload:
 
 **Case A (Schwab actually has a single matching fill, different price/qty than journal):**
 - LOGIC routes to redirect to `entry_price_mismatch` sub-classifier or `position_qty_mismatch` sub-classifier per which field differs.
@@ -1012,13 +1095,15 @@ This is the more invasive path; the VWAP path is the operator-friendly default a
 **Case C (Schwab has NO record at all — was a manual broker fill from a different account or pre-Schwab-arc legacy):**
 - Tier-2 `schwab_returned_no_match` → operator decides: mark unmatched OR supply truth OR acknowledge.
 
-**Why VSAT 40 is per-row data-dependent:** the discrepancy was emitted with `actual_value_json={"matched": null}` at emit time, but the actual Schwab payload depth was abbreviated in the emit-time JSON. The backfill may need to RE-FETCH Schwab API to get the full transaction list (consuming a `schwab_api_calls` audit row + flowing through Phase 11's sandbox gating + sandbox short-circuit semantics).
+**Why VSAT 40 is per-row data-dependent:** Pass 1 (§8.4) cannot break the ambiguity from `{"matched": null}` alone — same persisted-shape gap as DHC 39. Pass 2 re-fetches Schwab API for (VSAT, 2026-05-06) to get the full transaction list (consuming a `schwab_api_calls` audit row attributed with `surface='cli'`; under sandbox this short-circuits per §9.7 and classifier emits tier-2 `unsupported`).
 
-**Backfill behavior:**
-- Dry-run: re-fetches Schwab for (VSAT, 2026-05-06) period; classifies based on actual payload; prints projected classification.
-- `--apply`: applies per the above 3-case logic. Whichever case fires, the result is either tier-1 auto-applied OR tier-2 stamped + waiting for operator.
+**Backfill behavior under production environment:**
+- Dry-run: Pass 1 → interim tier-2 `unsupported`; Pass 2 re-fetches Schwab; classifier emits final classification per the 3-case logic above (Case A → tier-1 redirect to entry_price_mismatch/position_qty_mismatch; Case B → tier-2 multi_partial_vs_consolidated; Case C → tier-2 schwab_returned_no_match); prints projected classification. The Pass-2 re-fetch IS performed under dry-run because the classifier needs actual source-of-truth data to decide; the audit row is written but no journal mutation occurs.
+- `--apply`: same Pass-2 re-fetch + actual classification + tier-1 auto-apply (with SAVEPOINT-per-correction per §7.1) OR tier-2 stamp.
 
-The `manual_entry_confidence='low'` flag is operator-honesty metadata, NOT classifier input. Classifier doesn't read it. Operator confidence affects how the operator dispositions the tier-2 result (operator can be more aggressive about marking as unmatched given their own self-flagged uncertainty), but it doesn't change the auto-classification.
+**Backfill behavior under sandbox environment:** Pass 2's Schwab re-fetch is short-circuited per §9.7. Classifier emits tier-2 `unsupported` with rationale `"sandbox: cannot re-fetch source-canonical payload"`. Discrepancy stays unresolved-pending-ambiguity. Operator re-runs backfill under production environment OR dispositions manually via `resolve-ambiguity`.
+
+**manual_entry_confidence note:** the `manual_entry_confidence='low'` flag on the underlying fill is operator-honesty metadata captured at trade-entry time — NOT a classifier input. Classifier doesn't read it. Operator confidence affects how the operator dispositions the tier-2 result (operator can be more aggressive about marking as unmatched given their own self-flagged uncertainty), but it doesn't change the auto-classification.
 
 ---
 
@@ -1100,7 +1185,7 @@ Per §1.8: 4 sub-sub-bundles. Writing-plans refines + locks dispatch order. Proj
   - Per-(ambiguity_kind, choice_code) resolution handlers
   - `CallerHeldTransactionError` (mirrors Phase 9 Sub-bundle B pattern)
   - `ValidatorRejectedError`
-- Reconciliation flow pivot at `swing/trades/reconciliation.py:run_schwab_reconciliation` (and `run_tos_reconciliation` per §14.OQ-2 disposition).
+- Reconciliation flow pivot at `swing/trades/schwab_reconciliation.py:run_schwab_reconciliation` (Schwab-side; Codex R1 Major #6 fix — Schwab module is `schwab_reconciliation.py`, NOT `reconciliation.py`) AND `swing/trades/reconciliation.py:run_tos_reconciliation` (TOS-CSV side per §14.OQ-2 disposition).
 - `briefing.md` extension: new "Reconciliation status" section enumerates tier-2 backlog (Phase 11 Sub-bundle D banner precedent).
 - Phase 10 dashboard banner predicate update: include `'pending_ambiguity_resolution'` in the unresolved-material count (per §6.3 + Phase 10 T-E.3 retrofit precedent).
 
@@ -1257,7 +1342,7 @@ Spec proposes: REJECT — operator must override the CURRENT row in the chain (w
 ### §15.3 What writing-plans should pre-verify against shipped code
 
 1. Migration runner's `executescript()` partial-failure wrapper handles the 0019 table-rebuilds correctly (Phase 7 hotfix 283d4fa + Phase 9 §A.4 + Phase 12 Sub-bundle A T-A.7 precedent).
-2. `swing/trades/reconciliation.py:run_tos_reconciliation` + the parallel `run_schwab_reconciliation` exact module/function names + signatures (the spec's §7 pivot assumes specific names; writing-plans grep-verifies).
+2. `swing/trades/reconciliation.py:run_tos_reconciliation` AND `swing/trades/schwab_reconciliation.py:run_schwab_reconciliation` (per Codex R1 Major #6 verification — Schwab reconciliation is in a SEPARATE module file from TOS reconciliation); writing-plans grep-verifies the signatures + locks the pivot patches to the correct files.
 3. `_construct_pipeline_schwab_client(cfg)` exact module location (Phase 12 Sub-bundle A T-A.3 ship; writing-plans verifies).
 4. Existing `swing journal discrepancy` CLI command group module/function names (Phase 9 Sub-bundle B precedent; writing-plans verifies).
 5. Phase 10 `discrepancies.py` helper module location + base-layout VM mixin signature (Phase 10 Sub-bundle A T-A.18 + Sub-bundle E T-E.3 ship; writing-plans verifies).
