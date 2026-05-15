@@ -339,6 +339,9 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
         recommendations as recommendations_route,
     )
     from swing.web.routes import (
+        schwab as schwab_route,
+    )
+    from swing.web.routes import (
         trades as trades_route,
     )
     from swing.web.routes import (
@@ -353,5 +356,6 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
     app.include_router(config_route.router)
     app.include_router(metrics_route.router)
     app.include_router(account_route.router)
+    app.include_router(schwab_route.router)
 
     return app
