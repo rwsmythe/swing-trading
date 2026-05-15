@@ -660,7 +660,7 @@ def test_t_a_2_atomic_claim_then_replace_closes_toctou_race(
     import datetime as _dt
     import os as _os
 
-    fixed_ts = _dt.datetime(2026, 5, 15, 9, 30, 25, tzinfo=_dt.timezone.utc)
+    fixed_ts = _dt.datetime(2026, 5, 15, 9, 30, 25, tzinfo=_dt.UTC)
     monkeypatch.setattr(auth_mod, "_utc_now", lambda: fixed_ts)
 
     tokens_path = home / "swing-data" / "schwab-tokens.production.db"
