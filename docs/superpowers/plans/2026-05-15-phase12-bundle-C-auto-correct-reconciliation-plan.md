@@ -17,7 +17,7 @@
 - **Spec:** `docs/superpowers/specs/2026-05-15-phase12-bundle-C-auto-correct-reconciliation-design.md` (1444 lines; `NO_NEW_CRITICAL_MAJOR` at `d682c25`).
 - **Brief:** `docs/phase12-bundle-C-writing-plans-dispatch-brief.md`.
 - **Baseline:** main HEAD `effb995` (post-lesson-banking); ~3862 fast tests green; production schema_version 18; ruff baseline 18 E501.
-- **Production discrepancy state:** 3 unresolved-material (39 DHC + 40 VSAT + 41 CVGI from pipeline #63 reconciliation_run #10); 30 historical resolved (mostly `acknowledged_immaterial`). Sub-bundle C ships the auto-correct semantics; backfill consumes the 3 production cases at C.D operator-witnessed gate.
+- **Production discrepancy state:** 3 unresolved-material (39 DHC + 40 VSAT + 41 CVGI from pipeline #63 reconciliation_run #10); 30 historical resolved (mostly `acknowledged_immaterial`); 33 total production rows. Sub-bundle C ships the auto-correct semantics; backfill consumes the 3 production cases at C.D operator-witnessed gate. **Note:** the exact count may drift between plan-drafting and integration-merge (operator may resolve discrepancies inline; new discrepancies may emerge from intervening pipeline runs); T-A.8 + §G.1 S3 verify migration row-preservation via column-by-column equality against pre-migration snapshot rather than against a fixed count.
 
 ### §0.2 Plan posture
 
@@ -387,7 +387,7 @@ The runner-level backup gate fires when `current_version == N AND target >= N+1`
 ## §B Sub-sub-bundle C.A — Foundation (schema + dataclass + repo CRUD)
 
 **Scope summary (per spec §12.A):**
-- Migration 0019 (single atomic file) lands schema_version 18 → 19 with: NEW `reconciliation_corrections` table (19 columns + 4 indexes); NEW `reconciliation_discrepancies.ambiguity_kind` column + cross-column CHECK; widened `reconciliation_discrepancies.resolution` CHECK enum (5 → 9 values via table-rebuild); NEW `review_log.superseded_by_correction_id` column; widened `trade_events.event_type` CHECK enum (+1 value via table-rebuild); NEW `schwab_api_calls.linked_correction_id` column; new partial index `ix_reconciliation_discrepancies_pending_ambiguity`.
+- Migration 0019 (single atomic file) lands schema_version 18 → 19 with: NEW `reconciliation_corrections` table (20 columns + 4 indexes; **plan-vs-spec deviation banked at §I.16**: spec §3.1 header text says "Column count: 19" but enumerates 20 column rows including the `notes` row; plan locks the actual 20-column count from the spec table verbatim + banks the spec wording cleanup); NEW `reconciliation_discrepancies.ambiguity_kind` column + cross-column CHECK; widened `reconciliation_discrepancies.resolution` CHECK enum (5 → 9 values via table-rebuild); NEW `review_log.superseded_by_correction_id` column; widened `trade_events.event_type` CHECK enum (+1 value via table-rebuild); NEW `schwab_api_calls.linked_correction_id` column; new partial index `ix_reconciliation_discrepancies_pending_ambiguity`.
 - NEW `swing/data/repos/reconciliation_corrections.py` with pure-CRUD (caller-transaction).
 - New dataclass + repo column extensions on `ReconciliationDiscrepancy`, `ReviewLog`, `SchwabApiCall` for the new columns.
 - Migration runner backup-gate wiring at `swing/data/db.py`.
@@ -419,11 +419,13 @@ The runner-level backup gate fires when `current_version == N AND target >= N+1`
 **Acceptance criteria:**
 1. File opens with `BEGIN;` and closes with `COMMIT;` (per CLAUDE.md gotcha; 0018 precedent at lines 10/77).
 2. All 7 schema deltas land in spec §3.8 declared order (`reconciliation_corrections` first; rebuilds + ALTERs after; partial index; schema_version UPDATE last; per Phase 9 §A.0 R1 Critical #1 precedent — schema_version UPDATE is the FINAL statement before COMMIT).
-3. `reconciliation_corrections` table is created with all 19 columns + correct types + correct NULLABLE + correct CHECK constraints per spec §3.1 table.
+3. `reconciliation_corrections` table is created with all **20 columns** (per spec §3.1 column-row enumeration; spec header "19 columns" text under-counts by 1 — banked at §I.16) + correct types + correct NULLABLE + correct CHECK constraints per spec §3.1 table.
 4. All 4 indexes on `reconciliation_corrections` are created (`ix_reconciliation_corrections_discrepancy` / `_affected_row` / `_run` / `_action`).
 5. `reconciliation_discrepancies` rebuild widens `resolution` CHECK enum 5 → 9 values (verbatim 5 existing values preserved per §A.7.1 + 4 new values added: `'auto_corrected_from_schwab'`, `'pending_ambiguity_resolution'`, `'operator_resolved_ambiguity'`, `'operator_overridden'`).
 6. `reconciliation_discrepancies` rebuild adds NEW `ambiguity_kind TEXT NULL CHECK (...)` column with the 7-value CHECK enum (`'multi_partial_vs_consolidated', 'multi_match_within_window', 'unknown_schwab_subtype', 'field_shape_incompatible', 'schwab_returned_no_match', 'validator_rejected', 'unsupported'`) AND a cross-column CHECK enforcing `ambiguity_kind IS NULL OR resolution IN ('pending_ambiguity_resolution','operator_resolved_ambiguity')`.
-7. Rebuild preserves existing rows (32 in production: 29 historical resolved + 3 unresolved-material) byte-for-byte. INSERT-SELECT copies all existing column values; new `ambiguity_kind` is NULL for all copied rows.
+
+6.bis. **REVERTED (Codex R3 Major #1; updated R4 Major #2):** earlier R2 fix added a `metadata_json TEXT NULL` column. Codex R3 flagged that spec §15.1 item 2 locks the schema sketches, and a plan-author-added column needs explicit spec amendment or orchestrator escalation BEFORE C.A dispatch — banking is insufficient. **REVISED V1 LOCK:** drop the new column; drop the bidirectional Pass-2 audit-chain linkage automation from V1 scope. V2 candidate (§I.17 RESTORED): dedicated `reconciliation_discrepancies.pass_2_schwab_api_call_id` column OR separate `discrepancy_pass2_calls` join table. V1 operator surface: `swing journal reconcile-backfill` apply/dry-run output prints Pass-2 `call_id` per-discrepancy directly (per T-D.3 #5 + T-D.8 Step 3 revised); `swing journal discrepancy show-ambiguity <id>` queries `schwab_api_calls` by **time-window + endpoint + surface (NOT ticker)** for the discrepancy's post-emit window + displays the candidate call-history table (operator picks). Operator threads `--schwab-api-call-id` flag on `resolve-ambiguity` explicitly when desired. **Note: Schwab API response bodies are NOT stored in `schwab_api_calls` per shipped schema (verified §A.7.4); no ticker column exists V1; the call-history query matches by timing + endpoint + surface, not by response payload or ticker.**
+7. Rebuild preserves ALL existing rows (~33 in production at plan-drafting time: ~30 historical resolved + 3 unresolved-material; exact count may drift before integration-merge) byte-for-byte. INSERT-SELECT copies all existing column values; new `ambiguity_kind` is NULL for all copied rows. **Discriminating test asserts row-preservation via column-by-column equality against the pre-migration snapshot fetched dynamically from the test DB — NOT against a fixed count.**
 8. Rebuild preserves all 4 existing indexes on `reconciliation_discrepancies` (`ix_..._run`, `_trade`, `_unresolved`, `_material`); each is DROPped before the table rebuild + recreated on the new table post-rename.
 9. `review_log` gets NEW nullable column `superseded_by_correction_id INTEGER REFERENCES reconciliation_corrections(correction_id) ON DELETE SET NULL` via `ALTER TABLE ... ADD COLUMN`. No rebuild.
 10. `trade_events` rebuild widens `event_type` CHECK enum 6 → 7 values (verbatim 6 existing per §A.7.3 + new `'reconciliation_auto_correct'`); preserves existing rows; recreates `ix_trade_events_trade` index.
@@ -494,7 +496,7 @@ Migration file template (abbreviated for plan brevity; full SQL written verbatim
 
 BEGIN;
 
--- 1. reconciliation_corrections audit table (19 columns + 4 indexes).
+-- 1. reconciliation_corrections audit table (20 columns + 4 indexes; spec §3.1 header says 19 but enumerated rows are 20 — Codex R1 Major #2 + §I.16 V2.1 amendment candidate).
 CREATE TABLE reconciliation_corrections (
     correction_id INTEGER PRIMARY KEY AUTOINCREMENT,
     discrepancy_id INTEGER NOT NULL REFERENCES reconciliation_discrepancies(discrepancy_id) ON DELETE CASCADE,
@@ -605,12 +607,18 @@ CREATE INDEX ix_reconciliation_discrepancies_pending_ambiguity
     ON reconciliation_discrepancies(ambiguity_kind, created_at)
     WHERE resolution = 'pending_ambiguity_resolution';
 
--- 3. review_log column add.
+-- 3. review_log column add (spec §11.2 step 4).
 ALTER TABLE review_log
     ADD COLUMN superseded_by_correction_id INTEGER
         REFERENCES reconciliation_corrections(correction_id) ON DELETE SET NULL;
 
--- 4. trade_events rebuild (CHECK enum widening to add 'reconciliation_auto_correct').
+-- 4. schwab_api_calls column add (spec §11.2 step 5).
+-- Codex R1 Minor #2 fix: moved BEFORE trade_events rebuild to match spec §11.2 order verbatim.
+ALTER TABLE schwab_api_calls
+    ADD COLUMN linked_correction_id INTEGER
+        REFERENCES reconciliation_corrections(correction_id) ON DELETE SET NULL;
+
+-- 5. trade_events rebuild (spec §11.2 step 6 — CHECK enum widening to add 'reconciliation_auto_correct').
 CREATE TABLE trade_events_new (
     id INTEGER PRIMARY KEY,
     trade_id INTEGER NOT NULL REFERENCES trades(id) ON DELETE CASCADE,
@@ -626,11 +634,6 @@ SELECT id, trade_id, ts, event_type, payload_json, rationale, notes FROM trade_e
 DROP TABLE trade_events;
 ALTER TABLE trade_events_new RENAME TO trade_events;
 CREATE INDEX ix_trade_events_trade ON trade_events(trade_id, ts);
-
--- 5. schwab_api_calls column add.
-ALTER TABLE schwab_api_calls
-    ADD COLUMN linked_correction_id INTEGER
-        REFERENCES reconciliation_corrections(correction_id) ON DELETE SET NULL;
 
 -- 6. Schema version bump (LAST statement; Phase 9 §A.0 R1 Critical #1 precedent).
 UPDATE schema_version SET version = 19;
@@ -658,25 +661,37 @@ def test_rebuild_preserves_existing_discrepancy_rows(tmp_path):
     conn.execute("PRAGMA foreign_keys=ON")
     # Land schema at v18 first by applying 0001..0018 in order:
     _apply_migrations_through(conn, target_version=18)
-    # Plant 3 rows mimicking production (29 historical + 3 unresolved-material).
+    # Plant 30 rows mimicking production (27 historical + 3 unresolved-material).
+    # Count is illustrative; the test asserts row-preservation via dynamic
+    # snapshot equality, NOT against a fixed planted count.
     conn.execute("INSERT INTO reconciliation_runs (run_id, ...) VALUES (1, ...)")
-    for i in range(1, 33):
-        resolution = "acknowledged_immaterial" if i <= 29 else "unresolved"
+    planted_total = 30
+    historical_count = 27
+    for i in range(1, planted_total + 1):
+        resolution = "acknowledged_immaterial" if i <= historical_count else "unresolved"
         conn.execute(
             "INSERT INTO reconciliation_discrepancies (...) VALUES (...)",
             (i, 1, "entry_price_mismatch", ..., resolution, ...)
         )
     conn.commit()
+    # Dynamic pre-migration snapshot:
+    pre_rows = sorted(conn.execute(
+        "SELECT discrepancy_id, run_id, discrepancy_type, trade_id, fill_id, "
+        "ticker, field_name, resolution FROM reconciliation_discrepancies"
+    ).fetchall())
     # Apply 0019.
     _apply_migration(conn, Path("swing/data/migrations/0019_phase12_bundle_c_auto_correct_reconciliation.sql"))
-    # All 32 rows preserved; ambiguity_kind=NULL for all.
-    rows = conn.execute(
-        "SELECT discrepancy_id, resolution, ambiguity_kind FROM reconciliation_discrepancies ORDER BY discrepancy_id"
+    # Equality against pre-migration snapshot (column-by-column for the shared
+    # columns; ambiguity_kind is new + NULL for all):
+    post_rows = sorted(conn.execute(
+        "SELECT discrepancy_id, run_id, discrepancy_type, trade_id, fill_id, "
+        "ticker, field_name, resolution FROM reconciliation_discrepancies"
+    ).fetchall())
+    assert post_rows == pre_rows
+    ak_rows = conn.execute(
+        "SELECT discrepancy_id, ambiguity_kind FROM reconciliation_discrepancies"
     ).fetchall()
-    assert len(rows) == 32
-    assert all(r[2] is None for r in rows)
-    assert sum(1 for r in rows if r[1] == "acknowledged_immaterial") == 29
-    assert sum(1 for r in rows if r[1] == "unresolved") == 3
+    assert all(r[1] is None for r in ak_rows)
     conn.close()
 ```
 
@@ -737,7 +752,7 @@ git commit -m "feat(phase12-bundle-c-T-A.1): schema v19 migration 0019 — recon
 **Acceptance criteria:**
 1. `ReconciliationDiscrepancy` gains `ambiguity_kind: str | None = None` field.
 2. `ReviewLog` gains `superseded_by_correction_id: int | None = None` field.
-3. NEW `ReconciliationCorrection` dataclass with all 19 columns matching the schema; type hints + nullability matching the CHECK constraints + defaults.
+3. NEW `ReconciliationCorrection` dataclass with all 20 columns matching the schema (spec §3.1 header says 19 but table-row enumeration is 20; T-A.1 LOCKED 20-column count; §I.16 V2.1 amendment candidate); type hints + nullability matching the CHECK constraints + defaults.
 4. SchwabApiCall extension verified: if dataclass exists at `swing/integrations/schwab/models.py`, add `linked_correction_id: int | None = None` field; if it does NOT exist (per §A.7.4 grep no match), the column is consumed via raw SQL only V1 + V2 candidate §I.4 layers the dataclass.
 5. Round-trip tests: every field reads back from DB matching the dataclass shape.
 6. Defaults match SQL DEFAULT clauses (`ambiguity_kind` NULL default; `superseded_by_correction_id` NULL default).
@@ -1020,13 +1035,14 @@ git commit -m "test(phase12-bundle-c-T-A.7): forward-binding pin tests for class
 
 **Acceptance criteria:**
 1. Test is `@pytest.mark.slow` (NOT in fast suite).
-2. Test reads a copy of operator's production DB (via fixture `operator_swing_db_snapshot_copy`) + applies migration 0019 + asserts:
+2. Test reads a copy of operator's production DB (via fixture `operator_swing_db_snapshot_copy`) + dynamically snapshots pre-migration row content of `reconciliation_discrepancies` + `reconciliation_runs` + `review_log` + `trade_events` + `schwab_api_calls` + applies migration 0019 + asserts:
    - schema_version transitions 18 → 19.
-   - All 32 historical `reconciliation_discrepancies` rows preserved verbatim (column-by-column equality).
-   - All 4 existing reconciliation_runs preserved.
-   - All `review_log` rows preserved (count unchanged; new column NULL for all).
+   - All `reconciliation_discrepancies` rows preserved verbatim (column-by-column equality against the dynamic pre-migration snapshot; `ambiguity_kind` is NULL for all preserved rows).
+   - All `reconciliation_runs` rows preserved.
+   - All `review_log` rows preserved (count unchanged; new column `superseded_by_correction_id` NULL for all preserved rows).
    - All `trade_events` rows preserved verbatim.
-   - All `schwab_api_calls` rows preserved verbatim.
+   - All `schwab_api_calls` rows preserved verbatim (new column `linked_correction_id` NULL for all preserved rows).
+   - Row counts derived from the SNAPSHOT (not a hardcoded constant) so the test survives production drift between plan-drafting and integration-merge.
 3. Test runs in CI's slow-suite OR operator-driven before integration merge.
 
 - [ ] **Steps 1-3: implement the slow-marked test using `shutil.copy` of operator's DB to a tmp path + apply + verify.**
@@ -1617,7 +1633,7 @@ C.B operator-witnessed gate (per §G.2) follows — 3 surfaces verified by the o
 **Acceptance criteria:**
 1. NEW module exports 3 public outer functions (own transactions; reject caller-held) + 3 private inner functions (caller-controlled tx):
    - `apply_tier1_correction(conn, *, discrepancy_id, classification, schwab_api_call_id=None, risk_policy_id=None, correction_reason=None) -> CorrectionResult`
-   - `apply_tier2_resolution(conn, *, discrepancy_id, choice_code, operator_custom_payload=None, operator_reason, risk_policy_id=None) -> CorrectionResult`
+   - `apply_tier2_resolution(conn, *, discrepancy_id, choice_code, operator_custom_payload=None, operator_reason, risk_policy_id=None, schwab_api_call_id=None) -> CorrectionResult` — `schwab_api_call_id` is OPTIONAL; when supplied (V1: from operator-explicit CLI `--schwab-api-call-id` flag per T-D.3 #5 — Codex R3 Major #1 revision; the `metadata_json`-based automatic threading was reverted) it is stamped onto the new `reconciliation_corrections` row + the corresponding `schwab_api_calls.linked_correction_id` is back-linked at correction-INSERT time so the audit chain is bidirectional (spec §3.4 + §A.7.4 precedent). When NULL (operator-only resolution with no Schwab source-of-truth re-fetch, OR operator did not pass the flag), the correction row's `schwab_api_call_id` stays NULL.
    - `apply_tier3_override(conn, *, correction_id, operator_truth_value, operator_reason, risk_policy_id=None) -> CorrectionResult`
    - Plus `_apply_tier1_correction_inner(...)`, `_apply_tier2_resolution_inner(...)`, `_apply_tier3_override_inner(...)`.
 2. NEW exceptions:
@@ -1901,18 +1917,26 @@ git commit -m "feat(phase12-bundle-c-T-C.2): _apply_tier1_correction_inner — 1
    - Verify `(discrepancy.ambiguity_kind, choice_code)` is a registered handler key. If not, raise `ValueError("incompatible choice_code for ambiguity_kind ...")`.
    - Dispatch to per-pair handler. Each handler builds an explicit `ClassificationResult`-equivalent struct + invokes the same step-3-through-11 sequence as `_apply_tier1_correction_inner` (refactor common steps to a private helper `_apply_correction_steps_3_to_11(conn, ...)` to avoid duplication).
    - `correction_action='operator_resolved_ambiguity'`, `applied_by='operator'`, `correction_choice=<choice_code>`.
-2. Handler registry (dict of `(ambiguity_kind, choice_code) → handler_fn`) per spec §6.2.1 table — 18 entries (4 + 3 + 3 + 2 + 2 + 2 + 2 = 18 (kind, choice) pairs across the 7 ambiguity_kinds). Each handler is a small focused function in the module.
+2. Handler registry (dict of `(ambiguity_kind, choice_code) → handler_fn`) per spec §6.2.1 table — **17 exact-key entries + 1 parametric-prefix entry (`pick_schwab_record_<N>` family registered under prefix `_PICK_SCHWAB_RECORD_PREFIX = "pick_schwab_record_"` per Codex R1 Minor #4 fix + §I.18 amendment candidate)**. Each exact-key handler is a small focused function in the module; the parametric-prefix handler dispatches at runtime via prefix matching + N-extraction.
 3. Per spec §6.2.1 + Codex R5 Major #2 LOCK: each handler enforces its OWN `--custom-value` requirement via the per-choice payload contract. Handlers that REQUIRE `--custom-value` (per the §6.2.1 Description column "REQUIRES `--custom-value`" rows) raise `ValueError("--custom-value required for choice <code>")` if `operator_custom_payload is None OR empty`. Handlers that do NOT require it (`keep_journal_as_is`, `mark_unmatched`, `acknowledge`) accept `operator_custom_payload=None`.
-4. Per spec §5.6 step 4 — split-into-partials handler is the most complex:
+4. Per spec §5.6 step 4 — split-into-partials handler is the most complex (Codex R3 Major #4 LOCKED — uses verified shipped signatures only):
    - Validates `operator_custom_payload` is a list of dicts each with `qty`, `price`, `fill_datetime` keys; quantities sum to original fill quantity within tolerance; all prices > 0.
-   - DELETEs the consolidated journal fill via repo helper.
-   - INSERTs N partial fills via the existing `insert_fill_with_event(conn, fill, recompute=False)` path with `recompute=False` so `_recompute_aggregates` fires ONCE at the end.
-   - Calls `_recompute_aggregates` once.
+   - DELETEs the consolidated journal fill via raw `conn.execute("DELETE FROM fills WHERE fill_id = ?", ...)` (shipped `swing/data/repos/fills.py` does NOT expose a `delete_fill` helper; the inner-tx-owning service composes the raw DELETE inside its own tx). After DELETE: call `_recompute_aggregates(conn, trade_id)` ONCE (post-delete state).
+   - INSERTs N partial fills via the existing shipped `insert_fill_with_event(conn, fill, *, event_ts, rationale=None, emit_event=True) -> int` (verified shipped signature at `swing/data/repos/fills.py:16-20` — **NO `recompute` kwarg**; Codex R3 Major #4 fix). The shipped function calls `_recompute_aggregates(conn, fill.trade_id)` internally on every INSERT — N redundant recomputes inside one tx; mechanically correct + sub-millisecond cost for V1's expected N ≤ 5. V2 candidate (§I.21 below): add a `recompute=False` kwarg for batch-insert efficiency. V1 does NOT modify the shipped signature.
    - Writes N + 1 `reconciliation_corrections` rows bundled under one `correction_set_id`:
      - 1 deletion-sentinel row with `field_name='__delete__'`, `applied_value_json=null`.
      - N insertion-sentinel rows with `field_name='__insert__'`, `applied_value_json=<full inserted fill payload>`.
    - `correction_set_id` mechanic (per OQ-6 disposition + spec §3.1.1): INSERT anchor (deletion) row → SELECT its `correction_id` → UPDATE anchor's `correction_set_id` to itself → INSERT remaining N rows with `correction_set_id` = anchor's `correction_id`.
-5. Per spec §6.2.1 + Codex R1 Critical #1 LOCK — EVERY tier-2 resolution writes a `reconciliation_corrections` audit row, including "no journal mutation" choices (`keep_journal_as_is`, `mark_unmatched`, `acknowledge`). For these choices: `applied_value_json == pre_correction_value_json`; `affected_table` is still the underlying journal table for forensic-trail attribution; `field_name='__no_mutation__'` sentinel (per OQ-9 disposition pattern) — banked V2.1 §VII.F: writing-plans introduces a new sentinel `'__no_mutation__'` beyond the spec's enumerated `'__delete__'`/`'__insert__'`; spec §3.1.1 mentions only the 2 deletion/insertion sentinels but the no-mutation tier-2 outcomes need their own audit-row marker; clarified at §I.14 V2.1 amendment candidate (writing-plans-introduced).
+5. **V1 LOCK for `custom` choices (Codex R2 Major #5 fix):** the `custom` choice (appears under `multi_partial_vs_consolidated`, `multi_match_within_window`, `unknown_schwab_subtype`, `field_shape_incompatible` per spec §6.2.1) is **audit-only V1 — NO journal mutation regardless of payload shape**. The handler validates the payload is a JSON object with shape `{"audit_only": true, "operator_intent": "<free-text>"}` (or any subset thereof); writes a `reconciliation_corrections` row with `correction_action='operator_resolved_ambiguity'`, `correction_choice='custom'`, `applied_value_json == pre_correction_value_json` (no-mutation marker per #5.bis below), and `correction_reason=<operator_reason + payload.operator_intent>`. V2 candidate (§I.20 new): widen `custom` to support operator-defined transformations once a constrained DSL or per-discrepancy-type transformation contract emerges. Plan-author rationale: spec §6.2.1 wording "operator-custom transformation. REQUIRES --custom-value." is ambiguous about journal mutation; V1 conservative interpretation is audit-only to avoid encouraging handlers that record arbitrary JSON without applying valid journal corrections. Banked at §I.20 V2.1 §VII.F amendment candidate (spec wording lock).
+
+5.bis. Per spec §6.2.1 + Codex R1 Critical #1 LOCK — EVERY tier-2 resolution writes a `reconciliation_corrections` audit row, including "no journal mutation" choices (`keep_journal_as_is`, `mark_unmatched`, `acknowledge`, AND the V1-audit-only `custom`). For these choices (Codex R1 Major #8 fix — REVISED to avoid introducing a new sentinel beyond spec §3.1.1):
+   - `affected_table` is the underlying journal table for forensic-trail attribution (`fills` / `trades` / `cash_movements` / `account_equity_snapshots` — choose the journal row referenced by the discrepancy's FK).
+   - `affected_row_id` is the journal row's PK.
+   - `field_name` is the discrepancy's `field_name` value verbatim (the column the discrepancy was about — e.g., `'price'` for an `entry_price_mismatch`; the synthetic field name for `unmatched_open_fill` is whatever the shipped emitter stamped, e.g., `'matched'`).
+   - `pre_correction_value_json` reads the current journal column value (or the synthetic value the discrepancy emitter stamped, for unmatched_* cases).
+   - **`applied_value_json` is set EQUAL to `pre_correction_value_json` — bytewise identical** — and this equality is the canonical no-mutation marker (NO new sentinel introduced beyond spec §3.1.1's `__delete__` / `__insert__`).
+   - `correction_action='operator_resolved_ambiguity'` + `correction_choice=<choice_code>` distinguishes the no-mutation outcome from a real mutation at the action+choice grain.
+   - The single-sentinel-per-row discipline is preserved; spec §3.1.1's `field_name NOT LIKE '\_\_%' ESCAPE '\'` SQL filter idiom still works for "real mutations only" queries (sentinels stay scoped to multi-row split/insert correction-sets).
 6. UPDATE `reconciliation_discrepancies.resolution='operator_resolved_ambiguity'`.
 7. UPDATE `review_log.superseded_by_correction_id` per the same cadence-period anchoring as T-C.2 (when applicable).
 8. INSERT `trade_events` row PER `reconciliation_corrections` row when `affected_table='fills'` (per spec §9.3). For split-into-partials: N trade_events rows emitted (one per resulting fill); the deletion sentinel does NOT emit a trade_events row (deletion is not an `event_type='reconciliation_auto_correct'` direct mapping V1).
@@ -1960,7 +1984,9 @@ _TIER2_HANDLERS: dict[tuple[str, str], Callable[..., CorrectionResult]] = {
     ("multi_partial_vs_consolidated", "consolidate_using_operator_vwap"): _handle_consolidate_using_operator_vwap,
     ("multi_partial_vs_consolidated", "split_into_partials"): _handle_split_into_partials,
     ("multi_partial_vs_consolidated", "custom"): _handle_custom_multi_partial,
-    ("multi_match_within_window", "pick_schwab_record_<N>"): _handle_pick_schwab_record_N,  # parameterized; N parsed from suffix
+    # Parametric-prefix entry per §I.18 — single registry key dispatches all
+    # pick_schwab_record_<N> codes; N parsed from suffix at handler-dispatch time:
+    ("multi_match_within_window", _PICK_SCHWAB_RECORD_PREFIX): _handle_pick_schwab_record_N,
     ("multi_match_within_window", "mark_unmatched"): _handle_mark_unmatched,
     ("multi_match_within_window", "custom"): _handle_custom_multi_match,
     ("unknown_schwab_subtype", "acknowledge"): _handle_acknowledge,
@@ -2090,7 +2116,37 @@ def test_apply_tier2_resolution_rejects_incompatible_choice_code(
 ```bash
 pytest tests/trades/test_apply_tier2_resolution.py tests/trades/test_apply_tier2_handlers.py -v
 git add swing/trades/reconciliation_auto_correct.py tests/trades/test_apply_tier2_resolution.py tests/trades/test_apply_tier2_handlers.py
-git commit -m "feat(phase12-bundle-c-T-C.3): _apply_tier2_resolution_inner + 18 per-(kind,choice_code) handlers + correction_set_id discipline for split-into-partials"
+git commit -m "feat(phase12-bundle-c-T-C.3): _apply_tier2_resolution_inner + 17+1 per-(kind,choice_code) handlers + correction_set_id discipline for split-into-partials"
+```
+
+### §D.3.1 Task T-C.3.1 — `stamp_pending_ambiguity` service helper (Codex R2 Major #1 fix)
+
+**Files:**
+- Modify: `swing/trades/reconciliation_auto_correct.py`
+- Test: `tests/trades/test_stamp_pending_ambiguity.py`
+
+**Acceptance criteria:**
+1. NEW public service function `stamp_pending_ambiguity(conn, *, discrepancy_id: int, ambiguity_kind: str, resolution_reason: str, allow_pending_update: bool = False) -> None` (Codex R4 Major #1 — metadata_json removed per R3 revert; Codex R5 Major #1 — `allow_pending_update` added for `--retry-pass-2-failures` flow):
+   - Rejects caller-held tx; owns its own `BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK` envelope (mirrors `apply_tier1_correction` discipline).
+   - SELECT discrepancy; determine current state:
+     - If `resolution='unresolved'`: proceed with UPDATE (standard backfill stamp path).
+     - If `resolution='pending_ambiguity_resolution'` AND `allow_pending_update=False` (default): return no-op (idempotent — protects against double-stamping on backfill re-runs).
+     - If `resolution='pending_ambiguity_resolution'` AND `allow_pending_update=True` (only the `--retry-pass-2-failures` flow per T-D.9 passes this kwarg): proceed with UPDATE — overwrites `ambiguity_kind` + `resolution_reason` for a retry-classified row whose initial classification was `'unsupported'`.
+     - If `resolution` is in any other state (terminal like `auto_corrected_from_schwab` etc.): raise `ValueError("cannot stamp pending_ambiguity on discrepancy in terminal state '<state>'")`.
+   - UPDATE `reconciliation_discrepancies SET resolution='pending_ambiguity_resolution', ambiguity_kind=?, resolution_reason=? WHERE discrepancy_id=?`.
+   - No journal mutation; no `reconciliation_corrections` row write (tier-2 PENDING — no correction yet).
+2. Consumed by the backfill orchestrator (T-D.6 + T-D.8) AND the reconciliation flow pivot (T-C.5/6 — replaces the inline-UPDATE in the pivot to use the canonical service helper). Plan-author lock: T-C.5/6's per-discrepancy savepoint discipline stays; the inner-UPDATE inside the savepoint is replaced by a call to `_stamp_pending_ambiguity_inner` (caller-tx variant; mirrors outer/inner split).
+3. Discriminating tests:
+   - Caller-held-tx rejected with `CallerHeldTransactionError`.
+   - Idempotent on repeat invocation with default `allow_pending_update=False` (no second UPDATE; verified via row-version assertion).
+   - **Retry path** with `allow_pending_update=True` correctly UPDATEs an already-`pending_ambiguity_resolution` row from `ambiguity_kind='unsupported'` + `resolution_reason='Pass 2 re-fetch failed: ...'` to a fresh `ambiguity_kind=<retry_classification>` + new resolution_reason. Verifies that the failure-state is REPLACED, not retained alongside.
+   - Terminal-state guard: invocation against a discrepancy in `resolution='auto_corrected_from_schwab'` raises `ValueError`.
+
+- [ ] **Steps 1-5: TDD.**
+
+```bash
+git add swing/trades/reconciliation_auto_correct.py tests/trades/test_stamp_pending_ambiguity.py
+git commit -m "feat(phase12-bundle-c-T-C.3.1): stamp_pending_ambiguity service helper (own-tx + caller-tx inner variant; consumed by backfill + flow pivot)"
 ```
 
 ### §D.4 Task T-C.4 — `_apply_tier3_override_inner` body
@@ -2099,17 +2155,17 @@ git commit -m "feat(phase12-bundle-c-T-C.3): _apply_tier2_resolution_inner + 18 
 - Modify: `swing/trades/reconciliation_auto_correct.py`
 - Test: `tests/trades/test_apply_tier3_override.py`
 
-**Acceptance criteria (per spec §5.7 10-step flow + OQ-15 disposition):**
+**Acceptance criteria (per spec §5.7 10-step flow + OQ-15 disposition + Codex R1 Minor #1 reordering — validator-re-run BEFORE mutation):**
 1. SELECT the target `reconciliation_corrections` row by `correction_id`.
 2. Verify it's the current row in its chain: `superseded_by_correction_id IS NULL`. If NOT, raise `AlreadySupersededError(f"correction_id={correction_id} is already superseded by {row.superseded_by_correction_id}; override the current chain head")`.
-3. INSERT NEW `reconciliation_corrections` row with `correction_action='operator_overridden'`, `applied_by='operator'`, `operator_truth_value_json=json.dumps(operator_truth_value)`, `pre_correction_value_json=<prior row's applied_value_json>`, `applied_value_json=<operator_truth value>`.
-4. UPDATE prior row's `superseded_by_correction_id` = new row's `correction_id`.
-5. UPDATE the affected journal table to the operator-truth value (UPDATE only; no REPLACE).
-6. `_recompute_aggregates` if `affected_table='fills'`.
-7. UPDATE `reconciliation_discrepancies.resolution='operator_overridden'`.
-8. UPDATE `review_log.superseded_by_correction_id` for affected review rows (same logic as T-C.2 step 9).
-9. Emit `trade_events` row (per spec §3.5; one event per correction row that touched a fill on a trade).
-10. Validator chain re-run on the operator-truth value (per defense-in-depth — operator MAY supply a value that violates invariants; e.g., `quantity < 0`). On rejection: raise `ValidatorRejectedError(reason)`; outer-tx rolls back. **NOTE:** spec §5.7 doesn't explicitly enumerate validator-re-run for tier-3 (step 10 spec §5.7); writing-plans LOCK: tier-3 ALSO runs validator chain before applying — operator's "ground truth" must still pass schema invariants. Banked as V2.1 §VII.F amendment candidate §I.15 (spec §5.7 explicit step-by-step validator inclusion).
+3. **Validator chain re-run on the operator-truth value (BEFORE any mutation — Codex R1 Minor #1 fix; writing-plans LOCK).** Per defense-in-depth: operator MAY supply a value that violates invariants (e.g., `quantity < 0`). On `(False, reason)` from validator: raise `ValidatorRejectedError(reason)` BEFORE any INSERT / UPDATE. Outer-tx rolls back cleanly with zero partial state. Spec §5.7 didn't explicitly enumerate this step; writing-plans amends per §I.15 V2.1 §VII.F amendment candidate.
+4. INSERT NEW `reconciliation_corrections` row with `correction_action='operator_overridden'`, `applied_by='operator'`, `operator_truth_value_json=json.dumps(operator_truth_value)`, `pre_correction_value_json=<prior row's applied_value_json>`, `applied_value_json=<operator_truth value>`.
+5. UPDATE prior row's `superseded_by_correction_id` = new row's `correction_id`.
+6. UPDATE the affected journal table to the operator-truth value (UPDATE only; no REPLACE).
+7. `_recompute_aggregates` if `affected_table='fills'`.
+8. UPDATE `reconciliation_discrepancies.resolution='operator_overridden'`.
+9. UPDATE `review_log.superseded_by_correction_id` for affected review rows (same logic as T-C.2 step 9).
+10. Emit `trade_events` row (per spec §3.5; one event per correction row that touched a fill on a trade).
 
 - [ ] **Step 1: Write failing AlreadySupersededError test.**
 
@@ -2211,7 +2267,7 @@ git commit -m "feat(phase12-bundle-c-T-C.4): _apply_tier3_override_inner — cha
            )
            if classification.tier == 1:
                try:
-                   _apply_tier1_correction_inner(
+                   result = _apply_tier1_correction_inner(
                        conn,
                        discrepancy_id=disc.discrepancy_id,
                        classification=classification,
@@ -2220,19 +2276,38 @@ git commit -m "feat(phase12-bundle-c-T-C.4): _apply_tier3_override_inner — cha
                        environment=environment,
                    )
                    conn.execute(f"RELEASE SAVEPOINT {sp_name}")
-                   counters["tier1_applied"] += 1
+                   # Increment ONLY when the inner actually wrote a correction
+                   # (sandbox short-circuit returns CorrectionResult(correction_id=None)
+                   # per spec §5.9; do not double-count under sandbox).
+                   if result.correction_id is not None:
+                       counters["tier1_applied"] += 1
                except ValidatorRejectedError as e:
                    conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
                    conn.execute(f"RELEASE SAVEPOINT {sp_name}")
-                   # Fall through to tier-2 stamp:
-                   conn.execute(
-                       "UPDATE reconciliation_discrepancies SET "
-                       "resolution='pending_ambiguity_resolution', "
-                       "ambiguity_kind='validator_rejected', "
-                       "resolution_reason=? WHERE discrepancy_id=?",
-                       (str(e), disc.discrepancy_id),
-                   )
-                   counters["tier2_pending"] += 1
+                   # Fall through to tier-2 stamp INSIDE A FRESH SAVEPOINT so an
+                   # UPDATE failure on the stamp doesn't escape into the outer
+                   # except block (which would attempt ROLLBACK TO on the
+                   # already-released sp_name and fail).
+                   fb_sp = f"correction_fallback_sp_{disc.discrepancy_id}"
+                   conn.execute(f"SAVEPOINT {fb_sp}")
+                   try:
+                       conn.execute(
+                           "UPDATE reconciliation_discrepancies SET "
+                           "resolution='pending_ambiguity_resolution', "
+                           "ambiguity_kind='validator_rejected', "
+                           "resolution_reason=? WHERE discrepancy_id=?",
+                           (str(e), disc.discrepancy_id),
+                       )
+                       conn.execute(f"RELEASE SAVEPOINT {fb_sp}")
+                       counters["tier2_pending"] += 1
+                   except Exception as fb_e:
+                       conn.execute(f"ROLLBACK TO SAVEPOINT {fb_sp}")
+                       conn.execute(f"RELEASE SAVEPOINT {fb_sp}")
+                       logger.warning(
+                           "tier-2 fallback stamp failed for discrepancy %d: %s",
+                           disc.discrepancy_id, fb_e,
+                       )
+                       counters["tier_errored"] += 1
            else:  # tier == 2
                conn.execute(
                    "UPDATE reconciliation_discrepancies SET "
@@ -2652,8 +2727,8 @@ git commit -m "feat(phase12-bundle-c-T-D.1): swing journal discrepancy list-pend
      * REQUIRES --custom-value with execution-level partial-fill payload (list of dicts).
 
    custom *
-     Operator-supplied arbitrary payload.
-     * REQUIRES --custom-value (free-form JSON).
+     Audit-only V1 (NO journal mutation).
+     * REQUIRES --custom-value with shape {"audit_only": true, "operator_intent": "..."}.
    ```
 6. Per OQ-4: `keep_journal_as_is` is highlighted as `[RECOMMENDED]` (first in the printed list).
 7. Discriminating tests cover each ambiguity_kind's menu output.
@@ -2687,7 +2762,9 @@ _AMBIGUITY_CHOICE_MENUS: dict[str, list[ChoiceMenuItem]] = {
             "REQUIRES --custom-value with execution-level partial-fill payload.",
             requires_custom_value=True),
         ChoiceMenuItem("custom",
-            "Operator-supplied arbitrary payload via --custom-value.",
+            "Audit-only V1: operator records intent + investigation flag. "
+            "NO journal mutation. REQUIRES --custom-value with shape "
+            '\'{"audit_only": true, "operator_intent": "<free-text>"}\' (or subset).',
             requires_custom_value=True),
     ],
     "multi_match_within_window": [
@@ -2697,7 +2774,9 @@ _AMBIGUITY_CHOICE_MENUS: dict[str, list[ChoiceMenuItem]] = {
             "Journal entry has no corresponding broker record. No mutation.",
             requires_custom_value=False),
         ChoiceMenuItem("custom",
-            "Operator-supplied arbitrary payload via --custom-value.",
+            "Audit-only V1: operator records intent + investigation flag. "
+            "NO journal mutation. REQUIRES --custom-value with shape "
+            '\'{"audit_only": true, "operator_intent": "<free-text>"}\' (or subset).',
             requires_custom_value=True),
     ],
     "unknown_schwab_subtype": [
@@ -2708,7 +2787,8 @@ _AMBIGUITY_CHOICE_MENUS: dict[str, list[ChoiceMenuItem]] = {
             "Operator-supplies real journal field values. REQUIRES --custom-value.",
             requires_custom_value=True),
         ChoiceMenuItem("custom",
-            "Operator-custom transformation. REQUIRES --custom-value.",
+            "Audit-only V1 (NO journal mutation). REQUIRES --custom-value "
+            "with shape {'audit_only': true, 'operator_intent': '...'}.",
             requires_custom_value=True),
     ],
     "field_shape_incompatible": [
@@ -2716,7 +2796,8 @@ _AMBIGUITY_CHOICE_MENUS: dict[str, list[ChoiceMenuItem]] = {
             "Acknowledge + log. No mutation.",
             requires_custom_value=False),
         ChoiceMenuItem("custom",
-            "Operator-custom transformation. REQUIRES --custom-value.",
+            "Audit-only V1 (NO journal mutation). REQUIRES --custom-value "
+            "with shape {'audit_only': true, 'operator_intent': '...'}.",
             requires_custom_value=True),
     ],
     "schwab_returned_no_match": [
@@ -2772,11 +2853,20 @@ git commit -m "feat(phase12-bundle-c-T-D.2): show-ambiguity CLI + reconciliation
 2. `--reason` is REQUIRED on every invocation (per spec §6.4 mandatory + §6.2 Codex R5 LOCK; CLI exits non-zero with `click.MissingParameter` style message if missing).
 3. CLI parses `discrepancy_id` → fetches the discrepancy → reads `ambiguity_kind` → validates `choice_code` against `get_choice_menu(ambiguity_kind)`. Reject with friendly error if incompatible.
 4. **Per-choice `--custom-value` enforcement (Codex R5 Major #2 LOCK):** for each choice in the menu, if `requires_custom_value is True AND --custom-value not supplied`, CLI rejects with `click.UsageError("--custom-value is required for choice '<code>'; expected JSON shape: <description>")`. The description text for each choice's expected JSON shape is part of the helper-module data (T-D.2) — extended to include an `expected_payload_shape_description` field on `ChoiceMenuItem`.
-5. CLI invokes `apply_tier2_resolution(conn, discrepancy_id=..., choice_code=..., operator_custom_payload=<parsed JSON>, operator_reason=..., risk_policy_id=<active_at_time_of_call>)`.
-6. Success: prints `"resolved discrepancy {id} via choice '{code}'; correction_id={result.correction_id}"` and exits 0.
-7. `ValidatorRejectedError`: maps to friendly CLI error + exit 1.
-8. `ValueError` from service (incompatible choice OR missing required payload OR malformed JSON): maps to `click.UsageError` + exit 2.
-9. Discriminating tests:
+5. **Pass-2 audit-chain linkage (Codex R3 Major #1 revision + R4 Major #2 deterministic-output update — V1 LOCKED operator-explicit only):** CLI accepts OPTIONAL `--schwab-api-call-id <int>` flag. When supplied, threaded into the service via `schwab_api_call_id=<int>` kwarg + the service stamps the new `reconciliation_corrections` row + back-links `schwab_api_calls.linked_correction_id=<new_correction_id>` (via repo helper at T-A.3). When not supplied, the new correction row's `schwab_api_call_id` is NULL — V1 default. **Operator-facing discovery (Codex R4 Major #2 — deterministic):** instead of a best-effort `show-ambiguity` lookup (which fails when multiple Pass-2 calls fire within the same backfill iteration — e.g., DHC + VSAT in C.D gate S4), the backfill emits Pass-2 `call_id` PER-DISCREPANCY DIRECTLY in dry-run AND apply output:
+   ```
+   disc 39 DHC (unmatched_open_fill): Pass 2 → call_id=99; tier-2; ambiguity_kind='multi_partial_vs_consolidated'
+   disc 40 VSAT (unmatched_open_fill): Pass 2 → call_id=100; tier-2; ambiguity_kind='unknown_schwab_subtype'
+   ```
+   Operator copies the `call_id` from the backfill output for the discrepancy they're dispositioning + passes via `--schwab-api-call-id` to `resolve-ambiguity`. PLUS: `show-ambiguity <id>` additionally surfaces recent orders-list calls within the discrepancy's time window (Codex R5 Minor #2 clarification — `schwab_api_calls` has NO ticker column or response-body column V1, so the query is by time-window + endpoint, NOT ticker-attributed): `SELECT call_id, ts, status FROM schwab_api_calls WHERE endpoint='accounts.orders.list' AND surface='cli' AND ts >= discrepancy.created_at ORDER BY ts DESC LIMIT 10`. Multi-call disambiguation: operator picks based on the discrepancy's emit-time + the explicit-per-discrepancy `call_id` printed earlier by the backfill output. NO best-effort single-match advisory (Codex R4 Major #2 — would be fragile).
+
+   Discriminating test (T-D.3 acceptance #10 below): plant a `pending_ambiguity_resolution` discrepancy + a recent matching `schwab_api_calls` row #99; invoke `resolve-ambiguity 39 --choice ... --schwab-api-call-id 99`; assert the new correction row's `schwab_api_call_id=99` + `schwab_api_calls.linked_correction_id=<new_correction_id>`. V2 candidate (§I.17 restored): dedicated schema column for automatic linkage. **No new schema column V1; no spec amendment required for C.A dispatch.**
+6. CLI invokes `apply_tier2_resolution(conn, discrepancy_id=..., choice_code=..., operator_custom_payload=<parsed JSON>, operator_reason=..., risk_policy_id=<active_at_time_of_call>, schwab_api_call_id=<flag_value_or_None>)`.
+7. Success: prints `"resolved discrepancy {id} via choice '{code}'; correction_id={result.correction_id}"` and exits 0.
+8. `ValidatorRejectedError`: maps to friendly CLI error + exit 1.
+9. `ValueError` from service (incompatible choice OR missing required payload OR malformed JSON): maps to `click.UsageError` + exit 2.
+10. Pass-2-audit-chain regression test (Codex R2 Major #3 fix): see acceptance criterion #5 above.
+11. Discriminating tests:
    - Happy path with each of the 7 ambiguity_kinds × 1 valid choice each (7 tests).
    - Missing `--reason`: assert exit non-zero.
    - Missing `--custom-value` on payload-required choice: assert clear error message + exit 2.
@@ -2824,12 +2914,13 @@ git commit -m "feat(phase12-bundle-c-T-D.4): override-correction CLI + confirmat
 **Files:**
 - Test: `tests/cli/test_resolve_ambiguity_handler_exhaustiveness.py`
 
-**Acceptance criteria:**
-1. Test iterates the §6.2.1 binding-contract table (encoded as a Python constant in the test) + asserts EVERY (ambiguity_kind, choice_code) pair has:
-   - An entry in `get_choice_menu(ambiguity_kind)` (T-D.2 helper).
-   - An entry in `_TIER2_HANDLERS` (T-C.3 service registry).
-2. Inverse: test asserts no orphan entries in either dict (every menu entry has a handler; every handler has a menu entry).
-3. This is the canonical "no silent kind/choice drift" regression test — protects against the spec §6.2.1 LOCKED 18-pair contract drifting out-of-sync as future V2 dispatches widen the menu.
+**Acceptance criteria (Codex R1 Minor #4 clarified parametric handling):**
+1. Test iterates the §6.2.1 binding-contract table (encoded as a Python constant in the test). For each (ambiguity_kind, choice_code) entry:
+   - **Exact-key choices** (15 entries; non-parametric `keep_journal_as_is`, `consolidate_using_operator_vwap`, `split_into_partials`, `custom`, `mark_unmatched`, `acknowledge`, `operator_truth`, `operator_alternative`): assert exact-key match in both `get_choice_menu(ambiguity_kind)` member-list AND `_TIER2_HANDLERS` keys.
+   - **Parametric choices** (`pick_schwab_record_<N>` family — appears under `multi_match_within_window` only): assert the registry uses a clearly-marked placeholder key (e.g., the constant `_PICK_SCHWAB_RECORD_PREFIX = "pick_schwab_record_"` registered as `(ambiguity_kind="multi_match_within_window", choice_code=_PICK_SCHWAB_RECORD_PREFIX)`); assert `get_choice_menu("multi_match_within_window")` produces parametric entries at runtime via the candidate-list-from-discrepancy mechanic + the prefix is stable.
+2. Total pair count: **17 exact-key pairs + 1 parametric-prefix pair = 18 binding contract entries.** (Plan correction from prior "18 pairs" wording — 17 exact + 1 parametric prefix; see §I.18 V2.1 §VII.F amendment candidate banked for spec §6.2.1 row-count clarification.)
+3. Inverse: test asserts no orphan entries in either dict (every menu entry has a handler; every handler has a menu entry); parametric prefix counts as exactly one entry on each side.
+4. This is the canonical "no silent kind/choice drift" regression test — protects against the spec §6.2.1 LOCKED contract drifting out-of-sync as future V2 dispatches widen the menu.
 
 - [ ] **Steps 1-3: TDD.**
 
@@ -2849,7 +2940,12 @@ git commit -m "test(phase12-bundle-c-T-D.5): exhaustive handler-registry vs menu
 1. NEW subcommand `swing journal reconcile-backfill [--apply] [--dry-run] [--ticker <ticker>] [--limit <N>] [--no-pass-2-on-dry-run] [--retry-pass-2-failures]`.
 2. Default mode: `--dry-run` (per spec §8.2 LOCK).
 3. `--apply` flag: actually executes; mutually exclusive with `--dry-run` (Click raises if both supplied).
-4. Helper module `swing/trades/reconciliation_backfill.py` exposes `run_backfill(conn, *, dry_run, ticker=None, limit=None, no_pass_2_on_dry_run=False, retry_pass_2_failures=False, schwab_client, environment) -> BackfillSummary` orchestrator.
+4. Helper module `swing/trades/reconciliation_backfill.py` exposes `run_backfill(conn, *, dry_run, schwab_client, environment, account_hash, ticker=None, limit=None, no_pass_2_on_dry_run=False, retry_pass_2_failures=False) -> BackfillSummary` orchestrator. (Non-defaulted keyword-only parameters listed BEFORE defaulted ones for clarity; Python allows mixed order in the keyword-only section but lint convention is required-first.) **Transaction ownership — Codex R2 Major #1 fix (REVISED):** `run_backfill` does NOT open its OWN BEGIN IMMEDIATE — that would conflict with the inner public-service functions which own their own transactions + reject caller-held tx, AND with the Schwab wrapper's `record_call_start/finish` audit-row inserts which also use a separate tx envelope. Instead: `run_backfill` iterates discrepancies in autocommit mode (no outer tx); for each discrepancy:
+   - Fetch Pass 2 source-of-truth OUTSIDE any tx via the audited wrapper `_audited_get_account_orders(...)` (T-D.6.1 below) which writes a fresh `schwab_api_calls` audit row + returns `(call_id, list[SchwabOrderResponse])`.
+   - Classify via `classify_discrepancy(...)` (pure function; no tx).
+   - For tier-1 outcomes: call the PUBLIC `apply_tier1_correction(conn, ..., environment=environment, schwab_api_call_id=<pass_2_call_id_or_None>)` which owns ITS OWN tx end-to-end.
+   - For tier-2 outcomes: call a NEW service helper `stamp_pending_ambiguity(conn, *, discrepancy_id, ambiguity_kind, resolution_reason)` shipped at T-C.3.1 below — owns its own tx + writes the discrepancy stamp. (R3 reverted the `metadata_json` column from the plan; signature does NOT carry that kwarg.)
+   - Pipeline-exclusion guard (mirrors `FinvizPipelineActiveError` + `SchwabPipelineActiveError` precedent): backfill at entry asserts `pipeline_runs.state='running'` is empty; raises `BackfillPipelineActiveError` otherwise. This eliminates the audit-row attribution race for `_audited_get_account_orders`'s call_id lookup (Codex R2 Major #2 fix).
 5. `BackfillSummary` dataclass: `tier1_applied: int`, `tier2_stamped: int`, `tier_errored: int`, `pass_2_failed: int`, `skipped_already_resolved: int`, `skipped_pass_2_failed: int`, `per_discrepancy_outcomes: list[BackfillOutcome]`.
 6. CLI prints summary at end.
 7. Discriminating tests:
@@ -2863,6 +2959,29 @@ git commit -m "test(phase12-bundle-c-T-D.5): exhaustive handler-registry vs menu
 ```bash
 git add swing/cli.py swing/trades/reconciliation_backfill.py tests/cli/test_reconcile_backfill_cli.py
 git commit -m "feat(phase12-bundle-c-T-D.6): swing journal reconcile-backfill CLI scaffold + BackfillSummary dataclass"
+```
+
+### §E.6.1 Task T-D.6.1 — `_audited_get_account_orders` wrapper (Codex R2 Major #2 fix)
+
+**Files:**
+- Modify: `swing/integrations/schwab/trader.py` (add `get_account_orders_audited(...) -> tuple[int, list[SchwabOrderResponse]]` wrapper)
+- Test: `tests/integrations/test_schwab_trader_audited_wrapper.py`
+
+**Acceptance criteria (Codex R4 Major #3 — implementation seam explicit):**
+1. NEW wrapper function `get_account_orders_audited(client, conn, account_hash, from_entered_time, to_entered_time, *, surface, environment, pipeline_run_id=None, status=None, max_results=None) -> tuple[int, list[SchwabOrderResponse]]` returns the audit-row PK alongside the order list.
+2. **Implementation seam (explicit):** refactor the existing private `_call_endpoint(...)` (or the equivalent shipped helper at `swing/integrations/schwab/trader.py` that owns the `schwab_api_calls.record_call_start/finish` lifecycle per Phase 11 Sub-bundle B precedent) to optionally return `(call_id, mapped_result)` instead of only `mapped_result`. T-D.6.1 Step 2 grep-verifies the actual shipped helper name + line range before refactoring; the refactor adds an opt-in keyword `return_call_id: bool = False` (default False preserves existing behavior). Then `get_account_orders(...)` shipped wrapper stays untouched (returns `list[SchwabOrderResponse]` only — backward compatible); NEW `get_account_orders_audited(...)` invokes the same `_call_endpoint(..., return_call_id=True)` path + returns the tuple.
+3. **Backward compat regression test:** assert `get_account_orders(...)` shipped signature + return shape unchanged (return type is still `list[SchwabOrderResponse]`; no kwarg additions); assert all existing pipeline + flow-pivot callsites compile + pass tests.
+4. **Race-free via backfill-process pipeline-exclusion guard:** because `run_backfill` rejects entry while `pipeline_runs.state='running'` (Codex R2 Major #1 fix on T-D.6 transaction-ownership clause), no concurrent pipeline-initiated `get_account_orders` calls race with backfill-initiated calls; the audit-row INSERT inside the shared helper is the only writer for the call_id range used by the backfill iteration. The `return_call_id` keyword is set ONLY at backfill-initiated callsites; pipeline-initiated callsites never request the call_id (race-free at the API surface).
+5. Discriminating tests:
+   - Invoke `get_account_orders_audited(...)` against mocked Schwab response; assert returned tuple has `(int, list[SchwabOrderResponse])` shape; assert `schwab_api_calls` row exists with the returned `call_id` PK.
+   - Invoke existing `get_account_orders(...)` against mocked Schwab response; assert return shape is unchanged `list[SchwabOrderResponse]` (no tuple); assert audit row was still written (existing audit-row behavior preserved).
+   - Backward-compat-pin test: existing pipeline callsites at `swing/pipeline/runner.py` + `swing/trades/schwab_reconciliation.py` (existing flow-pivot from T-C.5) consume `get_account_orders(...)` unchanged + their existing tests pass.
+
+- [ ] **Steps 1-3: TDD.**
+
+```bash
+git add swing/integrations/schwab/trader.py tests/integrations/test_schwab_trader_audited_wrapper.py
+git commit -m "feat(phase12-bundle-c-T-D.6.1): _audited_get_account_orders wrapper — returns (call_id, orders) tuple for race-free Pass-2 audit-chain linkage"
 ```
 
 ### §E.7 Task T-D.7 — Backfill Pass 1 (persisted-JSON-only classification)
@@ -2885,7 +3004,11 @@ git commit -m "feat(phase12-bundle-c-T-D.6): swing journal reconcile-backfill CL
    39  | DHC    | unmatched_open_fill   | Pass 2 required (re-fetch)     | --apply or --no-pass-2
    40  | VSAT   | unmatched_open_fill   | Pass 2 required (re-fetch)     | --apply or --no-pass-2
    ```
-5. Apply mode: invokes `_apply_tier1_correction_inner` for tier-1 outcomes; stamps tier-2 outcomes via direct UPDATE; transitions Pass-2-required outcomes into Pass 2 (T-D.8).
+5. Apply mode (Codex R2 Major #1 + R3 Major #3 LOCKED — NO backfill-owned tx; service helpers own their own txs):
+   - For tier-1 outcomes: call PUBLIC `apply_tier1_correction(conn, ..., environment=environment)` (own-tx).
+   - For tier-2 outcomes: call PUBLIC `stamp_pending_ambiguity(conn, *, discrepancy_id, ambiguity_kind, resolution_reason)` per T-C.3.1 (own-tx). NO direct UPDATE from backfill code; NO per-discrepancy BEGIN IMMEDIATE in backfill code.
+   - Pass-2-required outcomes: backfill fetches Pass-2 via `get_account_orders_audited(...)` (T-D.6.1; outside any tx; returns `(call_id, orders)`) → re-classify with the fetched payload → dispatch on the new tier per the above two bullets.
+   The `environment` keyword propagates from the CLI's cfg into every public-service call so sandbox short-circuits are honored end-to-end (Codex R1 Minor #3 fix — propagation explicit). Acceptance criterion #5.1: discriminating test invokes `run_backfill(..., environment='sandbox')` against a planted CVGI-shape tier-1-eligible discrepancy + asserts `fills.price` unchanged + asserts no `reconciliation_corrections` row written + asserts `BackfillSummary.tier1_applied == 0`.
 6. Discriminating tests:
    - CVGI 41 fixture: Pass 1 emits tier-1; dry-run prints projection; `--apply` actually corrects.
    - DHC 39 fixture (Pass 1 only, no Pass 2 yet): emits tier-2 unsupported with `_pass_2_required=True`.
@@ -2906,8 +3029,28 @@ git commit -m "feat(phase12-bundle-c-T-D.7): backfill Pass 1 — persisted-JSON-
 
 **Acceptance criteria (per spec §8.4 Pass 2 + LOCKED Pass-2-tier-1-FORBIDDEN rule):**
 1. Pass 2 only fires when Pass 1 flagged `_pass_2_required=True` (currently only for `unmatched_open_fill` + `unmatched_close_fill`).
-2. Pass 2 calls `swing/integrations/schwab/trader.py:get_account_orders(...)` (verified at §A.7.4 — `SchwabOrderResponse` order-grain) with `(ticker=<disc.ticker>, from_entered_time=<disc.created_at_date>, to_entered_time=<disc.created_at_date>, surface='cli', environment=<cfg.environment>)`.
-3. Each Pass 2 fetch writes a `schwab_api_calls` audit row with `surface='cli'`, `endpoint='accounts.orders.list'` (per spec §8.4 + Codex R2 C#1 lock; per Phase 11 sandbox-gating §9.7).
+2. Pass 2 calls the audited wrapper `swing/integrations/schwab/trader.py:get_account_orders_audited(...)` (T-D.6.1 — wraps the shipped `get_account_orders(...)` per §A.7.4 verified signature + returns `(call_id, list[SchwabOrderResponse])`). Call shape:
+   ```python
+   call_id, schwab_orders = get_account_orders_audited(
+       schwab_client,                       # required positional; threaded via _construct_pipeline_schwab_client
+       conn,                                # required positional; same DB conn as outer
+       account_hash,                        # required positional; resolved at backfill-init via cached accounts.linked call
+       from_entered_time=<window_start>,    # e.g., disc.created_at - 1d (defensive widening)
+       to_entered_time=<window_end>,        # e.g., disc.created_at + 1d
+       surface="cli",
+       environment=cfg.integrations.schwab.environment,
+   )
+   # Filter post-fetch by ticker — wrapper returns ALL orders in the window across all
+   # symbols; classifier sub-classifier filters by disc.ticker against
+   # SchwabOrderResponse.instrument_symbol.
+   matching_orders = [o for o in schwab_orders if o.instrument_symbol == disc.ticker]
+   ```
+   The `account_hash` is the operator's single-account hash (V1 multi-account assumption per Phase 11 Sub-bundle B + Sub-bundle D scope; resolved at backfill-init via cached `accounts.linked` call or read from a cached operator-config setting; T-D.6 documents the resolution path). The `call_id` returned by the audited wrapper is preserved through the iteration — operator-side back-linkage is V1-deferred (per Step 3 below + §I.17 V2 candidate); the call_id may be displayed in dry-run output for operator observability.
+3. Each Pass 2 fetch uses the new audited wrapper `get_account_orders_audited(...)` (T-D.6.1 below) which wraps `get_account_orders(...)` + writes the `schwab_api_calls` audit row with `surface='cli'`, `endpoint='accounts.orders.list'` (per spec §8.4 + Codex R2 C#1 lock; per Phase 11 sandbox-gating §9.7) + returns `(call_id, list[SchwabOrderResponse])` so the caller has the audit-row PK without race-prone post-fetch lookups (Codex R2 Major #2 fix). **Pass-2 call_id is NOT persisted on the discrepancy V1 (Codex R3 Major #1 revision; reverted from R2 fix metadata_json column).** Bidirectional audit chain from `reconciliation_corrections` BACK to `schwab_api_calls` is preserved at correction-write time (T-A.3 repo helper sets `schwab_api_calls.linked_correction_id` when the operator supplies `--schwab-api-call-id` flag at resolve-time per T-D.3 #5). The FORWARD linkage from Pass-2 audit row TO the discrepancy V1 lock (Codex R5 Minor #1 fix):
+   - Backfill apply/dry-run output prints the Pass-2 `call_id` per-discrepancy DIRECTLY (deterministic per-row printout — no fragile single-match advisory).
+   - `show-ambiguity <id>` displays the recent orders-list call-history table within the discrepancy's time window (operator picks based on emit timing + endpoint + surface).
+   - Operator threads `--schwab-api-call-id <int>` on `resolve-ambiguity` to back-link.
+   V2 candidate (§I.17 restored): dedicated `reconciliation_discrepancies.pass_2_schwab_api_call_id` schema column for automatic forward linkage. `resolution_reason` stays free-text human-readable.
 4. **§8.4 Pass-2-tier-1-FORBIDDEN LOCK enforcement** (Codex R3 Critical #1 + Major #1 fix): Pass 2 source data is `list[SchwabOrderResponse]` (order-grain); per the LOCK, classifier-output from Pass 2 MUST NEVER be tier-1. Plan T-B.4 sub-classifier already enforces this; T-D.8 inherits via the classifier output.
 5. Sandbox short-circuit: under `environment='sandbox'`, Pass 2 returns `None` (no Schwab API call fired) + classifier emits tier-2 `unsupported` with rationale `"sandbox: cannot re-fetch source-canonical payload"` per spec §9.7.
 6. **Pass 2 failure-mode (Codex R2 Major #2 LOCK):** if the Schwab re-fetch raises (`SchwabApiError`, `SchwabAuthError`, `SchwabRateLimitedError`, network error), the classifier emits tier-2 `unsupported` with rationale `"Pass 2 re-fetch failed: <reason>"`. Persisted state under `--apply`: `resolution='pending_ambiguity_resolution', ambiguity_kind='unsupported', resolution_reason` containing `"Pass 2 re-fetch failed"`. Pipeline NEVER crashes (Phase 11 forward-binding lesson #2 inheritance).
@@ -2920,6 +3063,7 @@ git commit -m "feat(phase12-bundle-c-T-D.7): backfill Pass 1 — persisted-JSON-
    - Pass 2 raises `SchwabAuthError`: emits tier-2 `unsupported` with `"Pass 2 re-fetch failed"` rationale; discrepancy stamped accordingly under `--apply`.
    - Sandbox: emits tier-2 `unsupported` per §9.7; no Schwab API call fired.
    - `--no-pass-2-on-dry-run`: dry-run skips Schwab API entirely; matrix shows `unsupported`.
+   - **Per-discrepancy Pass-2 `call_id` printout (Codex R6 Minor #2):** backfill apply/dry-run output for each Pass-2-required discrepancy includes the captured `call_id` from `get_account_orders_audited(...)`. Discriminating test: invoke backfill against a planted DHC 39 fixture; capture stdout; assert the line `disc 39 DHC (unmatched_open_fill): Pass 2 → call_id=<int>; tier-2; ambiguity_kind=...` is present in output; assert the printed `call_id` matches the row INSERTed into `schwab_api_calls`. This is the V1 mechanic operator's `--schwab-api-call-id` workflow depends on.
 
 - [ ] **Steps 1-9: TDD.**
 
@@ -2940,7 +3084,7 @@ git commit -m "feat(phase12-bundle-c-T-D.8): backfill Pass 2 — Schwab re-fetch
    - Counter `skipped_already_resolved` increments.
 2. Pass-2-failed discrepancies are persisted as `resolution='pending_ambiguity_resolution'` (per §8.4 #3); these are also SKIPPED on default re-run.
    - Counter `skipped_pass_2_failed` increments when `--apply` skips them.
-3. **`--retry-pass-2-failures` flag (per §8.2 + §8.3):** opt-in flag that scopes iteration to rows WHERE `resolution = 'pending_ambiguity_resolution' AND ambiguity_kind = 'unsupported' AND resolution_reason LIKE '%Pass 2 re-fetch failed%'`. Each retry re-fetches Schwab + writes a new `schwab_api_calls` audit row (intentional retry-history trail).
+3. **`--retry-pass-2-failures` flag (per §8.2 + §8.3 + Codex R5 Major #1 fix):** opt-in flag that scopes iteration to rows WHERE `resolution = 'pending_ambiguity_resolution' AND ambiguity_kind = 'unsupported' AND resolution_reason LIKE '%Pass 2 re-fetch failed%'`. Each retry re-fetches Schwab via `get_account_orders_audited(...)` (writes new `schwab_api_calls` audit row — intentional retry-history trail) + re-classifies; when retry succeeds with a new `ambiguity_kind`, invokes `stamp_pending_ambiguity(..., allow_pending_update=True)` to OVERWRITE the prior failure-state stamp with the new classification. When retry fails AGAIN (still raises Pass-2 error), invokes `stamp_pending_ambiguity(..., allow_pending_update=True)` to refresh `resolution_reason` with the latest failure timestamp (advisory; not strictly required).
 4. CLI summary prints:
    ```
    Backfill summary:
@@ -2997,17 +3141,33 @@ git commit -m "feat(phase12-bundle-c-T-D.10): Phase 10 banner predicate widens t
 **Files:**
 - Test: `tests/integration/test_phase12_bundle_c_payload_contract_acceptance.py`
 
-**Acceptance criteria (per spec §15.5 C.D gate S6 LOCKED revised mechanic + brief §0.4 lesson #4):**
+**Acceptance criteria (per spec §15.5 C.D gate S6 LOCKED revised mechanic + brief §0.4 lesson #4 + Codex R1 Major #7 fix — table-driven across ALL payload-required choices):**
 1. Test runs against an **isolated tmp `swing.db`** via the writing-plans-drafted gate fixture — NOT the operator's production DB.
-2. Test plants a synthetic discrepancy with `ambiguity_kind='unknown_schwab_subtype'` so `operator_truth` is a valid choice (per spec §6.2.1 menu).
-3. Test exercises the parse-time payload-required error first:
-   - Invoke `swing journal discrepancy resolve-ambiguity <id> --choice operator_truth --reason "..."` WITHOUT `--custom-value` → assert CLI exits non-zero with clear missing-flag error.
-4. Test then dispositions via `--choice operator_truth --custom-value '{"price": 1.23}' --reason "synthetic gate fixture; isolated DB"`:
-   - Assert CLI exits 0.
-   - Assert `reconciliation_corrections.applied_value_json` row contains `{"price": 1.23}` verbatim.
-   - Assert `reconciliation_discrepancies.resolution = 'operator_resolved_ambiguity'`.
-5. Synthetic-fixture DB is discarded at test end (per spec §15.5 LOCK — append-only audit on production DB is preserved because synthetic test runs against an isolated DB).
-6. This test underwrites the C.D gate S6 surface (per §G.4 below) — the operator-witnessed gate at C.D will RUN this test as the payload-contract acceptance step, separately from operator's REAL disposition of DHC 39 / VSAT 40.
+2. Test is **table-driven** across every payload-required choice from spec §6.2.1 (Codex R1 Major #7 fix). Cases (11 payload-required entries enumerated below; each runs against a fresh isolated DB):
+   - `(multi_partial_vs_consolidated, consolidate_using_operator_vwap, {"price": 1.23})` against a synthetic `multi_partial_vs_consolidated` discrepancy.
+   - `(multi_partial_vs_consolidated, split_into_partials, [{"qty": 1, "price": 1.0, "fill_datetime": "2026-01-01T10:00:00"}, {"qty": 1, "price": 2.0, "fill_datetime": "2026-01-01T10:00:01"}])` against synthetic multi_partial discrepancy with qty=2.
+   - `(multi_partial_vs_consolidated, custom, {"audit_only": true, "operator_intent": "investigate broker statement next week"})` — see Major #5 lock below against synthetic multi_partial.
+   - `(multi_match_within_window, pick_schwab_record_1, {"qty": 5, "price": 9.99, "fill_datetime": "2026-01-01T10:00:00"})` against synthetic multi_match with N candidates.
+   - `(multi_match_within_window, custom, {"audit_only": true, "operator_intent": "investigate"})` against synthetic multi_match.
+   - `(unknown_schwab_subtype, operator_truth, {"price": 1.23})` against synthetic unknown_schwab_subtype.
+   - `(unknown_schwab_subtype, custom, {"audit_only": true, "operator_intent": "investigate"})` against synthetic unknown_schwab_subtype.
+   - `(field_shape_incompatible, custom, {"audit_only": true, "operator_intent": "investigate"})` against synthetic field_shape_incompatible.
+   - `(schwab_returned_no_match, operator_truth, {"price": 1.23})` against synthetic schwab_returned_no_match.
+   - `(validator_rejected, operator_alternative, {"price": 2.0})` against synthetic validator_rejected.
+   - `(unsupported, operator_truth, {"price": 1.23})` against synthetic unsupported.
+3. For EACH case the test exercises BOTH (Codex R3 Major #6 — assertions split by choice semantics):
+   - **Parse-time payload-required error first:** Invoke CLI WITHOUT `--custom-value` → assert CLI exits non-zero with clear missing-flag error mentioning the choice code.
+   - **Success-path with `--custom-value`:** Invoke CLI with the case's `--custom-value` payload + `--reason "synthetic gate fixture; case <i>; isolated DB"` → assert CLI exits 0 + `reconciliation_discrepancies.resolution = 'operator_resolved_ambiguity'`. Per-choice-class assertions:
+     - **Mutation-class choices** (`consolidate_using_operator_vwap`, `pick_schwab_record_<N>`, `operator_truth`, `operator_alternative`): `reconciliation_corrections.applied_value_json` matches the supplied payload + `applied_value_json != pre_correction_value_json` (mutation occurred).
+     - **Split-class choice** (`split_into_partials`): N+1 audit rows in one `correction_set_id`; original fill DELETEd; N new fills present with operator-supplied (qty, price, fill_datetime) tuples.
+     - **Audit-only class choices** (`custom` for any ambiguity_kind — per T-C.3 #5 V1 LOCK): `applied_value_json == pre_correction_value_json` (no-mutation marker); audit row records the operator-intent payload via `correction_reason` field (`operator_reason + payload.operator_intent` per T-C.3 #5).
+4. Also exercise the no-payload choices for completeness (single fixture per choice; assert no `--custom-value` is rejected by Click parser):
+   - `(multi_partial_vs_consolidated, keep_journal_as_is)` — assert succeeds without `--custom-value`; assert `applied_value_json == pre_correction_value_json` (no-mutation marker).
+   - `(multi_match_within_window, mark_unmatched)`.
+   - `(unknown_schwab_subtype, acknowledge)`, `(field_shape_incompatible, acknowledge)`, `(validator_rejected, acknowledge)`, `(unsupported, acknowledge)`.
+   - `(schwab_returned_no_match, mark_unmatched)`.
+5. Synthetic-fixture DBs are discarded per case end (per spec §15.5 LOCK — append-only audit on production DB is preserved because synthetic tests run against isolated DBs).
+6. This test suite underwrites the C.D gate S6 surface (per §G.4 below) — the operator-witnessed gate at C.D will RUN this test suite as the payload-contract acceptance step, separately from operator's REAL disposition of DHC 39 / VSAT 40. **All payload-required choices verified end-to-end; not just one representative.**
 
 - [ ] **Steps 1-5: implement.**
 
@@ -3103,7 +3263,7 @@ This section records BINDING interfaces between sub-sub-bundles. Each pin underw
 
 | Pin # | Producer (sub-bundle / task) | Consumer (sub-bundle / task) | Interface contract | Pin test |
 |---|---|---|---|---|
-| F-1 | C.A T-A.1 schema | C.B T-B.13 + C.C T-C.2 | `reconciliation_corrections` table shape (19 columns + 4 indexes + CHECK enums) | `tests/data/test_migration_0019_schema_shape.py` (un-skip at T-A.1 landing) |
+| F-1 | C.A T-A.1 schema | C.B T-B.13 + C.C T-C.2 | `reconciliation_corrections` table shape (20 columns + 4 indexes + CHECK enums; spec §3.1 header says 19 but row-enumeration is 20 — §I.16 amendment candidate) | `tests/data/test_migration_0019_schema_shape.py` (un-skip at T-A.1 landing) |
 | F-2 | C.A T-A.3 repo | C.C T-C.2/3/4 | `insert_correction(conn, ReconciliationCorrection) -> int`; `update_superseded_by(conn, ...)`; etc. signatures | `tests/data/test_reconciliation_corrections_repo.py` (un-skip at T-A.3 landing) |
 | F-3 | C.A T-A.1 + T-A.5 | C.B T-B.4 + T-D.7 | `ReconciliationDiscrepancy.ambiguity_kind` field + cross-column CHECK semantics | `tests/data/test_reconciliation_discrepancy_ambiguity_kind_roundtrip.py` |
 | F-4 | C.B T-B.1 classifier | C.C T-C.5/6 pivot + T-D.7 backfill | `classify_discrepancy(...) -> ClassificationResult` signature + dispatch table for 10 discrepancy_types | `tests/integration/test_phase12_bundle_c_cross_bundle_pin.py::test_classifier_module_exists_and_returns_classification_result` (T-A.7 placeholder; un-skip at T-B.1 landing) |
@@ -3132,7 +3292,7 @@ Per spec §15.5 C.A gate enumeration:
 
 **S2 — `swing db-migrate` against fresh DB.** Spin a fresh DB in a tmp path; run `swing db-migrate`; verify `schema_version=19` post-apply; verify all 7 schema deltas landed via SQLite introspection commands.
 
-**S3 — `swing db-migrate` against production-snapshot DB.** Copy operator's production `swing.db` to a tmp path; run `swing db-migrate`; verify schema_version transitions 18 → 19; verify all 32 historical `reconciliation_discrepancies` rows preserved (column-by-column equality against pre-migration snapshot); verify all `review_log` + `trade_events` + `schwab_api_calls` rows preserved; verify backup file `swing-pre-phase12-bundle-c-migration-<ISO>.db` was created. **This is the slow-marked T-A.8 regression test in CI form; operator may re-run interactively to confirm.**
+**S3 — `swing db-migrate` against production-snapshot DB.** Copy operator's production `swing.db` to a tmp path; SHA256-hash the pre-migration content of `reconciliation_discrepancies` + `review_log` + `trade_events` + `schwab_api_calls`; run `swing db-migrate`; verify schema_version transitions 18 → 19; verify column-by-column equality of every row in those 4 tables against the pre-migration snapshot (`ambiguity_kind` is NULL for all copied discrepancy rows; `superseded_by_correction_id` is NULL for all copied review_log + schwab_api_calls rows). **Verifies preservation via dynamic snapshot equality, NOT against a fixed count** — production state may drift between plan-drafting and integration-merge. Verify backup file `swing-pre-phase12-bundle-c-migration-<ISO>.db` was created. **This is the slow-marked T-A.8 regression test in CI form; operator may re-run interactively to confirm.**
 
 **S4 — ruff baseline unchanged.** Run `ruff check swing/` and confirm baseline 18 E501 — no regression.
 
@@ -3206,7 +3366,12 @@ Pre-gate operator check: confirm Schwab refresh-token has TTL > 1hr (operator ma
 **S5 — `swing journal discrepancy show-ambiguity 39` displays candidate choices.** Operator runs the show command; verifies output matches the expected menu for DHC 39's actual `ambiguity_kind` (per S4 Pass-2 outcome). Verifies `[RECOMMENDED]` tag on `keep_journal_as_is` if the ambiguity_kind is `multi_partial_vs_consolidated`.
 
 **S6 — Payload-contract acceptance via isolated synthetic-fixture DB + operator's REAL DHC 39 disposition.** This surface has TWO substeps per spec §15.5 LOCKED revised mechanic:
-- **S6a (pre-real-disposition):** the gate fixture creates an isolated tmp `swing.db` (the writing-plans-drafted T-D.11 integration test); plants a synthetic discrepancy with `ambiguity_kind='unknown_schwab_subtype'` so `operator_truth` is a valid choice; first exercises the parse-time payload-required error (operator runs CLI WITHOUT `--custom-value` → asserts non-zero exit + clear error message); then dispositions via `--choice operator_truth --custom-value '{"price": 1.23}' --reason "synthetic gate fixture"` → asserts CLI exits 0 + `reconciliation_corrections.applied_value_json` contains `{"price": 1.23}` + `resolution='operator_resolved_ambiguity'`. Synthetic-fixture DB is discarded after S6a. **This satisfies the payload-contract acceptance test surface without contortion on the real DHC 39 case.**
+- **S6a (pre-real-disposition; Codex R2 Minor #3 + R4 Minor #3 — table-driven per T-D.11 revised; assertions split by choice class):** the gate fixture runs the writing-plans-drafted T-D.11 table-driven integration test suite which exercises ALL 11 payload-required choices from spec §6.2.1 PLUS all 7 no-payload choices against isolated tmp DBs (one fresh DB per case). Each payload-required case exercises BOTH the parse-time `--custom-value` rejection AND the success-path. Per-class assertions:
+  - **Mutation-class payload-required choices** (`consolidate_using_operator_vwap`, `pick_schwab_record_<N>`, `operator_truth`, `operator_alternative`): assert `applied_value_json` matches the supplied payload + `applied_value_json != pre_correction_value_json` (mutation occurred).
+  - **Split-class** (`split_into_partials`): assert N+1 audit rows in one `correction_set_id`; original fill DELETEd; N new fills present.
+  - **Audit-only-class payload-required choices** (`custom` for any ambiguity_kind — per T-C.3 #5 V1 LOCK): assert `applied_value_json == pre_correction_value_json` (no-mutation marker); audit row records operator-intent payload via `correction_reason` field.
+  - **No-payload choices** (`keep_journal_as_is`, `mark_unmatched`, `acknowledge`): assert no-mutation marker.
+All synthetic-fixture DBs are discarded after S6a. **This satisfies the FULL payload-contract acceptance test surface without contortion on the real DHC 39 case.**
 - **S6b (operator's REAL disposition):** Operator dispositions production DHC 39 per their actual data — `keep_journal_as_is` (no broker-statement consultation; V1 default; expected most common) OR `consolidate_using_operator_vwap` / `split_into_partials` / `operator_truth` / `custom` with real `--custom-value` if operator has execution-level data. NO contrived contortions on the real production case.
 - Post-S6b: DHC 39 is in `resolution='operator_resolved_ambiguity'`; Phase 10 dashboard banner now shows count=1 (VSAT 40 remaining).
 
@@ -3323,13 +3488,37 @@ Per spec §8.2 + T-D.8 acceptance: V1 dry-run with Pass 2 enabled re-fetches Sch
 
 Per T-D.2 acceptance criteria #4 + Codex R-likely surface: V1 stores parametric `pick_schwab_record_<N>` candidate list inside `resolution_reason` (free-text). V2 candidate: add a dedicated `candidate_choices_json TEXT NULL` column to `reconciliation_discrepancies` so the Tier-2 UI can render rich candidate-comparison views.
 
-### §I.14 `'__no_mutation__'` sentinel in `field_name` (spec §3.1.1 amendment candidate)
+### §I.14 No-mutation audit-row marker convention (no new sentinel)
 
-Per T-C.3 acceptance criteria #5: writing-plans LOCKS the `'__no_mutation__'` sentinel for tier-2 no-mutation outcomes (`keep_journal_as_is`, `mark_unmatched`, `acknowledge`). Spec §3.1.1 only enumerates `'__delete__'` + `'__insert__'` sentinels; the no-mutation outcome's audit-row `field_name` needs its own marker. Banked at V2.1 §VII.F (writing-plans-introduced sentinel; spec amendment to document).
+**SUPERSEDED by Codex R1 Major #8 fix:** initial draft introduced `'__no_mutation__'` sentinel; revised to use `applied_value_json == pre_correction_value_json` bytewise equality as the no-mutation marker (no new sentinel beyond spec §3.1.1). This entry stays as a V2 candidate ONLY if Phase 10 dashboard surfaces or future analytics queries need a distinct "this was an intentional no-mutation operator-decision" signal that bytewise-equality can't distinguish from a coincidental same-value tier-1 auto-apply. V2 candidate: a dedicated `field_name='__no_mutation__'` sentinel + spec amendment. V1 LOCK: bytewise-equality marker; queries filter via `applied_value_json = pre_correction_value_json` SQL predicate.
 
 ### §I.15 Spec §5.7 tier-3 validator-chain re-run amendment
 
-Per T-C.4 acceptance criteria #10: writing-plans LOCKS that tier-3 ALSO runs validator chain on operator-truth value (defense-in-depth — operator-truth must still pass schema invariants). Spec §5.7 didn't explicitly enumerate this step. Banked at V2.1 §VII.F (spec amendment).
+Per T-C.4 acceptance criteria #10: writing-plans LOCKS that tier-3 ALSO runs validator chain on operator-truth value (defense-in-depth — operator-truth must still pass schema invariants). Spec §5.7 didn't explicitly enumerate this step. Banked at V2.1 §VII.F (spec amendment). **Codex R1 Minor #1 fix: validator re-run is positioned BEFORE journal mutation (between Steps 1-3 and Steps 4+ of the tier-3 flow), NOT at the end** — failures raise clean `ValidatorRejectedError` before any partial work.
+
+### §I.16 Spec §3.1 column-count header wording (Codex R1 Major #2 amendment candidate)
+
+Spec §3.1 header text says "Column count: 19 columns" but the column-row enumeration table immediately below it lists 20 rows (correction_id through notes). Plan T-A.1 locks the actual 20-column count from the table verbatim. Banked at V2.1 §VII.F (spec wording cleanup — header should match table).
+
+### §I.17 Pass-2 → tier-2 resolution `schwab_api_call_id` linkage mechanic (RESTORED V2 candidate per Codex R3 Major #1; revised R5)
+
+V1 LOCKED state: NO new column. NO automatic forward linkage from Pass-2 audit row to the discrepancy. Operator-explicit `--schwab-api-call-id` flag on `resolve-ambiguity` threads the linkage when supplied; **backfill output prints Pass-2 `call_id` per-discrepancy directly** (deterministic per-row printout); `show-ambiguity <id>` surfaces a recent orders-list call-history table (by time-window + endpoint, NOT ticker-attributed since schwab_api_calls has no ticker column V1). V2 candidate: dedicated `reconciliation_discrepancies.pass_2_schwab_api_call_id INTEGER REFERENCES schwab_api_calls(call_id) ON DELETE SET NULL` schema column. Banked at V2.1 §VII.F (spec amendment required for V2 schema landing).
+
+### §I.18 Spec §6.2.1 parametric-choice row count clarification (Codex R1 Minor #4 amendment candidate)
+
+Spec §6.2.1 table lists `pick_schwab_record_<N>` as a single parametric row (one row covering N candidates per discrepancy). Plan T-D.5 LOCKS the handler-registry shape as **17 exact-key pairs + 1 parametric-prefix pair = 18 total binding contract entries**. Banked at V2.1 §VII.F (spec wording clarification — distinguish exact-key entries from parametric-prefix entries in §6.2.1).
+
+### §I.19 SUPERSEDED — `metadata_json` column reverted (Codex R3 Major #1; revised R5 Minor #4)
+
+R2 fix added `reconciliation_discrepancies.metadata_json TEXT NULL` to carry Pass-2 audit-chain linkage. R3 reverted per spec §15.1 item 2 schema-lock discipline. V1 falls back to operator-supplied `--schwab-api-call-id` flag + deterministic per-discrepancy Pass-2 `call_id` printed in backfill output + `show-ambiguity` time-window-scoped call-history table. V2 candidate restored at §I.17 (dedicated PK column). This §I.19 entry is retained as a banking record of the reversal lesson — **plan-author additions to locked schemas need explicit spec-amendment-or-escalation BEFORE C.A dispatch, not bank-after-write**.
+
+### §I.21 `insert_fill_with_event(..., recompute=False)` batch-insert efficiency kwarg (Codex R3 Major #4 amendment candidate)
+
+V1 LOCKED: split-into-partials handler invokes shipped `insert_fill_with_event(...)` N times; each fires `_recompute_aggregates` internally → N redundant recomputes inside one tx. Sub-millisecond cost for V1's expected N ≤ 5. V2 candidate: add `recompute: bool = True` kwarg to the shipped function so handler can call N times with `recompute=False` + then fire `_recompute_aggregates` ONCE at the end. Requires modifying `swing/data/repos/fills.py:16-20` — out of Sub-bundle C scope (touches a Phase 7 surface).
+
+### §I.20 `custom` choice V1 audit-only lock (Codex R2 Major #5 amendment candidate)
+
+Plan T-C.3 LOCKED `custom` choice as audit-only V1 (NO journal mutation regardless of payload shape; operator-intent metadata captured in audit row). Spec §6.2.1 wording "operator-custom transformation. REQUIRES --custom-value." was ambiguous about journal mutation. Banked at V2.1 §VII.F: spec wording clarification — pin `custom` as audit-only V1 + bank operator-defined transformations as V2 with a constrained DSL or per-discrepancy-type transformation contract.
 
 ---
 
