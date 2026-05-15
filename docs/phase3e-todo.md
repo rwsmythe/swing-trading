@@ -6,9 +6,48 @@
 
 ---
 
+## 2026-05-15 Pipeline run errors out on missing `data/finviz-inbox/` folder (operator-reported)
+
+**Symptom (operator-surfaced 2026-05-15 during Sub-bundle D operator-witnessed gate):** `swing pipeline run` errors out with "no csv found" when `data/finviz-inbox/` directory does not exist on the operator's filesystem.
+
+**Expected behavior:** pipeline should check for folder existence first + create the folder via `os.makedirs(..., exist_ok=True)` if missing. The directory is operator-data convention (configured in `swing.config.toml`) — its absence is the natural first-run state, not an error condition.
+
+**Likely fix location:** `swing/pipeline/runner.py:_step_finviz_fetch` (the step that consumes the inbox). Add `Path(cfg.paths.finviz_inbox_dir).mkdir(parents=True, exist_ok=True)` near the top of the step.
+
+**Discriminating-test pattern:** delete `data/finviz-inbox/` (or use a tmp_path with the dir absent) + invoke pipeline run + assert directory was auto-created + step completed (or surfaced "no manual CSV; using API fallback" path correctly per existing `_step_finviz_fetch` semantics).
+
+**Defer-or-fix-soon disposition:** trivial fix; bundle into a near-term polish dispatch OR address inline. NOT Schwab-arc-related; banked here for orchestrator triage.
+
+---
+
 ## 2026-05-14 Schwab API Sub-bundle D SHIPPED + Phase 11 CLOSED — status surface full + briefing degraded banner + cycle-checklist + CLAUDE.md gotchas + E2E + migration verification + review-form polish (3 Codex rounds; 14 commits; CLOSES THE SCHWAB ARC)
 
 **Sub-bundle D SHIPPED 2026-05-14** at branch tip `cae6e7f` (integration merge to main pending operator-witnessed gate; baseline `23161a0`). 14 commits = 7 task-impl (T-D.1 `9ff7967` status surface; T-D.2 `3f462c8` cycle-checklist; T-D.3 `6aa8f44` E2E; T-D.4 `0cf2ade` CLAUDE.md gotchas; T-D.5 `4b6153e` briefing degraded banner; T-D.7 `7339957` migration verification; T-D.elective.1 `1f30cb3` review-form Phase-7 stale-promise replacement) + 2 pre-Codex review fixes (§J.5 cassette reword `37084bf`; cycle-checklist TTL alignment `edf0e43`) + 5 Codex-fix (R1 M#1+M#2 PROVISIONAL + tokens-parse `a0d618d`; R1 M#3 setup message `0327845`; R1 M#4 docstring `9341fd9`; R1 m#1 cycle-checklist `2703341`; R2 bundled `cae6e7f`).
+
+### Post-merge addendum (orchestrator) 2026-05-15
+
+**Integration merged to main at `e51e6eb`** via `--no-ff` per Sub-bundle B + C precedent (preserves Codex-fix chain visibility). Branch HEAD `6f943db` (return report `6f943db` + Phase 11 SHIPPED entry `9028ab6`); 16 commits since baseline 23161a0 (the implementer count of 14 above omitted the final 2 — return report + this Phase 11 entry).
+
+**Operator-witnessed gate ALL PASS** (5 operator-driven + 4 inline = 9 surfaces):
+- S1+S5+S6+S9 inline PASS (3747 fast pass per implementer; T-D.3 E2E + T-D.7 migration atomicity + ruff baseline GREEN).
+- **S2 PASS** — `swing schwab status --environment production` rendered LIVE indicator + "expired 2h 30m ago" access token + "6d 20h remaining" refresh token + recent calls (24-28) + masked account_hash (`E8F***76`) + recent errors (8 in 24h, 10 in 7d from C gate's expired-token attempts) + ZERO credential prompt + ZERO token bytes.
+- **S3 PASS** — `--environment sandbox` rendered DEGRADED indicator on call 29 (HTTP 401 from C gate); banner predicate fires correctly.
+- **S4 PASS** — pipeline #60 + briefing.md emits the degraded banner verbatim per spec §3.4.4: `> **Schwab integration: degraded** — most recent API call to \`marketdata.quotes\` did not succeed. Run \`swing schwab status\` to diagnose.` Banner is GENERIC (no token bytes / no error_message body content) + endpoint-named + remediation hint + Markdown-blockquote-formatted at top of briefing.md.
+- **S7 PASS** — cycle-checklist review by operator clean.
+- **S8 PASS via template inspection** — `swing/web/templates/partials/review_form.html.j2:67` reads "plan exactly? Auto-derivation from Fills is a future enhancement; manual entry V1." — stale "(Phase 7 will auto-derive this from Fills.)" parenthetical GONE; new phrasing matches brief recommendation verbatim.
+
+**Production state delta from gate** (post-merge):
+- `schwab_api_calls`: 29 → 30+ (small delta from S2/S3 status surface NOT writing audit rows — pure read-side; only pipeline #60 which silent-skipped Schwab steps per T-C.6 D1 added zero rows; no new rows expected from D scope).
+- Domain rows unchanged (D scope is read-side only).
+- `~/swing-data/schwab-tokens.production.db` clock started 2026-05-15T03:59:25+00:00; expires ~2026-05-22.
+- `~/swing-data/schwab-tokens.sandbox.db` clock started 2026-05-14T20:30:55+00:00; expires ~2026-05-21.
+- D worktree husk: 4th in cleanup-script queue (A + B + C + D pending operator's `cleanup-locked-scratch-dirs.ps1 -DeregisterFirst`).
+
+**Operator-paired-gate brief inaccuracies banked for V2.1 §VII.F amendment routing:**
+- Brief §4 surface table referenced `/reviews` route for S8; actual routes are `/reviews/pending` (listing) + `/reviews/{review_id}/complete` (form).
+- Brief §0.7 referenced "3 pre-existing failures"; actual baseline is 4 (per Sub-bundle C SHIPPED entry banking; xdist-flaky setup CLI test).
+
+**Operator-reported NEW bug surfaced during S4 gate** — pipeline run errors on missing `data/finviz-inbox/` folder; banked as separate entry above (2026-05-15).
 
 **3 Codex rounds → NO_NEW_CRITICAL_MAJOR** convergent tapering (R1 0C/4M/2m → R2 0C/2M/2m → R3 0C/0M/1m); **ZERO Critical findings** entire chain; **1 ACCEPT-WITH-RATIONALE banked** (R1 M#4 — E2E test scope service-composition-driven not CLI-driven; per-CLI tests already cover the CLI surfaces; banked at return report).
 
