@@ -10,7 +10,7 @@ import logging
 import threading
 import time
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -27,6 +27,25 @@ class PriceSnapshot:
     asof: datetime
     is_stale: bool
     source: str   # "live" | "last_close" | "last_close_market_closed"
+    # Provenance tag for Schwab API ladder (Phase 11 Sub-bundle C T-C.3).
+    # Option A: collapsed T-C.4's dataclass extension into T-C.3 per dispatch
+    # brief §0.5 pre-emption #4. Legal values: None (legacy / not set),
+    # 'schwab_api' (returned by marketdata ladder Schwab-success path),
+    # 'yfinance' (returned by marketdata ladder yfinance fallback path).
+    provider: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.provider is not None:
+            if not isinstance(self.provider, str):
+                raise TypeError(
+                    "PriceSnapshot.provider must be str or None; got "
+                    f"{type(self.provider).__name__}"
+                )
+            if self.provider not in ("schwab_api", "yfinance"):
+                raise ValueError(
+                    "PriceSnapshot.provider must be one of None | "
+                    f"'schwab_api' | 'yfinance'; got {self.provider!r}"
+                )
 
 
 class PriceCache:
@@ -43,6 +62,33 @@ class PriceCache:
         self._cache: dict[str, tuple[PriceSnapshot, float]] = {}
         self._failure_window: deque[bool] = deque(maxlen=20)
         self._degraded_until: float | None = None
+        # Schwab Sub-bundle C T-C.4: optional ladder-aware fetcher. When None
+        # (default) the cache uses its existing yfinance-only path. When set
+        # via `set_ladder_fetcher`, the live-fetch branch in
+        # `_fetch_with_fallback` delegates to the callable which returns
+        # `(price: float, provider: str)` for production-env routing through
+        # the Schwab → yfinance ladder. Sandbox short-circuit lives INSIDE the
+        # ladder; cache stays env-agnostic. Caller is responsible for invoking
+        # `fetch_quote_via_ladder` and unpacking the PriceSnapshot tuple.
+        self._ladder_fetcher: Callable[[str], tuple[float, str]] | None = None
+
+    def set_ladder_fetcher(
+        self,
+        fetcher: Callable[[str], tuple[float, str]] | None,
+    ) -> None:
+        """Install (or clear) a ladder-aware live-fetch callable.
+
+        ``fetcher`` must accept the ticker symbol and return
+        ``(price: float, provider: str)`` where ``provider`` is
+        ``'schwab_api'`` or ``'yfinance'``. The cache will route ALL
+        live-fetch attempts through this callable when set; the legacy
+        ``_fetch_live_price`` (raw yfinance) path is reserved for the
+        ``fetcher is None`` configuration.
+
+        Passing ``None`` reverts to the legacy yfinance-only path (used
+        by existing PriceCache tests that don't exercise the ladder).
+        """
+        self._ladder_fetcher = fetcher
 
     # ---------- single-ticker API ----------
 
@@ -95,11 +141,21 @@ class PriceCache:
                 is_stale=True, source="last_close_market_closed",
             )
         try:
-            price = self._fetch_live_price(ticker)
+            # Schwab Sub-bundle C T-C.4: when a ladder fetcher is installed,
+            # route the live fetch through it. The ladder owns env routing
+            # (sandbox short-circuit lives inside the ladder); returned
+            # provider tag is stamped onto the snapshot. Legacy yfinance-only
+            # path remains the default when no ladder is installed.
+            provider_tag: str | None = None
+            if self._ladder_fetcher is not None:
+                price, provider_tag = self._ladder_fetcher(ticker)
+            else:
+                price = self._fetch_live_price(ticker)
             self._record_outcome(success=True)
             return PriceSnapshot(
                 ticker=ticker, price=price, asof=datetime.now(),
                 is_stale=False, source="live",
+                provider=provider_tag,
             )
         except Exception as exc:
             log.warning("live fetch failed for %s: %s", ticker, exc)

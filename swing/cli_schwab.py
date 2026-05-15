@@ -619,6 +619,225 @@ def _check_pipeline_not_running(conn: sqlite3.Connection) -> None:
         )
 
 
+def _verify_marketdata_path(
+    *,
+    ctx: click.Context,
+    symbols: list[str],
+    environment: str | None,
+) -> None:
+    """T-C.5 `--verify-marketdata` execution path.
+
+    Per dispatch brief §3 surface S3 disposition (b): verification-only
+    subcommand exercising the schwabdev market-data API endpoints
+    (`/quotes` + `/price_history`). Audit rows ARE written; cache writes
+    are SKIPPED regardless of env (no ladder fetcher installed; CLI
+    directly invokes the T-C.1 wrappers).
+
+    Per plan §H.10: `--verify-marketdata` is in the 3-SAFE-subcommands
+    list; NO pipeline-active exclusion check fires.
+
+    Reuses ``construct_authenticated_client`` per pre-emption #5 — does
+    NOT instantiate `schwabdev.Client(...)` directly.
+
+    Exit codes:
+      - 0 on success (incl. partial-response: at least one symbol mapped).
+      - Non-zero on auth failure (401), rate-limit (429), shape error,
+        or total failure (all symbols failed at quotes layer).
+    """
+    # Apply user-config.toml overrides best-effort (production path).
+    try:
+        from swing.config_overrides import apply_overrides
+        cfg = apply_overrides(ctx.obj["config"])
+    except (AttributeError, TypeError):
+        cfg = ctx.obj["config"]
+    env = (environment or cfg.integrations.schwab.environment).lower()
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        # Pipeline-active check intentionally SKIPPED per plan §H.10 + brief
+        # pre-emption #2 — verify-marketdata is in the 3-safe-subcommands list.
+
+        # Prompt for credentials (mirror setup/refresh/fetch pattern).
+        client_id = click.prompt("Schwab app client_id", type=str).strip()
+        client_secret = click.prompt(
+            "Schwab app client_secret", type=str, hide_input=True,
+        ).strip()
+        if not client_id:
+            raise click.ClickException("client_id is required (non-empty).")
+        if not client_secret:
+            raise click.ClickException("client_secret is required (non-empty).")
+
+        # Apply --environment override to cfg so downstream env-aware
+        # consumers see the right value (mirrors schwab_fetch).
+        if environment and env != cfg.integrations.schwab.environment:
+            from dataclasses import replace as _dc_replace
+            try:
+                new_schwab = _dc_replace(
+                    cfg.integrations.schwab, environment=env,
+                )
+                new_integrations = _dc_replace(
+                    cfg.integrations, schwab=new_schwab,
+                )
+                cfg = _dc_replace(cfg, integrations=new_integrations)
+            except TypeError:
+                cfg.integrations.schwab.environment = env
+
+        # Construct client via the single-Client-instance discipline helper.
+        try:
+            sd_client = _build_schwabdev_client_for_fetch(
+                cfg, env, client_id, client_secret,
+            )
+        except SchwabAuthError as exc:
+            raise click.ClickException(
+                f"Authentication failed: {exc}",
+            ) from exc
+        except SchwabConfigMissingError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+        # Invoke T-C.1 wrappers DIRECTLY — NOT via the ladder.
+        # Per pre-emption #3: no cache fill, no ladder fetcher installed.
+        from swing.integrations.schwab import marketdata as schwab_md
+        from swing.integrations.schwab.client import (
+            SchwabRateLimitError,
+            SchwabSchemaParityError,
+        )
+
+        click.echo(f"Schwab market-data verification (env={env}):")
+
+        # /quotes call.
+        quotes_failed_total = False
+        try:
+            quotes_result = schwab_md.get_quotes_batch(
+                sd_client,
+                conn,
+                symbols,
+                surface="cli",
+                environment=env,
+                pipeline_run_id=None,
+            )
+        except SchwabAuthError as exc:
+            raise click.ClickException(
+                f"quotes: authentication failed (HTTP "
+                f"{getattr(exc, 'status_code', '?')}): {exc}",
+            ) from exc
+        except SchwabRateLimitError as exc:
+            raise click.ClickException(
+                f"quotes: rate limited (HTTP "
+                f"{getattr(exc, 'status_code', '?')}): {exc}",
+            ) from exc
+        except SchwabSchemaParityError as exc:
+            raise click.ClickException(
+                f"quotes: response shape error: {exc}",
+            ) from exc
+        except SchwabApiError as exc:
+            raise click.ClickException(
+                f"quotes: API error (HTTP "
+                f"{getattr(exc, 'status_code', '?')}): {exc}",
+            ) from exc
+
+        # Build operator-visible summary for quotes.
+        ok_syms = set(quotes_result.keys())
+        failed = [s for s in symbols if s not in ok_syms]
+        n_ok = len(ok_syms)
+        n_total = len(symbols)
+        if n_ok == n_total:
+            click.echo(
+                f"  [quotes] success  {n_ok}/{n_total} OK  "
+                f"symbols={','.join(symbols)}"
+            )
+        else:
+            failed_excerpt = ",".join(failed[:5])
+            if len(failed) > 5:
+                failed_excerpt += f",+{len(failed) - 5} more"
+            click.echo(
+                f"  [quotes] partial  {n_ok}/{n_total} OK; "
+                f"failed: {failed_excerpt}"
+            )
+            if n_ok == 0:
+                quotes_failed_total = True
+
+        # /price_history call — use first symbol (default AAPL when omitted).
+        # Schwab's price_history accepts ONE symbol per call (per T-C.1
+        # docstring; api-calls.md L432). Verification scope is the endpoint
+        # surface; running it on the first symbol suffices.
+        primary_symbol = symbols[0]
+        try:
+            ph_window = schwab_md.get_price_history(
+                sd_client,
+                conn,
+                primary_symbol,
+                period_type="month",
+                period=1,
+                frequency_type="daily",
+                frequency=1,
+                surface="cli",
+                environment=env,
+                pipeline_run_id=None,
+            )
+        except SchwabAuthError as exc:
+            raise click.ClickException(
+                f"price_history: authentication failed (HTTP "
+                f"{getattr(exc, 'status_code', '?')}): {exc}",
+            ) from exc
+        except SchwabRateLimitError as exc:
+            raise click.ClickException(
+                f"price_history: rate limited (HTTP "
+                f"{getattr(exc, 'status_code', '?')}): {exc}",
+            ) from exc
+        except SchwabSchemaParityError as exc:
+            raise click.ClickException(
+                f"price_history: response shape error: {exc}",
+            ) from exc
+        except SchwabApiError as exc:
+            # Includes empty-bars transient (status_code=204).
+            raise click.ClickException(
+                f"price_history: API error (HTTP "
+                f"{getattr(exc, 'status_code', '?')}): {exc}",
+            ) from exc
+
+        n_bars = len(ph_window.bars)
+        click.echo(
+            f"  [price_history] success  symbol={primary_symbol}  "
+            f"bars={n_bars}  provider={ph_window.provider}"
+        )
+
+        # Exit code disposition per pre-emption #7:
+        # - All OK → exit 0.
+        # - Partial (quotes_failed_total is False, n_ok>0) → exit 0 with
+        #   stdout note already emitted above.
+        # - Total quotes failure (n_ok==0) → non-zero.
+        if quotes_failed_total:
+            raise click.ClickException(
+                f"quotes: ALL {n_total} symbols failed; see audit row for details.",
+            )
+    finally:
+        conn.close()
+
+
+def _parse_symbols_csv(raw: str | None, *, default: list[str]) -> list[str]:
+    """Parse `--symbols` CSV string per pre-emption #4.
+
+    Rules:
+      - None / empty string → ``default``.
+      - Comma-separated; per-element whitespace stripped.
+      - Empty tokens (e.g. trailing comma or `","`) dropped.
+      - Final list must be non-empty; otherwise raise ``click.ClickException``.
+
+    Operator typo defense — `swing schwab fetch --verify-marketdata --symbols ","`
+    rejected at parse time BEFORE any schwabdev call.
+    """
+    if raw is None or not raw.strip():
+        return list(default)
+    parts = [tok.strip() for tok in raw.split(",")]
+    cleaned = [p for p in parts if p]
+    if not cleaned:
+        raise click.ClickException(
+            "--symbols parsed to empty list; supply at least one ticker "
+            "(e.g. --symbols AAPL or --symbols AAPL,AMD).",
+        )
+    return cleaned
+
+
 @schwab_group.command("fetch")
 @click.option(
     "--snapshot", "fetch_snapshot", is_flag=True, default=False,
@@ -633,6 +852,21 @@ def _check_pipeline_not_running(conn: sqlite3.Connection) -> None:
     help="Run both --snapshot and --orders sequentially.",
 )
 @click.option(
+    "--verify-marketdata", "verify_marketdata", is_flag=True, default=False,
+    help=(
+        "Verification-only: issue /quotes + /price_history calls against "
+        "active env; audit rows written; cache writes SKIPPED. Does NOT "
+        "enforce pipeline-active exclusion (T-C.5)."
+    ),
+)
+@click.option(
+    "--symbols", "symbols_csv", default=None,
+    help=(
+        "Comma-separated ticker list for --verify-marketdata (e.g. "
+        "'AAPL,AMD'). Default: AAPL. Ignored for other fetch modes."
+    ),
+)
+@click.option(
     "--environment",
     "environment",
     type=click.Choice(["sandbox", "production"], case_sensitive=False),
@@ -645,21 +879,53 @@ def schwab_fetch(
     fetch_snapshot: bool,
     fetch_orders: bool,
     fetch_all: bool,
+    verify_marketdata: bool,
+    symbols_csv: str | None,
     environment: str | None,
 ) -> None:
-    """Run a CLI-driven Schwab data fetch (snapshot, orders, or both).
+    """Run a CLI-driven Schwab data fetch (snapshot, orders, both, or
+    market-data verification).
 
     Each subcommand prompts for client_id + client_secret (mirroring setup/
     refresh CLI). On success, the pipeline-step algorithm runs verbatim
     (production env: writes account_equity_snapshots + reconciliation_runs;
     sandbox env: audit rows only). Refuses execution if a pipeline is
     in flight (plan §H.10).
+
+    `--verify-marketdata` is a SAFE subcommand (T-C.5; plan §H.10): does
+    NOT enforce the pipeline-active exclusion + does NOT write to caches
+    or the OHLCV archive regardless of env. Audit rows ARE written for
+    each /quotes + /price_history call.
     """
+    # Dispatch to --verify-marketdata path BEFORE the snapshot/orders/all
+    # validation: --verify-marketdata is mutually exclusive with the 3
+    # domain-write flags. The verification path has its own simpler
+    # codepath (no pipeline-active check, no account_hash preflight, no
+    # domain writes).
+    if verify_marketdata:
+        if fetch_snapshot or fetch_orders or fetch_all:
+            raise click.ClickException(
+                "--verify-marketdata is mutually exclusive with "
+                "--snapshot / --orders / --all.",
+            )
+        symbols = _parse_symbols_csv(symbols_csv, default=["AAPL"])
+        _verify_marketdata_path(
+            ctx=ctx,
+            symbols=symbols,
+            environment=environment,
+        )
+        return
+
+    if symbols_csv is not None:
+        raise click.ClickException(
+            "--symbols is only valid with --verify-marketdata.",
+        )
+
     # Validate one of --snapshot/--orders/--all chosen.
     chosen_count = sum([fetch_snapshot, fetch_orders, fetch_all])
     if chosen_count == 0:
         raise click.ClickException(
-            "Choose one of --snapshot, --orders, or --all.",
+            "Choose one of --snapshot, --orders, --all, or --verify-marketdata.",
         )
     if chosen_count > 1 and not fetch_all:
         raise click.ClickException(

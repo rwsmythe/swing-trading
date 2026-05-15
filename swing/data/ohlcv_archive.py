@@ -48,6 +48,16 @@ import yfinance as yf
 
 log = logging.getLogger(__name__)
 
+# Shape A persistence (Schwab API Sub-bundle C T-C.2 / plan §A.8 + §H.6.3):
+# parquet-per-(ticker, provider). LOWER integer = HIGHER priority under
+# `min()`-by-precedence selection in `resolve_ohlcv_window`. Mirrors the
+# Phase 9 Sub-bundle C `_SOURCE_PRECEDENCE` pattern at
+# `swing/data/repos/account_equity_snapshots.py` (schwab_api > yfinance).
+_SOURCE_PRECEDENCE_MARKET_DATA: dict[str, int] = {
+    "schwab_api": 0,
+    "yfinance": 1,
+}
+
 
 def _archive_paths(cache_dir: Path, ticker: str) -> tuple[Path, Path]:
     return (cache_dir / f"{ticker}.parquet"), (cache_dir / f"{ticker}.meta.json")
@@ -239,3 +249,493 @@ def read_or_fetch_archive(
             archive = combined
 
     return archive.loc[archive.index.date <= end_date]
+
+
+# ---------------------------------------------------------------------------
+# Shape A persistence (Schwab API Sub-bundle C T-C.2 / plan §H.6.3)
+# ---------------------------------------------------------------------------
+#
+# Files: `{cache_dir}/{TICKER}.{PROVIDER}.parquet` with an explicit
+# `asof_date` column (ISO `YYYY-MM-DD` string per
+# `swing.integrations.schwab.models.OhlcvBar.asof_date`) plus OHLCV columns.
+# Coexists with the legacy `{TICKER}.parquet` shape consumed by
+# `read_or_fetch_archive` above; the one-shot `_backward_compat_rename`
+# migrates the legacy file to `{TICKER}.yfinance.parquet`.
+#
+# `resolve_ohlcv_window` is the read path consumed by the Sub-bundle C
+# ladder (`swing/integrations/schwab/marketdata_ladder.py` — T-C.3); reads
+# both per-provider files (if present), filters to the caller's
+# [start, end] window, then picks the highest-priority row per asof_date.
+
+
+def _shape_a_path(cache_dir: Path, ticker: str, provider: str) -> Path:
+    """Return the Shape A parquet path for `(ticker, provider)`.
+
+    Ticker is uppercased here so callers can pass lowercase without
+    silently splitting the cache (mirrors the existing helper's
+    discipline at `read_or_fetch_archive`).
+    """
+    return cache_dir / f"{ticker.upper()}.{provider}.parquet"
+
+
+def write_window(
+    ticker: str,
+    window: pd.DataFrame | None,
+    provider: str,
+    *,
+    cache_dir: Path,
+) -> None:
+    """Atomically write a Shape A window to
+    `{cache_dir}/{TICKER}.{PROVIDER}.parquet`, **merging with any pre-existing
+    rows by `asof_date`** (Codex R2 Major #2).
+
+    Merge semantics: the incoming window is concatenated with the existing
+    parquet (if any), deduped on `asof_date` with `keep='last'` (NEW rows
+    win on conflict), sorted ascending by `asof_date`, then atomically
+    written back. This preserves rows OUTSIDE the fetched window — e.g. a
+    pre-existing 1260-row archive is NOT clobbered when a 60-row Schwab
+    ladder fetch writes a small window.
+
+    Pre-R2 (REPLACE semantics): `_atomic_parquet_write` overwrote the entire
+    file with `window`, silently truncating archive history whenever the
+    incoming window was smaller than the existing file. Scenario:
+    `swing schwab fetch --verify-marketdata --symbols AAPL` triggers a
+    ladder fetch with a tiny verification window → existing 5-year archive
+    replaced with 1-row file → data loss.
+
+    Empty-window guard (Codex R1 Major #7 + CLAUDE.md "External-API
+    empty-result must be treated as transient"): if `window` is `None` or
+    has zero rows, return WITHOUT touching disk. This prevents the ladder
+    from clobbering a populated parquet when a transient Schwab call
+    returns no candles. The caller (ladder) records the audit row with
+    `status='error'`; this function's contract is "non-empty windows only".
+
+    Defense-in-depth: caller MUST ensure non-empty windows in normal flow;
+    the guard exists so a future regression cannot blank the archive.
+    """
+    if window is None:
+        return
+    # `len()` on a DataFrame returns row count; an explicit `.empty` check
+    # tolerates non-DataFrame falsy inputs the caller might pass in error.
+    try:
+        n_rows = len(window)
+    except TypeError:
+        return
+    if n_rows == 0:
+        return
+
+    # Codex R3 Minor #2: type-guard non-DataFrame inputs before subsequent
+    # `.columns` access (merge branch below). The empty/None paths above
+    # accept any falsy or `len`-able object so the early-exit contract is
+    # forgiving; here we surface a clear error for the genuine-non-empty
+    # type-mismatch case rather than failing with a cryptic
+    # ``AttributeError: 'str' object has no attribute 'columns'``.
+    if not isinstance(window, pd.DataFrame):
+        raise TypeError(
+            f"write_window expects pd.DataFrame, got {type(window).__name__}"
+        )
+
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = _shape_a_path(cache_dir, ticker, provider)
+
+    # Codex R2 Major #2: merge-by-asof_date semantics. If the parquet
+    # already exists, concat existing + new, dedupe keep='last' (new wins on
+    # conflict), sort ascending. Defense-in-depth around missing `asof_date`
+    # column in the incoming window (caller bug) — fall back to REPLACE in
+    # that case after logging, since merging without the dedup key is
+    # ambiguous.
+    if path.exists() and "asof_date" in window.columns:
+        try:
+            existing = pd.read_parquet(path)
+        except (OSError, ValueError) as exc:  # pragma: no cover — defensive
+            log.warning(
+                "write_window: failed to read existing %s for merge "
+                "(%s); falling back to REPLACE", path, exc,
+            )
+            existing = None
+        if existing is not None and "asof_date" in existing.columns:
+            merged = pd.concat([existing, window]).drop_duplicates(
+                subset=["asof_date"], keep="last"
+            )
+            merged = merged.sort_values("asof_date").reset_index(drop=True)
+            _write_archive_atomic(path, merged)
+            return
+
+    # Either path doesn't exist (first write), or the incoming/existing
+    # frame lacks `asof_date` — preserve the prior REPLACE semantics so we
+    # don't drop the write. The dedup-by-asof_date merge requires the
+    # dedup key on both sides.
+    _write_archive_atomic(path, window)
+
+
+def resolve_ohlcv_window(
+    ticker: str,
+    *,
+    start: str,
+    end: str,
+    cache_dir: Path,
+) -> tuple[pd.DataFrame, dict[str, str]]:
+    """Resolve the OHLCV window for `ticker` across both provider parquets.
+
+    Reads `{TICKER}.schwab_api.parquet` AND `{TICKER}.yfinance.parquet` from
+    `cache_dir` (whichever are present), filters to ISO-date window
+    `[start, end]` (inclusive on both ends), and selects the highest-
+    priority row per `asof_date` per `_SOURCE_PRECEDENCE_MARKET_DATA`.
+
+    Codex R1 Minor #4: the window filter (`start <= asof_date <= end`) is
+    applied AFTER reading both parquets but BEFORE winner selection so
+    out-of-range rows neither pollute the merge decision nor leak into the
+    return value.
+
+    Args:
+        ticker: ticker symbol; will be uppercased to match write_window.
+        start: ISO `YYYY-MM-DD` window start (inclusive).
+        end: ISO `YYYY-MM-DD` window end (inclusive).
+        cache_dir: archive directory; need not exist.
+
+    Returns:
+        Tuple of (DataFrame indexed 0..n-1 with `asof_date` column +
+        OHLCV columns sorted ascending by `asof_date`,
+        provenance dict mapping `asof_date` -> winning provider name).
+        Empty DataFrame + empty dict when no rows match.
+    """
+    cache_dir = Path(cache_dir)
+    ticker_u = ticker.upper()
+
+    # Codex R1 Major #1: wire one-shot legacy migration into the read path so
+    # existing {TICKER}.parquet archives are automatically migrated to Shape
+    # A on FIRST read. Idempotent — subsequent invocations no-op when the
+    # legacy file is absent (case 3: new-only).
+    if cache_dir.exists():
+        _backward_compat_rename(ticker_u, cache_dir=cache_dir)
+
+    # Read both providers' parquet files (if present), accumulate rows by
+    # (asof_date, provider). Reading returns a fresh DataFrame so we keep
+    # provider attribution on a per-row basis.
+    rows_by_date: dict[str, dict[str, pd.Series]] = {}
+    for provider in ("schwab_api", "yfinance"):
+        path = _shape_a_path(cache_dir, ticker_u, provider)
+        if not path.exists():
+            continue
+        df = pd.read_parquet(path)
+        if df.empty or "asof_date" not in df.columns:
+            continue
+        for _, row in df.iterrows():
+            asof = str(row["asof_date"])
+            rows_by_date.setdefault(asof, {})[provider] = row
+
+    # Merge: filter to [start, end] then pick lowest-precedence provider.
+    merged_rows: list[pd.Series] = []
+    provenance: dict[str, str] = {}
+    for asof_date in sorted(rows_by_date.keys()):
+        if not (start <= asof_date <= end):
+            continue
+        candidates = rows_by_date[asof_date]
+        winner_provider = min(
+            candidates.keys(),
+            key=lambda p: _SOURCE_PRECEDENCE_MARKET_DATA.get(p, 99),
+        )
+        merged_rows.append(candidates[winner_provider])
+        provenance[asof_date] = winner_provider
+
+    if not merged_rows:
+        return pd.DataFrame(), {}
+
+    merged_df = pd.DataFrame(merged_rows).reset_index(drop=True)
+    return merged_df, provenance
+
+
+_OHLCV_LOWER_NAMES = frozenset({"open", "high", "low", "close", "volume"})
+
+
+def _file_mtime_ns(path: Path) -> int:
+    """Return file mtime in nanoseconds when available, else seconds * 1e9.
+
+    Codex R4 Minor #2: on filesystems with coarse-timestamp resolution
+    (FAT32, older NFS without sub-second precision, post-rsync), a real
+    legacy refresh can tie with a Shape A file's mtime at second-level,
+    causing the ``_backward_compat_rename`` default branch (Shape A wins)
+    to fire when the legacy refresh should have won. Prefer
+    ``st_mtime_ns`` (nanosecond precision; NTFS + modern POSIX
+    filesystems support it) over ``st_mtime`` (seconds; float, FAT32
+    coarse). The graceful fallback to ``st_mtime * 1_000_000_000``
+    preserves V1 best-effort posture on platforms whose
+    ``os.stat_result`` does not carry ``st_mtime_ns``.
+    """
+    stat = path.stat()
+    if hasattr(stat, "st_mtime_ns"):
+        return stat.st_mtime_ns
+    return int(stat.st_mtime * 1_000_000_000)
+
+
+def _normalize_ohlcv_column_case(df: pd.DataFrame) -> pd.DataFrame:
+    """Map any-case OHLCV column names to lowercase Shape A names.
+
+    Returns a renamed view (or the unchanged frame if no rename needed).
+
+    Codex R3 Minor #1: factored out so the public
+    ``normalize_legacy_dataframe`` short-circuit branch (frames that
+    already have ``asof_date``) still normalizes mixed-shape OHLCV
+    casing rather than passing capitalized names through untouched.
+
+    Codex R4 Minor #1: restored case-insensitive matching. The R3 Minor
+    #1 implementation pinned an exact title-case keyset (``Open``,
+    ``High``, ``Low``, ``Close``, ``Volume``), which narrowed the prior
+    case-insensitive normalization. Mixed-casing frames carrying e.g.
+    ``CLOSE`` (uppercase), ``open`` (already lowercase mixed with
+    capitalized siblings), or other casing variants from V2 broker
+    integrations would leak through untouched. Non-OHLCV columns
+    (e.g. ``Volume_DAILY``) are preserved as-is — only columns whose
+    ``col.lower()`` is in the canonical OHLCV name set are renamed,
+    and only when the lowercase form differs from the original.
+    """
+    rename_dict: dict[str, str] = {}
+    for col in df.columns:
+        if (
+            isinstance(col, str)
+            and col.lower() in _OHLCV_LOWER_NAMES
+            and col != col.lower()
+        ):
+            rename_dict[col] = col.lower()
+    return df.rename(columns=rename_dict) if rename_dict else df
+
+
+def normalize_legacy_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert a legacy DatetimeIndex archive into Shape A.
+
+    **Public helper (promoted from `_normalize_legacy_dataframe` per Codex
+    R2 Minor #1).** Cross-module callers (e.g. the Schwab market-data ladder
+    at `swing/integrations/schwab/marketdata_ladder.py`) consume this to
+    normalize yfinance-shaped fallback windows into Shape A before
+    persisting via `write_window`. The underscore-prefixed alias is
+    preserved for backward compatibility with existing test imports.
+
+    Legacy archives produced by ``read_or_fetch_archive`` /
+    ``_yf_download_window`` carry a DatetimeIndex (date-like, may be named
+    ``Date`` after ``reset_index``) plus capitalized OHLCV columns
+    (``Open``/``High``/``Low``/``Close``/``Volume``). Shape A (consumed by
+    ``resolve_ohlcv_window``) requires:
+
+      - an ``asof_date`` column (ISO ``YYYY-MM-DD`` string) — NOT an index;
+      - lowercase OHLCV column names (``open``/``high``/``low``/``close``/
+        ``volume``) matching ``_mk_window`` in tests + the
+        ``write_window`` writer pattern from ``map_price_history_to_window``.
+
+    Codex R1 Major #2 fix: prior to this helper, ``_backward_compat_rename``
+    only renamed the legacy file without normalizing — Shape A's reader
+    (``resolve_ohlcv_window``) requires an ``asof_date`` column and skips
+    files without one at lines 360-362, so a real legacy archive became
+    INVISIBLE post-rename. Idempotent on already-Shape-A frames.
+
+    Codex R3 Minor #1 fix: a frame may carry ``asof_date`` AND capitalized
+    OHLCV columns (mixed shape — e.g. a partial migration). The pre-R3
+    short-circuit returned such a frame unchanged, leaking capitalized
+    columns into Shape A consumers. Now we ALWAYS apply lowercase OHLCV
+    column normalization, whether or not the date column needs work.
+    """
+    if "asof_date" in df.columns:
+        # Already has asof_date — but still normalize OHLCV column casing
+        # so mixed-shape frames (asof_date + capitalized OHLCV) emerge as
+        # full Shape A.
+        return _normalize_ohlcv_column_case(df)
+
+    normalized = df.reset_index()
+    # `reset_index` promotes the index to a column; the legacy yfinance shape
+    # names it `Date` (or sometimes `index` for an unnamed DatetimeIndex). Find
+    # the most date-like column and rename it `asof_date`.
+    date_col: str | None = None
+    for candidate in ("Date", "date", "index", "Datetime", "datetime"):
+        if candidate in normalized.columns:
+            date_col = candidate
+            break
+    if date_col is None:
+        # Last-ditch: scan for the first column whose dtype is datetime-like.
+        for col in normalized.columns:
+            if pd.api.types.is_datetime64_any_dtype(normalized[col]):
+                date_col = col
+                break
+    if date_col is None:
+        raise ValueError(
+            "normalize_legacy_dataframe: cannot identify date column; "
+            f"available columns: {list(normalized.columns)!r}"
+        )
+
+    normalized = normalized.rename(columns={date_col: "asof_date"})
+    # Coerce to ISO date string (mirrors `OhlcvBar.asof_date` + Shape A
+    # convention used elsewhere in this module).
+    normalized["asof_date"] = (
+        pd.to_datetime(normalized["asof_date"]).dt.date.astype(str)
+    )
+
+    # Normalize OHLCV column case to lowercase to match Shape A. Shared
+    # with the asof_date short-circuit branch (Codex R3 Minor #1).
+    normalized = _normalize_ohlcv_column_case(normalized)
+
+    return normalized.reset_index(drop=True)
+
+
+# Codex R2 Minor #1: backward-compat alias. Existing tests + the Schwab
+# market-data ladder import the underscore-prefixed name; preserve it so we
+# don't churn unrelated call sites. New code should use the public name.
+_normalize_legacy_dataframe = normalize_legacy_dataframe
+
+
+def _backward_compat_rename(ticker: str, *, cache_dir: Path) -> None:
+    """One-shot **non-destructive** replication of legacy `{TICKER}.parquet`
+    → Shape A `{TICKER}.yfinance.parquet`.
+
+    Per Codex R2 Major #1 — V1 LEAVES the legacy `{TICKER}.parquet` file
+    IN PLACE because ``read_or_fetch_archive`` (consumed by
+    ``swing/prices.py``, ``swing/pipeline/ohlcv.py``, and
+    ``swing/trades/daily_management.py``) reads ONLY the legacy path. A
+    destructive migration (unlink legacy / orphan-rename) would leave V1
+    chart-rendering, daily-management ATR computation, and PriceFetcher
+    callers without any archive on disk — they would refetch from yfinance
+    on every read, defeating the cache. The plan §H.6.3 "rename" terminology
+    is preserved for stability of the symbol; semantics are **copy** in V1.
+
+    **V1 → V2 transition path:** when all consumers of
+    ``read_or_fetch_archive`` have been refactored to consume the Shape A
+    resolver (``resolve_ohlcv_window``), V2 can drop the legacy parquet via
+    ``os.remove(old_path)`` in a one-shot cleanup pass. See V2 candidate
+    banked in the M#1 R2 fix commit body.
+
+    Per plan §H.6.3 + Codex R1 Major #6 + R1 Major #2 + R2 Minor #1 +
+    R2 Major #1 + R3 Major #1 — handles 4 cases without data loss:
+
+    1. **old-only:** `{TICKER}.parquet` exists, `{TICKER}.yfinance.parquet`
+       absent → NORMALIZE legacy DatetimeIndex/capitalized shape to Shape A
+       (asof_date column + lowercase OHLCV) via
+       ``normalize_legacy_dataframe``, write to
+       ``{TICKER}.yfinance.parquet``. **LEGACY FILE LEFT IN PLACE** (Codex
+       R2 Major #1; both files coexist during V1 read-path co-existence).
+       Codex R1 Major #2 fix: previously a bare ``os.replace`` would have
+       left the post-rename file invisible to ``resolve_ohlcv_window``.
+    2. **both-exist:** MERGE-PRESERVING-BOTH with **mtime-based freshness
+       winner** (Codex R3 Major #1). Read both, normalize the legacy one
+       first, then concat-dedupe on ``asof_date`` keyed on which file is
+       fresher by ``Path.stat().st_mtime``:
+
+         - If legacy ``{TICKER}.parquet`` mtime > Shape A mtime → legacy
+           rows win on conflict (concat order ``[new_df, old_df]`` with
+           ``keep='last'``). Closes the "yfinance corrections (e.g.,
+           post-split adjustment) refreshed legacy but Shape A retains
+           stale snapshot" window — legacy is the canonical archive under
+           V1 copy-not-move, so a fresher legacy must propagate forward.
+         - Otherwise (Shape A fresher or tied) → Shape A rows win on
+           conflict (concat order ``[old_df, new_df]`` with
+           ``keep='last'``). This was the pre-R3 default and remains the
+           tie-breaker.
+
+       Trade-off: mtime-based pick assumes the filesystem preserves mtime
+       correctly. Edge cases like rsync/git checkout zeroing mtimes are
+       banked as V2 candidate; in V1 copy-not-move mode the worst-case
+       outcome of a wrong mtime read is "Shape A retains its own value"
+       — the same posture we had before R3, never worse.
+       **LEGACY FILE LEFT IN PLACE** (Codex R2 Major #1; quarantine/orphan
+       step removed because both files coexist during V1).
+    3. **new-only:** already migrated; no-op.
+    4. **neither:** no historical data; no-op.
+
+    Idempotent: invoking twice on the same ticker drives the post-state to
+    case 2 (both-exist) on the second call, which merges the legacy file
+    with the existing Shape A file (no-op if both already contain the same
+    content) without losing rows.
+    """
+    cache_dir = Path(cache_dir)
+    ticker_u = ticker.upper()
+    old_path = cache_dir / f"{ticker_u}.parquet"
+    new_path = cache_dir / f"{ticker_u}.yfinance.parquet"
+
+    old_exists = old_path.exists()
+    new_exists = new_path.exists()
+
+    if old_exists and not new_exists:
+        # Read + normalize + write to Shape A path. **LEGACY FILE LEFT IN PLACE**
+        # (Codex R2 Major #1 copy-not-move) — read_or_fetch_archive still
+        # consumes the legacy path under V1.
+        old_df = pd.read_parquet(old_path)
+        normalized = normalize_legacy_dataframe(old_df)
+        _write_archive_atomic(new_path, normalized)
+        return
+
+    if old_exists and new_exists:
+        # MERGE-PRESERVING-BOTH — preserve every row across both files.
+        # Normalize legacy first. **LEGACY FILE LEFT IN PLACE** (Codex R2
+        # Major #1 copy-not-move) — no quarantine/orphan; both files coexist.
+        old_df = pd.read_parquet(old_path)
+        new_df = pd.read_parquet(new_path)
+        old_df = normalize_legacy_dataframe(old_df)
+        new_df = normalize_legacy_dataframe(new_df)  # idempotent on Shape A
+
+        # Codex R3 Major #1: mtime-based freshness winner. Under V1
+        # copy-not-move, the legacy parquet may have been refreshed more
+        # recently than Shape A (yfinance refresh post-split, etc.). In
+        # that case legacy rows MUST win on `asof_date` conflicts —
+        # otherwise Shape A retains stale values forever and yfinance
+        # corrections never propagate into the resolver's read path.
+        # `Path.stat().st_mtime` is the standard freshness signal; ties
+        # fall through to Shape-A-wins (the pre-R3 default, preserved
+        # as the tie-breaker for backward compatibility).
+        #
+        # V1 trade-off note (Codex R4 M#1 ACCEPT-WITH-RATIONALE):
+        # File-level mtime is a coarse signal — it cannot distinguish
+        # per-row freshness. Consequence: if legacy is touched by a
+        # partial refresh, the file-level mtime check lets legacy win
+        # for EVERY overlapping asof_date, including rows the refresh
+        # did not touch (so Shape A's newer-of-truth values for those
+        # rows get rolled back). This is the inverse failure of pre-R3
+        # (Shape-A-always-wins → stale Shape A when legacy is refreshed).
+        # Under V1, the impact is BOUNDED because:
+        #   - read_or_fetch_archive consumers read legacy directly (so
+        #     Shape A merge state does not affect their reads).
+        #   - Shape A consumers (Sub-bundle C ladder + Phase 10 metrics
+        #     if any) see a deterministic merge state that may diverge
+        #     from per-row truth.
+        # V2 resolves both directions by adding a per-row `recorded_at`
+        # column to both archives; the merge then picks per-row winner
+        # by `recorded_at` rather than file-level mtime. Tracked as V2
+        # candidate in the Sub-bundle C return report (per-row
+        # `recorded_at` column already banked from R3 M#1 review).
+        #
+        # Codex R4 Minor #2: use `_file_mtime_ns` (nanosecond precision
+        # where the OS / filesystem supports it) so a real legacy
+        # refresh that lands within the same wall-clock second as the
+        # Shape A write still wins on conflict. Coarse-timestamp
+        # filesystems (FAT32 / older NFS / post-rsync) fall back to
+        # the float-mtime-times-1e9 approximation — V1 best-effort.
+        try:
+            old_mtime = _file_mtime_ns(old_path)
+            new_mtime = _file_mtime_ns(new_path)
+        except OSError:  # pragma: no cover — defensive
+            old_mtime = 0
+            new_mtime = 0
+        if old_mtime > new_mtime:
+            # Legacy fresher → legacy rows win on conflict.
+            merged = pd.concat([new_df, old_df]).drop_duplicates(
+                subset=["asof_date"], keep="last"
+            )
+        else:
+            # Shape A fresher or tied → Shape A rows win on conflict.
+            merged = pd.concat([old_df, new_df]).drop_duplicates(
+                subset=["asof_date"], keep="last"
+            )
+        merged = merged.sort_values("asof_date").reset_index(drop=True)
+
+        # Idempotency optimization: if the existing Shape A file already
+        # contains every row that the merge produces (i.e. the legacy file's
+        # asof_dates are a subset of the new file's), skip the rewrite to
+        # preserve mtime + avoid spurious churn. Compare by content hash.
+        try:
+            existing_sorted = new_df.sort_values("asof_date").reset_index(drop=True)
+            if existing_sorted.equals(merged):
+                return
+        except (ValueError, TypeError):  # pragma: no cover — defensive
+            pass
+
+        _write_archive_atomic(new_path, merged)
+        return
+
+    # Cases 3 + 4: new-only or neither — no-op.
+    return

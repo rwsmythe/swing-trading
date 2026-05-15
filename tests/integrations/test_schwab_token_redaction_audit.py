@@ -1158,13 +1158,322 @@ def test_23d_reconciliation_run_audit_link_does_not_leak_sentinel(tmp_path):
                 )
 
 
-@pytest.mark.skip(
-    reason="Cross-bundle pin: un-skip at T-C.7 once Market Data API cassettes recorded",
-)
-def test_24_cross_bundle_pin_market_data_api_cassette_redaction():
-    """T-C.0.b cassette recording — Market Data API cassette token-leak
-    audit. Un-skip at T-C.7 when Bundle C closes.
+# T-C.7 — Bundle C sentinel-leak coverage. Un-skipped at Sub-bundle C ship.
+# Tests exercise both Market Data API marketdata.py wrappers
+# (`get_quotes_batch` + `get_price_history`) with sentinel-tainted response
+# payloads + sentinel-tainted error_messages + sentinel-bearing capital-S
+# `Schwabdev` logger records AND assert ZERO leakage through (a) caplog
+# captures of `Schwabdev*` loggers + (b) the schwab_api_calls audit
+# `error_message` column + (c) the parquet-on-disk cache file contents.
+
+
+def test_24_marketdata_quotes_audit_and_caplog_no_sentinel_leak(
+    tmp_path, caplog,
+):
+    """T-C.7 — `get_quotes_batch` redacts sentinels in audit error_message
+    + caplog records.
+
+    Discriminating: plant a Layer-0 sentinel as account_hash-shaped secret +
+    emit a schwabdev-level log record containing the sentinel; invoke
+    get_quotes_batch against a stub `client.quotes` that returns a 401
+    response whose body contains the sentinel; assert (a) no sentinel in
+    any audit error_message; (b) no sentinel in any captured caplog record
+    from `Schwabdev*` loggers (capital-S confirmed live per Sub-bundle A
+    T-A.10 D1 deviation).
     """
+    import logging as _logging
+    from unittest.mock import MagicMock as _MagicMock
+
+    from swing.data.db import ensure_schema
+    from swing.integrations.schwab.client import (
+        SchwabAuthError,
+        ensure_schwab_log_redaction_factory_installed,
+        register_schwab_secrets,
+    )
+    from swing.integrations.schwab.marketdata import get_quotes_batch
+
+    conn = ensure_schema(tmp_path / "marketdata-quotes-redaction.db")
+
+    sentinel = "SENTINEL_MD_QUOTES_PROBE_" + uuid.uuid4().hex[:8]
+    register_schwab_secrets([sentinel])
+    ensure_schwab_log_redaction_factory_installed()
+
+    err_resp = _MagicMock()
+    err_resp.json.return_value = {
+        "errors": [{"message": f"quotes failed for {sentinel}"}],
+    }
+    err_resp.status_code = 401
+    err_resp.headers = {}
+    client = _MagicMock()
+    client.quotes.return_value = err_resp
+
+    # Emit a Schwabdev capital-S logger record carrying the sentinel BEFORE
+    # invoking the wrapper — verifies Layer-2 factory-replacement redactor
+    # catches sentinels emitted by ANY `Schwabdev*` logger name.
+    sl = _logging.getLogger("Schwabdev")
+    with caplog.at_level(_logging.DEBUG, logger="Schwabdev"):
+        sl.warning("quotes call about to dispatch with token=%s", sentinel)
+        try:
+            get_quotes_batch(
+                client, conn, ["XYZ"],
+                surface="cli", environment="production",
+            )
+        except SchwabAuthError:
+            pass
+
+    # (a) audit error_message has no sentinel.
+    rows = conn.execute(
+        "SELECT error_message FROM schwab_api_calls "
+        "WHERE error_message IS NOT NULL"
+    ).fetchall()
+    assert rows, "Test setup error: no audit row recorded"
+    for r in rows:
+        assert sentinel not in (r[0] or ""), (
+            f"Market Data quotes audit row leaked sentinel: {r[0]!r}"
+        )
+    # (b) caplog records from Schwabdev* loggers have no sentinel after
+    # factory redaction.
+    schwabdev_records = [
+        r for r in caplog.records if r.name.startswith("Schwabdev")
+    ]
+    assert schwabdev_records, (
+        "Test setup error: no Schwabdev-prefixed caplog record captured"
+    )
+    for record in schwabdev_records:
+        assert sentinel not in record.getMessage(), (
+            f"Schwabdev logger record leaked sentinel: {record.getMessage()!r}"
+        )
+
+
+def test_25_marketdata_price_history_audit_and_caplog_no_sentinel_leak(
+    tmp_path, caplog,
+):
+    """T-C.7 — `get_price_history` redacts sentinels in audit error_message
+    + caplog records. Mirrors test_24's pattern against the second Market
+    Data wrapper.
+    """
+    import logging as _logging
+    from unittest.mock import MagicMock as _MagicMock
+
+    from swing.data.db import ensure_schema
+    from swing.integrations.schwab.client import (
+        SchwabAuthError,
+        ensure_schwab_log_redaction_factory_installed,
+        register_schwab_secrets,
+    )
+    from swing.integrations.schwab.marketdata import get_price_history
+
+    conn = ensure_schema(tmp_path / "marketdata-ph-redaction.db")
+
+    sentinel = "SENTINEL_MD_PH_PROBE_" + uuid.uuid4().hex[:8]
+    register_schwab_secrets([sentinel])
+    ensure_schwab_log_redaction_factory_installed()
+
+    err_resp = _MagicMock()
+    err_resp.json.return_value = {
+        "error": f"price_history failed for symbol with token {sentinel}",
+    }
+    err_resp.status_code = 401
+    err_resp.headers = {}
+    client = _MagicMock()
+    client.price_history.return_value = err_resp
+
+    sl = _logging.getLogger("Schwabdev.marketdata")
+    with caplog.at_level(_logging.DEBUG, logger="Schwabdev"):
+        sl.warning("price_history about to dispatch token=%s", sentinel)
+        try:
+            get_price_history(
+                client, conn, "XYZ",
+                period_type="day", period=10,
+                frequency_type="minute", frequency=1,
+                surface="cli", environment="production",
+            )
+        except SchwabAuthError:
+            pass
+
+    rows = conn.execute(
+        "SELECT error_message FROM schwab_api_calls "
+        "WHERE error_message IS NOT NULL"
+    ).fetchall()
+    assert rows, "Test setup error: no audit row recorded"
+    for r in rows:
+        assert sentinel not in (r[0] or ""), (
+            f"Market Data price_history audit row leaked sentinel: {r[0]!r}"
+        )
+    schwabdev_records = [
+        r for r in caplog.records if r.name.startswith("Schwabdev")
+    ]
+    assert schwabdev_records, (
+        "Test setup error: no Schwabdev-prefixed caplog record captured"
+    )
+    for record in schwabdev_records:
+        assert sentinel not in record.getMessage(), (
+            f"Schwabdev logger record leaked sentinel: {record.getMessage()!r}"
+        )
+
+
+def test_26_marketdata_quotes_partial_response_per_symbol_breakdown_redacted(
+    tmp_path,
+):
+    """T-C.7 — partial-response audit `error_message` excerpt with the
+    per-symbol breakdown (e.g., "1/2 OK; failed: BADX") MUST NOT carry
+    sentinel bytes from the failed-symbol's error envelope or symbol name.
+
+    Discriminating shape per recon doc §3.2: `quotes` partial-response
+    surfaces as an error envelope under the symbol key. Plant the sentinel
+    (a) as a sentinel-named ticker that goes into the `failed: ...` list,
+    AND (b) inside the per-symbol error-envelope payload — both paths feed
+    `_redact_error_message_for_audit` via `_finish_hook` in marketdata.py.
+    """
+    from unittest.mock import MagicMock as _MagicMock
+
+    from swing.data.db import ensure_schema
+    from swing.integrations.schwab.client import (
+        ensure_schwab_log_redaction_factory_installed,
+        register_schwab_secrets,
+    )
+    from swing.integrations.schwab.marketdata import get_quotes_batch
+
+    conn = ensure_schema(tmp_path / "marketdata-partial-redaction.db")
+
+    # Use a Layer-1-shaped sentinel (32+ hex) so the heuristic regex ALSO
+    # catches it on the audit-row write path (defense-in-depth: belt+braces
+    # alongside Layer-0 registration).
+    sentinel = "SENTINEL_PARTIAL_" + uuid.uuid4().hex + uuid.uuid4().hex
+    register_schwab_secrets([sentinel])
+    ensure_schwab_log_redaction_factory_installed()
+
+    # Partial-response: AAPL OK shape + a sentinel-named symbol with an
+    # error envelope embedding the sentinel verbatim.
+    ok_resp = _MagicMock()
+    ok_resp.json.return_value = {
+        "AAPL": {
+            "quote": {
+                "lastPrice": 150.0,
+                "bidPrice": 149.95,
+                "askPrice": 150.05,
+                "mark": 150.0,
+                "quoteTimeInLong": 1700000000000,
+                "delayed": False,
+            },
+        },
+        # The failed symbol's NAME is sentinel-derived; the failed-symbol
+        # list goes into the audit error_message excerpt.
+        sentinel: {
+            "errors": [{"message": f"upstream error for {sentinel}"}],
+        },
+    }
+    ok_resp.status_code = 200
+    ok_resp.headers = {}
+    client = _MagicMock()
+    client.quotes.return_value = ok_resp
+
+    result = get_quotes_batch(
+        client, conn, ["AAPL", sentinel],
+        surface="cli", environment="production",
+    )
+    # Mapper drops the sentinel-named failed symbol; AAPL maps successfully.
+    assert "AAPL" in result
+    assert sentinel not in result
+
+    rows = conn.execute(
+        "SELECT status, error_message FROM schwab_api_calls "
+        "WHERE endpoint = 'marketdata.quotes' "
+        "AND error_message IS NOT NULL"
+    ).fetchall()
+    # Status is 'success' (at least one symbol mapped); error_message
+    # carries the partial breakdown. Per `marketdata.py:_finish_hook`,
+    # the per-symbol breakdown passes through `_redact_error_message_for_audit`
+    # so the sentinel CANNOT survive into the excerpt.
+    assert rows, "Test setup error: no partial-response audit row recorded"
+    for status, msg in rows:
+        assert sentinel not in (msg or ""), (
+            f"Partial-response audit excerpt leaked sentinel: "
+            f"status={status!r}, msg={msg!r}"
+        )
+
+
+def test_27_marketdata_cache_files_do_not_contain_sentinel(tmp_path):
+    """T-C.7 — defense-in-depth: parquet cache files written via
+    `write_window` (T-C.2) MUST NOT contain the sentinel anywhere.
+
+    The cache path is for OHLCV bars (numeric columns + DatetimeIndex);
+    sentinels travel via response BODIES which the mapper transforms into
+    typed dataclasses — they should never reach parquet. This test
+    construes a sentinel-bearing OHLCV response, invokes the mapper +
+    cache write, then scans the on-disk parquet for the sentinel bytes.
+    """
+    import pandas as pd
+
+    from swing.data.ohlcv_archive import write_window
+    from swing.integrations.schwab.client import (
+        ensure_schwab_log_redaction_factory_installed,
+        register_schwab_secrets,
+    )
+    from swing.integrations.schwab.mappers import (
+        map_price_history_to_window,
+    )
+
+    sentinel = "SENTINEL_CACHE_LEAK_" + uuid.uuid4().hex[:8]
+    register_schwab_secrets([sentinel])
+    ensure_schwab_log_redaction_factory_installed()
+
+    # Build a price_history payload whose non-candle fields carry the
+    # sentinel (Schwab "symbol" + a hypothetical adversarial "note" key).
+    # The mapper extracts ONLY `candles` → typed bars; sentinel-bearing
+    # non-candle fields are dropped.
+    payload = {
+        "symbol": sentinel,  # sentinel in symbol metadata
+        "empty": False,
+        "candles": [
+            {
+                "open": 100.0, "high": 101.0, "low": 99.5,
+                "close": 100.5, "volume": 12345,
+                "datetime": 1700000000000,
+            },
+            {
+                "open": 100.5, "high": 101.5, "low": 100.0,
+                "close": 101.0, "volume": 23456,
+                "datetime": 1700086400000,
+            },
+        ],
+        # Adversarial extra field carrying the sentinel.
+        "notes": f"raw upstream debug: token={sentinel}",
+    }
+    window = map_price_history_to_window(payload, ticker="XYZ")
+    # Bar emit verifies the mapper did NOT carry sentinel into typed shape.
+    assert len(window.bars) == 2
+    for bar in window.bars:
+        # Bars expose only numeric / typed datetime fields.
+        for field_value in (bar.open, bar.high, bar.low, bar.close, bar.volume):
+            assert sentinel not in str(field_value)
+
+    # Construct a parquet-ready DataFrame from the typed bars and write it.
+    df = pd.DataFrame(
+        [
+            {
+                "asof_date": bar.asof_date,
+                "open": bar.open, "high": bar.high, "low": bar.low,
+                "close": bar.close, "volume": bar.volume,
+            }
+            for bar in window.bars
+        ]
+    )
+    cache_dir = tmp_path / "ohlcv-cache"
+    write_window("XYZ", df, "schwab_api", cache_dir=cache_dir)
+
+    # Scan the parquet bytes for the sentinel (it's UTF-8 text; even with
+    # snappy / dict encoding, an unredacted literal-string value would
+    # appear in the on-disk bytes).
+    parquet_path = cache_dir / "XYZ.schwab_api.parquet"
+    assert parquet_path.exists(), (
+        f"Test setup error: cache write did not produce {parquet_path}"
+    )
+    raw_bytes = parquet_path.read_bytes()
+    assert sentinel.encode("utf-8") not in raw_bytes, (
+        f"Cache parquet bytes leaked sentinel — symbol/notes fields "
+        f"reached disk: {parquet_path}"
+    )
 
 
 # ============================================================================
@@ -1315,4 +1624,200 @@ def test_28_redacted_excerpt_redacts_before_truncating_boundary_straddle():
         assert partial not in redacted, (
             f"Partial sentinel prefix {partial!r} (start={start}) leaked "
             f"through truncation-first path: {redacted!r}"
+        )
+
+
+# ============================================================================
+# Codex R1 Major #6 — sentinels emitted FROM INSIDE the schwabdev call
+# ============================================================================
+#
+# Prior T-C.7 tests (test_24 + test_25) emit Schwabdev-logger records BEFORE
+# invoking the wrapper. Codex R1 Major #6 flagged that these tests do not
+# prove sentinels emitted from INSIDE schwabdev's quotes/price_history are
+# suppressed when those emissions happen as a side-effect of the actual
+# method call.
+#
+# These tests close that gap by attaching a side_effect to the MagicMock
+# `quotes` / `price_history` method that emits a Schwabdev-logger warning
+# carrying the sentinel WHEN CALLED. The wrapper consumes the response
+# normally; we then assert ZERO sentinel leakage through caplog + audit.
+
+
+def test_27_marketdata_quotes_sentinel_emitted_from_inside_call_is_redacted(
+    tmp_path, caplog,
+):
+    """Codex R1 Major #6 discriminating test: schwabdev's `quotes` method
+    emits a sentinel-bearing log record DURING the call (side-effect on
+    invocation). Wrapper MUST NOT leak the sentinel into caplog records
+    from `Schwabdev*` loggers (Layer-2 factory replacement covers this) NOR
+    into the audit `error_message` column.
+
+    Discriminates against the pre-Major-#6 testing pattern where sentinels
+    were emitted BEFORE the wrapper call — that pattern doesn't exercise
+    the wrapper's logger-context during the call window.
+    """
+    import logging as _logging
+    from unittest.mock import MagicMock as _MagicMock
+
+    from swing.data.db import ensure_schema
+    from swing.integrations.schwab.client import (
+        ensure_schwab_log_redaction_factory_installed,
+        register_schwab_secrets,
+    )
+    from swing.integrations.schwab.marketdata import get_quotes_batch
+
+    conn = ensure_schema(tmp_path / "marketdata-quotes-inside-call.db")
+
+    sentinel = "SENTINEL_QUOTES_INSIDE_" + uuid.uuid4().hex[:8]
+    register_schwab_secrets([sentinel])
+    ensure_schwab_log_redaction_factory_installed()
+
+    # Side-effect: emit a Schwabdev logger record carrying the sentinel
+    # WHEN `quotes(...)` is called. Then return a normal 200 response.
+    schwabdev_logger = _logging.getLogger("Schwabdev.tokens")
+
+    def fake_quotes(symbols=None, fields=None, indicative=False):
+        # Mirrors schwabdev's internal token-refresh logging shape.
+        schwabdev_logger.warning(
+            f"quotes call dispatch — token refresh complete; token={sentinel}"
+        )
+        resp = _MagicMock()
+        resp.status_code = 200
+        # Return a populated quote so the wrapper's success path runs end-to-end.
+        resp.json.return_value = {
+            "AAPL": {
+                "quote": {
+                    "lastPrice": 100.0,
+                    "bidPrice": 99.5,
+                    "askPrice": 100.5,
+                    "mark": 100.0,
+                    "quoteTimeInLong": 1715692800000,
+                    "delayed": False,
+                },
+            },
+        }
+        resp.elapsed = _MagicMock()
+        resp.elapsed.total_seconds.return_value = 0.05
+        resp.headers = {}
+        return resp
+
+    client = _MagicMock()
+    client.quotes.side_effect = fake_quotes
+
+    with caplog.at_level(_logging.DEBUG, logger="Schwabdev"):
+        get_quotes_batch(
+            client, conn, ["AAPL"],
+            surface="cli", environment="production",
+        )
+
+    # Discriminating: sentinel absent from ALL caplog records (any logger).
+    for rec in caplog.records:
+        msg = rec.getMessage()
+        assert sentinel not in msg, (
+            f"caplog leaked sentinel from inside-call emission "
+            f"(logger={rec.name!r}): {msg!r}"
+        )
+        # Also assert against the formatted `.message` (some records may
+        # carry the formatted form alongside the args-based getMessage).
+        formatted = getattr(rec, "message", "") or ""
+        assert sentinel not in formatted, (
+            f"caplog.message leaked sentinel (logger={rec.name!r}): "
+            f"{formatted!r}"
+        )
+
+    # Audit `error_message` must also not carry the sentinel (defensive —
+    # the call succeeded, so error_message likely None; assert anyway).
+    rows = conn.execute(
+        "SELECT error_message FROM schwab_api_calls "
+        "WHERE error_message IS NOT NULL"
+    ).fetchall()
+    for r in rows:
+        assert sentinel not in (r[0] or ""), (
+            f"audit error_message leaked inside-call sentinel: {r[0]!r}"
+        )
+
+
+def test_28_marketdata_price_history_sentinel_emitted_from_inside_call_is_redacted(
+    tmp_path, caplog,
+):
+    """Codex R1 Major #6 discriminating test (price_history twin of test_27):
+    schwabdev's `price_history` method emits a sentinel-bearing log record
+    DURING the call. Wrapper MUST NOT leak the sentinel via caplog or audit.
+    """
+    import logging as _logging
+    from unittest.mock import MagicMock as _MagicMock
+
+    from swing.data.db import ensure_schema
+    from swing.integrations.schwab.client import (
+        ensure_schwab_log_redaction_factory_installed,
+        register_schwab_secrets,
+    )
+    from swing.integrations.schwab.marketdata import get_price_history
+
+    conn = ensure_schema(tmp_path / "marketdata-ph-inside-call.db")
+
+    sentinel = "SENTINEL_PH_INSIDE_" + uuid.uuid4().hex[:8]
+    register_schwab_secrets([sentinel])
+    ensure_schwab_log_redaction_factory_installed()
+
+    schwabdev_logger = _logging.getLogger("Schwabdev.marketdata")
+
+    def fake_price_history(
+        symbol=None, periodType=None, period=None,
+        frequencyType=None, frequency=None,
+        startDate=None, endDate=None,
+        needExtendedHoursData=None, needPreviousClose=None,
+    ):
+        schwabdev_logger.warning(
+            f"price_history dispatch — token refresh complete; "
+            f"token={sentinel}; symbol={symbol}"
+        )
+        resp = _MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "candles": [
+                {
+                    "datetime": 1715692800000,
+                    "open": 100.0, "high": 105.0, "low": 98.0, "close": 102.0,
+                    "volume": 12345,
+                },
+            ],
+            "empty": False,
+            "symbol": symbol or "AAPL",
+        }
+        resp.elapsed = _MagicMock()
+        resp.elapsed.total_seconds.return_value = 0.05
+        resp.headers = {}
+        return resp
+
+    client = _MagicMock()
+    client.price_history.side_effect = fake_price_history
+
+    with caplog.at_level(_logging.DEBUG, logger="Schwabdev"):
+        get_price_history(
+            client, conn, "AAPL",
+            period_type="day", period=10,
+            frequency_type="minute", frequency=1,
+            surface="cli", environment="production",
+        )
+
+    for rec in caplog.records:
+        msg = rec.getMessage()
+        assert sentinel not in msg, (
+            f"caplog leaked sentinel from inside-call emission "
+            f"(logger={rec.name!r}): {msg!r}"
+        )
+        formatted = getattr(rec, "message", "") or ""
+        assert sentinel not in formatted, (
+            f"caplog.message leaked sentinel (logger={rec.name!r}): "
+            f"{formatted!r}"
+        )
+
+    rows = conn.execute(
+        "SELECT error_message FROM schwab_api_calls "
+        "WHERE error_message IS NOT NULL"
+    ).fetchall()
+    for r in rows:
+        assert sentinel not in (r[0] or ""), (
+            f"audit error_message leaked inside-call sentinel: {r[0]!r}"
         )

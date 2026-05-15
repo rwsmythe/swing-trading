@@ -251,9 +251,259 @@ class SchwabTransactionResponse:
             )
 
 
+@dataclass(frozen=True)
+class SchwabQuoteResponse:
+    """Mapped single-symbol quote payload from `Client.quotes(...)` (T-C.1).
+
+    Per plan §E.3 + §H.7. Schwab returns a dict keyed by symbol; each entry
+    carries last/bid/ask/mark + a quote-as-of timestamp + a delayed flag.
+
+    Fields:
+      symbol: ticker symbol (e.g., 'AAPL').
+      last_price: primary consumed field; written to PriceCache via ladder.
+      bid: best bid at quote_time.
+      ask: best ask at quote_time.
+      mark: midpoint or Schwab-computed mark; may be None.
+      quote_time: ISO ms string (mapper converts from `quoteTimeInLong` epoch
+        ms OR `quoteTime` ISO string).
+      delayed: informational; default-tier accounts receive 15-min-delayed
+        quotes per spec §A.1 Q12 default disposition.
+    """
+
+    symbol: str
+    last_price: float
+    bid: float
+    ask: float
+    mark: float | None
+    quote_time: str
+    delayed: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.symbol, str) or not self.symbol:
+            raise ValueError(
+                "SchwabQuoteResponse.symbol must be non-empty str"
+            )
+        if not isinstance(self.last_price, (int, float)) or isinstance(
+            self.last_price, bool,
+        ):
+            raise ValueError(
+                f"SchwabQuoteResponse.last_price must be number; "
+                f"got {type(self.last_price).__name__}"
+            )
+        if not math.isfinite(float(self.last_price)):
+            raise ValueError(
+                f"SchwabQuoteResponse.last_price must be finite (not "
+                f"NaN/inf); got {self.last_price!r}"
+            )
+        if self.last_price < 0:
+            raise ValueError(
+                f"SchwabQuoteResponse.last_price must be >= 0; "
+                f"got {self.last_price!r}"
+            )
+        for fname, fval in (("bid", self.bid), ("ask", self.ask)):
+            if not isinstance(fval, (int, float)) or isinstance(fval, bool):
+                raise ValueError(
+                    f"SchwabQuoteResponse.{fname} must be number; "
+                    f"got {type(fval).__name__}"
+                )
+            if not math.isfinite(float(fval)):
+                raise ValueError(
+                    f"SchwabQuoteResponse.{fname} must be finite (not "
+                    f"NaN/inf); got {fval!r}"
+                )
+        if self.mark is not None:
+            if not isinstance(self.mark, (int, float)) or isinstance(
+                self.mark, bool,
+            ):
+                raise ValueError(
+                    f"SchwabQuoteResponse.mark must be number or None; "
+                    f"got {type(self.mark).__name__}"
+                )
+            if not math.isfinite(float(self.mark)):
+                raise ValueError(
+                    f"SchwabQuoteResponse.mark must be finite or None; "
+                    f"got {self.mark!r}"
+                )
+        if not isinstance(self.quote_time, str):
+            raise ValueError(
+                "SchwabQuoteResponse.quote_time must be str"
+            )
+        if not isinstance(self.delayed, bool):
+            raise ValueError(
+                f"SchwabQuoteResponse.delayed must be bool; "
+                f"got {type(self.delayed).__name__}"
+            )
+
+
+@dataclass(frozen=True)
+class OhlcvBar:
+    """Single daily/intraday OHLCV bar — mapped from one Schwab price_history
+    candle (T-C.1).
+
+    Per plan §H.7 row "SchwabPriceHistoryWindow per-bar invariants". `asof_date`
+    is ISO date string (`YYYY-MM-DD`); mapper converts Schwab's `datetime`
+    field (epoch ms) into ISO date in UTC.
+
+    Invariants enforced at `__post_init__`:
+      - `low <= min(open, close)` — Schwab data should always satisfy; reject
+        if violated (signals a malformed candle / parser error).
+      - `high >= max(open, close)` — same reasoning.
+      - `volume >= 0` — defensive (Schwab uses 0 for no-trade bars).
+      - all OHLC values finite (no NaN/inf).
+    """
+
+    asof_date: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.asof_date, str) or len(self.asof_date) < 10:
+            raise ValueError(
+                f"OhlcvBar.asof_date must be ISO date (YYYY-MM-DD or longer); "
+                f"got {self.asof_date!r}"
+            )
+        for fname, fval in (
+            ("open", self.open),
+            ("high", self.high),
+            ("low", self.low),
+            ("close", self.close),
+        ):
+            if not isinstance(fval, (int, float)) or isinstance(fval, bool):
+                raise ValueError(
+                    f"OhlcvBar.{fname} must be number; "
+                    f"got {type(fval).__name__}"
+                )
+            if not math.isfinite(float(fval)):
+                raise ValueError(
+                    f"OhlcvBar.{fname} must be finite (not NaN/inf); "
+                    f"got {fval!r}"
+                )
+        if not isinstance(self.volume, (int, float)) or isinstance(
+            self.volume, bool,
+        ):
+            raise ValueError(
+                f"OhlcvBar.volume must be number; "
+                f"got {type(self.volume).__name__}"
+            )
+        if self.volume < 0:
+            raise ValueError(
+                f"OhlcvBar.volume must be >= 0; got {self.volume!r}"
+            )
+        # Per-bar invariants: low ≤ min(open, close); high ≥ max(open, close).
+        oc_min = min(self.open, self.close)
+        oc_max = max(self.open, self.close)
+        if self.low > oc_min:
+            raise ValueError(
+                f"OhlcvBar invariant violated: low ({self.low}) must be "
+                f"<= min(open, close) ({oc_min}); date={self.asof_date}"
+            )
+        if self.high < oc_max:
+            raise ValueError(
+                f"OhlcvBar invariant violated: high ({self.high}) must be "
+                f">= max(open, close) ({oc_max}); date={self.asof_date}"
+            )
+
+
+@dataclass(frozen=True)
+class SchwabPriceHistoryWindow:
+    """Mapped price-history window from `Client.price_history(...)` (T-C.1).
+
+    Per plan §E.3 + §H.7. Carries the full bars list + ticker + provider tag.
+    Provider is hardcoded to `'schwab_api'` for instances emitted by this
+    mapper (distinguishes from yfinance-fallback path at the ladder layer).
+
+    Invariants:
+      - bars sorted by asof_date ascending (mapper enforces; validator pins).
+      - each bar passes OhlcvBar's __post_init__.
+      - provider non-empty (validator pins).
+    """
+
+    ticker: str
+    bars: list[OhlcvBar] = field(default_factory=list)
+    provider: str = "schwab_api"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.ticker, str) or not self.ticker:
+            raise ValueError(
+                "SchwabPriceHistoryWindow.ticker must be non-empty str"
+            )
+        if not isinstance(self.bars, list):
+            raise ValueError(
+                f"SchwabPriceHistoryWindow.bars must be list; "
+                f"got {type(self.bars).__name__}"
+            )
+        if not isinstance(self.provider, str) or not self.provider:
+            raise ValueError(
+                "SchwabPriceHistoryWindow.provider must be non-empty str"
+            )
+        # bars sorted by asof_date ascending.
+        prior: str | None = None
+        for bar in self.bars:
+            if not isinstance(bar, OhlcvBar):
+                raise ValueError(
+                    f"SchwabPriceHistoryWindow.bars must contain OhlcvBar; "
+                    f"got {type(bar).__name__}"
+                )
+            if prior is not None and bar.asof_date < prior:
+                raise ValueError(
+                    f"SchwabPriceHistoryWindow.bars must be sorted by "
+                    f"asof_date ascending; saw {prior!r} before "
+                    f"{bar.asof_date!r}"
+                )
+            prior = bar.asof_date
+
+    def to_dataframe(self):
+        """Convert bars to a DataFrame matching the legacy yfinance in-memory
+        shape consumed by the OHLCV cache + chart-step downstream code.
+
+        Returns a DataFrame with:
+          - DatetimeIndex (named ``Date``) parsed from ``OhlcvBar.asof_date``;
+          - CAPITALIZED OHLCV columns (``Open``/``High``/``Low``/``Close``/
+            ``Volume``) matching what ``swing/pipeline/ohlcv.py:compute_smas``
+            and ``swing/web/ohlcv_cache.py`` consume from the legacy
+            ``_yf_download_window`` shape.
+
+        This is the in-memory shape, NOT the Shape A on-disk shape. Use
+        ``swing.integrations.schwab.marketdata_ladder._schwab_window_to_shape_a_df``
+        (or the inline equivalent in the ladder) when persisting via
+        ``swing.data.ohlcv_archive.write_window``.
+
+        Codex R1 Major #4: previously the OhlcvCache ladder hook called
+        ``window.to_dataframe()`` but this method did not exist, breaking
+        the Schwab success path in ``swing/pipeline/runner.py:_bars_hook``.
+        Empty bars list → empty DataFrame with the canonical column set
+        (defensive; mapper raises before this for empty Schwab responses).
+        """
+        import pandas as pd  # lazy: keep models.py lightweight
+
+        if not self.bars:
+            return pd.DataFrame(
+                columns=["Open", "High", "Low", "Close", "Volume"],
+            )
+
+        idx = pd.to_datetime([bar.asof_date for bar in self.bars])
+        idx.name = "Date"
+        return pd.DataFrame(
+            {
+                "Open": [bar.open for bar in self.bars],
+                "High": [bar.high for bar in self.bars],
+                "Low": [bar.low for bar in self.bars],
+                "Close": [bar.close for bar in self.bars],
+                "Volume": [bar.volume for bar in self.bars],
+            },
+            index=idx,
+        )
+
+
 __all__ = [
+    "OhlcvBar",
     "SchwabAccountResponse",
     "SchwabOrderResponse",
+    "SchwabPriceHistoryWindow",
+    "SchwabQuoteResponse",
     "SchwabTransactionResponse",
     "_SCHWAB_ORDER_INSTRUCTIONS",
     "_SCHWAB_ORDER_STATUSES",
