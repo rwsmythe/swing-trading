@@ -255,3 +255,52 @@ def test_review_form_phase6_regression_existing_form_renders(
     assert 'name="mistake_cost_confidence"' in body
     assert 'name="lesson_learned"' in body
     assert "Submit review" in body
+
+
+# ---------------------------------------------------------------------------
+# Schwab Sub-bundle D T-D.elective.1 — replace stale Phase 7 parenthetical
+# with forward-looking phrasing. Phase 7 shipped 2026-05-05.
+# ---------------------------------------------------------------------------
+
+def test_review_form_does_not_show_stale_phase_7_auto_derive_text(
+    cfg_factory,
+) -> None:
+    """The obsolete '(Phase 7 will auto-derive this from Fills.)' parenthetical
+    MUST NOT appear in the rendered form — Phase 7 already shipped 2026-05-05.
+    """
+    cfg, cfg_path = cfg_factory("_phase7_stale")
+    tid = _seed_closed_trade(
+        cfg, trade_id=1, ticker="STAL",
+        entry_price=10.0, initial_stop=9.0, initial_shares=100,
+        exit_price=11.0, realized_R_if_plan_followed=1.0,
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{tid}/review")
+    assert r.status_code == 200
+    body = r.text
+    assert "Phase 7 will auto-derive this from Fills" not in body
+
+
+def test_review_form_shows_future_enhancement_phrasing(
+    cfg_factory,
+) -> None:
+    """The replacement forward-looking phrasing MUST appear in the rendered
+    form. The 'manual entry V1' framing is operator-locked per phase3e-todo
+    2026-05-13.
+    """
+    cfg, cfg_path = cfg_factory("_future_enh")
+    tid = _seed_closed_trade(
+        cfg, trade_id=1, ticker="FUTR",
+        entry_price=10.0, initial_stop=9.0, initial_shares=100,
+        exit_price=11.0, realized_R_if_plan_followed=1.0,
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/trades/{tid}/review")
+    assert r.status_code == 200
+    body = r.text
+    assert (
+        "Auto-derivation from Fills is a future enhancement;"
+        " manual entry V1." in body
+    )
