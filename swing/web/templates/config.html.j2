@@ -54,6 +54,16 @@
 </form>
 <div id="config-form-result"></div>
 
+<section class="config-integrations" style="margin-top:1.5rem;">
+  <h2>External integrations</h2>
+  <p>
+    <a href="/schwab/setup">Set up / re-authorize Schwab OAuth &rarr;</a>
+  </p>
+  <p class="description">
+    Use weekly when the refresh token nears expiration. An existing tokens database (if any) will be safely renamed before a new one is written.
+  </p>
+</section>
+
 {% for row in vm.rows %}
   {% if row.input_kind in ('int', 'float') %}
     <form method="post" action="/config/reset/{{ row.path }}"
