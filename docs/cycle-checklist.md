@@ -5,6 +5,61 @@ Working routine for the refactored stack (Phase 3d+). Assumes `swing` is on PATH
 
 ---
 
+## Initial setup — Schwab API integration (one-time)
+
+After project install + before first pipeline run that consumes Schwab data:
+
+1. **Register Schwab Developer Portal app.**
+   - Visit [developer.schwab.com](https://developer.schwab.com/).
+   - Create new app; name e.g. "Swing Trading Personal".
+   - Request Trader API + Market Data API access.
+   - Configure callback URL to `https://127.0.0.1` (paste-back flow; no listener required).
+   - Note `client_id` + `client_secret`.
+   - Await production-tier approval (Schwab review; days to weeks).
+
+2. **Run setup:**
+
+   ```powershell
+   swing schwab setup --environment production
+   # -> prompts for client_id + client_secret (secret is hidden input)
+   # -> prints consent URL
+   # -> open URL in browser, log in, approve
+   # -> browser redirects to https://127.0.0.1/?code=<CODE>... (404 page; copy the FULL redirected URL from the address bar)
+   # -> paste redirected URL at CLI prompt
+   # -> CLI persists tokens DB at ~/swing-data/schwab-tokens.production.db (or .json depending on schwabdev version)
+   # -> CLI auto-picks (single account) or prompts for primary account_hash if multiple
+   # -> CLI writes integrations.schwab.account_hash to user-config.toml
+   ```
+
+3. **Activate environment** (V1 — `swing config set` does NOT cover
+   `integrations.schwab.environment`; hand-edit `~/swing-data/user-config.toml`
+   to set it, OR pass `--environment production` on each Schwab CLI invocation):
+
+   ```powershell
+   # Option A — hand-edit ~/swing-data/user-config.toml:
+   #   [integrations.schwab]
+   #   environment = "production"
+   notepad "$env:USERPROFILE\swing-data\user-config.toml"
+
+   swing schwab status   # confirm tokens DB valid; account_hash set; env reads "production"
+   ```
+
+4. **Verify first fetch:**
+
+   ```powershell
+   swing schwab fetch --snapshot   # writes one account_equity_snapshots row
+   swing schwab fetch --orders     # writes one reconciliation_run + any discrepancies
+   ```
+
+5. **(Optional) Sandbox mode for cassette recording:**
+
+   ```powershell
+   swing schwab setup --environment sandbox   # separate sandbox app credentials
+   # Sandbox is verification-only: API calls + audit rows; ZERO domain writes.
+   ```
+
+---
+
 ## Daily — Pre-market (evening or morning before open)
 
 ### 1. Finviz screen — automated via API
@@ -49,6 +104,10 @@ Check:
 - Today's Decisions (A+ setups actionable)
 - Watchlist (near-pivot tickers with stop suggestions)
 - Position count vs caps (e.g. `0 / 4 warn, cap 6`)
+- **Verify briefing.md Schwab section.** Each pipeline run's `briefing.md` now
+  includes a "Schwab integration" section reporting latest equity snapshot +
+  reconciliation discrepancy count. If banner "Schwab integration: degraded"
+  appears, run `swing schwab status` to diagnose.
 
 ---
 
@@ -128,6 +187,11 @@ swing journal cash --withdraw 200 --date 2026-04-20 --note "withdrawal"
 ---
 
 ## Weekly (Friday post-close or weekend)
+
+- **Verify Schwab refresh_token validity.** Run `swing schwab status` weekly.
+  Schwab production-tier refresh_tokens have ~90-day TTL; sandbox-tier ~7 days.
+  If `refresh_token: valid (N days remaining)` shows < 14 days, plan to run
+  `swing schwab setup` again to re-bootstrap before expiry.
 
 ### 9. Reconcile against TOS
 
@@ -217,6 +281,30 @@ swing rs-universe --help
 | Watchlist prices (stale) | Market closed; showing last-close fallback | Expected on weekends / after hours |
 | Dashboard doesn't auto-refresh after pipeline | Fixed post-walkthrough; auto-reloads 1.5s after terminal state | Hard-refresh (Ctrl+F5) as fallback |
 | Finviz CSV rejected | Missing required columns | Check `data/finviz-inbox/rejected/*.rejected-reasons.json` |
+
+### Schwab integration recovery
+
+- **Schwab refresh_token expired or revoked at Schwab Developer Portal:**
+
+  ```powershell
+  swing schwab logout
+  swing schwab setup --environment production
+  swing schwab fetch --snapshot   # verify recovery
+  ```
+
+- **Schwab Developer Portal app reapproval / scope change:**
+
+  ```powershell
+  swing schwab logout
+  swing schwab setup --environment production
+  ```
+
+- **Tokens DB corruption:**
+
+  ```powershell
+  Remove-Item "$env:USERPROFILE\swing-data\schwab-tokens.production.db"
+  swing schwab setup --environment production
+  ```
 
 ---
 
