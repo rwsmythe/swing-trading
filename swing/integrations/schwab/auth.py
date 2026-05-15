@@ -1412,7 +1412,7 @@ def _write_schwabdev_tokens_file(
         # swallow the error since Windows handles directory-entry
         # durability differently (NTFS journals the rename) — best-
         # effort across platforms.
-        with contextlib.suppress(OSError, AttributeError):
+        with contextlib.suppress(OSError, AttributeError, NotImplementedError):
             dir_fd = os.open(str(tokens_path.parent), os.O_RDONLY)
             try:
                 os.fsync(dir_fd)
