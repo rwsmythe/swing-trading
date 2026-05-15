@@ -206,6 +206,135 @@ def _now_ms_iso() -> str:
     return datetime.now().isoformat(timespec="microseconds")
 
 
+def _utc_now() -> datetime:
+    """T-A.2 — module-level wall-clock helper used by the self-heal rename
+    path (`_rename_stale_tokens_db`).
+
+    Extracted so tests can `monkeypatch.setattr(auth_mod, "_utc_now", ...)`
+    to inject a deterministic timestamp for the collision-disambiguation
+    test (Test 3 of `test_schwab_setup_self_healing.py`).
+    """
+    import datetime as _dt
+    return datetime.now(_dt.UTC)
+
+
+def _rename_stale_tokens_db(
+    tokens_db_path: Path,
+    *,
+    environment: str,
+    conn: sqlite3.Connection,
+) -> Path | None:
+    """T-A.2 — atomically rename an existing tokens DB to a `.deleted-<ts>`
+    sibling BEFORE invoking schwabdev's `Client.__init__`.
+
+    Solves operator-pain from 2026-05-14 gate: `Client.__init__` auto-attempts
+    a refresh against any existing tokens DB and hard-fails if the refresh
+    token has expired (or any other auth-refresh failure), never reaching
+    the paste-back code path. Pre-T-A.2 operator recovery was the
+    `logout → setup` sequence (per CLAUDE.md gotcha "swing schwab setup
+    requires clean tokens DB state").
+
+    Algorithm:
+      1. If `tokens_db_path` does NOT exist → return `None` (no-op).
+      2. Build candidate `<path>.deleted-<YYYYmmddTHHMMSS>` — same timestamp
+         format as `revoke_and_delete` (logout) uses, so the renamed-file
+         suffix convention is consistent across setup + logout self-heal
+         paths.
+      3. If the candidate already exists (improbable race; same-second
+         double-invocation), append `-1`, `-2`, ... until a free name is
+         found. NEVER overwrite a prior renamed file.
+      4. `os.replace` (same-volume; both source + dest in `~/swing-data/` →
+         no cross-device-link risk per CLAUDE.md gotcha).
+      5. Emit a SINGLE audit row at `endpoint='oauth.code_exchange'`
+         (schema CHECK enum at v18 does NOT include
+         `oauth.tokens_db_rename` — brief deviation banked as V2.1 §VII.F
+         amendment candidate), `status='success'`, `surface='cli'`,
+         `environment=<env>`, `error_message` containing the substrings
+         "auto-detected" + "renamed before paste-back" so operators can
+         grep the audit log to find self-heal events. This row precedes
+         the setup flow's own `oauth.code_exchange` audit row for the
+         actual Client construction.
+      6. `click.echo` an operator-visible advisory line naming the renamed
+         path + 24h recovery window.
+
+    Audit-row disposition LOCK (per dispatch brief §3 T-A.2 AC3): emitted.
+    Lock the disposition so operator-pain root-cause is traceable in
+    `schwab_api_calls` history. Documented in the implementation docstring
+    + Test 7 of `test_schwab_setup_self_healing.py` pins the row shape.
+
+    Returns:
+        Path to the renamed file, or `None` if no tokens DB existed.
+    """
+    if not tokens_db_path.exists():
+        return None
+
+    # Step 2 — build the candidate timestamp suffix. Match logout format.
+    rename_ts = _utc_now().strftime("%Y%m%dT%H%M%S")
+    candidate = tokens_db_path.with_name(
+        f"{tokens_db_path.name}.deleted-{rename_ts}",
+    )
+
+    # Step 3 — collision disambiguation (NEVER overwrite a prior renamed
+    # file). Append `-1`, `-2`, ... if the candidate path is already taken.
+    counter = 0
+    while candidate.exists():
+        counter += 1
+        candidate = tokens_db_path.with_name(
+            f"{tokens_db_path.name}.deleted-{rename_ts}-{counter}",
+        )
+
+    # Step 4 — atomic rename via os.replace.
+    os.replace(str(tokens_db_path), str(candidate))
+
+    # Step 5 — audit row. ENDPOINT NOTE: the schema CHECK enum at v18 does
+    # NOT include `oauth.tokens_db_rename` (brief AC3 wording deviated from
+    # actual schema). Reuse `oauth.code_exchange` — operators grep on the
+    # distinctive error_message substring "auto-detected" + "renamed before
+    # paste-back" to find self-heal events. Banked as V2.1 §VII.F amendment
+    # candidate (extend CHECK enum + use dedicated endpoint name in V2).
+    audit_msg = (
+        f"<auto-detected stale tokens DB at {tokens_db_path}; "
+        f"renamed before paste-back>"
+    )
+    try:
+        ts = _now_ms_iso()
+        call_id = audit_service.record_call_start(
+            conn,
+            ts=ts,
+            endpoint="oauth.code_exchange",
+            pipeline_run_id=None,
+            surface="cli",
+            environment=environment,
+        )
+        audit_service.record_call_finish(
+            conn,
+            call_id=call_id,
+            http_status=None,
+            status="success",
+            response_time_ms=0,
+            signature_hash=None,
+            rate_limit_remaining=None,
+            error_message=audit_msg,
+        )
+    except Exception as exc:
+        # Audit-row write failure must not block the self-heal itself —
+        # the rename already happened on disk; surface a warning + continue.
+        log.warning(
+            "schwab setup self-heal: audit-row write failed: %s",
+            type(exc).__name__,
+        )
+
+    # Step 6 — operator-visible advisory line. AC5: emit unconditionally
+    # via `click.echo` (works regardless of whether a click.Context is
+    # bound; click.echo writes to sys.stdout otherwise).
+    click.echo(
+        f"Auto-detected existing tokens DB at {tokens_db_path}; "
+        f"renamed to {candidate} (24h recovery window) before paste-back.",
+    )
+
+    return candidate
+
+
 def _resolve_tokens_db_path(environment: str) -> Path:
     """Per-env tokens DB / file path under `~/swing-data/`.
 
@@ -446,6 +575,20 @@ def setup_paste_flow(
     # writes succeed first-call.
     tokens_path = _resolve_tokens_db_path(environment)
     tokens_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Step 4.bis (T-A.2) — self-heal: if a stale tokens DB exists at the
+    # canonical path, atomically rename it to a `.deleted-<ts>` sibling
+    # BEFORE invoking schwabdev. Solves operator-pain from 2026-05-14
+    # gate (CLAUDE.md gotcha "swing schwab setup requires clean tokens
+    # DB state" — schwabdev's `Client.__init__` auto-attempts a refresh
+    # against any existing tokens DB and hard-fails before paste-back
+    # if that refresh dies, e.g. expired refresh_token). The rename's
+    # own audit row precedes the setup-flow audit row below.
+    _rename_stale_tokens_db(
+        tokens_path,
+        environment=environment,
+        conn=conn,
+    )
 
     # Step 5 — INSERT in-flight audit row for the Client construction
     # call (oauth.code_exchange endpoint per migration 0018 CHECK enum).
