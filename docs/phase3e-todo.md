@@ -52,7 +52,133 @@ Each scenario needs a deterministic mapping from `Fills` + `trades.planned_*` co
 
 ---
 
-## 2026-05-14 Schwab API Sub-bundle B SHIPPED — Trader API + snapshot/orders/reconciliation pipeline + sandbox-gating (5 Codex rounds + 1 gate-caught fix; 11 commits; first end-to-end Schwab reconciliation in production)
+## 2026-05-14 Schwab API Sub-bundle C SHIPPED — Market Data API + Shape A cache ladder + PriceCache/OhlcvCache integration + sandbox short-circuit + --verify-marketdata CLI + cross-bundle pin closure (5 Codex rounds; 26 commits; LARGEST NOVEL SCOPE of the arc)
+
+**Sub-bundle C SHIPPED 2026-05-14** at `fd457de` (integration merge of `schwab-bundle-C-marketdata-and-cache-ladder` worktree branch via `--no-ff` to preserve Codex-fix chain per Sub-bundle B precedent at `df29232`). Branch HEAD `88267fd` (26 commits = 1 recon + 7 task-impl + 17 Codex-fix + 1 return-report). Operator-dispatched implementer per orchestrator brief at `8356b34`.
+
+**5 Codex rounds → NO_NEW_CRITICAL_MAJOR** convergent tapering (R1 0/6/2 → R2 0/2/2 → R3 0/1/2 → R4 0/1/2 → R5 0/0/2); **ZERO Critical findings** entire chain; **2 ACCEPT-WITH-RATIONALE banked** (R1 M#5 `_step_charts` ladder wiring V2; R4 M#1 file-level mtime V1 best-effort awaiting V2 per-row `recorded_at` column); 8 Major resolved with code-content fixes + discriminating regression tests.
+
+### Operator-paired live gate (Option A; 2026-05-14)
+
+Full S2-S5 live verification against operator's production-tier Schwab account + worktree-side inline S1+S6+S7+S8+S9 PASS:
+
+| Surface | Result | Key observation |
+|---|---|---|
+| S1 fast suite (worktree) | ✅ | 3713 passed; 4 pre-existing failures (3 Phase 8 walkthrough + 1 xdist-flaky setup CLI test); 5 skipped. **Main-HEAD post-merge:** 3717 passed; 3 failed (Phase 8 walkthrough only; xdist-flaky setup test passed this time); 1 skipped (only flag-classifier) — both cross-bundle pins (T-C.5 + T-C.7) un-skipped + GREEN. |
+| S2 `--verify-marketdata` prod | ❌→✅ post-recovery | First attempt failed: 7-day refresh-token expired (anticipated per dispatch brief §0.7). Recovery via `logout → setup` paste-back. Re-run: calls 27 (`marketdata.quotes` AAPL) + 28 (`marketdata.pricehistory` AAPL bars=23) BOTH success / HTTP 200 / signature_hash present / linked_* NULL ✓. **First live Schwab Market Data API success in production.** |
+| S3 `--verify-marketdata --environment sandbox` | ✅ via demonstration | Stale sandbox tokens DB triggered same auto-refresh failure → call 29 audit landed with `status='error'` / `http_status=401` / redacted `error_message` (no token bytes) + ZERO new domain rows. **Production-only-domain-writes contract per spec §3.6.3 holds even on auth failure.** |
+| S4 `swing pipeline run` (production env) | ✅ | Pipeline run #58 complete in 47s. Per T-C.6 D1 ACCEPT-WITH-RATIONALE: `_construct_pipeline_schwab_client` returned `None` (cfg has no `client_id`/`client_secret`) → both Sub-bundle B's snapshot/orders steps + Sub-bundle C's ladder warming silent-skipped per Sub-bundle B M#1 surface-aware advisory pattern. ZERO new `schwab_api_calls` rows from pipeline; ZERO domain-row deltas. **V1-shipped behavior; V2 enhancement banked.** |
+| S5 backward-compat copy-not-move | ✅-with-inspection-only | V1 ladder silent-skip (S4) blocks live trigger of `_backward_compat_rename`. Archive at `~/swing-data/prices-cache/` has 776 legacy `{TICKER}.parquet` files; ZERO Shape A files yet. T-C.2 unit tests (+18) cover Shape A persistence + backward-compat-rename comprehensively (R1 M#6 + R2 M#1 + R2 M#2 + R3 M#1 + R4 M#1 fixes all landed discriminating regression coverage). |
+| S6 sentinel-leak audit Bundle C | ✅ | `tests/integrations/test_schwab_token_redaction_audit.py` GREEN; un-skipped Market Data API portions covered + 2 NEW tests using `MagicMock.side_effect` emitting Schwabdev-logger sentinels FROM INSIDE actual `quotes`/`price_history` calls (R1 M#6 fix discriminating against pre-fix BEFORE-the-call pattern). |
+| S7 `SchwabPipelineActiveError` exclusion | ✅ | `test_b6_10_fetch_verify_marketdata_NOT_protected` un-skipped at T-C.5 + GREEN. |
+| S8 E2E pipeline production-only gate | ✅ | Bundle B suite unchanged by C (cache-layer integration does NOT regress). |
+| S9 ruff baseline | ✅ | 18 E501 unchanged. |
+
+**Sub-bundle C is operationally validated end-to-end against live Schwab Market Data API in production.** First live `marketdata.quotes` + `marketdata.pricehistory` calls; first Shape A parquet-per-(ticker, provider) persistence layer + ladder fetcher infrastructure.
+
+### Anticipated failure: 7-day refresh-token recovery sequence
+
+S2 attempt 1 failed exactly per dispatch brief §0.7 prediction (7-day clock from Sub-bundle A phase-2 OAuth setup expired). Recovery sequence:
+
+1. `swing schwab refresh` — failed (refresh attempted but operator's refresh_token is dead).
+2. `swing schwab setup` — **also failed** (auto-refresh fires on stale tokens DB before paste-back; bails out hard with `unsupported_token_type`).
+3. `swing schwab logout` — atomically renamed `~/swing-data/schwab-tokens.production.db` → `*.deleted-20260514T175833` (24h recovery window) per A T-A.5 design even though revoke best-effort failed.
+4. `swing schwab setup` against now-empty path — clean paste-back; same `hashValue=E8F...0676` auto-selected; fresh 7-day clock started.
+
+**NEW gotcha-promotion candidate (Sub-bundle D T-D.4):** `swing schwab setup` requires clean tokens DB state; auto-refresh fires on stale tokens DB and bails before paste-back code path. Recovery sequence is `logout → setup`, NOT `setup` standalone. **Possible V2 self-healing:** make `setup` detect-and-rename stale tokens DB itself.
+
+### Three highest-leverage SHIPPED deliverables
+
+1. **Market Data API endpoint methods** at `swing/integrations/schwab/marketdata.py` (646 lines; `get_quotes_batch` + `get_price_history` + 4 helpers + `_call_endpoint` shared wrapper). camelCase kwarg trap (B's `34be84e` defect family) PRE-EMPTED via `inspect.signature(schwabdev.Client.price_history)` discriminating test landing in T-C.1 BEFORE code; ZERO defects of that family caught by Codex chain.
+2. **OHLCV archive Shape A persistence** at `swing/data/ohlcv_archive.py` (extended +500 lines): `write_window` empty-window-guard + `resolve_ohlcv_window` window-filter + `_backward_compat_rename` 4-case copy-not-move (R2 M#1) with both-files-exist merge-and-quarantine + mtime-based freshness winner (R3 M#1) with nanosecond-precision (R4 m#2). 1512-line test file at `tests/data/test_ohlcv_archive_shape_a.py` covers ALL Codex-caught edge cases.
+3. **Market-data ladder fetcher** at `swing/integrations/schwab/marketdata_ladder.py` (455 lines; `fetch_quote_via_ladder` + `fetch_window_via_ladder` + 7 helpers). Sandbox short-circuit per spec §3.6.3 + §H.6.1; yfinance fallback discipline preserved; per-provider tagging through `provider` field on `PriceSnapshot` (NOT plan's hypothetical `PriceCacheEntry` class — actual class name preserved per T-C.4 D1).
+
+### High-leverage Codex fixes worth flagging at integration triage
+
+- **R1 M#1:** `_backward_compat_rename` not wired into ladder hot path — fixed in `1a5e099`.
+- **R1 M#3:** Schwab bars NOT persisted to Shape A archive — fixed in `700265c` (write-side) + R3 M#1 / R4 M#1 partial wiring on read-side (chart step deferred V2).
+- **R1 M#6:** Sentinel-leak audit tests stubbed sentinels OUTSIDE schwabdev call (would silently pass even without redaction) — fixed at `3663d2c` with `MagicMock.side_effect` pattern.
+- **R2 M#1:** Backward-compat rename should COPY-NOT-MOVE the legacy parquet (preserve operator's V1 reads via legacy path) — fixed at `26efbae`.
+- **R3 M#1 / R4 M#1:** mtime-based freshness winner for both-files-exist merge — banked as V1 best-effort + V2 candidate #7 (per-row `recorded_at` column closes both staleness + rollback failure modes).
+
+### 2 ACCEPT-WITH-RATIONALE family
+
+1. **R1 M#5** (`_step_charts` ladder wiring V2): chart step still uses legacy `read_or_fetch_archive` path (does NOT consult Shape A files); full wiring requires `fetcher.get()` refactor + weekly-refresh + archive_history_days reconciliation. V1 behavior unchanged for chart-step downstream consumers; ladder ships persistence infrastructure + V2 read-path extension closes the loop.
+2. **R4 M#1** (file-level mtime as row-level conflict signal V1 best-effort): coarse signal for fine-grained question. V2 per-row `recorded_at` column closes both directions. V1 impact bounded — `read_or_fetch_archive` consumers read legacy directly; Shape A merge state does NOT affect their reads.
+
+### Production state delta (post-gate)
+
+- `schwab_api_calls`: 17 → **29** (+12 net: failed pre-recovery attempts at calls 18-26 + S2 success calls 27+28 + S3 sandbox auth-failed call 29). All audit rows correctly classified per Sub-bundle B M#3 typed-SchwabApiError discipline.
+- `account_equity_snapshots`: **5 unchanged** (no Schwab snapshot writes from V1 pipeline; B-shipped step silent-skipped per T-C.6 D1).
+- `reconciliation_runs`: **9 unchanged** (no Schwab orders reconciliation from V1 pipeline; same path).
+- `reconciliation_discrepancies`: **38 unchanged**.
+- `~/swing-data/prices-cache/`: 776 legacy `{TICKER}.parquet` files unchanged; ZERO Shape A files yet (V1 ladder silent-skip blocks live trigger).
+- Tokens DB: fresh 7-day clock started 2026-05-14 (post `logout → setup` recovery).
+
+### NEW gotcha-promotion candidates (Sub-bundle D T-D.4 candidates)
+
+1. **`swing schwab setup` requires clean tokens DB state** (operator-witnessed gate finding) — see "Anticipated failure" section above.
+2. **schwabdev camelCase kwarg discipline reinforced** — Sub-bundle B's gate-caught defect (`account_orders(maxResults=...)`) was the precedent; Sub-bundle C pre-empted via `inspect.signature` discriminating test on `Client.price_history`. Both belong in CLAUDE.md.
+3. **Pre-existing flaky test baseline correction** — `test_setup_auth_failure_audit_status_and_sentinel_redaction` (Sub-bundle A's T-A.4 setup CLI suite) is xdist-flaky and confirmed pre-existing on main `8356b34` (deterministic-fails serial too). Brief §0.7 said "3 pre-existing failures" — actual is **4**. Doc correction; not a regression.
+
+### V2 candidates banked (7)
+
+Per return report §7.2:
+
+1. `_step_charts` ladder wiring (R1 M#5 follow-up).
+2. `read_or_fetch_archive` Shape A read-path extension.
+3. `empty_flag is True` pattern review across other JSON-boolean Schwab response flags.
+4. `_yfinance_window_to_shape_a_df` heuristic conversion → explicit fallback contract.
+5. Legacy parquet cleanup pass (after all consumers refactor to Shape A).
+6. REPLACE-mode `write_window` for explicit archive reset.
+7. Per-row `recorded_at` column as freshness signal alternative to filesystem mtime.
+
+Plus pipeline `client_id`/`client_secret` env-var path for V2 (T-C.6 D1).
+
+### Operator-action items pending post-handoff (NOT orchestrator-blocking)
+
+1. **Sub-bundle A + B + C worktree husks pending operator cleanup-script** — branches A + B + C all deleted post-merge; on-disk husks at `.worktrees/` ACL-locked. **C is 3rd in cleanup-script queue.** Operator runs `cleanup-locked-scratch-dirs.ps1 -DeregisterFirst` (elevated PowerShell) at convenience.
+2. **Refresh sandbox tokens DB** (optional V2 work) — sandbox path has stale tokens; `swing schwab fetch --verify-marketdata --environment sandbox` will continue to surface auth-failure-with-correct-discipline until refreshed via paste-back.
+3. **8 unresolved material discrepancies from Sub-bundle B's gate** STILL pending operator triage (4 distinct issues per phase3e-todo Sub-bundle B SHIPPED entry; operator-explained 2026-05-14 — DHC trim not yet journaled + 3 entry-price journal mistakes).
+
+### Cross-bundle pin status
+
+**ZERO cross-bundle pins remaining for Sub-bundle D.** Both T-C.5 (`test_b6_10_fetch_verify_marketdata_NOT_protected`) + T-C.7 (Market Data API sentinel-coverage) un-skipped at branch tip + GREEN.
+
+### 18 plan-text deviations banked (V2.1 §VII.F amendment candidates)
+
+Per return report §5: 8 cosmetic + 6 architectural + 4 scope. Includes:
+- T-C.1 D3: `_finish_hook` parameter on marketdata `_call_endpoint` (architectural — supports quotes partial-response audit messaging).
+- T-C.2 D1: `cache_dir` kwarg threading (matches existing `read_or_fetch_archive` API).
+- T-C.3 D2: ladder signatures take `conn` + `surface` kwargs.
+- T-C.4 D1: cache layer uses INJECTABLE FETCHER HOOK pattern (rationale: keeps cache env-agnostic; avoids fixture-rewrite cascades).
+- T-C.5 D1: sandbox-vs-production interpretation (b) — both envs invoke schwabdev; orchestrator-decision pending Sub-bundle D `swing schwab status` revisit.
+- T-C.6 D1: pipeline `_construct_pipeline_schwab_client(cfg)` returns `None` (cfg lacks credentials; V1 graceful degradation).
+
+Plus 5 plan-text deviations from T-C.0.b recon (§A camelCase / §B datetime permissiveness / §C `PriceCacheEntry`→`PriceSnapshot` / §D archive path / §E `OhlcvCacheEntry` existence).
+
+### Cross-references
+
+- Brainstorm spec: `docs/superpowers/specs/2026-05-13-schwab-api-design.md` (`585556f`).
+- Plan: `docs/superpowers/plans/2026-05-13-schwab-api-integration-plan.md` (`7faab72`).
+- Sub-bundle C executing-plans dispatch brief: `docs/schwab-bundle-C-marketdata-and-cache-ladder-executing-plans-dispatch-brief.md` (`8356b34`).
+- Sub-bundle C return report: `docs/schwab-bundle-C-return-report.md` (`88267fd`).
+- Sub-bundle C T-C.0.b recon doc: `docs/schwab-bundle-C-task-C0b-recon.md` (`9d1e3e4`).
+- Integration merge: `fd457de`.
+- Branch HEAD: `88267fd`.
+
+### Next dispatch
+
+**Sub-bundle D executing-plans dispatch UNBLOCKED.** D closes the Schwab arc. Operator-paced. Brief drafting MUST consume:
+1. Sub-bundle C return report §9 (5 NEW forward-binding lessons): camelCase signature pinning; dual empty-signal defense-in-depth; injectable fetcher hook architectural pattern; mtime-based freshness V1 best-effort; `construct_authenticated_client` requires sensitive secrets NOT in cfg (V1 pipeline silent-skip).
+2. Sub-bundles A + B + C cumulative forward-binding lessons (still BINDING).
+3. Plan §Tasks-D at line 2214+ (7 tasks T-D.1..T-D.7; +19 fast tests projected; 2-3 Codex rounds estimated; smallest sub-bundle of the arc).
+4. **3 NEW gotcha-promotion candidates** banked above for T-D.4.
+5. Review-form polish task (drop stale "(Phase 7 will auto-derive...)" per phase3e-todo 2026-05-13 entry).
+6. 7-day refresh-token expiry alert design + `unsupported_token_type` recovery surface design per spec §3.5.
+7. `reference/schwabdev/api-calls.md` already pre-checked for all V1 wrappers — no live verification expected at T-D.x.
+
+---
 
 **Sub-bundle B SHIPPED 2026-05-14** at `df29232` (integration merge of `schwab-bundle-B-trader-and-snapshot` worktree branch via `--no-ff` to preserve Codex-fix chain). Branch HEAD `34be84e` (11 commits = 10 implementer + 1 orchestrator-inline gate-caught fix). Operator-dispatched implementer per orchestrator brief at `19622b6`.
 
