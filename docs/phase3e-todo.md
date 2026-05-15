@@ -277,7 +277,7 @@ Plus pipeline `client_id`/`client_secret` env-var path for V2 (T-C.6 D1).
 
 1. **Sub-bundle A + B + C worktree husks pending operator cleanup-script** — branches A + B + C all deleted post-merge; on-disk husks at `.worktrees/` ACL-locked. **C is 3rd in cleanup-script queue.** Operator runs `cleanup-locked-scratch-dirs.ps1 -DeregisterFirst` (elevated PowerShell) at convenience.
 2. **Refresh sandbox tokens DB** (optional V2 work) — sandbox path has stale tokens; `swing schwab fetch --verify-marketdata --environment sandbox` will continue to surface auth-failure-with-correct-discipline until refreshed via paste-back.
-3. **8 unresolved material discrepancies from Sub-bundle B's gate** STILL pending operator triage (4 distinct issues per phase3e-todo Sub-bundle B SHIPPED entry; operator-explained 2026-05-14 — DHC trim not yet journaled + 3 entry-price journal mistakes).
+3. **8 material discrepancies from Sub-bundle B's gate — ALL RESOLVED** (operator action 2026-05-14 → 2026-05-15: 7 resolved as `journal_corrected` during D-gate window — DHC 9-share trim recorded as fill + VSAT/CVGI/DHC entry-prices corrected — + 1 final stale-re-emission cleanup at disc 37 post-D-merge per VSAT entry-price companion to disc 33). Final state: 30 `acknowledged_immaterial` + 8 `journal_corrected` + 0 `unresolved`. Phase 10 dashboard banner now clear.
 
 ### Cross-bundle pin status
 
