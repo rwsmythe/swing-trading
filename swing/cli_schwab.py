@@ -29,8 +29,8 @@ from swing.config_validation import mask_sensitive_value
 from swing.data.db import connect
 from swing.data.repos import schwab_api_calls as schwab_repo
 from swing.integrations.schwab.auth import (
-    _resolve_credentials_env_or_prompt,
     force_refresh,
+    resolve_credentials_env_or_prompt,
     revoke_and_delete,
     setup_paste_flow,
 )
@@ -110,6 +110,29 @@ def _build_account_picker():
     return _picker
 
 
+def _resolve_credentials_for_cli(cfg: Any, environment: str) -> tuple[str, str]:
+    """CLI-side credential resolver: env vars first, prompt fallback.
+
+    Wraps `resolve_credentials_env_or_prompt` with `click.ClickException`
+    translation so callers get clean CLI error rendering instead of stack
+    traces. Collapses the 5× repeated try/except blocks that every CLI
+    subcommand needing credentials previously open-coded (T-A.1 code-review
+    cleanup).
+    """
+    try:
+        client_id, client_secret = resolve_credentials_env_or_prompt(
+            cfg, environment, allow_prompt=True,
+        )
+    except SchwabConfigMissingError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if client_id is None or client_secret is None:
+        # `resolve_credentials_env_or_prompt` only returns (None, None) when
+        # `allow_prompt=False`; CLI path passes `allow_prompt=True` so this
+        # is defensive only.
+        raise click.ClickException("Failed to resolve Schwab credentials.")
+    return client_id, client_secret
+
+
 @schwab_group.command("setup")
 @click.option(
     "--environment",
@@ -159,12 +182,7 @@ def schwab_setup(
     try:
         # T-A.1 — env-var supersession: `SCHWAB_CLIENT_ID` + `SCHWAB_CLIENT_SECRET`
         # env vars set together → skip prompt; partial set → SchwabConfigMissingError.
-        try:
-            client_id, client_secret = _resolve_credentials_env_or_prompt(
-                cfg, env, allow_prompt=True,
-            )
-        except SchwabConfigMissingError as exc:
-            raise click.ClickException(str(exc)) from exc
+        client_id, client_secret = _resolve_credentials_for_cli(cfg, env)
 
         try:
             result = setup_paste_flow(
@@ -256,12 +274,7 @@ def schwab_refresh(
     conn = connect(cfg.paths.db_path)
     try:
         # T-A.1 — env-var supersession (see schwab_setup for full notes).
-        try:
-            client_id, client_secret = _resolve_credentials_env_or_prompt(
-                cfg, env, allow_prompt=True,
-            )
-        except SchwabConfigMissingError as exc:
-            raise click.ClickException(str(exc)) from exc
+        client_id, client_secret = _resolve_credentials_for_cli(cfg, env)
 
         try:
             result = force_refresh(
@@ -330,12 +343,7 @@ def schwab_logout(
     conn = connect(cfg.paths.db_path)
     try:
         # T-A.1 — env-var supersession (see schwab_setup for full notes).
-        try:
-            client_id, client_secret = _resolve_credentials_env_or_prompt(
-                cfg, env, allow_prompt=True,
-            )
-        except SchwabConfigMissingError as exc:
-            raise click.ClickException(str(exc)) from exc
+        client_id, client_secret = _resolve_credentials_for_cli(cfg, env)
 
         try:
             result = revoke_and_delete(
@@ -983,12 +991,7 @@ def _verify_marketdata_path(
         # pre-emption #2 — verify-marketdata is in the 3-safe-subcommands list.
 
         # T-A.1 — env-var supersession (see schwab_setup for full notes).
-        try:
-            client_id, client_secret = _resolve_credentials_env_or_prompt(
-                cfg, env, allow_prompt=True,
-            )
-        except SchwabConfigMissingError as exc:
-            raise click.ClickException(str(exc)) from exc
+        client_id, client_secret = _resolve_credentials_for_cli(cfg, env)
 
         # Apply --environment override to cfg so downstream env-aware
         # consumers see the right value (mirrors schwab_fetch).
@@ -1314,12 +1317,7 @@ def schwab_fetch(
             )
 
         # T-A.1 — env-var supersession (see schwab_setup for full notes).
-        try:
-            client_id, client_secret = _resolve_credentials_env_or_prompt(
-                cfg, env, allow_prompt=True,
-            )
-        except SchwabConfigMissingError as exc:
-            raise click.ClickException(str(exc)) from exc
+        client_id, client_secret = _resolve_credentials_for_cli(cfg, env)
 
         # Construct schwabdev client.
         try:

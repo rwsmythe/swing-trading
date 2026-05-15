@@ -35,6 +35,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import click
+
 from swing.config_user import _user_home
 from swing.integrations.schwab import audit_service
 from swing.integrations.schwab.client import (
@@ -81,7 +83,7 @@ def _mask_credential(value: str | None) -> str:
     return f"{s[:3]}***{s[-2:]}"
 
 
-def _resolve_credentials_env_or_prompt(
+def resolve_credentials_env_or_prompt(
     cfg: Any,
     environment: str,
     *,
@@ -175,7 +177,6 @@ def _resolve_credentials_env_or_prompt(
 
     # Both absent + prompt allowed → fall back to interactive prompt.
     if prompter is None:
-        import click
         prompter = click.prompt
 
     client_id = prompter("Schwab app client_id", type=str)

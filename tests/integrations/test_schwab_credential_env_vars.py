@@ -1,6 +1,7 @@
 """T-A.1 — SCHWAB_CLIENT_ID + SCHWAB_CLIENT_SECRET env-var resolution.
 
-10 binding tests per dispatch brief §3 T-A.1 acceptance criteria:
+11 binding tests per dispatch brief §3 T-A.1 acceptance criteria (10
+original + 1 sibling discriminator landed via code-review Fix #5):
 
   1. Both env vars set + non-empty → returned; NO prompt fires.
   2. Partial: CLIENT_ID set, CLIENT_SECRET unset → SchwabConfigMissingError.
@@ -11,8 +12,11 @@
   7. Both absent + allow_prompt=True → prompter fires; values returned.
   8. Both absent + allow_prompt=False → returns (None, None).
   9. Sentinel-leak guarantee: env-var values redacted from log records.
-  10. Status regression: `swing schwab status` does NOT prompt even when
-      env vars are absent + click.prompt would raise.
+  9.bis Discriminator: short hyphenated sentinels bypass Layer-1 heuristic
+       → only registry registration (Layer-0 exact-replace) scrubs them.
+  10. Status regression: `swing schwab status` does NOT prompt AND does
+      NOT invoke the credential resolver (strengthened per code-review
+      Fix #1 — patches both `click.prompt` and the resolver).
 
 Tests are unit-level (helper-direct invocation) PLUS the status regression
 which uses CliRunner.
@@ -30,10 +34,28 @@ import pytest
 from click.testing import CliRunner
 
 # Sentinel bytes — discriminating substrings the redactor must scrub from
-# any log record / audit-row error_message. Chosen long enough (24+ chars)
-# that Layer-1 base64 heuristic would catch them even without registry.
+# any log record / audit-row error_message.
+#
+# Test 9 sentinel discipline (code-review Fix #5): the legacy sentinels were
+# 47-char ALL-CAPS-with-underscores — long enough that Layer-1 base64
+# heuristic (`[A-Za-z]{24+}`) would scrub them WITHOUT requiring registry
+# registration, so Test 9 could not discriminate the
+# `register_schwab_secrets` codepath from the Layer-1 fallback. The kept
+# sentinels below remain long enough to satisfy the existing assertions
+# (they primarily probe error-message non-leak rather than redactor
+# routing), and a sibling test
+# `test_env_var_values_redacted_when_short_and_layer1_skips` uses
+# deliberately-short hyphenated sentinels that bypass Layer-1 to pin the
+# registry's role explicitly.
 _SENTINEL_CLIENT_ID = "ENVVAR_CLIENT_ID_SENTINEL_ABCDEFGHIJKLMNOPQRSTUV"
 _SENTINEL_CLIENT_SECRET = "ENVVAR_CLIENT_SECRET_SENTINEL_ZYXWVUTSRQPONMLKJI"
+
+# Short sentinels — Layer-1 heuristic (`[A-Za-z]{24+}` for base64-like;
+# hex 32+) skips these because they contain hyphens AND are shorter than
+# the minimum length. Only registry-driven Layer-0 exact-replace scrubs
+# them. Used by the discriminator test below.
+_SHORT_SENTINEL_CLIENT_ID = "test-app-id-7f3a"  # 16 chars; hyphens
+_SHORT_SENTINEL_CLIENT_SECRET = "secret-c5b2-09e8"  # 16 chars; hyphens
 
 
 # ============================================================================
@@ -98,7 +120,7 @@ def test_both_env_vars_set_skips_prompt_and_returns(
     Returns the tuple; prompter MUST NOT fire. Test fails the prompter
     via an AssertionError-raising stub.
     """
-    from swing.integrations.schwab.auth import _resolve_credentials_env_or_prompt
+    from swing.integrations.schwab.auth import resolve_credentials_env_or_prompt
 
     monkeypatch.setenv("SCHWAB_CLIENT_ID", _SENTINEL_CLIENT_ID)
     monkeypatch.setenv("SCHWAB_CLIENT_SECRET", _SENTINEL_CLIENT_SECRET)
@@ -108,7 +130,7 @@ def test_both_env_vars_set_skips_prompt_and_returns(
             "prompter must NOT fire when both env vars are set",
         )
 
-    client_id, client_secret = _resolve_credentials_env_or_prompt(
+    client_id, client_secret = resolve_credentials_env_or_prompt(
         fake_cfg, "production", allow_prompt=True, prompter=_no_prompt,
     )
     assert client_id == _SENTINEL_CLIENT_ID
@@ -126,14 +148,14 @@ def test_partial_env_var_id_only_raises(
     Must raise SchwabConfigMissingError. Error message must NOT contain
     raw client_id value (masked-form check via `mask_sensitive_value`).
     """
-    from swing.integrations.schwab.auth import _resolve_credentials_env_or_prompt
+    from swing.integrations.schwab.auth import resolve_credentials_env_or_prompt
     from swing.integrations.schwab.client import SchwabConfigMissingError
 
     monkeypatch.setenv("SCHWAB_CLIENT_ID", _SENTINEL_CLIENT_ID)
     # SECRET absent (cleared by fixture).
 
     with pytest.raises(SchwabConfigMissingError) as excinfo:
-        _resolve_credentials_env_or_prompt(
+        resolve_credentials_env_or_prompt(
             fake_cfg, "production", allow_prompt=True,
         )
     msg = str(excinfo.value)
@@ -157,13 +179,13 @@ def test_partial_env_var_secret_only_raises(
     Symmetric to Test 2 — must raise SchwabConfigMissingError; raw
     secret value MUST NOT leak into the error message.
     """
-    from swing.integrations.schwab.auth import _resolve_credentials_env_or_prompt
+    from swing.integrations.schwab.auth import resolve_credentials_env_or_prompt
     from swing.integrations.schwab.client import SchwabConfigMissingError
 
     monkeypatch.setenv("SCHWAB_CLIENT_SECRET", _SENTINEL_CLIENT_SECRET)
 
     with pytest.raises(SchwabConfigMissingError) as excinfo:
-        _resolve_credentials_env_or_prompt(
+        resolve_credentials_env_or_prompt(
             fake_cfg, "production", allow_prompt=True,
         )
     msg = str(excinfo.value)
@@ -183,14 +205,14 @@ def test_partial_env_var_id_set_secret_empty_raises(
     Empty-string treated as ABSENT per acceptance criterion #3 → partial
     rule → SchwabConfigMissingError.
     """
-    from swing.integrations.schwab.auth import _resolve_credentials_env_or_prompt
+    from swing.integrations.schwab.auth import resolve_credentials_env_or_prompt
     from swing.integrations.schwab.client import SchwabConfigMissingError
 
     monkeypatch.setenv("SCHWAB_CLIENT_ID", _SENTINEL_CLIENT_ID)
     monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "")
 
     with pytest.raises(SchwabConfigMissingError):
-        _resolve_credentials_env_or_prompt(
+        resolve_credentials_env_or_prompt(
             fake_cfg, "production", allow_prompt=True,
         )
 
@@ -212,14 +234,14 @@ def test_both_env_vars_empty_raises(
     set-then-cleared shell config is more likely operator error than
     legitimate intent.
     """
-    from swing.integrations.schwab.auth import _resolve_credentials_env_or_prompt
+    from swing.integrations.schwab.auth import resolve_credentials_env_or_prompt
     from swing.integrations.schwab.client import SchwabConfigMissingError
 
     monkeypatch.setenv("SCHWAB_CLIENT_ID", "")
     monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "")
 
     with pytest.raises(SchwabConfigMissingError):
-        _resolve_credentials_env_or_prompt(
+        resolve_credentials_env_or_prompt(
             fake_cfg, "production", allow_prompt=True,
         )
 
@@ -231,14 +253,14 @@ def test_both_env_vars_whitespace_only_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Test 6 — whitespace-only env vars treated as ABSENT per partial rule."""
-    from swing.integrations.schwab.auth import _resolve_credentials_env_or_prompt
+    from swing.integrations.schwab.auth import resolve_credentials_env_or_prompt
     from swing.integrations.schwab.client import SchwabConfigMissingError
 
     monkeypatch.setenv("SCHWAB_CLIENT_ID", "   ")
     monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "\t\n  ")
 
     with pytest.raises(SchwabConfigMissingError):
-        _resolve_credentials_env_or_prompt(
+        resolve_credentials_env_or_prompt(
             fake_cfg, "production", allow_prompt=True,
         )
 
@@ -254,7 +276,7 @@ def test_both_absent_allow_prompt_true_prompts(
     helper must invoke it once for client_id + once for client_secret.
     Returned tuple matches what the prompter returned.
     """
-    from swing.integrations.schwab.auth import _resolve_credentials_env_or_prompt
+    from swing.integrations.schwab.auth import resolve_credentials_env_or_prompt
 
     calls: list[str] = []
 
@@ -264,7 +286,7 @@ def test_both_absent_allow_prompt_true_prompts(
             return "prompted_secret_value"
         return "prompted_id_value"
 
-    client_id, client_secret = _resolve_credentials_env_or_prompt(
+    client_id, client_secret = resolve_credentials_env_or_prompt(
         fake_cfg, "production", allow_prompt=True, prompter=_stub_prompter,
     )
     assert client_id == "prompted_id_value"
@@ -285,14 +307,14 @@ def test_both_absent_allow_prompt_false_returns_none_tuple(
     This is the pipeline-path contract (T-A.3 will consume). Distinguishes
     "incomplete env vars" (raises) from "absent entirely" (returns Nones).
     """
-    from swing.integrations.schwab.auth import _resolve_credentials_env_or_prompt
+    from swing.integrations.schwab.auth import resolve_credentials_env_or_prompt
 
     def _no_prompt(*args: Any, **kwargs: Any) -> str:
         raise AssertionError(
             "prompter must NOT fire when allow_prompt=False",
         )
 
-    result = _resolve_credentials_env_or_prompt(
+    result = resolve_credentials_env_or_prompt(
         fake_cfg, "production", allow_prompt=False, prompter=_no_prompt,
     )
     assert result == (None, None)
@@ -315,7 +337,7 @@ def test_env_var_values_registered_for_redaction(
     emit a Schwabdev-named log record containing the sentinel and assert
     the captured record was redacted.
     """
-    from swing.integrations.schwab.auth import _resolve_credentials_env_or_prompt
+    from swing.integrations.schwab.auth import resolve_credentials_env_or_prompt
     from swing.integrations.schwab.client import (
         ensure_schwab_log_redaction_factory_installed,
     )
@@ -323,7 +345,7 @@ def test_env_var_values_registered_for_redaction(
     monkeypatch.setenv("SCHWAB_CLIENT_ID", _SENTINEL_CLIENT_ID)
     monkeypatch.setenv("SCHWAB_CLIENT_SECRET", _SENTINEL_CLIENT_SECRET)
 
-    client_id, client_secret = _resolve_credentials_env_or_prompt(
+    client_id, client_secret = resolve_credentials_env_or_prompt(
         fake_cfg, "production", allow_prompt=False,
     )
     assert client_id == _SENTINEL_CLIENT_ID
@@ -350,19 +372,85 @@ def test_env_var_values_registered_for_redaction(
     )
 
 
-def test_status_command_does_not_prompt_with_no_env_vars(
+def test_env_var_values_redacted_when_short_and_layer1_skips(
+    home: Path,
+    clear_credentials_env: None,
+    fake_cfg: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test 9.bis — discriminator: pins that registry registration (Layer-0
+    exact-replace), NOT just the Layer-1 heuristic, scrubs env-var values.
+
+    Sibling to Test 9 (code-review Fix #5). Test 9 uses 47-char sentinels
+    which Layer-1's base64 heuristic (`[A-Za-z]{24+}`) catches even WITHOUT
+    registry registration — so Test 9 alone could not discriminate the
+    `register_schwab_secrets` codepath from the fallback. This test uses
+    deliberately-short hyphenated sentinels that bypass Layer-1, so the
+    only path that scrubs them is `register_schwab_secrets`. If the helper
+    ever stops registering env-var values, this test fails.
+
+    Threat-model split:
+      * Test 9: real-world-shaped (long base64-ish) sentinels exercise the
+        end-to-end leak guarantee.
+      * Test 9.bis (this test): unrealistically-short sentinels exercise
+        the registry routing isolated from the heuristic fallback.
+    """
+    from swing.integrations.schwab.auth import resolve_credentials_env_or_prompt
+    from swing.integrations.schwab.client import (
+        ensure_schwab_log_redaction_factory_installed,
+    )
+
+    monkeypatch.setenv("SCHWAB_CLIENT_ID", _SHORT_SENTINEL_CLIENT_ID)
+    monkeypatch.setenv("SCHWAB_CLIENT_SECRET", _SHORT_SENTINEL_CLIENT_SECRET)
+
+    client_id, client_secret = resolve_credentials_env_or_prompt(
+        fake_cfg, "production", allow_prompt=False,
+    )
+    assert client_id == _SHORT_SENTINEL_CLIENT_ID
+    assert client_secret == _SHORT_SENTINEL_CLIENT_SECRET
+
+    ensure_schwab_log_redaction_factory_installed()
+    schwabdev_logger = logging.getLogger("Schwabdev.test_t_a_1_short")
+    caplog.set_level(logging.DEBUG, logger="Schwabdev")
+    schwabdev_logger.warning(
+        "test record interpolating id=%s secret=%s",
+        _SHORT_SENTINEL_CLIENT_ID,
+        _SHORT_SENTINEL_CLIENT_SECRET,
+    )
+    captured = "\n".join(r.getMessage() for r in caplog.records)
+    assert _SHORT_SENTINEL_CLIENT_ID not in captured, (
+        "short client_id sentinel leaked — registry registration broken: "
+        f"{captured}"
+    )
+    assert _SHORT_SENTINEL_CLIENT_SECRET not in captured, (
+        "short client_secret sentinel leaked — registry registration "
+        f"broken: {captured}"
+    )
+
+
+def test_status_command_does_not_invoke_credential_resolver(
     home: Path,
     clear_credentials_env: None,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Test 10 — `swing schwab status` MUST NOT prompt even when env vars
-    are absent. Status is a READ-ONLY surface (no schwabdev.Client
-    construction); does not consume credentials.
+    """Test 10 — `swing schwab status` MUST NOT prompt AND MUST NOT invoke
+    the credential resolver. Status is a READ-ONLY surface (no
+    schwabdev.Client construction); does not consume credentials.
 
-    Discriminating: patch click.prompt globally to raise AssertionError —
-    if any code path attempts a prompt during status invocation the test
-    catches the regression.
+    Code-review Fix #1: the previous version of this test only patched
+    `click.prompt` to fail, which the actual status codepath never reaches
+    (verified by reading `swing/cli_schwab.py:schwab_status` — no
+    `resolve_credentials_env_or_prompt` call, no `click.prompt` call). The
+    test was non-discriminating: it would pass even if status DID try to
+    load credentials via some other path.
+
+    This version pins the actual regression intent — status MUST stay
+    credentialed-free — by patching BOTH `click.prompt` AND
+    `resolve_credentials_env_or_prompt` (as imported into `cli_schwab`)
+    to raise. If status ever starts resolving credentials, the resolver
+    patch fires.
     """
     import click
 
@@ -407,7 +495,20 @@ rs_universe_path = "{home_rs}"
             "(status is read-only and MUST NOT prompt)",
         )
 
+    # Patch the credential resolver as imported into `swing.cli_schwab` so
+    # ANY code path inside the status command that tries to load
+    # credentials trips the assertion — not just the prompt fallback.
+    def _no_resolver_fires(*args: Any, **kwargs: Any) -> tuple[str, str]:
+        raise AssertionError(
+            "resolve_credentials_env_or_prompt fired during "
+            "`swing schwab status` (status MUST NOT resolve credentials)",
+        )
+
     monkeypatch.setattr(click, "prompt", _no_prompt_fires)
+    monkeypatch.setattr(
+        "swing.cli_schwab.resolve_credentials_env_or_prompt",
+        _no_resolver_fires,
+    )
 
     runner = CliRunner()
     result = runner.invoke(
@@ -416,10 +517,13 @@ rs_universe_path = "{home_rs}"
          "--environment", "production"],
     )
     # Even if status surfaces a "tokens absent" message, it must complete
-    # without invoking the prompt. exit_code can be 0 or non-zero per the
-    # underlying status logic (we just assert no AssertionError leaked).
+    # without invoking the prompt OR the resolver. exit_code can be 0 or
+    # non-zero per the underlying status logic.
     assert "click.prompt fired" not in result.output, result.output
-    # And no exception about the prompt should have been raised.
+    assert (
+        "resolve_credentials_env_or_prompt fired" not in result.output
+    ), result.output
     if result.exception is not None:
         msg = str(result.exception)
         assert "click.prompt fired" not in msg, msg
+        assert "resolve_credentials_env_or_prompt fired" not in msg, msg
