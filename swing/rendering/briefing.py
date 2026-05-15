@@ -62,6 +62,12 @@ class BriefingInputs:
     daily_management_active_snapshots: list[DailyManagementRecord] = field(
         default_factory=list
     )
+    # Schwab API arc-closer Sub-bundle D Task T-D.5 — degraded banner input.
+    # When non-None, the markdown renderer emits the spec §3.4.4 / §7.2
+    # "Schwab integration: degraded" banner citing this endpoint name. The
+    # pipeline runner's `_step_export` populates this from
+    # `swing.data.repos.schwab_api_calls.is_schwab_degraded(conn)`.
+    schwab_degraded_endpoint: str | None = None
 
 
 def _sizing_implication(status: str) -> str:
@@ -247,4 +253,5 @@ def build_briefing_view_model(inputs: BriefingInputs) -> BriefingViewModel:
         daily_management_open_trade_count_without_snapshot=(
             _daily_management_snapshots(inputs)[1]
         ),
+        schwab_degraded_endpoint=inputs.schwab_degraded_endpoint,
     )

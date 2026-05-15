@@ -47,6 +47,23 @@ _REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 3600
 # Limit on schwab_api_calls rows surfaced in `swing schwab status` output.
 _RECENT_CALLS_LIMIT = 5
 
+# T-D.1 — refresh-token severity-escalation thresholds (per dispatch brief
+# §0.5 + §5.2): 24h ⇒ WARN; 2h ⇒ ERROR. Boundary semantics are inclusive at
+# the upper bound (remaining <= 24*3600 ⇒ WARN; remaining <= 2*3600 ⇒ ERROR).
+_REFRESH_TOKEN_WARN_THRESHOLD_SECONDS = 24 * 3600
+_REFRESH_TOKEN_ERROR_THRESHOLD_SECONDS = 2 * 3600
+
+# T-D.1 — tokens-DB-staleness threshold for the multi-signal degraded
+# predicate (per dispatch brief §3 prevention column + §5.2 T-D.1 row).
+# Refresh-token TTL is 7 days, so a tokens DB whose mtime is older than
+# 7 days cannot possibly hold a valid refresh token.
+_TOKENS_DB_STALE_AGE_SECONDS = 7 * 24 * 3600
+
+# T-D.1 — per-environment count windows (per spec §3.5 mock).
+_RECENT_ERROR_WINDOW_24H_SECONDS = 24 * 3600
+_RECENT_ERROR_WINDOW_7D_SECONDS = 7 * 24 * 3600
+_RECENT_30D_WINDOW_SECONDS = 30 * 24 * 3600
+
 
 @click.group("schwab", help="Schwab API integration (V1 OAuth paste-back + status).")
 def schwab_group() -> None:
@@ -182,8 +199,15 @@ def schwab_setup(
     click.echo(
         f"Setup complete. Tokens DB written at {result['tokens_path']}.",
     )
+    # Codex R1 Major #3 — `swing config set integrations.schwab.environment`
+    # is NOT a working V1 surface (FIELD_REGISTRY does not include the env
+    # field). Operator activation path is hand-edit OR `--environment` flag
+    # per-invocation (T-D.2 cycle-checklist guidance).
     click.echo(
-        f"To activate this env: `swing config set integrations.schwab.environment {env}`.",
+        "To activate this environment for pipeline + CLI defaults: "
+        "hand-edit `%USERPROFILE%/swing-data/user-config.toml` and set "
+        f"`integrations.schwab.environment = \"{env}\"`. "
+        f"Or pass `--environment {env}` per-invocation to override.",
     )
     click.echo(
         "Then verify with `swing schwab status`.",
@@ -483,6 +507,270 @@ def _render_recent_calls(
     return "\n".join(lines)
 
 
+def _count_recent_errors(
+    conn: sqlite3.Connection,
+    *,
+    env: str,
+    now: datetime,
+    window_seconds: int,
+) -> int:
+    """Count `schwab_api_calls` rows in [now - window, now] with status != 'success'.
+
+    Mirrors `count_calls_by_status` but: (a) filters by environment, (b)
+    counts the COMPLEMENT of 'success' so all error variants
+    (`error`, `auth_failed`, `rate_limited`, `concurrent_refresh`,
+    `in_flight`) roll up under "recent errors". Per dispatch brief §0.5 #2:
+    the predicate is the COMPLEMENT of success, not equality with 'error'.
+    """
+    since_ts = (now - timedelta(seconds=window_seconds)).isoformat()
+    row = conn.execute(
+        "SELECT COUNT(*) FROM schwab_api_calls "
+        "WHERE environment = ? AND status != 'success' AND ts >= ?",
+        (env, since_ts),
+    ).fetchone()
+    return int(row[0])
+
+
+def _count_snapshots_30d(
+    conn: sqlite3.Connection,
+    *,
+    now: datetime,
+) -> int:
+    """Count `account_equity_snapshots` rows with snapshot_date in last 30 days.
+
+    Snapshots have NO environment column V1 (the per-env qualifier is
+    provided by the active env header in the rendered output).
+    """
+    since_date = (now - timedelta(seconds=_RECENT_30D_WINDOW_SECONDS)).date().isoformat()
+    row = conn.execute(
+        "SELECT COUNT(*) FROM account_equity_snapshots "
+        "WHERE source = 'schwab_api' AND snapshot_date >= ?",
+        (since_date,),
+    ).fetchone()
+    return int(row[0])
+
+
+def _count_recon_runs_30d(
+    conn: sqlite3.Connection,
+    *,
+    now: datetime,
+) -> int:
+    """Count `reconciliation_runs` with source='schwab_api' in last 30 days."""
+    since_ts = (now - timedelta(seconds=_RECENT_30D_WINDOW_SECONDS)).isoformat()
+    row = conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_runs "
+        "WHERE source = 'schwab_api' AND started_ts >= ?",
+        (since_ts,),
+    ).fetchone()
+    return int(row[0])
+
+
+def _count_unresolved_material_discrepancies(
+    conn: sqlite3.Connection,
+) -> int:
+    """Count `reconciliation_discrepancies` with material=1 AND resolution='unresolved'.
+
+    NOT joined to trades — counts ALL unresolved material discrepancies
+    regardless of attribution (active vs closed vs orphan-emit). The Phase
+    10 banner queries `list_unresolved_material_for_active_trades` (joined
+    to trades for the dashboard banner); status surface gives the broader
+    operator-visible count.
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_discrepancies "
+        "WHERE material_to_review = 1 AND resolution = 'unresolved'",
+    ).fetchone()
+    return int(row[0])
+
+
+def _compute_degraded_state(
+    conn: sqlite3.Connection,
+    *,
+    env: str,
+    tokens_path: Path,
+    now: datetime,
+) -> tuple[str, str | None]:
+    """Multi-signal integration-state predicate per dispatch brief §5.2 T-D.1
+    + Codex R1 Major #1+#2 + R2 Major #1+#2 hardening (extends to consult
+    token_dictionary presence + refresh_token bytes presence AND narrows
+    PROVISIONAL to ONLY tokens-DB-missing-on-disk).
+
+    Returns ``(state, reason_text)`` where ``state`` is one of:
+      - "LIVE" — all signals OK; integration is configured + healthy.
+      - "PROVISIONAL" — never configured yet (tokens DB missing on disk
+        ONLY per R2 M#2 narrowing). Operator runs `swing schwab setup` to
+        advance; this is NOT a failure state.
+      - "DEGRADED" — configured but failing. Operator runs `swing schwab
+        status` for diagnostic detail + likely `swing schwab logout` +
+        `swing schwab setup` to recover.
+
+    ``reason_text`` is ``None`` only when state == "LIVE"; otherwise carries
+    a short operator-facing phrase suitable for inline display next to the
+    state label.
+
+    Signal order (matches dispatch brief §5.2 + Codex R1 + R2 directives):
+      1. tokens DB missing on disk            → PROVISIONAL
+      2. tokens DB unparseable / corrupt JSON → DEGRADED
+      3. `token_dictionary` missing or non-dict
+                                              → DEGRADED   (R2 M#1)
+      4. `token_dictionary.refresh_token` bytes missing or empty
+                                              → DEGRADED   (R2 M#1)
+      5. `refresh_token_issued` field missing → DEGRADED   (R2 M#2)
+      6. `refresh_token_issued` unparseable   → DEGRADED   (R2 M#2)
+      7. `refresh_token_issued` already expired (issued + 7d <= now)
+                                              → DEGRADED   (R2 m#1: <=)
+      8. tokens DB mtime > 7 days old         → DEGRADED
+      9. most-recent `schwab_api_calls` for env has status != 'success'
+                                              → DEGRADED
+
+    R2 narrows PROVISIONAL to Signal 1 only: a tokens DB that exists on
+    disk implies the operator has previously completed `swing schwab
+    setup`, so any anomaly inside it is configured-but-malformed →
+    DEGRADED (cleanest semantic for operator triage). R2 M#1 closes the
+    bypass where a tokens DB with valid `refresh_token_issued` metadata
+    but missing actual refresh_token bytes would have fallen through to
+    LIVE; presence + non-emptiness is now an explicit signal (SECURITY:
+    only presence is checked; the token VALUE is never read into a return
+    string).
+    """
+    # Signal 1: tokens DB missing → PROVISIONAL (not configured yet).
+    if not tokens_path.exists():
+        return "PROVISIONAL", "tokens DB missing — not configured yet"
+
+    # Signals 2-7 consult tokens-file metadata.
+    payload, parse_err = _read_tokens_metadata(tokens_path)
+    # Signal 2: parse_err set → DEGRADED (corrupt JSON or OS error).
+    if parse_err is not None:
+        return "DEGRADED", f"tokens DB unparseable: {parse_err}"
+
+    if payload is not None:
+        # Signal 3 (R2 M#1): token_dictionary missing or non-dict → DEGRADED.
+        token_dict = payload.get("token_dictionary")
+        if not isinstance(token_dict, dict):
+            return (
+                "DEGRADED",
+                "token_dictionary missing or non-dict — "
+                "run `swing schwab logout` then `swing schwab setup`",
+            )
+        # Signal 4 (R2 M#1): refresh_token bytes missing or empty → DEGRADED.
+        # SECURITY: ONLY presence/non-emptiness is checked; the token
+        # VALUE is never echoed into the return string (sentinel-leak
+        # tests assert this).
+        refresh_token_bytes = token_dict.get("refresh_token")
+        if (
+            not isinstance(refresh_token_bytes, str)
+            or not refresh_token_bytes.strip()
+        ):
+            return (
+                "DEGRADED",
+                "token_dictionary missing refresh_token bytes — "
+                "run `swing schwab logout` then `swing schwab setup`",
+            )
+
+        refresh_issued_iso = payload.get("refresh_token_issued")
+        # Signal 5 (R2 M#2): refresh_token_issued field missing → DEGRADED.
+        if not refresh_issued_iso:
+            return (
+                "DEGRADED",
+                "tokens DB missing refresh_token_issued field — "
+                "run `swing schwab logout` then `swing schwab setup`",
+            )
+        # Signal 6 (R2 M#2): refresh_token_issued unparseable → DEGRADED.
+        issued_dt = _parse_iso_datetime(refresh_issued_iso)
+        if issued_dt is None:
+            return (
+                "DEGRADED",
+                "tokens DB has unparseable refresh_token_issued — "
+                "run `swing schwab logout` then `swing schwab setup`",
+            )
+        if issued_dt.tzinfo is None:
+            issued_dt = issued_dt.replace(tzinfo=UTC)
+        expires_dt = issued_dt + timedelta(
+            seconds=_REFRESH_TOKEN_TTL_SECONDS,
+        )
+        # Signal 7 (R2 m#1): boundary semantics align with renderer's
+        # `delta_seconds <= 0` — at exactly now == expires_dt, predicate
+        # AND renderer both report expired.
+        if expires_dt <= now:
+            return (
+                "DEGRADED",
+                "refresh_token expired (run `swing schwab setup` to re-auth)",
+            )
+
+    # Signal 8: tokens DB stale (mtime > 7 days).
+    try:
+        mtime = tokens_path.stat().st_mtime
+        age_seconds = now.timestamp() - mtime
+        if age_seconds > _TOKENS_DB_STALE_AGE_SECONDS:
+            days_old = int(age_seconds // 86400)
+            return (
+                "DEGRADED",
+                f"tokens DB age {days_old} days old (>7 days; refresh-token "
+                "TTL exceeded by file mtime)",
+            )
+    except OSError:
+        # Defensive — if we can't stat, treat as degraded (filesystem issue).
+        return "DEGRADED", "tokens DB stat failed (filesystem issue)"
+
+    # Signal 9: most-recent call for this env has status != 'success'.
+    # Pull only the single most-recent row to avoid scanning history.
+    row = conn.execute(
+        "SELECT status FROM schwab_api_calls WHERE environment = ? "
+        "ORDER BY ts DESC, call_id DESC LIMIT 1",
+        (env,),
+    ).fetchone()
+    if row is not None and row[0] != "success":
+        return "DEGRADED", f"most-recent call status='{row[0]}'"
+
+    return "LIVE", None
+
+
+def _render_refresh_token_with_severity(
+    *,
+    issued_iso: str | None,
+    now: datetime,
+) -> str:
+    """Render the refresh_token validity line with severity escalation.
+
+    Per dispatch brief §0.5 + spec §3.5:
+      - remaining <= 2hr ⇒ ERROR + bold red ASCII marker `[!! ERROR !!]`.
+      - 2hr < remaining <= 24hr ⇒ WARN (`[WARN]` prefix).
+      - remaining > 24hr ⇒ neither marker.
+
+    Boundary semantics: <= is INCLUSIVE at the upper bound (per acceptance
+    criteria: at exactly 24hr → WARN; at exactly 2hr → ERROR). ERROR
+    SUPPRESSES WARN (escalates rather than stacking).
+
+    NEVER touches sensitive token bytes — only the `*_issued` ISO timestamp.
+    """
+    base = _render_token_validity(
+        issued_label="Refresh token",
+        issued_iso=issued_iso,
+        ttl_seconds=_REFRESH_TOKEN_TTL_SECONDS,
+        now=now,
+        expired_advice="run `swing schwab setup` to re-auth",
+    )
+    if not issued_iso:
+        return base
+    issued_dt = _parse_iso_datetime(issued_iso)
+    if issued_dt is None:
+        return base
+    if issued_dt.tzinfo is None:
+        issued_dt = issued_dt.replace(tzinfo=UTC)
+    expires_dt = issued_dt + timedelta(seconds=_REFRESH_TOKEN_TTL_SECONDS)
+    delta_seconds = (expires_dt - now).total_seconds()
+    # Already-expired path is handled by the base "_render_token_validity"
+    # output ("expired N ago"); no severity prefix needed (the "expired"
+    # text is itself the loudest signal and operator advice already cited).
+    if delta_seconds <= 0:
+        return base
+    if delta_seconds <= _REFRESH_TOKEN_ERROR_THRESHOLD_SECONDS:
+        return f"[!! ERROR !!] {base}"
+    if delta_seconds <= _REFRESH_TOKEN_WARN_THRESHOLD_SECONDS:
+        return f"[WARN] {base}"
+    return base
+
+
 def render_status(
     *,
     cfg: Any,
@@ -493,12 +781,16 @@ def render_status(
 ) -> str:
     """Pure rendering helper for `swing schwab status` output.
 
-    Sections per dispatch brief + spec §3.5:
-      1. Environment header.
-      2. cfg + tokens-file metadata (account_hash masked; tokens DB path
-         + size if present).
-      3. Token validity (access + refresh remaining or expired-ago).
-      4. Recent API calls (last N, filtered by env).
+    Sections per dispatch brief §0.9 T-D.1 + spec §3.5 mock:
+      0. Environment header.
+      1. LIVE / PROVISIONAL / DEGRADED indicator (multi-signal predicate
+         per §5.2 T-D.1 + Codex R1 M#1+M#2 + R2 M#1+M#2 hardening).
+      2. cfg + tokens-file metadata (account_hash masked; tokens DB path).
+      3. Token validity (access + refresh, with severity escalation on refresh).
+      4. Per-environment counts: recent errors (24h, 7d) + snapshots-30d
+         + reconciliation_runs(schwab_api)-30d + unresolved-material-
+         discrepancies count.
+      5. Recent API calls (last N, filtered by env).
 
     NEVER echoes access_token / refresh_token / id_token bytes.
 
@@ -508,6 +800,19 @@ def render_status(
     header = f"Schwab integration status (environment: {env})"
     out.append(header)
     out.append("=" * len(header))
+    out.append("")
+
+    # Section 1 — LIVE/PROVISIONAL/DEGRADED indicator (T-D.1 + Codex R1
+    # Major #1+#2; multi-signal predicate with 3-state distinction).
+    state, reason = _compute_degraded_state(
+        conn, env=env, tokens_path=tokens_path, now=now,
+    )
+    if state == "LIVE":
+        out.append(f"Schwab integration: LIVE ({env})")
+    elif state == "PROVISIONAL":
+        out.append(f"Schwab integration: PROVISIONAL ({env}) — {reason}")
+    else:  # DEGRADED
+        out.append(f"Schwab integration: DEGRADED ({env}) — {reason}")
     out.append("")
 
     # Section 2 — cfg + tokens-file metadata.
@@ -560,16 +865,37 @@ def render_status(
                 now=now,
                 expired_advice="run `swing schwab refresh` to rotate",
             ))
-            out.append(_render_token_validity(
-                issued_label="Refresh token",
+            # Refresh token gets severity escalation (T-D.1).
+            out.append(_render_refresh_token_with_severity(
                 issued_iso=refresh_issued,
-                ttl_seconds=_REFRESH_TOKEN_TTL_SECONDS,
                 now=now,
-                expired_advice="run `swing schwab setup` to re-auth",
             ))
     out.append("")
 
-    # Section 4 — recent API calls.
+    # Section 4 — per-environment counts (T-D.1; spec §3.5 mock).
+    err_24h = _count_recent_errors(
+        conn, env=env, now=now,
+        window_seconds=_RECENT_ERROR_WINDOW_24H_SECONDS,
+    )
+    err_7d = _count_recent_errors(
+        conn, env=env, now=now,
+        window_seconds=_RECENT_ERROR_WINDOW_7D_SECONDS,
+    )
+    out.append(
+        f"recent errors:    {err_24h} in last 24h, {err_7d} in last 7d "
+        "(see `swing schwab fetch --verbose`)",
+    )
+    n_snap_30d = _count_snapshots_30d(conn, now=now)
+    out.append(f"snapshots written: {n_snap_30d} in last 30 days")
+    n_recon_30d = _count_recon_runs_30d(conn, now=now)
+    n_unresolved = _count_unresolved_material_discrepancies(conn)
+    out.append(
+        f"reconciliation_runs (schwab_api): {n_recon_30d} in last 30 days; "
+        f"{n_unresolved} unresolved material discrepancies",
+    )
+    out.append("")
+
+    # Section 5 — recent API calls.
     out.append(_render_recent_calls(conn, env=env, limit=_RECENT_CALLS_LIMIT))
 
     return "\n".join(out)

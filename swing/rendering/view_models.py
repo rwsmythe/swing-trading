@@ -132,3 +132,10 @@ class BriefingViewModel:
     # Operator-actionable signal: open_trades count when no snapshots emitted.
     # Drives the "no daily-management snapshot available" marker per Codex R3 M3.
     daily_management_open_trade_count_without_snapshot: int = 0
+    # Schwab API arc-closer Sub-bundle D Task T-D.5 — degraded banner.
+    # When non-None, the markdown renderer emits the spec §3.4.4 / §7.2
+    # "Schwab integration: degraded" banner citing this endpoint name.
+    # Default None preserves call-site backwards compatibility (other
+    # composition surfaces — TestClient web fixtures, ad-hoc CLI renders —
+    # do not need to populate this field; only `_step_export` does).
+    schwab_degraded_endpoint: str | None = None

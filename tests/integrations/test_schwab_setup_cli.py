@@ -859,3 +859,45 @@ def test_setup_account_linked_empty_list_audits_auth_failed(
         or "schwab" not in overrides.get("integrations", {})
         or "account_hash" not in overrides["integrations"]["schwab"]
     )
+
+
+# ============================================================================
+# Codex R1 Major #3 — setup success message must NOT reference non-existent
+# `swing config set integrations.schwab.environment` CLI subcommand.
+# ============================================================================
+
+
+def test_setup_success_message_does_not_reference_non_existent_swing_config_set_command(
+    home: Path, cfg_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex R1 Major #3 — `swing config set integrations.schwab.environment`
+    is NOT a working V1 surface (FIELD_REGISTRY does not include the env
+    field). The setup success message must NOT instruct the operator to
+    run that non-existent command; instead it should point at hand-editing
+    user-config.toml OR using the `--environment` flag per-invocation.
+
+    Discriminating: an implementation that still emits the legacy
+    `swing config set integrations.schwab.environment <env>` line would
+    fail this assertion.
+    """
+    _patch_schwabdev(monkeypatch, _make_schwabdev_stub())
+    result = _invoke(
+        cfg_path,
+        ["setup", "--environment", "production"],
+        input="my_client_id\nmy_client_secret\n",
+    )
+    assert result.exit_code == 0, result.output
+    # The legacy non-working command MUST NOT appear in output.
+    assert "swing config set integrations.schwab.environment" not in result.output, (
+        "setup success message still references non-existent `swing config "
+        "set integrations.schwab.environment` command (Codex R1 Major #3); "
+        f"got:\n{result.output}"
+    )
+    # Positive assertion — operator should see actionable guidance.
+    out_lower = result.output.lower()
+    assert "user-config.toml" in out_lower or "hand-edit" in out_lower or (
+        "--environment" in result.output
+    ), (
+        "setup success message should point at hand-edit or --environment "
+        f"flag activation path; got:\n{result.output}"
+    )
