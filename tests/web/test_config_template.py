@@ -60,6 +60,23 @@ def test_template_each_row_has_separate_reset_form(client: TestClient):
     assert r.text.count('class="reset-form"') == 3
 
 
+def test_template_renders_schwab_setup_link(client: TestClient):
+    """Orchestrator-inline gate-fix 2026-05-15 — operator-surfaced UX gap
+    during Phase 12 Sub-bundle B operator-witnessed gate: /schwab/setup
+    was reachable only by typing the URL. This discriminating test pins
+    the presence of the link to /schwab/setup so future template edits
+    don't silently regress the operator-discoverable navigation path.
+
+    Pre-fix shape: response body lacks any reference to /schwab/setup.
+    Post-fix shape: response body contains href="/schwab/setup" inside
+    an 'External integrations' section.
+    """
+    r = client.get("/config")
+    body = r.text
+    assert 'href="/schwab/setup"' in body
+    assert "External integrations" in body
+
+
 def test_soft_warn_fragment_root_is_not_tr(client: TestClient):
     """CLAUDE.md HTMX <tr>-leading makeFragment guard.
 

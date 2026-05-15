@@ -120,3 +120,31 @@ def test_get_field_source_override_even_when_value_equals_default(base_cfg):
     """
     write_user_overrides({"web": {"chase_factor": 0.01}})  # == default
     assert get_field_source(base_cfg, "web.chase_factor") == "override"
+
+
+def test_apply_overrides_short_circuits_on_non_dataclass_cfg():
+    """Phase 12 Sub-bundle B Codex R1 Critical #1 follow-up — defensive
+    short-circuit when base_cfg is NOT a dataclass instance.
+
+    Background: ``apply_overrides`` is now called at every Schwab CLI
+    entry point (setup/refresh/logout) and the web /schwab/setup route.
+    Some legacy test stubs build cfg via ``types.SimpleNamespace`` (e.g.
+    ``tests/integrations/test_schwab_pipeline_active_exclusion.py``);
+    the final ``dataclasses.replace(base_cfg, ...)`` call would raise
+    ``TypeError: replace() should be called on dataclass instances``
+    for such stubs.
+
+    The defensive guard short-circuits + returns the stub unchanged so
+    tests that exercise behavior BEFORE the cfg-cascade matters (e.g.
+    pipeline-active rejection) keep working.
+    """
+    from types import SimpleNamespace
+    stub = SimpleNamespace(
+        paths=SimpleNamespace(db_path="/tmp/test.db"),
+        integrations=SimpleNamespace(
+            schwab=SimpleNamespace(client_id="", client_secret=""),
+        ),
+    )
+    result = apply_overrides(stub)
+    # Same identity — short-circuit returned the stub unchanged.
+    assert result is stub

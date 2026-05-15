@@ -246,6 +246,15 @@ class SchwabIntegrationConfig:
     timeout_seconds: float = 30.0
     marketdata_ladder_enabled: bool = True
     callback_url: str = "https://127.0.0.1"
+    # Phase 12 Sub-bundle B T-B.2 — Schwab app credentials cfg-cascade fields.
+    # Empty-string default mirrors Finviz `token` precedent (L221); T-B.1 wires
+    # the env-var → user-config.toml → prompt cascade in
+    # `resolve_credentials_env_or_prompt`. Sensitive (live in user-config only);
+    # defensively dropped from tracked swing.config.toml at `load()` (L426-438
+    # pattern). FIELD_REGISTRY surfaces both as `masked=True` so CLI `swing
+    # config show` masks them (first-3 + `***` + last-2).
+    client_id: str = ""
+    client_secret: str = ""
 
     def __post_init__(self) -> None:
         import math as _math
@@ -305,6 +314,20 @@ class SchwabIntegrationConfig:
             raise ValueError(
                 "integrations.schwab.callback_url host must be 127.0.0.1 or "
                 f"localhost (Schwab callback gotcha); got {host!r}"
+            )
+        # T-B.2 — client_id + client_secret: must be `str` type. No length
+        # constraint (operator's actual Schwab Developer Portal credentials
+        # vary in length). Empty string is the LEGITIMATE V1 default per
+        # Finviz `token` precedent; env-var fallback handles the active path.
+        if not isinstance(self.client_id, str):
+            raise TypeError(
+                "integrations.schwab.client_id must be str; got "
+                f"{type(self.client_id).__name__}"
+            )
+        if not isinstance(self.client_secret, str):
+            raise TypeError(
+                "integrations.schwab.client_secret must be str; got "
+                f"{type(self.client_secret).__name__}"
             )
 
 
@@ -436,6 +459,11 @@ def load(config_path: Path) -> Config:
     raw_schwab.pop("account_hash", None)
     raw_schwab.pop("lookback_days", None)
     raw_schwab.pop("callback_url", None)
+    # T-B.2 — Schwab app credentials are sensitive; mirror Finviz token drop
+    # (L426-427). Tracked swing.config.toml MUST NOT carry these; they live
+    # in user-config.toml only (or env vars via T-A.1 / T-B.1 cascade).
+    raw_schwab.pop("client_id", None)
+    raw_schwab.pop("client_secret", None)
 
     return Config(
         paths=paths,

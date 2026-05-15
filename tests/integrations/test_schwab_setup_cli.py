@@ -901,3 +901,167 @@ def test_setup_success_message_does_not_reference_non_existent_swing_config_set_
         "setup success message should point at hand-edit or --environment "
         f"flag activation path; got:\n{result.output}"
     )
+
+
+# ============================================================================
+# Codex R1 Critical #1 regression — apply_overrides() at CLI entry point
+# so user-config.toml-tier credentials are consumed by setup/refresh/logout.
+# ============================================================================
+
+
+def _seed_user_config_with_credentials(
+    home: Path, *, client_id: str, client_secret: str,
+) -> None:
+    """Write Schwab credentials directly to user-config.toml under the
+    isolated tmp home. Mirrors how ``swing config set
+    integrations.schwab.client_id`` would persist them.
+    """
+    from swing.config_user import write_user_overrides
+    write_user_overrides({
+        "integrations": {
+            "schwab": {
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+        },
+    })
+
+
+def test_setup_consumes_user_config_credentials_via_apply_overrides(
+    home: Path, cfg_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex R1 Critical #1 regression — CLI `swing schwab setup` MUST
+    apply_overrides() on its `ctx.obj["config"]` so the cfg-cascade
+    tier (user-config.toml) of integrations.schwab.{client_id,
+    client_secret} is consulted by `_resolve_credentials_for_cli`.
+
+    Without apply_overrides, the raw tracked Config carries empty
+    defaults; resolve_credentials_env_or_prompt then falls through to
+    Tier-3 prompt — the cfg-tier credentials are never consumed.
+
+    Method: seed user-config.toml with cfg-tier credentials; clear env
+    vars; provide NO stdin (so prompt would block / error if reached);
+    expected exit 0 + captured client_id/secret on schwabdev.Client
+    construction matches the cfg-tier values.
+    """
+    monkeypatch.delenv("SCHWAB_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SCHWAB_CLIENT_SECRET", raising=False)
+    _seed_user_config_with_credentials(
+        home,
+        client_id="cli_cfg_tier_id_value_abcdef12345",
+        client_secret="cli_cfg_tier_secret_value_xyz_987",
+    )
+
+    captured: dict = {}
+
+    def factory(*args: Any, **kwargs: Any) -> _FakeSchwabdevClient:
+        captured["app_key"] = kwargs.get("app_key")
+        captured["app_secret"] = kwargs.get("app_secret")
+        return _FakeSchwabdevClient(
+            *args,
+            accounts=[{"accountNumber": "1", "hashValue": "CRITHASH"}],
+            **kwargs,
+        )
+
+    _patch_schwabdev(monkeypatch, factory)
+    # Pass NO stdin — if cfg-cascade fails, the CLI would fall through to
+    # click.prompt and either block or fail with empty-input.
+    result = _invoke(
+        cfg_path,
+        ["setup", "--environment", "production"],
+        input="",
+    )
+    assert result.exit_code == 0, result.output
+    # The schwabdev.Client factory must have received the cfg-tier values.
+    assert captured["app_key"] == "cli_cfg_tier_id_value_abcdef12345", (
+        f"cfg-tier client_id not consumed (got {captured.get('app_key')!r}) "
+        "— apply_overrides() likely missing from CLI setup entry point"
+    )
+    assert captured["app_secret"] == "cli_cfg_tier_secret_value_xyz_987"
+
+
+def test_refresh_consumes_user_config_credentials_via_apply_overrides(
+    home: Path, cfg_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex R1 Critical #1 regression — CLI `swing schwab refresh` MUST
+    apply_overrides() so cfg-tier credentials flow into force_refresh.
+    """
+    monkeypatch.delenv("SCHWAB_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SCHWAB_CLIENT_SECRET", raising=False)
+    _seed_user_config_with_credentials(
+        home,
+        client_id="refresh_cfg_id_value_abcdef12345",
+        client_secret="refresh_cfg_secret_value_xyzzy",
+    )
+
+    captured: dict = {}
+
+    def _stub_force_refresh(
+        *, cfg, environment, client_id, client_secret, conn,
+    ) -> dict:
+        captured["client_id"] = client_id
+        captured["client_secret"] = client_secret
+        return {"tokens_path": "/tmp/stub.db", "call_id": 1}
+
+    import swing.cli_schwab as cli_schwab_mod
+    monkeypatch.setattr(
+        cli_schwab_mod, "force_refresh", _stub_force_refresh,
+    )
+
+    result = _invoke(
+        cfg_path,
+        ["refresh", "--environment", "production"],
+        input="",
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["client_id"] == "refresh_cfg_id_value_abcdef12345", (
+        f"cfg-tier client_id not consumed by refresh "
+        f"(got {captured.get('client_id')!r}) — apply_overrides() likely "
+        f"missing from CLI refresh entry point"
+    )
+    assert captured["client_secret"] == "refresh_cfg_secret_value_xyzzy"
+
+
+def test_logout_consumes_user_config_credentials_via_apply_overrides(
+    home: Path, cfg_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex R1 Critical #1 regression — CLI `swing schwab logout` MUST
+    apply_overrides() so cfg-tier credentials flow into revoke_and_delete.
+    """
+    monkeypatch.delenv("SCHWAB_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SCHWAB_CLIENT_SECRET", raising=False)
+    _seed_user_config_with_credentials(
+        home,
+        client_id="logout_cfg_id_value_abcdef12345",
+        client_secret="logout_cfg_secret_value_xyzzy",
+    )
+
+    captured: dict = {}
+
+    def _stub_revoke_and_delete(
+        *, cfg, environment, client_id, client_secret, conn, force,
+    ) -> dict:
+        captured["client_id"] = client_id
+        captured["client_secret"] = client_secret
+        return {
+            "revoke_status": "success",
+            "deleted_path": "/tmp/stub.db.deleted-1",
+        }
+
+    import swing.cli_schwab as cli_schwab_mod
+    monkeypatch.setattr(
+        cli_schwab_mod, "revoke_and_delete", _stub_revoke_and_delete,
+    )
+
+    result = _invoke(
+        cfg_path,
+        ["logout", "--environment", "production"],
+        input="",
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["client_id"] == "logout_cfg_id_value_abcdef12345", (
+        f"cfg-tier client_id not consumed by logout "
+        f"(got {captured.get('client_id')!r}) — apply_overrides() likely "
+        f"missing from CLI logout entry point"
+    )
+    assert captured["client_secret"] == "logout_cfg_secret_value_xyzzy"

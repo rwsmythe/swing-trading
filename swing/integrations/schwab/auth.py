@@ -93,6 +93,24 @@ def _mask_credential(value: str | None) -> str:
     return f"{s[:3]}***{s[-2:]}"
 
 
+def _safe_cfg_attr(cfg: Any, attr: str) -> Any:
+    """T-B.1 — duck-typed safe lookup for `cfg.integrations.schwab.<attr>`.
+
+    Returns the attribute value if the chain resolves, else `None`. Tolerates
+    cfg objects that are missing the `integrations` / `schwab` sub-namespaces
+    (e.g., legacy test stubs constructed before T-B.2 added the cfg fields).
+    Tier-2 cfg-resolution treats `None` return identically to empty-string —
+    falls through.
+    """
+    integrations = getattr(cfg, "integrations", None)
+    if integrations is None:
+        return None
+    schwab = getattr(integrations, "schwab", None)
+    if schwab is None:
+        return None
+    return getattr(schwab, attr, None)
+
+
 def resolve_credentials_env_or_prompt(
     cfg: Any,
     environment: str,
@@ -100,47 +118,63 @@ def resolve_credentials_env_or_prompt(
     allow_prompt: bool = True,
     prompter: Callable[..., str] | None = None,
 ) -> tuple[str | None, str | None]:
-    """Resolve Schwab `client_id` + `client_secret` from env vars or prompt.
+    """Resolve Schwab `client_id` + `client_secret` via env > cfg > prompt cascade.
 
-    T-A.1 helper: consults `SCHWAB_CLIENT_ID` + `SCHWAB_CLIENT_SECRET` env
-    vars FIRST. If both set + non-empty (after `.strip()`) → returns them
-    + registers them in the Schwab redaction registry; SKIPS prompt. If
-    only ONE of the two is set (or empty / whitespace-only) → raises
-    `SchwabConfigMissingError` with a masked-form actionable message.
+    Sub-bundle A T-A.1 helper extended at Phase 12 Sub-bundle B T-B.1 —
+    consults three tiers in priority order:
+      Tier-1 (highest): `SCHWAB_CLIENT_ID` + `SCHWAB_CLIENT_SECRET` env
+        vars. Both set + non-empty (after `.strip()`) → returns them;
+        SKIPS cfg + prompt. If only ONE is set OR either is empty /
+        whitespace-only when the other is PRESENT → raises
+        `SchwabConfigMissingError` (env-tier partial signals operator
+        typo / shell-session error, not legitimate fallback intent).
+      Tier-2 (middle; NEW T-B.1): `cfg.integrations.schwab.client_id` +
+        `.client_secret`. Both non-empty + non-whitespace → returns them;
+        SKIPS prompt. Partial cfg-tier (one set, the other empty /
+        whitespace-only) FALLS THROUGH to next tier (differs from
+        env-tier — file-tier is operator-friendly, allowing mix of
+        env-var-for-secret + file-for-id without forcing an error).
+      Tier-3 (lowest): interactive `click.prompt(...)` fallback.
+
+    All resolution paths register the resolved secrets in the Schwab
+    redaction registry BEFORE returning so subsequent schwabdev log
+    records that interpolate them flow through Layer-2 redaction.
 
     Args:
-        cfg: Reserved for future per-env credential resolution. Currently
-            unused for env-var lookup; the brief locks `SCHWAB_CLIENT_ID` /
-            `SCHWAB_CLIENT_SECRET` as flat names (no per-env prefix).
-        environment: Reserved for future per-env credential resolution.
-            Currently unused for env-var lookup. Retained in signature so
-            callsites pre-bind their env scope.
-        allow_prompt: When True, fall back to `click.prompt(...)` (via the
-            optional `prompter` parameter) on the FULLY-ABSENT case (both
-            env vars unset). When False, the FULLY-ABSENT case returns
-            `(None, None)` — pipeline path contract for T-A.3 to consume.
-        prompter: Test-injection seam. When None, defaults to a `click.prompt`-
-            based callable. Receives the label as first positional arg + the
-            same `type=str` / `hide_input=` kwargs the legacy callsites used.
+        cfg: Config object with `cfg.integrations.schwab.client_id` +
+            `.client_secret` fields (T-B.2 added these). When fields are
+            empty / whitespace-only / absent (duck-typed), cfg-tier
+            falls through.
+        environment: Reserved for future per-env credential resolution
+            (env-var names + cfg fields are FLAT across environments in
+            V1). Retained in signature so callsites pre-bind their env
+            scope for future extension.
+        allow_prompt: When True, fall back to `click.prompt(...)` (via
+            the optional `prompter` parameter) on the FULLY-ABSENT-AT-
+            ALL-TIERS case. When False, returns `(None, None)` —
+            pipeline path contract (T-A.3 + T-B.1 AC6 extension).
+        prompter: Test-injection seam. When None, defaults to
+            `click.prompt`. Receives label + `type=str` / `hide_input=`
+            kwargs the legacy callsites used.
 
     Returns:
-        Tuple `(client_id, client_secret)`. Both strings on success; both
-        None when `allow_prompt=False` AND both env vars are FULLY absent.
+        Tuple `(client_id, client_secret)`. Both strings on success
+        (env-tier, cfg-tier, or prompt). Both None when
+        `allow_prompt=False` AND env + cfg are both absent / partial.
 
     Raises:
-        SchwabConfigMissingError: Partial env-var set (one of two set, or
-            empty / whitespace-only). Message names both env-var names +
-            includes the masked-form rendering of whichever was set.
+        SchwabConfigMissingError: Partial env-tier set (one of two set,
+            or empty / whitespace-only). Message names both env-var
+            names + masked-form rendering. NOTE: partial cfg-tier does
+            NOT raise — it falls through (locked at T-B.1).
 
     Notes:
-        Secret-leak guarantee — on successful env-var resolution, calls
-        `register_schwab_secrets([client_id, client_secret])` + invokes
-        `ensure_schwab_log_redaction_factory_installed()` BEFORE returning
-        so subsequent schwabdev log records that interpolate the values
-        flow through Layer-2 redaction (CLAUDE.md gotcha family).
+        Sentinel-leak guarantee — every successful tier resolution calls
+        `register_schwab_secrets(...)` + invokes
+        `ensure_schwab_log_redaction_factory_installed()` BEFORE
+        returning (CLAUDE.md gotcha family; lesson #2 mirrored from
+        Sub-bundle A — pre-call factory-replacement defense).
     """
-    del cfg, environment  # reserved for future use; unused for env-var lookup
-
     raw_id = os.environ.get(_ENV_VAR_CLIENT_ID)
     raw_secret = os.environ.get(_ENV_VAR_CLIENT_SECRET)
 
@@ -148,7 +182,7 @@ def resolve_credentials_env_or_prompt(
     # we DISTINGUISH "env var name present in environment" (operator set it,
     # even if to empty) from "env var name absent entirely" because the
     # partial-vs-fully-absent rule discriminates on that distinction (per
-    # acceptance criterion #3).
+    # Sub-bundle A acceptance criterion #3).
     id_present = _ENV_VAR_CLIENT_ID in os.environ
     secret_present = _ENV_VAR_CLIENT_SECRET in os.environ
     id_clean = (raw_id or "").strip()
@@ -156,18 +190,22 @@ def resolve_credentials_env_or_prompt(
     id_usable = bool(id_clean)
     secret_usable = bool(secret_clean)
 
-    # Happy path: both env vars usable → register + return; skip prompt.
+    # Tier-1 happy path: both env vars usable → register + return; skip cfg + prompt.
     if id_usable and secret_usable:
         register_schwab_secrets([id_clean, secret_clean])
         ensure_schwab_log_redaction_factory_installed()
         return id_clean, secret_clean
 
-    # Partial: at least one env var is PRESENT (operator set it) but the
-    # OTHER is missing OR both are present but at least one is empty /
-    # whitespace-only. Reject with masked-form error. The "both present
-    # but both empty" case lands here too — per dispatch brief §3
-    # acceptance criterion #3, empty == absent FOR THIS PARTIAL CHECK
-    # (treated as operator misconfiguration, not legitimate fallback intent).
+    # Tier-1 partial: at least one env var is PRESENT (operator set it) but
+    # the OTHER is missing OR both are present but at least one is empty /
+    # whitespace-only. Reject with masked-form error.
+    #
+    # T-B.1 LOCK (differs from cfg-tier below): partial env-tier RAISES
+    # even when cfg-tier could provide a complete fallback. Rationale:
+    # operator's stated intent (env vars) failed; falling through to cfg
+    # silently would HIDE the misconfiguration. cfg-tier partial, by
+    # contrast, falls through because file-tier may legitimately hold one
+    # field while the other comes from env or prompt.
     any_present = id_present or secret_present
     if any_present and not (id_usable and secret_usable):
         raise SchwabConfigMissingError(
@@ -176,13 +214,43 @@ def resolve_credentials_env_or_prompt(
             f"{_ENV_VAR_CLIENT_ID}={_mask_credential(raw_id)} "
             f"{_ENV_VAR_CLIENT_SECRET}={_mask_credential(raw_secret)}. "
             f"Either set BOTH env vars or UNSET both to fall back to "
-            f"interactive prompt.",
+            f"cfg fields (~/swing-data/user-config.toml) / interactive prompt.",
         )
 
-    # Fully absent: neither env var is set.
+    # Tier-2 (NEW T-B.1): consult cfg.integrations.schwab.{client_id,
+    # client_secret}. Both fields non-whitespace → use them; skip prompt.
+    #
+    # T-B.1 LOCK: partial cfg-tier (one field set, the other empty /
+    # whitespace-only) FALLS THROUGH to Tier-3 (NOT raises). Rationale per
+    # dispatch brief §3 AC2: file-tier is operator-friendly — an operator
+    # who has set client_id in user-config.toml but not client_secret may
+    # legitimately want to fall through to env or prompt for the secret,
+    # rather than being forced into an error state. The asymmetry with the
+    # env-tier-partial-raises rule is INTENTIONAL.
+    cfg_id_raw = _safe_cfg_attr(cfg, "client_id")
+    cfg_secret_raw = _safe_cfg_attr(cfg, "client_secret")
+    cfg_id_clean = (cfg_id_raw or "").strip() if isinstance(cfg_id_raw, str) else ""
+    cfg_secret_clean = (
+        (cfg_secret_raw or "").strip()
+        if isinstance(cfg_secret_raw, str)
+        else ""
+    )
+    if cfg_id_clean and cfg_secret_clean:
+        # Sentinel-leak guarantee (mirrors env-tier path): register cfg-
+        # sourced secrets in Layer-0 known-secrets registry BEFORE returning.
+        # Use `ensure_*` (Sub-bundle A lesson #2: factory-replacement defense)
+        # rather than `_install_*_once` so any third-party library that
+        # replaced the process-global LogRecord factory after our initial
+        # install gets re-wrapped before downstream schwabdev calls fire.
+        register_schwab_secrets([cfg_id_clean, cfg_secret_clean])
+        ensure_schwab_log_redaction_factory_installed()
+        return cfg_id_clean, cfg_secret_clean
+
+    # Tier-3: all preceding tiers fell through (env fully absent + cfg
+    # absent / partial). If allow_prompt=False, return (None, None) —
+    # pipeline path contract; criterion 6 bullet 3+4 (env+cfg absent OR
+    # env absent + partial cfg both produce None pair under this branch).
     if not allow_prompt:
-        # Pipeline-path contract: caller (T-A.3) distinguishes (None, None)
-        # from raise via this codepath.
         return None, None
 
     # Both absent + prompt allowed → fall back to interactive prompt.
@@ -911,14 +979,65 @@ def setup_paste_flow(
         error_message=None,
     )
 
-    # Step 8 — SECOND audit-row pair around `client.account_linked()`.
+    # Step 8-10 — account_linked() audit pair + picker + persist account_hash.
+    # Extracted into a shared private helper at T-B.4 (Phase 12 Sub-bundle B)
+    # so the new web-side `setup_paste_flow_with_callback_url` shares the
+    # exact audit-row + picker + write_user_overrides logic. The shared
+    # helper closes the account_linked audit row + returns the chosen
+    # account_hash; the caller assembles the summary dict.
+    account_hash, call_id_account_linked, num_accounts = (
+        _finalize_setup_account_linked(
+            client=client,
+            conn=conn,
+            environment=environment,
+            surface="cli",
+            account_picker=account_picker,
+        )
+    )
+
+    return {
+        "tokens_path": str(tokens_path),
+        "account_hash": account_hash,
+        "environment": environment,
+        "call_id_setup": call_id_setup,
+        "call_id_account_linked": call_id_account_linked,
+        "num_accounts": num_accounts,
+    }
+
+
+def _finalize_setup_account_linked(
+    *,
+    client: Any,
+    conn: sqlite3.Connection,
+    environment: str,
+    surface: str,
+    account_picker: Any,
+) -> tuple[str, int, int]:
+    """Shared helper extracted at T-B.4 — runs the account_linked() audit
+    pair + picker selection + persist account_hash to user-config.toml.
+
+    Called by both ``setup_paste_flow`` AND the new
+    ``setup_paste_flow_with_callback_url`` (both use surface='cli' at v18
+    per CHECK constraint; V2.1 §VII.F amendment candidate widens to 'web').
+    Owns its own
+    audit row open + close lifecycle; raises SchwabAuthError on any
+    account_linked failure or shape violation, SchwabConfigMissingError
+    on multi-account without a picker.
+
+    Returns ``(account_hash, call_id_account_linked, num_accounts)``.
+
+    The ``surface`` parameter is the only behavioural difference between
+    the two callers — CLI uses 'cli'; web routes use 'web'. The schema
+    CHECK enum at v18 covers both values.
+    """
+    # SECOND audit-row pair around `client.account_linked()`.
     account_linked_start_ts = _now_ms_iso()
     call_id_account_linked = audit_service.record_call_start(
         conn,
         ts=account_linked_start_ts,
         endpoint="accounts.linked",
         pipeline_run_id=None,
-        surface="cli",
+        surface=surface,
         environment=environment,
     )
     account_linked_start = time.monotonic()
@@ -967,8 +1086,6 @@ def setup_paste_flow(
             f"<account_linked returned unexpected shape: "
             f"{type(accounts).__name__}>",
         )
-    # Codex R1 Major #3 — empty-list rejection MUST audit-fail BEFORE
-    # the success close, not after.
     if not accounts:
         audit_service.record_call_finish(
             conn,
@@ -1016,8 +1133,7 @@ def setup_paste_flow(
         error_message=None,
     )
 
-    # Step 9 — pick primary account. (Empty-list case already handled
-    # pre-success above per Codex R1 Major #3.)
+    # Pick primary account.
     if len(accounts) == 1:
         chosen = accounts[0]
     else:
@@ -1041,14 +1157,11 @@ def setup_paste_flow(
             "<chosen account missing hashValue>",
         )
 
-    # T-A.10 — register the operator's chosen account_hash. Future log
-    # records that interpolate the hash (e.g., request URL contains the
-    # account-hash path segment per Schwab API V2 spec; schwabdev may log
-    # the URL on retry) flow through Layer-2 redaction with the hash known.
+    # Register the operator's chosen account_hash in the redaction registry.
     register_schwab_secrets([account_hash])
 
-    # Step 10 — persist via cfg-cascade write. USERPROFILE+HOME monkeypatch
-    # in tests; production reads operator's real ~/swing-data/user-config.toml.
+    # Persist via cfg-cascade write. USERPROFILE+HOME monkeypatch in tests;
+    # production reads operator's real ~/swing-data/user-config.toml.
     from swing.config_user import load_user_overrides, write_user_overrides
 
     overrides = load_user_overrides()
@@ -1057,13 +1170,594 @@ def setup_paste_flow(
     ] = account_hash
     write_user_overrides(overrides)
 
+    return account_hash, call_id_account_linked, len(accounts)
+
+
+def _exchange_code_for_tokens(
+    *,
+    client_id: str,
+    client_secret: str,
+    callback_url: str,
+    callback_url_with_code: str,
+    timeout_seconds: int,
+) -> dict:
+    """Manually exchange an OAuth authorization code for access + refresh
+    tokens by POSTing to ``https://api.schwabapi.com/v1/oauth/token``.
+
+    T-B.4 (Phase 12 Sub-bundle B) — web-mode counterpart to schwabdev's
+    blocking ``Tokens.update_refresh_token`` paste-back flow. In the web
+    context the operator has ALREADY pasted the callback URL into the
+    form, so we cannot delegate to schwabdev (it would block on
+    ``input(...)``). Instead we mirror schwabdev's internal
+    ``Tokens._post_oauth_token`` + ``_update_refresh_token_from_code``
+    logic: extract the ``code=`` query param from the callback URL and
+    POST to /v1/oauth/token with grant_type=authorization_code.
+
+    Mirrors the HTTP pattern at ``revoke_and_delete`` (this module) and
+    ``schwabdev/tokens.py:_post_oauth_token`` (Tokens private API).
+
+    Returns the parsed JSON token_dictionary from the OAuth response
+    (contains ``access_token``, ``refresh_token``, possibly ``id_token``,
+    ``token_type``, ``expires_in``, ``scope``).
+
+    Raises:
+        SchwabAuthError: HTTP non-2xx from /v1/oauth/token, or callback URL
+            does not contain a parseable ``code=`` substring, or response
+            body is not parseable JSON.
+    """
+    import base64
+    from urllib.parse import unquote, urlparse
+
+    import requests
+
+    # Codex R1 Major #5 fix — structured URL parsing for robustness.
+    # schwabdev's parser uses raw substring searches on the URL-encoded
+    # form: `code = f"{url[url.index('code=') + 5:url.index('%40')]}@"`.
+    # Two failure modes with the byte-for-byte mirror approach:
+    #   (1) additional query params (e.g. &state=XYZ) work but only if the
+    #       `code=` token appears BEFORE the first `%40` — schwabdev's
+    #       index() picks the first occurrence of EACH so cross-param
+    #       interleaving (e.g. `?state=foo%40bar&code=ABC%40XYZ`) can land
+    #       on the wrong `%40`.
+    #   (2) URL parser variants that encode the `@` differently break the
+    #       substring search entirely.
+    #
+    # Codex R3 Major #1 fix — the prior implementation used ``parse_qs``
+    # which applies ``application/x-www-form-urlencoded`` semantics and
+    # decodes ``+`` as space. OAuth authorization codes are OPAQUE tokens
+    # that may contain literal ``+``; ``parse_qs`` would corrupt the code
+    # before it round-trips back to /v1/oauth/token (→ invalid_grant).
+    # We now split the raw query string by ``&`` ourselves + use
+    # ``urllib.parse.unquote`` (NOT ``unquote_plus`` which has the same
+    # ``+``-as-space behavior) so percent-escapes decode while ``+`` is
+    # preserved literally. The downstream ``<segment>@`` reconstruction
+    # at the first decoded ``@`` is unchanged.
+    parsed = urlparse(callback_url_with_code)
+    code_raw: str | None = None
+    for raw_pair in parsed.query.split("&"):
+        if not raw_pair:
+            continue
+        key, sep, raw_val = raw_pair.partition("=")
+        if not sep:
+            continue
+        if key == "code":
+            # unquote (NOT unquote_plus) decodes %-escapes while leaving
+            # literal '+' intact — OAuth codes are opaque tokens.
+            code_raw = unquote(raw_val)
+            break
+    if not code_raw:
+        raise SchwabAuthError(
+            400,
+            "<callback URL missing 'code=' query param; "
+            "ensure the entire address bar URL was pasted>",
+        )
+    # The decoded `code` value should contain an `@` separator (Schwab's
+    # delimiter between auth-code and session-token portions). schwabdev
+    # truncates at the first `%40` (the URL-encoded form); we truncate at
+    # the decoded `@` to produce the same logical segment.
+    if "@" not in code_raw:
+        raise SchwabAuthError(
+            400,
+            "<callback URL 'code' value missing '@' separator; the URL "
+            "appears truncated or improperly formatted (expected Schwab's "
+            "code=<...>@<...> shape)>",
+        )
+    code_segment = code_raw.split("@", 1)[0]
+    if not code_segment:
+        raise SchwabAuthError(
+            400,
+            "<callback URL has empty auth-code segment before '@'>",
+        )
+    code = f"{code_segment}@"
+
+    # Register the freshly-extracted code as a redaction target. The code
+    # itself is short-lived (single-use, ~30s expiration per schwabdev
+    # tokens.py L300) but appearing in audit error_message during a
+    # failed exchange would leak its value into the audit row.
+    register_schwab_secrets([code, client_id, client_secret])
+    ensure_schwab_log_redaction_factory_installed()
+
+    auth_header = base64.b64encode(
+        f"{client_id}:{client_secret}".encode(),
+    ).decode("ascii")
+    headers = {
+        "Authorization": f"Basic {auth_header}",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    data = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": callback_url,
+    }
+    with _suppress_transport_debug_logs():
+        response = requests.post(
+            "https://api.schwabapi.com/v1/oauth/token",
+            headers=headers,
+            data=data,
+            timeout=timeout_seconds,
+        )
+    if not getattr(response, "ok", False):
+        http_status = getattr(response, "status_code", None)
+        raise SchwabAuthError(
+            http_status if http_status else 502,
+            f"<oauth token-exchange returned HTTP {http_status}>",
+        )
+    try:
+        token_dict = response.json()
+    except Exception as exc:
+        raise SchwabAuthError(
+            502,
+            f"<oauth token response body unparseable: {type(exc).__name__}>",
+        ) from exc
+    if not isinstance(token_dict, dict):
+        raise SchwabAuthError(
+            502,
+            f"<oauth token response JSON not an object: "
+            f"{type(token_dict).__name__}>",
+        )
+    access = token_dict.get("access_token")
+    refresh = token_dict.get("refresh_token")
+    if not access or not isinstance(access, str):
+        raise SchwabAuthError(
+            502,
+            "<oauth token response missing access_token>",
+        )
+    if not refresh or not isinstance(refresh, str):
+        raise SchwabAuthError(
+            502,
+            "<oauth token response missing refresh_token>",
+        )
+    # Register the freshly-issued tokens as redaction targets.
+    register_schwab_secrets([access, refresh])
+    return token_dict
+
+
+def _write_schwabdev_tokens_file(
+    *,
+    tokens_path: Path,
+    token_dictionary: dict,
+    issued_at: datetime,
+) -> None:
+    """Write the schwabdev-compatible tokens JSON file at ``tokens_path``.
+
+    schwabdev's ``Tokens._set_tokens`` produces a file with three keys:
+    ``access_token_issued`` + ``refresh_token_issued`` (both ISO 8601
+    UTC-aware) and ``token_dictionary`` (the raw JSON dict from
+    /v1/oauth/token). On subsequent ``schwabdev.Client(...)``
+    construction, ``Tokens.__init__`` reads this exact format.
+
+    T-B.4 mirrors that format byte-for-byte so the web-side OAuth
+    exchange produces a tokens file indistinguishable from one that
+    schwabdev wrote itself. After this call, a subsequent
+    ``construct_authenticated_client(...)`` call loads the freshly-
+    written tokens cleanly without prompting.
+
+    The mode-0o600 discipline mirrors the at-rest posture of the
+    self-heal rename path (auth.py:_rename_stale_tokens_db).
+
+    Codex R1 Major #3 fix — use ``tempfile.mkstemp`` to obtain a unique
+    tmp file in the destination dir rather than the deterministic
+    ``<name>.tmp`` sibling. Two concurrent setup submissions could
+    truncate each other's tmp file before ``os.replace`` lands.
+    ``mkstemp`` guarantees a unique name + same-dir placement (so
+    ``os.replace`` is intra-volume per the CLAUDE.md gotcha). The
+    ``except BaseException`` cleanup also closes the prior "tmp leak on
+    os.replace failure" minor.
+
+    Codex R2 Minor #1 fix — flush + fsync the tmp file descriptor
+    BEFORE ``os.replace`` to harden OAuth-token state against a crash
+    or power-loss between Python-buffer dump + filesystem-level rename.
+    Mirrors ``swing/config_user.py:write_user_overrides`` discipline.
+    """
+    import contextlib
+    import json as _json
+    import tempfile
+
+    payload = {
+        "access_token_issued": issued_at.isoformat(),
+        "refresh_token_issued": issued_at.isoformat(),
+        "token_dictionary": token_dictionary,
+    }
+    # Same-dir tempfile via mkstemp: unique name per concurrent call;
+    # placed alongside the canonical path so os.replace is intra-volume.
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(tokens_path.parent),
+        prefix=tokens_path.name + ".",
+        suffix=".tmp",
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        # mkstemp creates with default 0o600 on POSIX; on Windows file
+        # ACLs are inherited. Defensive chmod for explicit alignment with
+        # _rename_stale_tokens_db posture (no-op on Windows).
+        with contextlib.suppress(OSError):
+            os.chmod(str(tmp_path), 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            _json.dump(payload, f, ensure_ascii=False, indent=4)
+            # Codex R2 Minor #1 — flush Python buffer + fsync kernel
+            # buffer before os.replace. Without this, a crash between
+            # dump-return + replace can leave a partially-durable tmp
+            # file that os.replace promotes to canonical. Mirrors the
+            # config_user.write_user_overrides fsync pattern.
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(str(tmp_path), str(tokens_path))
+        # Codex R3 Minor #1 — best-effort parent-directory fsync to
+        # ensure the rename itself is durable across a power-loss or
+        # crash between os.replace returning + the directory entry
+        # being flushed by the OS. Required on POSIX for full
+        # crash-consistency guarantees; on Windows, opening a
+        # directory for O_RDONLY+fsync is not supported and the call
+        # raises OSError / PermissionError / NotImplementedError. We
+        # swallow the error since Windows handles directory-entry
+        # durability differently (NTFS journals the rename) — best-
+        # effort across platforms.
+        with contextlib.suppress(OSError, AttributeError, NotImplementedError):
+            dir_fd = os.open(str(tokens_path.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+    except BaseException:
+        # Cleanup covers BOTH write failure AND os.replace failure.
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+        raise
+
+
+def setup_paste_flow_with_callback_url(
+    cfg: Any,
+    environment: str,
+    client_id: str,
+    client_secret: str,
+    callback_url_with_code: str,
+    conn: sqlite3.Connection,
+    *,
+    force: bool = False,
+    account_picker: Any = None,
+) -> dict:
+    """OAuth setup flow that consumes a pre-pasted callback URL — T-B.4
+    (Phase 12 Sub-bundle B) web-mode counterpart to ``setup_paste_flow``.
+
+    The web route handler has ALREADY collected the operator's pasted
+    callback URL via a form submission. We cannot use ``setup_paste_flow``
+    here because ``schwabdev.Client(...)`` construction with a missing /
+    invalid tokens file blocks on stdin (``input(...)``) via
+    ``Tokens.update_refresh_token`` → ``Tokens._launch_capture_server`` or
+    ``input("After authorizing, paste...")``. In a FastAPI handler that
+    blocks the request thread indefinitely.
+
+    Algorithm:
+      1. Server-stamp start_ts at handler entry.
+      2. Validate environment + credentials + callback_url shape.
+      3. Refuse if pipeline state='running' unless force=True.
+      4. Resolve per-env tokens path; mkdir parent.
+      5. Self-heal stale tokens DB (T-A.2 — atomically rename existing DB
+         to `.deleted-<ts>` so the freshly-written tokens file from step 7
+         lands cleanly).
+      6. INSERT in-flight audit row for the oauth code exchange
+         (endpoint='oauth.code_exchange', surface='cli' at v18 per CHECK
+         constraint — V2.1 §VII.F amendment candidate widens to 'web').
+      7. POST to /v1/oauth/token with grant_type=authorization_code,
+         redirect_uri = cfg callback_url, code = extracted from form.
+         On HTTP success: parse JSON token_dictionary.
+      8. Write schwabdev-compatible tokens JSON file at the per-env path
+         (mirror schwabdev's ``Tokens._set_tokens`` format byte-for-byte).
+      9. Construct ``schwabdev.Client(...)`` — reads our just-written
+         tokens file cleanly; no stdin block. Verify
+         ``client.tokens.access_token`` is populated (silent-failure
+         detection per CLAUDE.md gotcha). This is end-to-end load-back
+         validation BEFORE marking audit as success — if schwabdev's
+         private format drifts and our written file is no longer
+         consumable, we surface the failure with audit row=auth_failed
+         (Codex R1 Major #1 reordering: load-back-before-success).
+      10. Close audit row #1 status='success' (ONLY after load-back
+          verification passes — end-to-end "setup success" semantics).
+      11. Run the SHARED ``_finalize_setup_account_linked`` helper
+          (account_linked() audit pair + picker + persist account_hash;
+          surface='cli' at v18 — V2.1 §VII.F amendment to widen CHECK
+          enum so web audit rows are distinguishable from CLI).
+      12. Return summary dict.
+
+    On exception during steps 7-9: close audit row #1 with
+    status='auth_failed' + raise SchwabAuthError. Web route handler
+    catches + surfaces a redacted operator-visible 4xx response.
+
+    Args:
+        cfg: Config with cfg.integrations.schwab.{callback_url,
+            timeout_seconds}.
+        environment: 'sandbox' or 'production'.
+        client_id / client_secret: Pre-resolved via
+            ``resolve_credentials_env_or_prompt(..., allow_prompt=False)``.
+        callback_url_with_code: The full URL the operator pasted (must
+            contain ``code=<value>%40<session>``).
+        conn: SQLite connection (must NOT be inside an open transaction;
+            ``record_call_start`` / ``record_call_finish`` REJECT caller-
+            held tx per Phase 8 R3→R4 discipline).
+        force: Bypass pipeline-active check.
+        account_picker: V1 web LOCK = None (singleton-only). Multi-
+            account requires CLI per dispatch brief §3 T-B.4 AC2.
+            Banked V2 candidate: web multi-account picker.
+
+    Returns:
+        Summary dict with same shape as ``setup_paste_flow`` plus
+        ``oauth_http_status`` carrying the /v1/oauth/token response code.
+
+    Raises:
+        SchwabConfigMissingError: invalid environment, empty credentials,
+            empty callback_url, OR multi-account + None picker.
+        SchwabPipelineActiveError: pipeline running + force=False.
+        SchwabAuthError: any OAuth exchange / shape failure.
+    """
+    # Step 1 — server-stamp BEFORE any I/O.
+    start_ts = _now_ms_iso()
+
+    # Step 2 — validate inputs.
+    if environment not in ("sandbox", "production"):
+        raise SchwabConfigMissingError(
+            f"environment must be 'sandbox' or 'production'; got {environment!r}",
+        )
+    if not client_id or not isinstance(client_id, str) or not client_id.strip():
+        raise SchwabConfigMissingError(
+            "client_id is required (non-empty string)",
+        )
+    if (
+        not client_secret
+        or not isinstance(client_secret, str)
+        or not client_secret.strip()
+    ):
+        raise SchwabConfigMissingError(
+            "client_secret is required (non-empty string)",
+        )
+    if (
+        not callback_url_with_code
+        or not isinstance(callback_url_with_code, str)
+        or not callback_url_with_code.strip()
+    ):
+        raise SchwabConfigMissingError(
+            "callback_url_with_code is required (non-empty string); "
+            "paste the entire address-bar URL after authorizing.",
+        )
+
+    # Step 3 — pipeline-active exclusion.
+    if not force and _is_pipeline_active(conn):
+        raise SchwabPipelineActiveError(
+            "Pipeline run in progress; cannot run schwab setup. "
+            "Use force=True to override.",
+        )
+
+    # Step 4 — resolve per-env tokens path; mkdir parent.
+    tokens_path = _resolve_tokens_db_path(environment)
+    tokens_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Step 5 — self-heal stale tokens DB (inherits T-A.2 behaviour). Same
+    # advisory click.echo fires on success; in a web context the echo
+    # lands on the uvicorn stdout but is harmless (operator sees the
+    # rename in the audit log + the success-redirect /schwab/status).
+    _rename_stale_tokens_db(
+        tokens_path,
+        environment=environment,
+        conn=conn,
+    )
+
+    # Step 6 — INSERT in-flight audit row.
+    #
+    # SURFACE-ENUM DEVIATION (banked as V2.1 §VII.F amendment candidate):
+    # the schema CHECK enum at v18 covers only ('pipeline', 'cli'). Web
+    # setup audit rows use surface='cli' to stay within the constraint;
+    # operators grep on the endpoint='oauth.code_exchange' + the
+    # operator-greppable substrings in error_message (NOT surface) to
+    # distinguish web from CLI events. Phase 12+ V2 will widen the enum
+    # to include 'web' via a 0019 migration.
+    call_id_setup = audit_service.record_call_start(
+        conn,
+        ts=start_ts,
+        endpoint="oauth.code_exchange",
+        pipeline_run_id=None,
+        surface="cli",
+        environment=environment,
+    )
+
+    # Pre-register cfg-known sensitive bytes before any HTTP call so
+    # debug logging emitted by `requests`-side urllib3 flows through the
+    # Layer-2 redactor with secrets in the registry. The code is
+    # additionally registered inside `_exchange_code_for_tokens`.
+    register_schwab_secrets([client_id, client_secret])
+    ensure_schwab_log_redaction_factory_installed()
+
+    # Step 7 — manual /v1/oauth/token POST.
+    exchange_start = time.monotonic()
+    try:
+        token_dictionary = _exchange_code_for_tokens(
+            client_id=client_id,
+            client_secret=client_secret,
+            callback_url=cfg.integrations.schwab.callback_url,
+            callback_url_with_code=callback_url_with_code,
+            timeout_seconds=int(cfg.integrations.schwab.timeout_seconds),
+        )
+    except SchwabAuthError as exc:
+        elapsed_ms = int((time.monotonic() - exchange_start) * 1000)
+        audit_service.record_call_finish(
+            conn,
+            call_id=call_id_setup,
+            http_status=getattr(exc, "status_code", None),
+            status="auth_failed",
+            response_time_ms=elapsed_ms,
+            signature_hash=None,
+            rate_limit_remaining=None,
+            error_message=_redacted_excerpt(exc),
+        )
+        log.warning(
+            "schwab setup (web) oauth code-exchange failed: %s",
+            type(exc).__name__,
+        )
+        raise
+    except BaseException as exc:
+        elapsed_ms = int((time.monotonic() - exchange_start) * 1000)
+        audit_service.record_call_finish(
+            conn,
+            call_id=call_id_setup,
+            http_status=None,
+            status="auth_failed",
+            response_time_ms=elapsed_ms,
+            signature_hash=None,
+            rate_limit_remaining=None,
+            error_message=_redacted_excerpt(exc),
+        )
+        log.warning(
+            "schwab setup (web) oauth code-exchange unexpected error: %s",
+            type(exc).__name__,
+        )
+        raise SchwabAuthError(
+            500,
+            f"<oauth code-exchange failed: {type(exc).__name__}>",
+        ) from exc
+
+    elapsed_ms = int((time.monotonic() - exchange_start) * 1000)
+
+    # Step 8 — write the schwabdev-compatible tokens file. issued_at is
+    # `now()` (UTC-aware); matches schwabdev's `Tokens._update_refresh_
+    # token_from_code` semantics ("both issued NOW on a fresh exchange").
+    import datetime as _dt
+    issued_at = datetime.now(_dt.UTC)
+    try:
+        _write_schwabdev_tokens_file(
+            tokens_path=tokens_path,
+            token_dictionary=token_dictionary,
+            issued_at=issued_at,
+        )
+    except OSError as exc:
+        audit_service.record_call_finish(
+            conn,
+            call_id=call_id_setup,
+            http_status=200,  # oauth succeeded; persist failed locally
+            status="error",
+            response_time_ms=elapsed_ms,
+            signature_hash=None,
+            rate_limit_remaining=None,
+            error_message=f"<tokens file write failed: {type(exc).__name__}>",
+        )
+        raise SchwabAuthError(
+            500,
+            f"<tokens file write failed at {tokens_path}: "
+            f"{type(exc).__name__}>",
+        ) from exc
+
+    # Step 9 — construct schwabdev.Client. Tokens file is fresh from
+    # step 8; schwabdev's Tokens.__init__ re-loads it without prompting.
+    #
+    # Codex R1 Major #1 fix (docstring step-order aligned in R2 Minor #2):
+    # load-back verification BEFORE closing the audit row `success`.
+    # Previously the audit row closed `success` immediately after the
+    # tokens-file write, but if schwabdev's private API changes (e.g.
+    # tokens file format drift) the load-back here raises while the
+    # audit row already says success → operator sees failure but audit
+    # log lies. Reorder: verify load-back → THEN close audit `success`
+    # (or `auth_failed` on load-back failure).
+    import schwabdev
+    try:
+        with _suppress_transport_debug_logs():
+            client = schwabdev.Client(
+                app_key=client_id,
+                app_secret=client_secret,
+                callback_url=cfg.integrations.schwab.callback_url,
+                tokens_file=str(tokens_path),
+                timeout=int(cfg.integrations.schwab.timeout_seconds),
+            )
+
+        # Silent-failure defense (D1 hotfix parity).
+        access_token = getattr(
+            getattr(client, "tokens", None), "access_token", None,
+        )
+        if not access_token or not isinstance(access_token, str):
+            raise SchwabAuthError(
+                401,
+                "<schwabdev returned Client without access_token after "
+                "fresh token-file write; load-back may have failed>",
+            )
+    except BaseException as exc:
+        # Load-back failed — close audit row as auth_failed (NOT success).
+        audit_service.record_call_finish(
+            conn,
+            call_id=call_id_setup,
+            http_status=200,  # oauth itself succeeded; load-back is local.
+            status="auth_failed",
+            response_time_ms=elapsed_ms,
+            signature_hash=None,
+            rate_limit_remaining=None,
+            error_message=(
+                f"<schwabdev Client load-back failed after fresh tokens "
+                f"file write: {type(exc).__name__}>"
+            ),
+        )
+        log.warning(
+            "schwab setup (web) schwabdev load-back failed: %s",
+            type(exc).__name__,
+        )
+        if isinstance(exc, SchwabAuthError):
+            raise
+        raise SchwabAuthError(
+            401,
+            f"<schwabdev Client load-back failed: {type(exc).__name__}>",
+        ) from exc
+
+    # Step 10 — close audit row #1 success ONLY after load-back
+    # verification (step 9) passes. End-to-end "setup success" semantics.
+    audit_service.record_call_finish(
+        conn,
+        call_id=call_id_setup,
+        http_status=200,
+        status="success",
+        response_time_ms=elapsed_ms,
+        signature_hash=None,
+        rate_limit_remaining=None,
+        error_message=None,
+    )
+
+    # Step 11 — SHARED helper for account_linked + picker + persist.
+    # Per the SURFACE-ENUM DEVIATION at step 6, web surface uses 'cli'
+    # to stay within the v18 CHECK enum.
+    account_hash, call_id_account_linked, num_accounts = (
+        _finalize_setup_account_linked(
+            client=client,
+            conn=conn,
+            environment=environment,
+            surface="cli",
+            account_picker=account_picker,
+        )
+    )
+
+    # Step 12 — return summary. Mirror `setup_paste_flow` shape plus
+    # `oauth_http_status` to surface the exchange-step HTTP status in
+    # the web view-model (operator visibility).
     return {
         "tokens_path": str(tokens_path),
         "account_hash": account_hash,
         "environment": environment,
         "call_id_setup": call_id_setup,
         "call_id_account_linked": call_id_account_linked,
-        "num_accounts": len(accounts),
+        "num_accounts": num_accounts,
+        "oauth_http_status": 200,
     }
 
 

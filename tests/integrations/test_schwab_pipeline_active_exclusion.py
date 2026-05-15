@@ -65,6 +65,12 @@ def _plant_running_pipeline(db_path: Path) -> None:
 
 
 def _make_cfg(*, db_path: Path) -> SimpleNamespace:
+    """Minimal SimpleNamespace cfg stub used to exercise pipeline-active
+    rejection. ``apply_overrides`` (called at CLI entry points per Codex
+    R1 Critical #1 fix) short-circuits on non-dataclass cfgs (defensive
+    contract documented in ``swing/config_overrides.py``), so this stub
+    remains usable without web/pipeline/account namespaces.
+    """
     return SimpleNamespace(
         paths=SimpleNamespace(db_path=Path(db_path)),
         integrations=SimpleNamespace(

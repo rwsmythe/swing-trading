@@ -166,7 +166,12 @@ def schwab_setup(
     the `accounts.linked` call). Both are observable via `swing config show`
     + `account.snapshot` consumers.
     """
-    cfg = ctx.obj["config"]
+    # Codex R1 Critical #1 fix — apply_overrides() at CLI entry point so
+    # the cfg-cascade (user-config.toml) tier of
+    # `integrations.schwab.{client_id,client_secret}` is actually consumed.
+    # Mirrors swing/cli_schwab.py:982-985, 1266-1269, 1430-1431.
+    from swing.config_overrides import apply_overrides
+    cfg = apply_overrides(ctx.obj["config"])
     env = environment or cfg.integrations.schwab.environment
 
     # D3 hotfix (operator-paired phase-2 verification 2026-05-14):
@@ -266,7 +271,9 @@ def schwab_refresh(
     Audit row at endpoint='oauth.refresh' is observable via the standard
     `schwab_api_calls` query surface.
     """
-    cfg = ctx.obj["config"]
+    # Codex R1 Critical #1 fix — apply_overrides() at CLI entry point.
+    from swing.config_overrides import apply_overrides
+    cfg = apply_overrides(ctx.obj["config"])
     env = environment or cfg.integrations.schwab.environment
 
     # D3 pattern from T-A.4 hotfix: connect() validates schema BEFORE
@@ -337,7 +344,9 @@ def schwab_logout(
     operator's intent on `logout` is "deactivate this device's tokens
     locally" and revocation-at-Schwab is best-effort per plan §E.6.
     """
-    cfg = ctx.obj["config"]
+    # Codex R1 Critical #1 fix — apply_overrides() at CLI entry point.
+    from swing.config_overrides import apply_overrides
+    cfg = apply_overrides(ctx.obj["config"])
     env = environment or cfg.integrations.schwab.environment
 
     conn = connect(cfg.paths.db_path)

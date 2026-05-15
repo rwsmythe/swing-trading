@@ -1,0 +1,95 @@
+{% extends "base.html.j2" %}
+{% block title %}Schwab OAuth setup — Swing Trading{% endblock %}
+{% block content %}
+<section class="schwab-setup-form">
+  <h1>Schwab OAuth setup ({{ vm.environment }})</h1>
+  <p class="muted">
+    Phase 12 web counterpart to <code>swing schwab setup</code> CLI. Weekly
+    OAuth re-auth happens here without dropping to a PowerShell session.
+    The refresh_token issued by Schwab expires after 7 days; you'll need
+    to repeat this flow on or before that deadline.
+  </p>
+
+  {% if vm.existing_tokens_db_warning %}
+  <aside class="banner banner-warn"
+         data-banner="schwab-setup-existing-tokens-db">
+    Existing tokens DB detected for the <code>{{ vm.environment }}</code>
+    environment. Submitting will atomically rename it to
+    <code>.deleted-&lt;ts&gt;</code> (24h recovery window) before
+    writing fresh tokens.
+  </aside>
+  {% endif %}
+
+  {% if vm.error_message %}
+  <aside class="banner banner-error"
+         role="alert"
+         id="schwab-setup-error"
+         data-form-error="schwab-setup">
+    {{ vm.error_message }}
+  </aside>
+  {% endif %}
+
+  <ol class="schwab-setup-steps">
+    <li>
+      <p>
+        <strong>Step 1:</strong> Open the authorize URL in a new tab and
+        approve the Swing Trading app for your Schwab account.
+      </p>
+      <p>
+        <a href="{{ vm.authorize_url }}"
+           target="_blank"
+           rel="noopener noreferrer"
+           class="schwab-authorize-link"
+           data-link="schwab-authorize">Authorize at Schwab &rarr;</a>
+      </p>
+    </li>
+    <li>
+      <p>
+        <strong>Step 2:</strong> After approving, Schwab will redirect
+        your browser to the cfg callback URL (e.g.,
+        <code>https://127.0.0.1/?code=...%40...</code>). Copy the
+        <em>entire</em> address-bar URL.
+      </p>
+    </li>
+    <li>
+      <p>
+        <strong>Step 3:</strong> Paste the copied URL below and submit.
+        The form extracts the <code>code=</code> query param and
+        exchanges it server-side at Schwab's OAuth endpoint; no token
+        bytes appear in your browser or in the URL bar after submit.
+      </p>
+      <form method="post"
+            action="/schwab/setup"
+            hx-post="/schwab/setup"
+            hx-headers='{"HX-Request": "true"}'>
+        <p>
+          <label for="callback_url">Pasted callback URL</label><br>
+          <input type="text"
+                 id="callback_url"
+                 name="callback_url"
+                 required
+                 autocomplete="off"
+                 size="80"
+                 value="{{ vm.callback_url_value }}"
+                 placeholder="https://127.0.0.1/?code=...%40..."
+                 aria-describedby="callback_url-help{% if vm.error_message %} schwab-setup-error{% endif %}">
+          <small id="callback_url-help" class="muted">
+            Paste the complete address-bar URL from your Schwab redirect.
+            The code parameter expires ~30 seconds after issuance.
+          </small>
+        </p>
+        <p>
+          <button type="submit"
+                  data-action="schwab-setup-submit">Complete setup</button>
+        </p>
+      </form>
+    </li>
+  </ol>
+
+  <p class="muted">
+    On success you'll be redirected to <code>/config</code> (T-B.7 web
+    status page is deferred; verify via <code>swing schwab status</code>
+    CLI in the interim).
+  </p>
+</section>
+{% endblock %}

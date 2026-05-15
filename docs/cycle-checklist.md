@@ -17,11 +17,45 @@ After project install + before first pipeline run that consumes Schwab data:
    - Note `client_id` + `client_secret`.
    - Await production-tier approval (Schwab review; days to weeks).
 
-2. **Run setup:**
+2. **Persist `client_id` + `client_secret` once (cfg-cascade tier 2; Phase 12 Sub-bundle B):**
+
+   ```powershell
+   swing config set integrations.schwab.client_id <CLIENT_ID>
+   swing config set integrations.schwab.client_secret <CLIENT_SECRET>
+   # -> writes both to ~/swing-data/user-config.toml under [integrations.schwab]
+   # -> swing.config.toml MUST NOT contain these (sensitive)
+   ```
+
+   Cascade for credential resolution (Phase 12 Sub-bundle A + B): **env vars
+   (`SCHWAB_CLIENT_ID` + `SCHWAB_CLIENT_SECRET`) > cfg fields
+   (`integrations.schwab.{client_id,client_secret}`) > interactive prompt**.
+   Partial env-tier (only one of the two set) STILL raises by design
+   (Sub-bundle A T-A.1 LOCK); partial cfg-tier falls through to prompt
+   (Sub-bundle B T-B.1 LOCK — file-tier is operator-friendly).
+
+3. **Run setup — web (PRIMARY, Phase 12 Sub-bundle B):**
+
+   ```powershell
+   swing web
+   # -> open http://127.0.0.1:8080/schwab/setup
+   # -> form auto-fills client_id/client_secret from cfg cascade (no prompt if step 2 done)
+   # -> click "Authorize at Schwab" link (opens Schwab consent page in new tab)
+   # -> approve; Schwab redirects to https://127.0.0.1/?code=<CODE>... (404 page; copy FULL URL from address bar)
+   # -> paste URL into the form; submit
+   # -> server-side manual token exchange against /v1/oauth/token; tokens written atomically
+   # -> HX-Redirect to /config?schwab_setup=ok on success
+   ```
+
+   Sub-bundle A T-A.2 self-healing applies identically: a stale tokens DB
+   from a prior expired refresh_token is auto-detected + renamed to
+   `*.deleted-<ts>` before the new tokens are written. The web flow no
+   longer requires the prior `logout → setup` recovery sequence.
+
+4. **Run setup — CLI (FALLBACK; multi-account OR web unavailable):**
 
    ```powershell
    swing schwab setup --environment production
-   # -> prompts for client_id + client_secret (secret is hidden input)
+   # -> credentials resolved via cascade (env > cfg > prompt); secret is hidden input on prompt
    # -> prints consent URL
    # -> open URL in browser, log in, approve
    # -> browser redirects to https://127.0.0.1/?code=<CODE>... (404 page; copy the FULL redirected URL from the address bar)
@@ -31,7 +65,11 @@ After project install + before first pipeline run that consumes Schwab data:
    # -> CLI writes integrations.schwab.account_hash to user-config.toml
    ```
 
-3. **Activate environment** (V1 — `swing config set` does NOT cover
+   Use CLI when: multi-account selection needed (web V1 auto-picks the
+   singleton and raises on multi-account per Sub-bundle B T-B.4 LOCK), OR
+   when the web server is unavailable.
+
+5. **Activate environment** (V1 — `swing config set` does NOT cover
    `integrations.schwab.environment`; hand-edit `~/swing-data/user-config.toml`
    to set it, OR pass `--environment production` on each Schwab CLI invocation):
 
@@ -44,14 +82,14 @@ After project install + before first pipeline run that consumes Schwab data:
    swing schwab status   # confirm tokens DB valid; account_hash set; env reads "production"
    ```
 
-4. **Verify first fetch:**
+6. **Verify first fetch:**
 
    ```powershell
    swing schwab fetch --snapshot   # writes one account_equity_snapshots row
    swing schwab fetch --orders     # writes one reconciliation_run + any discrepancies
    ```
 
-5. **(Optional) Sandbox mode for cassette recording:**
+7. **(Optional) Sandbox mode for cassette recording:**
 
    ```powershell
    swing schwab setup --environment sandbox   # separate sandbox app credentials
@@ -192,8 +230,16 @@ swing journal cash --withdraw 200 --date 2026-04-20 --note "withdrawal"
 - **Verify Schwab refresh_token validity.** Run `swing schwab status` weekly.
   Schwab refresh_tokens have ~7-day TTL (both sandbox and production tiers per
   operator-paired-gate observation 2026-05-14). If `refresh_token: valid (N days
-  remaining)` shows < 2 days remaining, plan to run `swing schwab logout` →
-  `swing schwab setup` to re-bootstrap before expiry.
+  remaining)` shows < 2 days remaining, re-bootstrap before expiry:
+  - **Primary path (Phase 12 Sub-bundle B):** open
+    [http://127.0.0.1:8080/schwab/setup](http://127.0.0.1:8080/schwab/setup)
+    in the running web server (`swing web`). The form pre-fills credentials
+    from the cfg cascade + handles paste-back entirely in the browser; no
+    PowerShell drop-out required. T-A.2 self-healing renames any stale
+    tokens DB atomically before writing.
+  - **Fallback path (CLI):** `swing schwab logout` →
+    `swing schwab setup --environment production`. Use when web is
+    unavailable or operator prefers terminal flow.
 
 ### 9. Reconcile against TOS
 
@@ -288,13 +334,28 @@ swing rs-universe --help
 
 - **Schwab refresh_token expired or revoked at Schwab Developer Portal:**
 
+  Primary path (web; Phase 12 Sub-bundle B): open
+  [http://127.0.0.1:8080/schwab/setup](http://127.0.0.1:8080/schwab/setup);
+  paste callback URL; submit. T-A.2 self-healing handles the stale-tokens-DB
+  rename automatically. Then verify:
+
   ```powershell
-  swing schwab logout
-  swing schwab setup --environment production
   swing schwab fetch --snapshot   # verify recovery
   ```
 
+  Fallback path (CLI):
+
+  ```powershell
+  swing schwab logout
+  swing schwab setup --environment production
+  swing schwab fetch --snapshot
+  ```
+
 - **Schwab Developer Portal app reapproval / scope change:**
+
+  Web (primary): open `/schwab/setup` + repeat the paste-back flow.
+
+  CLI (fallback):
 
   ```powershell
   swing schwab logout

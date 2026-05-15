@@ -1,0 +1,19 @@
+{% extends "base.html.j2" %}
+{% block title %}Schwab setup error — Swing Trading{% endblock %}
+{% block content %}
+<section class="schwab-setup-error">
+  <h1>{{ vm.status_code }} &mdash; Schwab setup failed</h1>
+  <div class="banner banner-degraded" role="alert"
+       data-banner="schwab-setup-error">
+    {{ vm.error_message }}
+  </div>
+  <p>
+    <strong>Next step:</strong> {{ vm.remediation_hint }}
+  </p>
+  <p>
+    <a href="/schwab/setup">Retry setup</a> &middot;
+    <a href="/config">Go to /config</a> &middot;
+    <a href="/">Dashboard</a>
+  </p>
+</section>
+{% endblock %}
