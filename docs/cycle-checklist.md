@@ -189,9 +189,10 @@ swing journal cash --withdraw 200 --date 2026-04-20 --note "withdrawal"
 ## Weekly (Friday post-close or weekend)
 
 - **Verify Schwab refresh_token validity.** Run `swing schwab status` weekly.
-  Schwab production-tier refresh_tokens have ~90-day TTL; sandbox-tier ~7 days.
-  If `refresh_token: valid (N days remaining)` shows < 14 days, plan to run
-  `swing schwab setup` again to re-bootstrap before expiry.
+  Schwab refresh_tokens have ~7-day TTL (both sandbox and production tiers per
+  operator-paired-gate observation 2026-05-14). If `refresh_token: valid (N days
+  remaining)` shows < 2 days remaining, plan to run `swing schwab logout` →
+  `swing schwab setup` to re-bootstrap before expiry.
 
 ### 9. Reconcile against TOS
 
@@ -300,6 +301,14 @@ swing rs-universe --help
   ```
 
 - **Tokens DB corruption:**
+
+  ```powershell
+  swing schwab logout                   # preserves 24h recovery window
+  swing schwab setup --environment production
+  ```
+
+  If `swing schwab logout` fails because the tokens DB is corrupt enough to
+  block all CLI commands, fall back to manual removal as a last resort:
 
   ```powershell
   Remove-Item "$env:USERPROFILE\swing-data\schwab-tokens.production.db"
