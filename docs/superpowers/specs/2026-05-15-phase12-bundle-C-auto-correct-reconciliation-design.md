@@ -705,8 +705,10 @@ run_schwab_reconciliation(conn, ...) → ReconciliationRun:
           conn.execute(f"RELEASE SAVEPOINT {sp_name}")
           counters.tier1_applied += 1
         except ValidatorRejectedError as e:
-          # ROLLBACK TO releases the savepoint AND undoes the partial UPDATEs
-          # the inner function made before raising; outer transaction continues.
+          # ROLLBACK TO undoes the partial UPDATEs the inner function made before
+          # raising; per SQLite spec, ROLLBACK TO does NOT release the savepoint —
+          # subsequent RELEASE is required to remove it from the active stack.
+          # Outer transaction continues unaffected (Codex R2 Minor #1 comment fix).
           conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
           conn.execute(f"RELEASE SAVEPOINT {sp_name}")
           # Fall through to tier-2 path with validator_rejected.
@@ -818,15 +820,19 @@ NEW subcommand:
 swing journal reconcile-backfill [--apply] [--dry-run] [--ticker <ticker>] [--limit <N>]
 ```
 
-Default mode: `--dry-run`. Prints a classification matrix showing each unresolved discrepancy + its proposed classification + (if tier-1) the proposed correction target. Does NOT mutate anything.
+Default mode: `--dry-run`. Prints a classification matrix showing each unresolved discrepancy + its proposed classification + (if tier-1) the proposed correction target. **Codex R2 Major #1 fix (LOCKED) — dry-run mutation scope:** dry-run does NOT mutate journal tables (`fills`/`trades`/`cash_movements`/`account_equity_snapshots`), does NOT mutate `reconciliation_discrepancies.resolution`/`ambiguity_kind`, does NOT INSERT `reconciliation_corrections`, does NOT INSERT `trade_events`, does NOT UPDATE `review_log.superseded_by_correction_id`. Dry-run DOES write `schwab_api_calls` audit rows when Pass-2 re-fetches occur (§8.4 Pass 2 is a read of source-of-truth; the audit row is the read's audit-trail contract, not a journal mutation). The CLI prints an explicit advisory before any Pass-2 re-fetches: `"dry-run will consume Schwab API quota for N discrepancies and write audit rows; only journal-side mutations are skipped"`. Operator can pass `--no-pass-2-on-dry-run` to skip Pass-2 entirely on dry-run (resulting in tier-2 `unsupported` for Pass-2-required discrepancies in the projected matrix; trade-off: less accurate dry-run projection). V2 candidate: a no-audit preview mode that caches Pass-2 responses in memory without writing audit rows; banked.
 
 `--apply` flag: actually executes the tier-1 corrections + tier-2 stamps. Without `--apply`, only dry-run.
 
 `--ticker` and `--limit`: scope/throttle flags for safety during initial operator dispositioning of the existing 3 cases.
 
-### §8.3 Idempotency
+`--retry-pass-2-failures`: opt-in flag that re-attempts Pass 2 on discrepancies whose prior backfill attempt failed Pass-2 fetch (persisted as `resolution='pending_ambiguity_resolution'` + `ambiguity_kind='unsupported'` + `resolution_reason` containing `"Pass 2 re-fetch failed"` — see §8.3 + §8.4 #3). Without this flag, those discrepancies are SKIPPED on rerun per the §8.3 idempotency contract.
 
-Re-running `swing journal reconcile-backfill --apply` is safe: discrepancies whose `resolution != 'unresolved'` are SKIPPED (per the SELECT-first idempotency contract at §5.3). The CLI prints a summary like `"Skipped 27 already-resolved discrepancies"`.
+### §8.3 Idempotency (Codex R2 Major #2 fix — LOCKED)
+
+Re-running `swing journal reconcile-backfill --apply` is safe: discrepancies whose `resolution != 'unresolved'` are SKIPPED (per the SELECT-first idempotency contract at §5.3 AND consistent with the Pass-2-failure persisted state in §8.4 #3). The CLI prints a summary like `"Skipped 27 already-resolved discrepancies"` AND `"Skipped 3 Pass-2-failed discrepancies (use --retry-pass-2-failures to retry)"` when any Pass-2-failed cases exist.
+
+**Pass-2-failed discrepancies are persisted as `resolution='pending_ambiguity_resolution'`** (see §8.4 #3); they are NOT in `resolution='unresolved'` state, so the §8.3 skip rule covers them. Operator paths to dispose of them: (a) re-run backfill with `--retry-pass-2-failures` (re-attempts Pass 2 only on these rows); (b) resolve manually via `swing journal discrepancy resolve-ambiguity <id> --choice acknowledge --reason ...` (no journal mutation; per §6.2.1 menu).
 
 ### §8.4 Classifier source-payload sourcing
 
@@ -836,9 +842,13 @@ The backfill needs source_payload (Schwab API responses) to classify. The shippe
 
 1. **Pass 1 — persisted-JSON-only classification.** Read the discrepancy's `expected_value_json` + `actual_value_json` + the journal row referenced by FK. Run the classifier. For most discrepancy types where the persisted JSON carries enough signal (e.g., `entry_price_mismatch` carries `{"price": X}` on both sides — CVGI 41 path), the classifier emits a definitive tier-1 or tier-2 result here. Pass 1 needs ZERO Schwab API calls.
 
-2. **Pass 2 — re-fetch Schwab when Pass 1 emits `ambiguity_kind='unsupported'` or persisted JSON is provably insufficient.** For `unmatched_open_fill` / `unmatched_close_fill` discrepancies with `actual_value_json={"matched": null}` (the persisted shape on shipped emitter), Pass 1 cannot distinguish partials-vs-no-match-vs-multi-match. Pass 2 re-fetches Schwab via `swing/integrations/schwab/trader.py` for the relevant (ticker, date-window) and re-runs the appropriate sub-classifier with the fuller payload. Each Pass 2 fetch consumes one `schwab_api_calls` audit row with `surface='cli'` (operator-initiated backfill) + `linked_correction_id` set when a correction is ultimately written. Per Phase 11 sandbox gating (§9.7), under `environment='sandbox'` Pass 2 returns no domain data; the classifier emits tier-2 `unsupported` with rationale "sandbox: cannot re-fetch source-canonical payload".
+2. **Pass 2 — re-fetch Schwab when Pass 1 emits `ambiguity_kind='unsupported'` or persisted JSON is provably insufficient.** For `unmatched_open_fill` / `unmatched_close_fill` discrepancies with `actual_value_json={"matched": null}` (the persisted shape on shipped emitter), Pass 1 cannot distinguish partials-vs-no-match-vs-multi-match. **Pass 2 calls `get_account_orders` at `swing/integrations/schwab/trader.py:329` (NOT `get_account_transactions` — Codex R2 Critical #1 verification: `SchwabTransactionResponse` at `swing/integrations/schwab/models.py:207-218` carries only transaction_id+date+type+net_amount+description with NO symbol/quantity/price; only the orders endpoint's `SchwabOrderResponse` at `models.py:133-203` carries `instrument_symbol`+`quantity`+`price`+`instruction` needed for fill-level partial-fill matching).** Each Pass 2 fetch consumes one `schwab_api_calls` audit row with `surface='cli'` (operator-initiated backfill) + `linked_correction_id` set when a correction is ultimately written. Per Phase 11 sandbox gating (§9.7), under `environment='sandbox'` Pass 2 returns no domain data; the classifier emits tier-2 `unsupported` with rationale "sandbox: cannot re-fetch source-canonical payload".
 
-3. **Pass 2 failure-mode.** If the Schwab re-fetch fails (auth_failed / rate_limited / network error), the classifier emits tier-2 `unsupported` with rationale "Pass 2 re-fetch failed: <reason>". Discrepancy stays unresolved-pending-ambiguity; operator can re-run backfill later OR resolve via `swing journal discrepancy resolve-ambiguity` manually.
+   **V1 mapper limitation (single order with multiple executions):** the shipped V1 `SchwabOrderResponse` mapper at `swing/integrations/schwab/mappers.py` flattens orders to one row each, carrying the order's aggregated quantity + price (or limit price). If a single Schwab order had multiple executions at different prices (e.g., a 39-share market order that filled in 2 partials at $7.57 + $7.59), V1 returns ONE SchwabOrderResponse with quantity=39 + price=<aggregate or limit>, NOT 2 separate execution-level rows. The classifier sees N=1 and routes to either tier-1 `entry_price_mismatch` redirect (if the aggregated price differs from journal) OR tier-1 if (qty, price) all match. If the broker shipped the fill as 2 SEPARATE orders (20-share + 19-share), V1 returns 2 SchwabOrderResponse rows + classifier emits tier-2 `multi_partial_vs_consolidated`. V2 candidate: expand the mapper to surface `orderActivityCollection[].executionLegs[]` for per-execution fill detail; would let Sub-bundle C disposition the single-order-multi-execution case. Banked at `docs/phase3e-todo.md` for post-Phase-12 standalone dispatch.
+
+3. **Pass 2 failure-mode (Codex R2 Major #2 fix — LOCKED persisted state).** If the Schwab re-fetch fails (auth_failed / rate_limited / network error), the classifier emits tier-2 `unsupported` with rationale "Pass 2 re-fetch failed: <reason>". The persisted state under `--apply` is `resolution='pending_ambiguity_resolution'` + `ambiguity_kind='unsupported'` + `resolution_reason` carrying the failure reason. This is the SAME persisted state as any other tier-2 `unsupported` classification; downstream operator surfaces (CLI `list-pending-ambiguities`, Phase 10 dashboard banner) treat them identically.
+
+   **Re-run handling:** the §8.3 idempotency contract SKIPS Pass-2-failed discrepancies on subsequent backfill `--apply` runs by default (they are no longer in `'unresolved'` state). Operator can opt-in to retry via `--retry-pass-2-failures` flag (§8.2) which scopes the iteration to rows where `resolution='pending_ambiguity_resolution' AND ambiguity_kind='unsupported' AND resolution_reason LIKE '%Pass 2 re-fetch failed%'`. Each retry re-fetches Schwab + writes a new `schwab_api_calls` audit row (intentional retry-history trail). Alternative operator path: `swing journal discrepancy resolve-ambiguity <id> --choice acknowledge --reason ...` to disposition without retrying Schwab.
 
 4. **Per-discrepancy-type table — which discrepancies need Pass 2?**
 
@@ -857,7 +867,7 @@ The backfill needs source_payload (Schwab API responses) to classify. The shippe
 
 Of the three production discrepancies (CVGI 41 + DHC 39 + VSAT 40): CVGI 41 is `entry_price_mismatch` → Pass 1 sufficient. DHC 39 + VSAT 40 are `unmatched_open_fill` → Pass 2 required.
 
-5. **Idempotency under Pass 2.** Re-running the backfill against an already-resolved discrepancy is a no-op (skip per §8.3); but re-running against a Pass-2-pending discrepancy that previously failed Pass-2-fetch DOES re-fetch Schwab. Each re-fetch produces a new `schwab_api_calls` audit row — this is intentional and provides a fetch-history trail.
+5. **Idempotency under Pass 2 (Codex R2 Major #2 fix — LOCKED).** Re-running the backfill against ANY non-`'unresolved'` discrepancy is a no-op (skip per §8.3) by default — this includes Pass-2-failed discrepancies which are persisted as `resolution='pending_ambiguity_resolution'`. Operator opts INTO retrying Pass-2-failed cases via the `--retry-pass-2-failures` flag (§8.2 + §8.4 #3); each opt-in retry re-fetches Schwab + writes a new `schwab_api_calls` audit row (intentional retry-history trail). Operators NOT opting in must disposition Pass-2-failed cases manually via `swing journal discrepancy resolve-ambiguity`.
 
 V2 candidate: a separate API response cache table that preserves full Schwab API response bodies for backfill replay, eliminating Pass 2 re-fetches for already-fetched window. Banked at `docs/phase3e-todo.md` for post-Phase-12 standalone dispatch.
 
@@ -1015,9 +1025,12 @@ Auto-correction service constructs its own Schwab client (when needed) via the e
 - Pass 1 OUTPUT (interim, NOT the final classification): tier=2, `ambiguity_kind='unsupported'`, with metadata flag `pass_2_required=True`.
 
 **Backfill Pass 2 (re-fetch Schwab — §8.4):**
-- Pass 2 fetches Schwab via the existing `swing/integrations/schwab/trader.py:get_transactions(...)` (or its V1 equivalent — writing-plans verifies signature) for `(ticker='DHC', start_date='2026-04-27', end_date='2026-04-27')`. Writes a `schwab_api_calls` audit row with `surface='cli'` (backfill is operator-invoked CLI), `endpoint='accounts.transactions.list'`, plus all the existing audit columns.
-- Pass 2 receives the full Schwab transaction list. Sub-classifier (§4.3.2 unmatched_open_fill) re-evaluates: if Schwab payload has 2 partials summing to qty=39 → tier=2, `ambiguity_kind='multi_partial_vs_consolidated'`. (If Schwab still has no record → tier=2, `ambiguity_kind='schwab_returned_no_match'`. If Schwab has exactly 1 single transaction with different price → redirect to `entry_price_mismatch` sub-classifier — tier=1 candidate.)
-- Pass 2 OUTPUT (assume the 2-partials case): `ClassificationResult(tier=2, ambiguity_kind='multi_partial_vs_consolidated', correction_target=None, ...)`.
+- Pass 2 fetches Schwab via `swing/integrations/schwab/trader.py:get_account_orders(...)` (per §8.4 Codex R2 C#1 fix — the orders endpoint, NOT the transactions endpoint) for `(ticker='DHC', from_date='2026-04-27', to_date='2026-04-27')`. Writes a `schwab_api_calls` audit row with `surface='cli'` (backfill is operator-invoked CLI), `endpoint='accounts.orders.list'`, plus all the existing audit columns.
+- Pass 2 receives a `list[SchwabOrderResponse]` filtered to DHC. Sub-classifier (§4.3.2 unmatched_open_fill) re-evaluates against the response shape:
+  - If Schwab returns 2 SEPARATE orders summing to qty=39 (e.g., 20 + 19) → tier=2, `ambiguity_kind='multi_partial_vs_consolidated'`.
+  - If Schwab returns 1 order with qty=39 + aggregated price (single order that filled in multiple executions; V1 mapper limitation per §8.4) → classifier inspects the aggregated price. If it differs from journal $7.58 by > price tolerance → redirect to `entry_price_mismatch` sub-classifier (tier=1 if other fields match); else tier=1 with `correction_target={}` (already-aligned) OR (more honest) classifier emits tier-2 `ambiguity_kind='unknown_schwab_subtype'` if V1 cannot recover per-execution detail and the operator must inspect manually.
+  - If Schwab returns 0 orders → tier=2, `ambiguity_kind='schwab_returned_no_match'`.
+- Pass 2 OUTPUT (assume the 2-separate-orders case): `ClassificationResult(tier=2, ambiguity_kind='multi_partial_vs_consolidated', correction_target=None, candidate_choices=[...the 2 SchwabOrderResponse rows enumerated as partial-fill candidates...])`.
 
 **Classifier (§4.3.2 unmatched_open_fill sub-classifier) — final under Pass 2:**
 - INPUT: discrepancy, source_payload from Pass 2 re-fetch (2 partial fills summing to qty=39), journal_row = single fill_id=2 with qty=39.
@@ -1164,7 +1177,8 @@ Per §1.8: 4 sub-sub-bundles. Writing-plans refines + locks dispatch order. Proj
 **Scope:**
 - New `swing/trades/reconciliation_classifier.py` module with `classify_discrepancy` public function + per-discrepancy-type sub-classifiers.
 - `ClassificationResult` NamedTuple/dataclass.
-- `ValidatorChainCallable` protocol + a stock implementation `default_validator_chain(conn)` composing the existing repo-layer validators.
+- NEW shim module `swing/trades/reconciliation_validators.py` per §5.5 Codex R1 Major #2 LOCK with 4 pure-function dry-run validators: `validate_fill_correction` + `validate_trade_correction` + `validate_cash_movement_correction` + `validate_snapshot_correction`. Shim mirrors shipped schema CHECK + FK constraints + Phase 7 `_recompute_aggregates` aggregate invariants WITHOUT performing INSERT/UPDATE.
+- `ValidatorChainCallable` protocol + a stock implementation `default_validator_chain(conn)` that dispatches on `affected_table` to the right shim validator. (The shipped repo-layer modules do NOT expose dedicated callable validators; the shim is the mandatory composition source per §5.5.)
 - Test coverage per §4.3 sub-classifier (10 sub-classifiers × multiple cases each).
 - ZERO journal mutations. ZERO Schwab API calls. ZERO service composition.
 
@@ -1309,7 +1323,7 @@ Spec locked: under sandbox, auto-correction is no-op. Banked here for orchestrat
 
 ### §14.OQ-14 — Validator chain composition source (LOCKED at §5.5; banked)
 
-Spec locked: validator chain composed from existing repo-layer validators. No new validator module. Orchestrator can revisit if a unified `swing/trades/validators.py` is desired (V2 candidate).
+**LOCKED at §5.5 (Codex R2 Major #3 cleanup):** validator chain composed from NEW shim module `swing/trades/reconciliation_validators.py` shipped at sub-sub-bundle C.B time. Earlier brainstorm wording "No new validator module" is SUPERSEDED — the shim is mandatory because shipped repo-layer modules do NOT expose dedicated callable validator functions (only schema CHECK + FK constraints + indirect `_recompute_aggregates` invariants per §5.5 Codex R1 Major #2 verification). The shim mirrors schema invariants as importable Python predicates for dry-run validation. V2 candidate: refactor the shim into the repo modules themselves so validators become first-class on `swing/data/repos/*.py`. Banked.
 
 ### §14.OQ-15 — When `apply_tier3_override` is invoked on a correction_id that's already superseded (chain longer than 2)
 
@@ -1346,7 +1360,7 @@ Spec proposes: REJECT — operator must override the CURRENT row in the chain (w
 3. `_construct_pipeline_schwab_client(cfg)` exact module location (Phase 12 Sub-bundle A T-A.3 ship; writing-plans verifies).
 4. Existing `swing journal discrepancy` CLI command group module/function names (Phase 9 Sub-bundle B precedent; writing-plans verifies).
 5. Phase 10 `discrepancies.py` helper module location + base-layout VM mixin signature (Phase 10 Sub-bundle A T-A.18 + Sub-bundle E T-E.3 ship; writing-plans verifies).
-6. `swing/data/repos/fills.py` validator coverage — what's actually IN the file vs implicit-via-CHECK only (writing-plans audits at C.B task time; classifier composition may need a thin shim module that exposes existing CHECK invariants as Python validators).
+6. `swing/data/repos/fills.py` (and trades.py / cash_movements.py / account_equity_snapshots.py) validator coverage — confirmed at Codex R1 + R2 verification that these files do NOT expose dedicated callable validator functions; invariants live in schema CHECK + FK + indirect `_recompute_aggregates`. Sub-bundle C.B MUST ship the new shim module `swing/trades/reconciliation_validators.py` per §5.5 LOCK + §12.B scope. Writing-plans at C.B task time grep-verifies the 4 shim functions are implemented + the validator-chain composition wires through `default_validator_chain(conn)` in §12.B.
 7. `briefing.md` generator extension point (Phase 11 Sub-bundle D banner ship); writing-plans confirms hook location.
 8. `trades.current_avg_cost` recompute under tier-1 fill-price correction matches expected post-state for CVGI 41 case (writing-plans writes a discriminating integration test).
 
