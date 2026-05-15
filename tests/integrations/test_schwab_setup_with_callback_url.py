@@ -765,27 +765,47 @@ def test_callback_url_code_value_missing_at_separator_raises(
 
 
 @pytest.mark.slow
-def test_written_tokens_file_loadable_by_real_schwabdev_format(tmp_path):
+def test_written_tokens_file_loadable_by_real_schwabdev_format(
+    tmp_path, monkeypatch,
+):
     """Major #2 — write a synthetic tokens file via
-    ``_write_schwabdev_tokens_file`` + perform the SAME ``json.load()`` +
-    field extraction that real schwabdev's ``Tokens.__init__`` performs.
-    If schwabdev's private format drifts (e.g. renames `token_dictionary`
-    to `tokens`), this test fails LOUDLY — pre-empting the operator-side
-    failure-mode where web POST returns 500 with no clear cause.
+    ``_write_schwabdev_tokens_file`` + invoke real schwabdev
+    ``Tokens.__init__`` against it. Assert ``tokens.access_token`` and
+    ``tokens.refresh_token`` reflect the values WE wrote, proving real
+    schwabdev's loader byte-for-byte accepts our format.
+
+    Codex R2 Major #1 fix — previously this test re-implemented
+    schwabdev's load semantics in test code (json.load + .get keys +
+    fromisoformat); if schwabdev's loader were to change (e.g. rename
+    ``token_dictionary`` to ``tokens`` or require new timestamp fields),
+    the test would still PASS because it never touched schwabdev's own
+    code. Now we construct the REAL ``schwabdev.tokens.Tokens(...)``
+    against our written file + verify the resulting object's tokens
+    match the sentinels we wrote.
+
+    Network-I/O suppression — ``Tokens.__init__`` calls
+    ``self.update_tokens()`` after loading. With fresh ISO-8601
+    timestamps (issued_at = now()), the access-token-delta (1800s
+    budget) and refresh-token-delta (604800s budget) both exceed the
+    refresh thresholds (61s + 1800s respectively), so ``update_tokens()``
+    returns False without any HTTP call. Defensive: we monkeypatch
+    ``requests.post`` to raise if ever invoked during construction;
+    test confirms it is NOT called.
 
     See ``schwabdev/tokens.py:52-66`` in the installed library for the
-    canonical load shape — our test replicates it byte-for-byte (minus
-    network I/O of `update_tokens()`).
+    canonical load shape.
     """
     import datetime
-    import json as _json
+    import logging
+    import types
+
+    import requests
 
     # Import real schwabdev to assert it is importable + the Tokens class
     # exists. If schwabdev is renamed/removed, this fails fast.
     import schwabdev
     assert hasattr(schwabdev, "Client"), "schwabdev.Client surface missing"
 
-    # Locate schwabdev's tokens module + Tokens class.
     from schwabdev import tokens as schwabdev_tokens_mod
     assert hasattr(schwabdev_tokens_mod, "Tokens"), (
         "schwabdev.tokens.Tokens class missing — library format may have "
@@ -805,33 +825,57 @@ def test_written_tokens_file_loadable_by_real_schwabdev_format(tmp_path):
         "expires_in": 1800,
         "scope": "api",
     }
+    # Fresh issued_at so update_tokens() short-circuits without HTTP.
+    issued_at = datetime.datetime.now(datetime.timezone.utc)
     _write_schwabdev_tokens_file(
         tokens_path=tokens_path,
         token_dictionary=token_dict,
-        issued_at=datetime.datetime.now(datetime.timezone.utc),
+        issued_at=issued_at,
     )
 
-    # Mirror schwabdev/tokens.py:52-60 exactly — if this fails, our
-    # tokens-file shape no longer matches what schwabdev's Tokens.__init__
-    # consumes.
-    with open(tokens_path) as f:
-        d = _json.load(f)
-        token_dictionary = d.get("token_dictionary")
-        assert token_dictionary is not None, (
-            "schwabdev compat: missing 'token_dictionary' key"
+    # Defensive: any HTTP call during construction means our timestamp
+    # assumption is wrong + the test is no longer hermetic. Raise loudly.
+    def _no_network(*_args, **_kwargs):  # noqa: D401
+        raise AssertionError(
+            "schwabdev.Tokens.__init__ attempted a network call — the "
+            "fresh-issued_at assumption no longer holds; investigate "
+            "schwabdev's update_tokens() threshold or library format drift"
         )
-        access = token_dictionary.get("access_token")
-        refresh = token_dictionary.get("refresh_token")
-        assert access == sentinel_access
-        assert refresh == sentinel_refresh
-        # schwabdev parses these as ISO 8601 with .fromisoformat then
-        # forces UTC. Replicate to verify our format compatibility.
-        access_issued = datetime.datetime.fromisoformat(
-            d.get("access_token_issued"),
-        ).replace(tzinfo=datetime.timezone.utc)
-        refresh_issued = datetime.datetime.fromisoformat(
-            d.get("refresh_token_issued"),
-        ).replace(tzinfo=datetime.timezone.utc)
-        # Both should parse without raising.
-        assert access_issued.tzinfo is datetime.timezone.utc
-        assert refresh_issued.tzinfo is datetime.timezone.utc
+
+    monkeypatch.setattr(requests, "post", _no_network)
+
+    # Real schwabdev.Tokens requires a `client` with a `.logger`
+    # attribute. SimpleNamespace stub is sufficient.
+    fake_client = types.SimpleNamespace(
+        logger=logging.getLogger(
+            "test_schwabdev_compat.tokens_format_validation",
+        ),
+    )
+    # _validate_input enforces app_key len in (32, 48), app_secret len
+    # in (16, 64), callback_url startswith https + no trailing /.
+    app_key = "a" * 32
+    app_secret = "b" * 16
+    callback_url = "https://127.0.0.1"
+
+    # Construct REAL schwabdev.Tokens — exercises the full json.load +
+    # field extraction + update_tokens path. If schwabdev's private
+    # format changes (renamed key, new required field, different
+    # timestamp semantics), this construction fails loudly.
+    tokens = schwabdev_tokens_mod.Tokens(
+        client=fake_client,
+        app_key=app_key,
+        app_secret=app_secret,
+        callback_url=callback_url,
+        tokens_file=str(tokens_path),
+    )
+
+    # Assert the loaded values match what we wrote — proves byte-for-
+    # byte compatibility through schwabdev's own load code path.
+    assert tokens.access_token == sentinel_access, (
+        f"schwabdev loader returned wrong access_token: "
+        f"{tokens.access_token!r} (expected {sentinel_access!r})"
+    )
+    assert tokens.refresh_token == sentinel_refresh, (
+        f"schwabdev loader returned wrong refresh_token: "
+        f"{tokens.refresh_token!r} (expected {sentinel_refresh!r})"
+    )

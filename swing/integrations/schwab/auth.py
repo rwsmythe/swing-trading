@@ -1352,6 +1352,11 @@ def _write_schwabdev_tokens_file(
     ``os.replace`` is intra-volume per the CLAUDE.md gotcha). The
     ``except BaseException`` cleanup also closes the prior "tmp leak on
     os.replace failure" minor.
+
+    Codex R2 Minor #1 fix — flush + fsync the tmp file descriptor
+    BEFORE ``os.replace`` to harden OAuth-token state against a crash
+    or power-loss between Python-buffer dump + filesystem-level rename.
+    Mirrors ``swing/config_user.py:write_user_overrides`` discipline.
     """
     import contextlib
     import json as _json
@@ -1378,6 +1383,13 @@ def _write_schwabdev_tokens_file(
             os.chmod(str(tmp_path), 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             _json.dump(payload, f, ensure_ascii=False, indent=4)
+            # Codex R2 Minor #1 — flush Python buffer + fsync kernel
+            # buffer before os.replace. Without this, a crash between
+            # dump-return + replace can leave a partially-durable tmp
+            # file that os.replace promotes to canonical. Mirrors the
+            # config_user.write_user_overrides fsync pattern.
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(str(tmp_path), str(tokens_path))
     except BaseException:
         # Cleanup covers BOTH write failure AND os.replace failure.
@@ -1424,16 +1436,23 @@ def setup_paste_flow_with_callback_url(
          On HTTP success: parse JSON token_dictionary.
       8. Write schwabdev-compatible tokens JSON file at the per-env path
          (mirror schwabdev's ``Tokens._set_tokens`` format byte-for-byte).
-      9. Close audit row #1 status='success'.
-      10. Construct ``schwabdev.Client(...)`` — reads our just-written
-          tokens file cleanly; no stdin block.
+      9. Construct ``schwabdev.Client(...)`` — reads our just-written
+         tokens file cleanly; no stdin block. Verify
+         ``client.tokens.access_token`` is populated (silent-failure
+         detection per CLAUDE.md gotcha). This is end-to-end load-back
+         validation BEFORE marking audit as success — if schwabdev's
+         private format drifts and our written file is no longer
+         consumable, we surface the failure with audit row=auth_failed
+         (Codex R1 Major #1 reordering: load-back-before-success).
+      10. Close audit row #1 status='success' (ONLY after load-back
+          verification passes — end-to-end "setup success" semantics).
       11. Run the SHARED ``_finalize_setup_account_linked`` helper
           (account_linked() audit pair + picker + persist account_hash;
           surface='cli' at v18 — V2.1 §VII.F amendment to widen CHECK
           enum so web audit rows are distinguishable from CLI).
       12. Return summary dict.
 
-    On exception during steps 7-10: close audit row #1 with
+    On exception during steps 7-9: close audit row #1 with
     status='auth_failed' + raise SchwabAuthError. Web route handler
     catches + surfaces a redacted operator-visible 4xx response.
 
@@ -1617,16 +1636,17 @@ def setup_paste_flow_with_callback_url(
             f"{type(exc).__name__}>",
         ) from exc
 
-    # Step 10 — construct schwabdev.Client. Tokens file is fresh from
+    # Step 9 — construct schwabdev.Client. Tokens file is fresh from
     # step 8; schwabdev's Tokens.__init__ re-loads it without prompting.
     #
-    # Codex R1 Major #1 fix — load-back verification BEFORE closing the
-    # audit row `success`. Previously the audit row closed `success` at
-    # step 9 immediately after the tokens-file write, but if schwabdev's
-    # private API changes (e.g. tokens file format drift) the load-back
-    # at step 10 raises while the audit row already says success →
-    # operator sees failure but audit log lies. Reorder: verify load-back
-    # → THEN close audit `success` (or `auth_failed` on load-back failure).
+    # Codex R1 Major #1 fix (docstring step-order aligned in R2 Minor #2):
+    # load-back verification BEFORE closing the audit row `success`.
+    # Previously the audit row closed `success` immediately after the
+    # tokens-file write, but if schwabdev's private API changes (e.g.
+    # tokens file format drift) the load-back here raises while the
+    # audit row already says success → operator sees failure but audit
+    # log lies. Reorder: verify load-back → THEN close audit `success`
+    # (or `auth_failed` on load-back failure).
     import schwabdev
     try:
         with _suppress_transport_debug_logs():
@@ -1674,8 +1694,8 @@ def setup_paste_flow_with_callback_url(
             f"<schwabdev Client load-back failed: {type(exc).__name__}>",
         ) from exc
 
-    # Step 9 (moved) — close audit row #1 success ONLY after load-back
-    # verification passes. End-to-end "setup success" semantics.
+    # Step 10 — close audit row #1 success ONLY after load-back
+    # verification (step 9) passes. End-to-end "setup success" semantics.
     audit_service.record_call_finish(
         conn,
         call_id=call_id_setup,
