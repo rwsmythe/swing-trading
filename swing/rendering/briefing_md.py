@@ -9,6 +9,19 @@ def render_briefing_md(vm: BriefingViewModel) -> str:
     parts.append(f"# Swing Briefing \u2014 {vm.action_session_date}")
     parts.append(f"_Data as of {vm.data_asof_date} \u00b7 Generated {vm.generated_at}_\n")
 
+    # Schwab API arc-closer Sub-bundle D Task T-D.5 \u2014 degraded banner.
+    # Emitted near the top (after header, before market weather) when the
+    # most-recent schwab_api_calls row's status != 'success'. Generic copy
+    # per spec \u00a73.4.4 / \u00a77.2 \u2014 does NOT echo error_message body content
+    # (operator runs `swing schwab status` for diagnostic detail).
+    if vm.schwab_degraded_endpoint is not None:
+        endpoint = vm.schwab_degraded_endpoint
+        parts.append(
+            f"> **Schwab integration: degraded** \u2014 most recent API call "
+            f"to `{endpoint}` did not succeed. Run `swing schwab status` to "
+            f"diagnose.\n"
+        )
+
     parts.append("## Market Weather")
     parts.append(f"**Status:** {vm.status_strip.weather.status}")
     parts.append(f"_{vm.status_strip.weather.rationale}_")

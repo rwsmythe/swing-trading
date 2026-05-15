@@ -497,13 +497,14 @@ def test_schwab_full_happy_path_across_all_sub_bundles(
         # Open positions section surfaces the planted ticker.
         assert "AAPL" in md
         # Banner from T-D.5 (degraded) MUST NOT fire on the happy path.
-        # Defensive substring check: T-D.5's banner copy will surface
-        # the word "degraded" in the briefing; if T-D.5 lands a different
-        # banner phrase later this assertion will need updating to track.
-        # For Sub-bundle D T-D.3 (PRE-T-D.5), the banner copy does NOT
-        # exist yet — so the assertion below pins absence as the binding
-        # criterion.
-        assert "Schwab integration degraded" not in md
+        # T-D.5 shipped the spec §3.4.4 / §7.2 verbatim copy
+        # "Schwab integration: degraded" (with colon); this assertion
+        # serves as the cross-bundle pin discriminating regression test
+        # — the happy path MUST NOT emit the degraded banner because
+        # `is_schwab_degraded` returns (False, None) when there are no
+        # `schwab_api_calls` rows OR when the most-recent row is
+        # `status='success'` (this test plants only success rows).
+        assert "Schwab integration: degraded" not in md
 
     finally:
         snap_conn.close()

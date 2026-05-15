@@ -1504,6 +1504,7 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
     )
     from swing.data.repos.fills import list_all_fills
     from swing.data.repos.recommendations import list_for_session
+    from swing.data.repos.schwab_api_calls import is_schwab_degraded
     conn = connect(cfg.paths.db_path)
     try:
         candidates = fetch_candidates_for_run(conn, eval_run_id)
@@ -1547,6 +1548,12 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
         maturity_stage_by_trade_id: dict[int, str | None] = {
             s.trade_id: s.maturity_stage for s in daily_mgmt_snapshots
         }
+        # Schwab API arc-closer Sub-bundle D Task T-D.5 — degraded predicate.
+        # Read-only check on most-recent schwab_api_calls row; emits the
+        # spec §3.4.4 / §7.2 banner when status != 'success'. ZERO-rows-yet
+        # state is NOT degraded (false-positive guard per dispatch brief
+        # §5.2 T-D.5 pre-emption).
+        schwab_degraded, schwab_degraded_endpoint_name = is_schwab_degraded(conn)
     finally:
         conn.close()
 
@@ -1629,6 +1636,9 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
         near_trigger_above_pct=cfg.near_trigger.above_pct,
         near_trigger_below_pct=cfg.near_trigger.below_pct,
         daily_management_active_snapshots=daily_mgmt_snapshots,
+        schwab_degraded_endpoint=(
+            schwab_degraded_endpoint_name if schwab_degraded else None
+        ),
     )
     vm = build_briefing_view_model(inputs)
 

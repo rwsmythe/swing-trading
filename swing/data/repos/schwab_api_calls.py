@@ -198,3 +198,32 @@ def count_calls_by_status(
         (status_filter, since_ts),
     ).fetchone()
     return int(row[0])
+
+
+def is_schwab_degraded(
+    conn: sqlite3.Connection,
+) -> tuple[bool, str | None]:
+    """Schwab API arc-closer Sub-bundle D Task T-D.5 — degraded predicate.
+
+    Plan §Tasks-D T-D.5 + dispatch brief §0.9 + spec §3.4.4 + §7.2.
+
+    Returns ``(True, endpoint_name)`` when the most-recent ``schwab_api_calls``
+    row's ``status != 'success'``. Returns ``(False, None)`` otherwise.
+
+    CRITICAL: ZERO-rows-yet state is NOT degraded (false-positive guard per
+    dispatch brief §5.2 T-D.5 pre-emption — predicate MUST NOT fire on
+    fresh DB state where no Schwab API calls have been made yet).
+
+    Read-only; caller-controlled tx; mirrors ordering of ``list_recent_calls``
+    (``ts DESC, call_id DESC``).
+    """
+    row = conn.execute(
+        "SELECT status, endpoint FROM schwab_api_calls "
+        "ORDER BY ts DESC, call_id DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return (False, None)
+    status, endpoint = row[0], row[1]
+    if status == "success":
+        return (False, None)
+    return (True, endpoint)
