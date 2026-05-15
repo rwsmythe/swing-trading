@@ -214,7 +214,7 @@ def resolve_credentials_env_or_prompt(
             f"{_ENV_VAR_CLIENT_ID}={_mask_credential(raw_id)} "
             f"{_ENV_VAR_CLIENT_SECRET}={_mask_credential(raw_secret)}. "
             f"Either set BOTH env vars or UNSET both to fall back to "
-            f"interactive prompt.",
+            f"cfg fields (~/swing-data/user-config.toml) / interactive prompt.",
         )
 
     # Tier-2 (NEW T-B.1): consult cfg.integrations.schwab.{client_id,
