@@ -104,10 +104,11 @@ Check:
 - Today's Decisions (A+ setups actionable)
 - Watchlist (near-pivot tickers with stop suggestions)
 - Position count vs caps (e.g. `0 / 4 warn, cap 6`)
-- **Verify briefing.md Schwab section.** Each pipeline run's `briefing.md` now
-  includes a "Schwab integration" section reporting latest equity snapshot +
-  reconciliation discrepancy count. If banner "Schwab integration: degraded"
-  appears, run `swing schwab status` to diagnose.
+- **Verify briefing.md Schwab degraded banner.** Each pipeline run's
+  `briefing.md` will include a "Schwab integration: degraded" banner if the
+  most recent Schwab API call failed. Run `swing schwab status` to diagnose.
+  (Full Schwab snapshot + reconciliation-summary section is V2 work — V1
+  surfaces those metrics via `swing schwab status` instead.)
 
 ---
 
