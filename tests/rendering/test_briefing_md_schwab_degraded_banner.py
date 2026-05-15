@@ -260,3 +260,39 @@ def test_banner_is_generic_no_token_bytes_no_error_message_body(
         assert "bearer-leak" not in md
     finally:
         conn.close()
+
+
+# ============================================================================
+# Codex R1 Major #2 — Banner ABSENT when integration is PROVISIONAL state
+# (not configured yet; no schwab_api_calls rows yet either).
+# ============================================================================
+
+def test_banner_absent_when_provisional_state_no_audit_rows(
+    tmp_path: Path,
+) -> None:
+    """Codex R1 Major #2 verification — when the operator has never set up
+    Schwab (PROVISIONAL state), the briefing banner must NOT fire. The
+    existing zero-rows guard in `is_schwab_degraded` already covers this
+    case (no schwab_api_calls rows yet because never called), so no code
+    change to the briefing-side predicate is required.
+
+    Pin this behavior with a discriminating test: a future "promote
+    PROVISIONAL to degraded banner" implementation would break it (and
+    correctly so — PROVISIONAL is NOT a failure state per spec §3.4.4 +
+    §7.2 wording "Schwab integration: degraded").
+    """
+    conn = _bootstrap_db(tmp_path)
+    try:
+        # PROVISIONAL state model: zero schwab_api_calls rows (never been
+        # called because operator hasn't completed setup).
+        n = conn.execute(
+            "SELECT COUNT(*) FROM schwab_api_calls",
+        ).fetchone()[0]
+        assert n == 0
+        md = _render_with_predicate(conn)
+        # Banner MUST NOT fire — PROVISIONAL is not DEGRADED.
+        assert BANNER_TITLE_SUBSTRING not in md, (
+            f"banner unexpectedly fired in PROVISIONAL state; got:\n{md}"
+        )
+    finally:
+        conn.close()

@@ -582,41 +582,92 @@ def _compute_degraded_state(
     env: str,
     tokens_path: Path,
     now: datetime,
-) -> tuple[bool, str | None]:
-    """Multi-signal `is_degraded` predicate per dispatch brief §5.2 T-D.1.
+) -> tuple[str, str | None]:
+    """Multi-signal integration-state predicate per dispatch brief §5.2 T-D.1
+    + Codex R1 Major #1+#2 hardening (extends to consult tokens parse_err
+    + refresh_token_issued AND splits PROVISIONAL/DEGRADED/LIVE three-state).
 
-    Consults THREE signals in this order:
-      1. tokens DB missing on disk;
-      2. tokens DB mtime > 7 days old (refresh-token TTL exceeded by file age);
-      3. most-recent `schwab_api_calls` row for this env has status != 'success'.
+    Returns ``(state, reason_text)`` where ``state`` is one of:
+      - "LIVE" — all signals OK; integration is configured + healthy.
+      - "PROVISIONAL" — never configured yet (tokens DB missing OR tokens
+        JSON valid but `refresh_token_issued` field absent). Operator runs
+        `swing schwab setup` to advance; this is NOT a failure state.
+      - "DEGRADED" — configured but failing. Operator runs `swing schwab
+        status` for diagnostic detail + likely `swing schwab logout` +
+        `swing schwab setup` to recover.
 
-    Returns `(is_degraded, reason_text)`. `reason_text` is None when not
-    degraded; otherwise a short operator-facing phrase (e.g., "tokens DB
-    missing") suitable for inline display next to the DEGRADED label.
+    ``reason_text`` is ``None`` only when state == "LIVE"; otherwise carries
+    a short operator-facing phrase suitable for inline display next to the
+    state label.
 
-    Order matters: the most-actionable signal (missing tokens) is reported
-    first; recent-call status is reported last (operator may need to inspect
-    the call log to diagnose).
+    Signal order (matches dispatch brief §5.2 + Codex R1 directive):
+      1. tokens DB missing on disk            → PROVISIONAL
+      2. tokens DB unparseable / corrupt JSON → DEGRADED
+      3. `refresh_token_issued` field missing → PROVISIONAL
+      4. `refresh_token_issued` already expired (issued + 7d < now)
+                                              → DEGRADED
+      5. tokens DB mtime > 7 days old         → DEGRADED
+      6. most-recent `schwab_api_calls` for env has status != 'success'
+                                              → DEGRADED
+
+    The PROVISIONAL/DEGRADED split distinguishes "never configured" from
+    "configured-but-failing" so operator-facing copy can be precise (the
+    former points at `setup`, the latter at the recovery sequence).
     """
-    # Signal 1: tokens DB missing.
+    # Signal 1: tokens DB missing → PROVISIONAL (not configured yet).
     if not tokens_path.exists():
-        return True, "tokens DB missing"
+        return "PROVISIONAL", "tokens DB missing — not configured yet"
 
-    # Signal 2: tokens DB stale (mtime > 7 days).
+    # Signals 2-4 consult tokens-file metadata.
+    payload, parse_err = _read_tokens_metadata(tokens_path)
+    # Signal 2: parse_err set → DEGRADED (corrupt JSON or OS error).
+    if parse_err is not None:
+        return "DEGRADED", f"tokens DB unparseable: {parse_err}"
+
+    if payload is not None:
+        refresh_issued_iso = payload.get("refresh_token_issued")
+        # Signal 3: refresh_token_issued field missing → PROVISIONAL.
+        if not refresh_issued_iso:
+            return (
+                "PROVISIONAL",
+                "tokens DB missing refresh_token_issued field — "
+                "run `swing schwab setup`",
+            )
+        # Signal 4: refresh_token expired (issued + 7d < now) → DEGRADED.
+        issued_dt = _parse_iso_datetime(refresh_issued_iso)
+        if issued_dt is None:
+            return (
+                "PROVISIONAL",
+                "tokens DB has unparseable refresh_token_issued — "
+                "run `swing schwab setup`",
+            )
+        if issued_dt.tzinfo is None:
+            issued_dt = issued_dt.replace(tzinfo=UTC)
+        expires_dt = issued_dt + timedelta(
+            seconds=_REFRESH_TOKEN_TTL_SECONDS,
+        )
+        if expires_dt < now:
+            return (
+                "DEGRADED",
+                "refresh_token expired (run `swing schwab setup` to re-auth)",
+            )
+
+    # Signal 5: tokens DB stale (mtime > 7 days).
     try:
         mtime = tokens_path.stat().st_mtime
         age_seconds = now.timestamp() - mtime
         if age_seconds > _TOKENS_DB_STALE_AGE_SECONDS:
             days_old = int(age_seconds // 86400)
-            return True, (
+            return (
+                "DEGRADED",
                 f"tokens DB age {days_old} days old (>7 days; refresh-token "
-                "TTL exceeded by file mtime)"
+                "TTL exceeded by file mtime)",
             )
     except OSError:
         # Defensive — if we can't stat, treat as degraded (filesystem issue).
-        return True, "tokens DB stat failed (filesystem issue)"
+        return "DEGRADED", "tokens DB stat failed (filesystem issue)"
 
-    # Signal 3: most-recent call for this env has status != 'success'.
+    # Signal 6: most-recent call for this env has status != 'success'.
     # Pull only the single most-recent row to avoid scanning history.
     row = conn.execute(
         "SELECT status FROM schwab_api_calls WHERE environment = ? "
@@ -624,9 +675,9 @@ def _compute_degraded_state(
         (env,),
     ).fetchone()
     if row is not None and row[0] != "success":
-        return True, f"most-recent call status='{row[0]}'"
+        return "DEGRADED", f"most-recent call status='{row[0]}'"
 
-    return False, None
+    return "LIVE", None
 
 
 def _render_refresh_token_with_severity(
@@ -705,14 +756,17 @@ def render_status(
     out.append("=" * len(header))
     out.append("")
 
-    # Section 1 — DEGRADED/LIVE indicator (T-D.1; multi-signal predicate).
-    is_degraded, reason = _compute_degraded_state(
+    # Section 1 — LIVE/PROVISIONAL/DEGRADED indicator (T-D.1 + Codex R1
+    # Major #1+#2; multi-signal predicate with 3-state distinction).
+    state, reason = _compute_degraded_state(
         conn, env=env, tokens_path=tokens_path, now=now,
     )
-    if is_degraded:
-        out.append(f"Schwab integration: DEGRADED ({env}) — {reason}")
-    else:
+    if state == "LIVE":
         out.append(f"Schwab integration: LIVE ({env})")
+    elif state == "PROVISIONAL":
+        out.append(f"Schwab integration: PROVISIONAL ({env}) — {reason}")
+    else:  # DEGRADED
+        out.append(f"Schwab integration: DEGRADED ({env}) — {reason}")
     out.append("")
 
     # Section 2 — cfg + tokens-file metadata.

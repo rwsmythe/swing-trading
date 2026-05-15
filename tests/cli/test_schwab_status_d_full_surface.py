@@ -289,23 +289,142 @@ def test_status_renders_degraded_when_recent_call_status_error(
     )
 
 
-def test_status_renders_degraded_when_tokens_db_missing(
+def test_status_renders_provisional_when_tokens_db_missing(
     home: Path, cfg_path: Path,
 ) -> None:
-    """Test 3 — DEGRADED via missing tokens DB.
+    """Test 3 — PROVISIONAL via missing tokens DB (Codex R1 Major #2).
 
-    No tokens file written; assert "DEGRADED" + reason cites missing tokens.
+    "Never configured yet" is distinct from "configured-but-failing". A
+    missing tokens DB indicates the operator hasn't completed `swing schwab
+    setup`; this is NOT a DEGRADED state. Assert "PROVISIONAL" appears +
+    reason cites missing tokens; "DEGRADED" must NOT appear.
     """
     # No tokens file written.
     result = _invoke(cfg_path, ["status", "--environment", "production"])
     assert result.exit_code == 0, result.output
-    assert "DEGRADED" in result.output
+    assert "PROVISIONAL" in result.output, (
+        f"expected PROVISIONAL state for missing tokens; got:\n{result.output}"
+    )
+    assert "DEGRADED" not in result.output, (
+        "missing tokens is PROVISIONAL, NOT DEGRADED (Codex R1 Major #2); "
+        f"got:\n{result.output}"
+    )
     out_lower = result.output.lower()
     assert "tokens" in out_lower and (
         "missing" in out_lower or "not present" in out_lower
-        or "not found" in out_lower
+        or "not found" in out_lower or "not configured" in out_lower
     ), (
-        f"DEGRADED reason should cite missing tokens DB; got:\n{result.output}"
+        f"PROVISIONAL reason should cite missing tokens DB; got:\n{result.output}"
+    )
+
+
+def test_status_renders_degraded_when_tokens_json_unparseable(
+    home: Path, cfg_path: Path,
+) -> None:
+    """Test 3a — DEGRADED via corrupt JSON in tokens DB (Codex R1 Major #1).
+
+    Plant tokens DB with invalid JSON content; assert DEGRADED + reason
+    cites unparseable. Discriminating: an implementation that only consults
+    file existence + mtime would render LIVE (or DEGRADED via signal 5 if
+    file is fresh, but with WRONG reason wording).
+    """
+    tokens_path = home / "swing-data" / "schwab-tokens.production.db"
+    # Write malformed JSON (truncated object).
+    tokens_path.write_text('{"this is not valid')
+    # Fresh recent-call so the recent-call signal doesn't fire.
+    _plant_call(home / "swing-data" / "swing.db",
+                ts=datetime.now(UTC).isoformat(),
+                status="success", env="production")
+
+    result = _invoke(cfg_path, ["status", "--environment", "production"])
+    assert result.exit_code == 0, result.output
+    assert "DEGRADED" in result.output, (
+        f"expected DEGRADED for corrupt JSON; got:\n{result.output}"
+    )
+    out_lower = result.output.lower()
+    assert ("unparseable" in out_lower or "invalid json" in out_lower
+            or "unreadable" in out_lower), (
+        f"DEGRADED reason should cite unparseable tokens; got:\n{result.output}"
+    )
+
+
+def test_status_renders_degraded_when_refresh_token_already_expired(
+    home: Path, cfg_path: Path,
+) -> None:
+    """Test 3b — DEGRADED when refresh_token_issued + 7d < now (Codex R1 M#1).
+
+    Plant tokens DB with `refresh_token_issued` 8 days ago — refresh token
+    is already past its 7-day TTL. Assert DEGRADED + reason cites
+    refresh_token expiry. Discriminating: an implementation that only
+    consults file mtime would miss this when the file itself is fresh.
+    """
+    issued_8d_ago = (datetime.now(UTC) - timedelta(days=8)).isoformat()
+    _write_tokens_file(
+        home, env="production",
+        refresh_token_issued=issued_8d_ago,
+        access_token_issued=datetime.now(UTC).isoformat(),
+    )
+    # File mtime is fresh (write happened just now), so signal 5 does NOT
+    # fire. Recent call success → signal 6 does NOT fire. Only the new
+    # refresh-token-expired signal can trigger DEGRADED here.
+    _plant_call(home / "swing-data" / "swing.db",
+                ts=datetime.now(UTC).isoformat(),
+                status="success", env="production")
+
+    result = _invoke(cfg_path, ["status", "--environment", "production"])
+    assert result.exit_code == 0, result.output
+    assert "DEGRADED" in result.output, (
+        f"expected DEGRADED for expired refresh_token; got:\n{result.output}"
+    )
+    out_lower = result.output.lower()
+    assert "refresh_token expired" in out_lower or "refresh token expired" in out_lower, (
+        f"DEGRADED reason should cite refresh_token expiry; "
+        f"got:\n{result.output}"
+    )
+
+
+def test_status_renders_provisional_when_refresh_token_issued_field_missing(
+    home: Path, cfg_path: Path,
+) -> None:
+    """Test 3c — PROVISIONAL when tokens JSON valid but missing
+    refresh_token_issued (Codex R1 Major #1 + #2).
+
+    Plant tokens DB with valid JSON but no `refresh_token_issued` key —
+    operator-construed pre-paste-back state. Assert PROVISIONAL +
+    "DEGRADED" must NOT appear; reason cites the missing field.
+    """
+    tokens_path = home / "swing-data" / "schwab-tokens.production.db"
+    payload = {
+        # Note: no refresh_token_issued key at all.
+        "access_token_issued": datetime.now(UTC).isoformat(),
+        "token_dictionary": {
+            "expires_in": 1800,
+            "token_type": "Bearer",
+            "scope": "api",
+            "access_token": _SENTINEL_ACCESS_TOKEN,
+            "refresh_token": _SENTINEL_REFRESH_TOKEN,
+            "id_token": _SENTINEL_ID_TOKEN,
+        },
+    }
+    tokens_path.write_text(json.dumps(payload, indent=4))
+    _plant_call(home / "swing-data" / "swing.db",
+                ts=datetime.now(UTC).isoformat(),
+                status="success", env="production")
+
+    result = _invoke(cfg_path, ["status", "--environment", "production"])
+    assert result.exit_code == 0, result.output
+    assert "PROVISIONAL" in result.output, (
+        f"expected PROVISIONAL for missing refresh_token_issued; "
+        f"got:\n{result.output}"
+    )
+    assert "DEGRADED" not in result.output, (
+        "missing refresh_token_issued is PROVISIONAL, NOT DEGRADED "
+        f"(Codex R1 M#2); got:\n{result.output}"
+    )
+    out_lower = result.output.lower()
+    assert "refresh_token_issued" in out_lower or "refresh token issued" in out_lower, (
+        f"PROVISIONAL reason should cite missing refresh_token_issued; "
+        f"got:\n{result.output}"
     )
 
 
@@ -486,8 +605,21 @@ def test_status_renders_snapshots_written_count_per_environment(
         (7 * 24 * 3600 - 2 * 3600 + 1, False, True),
         # 2h PLUS 1s remaining ⇒ WARN only.
         (7 * 24 * 3600 - 2 * 3600 - 1, True, False),
+        # Codex R1 Minor #2 — exact-equality cases (<= upper-bound semantics
+        # per dispatch brief §0.5 + spec §3.5; renderer uses `delta <= X`).
+        # Exactly 24h remaining ⇒ WARN True, ERROR False.
+        (7 * 24 * 3600 - 24 * 3600, True, False),
+        # Exactly 2h remaining ⇒ ERROR True (WARN suppressed by escalation).
+        (7 * 24 * 3600 - 2 * 3600, False, True),
     ],
-    ids=["24h+1s_OK", "24h-1s_WARN", "2h-1s_ERROR", "2h+1s_WARN"],
+    ids=[
+        "24h+1s_OK",
+        "24h-1s_WARN",
+        "2h-1s_ERROR",
+        "2h+1s_WARN",
+        "exactly_24h_WARN",
+        "exactly_2h_ERROR",
+    ],
 )
 def test_status_alert_warn_at_24hr_minus_1s_boundary(
     home: Path, cfg_path: Path,
@@ -575,8 +707,12 @@ def test_status_cli_exit_code_zero_even_when_degraded(
     Status is a read-only diagnostic surface; it MUST NEVER exit nonzero
     even when the integration is degraded. Operator scripting can grep for
     "DEGRADED" in stdout if they want a programmatic signal.
+
+    Codex R1 Major #2: missing tokens now renders PROVISIONAL not DEGRADED,
+    so this test plants a real DEGRADED scenario (corrupt JSON) instead.
     """
-    # No tokens file → DEGRADED via missing-tokens signal.
+    tokens_path = home / "swing-data" / "schwab-tokens.production.db"
+    tokens_path.write_text("{not valid json")
     result = _invoke(cfg_path, ["status", "--environment", "production"])
     assert result.exit_code == 0, result.output
     assert "DEGRADED" in result.output  # Confirms degraded state surfaced.
