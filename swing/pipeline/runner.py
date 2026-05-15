@@ -45,7 +45,6 @@ from swing.integrations.schwab.auth import (
     resolve_credentials_env_or_prompt,
 )
 from swing.integrations.schwab.client import (
-    SchwabApiError,
     SchwabConfigMissingError,
 )
 from swing.pipeline.finviz_schema import reject_csv, validate_csv
@@ -239,16 +238,32 @@ def _construct_pipeline_schwab_client(cfg) -> object | None:
             cfg, environment,
             client_id=client_id, client_secret=client_secret,
         )
-    except (SchwabApiError, SchwabConfigMissingError) as exc:
-        # SchwabAuthError + SchwabRefreshTokenExpiredError + SchwabRateLimitError
-        # + SchwabConcurrentRefreshError all subclass SchwabApiError; the
-        # narrowest applicable union here is SchwabApiError | SchwabConfigMissingError
-        # (latter for any pre-flight validation surprise after the env-var
-        # resolution).
+    except Exception as exc:  # noqa: BLE001 — V1 graceful-degradation safety boundary
+        # Codex R1 Major fix (2026-05-15): pre-fix this caught only
+        # `(SchwabApiError, SchwabConfigMissingError)`, but
+        # `construct_authenticated_client` ultimately invokes
+        # `schwabdev.Client(...)` which can raise arbitrary unwrapped
+        # exceptions — `OSError` (tokens DB filesystem failure),
+        # `sqlite3.DatabaseError` (tokens DB corruption), `RuntimeError`
+        # or `ValueError` from schwabdev-internal validation,
+        # `ConnectionError`/`TimeoutError` from network preflight, etc.
+        # The pipeline boundary is a SAFETY boundary, not a typed-correctness
+        # boundary; the V1 graceful-degradation contract demands the
+        # pipeline never crash on Schwab construction issues. Widen to
+        # bare `Exception` so every construction failure surfaces as a
+        # single silent-skip WARNING.
+        #
+        # Message is redacted via `_redacted_excerpt` before logging
+        # because the underlying exception text from schwabdev /
+        # urllib3 / sqlite3 may contain credentials or token-shaped
+        # substrings (Layer-0 + Layer-1 redactor catches registered
+        # secrets + heuristic regex on hex/base64 sequences).
+        from swing.integrations.schwab.auth import _redacted_excerpt
         log.warning(
-            "Pipeline schwab_client construction failed: %s: %s. "
+            "Pipeline schwab_client construction failed (%s: %s). "
             "Pipeline will silent-skip Schwab steps.",
-            type(exc).__name__, str(exc),
+            type(exc).__name__,
+            _redacted_excerpt(exc),
         )
         return None
 

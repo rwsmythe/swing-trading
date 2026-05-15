@@ -130,8 +130,10 @@ param(
 
 # Safety-filter regex — only worktrees whose paths match the project's branch
 # naming convention deregister. Two arcs supported:
-#   - phase{NN}-* (e.g., phase8-bundle-V-..., phase10-bundle-E-...)
-#   - schwab[-{arc?}]-bundle-* (e.g., schwab-bundle-A-foundational)
+#   - phase{NN}-* OR phase{NN}_* (any subsequent tail; e.g., phase8-bundle-V-...,
+#     phase10_bundle_E-...)
+#   - schwab[-{arc?}]-bundle-* (literal `-bundle-` segment REQUIRED for Schwab
+#     paths; e.g., schwab-bundle-A-foundational, schwab-arc-bundle-X-...)
 # Future arcs that break this convention need explicit regex amendment.
 # Defense-in-depth: the safety filter also explicitly rejects the
 # currently-checked-out worktree (handled separately at the candidate-list-
@@ -142,7 +144,13 @@ param(
 # LOCKED to Option A (default-widen) — Option B (-BranchPattern parameter)
 # explicitly rejected since future arcs may also break the convention and
 # backward compat is preserved by the alternation.
-$script:DeregisterPathPattern = '^.+[\\/]+(\.worktrees|\.claude[\\/]+worktrees)[\\/]+(phase\d+|schwab(?:-\w+)?)[-_]'
+# Codex R1 Critical fix (2026-05-15): the prior Schwab alternation
+# `schwab(?:-\w+)?[-_]` admitted ANY worktree named `schwab-feature-foo` /
+# `schwab-test-branch` (operator-curated non-bundle Schwab branches) — an
+# elevated cleanup run could destructively `git worktree remove --force`
+# them. TIGHTENED to require the literal `-bundle-` segment for Schwab paths;
+# phase alternation continues to allow either `-` or `_` after `phase{NN}`.
+$script:DeregisterPathPattern = '^.+[\\/]+(\.worktrees|\.claude[\\/]+worktrees)[\\/]+(phase\d+[-_]|schwab(?:-\w+)?-bundle-)'
 
 $ErrorActionPreference = 'Stop'
 

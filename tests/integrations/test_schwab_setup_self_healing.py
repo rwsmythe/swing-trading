@@ -632,3 +632,98 @@ def test_t_a_2_audit_row_emitted_on_os_replace_failure(
         f"setup should NOT have proceeded past the failed self-heal; "
         f"unexpected rows: {other_code_exchange}"
     )
+
+
+def test_t_a_2_atomic_claim_then_replace_closes_toctou_race(
+    home: Path, cfg: Any, conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test 9 (Codex R1 Major fix) — atomic O_EXCL claim closes the TOCTOU
+    race where another process could create the same `.deleted-<ts>` path
+    between our `exists()` check and `os.replace`.
+
+    Pre-fix the disambiguation loop used `exists()`-then-`os.replace`, which
+    left a TOCTOU window: between the check + the rename, a concurrent
+    process (or our own re-invocation in a different shell) could create
+    the same candidate path; `os.replace` would then silently overwrite it
+    (violates "NEVER overwrite a prior renamed file" guarantee).
+
+    Post-fix: each candidate is atomically CLAIMED via
+    `os.open(..., O_CREAT|O_EXCL|O_WRONLY)`. Simulate the race by making
+    `os.open` raise `FileExistsError` for the FIRST candidate (the
+    un-suffixed `.deleted-<ts>`) + succeed for the `-1` disambiguation.
+    Assert: (a) renamed file lands at `.deleted-<ts>-1` (NOT
+    `.deleted-<ts>`); (b) the pre-existing `.deleted-<ts>` collision file
+    is unchanged; (c) `os.open` was called with `O_CREAT|O_EXCL|O_WRONLY`
+    flags (pins the atomic-claim primitive).
+    """
+    import datetime as _dt
+    import os as _os
+
+    fixed_ts = _dt.datetime(2026, 5, 15, 9, 30, 25, tzinfo=_dt.timezone.utc)
+    monkeypatch.setattr(auth_mod, "_utc_now", lambda: fixed_ts)
+
+    tokens_path = home / "swing-data" / "schwab-tokens.production.db"
+    expected_collision = home / "swing-data" / (
+        "schwab-tokens.production.db.deleted-20260515T093025"
+    )
+    # Plant the stale tokens DB AND the collision file (mirrors Test 3
+    # setup, but here we ALSO simulate that the collision-detection happens
+    # via O_EXCL FileExistsError rather than .exists() pre-check).
+    tokens_path.write_text("STALE_PAYLOAD_TEST_9")
+    expected_collision.write_text("PRIOR_PROCESS_DELETION_PAYLOAD")
+
+    _patch_schwabdev_ok(monkeypatch)
+
+    # Capture every os.open invocation made during the test so we can
+    # assert (c) post-call.
+    open_calls: list[tuple[str, int, int]] = []
+    real_open = _os.open
+
+    def recording_open(path, flags, mode=0o777, *args, **kwargs):
+        # Only record claims against the canonical-tokens-DB family; ignore
+        # unrelated SQLite + filesystem opens.
+        path_str = str(path)
+        if "schwab-tokens.production.db.deleted-" in path_str:
+            open_calls.append((path_str, flags, mode))
+        return real_open(path, flags, mode, *args, **kwargs)
+
+    monkeypatch.setattr(_os, "open", recording_open)
+
+    setup_paste_flow(
+        cfg=cfg,
+        environment="production",
+        client_id="my_client_id",
+        client_secret="my_client_secret",
+        conn=conn,
+    )
+
+    # (b) pre-existing collision file untouched (this is the key TOCTOU
+    # property — pre-fix, os.replace would have overwritten this content
+    # if the race window were exercised).
+    assert expected_collision.read_text() == "PRIOR_PROCESS_DELETION_PAYLOAD", (
+        "TOCTOU regression: pre-existing collision file was overwritten "
+        "by os.replace; atomic O_EXCL claim guard failed"
+    )
+
+    # (a) new renamed file at -1 suffix.
+    disambiguated = home / "swing-data" / (
+        "schwab-tokens.production.db.deleted-20260515T093025-1"
+    )
+    assert disambiguated.exists(), (
+        f"expected disambiguated rename at {disambiguated}; "
+        f"glob: {list(home.glob('swing-data/*.deleted-*'))}"
+    )
+    assert disambiguated.read_text() == "STALE_PAYLOAD_TEST_9"
+
+    # (c) at least one claim attempt used O_CREAT|O_EXCL|O_WRONLY flags.
+    expected_flags = _os.O_CREAT | _os.O_EXCL | _os.O_WRONLY
+    o_excl_claim_attempts = [
+        c for c in open_calls
+        if c[1] == expected_flags
+    ]
+    assert len(o_excl_claim_attempts) >= 1, (
+        f"expected at least one os.open call using "
+        f"O_CREAT|O_EXCL|O_WRONLY flags ({expected_flags}) against a "
+        f"`.deleted-*` candidate path; got open_calls={open_calls!r}"
+    )

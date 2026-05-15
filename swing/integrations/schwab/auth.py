@@ -257,11 +257,19 @@ def _rename_stale_tokens_db(
          self-heal + logout actions during the same wall-clock session.
          Banked as V2.1 §VII.F amendment candidate (unify logout on UTC);
          logout is out-of-scope for T-A.2 per dispatch brief §6.
-      3. If the candidate already exists (improbable race; same-second
-         double-invocation), append `-1`, `-2`, ... until a free name is
-         found. NEVER overwrite a prior renamed file. Bounded by
-         `_MAX_RENAME_DISAMBIG_ATTEMPTS`; pathological filesystem states
-         raise `RuntimeError` rather than spinning forever.
+      3. Atomic CLAIM-then-replace: try `os.open(..., O_CREAT|O_EXCL)` on
+         each candidate suffix. `O_EXCL` guarantees that the syscall fails
+         atomically if the path already exists (race-free even under
+         concurrent same-second double-invocation). On `FileExistsError`,
+         disambiguate to `-1`, `-2`, ... and try again. NEVER overwrite a
+         prior renamed file (Codex R1 Major fix 2026-05-15: pre-fix used
+         `exists()`-then-`os.replace` which had a TOCTOU window where
+         another process could create the same `.deleted-<ts>` path
+         between the exists-check and the rename — `os.replace` would
+         then silently overwrite the prior process's renamed file).
+         Bounded by `_MAX_RENAME_DISAMBIG_ATTEMPTS`; pathological
+         filesystem states raise `RuntimeError` rather than spinning
+         forever.
       4. Pre-flight phase complete — no side-effects, no audit. Audit
          lifecycle now opens: `record_call_start(endpoint='oauth.code_exchange')`
          emits the in-flight audit row BEFORE the `os.replace` so a
@@ -310,28 +318,57 @@ def _rename_stale_tokens_db(
     # via `_utc_now()`, logout uses naïve `datetime.now()`. See docstring
     # for V2.1 §VII.F amendment-candidate disposition.
     rename_ts = _utc_now().strftime("%Y%m%dT%H%M%S")
-    candidate = tokens_db_path.with_name(
-        f"{tokens_db_path.name}.deleted-{rename_ts}",
-    )
 
-    # Step 3 — collision disambiguation (NEVER overwrite a prior renamed
-    # file). Append `-1`, `-2`, ... if the candidate path is already taken.
-    # Bounded loop: pathological filesystem states (directory full of
-    # `*.deleted-<same-ts>-*` siblings) raise rather than spin forever.
-    if candidate.exists():
-        for counter in range(1, _MAX_RENAME_DISAMBIG_ATTEMPTS):
-            candidate = tokens_db_path.with_name(
+    # Step 3 — atomic claim-then-replace (Codex R1 Major fix, 2026-05-15).
+    # Pre-fix this used an `exists()`-then-`os.replace` pattern that left a
+    # TOCTOU window: another process could create the same `.deleted-<ts>`
+    # path between our `candidate.exists()` check and `os.replace`. Since
+    # `os.replace` overwrites the destination unconditionally on success,
+    # the race could silently destroy a prior-process renamed file (violates
+    # "NEVER overwrite a prior renamed file" guarantee).
+    #
+    # Post-fix: each candidate path is atomically CLAIMED via
+    # `os.open(..., O_CREAT|O_EXCL|O_WRONLY)` which fails with `FileExistsError`
+    # if any process — including ours from a prior invocation — already
+    # created that path. On collision we disambiguate to the next suffix
+    # and try the claim again. Bounded by `_MAX_RENAME_DISAMBIG_ATTEMPTS`.
+    #
+    # Once claimed (a 0-byte sentinel file at `candidate`), `os.replace`
+    # below atomically REPLACES the claimed sentinel with the stale tokens
+    # DB contents. This is safe even if another process tries to claim the
+    # same path concurrently — they get `FileExistsError` on their O_EXCL
+    # attempt and disambiguate to a different suffix.
+    candidate: Path | None = None
+    for counter in range(0, _MAX_RENAME_DISAMBIG_ATTEMPTS):
+        if counter == 0:
+            attempt = tokens_db_path.with_name(
+                f"{tokens_db_path.name}.deleted-{rename_ts}",
+            )
+        else:
+            attempt = tokens_db_path.with_name(
                 f"{tokens_db_path.name}.deleted-{rename_ts}-{counter}",
             )
-            if not candidate.exists():
-                break
-        else:
-            raise RuntimeError(
-                f"could not find a non-colliding rename target after "
-                f"{_MAX_RENAME_DISAMBIG_ATTEMPTS} attempts; manually clean "
-                f"up `{tokens_db_path.parent}/{tokens_db_path.name}"
-                f".deleted-*`",
+        try:
+            # Atomic claim: O_CREAT|O_EXCL fails if path exists (race-free).
+            # Mode 0o600 mirrors the tokens-DB at-rest posture.
+            fd = os.open(
+                str(attempt),
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600,
             )
+        except FileExistsError:
+            continue  # disambiguate to next suffix
+        else:
+            os.close(fd)
+            candidate = attempt
+            break
+    if candidate is None:
+        raise RuntimeError(
+            f"could not claim a non-colliding rename target after "
+            f"{_MAX_RENAME_DISAMBIG_ATTEMPTS} attempts; manually clean "
+            f"up `{tokens_db_path.parent}/{tokens_db_path.name}"
+            f".deleted-*`",
+        )
 
     # Step 4 — audit-row open BEFORE side-effect. ENDPOINT NOTE: the schema
     # CHECK enum at v18 does NOT include `oauth.tokens_db_rename` (brief
@@ -365,9 +402,27 @@ def _rename_stale_tokens_db(
     # Step 5 — atomic rename via os.replace. On OSError, close the audit
     # row with status='error' BEFORE re-raise so the failed self-heal
     # attempt is traceable in schwab_api_calls history.
+    #
+    # Codex R1 Major fix (2026-05-15): Step 3 atomically CLAIMED `candidate`
+    # via `O_CREAT|O_EXCL` (leaving a 0-byte sentinel file at that path).
+    # If `os.replace` below fails (Windows file-in-use, EACCES, etc.), we
+    # MUST clean up that sentinel so the failure path leaves no orphan
+    # `*.deleted-*` files (matches the pre-fix invariant pinned by Test 8:
+    # "no rename should have happened on os.replace failure").
     try:
         os.replace(str(tokens_db_path), str(candidate))
     except OSError as rename_exc:
+        # Best-effort cleanup of the claimed sentinel. If unlink itself
+        # fails (e.g., antivirus race on Windows), swallow + log so the
+        # underlying OSError still surfaces with the original cause.
+        try:
+            os.unlink(str(candidate))
+        except OSError as unlink_exc:
+            log.warning(
+                "schwab setup self-heal: claimed-sentinel cleanup failed "
+                "after os.replace error: %s",
+                type(unlink_exc).__name__,
+            )
         elapsed_ms = int(
             (time.monotonic() - audit_start_monotonic) * 1000,
         )

@@ -150,3 +150,59 @@ def test_pattern_rejects_project_root_itself(
     assert safety_filter.search(path) is None, (
         f"T-A.4 regression: project root admitted (should be rejected): {path}"
     )
+
+
+# --- Codex R1 Critical fix: schwab non-bundle paths MUST be rejected ---
+
+
+def test_pattern_rejects_schwab_feature_branch_non_bundle(
+    safety_filter: re.Pattern[str],
+) -> None:
+    """T-A.4 Test 9 (Codex R1 Critical rejection): operator-curated
+    `schwab-feature-foo` worktree MUST be rejected.
+
+    Pre-fix, the regex `schwab(?:-\\w+)?[-_]` admitted ANY `schwab-*`
+    branch name where the second segment was a word + a separator —
+    enabling destructive `git worktree remove --force` on operator-curated
+    Schwab feature branches that are NOT bundle husks. Post-fix, Schwab
+    paths require the literal `-bundle-` segment.
+    """
+    path = "C:/Users/rwsmy/swing-trading/.worktrees/schwab-feature-foo"
+    assert safety_filter.search(path) is None, (
+        f"Codex R1 Critical regression: operator-curated non-bundle Schwab "
+        f"branch admitted (should be rejected): {path}"
+    )
+
+
+def test_pattern_rejects_schwab_test_branch_non_bundle(
+    safety_filter: re.Pattern[str],
+) -> None:
+    """T-A.4 Test 10 (Codex R1 Critical rejection): `schwab-test-branch`
+    MUST be rejected.
+
+    Defense-in-depth alongside Test 9 — covers a second non-bundle Schwab
+    naming pattern that the pre-fix regex would have admitted.
+    """
+    path = "C:/Users/rwsmy/swing-trading/.worktrees/schwab-test-branch"
+    assert safety_filter.search(path) is None, (
+        f"Codex R1 Critical regression: non-bundle Schwab test branch "
+        f"admitted (should be rejected): {path}"
+    )
+
+
+def test_pattern_rejects_schwabby_bundle_a_prefix_boundary(
+    safety_filter: re.Pattern[str],
+) -> None:
+    """T-A.4 Test 11 (defensive boundary): `schwabby-bundle-A` MUST be
+    rejected — the `schwab` token must be followed by either `-` (entering
+    the optional `-<arc>` group) or `-bundle-` directly, NOT by additional
+    characters like `by`.
+
+    Pins that the regex isn't matching `schwab` as a free-floating prefix
+    of arbitrary strings.
+    """
+    path = "C:/Users/rwsmy/swing-trading/.worktrees/schwabby-bundle-A"
+    assert safety_filter.search(path) is None, (
+        f"Defensive boundary regression: schwab-prefixed-but-unbounded path "
+        f"admitted (should be rejected): {path}"
+    )

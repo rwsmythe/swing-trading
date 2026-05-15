@@ -269,6 +269,90 @@ def test_construction_failure_returns_none_with_warning(
     )
 
 
+def test_broad_construction_exception_returns_none_with_redacted_warning(
+    fake_cfg: SimpleNamespace,
+    clear_credentials_env: None,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test 6 (Codex R1 Major fix) — non-typed exception from
+    `construct_authenticated_client` is ALSO caught + silent-skipped.
+
+    Pre-fix, the helper caught only `(SchwabApiError, SchwabConfigMissingError)`
+    — but `construct_authenticated_client` ultimately calls schwabdev's
+    `Client.__init__` which can raise arbitrary library exceptions:
+    `OSError` (tokens DB filesystem failure), `sqlite3.DatabaseError`,
+    `RuntimeError`/`ValueError` from schwabdev-internal validation,
+    `ConnectionError`/`TimeoutError` from network preflight, etc. The V1
+    graceful-degradation contract is that the pipeline NEVER crashes on
+    Schwab construction errors. Widening the catch to bare `Exception`
+    enforces that contract.
+
+    Assert:
+      (a) None returned (NOT propagated; pipeline does NOT crash);
+      (b) exactly one WARNING logged with both 'construction failed'
+          + the exception class name 'OSError';
+      (c) the raw exception message is REDACTED before logging
+          (`_redacted_excerpt` applied — overall message bounded; raw
+          message is not appended verbatim with full length).
+    """
+    from swing.pipeline import runner as runner_mod
+
+    monkeypatch.setenv("SCHWAB_CLIENT_ID", "env-test-id-os-error-path")
+    monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "env-test-secret-os-error-path")
+
+    raw_msg = "tokens DB read failed: permission denied"
+
+    def fake_construct(cfg, environment, client_id, client_secret):
+        raise OSError(raw_msg)
+
+    monkeypatch.setattr(
+        runner_mod, "construct_authenticated_client", fake_construct,
+    )
+
+    caplog.set_level(logging.WARNING, logger="swing.pipeline.runner")
+    result = runner_mod._construct_pipeline_schwab_client(fake_cfg)
+
+    # (a) None returned, NOT propagated.
+    assert result is None, (
+        f"expected None on OSError construction failure (NOT propagated); "
+        f"got {result!r}"
+    )
+
+    runner_warnings = [
+        rec for rec in caplog.records
+        if rec.name == "swing.pipeline.runner"
+        and rec.levelno >= logging.WARNING
+    ]
+    assert len(runner_warnings) == 1, (
+        f"expected exactly one WARNING record on OSError construction-failure "
+        f"path; got {len(runner_warnings)}: "
+        f"{[(r.levelname, r.getMessage()) for r in runner_warnings]}"
+    )
+    msg = runner_warnings[0].getMessage()
+    # (b) class name + 'construction failed' substring present.
+    assert "construction failed" in msg, (
+        f"WARNING message should name 'construction failed'; got: {msg!r}"
+    )
+    assert "OSError" in msg, (
+        f"WARNING message should name the typed-exception class name "
+        f"('OSError'); got: {msg!r}"
+    )
+    # (c) Redaction was applied. The redactor bounds output length to
+    # `max_chars=80` AND scrubs token-shaped substrings. The raw 'permission
+    # denied' substring is NOT credential-shaped so it can appear within
+    # the bounded excerpt; what we pin is that the WARNING message length
+    # is bounded (no unbounded leak of the underlying exception text).
+    # `_redacted_excerpt(exc, max_chars=80)` yields ≤80 chars; the full
+    # WARNING line is the prefix template + class name + that excerpt; we
+    # assert a generous bound that would fail if redaction were skipped on
+    # a degenerate large exception payload.
+    assert len(msg) < 400, (
+        f"WARNING message too long ({len(msg)} chars) — redaction excerpt "
+        f"likely bypassed; got: {msg!r}"
+    )
+
+
 def test_production_env_threading_returns_live_mock_client(
     fake_cfg: SimpleNamespace,
     clear_credentials_env: None,
