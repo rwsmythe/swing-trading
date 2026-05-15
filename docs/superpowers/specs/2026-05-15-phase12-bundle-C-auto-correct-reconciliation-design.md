@@ -638,7 +638,7 @@ Renders the full discrepancy detail + the per-ambiguity_kind candidate choice me
 | `ambiguity_kind` | Choice code | Description | Action |
 |---|---|---|---|
 | `multi_partial_vs_consolidated` | `split_into_partials` | Replace journal consolidated fill with N partial fills from Schwab side | DELETE consolidated fill; INSERT N partial fills; `correction_set_id` group; resolution → `operator_resolved_ambiguity` |
-| `multi_partial_vs_consolidated` | `consolidate_using_schwab_vwap` | Keep journal consolidated row; UPDATE journal price to Schwab VWAP | UPDATE `fills.price` to Schwab VWAP; resolution → `operator_resolved_ambiguity` |
+| `multi_partial_vs_consolidated` | `consolidate_using_operator_vwap` | Keep journal consolidated row; UPDATE journal price to operator-supplied VWAP (operator computes from broker execution statement). **REQUIRES `--custom-value '{"price": X.XX}'`** per Codex R4 Major #2 lock — V1 mapper exposes only order-level prices (limit/stopPrice per `swing/integrations/schwab/mappers.py:223-229`); auto-deriving VWAP from `SchwabOrderResponse.price` would yield meaningless price-aggregation of limit prices, not execution prices. Operator computes VWAP from their broker statement's execution detail + supplies the value | UPDATE `fills.price` to operator-supplied VWAP; resolution → `operator_resolved_ambiguity` |
 | `multi_partial_vs_consolidated` | `keep_journal_as_is` | Acknowledge that Schwab partials aggregate to journal's consolidated row; operator-acknowledged "journal's aggregation is intentional" | NO journal mutation; INSERT audit row with `correction_action='operator_resolved_ambiguity'` + `correction_choice='keep_journal_as_is'` + `applied_value_json` == `pre_correction_value_json`; resolution → `operator_resolved_ambiguity` |
 | `multi_partial_vs_consolidated` | `custom` | Operator supplies arbitrary structured payload | `--custom-value` provides the payload; service applies as multi-column correction; resolution → `operator_resolved_ambiguity` |
 | `multi_match_within_window` | `pick_schwab_record_<N>` | Pick the Nth Schwab candidate (N is an index into the candidate list from `show-ambiguity`) | UPDATE journal fields to match Nth candidate; resolution → `operator_resolved_ambiguity` |
@@ -1056,24 +1056,24 @@ Auto-correction service constructs its own Schwab client (when needed) via the e
 
 **Operator-side resolution (§6.2 CLI):**
 - Operator runs `swing journal discrepancy show-ambiguity 39`. Sees the 4 candidate choices with codes.
-- Operator picks (hypothetically) `consolidate_using_schwab_vwap`. Runs: `swing journal discrepancy resolve-ambiguity 39 --choice consolidate_using_schwab_vwap --reason "Schwab partials are same trade; keeping consolidated row"`.
-- Service calls `apply_tier2_resolution(discrepancy_id=39, choice_code='consolidate_using_schwab_vwap', operator_reason=...)`.
+- Operator picks (hypothetically) `consolidate_using_operator_vwap` (per Codex R4 Major #2 LOCK — V1 requires operator-supplied VWAP because order-level Schwab data isn't execution-level). Operator computes VWAP from their Schwab broker statement (which has execution-level detail): VWAP = ((20×$7.57)+(19×$7.59))/39 = $7.5797 ≈ $7.58. Runs: `swing journal discrepancy resolve-ambiguity 39 --choice consolidate_using_operator_vwap --custom-value '{"price": 7.58}' --reason "Schwab broker statement shows 2 partial executions; operator-computed VWAP from execution-level statement"`.
+- Service calls `apply_tier2_resolution(discrepancy_id=39, choice_code='consolidate_using_operator_vwap', operator_custom_payload={'price': 7.58}, operator_reason=...)`.
 
 **`apply_tier2_resolution` flow (§5.6):**
 1. REJECT caller-held; BEGIN IMMEDIATE.
 2. SELECT discrepancy; verify resolution='pending_ambiguity_resolution'. Verify ambiguity_kind matches choice_code's compatible-kind set. PASSES.
-3. Dispatch to handler `(multi_partial_vs_consolidated, consolidate_using_schwab_vwap)`:
-   - Compute VWAP from source_payload (cached or re-fetched).
-   - Build correction target: `{'price': 7.58}` (the VWAP).
+3. Dispatch to handler `(multi_partial_vs_consolidated, consolidate_using_operator_vwap)`:
+   - Validate `operator_custom_payload` has `price` key + value is positive number.
+   - Build correction target: `{'price': operator_custom_payload['price']}` (the operator-supplied VWAP).
    - Re-run validator chain → PASSES.
 4. UPDATE `fills.fill_id=2 SET price = 7.58`.
 5. `_recompute_aggregates`.
 6. INSERT `reconciliation_corrections`:
    - `correction_action='operator_resolved_ambiguity'`
-   - `correction_choice='consolidate_using_schwab_vwap'`
+   - `correction_choice='consolidate_using_operator_vwap'`
    - `affected_table='fills'`, `affected_row_id=2`, `field_name='price'`
    - `pre_correction_value_json={"price": 7.58}` (current journal value)
-   - `source_canonical_value_json={"price": 7.58}` (VWAP)
+   - `source_canonical_value_json={"price": 7.58, "_source": "operator_vwap_from_broker_statement"}` (operator-computed VWAP from execution-level broker statement; NOT auto-derived from Schwab API order-level data per §6.2.1 Codex R4 Major #2 lock)
    - `applied_value_json={"price": 7.58}` (same as source in this case)
    - `applied_by='operator'`
    - `correction_reason=<operator reason>`
@@ -1091,7 +1091,7 @@ The handler:
 - `_recompute_aggregates` after each.
 - Writes 3 `reconciliation_corrections` rows (1 deletion sentinel + 2 insertion sentinels) bundled under one `correction_set_id`. Each row's `field_name` is `'__delete__'` / `'__insert__'` sentinel; `applied_value_json` carries the full inserted fill payload for forensic trail. Operator-decision-anchored.
 
-This is the more invasive path; the VWAP path is the operator-friendly default and is the recommended UI hint in `show-ambiguity` output.
+This is the more invasive path. Per §14.OQ-4 revised recommendation (Codex R4 Minor #1 fix), the V1 default recommended choice in `show-ambiguity` output is `keep_journal_as_is` (no operator broker-statement lookup required); `consolidate_using_operator_vwap` and `split_into_partials` are available for operators willing to do the broker-statement lookup work.
 
 **Backfill walkthrough (§8):** dry-run prints the ambiguity-kind line + candidate choices. `--apply` mode does the `pending_ambiguity_resolution` stamp but does NOT auto-pick a choice (tier-2 is operator action by definition). Operator then dispositions via `resolve-ambiguity` CLI.
 
@@ -1123,9 +1123,9 @@ This is the more invasive path; the VWAP path is the operator-friendly default a
 
 **Why VSAT 40 is per-row data-dependent:** Pass 1 (§8.4) cannot break the ambiguity from `{"matched": null}` alone — same persisted-shape gap as DHC 39. Pass 2 re-fetches Schwab API for (VSAT, 2026-05-06) to get the full transaction list (consuming a `schwab_api_calls` audit row attributed with `surface='cli'`; under sandbox this short-circuits per §9.7 and classifier emits tier-2 `unsupported`).
 
-**Backfill behavior under production environment:**
-- Dry-run: Pass 1 → interim tier-2 `unsupported`; Pass 2 re-fetches Schwab; classifier emits final classification per the 3-case logic above (Case A → tier-1 redirect to entry_price_mismatch/position_qty_mismatch; Case B → tier-2 multi_partial_vs_consolidated; Case C → tier-2 schwab_returned_no_match); prints projected classification. The Pass-2 re-fetch IS performed under dry-run because the classifier needs actual source-of-truth data to decide; the audit row is written but no journal mutation occurs.
-- `--apply`: same Pass-2 re-fetch + actual classification + tier-1 auto-apply (with SAVEPOINT-per-correction per §7.1) OR tier-2 stamp.
+**Backfill behavior under production environment (Codex R4 Major #1 fix — LOCKED tier-2-only per §8.4 Pass-2-tier-1-FORBIDDEN):**
+- Dry-run: Pass 1 → interim tier-2 `unsupported`; Pass 2 re-fetches Schwab via `get_account_orders`; classifier emits final classification per the 3-case logic above — ALL three cases land tier-2 because Pass-2 source data is order-level not execution-level (Case A → tier-2 `unknown_schwab_subtype`; Case B → tier-2 `multi_partial_vs_consolidated`; Case C → tier-2 `schwab_returned_no_match`); prints projected classification. The Pass-2 re-fetch IS performed under dry-run because the classifier needs actual source-of-truth data to disposition the projection; the `schwab_api_calls` audit row is written but no journal/discrepancy mutation occurs (per §8.2 dry-run mutation-scope LOCK).
+- `--apply`: same Pass-2 re-fetch + actual tier-2 classification + tier-2 stamp (`resolution='pending_ambiguity_resolution'` + `ambiguity_kind` per the case). NO tier-1 auto-apply on Pass-2 data per the lock. SAVEPOINT-per-correction discipline per §7.1 still applies to the stamping UPDATE.
 
 **Backfill behavior under sandbox environment:** Pass 2's Schwab re-fetch is short-circuited per §9.7. Classifier emits tier-2 `unsupported` with rationale `"sandbox: cannot re-fetch source-canonical payload"`. Discrepancy stays unresolved-pending-ambiguity. Operator re-runs backfill under production environment OR dispositions manually via `resolve-ambiguity`.
 
@@ -1289,12 +1289,18 @@ Default recommendation: pivot BOTH; per-discrepancy-type sub-classifiers handle 
 
 Spec locked: CLI-only V1, web V2. Operator can revisit if their workflow strongly favors web — but the operator-locked architectural framing supports CLI as the operator's discrepancy-resolution surface (per §6.1 rationale).
 
-### §14.OQ-4 — `multi_partial_vs_consolidated` default choice (recommend `consolidate_using_schwab_vwap`)
+### §14.OQ-4 — `multi_partial_vs_consolidated` default choice (Codex R4 Minor #1 fix — revised)
 
-When operator runs `show-ambiguity`, which choice is highlighted as the "recommended" default? Spec recommends `consolidate_using_schwab_vwap` because:
-- Least invasive (no fill table changes other than a price field).
-- Preserves existing trade analytics (single-fill semantics intact).
-- Operator can later opt for split if desired (always reversible via tier-3 override).
+When operator runs `show-ambiguity`, which choice is highlighted as the "recommended" default? Earlier spec recommended `consolidate_using_schwab_vwap` for least-invasiveness; that recommendation is SUPERSEDED per the §8.4 + §6.2.1 Codex R4 Major #2 lock — V1 cannot auto-derive VWAP from order-level Schwab data, so the `consolidate_using_operator_vwap` choice requires operator-supplied execution prices (more operator work than originally framed).
+
+Revised spec recommendation: **`keep_journal_as_is`** as the V1 default highlighted choice. Rationale:
+- Zero operator work (no `--custom-value` required).
+- Preserves the journal as-recorded (operator already typed it from memory at trade-entry time; the no-mutation outcome is consistent with "operator's recall stands until proven wrong by execution-level data").
+- Operator-friendly default for the V1 mapper-limitation case where execution data isn't readily available without a broker-statement consultation.
+- Operator can pick `consolidate_using_operator_vwap` OR `split_into_partials` OR `custom` when they're willing to do the broker-statement lookup work.
+- Tier-3 override still available if a later discovery reveals the journal was wrong; `keep_journal_as_is` doesn't foreclose later corrections.
+
+V2 candidate: once the mapper exposes execution-leg data, the recommended default reverts to auto-VWAP. Banked at `docs/phase3e-todo.md` for post-Phase-12 standalone dispatch.
 
 Writing-plans confirms via operator preference.
 
