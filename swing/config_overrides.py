@@ -21,6 +21,11 @@ _V1_PATHS = (
     "pipeline.chart_top_n_watch",
     "account.risk_equity_floor",
     "integrations.schwab.account_hash",
+    # Phase 12 Sub-bundle B T-B.2 — Schwab app credentials cfg-cascade entries.
+    # FIELD_REGISTRY surfaces both masked; `swing config show` calls
+    # `get_field_source` for every registry path, so these must appear here too.
+    "integrations.schwab.client_id",
+    "integrations.schwab.client_secret",
 )
 
 
@@ -106,6 +111,14 @@ def apply_overrides(base_cfg: Config) -> Config:
     sw_callback = _get(overrides, "integrations.schwab.callback_url")
     if not isinstance(sw_callback, _Missing):
         new_schwab = replace(new_schwab, callback_url=str(sw_callback))
+    # Phase 12 Sub-bundle B T-B.2 — Schwab app credentials cfg-cascade
+    # (env vars > user-config.toml > prompt; T-B.1 wires the consumer).
+    sw_cid = _get(overrides, "integrations.schwab.client_id")
+    if not isinstance(sw_cid, _Missing):
+        new_schwab = replace(new_schwab, client_id=str(sw_cid))
+    sw_csec = _get(overrides, "integrations.schwab.client_secret")
+    if not isinstance(sw_csec, _Missing):
+        new_schwab = replace(new_schwab, client_secret=str(sw_csec))
 
     if (
         new_finviz is not base_cfg.integrations.finviz

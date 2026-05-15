@@ -85,6 +85,38 @@ FIELD_REGISTRY: tuple[FieldSpec, ...] = (
         soft_warn_min=None, soft_warn_max=None,
         masked=True,
     ),
+    # Phase 12 Sub-bundle B T-B.2 — Schwab app credentials cfg-cascade entries.
+    # Mirrors `account_hash` masked=True template; auto-inherits first-3 +
+    # `***` + last-2 mask rendering via `mask_sensitive_value`. NOT editable
+    # via `swing config set` (write path is user-config.toml direct + future
+    # T-B.4 web form per dispatch brief); registry entry surfaces them masked
+    # in `swing config show` + `/config` web page.
+    FieldSpec(
+        path="integrations.schwab.client_id",
+        label="Schwab client_id",
+        description=(
+            "Schwab Developer Portal app client_id (sensitive). Cfg-cascade "
+            "fallback when `SCHWAB_CLIENT_ID` env var absent. Displayed "
+            "masked here."
+        ),
+        type=str, default="",
+        hard_refuse_min=None, hard_refuse_max=None,
+        soft_warn_min=None, soft_warn_max=None,
+        masked=True,
+    ),
+    FieldSpec(
+        path="integrations.schwab.client_secret",
+        label="Schwab client_secret",
+        description=(
+            "Schwab Developer Portal app client_secret (sensitive). Cfg-cascade "
+            "fallback when `SCHWAB_CLIENT_SECRET` env var absent. Displayed "
+            "masked here."
+        ),
+        type=str, default="",
+        hard_refuse_min=None, hard_refuse_max=None,
+        soft_warn_min=None, soft_warn_max=None,
+        masked=True,
+    ),
 )
 
 
