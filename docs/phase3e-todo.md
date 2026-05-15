@@ -20,6 +20,25 @@
 
 ---
 
+## 2026-05-15 Pipeline run on empty finviz inbox should auto-trigger `_step_finviz_fetch` (operator-reported during Phase 12 Sub-bundle A S5 gate)
+
+**Symptom (operator-surfaced 2026-05-15 during Phase 12 Sub-bundle A S5 gate):** `swing pipeline run` against an empty `data/finviz-inbox/` (folder exists but contains no CSV — common in fresh worktrees per yesterday's #3 fix that auto-creates the dir but doesn't populate it) errors with `No CSV files in <dir>` + state=failed. Should instead invoke the Finviz Elite API fetch path (`_step_finviz_fetch` semantics) to auto-populate the inbox + then proceed.
+
+**Root cause:** at `swing/pipeline/runner.py:run_pipeline_internal` L425+, `select_csv(cfg.paths.finviz_inbox_dir)` runs FIRST + raises `NoFilesError` on empty dir → pipeline fails. `_step_finviz_fetch` (which DOES auto-fetch via Finviz API) is registered as a pipeline step at L499, AFTER `select_csv` has already errored. The architectural intent appears to have been "pipeline reads existing CSV from prior `swing finviz fetch` invocation" — but on first-run empty-inbox state, there's no prior CSV.
+
+**Fix candidate:** when `select_csv` raises `NoFilesError`, attempt a synchronous `_step_finviz_fetch` (or extracted core helper `_finviz_fetch_core(cfg)`) inline + retry `select_csv`. If the auto-fetch ALSO produces no CSV (Finviz API rate-limited, Finviz Elite credentials missing, etc.) → THEN fail with combined error message ("inbox empty + auto-fetch failed: <reason>"). Preserves the existing select-then-error path for AmbiguousInboxError; only the empty-inbox path is widened.
+
+**Discriminating-test pattern:** plant empty inbox dir (after yesterday's #3 mkdir bootstrap fix) + monkeypatch `_finviz_fetch_core` to write a known CSV + invoke `run_pipeline_internal` + assert (a) auto-fetch fired, (b) CSV present in inbox post-call, (c) pipeline state != "failed" on the inbox-empty cause (may still fail later on yfinance / Schwab / etc. — that's fine; the empty-inbox cause is the specific axis under test).
+
+**Defer-or-fix-soon disposition:** small-scope bug; bundle into next polish dispatch (could be next Phase 12 sub-bundle OR standalone). Operator-paced.
+
+**Cross-references:**
+- 2026-05-15 yesterday's missing-folder fix at commit `6ea94f7` (closed the missing-FOLDER case; this is the empty-FOLDER follow-up).
+- `_step_finviz_fetch` definition at `swing/pipeline/runner.py:1956` + `_finviz_fetch_core` helper at L1791.
+- `select_csv` at `swing/pipeline/finviz_select.py:50`.
+
+---
+
 ## 2026-05-15 Pipeline run errors out on missing `data/finviz-inbox/` folder (operator-reported)
 
 **Symptom (operator-surfaced 2026-05-15 during Sub-bundle D operator-witnessed gate):** `swing pipeline run` errors out with "no csv found" when `data/finviz-inbox/` directory does not exist on the operator's filesystem.
