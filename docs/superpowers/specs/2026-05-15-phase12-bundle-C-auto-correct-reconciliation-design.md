@@ -817,7 +817,7 @@ At dispatch time, production has 3 unresolved-material discrepancies (39 DHC + 4
 NEW subcommand:
 
 ```
-swing journal reconcile-backfill [--apply] [--dry-run] [--ticker <ticker>] [--limit <N>]
+swing journal reconcile-backfill [--apply] [--dry-run] [--ticker <ticker>] [--limit <N>] [--no-pass-2-on-dry-run] [--retry-pass-2-failures]
 ```
 
 Default mode: `--dry-run`. Prints a classification matrix showing each unresolved discrepancy + its proposed classification + (if tier-1) the proposed correction target. **Codex R2 Major #1 fix (LOCKED) — dry-run mutation scope:** dry-run does NOT mutate journal tables (`fills`/`trades`/`cash_movements`/`account_equity_snapshots`), does NOT mutate `reconciliation_discrepancies.resolution`/`ambiguity_kind`, does NOT INSERT `reconciliation_corrections`, does NOT INSERT `trade_events`, does NOT UPDATE `review_log.superseded_by_correction_id`. Dry-run DOES write `schwab_api_calls` audit rows when Pass-2 re-fetches occur (§8.4 Pass 2 is a read of source-of-truth; the audit row is the read's audit-trail contract, not a journal mutation). The CLI prints an explicit advisory before any Pass-2 re-fetches: `"dry-run will consume Schwab API quota for N discrepancies and write audit rows; only journal-side mutations are skipped"`. Operator can pass `--no-pass-2-on-dry-run` to skip Pass-2 entirely on dry-run (resulting in tier-2 `unsupported` for Pass-2-required discrepancies in the projected matrix; trade-off: less accurate dry-run projection). V2 candidate: a no-audit preview mode that caches Pass-2 responses in memory without writing audit rows; banked.
@@ -844,7 +844,19 @@ The backfill needs source_payload (Schwab API responses) to classify. The shippe
 
 2. **Pass 2 — re-fetch Schwab when Pass 1 emits `ambiguity_kind='unsupported'` or persisted JSON is provably insufficient.** For `unmatched_open_fill` / `unmatched_close_fill` discrepancies with `actual_value_json={"matched": null}` (the persisted shape on shipped emitter), Pass 1 cannot distinguish partials-vs-no-match-vs-multi-match. **Pass 2 calls `get_account_orders` at `swing/integrations/schwab/trader.py:329` (NOT `get_account_transactions` — Codex R2 Critical #1 verification: `SchwabTransactionResponse` at `swing/integrations/schwab/models.py:207-218` carries only transaction_id+date+type+net_amount+description with NO symbol/quantity/price; only the orders endpoint's `SchwabOrderResponse` at `models.py:133-203` carries `instrument_symbol`+`quantity`+`price`+`instruction` needed for fill-level partial-fill matching).** Each Pass 2 fetch consumes one `schwab_api_calls` audit row with `surface='cli'` (operator-initiated backfill) + `linked_correction_id` set when a correction is ultimately written. Per Phase 11 sandbox gating (§9.7), under `environment='sandbox'` Pass 2 returns no domain data; the classifier emits tier-2 `unsupported` with rationale "sandbox: cannot re-fetch source-canonical payload".
 
-   **V1 mapper limitation (single order with multiple executions):** the shipped V1 `SchwabOrderResponse` mapper at `swing/integrations/schwab/mappers.py` flattens orders to one row each, carrying the order's aggregated quantity + price (or limit price). If a single Schwab order had multiple executions at different prices (e.g., a 39-share market order that filled in 2 partials at $7.57 + $7.59), V1 returns ONE SchwabOrderResponse with quantity=39 + price=<aggregate or limit>, NOT 2 separate execution-level rows. The classifier sees N=1 and routes to either tier-1 `entry_price_mismatch` redirect (if the aggregated price differs from journal) OR tier-1 if (qty, price) all match. If the broker shipped the fill as 2 SEPARATE orders (20-share + 19-share), V1 returns 2 SchwabOrderResponse rows + classifier emits tier-2 `multi_partial_vs_consolidated`. V2 candidate: expand the mapper to surface `orderActivityCollection[].executionLegs[]` for per-execution fill detail; would let Sub-bundle C disposition the single-order-multi-execution case. Banked at `docs/phase3e-todo.md` for post-Phase-12 standalone dispatch.
+   **V1 mapper limitation — tier-1 redirect FORBIDDEN when source is order-level (Codex R3 Critical #1 + Major #1 fix — LOCKED):** the shipped V1 `SchwabOrderResponse.price` field maps from the order's top-level `price` (limit-price) OR `stopPrice` per the shipped mapper at `swing/integrations/schwab/mappers.py:223-229`, NOT from per-execution fill prices. A limit/stop price can differ from the actual execution price, so auto-correcting `fills.price` to match `SchwabOrderResponse.price` would silently corrupt the journal — a textbook violation of the §4.4 determinism principle. Pass 2 returning `SchwabOrderResponse` data SHALL NOT be used for tier-1 price corrections. The classifier behavior under Pass 2 with order-level source data is **tier-2 always**:
+
+   - 0 orders returned → tier=2, `ambiguity_kind='schwab_returned_no_match'`.
+   - 1 order returned (single Schwab order; cannot disambiguate single-execution vs multiple-executions due to V1 mapper limitation) → tier=2, `ambiguity_kind='unknown_schwab_subtype'` with rationale "Schwab returned a single order at order-grain; V1 mapper does not expose per-execution fill detail; cannot determine whether journal price reflects actual execution. Operator dispositions via `--choice acknowledge` (keep journal as-is) or `--choice operator_truth` (operator supplies real fill price from broker statement)".
+   - 2+ orders returned summing to journal qty → tier=2, `ambiguity_kind='multi_partial_vs_consolidated'` (operator picks split / VWAP-consolidate / keep-consolidated / custom — but operator's choice does NOT auto-derive from `SchwabOrderResponse.price`; operator must SUPPLY the truth value via `--custom-value` if they want price corrections, OR pick `keep_journal_as_is` if confident the operator-typed price is correct).
+   - 2+ orders returned NOT summing to journal qty → tier=2, `ambiguity_kind='multi_match_within_window'`.
+   - In every case: Pass 2 with order-level source data MAY confirm PRESENCE of matching Schwab activity but MAY NOT auto-derive fill-level prices.
+
+   V2 candidate: expand the mapper to surface `orderActivityCollection[].executionLegs[]` for per-execution fill detail. Once shipped, sub-bundle V2 of Sub-bundle C can revisit the determinism boundary and consider tier-1 price corrections from execution-leg data. Banked at `docs/phase3e-todo.md` for post-Phase-12 standalone dispatch.
+
+   **Persisted-JSON vs Pass-2-re-fetched data distinction (LOCKED):** the Pass-2-FORBIDDEN rule applies to NEW data the classifier re-fetches mid-backfill, NOT to the persisted `actual_value_json` already emitted by the shipped reconciliation at original-run time. Tier-1 from persisted `entry_price_mismatch` JSON IS allowed (CVGI 41 path). Important caveat for transparency: the shipped reconciliation at `swing/trades/schwab_reconciliation.py:454-479` compares against `SchwabOrderResponse.price` which is order-level (limit/stop price), NOT execution-level — verified at Codex R3 verification of shipped mappers. The operator has locked CVGI 41 as tier-1 despite this order-level-vs-execution distinction; the underlying assumption is that for typical Schwab-routed swing-trade orders, the order/limit price closely matches actual execution price. Sub-bundle C does NOT re-litigate this operator-lock (§1.3 framing); the order-level basis is the SAME limitation already accepted at original-discrepancy-emit time.
+
+   **Net effect:** the discriminating examples in §10.2 + §10.3 (DHC 39 + VSAT 40) resolve to tier-2 ambiguity-resolution regardless of Pass 2 response shape because the persisted JSON for `unmatched_open_fill` is `{"matched": null}` (no price/qty/execution data to redirect from). CVGI 41 (§10.1) resolves to tier-1 from persisted `entry_price_mismatch` JSON. The asymmetric treatment of persisted-JSON-tier-1 vs Pass-2-re-fetched-tier-1 is the cleanest path that respects both the operator-lock on CVGI 41 AND the determinism principle for unmatched-fill backfill resolution.
 
 3. **Pass 2 failure-mode (Codex R2 Major #2 fix — LOCKED persisted state).** If the Schwab re-fetch fails (auth_failed / rate_limited / network error), the classifier emits tier-2 `unsupported` with rationale "Pass 2 re-fetch failed: <reason>". The persisted state under `--apply` is `resolution='pending_ambiguity_resolution'` + `ambiguity_kind='unsupported'` + `resolution_reason` carrying the failure reason. This is the SAME persisted state as any other tier-2 `unsupported` classification; downstream operator surfaces (CLI `list-pending-ambiguities`, Phase 10 dashboard banner) treat them identically.
 
@@ -1026,9 +1038,9 @@ Auto-correction service constructs its own Schwab client (when needed) via the e
 
 **Backfill Pass 2 (re-fetch Schwab — §8.4):**
 - Pass 2 fetches Schwab via `swing/integrations/schwab/trader.py:get_account_orders(...)` (per §8.4 Codex R2 C#1 fix — the orders endpoint, NOT the transactions endpoint) for `(ticker='DHC', from_date='2026-04-27', to_date='2026-04-27')`. Writes a `schwab_api_calls` audit row with `surface='cli'` (backfill is operator-invoked CLI), `endpoint='accounts.orders.list'`, plus all the existing audit columns.
-- Pass 2 receives a `list[SchwabOrderResponse]` filtered to DHC. Sub-classifier (§4.3.2 unmatched_open_fill) re-evaluates against the response shape:
-  - If Schwab returns 2 SEPARATE orders summing to qty=39 (e.g., 20 + 19) → tier=2, `ambiguity_kind='multi_partial_vs_consolidated'`.
-  - If Schwab returns 1 order with qty=39 + aggregated price (single order that filled in multiple executions; V1 mapper limitation per §8.4) → classifier inspects the aggregated price. If it differs from journal $7.58 by > price tolerance → redirect to `entry_price_mismatch` sub-classifier (tier=1 if other fields match); else tier=1 with `correction_target={}` (already-aligned) OR (more honest) classifier emits tier-2 `ambiguity_kind='unknown_schwab_subtype'` if V1 cannot recover per-execution detail and the operator must inspect manually.
+- Pass 2 receives a `list[SchwabOrderResponse]` filtered to DHC. Sub-classifier (§4.3.2 unmatched_open_fill) re-evaluates against the response shape — **tier-2 ALWAYS per §8.4 V1-mapper-limitation lock** (Pass-2-tier-1-FORBIDDEN for order-level source data):
+  - If Schwab returns 2 SEPARATE orders summing to qty=39 (e.g., 20 + 19) → tier=2, `ambiguity_kind='multi_partial_vs_consolidated'` (operator picks split / VWAP-consolidate / keep-consolidated / custom; operator MUST supply price truth via `--custom-value` if they want price corrections since `SchwabOrderResponse.price` is order-level not execution-level).
+  - If Schwab returns 1 order with qty=39 + aggregated price → tier=2, `ambiguity_kind='unknown_schwab_subtype'` with rationale "Schwab returned a single order at order-grain; V1 mapper does not expose per-execution fill detail; operator dispositions via `--choice acknowledge` (keep journal as-is) or `--choice operator_truth` (operator supplies execution price)".
   - If Schwab returns 0 orders → tier=2, `ambiguity_kind='schwab_returned_no_match'`.
 - Pass 2 OUTPUT (assume the 2-separate-orders case): `ClassificationResult(tier=2, ambiguity_kind='multi_partial_vs_consolidated', correction_target=None, candidate_choices=[...the 2 SchwabOrderResponse rows enumerated as partial-fill candidates...])`.
 
@@ -1098,15 +1110,16 @@ This is the more invasive path; the VWAP path is the operator-friendly default a
 
 **Backfill Pass 2 (§8.4) — re-fetch Schwab transactions for (VSAT, 2026-05-06):** consumes one `schwab_api_calls` audit row with `surface='cli'`. Three downstream classifier paths depending on actual Schwab payload:
 
-**Case A (Schwab actually has a single matching fill, different price/qty than journal):**
-- LOGIC routes to redirect to `entry_price_mismatch` sub-classifier or `position_qty_mismatch` sub-classifier per which field differs.
-- Likely tier-1 (single-field mismatch) → auto-correct.
+**Case A (Schwab returns 1 single matching order, different price OR qty than journal):**
+- Per §8.4 Codex R3 C1+M1 LOCK (Pass-2-tier-1-FORBIDDEN for order-level source): tier=2, `ambiguity_kind='unknown_schwab_subtype'`. Classifier does NOT redirect to `entry_price_mismatch` sub-classifier from Pass-2 order-level data because `SchwabOrderResponse.price` is limit/order price, not execution price. Operator dispositions via `--choice operator_truth` (operator supplies real execution price from broker statement) OR `--choice acknowledge` (keep journal as-is) OR `--choice custom`.
 
-**Case B (Schwab has 2 partial fills summing to qty=2):**
-- Tier-2 `multi_partial_vs_consolidated` → operator picks per §10.2.
+**Case B (Schwab returns 2 SEPARATE orders summing to qty=2):**
+- Tier=2, `ambiguity_kind='multi_partial_vs_consolidated'` → operator picks per §10.2 (same Pass-2-tier-1-FORBIDDEN rule).
 
-**Case C (Schwab has NO record at all — was a manual broker fill from a different account or pre-Schwab-arc legacy):**
-- Tier-2 `schwab_returned_no_match` → operator decides: mark unmatched OR supply truth OR acknowledge.
+**Case C (Schwab returns 0 orders for the (VSAT, 2026-05-06) window):**
+- Tier=2, `ambiguity_kind='schwab_returned_no_match'` → operator decides: mark unmatched OR supply truth OR acknowledge.
+
+(All three cases are tier-2; no tier-1 redirect is permitted because Pass-2 source data is order-level not execution-level.)
 
 **Why VSAT 40 is per-row data-dependent:** Pass 1 (§8.4) cannot break the ambiguity from `{"matched": null}` alone — same persisted-shape gap as DHC 39. Pass 2 re-fetches Schwab API for (VSAT, 2026-05-06) to get the full transaction list (consuming a `schwab_api_calls` audit row attributed with `surface='cli'`; under sandbox this short-circuits per §9.7 and classifier emits tier-2 `unsupported`).
 
@@ -1398,16 +1411,17 @@ Per Phase 11 + Phase 12 precedent: each sub-sub-bundle ships with an operator-wi
 - S3: sandbox short-circuit test — under sandbox env, no journal mutation occurs even when classifier emits tier-1.
 - S4: ruff baseline unchanged.
 
-**C.D gate (the big one):**
+**C.D gate (the big one) — Codex R3 Major #2 fix (LOCKED sequence):**
 - S1: inline `pytest -q` PASS.
-- S2: `swing journal reconcile-backfill --dry-run` against production DB; outputs the projected classification matrix; operator reviews.
-- S3: `swing journal reconcile-backfill --apply --ticker CVGI` against production; verifies disc 41 auto-corrected end-to-end per §10.1 (journal `fills.fill_id=9.price = $5.30`; `reconciliation_corrections` row written; discrepancy resolution = `auto_corrected_from_schwab`).
-- S4: `swing journal discrepancy show-ambiguity 39` displays the 4 candidate choices for DHC 39 (per §10.2).
-- S5: operator picks (interactively, no automation) — `swing journal discrepancy resolve-ambiguity 39 --choice <picked> --reason ...` — and the disposition lands per §10.2 post-state.
-- S6: `swing journal discrepancy resolve-ambiguity 40 ...` per VSAT classification result (likely operator dispositions one of the tier-2 paths or, if classifier upgraded to tier-1 on actual payload, the `--apply` of backfill already auto-corrected it).
-- S7: Phase 10 dashboard banner clears to ZERO unresolved-material discrepancies (assuming all 3 dispositioned).
-- S8: ruff baseline unchanged.
-- S9: cycle-checklist + CLAUDE.md gotcha additions per writing-plans-time spec.
+- S2: `swing journal reconcile-backfill --dry-run` against production DB; outputs the projected classification matrix (CVGI 41 → tier-1; DHC 39 + VSAT 40 → tier-2 with their ambiguity_kinds projected per §10.2 + §10.3); operator reviews. Dry-run consumes Pass-2 Schwab API quota for DHC + VSAT (writes `schwab_api_calls` audit rows; no journal mutations per §8.2 dry-run scope LOCK).
+- S3: `swing journal reconcile-backfill --apply --ticker CVGI` against production; verifies disc 41 auto-corrected end-to-end per §10.1 (journal `fills.fill_id=9.price = $5.30`; `reconciliation_corrections` row written; discrepancy `resolution='auto_corrected_from_schwab'`).
+- S4: `swing journal reconcile-backfill --apply --ticker DHC` AND `--apply --ticker VSAT` (two separate invocations OR one invocation without --ticker filter; operator preference); verifies DHC 39 + VSAT 40 are stamped tier-2 with `resolution='pending_ambiguity_resolution'` + `ambiguity_kind` populated per their actual Pass-2 outcomes (one of the §10.2/§10.3 Cases A/B/C). This step is REQUIRED before S5 because `show-ambiguity` only renders the candidate menu after the discrepancy is in `pending_ambiguity_resolution` state (per §6.2 CLI semantics + §8 backfill mutation discipline).
+- S5: `swing journal discrepancy show-ambiguity 39` displays the candidate choices for DHC 39 per the ambiguity_kind set in S4 (per §10.2).
+- S6: operator picks (interactively, no automation) — `swing journal discrepancy resolve-ambiguity 39 --choice <picked> --reason ...` — and the disposition lands per §10.2 post-state (resolution → `operator_resolved_ambiguity`).
+- S7: `swing journal discrepancy show-ambiguity 40` then `resolve-ambiguity 40 --choice <picked> --reason ...` for VSAT 40 per §10.3 (tier-2 case A/B/C dispositioned per actual Pass-2 outcome).
+- S8: Phase 10 dashboard banner clears to ZERO unresolved-material discrepancies (assuming all 3 dispositioned). NOTE: Phase 10 banner predicate change per §14.OQ-7 (include `'pending_ambiguity_resolution'` alongside `'unresolved'` in unresolved-material count) — verified at S4 that the banner correctly increments when DHC + VSAT land in pending state (after S3+S4 the banner shows count=2; after S6+S7 count=0).
+- S9: ruff baseline unchanged.
+- S10: cycle-checklist + CLAUDE.md gotcha additions per writing-plans-time spec.
 
 ---
 
