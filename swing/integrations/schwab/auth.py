@@ -93,6 +93,24 @@ def _mask_credential(value: str | None) -> str:
     return f"{s[:3]}***{s[-2:]}"
 
 
+def _safe_cfg_attr(cfg: Any, attr: str) -> Any:
+    """T-B.1 — duck-typed safe lookup for `cfg.integrations.schwab.<attr>`.
+
+    Returns the attribute value if the chain resolves, else `None`. Tolerates
+    cfg objects that are missing the `integrations` / `schwab` sub-namespaces
+    (e.g., legacy test stubs constructed before T-B.2 added the cfg fields).
+    Tier-2 cfg-resolution treats `None` return identically to empty-string —
+    falls through.
+    """
+    integrations = getattr(cfg, "integrations", None)
+    if integrations is None:
+        return None
+    schwab = getattr(integrations, "schwab", None)
+    if schwab is None:
+        return None
+    return getattr(schwab, attr, None)
+
+
 def resolve_credentials_env_or_prompt(
     cfg: Any,
     environment: str,
@@ -100,47 +118,63 @@ def resolve_credentials_env_or_prompt(
     allow_prompt: bool = True,
     prompter: Callable[..., str] | None = None,
 ) -> tuple[str | None, str | None]:
-    """Resolve Schwab `client_id` + `client_secret` from env vars or prompt.
+    """Resolve Schwab `client_id` + `client_secret` via env > cfg > prompt cascade.
 
-    T-A.1 helper: consults `SCHWAB_CLIENT_ID` + `SCHWAB_CLIENT_SECRET` env
-    vars FIRST. If both set + non-empty (after `.strip()`) → returns them
-    + registers them in the Schwab redaction registry; SKIPS prompt. If
-    only ONE of the two is set (or empty / whitespace-only) → raises
-    `SchwabConfigMissingError` with a masked-form actionable message.
+    Sub-bundle A T-A.1 helper extended at Phase 12 Sub-bundle B T-B.1 —
+    consults three tiers in priority order:
+      Tier-1 (highest): `SCHWAB_CLIENT_ID` + `SCHWAB_CLIENT_SECRET` env
+        vars. Both set + non-empty (after `.strip()`) → returns them;
+        SKIPS cfg + prompt. If only ONE is set OR either is empty /
+        whitespace-only when the other is PRESENT → raises
+        `SchwabConfigMissingError` (env-tier partial signals operator
+        typo / shell-session error, not legitimate fallback intent).
+      Tier-2 (middle; NEW T-B.1): `cfg.integrations.schwab.client_id` +
+        `.client_secret`. Both non-empty + non-whitespace → returns them;
+        SKIPS prompt. Partial cfg-tier (one set, the other empty /
+        whitespace-only) FALLS THROUGH to next tier (differs from
+        env-tier — file-tier is operator-friendly, allowing mix of
+        env-var-for-secret + file-for-id without forcing an error).
+      Tier-3 (lowest): interactive `click.prompt(...)` fallback.
+
+    All resolution paths register the resolved secrets in the Schwab
+    redaction registry BEFORE returning so subsequent schwabdev log
+    records that interpolate them flow through Layer-2 redaction.
 
     Args:
-        cfg: Reserved for future per-env credential resolution. Currently
-            unused for env-var lookup; the brief locks `SCHWAB_CLIENT_ID` /
-            `SCHWAB_CLIENT_SECRET` as flat names (no per-env prefix).
-        environment: Reserved for future per-env credential resolution.
-            Currently unused for env-var lookup. Retained in signature so
-            callsites pre-bind their env scope.
-        allow_prompt: When True, fall back to `click.prompt(...)` (via the
-            optional `prompter` parameter) on the FULLY-ABSENT case (both
-            env vars unset). When False, the FULLY-ABSENT case returns
-            `(None, None)` — pipeline path contract for T-A.3 to consume.
-        prompter: Test-injection seam. When None, defaults to a `click.prompt`-
-            based callable. Receives the label as first positional arg + the
-            same `type=str` / `hide_input=` kwargs the legacy callsites used.
+        cfg: Config object with `cfg.integrations.schwab.client_id` +
+            `.client_secret` fields (T-B.2 added these). When fields are
+            empty / whitespace-only / absent (duck-typed), cfg-tier
+            falls through.
+        environment: Reserved for future per-env credential resolution
+            (env-var names + cfg fields are FLAT across environments in
+            V1). Retained in signature so callsites pre-bind their env
+            scope for future extension.
+        allow_prompt: When True, fall back to `click.prompt(...)` (via
+            the optional `prompter` parameter) on the FULLY-ABSENT-AT-
+            ALL-TIERS case. When False, returns `(None, None)` —
+            pipeline path contract (T-A.3 + T-B.1 AC6 extension).
+        prompter: Test-injection seam. When None, defaults to
+            `click.prompt`. Receives label + `type=str` / `hide_input=`
+            kwargs the legacy callsites used.
 
     Returns:
-        Tuple `(client_id, client_secret)`. Both strings on success; both
-        None when `allow_prompt=False` AND both env vars are FULLY absent.
+        Tuple `(client_id, client_secret)`. Both strings on success
+        (env-tier, cfg-tier, or prompt). Both None when
+        `allow_prompt=False` AND env + cfg are both absent / partial.
 
     Raises:
-        SchwabConfigMissingError: Partial env-var set (one of two set, or
-            empty / whitespace-only). Message names both env-var names +
-            includes the masked-form rendering of whichever was set.
+        SchwabConfigMissingError: Partial env-tier set (one of two set,
+            or empty / whitespace-only). Message names both env-var
+            names + masked-form rendering. NOTE: partial cfg-tier does
+            NOT raise — it falls through (locked at T-B.1).
 
     Notes:
-        Secret-leak guarantee — on successful env-var resolution, calls
-        `register_schwab_secrets([client_id, client_secret])` + invokes
-        `ensure_schwab_log_redaction_factory_installed()` BEFORE returning
-        so subsequent schwabdev log records that interpolate the values
-        flow through Layer-2 redaction (CLAUDE.md gotcha family).
+        Sentinel-leak guarantee — every successful tier resolution calls
+        `register_schwab_secrets(...)` + invokes
+        `ensure_schwab_log_redaction_factory_installed()` BEFORE
+        returning (CLAUDE.md gotcha family; lesson #2 mirrored from
+        Sub-bundle A — pre-call factory-replacement defense).
     """
-    del cfg, environment  # reserved for future use; unused for env-var lookup
-
     raw_id = os.environ.get(_ENV_VAR_CLIENT_ID)
     raw_secret = os.environ.get(_ENV_VAR_CLIENT_SECRET)
 
@@ -148,7 +182,7 @@ def resolve_credentials_env_or_prompt(
     # we DISTINGUISH "env var name present in environment" (operator set it,
     # even if to empty) from "env var name absent entirely" because the
     # partial-vs-fully-absent rule discriminates on that distinction (per
-    # acceptance criterion #3).
+    # Sub-bundle A acceptance criterion #3).
     id_present = _ENV_VAR_CLIENT_ID in os.environ
     secret_present = _ENV_VAR_CLIENT_SECRET in os.environ
     id_clean = (raw_id or "").strip()
@@ -156,18 +190,22 @@ def resolve_credentials_env_or_prompt(
     id_usable = bool(id_clean)
     secret_usable = bool(secret_clean)
 
-    # Happy path: both env vars usable → register + return; skip prompt.
+    # Tier-1 happy path: both env vars usable → register + return; skip cfg + prompt.
     if id_usable and secret_usable:
         register_schwab_secrets([id_clean, secret_clean])
         ensure_schwab_log_redaction_factory_installed()
         return id_clean, secret_clean
 
-    # Partial: at least one env var is PRESENT (operator set it) but the
-    # OTHER is missing OR both are present but at least one is empty /
-    # whitespace-only. Reject with masked-form error. The "both present
-    # but both empty" case lands here too — per dispatch brief §3
-    # acceptance criterion #3, empty == absent FOR THIS PARTIAL CHECK
-    # (treated as operator misconfiguration, not legitimate fallback intent).
+    # Tier-1 partial: at least one env var is PRESENT (operator set it) but
+    # the OTHER is missing OR both are present but at least one is empty /
+    # whitespace-only. Reject with masked-form error.
+    #
+    # T-B.1 LOCK (differs from cfg-tier below): partial env-tier RAISES
+    # even when cfg-tier could provide a complete fallback. Rationale:
+    # operator's stated intent (env vars) failed; falling through to cfg
+    # silently would HIDE the misconfiguration. cfg-tier partial, by
+    # contrast, falls through because file-tier may legitimately hold one
+    # field while the other comes from env or prompt.
     any_present = id_present or secret_present
     if any_present and not (id_usable and secret_usable):
         raise SchwabConfigMissingError(
@@ -179,10 +217,40 @@ def resolve_credentials_env_or_prompt(
             f"interactive prompt.",
         )
 
-    # Fully absent: neither env var is set.
+    # Tier-2 (NEW T-B.1): consult cfg.integrations.schwab.{client_id,
+    # client_secret}. Both fields non-whitespace → use them; skip prompt.
+    #
+    # T-B.1 LOCK: partial cfg-tier (one field set, the other empty /
+    # whitespace-only) FALLS THROUGH to Tier-3 (NOT raises). Rationale per
+    # dispatch brief §3 AC2: file-tier is operator-friendly — an operator
+    # who has set client_id in user-config.toml but not client_secret may
+    # legitimately want to fall through to env or prompt for the secret,
+    # rather than being forced into an error state. The asymmetry with the
+    # env-tier-partial-raises rule is INTENTIONAL.
+    cfg_id_raw = _safe_cfg_attr(cfg, "client_id")
+    cfg_secret_raw = _safe_cfg_attr(cfg, "client_secret")
+    cfg_id_clean = (cfg_id_raw or "").strip() if isinstance(cfg_id_raw, str) else ""
+    cfg_secret_clean = (
+        (cfg_secret_raw or "").strip()
+        if isinstance(cfg_secret_raw, str)
+        else ""
+    )
+    if cfg_id_clean and cfg_secret_clean:
+        # Sentinel-leak guarantee (mirrors env-tier path): register cfg-
+        # sourced secrets in Layer-0 known-secrets registry BEFORE returning.
+        # Use `ensure_*` (Sub-bundle A lesson #2: factory-replacement defense)
+        # rather than `_install_*_once` so any third-party library that
+        # replaced the process-global LogRecord factory after our initial
+        # install gets re-wrapped before downstream schwabdev calls fire.
+        register_schwab_secrets([cfg_id_clean, cfg_secret_clean])
+        ensure_schwab_log_redaction_factory_installed()
+        return cfg_id_clean, cfg_secret_clean
+
+    # Tier-3: all preceding tiers fell through (env fully absent + cfg
+    # absent / partial). If allow_prompt=False, return (None, None) —
+    # pipeline path contract; criterion 6 bullet 3+4 (env+cfg absent OR
+    # env absent + partial cfg both produce None pair under this branch).
     if not allow_prompt:
-        # Pipeline-path contract: caller (T-A.3) distinguishes (None, None)
-        # from raise via this codepath.
         return None, None
 
     # Both absent + prompt allowed → fall back to interactive prompt.
