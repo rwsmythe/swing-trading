@@ -1016,8 +1016,10 @@ def _finalize_setup_account_linked(
     """Shared helper extracted at T-B.4 — runs the account_linked() audit
     pair + picker selection + persist account_hash to user-config.toml.
 
-    Called by both ``setup_paste_flow`` (surface='cli') AND the new
-    ``setup_paste_flow_with_callback_url`` (surface='web'). Owns its own
+    Called by both ``setup_paste_flow`` AND the new
+    ``setup_paste_flow_with_callback_url`` (both use surface='cli' at v18
+    per CHECK constraint; V2.1 §VII.F amendment candidate widens to 'web').
+    Owns its own
     audit row open + close lifecycle; raises SchwabAuthError on any
     account_linked failure or shape violation, SchwabConfigMissingError
     on multi-account without a picker.
@@ -1377,7 +1379,8 @@ def setup_paste_flow_with_callback_url(
          to `.deleted-<ts>` so the freshly-written tokens file from step 7
          lands cleanly).
       6. INSERT in-flight audit row for the oauth code exchange
-         (endpoint='oauth.code_exchange', surface='web').
+         (endpoint='oauth.code_exchange', surface='cli' at v18 per CHECK
+         constraint — V2.1 §VII.F amendment candidate widens to 'web').
       7. POST to /v1/oauth/token with grant_type=authorization_code,
          redirect_uri = cfg callback_url, code = extracted from form.
          On HTTP success: parse JSON token_dictionary.
@@ -1387,8 +1390,9 @@ def setup_paste_flow_with_callback_url(
       10. Construct ``schwabdev.Client(...)`` — reads our just-written
           tokens file cleanly; no stdin block.
       11. Run the SHARED ``_finalize_setup_account_linked`` helper
-          (account_linked() audit pair + picker + persist account_hash).
-          surface='web' so the audit row is distinguishable from CLI.
+          (account_linked() audit pair + picker + persist account_hash;
+          surface='cli' at v18 — V2.1 §VII.F amendment to widen CHECK
+          enum so web audit rows are distinguishable from CLI).
       12. Return summary dict.
 
     On exception during steps 7-10: close audit row #1 with
