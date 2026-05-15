@@ -27,11 +27,15 @@ as additional plan-text amendment to recon doc §6 §B.
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+import click
 
 from swing.config_user import _user_home
 from swing.integrations.schwab import audit_service
@@ -49,11 +53,491 @@ from swing.integrations.schwab.client import (
 log = logging.getLogger(__name__)
 
 
+# T-A.1 — env-var names operator sets to skip the interactive prompt.
+# Both must be set together; partial sets raise SchwabConfigMissingError
+# rather than silently falling back to prompting only the missing one.
+_ENV_VAR_CLIENT_ID = "SCHWAB_CLIENT_ID"
+_ENV_VAR_CLIENT_SECRET = "SCHWAB_CLIENT_SECRET"
+
+# T-A.2 collision-disambiguation loop upper bound. The disambiguation branch
+# (`<canonical>.deleted-<ts>-1`, `-2`, ...) is unreachable in normal
+# operation — same-second double-invocation would require parallel `swing
+# schwab setup` invocations against the SAME tokens DB, which the CLI is
+# not designed for. The bounded loop exists as a defense-in-depth guard
+# against pathological filesystem states (e.g. a directory full of
+# `*.deleted-<same-ts>-*` siblings); the `else` clause raises with an
+# actionable cleanup message rather than spinning forever.
+_MAX_RENAME_DISAMBIG_ATTEMPTS = 10_000
+
+
+def _mask_credential(value: str | None) -> str:
+    """Mask a credential value for inclusion in operator-visible error text.
+
+    Mirrors `swing.config_validation.mask_sensitive_value` shape (first 3 +
+    `***` + last 2) but with explicit `<absent>` + `<too_short>` markers
+    matching dispatch brief §3 T-A.1 acceptance criterion #2's example
+    error message ("CLIENT_ID=<masked> CLIENT_SECRET=<absent>").
+
+    Discipline: NEVER includes the raw value in the masked output for
+    strings of length >= 5; shorter strings render `<too_short>` rather
+    than the raw bytes so operator misconfiguration (one-char paste) does
+    not leak into error text.
+    """
+    if value is None:
+        return "<absent>"
+    if not value or not value.strip():
+        return "<absent>"
+    s = value
+    if len(s) < 5:
+        return "<too_short>"
+    return f"{s[:3]}***{s[-2:]}"
+
+
+def resolve_credentials_env_or_prompt(
+    cfg: Any,
+    environment: str,
+    *,
+    allow_prompt: bool = True,
+    prompter: Callable[..., str] | None = None,
+) -> tuple[str | None, str | None]:
+    """Resolve Schwab `client_id` + `client_secret` from env vars or prompt.
+
+    T-A.1 helper: consults `SCHWAB_CLIENT_ID` + `SCHWAB_CLIENT_SECRET` env
+    vars FIRST. If both set + non-empty (after `.strip()`) → returns them
+    + registers them in the Schwab redaction registry; SKIPS prompt. If
+    only ONE of the two is set (or empty / whitespace-only) → raises
+    `SchwabConfigMissingError` with a masked-form actionable message.
+
+    Args:
+        cfg: Reserved for future per-env credential resolution. Currently
+            unused for env-var lookup; the brief locks `SCHWAB_CLIENT_ID` /
+            `SCHWAB_CLIENT_SECRET` as flat names (no per-env prefix).
+        environment: Reserved for future per-env credential resolution.
+            Currently unused for env-var lookup. Retained in signature so
+            callsites pre-bind their env scope.
+        allow_prompt: When True, fall back to `click.prompt(...)` (via the
+            optional `prompter` parameter) on the FULLY-ABSENT case (both
+            env vars unset). When False, the FULLY-ABSENT case returns
+            `(None, None)` — pipeline path contract for T-A.3 to consume.
+        prompter: Test-injection seam. When None, defaults to a `click.prompt`-
+            based callable. Receives the label as first positional arg + the
+            same `type=str` / `hide_input=` kwargs the legacy callsites used.
+
+    Returns:
+        Tuple `(client_id, client_secret)`. Both strings on success; both
+        None when `allow_prompt=False` AND both env vars are FULLY absent.
+
+    Raises:
+        SchwabConfigMissingError: Partial env-var set (one of two set, or
+            empty / whitespace-only). Message names both env-var names +
+            includes the masked-form rendering of whichever was set.
+
+    Notes:
+        Secret-leak guarantee — on successful env-var resolution, calls
+        `register_schwab_secrets([client_id, client_secret])` + invokes
+        `ensure_schwab_log_redaction_factory_installed()` BEFORE returning
+        so subsequent schwabdev log records that interpolate the values
+        flow through Layer-2 redaction (CLAUDE.md gotcha family).
+    """
+    del cfg, environment  # reserved for future use; unused for env-var lookup
+
+    raw_id = os.environ.get(_ENV_VAR_CLIENT_ID)
+    raw_secret = os.environ.get(_ENV_VAR_CLIENT_SECRET)
+
+    # Normalise: treat empty / whitespace-only as ABSENT-FOR-RESOLUTION but
+    # we DISTINGUISH "env var name present in environment" (operator set it,
+    # even if to empty) from "env var name absent entirely" because the
+    # partial-vs-fully-absent rule discriminates on that distinction (per
+    # acceptance criterion #3).
+    id_present = _ENV_VAR_CLIENT_ID in os.environ
+    secret_present = _ENV_VAR_CLIENT_SECRET in os.environ
+    id_clean = (raw_id or "").strip()
+    secret_clean = (raw_secret or "").strip()
+    id_usable = bool(id_clean)
+    secret_usable = bool(secret_clean)
+
+    # Happy path: both env vars usable → register + return; skip prompt.
+    if id_usable and secret_usable:
+        register_schwab_secrets([id_clean, secret_clean])
+        ensure_schwab_log_redaction_factory_installed()
+        return id_clean, secret_clean
+
+    # Partial: at least one env var is PRESENT (operator set it) but the
+    # OTHER is missing OR both are present but at least one is empty /
+    # whitespace-only. Reject with masked-form error. The "both present
+    # but both empty" case lands here too — per dispatch brief §3
+    # acceptance criterion #3, empty == absent FOR THIS PARTIAL CHECK
+    # (treated as operator misconfiguration, not legitimate fallback intent).
+    any_present = id_present or secret_present
+    if any_present and not (id_usable and secret_usable):
+        raise SchwabConfigMissingError(
+            f"Both `{_ENV_VAR_CLIENT_ID}` and `{_ENV_VAR_CLIENT_SECRET}` "
+            f"must be set together (non-empty, non-whitespace); got "
+            f"{_ENV_VAR_CLIENT_ID}={_mask_credential(raw_id)} "
+            f"{_ENV_VAR_CLIENT_SECRET}={_mask_credential(raw_secret)}. "
+            f"Either set BOTH env vars or UNSET both to fall back to "
+            f"interactive prompt.",
+        )
+
+    # Fully absent: neither env var is set.
+    if not allow_prompt:
+        # Pipeline-path contract: caller (T-A.3) distinguishes (None, None)
+        # from raise via this codepath.
+        return None, None
+
+    # Both absent + prompt allowed → fall back to interactive prompt.
+    if prompter is None:
+        prompter = click.prompt
+
+    client_id = prompter("Schwab app client_id", type=str)
+    client_secret = prompter(
+        "Schwab app client_secret", type=str, hide_input=True,
+    )
+    # Apply the same `.strip()` discipline the legacy callsites used.
+    client_id = (client_id or "").strip()
+    client_secret = (client_secret or "").strip()
+    if not client_id:
+        raise SchwabConfigMissingError(
+            "client_id is required (non-empty).",
+        )
+    if not client_secret:
+        raise SchwabConfigMissingError(
+            "client_secret is required (non-empty).",
+        )
+    register_schwab_secrets([client_id, client_secret])
+    ensure_schwab_log_redaction_factory_installed()
+    return client_id, client_secret
+
+
 def _now_ms_iso() -> str:
     """ISO 8601 server-stamp at handler entry (Phase 8 server-stamping
     discipline). Matches the format used by Finviz audit + Phase 9 services.
     """
     return datetime.now().isoformat(timespec="microseconds")
+
+
+def _utc_now() -> datetime:
+    """T-A.2 — module-level wall-clock helper used by the self-heal rename
+    path (`_rename_stale_tokens_db`).
+
+    Extracted so tests can `monkeypatch.setattr(auth_mod, "_utc_now", ...)`
+    to inject a deterministic timestamp for the collision-disambiguation
+    test (Test 3 of `test_schwab_setup_self_healing.py`).
+    """
+    import datetime as _dt
+    return datetime.now(_dt.UTC)
+
+
+def _rename_stale_tokens_db(
+    tokens_db_path: Path,
+    *,
+    environment: str,
+    conn: sqlite3.Connection,
+) -> Path | None:
+    """T-A.2 — atomically rename an existing tokens DB to a `.deleted-<ts>`
+    sibling BEFORE invoking schwabdev's `Client.__init__`.
+
+    Solves operator-pain from 2026-05-14 gate: `Client.__init__` auto-attempts
+    a refresh against any existing tokens DB and hard-fails if the refresh
+    token has expired (or any other auth-refresh failure), never reaching
+    the paste-back code path. Pre-T-A.2 operator recovery was the
+    `logout → setup` sequence (per CLAUDE.md gotcha "swing schwab setup
+    requires clean tokens DB state").
+
+    Algorithm:
+      1. If `tokens_db_path` does NOT exist → return `None` (no-op).
+      2. Build candidate `<path>.deleted-<YYYYmmddTHHMMSS>` — same timestamp
+         FORMAT as `revoke_and_delete` (logout) uses (`%Y%m%dT%H%M%S`), so
+         the renamed-file suffix string convention is consistent across
+         setup + logout self-heal paths. SEMANTIC ANCHOR DEVIATION: this
+         self-heal path uses UTC-aware `_utc_now()` (intentional; matches
+         modern convention) while `revoke_and_delete` currently uses naïve
+         `datetime.now()` (local time). Operators scanning `*.deleted-*`
+         files by timestamp will see a 4-5 hour gap between adjacent
+         self-heal + logout actions during the same wall-clock session.
+         Banked as V2.1 §VII.F amendment candidate (unify logout on UTC);
+         logout is out-of-scope for T-A.2 per dispatch brief §6.
+      3. Atomic CLAIM-then-replace: try `os.open(..., O_CREAT|O_EXCL)` on
+         each candidate suffix. `O_EXCL` guarantees that the syscall fails
+         atomically if the path already exists (race-free even under
+         concurrent same-second double-invocation). On `FileExistsError`,
+         disambiguate to `-1`, `-2`, ... and try again. NEVER overwrite a
+         prior renamed file (Codex R1 Major fix 2026-05-15: pre-fix used
+         `exists()`-then-`os.replace` which had a TOCTOU window where
+         another process could create the same `.deleted-<ts>` path
+         between the exists-check and the rename — `os.replace` would
+         then silently overwrite the prior process's renamed file).
+         Bounded by `_MAX_RENAME_DISAMBIG_ATTEMPTS`; pathological
+         filesystem states raise `RuntimeError` rather than spinning
+         forever.
+      4. Audit lifecycle opens BEFORE any claim or rename side effect:
+         `record_call_start(endpoint='oauth.code_exchange')` emits the
+         in-flight audit row BEFORE the O_EXCL claim loop AND before
+         `os.replace` so EVERY failure mode (claim-step OSError such as
+         PermissionError / ENOSPC / antivirus interference, replace-step
+         OSError such as Windows file-in-use / EACCES, or
+         disambiguation-exhaustion RuntimeError) leaves an audit trail.
+         Mirrors the canonical setup-flow pattern at `setup_paste_flow`
+         :595-602 + the revoke-and-delete pattern at `:1276-1308`.
+      5. `os.replace` (same-volume; both source + dest in `~/swing-data/` →
+         no cross-device-link risk per CLAUDE.md gotcha). On `OSError`,
+         close the audit row with `status='error'`, `error_message` =
+         redacted excerpt of the failure (still prefixed with
+         "auto-detected" + "renamed" so operators can grep failed
+         self-heal attempts), then re-raise.
+      6. On success: close the audit row with `status='success'`,
+         `error_message` containing the substrings "auto-detected" +
+         "renamed before paste-back" so operators can grep the audit log
+         to find self-heal events. This row precedes the setup flow's
+         own `oauth.code_exchange` audit row for the actual Client
+         construction.
+      7. `click.echo` an operator-visible advisory line naming the renamed
+         path + 24h recovery window (success path only).
+
+    Audit-row disposition LOCK (per dispatch brief §3 T-A.2 AC3): emitted.
+    Lock the disposition so operator-pain root-cause is traceable in
+    `schwab_api_calls` history. Documented in the implementation docstring
+    + Test 7 of `test_schwab_setup_self_healing.py` pins the success-path
+    row shape; Test 8 pins the failure-path row shape.
+
+    Returns:
+        Path to the renamed file, or `None` if no tokens DB existed.
+
+    Raises:
+        OSError: filesystem failure during the O_EXCL claim or the
+            subsequent `os.replace` — e.g. PermissionError / EACCES,
+            ENOSPC, antivirus-locked tokens DB, Windows file-in-use,
+            path-is-directory, or cross-device-link. In ALL OSError
+            paths the audit row is closed with `status='error'` and
+            the locked operator-greppable substrings ("auto-detected"
+            + "renamed") before re-raise.
+        RuntimeError: collision-disambiguation loop exceeded
+            `_MAX_RENAME_DISAMBIG_ATTEMPTS` (pathological filesystem
+            state — operator must clean up the `*.deleted-<ts>-*`
+            directory). Audit row closed with `status='error'` before
+            re-raise.
+    """
+    if not tokens_db_path.exists():
+        return None
+
+    # Step 2 — build the candidate timestamp suffix. Format matches logout
+    # (`%Y%m%dT%H%M%S`); SEMANTIC anchor diverges — self-heal is UTC-aware
+    # via `_utc_now()`, logout uses naïve `datetime.now()`. See docstring
+    # for V2.1 §VII.F amendment-candidate disposition.
+    rename_ts = _utc_now().strftime("%Y%m%dT%H%M%S")
+
+    # Step 3 — audit-row open BEFORE ANY filesystem side effect. Codex R2
+    # Major fix (2026-05-15): pre-fix the audit OPEN happened AFTER the
+    # O_EXCL claim loop, so any non-collision OSError raised by `os.open`
+    # (PermissionError / ENOSPC / path-is-directory / antivirus
+    # interference) propagated to the caller before `record_call_start`
+    # ran — reintroducing the observability gap the two-phase audit
+    # ordering was meant to close. Post-fix: the audit row is opened
+    # FIRST so EVERY failure mode below (claim-step OSError, replace-step
+    # OSError, disambiguation exhaustion) leaves an audit trail.
+    #
+    # ENDPOINT NOTE: the schema CHECK enum at v18 does NOT include
+    # `oauth.tokens_db_rename` (brief AC3 wording deviated from actual
+    # schema). Reuse `oauth.code_exchange` — operators grep on the
+    # distinctive error_message substring "auto-detected" + "renamed" to
+    # find self-heal events. Banked as V2.1 §VII.F amendment candidate
+    # (extend CHECK enum + use dedicated endpoint name in V2).
+    audit_start_monotonic = time.monotonic()
+    call_id: int | None = None
+    try:
+        ts = _now_ms_iso()
+        call_id = audit_service.record_call_start(
+            conn,
+            ts=ts,
+            endpoint="oauth.code_exchange",
+            pipeline_run_id=None,
+            surface="cli",
+            environment=environment,
+        )
+    except Exception as exc:
+        # Audit-row open failure must not block the self-heal itself —
+        # surface a warning + continue with no audit trail.
+        log.warning(
+            "schwab setup self-heal: audit-row open failed: %s",
+            type(exc).__name__,
+        )
+        call_id = None
+        del exc  # silence linter
+
+    def _close_audit_error(failure_exc: BaseException) -> None:
+        """Close the audit row with status='error' before re-raising the
+        underlying OSError. Preserves the locked grep substrings
+        ('auto-detected' + 'renamed') so failed self-heal attempts share
+        the same audit namespace as successful ones, and carries the
+        underlying failure excerpt for root-cause visibility (Codex R2
+        Major coverage extends to claim-step OSError as well as
+        os.replace failures).
+        """
+        elapsed = int((time.monotonic() - audit_start_monotonic) * 1000)
+        msg = (
+            f"<auto-detected stale tokens DB at {tokens_db_path}; "
+            f"renamed FAILED: {_redacted_excerpt(failure_exc)}>"
+        )
+        if call_id is not None:
+            try:
+                audit_service.record_call_finish(
+                    conn,
+                    call_id=call_id,
+                    http_status=None,
+                    status="error",
+                    response_time_ms=elapsed,
+                    signature_hash=None,
+                    rate_limit_remaining=None,
+                    error_message=msg,
+                )
+            except Exception as audit_exc:
+                log.warning(
+                    "schwab setup self-heal: audit-row close (failure) "
+                    "failed: %s",
+                    type(audit_exc).__name__,
+                )
+
+    # Step 4 — atomic claim-then-replace (Codex R1 Major fix, 2026-05-15;
+    # restructured under audit-row ownership at Codex R2 Major fix,
+    # 2026-05-15). Pre-R1 this used an `exists()`-then-`os.replace`
+    # pattern that left a TOCTOU window: another process could create the
+    # same `.deleted-<ts>` path between our `candidate.exists()` check
+    # and `os.replace`. Since `os.replace` overwrites the destination
+    # unconditionally on success, the race could silently destroy a
+    # prior-process renamed file (violates "NEVER overwrite a prior
+    # renamed file" guarantee).
+    #
+    # Post-R1: each candidate path is atomically CLAIMED via
+    # `os.open(..., O_CREAT|O_EXCL|O_WRONLY)` which fails with
+    # `FileExistsError` if any process — including ours from a prior
+    # invocation — already created that path. On collision we
+    # disambiguate to the next suffix and try the claim again. Bounded
+    # by `_MAX_RENAME_DISAMBIG_ATTEMPTS`.
+    #
+    # Once claimed (a 0-byte sentinel file at `candidate`), `os.replace`
+    # below atomically REPLACES the claimed sentinel with the stale
+    # tokens DB contents. This is safe even if another process tries to
+    # claim the same path concurrently — they get `FileExistsError` on
+    # their O_EXCL attempt and disambiguate to a different suffix.
+    #
+    # Codex R2 framing: the ENTIRE claim loop + os.replace lives inside a
+    # try/except OSError block. Any non-collision OSError from the claim
+    # step (PermissionError on the parent dir, ENOSPC, path-is-directory,
+    # antivirus race) closes the audit row with status='error' before
+    # re-raise, matching the os.replace failure-path semantics.
+    candidate: Path | None = None
+    try:
+        for counter in range(0, _MAX_RENAME_DISAMBIG_ATTEMPTS):
+            if counter == 0:
+                attempt = tokens_db_path.with_name(
+                    f"{tokens_db_path.name}.deleted-{rename_ts}",
+                )
+            else:
+                attempt = tokens_db_path.with_name(
+                    f"{tokens_db_path.name}.deleted-{rename_ts}-{counter}",
+                )
+            try:
+                # Atomic claim: O_CREAT|O_EXCL fails with FileExistsError
+                # if path exists (race-free). Other OSError subclasses
+                # (PermissionError, OSError(ENOSPC), IsADirectoryError,
+                # antivirus interference) escape this inner try and are
+                # caught by the OUTER except OSError below — closing the
+                # audit row with status='error' before re-raise.
+                # Mode 0o600 mirrors the tokens-DB at-rest posture.
+                fd = os.open(
+                    str(attempt),
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                    0o600,
+                )
+            except FileExistsError:
+                continue  # disambiguate to next suffix
+            else:
+                os.close(fd)
+                candidate = attempt
+                break
+        if candidate is None:
+            # Disambiguation exhaustion — close the audit row with
+            # status='error' before raising RuntimeError so the
+            # pathological-filesystem state is traceable.
+            exhaustion = RuntimeError(
+                f"could not claim a non-colliding rename target after "
+                f"{_MAX_RENAME_DISAMBIG_ATTEMPTS} attempts; manually "
+                f"clean up `{tokens_db_path.parent}/"
+                f"{tokens_db_path.name}.deleted-*`",
+            )
+            _close_audit_error(exhaustion)
+            raise exhaustion
+
+        # Step 5 — atomic rename via os.replace. On OSError, close the
+        # audit row with status='error' BEFORE re-raise (handled in
+        # outer except OSError) so the failed self-heal attempt is
+        # traceable in schwab_api_calls history.
+        try:
+            os.replace(str(tokens_db_path), str(candidate))
+        except OSError:
+            # Best-effort cleanup of the claimed sentinel so the failure
+            # path leaves no orphan `*.deleted-*` files (matches
+            # invariant pinned by Test 8). If unlink itself fails
+            # (antivirus race on Windows), swallow + log so the
+            # underlying OSError still surfaces with the original cause.
+            try:
+                os.unlink(str(candidate))
+            except OSError as unlink_exc:
+                log.warning(
+                    "schwab setup self-heal: claimed-sentinel cleanup "
+                    "failed after os.replace error: %s",
+                    type(unlink_exc).__name__,
+                )
+            raise
+    except OSError as rename_exc:
+        # Covers BOTH claim-step (Codex R2 Major coverage) and
+        # replace-step OSError. Audit row is already OPEN; close with
+        # status='error' before re-raising.
+        _close_audit_error(rename_exc)
+        log.warning(
+            "schwab setup self-heal: rename failed: %s",
+            type(rename_exc).__name__,
+        )
+        raise
+
+    # Step 6 — success-path audit close. Preserve disposition-lock substrings
+    # "auto-detected" + "renamed before paste-back" (Test 7).
+    elapsed_ms = int((time.monotonic() - audit_start_monotonic) * 1000)
+    audit_msg = (
+        f"<auto-detected stale tokens DB at {tokens_db_path}; "
+        f"renamed before paste-back>"
+    )
+    if call_id is not None:
+        try:
+            audit_service.record_call_finish(
+                conn,
+                call_id=call_id,
+                http_status=None,
+                status="success",
+                response_time_ms=elapsed_ms,
+                signature_hash=None,
+                rate_limit_remaining=None,
+                error_message=audit_msg,
+            )
+        except Exception as exc:
+            # Audit-row close failure must not block the self-heal itself
+            # — the rename already happened on disk; surface a warning +
+            # continue.
+            log.warning(
+                "schwab setup self-heal: audit-row close (success) "
+                "failed: %s",
+                type(exc).__name__,
+            )
+
+    # Step 7 — operator-visible advisory line. AC5: emit unconditionally
+    # via `click.echo` (works regardless of whether a click.Context is
+    # bound; click.echo writes to sys.stdout otherwise).
+    click.echo(
+        f"Auto-detected existing tokens DB at {tokens_db_path}; "
+        f"renamed to {candidate} (24h recovery window) before paste-back.",
+    )
+
+    return candidate
 
 
 def _resolve_tokens_db_path(environment: str) -> Path:
@@ -296,6 +780,20 @@ def setup_paste_flow(
     # writes succeed first-call.
     tokens_path = _resolve_tokens_db_path(environment)
     tokens_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Step 4.bis (T-A.2) — self-heal: if a stale tokens DB exists at the
+    # canonical path, atomically rename it to a `.deleted-<ts>` sibling
+    # BEFORE invoking schwabdev. Solves operator-pain from 2026-05-14
+    # gate (CLAUDE.md gotcha "swing schwab setup requires clean tokens
+    # DB state" — schwabdev's `Client.__init__` auto-attempts a refresh
+    # against any existing tokens DB and hard-fails before paste-back
+    # if that refresh dies, e.g. expired refresh_token). The rename's
+    # own audit row precedes the setup-flow audit row below.
+    _rename_stale_tokens_db(
+        tokens_path,
+        environment=environment,
+        conn=conn,
+    )
 
     # Step 5 — INSERT in-flight audit row for the Client construction
     # call (oauth.code_exchange endpoint per migration 0018 CHECK enum).

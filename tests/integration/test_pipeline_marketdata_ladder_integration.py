@@ -334,10 +334,22 @@ def test_warm_twice_within_ttl_only_fires_ladder_once_per_ticker(
 # ============================================================================
 
 
-def test_construct_pipeline_schwab_client_returns_none_by_default(tmp_path):
+def test_construct_pipeline_schwab_client_returns_none_by_default(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+):
     """Pipeline cannot prompt for credentials; default `_construct_*`
-    helper returns None unless tests monkeypatch. Matches the precedent
-    set by `_step_schwab_snapshot` (`client=None` → silent-skip)."""
+    helper returns None unless env vars are set (T-A.3) or the caller
+    monkeypatches the helper. Matches the precedent set by
+    `_step_schwab_snapshot` (`client=None` → silent-skip).
+
+    T-A.3 amendment: explicit `delenv` of SCHWAB_CLIENT_ID +
+    SCHWAB_CLIENT_SECRET keeps this assertion deterministic regardless
+    of operator's host shell env. Without this, an operator with the
+    env vars set in their shell would see the helper construct a real
+    client and this test would fail.
+    """
+    monkeypatch.delenv("SCHWAB_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SCHWAB_CLIENT_SECRET", raising=False)
     cfg = _make_cfg(
         env="production", ladder_enabled=True,
         db_path=tmp_path / "any.db",
