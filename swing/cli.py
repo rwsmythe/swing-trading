@@ -218,6 +218,23 @@ def db_migrate(ctx: click.Context) -> None:
         finally:
             _probe.close()
 
+    # Schwab API T-D.7 (plan §C.5 + §I.1): NO version-specific backup gate
+    # fires for 17→18 because the Phase-9 gate is keyed on current==16 AND
+    # target>=17. The auto-backup above still writes a defensive snapshot
+    # to backups_dir, but plan §I.1 wants a visible operator-facing
+    # recommendation to take a manual backup at a known location BEFORE
+    # 0018 lands — defense-in-depth for the FIRST schema-change in the
+    # Schwab arc. Fires only when pre_version < 18 (idempotent on rerun).
+    if pre_version < 18:
+        click.echo(
+            "WARN: Migration 0018 (Schwab integration) will be applied. "
+            "Manual backup recommended before continuing — copy "
+            "%USERPROFILE%/swing-data/swing.db to "
+            "swing.db.pre-phase11.backup as a recovery snapshot. "
+            "(Auto-backup ALSO writes to backups_dir.)",
+            err=True,
+        )
+
     conn = ensure_schema(db_path)
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
     if pre_version <= 16 and version >= 17:
