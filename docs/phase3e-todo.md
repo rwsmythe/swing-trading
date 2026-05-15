@@ -6,6 +6,91 @@
 
 ---
 
+## 2026-05-14 Schwab API Sub-bundle D SHIPPED + Phase 11 CLOSED — status surface full + briefing degraded banner + cycle-checklist + CLAUDE.md gotchas + E2E + migration verification + review-form polish (3 Codex rounds; 14 commits; CLOSES THE SCHWAB ARC)
+
+**Sub-bundle D SHIPPED 2026-05-14** at branch tip `cae6e7f` (integration merge to main pending operator-witnessed gate; baseline `23161a0`). 14 commits = 7 task-impl (T-D.1 `9ff7967` status surface; T-D.2 `3f462c8` cycle-checklist; T-D.3 `6aa8f44` E2E; T-D.4 `0cf2ade` CLAUDE.md gotchas; T-D.5 `4b6153e` briefing degraded banner; T-D.7 `7339957` migration verification; T-D.elective.1 `1f30cb3` review-form Phase-7 stale-promise replacement) + 2 pre-Codex review fixes (§J.5 cassette reword `37084bf`; cycle-checklist TTL alignment `edf0e43`) + 5 Codex-fix (R1 M#1+M#2 PROVISIONAL + tokens-parse `a0d618d`; R1 M#3 setup message `0327845`; R1 M#4 docstring `9341fd9`; R1 m#1 cycle-checklist `2703341`; R2 bundled `cae6e7f`).
+
+**3 Codex rounds → NO_NEW_CRITICAL_MAJOR** convergent tapering (R1 0C/4M/2m → R2 0C/2M/2m → R3 0C/0M/1m); **ZERO Critical findings** entire chain; **1 ACCEPT-WITH-RATIONALE banked** (R1 M#4 — E2E test scope service-composition-driven not CLI-driven; per-CLI tests already cover the CLI surfaces; banked at return report).
+
+### Test count + style + schema deltas
+
+- **+30 fast tests** (3717 → 3747; brief projected +19; overshoot from R1+R2 defensive coverage + parametrize)
+- 3 pre-existing failures unchanged (`tests/integration/test_phase8_pipeline_walkthrough.py`)
+- 5 skipped (1 flag-classifier only — baseline preserved)
+- Ruff baseline 18 E501 unchanged
+- Schema version 18 unchanged (consumer-side; v18 landed by Sub-bundle A); ZERO new schema work in D scope
+
+### Sub-bundle D operator-visible deliverables
+
+1. **`swing schwab status` full per-environment surface** (T-D.1) — three-state determination (CONFIGURED / PROVISIONAL / NOT_CONFIGURED) per environment; refresh-token TTL with severity escalation (≤24hr WARN; ≤2hr ERROR + bold red); recent-call audit summary. R1 M#1 + M#2 restored PROVISIONAL state (narrowly scoped to "tokens DB missing on disk" per R2 M#2) + consults tokens-DB `parse_err` / `refresh_token_issued`. R2 M#1 closed `token_dictionary` bypass; R2 M#2 narrowed PROVISIONAL strictly; R2 m#1 aligned expiry boundary; R2 m#2 refreshed 3-state docstring.
+2. **Briefing.md degraded banner** (T-D.5) — emits "Schwab integration: degraded" when most-recent `schwab_api_calls.status != 'success'`. V1 ships banner-only (NOT always-present section per spec §7.2 + cycle-checklist initially claimed; cycle-checklist narrowed post-R1 m#1).
+3. **Cycle-checklist updates** (T-D.2) — weekly re-auth reminder + 7-day refresh-token TTL aligned with operator-paired-gate observation (pre-Codex review fix `edf0e43`).
+4. **CLAUDE.md gotchas promotion** (T-D.4) — 12 entries (6 brief §3 + 6 plan §J supplementary; §J.5 reworded as V2-PLANNED per spec-review fix). Covers: schwabdev camelCase kwarg discipline; typed `SchwabApiError` audit-row close discipline; `swing schwab setup` clean-state requirement; 7-day refresh-token clock; `Schwabdev` capital-S logger prefix; silent-failure-mode discipline; tokens DB plaintext-at-rest; pipeline-active CLI exclusion; sandbox short-circuit gating; `setLogRecordFactory` content-redaction wrapper; cassette runbook V2-PLANNED; source-artifact reference shape.
+5. **E2E happy-path integration test** (T-D.3) — service-composition-driven (NOT CLI-driven per ACCEPT-WITH-RATIONALE R1 M#4); per-CLI tests cover the CLI surfaces.
+6. **Migration 0018 BEGIN/COMMIT discipline + manual-backup warning verification** (T-D.7).
+7. **Review-form polish (T-D.elective.1)** — replaced stale Phase-7-auto-derive parenthetical at `swing/web/templates/partials/review_form.html.j2:66-67` with forward-looking phrasing per orchestrator default — "Auto-derivation from Fills is a future enhancement; manual entry V1." Closes the 2026-05-13 polish task entry below.
+
+### Schwab arc closer aggregate (4-bundle Phase 11 closure)
+
+| Sub-bundle | Merge SHA | Codex rounds | Commits |
+|---|---|---:|---:|
+| **A** (foundational) | `5b6e5ba` | 4 | 19 |
+| **B** (trader API + snapshot) | `df29232` | 5 + 1 orchestrator-inline gate-fix at `34be84e` | ~24 |
+| **C** (market data + cache ladder) | `fd457de` | 5 | 26 |
+| **D** (arc-closer; this bundle) | (pending integration merge) | 3 | 14 |
+
+**Arc total: ~17 Codex rounds across 4 bundles; ~83 commits; ZERO Critical findings entire arc.**
+
+**5 ACCEPT-WITH-RATIONALE banked across arc:**
+- Sub-bundle A: 1
+- Sub-bundle B: 1 (lease status fields V2-deferred)
+- Sub-bundle C: 2 (R1 M#5 `_step_charts` ladder V2; R4 M#1 file-level mtime V1 best-effort)
+- Sub-bundle D: 1 (R1 M#4 E2E test scope — service-composition vs CLI-driven)
+
+### V2 candidates banked across arc
+
+**Operator-visible Q-deferrals from spec §10:** Q2 token encryption-at-rest (schwabdev `encryption=<key>`); Q3 multi-account support; Q4 WebSocket streaming; Q5 web UI for Schwab integration (status surface only V1); Q6 Schwab inception-CSV ingestion (separate dispatch per phase3e-todo 2026-05-12 entry); Q7 TOS reconciliation deprecation milestone.
+
+**Sub-bundle C return report §7 + Sub-bundle D V2 banks:**
+
+1. `_step_charts` ladder wiring (R1 M#5 from C).
+2. `read_or_fetch_archive` Shape A read-path extension.
+3. `empty_flag is True` pattern review across other JSON-boolean Schwab response flags.
+4. `_yfinance_window_to_shape_a_df` heuristic conversion → explicit fallback contract.
+5. Legacy parquet cleanup pass (after all consumers refactor to Shape A).
+6. REPLACE-mode `write_window` for explicit archive reset.
+7. Per-row `recorded_at` column as freshness signal alternative to filesystem mtime (R4 M#1 family).
+8. Pipeline `client_id`/`client_secret` env-var path (T-C.6 D1).
+9. `swing schwab setup` self-healing (detect-and-rename stale tokens DB; gotcha #3 candidate from D T-D.4).
+10. Briefing always-present "Schwab integration" section (D R1 Minor #1 — currently banner-only).
+11. Future Schwab live-test cassette infrastructure + cassette staleness runbook (D T-D.4 §J.5 V2-PLANNED).
+12. **(D NEW) `swing config set integrations.schwab.environment` CLI surface** — currently FIELD_REGISTRY doesn't include the env field; operators must hand-edit `user-config.toml` (caught by T-D.2 + adapted CLI message at R1 M#3).
+13. **(D NEW) Briefing always-present "Schwab integration" section** — V1 ships banner-only; spec §7.2 + cycle-checklist initially claimed always-present section; cycle-checklist narrowed to banner-only post-R1 m#1.
+
+### Plan-text amendments pending V2.1 §VII.F routing
+
+- ~17 from Sub-bundle A.
+- ~5 from Sub-bundle B.
+- ~18 from Sub-bundle C.
+- **(D NEW) `swing schwab setup` success message wording (R1 M#3)** — plan §I.1 referenced `swing config set integrations.schwab.environment` command which doesn't exist.
+- **(D NEW) Refresh-token TTL claim** (90d/7d split → 7d uniform per operator-paired-gate observation 2026-05-14; pre-Codex review fix).
+- **(D NEW) E2E test scope wording (R1 M#4)** — plan §Tasks-D T-D.3 said "cassette-driven" but no Schwab cassettes exist; implementation is MagicMock-driven service-composition E2E.
+- **(D NEW) PROVISIONAL state narrowed** strictly to "tokens DB missing on disk" per Codex R2 Major #2.
+- **(D NEW) Briefing always-present "Schwab integration" section** was specified but ships banner-only V1.
+
+### Production state delta from D scope
+
+- ZERO new domain rows from D operator-witnessed gate surfaces (S2-S8 are inline tests OR read-only operator-driven CLI/filesystem/browser surfaces).
+- Operator's Schwab tokens DB clock still on the fresh 7-day cycle from Sub-bundle C gate recovery (refreshed 2026-05-14; expires ~2026-05-21).
+
+### Closure
+
+- Phase 11 (Schwab API integration) **CLOSED** — 4 sub-bundles A → B → C → D all SHIPPED in strict dispatch order.
+- **Phase 12+ candidate triage UNBLOCKED** for orchestrator-paced dispatching.
+- Worktree teardown: branch `schwab-bundle-D-arc-closer` ready for integration merge to main; on-disk husk will be 4th in operator's cleanup-script queue (after A, B, C still pending per Sub-bundle C SHIPPED entry).
+
+---
+
 ## 2026-05-13 Trade exit review form — stale "Phase 7 will auto-derive" promise + counterfactual still operator-input
 
 **Symptom (operator-surfaced 2026-05-13):** trade exit review form's "Counterfactual (optional)" fieldset displays helper text:
