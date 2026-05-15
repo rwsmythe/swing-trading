@@ -6,6 +6,44 @@
 
 ---
 
+## 2026-05-15 Schwab CLIENT_ID + CLIENT_SECRET in user-config.toml (Finviz precedent; operator-stated UX gap during Phase 12 Sub-bundle A S6 gate)
+
+**Operator UX clarification (2026-05-15):** Phase 12 Sub-bundle A T-A.1 env-var path is "better than copying and pasting" but not great from a user perspective:
+- Each shell session needs `$env:SCHWAB_CLIENT_ID` + `$env:SCHWAB_CLIENT_SECRET` set (PowerShell shell for CLI; separate shell for `swing web`; etc.). Operator could set in PowerShell profile but that's per-shell-application.
+- Operator initially worried about weekly reset — **clarification: app credentials (CLIENT_ID + CLIENT_SECRET) are STABLE from Schwab Developer Portal app registration; do NOT weekly-rotate.** What rotates weekly is the OAuth refresh_token (managed by schwabdev's tokens DB; rotated via paste-back; separate concern). So env vars only need to be set ONCE per Schwab Developer Portal credential rotation (rare — only when operator regenerates app credentials from the portal).
+
+**Operator's intended UX:** file-based credential storage in `~/swing-data/user-config.toml` under `[integrations.schwab]` (mirrors Finviz precedent — Finviz token already lives here under `[integrations.finviz]`; per CLAUDE.md gotcha "Finviz Elite API token storage": user-config.toml is `%USERPROFILE%/swing-data/user-config.toml` — operator's home dir, NOT in repo, NOT git-tracked, per-machine, plaintext). Operator edits ONCE per app credential rotation; every shell automatically picks up the same values; no per-shell setup required.
+
+### Cascade design
+
+Three-tier credential resolution (extend the T-A.1 helper):
+1. **Env vars** (highest priority) — `SCHWAB_CLIENT_ID` + `SCHWAB_CLIENT_SECRET`. Useful for: scripted ops; CI/CD; per-invocation override of file-stored values; security-conscious operators who don't want plaintext on disk.
+2. **`user-config.toml` `[integrations.schwab].client_id` + `.client_secret`** (middle priority) — file-stored; persists across shells + reboots; operator edits once per credential rotation. The DEFAULT operator path.
+3. **Interactive prompt** (lowest priority; fallback) — current Sub-bundle A T-A.2 behavior preserved when neither env vars nor file values present. Useful for: first-run operators; one-off CLI invocations on a fresh machine.
+
+`construct_authenticated_client(cfg, environment)` consults in this order; first non-empty pair wins. Both-or-neither at each tier (partial → next tier) — UNLIKE T-A.1 partial-rejects-with-error, since file-tier may have CLIENT_ID set without CLIENT_SECRET (rare but valid as the operator may want to fall through to env vars or prompt for the secret).
+
+### Architectural changes required
+
+1. **Extend `SchwabConfig` dataclass** (`swing/config.py`) with `client_id: str | None = None` + `client_secret: str | None = None` fields. ADD to `FIELD_REGISTRY` with `masked=True` (first-3 + *** + last-2 per existing FIELD_REGISTRY pattern). `swing config show` displays masked values.
+2. **Extend `resolve_credentials_env_or_prompt`** (T-A.1 helper at `swing/integrations/schwab/auth.py`) with the three-tier cascade. Currently env-var-or-prompt; becomes env-var-or-cfg-or-prompt.
+3. **`swing config set integrations.schwab.client_id <value>`** + `client_secret <value>` paths via existing `swing config set` cascade emitter. Mirrors existing finviz token-set path.
+4. **CLAUDE.md gotcha addition** — "Schwab CLIENT_ID + CLIENT_SECRET storage" mirrors existing "Finviz Elite API token storage" entry. Tracked `swing.config.toml` MUST NOT contain the values (sensitive); only `~/swing-data/user-config.toml`. `.gitignore` patterns for `user-config.toml*` should already cover (verify).
+5. **Sentinel-leak audit extension** — env-var sentinel-leak coverage exists post-Sub-bundle-A; extend to cfg-cascade-sourced credentials so Layer 0 redactor's known-secret registry picks them up at SchwabClient construction time.
+6. **Backwards-compat** — operators relying on env vars continue to work unchanged (env vars are highest-priority tier).
+
+### Sequencing — could ship BEFORE Sub-bundle B (auto-correct service)
+
+This is a small Tier 1.5 polish dispatch (smaller than Sub-bundle B's architectural pivot). ~6-10 fast tests; 1-2 Codex rounds; 1 day. Could ship as Phase 12 Sub-bundle B (re-scoped) OR as a fast-follow before the auto-correct service work.
+
+### Cross-references
+
+- Finviz precedent: `docs/superpowers/plans/2026-05-05-finviz-api-integration-plan.md` + CLAUDE.md "Finviz Elite API token storage" gotcha.
+- Sub-bundle A T-A.1 implementation: `swing/integrations/schwab/auth.py:resolve_credentials_env_or_prompt`.
+- Sub-bundle A T-A.2 design rationale (credentials NOT in cfg cascade): security posture per dispatch brief; this entry SUPERSEDES with a more nuanced cascade design.
+
+---
+
 ## 2026-05-15 ARCHITECTURAL: reconciliation must auto-correct journal-from-Schwab, not surface for operator-triage (Phase 12 Sub-bundle B headline candidate)
 
 **Surfaced (operator-stated 2026-05-15 during Phase 12 Sub-bundle A S5 gate):** the current Phase 9 + Phase 11 reconciliation model surfaces journal-vs-Schwab discrepancies for operator-triage with resolutions of `acknowledged_immaterial` / `journal_corrected` / `mistake_corrected`. Operator pushed back: when Schwab data is available, **Schwab IS truth — there is no "immaterial" price magnitude**. Operator-action loop is the wrong design. The fact that 3 discrepancies re-emerged on pipeline #63 after operator "resolved" 7 of 8 yesterday demonstrates this concretely: yesterday's resolutions only marked OLD discrepancy ROWS as resolved; they did NOT update the underlying fills. Each fresh `reconciliation_run` re-detects the same mismatches because journal data still diverges from Schwab.
@@ -123,6 +161,72 @@ Discrepancies 39/40/41 from pipeline #63 (run_id=10) are LITERALLY IDENTICAL to 
 **Discriminating-test pattern:** delete `data/finviz-inbox/` (or use a tmp_path with the dir absent) + invoke pipeline run + assert directory was auto-created + step completed (or surfaced "no manual CSV; using API fallback" path correctly per existing `_step_finviz_fetch` semantics).
 
 **Defer-or-fix-soon disposition:** trivial fix; bundle into a near-term polish dispatch OR address inline. NOT Schwab-arc-related; banked here for orchestrator triage.
+
+---
+
+## 2026-05-15 Phase 12 Sub-bundle A SHIPPED — Schwab API operational-pain mini-bundle (env vars + setup self-healing + pipeline env-var wiring + cleanup-script regex; 3 Codex rounds + 1 orchestrator-inline gate-fix; 12 commits; FIRST Phase 12 dispatch)
+
+**Sub-bundle A SHIPPED 2026-05-15** at `123d27a` (integration merge of `phase12-bundle-A-schwab-operational-pain` worktree branch via `--no-ff` to preserve Codex-fix chain). Branch HEAD `e2c0384` (12 commits = 4 task-impl + 2 pre-Codex review fixes + 5 Codex-fix + 1 orchestrator-inline gate-fix on top of return report `2cbb8c4`). Operator-dispatched implementer per orchestrator brief at `892e3e3`.
+
+**3 Codex rounds → NO_NEW_CRITICAL_MAJOR** convergent tapering (R1 1C/2M → R2 0C/1M → R3 0C/0M); **ZERO ACCEPT-WITH-RATIONALE banked**; **+1 orchestrator-inline gate-fix at `e2c0384`** (closed T-A.3 acceptance #4 gap that operator-paired S5 surfaced — implementer's T-A.3 wired the env-var-constructed schwab_client into the market-data ladder hook but LEFT both `_step_schwab_snapshot` + `_step_schwab_orders` callsites with `client=None` HARDCODED; orchestrator-inline fix wired schwab_client through both callsites + added discriminating regression test).
+
+**Why no brainstorm + no writing-plans:** Per operator scope decision 2026-05-15, V2 candidates from Phase 11 arc were well-defined; this bundle went straight to executing-plans dispatch as a focused operational-pain mini-bundle.
+
+### Operator-paired live gate (Option A; 2026-05-15)
+
+Full S2-S7 live verification against operator's production-tier Schwab account + worktree-side inline S1+S8+S9 PASS:
+
+| Surface | Result | Key observation |
+|---|---|---|
+| S1 fast suite (worktree) | ✅ | 3786 → 3787 passed (post-orchestrator-inline gate-fix); 3 pre-existing phase8 failures unchanged |
+| S2 status with env vars | ✅ | NO credential prompt (T-A.1); LIVE indicator + token TTL 6d 18h + recent calls (24-28); ZERO token bytes |
+| S3 fetch --verify-marketdata with env vars | ✅ | NO prompt; calls 30 + 31 success against live Schwab Market Data API |
+| S4 setup self-healing | ✅ | T-A.2 atomic rename of existing tokens DB to `*.deleted-20260515T095338` + audit row at call 32 + fresh paste-back; same hashValue=E8F...0676 auto-picked; **fresh 7-day clock started 2026-05-15T03:59:25 UTC** |
+| S5 pipeline with env vars | ❌→✅ post-fix `e2c0384` | Initial pipeline #62 ran with ZERO new schwab_api_calls (T-A.3 implementer-side gap caught at gate). **Orchestrator-inline gate-fix** wired schwab_client through both Sub-bundle B step callsites + added regression test. Re-run pipeline #63 completed in 11s with 4 new schwab_api_calls (calls 35-38; surface=pipeline; endpoints accounts.details + accounts.orders.list + accounts.transactions.list) + new reconciliation_run #10 + 3 fresh discrepancies (39 DHC + 40 VSAT + 41 CVGI). **BONUS validation: Sub-bundle B same-day-replay UPSERT path NOW operationally validated** (snapshot_id=5 from yesterday preserved; call 35 linked via linked_snapshot_id=5 — closes one of the three V2-deferred validations from Phase 11 Sub-bundle B SHIPPED entry). |
+| S6 pipeline without env vars | ✅ | Pipeline #64 in 9s; ZERO new schwab_api_calls + ZERO new domain rows (T-A.3 silent-skip path preserved per acceptance #2) |
+| S7 cleanup-script regex | ✅ via test coverage | 11 cleanup-script regex unit tests inline GREEN at `tests/scripts/test_cleanup_script_regex.py` (skip destructive plant-fake-worktree path) |
+| S8 ruff baseline | ✅ | 18 E501 unchanged |
+| S9 sentinel-leak audit | ✅ | New T-A.1 + T-A.3 paths covered by existing `tests/integrations/test_schwab_token_redaction_audit.py` patterns |
+
+### Orchestrator-inline gate-fix at `e2c0384` (mirrors Sub-bundle B's `34be84e` precedent)
+
+**Defect:** runner.py L728-738 + L747-757 hardcoded `client=None` at both Sub-bundle B `_step_schwab_snapshot` + `_step_schwab_orders` callsites. T-A.3 implementer wired env-var helper into `_install_pipeline_marketdata_caches` (market-data ladder) but missed parallel wiring into snapshot/orders callsites. Implementer's +5 helper-return-contract tests didn't integration-test the runner-level wiring through to Sub-bundle B's pipeline steps.
+
+**Fix:** pass `client=schwab_client` instead of `client=None` at both callsites. Single-line per callsite + 1 discriminating regression test (`test_runner_threads_schwab_client_into_snapshot_and_orders_steps` does source-level pattern matching on runner.py to assert `client=schwab_client, surface="pipeline"` shape; explicitly rejects pre-fix `client=None, surface="pipeline"` shape).
+
+### Three highest-leverage SHIPPED deliverables
+
+1. **Credential entry UX** — `SCHWAB_CLIENT_ID` + `SCHWAB_CLIENT_SECRET` env vars supersede interactive prompt at `construct_authenticated_client`. Both-or-neither resolution (partial → SchwabConfigMissingError with actionable message). Operator can now `$env:SCHWAB_CLIENT_ID = "..."; $env:SCHWAB_CLIENT_SECRET = "..."` once per shell session (or in PowerShell profile) → every Schwab CLI invocation runs without prompts. Daily-use unblock.
+2. **`swing schwab setup` self-healing** — auto-detects + atomically renames stale tokens DB to `*.deleted-<ts>` (24h recovery window) BEFORE invoking schwabdev. Closes Sub-bundle C operator-paired-gate finding from yesterday (`logout → setup` recovery sequence is no longer needed; `setup` now handles it in one shot).
+3. **Pipeline env-var path** — `_construct_pipeline_schwab_client(cfg)` reads same env vars; both-or-neither (partial → return None + log WARNING). Pipeline now actually fires Schwab steps end-to-end when operator has env vars set. Closes T-C.6 D1 ACCEPT-WITH-RATIONALE V1 graceful-degradation gap.
+
+### NEW V2.1 §VII.F amendment candidates banked (per implementer return report)
+
+1. `oauth.tokens_db_rename` dedicated endpoint enum value for T-A.2 audit row (currently uses `oauth.code_exchange` with descriptive error_message; would require schema v18→v19 to add new enum value).
+2. Unify `logout` `revoke_and_delete` timestamp to UTC.
+
+### Tests + ruff + schema deltas
+
+- Tests: 3752 → 3787 (+35 net = +34 implementer + 1 inline gate-fix regression). Within +20..+40 brief projection.
+- Ruff baseline: 18 E501 unchanged.
+- Schema version: v18 unchanged (Sub-bundle A is consumer-side only).
+
+### Operator-action items pending post-handoff (NOT orchestrator-blocking)
+
+1. **3 unresolved material discrepancies (39/40/41) from pipeline #63 are LEFT UNRESOLVED by design** — they're correct signal of fiction-vs-truth divergences; will be auto-corrected categorically when Phase 12 Sub-bundle B (auto-correct service) ships. Phase 10 dashboard banner shows "3 unresolved" until then — that's accurate state.
+2. **Worktree husk pending operator cleanup-script** — branch `phase12-bundle-A-schwab-operational-pain` deleted post-merge; on-disk husk at `.worktrees/phase12-bundle-A-schwab-operational-pain/` ACL-locked per all prior-phase precedent. **The cleanup-script's regex (post T-A.4 fix) DOES match `phase12-*` so `-DeregisterFirst` should pick it up cleanly without any manual `git worktree remove --force` workaround.** Operator runs `cleanup-locked-scratch-dirs.ps1 -DeregisterFirst` at convenience.
+3. **7-day refresh-token clock** restarted 2026-05-15T03:59:25 UTC during S4; expires ~2026-05-22.
+
+### Cross-references
+
+- Dispatch brief: `docs/phase12-bundle-A-schwab-operational-pain-executing-plans-dispatch-brief.md` (`892e3e3`).
+- Return report: `docs/phase12-bundle-A-return-report.md` (worktree branch).
+- Orchestrator-inline gate-fix: `e2c0384` (worktree branch).
+- Integration merge: `123d27a`.
+
+### Next dispatch
+
+**Phase 12 Sub-bundle B (auto-correct journal-from-Schwab service) UNBLOCKED.** Per the architectural pivot banked in the 2026-05-15 entry above (top of phase3e-todo). Substantial brainstorm + writing-plans + multi-bundle executing-plans cycle expected; operator-paced.
 
 ---
 
