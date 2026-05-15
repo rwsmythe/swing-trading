@@ -6,6 +6,54 @@
 
 ---
 
+## 2026-05-15 ARCHITECTURAL: reconciliation must auto-correct journal-from-Schwab, not surface for operator-triage (Phase 12 Sub-bundle B headline candidate)
+
+**Surfaced (operator-stated 2026-05-15 during Phase 12 Sub-bundle A S5 gate):** the current Phase 9 + Phase 11 reconciliation model surfaces journal-vs-Schwab discrepancies for operator-triage with resolutions of `acknowledged_immaterial` / `journal_corrected` / `mistake_corrected`. Operator pushed back: when Schwab data is available, **Schwab IS truth — there is no "immaterial" price magnitude**. Operator-action loop is the wrong design. The fact that 3 discrepancies re-emerged on pipeline #63 after operator "resolved" 7 of 8 yesterday demonstrates this concretely: yesterday's resolutions only marked OLD discrepancy ROWS as resolved; they did NOT update the underlying fills. Each fresh `reconciliation_run` re-detects the same mismatches because journal data still diverges from Schwab.
+
+**Operator's intended model:** reconciliation detects journal-vs-Schwab mismatches AND auto-corrects journal to match Schwab, with full audit. Discrepancies become transient correction events ("Schwab=$5.30, journal had $5.23, auto-corrected fill_id=9 at <ts>; pre-state preserved"), not standing operator-action tickets. Operator-resolution becomes the EXCEPTION (operator OVERRIDES an auto-correction in rare "Schwab itself is wrong" cases) rather than the norm.
+
+### Concrete current-state evidence
+
+Discrepancies 39/40/41 from pipeline #63 (run_id=10) are LITERALLY IDENTICAL to siblings 32/36/37/34/38 from runs 8+9 (same fill_id, same expected_value_json, same actual_value_json):
+
+- **disc 41 CVGI entry_price_mismatch:** journal `fills.fill_id=9` price=$5.23, Schwab=$5.30, **delta $+0.07** (yesterday's resolution claimed "~$0.01 off" — wrong magnitude AND no actual correction made).
+- **disc 39 DHC unmatched_open_fill:** journal `fills.fill_id=2` entry @$7.58 × 39 on 2026-04-27, Schwab `actual={"matched": null}` (likely Schwab split entry into multiple partial fills with different timestamps/prices; operator's single-row journal entry can't match).
+- **disc 40 VSAT unmatched_open_fill:** journal `fills.fill_id=6` entry @$65.69 × 2 on 2026-05-06, `manual_entry_confidence='low'` (operator flagged as uncertain at entry time!), Schwab `actual={"matched": null}`.
+
+**All three fills carry `reconciliation_status='unreconciled'` + `tos_match_id=NULL`** — they were operator-typed-from-memory and never linked to a Schwab/TOS source record at entry time. Reconciliation correctly identifies them as fiction-vs-truth divergences.
+
+### Architectural changes required
+
+1. **New service-layer auto-correction module** at `swing/trades/reconciliation_auto_correct.py` (or similar). Transactional (BEGIN IMMEDIATE / COMMIT / ROLLBACK; reject caller-held tx per Phase 8 lesson family). Validator-respecting (Phase 7 fills validators; Phase 9 risk_policy). Audit-aware (writes audit row capturing pre/post state).
+2. **New audit-history table** OR extension of `event_log` to preserve pre-correction journal values (forensic trail; "what did the operator originally enter; what did Schwab show; when did we correct it").
+3. **Reconciliation pivot:** discrepancy emission flow becomes "emit correction event + apply correction in same transaction" instead of "emit discrepancy + wait for operator." Existing discrepancy table semantics change OR the table is supplemented by a `corrections` table.
+4. **`fills.reconciliation_status` enum change:** `unreconciled` → `auto_matched` / `auto_corrected_from_schwab` / `operator_overridden`. `tos_match_id` populated for auto-matched fills.
+5. **Operator approval gate for large corrections** (configurable threshold; e.g., > 10% deviation OR > $5 absolute → surface for confirm; below threshold → auto-apply). Mirrors Phase 9 risk_policy approval gates.
+6. **Backfill path** for existing unresolved-material discrepancies (39/40/41 + any future): when the auto-correction service ships, run a one-shot backfill that applies all currently-unresolved Schwab-truth corrections + audits.
+7. **Fill auto-population at trade-entry time** (the unstated V2 candidate): create fills directly from Schwab Trader API responses at trade-entry handler time instead of operator-typing-from-memory. Closes the entire discrepancy stream as a category. Fills get `tos_match_id` populated from start.
+
+### What this is NOT
+
+- NOT a polish/observability bundle (those were the Tier 2 items I originally outlined).
+- NOT a Sub-bundle A scope expansion (Sub-bundle A's env-var + setup-self-healing + pipeline-env-var changes are still independently valuable; merge as planned).
+- NOT a quick fix (touches reconciliation core + introduces new audit semantics + requires careful migration of existing data; substantial brainstorm + writing-plans + multi-bundle executing-plans cycle).
+
+### Recommended sequence
+
+1. **Finish Sub-bundle A gate (S6 + S7) + merge** — Tier 1 ops-pain fixes ship as scoped.
+2. **Leave the 3 current unresolved-material discrepancies (39/40/41) alone for now.** They're correct signal; operator-action would just mark-as-resolved without fixing the underlying fiction-vs-truth divergence. Phase 10 dashboard banner shows "3 unresolved" until auto-correction ships — that's accurate state.
+3. **Phase 12 Sub-bundle B = brainstorm + writing-plans + executing-plans for the auto-correction pivot.** Operator-paced; substantial dispatch.
+
+### Cross-references
+
+- Phase 9 Sub-bundle B reconciliation_run shape: `swing/trades/reconciliation.py` (`run_tos_reconciliation` mirror used by `run_schwab_reconciliation`).
+- Phase 11 Sub-bundle B `swing_schwab_reconciliation` service.
+- Phase 8 transactional-discipline pattern (caller-rejection + BEGIN IMMEDIATE) for the new auto-correction service.
+- Phase 7 single-write-path discipline + audit-trail patterns.
+- Phase 10 Sub-bundle E §A.18 dashboard banner consumer (continues to read `count(unresolved-material)` predicate; semantics shift when that count drops to ~0 once auto-correction is the norm).
+
+---
+
 ## 2026-05-15 `cleanup-locked-scratch-dirs.ps1 -DeregisterFirst` regex too narrow — `phase\d+-*` doesn't match `schwab-bundle-*`
 
 **Symptom (operator-surfaced 2026-05-15 during Sub-bundle D post-merge cleanup):** the cleanup script's `-DeregisterFirst` safety filter regex `phase\d+-*` does NOT match the Schwab arc's worktree naming convention `schwab-bundle-*`. Result: all 4 Schwab worktrees were skipped during the deregister scan; operator + orchestrator had to manually invoke `git worktree remove --force` for each + then re-run the script to clean ACL-locked dirs.
