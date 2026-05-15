@@ -383,15 +383,18 @@ def test_status_renders_degraded_when_refresh_token_already_expired(
     )
 
 
-def test_status_renders_provisional_when_refresh_token_issued_field_missing(
+def test_status_renders_degraded_when_refresh_token_issued_field_missing(
     home: Path, cfg_path: Path,
 ) -> None:
-    """Test 3c — PROVISIONAL when tokens JSON valid but missing
-    refresh_token_issued (Codex R1 Major #1 + #2).
+    """Test 3c — DEGRADED when tokens JSON valid but missing
+    refresh_token_issued (Codex R2 Major #2 narrowing of R1 M#1+#2).
 
-    Plant tokens DB with valid JSON but no `refresh_token_issued` key —
-    operator-construed pre-paste-back state. Assert PROVISIONAL +
-    "DEGRADED" must NOT appear; reason cites the missing field.
+    Plant tokens DB with valid JSON + valid token_dictionary (incl.
+    refresh_token bytes) but no `refresh_token_issued` key — a configured
+    tokens DB with malformed metadata. R2 M#2 narrows PROVISIONAL to
+    "tokens DB missing on disk ONLY"; any anomaly INSIDE a tokens DB that
+    exists is configured-but-malformed → DEGRADED. Assert DEGRADED +
+    reason cites the missing field; "PROVISIONAL" must NOT appear.
     """
     tokens_path = home / "swing-data" / "schwab-tokens.production.db"
     payload = {
@@ -413,17 +416,159 @@ def test_status_renders_provisional_when_refresh_token_issued_field_missing(
 
     result = _invoke(cfg_path, ["status", "--environment", "production"])
     assert result.exit_code == 0, result.output
-    assert "PROVISIONAL" in result.output, (
-        f"expected PROVISIONAL for missing refresh_token_issued; "
+    assert "DEGRADED" in result.output, (
+        f"expected DEGRADED for missing refresh_token_issued "
+        f"(R2 M#2 narrows PROVISIONAL to missing-tokens-DB-only); "
         f"got:\n{result.output}"
     )
-    assert "DEGRADED" not in result.output, (
-        "missing refresh_token_issued is PROVISIONAL, NOT DEGRADED "
-        f"(Codex R1 M#2); got:\n{result.output}"
+    assert "PROVISIONAL" not in result.output, (
+        "missing refresh_token_issued is DEGRADED, NOT PROVISIONAL per "
+        f"R2 M#2; got:\n{result.output}"
     )
     out_lower = result.output.lower()
     assert "refresh_token_issued" in out_lower or "refresh token issued" in out_lower, (
-        f"PROVISIONAL reason should cite missing refresh_token_issued; "
+        f"DEGRADED reason should cite missing refresh_token_issued; "
+        f"got:\n{result.output}"
+    )
+
+
+def test_status_renders_degraded_when_token_dictionary_missing(
+    home: Path, cfg_path: Path,
+) -> None:
+    """Test 3d — DEGRADED when tokens JSON valid but `token_dictionary`
+    key absent (Codex R2 Major #1).
+
+    A tokens DB whose top-level JSON parses but is missing
+    `token_dictionary` cannot possibly hold the access/refresh tokens
+    schwabdev requires. Pre-R2-fix bypass: predicate fell through to
+    LIVE because Signals 3+4 only consulted `refresh_token_issued`
+    timestamp metadata, never the actual token bytes container.
+    """
+    tokens_path = home / "swing-data" / "schwab-tokens.production.db"
+    payload = {
+        # token_dictionary key OMITTED entirely.
+        "access_token_issued": datetime.now(UTC).isoformat(),
+        "refresh_token_issued": datetime.now(UTC).isoformat(),
+    }
+    tokens_path.write_text(json.dumps(payload, indent=4))
+    _plant_call(home / "swing-data" / "swing.db",
+                ts=datetime.now(UTC).isoformat(),
+                status="success", env="production")
+
+    result = _invoke(cfg_path, ["status", "--environment", "production"])
+    assert result.exit_code == 0, result.output
+    assert "DEGRADED" in result.output, (
+        f"expected DEGRADED for missing token_dictionary (R2 M#1); "
+        f"got:\n{result.output}"
+    )
+    assert "LIVE" not in result.output, (
+        "missing token_dictionary must NOT fall through to LIVE "
+        f"(R2 M#1 bypass closure); got:\n{result.output}"
+    )
+    out_lower = result.output.lower()
+    assert "token_dictionary" in out_lower or "token dictionary" in out_lower, (
+        f"DEGRADED reason should cite token_dictionary; "
+        f"got:\n{result.output}"
+    )
+
+
+def test_status_renders_degraded_when_refresh_token_bytes_empty_or_missing(
+    home: Path, cfg_path: Path,
+) -> None:
+    """Test 3e — DEGRADED when token_dictionary present but
+    refresh_token bytes absent or empty (Codex R2 Major #1).
+
+    A valid token_dictionary that contains access_token but NO
+    refresh_token key (or an empty/whitespace string) cannot drive the
+    7-day refresh cycle. Pre-R2-fix bypass: predicate fell through to
+    LIVE because refresh_token_issued metadata was fresh, never
+    inspecting the actual bytes slot.
+
+    SECURITY: assertion strictly checks state + reason wording; the
+    token VALUE (or its absence) is never compared as a string to avoid
+    leaking sentinel bytes into test diagnostics.
+    """
+    tokens_path = home / "swing-data" / "schwab-tokens.production.db"
+    payload = {
+        "access_token_issued": datetime.now(UTC).isoformat(),
+        "refresh_token_issued": datetime.now(UTC).isoformat(),
+        "token_dictionary": {
+            "expires_in": 1800,
+            "token_type": "Bearer",
+            "scope": "api",
+            "access_token": _SENTINEL_ACCESS_TOKEN,
+            # refresh_token key OMITTED entirely (R2 M#1 covers both
+            # missing-key and empty-string variants — empty-string is
+            # additionally pinned by the second assertion below).
+            "id_token": _SENTINEL_ID_TOKEN,
+        },
+    }
+    tokens_path.write_text(json.dumps(payload, indent=4))
+    _plant_call(home / "swing-data" / "swing.db",
+                ts=datetime.now(UTC).isoformat(),
+                status="success", env="production")
+
+    result = _invoke(cfg_path, ["status", "--environment", "production"])
+    assert result.exit_code == 0, result.output
+    assert "DEGRADED" in result.output, (
+        f"expected DEGRADED for missing refresh_token bytes (R2 M#1); "
+        f"got:\n{result.output}"
+    )
+    assert "LIVE" not in result.output, (
+        "missing refresh_token bytes must NOT fall through to LIVE "
+        f"(R2 M#1 bypass closure); got:\n{result.output}"
+    )
+    out_lower = result.output.lower()
+    assert "refresh_token" in out_lower or "refresh token" in out_lower, (
+        f"DEGRADED reason should cite refresh_token; "
+        f"got:\n{result.output}"
+    )
+
+    # Discriminating second pass — empty-string refresh_token also degrades.
+    payload["token_dictionary"]["refresh_token"] = "   "  # whitespace
+    tokens_path.write_text(json.dumps(payload, indent=4))
+    result2 = _invoke(cfg_path, ["status", "--environment", "production"])
+    assert result2.exit_code == 0, result2.output
+    assert "DEGRADED" in result2.output, (
+        f"empty/whitespace refresh_token must DEGRADE; "
+        f"got:\n{result2.output}"
+    )
+
+
+def test_status_renders_degraded_when_refresh_token_issued_unparseable(
+    home: Path, cfg_path: Path,
+) -> None:
+    """Test 3f — DEGRADED when refresh_token_issued is present but
+    unparseable as ISO datetime (Codex R2 Major #2).
+
+    Pre-R2-fix classified this as PROVISIONAL (alongside missing-field
+    case). R2 M#2 reclassifies: a tokens DB with malformed metadata is
+    configured-but-failing → DEGRADED, not "never configured" →
+    PROVISIONAL. Reserve PROVISIONAL strictly for "tokens DB missing on
+    disk" (Signal 1).
+    """
+    _write_tokens_file(
+        home, env="production",
+        refresh_token_issued="not-an-iso-string",
+        access_token_issued=datetime.now(UTC).isoformat(),
+    )
+    _plant_call(home / "swing-data" / "swing.db",
+                ts=datetime.now(UTC).isoformat(),
+                status="success", env="production")
+
+    result = _invoke(cfg_path, ["status", "--environment", "production"])
+    assert result.exit_code == 0, result.output
+    assert "DEGRADED" in result.output, (
+        f"expected DEGRADED for unparseable refresh_token_issued (R2 M#2); "
+        f"got:\n{result.output}"
+    )
+    assert "PROVISIONAL" not in result.output, (
+        "unparseable refresh_token_issued is DEGRADED, NOT PROVISIONAL per "
+        f"R2 M#2; got:\n{result.output}"
+    )
+    out_lower = result.output.lower()
+    assert "unparseable" in out_lower or "refresh_token_issued" in out_lower, (
+        f"DEGRADED reason should cite unparseable refresh_token_issued; "
         f"got:\n{result.output}"
     )
 

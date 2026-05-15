@@ -591,14 +591,15 @@ def _compute_degraded_state(
     now: datetime,
 ) -> tuple[str, str | None]:
     """Multi-signal integration-state predicate per dispatch brief §5.2 T-D.1
-    + Codex R1 Major #1+#2 hardening (extends to consult tokens parse_err
-    + refresh_token_issued AND splits PROVISIONAL/DEGRADED/LIVE three-state).
+    + Codex R1 Major #1+#2 + R2 Major #1+#2 hardening (extends to consult
+    token_dictionary presence + refresh_token bytes presence AND narrows
+    PROVISIONAL to ONLY tokens-DB-missing-on-disk).
 
     Returns ``(state, reason_text)`` where ``state`` is one of:
       - "LIVE" — all signals OK; integration is configured + healthy.
-      - "PROVISIONAL" — never configured yet (tokens DB missing OR tokens
-        JSON valid but `refresh_token_issued` field absent). Operator runs
-        `swing schwab setup` to advance; this is NOT a failure state.
+      - "PROVISIONAL" — never configured yet (tokens DB missing on disk
+        ONLY per R2 M#2 narrowing). Operator runs `swing schwab setup` to
+        advance; this is NOT a failure state.
       - "DEGRADED" — configured but failing. Operator runs `swing schwab
         status` for diagnostic detail + likely `swing schwab logout` +
         `swing schwab setup` to recover.
@@ -607,59 +608,96 @@ def _compute_degraded_state(
     a short operator-facing phrase suitable for inline display next to the
     state label.
 
-    Signal order (matches dispatch brief §5.2 + Codex R1 directive):
+    Signal order (matches dispatch brief §5.2 + Codex R1 + R2 directives):
       1. tokens DB missing on disk            → PROVISIONAL
       2. tokens DB unparseable / corrupt JSON → DEGRADED
-      3. `refresh_token_issued` field missing → PROVISIONAL
-      4. `refresh_token_issued` already expired (issued + 7d < now)
-                                              → DEGRADED
-      5. tokens DB mtime > 7 days old         → DEGRADED
-      6. most-recent `schwab_api_calls` for env has status != 'success'
+      3. `token_dictionary` missing or non-dict
+                                              → DEGRADED   (R2 M#1)
+      4. `token_dictionary.refresh_token` bytes missing or empty
+                                              → DEGRADED   (R2 M#1)
+      5. `refresh_token_issued` field missing → DEGRADED   (R2 M#2)
+      6. `refresh_token_issued` unparseable   → DEGRADED   (R2 M#2)
+      7. `refresh_token_issued` already expired (issued + 7d <= now)
+                                              → DEGRADED   (R2 m#1: <=)
+      8. tokens DB mtime > 7 days old         → DEGRADED
+      9. most-recent `schwab_api_calls` for env has status != 'success'
                                               → DEGRADED
 
-    The PROVISIONAL/DEGRADED split distinguishes "never configured" from
-    "configured-but-failing" so operator-facing copy can be precise (the
-    former points at `setup`, the latter at the recovery sequence).
+    R2 narrows PROVISIONAL to Signal 1 only: a tokens DB that exists on
+    disk implies the operator has previously completed `swing schwab
+    setup`, so any anomaly inside it is configured-but-malformed →
+    DEGRADED (cleanest semantic for operator triage). R2 M#1 closes the
+    bypass where a tokens DB with valid `refresh_token_issued` metadata
+    but missing actual refresh_token bytes would have fallen through to
+    LIVE; presence + non-emptiness is now an explicit signal (SECURITY:
+    only presence is checked; the token VALUE is never read into a return
+    string).
     """
     # Signal 1: tokens DB missing → PROVISIONAL (not configured yet).
     if not tokens_path.exists():
         return "PROVISIONAL", "tokens DB missing — not configured yet"
 
-    # Signals 2-4 consult tokens-file metadata.
+    # Signals 2-7 consult tokens-file metadata.
     payload, parse_err = _read_tokens_metadata(tokens_path)
     # Signal 2: parse_err set → DEGRADED (corrupt JSON or OS error).
     if parse_err is not None:
         return "DEGRADED", f"tokens DB unparseable: {parse_err}"
 
     if payload is not None:
+        # Signal 3 (R2 M#1): token_dictionary missing or non-dict → DEGRADED.
+        token_dict = payload.get("token_dictionary")
+        if not isinstance(token_dict, dict):
+            return (
+                "DEGRADED",
+                "token_dictionary missing or non-dict — "
+                "run `swing schwab logout` then `swing schwab setup`",
+            )
+        # Signal 4 (R2 M#1): refresh_token bytes missing or empty → DEGRADED.
+        # SECURITY: ONLY presence/non-emptiness is checked; the token
+        # VALUE is never echoed into the return string (sentinel-leak
+        # tests assert this).
+        refresh_token_bytes = token_dict.get("refresh_token")
+        if (
+            not isinstance(refresh_token_bytes, str)
+            or not refresh_token_bytes.strip()
+        ):
+            return (
+                "DEGRADED",
+                "token_dictionary missing refresh_token bytes — "
+                "run `swing schwab logout` then `swing schwab setup`",
+            )
+
         refresh_issued_iso = payload.get("refresh_token_issued")
-        # Signal 3: refresh_token_issued field missing → PROVISIONAL.
+        # Signal 5 (R2 M#2): refresh_token_issued field missing → DEGRADED.
         if not refresh_issued_iso:
             return (
-                "PROVISIONAL",
+                "DEGRADED",
                 "tokens DB missing refresh_token_issued field — "
-                "run `swing schwab setup`",
+                "run `swing schwab logout` then `swing schwab setup`",
             )
-        # Signal 4: refresh_token expired (issued + 7d < now) → DEGRADED.
+        # Signal 6 (R2 M#2): refresh_token_issued unparseable → DEGRADED.
         issued_dt = _parse_iso_datetime(refresh_issued_iso)
         if issued_dt is None:
             return (
-                "PROVISIONAL",
+                "DEGRADED",
                 "tokens DB has unparseable refresh_token_issued — "
-                "run `swing schwab setup`",
+                "run `swing schwab logout` then `swing schwab setup`",
             )
         if issued_dt.tzinfo is None:
             issued_dt = issued_dt.replace(tzinfo=UTC)
         expires_dt = issued_dt + timedelta(
             seconds=_REFRESH_TOKEN_TTL_SECONDS,
         )
-        if expires_dt < now:
+        # Signal 7 (R2 m#1): boundary semantics align with renderer's
+        # `delta_seconds <= 0` — at exactly now == expires_dt, predicate
+        # AND renderer both report expired.
+        if expires_dt <= now:
             return (
                 "DEGRADED",
                 "refresh_token expired (run `swing schwab setup` to re-auth)",
             )
 
-    # Signal 5: tokens DB stale (mtime > 7 days).
+    # Signal 8: tokens DB stale (mtime > 7 days).
     try:
         mtime = tokens_path.stat().st_mtime
         age_seconds = now.timestamp() - mtime
@@ -674,7 +712,7 @@ def _compute_degraded_state(
         # Defensive — if we can't stat, treat as degraded (filesystem issue).
         return "DEGRADED", "tokens DB stat failed (filesystem issue)"
 
-    # Signal 6: most-recent call for this env has status != 'success'.
+    # Signal 9: most-recent call for this env has status != 'success'.
     # Pull only the single most-recent row to avoid scanning history.
     row = conn.execute(
         "SELECT status FROM schwab_api_calls WHERE environment = ? "
@@ -745,7 +783,8 @@ def render_status(
 
     Sections per dispatch brief §0.9 T-D.1 + spec §3.5 mock:
       0. Environment header.
-      1. DEGRADED/LIVE indicator (multi-signal predicate per §5.2 T-D.1).
+      1. LIVE / PROVISIONAL / DEGRADED indicator (multi-signal predicate
+         per §5.2 T-D.1 + Codex R1 M#1+M#2 + R2 M#1+M#2 hardening).
       2. cfg + tokens-file metadata (account_hash masked; tokens DB path).
       3. Token validity (access + refresh, with severity escalation on refresh).
       4. Per-environment counts: recent errors (24h, 7d) + snapshots-30d
