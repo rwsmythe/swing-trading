@@ -6,6 +6,57 @@
 
 ---
 
+## 2026-05-15 Web-UI OAuth paste-back form (`GET/POST /schwab/setup`) — operator-stated UX gap; bundle with credentials-in-file as Phase 12 Sub-bundle B
+
+**Operator UX gap (2026-05-15 during Phase 12 Sub-bundle A close discussion):** `swing schwab setup` is CLI-only. Operator's normal mode is the web interface (`swing web` on 127.0.0.1:8080). Weekly OAuth re-auth currently forces operator to drop to a separate PowerShell session for the paste-back flow. No web-side equivalent exists.
+
+**Proposed Option A (simpler; recommended for V1):** new web route `GET /schwab/setup` renders a simple form:
+- Step 1: pre-populated clickable link to the Schwab authorize URL (opens in new tab via `target="_blank"`).
+- Step 2: text input for "paste your callback URL here".
+- Step 3: submit button.
+
+`POST /schwab/setup` handler runs the same `setup_paste_flow` service-layer function from Sub-bundle A T-A.4 (NOT a re-implementation). T-A.2 self-healing (auto-rename stale tokens DB before invoking schwabdev) applies identically. Operator interaction: navigate to `/schwab/setup` → click authorize link (new tab) → complete OAuth → copy callback URL from address bar → paste into form on original tab → submit. Same number of paste actions as CLI flow but stays inside web UI context — operator never leaves browser.
+
+Web-form must use HTMX patterns per Phase 5+ HTMX failure-surface gotchas: embedded form `hx-headers='{"HX-Request": "true"}'` for OriginGuard strict-mode propagation; success-path `204 No Content` + `HX-Redirect: /schwab/status` (NOT 303 swap-target); HX-Redirect target route must exist (verify via TestClient route-table assertion). Server-stamping discipline applies (operator-supplied = the callback URL; everything else server-stamped).
+
+**Option B (V2 candidate; eliminates paste-back entirely):** local HTTPS callback handler at e.g. `https://127.0.0.1:8443/schwab/oauth/callback`. Browser hits handler directly after Schwab redirects; server extracts `code` from URL params; completes exchange automatically. Pros: zero paste-back. Cons: requires local self-signed HTTPS cert (browser security warning; operator must accept cert), separate HTTPS port listener, Schwab Developer Portal app callback URL must be reconfigured. Substantial complexity for the UX win — banked V2 candidate.
+
+### Bundle with credentials-in-file (preceding phase3e-todo entry) as Phase 12 Sub-bundle B
+
+Both target the same operator pain — "make Schwab setup work without dropping to PowerShell":
+- **Credentials-in-file** (`user-config.toml` cascade): CLI + web both read app credentials from one place; no per-shell env vars.
+- **Web OAuth setup form** (`GET/POST /schwab/setup`): operator never leaves browser for weekly re-auth.
+
+Bundled scope: ~12-18 fast tests; 2-3 Codex rounds; 1-2 days. Shared infrastructure (`construct_authenticated_client` cascade for credentials; `setup_paste_flow` for OAuth) makes bundling efficient. Combined dispatch as "Phase 12 Sub-bundle B — Schwab web-UI-friendliness mini-bundle."
+
+### Architectural changes required (web-form portion)
+
+1. **New route at `swing/web/routes/schwab.py`** (or co-located in existing routes module). `GET /schwab/setup` renders the form template; `POST /schwab/setup` runs `setup_paste_flow(cfg, environment, client_id, client_secret, callback_url=<operator-pasted>)`. Credentials sourced from the cascade (env vars > user-config.toml > prompt — except prompt path is N/A in web context; if neither env vars nor file values present, render an error pointing operator at `/config` or `swing config set`).
+2. **New template at `swing/web/templates/schwab_setup.html.j2`** following base.html.j2 extension pattern (must add any new VM fields to ALL base-layout VMs per CLAUDE.md gotcha).
+3. **New view model `SchwabSetupVM`** with the standard base-layout fields + setup-specific fields (authorize URL, optional success/error message, optional pre-existing-tokens-DB warning).
+4. **CycleChecklist update** to reference the web URL (`http://127.0.0.1:8080/schwab/setup`) as the primary weekly re-auth path; CLI command remains as fallback.
+5. **`swing schwab status` web counterpart at `GET /schwab/status`** — V2 candidate (smaller; not load-bearing for OAuth flow); could ship in same Sub-bundle B if operator wants the status surface in the web UI too.
+6. **CLAUDE.md gotcha addition** — "Schwab OAuth web setup flow" documents Option A's HTMX requirements (embedded form HX-Request propagation; HX-Redirect success path; T-A.2 self-healing applies identically; route table must include `/schwab/setup` GET + POST).
+
+### Sequencing within Sub-bundle B
+
+If bundled with credentials-in-file:
+- Task 1: credentials-in-file cascade extension (T-A.1 helper extends; SchwabConfig dataclass extends).
+- Task 2: `swing config set integrations.schwab.client_id` + `client_secret` cascade emitter wires.
+- Task 3: web `GET/POST /schwab/setup` form + POST handler integration.
+- Task 4: cycle-checklist + CLAUDE.md updates.
+- Task 5: optional `GET /schwab/status` web counterpart.
+- Task 6: end-to-end happy-path integration test.
+
+### Cross-references
+
+- Sub-bundle A T-A.4 setup_paste_flow CLI implementation: `swing/integrations/schwab/auth.py:setup_paste_flow`.
+- Sub-bundle A T-A.2 self-healing logic (applies identically to web POST): same file.
+- Phase 5 HTMX failure-surface gotchas: CLAUDE.md HX-Request propagation + HX-Redirect-vs-303-swap + HX-Redirect-target-unrouted gotchas.
+- Phase 8 server-stamping discipline gotcha (relevant to web POST: operator-supplied = callback URL only; everything else server-stamped).
+
+---
+
 ## 2026-05-15 Schwab CLIENT_ID + CLIENT_SECRET in user-config.toml (Finviz precedent; operator-stated UX gap during Phase 12 Sub-bundle A S6 gate)
 
 **Operator UX clarification (2026-05-15):** Phase 12 Sub-bundle A T-A.1 env-var path is "better than copying and pasting" but not great from a user perspective:
