@@ -10,7 +10,21 @@
 
 **Surfaced (operator-stated 2026-05-15 during Phase 12 Sub-bundle A S5 gate):** the current Phase 9 + Phase 11 reconciliation model surfaces journal-vs-Schwab discrepancies for operator-triage with resolutions of `acknowledged_immaterial` / `journal_corrected` / `mistake_corrected`. Operator pushed back: when Schwab data is available, **Schwab IS truth — there is no "immaterial" price magnitude**. Operator-action loop is the wrong design. The fact that 3 discrepancies re-emerged on pipeline #63 after operator "resolved" 7 of 8 yesterday demonstrates this concretely: yesterday's resolutions only marked OLD discrepancy ROWS as resolved; they did NOT update the underlying fills. Each fresh `reconciliation_run` re-detects the same mismatches because journal data still diverges from Schwab.
 
-**Operator's intended model:** reconciliation detects journal-vs-Schwab mismatches AND auto-corrects journal to match Schwab, with full audit. Discrepancies become transient correction events ("Schwab=$5.30, journal had $5.23, auto-corrected fill_id=9 at <ts>; pre-state preserved"), not standing operator-action tickets. Operator-resolution becomes the EXCEPTION (operator OVERRIDES an auto-correction in rare "Schwab itself is wrong" cases) rather than the norm.
+**Operator's intended model — three-tier resolution (operator clarification 2026-05-15):**
+
+1. **Unambiguous auto-correct (the common case):** reconciliation detects a journal-vs-Schwab mismatch where the correction is deterministic — single Schwab record maps to single journal fill, single field differs, clear "set journal field to Schwab value." System auto-corrects journal to match Schwab + writes audit row capturing pre/post values. No operator involvement needed. Example: CVGI disc 41 (journal $5.23 vs Schwab $5.30 on a single matching fill) — system can unambiguously resolve.
+
+2. **Ambiguity surfaced for operator decision (operationally important — second most common):** system detects mismatch but cannot deterministically decide the correction. Examples:
+   - Schwab shows multiple partial fills (e.g., DHC entry as 20+19 partials at slightly different prices) + journal has single consolidated entry — system cannot decide whether to (a) split journal into matching partials, (b) keep journal consolidated + use Schwab's volume-weighted avg price, (c) pick a representative fill, (d) something operator-specific.
+   - Multiple Schwab transactions could match the same journal fill within a window — which is the "right" match?
+   - Schwab data shape doesn't fit existing journal schema (e.g., new transaction subtype not in CHECK enum).
+   - Data shape transformation requires operator judgment (intraday timestamps preserved vs rolled to EOD; fee allocation across split fills).
+   
+   Surfaced to operator with **clear message: what the discrepancy is + what the ambiguity is + what the resolution choices are**. Operator picks (or provides custom). System then auto-applies the chosen resolution + audits.
+
+3. **Operator overrides an auto-correction (the rare edge case):** operator has ground-truth knowledge that Schwab itself is wrong (known broker error; reporting glitch; operator caught it before it propagated). Operator marks an applied correction as `operator_overridden` + provides ground-truth value + reason. Audit chain preserves all three values: pre-correction journal / Schwab-said / operator-override.
+
+The current Phase 9 + 11 model collapses tiers (1) + (2) into a single "operator triages everything" loop, which is the wrong default. The new architecture must distinguish: **deterministic correction → auto-apply silently** vs **ambiguous case → surface with clear choices** vs **rare override case → preserve all three values in audit**.
 
 ### Concrete current-state evidence
 
@@ -24,13 +38,24 @@ Discrepancies 39/40/41 from pipeline #63 (run_id=10) are LITERALLY IDENTICAL to 
 
 ### Architectural changes required
 
-1. **New service-layer auto-correction module** at `swing/trades/reconciliation_auto_correct.py` (or similar). Transactional (BEGIN IMMEDIATE / COMMIT / ROLLBACK; reject caller-held tx per Phase 8 lesson family). Validator-respecting (Phase 7 fills validators; Phase 9 risk_policy). Audit-aware (writes audit row capturing pre/post state).
-2. **New audit-history table** OR extension of `event_log` to preserve pre-correction journal values (forensic trail; "what did the operator originally enter; what did Schwab show; when did we correct it").
-3. **Reconciliation pivot:** discrepancy emission flow becomes "emit correction event + apply correction in same transaction" instead of "emit discrepancy + wait for operator." Existing discrepancy table semantics change OR the table is supplemented by a `corrections` table.
-4. **`fills.reconciliation_status` enum change:** `unreconciled` → `auto_matched` / `auto_corrected_from_schwab` / `operator_overridden`. `tos_match_id` populated for auto-matched fills.
-5. **Operator approval gate for large corrections** (configurable threshold; e.g., > 10% deviation OR > $5 absolute → surface for confirm; below threshold → auto-apply). Mirrors Phase 9 risk_policy approval gates.
-6. **Backfill path** for existing unresolved-material discrepancies (39/40/41 + any future): when the auto-correction service ships, run a one-shot backfill that applies all currently-unresolved Schwab-truth corrections + audits.
-7. **Fill auto-population at trade-entry time** (the unstated V2 candidate): create fills directly from Schwab Trader API responses at trade-entry handler time instead of operator-typing-from-memory. Closes the entire discrepancy stream as a category. Fills get `tos_match_id` populated from start.
+1. **New ambiguity classifier** at the reconciliation layer. For every detected mismatch, classify as:
+   - `auto_correctable` — single journal fill + single Schwab record + single field differs + clear target value → tier 1 auto-apply.
+   - `ambiguous` — multiple-to-one mapping, shape mismatch, missing-field-on-one-side, schema-doesn't-fit, or any case where multiple deterministic resolutions exist → tier 2 surface for operator. Classifier MUST emit a structured `ambiguity_kind` enum (e.g., `multi_partial_vs_consolidated`, `multi_match_within_window`, `unknown_schwab_subtype`, `field_shape_incompatible`, `schwab_returned_no_match`) so the operator-facing UI can render type-specific resolution choices.
+   - `unsupported` — system genuinely cannot reason about the mismatch (e.g., new Schwab API field shape; cassette-fixture-only edge case) → tier 2 with explicit "system needs code update; please report" message.
+2. **New service-layer auto-correction module** at `swing/trades/reconciliation_auto_correct.py` (or similar). Transactional (BEGIN IMMEDIATE / COMMIT / ROLLBACK; reject caller-held tx per Phase 8 lesson family). Validator-respecting (Phase 7 fills validators; Phase 9 risk_policy). Audit-aware. Handles tier-1 auto-correctable cases only; tier-2 cases get queued for operator decision (do NOT auto-apply ambiguous cases).
+3. **New audit-history table** OR extension of `event_log` to preserve pre-correction journal values (forensic trail; "what did the operator originally enter; what did Schwab show; what action was taken; when").
+4. **Tier-2 ambiguity-resolution UI/CLI** — operator-facing surface that renders the discrepancy + ambiguity_kind + resolution choices specific to the kind. E.g., `multi_partial_vs_consolidated` choices: (a) split journal into matching partials; (b) keep consolidated + use Schwab volume-weighted avg price; (c) keep journal as-is + mark schwab_partial_fill_aggregation_acknowledged; (d) operator-custom value. Each choice maps to a deterministic action; operator pick → service auto-applies + audits.
+5. **Reconciliation flow pivot:** discrepancy emission becomes a multi-tier dispatch — tier-1 cases auto-apply silently; tier-2 cases surface for operator decision; tier-3 (operator override of an applied tier-1 correction) is a separate post-hoc UI surface. Discrepancy table semantics shift: rows represent classification + (for tier-2) pending operator decision OR (for tier-1+tier-3) audit history.
+6. **`fills.reconciliation_status` enum change:** `unreconciled` → `auto_matched` / `auto_corrected_from_schwab` / `pending_ambiguity_resolution` / `operator_resolved_ambiguity` / `operator_overridden`. `tos_match_id` populated for auto-matched + auto-corrected + operator-resolved.
+7. **No magnitude-based auto-vs-surface threshold** — magnitude is the WRONG axis (operator clarification: $0.07 isn't "small"; the question is whether the correction is deterministic, not whether the delta is big). Ambiguity classifier replaces threshold gates.
+8. **Backfill path** for existing unresolved-material discrepancies (39/40/41 + any future): when the auto-correction service ships, run the classifier across all currently-unresolved discrepancies. Tier-1 cases auto-apply + audit. Tier-2 cases get queued for operator decision via the new UI.
+9. **Fill auto-population at trade-entry time** (the unstated V2 candidate): create fills directly from Schwab Trader API responses at trade-entry handler time instead of operator-typing-from-memory. Closes the entire discrepancy stream as a CATEGORY (not just one-at-a-time). Fills get `tos_match_id` populated from start; no future fiction-vs-truth divergence possible. Probably a separate sub-bundle (Sub-bundle B vs Sub-bundle C decision; brainstorm should determine ordering).
+
+### Per-discrepancy classification of the current 3 unresolved (illustrative — informs the new architecture's expected workload)
+
+- **disc 41 CVGI entry_price_mismatch** → likely **`auto_correctable` (tier 1)**: single journal fill `fill_id=9` matches single Schwab transaction by date+ticker+qty; only `price` field differs ($5.23 vs $5.30). System sets journal price to $5.30 + writes audit row + done. No operator involvement.
+- **disc 39 DHC unmatched_open_fill** → likely **`ambiguous` (tier 2)** with `ambiguity_kind=multi_partial_vs_consolidated`: journal has single fill `qty=39 @ $7.58`; Schwab almost certainly has partial fills (e.g., 20 + 19 at slightly different prices). Operator picks split-into-partials vs keep-consolidated + average + audit.
+- **disc 40 VSAT unmatched_open_fill** → either `ambiguous` (`multi_partial_vs_consolidated` if Schwab split entry) OR `auto_correctable` (if Schwab has single fill at slightly different price/qty). Classifier determines which on a per-row basis.
 
 ### What this is NOT
 
