@@ -6,6 +6,20 @@
 
 ---
 
+## 2026-05-15 `cleanup-locked-scratch-dirs.ps1 -DeregisterFirst` regex too narrow — `phase\d+-*` doesn't match `schwab-bundle-*`
+
+**Symptom (operator-surfaced 2026-05-15 during Sub-bundle D post-merge cleanup):** the cleanup script's `-DeregisterFirst` safety filter regex `phase\d+-*` does NOT match the Schwab arc's worktree naming convention `schwab-bundle-*`. Result: all 4 Schwab worktrees were skipped during the deregister scan; operator + orchestrator had to manually invoke `git worktree remove --force` for each + then re-run the script to clean ACL-locked dirs.
+
+**Root cause:** the script was authored at post-Phase-10 infrastructure bundle SHIPPED (commit `27ce96f`) when ALL prior worktree branches had `phase\d+-*` naming (phase8/phase9/phase10 bundles). The Schwab arc's `schwab-bundle-A/B/C/D-...` naming was the first deviation; the regex didn't follow.
+
+**Fix candidate:** widen the safety filter regex to `(phase\d+|schwab(?:-\w+)?)-bundle-` OR introduce a configurable filter (e.g., `-BranchPattern` parameter; default `phase\d+-*` for backward compat). Operator-paced; bundle into the next polish dispatch OR address inline at next worktree-husk cleanup cycle.
+
+**Defense-in-depth:** orchestrator briefs for future arc-style dispatches MUST either (a) use `phase{NN}-bundle-*` naming convention to match the existing regex, OR (b) explicitly thread the cleanup-script regex extension into the dispatch brief as a watch item.
+
+**Cross-reference:** Phase 10 infrastructure bundle SHIPPED entry at `27ce96f` — the original `-DeregisterFirst` switch addition (Codex R1 Critical #1 confirm-before-deregister gate landed in that bundle).
+
+---
+
 ## 2026-05-15 Pipeline run errors out on missing `data/finviz-inbox/` folder (operator-reported)
 
 **Symptom (operator-surfaced 2026-05-15 during Sub-bundle D operator-witnessed gate):** `swing pipeline run` errors out with "no csv found" when `data/finviz-inbox/` directory does not exist on the operator's filesystem.
