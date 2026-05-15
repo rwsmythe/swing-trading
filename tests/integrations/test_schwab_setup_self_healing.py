@@ -530,3 +530,105 @@ def test_t_a_2_audit_row_emitted_with_locked_disposition(
         f"self-heal row call_id={self_heal_call_id} must precede setup "
         f"row call_id={other_code_exchange[0]['call_id']}"
     )
+
+
+def test_t_a_2_audit_row_emitted_on_os_replace_failure(
+    home: Path, cfg: Any, conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test 8 — failure-path audit row (code-review Fix #1).
+
+    Two-phase audit ordering: `record_call_start` MUST run BEFORE
+    `os.replace` so a failed rename (Windows file-in-use, EACCES,
+    antivirus-locked tokens DB) leaves an audit trail of the attempted
+    self-heal. Pre-Fix #1 the function called `os.replace` FIRST + only
+    emitted the audit row AFTER success — failed renames vanished.
+
+    Plant stale tokens DB; monkeypatch `os.replace` to raise
+    `OSError("File in use by another process")`; invoke `setup_paste_flow`.
+    Assert:
+      (a) `OSError` propagates (NOT swallowed);
+      (b) `schwab_api_calls` has exactly ONE row with
+          `endpoint='oauth.code_exchange'`, `status='error'`,
+          `error_message` containing 'auto-detected' AND 'renamed';
+      (c) the audit row's `error_message` excerpt also references the
+          underlying failure ('File in use' substring or equivalent).
+    """
+    import os as _os
+
+    tokens_path = home / "swing-data" / "schwab-tokens.production.db"
+    tokens_path.write_text("stale-payload-failure-path-test")
+
+    failure_msg = "File in use by another process"
+
+    def raising_replace(*args: Any, **kwargs: Any) -> None:
+        raise OSError(failure_msg)
+
+    # NOTE: schwabdev.Client is NOT patched — the OSError on os.replace
+    # propagates from the self-heal helper BEFORE setup_paste_flow gets
+    # to invoke schwabdev. If a regression silently swallows the OSError
+    # + falls through to schwabdev construction, this test would fail
+    # with an entirely different error (real schwabdev would try to do
+    # OAuth I/O against a stub-less environment).
+    monkeypatch.setattr(_os, "replace", raising_replace)
+
+    with pytest.raises(OSError, match=failure_msg):
+        setup_paste_flow(
+            cfg=cfg,
+            environment="production",
+            client_id="my_client_id",
+            client_secret="my_client_secret",
+            conn=conn,
+        )
+
+    # Stale tokens DB still present (rename failed; original file not moved).
+    assert tokens_path.exists(), (
+        "stale tokens DB should still be at canonical path "
+        "(os.replace failed; no atomic rename happened)"
+    )
+    # No renamed file appeared.
+    renamed = list(home.glob("swing-data/schwab-tokens.production.db.deleted-*"))
+    assert renamed == [], (
+        f"no rename should have happened on os.replace failure; got {renamed}"
+    )
+
+    # Audit-row failure-path discipline: ONE row with status='error' +
+    # the locked grep substrings + the underlying OSError excerpt.
+    rows = _read_audit_rows(home)
+    self_heal_rows = [
+        r for r in rows
+        if r["error_message"]
+        and "auto-detected" in r["error_message"]
+        and "renamed" in r["error_message"]
+    ]
+    assert len(self_heal_rows) == 1, (
+        f"expected exactly 1 self-heal audit row on failure path; "
+        f"got {len(self_heal_rows)}: rows={rows}"
+    )
+    row = self_heal_rows[0]
+    assert row["endpoint"] == "oauth.code_exchange", (
+        f"expected endpoint='oauth.code_exchange'; got {row['endpoint']!r}"
+    )
+    assert row["status"] == "error", (
+        f"expected status='error' on os.replace failure; "
+        f"got {row['status']!r}"
+    )
+    assert row["surface"] == "cli"
+    assert row["environment"] == "production"
+    # error_message carries the underlying failure substring (within the
+    # _redacted_excerpt 80-char window).
+    assert "File in use" in row["error_message"], (
+        f"expected underlying OSError substring 'File in use' in "
+        f"error_message; got {row['error_message']!r}"
+    )
+    # No OTHER oauth.code_exchange row — setup never proceeded past the
+    # self-heal step.
+    other_code_exchange = [
+        r for r in rows
+        if r["endpoint"] == "oauth.code_exchange"
+        and r["call_id"] != row["call_id"]
+    ]
+    assert other_code_exchange == [], (
+        f"setup should NOT have proceeded past the failed self-heal; "
+        f"unexpected rows: {other_code_exchange}"
+    )

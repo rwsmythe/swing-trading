@@ -59,6 +59,16 @@ log = logging.getLogger(__name__)
 _ENV_VAR_CLIENT_ID = "SCHWAB_CLIENT_ID"
 _ENV_VAR_CLIENT_SECRET = "SCHWAB_CLIENT_SECRET"
 
+# T-A.2 collision-disambiguation loop upper bound. The disambiguation branch
+# (`<canonical>.deleted-<ts>-1`, `-2`, ...) is unreachable in normal
+# operation — same-second double-invocation would require parallel `swing
+# schwab setup` invocations against the SAME tokens DB, which the CLI is
+# not designed for. The bounded loop exists as a defense-in-depth guard
+# against pathological filesystem states (e.g. a directory full of
+# `*.deleted-<same-ts>-*` siblings); the `else` clause raises with an
+# actionable cleanup message rather than spinning forever.
+_MAX_RENAME_DISAMBIG_ATTEMPTS = 10_000
+
 
 def _mask_credential(value: str | None) -> str:
     """Mask a credential value for inclusion in operator-visible error text.
@@ -237,38 +247,68 @@ def _rename_stale_tokens_db(
     Algorithm:
       1. If `tokens_db_path` does NOT exist → return `None` (no-op).
       2. Build candidate `<path>.deleted-<YYYYmmddTHHMMSS>` — same timestamp
-         format as `revoke_and_delete` (logout) uses, so the renamed-file
-         suffix convention is consistent across setup + logout self-heal
-         paths.
+         FORMAT as `revoke_and_delete` (logout) uses (`%Y%m%dT%H%M%S`), so
+         the renamed-file suffix string convention is consistent across
+         setup + logout self-heal paths. SEMANTIC ANCHOR DEVIATION: this
+         self-heal path uses UTC-aware `_utc_now()` (intentional; matches
+         modern convention) while `revoke_and_delete` currently uses naïve
+         `datetime.now()` (local time). Operators scanning `*.deleted-*`
+         files by timestamp will see a 4-5 hour gap between adjacent
+         self-heal + logout actions during the same wall-clock session.
+         Banked as V2.1 §VII.F amendment candidate (unify logout on UTC);
+         logout is out-of-scope for T-A.2 per dispatch brief §6.
       3. If the candidate already exists (improbable race; same-second
          double-invocation), append `-1`, `-2`, ... until a free name is
-         found. NEVER overwrite a prior renamed file.
-      4. `os.replace` (same-volume; both source + dest in `~/swing-data/` →
-         no cross-device-link risk per CLAUDE.md gotcha).
-      5. Emit a SINGLE audit row at `endpoint='oauth.code_exchange'`
-         (schema CHECK enum at v18 does NOT include
-         `oauth.tokens_db_rename` — brief deviation banked as V2.1 §VII.F
-         amendment candidate), `status='success'`, `surface='cli'`,
-         `environment=<env>`, `error_message` containing the substrings
-         "auto-detected" + "renamed before paste-back" so operators can
-         grep the audit log to find self-heal events. This row precedes
-         the setup flow's own `oauth.code_exchange` audit row for the
-         actual Client construction.
-      6. `click.echo` an operator-visible advisory line naming the renamed
-         path + 24h recovery window.
+         found. NEVER overwrite a prior renamed file. Bounded by
+         `_MAX_RENAME_DISAMBIG_ATTEMPTS`; pathological filesystem states
+         raise `RuntimeError` rather than spinning forever.
+      4. Pre-flight phase complete — no side-effects, no audit. Audit
+         lifecycle now opens: `record_call_start(endpoint='oauth.code_exchange')`
+         emits the in-flight audit row BEFORE the `os.replace` so a
+         failed rename (Windows file-in-use, EACCES, antivirus-locked
+         tokens DB) still leaves an audit trail. Mirrors the canonical
+         setup-flow pattern at `setup_paste_flow` :595-602 + the
+         revoke-and-delete pattern at `:1276-1308`.
+      5. `os.replace` (same-volume; both source + dest in `~/swing-data/` →
+         no cross-device-link risk per CLAUDE.md gotcha). On `OSError`,
+         close the audit row with `status='error'`, `error_message` =
+         redacted excerpt of the failure (still prefixed with
+         "auto-detected" + "renamed" so operators can grep failed
+         self-heal attempts), then re-raise.
+      6. On success: close the audit row with `status='success'`,
+         `error_message` containing the substrings "auto-detected" +
+         "renamed before paste-back" so operators can grep the audit log
+         to find self-heal events. This row precedes the setup flow's
+         own `oauth.code_exchange` audit row for the actual Client
+         construction.
+      7. `click.echo` an operator-visible advisory line naming the renamed
+         path + 24h recovery window (success path only).
 
     Audit-row disposition LOCK (per dispatch brief §3 T-A.2 AC3): emitted.
     Lock the disposition so operator-pain root-cause is traceable in
     `schwab_api_calls` history. Documented in the implementation docstring
-    + Test 7 of `test_schwab_setup_self_healing.py` pins the row shape.
+    + Test 7 of `test_schwab_setup_self_healing.py` pins the success-path
+    row shape; Test 8 pins the failure-path row shape.
 
     Returns:
         Path to the renamed file, or `None` if no tokens DB existed.
+
+    Raises:
+        OSError: `os.replace` failed (file-in-use on Windows, EACCES,
+            cross-device-link). Audit row written with `status='error'`
+            BEFORE re-raise.
+        RuntimeError: collision-disambiguation loop exceeded
+            `_MAX_RENAME_DISAMBIG_ATTEMPTS` (pathological filesystem
+            state — operator must clean up the `*.deleted-<ts>-*`
+            directory).
     """
     if not tokens_db_path.exists():
         return None
 
-    # Step 2 — build the candidate timestamp suffix. Match logout format.
+    # Step 2 — build the candidate timestamp suffix. Format matches logout
+    # (`%Y%m%dT%H%M%S`); SEMANTIC anchor diverges — self-heal is UTC-aware
+    # via `_utc_now()`, logout uses naïve `datetime.now()`. See docstring
+    # for V2.1 §VII.F amendment-candidate disposition.
     rename_ts = _utc_now().strftime("%Y%m%dT%H%M%S")
     candidate = tokens_db_path.with_name(
         f"{tokens_db_path.name}.deleted-{rename_ts}",
@@ -276,26 +316,32 @@ def _rename_stale_tokens_db(
 
     # Step 3 — collision disambiguation (NEVER overwrite a prior renamed
     # file). Append `-1`, `-2`, ... if the candidate path is already taken.
-    counter = 0
-    while candidate.exists():
-        counter += 1
-        candidate = tokens_db_path.with_name(
-            f"{tokens_db_path.name}.deleted-{rename_ts}-{counter}",
-        )
+    # Bounded loop: pathological filesystem states (directory full of
+    # `*.deleted-<same-ts>-*` siblings) raise rather than spin forever.
+    if candidate.exists():
+        for counter in range(1, _MAX_RENAME_DISAMBIG_ATTEMPTS):
+            candidate = tokens_db_path.with_name(
+                f"{tokens_db_path.name}.deleted-{rename_ts}-{counter}",
+            )
+            if not candidate.exists():
+                break
+        else:
+            raise RuntimeError(
+                f"could not find a non-colliding rename target after "
+                f"{_MAX_RENAME_DISAMBIG_ATTEMPTS} attempts; manually clean "
+                f"up `{tokens_db_path.parent}/{tokens_db_path.name}"
+                f".deleted-*`",
+            )
 
-    # Step 4 — atomic rename via os.replace.
-    os.replace(str(tokens_db_path), str(candidate))
-
-    # Step 5 — audit row. ENDPOINT NOTE: the schema CHECK enum at v18 does
-    # NOT include `oauth.tokens_db_rename` (brief AC3 wording deviated from
-    # actual schema). Reuse `oauth.code_exchange` — operators grep on the
-    # distinctive error_message substring "auto-detected" + "renamed before
-    # paste-back" to find self-heal events. Banked as V2.1 §VII.F amendment
-    # candidate (extend CHECK enum + use dedicated endpoint name in V2).
-    audit_msg = (
-        f"<auto-detected stale tokens DB at {tokens_db_path}; "
-        f"renamed before paste-back>"
-    )
+    # Step 4 — audit-row open BEFORE side-effect. ENDPOINT NOTE: the schema
+    # CHECK enum at v18 does NOT include `oauth.tokens_db_rename` (brief
+    # AC3 wording deviated from actual schema). Reuse `oauth.code_exchange`
+    # — operators grep on the distinctive error_message substring
+    # "auto-detected" + "renamed" to find self-heal events. Banked as
+    # V2.1 §VII.F amendment candidate (extend CHECK enum + use dedicated
+    # endpoint name in V2).
+    audit_start_monotonic = time.monotonic()
+    call_id: int | None = None
     try:
         ts = _now_ms_iso()
         call_id = audit_service.record_call_start(
@@ -306,25 +352,87 @@ def _rename_stale_tokens_db(
             surface="cli",
             environment=environment,
         )
-        audit_service.record_call_finish(
-            conn,
-            call_id=call_id,
-            http_status=None,
-            status="success",
-            response_time_ms=0,
-            signature_hash=None,
-            rate_limit_remaining=None,
-            error_message=audit_msg,
-        )
     except Exception as exc:
-        # Audit-row write failure must not block the self-heal itself —
-        # the rename already happened on disk; surface a warning + continue.
+        # Audit-row open failure must not block the self-heal itself —
+        # surface a warning + continue with no audit trail.
         log.warning(
-            "schwab setup self-heal: audit-row write failed: %s",
+            "schwab setup self-heal: audit-row open failed: %s",
             type(exc).__name__,
         )
+        call_id = None
+        del exc  # silence linter
 
-    # Step 6 — operator-visible advisory line. AC5: emit unconditionally
+    # Step 5 — atomic rename via os.replace. On OSError, close the audit
+    # row with status='error' BEFORE re-raise so the failed self-heal
+    # attempt is traceable in schwab_api_calls history.
+    try:
+        os.replace(str(tokens_db_path), str(candidate))
+    except OSError as rename_exc:
+        elapsed_ms = int(
+            (time.monotonic() - audit_start_monotonic) * 1000,
+        )
+        # Failure-path error_message: preserve operator-grep substrings
+        # ("auto-detected" + "renamed") so failed self-heal attempts
+        # share the same grep namespace as successful ones, but also
+        # carry the underlying OSError excerpt so root-cause is visible.
+        failure_msg = (
+            f"<auto-detected stale tokens DB at {tokens_db_path}; "
+            f"renamed FAILED: {_redacted_excerpt(rename_exc)}>"
+        )
+        if call_id is not None:
+            try:
+                audit_service.record_call_finish(
+                    conn,
+                    call_id=call_id,
+                    http_status=None,
+                    status="error",
+                    response_time_ms=elapsed_ms,
+                    signature_hash=None,
+                    rate_limit_remaining=None,
+                    error_message=failure_msg,
+                )
+            except Exception as audit_exc:
+                log.warning(
+                    "schwab setup self-heal: audit-row close (failure) "
+                    "failed: %s",
+                    type(audit_exc).__name__,
+                )
+        log.warning(
+            "schwab setup self-heal: os.replace failed: %s",
+            type(rename_exc).__name__,
+        )
+        raise
+
+    # Step 6 — success-path audit close. Preserve disposition-lock substrings
+    # "auto-detected" + "renamed before paste-back" (Test 7).
+    elapsed_ms = int((time.monotonic() - audit_start_monotonic) * 1000)
+    audit_msg = (
+        f"<auto-detected stale tokens DB at {tokens_db_path}; "
+        f"renamed before paste-back>"
+    )
+    if call_id is not None:
+        try:
+            audit_service.record_call_finish(
+                conn,
+                call_id=call_id,
+                http_status=None,
+                status="success",
+                response_time_ms=elapsed_ms,
+                signature_hash=None,
+                rate_limit_remaining=None,
+                error_message=audit_msg,
+            )
+        except Exception as exc:
+            # Audit-row close failure must not block the self-heal itself
+            # — the rename already happened on disk; surface a warning +
+            # continue.
+            log.warning(
+                "schwab setup self-heal: audit-row close (success) "
+                "failed: %s",
+                type(exc).__name__,
+            )
+
+    # Step 7 — operator-visible advisory line. AC5: emit unconditionally
     # via `click.echo` (works regardless of whether a click.Context is
     # bound; click.echo writes to sys.stdout otherwise).
     click.echo(
