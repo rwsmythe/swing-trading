@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -39,6 +40,14 @@ from swing.evaluation.patterns.flag_classifier import (
     classify_flag,
 )
 from swing.evaluation.rs import load_universe, universe_version_hash
+from swing.integrations.schwab.auth import (
+    construct_authenticated_client,
+    resolve_credentials_env_or_prompt,
+)
+from swing.integrations.schwab.client import (
+    SchwabApiError,
+    SchwabConfigMissingError,
+)
 from swing.pipeline.finviz_schema import reject_csv, validate_csv
 from swing.pipeline.finviz_select import AmbiguousInboxError, NoFilesError, select_csv
 from swing.pipeline.heartbeat import Heartbeat
@@ -159,29 +168,89 @@ def _maybe_weekly_backup(cfg: Config) -> None:
 
 
 def _construct_pipeline_schwab_client(cfg) -> object | None:
-    """Construct a `schwabdev.Client` instance for pipeline-internal use.
+    """Construct a `schwabdev.Client` for pipeline-internal use from env vars.
 
-    Phase 11 Sub-bundle C T-C.6 — pipeline-internal market-data ladder wiring.
-    Pipeline cannot prompt for client_id / client_secret (those are CLI-only
-    surfaces); neither V1 nor V2 stores them in cfg (sensitive). So this
-    helper returns ``None`` by default, matching the precedent established
-    by ``swing/integrations/schwab/pipeline_steps.py:_build_default_client``.
+    Phase 12 Sub-bundle A T-A.3 — env-var-driven construction. Reads
+    ``SCHWAB_CLIENT_ID`` + ``SCHWAB_CLIENT_SECRET`` via the public T-A.1
+    helper ``resolve_credentials_env_or_prompt(cfg, env, allow_prompt=False)``.
+    The pipeline cannot prompt (no TTY), so the helper is invoked with
+    ``allow_prompt=False`` per T-A.1 contract.
 
-    Tests monkeypatch this function to inject a MagicMock client. When a
-    client IS returned, the ladder hooks installed by
+    Three return paths:
+
+      * Both env vars absent → ``(None, None)`` from the helper →
+        return ``None`` SILENTLY (no log noise; preserves V1 graceful-
+        skip path for operators not using env-var integration).
+      * Partial env vars (one set, one absent / empty / whitespace-only)
+        → helper raises ``SchwabConfigMissingError`` → caught here,
+        return ``None`` + emit a single ``WARNING`` line naming
+        ``CLIENT_ID=<present|absent>`` / ``CLIENT_SECRET=<present|absent>``
+        so operators can diagnose misconfiguration. Pipeline does NOT crash.
+      * Both env vars set → invoke ``construct_authenticated_client``;
+        return the live client on success. On construction failure
+        (``SchwabApiError`` / ``SchwabAuthError`` / ``SchwabConfigMissingError``
+        / etc.) → catch + return ``None`` + emit a single ``WARNING``
+        line. V1 graceful-degradation: a stale tokens DB or rotation
+        failure must NOT crash the whole pipeline run.
+
+    When a non-``None`` client IS returned, the ladder hooks installed by
     ``_install_pipeline_marketdata_caches`` route through the T-C.1 wrappers
     with ``surface='pipeline'``. When ``None``, the ladder gracefully falls
     through to yfinance (per T-C.3 test #15) and zero ``schwab_api_calls``
     rows are written.
 
-    V2 enhancement (banked): the pipeline could read tokens from
-    ``~/swing-data/schwab-tokens.{env}.db`` AND credentials from a
-    machine-scoped env var (e.g. ``SWING_SCHWAB_CLIENT_ID`` /
-    ``SWING_SCHWAB_CLIENT_SECRET``) — but the V1 design point is that
-    pipeline-internal Schwab fetching is best-effort + opt-in via CLI as
-    primary entry. See ``_build_default_client`` for the full rationale.
+    Tests can either set the env vars + monkeypatch
+    ``construct_authenticated_client`` (mirror of integration tests) OR
+    leave env vars absent (silent-skip mode). Pre-T-A.3 monkeypatching
+    of this function itself remains supported — callers can still patch
+    ``_construct_pipeline_schwab_client`` directly when they want to
+    inject a MagicMock without going through env vars.
+
+    Sandbox short-circuit lives inside the ladder layer (per T-C.3
+    §H.6.1 LOCK); this helper unconditionally constructs the Client
+    regardless of env. The ladder layer does the env check + skips audit
+    + yfinance-fall-through when ``cfg.integrations.schwab.environment !=
+    'production'``.
     """
-    return None
+    environment = cfg.integrations.schwab.environment
+    try:
+        client_id, client_secret = resolve_credentials_env_or_prompt(
+            cfg, environment, allow_prompt=False,
+        )
+    except SchwabConfigMissingError:
+        id_present = os.environ.get("SCHWAB_CLIENT_ID") is not None
+        secret_present = os.environ.get("SCHWAB_CLIENT_SECRET") is not None
+        log.warning(
+            "Pipeline schwab_client construction skipped: env-var credentials "
+            "incomplete (CLIENT_ID=%s; CLIENT_SECRET=%s). Pipeline will "
+            "silent-skip Schwab steps.",
+            "present" if id_present else "absent",
+            "present" if secret_present else "absent",
+        )
+        return None
+
+    if client_id is None or client_secret is None:
+        # Both env vars genuinely absent — V1 silent-skip path. No log noise
+        # so operators not using env-var integration see a clean pipeline run.
+        return None
+
+    try:
+        return construct_authenticated_client(
+            cfg, environment,
+            client_id=client_id, client_secret=client_secret,
+        )
+    except (SchwabApiError, SchwabConfigMissingError) as exc:
+        # SchwabAuthError + SchwabRefreshTokenExpiredError + SchwabRateLimitError
+        # + SchwabConcurrentRefreshError all subclass SchwabApiError; the
+        # narrowest applicable union here is SchwabApiError | SchwabConfigMissingError
+        # (latter for any pre-flight validation surprise after the env-var
+        # resolution).
+        log.warning(
+            "Pipeline schwab_client construction failed: %s: %s. "
+            "Pipeline will silent-skip Schwab steps.",
+            type(exc).__name__, str(exc),
+        )
+        return None
 
 
 def _install_pipeline_marketdata_caches(
