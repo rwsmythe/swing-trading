@@ -422,7 +422,22 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
     )
     eval_run_id = 0
     try:
-        # Finviz selection/validation under the lease.
+        # Finviz selection/validation under the lease. Ensure the inbox
+        # dir exists (first-run bootstrap; mirrors `_step_finviz_fetch`
+        # mkdir at L1832 per Codex R1 Major-2 fix family). Without this,
+        # `select_csv` on a non-existent dir raises a misleading
+        # `NoFilesError("No CSV files in <dir>")` because Path.glob on
+        # a missing directory returns empty silently.
+        try:
+            cfg.paths.finviz_inbox_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            log.error("Finviz inbox dir create failed: %s", exc)
+            lease.release(state="failed", error_message=f"finviz inbox mkdir: {exc}")
+            return RunResult(
+                run_id=lease.run_id,
+                state="failed",
+                error_message=f"finviz inbox mkdir: {exc}",
+            )
         try:
             csv_path = select_csv(cfg.paths.finviz_inbox_dir)
         except (NoFilesError, AmbiguousInboxError) as exc:
