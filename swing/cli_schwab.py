@@ -29,6 +29,7 @@ from swing.config_validation import mask_sensitive_value
 from swing.data.db import connect
 from swing.data.repos import schwab_api_calls as schwab_repo
 from swing.integrations.schwab.auth import (
+    _resolve_credentials_env_or_prompt,
     force_refresh,
     revoke_and_delete,
     setup_paste_flow,
@@ -156,14 +157,14 @@ def schwab_setup(
     # before they type credentials.
     conn = connect(cfg.paths.db_path)
     try:
-        client_id = click.prompt("Schwab app client_id", type=str).strip()
-        client_secret = click.prompt(
-            "Schwab app client_secret", type=str, hide_input=True,
-        ).strip()
-        if not client_id:
-            raise click.ClickException("client_id is required (non-empty).")
-        if not client_secret:
-            raise click.ClickException("client_secret is required (non-empty).")
+        # T-A.1 — env-var supersession: `SCHWAB_CLIENT_ID` + `SCHWAB_CLIENT_SECRET`
+        # env vars set together → skip prompt; partial set → SchwabConfigMissingError.
+        try:
+            client_id, client_secret = _resolve_credentials_env_or_prompt(
+                cfg, env, allow_prompt=True,
+            )
+        except SchwabConfigMissingError as exc:
+            raise click.ClickException(str(exc)) from exc
 
         try:
             result = setup_paste_flow(
@@ -254,14 +255,13 @@ def schwab_refresh(
     # operator credential prompt — fail fast on schema mismatch.
     conn = connect(cfg.paths.db_path)
     try:
-        client_id = click.prompt("Schwab app client_id", type=str).strip()
-        client_secret = click.prompt(
-            "Schwab app client_secret", type=str, hide_input=True,
-        ).strip()
-        if not client_id:
-            raise click.ClickException("client_id is required (non-empty).")
-        if not client_secret:
-            raise click.ClickException("client_secret is required (non-empty).")
+        # T-A.1 — env-var supersession (see schwab_setup for full notes).
+        try:
+            client_id, client_secret = _resolve_credentials_env_or_prompt(
+                cfg, env, allow_prompt=True,
+            )
+        except SchwabConfigMissingError as exc:
+            raise click.ClickException(str(exc)) from exc
 
         try:
             result = force_refresh(
@@ -329,14 +329,13 @@ def schwab_logout(
 
     conn = connect(cfg.paths.db_path)
     try:
-        client_id = click.prompt("Schwab app client_id", type=str).strip()
-        client_secret = click.prompt(
-            "Schwab app client_secret", type=str, hide_input=True,
-        ).strip()
-        if not client_id:
-            raise click.ClickException("client_id is required (non-empty).")
-        if not client_secret:
-            raise click.ClickException("client_secret is required (non-empty).")
+        # T-A.1 — env-var supersession (see schwab_setup for full notes).
+        try:
+            client_id, client_secret = _resolve_credentials_env_or_prompt(
+                cfg, env, allow_prompt=True,
+            )
+        except SchwabConfigMissingError as exc:
+            raise click.ClickException(str(exc)) from exc
 
         try:
             result = revoke_and_delete(
@@ -983,15 +982,13 @@ def _verify_marketdata_path(
         # Pipeline-active check intentionally SKIPPED per plan §H.10 + brief
         # pre-emption #2 — verify-marketdata is in the 3-safe-subcommands list.
 
-        # Prompt for credentials (mirror setup/refresh/fetch pattern).
-        client_id = click.prompt("Schwab app client_id", type=str).strip()
-        client_secret = click.prompt(
-            "Schwab app client_secret", type=str, hide_input=True,
-        ).strip()
-        if not client_id:
-            raise click.ClickException("client_id is required (non-empty).")
-        if not client_secret:
-            raise click.ClickException("client_secret is required (non-empty).")
+        # T-A.1 — env-var supersession (see schwab_setup for full notes).
+        try:
+            client_id, client_secret = _resolve_credentials_env_or_prompt(
+                cfg, env, allow_prompt=True,
+            )
+        except SchwabConfigMissingError as exc:
+            raise click.ClickException(str(exc)) from exc
 
         # Apply --environment override to cfg so downstream env-aware
         # consumers see the right value (mirrors schwab_fetch).
@@ -1316,15 +1313,13 @@ def schwab_fetch(
                 f"Run `swing schwab setup --environment {env}` first.",
             )
 
-        # Prompt for credentials.
-        client_id = click.prompt("Schwab app client_id", type=str).strip()
-        client_secret = click.prompt(
-            "Schwab app client_secret", type=str, hide_input=True,
-        ).strip()
-        if not client_id:
-            raise click.ClickException("client_id is required (non-empty).")
-        if not client_secret:
-            raise click.ClickException("client_secret is required (non-empty).")
+        # T-A.1 — env-var supersession (see schwab_setup for full notes).
+        try:
+            client_id, client_secret = _resolve_credentials_env_or_prompt(
+                cfg, env, allow_prompt=True,
+            )
+        except SchwabConfigMissingError as exc:
+            raise click.ClickException(str(exc)) from exc
 
         # Construct schwabdev client.
         try:

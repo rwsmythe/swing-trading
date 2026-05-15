@@ -27,8 +27,10 @@ as additional plan-text amendment to recon doc §6 §B.
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -47,6 +49,153 @@ from swing.integrations.schwab.client import (
 )
 
 log = logging.getLogger(__name__)
+
+
+# T-A.1 — env-var names operator sets to skip the interactive prompt.
+# Both must be set together; partial sets raise SchwabConfigMissingError
+# rather than silently falling back to prompting only the missing one.
+_ENV_VAR_CLIENT_ID = "SCHWAB_CLIENT_ID"
+_ENV_VAR_CLIENT_SECRET = "SCHWAB_CLIENT_SECRET"
+
+
+def _mask_credential(value: str | None) -> str:
+    """Mask a credential value for inclusion in operator-visible error text.
+
+    Mirrors `swing.config_validation.mask_sensitive_value` shape (first 3 +
+    `***` + last 2) but with explicit `<absent>` + `<too_short>` markers
+    matching dispatch brief §3 T-A.1 acceptance criterion #2's example
+    error message ("CLIENT_ID=<masked> CLIENT_SECRET=<absent>").
+
+    Discipline: NEVER includes the raw value in the masked output for
+    strings of length >= 5; shorter strings render `<too_short>` rather
+    than the raw bytes so operator misconfiguration (one-char paste) does
+    not leak into error text.
+    """
+    if value is None:
+        return "<absent>"
+    if not value or not value.strip():
+        return "<absent>"
+    s = value
+    if len(s) < 5:
+        return "<too_short>"
+    return f"{s[:3]}***{s[-2:]}"
+
+
+def _resolve_credentials_env_or_prompt(
+    cfg: Any,
+    environment: str,
+    *,
+    allow_prompt: bool = True,
+    prompter: Callable[..., str] | None = None,
+) -> tuple[str | None, str | None]:
+    """Resolve Schwab `client_id` + `client_secret` from env vars or prompt.
+
+    T-A.1 helper: consults `SCHWAB_CLIENT_ID` + `SCHWAB_CLIENT_SECRET` env
+    vars FIRST. If both set + non-empty (after `.strip()`) → returns them
+    + registers them in the Schwab redaction registry; SKIPS prompt. If
+    only ONE of the two is set (or empty / whitespace-only) → raises
+    `SchwabConfigMissingError` with a masked-form actionable message.
+
+    Args:
+        cfg: Reserved for future per-env credential resolution. Currently
+            unused for env-var lookup; the brief locks `SCHWAB_CLIENT_ID` /
+            `SCHWAB_CLIENT_SECRET` as flat names (no per-env prefix).
+        environment: Reserved for future per-env credential resolution.
+            Currently unused for env-var lookup. Retained in signature so
+            callsites pre-bind their env scope.
+        allow_prompt: When True, fall back to `click.prompt(...)` (via the
+            optional `prompter` parameter) on the FULLY-ABSENT case (both
+            env vars unset). When False, the FULLY-ABSENT case returns
+            `(None, None)` — pipeline path contract for T-A.3 to consume.
+        prompter: Test-injection seam. When None, defaults to a `click.prompt`-
+            based callable. Receives the label as first positional arg + the
+            same `type=str` / `hide_input=` kwargs the legacy callsites used.
+
+    Returns:
+        Tuple `(client_id, client_secret)`. Both strings on success; both
+        None when `allow_prompt=False` AND both env vars are FULLY absent.
+
+    Raises:
+        SchwabConfigMissingError: Partial env-var set (one of two set, or
+            empty / whitespace-only). Message names both env-var names +
+            includes the masked-form rendering of whichever was set.
+
+    Notes:
+        Secret-leak guarantee — on successful env-var resolution, calls
+        `register_schwab_secrets([client_id, client_secret])` + invokes
+        `ensure_schwab_log_redaction_factory_installed()` BEFORE returning
+        so subsequent schwabdev log records that interpolate the values
+        flow through Layer-2 redaction (CLAUDE.md gotcha family).
+    """
+    del cfg, environment  # reserved for future use; unused for env-var lookup
+
+    raw_id = os.environ.get(_ENV_VAR_CLIENT_ID)
+    raw_secret = os.environ.get(_ENV_VAR_CLIENT_SECRET)
+
+    # Normalise: treat empty / whitespace-only as ABSENT-FOR-RESOLUTION but
+    # we DISTINGUISH "env var name present in environment" (operator set it,
+    # even if to empty) from "env var name absent entirely" because the
+    # partial-vs-fully-absent rule discriminates on that distinction (per
+    # acceptance criterion #3).
+    id_present = _ENV_VAR_CLIENT_ID in os.environ
+    secret_present = _ENV_VAR_CLIENT_SECRET in os.environ
+    id_clean = (raw_id or "").strip()
+    secret_clean = (raw_secret or "").strip()
+    id_usable = bool(id_clean)
+    secret_usable = bool(secret_clean)
+
+    # Happy path: both env vars usable → register + return; skip prompt.
+    if id_usable and secret_usable:
+        register_schwab_secrets([id_clean, secret_clean])
+        ensure_schwab_log_redaction_factory_installed()
+        return id_clean, secret_clean
+
+    # Partial: at least one env var is PRESENT (operator set it) but the
+    # OTHER is missing OR both are present but at least one is empty /
+    # whitespace-only. Reject with masked-form error. The "both present
+    # but both empty" case lands here too — per dispatch brief §3
+    # acceptance criterion #3, empty == absent FOR THIS PARTIAL CHECK
+    # (treated as operator misconfiguration, not legitimate fallback intent).
+    any_present = id_present or secret_present
+    if any_present and not (id_usable and secret_usable):
+        raise SchwabConfigMissingError(
+            f"Both `{_ENV_VAR_CLIENT_ID}` and `{_ENV_VAR_CLIENT_SECRET}` "
+            f"must be set together (non-empty, non-whitespace); got "
+            f"{_ENV_VAR_CLIENT_ID}={_mask_credential(raw_id)} "
+            f"{_ENV_VAR_CLIENT_SECRET}={_mask_credential(raw_secret)}. "
+            f"Either set BOTH env vars or UNSET both to fall back to "
+            f"interactive prompt.",
+        )
+
+    # Fully absent: neither env var is set.
+    if not allow_prompt:
+        # Pipeline-path contract: caller (T-A.3) distinguishes (None, None)
+        # from raise via this codepath.
+        return None, None
+
+    # Both absent + prompt allowed → fall back to interactive prompt.
+    if prompter is None:
+        import click
+        prompter = click.prompt
+
+    client_id = prompter("Schwab app client_id", type=str)
+    client_secret = prompter(
+        "Schwab app client_secret", type=str, hide_input=True,
+    )
+    # Apply the same `.strip()` discipline the legacy callsites used.
+    client_id = (client_id or "").strip()
+    client_secret = (client_secret or "").strip()
+    if not client_id:
+        raise SchwabConfigMissingError(
+            "client_id is required (non-empty).",
+        )
+    if not client_secret:
+        raise SchwabConfigMissingError(
+            "client_secret is required (non-empty).",
+        )
+    register_schwab_secrets([client_id, client_secret])
+    ensure_schwab_log_redaction_factory_installed()
+    return client_id, client_secret
 
 
 def _now_ms_iso() -> str:
