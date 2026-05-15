@@ -81,15 +81,39 @@ def write_user_overrides(overrides: dict[str, Any]) -> None:
 
 
 def delete_user_override(field_path: str) -> None:
-    """Delete one dotted field. No-op if absent. Empties trailing sections."""
-    overrides = load_user_overrides()
+    """Delete one dotted field. No-op if absent. Empties trailing sections.
+
+    Supports N-part dotted paths (e.g. ``integrations.schwab.client_id``).
+    After leaf deletion, prunes empty parent tables bottom-up so the resulting
+    TOML stays clean (matches the existing 2-part semantics).
+
+    Phase 12 Sub-bundle B T-B.3 — generalized from 2-part-only (which raised
+    `ValueError("field_path must be 'section.key'")`) to N-part to support
+    `swing config reset integrations.schwab.client_id`.
+    """
     parts = field_path.split(".")
-    if len(parts) != 2:
-        raise ValueError(f"field_path must be 'section.key'; got {field_path!r}")
-    section, key = parts
-    if section not in overrides or key not in overrides[section]:
+    if len(parts) < 2:
+        raise ValueError(
+            f"field_path must be 'section.key[.subkey...]'; got {field_path!r}"
+        )
+    overrides = load_user_overrides()
+    # Walk down to the leaf parent table, recording the chain so we can prune
+    # empty intermediate tables bottom-up on the way out. No-op if any link
+    # in the chain is missing or not a dict.
+    chain: list[tuple[dict, str]] = []
+    cursor: object = overrides
+    for part in parts[:-1]:
+        if not isinstance(cursor, dict) or part not in cursor:
+            return
+        chain.append((cursor, part))
+        cursor = cursor[part]
+    if not isinstance(cursor, dict) or parts[-1] not in cursor:
         return
-    del overrides[section][key]
-    if not overrides[section]:
-        del overrides[section]
+    del cursor[parts[-1]]
+    # Bottom-up prune of empty parents (chain is parent→key tuples).
+    for parent, key in reversed(chain):
+        if not parent[key]:
+            del parent[key]
+        else:
+            break
     write_user_overrides(overrides)

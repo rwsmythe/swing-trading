@@ -20,10 +20,40 @@ from swing.config_validation import (
     validate_field,
 )
 
-# Sub-bundle A T-A.2 — masked entries are display-only; they are NOT
-# settable via `swing config set` (operator sets via `swing schwab setup`).
-_EDITABLE_SPECS = tuple(s for s in FIELD_REGISTRY if not s.masked)
+# Sub-bundle A T-A.2 — masked entries are display-only by default; they are
+# NOT settable via `swing config set` (operator sets via `swing schwab setup`).
+# Phase 12 Sub-bundle B T-B.3 — two masked entries ARE writeable via CLI:
+# `integrations.schwab.client_id` + `integrations.schwab.client_secret`. These
+# are Schwab Developer Portal app credentials (cfg-cascade tier 2 per T-B.1);
+# operator-supplied + stable + not OAuth-rotating. account_hash stays excluded
+# (set via `swing schwab setup`, not direct CLI).
+_MASKED_WRITEABLE_PATHS: frozenset[str] = frozenset({
+    "integrations.schwab.client_id",
+    "integrations.schwab.client_secret",
+})
+_EDITABLE_SPECS = tuple(
+    s for s in FIELD_REGISTRY
+    if not s.masked or s.path in _MASKED_WRITEABLE_PATHS
+)
 _FIELD_PATHS = tuple(s.path for s in _EDITABLE_SPECS)
+
+
+def _write_override_nested(
+    overrides: dict, field_path: str, value: object,
+) -> None:
+    """Walk an N-part dotted path through nested dicts; create missing tables;
+    set the leaf to ``value``. Generalizes the 2-part `section.key` pattern to
+    support 3-part paths like `integrations.schwab.client_id` (T-B.3).
+    """
+    parts = field_path.split(".")
+    cursor: dict = overrides
+    for part in parts[:-1]:
+        nxt = cursor.get(part)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cursor[part] = nxt
+        cursor = nxt
+    cursor[parts[-1]] = value
 
 
 @click.group("config")
@@ -91,8 +121,10 @@ def config_set(ctx: click.Context, field_path: str, raw_value: str, force: bool)
             ctx.exit(2)
     coerced = coerce_value(field_path, raw_value)
     overrides = load_user_overrides()
-    section, key = field_path.split(".")
-    overrides.setdefault(section, {})[key] = coerced
+    # T-B.3 — support N-part dotted paths (e.g. `integrations.schwab.client_id`);
+    # walks nested dicts + creates missing tables. Existing 2-part paths
+    # (`web.chase_factor`, `account.risk_equity_floor`, etc.) unchanged.
+    _write_override_nested(overrides, field_path, coerced)
     write_user_overrides(overrides)
     click.echo(f"Set {field_path} = {coerced}")
 
