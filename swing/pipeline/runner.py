@@ -725,14 +725,19 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 from swing.integrations.schwab.pipeline_steps import (
                     _step_schwab_snapshot,
                 )
-                # Pipeline-internal call without an explicit client: the step
-                # short-circuits via _build_default_client which raises
-                # SchwabConfigMissingError. We catch + log per-step semantics.
+                # Phase 12 Sub-bundle A T-A.3 — pass the env-var-constructed
+                # schwab_client (from L640) instead of hardcoded None. When env
+                # vars absent → schwab_client is None → step short-circuits via
+                # the existing client=None silent-skip path (per Sub-bundle B
+                # M#1 surface-aware advisory pattern). When env vars present →
+                # step actually fires + writes audit + domain rows with
+                # surface='pipeline'. Closes the T-A.3 acceptance criterion #4
+                # gap that orchestrator-inline gate-fix caught at S5.
                 _conn = connect(cfg.paths.db_path)
                 try:
                     _step_schwab_snapshot(
                         _conn, cfg, pipeline_run_id=lease.run_id,
-                        client=None, surface="pipeline",
+                        client=schwab_client, surface="pipeline",
                     )
                 finally:
                     _conn.close()
@@ -749,11 +754,12 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 from swing.integrations.schwab.pipeline_steps import (
                     _step_schwab_orders,
                 )
+                # T-A.3 same fix family — wire schwab_client through.
                 _conn = connect(cfg.paths.db_path)
                 try:
                     _step_schwab_orders(
                         _conn, cfg, pipeline_run_id=lease.run_id,
-                        client=None, surface="pipeline",
+                        client=schwab_client, surface="pipeline",
                     )
                 finally:
                     _conn.close()

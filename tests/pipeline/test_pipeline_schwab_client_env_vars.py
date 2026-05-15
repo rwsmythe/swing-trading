@@ -391,3 +391,89 @@ def test_production_env_threading_returns_live_mock_client(
         f"expected helper to pass cfg.integrations.schwab.environment "
         f"verbatim to construct_authenticated_client; got {seen_env!r}"
     )
+
+
+def test_runner_threads_schwab_client_into_snapshot_and_orders_steps() -> None:
+    """T-A.3 orchestrator-inline gate-fix regression test (2026-05-15).
+
+    Discriminating signal: the implementer's T-A.3 fix wired
+    `_construct_pipeline_schwab_client` into `_install_pipeline_marketdata_caches`
+    (the market-data ladder) but LEFT `_step_schwab_snapshot` +
+    `_step_schwab_orders` callsites with `client=None` HARDCODED. Operator's
+    Phase 12 Sub-bundle A S5 gate caught this — pipeline ran with env vars
+    set + ZERO new schwab_api_calls/account_equity_snapshots/reconciliation_runs
+    rows because Sub-bundle B's pipeline steps silent-skipped on the
+    hardcoded None per Sub-bundle B M#1 surface-aware advisory pattern.
+
+    Fix: pass `client=schwab_client` (from L640 _construct_pipeline_schwab_client
+    return value) instead of `client=None` at both callsites. Closes T-A.3
+    acceptance criterion #4: 'Successful-construction path: when both env
+    vars present + Client constructs successfully → Sub-bundle B's
+    `_step_schwab_snapshot` + `_step_schwab_orders` + Sub-bundle C's
+    market-data ladder all run; audit rows accumulate with surface=pipeline.'
+
+    Pre-fix: source contained `client=None,\\s+surface="pipeline"` at both
+    callsites → assertion would fail.
+    Post-fix: source contains `client=schwab_client,\\s+surface="pipeline"`
+    → assertion passes.
+    """
+    import re
+    from pathlib import Path
+
+    runner_path = (
+        Path(__file__).resolve().parents[2]
+        / "swing" / "pipeline" / "runner.py"
+    )
+    source = runner_path.read_text(encoding="utf-8")
+
+    # Both Sub-bundle B step callsites must thread the env-var-constructed
+    # schwab_client (from L640) through, NOT pass hardcoded None.
+    snapshot_pattern = re.compile(
+        r"_step_schwab_snapshot\(\s*"
+        r"_conn,\s*cfg,\s*pipeline_run_id=lease\.run_id,\s*"
+        r"client=schwab_client,\s*surface=\"pipeline\"",
+        re.MULTILINE,
+    )
+    orders_pattern = re.compile(
+        r"_step_schwab_orders\(\s*"
+        r"_conn,\s*cfg,\s*pipeline_run_id=lease\.run_id,\s*"
+        r"client=schwab_client,\s*surface=\"pipeline\"",
+        re.MULTILINE,
+    )
+
+    assert snapshot_pattern.search(source), (
+        "T-A.3 gate-fix regression: _step_schwab_snapshot callsite in "
+        "run_pipeline_internal MUST pass client=schwab_client (from L640 "
+        "_construct_pipeline_schwab_client return), NOT client=None. "
+        "Without this wiring, env-var-driven pipeline Schwab steps "
+        "silent-skip per Sub-bundle B M#1 surface-aware advisory pattern."
+    )
+    assert orders_pattern.search(source), (
+        "T-A.3 gate-fix regression: _step_schwab_orders callsite in "
+        "run_pipeline_internal MUST pass client=schwab_client, NOT "
+        "client=None. Same family as snapshot callsite above."
+    )
+
+    # Defense-in-depth: ensure NO `client=None,\s+surface="pipeline"` substring
+    # appears in the runner's pipeline_steps callsite vicinity. (We allow
+    # client=None as a default in helper signatures elsewhere, but the
+    # runner's two pipeline-step callsites must NOT use the hardcoded-None
+    # form.) Search bounded to the function body of run_pipeline_internal
+    # by anchoring on the surrounding lease.step("schwab_*") calls.
+    schwab_block_match = re.search(
+        r"lease\.step\(\"schwab_snapshot\"\).*?lease\.step\(\"charts\"\)",
+        source,
+        re.DOTALL,
+    )
+    assert schwab_block_match is not None, (
+        "could not locate Schwab pipeline-steps block between "
+        'lease.step("schwab_snapshot") and lease.step("charts") — '
+        "test setup error, not a fix regression"
+    )
+    schwab_block = schwab_block_match.group(0)
+    assert 'client=None, surface="pipeline"' not in schwab_block, (
+        "T-A.3 gate-fix regression: Schwab pipeline-steps block contains "
+        "the pre-fix `client=None, surface=\"pipeline\"` callsite shape. "
+        "Both _step_schwab_snapshot + _step_schwab_orders callsites must "
+        "pass client=schwab_client to honor T-A.3 acceptance criterion #4."
+    )
