@@ -6,6 +6,74 @@
 
 ---
 
+## 2026-05-15 Phase 12 Sub-bundle B SHIPPED — Schwab web-UI-friendliness mini-bundle (credentials-in-file + web OAuth paste-back form; Outcome B manual token exchange; 4 Codex rounds NO_NEW_CRITICAL_MAJOR; 16 commits + 1 orchestrator-inline gate-fix; SECOND Phase 12 sub-bundle)
+
+**Sub-bundle B SHIPPED 2026-05-15** at `b09eb06` (integration merge of `phase12-bundle-B-schwab-web-ui-friendliness` worktree branch via `--no-ff` to preserve Codex-fix chain). Branch HEAD `7b75d4a` (16 implementer commits + 1 orchestrator-inline gate-fix on top of dispatch brief). Operator-dispatched implementer per orchestrator brief at `fc86b8e`.
+
+**4 Codex rounds → NO_NEW_CRITICAL_MAJOR** convergent tapering (R1 1C/5M/3m → R2 0C/1M/2m → R3 0C/1M/1m → R4 0C/0M/1m); **ZERO ACCEPT-WITH-RATIONALE on Critical+Major banked** (all 1 Critical + 7 Major resolved with code-content fixes); **+1 orchestrator-inline gate-fix at `7b75d4a`** (operator-paired gate caught a UX gap — `/schwab/setup` was reachable only by typing the URL; orchestrator added "External integrations" section on `/config` page with link to `/schwab/setup` + 1 regression test; mirrors 12A `e2c0384` + 11B `34be84e` precedent — **now 3 inline gate-fix instances cumulatively**).
+
+**The two preceding 2026-05-15 phase3e-todo entries are NOW FULFILLED by this dispatch:** "Web-UI OAuth paste-back form" → T-B.4 `GET/POST /schwab/setup` Outcome B; "Schwab CLIENT_ID + CLIENT_SECRET in user-config.toml" → T-B.1 (cascade) + T-B.2 (cfg dataclass + FIELD_REGISTRY) + T-B.3 (CLI). Both entries are retained below for one-phase-cooldown per orchestrator-context.md retention discipline; will migrate to archive at next Sub-bundle ship.
+
+### Operator-paired gate (2026-05-15 post-merge-prep; orchestrator-driven)
+
+| Surface | Result | Key observation |
+|---|---|---|
+| S1 fast suite | ✅ | 3862 fast pass on main HEAD post-merge + 4 pre-existing failures (3 phase8 walkthrough + 1 schwab_setup_cli sentinel — return report §7 #2 banked separately) + 1 skipped |
+| S2 `swing config set integrations.schwab.client_id\|client_secret` | ✅ | Operator's REAL Developer Portal credentials written to user-config.toml; `swing config show` renders masked `6m6***l7` / `2jp***T5` with `source=override` badge |
+| S3 cascade resolution (env vars cleared) | ✅ | `swing schwab status --environment production` renders LIVE with NO prompt fired — cfg-tier resolves end-to-end through `apply_overrides` at status callsite (closes Codex R1 Critical fix `e418d56`'s post-conditions) |
+| S4 web GET /schwab/setup | ✅ | Worktree-side `swing web --port 8081`; form renders 4 elements (authorize URL link + callback URL paste input + submit button + existing-tokens-DB advisory) + zero console errors |
+| S5 web POST /schwab/setup (destructive) | ✅ | Outcome B manual token exchange — operator pastes Schwab callback URL → handler extracts `code` via raw-`&`-split → POSTs to `/v1/oauth/token` → tokens DB rewritten atomically via T-A.2 self-healing rename to `*.deleted-20260515T170457` → HX-Redirect to `/config?schwab_setup=ok` → fresh 7-day refresh-token clock starting 2026-05-15T17:05:00+00:00 (expires 2026-05-22T17:05:00+00:00) + 3 new audit rows (call_id=39 `oauth.code_exchange` self-healing rename http=— + call_id=40 `oauth.code_exchange` actual exchange http=200 + call_id=41 `accounts.linked` http=200) |
+| Gate-caught UX gap | ✅ resolved inline at `7b75d4a` | Operator surfaced "no link to navigate to `/schwab/setup`"; orchestrator-inline gate-fix added link on `/config` + regression test |
+| S7 ruff baseline | ✅ | 18 E501 unchanged |
+| S8 + S9 sentinel-leak + masked rendering | ✅ via S1 pytest | Both covered by T-B.6 + T-B.2 + T-B.3 tests in the fast suite |
+
+### Three highest-leverage SHIPPED deliverables
+
+1. **Credentials-in-file cfg-cascade** — `SCHWAB_CLIENT_ID` + `SCHWAB_CLIENT_SECRET` join the cfg-cascade as middle tier between env vars and prompt. Persistent across shells; mirrors Finviz token precedent. Asymmetry locked: partial env-tier RAISES (Sub-bundle A LOCK preserved — operator-typo signal); partial cfg-tier FALLS THROUGH (file-tier is operator-friendly per phase3e-todo "Cascade design" intent). Forward-binding lesson #1 for Sub-bundle C.
+2. **Web `GET/POST /schwab/setup`** — Outcome B locked (manual token exchange since schwabdev's `Client.__init__` blocks on stdin paste-back). New `setup_paste_flow_with_callback_url` service helper mirrors schwabdev's `Tokens._post_oauth_token` HTTP shape + `Tokens._set_tokens` JSON file format byte-for-byte. HTMX patterns preserved (HX-Request propagation + HX-Redirect success + route-table assertion). Eliminates PowerShell drop-out for weekly Schwab OAuth re-auth.
+3. **Orchestrator-inline gate-fix precedent extension to 3 instances** — `/schwab/setup` nav link on `/config` page closes operator-surfaced UX gap; the brief's mandated T-B.4 route-level integration test caught Sub-bundle A T-A.3 implementer-gap-class defects pre-emptively (Codex R1 Critical `apply_overrides` missing at 5 entry points resolved at `e418d56`).
+
+### NEW V2 candidates banked
+
+1. **T-B.7 `/schwab/status` web counterpart** — deferred per Outcome B decision rule. When this ships in a follow-up dispatch, the T-B.4 HX-Redirect target retargets from `/config?schwab_setup=ok` to `/schwab/status`.
+2. **`surface='web'` CHECK enum widening** — schema v18 → v19 migration. Resolves T-B.4 audit-row ambiguity (currently `surface='cli'` for web audit rows per v18 CHECK constraint). V2.1 §VII.F amendment candidate.
+3. **Option B HTTPS callback handler** — eliminates paste-back entirely. Substantial complexity: local self-signed HTTPS cert, browser security warning, Schwab Developer Portal callback URL reconfiguration. Separate dispatch.
+4. **Per-environment-namespaced credentials** — separate `[integrations.schwab.sandbox]` / `[integrations.schwab.production]` tables. V2 candidate.
+5. **Web multi-account picker** — V1 raises `SchwabConfigMissingError` for multi-account on web; V2 adds picker UI.
+6. **Token encryption-at-rest** — schwabdev's optional `encryption=<key>` Fernet wrapper. Q2 from Phase 11 brainstorm. Operator-paired key management.
+7. **Promote `masked_writeable` to `FieldSpec` attribute** — replace `_MASKED_WRITEABLE_PATHS` frozenset allowlist with per-FieldSpec attribute when the catalog grows beyond 2-3 entries. T-B.3 forward-binding lesson #4.
+8. **`/config?schwab_setup=ok` query-param consumer** — currently dead query param; future enhancement could surface "Schwab setup successful" toast on `/config` page.
+9. **schwabdev version pin + extended compat test** — Outcome B mirrors schwabdev's private API byte-for-byte; defensive `schwabdev==2.5.1` pin in pyproject.toml + extended regression test that constructs a real `schwabdev.Client` (not just `Tokens`) against the written file.
+10. **T-B.2 stale-comment cleanup** at `swing/config_validation.py:91-93` + `swing/config_overrides.py:25-26` — comments saying client_id/client_secret are "NOT editable via `swing config set`" are now factually incorrect post-T-B.3. Banked here for next polish-bundle dispatch.
+
+### 12 forward-binding lessons for Sub-bundle C dispatch (return report §10)
+
+1. Three-tier credential cascade asymmetry pattern (env partial RAISES; cfg partial FALLS THROUGH)
+2. Outcome A vs B SDK-wrapping recipe — manual token-exchange byte-for-byte mirror + atomic tokens-file write + SDK construction reads back
+3. `surface='X'` CHECK constraint workaround pattern — when enum widens at v_N but schema migrations out-of-scope, document deviation in code comment + bank V2.1 §VII.F amendment
+4. `_MASKED_WRITEABLE_PATHS` allowlist + `_FIELD_PATHS` filter pattern (canonical way to gate masked CLI fields)
+5. N-part dotted-path generalization at write/read/delete (all 3 call sites touch together: `config_user.py:delete_user_override` + `cli_config.py:_write_override_nested` + `config_overrides.py:get_field_source`)
+6. **`apply_overrides()` discipline at Schwab entry points** — Codex R1 Critical surfaced — project-wide invariant candidate: consider moving `apply_overrides` into `load_config` itself OR into the FastAPI lifespan hook
+7. `parse_qs` vs `unquote` for OAuth code parsing — `parse_qs` applies `application/x-www-form-urlencoded` semantics; OAuth codes are opaque; use raw query-string split + `urllib.parse.unquote` (NOT `unquote_plus` or `parse_qs`)
+8. Atomic file-write fsync discipline — match `swing/config_user.py:write_user_overrides` pattern (tempfile same-dir → write → flush → fsync → os.replace → best-effort parent-dir fsync)
+9. Real-SDK compat regression test pattern — when mirroring an external SDK's private API byte-for-byte, the regression test MUST invoke the real SDK's loader
+10. Cross-bundle base-layout VM pin discipline — every new VM extending `base.html.j2` MUST populate `unresolved_material_discrepancies_count` (Phase 10 T-E.3 pin)
+11. HTMX gotcha trinity preserved for any new form-driven route (HX-Request propagation + 204+HX-Redirect + HX-Redirect target route exists)
+12. Sub-bundle A T-A.3 implementer gap pre-emption discipline — for any new entry point that threads credentials through multiple call sites, the route-level integration test MUST mock the service function + assert the EXACT cascade-resolved credential values were threaded through
+
+### Cross-references
+
+- Dispatch brief: `docs/phase12-bundle-B-schwab-web-ui-friendliness-executing-plans-dispatch-brief.md` (`fc86b8e`).
+- Return report: `docs/phase12-bundle-B-return-report.md` (on main post-merge).
+- Orchestrator-inline gate-fix: `7b75d4a` (on worktree branch + merged via `--no-ff`).
+- Integration merge: `b09eb06`.
+
+### Next dispatch
+
+**Phase 12 Sub-bundle C (auto-correct journal-from-Schwab service) UNBLOCKED.** Per the architectural pivot banked at `28a7d01` + `75b876c`. Substantial brainstorm + writing-plans + multi-bundle executing-plans cycle expected. Operator-paced. Three-tier resolution model (auto-correct unambiguous + ambiguity surfaced + operator override); magnitude is the WRONG axis (determinism is the axis); closes the 3 unresolved-material discrepancies (39 DHC + 40 VSAT + 41 CVGI) + future categorical fiction-vs-truth divergences.
+
+---
+
 ## 2026-05-15 Web-UI OAuth paste-back form (`GET/POST /schwab/setup`) — operator-stated UX gap; bundle with credentials-in-file as Phase 12 Sub-bundle B
 
 **Operator UX gap (2026-05-15 during Phase 12 Sub-bundle A close discussion):** `swing schwab setup` is CLI-only. Operator's normal mode is the web interface (`swing web` on 127.0.0.1:8080). Weekly OAuth re-auth currently forces operator to drop to a separate PowerShell session for the paste-back flow. No web-side equivalent exists.
