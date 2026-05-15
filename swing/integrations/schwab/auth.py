@@ -1206,34 +1206,58 @@ def _exchange_code_for_tokens(
             body is not parseable JSON.
     """
     import base64
+    from urllib.parse import parse_qs, urlparse
 
     import requests
 
-    # Extract code from callback URL. schwabdev's parser:
-    #   code = f"{url[url.index('code=') + 5:url.index('%40')]}@"
-    # We mirror it byte-for-byte. The trailing '@' is part of Schwab's
-    # auth-code format; '%40' is the URL-encoded '@' separator before the
-    # session token.
-    if "code=" not in callback_url_with_code:
+    # Codex R1 Major #5 fix — structured URL parsing for robustness.
+    # schwabdev's parser uses raw substring searches on the URL-encoded
+    # form: `code = f"{url[url.index('code=') + 5:url.index('%40')]}@"`.
+    # Two failure modes with the byte-for-byte mirror approach:
+    #   (1) additional query params (e.g. &state=XYZ) work but only if the
+    #       `code=` token appears BEFORE the first `%40` — schwabdev's
+    #       index() picks the first occurrence of EACH so cross-param
+    #       interleaving (e.g. `?state=foo%40bar&code=ABC%40XYZ`) can land
+    #       on the wrong `%40`.
+    #   (2) URL parser variants that encode the `@` differently break the
+    #       substring search entirely.
+    #
+    # Use ``urllib.parse`` to extract the `code` query param structurally.
+    # `parse_qs` URL-decodes percent-escapes, so the returned `code`
+    # already contains the `@` separator embedded by Schwab between the
+    # auth-code segment and the session-token segment. We then reconstruct
+    # the schwabdev-compatible `<segment>@` shape by truncating at the
+    # first `@`. This preserves byte-for-byte compatibility with
+    # schwabdev's downstream consumer of the `code` field while accepting
+    # a wider range of callback URL shapes.
+    parsed = urlparse(callback_url_with_code)
+    query_params = parse_qs(parsed.query, keep_blank_values=False)
+    code_values = query_params.get("code")
+    if not code_values or not code_values[0]:
         raise SchwabAuthError(
             400,
             "<callback URL missing 'code=' query param; "
             "ensure the entire address bar URL was pasted>",
         )
-    if "%40" not in callback_url_with_code:
+    code_raw = code_values[0]
+    # The decoded `code` value should contain an `@` separator (Schwab's
+    # delimiter between auth-code and session-token portions). schwabdev
+    # truncates at the first `%40` (the URL-encoded form); we truncate at
+    # the decoded `@` to produce the same logical segment.
+    if "@" not in code_raw:
         raise SchwabAuthError(
             400,
-            "<callback URL missing '%40' marker; the URL appears truncated "
-            "or improperly formatted (expected Schwab's code=<...>%40<...> shape)>",
+            "<callback URL 'code' value missing '@' separator; the URL "
+            "appears truncated or improperly formatted (expected Schwab's "
+            "code=<...>@<...> shape)>",
         )
-    code_start = callback_url_with_code.index("code=") + 5
-    code_end = callback_url_with_code.index("%40")
-    if code_end <= code_start:
+    code_segment = code_raw.split("@", 1)[0]
+    if not code_segment:
         raise SchwabAuthError(
             400,
-            "<callback URL has 'code=' AFTER '%40' marker; URL malformed>",
+            "<callback URL has empty auth-code segment before '@'>",
         )
-    code = f"{callback_url_with_code[code_start:code_end]}@"
+    code = f"{code_segment}@"
 
     # Register the freshly-extracted code as a redaction target. The code
     # itself is short-lived (single-use, ~30s expiration per schwabdev
@@ -1319,33 +1343,47 @@ def _write_schwabdev_tokens_file(
 
     The mode-0o600 discipline mirrors the at-rest posture of the
     self-heal rename path (auth.py:_rename_stale_tokens_db).
+
+    Codex R1 Major #3 fix — use ``tempfile.mkstemp`` to obtain a unique
+    tmp file in the destination dir rather than the deterministic
+    ``<name>.tmp`` sibling. Two concurrent setup submissions could
+    truncate each other's tmp file before ``os.replace`` lands.
+    ``mkstemp`` guarantees a unique name + same-dir placement (so
+    ``os.replace`` is intra-volume per the CLAUDE.md gotcha). The
+    ``except BaseException`` cleanup also closes the prior "tmp leak on
+    os.replace failure" minor.
     """
+    import contextlib
     import json as _json
+    import tempfile
 
     payload = {
         "access_token_issued": issued_at.isoformat(),
         "refresh_token_issued": issued_at.isoformat(),
         "token_dictionary": token_dictionary,
     }
-    # Write to a tmp sibling + os.replace for atomicity (CLAUDE.md gotcha
-    # "os.replace requires same filesystem" — tmp sibling guarantees same
-    # volume as final).
-    tmp_path = tokens_path.with_name(tokens_path.name + ".tmp")
-    fd = os.open(
-        str(tmp_path),
-        os.O_CREAT | os.O_TRUNC | os.O_WRONLY,
-        0o600,
+    # Same-dir tempfile via mkstemp: unique name per concurrent call;
+    # placed alongside the canonical path so os.replace is intra-volume.
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(tokens_path.parent),
+        prefix=tokens_path.name + ".",
+        suffix=".tmp",
     )
-    import contextlib
-
+    tmp_path = Path(tmp_name)
     try:
+        # mkstemp creates with default 0o600 on POSIX; on Windows file
+        # ACLs are inherited. Defensive chmod for explicit alignment with
+        # _rename_stale_tokens_db posture (no-op on Windows).
+        with contextlib.suppress(OSError):
+            os.chmod(str(tmp_path), 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             _json.dump(payload, f, ensure_ascii=False, indent=4)
+        os.replace(str(tmp_path), str(tokens_path))
     except BaseException:
+        # Cleanup covers BOTH write failure AND os.replace failure.
         with contextlib.suppress(OSError):
-            os.unlink(str(tmp_path))
+            tmp_path.unlink()
         raise
-    os.replace(str(tmp_path), str(tokens_path))
 
 
 def setup_paste_flow_with_callback_url(
@@ -1579,7 +1617,65 @@ def setup_paste_flow_with_callback_url(
             f"{type(exc).__name__}>",
         ) from exc
 
-    # Step 9 — close audit row #1 success.
+    # Step 10 — construct schwabdev.Client. Tokens file is fresh from
+    # step 8; schwabdev's Tokens.__init__ re-loads it without prompting.
+    #
+    # Codex R1 Major #1 fix — load-back verification BEFORE closing the
+    # audit row `success`. Previously the audit row closed `success` at
+    # step 9 immediately after the tokens-file write, but if schwabdev's
+    # private API changes (e.g. tokens file format drift) the load-back
+    # at step 10 raises while the audit row already says success →
+    # operator sees failure but audit log lies. Reorder: verify load-back
+    # → THEN close audit `success` (or `auth_failed` on load-back failure).
+    import schwabdev
+    try:
+        with _suppress_transport_debug_logs():
+            client = schwabdev.Client(
+                app_key=client_id,
+                app_secret=client_secret,
+                callback_url=cfg.integrations.schwab.callback_url,
+                tokens_file=str(tokens_path),
+                timeout=int(cfg.integrations.schwab.timeout_seconds),
+            )
+
+        # Silent-failure defense (D1 hotfix parity).
+        access_token = getattr(
+            getattr(client, "tokens", None), "access_token", None,
+        )
+        if not access_token or not isinstance(access_token, str):
+            raise SchwabAuthError(
+                401,
+                "<schwabdev returned Client without access_token after "
+                "fresh token-file write; load-back may have failed>",
+            )
+    except BaseException as exc:
+        # Load-back failed — close audit row as auth_failed (NOT success).
+        audit_service.record_call_finish(
+            conn,
+            call_id=call_id_setup,
+            http_status=200,  # oauth itself succeeded; load-back is local.
+            status="auth_failed",
+            response_time_ms=elapsed_ms,
+            signature_hash=None,
+            rate_limit_remaining=None,
+            error_message=(
+                f"<schwabdev Client load-back failed after fresh tokens "
+                f"file write: {type(exc).__name__}>"
+            ),
+        )
+        log.warning(
+            "schwab setup (web) schwabdev load-back failed: %s",
+            type(exc).__name__,
+        )
+        if isinstance(exc, SchwabAuthError):
+            raise
+        raise SchwabAuthError(
+            401,
+            f"<schwabdev Client load-back failed: {type(exc).__name__}>",
+        ) from exc
+
+    # Step 9 (moved) — close audit row #1 success ONLY after load-back
+    # verification passes. End-to-end "setup success" semantics.
     audit_service.record_call_finish(
         conn,
         call_id=call_id_setup,
@@ -1590,27 +1686,6 @@ def setup_paste_flow_with_callback_url(
         rate_limit_remaining=None,
         error_message=None,
     )
-
-    # Step 10 — construct schwabdev.Client. Tokens file is fresh from
-    # step 8; schwabdev's Tokens.__init__ re-loads it without prompting.
-    import schwabdev
-    with _suppress_transport_debug_logs():
-        client = schwabdev.Client(
-            app_key=client_id,
-            app_secret=client_secret,
-            callback_url=cfg.integrations.schwab.callback_url,
-            tokens_file=str(tokens_path),
-            timeout=int(cfg.integrations.schwab.timeout_seconds),
-        )
-
-    # Silent-failure defense (D1 hotfix parity).
-    access_token = getattr(getattr(client, "tokens", None), "access_token", None)
-    if not access_token or not isinstance(access_token, str):
-        raise SchwabAuthError(
-            401,
-            "<schwabdev returned Client without access_token after "
-            "fresh token-file write; load-back may have failed>",
-        )
 
     # Step 11 — SHARED helper for account_linked + picker + persist.
     # Per the SURFACE-ENUM DEVIATION at step 6, web surface uses 'cli'

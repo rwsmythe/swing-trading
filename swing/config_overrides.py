@@ -7,7 +7,7 @@ feed those caches, so the mismatch is benign. See plan §C.
 """
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import is_dataclass, replace
 from typing import Any, Literal
 
 from swing.config import Config
@@ -55,7 +55,21 @@ def apply_overrides(base_cfg: Config) -> Config:
 
     Cheap; safe to call at every route entry. Future V2 fields require
     extending the per-section replace blocks below.
+
+    Codex R1 Critical #1 follow-up — defensive short-circuit when
+    ``base_cfg`` is NOT a dataclass instance. Some test stubs build cfg
+    via ``types.SimpleNamespace`` (e.g.
+    ``tests/integrations/test_schwab_pipeline_active_exclusion.py``); the
+    final ``dataclasses.replace(base_cfg, ...)`` call would raise
+    ``TypeError: replace() should be called on dataclass instances`` for
+    such stubs. Since SimpleNamespace cfgs cannot have ``user-config.toml``
+    overrides applied to them in any meaningful way (no
+    ``dataclasses.replace`` semantics), returning the base cfg unchanged
+    preserves the V1 contract for production callers while remaining
+    test-stub-friendly.
     """
+    if not is_dataclass(base_cfg):
+        return base_cfg
     overrides = load_user_overrides()
     new_web = base_cfg.web
     new_pipeline = base_cfg.pipeline

@@ -22,6 +22,8 @@
 
   {% if vm.error_message %}
   <aside class="banner banner-error"
+         role="alert"
+         id="schwab-setup-error"
          data-form-error="schwab-setup">
     {{ vm.error_message }}
   </aside>
@@ -69,7 +71,12 @@
                  autocomplete="off"
                  size="80"
                  value="{{ vm.callback_url_value }}"
-                 placeholder="https://127.0.0.1/?code=...%40...">
+                 placeholder="https://127.0.0.1/?code=...%40..."
+                 aria-describedby="callback_url-help{% if vm.error_message %} schwab-setup-error{% endif %}">
+          <small id="callback_url-help" class="muted">
+            Paste the complete address-bar URL from your Schwab redirect.
+            The code parameter expires ~30 seconds after issuance.
+          </small>
         </p>
         <p>
           <button type="submit"

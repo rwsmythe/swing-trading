@@ -553,6 +553,220 @@ def test_get_omits_global_discrepancy_banner_when_count_eq_0(
 # (Phase 9 Sub-bundle A return report §11 lesson regression guard)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Codex R1 Critical #1 regression — apply_overrides() at route entry point
+# so user-config.toml-tier credentials are consumed by the web setup flow.
+# Without apply_overrides() in the route handler, `request.app.state.cfg`
+# returns the RAW tracked Config whose schwab.client_id/client_secret are
+# empty strings; the cfg-cascade never reaches user-config.toml.
+# ---------------------------------------------------------------------------
+
+
+def test_post_consumes_cfg_tier_credentials_via_apply_overrides(
+    seeded_db, monkeypatch, tmp_path,
+):
+    """Critical #1 regression — write credentials to user-config.toml,
+    clear env vars, POST /schwab/setup, assert the service stub was
+    invoked with the cfg-tier credentials (NOT empty strings).
+    """
+    cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
+    # Clear env vars so the cfg cascade falls through to user-config.toml.
+    monkeypatch.delenv("SCHWAB_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SCHWAB_CLIENT_SECRET", raising=False)
+
+    # Seed user-config.toml with credentials under the isolated home.
+    from swing.config_user import write_user_overrides
+    write_user_overrides({
+        "integrations": {
+            "schwab": {
+                "client_id": "cfg_tier_client_id_value_1234",
+                "client_secret": "cfg_tier_client_secret_value_5678",
+            },
+        },
+    })
+
+    captured: dict = {}
+
+    def _stub_service(
+        cfg_arg, environment, client_id, client_secret,
+        callback_url_with_code, conn, *, force=False, account_picker=None,
+    ):
+        captured["client_id"] = client_id
+        captured["client_secret"] = client_secret
+        return {
+            "tokens_path": "/tmp/stub.db",
+            "account_hash": "HASH",
+            "environment": environment,
+            "call_id_setup": 1,
+            "call_id_account_linked": 2,
+            "num_accounts": 1,
+            "oauth_http_status": 200,
+        }
+
+    import swing.web.routes.schwab as schwab_route
+    monkeypatch.setattr(
+        schwab_route,
+        "setup_paste_flow_with_callback_url",
+        _stub_service,
+    )
+
+    app = create_app(cfg, _cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/schwab/setup",
+            data={"callback_url": "https://127.0.0.1/?code=Z%40A"},
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code in (204, 303), (
+        f"unexpected status {r.status_code}: {r.text[:200]}"
+    )
+    # The Critical defect would surface as empty-string credentials
+    # because the raw cfg's defaults are empty strings — the cfg-cascade
+    # tier was never consulted.
+    assert captured["client_id"] == "cfg_tier_client_id_value_1234", (
+        f"cfg-tier client_id not consumed (got {captured.get('client_id')!r})"
+        " — apply_overrides() likely missing from route entry"
+    )
+    assert captured["client_secret"] == "cfg_tier_client_secret_value_5678"
+
+
+def test_get_consumes_cfg_tier_credentials_via_apply_overrides(
+    seeded_db, monkeypatch, tmp_path,
+):
+    """Critical #1 regression GET-side — credentials in user-config.toml
+    surface the configured client_id in the authorize URL on GET render.
+    Without apply_overrides(), the raw cfg's empty-string default would
+    render `client_id=<set client_id>` placeholder + the no-credentials
+    banner.
+    """
+    cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
+    monkeypatch.delenv("SCHWAB_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SCHWAB_CLIENT_SECRET", raising=False)
+
+    from swing.config_user import write_user_overrides
+    write_user_overrides({
+        "integrations": {
+            "schwab": {
+                "client_id": "get_cfg_tier_id_abcdef_123456",
+                "client_secret": "get_cfg_tier_secret_xyzzy",
+            },
+        },
+    })
+
+    app = create_app(cfg, _cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/schwab/setup")
+    assert r.status_code == 200
+    body = r.text
+    # The cfg-tier client_id MUST appear in the authorize URL.
+    assert "client_id=get_cfg_tier_id_abcdef_123456" in body, (
+        "cfg-tier client_id not in rendered authorize URL — "
+        "apply_overrides() likely missing from GET handler"
+    )
+    # And the no-credentials banner MUST NOT appear.
+    assert "Schwab credentials not configured" not in body
+
+
+# ---------------------------------------------------------------------------
+# Codex R1 Major #4 regression — /config link removed from error remediation
+# (masked fields are not editable via /config; pointing operators there
+# would show display-only masked values with no edit form).
+# ---------------------------------------------------------------------------
+
+
+def test_post_no_credentials_remediation_does_not_link_to_config(
+    seeded_db, monkeypatch, tmp_path,
+):
+    """Major #4 regression — the no-credentials remediation hint MUST
+    reference env vars + CLI; MUST NOT reference /config (since masked
+    fields are not POST-editable per swing/web/routes/config.py:31).
+    """
+    cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
+    monkeypatch.delenv("SCHWAB_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SCHWAB_CLIENT_SECRET", raising=False)
+    app = create_app(cfg, _cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/schwab/setup",
+            data={"callback_url": "https://127.0.0.1/?code=abc%40123"},
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 400
+    body = r.text
+    # Remediation must mention env vars OR the CLI command.
+    assert (
+        "SCHWAB_CLIENT_ID" in body
+        or "swing config set integrations.schwab.client_id" in body
+    )
+    # The remediation hint MUST NOT instruct operators to "Set credentials
+    # via /config" (the masked-fields gotcha). The error_message paragraph
+    # may still contain "/config" via the unrelated "Go to /config" footer
+    # link, so we look only at the remediation-hint paragraph (after
+    # "Next step:").
+    # Extract the remediation hint text — between "Next step:" and the
+    # following </p>.
+    import re
+    m = re.search(
+        r"Next step:</strong>(.+?)</p>", body, re.DOTALL,
+    )
+    remediation = m.group(1) if m else ""
+    assert "/config" not in remediation, (
+        f"/config reference still present in remediation hint: {remediation!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Codex R1 Minor #2 regression — accessibility (aria-describedby +
+# role='alert') on the inline form.
+# ---------------------------------------------------------------------------
+
+
+def test_form_input_has_aria_describedby_to_help_text(
+    seeded_db, monkeypatch, tmp_path,
+):
+    """Minor #2 — callback_url input carries aria-describedby pointing
+    at the inline help text + (when error_message present) error banner.
+    """
+    cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
+    monkeypatch.setenv("SCHWAB_CLIENT_ID", "test_id_value_1234567890")
+    monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "test_secret_abc")
+    app = create_app(cfg, _cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/schwab/setup")
+    assert r.status_code == 200
+    assert 'aria-describedby="callback_url-help"' in r.text
+    assert 'id="callback_url-help"' in r.text
+
+
+def test_form_inline_error_banner_has_role_alert_for_screen_readers(
+    seeded_db, monkeypatch, tmp_path,
+):
+    """Minor #2 — inline form-error banner carries role='alert' so screen
+    readers announce it when re-rendered after a validation failure.
+    """
+    cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
+    monkeypatch.setenv("SCHWAB_CLIENT_ID", "test_id_value_1234567890")
+    monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "test_secret_abc")
+    app = create_app(cfg, _cfg_path)
+    with TestClient(app) as client:
+        # Submit with empty callback_url to trigger the inline banner.
+        r = client.post(
+            "/schwab/setup",
+            data={"callback_url": ""},
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 400
+    body = r.text
+    # role='alert' attached to the inline banner.
+    assert 'data-form-error="schwab-setup"' in body
+    assert 'role="alert"' in body
+
+
 def test_get_existing_tokens_db_warning_false_under_isolated_home(
     seeded_db, monkeypatch, tmp_path,
 ):

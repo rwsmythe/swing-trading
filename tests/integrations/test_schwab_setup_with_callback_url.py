@@ -424,3 +424,414 @@ def test_account_hash_persisted_to_user_overrides(env_with_db, monkeypatch):
         overrides.get("integrations", {}).get("schwab", {}).get("account_hash")
         == "PERSISTED_HASH"
     )
+
+
+# ===========================================================================
+# Codex R1 Major #1 regression — audit row reflects END-TO-END setup
+# success, NOT just OAuth-exchange success. Previously the audit row was
+# closed 'success' BEFORE schwabdev.Client construction; if load-back
+# failed (e.g. schwabdev tokens-file format drift), audit lied. Reorder:
+# load-back verify → THEN close audit success.
+# ===========================================================================
+
+
+def test_audit_row_closes_auth_failed_when_schwabdev_loadback_fails(
+    env_with_db, monkeypatch,
+):
+    """Major #1 regression — synthesize an invalid tokens file by stubbing
+    schwabdev.Client to raise on construction; assert the audit row for
+    `oauth.code_exchange` is `auth_failed` (NOT `success`), reflecting
+    end-to-end setup failure.
+    """
+    cfg, conn, _tokens_path = env_with_db
+    captured: dict = {}
+    _install_stub_requests(
+        monkeypatch,
+        _StubResponse(
+            ok=True, status_code=200,
+            body={
+                "access_token": "fresh_access_value_abcdef",
+                "refresh_token": "fresh_refresh_value_xyzzy",
+            },
+        ),
+        captured,
+    )
+
+    # Stub schwabdev.Client to RAISE on construction — simulating a
+    # format-drift scenario where our written tokens file is no longer
+    # consumable by the live schwabdev library.
+    class _FailingClient:
+        def __init__(self, *_args, **_kwargs):
+            raise RuntimeError("schwabdev rejected tokens file format")
+
+    import schwabdev
+    monkeypatch.setattr(schwabdev, "Client", _FailingClient)
+
+    with pytest.raises(SchwabAuthError):
+        setup_paste_flow_with_callback_url(
+            cfg, "production",
+            "id_xyz_abc",
+            "secret_xyz_abc",
+            "https://127.0.0.1/?code=AUTH%40SESSION",
+            conn,
+        )
+
+    # Audit row closed 'auth_failed' (NOT 'success').
+    rows = conn.execute(
+        "SELECT endpoint, status FROM schwab_api_calls ORDER BY call_id",
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "oauth.code_exchange"
+    assert rows[0][1] == "auth_failed", (
+        f"Major #1 regression: audit row should be auth_failed when "
+        f"schwabdev load-back fails, got {rows[0][1]!r}"
+    )
+
+
+def test_audit_row_closes_auth_failed_when_loadback_returns_no_access_token(
+    env_with_db, monkeypatch,
+):
+    """Major #1 silent-failure variant — schwabdev.Client constructs
+    successfully but the resulting `client.tokens.access_token` is
+    None/empty (silent-failure mode per CLAUDE.md gotcha). Audit row
+    MUST close 'auth_failed', NOT 'success'.
+    """
+    cfg, conn, _tokens_path = env_with_db
+    captured: dict = {}
+    _install_stub_requests(
+        monkeypatch,
+        _StubResponse(
+            ok=True, status_code=200,
+            body={
+                "access_token": "fresh_access_value_abcdef",
+                "refresh_token": "fresh_refresh_value_xyzzy",
+            },
+        ),
+        captured,
+    )
+
+    class _SilentFailTokens:
+        access_token = None  # schwabdev's silent-failure mode
+        refresh_token = None
+
+    class _SilentFailClient:
+        def __init__(self, *_args, **_kwargs):
+            self.tokens = _SilentFailTokens()
+
+    import schwabdev
+    monkeypatch.setattr(schwabdev, "Client", _SilentFailClient)
+
+    with pytest.raises(SchwabAuthError):
+        setup_paste_flow_with_callback_url(
+            cfg, "production",
+            "id_xyz_abc",
+            "secret_xyz_abc",
+            "https://127.0.0.1/?code=AUTH%40SESSION",
+            conn,
+        )
+
+    rows = conn.execute(
+        "SELECT endpoint, status FROM schwab_api_calls ORDER BY call_id",
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0] == ("oauth.code_exchange", "auth_failed")
+
+
+# ===========================================================================
+# Codex R1 Major #3 regression — concurrent-safe atomic write via
+# tempfile.mkstemp (unique tmp path per call). Two concurrent setup
+# flows must not truncate each other's tmp file before os.replace.
+# ===========================================================================
+
+
+def test_tokens_file_atomic_write_uses_unique_tmp_path(
+    env_with_db, monkeypatch, tmp_path,
+):
+    """Major #3 regression — the helper writes through a UNIQUE tmp file
+    (mkstemp), NOT the deterministic ``<name>.tmp`` sibling. Test by
+    capturing all `os.replace` calls + asserting the source path is NOT
+    the deterministic sibling.
+    """
+    from swing.integrations.schwab.auth import _write_schwabdev_tokens_file
+    from datetime import datetime, timezone
+
+    captured: dict = {"replace_calls": []}
+    import os as _os
+    real_replace = _os.replace
+
+    def _spy_replace(src, dst):
+        captured["replace_calls"].append((str(src), str(dst)))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(_os, "replace", _spy_replace)
+
+    tokens_path = tmp_path / "schwab-tokens.production.db"
+    _write_schwabdev_tokens_file(
+        tokens_path=tokens_path,
+        token_dictionary={
+            "access_token": "a", "refresh_token": "r",
+        },
+        issued_at=datetime.now(timezone.utc),
+    )
+
+    assert len(captured["replace_calls"]) == 1
+    src, dst = captured["replace_calls"][0]
+    # Destination must be the canonical path.
+    assert dst == str(tokens_path)
+    # Source MUST NOT be the deterministic .tmp sibling — that's the
+    # pre-fix shape and would race under concurrent calls.
+    deterministic_tmp = str(tokens_path.with_name(tokens_path.name + ".tmp"))
+    assert src != deterministic_tmp, (
+        f"Major #3 regression: write used the deterministic tmp path "
+        f"{deterministic_tmp!r} (race-unsafe). Should use mkstemp."
+    )
+    # Source IS in the canonical path's parent dir (intra-volume rename).
+    assert _os.path.dirname(src) == str(tokens_path.parent)
+
+
+def test_tokens_file_concurrent_writes_unique_tmp_names(env_with_db, tmp_path):
+    """Major #3 — assert TWO sequential writes use DIFFERENT tmp file
+    names (mkstemp guarantees uniqueness). Pre-fix shape used the same
+    deterministic name for every call.
+    """
+    from swing.integrations.schwab.auth import _write_schwabdev_tokens_file
+    from datetime import datetime, timezone
+
+    captured: list = []
+    import os as _os
+    real_replace = _os.replace
+
+    def _spy_replace(src, dst):
+        captured.append((str(src), str(dst)))
+        return real_replace(src, dst)
+
+    import unittest.mock as mock
+    tokens_path = tmp_path / "schwab-tokens.production.db"
+
+    with mock.patch.object(_os, "replace", side_effect=_spy_replace):
+        for _ in range(2):
+            _write_schwabdev_tokens_file(
+                tokens_path=tokens_path,
+                token_dictionary={
+                    "access_token": "a", "refresh_token": "r",
+                },
+                issued_at=datetime.now(timezone.utc),
+            )
+
+    assert len(captured) == 2
+    src_1, _dst_1 = captured[0]
+    src_2, _dst_2 = captured[1]
+    assert src_1 != src_2, (
+        "Major #3: concurrent writes must use unique tmp names "
+        f"(got identical: {src_1!r})"
+    )
+
+
+# ===========================================================================
+# Codex R1 Major #5 regression — structured URL parsing handles realistic
+# callback URL variants that schwabdev's raw substring search misses.
+# ===========================================================================
+
+
+def test_callback_url_with_state_param_after_code(env_with_db, monkeypatch):
+    """Major #5 — callback URL with additional query params (e.g.
+    `?state=XYZ&code=...%40...`) must extract the code correctly.
+    """
+    cfg, conn, _tokens_path = env_with_db
+    captured: dict = {}
+    _install_stub_requests(
+        monkeypatch,
+        _StubResponse(
+            ok=True, status_code=200,
+            body={
+                "access_token": "fresh_at_xyz",
+                "refresh_token": "fresh_rt_xyz",
+            },
+        ),
+        captured,
+    )
+    _install_stub_schwabdev(
+        monkeypatch,
+        accounts=[{"accountNumber": "12345", "hashValue": "HASH_X"}],
+    )
+
+    summary = setup_paste_flow_with_callback_url(
+        cfg, "production",
+        "test_id_abc",
+        "test_secret_xyz",
+        "https://127.0.0.1/?state=xyz_state&code=AUTH_VALUE%40SESSION_TOK",
+        conn,
+    )
+    assert summary["account_hash"] == "HASH_X"
+    # Code extracted correctly despite preceding state param.
+    assert captured["data"]["code"] == "AUTH_VALUE@"
+
+
+def test_callback_url_with_code_before_other_at_encoded_params(
+    env_with_db, monkeypatch,
+):
+    """Major #5 — guards against the schwabdev substring-search ambiguity
+    where a state param containing %40 BEFORE the code param would have
+    confused the byte-for-byte mirror.
+    URL shape: `?code=GOOD%40DATA&state=NOISE%40MORE`. The fixed parser
+    extracts the code's own value, not the state's `%40`.
+    """
+    cfg, conn, _tokens_path = env_with_db
+    captured: dict = {}
+    _install_stub_requests(
+        monkeypatch,
+        _StubResponse(
+            ok=True, status_code=200,
+            body={
+                "access_token": "fresh_at",
+                "refresh_token": "fresh_rt",
+            },
+        ),
+        captured,
+    )
+    _install_stub_schwabdev(
+        monkeypatch,
+        accounts=[{"accountNumber": "99", "hashValue": "HASH_Y"}],
+    )
+
+    setup_paste_flow_with_callback_url(
+        cfg, "production",
+        "test_id_abc",
+        "test_secret_xyz",
+        "https://127.0.0.1/?code=GOOD%40DATA&state=NOISE%40MORE",
+        conn,
+    )
+    # Code must be "GOOD@" — extracted from the `code` param's first
+    # segment, NOT the schwabdev raw `url.index('%40')` substring which
+    # could have landed on the state param's `%40`.
+    assert captured["data"]["code"] == "GOOD@"
+
+
+def test_callback_url_missing_code_param_raises_auth_error(
+    env_with_db, monkeypatch,
+):
+    """Major #5 — URL with NO `code` query param is rejected cleanly."""
+    cfg, conn, _tokens_path = env_with_db
+
+    def _should_not_be_called(*_a, **_kw):
+        raise AssertionError("requests.post should not run")
+
+    import requests
+    monkeypatch.setattr(requests, "post", _should_not_be_called)
+
+    with pytest.raises(SchwabAuthError):
+        setup_paste_flow_with_callback_url(
+            cfg, "production",
+            "test_id_abc",
+            "test_secret_xyz",
+            "https://127.0.0.1/?state=only",
+            conn,
+        )
+
+
+def test_callback_url_code_value_missing_at_separator_raises(
+    env_with_db, monkeypatch,
+):
+    """Major #5 — code param present but value lacks the `@` separator
+    is rejected (Schwab always emits `<auth>@<session>` shape).
+    """
+    cfg, conn, _tokens_path = env_with_db
+
+    def _should_not_be_called(*_a, **_kw):
+        raise AssertionError("requests.post should not run")
+
+    import requests
+    monkeypatch.setattr(requests, "post", _should_not_be_called)
+
+    with pytest.raises(SchwabAuthError) as exc_info:
+        setup_paste_flow_with_callback_url(
+            cfg, "production",
+            "test_id_abc",
+            "test_secret_xyz",
+            "https://127.0.0.1/?code=NOATSEP",
+            conn,
+        )
+    assert "@" in exc_info.value.body_excerpt or "separator" in (
+        exc_info.value.body_excerpt.lower()
+    )
+
+
+# ===========================================================================
+# Codex R1 Major #2 regression — schwabdev tokens-file format compatibility.
+# Imports REAL schwabdev (no stub) + asserts our written tokens file is
+# loadable via the same json.load() schwabdev's Tokens.__init__ uses.
+# Slow-marked because it imports real schwabdev.
+# ===========================================================================
+
+
+@pytest.mark.slow
+def test_written_tokens_file_loadable_by_real_schwabdev_format(tmp_path):
+    """Major #2 — write a synthetic tokens file via
+    ``_write_schwabdev_tokens_file`` + perform the SAME ``json.load()`` +
+    field extraction that real schwabdev's ``Tokens.__init__`` performs.
+    If schwabdev's private format drifts (e.g. renames `token_dictionary`
+    to `tokens`), this test fails LOUDLY — pre-empting the operator-side
+    failure-mode where web POST returns 500 with no clear cause.
+
+    See ``schwabdev/tokens.py:52-66`` in the installed library for the
+    canonical load shape — our test replicates it byte-for-byte (minus
+    network I/O of `update_tokens()`).
+    """
+    import datetime
+    import json as _json
+
+    # Import real schwabdev to assert it is importable + the Tokens class
+    # exists. If schwabdev is renamed/removed, this fails fast.
+    import schwabdev
+    assert hasattr(schwabdev, "Client"), "schwabdev.Client surface missing"
+
+    # Locate schwabdev's tokens module + Tokens class.
+    from schwabdev import tokens as schwabdev_tokens_mod
+    assert hasattr(schwabdev_tokens_mod, "Tokens"), (
+        "schwabdev.tokens.Tokens class missing — library format may have "
+        "changed; setup_paste_flow_with_callback_url's tokens-file write "
+        "may need updating"
+    )
+
+    from swing.integrations.schwab.auth import _write_schwabdev_tokens_file
+
+    tokens_path = tmp_path / "schwab-tokens.production.db"
+    sentinel_access = "fresh_access_token_for_compat_test_xyz"
+    sentinel_refresh = "fresh_refresh_token_for_compat_test_abc"
+    token_dict = {
+        "access_token": sentinel_access,
+        "refresh_token": sentinel_refresh,
+        "token_type": "Bearer",
+        "expires_in": 1800,
+        "scope": "api",
+    }
+    _write_schwabdev_tokens_file(
+        tokens_path=tokens_path,
+        token_dictionary=token_dict,
+        issued_at=datetime.datetime.now(datetime.timezone.utc),
+    )
+
+    # Mirror schwabdev/tokens.py:52-60 exactly — if this fails, our
+    # tokens-file shape no longer matches what schwabdev's Tokens.__init__
+    # consumes.
+    with open(tokens_path) as f:
+        d = _json.load(f)
+        token_dictionary = d.get("token_dictionary")
+        assert token_dictionary is not None, (
+            "schwabdev compat: missing 'token_dictionary' key"
+        )
+        access = token_dictionary.get("access_token")
+        refresh = token_dictionary.get("refresh_token")
+        assert access == sentinel_access
+        assert refresh == sentinel_refresh
+        # schwabdev parses these as ISO 8601 with .fromisoformat then
+        # forces UTC. Replicate to verify our format compatibility.
+        access_issued = datetime.datetime.fromisoformat(
+            d.get("access_token_issued"),
+        ).replace(tzinfo=datetime.timezone.utc)
+        refresh_issued = datetime.datetime.fromisoformat(
+            d.get("refresh_token_issued"),
+        ).replace(tzinfo=datetime.timezone.utc)
+        # Both should parse without raising.
+        assert access_issued.tzinfo is datetime.timezone.utc
+        assert refresh_issued.tzinfo is datetime.timezone.utc

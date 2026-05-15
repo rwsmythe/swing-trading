@@ -40,6 +40,7 @@ from datetime import datetime
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
+from swing.config_overrides import apply_overrides
 from swing.evaluation.dates import action_session_for_run
 from swing.integrations.schwab.auth import (
     _redacted_excerpt,
@@ -192,7 +193,13 @@ def _build_form_vm(
 @router.get("/schwab/setup", response_class=HTMLResponse)
 def schwab_setup_form(request: Request) -> Response:
     """GET — render the OAuth setup form."""
-    cfg = request.app.state.cfg
+    # Codex R1 Critical #1 fix — apply_overrides() at the route entry point.
+    # `request.app.state.cfg` is the RAW tracked Config; without
+    # apply_overrides() the cfg-cascade tier (user-config.toml) is never
+    # consulted for `integrations.schwab.client_id` /
+    # `integrations.schwab.client_secret`. Mirrors the existing pattern in
+    # swing/cli_schwab.py:982-985, 1266-1269, 1430-1431.
+    cfg = apply_overrides(request.app.state.cfg)
     environment = getattr(
         getattr(getattr(cfg, "integrations", None), "schwab", None),
         "environment",
@@ -221,6 +228,8 @@ def schwab_setup_form(request: Request) -> Response:
 
     error_msg = None
     if client_id is None:
+        # Codex R1 Major #4: do NOT reference /config (masked fields are
+        # not editable there per swing/web/routes/config.py:31).
         error_msg = (
             "Schwab credentials not configured. Set "
             "SCHWAB_CLIENT_ID + SCHWAB_CLIENT_SECRET env vars OR run "
@@ -240,7 +249,9 @@ def schwab_setup_form(request: Request) -> Response:
 @router.post("/schwab/setup")
 async def schwab_setup_post(request: Request) -> Response:
     """POST — exchange operator's pasted callback URL for tokens."""
-    cfg = request.app.state.cfg
+    # Codex R1 Critical #1 fix — apply_overrides() at the route entry point.
+    # See GET handler for full rationale; same pattern.
+    cfg = apply_overrides(request.app.state.cfg)
     environment = getattr(
         getattr(getattr(cfg, "integrations", None), "schwab", None),
         "environment",
@@ -272,6 +283,11 @@ async def schwab_setup_post(request: Request) -> Response:
         )
 
     if client_id is None or client_secret is None:
+        # Codex R1 Major #4 fix — drop `/config` mention (masked fields are
+        # not editable via the /config POST form per
+        # swing/web/routes/config.py:31; pointing operators there would
+        # show the masked display but no edit affordance). Reference env
+        # vars + CLI only.
         return _render_error(
             request,
             status_code=400,
@@ -280,10 +296,11 @@ async def schwab_setup_post(request: Request) -> Response:
                 "(env vars, ~/swing-data/user-config.toml, prompt-N/A)."
             ),
             remediation_hint=(
-                "Set credentials via /config or run "
-                "`swing config set integrations.schwab.client_id` + "
-                "`swing config set integrations.schwab.client_secret` "
-                "in a PowerShell session, then retry."
+                "Set credentials via env vars "
+                "(SCHWAB_CLIENT_ID + SCHWAB_CLIENT_SECRET) OR via CLI "
+                "(`swing config set integrations.schwab.client_id <value>` "
+                "and `swing config set integrations.schwab.client_secret "
+                "<value>`) in a PowerShell session, then retry."
             ),
             unresolved_count=unresolved_count,
         )
