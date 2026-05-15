@@ -199,8 +199,15 @@ def schwab_setup(
     click.echo(
         f"Setup complete. Tokens DB written at {result['tokens_path']}.",
     )
+    # Codex R1 Major #3 — `swing config set integrations.schwab.environment`
+    # is NOT a working V1 surface (FIELD_REGISTRY does not include the env
+    # field). Operator activation path is hand-edit OR `--environment` flag
+    # per-invocation (T-D.2 cycle-checklist guidance).
     click.echo(
-        f"To activate this env: `swing config set integrations.schwab.environment {env}`.",
+        "To activate this environment for pipeline + CLI defaults: "
+        "hand-edit `%USERPROFILE%/swing-data/user-config.toml` and set "
+        f"`integrations.schwab.environment = \"{env}\"`. "
+        f"Or pass `--environment {env}` per-invocation to override.",
     )
     click.echo(
         "Then verify with `swing schwab status`.",
