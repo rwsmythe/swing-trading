@@ -64,7 +64,8 @@
   Before running the orphaned-worktree discovery pass, scan `git worktree
   list` and deregister any STILL-REGISTERED worktree under `.worktrees/` or
   `.claude/worktrees/` whose name matches the project's branch naming
-  convention (phase\d+ or schwab[-{arc?}]-bundle-) — project phase/sub-bundle
+  convention (phase{NN}-* with `-` or `_` separator; schwab[-arc?]-bundle-*
+  with the literal `-bundle-` segment REQUIRED) — project phase/sub-bundle
   dispatches. `git worktree remove --force` deregisters even when the
   on-disk delete fails due to ACL-lock; the resulting orphan is then picked
   up by the existing discovery pass and cleaned by the same
@@ -75,8 +76,9 @@
   safety filter.
 
   SAFETY: only paths under `.worktrees/` or `.claude/worktrees/` whose
-  branch directory matches `(phase\d+|schwab(?:-\w+)?)[-_]...` deregister.
-  Any other worktree (in-flight branches, polish bundles, operator-curated
+  branch directory matches `(phase\d+[-_]|schwab(?:-\w+)?-bundle-)...`
+  deregister. Any other worktree (in-flight branches, polish bundles,
+  operator-curated branches, schwab-feature-* / schwab-test-* non-bundle
   branches) is left alone.
 
 .EXAMPLE
@@ -95,7 +97,8 @@
 .EXAMPLE
   PS C:\> .\cleanup-locked-scratch-dirs.ps1 -DeregisterFirst
   # Deregister still-registered worktrees matching the project naming
-  # convention (phase\d+ or schwab[-{arc?}]-bundle-) first, then clean all
+  # convention (phase{NN}-* with `-`/`_` separator; schwab[-arc?]-bundle-*
+  # with literal `-bundle-` segment required) first, then clean all
   # resulting orphans + any pre-existing locked scratch dirs.
 
 .NOTES
@@ -218,7 +221,8 @@ foreach ($dir in $topLevelDirs) {
 # --- Optional pre-pass: deregister still-registered naming-convention worktrees ---
 # Added 2026-05-13 per post-phase10-infra-bundle dispatch brief §0.6.
 # Widened 2026-05-15 per Phase 12 Sub-bundle A T-A.4 to include schwab-arc
-# naming convention (phase\d+ OR schwab[-{arc?}]-bundle-).
+# naming convention (phase\d+[-_] OR schwab(?:-\w+)?-bundle-; literal
+# `-bundle-` segment REQUIRED for schwab paths).
 # When -DeregisterFirst is set, scan `git worktree list` and run
 # `git worktree remove --force <path>` for any registered worktree whose
 # path matches the safety filter (see $script:DeregisterPathPattern).
@@ -228,7 +232,7 @@ foreach ($dir in $topLevelDirs) {
 # to clean). Any deregister error is logged but does NOT abort the loop
 # (the on-disk orphan still ends up in the candidates set).
 if ($DeregisterFirst) {
-  Write-Output "DeregisterFirst: scanning git worktree list for naming-convention (phase\d+ or schwab-{arc?}-bundle-) still-registered worktrees..."
+  Write-Output "DeregisterFirst: scanning git worktree list for naming-convention (phase\d+[-_] or schwab(?:-\w+)?-bundle-) still-registered worktrees..."
   try {
     $worktreeListOutput = & git -C $ProjectRoot worktree list 2>&1
   } catch {

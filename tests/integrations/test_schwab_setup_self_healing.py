@@ -727,3 +727,144 @@ def test_t_a_2_atomic_claim_then_replace_closes_toctou_race(
         f"O_CREAT|O_EXCL|O_WRONLY flags ({expected_flags}) against a "
         f"`.deleted-*` candidate path; got open_calls={open_calls!r}"
     )
+
+
+def test_t_a_2_audit_row_emitted_on_claim_step_permission_error(
+    home: Path, cfg: Any, conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test 10 (Codex R2 Major fix, 2026-05-15) — claim-step OSError
+    failure-path audit row.
+
+    Pre-R2 the audit row OPEN happened AFTER the `os.open(... O_EXCL ...)`
+    claim loop, so any non-collision OSError raised by `os.open`
+    (PermissionError / ENOSPC / path-is-directory / antivirus
+    interference) propagated to the caller before `record_call_start`
+    ran — reintroducing the observability gap the two-phase audit
+    ordering was meant to close.
+
+    Plant existing tokens DB; monkeypatch `os.open` to raise
+    `PermissionError("EACCES on tokens DB parent dir")` on the FIRST
+    invocation (covering only the candidate-claim path, not unrelated
+    Python-internals usage); invoke `setup_paste_flow`. Assert:
+      (a) `PermissionError` propagates (NOT swallowed);
+      (b) existing stale tokens DB still at canonical path (no rename
+          happened);
+      (c) no `.deleted-*` files appeared;
+      (d) exactly ONE audit row with endpoint='oauth.code_exchange',
+          status='error', surface='cli', environment='production';
+      (e) `error_message` contains BOTH operator-greppable substrings
+          ("auto-detected" + "renamed") AND a substring tied to the
+          underlying PermissionError ("EACCES" or "Permission");
+      (f) no OTHER `oauth.code_exchange` audit row — setup never
+          proceeded past the failed self-heal.
+
+    This pins the audit-trail invariant for the claim-step failure
+    path, complementing Test 8 which pins the os.replace failure path.
+    """
+    import os as _os
+
+    tokens_path = home / "swing-data" / "schwab-tokens.production.db"
+    tokens_path.write_text("stale-payload-claim-step-failure-test")
+
+    # Only intercept os.open calls that target our `.deleted-*` claim
+    # candidates; pass-through everything else so unrelated stdlib calls
+    # (sqlite3, audit_service writes) work normally. Raise PermissionError
+    # on the very first matching call.
+    real_open = _os.open
+    claim_attempts: list[str] = []
+
+    def selective_raising_open(path: Any, *args: Any, **kwargs: Any) -> int:
+        path_str = str(path)
+        if ".deleted-" in path_str:
+            claim_attempts.append(path_str)
+            raise PermissionError("EACCES on tokens DB parent dir")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(_os, "open", selective_raising_open)
+
+    # NOTE: schwabdev.Client is NOT patched — the PermissionError on
+    # os.open propagates from the self-heal helper BEFORE setup_paste_flow
+    # gets to invoke schwabdev (mirrors Test 8 invariant).
+    with pytest.raises(PermissionError, match="EACCES"):
+        setup_paste_flow(
+            cfg=cfg,
+            environment="production",
+            client_id="my_client_id",
+            client_secret="my_client_secret",
+            conn=conn,
+        )
+
+    # The claim path was actually exercised (sanity guard against a
+    # regression that bypasses os.open entirely).
+    assert claim_attempts, (
+        "expected at least one os.open attempt against a `.deleted-*` "
+        "candidate path; the test is not exercising the claim step"
+    )
+
+    # (b) Stale tokens DB still present (no rename happened).
+    assert tokens_path.exists(), (
+        "stale tokens DB should still be at canonical path "
+        "(os.open claim failed before any rename could occur)"
+    )
+    assert tokens_path.read_text() == "stale-payload-claim-step-failure-test", (
+        "stale tokens DB payload should be untouched"
+    )
+
+    # (c) No renamed `.deleted-*` files appeared.
+    renamed = list(home.glob("swing-data/schwab-tokens.production.db.deleted-*"))
+    assert renamed == [], (
+        f"no `.deleted-*` files should exist after a failed O_EXCL claim; "
+        f"got {renamed}"
+    )
+
+    # (d) Exactly ONE audit row matching the self-heal grep namespace,
+    # with status='error', endpoint='oauth.code_exchange', surface='cli',
+    # environment='production'.
+    rows = _read_audit_rows(home)
+    self_heal_rows = [
+        r for r in rows
+        if r["error_message"]
+        and "auto-detected" in r["error_message"]
+        and "renamed" in r["error_message"]
+    ]
+    assert len(self_heal_rows) == 1, (
+        f"expected exactly 1 self-heal audit row on claim-step failure "
+        f"path; got {len(self_heal_rows)}: rows={rows}"
+    )
+    row = self_heal_rows[0]
+    assert row["endpoint"] == "oauth.code_exchange", (
+        f"expected endpoint='oauth.code_exchange'; got {row['endpoint']!r}"
+    )
+    assert row["status"] == "error", (
+        f"expected status='error' on claim-step OSError; "
+        f"got {row['status']!r}"
+    )
+    assert row["surface"] == "cli"
+    assert row["environment"] == "production"
+
+    # (e) error_message carries BOTH the operator-grep substrings AND a
+    # substring identifying the underlying PermissionError.
+    msg = row["error_message"]
+    assert "auto-detected" in msg, (
+        f"expected 'auto-detected' grep substring in error_message; got {msg!r}"
+    )
+    assert "renamed" in msg, (
+        f"expected 'renamed' grep substring in error_message; got {msg!r}"
+    )
+    assert ("EACCES" in msg or "Permission" in msg), (
+        f"expected underlying PermissionError substring "
+        f"('EACCES' or 'Permission') in error_message; got {msg!r}"
+    )
+
+    # (f) No OTHER oauth.code_exchange row — setup never proceeded past
+    # the failed self-heal.
+    other_code_exchange = [
+        r for r in rows
+        if r["endpoint"] == "oauth.code_exchange"
+        and r["call_id"] != row["call_id"]
+    ]
+    assert other_code_exchange == [], (
+        f"setup should NOT have proceeded past the failed self-heal claim "
+        f"step; unexpected rows: {other_code_exchange}"
+    )
