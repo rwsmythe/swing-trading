@@ -1206,7 +1206,7 @@ def _exchange_code_for_tokens(
             body is not parseable JSON.
     """
     import base64
-    from urllib.parse import parse_qs, urlparse
+    from urllib.parse import unquote, urlparse
 
     import requests
 
@@ -1222,24 +1222,35 @@ def _exchange_code_for_tokens(
     #   (2) URL parser variants that encode the `@` differently break the
     #       substring search entirely.
     #
-    # Use ``urllib.parse`` to extract the `code` query param structurally.
-    # `parse_qs` URL-decodes percent-escapes, so the returned `code`
-    # already contains the `@` separator embedded by Schwab between the
-    # auth-code segment and the session-token segment. We then reconstruct
-    # the schwabdev-compatible `<segment>@` shape by truncating at the
-    # first `@`. This preserves byte-for-byte compatibility with
-    # schwabdev's downstream consumer of the `code` field while accepting
-    # a wider range of callback URL shapes.
+    # Codex R3 Major #1 fix — the prior implementation used ``parse_qs``
+    # which applies ``application/x-www-form-urlencoded`` semantics and
+    # decodes ``+`` as space. OAuth authorization codes are OPAQUE tokens
+    # that may contain literal ``+``; ``parse_qs`` would corrupt the code
+    # before it round-trips back to /v1/oauth/token (→ invalid_grant).
+    # We now split the raw query string by ``&`` ourselves + use
+    # ``urllib.parse.unquote`` (NOT ``unquote_plus`` which has the same
+    # ``+``-as-space behavior) so percent-escapes decode while ``+`` is
+    # preserved literally. The downstream ``<segment>@`` reconstruction
+    # at the first decoded ``@`` is unchanged.
     parsed = urlparse(callback_url_with_code)
-    query_params = parse_qs(parsed.query, keep_blank_values=False)
-    code_values = query_params.get("code")
-    if not code_values or not code_values[0]:
+    code_raw: str | None = None
+    for raw_pair in parsed.query.split("&"):
+        if not raw_pair:
+            continue
+        key, sep, raw_val = raw_pair.partition("=")
+        if not sep:
+            continue
+        if key == "code":
+            # unquote (NOT unquote_plus) decodes %-escapes while leaving
+            # literal '+' intact — OAuth codes are opaque tokens.
+            code_raw = unquote(raw_val)
+            break
+    if not code_raw:
         raise SchwabAuthError(
             400,
             "<callback URL missing 'code=' query param; "
             "ensure the entire address bar URL was pasted>",
         )
-    code_raw = code_values[0]
     # The decoded `code` value should contain an `@` separator (Schwab's
     # delimiter between auth-code and session-token portions). schwabdev
     # truncates at the first `%40` (the URL-encoded form); we truncate at
@@ -1391,6 +1402,22 @@ def _write_schwabdev_tokens_file(
             f.flush()
             os.fsync(f.fileno())
         os.replace(str(tmp_path), str(tokens_path))
+        # Codex R3 Minor #1 — best-effort parent-directory fsync to
+        # ensure the rename itself is durable across a power-loss or
+        # crash between os.replace returning + the directory entry
+        # being flushed by the OS. Required on POSIX for full
+        # crash-consistency guarantees; on Windows, opening a
+        # directory for O_RDONLY+fsync is not supported and the call
+        # raises OSError / PermissionError / NotImplementedError. We
+        # swallow the error since Windows handles directory-entry
+        # durability differently (NTFS journals the rename) — best-
+        # effort across platforms.
+        with contextlib.suppress(OSError, AttributeError):
+            dir_fd = os.open(str(tokens_path.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
     except BaseException:
         # Cleanup covers BOTH write failure AND os.replace failure.
         with contextlib.suppress(OSError):

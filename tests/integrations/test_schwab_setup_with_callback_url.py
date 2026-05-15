@@ -756,6 +756,57 @@ def test_callback_url_code_value_missing_at_separator_raises(
     )
 
 
+def test_callback_url_with_literal_plus_in_code_preserved(
+    env_with_db, monkeypatch,
+):
+    """Codex R3 Major #1 — OAuth authorization codes are opaque tokens
+    that may contain literal '+' characters. The previous parser used
+    ``urllib.parse.parse_qs`` which applies ``application/x-www-form-
+    urlencoded`` semantics — it decodes ``+`` as space. If Schwab emits
+    ``?code=ABC+DEF%40SESSION``, parse_qs would yield ``ABC DEF@SESSION``
+    instead of the literal ``ABC+DEF@SESSION``, corrupting the code that
+    gets POSTed back to /v1/oauth/token (→ invalid_grant).
+
+    The fix is to split the raw query string by '&' + use
+    ``urllib.parse.unquote`` (NOT ``unquote_plus``, which has the same
+    '+'-as-space behavior) to decode percent-escapes while preserving
+    '+' literally.
+
+    Discriminating: pre-fix code passed ``ABC DEF@`` (space-corrupted)
+    to the OAuth POST; post-fix passes the literal ``ABC+DEF@``.
+    """
+    cfg, conn, _tokens_path = env_with_db
+    captured: dict = {}
+    _install_stub_requests(
+        monkeypatch,
+        _StubResponse(
+            ok=True, status_code=200,
+            body={
+                "access_token": "fresh_at_plus",
+                "refresh_token": "fresh_rt_plus",
+            },
+        ),
+        captured,
+    )
+    _install_stub_schwabdev(
+        monkeypatch,
+        accounts=[{"accountNumber": "777", "hashValue": "HASH_PLUS"}],
+    )
+
+    setup_paste_flow_with_callback_url(
+        cfg, "production",
+        "test_id_abc",
+        "test_secret_xyz",
+        "https://127.0.0.1/?code=ABC+DEF%40SESSION_TOK",
+        conn,
+    )
+    # Code's literal '+' must be preserved; the schwabdev-shape truncation
+    # at the first '@' then yields "ABC+DEF@".
+    assert captured["data"]["code"] == "ABC+DEF@", (
+        f"expected 'ABC+DEF@' (literal '+'), got {captured['data']['code']!r}"
+    )
+
+
 # ===========================================================================
 # Codex R1 Major #2 regression — schwabdev tokens-file format compatibility.
 # Imports REAL schwabdev (no stub) + asserts our written tokens file is
