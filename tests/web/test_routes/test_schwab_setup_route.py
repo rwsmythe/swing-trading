@@ -19,12 +19,77 @@ Plus T-B.4 acceptance criteria coverage:
 - existing_tokens_db_warning surfaces when tokens DB exists.
 - SchwabPipelineActiveError → 409.
 - SchwabConfigMissingError (multi-account) → 400 + CLI hint.
+
+USERPROFILE+HOME monkeypatch discipline (Phase 9 Sub-bundle A return
+report §11 lesson + CLAUDE.md gotcha): every test that exercises the
+``/schwab/setup`` surface monkeypatches BOTH ``USERPROFILE`` and ``HOME``
+to a fresh tmp_path BEFORE building the app. ``_resolve_tokens_db_path``
+→ ``_user_home()`` reads these env vars directly; an unmonkeypatched
+read leaks against the operator's REAL ``~/swing-data/`` and a stale
+``schwab-tokens.production.db`` there would flip
+``existing_tokens_db_warning`` to True in tests that don't expect it.
 """
 from __future__ import annotations
+
+import sqlite3
 
 from fastapi.testclient import TestClient
 
 from swing.web.app import create_app
+
+
+def _isolate_home(monkeypatch, tmp_path) -> None:
+    """Monkeypatch USERPROFILE+HOME to ``tmp_path`` so
+    ``_resolve_tokens_db_path``'s ``_user_home()`` reads test-controlled
+    state instead of the operator's real ``~/swing-data/``.
+
+    Per CLAUDE.md gotcha: BOTH env vars MUST be set (Windows reads
+    USERPROFILE; POSIX reads HOME; tests run on both).
+    """
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+
+def _seed_one_unresolved_material_discrepancy(db_path) -> None:
+    """Plant a closed trade + one unresolved material discrepancy attributed
+    to it so ``list_unresolved_material_for_closed_trades`` returns N=1.
+
+    Mirrors the seed helper in
+    ``tests/web/test_routes/test_base_layout_discrepancy_banner.py``.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO trades (id, ticker, entry_date, entry_price, "
+            "initial_shares, initial_stop, current_stop, state, sector, "
+            "industry, trade_origin, pre_trade_locked_at, current_size) "
+            "VALUES (1, 'AAA', '2026-04-01', 10.0, 100, 9.0, 9.0, 'closed', "
+            "'S', 'I', 'manual_off_pipeline', '2026-04-01T09:30:00', 0)"
+        )
+        conn.execute(
+            "INSERT INTO reconciliation_runs "
+            "(run_id, period_start, period_end, started_ts, finished_ts, "
+            " state, source, source_artifact_path, source_artifact_sha256) "
+            "VALUES (1, '2026-04-01', '2026-04-08', "
+            "'2026-04-08T16:00:00.000', '2026-04-08T16:00:01.000', "
+            "'completed', 'system_audit', 'gate-test', 'gate-test-sha')"
+        )
+        conn.execute(
+            "INSERT INTO reconciliation_discrepancies "
+            "(discrepancy_id, run_id, discrepancy_type, trade_id, fill_id, "
+            " cash_movement_id, linked_daily_management_record_id, "
+            " ticker, field_name, expected_value_json, actual_value_json, "
+            " delta_text, material_to_review, resolution, "
+            " resolution_reason, resolved_at, resolved_by, "
+            " mistake_tag_assigned, created_at) VALUES "
+            "(1, 1, 'stop_mismatch', 1, NULL, NULL, NULL, 'AAA', "
+            " 'current_stop', '\"9.00\"', '\"8.50\"', NULL, 1, "
+            " 'unresolved', NULL, NULL, NULL, NULL, "
+            " '2026-04-08T16:00:00.000')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -32,11 +97,12 @@ from swing.web.app import create_app
 # ---------------------------------------------------------------------------
 
 def test_get_schwab_setup_renders_200_with_authorize_url(
-    seeded_db, monkeypatch,
+    seeded_db, monkeypatch, tmp_path,
 ):
     """Test 1 — authorize URL constructed from cfg client_id + Schwab
     OAuth endpoint with the cfg callback URL as redirect_uri."""
     cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
     monkeypatch.setenv("SCHWAB_CLIENT_ID", "test_client_id_value_12345")
     monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "test_client_secret_abc")
     app = create_app(cfg, _cfg_path)
@@ -56,10 +122,13 @@ def test_get_schwab_setup_renders_200_with_authorize_url(
 # (2) GET — hx-headers attribute on form
 # ---------------------------------------------------------------------------
 
-def test_get_form_includes_hx_headers_propagation(seeded_db, monkeypatch):
+def test_get_form_includes_hx_headers_propagation(
+    seeded_db, monkeypatch, tmp_path,
+):
     """Test 2 (Phase 5 R1 M1 regression) — embedded form needs explicit
     hx-headers attribute so HX-Request propagates under OriginGuard."""
     cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
     monkeypatch.setenv("SCHWAB_CLIENT_ID", "test_client_id_12345")
     monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "test_client_secret_abc")
     app = create_app(cfg, _cfg_path)
@@ -74,10 +143,11 @@ def test_get_form_includes_hx_headers_propagation(seeded_db, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_post_without_credentials_returns_400_error_template(
-    seeded_db, monkeypatch,
+    seeded_db, monkeypatch, tmp_path,
 ):
     """Test 3 — credentials cascade returns (None, None) → 400."""
     cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
     monkeypatch.delenv("SCHWAB_CLIENT_ID", raising=False)
     monkeypatch.delenv("SCHWAB_CLIENT_SECRET", raising=False)
     app = create_app(cfg, _cfg_path)
@@ -100,11 +170,12 @@ def test_post_without_credentials_returns_400_error_template(
 # ---------------------------------------------------------------------------
 
 def test_post_with_credentials_and_callback_url_returns_204_hx_redirect(
-    seeded_db, monkeypatch,
+    seeded_db, monkeypatch, tmp_path,
 ):
     """Test 4 — happy path: mock service returns success → 204 +
     HX-Redirect with target route registered in app.routes."""
     cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
     monkeypatch.setenv("SCHWAB_CLIENT_ID", "test_id_value_1234567890")
     monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "test_secret_abc")
 
@@ -160,11 +231,12 @@ def test_post_with_credentials_and_callback_url_returns_204_hx_redirect(
 # ---------------------------------------------------------------------------
 
 def test_post_with_setup_paste_flow_raising_auth_error_returns_4xx(
-    seeded_db, monkeypatch,
+    seeded_db, monkeypatch, tmp_path,
 ):
     """Test 5 — SchwabAuthError handled cleanly → 502 + error template
     (NOT raw 500 via FastAPI's default exception handler)."""
     cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
     monkeypatch.setenv("SCHWAB_CLIENT_ID", "test_id_value_1234567890")
     monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "test_secret_abc")
 
@@ -201,12 +273,13 @@ def test_post_with_setup_paste_flow_raising_auth_error_returns_4xx(
 # ---------------------------------------------------------------------------
 
 def test_post_invokes_service_with_credentials_from_cascade(
-    seeded_db, monkeypatch,
+    seeded_db, monkeypatch, tmp_path,
 ):
     """Test 6 — service function is invoked with the EXACT credentials
     the cascade resolves (NOT some hardcoded test value or empty
     string). Mirrors Sub-bundle A T-A.3 gap pre-emption pattern."""
     cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
     monkeypatch.setenv("SCHWAB_CLIENT_ID", "cascaded_id_abc_1234567890")
     monkeypatch.setenv(
         "SCHWAB_CLIENT_SECRET", "cascaded_secret_xyz_abcdef",
@@ -258,12 +331,15 @@ def test_post_invokes_service_with_credentials_from_cascade(
 # (7) HX-Redirect target route exists (route-table assertion)
 # ---------------------------------------------------------------------------
 
-def test_hx_redirect_target_route_exists_in_app_routes(seeded_db):
+def test_hx_redirect_target_route_exists_in_app_routes(
+    seeded_db, monkeypatch, tmp_path,
+):
     """Test 7 (Phase 6 I3 regression) — HX-Redirect target `/config` MUST
     be registered in app.routes. TestClient verifies the header value
     but does NOT follow the redirect, so a typo in the target would
     silently 404 on the operator's browser."""
     cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
     app = create_app(cfg, _cfg_path)
     assert any(getattr(r, "path", None) == "/config" for r in app.routes), (
         "HX-Redirect target /config not in app.routes; T-B.4 success "
@@ -279,9 +355,12 @@ def test_hx_redirect_target_route_exists_in_app_routes(seeded_db):
 # Additional acceptance-criteria coverage
 # ---------------------------------------------------------------------------
 
-def test_post_with_pipeline_active_returns_409(seeded_db, monkeypatch):
+def test_post_with_pipeline_active_returns_409(
+    seeded_db, monkeypatch, tmp_path,
+):
     """SchwabPipelineActiveError handled cleanly → 409 + error template."""
     cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
     monkeypatch.setenv("SCHWAB_CLIENT_ID", "test_id_value_1234567890")
     monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "test_secret_abc")
 
@@ -309,11 +388,12 @@ def test_post_with_pipeline_active_returns_409(seeded_db, monkeypatch):
 
 
 def test_post_with_multi_account_returns_400_with_cli_hint(
-    seeded_db, monkeypatch,
+    seeded_db, monkeypatch, tmp_path,
 ):
     """SchwabConfigMissingError (multi-account on web V1) → 400 +
     error template mentioning CLI as the multi-account path."""
     cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
     monkeypatch.setenv("SCHWAB_CLIENT_ID", "test_id_value_1234567890")
     monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "test_secret_abc")
 
@@ -343,9 +423,12 @@ def test_post_with_multi_account_returns_400_with_cli_hint(
     assert "swing schwab setup" in r.text.lower()
 
 
-def test_post_with_empty_callback_url_returns_400(seeded_db, monkeypatch):
+def test_post_with_empty_callback_url_returns_400(
+    seeded_db, monkeypatch, tmp_path,
+):
     """Empty callback_url field → 400 + form re-render with banner."""
     cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
     monkeypatch.setenv("SCHWAB_CLIENT_ID", "test_id_value_1234567890")
     monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "test_secret_abc")
     app = create_app(cfg, _cfg_path)
@@ -384,7 +467,9 @@ def test_get_renders_existing_tokens_db_warning_when_present(
     assert 'data-banner="schwab-setup-existing-tokens-db"' in r.text
 
 
-def test_non_htmx_post_blocked_by_origin_guard_strict_mode(seeded_db):
+def test_non_htmx_post_blocked_by_origin_guard_strict_mode(
+    seeded_db, monkeypatch, tmp_path,
+):
     """OriginGuard strict-mode contract — POST without HX-Request gets
     403 from middleware BEFORE reaching the route handler. The 303
     fallback branch in the route is dead-code-defense for future
@@ -392,6 +477,7 @@ def test_non_htmx_post_blocked_by_origin_guard_strict_mode(seeded_db):
     (mirrors the account snapshot test_post_without_hx_request precedent).
     """
     cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
     app = create_app(cfg, _cfg_path)
     with TestClient(app, follow_redirects=False) as client:
         r = client.post(
@@ -399,3 +485,93 @@ def test_non_htmx_post_blocked_by_origin_guard_strict_mode(seeded_db):
             data={"callback_url": "https://127.0.0.1/?code=Z%40A"},
         )
     assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Issue 1 fix — global unresolved-material discrepancy banner integration
+# (Phase 10 Sub-bundle E T-E.3 cross-bundle pin)
+# ---------------------------------------------------------------------------
+
+def test_get_renders_global_discrepancy_banner_when_unresolved_material_exists(
+    seeded_db, monkeypatch, tmp_path,
+):
+    """GET /schwab/setup populates the base-layout
+    ``unresolved_material_discrepancies_count`` so the global banner
+    rendered by ``base.html.j2`` fires when discrepancies exist.
+
+    Regression guard for the cross-bundle pin from Phase 10 Sub-bundle E
+    T-E.3 — every base-layout page MUST populate the count or the global
+    banner silently hides on the affected surface.
+    """
+    cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
+    monkeypatch.setenv("SCHWAB_CLIENT_ID", "test_id_value_1234567890")
+    monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "test_secret_abc")
+
+    _seed_one_unresolved_material_discrepancy(cfg.paths.db_path)
+
+    app = create_app(cfg, _cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/schwab/setup")
+    assert r.status_code == 200
+    body = r.text
+    # Banner-element selector (matches base.html.j2 + the shared
+    # banner-rendering test in test_base_layout_discrepancy_banner.py).
+    assert 'data-banner="unresolved-material-discrepancies"' in body, (
+        "global discrepancy banner missing from /schwab/setup body — "
+        "Phase 10 Sub-bundle E T-E.3 cross-bundle pin regression"
+    )
+    # Banner text fragment from the rendered <strong> element.
+    assert "unresolved material reconciliation" in body
+
+
+def test_get_omits_global_discrepancy_banner_when_count_eq_0(
+    seeded_db, monkeypatch, tmp_path,
+):
+    """Companion to the banner-fires test: when no unresolved material
+    discrepancies exist, the banner is ABSENT from /schwab/setup.
+
+    Mirrors test_base_layout_discrepancy_banner.py's omission tests.
+    """
+    cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
+    monkeypatch.setenv("SCHWAB_CLIENT_ID", "test_id_value_1234567890")
+    monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "test_secret_abc")
+
+    app = create_app(cfg, _cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/schwab/setup")
+    assert r.status_code == 200
+    assert (
+        'data-banner="unresolved-material-discrepancies"' not in r.text
+    )
+
+
+# ---------------------------------------------------------------------------
+# Issue 2 fix verification — existing_tokens_db_warning deterministically
+# False when USERPROFILE+HOME are isolated to a clean tmp_path
+# (Phase 9 Sub-bundle A return report §11 lesson regression guard)
+# ---------------------------------------------------------------------------
+
+def test_get_existing_tokens_db_warning_false_under_isolated_home(
+    seeded_db, monkeypatch, tmp_path,
+):
+    """With USERPROFILE+HOME monkeypatched to a clean tmp_path (no
+    pre-existing tokens DB), ``existing_tokens_db_warning`` is False —
+    confirming the test-isolation discipline prevents the warning from
+    falsely flipping based on the operator's REAL ``~/swing-data/``.
+    """
+    cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
+    monkeypatch.setenv("SCHWAB_CLIENT_ID", "test_id_value_1234567890")
+    monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "test_secret_abc")
+
+    # Sanity: no tokens DB pre-exists in the isolated home.
+    assert not (tmp_path / "swing-data" / "schwab-tokens.production.db").exists()
+
+    app = create_app(cfg, _cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/schwab/setup")
+    assert r.status_code == 200
+    # The existing-tokens-db banner is ABSENT when no DB exists.
+    assert 'data-banner="schwab-setup-existing-tokens-db"' not in r.text

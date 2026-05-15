@@ -52,6 +52,7 @@ from swing.integrations.schwab.client import (
     SchwabConfigMissingError,
     SchwabPipelineActiveError,
 )
+from swing.metrics.discrepancies import count_unresolved_material
 from swing.web.view_models.schwab import (
     SchwabSetupErrorVM,
     SchwabSetupVM,
@@ -66,6 +67,22 @@ router = APIRouter()
 # is the V1 landing page (verified to exist via route-table assertion
 # in tests).
 _SUCCESS_REDIRECT_TARGET = "/config?schwab_setup=ok"
+
+
+def _fetch_unresolved_material_count(db_path) -> int:
+    """Open a short-lived sqlite connection to count unresolved material
+    discrepancies for the global base-layout banner.
+
+    Mirrors the pattern in ``swing/web/routes/account.py`` (Phase 10
+    Sub-bundle E T-E.3 cross-bundle pin) — every base-layout page must
+    populate ``unresolved_material_discrepancies_count`` so the banner
+    fires when discrepancies exist.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        return count_unresolved_material(conn)
+    finally:
+        conn.close()
 
 
 def _build_authorize_url(client_id: str, callback_url: str) -> str:
@@ -100,6 +117,7 @@ def _render_error(
     status_code: int,
     error_message: str,
     remediation_hint: str,
+    unresolved_count: int = 0,
 ) -> Response:
     try:
         session_date = action_session_for_run(datetime.now()).isoformat()
@@ -110,6 +128,7 @@ def _render_error(
         status_code=status_code,
         error_message=error_message,
         remediation_hint=remediation_hint,
+        unresolved_material_discrepancies_count=unresolved_count,
     )
     return request.app.state.templates.TemplateResponse(
         request,
@@ -125,6 +144,7 @@ def _build_form_vm(
     client_id: str | None,
     error_message: str | None = None,
     callback_url_value: str = "",
+    unresolved_count: int = 0,
 ) -> SchwabSetupVM:
     """Build the SchwabSetupVM for form render.
 
@@ -165,6 +185,7 @@ def _build_form_vm(
         existing_tokens_db_warning=existing_db,
         error_message=error_message,
         callback_url_value=callback_url_value,
+        unresolved_material_discrepancies_count=unresolved_count,
     )
 
 
@@ -177,6 +198,10 @@ def schwab_setup_form(request: Request) -> Response:
         "environment",
         "production",
     )
+    # Phase 10 Sub-bundle E T-E.3 cross-bundle pin — every base-layout
+    # page populates ``unresolved_material_discrepancies_count`` so the
+    # global banner in base.html.j2 fires when discrepancies exist.
+    unresolved_count = _fetch_unresolved_material_count(cfg.paths.db_path)
     # Resolve credentials WITHOUT prompting (web context has no stdin).
     # If creds are absent at every tier the form still renders, but
     # surfaces an inline banner pointing the operator at /config.
@@ -190,6 +215,7 @@ def schwab_setup_form(request: Request) -> Response:
             cfg=cfg,
             client_id=None,
             error_message=_redacted_excerpt(exc),
+            unresolved_count=unresolved_count,
         )
         return _render_form(request, vm=vm)
 
@@ -202,7 +228,12 @@ def schwab_setup_form(request: Request) -> Response:
             "and `swing config set integrations.schwab.client_secret "
             "<value>` before completing the OAuth flow."
         )
-    vm = _build_form_vm(cfg=cfg, client_id=client_id, error_message=error_msg)
+    vm = _build_form_vm(
+        cfg=cfg,
+        client_id=client_id,
+        error_message=error_msg,
+        unresolved_count=unresolved_count,
+    )
     return _render_form(request, vm=vm)
 
 
@@ -218,6 +249,11 @@ async def schwab_setup_post(request: Request) -> Response:
     form = await request.form()
     callback_url_with_code = (form.get("callback_url") or "").strip()
 
+    # Phase 10 Sub-bundle E T-E.3 cross-bundle pin — every base-layout
+    # error/form response carries the unresolved-material count so the
+    # global banner fires regardless of the response branch.
+    unresolved_count = _fetch_unresolved_material_count(cfg.paths.db_path)
+
     # Tier-1: resolve credentials (no prompt in web context).
     try:
         client_id, client_secret = resolve_credentials_env_or_prompt(
@@ -232,6 +268,7 @@ async def schwab_setup_post(request: Request) -> Response:
                 "Unset partial SCHWAB_CLIENT_ID / SCHWAB_CLIENT_SECRET "
                 "env vars OR set both, then retry."
             ),
+            unresolved_count=unresolved_count,
         )
 
     if client_id is None or client_secret is None:
@@ -248,6 +285,7 @@ async def schwab_setup_post(request: Request) -> Response:
                 "`swing config set integrations.schwab.client_secret` "
                 "in a PowerShell session, then retry."
             ),
+            unresolved_count=unresolved_count,
         )
 
     if not callback_url_with_code:
@@ -261,6 +299,7 @@ async def schwab_setup_post(request: Request) -> Response:
                 "Schwab, copy the full address-bar URL and paste here."
             ),
             callback_url_value="",
+            unresolved_count=unresolved_count,
         )
         return _render_form(request, vm=vm, status_code=400)
 
@@ -291,6 +330,7 @@ async def schwab_setup_post(request: Request) -> Response:
                 "primary account. (Banked V2 candidate: web multi-"
                 "account picker.)"
             ),
+            unresolved_count=unresolved_count,
         )
     except SchwabPipelineActiveError as exc:
         return _render_error(
@@ -301,6 +341,7 @@ async def schwab_setup_post(request: Request) -> Response:
                 "Wait for the in-flight pipeline run to finish, then "
                 "retry. Check status at /pipeline."
             ),
+            unresolved_count=unresolved_count,
         )
     except SchwabAuthError as exc:
         return _render_error(
@@ -312,6 +353,7 @@ async def schwab_setup_post(request: Request) -> Response:
                 "credentials are correct + retry the authorize flow "
                 "(the code expires ~30 seconds after issuance)."
             ),
+            unresolved_count=unresolved_count,
         )
     except Exception as exc:
         # Broad except-clause — pipeline-boundary discipline (Sub-bundle
@@ -329,6 +371,7 @@ async def schwab_setup_post(request: Request) -> Response:
                 "Unexpected error during setup. Retry; if persistent, "
                 "check `swing schwab status` CLI for audit-row state."
             ),
+            unresolved_count=unresolved_count,
         )
     finally:
         conn.close()
