@@ -270,13 +270,15 @@ def _rename_stale_tokens_db(
          Bounded by `_MAX_RENAME_DISAMBIG_ATTEMPTS`; pathological
          filesystem states raise `RuntimeError` rather than spinning
          forever.
-      4. Pre-flight phase complete — no side-effects, no audit. Audit
-         lifecycle now opens: `record_call_start(endpoint='oauth.code_exchange')`
-         emits the in-flight audit row BEFORE the `os.replace` so a
-         failed rename (Windows file-in-use, EACCES, antivirus-locked
-         tokens DB) still leaves an audit trail. Mirrors the canonical
-         setup-flow pattern at `setup_paste_flow` :595-602 + the
-         revoke-and-delete pattern at `:1276-1308`.
+      4. Audit lifecycle opens BEFORE any claim or rename side effect:
+         `record_call_start(endpoint='oauth.code_exchange')` emits the
+         in-flight audit row BEFORE the O_EXCL claim loop AND before
+         `os.replace` so EVERY failure mode (claim-step OSError such as
+         PermissionError / ENOSPC / antivirus interference, replace-step
+         OSError such as Windows file-in-use / EACCES, or
+         disambiguation-exhaustion RuntimeError) leaves an audit trail.
+         Mirrors the canonical setup-flow pattern at `setup_paste_flow`
+         :595-602 + the revoke-and-delete pattern at `:1276-1308`.
       5. `os.replace` (same-volume; both source + dest in `~/swing-data/` →
          no cross-device-link risk per CLAUDE.md gotcha). On `OSError`,
          close the audit row with `status='error'`, `error_message` =
@@ -302,13 +304,18 @@ def _rename_stale_tokens_db(
         Path to the renamed file, or `None` if no tokens DB existed.
 
     Raises:
-        OSError: `os.replace` failed (file-in-use on Windows, EACCES,
-            cross-device-link). Audit row written with `status='error'`
-            BEFORE re-raise.
+        OSError: filesystem failure during the O_EXCL claim or the
+            subsequent `os.replace` — e.g. PermissionError / EACCES,
+            ENOSPC, antivirus-locked tokens DB, Windows file-in-use,
+            path-is-directory, or cross-device-link. In ALL OSError
+            paths the audit row is closed with `status='error'` and
+            the locked operator-greppable substrings ("auto-detected"
+            + "renamed") before re-raise.
         RuntimeError: collision-disambiguation loop exceeded
             `_MAX_RENAME_DISAMBIG_ATTEMPTS` (pathological filesystem
             state — operator must clean up the `*.deleted-<ts>-*`
-            directory).
+            directory). Audit row closed with `status='error'` before
+            re-raise.
     """
     if not tokens_db_path.exists():
         return None
