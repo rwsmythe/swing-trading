@@ -606,3 +606,77 @@ def test_entry_price_mismatch_deterministic() -> None:
     for _ in range(99):
         nth = classify_discrepancy(**fixture)
         assert nth == first
+
+
+# ---------------------------------------------------------------------------
+# R3 Major #1 — contradictory source date evidence (determinism principle §4.4)
+# ---------------------------------------------------------------------------
+
+
+def test_tier_2_unsupported_on_contradictory_source_date_evidence() -> None:
+    """source_payload carries BOTH 'date' and 'fill_datetime' whose
+    normalized YYYY-MM-DD prefixes DISAGREE → tier-2 'unsupported' per
+    R3 Major #1 (determinism principle §4.4: contradictory tuple
+    evidence defaults to tier-2 rather than silently picking one form).
+
+    Discriminating: under the pre-R3 logic, this would have emitted
+    tier-1 because the classifier only inspected source_payload['date']
+    (2026-04-27) which happens to match the journal date; the
+    fill_datetime divergence (2026-04-28) was silently ignored.
+    """
+    discrepancy = _make_cvgi_41_discrepancy()
+    result = classify_discrepancy(
+        discrepancy,
+        source_payload={
+            "ticker": "CVGI",
+            "quantity": 100,
+            "date": "2026-04-27",
+            "fill_datetime": "2026-04-28T09:30:00",
+            "price": 5.30,
+        },
+        journal_row={
+            "ticker": "CVGI",
+            "quantity": 100,
+            "fill_datetime": "2026-04-27T10:00:00",
+            "price": 5.23,
+        },
+        validator_chain=None,
+    )
+    assert result.tier == 2
+    assert result.ambiguity_kind == "unsupported"
+    assert result.correction_target is None
+    assert "contradictory" in result.correction_reason.lower()
+    # Reason names both conflicting normalized prefixes for observability.
+    assert "2026-04-27" in result.correction_reason
+    assert "2026-04-28" in result.correction_reason
+
+
+def test_tier_1_when_source_date_and_fill_datetime_agree_with_each_other_and_journal() -> None:
+    """source_payload carries BOTH 'date' and 'fill_datetime'; both
+    normalized YYYY-MM-DD prefixes agree with each other AND with the
+    journal date → tier-1 emits cleanly. Discriminating positive: pins
+    that the R3 fix accepts the both-forms-agreeing case (does not
+    over-reject Shape B when redundant-but-consistent date evidence is
+    present).
+    """
+    discrepancy = _make_cvgi_41_discrepancy()
+    result = classify_discrepancy(
+        discrepancy,
+        source_payload={
+            "ticker": "CVGI",
+            "quantity": 100,
+            "date": "2026-04-27",
+            "fill_datetime": "2026-04-27T14:23:00",
+            "price": 5.30,
+        },
+        journal_row={
+            "ticker": "CVGI",
+            "quantity": 100,
+            "fill_datetime": "2026-04-27T10:00:00",
+            "price": 5.23,
+        },
+        validator_chain=None,
+    )
+    assert result.tier == 1
+    assert result.ambiguity_kind is None
+    assert result.correction_target == {"price": 5.30}

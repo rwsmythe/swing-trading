@@ -378,25 +378,95 @@ def _classify_entry_price_mismatch(
             )
 
         # Date consistency: ISO-date-prefix equality. source_payload may
-        # carry 'date' (date-only) OR 'fill_datetime' (full ISO);
-        # journal_row likewise. Normalize to first 10 chars and compare.
-        src_date_raw = source_payload.get("date")
-        if src_date_raw is None:
-            src_date_raw = source_payload.get("fill_datetime")
-        jr_date_raw = journal_row.get("fill_datetime")
-        if jr_date_raw is None:
-            jr_date_raw = journal_row.get("date")
-        src_date_prefix = (
-            str(src_date_raw)[:10] if src_date_raw is not None else None
-        )
-        jr_date_prefix = (
-            str(jr_date_raw)[:10] if jr_date_raw is not None else None
-        )
+        # carry 'date' (date-only) AND/OR 'fill_datetime' (full ISO);
+        # journal_row likewise. Per R3 Major #1 (determinism principle
+        # §4.4): when source_payload carries BOTH date forms, BOTH
+        # normalized values must agree with each other AND with at least
+        # one journal date form. Contradictory source date evidence →
+        # tier-2 'unsupported' rather than silently picking one form.
+        source_date_forms: list[tuple[str, str]] = []
+        if "date" in source_payload and source_payload.get("date") is not None:
+            source_date_forms.append(
+                ("date", str(source_payload.get("date"))[:10])
+            )
         if (
-            src_date_prefix is None
-            or jr_date_prefix is None
-            or src_date_prefix != jr_date_prefix
+            "fill_datetime" in source_payload
+            and source_payload.get("fill_datetime") is not None
         ):
+            source_date_forms.append(
+                (
+                    "fill_datetime",
+                    str(source_payload.get("fill_datetime"))[:10],
+                )
+            )
+        journal_date_forms: list[tuple[str, str]] = []
+        if journal_row.get("date") is not None:
+            journal_date_forms.append(
+                ("date", str(journal_row.get("date"))[:10])
+            )
+        if journal_row.get("fill_datetime") is not None:
+            journal_date_forms.append(
+                (
+                    "fill_datetime",
+                    str(journal_row.get("fill_datetime"))[:10],
+                )
+            )
+
+        if not source_date_forms:
+            # Shape B requires at least one source date form (predicate
+            # above guards on 'date' or 'fill_datetime' being a KEY, but
+            # both could be None-valued).
+            return ClassificationResult(
+                tier=2,
+                ambiguity_kind="unsupported",
+                correction_target=None,
+                correction_reason=(
+                    f"entry_price_mismatch on "
+                    f"(ticker={discrepancy.ticker!r}, "
+                    f"fill_id={discrepancy.fill_id}): source_payload "
+                    f"date evidence missing (no 'date' or "
+                    f"'fill_datetime' value); cannot verify match tuple "
+                    f"per spec §4.3.1"
+                ),
+            )
+
+        # Internal source consistency: if both forms are present, their
+        # normalized values must agree. Contradictory tuple evidence →
+        # tier-2 unsupported (determinism principle §4.4).
+        distinct_source_prefixes = {prefix for _, prefix in source_date_forms}
+        if len(distinct_source_prefixes) > 1:
+            conflicting = ", ".join(
+                f"{key}={prefix}" for key, prefix in source_date_forms
+            )
+            return ClassificationResult(
+                tier=2,
+                ambiguity_kind="unsupported",
+                correction_target=None,
+                correction_reason=(
+                    f"entry_price_mismatch on "
+                    f"(ticker={discrepancy.ticker!r}, "
+                    f"fill_id={discrepancy.fill_id}): contradictory "
+                    f"source date evidence ({conflicting}); cannot verify "
+                    f"match tuple per spec §4.3.1 (determinism principle "
+                    f"§4.4 defaults to tier-2 when tuple evidence "
+                    f"conflicts)"
+                ),
+            )
+
+        # Source-vs-journal date agreement: every source date form must
+        # agree with at least one journal date form. Equivalently, since
+        # source prefixes are unique here, the single source date prefix
+        # must appear in the journal's date forms. Empty
+        # journal_date_forms → no agreement possible.
+        source_prefix = next(iter(distinct_source_prefixes))
+        journal_prefixes = {prefix for _, prefix in journal_date_forms}
+        if not journal_prefixes or source_prefix not in journal_prefixes:
+            src_render = ", ".join(
+                f"{key}={prefix}" for key, prefix in source_date_forms
+            ) or "(none)"
+            jr_render = ", ".join(
+                f"{key}={prefix}" for key, prefix in journal_date_forms
+            ) or "(none)"
             return ClassificationResult(
                 tier=2,
                 ambiguity_kind="unsupported",
@@ -405,9 +475,9 @@ def _classify_entry_price_mismatch(
                     f"entry_price_mismatch on "
                     f"(ticker={discrepancy.ticker!r}, "
                     f"fill_id={discrepancy.fill_id}): date mismatch "
-                    f"between source_payload ({src_date_raw!r}) and "
-                    f"journal_row (fill_datetime/date={jr_date_raw!r}); "
-                    f"cannot verify match tuple per spec §4.3.1"
+                    f"between source_payload ({src_render}) and "
+                    f"journal_row ({jr_render}); cannot verify match "
+                    f"tuple per spec §4.3.1"
                 ),
             )
     # source_tuple_keys_present is computed for the predicate above; the
