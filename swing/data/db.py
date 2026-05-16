@@ -524,6 +524,40 @@ def _phase12_bundle_c_backup_gate(
     Phase 11 (v17 → v18) did NOT wire a version-specific gate per plan
     §C.5 LOCK on Phase 11 Sub-bundle B's migration 0018 ship; this gate
     closes the v18 → v19 transition specifically.
+
+    INTENTIONAL NARROWNESS (ACCEPT-WITH-RATIONALE, Codex R1 Major #1):
+    Multi-step migrations from a pre-v18 baseline (e.g., v15 → v19, v17 →
+    v19) BYPASS this gate by design — the predicate ``current_version != 18``
+    is evaluated ONCE at ``run_migrations`` entry, not before each individual
+    schema-jump migration. A DB at v17 advancing to v19 sees the gate
+    evaluated with ``current_version=17`` (returns early); the migration
+    loop then walks 17→18→19 internally with no further gate evaluation.
+    This matches ``_phase9_backup_gate`` precedent verbatim (equality
+    predicate ``current_version != 16`` at run_migrations entry; multi-step
+    walks from pre-v16 likewise bypass).
+
+    Production operators on v18 (the current state at integration-merge
+    time, per CLAUDE.md Phase 11 ship entry) fire the gate on next
+    ``swing db-migrate``. Operators who skipped a phase (extremely uncommon
+    in this project's history — phase ships are integration-merged
+    sequentially) should run a manual one-off backup via
+    ``sqlite3 swing.db ".backup swing-pre-multi-step.db"`` before invoking
+    ``swing db-migrate``.
+
+    Forward-binding note (V2 hardening candidate): firing the gate before
+    each individual schema-jump migration (per-version backups instead of
+    per-target backups) is a candidate banked at plan §I for V2 dispatch.
+    The current per-target design is preserved because:
+      (a) the only real-world scenario where it matters is a deliberately
+          long-skipped operator state, which has never occurred in the
+          project's history;
+      (b) per-version backups would generate N intermediate snapshots that
+          mostly duplicate each other on a single ``db-migrate`` invocation,
+          consuming disk space proportional to the version-jump distance;
+      (c) the alternative — a single backup at the FIRST in-flight version
+          rather than at the target version — would also work but would
+          require a non-trivial refactor of the four phase-specific gates
+          into a unified version-aware backup-once helper.
     """
     if target_version < 19 or current_version != 18:
         return

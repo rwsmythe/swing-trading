@@ -273,6 +273,74 @@ def test_backup_defaults_to_db_parent_dir_when_unspecified(tmp_path: Path) -> No
     )
 
 
+def test_phase12_gate_does_not_fire_on_multi_step_v17_to_v19_walk(
+    tmp_path: Path,
+) -> None:
+    """Codex R1 Major #1 — documenting test for intentional gate narrowness.
+
+    The ``_phase12_bundle_c_backup_gate`` predicate is equality on
+    ``current_version == 18``. A DB at v17 advancing directly to v19 in a
+    single ``run_migrations`` call sees the gate evaluated ONCE at entry
+    with ``current_version=17`` (returns early); the migration loop then
+    walks 17→18→19 internally with no further gate re-evaluation.
+
+    This test pins that ACCEPT-WITH-RATIONALE behavior as a regression
+    sentinel. If a future refactor adds per-version gate re-evaluation
+    (V2 hardening candidate per docstring forward-binding note), this
+    test will fail — at which point delete this test + update the
+    docstring to remove the ACCEPT-WITH-RATIONALE clause.
+
+    Mirrors ``_phase9_backup_gate`` precedent: equality predicate
+    ``current_version != 16`` at run_migrations entry; multi-step walks
+    from pre-v16 likewise bypass.
+    """
+    db_path = tmp_path / "v17.db"
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+
+    # Seed schema at v17 (Phase 9 baseline; Phase 9 gate fires here):
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA foreign_keys=ON")
+    run_migrations(conn, target_version=17, backup_dir=backup_dir)
+    conn.commit()
+    conn.close()
+    assert _read_version(db_path) == 17
+
+    # Wipe any Phase 9 backup file emitted by the v0→v17 seed walk so the
+    # subsequent assertion can cleanly distinguish "Phase 12 gate fired" vs
+    # "Phase 12 gate did not fire". The seed walk is test scaffolding, not
+    # the discriminator under test.
+    for stale_backup in backup_dir.glob("swing-pre-phase*-migration-*.db"):
+        stale_backup.unlink()
+
+    # Walk v17 -> v19 in a single run_migrations call. The Phase 12 gate's
+    # entry predicate ``current_version != 18`` evaluates True (current is
+    # 17), so the gate returns early; the loop then advances 17→18→19
+    # internally.
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA foreign_keys=ON")
+    run_migrations(conn, target_version=19, backup_dir=backup_dir)
+    conn.commit()
+    conn.close()
+
+    # Migration succeeded: schema_version == 19.
+    assert _read_version(db_path) == 19
+
+    # Phase 12 backup file does NOT exist (gate did not fire on the
+    # multi-step walk — documenting the ACCEPT-WITH-RATIONALE narrowness).
+    phase12_backups = list(
+        backup_dir.glob("swing-pre-phase12-bundle-c-migration-*.db")
+    )
+    assert phase12_backups == [], (
+        "Phase 12 backup gate fired on multi-step v17→v19 walk; this "
+        "violates the documented ACCEPT-WITH-RATIONALE narrowness. "
+        "Either (a) the gate predicate was widened — update the docstring "
+        "to remove the narrowness clause + delete this test, or (b) the "
+        "behavior regressed unintentionally — restore the original "
+        "``current_version != 18`` early-return predicate."
+    )
+
+
 def test_phase9_backup_gate_still_fires_unchanged(tmp_path: Path) -> None:
     """Per plan §B.4 acceptance criterion #2: existing Phase 9 + Phase 11
     backup-gate entries unchanged. Phase 11 (v17→v18) per §C.5 LOCK does
