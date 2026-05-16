@@ -36,6 +36,7 @@ notes + spec §3.7 fill-matching subset):
 from __future__ import annotations
 
 import contextlib
+import functools as _functools
 import json
 import logging
 import sqlite3
@@ -55,13 +56,12 @@ from swing.trades.reconciliation import (
     MATERIAL_BY_TYPE,
 )
 from swing.trades.reconciliation_auto_correct import (
+    ValidatorRejectedError,
     _apply_tier1_correction_inner,
     _stamp_pending_ambiguity_inner,
-    ValidatorRejectedError,
 )
 from swing.trades.reconciliation_classifier import classify_discrepancy
 from swing.trades.reconciliation_validators import default_validator_chain
-import functools as _functools
 
 log = logging.getLogger(__name__)
 

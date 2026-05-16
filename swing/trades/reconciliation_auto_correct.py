@@ -38,9 +38,10 @@ import json
 import logging
 import math
 import sqlite3
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Mapping, Sequence
+from datetime import UTC, datetime
+from typing import Any
 
 from swing.data.models import ReconciliationCorrection
 from swing.data.repos.fills import _recompute_aggregates, insert_fill_with_event
@@ -145,7 +146,7 @@ _AFFECTED_TABLE_SNAPSHOTS = "account_equity_snapshots"
 
 def _utc_now_iso_ms() -> str:
     """ISO-8601 with millisecond precision (naive UTC), matching audit cols."""
-    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat(
+    return datetime.now(UTC).replace(tzinfo=None).isoformat(
         timespec="milliseconds"
     )
 
@@ -1428,7 +1429,7 @@ def _handle_multi_field_correction(
         fname: _read_journal_value(
             conn, affected_table, affected_row_id, fname,
         )
-        for fname in correction_target.keys()
+        for fname in correction_target
     }
     pre_json = json.dumps(pre_values, sort_keys=True, default=str)
     applied_json = json.dumps(
@@ -1709,7 +1710,9 @@ def _handle_split_into_partials(
 
     # Step 4: INSERT N insertion-sentinel correction rows under the same
     # correction_set_id.
-    for new_fid, partial in zip(inserted_fill_ids, parsed_partials):
+    for new_fid, partial in zip(
+        inserted_fill_ids, parsed_partials, strict=True,
+    ):
         insert_payload_json = json.dumps(
             {
                 "fill_id": new_fid,
@@ -1859,7 +1862,7 @@ def _handle_operator_alternative(
     )
 
 
-def _handle_pick_schwab_record_N(
+def _handle_pick_schwab_record_n(
     conn, *, disc, choice_code, operator_custom_payload,
     operator_reason, risk_policy_id, schwab_api_call_id,
 ):
@@ -1910,7 +1913,7 @@ _TIER2_HANDLERS: dict[tuple[str, str], Callable[..., CorrectionResult]] = {
     ("multi_partial_vs_consolidated", "custom"):
         _handle_custom_audit_only,
     ("multi_match_within_window", _PICK_SCHWAB_RECORD_PREFIX):
-        _handle_pick_schwab_record_N,
+        _handle_pick_schwab_record_n,
     ("multi_match_within_window", "mark_unmatched"):
         _handle_mark_unmatched,
     ("multi_match_within_window", "custom"):

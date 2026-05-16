@@ -1673,7 +1673,8 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
         # 7-day window anchored on action_session (data_asof drift is OK
         # — the briefing already disclaims best-effort historical
         # accuracy per Phase 10 §A.0.1 footnote).
-        from datetime import datetime as _dtcls, timedelta as _td
+        from datetime import datetime as _dtcls
+        from datetime import timedelta as _td
         cutoff_iso = (
             _dtcls.utcnow().replace(microsecond=0) - _td(days=7)
         ).isoformat(timespec="seconds")
