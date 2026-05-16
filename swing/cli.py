@@ -1824,6 +1824,68 @@ def discrepancy_list_cmd(ctx, unresolved, material, trade_id, limit):
         )
 
 
+@discrepancy_group.command("list-pending-ambiguities")
+@click.option(
+    "--ambiguity-kind", type=str, default=None,
+    help="Filter to a specific ambiguity_kind value.",
+)
+@click.option(
+    "--ticker", type=str, default=None,
+    help="Filter to a specific ticker.",
+)
+@click.option("--limit", type=int, default=50, help="Max rows to show.")
+@click.pass_context
+def discrepancy_list_pending_ambiguities_cmd(
+    ctx, ambiguity_kind, ticker, limit,
+):
+    """List discrepancies pending operator ambiguity resolution.
+
+    Surfaces rows in ``resolution='pending_ambiguity_resolution'`` (Phase
+    12 Sub-bundle C Tier-2 state) for operator review before invoking
+    ``resolve-ambiguity`` (T-D.3). Mirrors the existing ``discrepancy
+    list`` shape; adds an ``Ambiguity`` column for the per-row
+    ``ambiguity_kind`` discriminator.
+    """
+    from swing.data.db import connect
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        where = ["resolution = 'pending_ambiguity_resolution'"]
+        params: list = []
+        if ambiguity_kind:
+            where.append("ambiguity_kind = ?")
+            params.append(ambiguity_kind)
+        if ticker:
+            where.append("ticker = ?")
+            params.append(ticker)
+        sql = (
+            "SELECT discrepancy_id, run_id, discrepancy_type, trade_id, "
+            "ticker, field_name, ambiguity_kind, created_at "
+            "FROM reconciliation_discrepancies WHERE "
+            + " AND ".join(where)
+            + " ORDER BY discrepancy_id DESC LIMIT ?"
+        )
+        params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        click.echo("(no pending ambiguities)")
+        return
+    click.echo(
+        f"{'ID':>5} {'Run':>4} {'Type':<22} {'Trade':>6} "
+        f"{'Ticker':<8} {'Field':<14} {'Ambiguity':<32} Created"
+    )
+    for r in rows:
+        did, rid, dtype, tid, tk, fn, ak, created = r
+        click.echo(
+            f"{did:>5} {rid:>4} {dtype:<22} "
+            f"{(tid if tid is not None else '-'):>6} "
+            f"{(tk or '-'):<8} {fn:<14} {(ak or '-'):<32} {created or ''}"
+        )
+
+
 @discrepancy_group.command("show")
 @click.argument("discrepancy_id", type=int)
 @click.pass_context
