@@ -183,20 +183,20 @@ def apply_tier1_correction(
             "compose via _apply_tier1_correction_inner inside an existing tx"
         )
 
+    # Sandbox short-circuit delegated to the inner per plan §D.5 step 3
+    # LOCK + spec §5.9 — the inner returns a no-op CorrectionResult when
+    # environment == 'sandbox' without journal mutation. We avoid opening
+    # a transaction at all under sandbox so the wrapper stays a pure
+    # no-op (no BEGIN IMMEDIATE / COMMIT cycle for a no-write call).
     if environment == "sandbox":
-        logger.warning(
-            "apply_tier1_correction short-circuited under sandbox "
-            "environment for discrepancy_id=%d; no domain writes",
-            discrepancy_id,
-        )
-        return CorrectionResult(
-            correction_id=None,
-            affected_table=None,
-            affected_row_id=None,
-            field_name=None,
-            applied_value_json=None,
-            correction_action=None,
-            notes="sandbox: domain write short-circuited",
+        return _apply_tier1_correction_inner(
+            conn,
+            discrepancy_id=discrepancy_id,
+            classification=classification,
+            schwab_api_call_id=schwab_api_call_id,
+            risk_policy_id=risk_policy_id,
+            correction_reason=correction_reason,
+            environment=environment,
         )
 
     conn.execute("BEGIN IMMEDIATE")
@@ -208,6 +208,7 @@ def apply_tier1_correction(
             schwab_api_call_id=schwab_api_call_id,
             risk_policy_id=risk_policy_id,
             correction_reason=correction_reason,
+            environment=environment,
         )
         conn.commit()
         return result
@@ -341,6 +342,7 @@ def _apply_tier1_correction_inner(
     schwab_api_call_id: int | None = None,
     risk_policy_id: int | None = None,
     correction_reason: str | None = None,
+    environment: str | None = None,
 ) -> CorrectionResult:
     """T-C.2 — spec §5.4 11-step atomic flow. Caller owns tx.
 
@@ -359,6 +361,14 @@ def _apply_tier1_correction_inner(
             cadence rows (closed-trade case only).
     Step 10: UPDATE discrepancy resolution to 'auto_corrected_from_schwab'.
     Step 11: UPDATE fills.reconciliation_status + INSERT trade_events.
+
+    Sandbox short-circuit (plan §D.5 step 3 LOCK + spec §5.9): when
+    ``environment == 'sandbox'``, skip steps 3-11 (no journal mutation,
+    no correction INSERT, no discrepancy resolution update, no
+    review_log supersede, no trade_events emit) and return a no-op
+    ``CorrectionResult(correction_id=None, notes="sandbox: ...")``.
+    Callers (the pivot dispatcher) MUST treat ``correction_id is None``
+    as the no-op signal (do NOT increment ``tier1_applied_count``).
     """
     if classification is None:
         raise ValueError(
@@ -372,6 +382,26 @@ def _apply_tier1_correction_inner(
     if classification.correction_target is None:
         raise ValueError(
             "tier-1 classification.correction_target must not be None"
+        )
+
+    # Sandbox short-circuit (plan §D.5 step 3 + spec §5.9). Mirrors the
+    # outer wrapper's behavior so callers that pass the kwarg through
+    # (the pivot dispatcher) get the same no-op contract without the
+    # outer's tx-management.
+    if environment == "sandbox":
+        logger.warning(
+            "_apply_tier1_correction_inner short-circuited under sandbox "
+            "environment for discrepancy_id=%d; no domain writes",
+            discrepancy_id,
+        )
+        return CorrectionResult(
+            correction_id=None,
+            affected_table=None,
+            affected_row_id=None,
+            field_name=None,
+            applied_value_json=None,
+            correction_action=None,
+            notes="sandbox: domain write short-circuited",
         )
 
     # Step 1: SELECT discrepancy.

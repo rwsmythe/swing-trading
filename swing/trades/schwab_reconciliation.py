@@ -376,11 +376,13 @@ def _pivot_classify_and_dispatch_for_run(
                         discrepancy_id=disc.discrepancy_id,
                         classification=classification,
                         schwab_api_call_id=schwab_api_call_id,
+                        environment=environment,
                     )
                     conn.execute(f"RELEASE SAVEPOINT {sp_name}")
-                    # Sandbox short-circuit at outer returns id=None;
-                    # tier-1 inner always returns a real id when called
-                    # directly here.
+                    # Plan §D.5 step 1 LOCK: increment counter ONLY when
+                    # the inner returned a real correction_id. Sandbox
+                    # short-circuit returns id=None → counter stays at 0
+                    # naturally (no journal mutation occurred).
                     if result.correction_id is not None:
                         counters["tier1_applied_count"] += 1
                 except ValidatorRejectedError as e:
@@ -804,17 +806,21 @@ def run_schwab_reconciliation(
 
         # --- 8.5. PHASE 12 C.C PIVOT: classify + dispatch per discrepancy ---
         # Spec §7.1 LOCKED savepoint-per-discrepancy discipline. NEVER raises
-        # out (graceful degradation per spec §7.4). Skipped entirely under
-        # sandbox per spec §5.9 (Phase 11 sandbox-gating discipline).
-        if environment != "sandbox":
-            _pivot_classify_and_dispatch_for_run(
-                conn,
-                run_id=run_id,
-                schwab_orders=schwab_orders,
-                schwab_api_call_id=schwab_api_call_id,
-                environment=environment,
-                counters=counters,
-            )
+        # out (graceful degradation per spec §7.4). Plan §D.5 step 3 LOCK:
+        # under sandbox we STILL iterate + classify (so classifier counters
+        # reflect what would have happened) but pass environment='sandbox'
+        # through to `_apply_tier1_correction_inner` which short-circuits
+        # the journal mutation. tier1_applied_count stays 0 naturally
+        # because the inner returns correction_id=None and the counter
+        # increment guards on that.
+        _pivot_classify_and_dispatch_for_run(
+            conn,
+            run_id=run_id,
+            schwab_orders=schwab_orders,
+            schwab_api_call_id=schwab_api_call_id,
+            environment=environment,
+            counters=counters,
+        )
 
         # --- 9. UPDATE state='completed' ---
         finished_ts = now_ms()

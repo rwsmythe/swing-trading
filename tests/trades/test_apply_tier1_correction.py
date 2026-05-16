@@ -28,6 +28,7 @@ from swing.data.models import Fill, Trade
 from swing.trades.reconciliation_auto_correct import (
     CorrectionResult,
     ValidatorRejectedError,
+    _apply_tier1_correction_inner,
     apply_tier1_correction,
 )
 from swing.trades.reconciliation_classifier import ClassificationResult
@@ -319,6 +320,56 @@ def test_apply_tier1_correction_sandbox_short_circuit_writes_nothing(
         "SELECT resolution FROM reconciliation_discrepancies WHERE discrepancy_id = 41"
     ).fetchone()
     assert d[0] == "unresolved"
+    rc_count = conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections"
+    ).fetchone()[0]
+    assert rc_count == 0
+
+
+def test_apply_tier1_correction_inner_sandbox_short_circuit_writes_nothing(
+    conn: sqlite3.Connection, cvgi_world: dict[str, Any],
+) -> None:
+    """SC-1: plan §D.5 step 3 LOCK requires `_apply_tier1_correction_inner`
+    to accept ``environment`` kwarg and short-circuit on ``'sandbox'``
+    without journal mutation or correction INSERT. This pins the inner-fn
+    contract (not the outer wrapper) so the pivot dispatcher at
+    `_pivot_classify_and_dispatch_for_run` can always iterate + classify +
+    call the inner with ``environment='sandbox'`` and get a no-op result
+    that increments classifier counters but leaves tier1_applied_count=0.
+    """
+    classification = ClassificationResult(
+        tier=1, ambiguity_kind=None,
+        correction_target={"price": 5.30},
+        correction_reason="...",
+        candidate_choices=None,
+    )
+    # Caller owns transaction per inner-fn contract.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        result = _apply_tier1_correction_inner(
+            conn,
+            discrepancy_id=41,
+            classification=classification,
+            environment="sandbox",
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+    # Returns no-op result.
+    assert result.correction_id is None
+    assert "sandbox" in (result.notes or "").lower()
+    # No journal mutation.
+    fp = conn.execute("SELECT price FROM fills WHERE fill_id = 9").fetchone()
+    assert fp[0] == 5.23
+    # No discrepancy resolution change.
+    d = conn.execute(
+        "SELECT resolution FROM reconciliation_discrepancies "
+        "WHERE discrepancy_id = 41"
+    ).fetchone()
+    assert d[0] == "unresolved"
+    # No correction audit row.
     rc_count = conn.execute(
         "SELECT COUNT(*) FROM reconciliation_corrections"
     ).fetchone()[0]
