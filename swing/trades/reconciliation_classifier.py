@@ -718,6 +718,329 @@ def _classify_stop_mismatch(
 _SUB_CLASSIFIERS["stop_mismatch"] = _classify_stop_mismatch
 
 
+# ---------------------------------------------------------------------------
+# T-B.7 — position_qty_mismatch sub-classifier (tier-2-always V1)
+# ---------------------------------------------------------------------------
+#
+# Spec §4.3.5 LOCK: tier-1 auto-quantity-correction requires per-fill
+# broker attribution V1 Schwab API doesn't provide cleanly.
+
+
+def _classify_position_qty_mismatch(
+    *,
+    discrepancy: ReconciliationDiscrepancy,
+    source_payload: Any | None,
+    journal_row: Mapping[str, Any] | None,
+) -> ClassificationResult:
+    """Spec §4.3.5 — position_qty_mismatch (tier-2-always V1)."""
+    ticker = discrepancy.ticker
+    trade_id = discrepancy.trade_id
+
+    # Source has 1 position record; journal fills sum to broker_qty;
+    # small fills count (<=3) → multi_match_within_window per fill
+    # (operator decides which fill is wrong-qty).
+    if isinstance(source_payload, Mapping):
+        # Single broker position record. Plan §C.7 acceptance #2 path:
+        # broker has 1 record + journal fills sum to broker_qty + small
+        # fills count (<=3) → multi_match_within_window.
+        journal_fills = (journal_row or {}).get("fills") or []
+        if (
+            isinstance(journal_fills, list)
+            and 0 < len(journal_fills) <= 3
+        ):
+            return ClassificationResult(
+                tier=2,
+                ambiguity_kind="multi_match_within_window",
+                correction_target=None,
+                correction_reason=(
+                    f"position_qty_mismatch on (ticker={ticker!r}, "
+                    f"trade_id={trade_id}): Schwab has 1 position record; "
+                    f"journal has {len(journal_fills)} contributing fills; "
+                    f"operator picks which fill carries the wrong qty"
+                ),
+                candidate_choices=(
+                    _candidate_choices_multi_match_within_window(
+                        len(journal_fills)
+                    )
+                ),
+            )
+        # Fall through to unsupported default.
+
+    if source_payload is None or (
+        isinstance(source_payload, list) and len(source_payload) == 0
+    ):
+        # Broker has 0 positions AND journal has open trade.
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="schwab_returned_no_match",
+            correction_target=None,
+            correction_reason=(
+                f"position_qty_mismatch on (ticker={ticker!r}, "
+                f"trade_id={trade_id}): Schwab has no open position for "
+                f"this ticker but journal carries an open trade; operator "
+                f"dispositions via mark_unmatched or operator_truth"
+            ),
+            candidate_choices=_candidate_choices_schwab_returned_no_match(),
+        )
+
+    return ClassificationResult(
+        tier=2,
+        ambiguity_kind="unsupported",
+        correction_target=None,
+        correction_reason=(
+            f"position_qty_mismatch on (ticker={ticker!r}, "
+            f"trade_id={trade_id}): tier-1 auto-quantity-correction "
+            f"requires per-fill broker attribution V1 Schwab API does "
+            f"not provide cleanly (spec §4.3.5 LOCK); operator "
+            f"dispositions manually"
+        ),
+    )
+
+
+_SUB_CLASSIFIERS["position_qty_mismatch"] = _classify_position_qty_mismatch
+
+
+# ---------------------------------------------------------------------------
+# T-B.8 — close_price_mismatch sub-classifier (tier-2-always V1)
+# ---------------------------------------------------------------------------
+#
+# Spec §4.3.6 LOCK: tier-2-always V1; historical close-price corrections
+# are V2 candidate (V1 cannot re-import OHLCV history).
+
+
+def _classify_close_price_mismatch(
+    *,
+    discrepancy: ReconciliationDiscrepancy,
+    source_payload: Any | None,  # noqa: ARG001 — V1 doesn't consult source
+    journal_row: Mapping[str, Any] | None,  # noqa: ARG001 — V1 doesn't consult journal
+) -> ClassificationResult:
+    """Spec §4.3.6 — close_price_mismatch (tier-2-always V1)."""
+    ticker = discrepancy.ticker
+    trade_id = discrepancy.trade_id
+    return ClassificationResult(
+        tier=2,
+        ambiguity_kind="unknown_schwab_subtype",
+        correction_target=None,
+        correction_reason=(
+            f"close_price_mismatch on (ticker={ticker!r}, "
+            f"trade_id={trade_id}): historical snapshot; V1 cannot "
+            f"re-import OHLCV history (V2 candidate); operator "
+            f"dispositions via acknowledge OR operator_truth"
+        ),
+        candidate_choices=_candidate_choices_unknown_schwab_subtype(),
+    )
+
+
+_SUB_CLASSIFIERS["close_price_mismatch"] = _classify_close_price_mismatch
+
+
+# ---------------------------------------------------------------------------
+# T-B.9 — cash_movement_mismatch sub-classifier
+# ---------------------------------------------------------------------------
+#
+# Spec §4.3.7. Tier-1 single-match path; tier-2 otherwise.
+#
+# correction_target may carry multiple fields atomically per spec §4.4 +
+# §3.1.1 multi-column atomic correction discipline; classifier supplies a
+# multi-field dict + downstream service writes a correction_set_id-bundled
+# set.
+
+
+def _classify_cash_movement_mismatch(
+    *,
+    discrepancy: ReconciliationDiscrepancy,
+    source_payload: Any | None,
+    journal_row: Mapping[str, Any] | None,
+) -> ClassificationResult:
+    """Spec §4.3.7 — cash_movement_mismatch."""
+    cash_movement_id = discrepancy.cash_movement_id
+
+    if source_payload is None or (
+        isinstance(source_payload, list) and len(source_payload) == 0
+    ):
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="schwab_returned_no_match",
+            correction_target=None,
+            correction_reason=(
+                f"cash_movement_mismatch on "
+                f"(cash_movement_id={cash_movement_id}): no matching "
+                f"cash movement found on broker side; operator "
+                f"dispositions via mark_unmatched or operator_truth"
+            ),
+            candidate_choices=_candidate_choices_schwab_returned_no_match(),
+        )
+
+    if isinstance(source_payload, list):
+        if len(source_payload) > 1:
+            n = len(source_payload)
+            return ClassificationResult(
+                tier=2,
+                ambiguity_kind="multi_match_within_window",
+                correction_target=None,
+                correction_reason=(
+                    f"cash_movement_mismatch on "
+                    f"(cash_movement_id={cash_movement_id}): {n} broker "
+                    f"cash movements match within window; operator picks "
+                    f"the intended record"
+                ),
+                candidate_choices=_candidate_choices_multi_match_within_window(n),
+            )
+        # Single-match list of 1; unwrap.
+        source_payload = source_payload[0]
+
+    if not isinstance(source_payload, Mapping):
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="unsupported",
+            correction_target=None,
+            correction_reason=(
+                f"cash_movement_mismatch on "
+                f"(cash_movement_id={cash_movement_id}): source_payload "
+                f"shape {type(source_payload).__name__} not understood"
+            ),
+        )
+
+    # Single-match: build multi-field correction_target from any keys
+    # present in source_payload that differ from journal_row. Spec §4.4
+    # allows multi-field atomic correction; downstream service bundles
+    # via correction_set_id.
+    journal_data = journal_row or {}
+    correction_target: dict[str, Any] = {}
+    for key in ("date", "kind", "amount", "ref"):
+        if key in source_payload:
+            source_val = source_payload[key]
+            journal_val = journal_data.get(key)
+            if source_val != journal_val:
+                correction_target[key] = source_val
+
+    if not correction_target:
+        # source matches journal — discrepancy emit was stale.
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="unsupported",
+            correction_target=None,
+            correction_reason=(
+                f"cash_movement_mismatch on "
+                f"(cash_movement_id={cash_movement_id}): source_payload "
+                f"matches journal on all checked fields; discrepancy "
+                f"appears stale; operator acknowledges"
+            ),
+        )
+
+    field_list = ", ".join(sorted(correction_target.keys()))
+    return ClassificationResult(
+        tier=1,
+        ambiguity_kind=None,
+        correction_target=correction_target,
+        correction_reason=(
+            f"cash_movement_mismatch on "
+            f"(cash_movement_id={cash_movement_id}): single broker "
+            f"match; tier-1 auto-correct on fields [{field_list}]"
+        ),
+        candidate_choices=None,
+    )
+
+
+_SUB_CLASSIFIERS["cash_movement_mismatch"] = _classify_cash_movement_mismatch
+
+
+# ---------------------------------------------------------------------------
+# T-B.10 — sector_tamper sub-classifier (tier-2-always V1)
+# ---------------------------------------------------------------------------
+#
+# Spec §4.3.8 LOCK: Schwab doesn't supply sector data; operator-action-only.
+
+
+def _classify_sector_tamper(
+    *,
+    discrepancy: ReconciliationDiscrepancy,
+    source_payload: Any | None,  # noqa: ARG001
+    journal_row: Mapping[str, Any] | None,  # noqa: ARG001
+) -> ClassificationResult:
+    """Spec §4.3.8 — sector_tamper (tier-2-always V1)."""
+    ticker = discrepancy.ticker
+    trade_id = discrepancy.trade_id
+    return ClassificationResult(
+        tier=2,
+        ambiguity_kind="unknown_schwab_subtype",
+        correction_target=None,
+        correction_reason=(
+            f"sector_tamper on (ticker={ticker!r}, "
+            f"trade_id={trade_id}): requires operator override "
+            f"(tier-3 path); Schwab does not supply sector data"
+        ),
+        candidate_choices=_candidate_choices_unknown_schwab_subtype(),
+    )
+
+
+_SUB_CLASSIFIERS["sector_tamper"] = _classify_sector_tamper
+
+
+# ---------------------------------------------------------------------------
+# T-B.11 — snapshot_mismatch sub-classifier (tier-2-always V1)
+# ---------------------------------------------------------------------------
+#
+# Spec §4.3.9 LOCK: mirrors close_price_mismatch — tier-2-always V1.
+
+
+def _classify_snapshot_mismatch(
+    *,
+    discrepancy: ReconciliationDiscrepancy,
+    source_payload: Any | None,  # noqa: ARG001
+    journal_row: Mapping[str, Any] | None,  # noqa: ARG001
+) -> ClassificationResult:
+    """Spec §4.3.9 — snapshot_mismatch (tier-2-always V1)."""
+    return ClassificationResult(
+        tier=2,
+        ambiguity_kind="unknown_schwab_subtype",
+        correction_target=None,
+        correction_reason=(
+            f"snapshot_mismatch on "
+            f"(trade_id={discrepancy.trade_id}, "
+            f"field_name={discrepancy.field_name!r}): historical "
+            f"snapshot; V1 cannot re-derive OHLCV history (V2 candidate "
+            f"for richer auto-correct); operator dispositions via "
+            f"acknowledge OR operator_truth"
+        ),
+        candidate_choices=_candidate_choices_unknown_schwab_subtype(),
+    )
+
+
+_SUB_CLASSIFIERS["snapshot_mismatch"] = _classify_snapshot_mismatch
+
+
+# ---------------------------------------------------------------------------
+# T-B.12 — equity_delta sub-classifier (tier-2-always V1)
+# ---------------------------------------------------------------------------
+#
+# Spec §4.3.10 LOCK: cash-basis-vs-MTM semantics divergence is a Phase 10
+# operator-locked V2 candidate.
+
+
+def _classify_equity_delta(
+    *,
+    discrepancy: ReconciliationDiscrepancy,
+    source_payload: Any | None,  # noqa: ARG001
+    journal_row: Mapping[str, Any] | None,  # noqa: ARG001
+) -> ClassificationResult:
+    """Spec §4.3.10 — equity_delta (tier-2-always V1)."""
+    return ClassificationResult(
+        tier=2,
+        ambiguity_kind="field_shape_incompatible",
+        correction_target=None,
+        correction_reason=(
+            f"equity_delta on (run_id={discrepancy.run_id}): requires "
+            f"cash-basis-vs-MTM formalization (Phase 10 V2 candidate); "
+            f"operator dispositions via acknowledge OR operator_truth"
+        ),
+        candidate_choices=_candidate_choices_unknown_schwab_subtype(),
+    )
+
+
+_SUB_CLASSIFIERS["equity_delta"] = _classify_equity_delta
+
+
 def classify_discrepancy(
     discrepancy: ReconciliationDiscrepancy,
     *,
