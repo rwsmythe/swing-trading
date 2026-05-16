@@ -150,9 +150,12 @@ def update_call_linked_correction(
     correction. Mirrors ``update_call_linked_snapshot`` +
     ``update_call_linked_reconciliation_run`` shape verbatim.
 
-    Migration 0019 adds the FK with ``ON DELETE SET NULL``; deleting the
-    correction (e.g., during a tier-3 supersession cleanup) nulls this
-    column automatically.
+    Migration 0019 adds the FK with ``ON DELETE SET NULL`` as defensive
+    behavior in case a correction row is removed by test or admin tooling.
+    Tier-3 supersession does NOT delete the prior correction — it inserts
+    a new correction and stamps the prior row's ``superseded_by_correction_id``
+    (per spec §3.1 append-only audit model); the SET NULL action is not
+    expected to fire in normal operation.
 
     Caller controls transaction (UPDATE only — NO ``INSERT OR REPLACE``
     per CLAUDE.md cascade-wipe gotcha; never call ``conn.commit()`` per

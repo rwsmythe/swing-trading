@@ -540,9 +540,10 @@ def _phase12_bundle_c_backup_gate(
     time, per CLAUDE.md Phase 11 ship entry) fire the gate on next
     ``swing db-migrate``. Operators who skipped a phase (extremely uncommon
     in this project's history — phase ships are integration-merged
-    sequentially) should run a manual one-off backup via
-    ``sqlite3 swing.db ".backup swing-pre-multi-step.db"`` before invoking
-    ``swing db-migrate``.
+    sequentially) should run a manual one-off backup via Python
+    ``sqlite3.Connection.backup()`` (the same SQLite-native mechanism the
+    in-tree gates use; matches spec §12.1 binding posture and avoids
+    relying on the ``sqlite3`` CLI being installed on PATH).
 
     Forward-binding note (V2 hardening candidate): firing the gate before
     each individual schema-jump migration (per-version backups instead of
