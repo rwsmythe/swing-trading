@@ -383,6 +383,11 @@ class ReviewLog:
     avg_loss_R: float | None = None  # noqa: N815
     profit_factor: float | None = None
     max_drawdown_R: float | None = None  # noqa: N815
+    # Phase 12 Sub-bundle C (T-A.2): FK to reconciliation_corrections audit
+    # row that supersedes a previously-published review aggregate value
+    # (rare; tier-3 operator override path). NULL when no correction has
+    # been applied. Per migration 0019.
+    superseded_by_correction_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -818,6 +823,14 @@ _RESOLUTION_VALUES = (
     "manual_override",
     "unresolved",
     "acknowledged_immaterial",
+    # Phase 12 Sub-bundle C T-A.5 — widened to match migration 0019 SQL CHECK
+    # (4 new resolutions for the tier-1 auto-correct + tier-2 ambiguity +
+    # tier-3 operator-override lifecycle; spec §3.3 + plan §B.2 step-3 gap
+    # closure surfaced during T-A.5 row-deserializer wiring).
+    "auto_corrected_from_schwab",
+    "pending_ambiguity_resolution",
+    "operator_resolved_ambiguity",
+    "operator_overridden",
 )
 
 
@@ -978,6 +991,12 @@ class ReconciliationDiscrepancy:
     resolved_by: str | None
     mistake_tag_assigned: str | None
     created_at: str
+    # Phase 12 Sub-bundle C (T-A.2): ambiguity classification for tier-2
+    # operator-resolution path. NULL when discrepancy is unambiguous (auto-
+    # correct path) or when ambiguity_kind has not yet been classified. The
+    # SQL layer enforces the 7-value CHECK enum + cross-column resolution-
+    # vs-ambiguity_kind pinning (migration 0019 lines 125-148).
+    ambiguity_kind: str | None = None
 
     def __post_init__(self) -> None:
         import json
@@ -1028,9 +1047,14 @@ class ReconciliationDiscrepancy:
                     ) from None
 
         # Resolution-lifecycle invariants.
-        if self.resolution == "unresolved":
-            # When unresolved, resolved_at + resolved_by typically NULL.
-            # We don't strictly enforce NULL (operator could correct
+        # Phase 12 Sub-bundle C T-A.5 — `pending_ambiguity_resolution` is the
+        # "awaiting operator decision" intermediate state (tier-2 ambiguity
+        # surfaced by the classifier; resolved_at + resolved_by stay NULL
+        # until the operator dispositions via the CLI). Treat it as
+        # unresolved-shaped for the resolved_at/resolved_by symmetry check.
+        if self.resolution in ("unresolved", "pending_ambiguity_resolution"):
+            # When pending/unresolved, resolved_at + resolved_by typically
+            # NULL.  We don't strictly enforce NULL (operator could correct
             # mid-workflow) but we DO reject non-null resolved_at without
             # resolved_by or vice versa (asymmetry is a sign of bug).
             if (self.resolved_at is None) != (self.resolved_by is None):
@@ -1063,6 +1087,97 @@ class ReconciliationDiscrepancy:
                     f"resolution={self.resolution!r} requires non-empty "
                     "resolution_reason"
                 )
+
+
+@dataclass(frozen=True)
+class ReconciliationCorrection:
+    """Phase 12 Sub-bundle C audit row for tier-1/tier-2/tier-3 corrections.
+
+    Mirrors migration 0019 ``reconciliation_corrections`` table verbatim
+    (20 columns; spec §3.1 header miscounts as 19 — T-A.1 LOCKED 20, banked
+    as V2.1 §VII.F amendment candidate §I.16). Emitted by the auto-correct
+    service when reconciliation classifies a discrepancy as tier-1 (auto-
+    apply), tier-2 (operator-resolved ambiguity), or tier-3 (operator
+    override of a prior tier-1 correction).
+
+    Schema-layer enforcement (migration 0019; what the SQL CHECKs actually
+    cover):
+      - Per-column CHECK enums: ``correction_action`` (3-value:
+        ``auto_applied`` | ``operator_resolved_ambiguity`` |
+        ``operator_overridden``); ``affected_table`` (4-value: ``fills`` |
+        ``trades`` | ``cash_movements`` | ``account_equity_snapshots``);
+        ``applied_by`` (2-value: ``auto`` | ``operator``).
+      - FK relationships: ``discrepancy_id`` -> reconciliation_discrepancies;
+        ``reconciliation_run_id`` -> reconciliation_runs;
+        ``superseded_by_correction_id`` -> reconciliation_corrections (self);
+        ``risk_policy_id_at_correction`` -> risk_policy;
+        ``schwab_api_call_id`` -> schwab_api_calls.
+      - NOT NULL constraints on identity + identification columns
+        (``discrepancy_id``, ``correction_action``, ``affected_table``,
+        ``affected_row_id``, ``field_name``, ``pre_correction_value_json``,
+        ``applied_value_json``, ``applied_at``, ``applied_by``,
+        ``reconciliation_run_id``).
+
+    Schema-layer NON-enforcement (Codex R1 Major #4 docstring correction):
+      The migration intentionally does NOT add cross-column CHECK
+      constraints binding ``correction_action`` to the population of other
+      columns. The audit table will accept lifecycle-contradictory rows at
+      the SQL layer, including but not limited to:
+        - ``correction_action='auto_applied'`` paired with
+          ``applied_by='operator'`` (a tier-1 auto-correction not authored
+          by the operator);
+        - ``correction_action='operator_overridden'`` paired with
+          ``operator_truth_value_json IS NULL`` (an override carrying no
+          operator-supplied truth payload);
+        - ``correction_action='operator_resolved_ambiguity'`` paired with
+          ``correction_choice IS NULL`` (an ambiguity resolution recording
+          no choice).
+
+      These lifecycle invariants WILL be validated at the auto-correct
+      service layer in Sub-sub-bundle C.C (the next sub-bundle in the
+      plan §D task sequence after C.A foundation + C.B classifier).
+      Schema-layer CHECKs were kept minimal at C.A per dispatch-brief
+      §0.6 lesson #3 (plan-author schema additions during the
+      executing-plans cycle are escalation territory).
+
+    Forward-binding for C.C dispatch: the auto-correct service MUST
+    validate lifecycle invariants at INSERT time BEFORE calling
+    ``insert_correction(...)`` in
+    ``swing.data.repos.reconciliation_corrections``. Discriminating
+    tests at C.C MUST cover each lifecycle invariant explicitly (one
+    discriminating regression test per contradictory-pair surfaced
+    above, plus any additional invariants C.C identifies during spec
+    review).
+
+    Field order matches the migration 0019 CREATE TABLE column ordering so
+    that ``cursor.execute("SELECT * FROM reconciliation_corrections")`` rows
+    can be wrapped positionally via ``ReconciliationCorrection(*row)`` if
+    needed (project convention prefers explicit column lists; this is a
+    defense-in-depth alignment).
+    """
+
+    correction_id: int
+    discrepancy_id: int
+    # 'auto_applied' | 'operator_resolved_ambiguity' | 'operator_overridden'
+    correction_action: str
+    correction_choice: str | None
+    # 'fills' | 'trades' | 'cash_movements' | 'account_equity_snapshots'
+    affected_table: str
+    affected_row_id: int
+    field_name: str
+    pre_correction_value_json: str
+    source_canonical_value_json: str | None
+    applied_value_json: str
+    operator_truth_value_json: str | None
+    applied_at: str  # ISO YYYY-MM-DDTHH:MM:SS.SSS naive-UTC
+    applied_by: str  # 'auto' | 'operator'
+    correction_set_id: int | None
+    superseded_by_correction_id: int | None
+    risk_policy_id_at_correction: int | None
+    schwab_api_call_id: int | None
+    reconciliation_run_id: int
+    correction_reason: str | None
+    notes: str | None
 
 
 # ===========================================================================
@@ -1246,6 +1361,11 @@ class SchwabApiCall:
     pipeline_run_id: int | None
     surface: str
     environment: str
+    # Phase 12 Sub-bundle C (T-A.2): nullable FK to reconciliation_corrections
+    # audit row when this Schwab API call sourced the canonical value for a
+    # tier-1/tier-2/tier-3 correction. NULL for calls that did not produce a
+    # correction (most calls). Per migration 0019.
+    linked_correction_id: int | None = None
 
     def __post_init__(self) -> None:
         if self.endpoint not in _SCHWAB_VALID_ENDPOINTS:
@@ -1375,6 +1495,7 @@ class SchwabApiCall:
             ("linked_snapshot_id", self.linked_snapshot_id),
             ("linked_reconciliation_run_id", self.linked_reconciliation_run_id),
             ("pipeline_run_id", self.pipeline_run_id),
+            ("linked_correction_id", self.linked_correction_id),
         ):
             if fval is not None and (
                 isinstance(fval, bool) or not isinstance(fval, int) or fval <= 0

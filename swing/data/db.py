@@ -21,7 +21,14 @@ from pathlib import Path
 #   reconciliation_runs.schwab_api_call_id). Migration opens with explicit
 #   BEGIN; / COMMIT; per Codex R1 Critical #1 (executescript implicit COMMIT
 #   gotcha) — sets new discipline for all future migrations.
-EXPECTED_SCHEMA_VERSION = 18
+# phase 12 sub-bundle C.A auto-correct reconciliation (migration 0019):
+#   reconciliation_corrections audit table (20 cols + 4 indexes) +
+#   reconciliation_discrepancies rebuild (widen resolution CHECK 5→9 + new
+#   ambiguity_kind column + cross-column CHECK) + ALTER review_log ADD
+#   superseded_by_correction_id + ALTER schwab_api_calls ADD linked_correction_id +
+#   trade_events rebuild (widen event_type CHECK 6→7 to add
+#   'reconciliation_auto_correct'). Atomic BEGIN/COMMIT discipline preserved.
+EXPECTED_SCHEMA_VERSION = 19
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 # Phase 7 backup gate (spec §12.1): when migrating to schema_version >= 14,
@@ -60,6 +67,27 @@ PHASE8_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
 # auditable. Filename pattern `swing-pre-phase9-migration-<ISO>.db`.
 PHASE9_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
     PHASE8_PRE_MIGRATION_EXPECTED_TABLES | {"daily_management_records"}
+)
+
+# Phase 12 Sub-bundle C backup gate (spec §11.3 + plan §A.12 + plan §B.4):
+# when migrating from v18 → v19+, snapshot the live v18 DB. Adds the Phase 9
+# tables (risk_policy / reconciliation_runs / reconciliation_discrepancies /
+# hypothesis_status_history / account_equity_snapshots) AND the Phase 11
+# schwab_api_calls audit table to the post-Phase-9 baseline. Derived
+# deterministically from PHASE9 set so provenance stays auditable. Phase 11
+# itself did NOT wire a version-specific gate (plan §C.5 LOCK on Sub-bundle B
+# of Phase 11; no swing-pre-phase11-*.db backups exist in the wild). Filename
+# pattern `swing-pre-phase12-bundle-c-migration-<ISO>.db` per plan §B.4 #1.
+PHASE12_BUNDLE_C_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
+    PHASE9_PRE_MIGRATION_EXPECTED_TABLES
+    | {
+        "risk_policy",
+        "reconciliation_runs",
+        "reconciliation_discrepancies",
+        "hypothesis_status_history",
+        "account_equity_snapshots",
+        "schwab_api_calls",
+    }
 )
 
 
@@ -370,6 +398,31 @@ def _create_pre_phase9_migration_backup(
     return backup_path
 
 
+def _create_pre_phase12_bundle_c_migration_backup(
+    src_path: Path, *, dest_dir: Path,
+) -> Path:
+    """Phase 12 Sub-bundle C mirror with phase12-bundle-c filename prefix.
+
+    Per plan §B.4 #1 + spec §11.3: backup file pattern
+    ``swing-pre-phase12-bundle-c-migration-<ISO>.db``. SQLite-native
+    Connection.backup() is the only acceptable snapshot mechanism (consistent
+    under live writers).
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = dest_dir / f"swing-pre-phase12-bundle-c-migration-{timestamp}.db"
+    src_conn = sqlite3.connect(src_path)
+    try:
+        dest_conn = sqlite3.connect(backup_path)
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        src_conn.close()
+    return backup_path
+
+
 def _phase8_backup_gate(
     conn: sqlite3.Connection,
     *,
@@ -453,6 +506,86 @@ def _phase9_backup_gate(
         ) from exc
 
 
+def _phase12_bundle_c_backup_gate(
+    conn: sqlite3.Connection,
+    *,
+    current_version: int,
+    target_version: int,
+    backup_dir: Path | None,
+) -> None:
+    """Phase 12 Sub-bundle C backup-before-migrate gate (plan §B.4 + §A.12).
+
+    Fires only when ``current_version == 18 AND target_version >= 19`` —
+    i.e., a real production v18 DB about to receive Phase 12 Sub-bundle C's
+    migration 0019. Mutually exclusive with the Phase 7/8/9 gates by
+    construction (current_version == 13 vs 15 vs 16 vs 18). Filename:
+    ``swing-pre-phase12-bundle-c-migration-<ISO>.db`` (NOT phase7/8/9 prefix).
+
+    Phase 11 (v17 → v18) did NOT wire a version-specific gate per plan
+    §C.5 LOCK on Phase 11 Sub-bundle B's migration 0018 ship; this gate
+    closes the v18 → v19 transition specifically.
+
+    INTENTIONAL NARROWNESS (ACCEPT-WITH-RATIONALE, Codex R1 Major #1):
+    Multi-step migrations from a pre-v18 baseline (e.g., v15 → v19, v17 →
+    v19) BYPASS this gate by design — the predicate ``current_version != 18``
+    is evaluated ONCE at ``run_migrations`` entry, not before each individual
+    schema-jump migration. A DB at v17 advancing to v19 sees the gate
+    evaluated with ``current_version=17`` (returns early); the migration
+    loop then walks 17→18→19 internally with no further gate evaluation.
+    This matches ``_phase9_backup_gate`` precedent verbatim (equality
+    predicate ``current_version != 16`` at run_migrations entry; multi-step
+    walks from pre-v16 likewise bypass).
+
+    Production operators on v18 (the current state at integration-merge
+    time, per CLAUDE.md Phase 11 ship entry) fire the gate on next
+    ``swing db-migrate``. Operators who skipped a phase (extremely uncommon
+    in this project's history — phase ships are integration-merged
+    sequentially) should run a manual one-off backup via Python
+    ``sqlite3.Connection.backup()`` (the same SQLite-native mechanism the
+    in-tree gates use; matches spec §12.1 binding posture and avoids
+    relying on the ``sqlite3`` CLI being installed on PATH).
+
+    Forward-binding note (V2 hardening candidate): firing the gate before
+    each individual schema-jump migration (per-version backups instead of
+    per-target backups) is a candidate banked at plan §I for V2 dispatch.
+    The current per-target design is preserved because:
+      (a) the only real-world scenario where it matters is a deliberately
+          long-skipped operator state, which has never occurred in the
+          project's history;
+      (b) per-version backups would generate N intermediate snapshots that
+          mostly duplicate each other on a single ``db-migrate`` invocation,
+          consuming disk space proportional to the version-jump distance;
+      (c) the alternative — a single backup at the FIRST in-flight version
+          rather than at the target version — would also work but would
+          require a non-trivial refactor of the four phase-specific gates
+          into a unified version-aware backup-once helper.
+    """
+    if target_version < 19 or current_version != 18:
+        return
+    src_path = _resolve_main_db_path(conn)
+    if src_path is None:
+        raise MigrationBackupRequiredException(
+            "pre-Phase-12-Sub-bundle-C backup gate requires a file-backed "
+            "source DB; in-memory connections cannot be snapshotted."
+        )
+    if backup_dir is None:
+        backup_dir = src_path.parent
+    try:
+        backup_path = _create_pre_phase12_bundle_c_migration_backup(
+            src_path, dest_dir=backup_dir,
+        )
+        _verify_backup_integrity(
+            backup_path,
+            expected_tables=PHASE12_BUNDLE_C_PRE_MIGRATION_EXPECTED_TABLES,
+        )
+    except MigrationBackupRequiredException:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise MigrationBackupRequiredException(
+            f"pre-Phase-12-Sub-bundle-C backup failed: {exc}"
+        ) from exc
+
+
 def run_migrations(
     conn: sqlite3.Connection,
     *,
@@ -490,6 +623,12 @@ def run_migrations(
         backup_dir=backup_dir,
     )
     _phase9_backup_gate(
+        conn,
+        current_version=current,
+        target_version=target_version,
+        backup_dir=backup_dir,
+    )
+    _phase12_bundle_c_backup_gate(
         conn,
         current_version=current,
         target_version=target_version,

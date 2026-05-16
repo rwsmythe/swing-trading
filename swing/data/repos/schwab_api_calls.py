@@ -27,7 +27,7 @@ _SELECT_COLUMNS = (
     "call_id, ts, endpoint, http_status, response_time_ms, "
     "rate_limit_remaining, signature_hash, status, error_message, "
     "linked_snapshot_id, linked_reconciliation_run_id, pipeline_run_id, "
-    "surface, environment"
+    "surface, environment, linked_correction_id"
 )
 
 
@@ -47,6 +47,7 @@ def _row_to_model(row: tuple) -> SchwabApiCall:
         pipeline_run_id=row[11],
         surface=row[12],
         environment=row[13],
+        linked_correction_id=row[14],
     )
 
 
@@ -132,6 +133,38 @@ def update_call_linked_reconciliation_run(
         "UPDATE schwab_api_calls SET linked_reconciliation_run_id = ? "
         "WHERE call_id = ?",
         (reconciliation_run_id, call_id),
+    )
+
+
+def update_call_linked_correction(
+    conn: sqlite3.Connection,
+    *,
+    call_id: int,
+    correction_id: int,
+) -> None:
+    """Set linked_correction_id; preserve all else.
+
+    Phase 12 Sub-bundle C.A T-A.2 — wires the optional reverse pointer from
+    a Schwab API call to the ``reconciliation_corrections`` audit row when
+    the call sourced the canonical value for a tier-1/tier-2/tier-3
+    correction. Mirrors ``update_call_linked_snapshot`` +
+    ``update_call_linked_reconciliation_run`` shape verbatim.
+
+    Migration 0019 adds the FK with ``ON DELETE SET NULL`` as defensive
+    behavior in case a correction row is removed by test or admin tooling.
+    Tier-3 supersession does NOT delete the prior correction — it inserts
+    a new correction and stamps the prior row's ``superseded_by_correction_id``
+    (per spec §3.1 append-only audit model); the SET NULL action is not
+    expected to fire in normal operation.
+
+    Caller controls transaction (UPDATE only — NO ``INSERT OR REPLACE``
+    per CLAUDE.md cascade-wipe gotcha; never call ``conn.commit()`` per
+    Finviz I1 lesson family).
+    """
+    conn.execute(
+        "UPDATE schwab_api_calls SET linked_correction_id = ? "
+        "WHERE call_id = ?",
+        (correction_id, call_id),
     )
 
 

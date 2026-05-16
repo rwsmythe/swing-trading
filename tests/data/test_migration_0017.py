@@ -39,14 +39,15 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 # ============================================================================
 
 
-def test_expected_schema_version_constant_is_18() -> None:
-    # ensure_schema walks to HEAD; Phase 11 migration 0018 advanced to 18.
-    assert EXPECTED_SCHEMA_VERSION == 18
+def test_expected_schema_version_constant_is_19() -> None:
+    # ensure_schema walks to HEAD; Phase 12 Sub-bundle C.A migration 0019
+    # advanced to 19 (was 18 post-Phase-11).
+    assert EXPECTED_SCHEMA_VERSION == 19
 
 
-def test_schema_version_row_is_18(conn: sqlite3.Connection) -> None:
+def test_schema_version_row_is_19(conn: sqlite3.Connection) -> None:
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row[0] == 18
+    assert row[0] == 19
 
 
 # ============================================================================
@@ -286,20 +287,23 @@ _RECON_DISC_EXPECTED_COLS: frozenset[str] = frozenset({
     "field_name", "expected_value_json", "actual_value_json", "delta_text",
     "material_to_review", "resolution", "resolution_reason", "resolved_at",
     "resolved_by", "mistake_tag_assigned", "created_at",
+    # Phase 12 Sub-bundle C.A T-A.1 added `ambiguity_kind` via 0019 rebuild;
+    # legacy 19 → widened 20.
+    "ambiguity_kind",
 })
 
 
-def test_reconciliation_discrepancies_table_exists_with_19_columns(
+def test_reconciliation_discrepancies_table_exists_with_20_columns(
     conn: sqlite3.Connection,
 ) -> None:
-    """Spec §3.3 enumerates 19 distinct fields (text says "18"; brainstorm miscount).
+    """Spec §3.3 enumerated 19 distinct fields at Phase 9; migration 0019
+    widened to 20 by adding `ambiguity_kind` (tier-2 pending classification).
 
     Listed: discrepancy_id, run_id, discrepancy_type, trade_id, fill_id,
     cash_movement_id, linked_daily_management_record_id, ticker, field_name,
     expected_value_json, actual_value_json, delta_text, material_to_review,
-    resolution, resolution_reason, resolved_at, resolved_by,
-    mistake_tag_assigned, created_at = 19. Asserting LIST per same Codex
-    R1 Major #2 precedent as risk_policy.
+    resolution, ambiguity_kind, resolution_reason, resolved_at, resolved_by,
+    mistake_tag_assigned, created_at = 20.
     """
     cur = conn.execute("PRAGMA table_info(reconciliation_discrepancies)")
     cols = {r[1] for r in cur.fetchall()}

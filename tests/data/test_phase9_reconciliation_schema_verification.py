@@ -142,7 +142,9 @@ def test_reconciliation_runs_source_check_accepts_all_enum_values(
 
 
 # ============================================================================
-# §3 — reconciliation_discrepancies table shape (19 columns + 4 indexes)
+# §3 — reconciliation_discrepancies table shape (20 columns + 5 indexes
+#      post-Phase-12 Sub-bundle C.A migration 0019 — ambiguity_kind widening +
+#      new ix_..._pending_ambiguity partial index).
 # ============================================================================
 
 
@@ -152,20 +154,24 @@ _RECON_DISC_EXPECTED_COLS: frozenset[str] = frozenset({
     "field_name", "expected_value_json", "actual_value_json", "delta_text",
     "material_to_review", "resolution", "resolution_reason", "resolved_at",
     "resolved_by", "mistake_tag_assigned", "created_at",
+    # Phase 12 Sub-bundle C.A T-A.1 widened 19 → 20.
+    "ambiguity_kind",
 })
 
 
-def test_reconciliation_discrepancies_has_19_columns(
+def test_reconciliation_discrepancies_has_20_columns(
     conn: sqlite3.Connection,
 ) -> None:
-    """Plan §E says 18; migration LIST enumerates 19 (binding)."""
+    """Phase 9 plan §E said 18; migration enumerated 19; Phase 12 0019 widened
+    to 20 by adding `ambiguity_kind` for tier-2 ambiguity classification.
+    """
     cur = conn.execute("PRAGMA table_info(reconciliation_discrepancies)")
     cols = {r[1] for r in cur.fetchall()}
     assert cols == _RECON_DISC_EXPECTED_COLS, (
         f"column drift; missing {_RECON_DISC_EXPECTED_COLS - cols}; "
         f"extra {cols - _RECON_DISC_EXPECTED_COLS}"
     )
-    assert len(cols) == 19
+    assert len(cols) == 20
 
 
 def test_reconciliation_discrepancies_indexes_present(

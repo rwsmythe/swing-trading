@@ -60,13 +60,14 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 # ============================================================================
 
 
-def test_expected_schema_version_constant_is_18() -> None:
-    assert EXPECTED_SCHEMA_VERSION == 18
+def test_expected_schema_version_constant_is_19() -> None:
+    # Phase 12 Sub-bundle C.A migration 0019 advanced 18 → 19.
+    assert EXPECTED_SCHEMA_VERSION == 19
 
 
-def test_schema_version_row_is_18(conn: sqlite3.Connection) -> None:
+def test_schema_version_row_is_19(conn: sqlite3.Connection) -> None:
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row[0] == 18
+    assert row[0] == 19
 
 
 # ============================================================================
@@ -89,10 +90,13 @@ _SCHWAB_CALLS_EXPECTED_COLS: frozenset[str] = frozenset({
     "pipeline_run_id",
     "surface",
     "environment",
+    # Phase 12 Sub-bundle C.A migration 0019 added `linked_correction_id`
+    # via ALTER ADD COLUMN; nullable FK to reconciliation_corrections.
+    "linked_correction_id",
 })
 
 
-def test_schwab_api_calls_table_exists_with_14_columns(
+def test_schwab_api_calls_table_exists_with_15_columns(
     conn: sqlite3.Connection,
 ) -> None:
     cur = conn.execute("PRAGMA table_info(schwab_api_calls)")
@@ -101,7 +105,7 @@ def test_schwab_api_calls_table_exists_with_14_columns(
         f"column drift; missing {_SCHWAB_CALLS_EXPECTED_COLS - cols}; "
         f"extra {cols - _SCHWAB_CALLS_EXPECTED_COLS}"
     )
-    assert len(cols) == 14
+    assert len(cols) == 15
 
 
 # ============================================================================

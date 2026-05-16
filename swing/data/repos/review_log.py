@@ -442,7 +442,11 @@ def count_needs_review(
 def _row_to_review_log(row: tuple) -> ReviewLog:  # type: ignore[type-arg]
     """Map a positional sqlite3 row (SELECT * FROM review_log) to ReviewLog.
 
-    Column order follows migration 0013 (see module-level comment).
+    Column order follows migration 0013 (rows 0-20), then migration 0017
+    ALTER ADD COLUMN ``risk_policy_id_at_review_completion`` (row 21 — NOT
+    consumed by the dataclass V1; stays at SQL layer only), then migration
+    0019 ALTER ADD COLUMN ``superseded_by_correction_id`` (row 22 — NEW
+    dataclass field at Phase 12 Sub-bundle C T-A.6).
     """
     skipped_raw = row[6]
     return ReviewLog(
@@ -467,4 +471,8 @@ def _row_to_review_log(row: tuple) -> ReviewLog:  # type: ignore[type-arg]
         avg_loss_R=row[18],
         profit_factor=row[19],
         max_drawdown_R=row[20],
+        # row[21] = risk_policy_id_at_review_completion (Phase 9 migration
+        # 0017) — intentionally not consumed by the dataclass V1.
+        # Phase 12 Sub-bundle C T-A.6: superseded_by_correction_id at row[22].
+        superseded_by_correction_id=row[22],
     )
