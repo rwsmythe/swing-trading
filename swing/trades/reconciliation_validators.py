@@ -27,7 +27,8 @@ reject when simulated ``current_size < 0``.
 from __future__ import annotations
 
 import sqlite3
-from typing import Any, Callable, Mapping
+from collections.abc import Callable, Mapping
+from typing import Any
 
 # Schema-CHECK-mirror constants (mirror schema VERBATIM; do NOT extend).
 _FILL_ACTIONS = ("entry", "trim", "exit", "stop")
