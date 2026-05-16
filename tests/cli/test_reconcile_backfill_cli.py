@@ -600,6 +600,119 @@ def test_dry_run_no_pass_2_does_not_construct_client(
     assert len(build_calls) == 0
 
 
+def test_pipeline_started_mid_iteration_aborts_loop(
+    cli_workspace, monkeypatch,
+):
+    """Codex R1 Major #3 fix — per-iteration recheck closes the race window.
+
+    Plant 3 discrepancies. Stub ``_classify_and_apply`` so that after
+    the first iteration completes, a ``pipeline_runs`` row with
+    state='running' is inserted. The next iteration's
+    ``_check_pipeline_not_running`` recheck MUST raise
+    ``BackfillPipelineActiveError`` + abort the loop. The first
+    discrepancy's outcome persists in the summary; the 2nd + 3rd are
+    NOT processed.
+    """
+    from swing.trades.reconciliation_backfill import (
+        BackfillOutcome,
+        BackfillPipelineActiveError,
+        run_backfill,
+    )
+    from swing.trades import reconciliation_backfill as _bf
+
+    _runner, _cfg, db_path = cli_workspace
+    conn = sqlite3.connect(db_path)
+    try:
+        run_id = _seed_reconciliation_run(conn)
+        _plant_unresolved(conn, run_id, ticker="DHC")
+        _plant_unresolved(conn, run_id, ticker="VSAT")
+        _plant_unresolved(conn, run_id, ticker="CVGI")
+        conn.commit()
+
+        call_count = {"n": 0}
+
+        def _spy_classify_and_apply(conn_arg, disc, **kwargs):
+            call_count["n"] += 1
+            # After the FIRST iteration, plant a pipeline_runs row to
+            # simulate a pipeline starting mid-backfill.
+            if call_count["n"] == 1:
+                conn_arg.execute(
+                    "INSERT INTO pipeline_runs ("
+                    "  started_ts, state, trigger, data_asof_date, "
+                    "  action_session_date, lease_token"
+                    ") VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        "2026-05-16T10:30:00", "running", "manual",
+                        "2026-05-16", "2026-05-16",
+                        "race-test-lease",
+                    ),
+                )
+                conn_arg.commit()
+            return BackfillOutcome(
+                discrepancy_id=int(disc.discrepancy_id or 0),
+                ticker=disc.ticker,
+                discrepancy_type=disc.discrepancy_type,
+                tier=1,
+                outcome="tier1_applied",
+            )
+
+        monkeypatch.setattr(
+            _bf, "_classify_and_apply", _spy_classify_and_apply,
+        )
+
+        with pytest.raises(BackfillPipelineActiveError):
+            run_backfill(
+                conn,
+                dry_run=False,
+                schwab_client=None,
+                environment="production",
+                account_hash="acct-hash",
+            )
+
+        # First iteration ran (call_count==1). The second iteration's
+        # recheck should have raised, so call_count stays at 1.
+        assert call_count["n"] == 1, (
+            f"expected exactly 1 iteration before recheck raised; "
+            f"got {call_count['n']}"
+        )
+        # Verify the planted pipeline_runs row IS there (proves the
+        # mid-iteration mutation took effect).
+        running = conn.execute(
+            "SELECT id FROM pipeline_runs WHERE state = 'running'",
+        ).fetchone()
+        assert running is not None
+    finally:
+        conn.close()
+
+
+def test_pipeline_recheck_does_not_fire_when_no_active_pipeline(
+    cli_workspace,
+):
+    """Sanity peer — recheck does NOT spuriously raise when clean."""
+    from swing.trades.reconciliation_backfill import run_backfill
+
+    _runner, _cfg, db_path = cli_workspace
+    conn = sqlite3.connect(db_path)
+    try:
+        run_id = _seed_reconciliation_run(conn)
+        _plant_unresolved(conn, run_id, ticker="DHC")
+        _plant_unresolved(conn, run_id, ticker="VSAT")
+        conn.commit()
+
+        # No mock — full dry-run + no pipeline_runs running row.
+        summary = run_backfill(
+            conn,
+            dry_run=True,
+            schwab_client=None,
+            environment="production",
+            account_hash="acct-hash",
+        )
+        # Both rows iterated cleanly.
+        assert len(summary.per_discrepancy_outcomes) == 2
+    finally:
+        conn.close()
+
+
 def test_sandbox_env_does_not_construct_client(cli_workspace, monkeypatch):
     """Major #1 fix — sandbox env skips construction (C.C inner short-circuit)."""
     runner, cfg, _db = cli_workspace

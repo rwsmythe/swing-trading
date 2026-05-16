@@ -176,6 +176,20 @@ def _check_pipeline_not_running(conn: sqlite3.Connection) -> None:
     """Raise ``BackfillPipelineActiveError`` if a pipeline_runs row is running.
 
     Mirrors ``swing/cli_schwab.py:_check_pipeline_not_running``.
+
+    Codex R1 Major #3 — Race-window note: the entry-time check at
+    ``run_backfill`` is necessary but not sufficient. ``run_backfill``
+    operates in AUTOCOMMIT MODE (no outer transaction; per-discrepancy
+    service helpers own their own BEGIN IMMEDIATE / COMMIT envelopes
+    per plan §E.6 #4). A pipeline can therefore start AFTER the entry
+    check and BEFORE / DURING per-discrepancy dispatch. The mitigation
+    is to call this helper BEFORE EACH per-discrepancy iteration in
+    ``run_backfill``'s loop. If a pipeline started mid-iteration the
+    helper raises ``BackfillPipelineActiveError`` and the loop aborts
+    with a clean partial-progress summary (rows processed so far stay
+    persisted via their own transactions; remaining rows are skipped).
+    The cost is one SELECT per iteration — cheap (~50 production
+    discrepancies even on a backlog).
     """
     row = conn.execute(
         "SELECT id FROM pipeline_runs WHERE state = 'running' LIMIT 1",
@@ -1068,6 +1082,15 @@ def run_backfill(
 
     summary = BackfillSummary()
     for disc in discrepancies:
+        # Codex R1 Major #3 — per-iteration pipeline-exclusion recheck
+        # to close the entry-check vs per-discrepancy-dispatch race
+        # window. ``run_backfill`` operates in AUTOCOMMIT (no outer tx
+        # per plan §E.6 #4) so a pipeline can land between the entry
+        # check + the next per-discrepancy dispatch. The recheck raises
+        # ``BackfillPipelineActiveError`` and aborts further iteration;
+        # rows already processed remain persisted (their own service-
+        # layer txs committed end-to-end).
+        _check_pipeline_not_running(conn)
         outcome = _classify_and_apply(
             conn,
             disc,
