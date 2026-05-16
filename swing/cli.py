@@ -1922,6 +1922,134 @@ def discrepancy_show_cmd(ctx, discrepancy_id):
     click.echo(f"created_at:     {d.created_at}")
 
 
+@discrepancy_group.command("show-ambiguity")
+@click.argument("discrepancy_id", type=int)
+@click.pass_context
+def discrepancy_show_ambiguity_cmd(ctx, discrepancy_id):
+    """Print discrepancy detail + the per-``ambiguity_kind`` choice menu.
+
+    Surfaces the choices the operator can pass to ``resolve-ambiguity``
+    via ``--choice <code>``. For ``multi_match_within_window``, the
+    parametric ``pick_schwab_record_<N>`` entries are constructed from
+    the candidate count parsed best-effort out of ``resolution_reason``
+    (V1 source per plan §E.2 acceptance criterion #4; no dedicated
+    ``candidate_choices_json`` column — banked V2 candidate §I.13).
+    """
+    import re
+
+    from swing.data.db import connect
+    from swing.data.repos.reconciliation import get_discrepancy
+    from swing.trades.reconciliation_ambiguity_choices import (
+        ChoiceMenuItem,
+        get_choice_menu,
+    )
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        d = get_discrepancy(conn, discrepancy_id)
+    finally:
+        conn.close()
+    if d is None:
+        raise click.ClickException(
+            f"discrepancy {discrepancy_id} not found"
+        )
+    # --- Shared discrepancy detail (mirrors discrepancy_show_cmd). ---
+    click.echo(f"discrepancy_id: {d.discrepancy_id}")
+    click.echo(f"run_id:         {d.run_id}")
+    click.echo(f"type:           {d.discrepancy_type}")
+    click.echo(f"trade_id:       {d.trade_id}")
+    click.echo(f"fill_id:        {d.fill_id}")
+    click.echo(f"ticker:         {d.ticker}")
+    click.echo(f"field:          {d.field_name}")
+    click.echo(f"material:       {d.material_to_review}")
+    click.echo(f"expected:       {d.expected_value_json}")
+    click.echo(f"actual:         {d.actual_value_json}")
+    click.echo(f"delta:          {d.delta_text}")
+    click.echo(f"resolution:     {d.resolution}")
+    click.echo(f"ambiguity_kind: {d.ambiguity_kind}")
+    click.echo(f"reason:         {d.resolution_reason}")
+    click.echo(f"created_at:     {d.created_at}")
+
+    # --- Choice menu per spec §6.2.1. ---
+    click.echo("")
+    if d.ambiguity_kind is None:
+        click.echo(
+            "(no candidate choices: discrepancy has no ambiguity_kind; "
+            "not a Tier-2 pending row)"
+        )
+        return
+
+    menu = get_choice_menu(d.ambiguity_kind)
+
+    # multi_match_within_window: prepend parametric pick_schwab_record_<N>
+    # entries derived best-effort from resolution_reason text. V1 source
+    # per plan §E.2 acceptance criterion #4 — the classifier emits
+    # ``Schwab returned <N> orders within the match window`` in the
+    # reason. Fall through to static-only menu on parse failure
+    # (defense-in-depth).
+    if d.ambiguity_kind == "multi_match_within_window":
+        parametric: list[ChoiceMenuItem] = []
+        reason = d.resolution_reason or ""
+        m = re.search(
+            r"Schwab returned\s+(\d+)\s+orders within the match window",
+            reason,
+        )
+        if m:
+            n = int(m.group(1))
+            for i in range(n):
+                parametric.append(
+                    ChoiceMenuItem(
+                        code=f"pick_schwab_record_{i + 1}",
+                        description=(
+                            f"Pick Schwab candidate #{i + 1} as the "
+                            f"canonical source for this fill (REQUIRES "
+                            f"--custom-value with operator-supplied "
+                            f"execution-level field values; Pass-2 "
+                            f"candidates are order-grain not "
+                            f"execution-grain per spec §4.3.2 LOCK)."
+                        ),
+                        requires_custom_value=True,
+                        expected_payload_shape_description=(
+                            '{"price": X.XX, "quantity": Q, '
+                            '"fill_datetime": "..."}'
+                        ),
+                    )
+                )
+        menu = parametric + menu
+
+    if not menu:
+        click.echo(
+            f"(no candidate choices for ambiguity_kind="
+            f"{d.ambiguity_kind!r}; helper module not updated for "
+            f"this kind — V1 forward-compatibility surface)"
+        )
+        return
+
+    click.echo("Candidate choices (pass to resolve-ambiguity via --choice):")
+    click.echo("")
+    # RECOMMENDED entries surface first (operator scan-first per OQ-4).
+    recommended_items = [it for it in menu if it.recommended]
+    other_items = [it for it in menu if not it.recommended]
+    for it in recommended_items + other_items:
+        prefix = "[RECOMMENDED] " if it.recommended else "  "
+        marker = " *" if it.requires_custom_value else ""
+        click.echo(f"{prefix}{it.code}{marker}")
+        click.echo(f"    {it.description}")
+        if it.requires_custom_value:
+            shape = it.expected_payload_shape_description
+            if shape is not None:
+                click.echo(
+                    f"    * REQUIRES --custom-value with shape "
+                    f"{shape}"
+                )
+            else:
+                click.echo(
+                    "    * REQUIRES --custom-value '<json>' payload"
+                )
+        click.echo("")
+
+
 @discrepancy_group.command("resolve")
 @click.argument("discrepancy_id", type=int)
 @click.option(
