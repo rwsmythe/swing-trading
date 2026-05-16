@@ -195,6 +195,20 @@ def test_discrepancy_list_unresolved_filter(
     runner, cfg, db_path, project = cli_workspace
     _seed_open_trade(db_path)
     _run_reconcile(runner, cfg, SYNTHETIC_TOS_TEXT, tmp_path)
+    # Phase 12 C.C T-C.6: reset post-pivot resolutions back to
+    # ``unresolved`` so the legacy ``--unresolved`` CLI filter still
+    # surfaces the seeded discrepancies (C.D will widen the filter to
+    # include ``pending_ambiguity_resolution``).
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE reconciliation_discrepancies SET "
+            "resolution='unresolved', ambiguity_kind=NULL, "
+            "resolution_reason=NULL, resolved_at=NULL, resolved_by=NULL"
+        )
+        conn.commit()
+    finally:
+        conn.close()
     r = runner.invoke(main, [
         "--config", str(cfg), "journal", "discrepancy", "list",
         "--unresolved",
@@ -248,6 +262,19 @@ def test_discrepancy_resolve_happy_path(
             "SELECT discrepancy_id FROM reconciliation_discrepancies "
             "ORDER BY discrepancy_id ASC LIMIT 1"
         ).fetchone()[0]
+        # Phase 12 C.C T-C.6: reset back to ``unresolved`` so the
+        # legacy resolve-CLI transition is valid (the pivot otherwise
+        # stamps ``pending_ambiguity_resolution`` which the schema
+        # cross-CHECK forbids transitioning to ``journal_corrected``
+        # while ambiguity_kind IS NOT NULL).
+        conn.execute(
+            "UPDATE reconciliation_discrepancies SET "
+            "resolution='unresolved', ambiguity_kind=NULL, "
+            "resolution_reason=NULL, resolved_at=NULL, resolved_by=NULL "
+            "WHERE discrepancy_id=?",
+            (did,),
+        )
+        conn.commit()
     finally:
         conn.close()
     r = runner.invoke(main, [
@@ -286,6 +313,19 @@ def test_discrepancy_resolve_acknowledged_immaterial_without_reason(
             "SELECT discrepancy_id FROM reconciliation_discrepancies "
             "ORDER BY discrepancy_id ASC LIMIT 1"
         ).fetchone()[0]
+        # Phase 12 C.C T-C.6: reset the discrepancy back to
+        # ``resolution='unresolved'`` + ``ambiguity_kind=NULL`` so the
+        # acknowledged_immaterial transition does not violate the
+        # schema cross-CHECK (pending_ambiguity_resolution requires
+        # ambiguity_kind IS NOT NULL).
+        conn.execute(
+            "UPDATE reconciliation_discrepancies SET "
+            "resolution='unresolved', ambiguity_kind=NULL, "
+            "resolution_reason=NULL, resolved_at=NULL, resolved_by=NULL "
+            "WHERE discrepancy_id=?",
+            (did,),
+        )
+        conn.commit()
     finally:
         conn.close()
     r = runner.invoke(main, [
@@ -329,6 +369,20 @@ def test_discrepancy_resolve_material_override(
             "SELECT discrepancy_id FROM reconciliation_discrepancies "
             "ORDER BY discrepancy_id ASC LIMIT 1"
         ).fetchone()[0]
+        # Phase 12 C.C T-C.6: reset the discrepancy to unresolved state
+        # so the test exercises the resolve-CLI's --material override
+        # path against the pre-pivot resolution shape. The pivot
+        # otherwise stamps ``pending_ambiguity_resolution`` which the
+        # schema cross-CHECK forbids transitioning to
+        # ``acknowledged_immaterial`` without clearing ambiguity_kind.
+        conn.execute(
+            "UPDATE reconciliation_discrepancies SET "
+            "resolution='unresolved', ambiguity_kind=NULL, "
+            "resolution_reason=NULL, resolved_at=NULL, resolved_by=NULL "
+            "WHERE discrepancy_id=?",
+            (did,),
+        )
+        conn.commit()
     finally:
         conn.close()
     r = runner.invoke(main, [

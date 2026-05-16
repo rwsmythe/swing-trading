@@ -121,6 +121,7 @@ def run_tos_reconciliation(
     period_start: date | str | None = None,
     notes: str | None = None,
     price_tolerance: float = 0.01,
+    environment: str | None = None,
 ) -> ReconciliationRun:
     """Orchestrate a TOS-CSV reconciliation run per spec §3.3.3 + plan §A.2.
 
@@ -386,6 +387,29 @@ def run_tos_reconciliation(
                         f"${equity_delta:+.2f} (journal minus source)"
                     ),
                 )
+
+        # ----- T-C.6 (Phase 12 C.C): classify + dispatch pivot -----
+        # Spec §7.1 LOCKED savepoint-per-discrepancy discipline. Mirrors
+        # the T-C.5 pivot at `run_schwab_reconciliation` (per OQ-2 PIVOT
+        # BOTH). Skipped under sandbox per spec §5.9.
+        if environment != "sandbox":
+            from swing.trades.schwab_reconciliation import (
+                _pivot_classify_and_dispatch_for_run,
+            )
+            _pivot_classify_and_dispatch_for_run(
+                conn,
+                run_id=run_id,
+                schwab_orders=[],  # TOS-CSV has no Schwab-side orders
+                schwab_api_call_id=None,
+                environment=environment,
+                counters=counters,
+            )
+        # Augment summary with pivot counters (defaults preserve back-compat
+        # for callers that only read existing summary keys).
+        summary["tier1_applied_count"] = counters.get("tier1_applied_count", 0)
+        summary["tier2_pending_count"] = counters.get("tier2_pending_count", 0)
+        summary["tier3_overridden_count"] = 0  # always 0 — tier-3 post-run
+        summary["tier_errored_count"] = counters.get("tier_errored_count", 0)
 
         finished_ts = now_ms()
         if finished_ts < started_ts:

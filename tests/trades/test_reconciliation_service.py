@@ -388,7 +388,11 @@ def test_resolve_discrepancy_updates_lifecycle(
     )
     csv = tmp_path / "tos.csv"
     csv.write_text(_SIMPLE_TOS_CSV, encoding="utf-8")
-    out = run_tos_reconciliation(conn, csv_path=csv)
+    # Phase 12 C.C T-C.6: bypass the auto-correct pivot so this legacy
+    # test exercises ``resolve_discrepancy`` against the pre-pivot
+    # ``resolution='unresolved'`` state. The pivot is exercised end-to-end
+    # in tests/trades/test_run_tos_reconciliation_pivot.py.
+    out = run_tos_reconciliation(conn, csv_path=csv, environment="sandbox")
     ds = recon_repo.list_discrepancies_for_run(conn, out.run_id)
     assert len(ds) >= 1
     target = ds[0]
@@ -440,7 +444,12 @@ def test_resolve_discrepancy_acknowledged_immaterial_allows_null_reason(
     )
     csv = tmp_path / "tos.csv"
     csv.write_text(_SIMPLE_TOS_CSV, encoding="utf-8")
-    out = run_tos_reconciliation(conn, csv_path=csv)
+    # Phase 12 C.C T-C.6: bypass the auto-correct pivot so the test's
+    # ``acknowledged_immaterial`` resolution transition is valid (the
+    # pivot otherwise leaves the row in ``pending_ambiguity_resolution``,
+    # whose schema cross-CHECK invariant forbids transitioning directly
+    # to ``acknowledged_immaterial`` while ambiguity_kind IS NOT NULL).
+    out = run_tos_reconciliation(conn, csv_path=csv, environment="sandbox")
     ds = recon_repo.list_discrepancies_for_run(conn, out.run_id)
     target = ds[0]
     # Should not raise.
@@ -876,7 +885,12 @@ def test_overfill_close_attributes_to_trade_id(
         "2026-05-12 15:30:00,STOCK,SELL,-8,CLOSING,OVR,,,,12.0000,12.0000,MKT\n",
         encoding="utf-8",
     )
-    out = run_tos_reconciliation(conn, csv_path=csv)
+    # Phase 12 C.C T-C.6: bypass the auto-correct pivot so the
+    # ``list_unresolved_material_for_active_trades`` canonical query
+    # (filters on resolution='unresolved') still surfaces the row. The
+    # pivot otherwise stamps it ``pending_ambiguity_resolution`` —
+    # C.D widens the canonical queries.
+    out = run_tos_reconciliation(conn, csv_path=csv, environment="sandbox")
     ds = recon_repo.list_discrepancies_for_run(conn, out.run_id)
     ucf = [d for d in ds if d.discrepancy_type == "unmatched_close_fill"]
     assert len(ucf) == 1

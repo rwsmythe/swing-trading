@@ -216,6 +216,17 @@ def test_phase9_end_to_end_four_discrepancy_types(cli_workspace) -> None:
     # Verify the four discrepancy types persisted.
     conn = connect(db_path)
     try:
+        # Phase 12 C.C T-C.6: the auto-correct pivot has now run + most
+        # discrepancies have moved to ``pending_ambiguity_resolution``.
+        # Reset to ``unresolved`` so this Phase 9 e2e test exercises the
+        # canonical-query surface as designed (the pivot has its own
+        # E2E test at tests/trades/test_run_tos_reconciliation_pivot.py).
+        conn.execute(
+            "UPDATE reconciliation_discrepancies SET "
+            "resolution='unresolved', ambiguity_kind=NULL, "
+            "resolution_reason=NULL, resolved_at=NULL, resolved_by=NULL"
+        )
+        conn.commit()
         runs = recon_repo.list_recent_runs(conn, limit=5)
         assert len(runs) == 1
         run = runs[0]
@@ -285,6 +296,17 @@ def test_phase9_end_to_end_resolve_via_cli_updates_row(cli_workspace) -> None:
     # Pick any discrepancy on the active trade.
     conn = connect(db_path)
     try:
+        # Phase 12 C.C T-C.6: reset post-pivot resolution back to
+        # ``unresolved`` so the test exercises the legacy resolve-CLI
+        # path against a pre-pivot row shape (avoids the schema
+        # cross-CHECK that forbids journal_corrected from
+        # pending_ambiguity_resolution while ambiguity_kind IS NOT NULL).
+        conn.execute(
+            "UPDATE reconciliation_discrepancies SET "
+            "resolution='unresolved', ambiguity_kind=NULL, "
+            "resolution_reason=NULL, resolved_at=NULL, resolved_by=NULL"
+        )
+        conn.commit()
         row = conn.execute(
             "SELECT discrepancy_id, run_id FROM reconciliation_discrepancies "
             "WHERE trade_id IS NOT NULL ORDER BY discrepancy_id ASC LIMIT 1"
@@ -292,7 +314,17 @@ def test_phase9_end_to_end_resolve_via_cli_updates_row(cli_workspace) -> None:
         assert row is not None
         did, run_id = row
         before = recon_repo.get_run(conn, run_id)
-        unresolved_before = before.unresolved_discrepancies_count
+        # Refresh unresolved_before from the rewrite — the original
+        # run-level count was set at pre-pivot time + may be stale.
+        unresolved_before = conn.execute(
+            "SELECT COUNT(*) FROM reconciliation_discrepancies "
+            "WHERE run_id=? AND resolution='unresolved'", (run_id,),
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE reconciliation_runs SET unresolved_discrepancies_count=? "
+            "WHERE run_id=?", (unresolved_before, run_id),
+        )
+        conn.commit()
     finally:
         conn.close()
 
