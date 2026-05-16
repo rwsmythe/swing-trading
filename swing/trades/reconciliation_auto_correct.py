@@ -580,7 +580,7 @@ def _apply_tier3_override_inner(  # pragma: no cover — populated in T-C.4
     )
 
 
-def _stamp_pending_ambiguity_inner(  # pragma: no cover — populated in T-C.3.1
+def _stamp_pending_ambiguity_inner(
     conn: sqlite3.Connection,
     *,
     discrepancy_id: int,
@@ -588,9 +588,40 @@ def _stamp_pending_ambiguity_inner(  # pragma: no cover — populated in T-C.3.1
     resolution_reason: str,
     allow_pending_update: bool = False,
 ) -> None:
-    """T-C.3.1 — UPDATE discrepancy to pending_ambiguity_resolution. Caller owns tx."""
-    raise NotImplementedError(
-        "_stamp_pending_ambiguity_inner body lands in T-C.3.1 per plan §D.3.1"
+    """T-C.3.1 — UPDATE discrepancy to pending_ambiguity_resolution.
+
+    Per plan §D.3.1 contract (Codex R4/R5 LOCK):
+      - resolution='unresolved' → UPDATE (standard backfill stamp).
+      - resolution='pending_ambiguity_resolution' AND
+        allow_pending_update=False (default) → no-op (idempotent).
+      - resolution='pending_ambiguity_resolution' AND
+        allow_pending_update=True → UPDATE (T-D.9 --retry-pass-2-failures).
+      - resolution in terminal state → raise ValueError.
+
+    No journal mutation; no audit row write.
+    """
+    disc = _select_discrepancy(conn, discrepancy_id)
+
+    if disc.resolution == "unresolved":
+        pass  # standard backfill stamp; proceed to UPDATE
+    elif disc.resolution == "pending_ambiguity_resolution":
+        if not allow_pending_update:
+            return  # idempotent no-op
+        # else: T-D.9 retry — proceed to UPDATE
+    else:
+        raise ValueError(
+            f"cannot stamp pending_ambiguity on discrepancy in terminal "
+            f"state {disc.resolution!r} (discrepancy_id={discrepancy_id})"
+        )
+
+    conn.execute(
+        "UPDATE reconciliation_discrepancies SET "
+        "resolution = ?, ambiguity_kind = ?, resolution_reason = ? "
+        "WHERE discrepancy_id = ?",
+        (
+            "pending_ambiguity_resolution", ambiguity_kind,
+            resolution_reason, discrepancy_id,
+        ),
     )
 
 

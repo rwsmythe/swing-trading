@@ -194,21 +194,21 @@ def test_inner_functions_do_not_raise_caller_held_transaction_error(
                 choice_code="keep_journal_as_is",
                 operator_reason="x",
             )
-        # Tier-3 + stamp inner bodies still raise NotImplementedError
-        # in T-C.3 scope; they land in T-C.3.1 / T-C.4.
+        # Stamp inner body is populated (T-C.3.1): unknown id → ValueError.
+        with pytest.raises(ValueError, match="discrepancy_id"):
+            _stamp_pending_ambiguity_inner(
+                conn,
+                discrepancy_id=999_999,
+                ambiguity_kind="unsupported",
+                resolution_reason="x",
+            )
+        # Tier-3 inner body still raises NotImplementedError until T-C.4.
         with pytest.raises(NotImplementedError):
             _apply_tier3_override_inner(
                 conn,
                 correction_id=1,
                 operator_truth_value={"price": 5.0},
                 operator_reason="x",
-            )
-        with pytest.raises(NotImplementedError):
-            _stamp_pending_ambiguity_inner(
-                conn,
-                discrepancy_id=1,
-                ambiguity_kind="unsupported",
-                resolution_reason="x",
             )
     finally:
         conn.rollback()
