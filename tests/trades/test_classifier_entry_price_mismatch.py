@@ -189,6 +189,157 @@ def test_entry_price_mismatch_tier_2_when_source_payload_scalar() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Codex R1 Critical #1 — (ticker, date, quantity) consistency check +
+# NaN/inf/non-numeric guard on source_price.
+#
+# Spec §4.3.1 LOGIC requires journal (ticker, date, quantity) to match
+# source exactly and only `price` to differ before tier-1 emission. The
+# pre-Codex-R1 implementation only checked `source_payload['price']` and
+# would emit tier-1 even if source ticker/date/quantity contradicted the
+# journal or if `journal_row` was missing entirely. These tests pin the
+# tightened contract.
+# ---------------------------------------------------------------------------
+
+
+def test_tier_2_unsupported_when_source_ticker_disagrees_with_journal() -> None:
+    """Source ticker AAPL vs journal CVGI → tier-2 unsupported (R1 C#1)."""
+    discrepancy = _make_cvgi_41_discrepancy()
+    result = classify_discrepancy(
+        discrepancy,
+        source_payload={"ticker": "AAPL", "price": 5.30},
+        journal_row={
+            "price": 5.23,
+            "quantity": 100,
+            "ticker": "CVGI",
+            "fill_datetime": "2026-04-27T10:00:00",
+        },
+        validator_chain=None,
+    )
+    assert result.tier == 2
+    assert result.ambiguity_kind == "unsupported"
+    assert result.correction_target is None
+    assert "ticker" in result.correction_reason.lower()
+
+
+def test_tier_2_unsupported_when_source_quantity_disagrees() -> None:
+    """Source qty=200 vs journal qty=100 → tier-2 unsupported (R1 C#1)."""
+    discrepancy = _make_cvgi_41_discrepancy()
+    result = classify_discrepancy(
+        discrepancy,
+        source_payload={"quantity": 200, "price": 5.30},
+        journal_row={
+            "price": 5.23,
+            "quantity": 100,
+            "ticker": "CVGI",
+            "fill_datetime": "2026-04-27T10:00:00",
+        },
+        validator_chain=None,
+    )
+    assert result.tier == 2
+    assert result.ambiguity_kind == "unsupported"
+    assert "quantity" in result.correction_reason.lower()
+
+
+def test_tier_2_unsupported_when_source_date_disagrees_against_journal_fill_datetime() -> None:
+    """Source date 2026-04-28 vs journal fill_datetime 2026-04-27T... → tier-2."""
+    discrepancy = _make_cvgi_41_discrepancy()
+    result = classify_discrepancy(
+        discrepancy,
+        source_payload={"date": "2026-04-28", "price": 5.30},
+        journal_row={
+            "price": 5.23,
+            "quantity": 100,
+            "ticker": "CVGI",
+            "fill_datetime": "2026-04-27T14:00:00",
+        },
+        validator_chain=None,
+    )
+    assert result.tier == 2
+    assert result.ambiguity_kind == "unsupported"
+    assert "date" in result.correction_reason.lower()
+
+
+def test_tier_2_unsupported_when_journal_row_is_None() -> None:
+    """journal_row=None with non-None source_payload → cannot verify tuple."""
+    discrepancy = _make_cvgi_41_discrepancy()
+    result = classify_discrepancy(
+        discrepancy,
+        source_payload={"price": 5.30},
+        journal_row=None,
+        validator_chain=None,
+    )
+    assert result.tier == 2
+    assert result.ambiguity_kind == "unsupported"
+    assert "journal_row missing" in result.correction_reason
+
+
+@pytest.mark.parametrize(
+    "bad_price",
+    [
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        "not-a-number",
+    ],
+)
+def test_tier_2_unsupported_when_source_price_is_nan_or_inf(bad_price: object) -> None:
+    """NaN/inf/non-numeric source_price → tier-2 unsupported (R1 C#1)."""
+    discrepancy = _make_cvgi_41_discrepancy()
+    result = classify_discrepancy(
+        discrepancy,
+        source_payload={"price": bad_price},
+        journal_row={"price": 5.23, "quantity": 100, "ticker": "CVGI"},
+        validator_chain=None,
+    )
+    assert result.tier == 2
+    assert result.ambiguity_kind == "unsupported"
+    assert result.correction_target is None
+
+
+def test_tier_1_passes_when_source_carries_persisted_json_only_shape() -> None:
+    """Discriminating positive case: persisted-JSON-only shape {"price": X}.
+
+    This is the shipped emitter contract per
+    swing/trades/schwab_reconciliation.py:469-474 — emitter verifies the
+    match pre-emit and persists only {'price': X}. With no contradicting
+    keys present in source_payload, tier-1 emits as designed.
+    """
+    discrepancy = _make_cvgi_41_discrepancy()
+    result = classify_discrepancy(
+        discrepancy,
+        source_payload={"price": 5.30},
+        journal_row={
+            "price": 5.23,
+            "quantity": 100,
+            "ticker": "CVGI",
+            "fill_datetime": "2026-04-27T10:00:00",
+        },
+        validator_chain=None,
+    )
+    assert result.tier == 1
+    assert result.correction_target == {"price": 5.30}
+
+
+def test_tier_1_passes_when_source_keys_match_journal_explicitly() -> None:
+    """Discriminating positive case: source carries (ticker, qty, price)
+    AND they match journal_row → tier-1 emits as designed."""
+    discrepancy = _make_cvgi_41_discrepancy()
+    result = classify_discrepancy(
+        discrepancy,
+        source_payload={"ticker": "CVGI", "quantity": 100, "price": 5.30},
+        journal_row={
+            "price": 5.23,
+            "quantity": 100,
+            "ticker": "CVGI",
+            "fill_datetime": "2026-04-27T10:00:00",
+        },
+        validator_chain=None,
+    )
+    assert result.tier == 1
+    assert result.correction_target == {"price": 5.30}
+
+
+# ---------------------------------------------------------------------------
 # Determinism over the sub-classifier
 # ---------------------------------------------------------------------------
 

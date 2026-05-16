@@ -32,6 +32,7 @@ broker-statement consultation.
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -223,7 +224,144 @@ def _classify_entry_price_mismatch(
             ),
         )
 
-    journal_price = (journal_row or {}).get("price") if journal_row else None
+    # Codex R1 Critical #1 — defensive numeric guard on source_price.
+    # Reject NaN/inf/non-numeric so tier-1 emission never carries a value
+    # that mirrors a schema CHECK violation downstream. The persisted-JSON
+    # emitter (swing/trades/schwab_reconciliation.py:469-474) only writes
+    # finite floats, but a defensive guard keeps the classifier honest.
+    try:
+        source_price_float = float(source_price)
+    except (TypeError, ValueError):
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="unsupported",
+            correction_target=None,
+            correction_reason=(
+                f"entry_price_mismatch on "
+                f"(ticker={discrepancy.ticker!r}, "
+                f"fill_id={discrepancy.fill_id}): source_payload 'price' "
+                f"is non-numeric ({source_price!r}); classifier cannot "
+                f"disposition"
+            ),
+        )
+    if not math.isfinite(source_price_float):
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="unsupported",
+            correction_target=None,
+            correction_reason=(
+                f"entry_price_mismatch on "
+                f"(ticker={discrepancy.ticker!r}, "
+                f"fill_id={discrepancy.fill_id}): source_payload 'price' "
+                f"is NaN/inf ({source_price!r}); classifier cannot "
+                f"disposition"
+            ),
+        )
+
+    # Codex R1 Critical #1 — (ticker, date, quantity) consistency check per
+    # spec §4.3.1 LOGIC verbatim. The persisted-JSON-only shape from the
+    # shipped emitter (swing/trades/schwab_reconciliation.py:469-474) carries
+    # ONLY a 'price' key and is verified pre-emit, so it falls through to
+    # tier-1. If a caller supplies a richer payload AND any of
+    # (ticker, date, quantity) disagrees with journal_row, downgrade to
+    # tier-2 'unsupported' rather than emit an ungrounded auto-correct.
+    # journal_row missing entirely → also tier-2 unsupported (cannot verify
+    # match tuple).
+    if journal_row is None:
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="unsupported",
+            correction_target=None,
+            correction_reason=(
+                f"entry_price_mismatch on "
+                f"(ticker={discrepancy.ticker!r}, "
+                f"fill_id={discrepancy.fill_id}): journal_row missing — "
+                f"cannot verify (ticker, date, quantity) match tuple per "
+                f"spec §4.3.1; operator dispositions manually"
+            ),
+        )
+
+    # Ticker consistency: case-insensitive string equality.
+    if "ticker" in source_payload:
+        src_ticker = source_payload.get("ticker")
+        jr_ticker = journal_row.get("ticker")
+        if src_ticker is None or jr_ticker is None or (
+            str(src_ticker).strip().upper() != str(jr_ticker).strip().upper()
+        ):
+            return ClassificationResult(
+                tier=2,
+                ambiguity_kind="unsupported",
+                correction_target=None,
+                correction_reason=(
+                    f"entry_price_mismatch on "
+                    f"(ticker={discrepancy.ticker!r}, "
+                    f"fill_id={discrepancy.fill_id}): ticker mismatch "
+                    f"between source_payload ({src_ticker!r}) and "
+                    f"journal_row ({jr_ticker!r}); cannot verify match "
+                    f"tuple per spec §4.3.1"
+                ),
+            )
+
+    # Quantity consistency: exact equality (after numeric coercion).
+    if "quantity" in source_payload:
+        src_qty = source_payload.get("quantity")
+        jr_qty = journal_row.get("quantity")
+        try:
+            src_qty_f = float(src_qty) if src_qty is not None else None
+            jr_qty_f = float(jr_qty) if jr_qty is not None else None
+        except (TypeError, ValueError):
+            src_qty_f = jr_qty_f = None
+        if src_qty_f is None or jr_qty_f is None or src_qty_f != jr_qty_f:
+            return ClassificationResult(
+                tier=2,
+                ambiguity_kind="unsupported",
+                correction_target=None,
+                correction_reason=(
+                    f"entry_price_mismatch on "
+                    f"(ticker={discrepancy.ticker!r}, "
+                    f"fill_id={discrepancy.fill_id}): quantity mismatch "
+                    f"between source_payload ({src_qty!r}) and "
+                    f"journal_row ({jr_qty!r}); cannot verify match "
+                    f"tuple per spec §4.3.1"
+                ),
+            )
+
+    # Date consistency: ISO-date-prefix equality. source_payload may carry
+    # 'date' (date-only) OR 'fill_datetime' (full ISO); journal_row likewise.
+    # Normalize to first 10 chars and compare.
+    src_date_raw = source_payload.get("date")
+    if src_date_raw is None:
+        src_date_raw = source_payload.get("fill_datetime")
+    if src_date_raw is not None:
+        jr_date_raw = journal_row.get("fill_datetime")
+        if jr_date_raw is None:
+            jr_date_raw = journal_row.get("date")
+        src_date_prefix = (
+            str(src_date_raw)[:10] if src_date_raw is not None else None
+        )
+        jr_date_prefix = (
+            str(jr_date_raw)[:10] if jr_date_raw is not None else None
+        )
+        if (
+            src_date_prefix is None
+            or jr_date_prefix is None
+            or src_date_prefix != jr_date_prefix
+        ):
+            return ClassificationResult(
+                tier=2,
+                ambiguity_kind="unsupported",
+                correction_target=None,
+                correction_reason=(
+                    f"entry_price_mismatch on "
+                    f"(ticker={discrepancy.ticker!r}, "
+                    f"fill_id={discrepancy.fill_id}): date mismatch "
+                    f"between source_payload ({src_date_raw!r}) and "
+                    f"journal_row (fill_datetime/date={jr_date_raw!r}); "
+                    f"cannot verify match tuple per spec §4.3.1"
+                ),
+            )
+
+    journal_price = journal_row.get("price")
     # Format prices to 2 decimals so the reason string carries a stable
     # numeric representation regardless of Python's float repr (e.g.,
     # 5.30 → 5.3 by default; we render 5.30 explicitly for observability).
