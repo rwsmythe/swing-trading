@@ -383,6 +383,11 @@ class ReviewLog:
     avg_loss_R: float | None = None  # noqa: N815
     profit_factor: float | None = None
     max_drawdown_R: float | None = None  # noqa: N815
+    # Phase 12 Sub-bundle C (T-A.2): FK to reconciliation_corrections audit
+    # row that supersedes a previously-published review aggregate value
+    # (rare; tier-3 operator override path). NULL when no correction has
+    # been applied. Per migration 0019.
+    superseded_by_correction_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -978,6 +983,12 @@ class ReconciliationDiscrepancy:
     resolved_by: str | None
     mistake_tag_assigned: str | None
     created_at: str
+    # Phase 12 Sub-bundle C (T-A.2): ambiguity classification for tier-2
+    # operator-resolution path. NULL when discrepancy is unambiguous (auto-
+    # correct path) or when ambiguity_kind has not yet been classified. The
+    # SQL layer enforces the 7-value CHECK enum + cross-column resolution-
+    # vs-ambiguity_kind pinning (migration 0019 lines 125-148).
+    ambiguity_kind: str | None = None
 
     def __post_init__(self) -> None:
         import json
@@ -1063,6 +1074,54 @@ class ReconciliationDiscrepancy:
                     f"resolution={self.resolution!r} requires non-empty "
                     "resolution_reason"
                 )
+
+
+@dataclass(frozen=True)
+class ReconciliationCorrection:
+    """Phase 12 Sub-bundle C audit row for tier-1/tier-2/tier-3 corrections.
+
+    Mirrors migration 0019 ``reconciliation_corrections`` table verbatim
+    (20 columns; spec §3.1 header miscounts as 19 — T-A.1 LOCKED 20, banked
+    as V2.1 §VII.F amendment candidate §I.16). Emitted by the auto-correct
+    service when reconciliation classifies a discrepancy as tier-1 (auto-
+    apply), tier-2 (operator-resolved ambiguity), or tier-3 (operator
+    override of a prior tier-1 correction).
+
+    Schema enums + cross-column CHECKs (correction_action vs correction_choice
+    population; affected_table membership; applied_by/correction_action
+    pinning) are enforced at the SQL layer; the dataclass is the binding
+    artifact for service-layer construction at T-A.4 (repo CRUD) / T-A.5+
+    (the auto-correct service).
+
+    Field order matches the migration 0019 CREATE TABLE column ordering so
+    that ``cursor.execute("SELECT * FROM reconciliation_corrections")`` rows
+    can be wrapped positionally via ``ReconciliationCorrection(*row)`` if
+    needed (project convention prefers explicit column lists; this is a
+    defense-in-depth alignment).
+    """
+
+    correction_id: int
+    discrepancy_id: int
+    # 'auto_applied' | 'operator_resolved_ambiguity' | 'operator_overridden'
+    correction_action: str
+    correction_choice: str | None
+    # 'fills' | 'trades' | 'cash_movements' | 'account_equity_snapshots'
+    affected_table: str
+    affected_row_id: int
+    field_name: str
+    pre_correction_value_json: str
+    source_canonical_value_json: str | None
+    applied_value_json: str
+    operator_truth_value_json: str | None
+    applied_at: str  # ISO YYYY-MM-DDTHH:MM:SS.SSS naive-UTC
+    applied_by: str  # 'auto' | 'operator'
+    correction_set_id: int | None
+    superseded_by_correction_id: int | None
+    risk_policy_id_at_correction: int | None
+    schwab_api_call_id: int | None
+    reconciliation_run_id: int
+    correction_reason: str | None
+    notes: str | None
 
 
 # ===========================================================================
@@ -1246,6 +1305,11 @@ class SchwabApiCall:
     pipeline_run_id: int | None
     surface: str
     environment: str
+    # Phase 12 Sub-bundle C (T-A.2): nullable FK to reconciliation_corrections
+    # audit row when this Schwab API call sourced the canonical value for a
+    # tier-1/tier-2/tier-3 correction. NULL for calls that did not produce a
+    # correction (most calls). Per migration 0019.
+    linked_correction_id: int | None = None
 
     def __post_init__(self) -> None:
         if self.endpoint not in _SCHWAB_VALID_ENDPOINTS:
@@ -1375,6 +1439,7 @@ class SchwabApiCall:
             ("linked_snapshot_id", self.linked_snapshot_id),
             ("linked_reconciliation_run_id", self.linked_reconciliation_run_id),
             ("pipeline_run_id", self.pipeline_run_id),
+            ("linked_correction_id", self.linked_correction_id),
         ):
             if fval is not None and (
                 isinstance(fval, bool) or not isinstance(fval, int) or fval <= 0
