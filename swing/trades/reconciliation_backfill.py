@@ -55,12 +55,25 @@ import json
 import logging
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import Any
 
 from swing.data.models import ReconciliationDiscrepancy
 from swing.data.repos.reconciliation import _DISCREPANCY_SELECT_COLUMNS, _row_to_discrepancy
 
+# Re-export at module attribute path so tests can ``patch(
+# "swing.trades.reconciliation_backfill.get_account_orders_audited", ...)``
+# at the backfill seam instead of monkey-patching the integrations module
+# directly (tests use ``unittest.mock.patch`` with this dotted path).
+from swing.integrations.schwab.trader import get_account_orders_audited
+
 logger = logging.getLogger(__name__)
+
+
+# Pass-2 source-canonical sandbox short-circuit rationale (spec §9.7).
+_SANDBOX_PASS_2_REASON = (
+    "sandbox: cannot re-fetch source-canonical payload"
+)
 
 
 # Substring sentinel emitted by the C.B unmatched_*_fill sub-classifier
@@ -268,15 +281,342 @@ def _fetch_journal_row(
     return None
 
 
+_PASS_2_FAILURE_REASON_PREFIX = "Pass 2 re-fetch failed"
+
+
+def _orders_to_classifier_payload(
+    orders: list[Any],
+) -> list[dict[str, Any]]:
+    """Convert ``list[SchwabOrderResponse]`` → ``list[dict]`` for the
+    classifier's expected source_payload shape.
+
+    The C.B ``_classify_unmatched_fill_shared`` (spec §4.3.2/.3.3) treats
+    source_payload as ``list[Mapping]`` where each entry responds to
+    ``.get("quantity")``. ``SchwabOrderResponse`` is a frozen dataclass
+    (no ``.get()``); convert at the backfill→classifier seam.
+
+    Per C.B classifier source comments: ``SchwabOrderResponse.price`` is
+    limit/stop price, NOT execution price; surfacing here gives the
+    classifier the qty + price fields it needs to choose between
+    ``multi_partial_vs_consolidated`` / ``multi_match_within_window``
+    /etc. — the Pass-2-tier-1-FORBIDDEN LOCK at §8.4 is encoded
+    structurally in the sub-classifier (never emits tier-1 regardless of
+    payload shape).
+    """
+    out: list[dict[str, Any]] = []
+    for o in orders:
+        # Defensive: tolerate either dataclass-instance or pre-converted
+        # dict (for cassette/replay flexibility).
+        if isinstance(o, dict):
+            out.append(o)
+            continue
+        out.append({
+            "order_id": getattr(o, "order_id", None),
+            "status": getattr(o, "status", None),
+            "enter_time": getattr(o, "enter_time", None),
+            "instrument_symbol": getattr(o, "instrument_symbol", None),
+            "instruction": getattr(o, "instruction", None),
+            "quantity": getattr(o, "quantity", None),
+            "order_type": getattr(o, "order_type", None),
+            "price": getattr(o, "price", None),
+        })
+    return out
+
+
+def _parse_disc_created_at(disc: ReconciliationDiscrepancy) -> datetime:
+    """Parse ``ReconciliationDiscrepancy.created_at`` (ISO string) into
+    a ``datetime`` for Pass-2 window arithmetic. Falls back to ``now()``
+    when the field is missing or malformed (defense-in-depth)."""
+    raw = disc.created_at
+    if not raw:
+        return datetime.now()
+    # Strip a trailing 'Z' if present (datetime.fromisoformat doesn't
+    # accept it in pre-3.11 — we target 3.11+ but be tolerant).
+    s = raw.rstrip("Z")
+    try:
+        return datetime.fromisoformat(s)
+    except (TypeError, ValueError):
+        return datetime.now()
+
+
+def _format_pass_2_line(
+    *,
+    discrepancy_id: int,
+    ticker: str | None,
+    discrepancy_type: str,
+    call_id: int | None,
+    tier: int | None,
+    ambiguity_kind: str | None,
+) -> str:
+    """Render the per-discrepancy Pass-2 printout line per plan §E.8 #9.
+
+    Shape:
+      ``disc <id> <ticker> (<type>): Pass 2 → call_id=<int>; tier-<n>;
+        ambiguity_kind='<kind>'``
+
+    The format is operator-facing — they copy ``call_id`` for use with
+    ``swing journal discrepancy resolve-ambiguity --schwab-api-call-id``
+    (T-D.3-wired flag) for forward-linkage of correction rows to the
+    Pass-2 audit row (`reconciliation_corrections.schwab_api_call_id`).
+    """
+    tk = ticker or "-"
+    tier_str = f"tier-{tier}" if tier is not None else "tier-?"
+    return (
+        f"disc {discrepancy_id} {tk} ({discrepancy_type}): "
+        f"Pass 2 → call_id={call_id}; {tier_str}; "
+        f"ambiguity_kind={ambiguity_kind!r}"
+    )
+
+
+def _pass_2_dispatch(
+    conn: sqlite3.Connection,
+    disc: ReconciliationDiscrepancy,
+    *,
+    schwab_client: Any,
+    environment: str,
+    account_hash: str | None,
+    dry_run: bool,
+    no_pass_2_on_dry_run: bool,
+) -> tuple[Any, int | None, str | None]:
+    """Run Pass 2 for one Pass-2-required discrepancy.
+
+    Returns ``(reclassification, call_id, failure_reason)``:
+      - ``reclassification``: a ``ClassificationResult`` (always tier-2
+        per §8.4 Pass-2-tier-1-FORBIDDEN LOCK) OR ``None`` when the
+        caller should stamp tier-2 ``unsupported`` directly with a custom
+        rationale (sandbox / dry-run-skip / re-fetch failure).
+      - ``call_id``: the persisted ``schwab_api_calls.call_id`` returned
+        by ``get_account_orders_audited`` when invoked; ``None``
+        otherwise.
+      - ``failure_reason``: a free-text rationale to thread into
+        BackfillOutcome.reason / persisted resolution_reason when
+        ``reclassification`` is ``None``.
+
+    Branches:
+      1. ``environment='sandbox'``: short-circuit BEFORE Schwab API call
+         per §9.7. No audit row written. Return tier-2 ``unsupported``
+         shape via ``failure_reason``.
+      2. Dry-run + ``--no-pass-2-on-dry-run``: skip API entirely. Same as
+         sandbox failure-rationale-only path.
+      3. Otherwise: invoke ``get_account_orders_audited`` + filter by
+         ticker + classify via shared C.B sub-classifier. On raised
+         exception, return ``(None, None, "Pass 2 re-fetch failed: ...")``.
+    """
+    from swing.trades.reconciliation_classifier import classify_discrepancy
+
+    # Sandbox short-circuit — §9.7 LOCK. Fires BEFORE any Schwab API call.
+    if environment == "sandbox":
+        return (None, None, _SANDBOX_PASS_2_REASON)
+
+    # Dry-run with --no-pass-2-on-dry-run — skip Pass 2 entirely.
+    if dry_run and no_pass_2_on_dry_run:
+        return (
+            None, None,
+            "Pass 2 skipped per --no-pass-2-on-dry-run (dry-run mode)",
+        )
+
+    # Re-fetch via audited wrapper. Failure-mode per acceptance #6.
+    created_at = _parse_disc_created_at(disc)
+    from_dt = created_at - timedelta(days=1)
+    to_dt = created_at + timedelta(days=1)
+
+    try:
+        call_id, schwab_orders = get_account_orders_audited(
+            schwab_client,
+            conn,
+            account_hash or "",
+            from_entered_time=from_dt,
+            to_entered_time=to_dt,
+            surface="cli",
+            environment=environment,
+        )
+    except Exception as exc:  # noqa: BLE001 — graceful degradation
+        # Pipeline NEVER crashes (Phase 11 forward-binding lesson #2).
+        reason = (
+            f"{_PASS_2_FAILURE_REASON_PREFIX}: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        logger.warning(
+            "backfill Pass 2 re-fetch raised on discrepancy %s: %s: %s",
+            disc.discrepancy_id, type(exc).__name__, exc,
+        )
+        return (None, None, reason)
+
+    # Filter by ticker (audited wrapper returns ALL orders in the window
+    # across all symbols per plan §E.8 #2).
+    matching_orders = [
+        o for o in schwab_orders
+        if getattr(o, "instrument_symbol", None) == disc.ticker
+    ]
+    source_payload = _orders_to_classifier_payload(matching_orders)
+
+    # Read the journal row (same shape Pass 1 uses) so the classifier's
+    # qty-sum comparison works (journal_row.get("quantity")).
+    journal_row = _fetch_journal_row(conn, disc)
+
+    # Invoke the C.B sub-classifier with the Pass-2 source payload.
+    # Per §8.4 Pass-2-tier-1-FORBIDDEN LOCK: the sub-classifier NEVER
+    # emits tier-1 from this code path regardless of payload shape.
+    reclassification = classify_discrepancy(
+        disc,
+        source_payload=source_payload,
+        journal_row=journal_row,
+        validator_chain=None,
+    )
+    return (reclassification, call_id, None)
+
+
+def _handle_pass_2(
+    conn: sqlite3.Connection,
+    disc: ReconciliationDiscrepancy,
+    *,
+    disc_id: int,
+    dry_run: bool,
+    schwab_client: Any,
+    environment: str,
+    account_hash: str | None,
+    no_pass_2_on_dry_run: bool,
+) -> BackfillOutcome:
+    """Pass-2 dispatch for one Pass-2-required discrepancy.
+
+    Combines:
+      (a) ``_pass_2_dispatch`` (sandbox / dry-run-skip / fetch + classify);
+      (b) per-discrepancy ``call_id`` printout (plan §E.8 #9);
+      (c) ``--apply`` tier-2 stamp via PUBLIC ``stamp_pending_ambiguity``;
+      (d) Pass-2 failure-counter increment via the caller's summary
+          wiring (returned outcome.outcome == 'pass_2_failed' but also
+          tier-2 stamped per the LOCK).
+
+    The Pass-2-tier-1-FORBIDDEN LOCK is enforced STRUCTURALLY at the
+    C.B sub-classifier — this helper trusts the reclassification result.
+    """
+    from swing.trades.reconciliation_auto_correct import (
+        CallerHeldTransactionError,
+        stamp_pending_ambiguity,
+    )
+
+    reclassification, call_id, failure_reason = _pass_2_dispatch(
+        conn,
+        disc,
+        schwab_client=schwab_client,
+        environment=environment,
+        account_hash=account_hash,
+        dry_run=dry_run,
+        no_pass_2_on_dry_run=no_pass_2_on_dry_run,
+    )
+
+    # Default rendering values (overwritten below on Pass-2 success).
+    ambiguity_kind: str | None = None
+    reason: str | None = None
+
+    if reclassification is not None:
+        ambiguity_kind = reclassification.ambiguity_kind
+        reason = reclassification.correction_reason
+    else:
+        # Sandbox / dry-run-skip / fetch-failure path: emit tier-2
+        # unsupported with custom rationale. The ``run_backfill`` counter
+        # loop reads ``outcome.reason.startswith(_PASS_2_FAILURE_REASON_PREFIX)``
+        # to increment ``BackfillSummary.pass_2_failed`` — sandbox and
+        # --no-pass-2-on-dry-run skip paths use different prefixes so
+        # they do NOT increment the failure counter.
+        ambiguity_kind = "unsupported"
+        reason = failure_reason
+
+    # Per-discrepancy Pass-2 printout (plan §E.8 #9). Operator copies
+    # call_id from this line to use --schwab-api-call-id on resolve.
+    print(
+        _format_pass_2_line(
+            discrepancy_id=disc_id,
+            ticker=disc.ticker,
+            discrepancy_type=disc.discrepancy_type,
+            call_id=call_id,
+            tier=2,
+            ambiguity_kind=ambiguity_kind,
+        ),
+    )
+
+    if dry_run:
+        # Spec §8.2 LOCK — dry-run DOES write the audit row (read's
+        # audit-trail contract; already written by audited wrapper above
+        # when not sandbox-skipped) but does NOT stamp the discrepancy.
+        label = (
+            f"tier-2 stamp ({ambiguity_kind})"
+            if ambiguity_kind and reclassification is not None
+            else f"tier-2 stamp ({ambiguity_kind})"
+        )
+        action = "operator resolution via `swing journal discrepancy`"
+        return BackfillOutcome(
+            discrepancy_id=disc_id,
+            ticker=disc.ticker,
+            discrepancy_type=disc.discrepancy_type,
+            tier=2,
+            outcome="projection_pass_2",
+            ambiguity_kind=ambiguity_kind,
+            correction_id=None,
+            pass_2_call_id=call_id,
+            reason=reason,
+            projection_outcome_label=label,
+            projection_action_needed=action,
+        )
+
+    # --apply mode: stamp via PUBLIC stamp_pending_ambiguity (own-tx).
+    try:
+        stamp_pending_ambiguity(
+            conn,
+            discrepancy_id=disc_id,
+            ambiguity_kind=ambiguity_kind or "unsupported",
+            resolution_reason=reason or "",
+        )
+    except CallerHeldTransactionError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — graceful degradation
+        logger.warning(
+            "backfill Pass 2 stamp_pending_ambiguity failed on "
+            "discrepancy %s: %s: %s",
+            disc_id, type(exc).__name__, exc,
+        )
+        return BackfillOutcome(
+            discrepancy_id=disc_id,
+            ticker=disc.ticker,
+            discrepancy_type=disc.discrepancy_type,
+            tier=2,
+            outcome="errored",
+            ambiguity_kind=ambiguity_kind,
+            pass_2_call_id=call_id,
+            reason=f"stamp_pending failed: {type(exc).__name__}: {exc}",
+            projection_outcome_label="tier-2 errored",
+            projection_action_needed="investigate manually",
+        )
+
+    return BackfillOutcome(
+        discrepancy_id=disc_id,
+        ticker=disc.ticker,
+        discrepancy_type=disc.discrepancy_type,
+        tier=2,
+        outcome="tier2_stamped",
+        ambiguity_kind=ambiguity_kind,
+        pass_2_call_id=call_id,
+        reason=reason,
+        projection_outcome_label=(
+            f"tier-2 stamped ({ambiguity_kind})"
+            if ambiguity_kind
+            else "tier-2 stamped"
+        ),
+        projection_action_needed=(
+            "operator resolution via `swing journal discrepancy`"
+        ),
+    )
+
+
 def _classify_and_apply(
     conn: sqlite3.Connection,
     disc: ReconciliationDiscrepancy,
     *,
     dry_run: bool,
-    schwab_client: Any,  # noqa: ARG001 — T-D.8 consumer
+    schwab_client: Any,
     environment: str,
-    account_hash: str | None,  # noqa: ARG001 — T-D.8 consumer
-    no_pass_2_on_dry_run: bool,  # noqa: ARG001 — T-D.8 consumer
+    account_hash: str | None,
+    no_pass_2_on_dry_run: bool,
     retry_pass_2_failures: bool,  # noqa: ARG001 — T-D.9 consumer
 ) -> BackfillOutcome:
     """T-D.7 — Pass 1 persisted-JSON-only classification + dispatch.
@@ -349,16 +689,28 @@ def _classify_and_apply(
         and _PASS_2_REQUIRED_SENTINEL in (classification.correction_reason or "")
     )
 
+    # T-D.8 — Pass-2-required short-circuit (BEFORE the dry-run branch).
+    # The Pass-2 path covers BOTH dry-run (writes audit row by spec §8.2
+    # LOCK; does NOT stamp the discrepancy) AND --apply (writes audit
+    # row + stamps via stamp_pending_ambiguity).
+    if pass_2_required:
+        return _handle_pass_2(
+            conn,
+            disc,
+            disc_id=disc_id,
+            dry_run=dry_run,
+            schwab_client=schwab_client,
+            environment=environment,
+            account_hash=account_hash,
+            no_pass_2_on_dry_run=no_pass_2_on_dry_run,
+        )
+
     if dry_run:
         # No journal mutation; just build the projection record.
         if classification.tier == 1:
             label = "tier-1 auto-apply"
             action = "(none)"
             outcome = "projection_tier1"
-        elif pass_2_required:
-            label = "Pass 2 required (re-fetch)"
-            action = "--apply or --no-pass-2"
-            outcome = "projection_pass_2"
         else:
             label = (
                 f"tier-2 stamp ({classification.ambiguity_kind})"
@@ -371,7 +723,7 @@ def _classify_and_apply(
             discrepancy_id=disc_id,
             ticker=disc.ticker,
             discrepancy_type=disc.discrepancy_type,
-            tier=classification.tier if not pass_2_required else None,
+            tier=classification.tier,
             outcome=outcome,
             ambiguity_kind=classification.ambiguity_kind,
             reason=classification.correction_reason,
@@ -380,26 +732,6 @@ def _classify_and_apply(
         )
 
     # --apply mode below — dispatch to C.C public services.
-
-    if pass_2_required:
-        # T-D.7 stops short of Pass 2 — record placeholder; T-D.8 will
-        # overwrite with the actual Schwab re-fetch + reclassify path.
-        # Acceptance criterion §0 "Pass-2-required outcomes record
-        # `outcome='pass_2_pending'` placeholder for T-D.8".
-        return BackfillOutcome(
-            discrepancy_id=disc_id,
-            ticker=disc.ticker,
-            discrepancy_type=disc.discrepancy_type,
-            tier=None,
-            outcome="pass_2_pending",
-            ambiguity_kind=classification.ambiguity_kind,
-            reason=(
-                "T-D.8 will dispatch Pass 2 (Schwab re-fetch + "
-                "reclassify); Pass 1 emitted _pass_2_required"
-            ),
-            projection_outcome_label="Pass 2 pending (T-D.8)",
-            projection_action_needed="--apply with T-D.8 wired",
-        )
 
     if classification.tier == 1:
         try:
@@ -570,7 +902,7 @@ def run_backfill(
             retry_pass_2_failures=retry_pass_2_failures,
         )
         summary.per_discrepancy_outcomes.append(outcome)
-        # Counter wiring — T-D.7 dispatches Pass 1 outcomes inline.
+        # Counter wiring — T-D.7 Pass 1 outcomes + T-D.8 Pass 2 outcomes.
         if outcome.outcome == "tier1_applied":
             summary.tier1_applied += 1
         elif outcome.outcome == "tier1_skipped_sandbox":
@@ -578,6 +910,8 @@ def run_backfill(
         elif outcome.outcome == "tier2_stamped":
             summary.tier2_stamped += 1
         elif outcome.outcome == "pass_2_pending":
+            # Legacy T-D.7 placeholder — should NOT be emitted now that
+            # T-D.8 ships; retained for graceful-degradation defense.
             summary.pass_2_pending += 1
         elif outcome.outcome == "pass_2_failed":
             summary.pass_2_failed += 1
@@ -593,6 +927,14 @@ def run_backfill(
             summary.projection_tier2 += 1
         elif outcome.outcome == "projection_pass_2":
             summary.projection_pass_2 += 1
+        # T-D.8 — Pass-2 re-fetch failure-mode counter (orthogonal to
+        # the canonical ``outcome`` enum; transported via the
+        # ``reason`` substring per spec §8.4 + plan §E.8 #6 LOCK).
+        if (
+            outcome.reason
+            and outcome.reason.startswith(_PASS_2_FAILURE_REASON_PREFIX)
+        ):
+            summary.pass_2_failed += 1
 
     return summary
 

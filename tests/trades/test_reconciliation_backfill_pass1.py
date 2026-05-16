@@ -338,10 +338,12 @@ def test_cvgi_tier1_apply_writes_correction(v19_db: sqlite3.Connection) -> None:
 def test_dhc_unmatched_open_fill_records_pass_2_pending_placeholder(
     v19_db: sqlite3.Connection,
 ) -> None:
-    """Acceptance criterion #3 — unmatched_open_fill Pass 1 cannot
-    enumerate candidates from persisted JSON; classifier emits
-    ``_pass_2_required=True`` substring in correction_reason; T-D.7
-    records ``outcome='pass_2_pending'`` placeholder for T-D.8."""
+    """SUPERSEDED by T-D.8 — when ``schwab_client=None`` Pass 2 cannot
+    re-fetch, so the Pass-2 dispatcher emits tier-2 ``unsupported`` with
+    ``"Pass 2 re-fetch failed"`` rationale + increments
+    ``BackfillSummary.pass_2_failed``. The original ``'pass_2_pending'``
+    placeholder semantics from T-D.7 are gone (T-D.8 always either
+    completes Pass 2 OR fails the re-fetch + stamps accordingly)."""
     run_id = _seed_reconciliation_run(v19_db)
     seed = _seed_dhc_trade_and_fill(v19_db)
     disc_id = _seed_dhc_unmatched_open_fill_disc(
@@ -358,35 +360,47 @@ def test_dhc_unmatched_open_fill_records_pass_2_pending_placeholder(
         account_hash=None,
     )
 
-    assert summary.pass_2_pending == 1
+    # T-D.8 supersedes pass_2_pending placeholder: with no schwab_client
+    # the Pass-2 dispatcher's re-fetch raises, the failure-mode path
+    # fires (acceptance #6), tier-2 unsupported is stamped, and
+    # pass_2_failed increments.
+    assert summary.pass_2_pending == 0
     assert summary.tier1_applied == 0
-    assert summary.tier2_stamped == 0
+    assert summary.tier2_stamped == 1
+    assert summary.pass_2_failed == 1
     out = summary.per_discrepancy_outcomes[0]
     assert out.discrepancy_id == disc_id
-    assert out.outcome == "pass_2_pending"
-    assert out.tier is None
-    # Discriminating: the reason mentions T-D.8 / Pass 2 forward link.
-    assert "Pass 2" in (out.reason or "") or "_pass_2_required" in (
-        out.reason or ""
-    ) or "T-D.8" in (out.reason or "")
+    assert out.outcome == "tier2_stamped"
+    assert out.tier == 2
+    assert out.ambiguity_kind == "unsupported"
+    assert "Pass 2 re-fetch failed" in (out.reason or "")
 
-    # Journal not mutated; no correction row.
+    # No correction row (tier-2 stamps do not write reconciliation_corrections).
     n_corr = v19_db.execute(
         "SELECT COUNT(*) FROM reconciliation_corrections",
     ).fetchone()[0]
     assert n_corr == 0
+    # Discrepancy stamped (per acceptance #6 persisted state).
     res = v19_db.execute(
-        "SELECT resolution FROM reconciliation_discrepancies "
+        "SELECT resolution, ambiguity_kind FROM reconciliation_discrepancies "
         "WHERE discrepancy_id = ?",
         (disc_id,),
-    ).fetchone()[0]
-    assert res == "unresolved"  # T-D.8 will flip it.
+    ).fetchone()
+    assert res[0] == "pending_ambiguity_resolution"
+    assert res[1] == "unsupported"
 
 
 def test_dhc_unmatched_open_fill_dry_run_projection(
     v19_db: sqlite3.Connection,
 ) -> None:
-    """Dry-run for Pass-2-required shows "Pass 2 required" projection."""
+    """Dry-run with --no-pass-2-on-dry-run shows Pass 2 projection
+    rendered as ``projection_pass_2`` outcome.
+
+    T-D.8 supersession: original test assumed dry-run skipped Pass 2
+    by default; T-D.8 fires Pass 2 even on dry-run by default (per spec
+    §8.2 LOCK — dry-run writes audit row). To exercise the projection
+    path without invoking Schwab API, pass ``no_pass_2_on_dry_run=True``.
+    """
     run_id = _seed_reconciliation_run(v19_db)
     seed = _seed_dhc_trade_and_fill(v19_db)
     _seed_dhc_unmatched_open_fill_disc(v19_db, run_id=run_id, **seed)
@@ -397,12 +411,17 @@ def test_dhc_unmatched_open_fill_dry_run_projection(
         schwab_client=None,
         environment="production",
         account_hash=None,
+        no_pass_2_on_dry_run=True,  # skip Schwab API on dry-run.
     )
     assert summary.projection_pass_2 == 1
     out = summary.per_discrepancy_outcomes[0]
     assert out.outcome == "projection_pass_2"
-    assert out.projection_outcome_label == "Pass 2 required (re-fetch)"
-    assert out.projection_action_needed == "--apply or --no-pass-2"
+    assert out.tier == 2
+    assert out.ambiguity_kind == "unsupported"
+    # Discriminating: reason mentions the skip.
+    assert "skip" in (out.reason or "").lower() or (
+        "no-pass-2" in (out.reason or "").lower()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -629,8 +648,13 @@ def test_summary_counter_wiring_mixed_outcomes(
         account_hash=None,
     )
 
+    # T-D.8 supersedes pass_2_pending: with no schwab_client, the DHC
+    # discrepancy routes to Pass 2 → re-fetch fails → tier-2 unsupported
+    # stamped (NOT pass_2_pending). Sector tamper is tier-2 stamped
+    # directly. So tier2_stamped == 2.
     assert summary.tier1_applied == 1
-    assert summary.pass_2_pending == 1
-    assert summary.tier2_stamped == 1
+    assert summary.pass_2_pending == 0
+    assert summary.tier2_stamped == 2
+    assert summary.pass_2_failed == 1
     assert len(summary.per_discrepancy_outcomes) == 3
     assert isinstance(summary, BackfillSummary)
