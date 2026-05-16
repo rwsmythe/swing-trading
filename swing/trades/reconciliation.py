@@ -411,6 +411,19 @@ def run_tos_reconciliation(
         summary["tier3_overridden_count"] = 0  # always 0 — tier-3 post-run
         summary["tier_errored_count"] = counters.get("tier_errored_count", 0)
 
+        # Codex R1 Major #3 — recompute unresolved_discrepancies_count
+        # post-pivot. _emit increments at INSERT time; the pivot loop
+        # (T-C.6 cross-bundle wiring above) flips rows OFF 'unresolved'
+        # (tier-1 → auto_corrected_from_schwab; tier-2 →
+        # pending_ambiguity_resolution). Recomputing from the canonical
+        # resolution column is more robust than tracking decrement deltas.
+        unresolved_now = conn.execute(
+            "SELECT COUNT(*) FROM reconciliation_discrepancies "
+            "WHERE run_id = ? AND resolution = 'unresolved'",
+            (run_id,),
+        ).fetchone()[0]
+        counters["unresolved_discrepancies_count"] = int(unresolved_now)
+
         finished_ts = now_ms()
         if finished_ts < started_ts:
             finished_ts = started_ts

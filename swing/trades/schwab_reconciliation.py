@@ -826,6 +826,20 @@ def run_schwab_reconciliation(
         finished_ts = now_ms()
         if finished_ts < started_ts:
             finished_ts = started_ts
+
+        # Codex R1 Major #3 — recompute unresolved_discrepancies_count
+        # post-pivot. _emit increments at INSERT time; the pivot flips
+        # rows OFF 'unresolved' (tier-1 → auto_corrected_from_schwab;
+        # tier-2 → pending_ambiguity_resolution). Recomputing from the
+        # canonical resolution column is more robust than tracking
+        # decrement deltas in counter state.
+        unresolved_now = conn.execute(
+            "SELECT COUNT(*) FROM reconciliation_discrepancies "
+            "WHERE run_id = ? AND resolution = 'unresolved'",
+            (run_id,),
+        ).fetchone()[0]
+        counters["unresolved_discrepancies_count"] = int(unresolved_now)
+
         summary = {
             "open_trades_checked": len(open_trades),
             "schwab_orders_checked": len(schwab_orders),

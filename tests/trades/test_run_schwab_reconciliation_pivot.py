@@ -281,3 +281,68 @@ def test_run_schwab_reconciliation_savepoint_isolates_failure(
     n_disp = sum(1 for s in states if s[0] != "unresolved")
     assert n_unresolved == 1
     assert n_disp == 2
+
+
+# ---------------------------------------------------------------------------
+# Codex R1 Major #3 — unresolved_discrepancies_count stays in sync after pivot
+# ---------------------------------------------------------------------------
+
+
+def test_run_schwab_reconciliation_unresolved_counter_decrements_post_pivot(
+    conn: sqlite3.Connection,
+) -> None:
+    """The unresolved_discrepancies_count column on the parent
+    reconciliation_run row MUST reflect the post-pivot state — _emit
+    increments at INSERT time, but the pivot loop flips rows OFF
+    'unresolved' (tier-1 → auto_corrected_from_schwab; tier-2 →
+    pending_ambiguity_resolution). Without a post-pivot recompute the
+    counter stays stale.
+
+    Plant 1 CVGI tier-1 + 2 unmatched-open-fill tier-2 → expect
+    unresolved_discrepancies_count == 0 (all rows moved off
+    'unresolved') and discrepancies_count == 3.
+    """
+    # 1 CVGI tier-1 candidate (entry_price_mismatch with Schwab match)
+    _seed_open_trade(conn, ticker="CVGI", fill_price=5.23)
+    # 2 unmatched journal fills (tier-2 — no Schwab side match)
+    _seed_open_trade(conn, ticker="AAA", fill_price=10.0)
+    _seed_open_trade(conn, ticker="BBB", fill_price=20.0)
+
+    schwab_orders = [
+        _SchwabOrder(
+            status="FILLED", price=5.30, quantity=100.0,
+            instrument_symbol="CVGI",
+        ),
+    ]
+    schwab_account = _SchwabAccount(net_liquidating_value=2000.0, positions=[])
+
+    run = run_schwab_reconciliation(
+        conn,
+        account_hash="<acct>",
+        period_start="2026-04-27",
+        period_end="2026-04-27",
+        schwab_orders=schwab_orders,
+        schwab_transactions=[],
+        schwab_account=schwab_account,
+    )
+
+    # Sanity check: all 3 dispositioned off 'unresolved' state.
+    rows = conn.execute(
+        "SELECT resolution FROM reconciliation_discrepancies "
+        "WHERE run_id = ?",
+        (run.run_id,),
+    ).fetchall()
+    resolutions = sorted(r[0] for r in rows)
+    n_unresolved = sum(1 for r in resolutions if r == "unresolved")
+    assert n_unresolved == 0, (
+        f"all discrepancies should be off 'unresolved' post-pivot; "
+        f"got resolutions={resolutions}"
+    )
+    # Discriminating signal: parent run's unresolved counter recomputed.
+    assert run.unresolved_discrepancies_count == 0, (
+        f"unresolved_discrepancies_count must be recomputed post-pivot; "
+        f"got {run.unresolved_discrepancies_count}, "
+        f"resolutions={resolutions}"
+    )
+    # discrepancies_count remains 3 (emit count, not lifecycle).
+    assert run.discrepancies_count == 3
