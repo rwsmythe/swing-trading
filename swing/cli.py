@@ -1764,6 +1764,122 @@ def journal_import_tos_cmd(
     )
 
 
+@journal_group.command("reconcile-backfill")
+@click.option(
+    "--apply", "apply_flag", is_flag=True, default=False,
+    help=(
+        "Actually execute backfill (mutates journal). Mutually exclusive "
+        "with --dry-run."
+    ),
+)
+@click.option(
+    "--dry-run", "dry_run_flag", is_flag=True, default=False,
+    help=(
+        "Print projected classification only; no mutation. Mutually "
+        "exclusive with --apply. Default mode when neither flag set."
+    ),
+)
+@click.option(
+    "--ticker", "ticker", type=str, default=None,
+    help="Restrict iteration to a single ticker.",
+)
+@click.option(
+    "--limit", "limit", type=int, default=None,
+    help="Cap the number of discrepancies iterated.",
+)
+@click.option(
+    "--no-pass-2-on-dry-run", "no_pass_2_on_dry_run", is_flag=True,
+    default=False,
+    help=(
+        "Skip Pass-2 Schwab API calls during dry-run (T-D.8 consumer; "
+        "no-op at T-D.6 scaffold)."
+    ),
+)
+@click.option(
+    "--retry-pass-2-failures", "retry_pass_2_failures", is_flag=True,
+    default=False,
+    help=(
+        "Re-attempt Pass-2 on discrepancies whose previous backfill "
+        "attempt failed at Pass 2 (idempotency hook; T-D.9 consumer)."
+    ),
+)
+@click.pass_context
+def journal_reconcile_backfill_cmd(
+    ctx, apply_flag, dry_run_flag, ticker, limit,
+    no_pass_2_on_dry_run, retry_pass_2_failures,
+):
+    """Backfill auto-correct + Tier-2 stamp across unresolved discrepancies.
+
+    Phase 12 Sub-bundle C T-D.6 SCAFFOLD — iterates unresolved
+    discrepancies + emits a per-row projection table. The actual
+    Pass-1 / Pass-2 dispatch + tier-1 auto-apply + tier-2 stamp
+    lands at T-D.7 / T-D.8 / T-D.9.
+
+    Default mode is dry-run; pass ``--apply`` to actually execute.
+    The two flags are mutually exclusive.
+    """
+    from swing.data.db import connect
+    from swing.trades.reconciliation_backfill import (
+        BackfillPipelineActiveError,
+        format_projection_row,
+        format_projection_table_header,
+        format_summary_block,
+        run_backfill,
+    )
+
+    # Mutually-exclusive --apply / --dry-run check per plan §E.6 #3.
+    if apply_flag and dry_run_flag:
+        raise click.UsageError(
+            "--apply and --dry-run are mutually exclusive. Pass exactly "
+            "one (or neither, for default dry-run).",
+        )
+    # Default behavior is dry-run unless --apply is explicit.
+    dry_run = not apply_flag
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        environment = cfg.integrations.schwab.environment
+        # T-D.6 scaffold: schwab_client + account_hash are opaque
+        # pass-throughs. T-D.7 (Pass 1) does NOT need them; T-D.8
+        # (Pass 2) will construct schwab_client via
+        # ``construct_authenticated_client(cfg, environment, ...)``
+        # (see ``swing/cli_schwab.py:_build_schwabdev_client_for_fetch``)
+        # and read account_hash from cfg.integrations.schwab.account_hash.
+        schwab_client = None
+        account_hash = getattr(
+            cfg.integrations.schwab, "account_hash", None,
+        )
+
+        try:
+            summary = run_backfill(
+                conn,
+                dry_run=dry_run,
+                schwab_client=schwab_client,
+                environment=environment,
+                account_hash=account_hash,
+                ticker=ticker,
+                limit=limit,
+                no_pass_2_on_dry_run=no_pass_2_on_dry_run,
+                retry_pass_2_failures=retry_pass_2_failures,
+            )
+        except BackfillPipelineActiveError as exc:
+            raise click.ClickException(str(exc)) from exc
+    finally:
+        conn.close()
+
+    if not summary.per_discrepancy_outcomes:
+        click.echo("(no unresolved discrepancies)")
+        return
+
+    mode_label = "dry-run" if dry_run else "apply"
+    click.echo(f"Backfill ({mode_label}) projection:\n")
+    click.echo(format_projection_table_header())
+    for outcome in summary.per_discrepancy_outcomes:
+        click.echo(format_projection_row(outcome))
+    click.echo(format_summary_block(summary))
+
+
 @journal_group.group("discrepancy")
 def discrepancy_group() -> None:
     """Phase 9 reconciliation discrepancy review + resolution."""
