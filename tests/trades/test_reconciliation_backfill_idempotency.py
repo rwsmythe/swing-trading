@@ -757,9 +757,237 @@ def test_mixed_state_yields_per_bucket_counters(
     block = format_summary_block(summary)
     assert "Tier 1 applied: 1" in block
     assert "Tier 2 stamped: 2" in block
+    # Item 2 rendering — pass_2_failed is a NESTED sub-counter of
+    # tier2_stamped, not a flat parallel bucket. With no Pass-2 re-fetch
+    # failures here, the nested line reads "(of which Pass 2 re-fetch
+    # failed: 0)".
+    assert "(of which Pass 2 re-fetch failed: 0)" in block
     assert "Errored: 0" in block
-    assert "Pass 2 failed (persisted as tier-2 unsupported):" in block
     assert "Skipped (already resolved): 0" in block
     assert (
         "Skipped (Pass-2-failed; use --retry-pass-2-failures to retry): 2"
     ) in block
+
+
+# ---------------------------------------------------------------------------
+# Item 2 (pre-Codex review) — pass_2_failed overlap rendering semantics
+# ---------------------------------------------------------------------------
+
+
+def test_summary_block_pass_2_failed_is_nested_subcounter_of_tier2_stamped(
+    v19_db: sqlite3.Connection,
+) -> None:
+    """Item 2 — operator-facing rendering pins overlap semantics.
+
+    ``pass_2_failed`` is a DIAGNOSTIC SUB-COUNTER of ``tier2_stamped``,
+    NOT a parallel bucket. Per the counter wiring at
+    :func:`run_backfill` (lines marked "T-D.9 fix: do NOT double-count"),
+    a row whose ``reason`` starts with "Pass 2 re-fetch failed" and whose
+    outcome is ``tier2_stamped`` increments BOTH counters. Reading them
+    as flat parallel counters would imply (M + L) distinct outcomes when
+    only M distinct tier-2 stamps actually occurred.
+
+    Discriminating shape: assert the summary block renders
+    ``pass_2_failed`` as an INDENTED sub-line under ``Tier 2 stamped``
+    with the "(of which ...)" preface (Option A — nested indication).
+    The old flat "Pass 2 failed (persisted as tier-2 unsupported): L"
+    line must NOT appear (operator-misreading hazard).
+
+    Constructed counters: M=5 tier-2 stamps, L=3 of those from Pass-2
+    re-fetch failure. Operator reading the block should NOT interpret
+    8 distinct outcomes.
+    """
+    summary = BackfillSummary(
+        tier1_applied=2,
+        tier2_stamped=5,
+        pass_2_failed=3,
+        tier_errored=0,
+        skipped_already_resolved=1,
+        skipped_pass_2_failed=4,
+    )
+    block = format_summary_block(summary)
+
+    # Canonical lines (parent counter visible).
+    assert "Tier 1 applied: 2" in block
+    assert "Tier 2 stamped: 5" in block
+    # Nested sub-counter line with "(of which ...)" preface + indentation.
+    assert "    (of which Pass 2 re-fetch failed: 3)" in block
+    # Old flat-line rendering MUST NOT appear (operator-misreading hazard).
+    assert "Pass 2 failed (persisted as tier-2 unsupported):" not in block
+    # Other canonical lines preserved.
+    assert "Errored: 0" in block
+    assert "Skipped (already resolved): 1" in block
+    assert (
+        "Skipped (Pass-2-failed; use --retry-pass-2-failures to retry): 4"
+    ) in block
+
+    # The nested line must appear AFTER the Tier 2 line (ordering pin).
+    tier2_idx = block.index("Tier 2 stamped: 5")
+    nested_idx = block.index("(of which Pass 2 re-fetch failed: 3)")
+    errored_idx = block.index("Errored: 0")
+    assert tier2_idx < nested_idx < errored_idx, (
+        "nested sub-counter must render between Tier 2 stamped and "
+        "Errored lines per Option A layout"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Item 6 (pre-Codex review) — --retry-pass-2-failures terminal-state exclusion
+# ---------------------------------------------------------------------------
+
+
+def test_retry_pass_2_failures_excludes_terminal_state_and_kind_mismatch(
+    v19_db: sqlite3.Connection,
+) -> None:
+    """Item 6 — ``--retry-pass-2-failures`` predicate scope is binding.
+
+    Per plan §E.9 #3 LOCK: the flag scopes iteration to
+    ``resolution = 'pending_ambiguity_resolution' AND ambiguity_kind =
+    'unsupported' AND resolution_reason LIKE '%Pass 2 re-fetch failed%'``.
+
+    Discriminating regression: plant 3 rows covering each exclusion
+    boundary + assert ONLY the 1 in-scope row gets re-fetched.
+
+      Row 1 (in scope):
+        resolution='pending_ambiguity_resolution',
+        ambiguity_kind='unsupported',
+        reason="Pass 2 re-fetch failed: SchwabAuthError: ...".
+
+      Row 2 (terminal-state exclusion):
+        resolution='acknowledged_immaterial' (TERMINAL),
+        ambiguity_kind=NULL (schema cross-column CHECK forbids
+        non-NULL ambiguity_kind paired with terminal resolution per C.A
+        T-A.1 LOCK),
+        reason="Pass 2 re-fetch failed: ..." (substring matches but
+        resolution predicate filters it out).
+
+      Row 3 (ambiguity_kind + reason mismatch):
+        resolution='pending_ambiguity_resolution',
+        ambiguity_kind='multi_partial_vs_consolidated',
+        reason="operator note" (neither ambiguity_kind nor reason
+        predicate matches).
+
+    Without the strict three-predicate AND filter, terminal-state rows
+    with the matching reason substring would be re-iterated + the
+    operator's prior resolution would be silently overwritten via
+    ``stamp_pending_ambiguity(..., allow_pending_update=True)`` (lifecycle
+    invariant violation: terminal states are append-only / chain-extend
+    per the reconciliation_corrections gotcha).
+
+    Assertion shape: the audited wrapper is invoked EXACTLY ONCE
+    (only the in-scope row triggers Pass-2 dispatch); per-row outcomes
+    list contains EXACTLY ONE entry; the 2 excluded rows are
+    UNTOUCHED in the DB.
+    """
+    run_id = _seed_reconciliation_run(v19_db)
+
+    # Row 1: in-scope (different tickers to avoid trade UNIQUE constraints).
+    seed_in_scope = _seed_dhc_trade_and_fill(
+        v19_db, ticker="DHC", journal_qty=39.0,
+    )
+    disc_in_scope = _seed_unmatched_open_fill_disc(
+        v19_db,
+        run_id=run_id,
+        ticker="DHC",
+        resolution="pending_ambiguity_resolution",
+        ambiguity_kind="unsupported",
+        resolution_reason=(
+            "Pass 2 re-fetch failed: SchwabAuthError: 401 refresh_token expired"
+        ),
+        **seed_in_scope,
+    )
+
+    # Row 2: terminal-state exclusion — resolution predicate filters out
+    # despite reason substring matching.
+    seed_terminal = _seed_dhc_trade_and_fill(
+        v19_db, ticker="YOU", journal_qty=39.0,
+    )
+    # Schema cross-column CHECK forbids non-NULL ambiguity_kind paired
+    # with terminal resolution per C.A T-A.1 LOCK; ambiguity_kind stays
+    # NULL here. The retry predicate's ``ambiguity_kind = 'unsupported'``
+    # clause would filter this row out regardless — the discriminating
+    # signal is that the resolution predicate ALSO filters terminal-state
+    # rows out, providing belt-and-suspenders defense.
+    disc_terminal = _seed_unmatched_open_fill_disc(
+        v19_db,
+        run_id=run_id,
+        ticker="YOU",
+        resolution="acknowledged_immaterial",
+        ambiguity_kind=None,
+        resolution_reason=(
+            "Pass 2 re-fetch failed: prior failure operator-acknowledged"
+        ),
+        **seed_terminal,
+    )
+
+    # Row 3: ambiguity_kind + reason mismatch — both predicates filter out
+    # despite resolution matching.
+    seed_kind_mismatch = _seed_dhc_trade_and_fill(
+        v19_db, ticker="VSAT", journal_qty=39.0,
+    )
+    disc_kind_mismatch = _seed_unmatched_open_fill_disc(
+        v19_db,
+        run_id=run_id,
+        ticker="VSAT",
+        resolution="pending_ambiguity_resolution",
+        ambiguity_kind="multi_partial_vs_consolidated",
+        resolution_reason="operator note: pending follow-up review",
+        **seed_kind_mismatch,
+    )
+
+    # Pass-2 returns orders for the in-scope ticker only (DHC).
+    orders = [
+        _make_order(
+            order_id="200-DHC", quantity=20.0, instrument_symbol="DHC",
+        ),
+        _make_order(
+            order_id="201-DHC", quantity=19.0, instrument_symbol="DHC",
+        ),
+    ]
+
+    with patch(
+        "swing.trades.reconciliation_backfill.get_account_orders_audited",
+        return_value=(99, orders),
+    ) as audited_mock:
+        summary = run_backfill(
+            v19_db,
+            dry_run=False,
+            schwab_client=_FakeSchwabClient(),
+            environment="production",
+            account_hash="acct-hash",
+            retry_pass_2_failures=True,
+        )
+
+    # Audited wrapper invoked EXACTLY ONCE — only the in-scope row.
+    assert audited_mock.call_count == 1, (
+        f"expected audited wrapper invoked once (in-scope row only); "
+        f"got {audited_mock.call_count} invocations — predicate scope "
+        f"likely too wide"
+    )
+    # Outcomes list contains EXACTLY ONE entry.
+    assert len(summary.per_discrepancy_outcomes) == 1, (
+        f"expected 1 outcome from in-scope row only; got "
+        f"{[o.discrepancy_id for o in summary.per_discrepancy_outcomes]}"
+    )
+    assert summary.per_discrepancy_outcomes[0].discrepancy_id == disc_in_scope
+
+    # The 2 excluded rows are UNTOUCHED in the DB.
+    terminal_row = v19_db.execute(
+        "SELECT resolution, ambiguity_kind, resolution_reason "
+        "FROM reconciliation_discrepancies WHERE discrepancy_id = ?",
+        (disc_terminal,),
+    ).fetchone()
+    assert terminal_row[0] == "acknowledged_immaterial"
+    assert terminal_row[1] is None
+    assert terminal_row[2] == (
+        "Pass 2 re-fetch failed: prior failure operator-acknowledged"
+    )
+
+    kind_row = v19_db.execute(
+        "SELECT resolution, ambiguity_kind, resolution_reason "
+        "FROM reconciliation_discrepancies WHERE discrepancy_id = ?",
+        (disc_kind_mismatch,),
+    ).fetchone()
+    assert kind_row[0] == "pending_ambiguity_resolution"
+    assert kind_row[1] == "multi_partial_vs_consolidated"
+    assert kind_row[2] == "operator note: pending follow-up review"

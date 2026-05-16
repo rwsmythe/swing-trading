@@ -1171,10 +1171,25 @@ def format_summary_block(summary: BackfillSummary) -> str:
       Backfill summary:
         Tier 1 applied: N
         Tier 2 stamped: M
+          (of which Pass 2 re-fetch failed: L)
         Errored: K
-        Pass 2 failed (persisted as tier-2 unsupported): L
         Skipped (already resolved): X
         Skipped (Pass-2-failed; use --retry-pass-2-failures to retry): Y
+
+    Overlap semantics (Item 2 pre-Codex review):
+      ``pass_2_failed`` is a DIAGNOSTIC SUB-COUNTER of ``tier2_stamped``,
+      NOT a parallel bucket. Per the counter wiring at
+      :func:`run_backfill` (lines marked "T-D.9 fix: do NOT double-count"),
+      every row whose ``reason`` starts with "Pass 2 re-fetch failed" and
+      whose outcome is ``tier2_stamped`` increments BOTH counters
+      (``tier2_stamped`` is the canonical bucket; ``pass_2_failed`` is the
+      operator-diagnostic signal "how many of those tier-2 stamps came
+      from a Pass-2 re-fetch failure vs honest tier-2 classification?").
+      Reading them as flat parallel counters would double-count L rows.
+      Rendering nested with "(of which ...)" makes the overlap explicit
+      so an operator seeing ``M=5, L=3`` correctly interprets 5 distinct
+      tier-2 outcomes with 3 of them stemming from Pass-2 re-fetch
+      failure (NOT 8 distinct outcomes).
 
     Diagnostic counters (tier1_skipped_sandbox + pass_2_pending +
     projection_*) follow on indented lines for operator triage but are
@@ -1184,9 +1199,8 @@ def format_summary_block(summary: BackfillSummary) -> str:
         "\nBackfill summary:\n"
         f"  Tier 1 applied: {summary.tier1_applied}\n"
         f"  Tier 2 stamped: {summary.tier2_stamped}\n"
+        f"    (of which Pass 2 re-fetch failed: {summary.pass_2_failed})\n"
         f"  Errored: {summary.tier_errored}\n"
-        f"  Pass 2 failed (persisted as tier-2 unsupported): "
-        f"{summary.pass_2_failed}\n"
         f"  Skipped (already resolved): {summary.skipped_already_resolved}\n"
         f"  Skipped (Pass-2-failed; use --retry-pass-2-failures to retry): "
         f"{summary.skipped_pass_2_failed}\n"
