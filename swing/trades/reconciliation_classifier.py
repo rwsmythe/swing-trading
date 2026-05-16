@@ -280,11 +280,11 @@ def _classify_entry_price_mismatch(
     # Any other shape (partial tuple, mixed unrecognized keys, journal_row
     # missing while richer-than-Shape-A) → tier-2 'unsupported' rather than
     # emit an ungrounded auto-correct.
-    _TUPLE_KEYS = {"ticker", "date", "fill_datetime", "quantity"}
-    _RECOGNIZED_KEYS = _TUPLE_KEYS | {"price"}
+    tuple_keys = {"ticker", "date", "fill_datetime", "quantity"}
+    recognized_keys = tuple_keys | {"price"}
     source_keys = set(source_payload.keys())
-    extra_keys = source_keys - _RECOGNIZED_KEYS
-    source_tuple_keys_present = source_keys & _TUPLE_KEYS
+    extra_keys = source_keys - recognized_keys
+    source_tuple_keys_present = source_keys & tuple_keys
 
     is_shape_a = source_keys == {"price"}
     # Shape B requires ticker + quantity + at least one date-form, AND no
