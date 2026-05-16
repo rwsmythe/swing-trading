@@ -252,6 +252,345 @@ def _classify_entry_price_mismatch(
 _SUB_CLASSIFIERS["entry_price_mismatch"] = _classify_entry_price_mismatch
 
 
+# ---------------------------------------------------------------------------
+# T-B.4 + T-B.5 — unmatched_open_fill / unmatched_close_fill sub-classifiers
+# ---------------------------------------------------------------------------
+#
+# Spec §4.3.2 + §4.3.3 + §8.4 Pass-2-tier-1-FORBIDDEN LOCK + §10.2 DHC 39 +
+# §10.3 VSAT 40 BINDING walkthroughs.
+#
+# V1 LOCK: NEVER emits tier-1 regardless of Pass-2 input shape.
+# ``SchwabOrderResponse.price`` is limit/stop price, not execution price
+# (§8.4 + §A.7.4 mapper verification). Sub-classifier dispatches on
+# source_payload shape:
+#   - None / {"matched": null} → tier-2 ``unsupported`` with
+#     ``_pass_2_required=True`` signal in correction_reason. Backfill
+#     path (T-D.8) reads this signal to fire Pass 2.
+#   - list-shaped, 0 elements → tier-2 ``schwab_returned_no_match``.
+#   - list-shaped, 1 element → tier-2 ``unknown_schwab_subtype``.
+#   - list-shaped, N>=2, sum(qty) == journal_qty → tier-2
+#     ``multi_partial_vs_consolidated``.
+#   - list-shaped, N>=2, sum(qty) != journal_qty → tier-2
+#     ``multi_match_within_window``.
+#
+# candidate_choices populated per the spec §6.2.1 LOCKED menu per
+# ambiguity_kind:
+#   - multi_partial_vs_consolidated → 4 choices (keep_journal_as_is
+#     HIGHLIGHTED FIRST per §0.4 OQ-4 + consolidate_using_operator_vwap
+#     + split_into_partials + custom).
+#   - multi_match_within_window → N+2 choices (pick_schwab_record_<i>
+#     for i=1..N + mark_unmatched + custom).
+#   - schwab_returned_no_match → 2 choices (mark_unmatched + operator_truth).
+#   - unknown_schwab_subtype → 3 choices (acknowledge + operator_truth + custom).
+#   - unsupported (_pass_2_required signal) → 0 candidate_choices V1.
+
+
+def _candidate_choices_multi_partial_vs_consolidated() -> list[dict[str, Any]]:
+    """Spec §6.2.1 — 4 choices; ``keep_journal_as_is`` HIGHLIGHTED FIRST."""
+    return [
+        {
+            "code": "keep_journal_as_is",
+            "description": (
+                "Acknowledge Schwab partial-fill aggregation; no journal "
+                "mutation (V1 default recommendation per §14.OQ-4)"
+            ),
+            "requires_custom_value": False,
+        },
+        {
+            "code": "consolidate_using_operator_vwap",
+            "description": (
+                "Keep journal consolidated; update price to operator-"
+                "supplied VWAP. REQUIRES --custom-value '{\"price\": "
+                "X.XX}' (operator computes VWAP from broker execution "
+                "statement; V1 mapper cannot auto-derive execution-level "
+                "prices)"
+            ),
+            "requires_custom_value": True,
+        },
+        {
+            "code": "split_into_partials",
+            "description": (
+                "Replace journal fill with N partial fills. REQUIRES "
+                "--custom-value with execution-level partial-fill payload "
+                "(operator supplies per-execution qty + price from broker "
+                "statement)"
+            ),
+            "requires_custom_value": True,
+        },
+        {
+            "code": "custom",
+            "description": (
+                "Operator-supplied arbitrary payload via --custom-value"
+            ),
+            "requires_custom_value": True,
+        },
+    ]
+
+
+def _candidate_choices_multi_match_within_window(
+    n: int,
+) -> list[dict[str, Any]]:
+    """Spec §6.2.1 — N+2 choices (N pick_schwab_record_<i> + 2 fallbacks)."""
+    choices: list[dict[str, Any]] = [
+        {
+            "code": f"pick_schwab_record_{i + 1}",
+            "description": (
+                f"Apply Schwab record #{i + 1} as the canonical source "
+                f"for this fill"
+            ),
+            "requires_custom_value": False,
+        }
+        for i in range(n)
+    ]
+    choices.append(
+        {
+            "code": "mark_unmatched",
+            "description": (
+                "Acknowledge no canonical match; no journal mutation"
+            ),
+            "requires_custom_value": False,
+        }
+    )
+    choices.append(
+        {
+            "code": "custom",
+            "description": (
+                "Operator-supplied arbitrary payload via --custom-value"
+            ),
+            "requires_custom_value": True,
+        }
+    )
+    return choices
+
+
+def _candidate_choices_schwab_returned_no_match() -> list[dict[str, Any]]:
+    """Spec §6.2.1 — 2 choices."""
+    return [
+        {
+            "code": "mark_unmatched",
+            "description": (
+                "Acknowledge no Schwab record matches; no journal mutation"
+            ),
+            "requires_custom_value": False,
+        },
+        {
+            "code": "operator_truth",
+            "description": (
+                "Operator supplies the true source payload via --custom-value"
+            ),
+            "requires_custom_value": True,
+        },
+    ]
+
+
+def _candidate_choices_unknown_schwab_subtype() -> list[dict[str, Any]]:
+    """Spec §6.2.1 — 3 choices."""
+    return [
+        {
+            "code": "acknowledge",
+            "description": (
+                "Acknowledge the V1 mapper limitation; no journal mutation"
+            ),
+            "requires_custom_value": False,
+        },
+        {
+            "code": "operator_truth",
+            "description": (
+                "Operator supplies the true execution payload via "
+                "--custom-value (e.g., per-execution price from broker "
+                "statement)"
+            ),
+            "requires_custom_value": True,
+        },
+        {
+            "code": "custom",
+            "description": (
+                "Operator-supplied arbitrary payload via --custom-value"
+            ),
+            "requires_custom_value": True,
+        },
+    ]
+
+
+def _classify_unmatched_fill_shared(
+    *,
+    discrepancy: ReconciliationDiscrepancy,
+    source_payload: Any | None,
+    journal_row: Mapping[str, Any] | None,
+    direction: str,  # 'open' or 'close' — for reason rendering only
+) -> ClassificationResult:
+    """Shared core for unmatched_open_fill + unmatched_close_fill.
+
+    V1 LOCK: NEVER emits tier-1 (Pass-2-tier-1-FORBIDDEN per spec §8.4).
+    """
+    ticker = discrepancy.ticker
+    fill_id = discrepancy.fill_id
+
+    # Pass-1-only or no-payload case (DHC 39 + VSAT 40 walkthrough — Pass 1
+    # input shape ``actual_value_json={"matched": null}``; here we receive
+    # source_payload=None OR source_payload == {"matched": None}.
+    if source_payload is None or (
+        isinstance(source_payload, Mapping)
+        and "matched" in source_payload
+        and source_payload.get("matched") is None
+        and len(source_payload) == 1
+    ):
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="unsupported",
+            correction_target=None,
+            correction_reason=(
+                f"unmatched_{direction}_fill on "
+                f"(ticker={ticker!r}, fill_id={fill_id}): Pass 1 input "
+                f"insufficient to disposition (persisted JSON gives no "
+                f"candidate enumeration); _pass_2_required=True; backfill "
+                f"must re-fetch Schwab orders to disposition"
+            ),
+            candidate_choices=None,
+        )
+
+    # List-shaped Pass-2 payload branches.
+    if isinstance(source_payload, list):
+        n = len(source_payload)
+        if n == 0:
+            return ClassificationResult(
+                tier=2,
+                ambiguity_kind="schwab_returned_no_match",
+                correction_target=None,
+                correction_reason=(
+                    f"unmatched_{direction}_fill on "
+                    f"(ticker={ticker!r}, fill_id={fill_id}): Schwab "
+                    f"returned 0 orders for the match window; operator "
+                    f"dispositions via mark_unmatched or operator_truth"
+                ),
+                candidate_choices=_candidate_choices_schwab_returned_no_match(),
+            )
+        if n == 1:
+            return ClassificationResult(
+                tier=2,
+                ambiguity_kind="unknown_schwab_subtype",
+                correction_target=None,
+                correction_reason=(
+                    f"unmatched_{direction}_fill on "
+                    f"(ticker={ticker!r}, fill_id={fill_id}): Schwab "
+                    f"returned a single order at order-grain; V1 mapper "
+                    f"does not expose per-execution fill detail "
+                    f"(Pass-2-tier-1-FORBIDDEN per §8.4); operator "
+                    f"dispositions via acknowledge (keep journal as-is) "
+                    f"or operator_truth (supplies execution price)"
+                ),
+                candidate_choices=_candidate_choices_unknown_schwab_subtype(),
+            )
+        # n >= 2: compare sum(quantity) vs journal quantity.
+        try:
+            schwab_qty_sum = sum(
+                float(o.get("quantity", 0) or 0) for o in source_payload
+            )
+        except (AttributeError, TypeError, ValueError):
+            schwab_qty_sum = None  # type: ignore[assignment]
+
+        journal_qty = None
+        if journal_row is not None:
+            jq = journal_row.get("quantity")
+            try:
+                journal_qty = float(jq) if jq is not None else None
+            except (TypeError, ValueError):
+                journal_qty = None
+
+        if (
+            schwab_qty_sum is not None
+            and journal_qty is not None
+            and abs(schwab_qty_sum - journal_qty) < 1e-9
+        ):
+            return ClassificationResult(
+                tier=2,
+                ambiguity_kind="multi_partial_vs_consolidated",
+                correction_target=None,
+                correction_reason=(
+                    f"unmatched_{direction}_fill on "
+                    f"(ticker={ticker!r}, fill_id={fill_id}): journal "
+                    f"consolidated qty={journal_qty}; Schwab returns "
+                    f"{n} separate orders summing to qty={schwab_qty_sum}; "
+                    f"V1 mapper exposes order-level price only (per §8.4 "
+                    f"Pass-2-tier-1-FORBIDDEN lock) — operator must "
+                    f"consult broker execution statement and choose "
+                    f"keep_journal_as_is (no mutation) OR "
+                    f"consolidate_using_operator_vwap (requires "
+                    f"--custom-value with operator-computed VWAP) OR "
+                    f"split_into_partials (requires --custom-value with "
+                    f"execution-level partial payload)."
+                ),
+                candidate_choices=(
+                    _candidate_choices_multi_partial_vs_consolidated()
+                ),
+            )
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="multi_match_within_window",
+            correction_target=None,
+            correction_reason=(
+                f"unmatched_{direction}_fill on "
+                f"(ticker={ticker!r}, fill_id={fill_id}): Schwab returned "
+                f"{n} orders within the match window with sum-qty="
+                f"{schwab_qty_sum} != journal qty={journal_qty}; operator "
+                f"picks the intended record or marks unmatched"
+            ),
+            candidate_choices=_candidate_choices_multi_match_within_window(n),
+        )
+
+    # Any other shape (scalar, non-list, non-{"matched": None} Mapping)
+    # → tier-2 unsupported. Defense in depth.
+    return ClassificationResult(
+        tier=2,
+        ambiguity_kind="unsupported",
+        correction_target=None,
+        correction_reason=(
+            f"unmatched_{direction}_fill on "
+            f"(ticker={ticker!r}, fill_id={fill_id}): source_payload "
+            f"shape {type(source_payload).__name__} not understood by "
+            f"classifier (Pass-2-tier-1-FORBIDDEN); operator dispositions "
+            f"manually"
+        ),
+        candidate_choices=None,
+    )
+
+
+def _classify_unmatched_open_fill(
+    *,
+    discrepancy: ReconciliationDiscrepancy,
+    source_payload: Any | None,
+    journal_row: Mapping[str, Any] | None,
+) -> ClassificationResult:
+    """Spec §4.3.2 + §8.4 Pass-2-tier-1-FORBIDDEN — DHC 39 walkthrough."""
+    return _classify_unmatched_fill_shared(
+        discrepancy=discrepancy,
+        source_payload=source_payload,
+        journal_row=journal_row,
+        direction="open",
+    )
+
+
+_SUB_CLASSIFIERS["unmatched_open_fill"] = _classify_unmatched_open_fill
+
+
+def _classify_unmatched_close_fill(
+    *,
+    discrepancy: ReconciliationDiscrepancy,
+    source_payload: Any | None,
+    journal_row: Mapping[str, Any] | None,
+) -> ClassificationResult:
+    """Spec §4.3.3 — mirrors unmatched_open_fill symmetrically."""
+    return _classify_unmatched_fill_shared(
+        discrepancy=discrepancy,
+        source_payload=source_payload,
+        journal_row=journal_row,
+        direction="close",
+    )
+
+
+_SUB_CLASSIFIERS["unmatched_close_fill"] = _classify_unmatched_close_fill
+
+
 def classify_discrepancy(
     discrepancy: ReconciliationDiscrepancy,
     *,
