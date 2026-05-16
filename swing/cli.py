@@ -1837,20 +1837,129 @@ def journal_reconcile_backfill_cmd(
     # Default behavior is dry-run unless --apply is explicit.
     dry_run = not apply_flag
 
-    cfg = ctx.obj["config"]
+    # Codex R1 Major #1 fix — apply_overrides() at CLI entry so the
+    # cfg-cascade (env vars > user-config.toml > prompt) resolves
+    # end-to-end. Mirrors Phase 12 Sub-bundle B forward-binding lesson
+    # #6 (apply_overrides discipline at Schwab entry points). Fall back
+    # to raw cfg if the helper can't operate on it (test fixtures supply
+    # SimpleNamespace cfgs that bypass the Config dataclass round-trip).
+    try:
+        from swing.config_overrides import apply_overrides
+        cfg = apply_overrides(ctx.obj["config"])
+    except (AttributeError, TypeError):
+        cfg = ctx.obj["config"]
+
     conn = connect(cfg.paths.db_path)
     try:
         environment = cfg.integrations.schwab.environment
-        # T-D.6 scaffold: schwab_client + account_hash are opaque
-        # pass-throughs. T-D.7 (Pass 1) does NOT need them; T-D.8
-        # (Pass 2) will construct schwab_client via
-        # ``construct_authenticated_client(cfg, environment, ...)``
-        # (see ``swing/cli_schwab.py:_build_schwabdev_client_for_fetch``)
-        # and read account_hash from cfg.integrations.schwab.account_hash.
-        schwab_client = None
         account_hash = getattr(
             cfg.integrations.schwab, "account_hash", None,
         )
+
+        # Codex R1 Major #1 fix — construct the Schwab client at the CLI
+        # entry so Pass 2 (T-D.8) actually has a live client to call
+        # ``account_orders`` on. Without this, the previous scaffold
+        # passed ``schwab_client=None`` and Pass 2's
+        # ``get_account_orders_audited`` dereferenced ``client.account_orders``
+        # → AttributeError; production --apply for DHC/VSAT would not
+        # perform the audited Schwab re-fetch + would persist a fake
+        # Pass-2 failure instead of real tier-2 ambiguity classification.
+        #
+        # Construction is short-circuited when:
+        #   * environment == 'sandbox' (the C.C sandbox short-circuit
+        #     LOCK fires at the inner service function regardless of
+        #     whether the client was constructed — pass None to avoid
+        #     burning OAuth state on a sandbox run);
+        #   * dry_run AND no_pass_2_on_dry_run (caller opted out of
+        #     Pass 2 entirely; client construction would be pure waste
+        #     + would prompt unnecessarily when env vars are unset).
+        #
+        # Otherwise mirror ``swing schwab fetch`` preflight verbatim:
+        # preflight account_hash + resolve credentials via cfg-cascade +
+        # build schwabdev client.
+        from swing.cli_schwab import (
+            _build_schwabdev_client_for_fetch,
+            _resolve_credentials_for_cli,
+        )
+        from swing.integrations.schwab.client import (
+            SchwabAuthError,
+            SchwabConfigMissingError,
+        )
+
+        schwab_client = None
+        # Skip construction entirely under sandbox (C.C inner short-circuit
+        # fires regardless) and under --dry-run + --no-pass-2-on-dry-run
+        # (operator explicitly opted out of Pass 2).
+        skip_client_construction = (
+            environment == "sandbox"
+            or (dry_run and no_pass_2_on_dry_run)
+        )
+        if not skip_client_construction:
+            # --apply mode REQUIRES the client (Pass-2 dispatch must
+            # actually re-fetch Schwab orders). Dry-run mode without
+            # --no-pass-2-on-dry-run also wants the client (Pass 2 still
+            # fires unless explicitly skipped). For both modes,
+            # account_hash + credentials are mandatory preflight.
+            if not account_hash:
+                if not dry_run:
+                    raise click.ClickException(
+                        f"Schwab account_hash not configured. "
+                        f"Run `swing schwab setup --environment "
+                        f"{environment}` first."
+                    )
+                # Dry-run: emit advisory + leave client=None. If a
+                # Pass-2-required discrepancy is reached, dispatch will
+                # surface a Pass-2 re-fetch failure with descriptive
+                # reason. This preserves the operator's ability to run
+                # dry-run previews against pre-Phase-11 DBs where
+                # account_hash was never configured.
+                click.echo(
+                    "(advisory) Schwab account_hash not configured; "
+                    "Pass-2 dispatch will fail for unmatched_*_fill "
+                    "discrepancies. Run `swing schwab setup` to enable "
+                    "Pass-2 re-fetch.",
+                    err=True,
+                )
+            else:
+                try:
+                    client_id, client_secret = _resolve_credentials_for_cli(
+                        cfg, environment,
+                    )
+                except SchwabConfigMissingError as exc:
+                    if not dry_run:
+                        raise click.ClickException(str(exc)) from exc
+                    # Dry-run soft-fail (operator may not have shell
+                    # env vars set for a non-destructive preview).
+                    click.echo(
+                        f"(advisory) Schwab credentials unavailable: "
+                        f"{exc}. Pass-2 dispatch will fail for "
+                        "unmatched_*_fill discrepancies.",
+                        err=True,
+                    )
+                    client_id = None
+                if client_id is not None:
+                    try:
+                        schwab_client = _build_schwabdev_client_for_fetch(
+                            cfg, environment, client_id, client_secret,
+                        )
+                    except SchwabAuthError as exc:
+                        if not dry_run:
+                            raise click.ClickException(
+                                f"Authentication failed: {exc}",
+                            ) from exc
+                        click.echo(
+                            f"(advisory) Schwab authentication failed: "
+                            f"{exc}. Pass-2 dispatch will fail.",
+                            err=True,
+                        )
+                    except SchwabConfigMissingError as exc:
+                        if not dry_run:
+                            raise click.ClickException(str(exc)) from exc
+                        click.echo(
+                            f"(advisory) Schwab config missing: {exc}. "
+                            "Pass-2 dispatch will fail.",
+                            err=True,
+                        )
 
         try:
             summary = run_backfill(

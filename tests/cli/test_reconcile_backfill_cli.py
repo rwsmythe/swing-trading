@@ -420,3 +420,217 @@ def test_run_backfill_limit_kwarg_caps_iteration(cli_workspace):
         assert len(summary.per_discrepancy_outcomes) == 2
     finally:
         conn.close()
+
+
+# ============================================================================
+# Codex R1 Major #1 — CLI handler MUST construct schwab_client via the
+# cfg-cascade (env vars > user-config.toml > prompt) + apply_overrides
+# discipline. Without this, --apply for unmatched_*_fill discrepancies
+# would call ``client.account_orders`` on None → AttributeError.
+# ============================================================================
+
+
+def test_apply_overrides_invoked_at_cli_entry(cli_workspace, monkeypatch):
+    """Major #1 fix — apply_overrides() fires at CLI entry.
+
+    Pin: monkeypatch ``swing.config_overrides.apply_overrides`` to a
+    spy + invoke the CLI in dry-run; assert the spy was called with the
+    raw cfg from ctx.obj.
+    """
+    runner, cfg, _db = cli_workspace
+    calls: list = []
+    from swing import config_overrides as _config_overrides
+
+    real_apply = _config_overrides.apply_overrides
+
+    def _spy(cfg_arg):
+        calls.append(cfg_arg)
+        return real_apply(cfg_arg)
+
+    monkeypatch.setattr(
+        "swing.cli.apply_overrides", _spy, raising=False,
+    )
+    # The CLI imports apply_overrides lazily via `from
+    # swing.config_overrides import apply_overrides`, so we must patch
+    # the source module too to catch the import.
+    monkeypatch.setattr(_config_overrides, "apply_overrides", _spy)
+
+    r = runner.invoke(
+        main, [
+            "--config", str(cfg), "journal", "reconcile-backfill",
+            "--dry-run", "--no-pass-2-on-dry-run",
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    assert len(calls) >= 1
+
+
+def test_apply_constructs_schwab_client_via_cli_schwab_helpers(
+    cli_workspace, monkeypatch,
+):
+    """Major #1 fix — --apply path constructs schwab_client.
+
+    Plant a discrepancy + invoke --apply against production env with
+    account_hash configured via monkeypatch on cfg dataclass; assert
+    ``_build_schwabdev_client_for_fetch`` was invoked with cfg + env +
+    credentials. Without the fix, schwab_client would be None and Pass 2
+    dispatch would AttributeError.
+    """
+    runner, cfg, db_path = cli_workspace
+    conn = sqlite3.connect(db_path)
+    try:
+        run_id = _seed_reconciliation_run(conn)
+        _plant_unresolved(
+            conn, run_id, ticker="DHC",
+            discrepancy_type="unmatched_open_fill",
+            field_name="match",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Spy on the helpers invoked at CLI entry.
+    build_calls: list = []
+    resolve_calls: list = []
+
+    class _FakeClient:
+        def account_orders(self, *args, **kwargs):
+            return []
+
+    def _spy_resolve(cfg_arg, env_arg):
+        resolve_calls.append((cfg_arg, env_arg))
+        return ("spy-client-id", "spy-client-secret")
+
+    def _spy_build(cfg_arg, env_arg, cid, csec):
+        build_calls.append((cfg_arg, env_arg, cid, csec))
+        return _FakeClient()
+
+    from swing import cli_schwab as _cli_schwab
+
+    monkeypatch.setattr(
+        _cli_schwab, "_resolve_credentials_for_cli", _spy_resolve,
+    )
+    monkeypatch.setattr(
+        _cli_schwab, "_build_schwabdev_client_for_fetch", _spy_build,
+    )
+
+    # Inject account_hash via apply_overrides override path. Use the
+    # cfg-cascade write surface for realism: a user-config.toml fragment.
+    from pathlib import Path as _Path
+    home_str = cfg.parent.parent / "home"
+    home = _Path(home_str)
+    user_config = home / "swing-data" / "user-config.toml"
+    user_config.parent.mkdir(parents=True, exist_ok=True)
+    user_config.write_text(
+        "[integrations.schwab]\n"
+        "environment = \"production\"\n"
+        "account_hash = \"AAAAAAAA1234567890\"\n",
+        encoding="utf-8",
+    )
+    # Suppress real apply_overrides home discovery — monkeypatch
+    # USERPROFILE + HOME so the test does not leak to the operator's
+    # real ~/swing-data/user-config.toml.
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    # Also clear potential env vars from the host shell.
+    monkeypatch.delenv("SCHWAB_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SCHWAB_CLIENT_SECRET", raising=False)
+
+    # Stub Pass 2 audit-fetch so we do not need a real Schwab API.
+    from swing.trades import reconciliation_backfill as _bf
+
+    def _stub_audited(*args, **kwargs):
+        return (None, [])
+
+    monkeypatch.setattr(_bf, "get_account_orders_audited", _stub_audited)
+
+    r = runner.invoke(
+        main, [
+            "--config", str(cfg), "journal", "reconcile-backfill",
+            "--apply",
+        ],
+    )
+    # If the cfg-cascade resolves credentials + the spy fires, exit 0.
+    # Otherwise the SchwabConfigMissingError path raises ClickException
+    # and exit_code != 0 — that itself proves the fix would block a
+    # broken cfg from silently no-op'ing.
+    assert r.exit_code == 0, r.output
+    # Major #1 binding pin: build helper was invoked with cfg + env +
+    # spy-resolved credentials.
+    assert len(build_calls) == 1, (
+        f"_build_schwabdev_client_for_fetch must be invoked at CLI "
+        f"entry; got {len(build_calls)} call(s)"
+    )
+    assert build_calls[0][1] == "production"
+    assert build_calls[0][2] == "spy-client-id"
+    assert build_calls[0][3] == "spy-client-secret"
+    # And the resolve helper too (cfg-cascade).
+    assert len(resolve_calls) == 1
+
+
+def test_dry_run_no_pass_2_does_not_construct_client(
+    cli_workspace, monkeypatch,
+):
+    """Major #1 fix — --dry-run + --no-pass-2-on-dry-run skips construction.
+
+    Per design comment in the CLI handler: client construction is
+    skipped under sandbox OR (dry_run AND no_pass_2_on_dry_run). Pin
+    the second branch so unnecessary prompts don't fire on a preview.
+    """
+    runner, cfg, _db = cli_workspace
+    build_calls: list = []
+
+    def _spy_build(*args, **kwargs):
+        build_calls.append(args)
+        raise AssertionError("must NOT be called under no-pass-2 dry-run")
+
+    from swing import cli_schwab as _cli_schwab
+
+    monkeypatch.setattr(
+        _cli_schwab, "_build_schwabdev_client_for_fetch", _spy_build,
+    )
+
+    r = runner.invoke(
+        main, [
+            "--config", str(cfg), "journal", "reconcile-backfill",
+            "--dry-run", "--no-pass-2-on-dry-run",
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    assert len(build_calls) == 0
+
+
+def test_sandbox_env_does_not_construct_client(cli_workspace, monkeypatch):
+    """Major #1 fix — sandbox env skips construction (C.C inner short-circuit)."""
+    runner, cfg, _db = cli_workspace
+    build_calls: list = []
+
+    def _spy_build(*args, **kwargs):
+        build_calls.append(args)
+        raise AssertionError("must NOT be called under sandbox")
+
+    from swing import cli_schwab as _cli_schwab
+
+    monkeypatch.setattr(
+        _cli_schwab, "_build_schwabdev_client_for_fetch", _spy_build,
+    )
+    # Inject environment='sandbox' via user-config.toml override.
+    from pathlib import Path as _Path
+    home = _Path(str(cfg.parent.parent / "home"))
+    user_config = home / "swing-data" / "user-config.toml"
+    user_config.parent.mkdir(parents=True, exist_ok=True)
+    user_config.write_text(
+        "[integrations.schwab]\nenvironment = \"sandbox\"\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+
+    r = runner.invoke(
+        main, [
+            "--config", str(cfg), "journal", "reconcile-backfill",
+            "--dry-run",
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    assert len(build_calls) == 0
