@@ -1220,3 +1220,88 @@ def test_cli_renders_partial_summary_on_mid_iteration_abort(
     assert "ABORTED MID-ITERATION" in r.output
     # Tier 1 applied: 1 from the row that committed before the abort.
     assert "Tier 1 applied: 1" in r.output
+
+
+# ============================================================================
+# Codex R2 Minor #1 — dry-run Pass-2-unavailable distinguished from
+# apply-mode Pass-2-failed. The R1 nested rendering "(of which Pass 2
+# re-fetch failed: L)" beneath "Tier 2 stamped: M" assumed L ⊆ M;
+# dry-run soft-fail had L>0 with M=0 — visually contradictory.
+# ============================================================================
+
+
+def test_dry_run_pass_2_unavailable_distinct_from_apply_failed(
+    cli_workspace, monkeypatch,
+):
+    """R2 Minor #1 fix — dry-run unavailable routed to separate counter.
+
+    Plants a Pass-2-required discrepancy. Stubs the audited wrapper
+    to raise (mimics network failure under dry-run preview). Asserts
+    the summary block renders the row under
+    ``Pass 2 unavailable (dry-run / sandbox / fetch skip): 1`` NOT
+    under ``(of which Pass 2 re-fetch failed: 1)`` beneath
+    ``Tier 2 stamped: 0``.
+    """
+    from swing.trades import reconciliation_backfill as _bf
+
+    runner, cfg, db_path = cli_workspace
+    conn = sqlite3.connect(db_path)
+    try:
+        run_id = _seed_reconciliation_run(conn)
+        _plant_unresolved(
+            conn, run_id, ticker="DHC",
+            discrepancy_type="unmatched_open_fill",
+            field_name="match",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    from pathlib import Path as _Path
+    home = _Path(str(cfg.parent.parent / "home"))
+    user_config = home / "swing-data" / "user-config.toml"
+    user_config.parent.mkdir(parents=True, exist_ok=True)
+    user_config.write_text(
+        "[integrations.schwab]\n"
+        "environment = \"production\"\n"
+        "account_hash = \"AAAAAAAA1234567890\"\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("SCHWAB_CLIENT_ID", "stub-cid")
+    monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "stub-csec")
+
+    # Stub the client builder so we don't hit OAuth.
+    class _FakeClient:
+        def account_orders(self, *args, **kwargs):
+            return []
+
+    from swing import cli_schwab as _cli_schwab
+    monkeypatch.setattr(
+        _cli_schwab,
+        "_build_schwabdev_client_for_fetch",
+        lambda *a, **k: _FakeClient(),
+    )
+
+    # Stub the audited wrapper to RAISE (simulates a network failure
+    # under dry-run).
+    def _raising_audited(*args, **kwargs):
+        raise RuntimeError("simulated network failure")
+
+    monkeypatch.setattr(_bf, "get_account_orders_audited", _raising_audited)
+
+    r = runner.invoke(
+        main, [
+            "--config", str(cfg), "journal", "reconcile-backfill",
+            "--dry-run",
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    # Minor #1 binding pin: top-level Pass-2-unavailable line present.
+    assert "Pass 2 unavailable" in r.output
+    # And the nested "(of which Pass 2 re-fetch failed: N)" line shows 0,
+    # NOT 1 — the row is routed to the projection-unavailable counter.
+    assert "(of which Pass 2 re-fetch failed: 0)" in r.output
+    # Tier 2 stamped stays at 0 (dry-run; no journal mutation).
+    assert "Tier 2 stamped: 0" in r.output

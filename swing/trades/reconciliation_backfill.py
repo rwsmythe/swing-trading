@@ -186,6 +186,16 @@ class BackfillSummary:
     projection_tier1: int = 0
     projection_tier2: int = 0
     projection_pass_2: int = 0
+    # Codex R2 Minor #1 — distinguishes dry-run / sandbox / fetch-skip
+    # Pass-2 paths from APPLY-mode Pass-2 re-fetch failure. In R1's
+    # nested rendering the dry-run soft-fail (credentials missing) +
+    # sandbox-skip paths inflated ``pass_2_failed`` while
+    # ``tier2_stamped`` stayed at zero — visually contradictory ("of
+    # which Pass-2 re-fetch failed: N" beneath "Tier 2 stamped: 0"). The
+    # apply-mode counter ``pass_2_failed`` now ONLY counts honest
+    # re-fetch failures whose outcome was a tier-2 stamp; this counter
+    # surfaces dry-run / sandbox-skipped projections separately.
+    pass_2_projection_unavailable: int = 0
     # Codex R2 Major #3 — mid-iteration abort signal. Set to True when
     # ``run_backfill`` aborts because a pipeline_runs row appeared
     # mid-iteration; the partial summary is still returned via
@@ -1206,14 +1216,20 @@ def run_backfill(
         # the reason substring for operator triage but the canonical
         # bucket counter is tier2_stamped; the pass_2_failed bucket is
         # the rate of Pass-2 RE-FETCH FAILURES specifically.
+        #
+        # Codex R2 Minor #1 — distinguishes dry-run / projection paths
+        # from apply-mode Pass-2 re-fetch failures. The R1 nested
+        # rendering "(of which Pass 2 re-fetch failed: L)" beneath
+        # "Tier 2 stamped: M" assumed L ⊆ M; under dry-run soft-fail
+        # (credentials missing) the reason started with the prefix but
+        # the outcome was ``projection_pass_2`` (no stamp), inflating
+        # ``pass_2_failed`` above zero while ``tier2_stamped`` stayed at
+        # zero — visually contradictory. Apply-mode failures whose
+        # outcome IS a tier-2 stamp still increment ``pass_2_failed``;
+        # dry-run/projection failures route to the separate
+        # ``pass_2_projection_unavailable`` counter, which the summary
+        # block renders top-level (not nested).
         if (
-            outcome.reason
-            and outcome.reason.startswith(_PASS_2_FAILURE_REASON_PREFIX)
-            and outcome.outcome != "tier2_stamped"
-            and outcome.outcome != "errored"
-        ):
-            summary.pass_2_failed += 1
-        elif (
             outcome.reason
             and outcome.reason.startswith(_PASS_2_FAILURE_REASON_PREFIX)
             and outcome.outcome == "tier2_stamped"
@@ -1225,6 +1241,26 @@ def run_backfill(
             # Keep the increment but it does NOT double-count anything
             # because tier2_stamped + pass_2_failed are SEPARATE
             # diagnostic bucket counters per spec §8.4 + plan §E.9 #4.
+            summary.pass_2_failed += 1
+        elif (
+            outcome.reason
+            and outcome.reason.startswith(_PASS_2_FAILURE_REASON_PREFIX)
+            and outcome.outcome == "projection_pass_2"
+        ):
+            # Dry-run / sandbox-projection Pass-2 unavailability — NOT a
+            # subset of tier2_stamped (no stamp happened). Route to a
+            # separate top-level counter so the summary doesn't render
+            # "(of which Pass 2 re-fetch failed: 1)" beneath "Tier 2
+            # stamped: 0".
+            summary.pass_2_projection_unavailable += 1
+        elif (
+            outcome.reason
+            and outcome.reason.startswith(_PASS_2_FAILURE_REASON_PREFIX)
+            and outcome.outcome != "errored"
+        ):
+            # Any other path (e.g., pass_2_pending placeholder reached
+            # under apply-mode without a stamp). Keep the prior
+            # diagnostic counter behavior for defense-in-depth.
             summary.pass_2_failed += 1
 
     # T-D.9 — emit SKIP-only outcomes for Pass-2-failed rows on default
@@ -1326,6 +1362,17 @@ def format_summary_block(summary: BackfillSummary) -> str:
     projection_*) follow on indented lines for operator triage but are
     NOT part of the §E.9 #4 binding layout.
     """
+    # Codex R2 Minor #1 — top-level Pass-2-unavailable line for
+    # dry-run / sandbox-projection paths (NOT nested under tier2_stamped
+    # because no stamp happened); rendered only when non-zero so the
+    # standard apply-mode summary stays compact.
+    projection_unavailable_line = ""
+    if summary.pass_2_projection_unavailable:
+        projection_unavailable_line = (
+            f"  Pass 2 unavailable (dry-run / sandbox / fetch skip): "
+            f"{summary.pass_2_projection_unavailable}\n"
+        )
+
     # Codex R2 Major #3 — abort banner surfaces above the counters so
     # the operator immediately sees that this is a partial summary; the
     # numeric lines below reflect rows that DID commit before the abort.
@@ -1345,6 +1392,7 @@ def format_summary_block(summary: BackfillSummary) -> str:
         + f"  Tier 1 applied: {summary.tier1_applied}\n"
         + f"  Tier 2 stamped: {summary.tier2_stamped}\n"
         + f"    (of which Pass 2 re-fetch failed: {summary.pass_2_failed})\n"
+        + projection_unavailable_line
         + f"  Errored: {summary.tier_errored}\n"
         + f"  Skipped (already resolved): {summary.skipped_already_resolved}\n"
         + "  Skipped (Pass-2-failed; use --retry-pass-2-failures to retry): "
