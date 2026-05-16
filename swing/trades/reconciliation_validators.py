@@ -26,6 +26,7 @@ reject when simulated ``current_size < 0``.
 """
 from __future__ import annotations
 
+import math
 import sqlite3
 from collections.abc import Callable, Mapping
 from typing import Any
@@ -99,6 +100,10 @@ def validate_fill_correction(
     quantity = merged["quantity"]
     if quantity is None or not isinstance(quantity, (int, float)):
         return (False, f"quantity must be numeric; got {quantity!r}")
+    # Codex R1 Major #2 — mirror swing/data/models.py REAL-field discipline
+    # (rejects NaN/inf on REAL columns; cf. models.py:888-896).
+    if not math.isfinite(float(quantity)):
+        return (False, f"quantity must be finite (got NaN/inf); got {quantity}")
     if quantity <= 0:
         return (False, f"quantity must be > 0; got {quantity}")
 
@@ -106,6 +111,8 @@ def validate_fill_correction(
     price = merged["price"]
     if price is None or not isinstance(price, (int, float)):
         return (False, f"price must be numeric; got {price!r}")
+    if not math.isfinite(float(price)):
+        return (False, f"price must be finite (got NaN/inf); got {price}")
     if price <= 0:
         return (False, f"price must be > 0; got {price}")
 
@@ -187,6 +194,12 @@ def validate_trade_correction(
                 False,
                 f"current_stop must be numeric; got {proposed_stop!r}",
             )
+        # Codex R1 Major #2 — mirror REAL-field discipline.
+        if not math.isfinite(float(proposed_stop)):
+            return (
+                False,
+                f"current_stop must be finite (got NaN/inf); got {proposed_stop}",
+            )
         if proposed_stop <= 0:
             return (
                 False,
@@ -249,6 +262,9 @@ def validate_cash_movement_correction(
     amount = merged["amount"]
     if amount is None or not isinstance(amount, (int, float)):
         return (False, f"amount must be numeric; got {amount!r}")
+    # Codex R1 Major #2 — mirror REAL-field discipline.
+    if not math.isfinite(float(amount)):
+        return (False, f"amount must be finite (got NaN/inf); got {amount}")
     if amount < 0:
         return (False, f"amount must be >= 0; got {amount}")
 
@@ -295,6 +311,12 @@ def validate_snapshot_correction(
         return (
             False,
             f"equity_dollars must be numeric; got {equity_dollars!r}",
+        )
+    # Codex R1 Major #2 — mirror REAL-field discipline.
+    if not math.isfinite(float(equity_dollars)):
+        return (
+            False,
+            f"equity_dollars must be finite (got NaN/inf); got {equity_dollars}",
         )
     if equity_dollars <= 0:
         return (

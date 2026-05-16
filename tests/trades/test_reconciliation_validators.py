@@ -421,3 +421,91 @@ def test_validate_snapshot_correction_rejects_nonexistent_id(
     )
     assert passes is False
     assert "not found" in (reason or "").lower()
+
+
+# ---------------------------------------------------------------------------
+# Codex R1 Major #2 — math.isfinite() guard on all numeric validator fields.
+#
+# `swing/data/models.py` REAL-field validators reject NaN/inf on REAL
+# columns (cf. models.py:888-896). The shipped validators only checked
+# type and inequality, so float('inf') passed positive checks and
+# float('nan') ≤ 0 is False so NaN passed too. These tests pin the
+# tightened contract: NaN/inf must be rejected at validator-shim time
+# (before the schema CHECK fires) with a reason mentioning "finite".
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [float("nan"), float("inf"), float("-inf")],
+)
+def test_validate_fill_correction_rejects_nan_or_inf_quantity(
+    conn_with_planted_cvgi_trade_and_fill: sqlite3.Connection,
+    bad_value: float,
+) -> None:
+    conn = conn_with_planted_cvgi_trade_and_fill
+    passes, reason = validate_fill_correction(conn, 1, {"quantity": bad_value})
+    assert passes is False
+    assert "finite" in (reason or "").lower()
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [float("nan"), float("inf"), float("-inf")],
+)
+def test_validate_fill_correction_rejects_nan_or_inf_price(
+    conn_with_planted_cvgi_trade_and_fill: sqlite3.Connection,
+    bad_value: float,
+) -> None:
+    conn = conn_with_planted_cvgi_trade_and_fill
+    passes, reason = validate_fill_correction(conn, 1, {"price": bad_value})
+    assert passes is False
+    assert "finite" in (reason or "").lower()
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [float("nan"), float("inf"), float("-inf")],
+)
+def test_validate_trade_correction_rejects_nan_or_inf_current_stop(
+    conn_with_planted_cvgi_trade_and_fill: sqlite3.Connection,
+    bad_value: float,
+) -> None:
+    conn = conn_with_planted_cvgi_trade_and_fill
+    passes, reason = validate_trade_correction(
+        conn, 1, {"current_stop": bad_value},
+    )
+    assert passes is False
+    assert "finite" in (reason or "").lower()
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [float("nan"), float("inf"), float("-inf")],
+)
+def test_validate_cash_movement_correction_rejects_nan_or_inf_amount(
+    conn_with_planted_cash_movement: sqlite3.Connection,
+    bad_value: float,
+) -> None:
+    conn = conn_with_planted_cash_movement
+    passes, reason = validate_cash_movement_correction(
+        conn, 1, {"amount": bad_value},
+    )
+    assert passes is False
+    assert "finite" in (reason or "").lower()
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [float("nan"), float("inf"), float("-inf")],
+)
+def test_validate_snapshot_correction_rejects_nan_or_inf_equity_dollars(
+    conn_with_planted_snapshot: sqlite3.Connection,
+    bad_value: float,
+) -> None:
+    conn = conn_with_planted_snapshot
+    passes, reason = validate_snapshot_correction(
+        conn, 1, {"equity_dollars": bad_value},
+    )
+    assert passes is False
+    assert "finite" in (reason or "").lower()
