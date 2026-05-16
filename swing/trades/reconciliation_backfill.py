@@ -118,6 +118,9 @@ class BackfillOutcome:
     #   'tier1_applied'                  (--apply, tier-1 auto-corrected)
     #   'tier1_skipped_sandbox'          (--apply, env='sandbox' short-circuit)
     #   'tier2_stamped'                  (--apply, tier-2 stamp via service)
+    #   'tier2_skipped_sandbox'          (--apply, env='sandbox' Pass-2
+    #                                     short-circuit — discrepancy left
+    #                                     unresolved; Codex R1 Major #2)
     #   'pass_2_pending'                 (--apply, Pass-1 emitted
     #                                     _pass_2_required; T-D.8 will retry)
     #   'pass_2_failed'                  (T-D.8 consumer)
@@ -150,6 +153,12 @@ class BackfillSummary:
     tier1_applied: int = 0
     tier1_skipped_sandbox: int = 0
     tier2_stamped: int = 0
+    # Codex R1 Major #2 fix — sandbox + --apply short-circuit for
+    # Pass-2-required discrepancies preserves the C.C sandbox LOCK
+    # (no journal mutation under sandbox). The discrepancy stays
+    # ``unresolved`` rather than being stamped ``pending_ambiguity_
+    # resolution``; this counter tracks the no-op outcome.
+    tier2_skipped_sandbox: int = 0
     tier_errored: int = 0
     pass_2_pending: int = 0
     pass_2_failed: int = 0
@@ -633,6 +642,36 @@ def _handle_pass_2(
             projection_action_needed=action,
         )
 
+    # Codex R1 Major #2 fix — under sandbox + --apply, the
+    # ``_pass_2_dispatch`` short-circuit returns BEFORE any Schwab API
+    # call (preserves the C.C sandbox short-circuit LOCK contract:
+    # environment='sandbox' MUST NOT mutate domain rows). Without this
+    # guard, ``stamp_pending_ambiguity`` would flip the discrepancy
+    # resolution to ``pending_ambiguity_resolution`` + emit ambiguity_kind
+    # — which IS a journal mutation. The discrepancy stays ``unresolved``
+    # under sandbox so the operator can re-run under production for
+    # honest tier-2 classification.
+    if environment == "sandbox":
+        return BackfillOutcome(
+            discrepancy_id=disc_id,
+            ticker=disc.ticker,
+            discrepancy_type=disc.discrepancy_type,
+            tier=2,
+            outcome="tier2_skipped_sandbox",
+            ambiguity_kind=None,
+            correction_id=None,
+            pass_2_call_id=call_id,
+            reason=(
+                "sandbox: Pass 2 short-circuited; discrepancy left "
+                "unresolved (re-run under production for honest tier-2 "
+                "classification)"
+            ),
+            projection_outcome_label="tier-2 skipped (sandbox)",
+            projection_action_needed=(
+                "re-run under environment='production'"
+            ),
+        )
+
     # --apply mode: stamp via PUBLIC stamp_pending_ambiguity (own-tx).
     # T-D.9: when ``allow_pending_update=True`` (retry-pass-2-failures
     # path), the inner UPDATE overwrites a prior ``pending_ambiguity_
@@ -1047,6 +1086,8 @@ def run_backfill(
             summary.tier1_skipped_sandbox += 1
         elif outcome.outcome == "tier2_stamped":
             summary.tier2_stamped += 1
+        elif outcome.outcome == "tier2_skipped_sandbox":
+            summary.tier2_skipped_sandbox += 1
         elif outcome.outcome == "pass_2_pending":
             # Legacy T-D.7 placeholder — should NOT be emitted now that
             # T-D.8 ships; retained for graceful-degradation defense.
@@ -1206,6 +1247,7 @@ def format_summary_block(summary: BackfillSummary) -> str:
         f"{summary.skipped_pass_2_failed}\n"
         "  --- diagnostic counters ---\n"
         f"  tier1_skipped_sandbox:    {summary.tier1_skipped_sandbox}\n"
+        f"  tier2_skipped_sandbox:    {summary.tier2_skipped_sandbox}\n"
         f"  pass_2_pending:           {summary.pass_2_pending}\n"
         f"  projection_tier1:         {summary.projection_tier1}\n"
         f"  projection_tier2:         {summary.projection_tier2}\n"

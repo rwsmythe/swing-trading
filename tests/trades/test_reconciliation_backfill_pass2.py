@@ -386,11 +386,34 @@ def test_pass_2_auth_error_failure_mode(
 def test_sandbox_short_circuit_skips_schwab_api(
     v19_db: sqlite3.Connection,
 ) -> None:
+    """Codex R1 Major #2 fix — sandbox + --apply leaves discrepancy unresolved.
+
+    Sandbox MUST NOT mutate any journal state under --apply: the C.C
+    sandbox short-circuit LOCK extends to backfill Pass-2 dispatch. The
+    previous behavior stamped ``pending_ambiguity_resolution`` even
+    though the underlying Schwab API call was skipped — that was a
+    journal mutation (resolution flip + ambiguity_kind set) and violates
+    the no-mutation-under-sandbox contract. Fixed: backfill outcome is
+    ``tier2_skipped_sandbox`` + discrepancy stays ``unresolved``.
+    """
     run_id = _seed_reconciliation_run(v19_db)
     seed = _seed_dhc_trade_and_fill(v19_db, journal_qty=39.0)
     disc_id = _seed_unmatched_open_fill_disc(
         v19_db, run_id=run_id, ticker="DHC", **seed,
     )
+
+    # Capture pre-state for the BEFORE/AFTER discriminator.
+    pre_row = v19_db.execute(
+        "SELECT resolution, ambiguity_kind, resolution_reason "
+        "FROM reconciliation_discrepancies WHERE discrepancy_id = ?",
+        (disc_id,),
+    ).fetchone()
+    assert pre_row[0] == "unresolved"
+    assert pre_row[1] is None
+    # And no fill mutations.
+    pre_fill = v19_db.execute(
+        "SELECT price FROM fills WHERE fill_id = ?", (seed["fill_id"],),
+    ).fetchone()
 
     def _should_not_be_called(*args: Any, **kwargs: Any) -> None:
         raise AssertionError(
@@ -416,19 +439,39 @@ def test_sandbox_short_circuit_skips_schwab_api(
         "SELECT COUNT(*) FROM schwab_api_calls",
     ).fetchone()[0]
     assert n_calls == 0
+    # No reconciliation_corrections row written.
+    n_corrections = v19_db.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0]
+    assert n_corrections == 0
 
-    # Outcome — tier-2 unsupported per spec §9.7.
+    # Outcome — tier-2 SKIPPED (sandbox) per Codex R1 Major #2 LOCK.
     out = summary.per_discrepancy_outcomes[0]
     assert out.discrepancy_id == disc_id
     assert out.tier == 2
-    assert out.outcome == "tier2_stamped"
-    assert out.ambiguity_kind == "unsupported"
+    assert out.outcome == "tier2_skipped_sandbox"
+    assert out.ambiguity_kind is None  # no stamp = no ambiguity_kind set
     assert "sandbox" in (out.reason or "").lower()
-    assert "cannot re-fetch" in (out.reason or "")
     assert out.pass_2_call_id is None
     # pass_2_failed must NOT increment under sandbox (it's a deliberate
     # short-circuit, not an API failure).
     assert summary.pass_2_failed == 0
+    assert summary.tier2_stamped == 0
+    assert summary.tier2_skipped_sandbox == 1
+
+    # AFTER state: discrepancy left exactly as pre-call.
+    post_row = v19_db.execute(
+        "SELECT resolution, ambiguity_kind, resolution_reason "
+        "FROM reconciliation_discrepancies WHERE discrepancy_id = ?",
+        (disc_id,),
+    ).fetchone()
+    assert post_row[0] == "unresolved"
+    assert post_row[1] is None
+    # Fill state unchanged.
+    post_fill = v19_db.execute(
+        "SELECT price FROM fills WHERE fill_id = ?", (seed["fill_id"],),
+    ).fetchone()
+    assert post_fill[0] == pre_fill[0]
 
 
 # ---------------------------------------------------------------------------
