@@ -24,7 +24,7 @@ Covers plan §E.8 acceptance criteria #1-9 + brief §0.5 #9:
      price; assert tier-2 always (NEVER tier-1) regardless of
      price-similarity.
   8. Per-discrepancy ``call_id`` printout (Codex R6 Minor #2):
-     output line shape ``disc <id> <ticker> (<type>): Pass 2 →
+     output line shape ``disc <id> <ticker> (<type>): Pass 2 ->
      call_id=<int>; tier-2; ambiguity_kind=...``; assert the printed
      ``call_id`` matches the row INSERTed into ``schwab_api_calls``.
 """
@@ -583,7 +583,7 @@ def test_per_discrepancy_call_id_printout(
     """Backfill apply output for each Pass-2-required discrepancy MUST
     include the captured ``call_id``. Output line shape per plan §E.8 #9:
 
-      ``disc <id> <ticker> (<type>): Pass 2 → call_id=<int>; tier-2;
+      ``disc <id> <ticker> (<type>): Pass 2 -> call_id=<int>; tier-2;
         ambiguity_kind=<kind>``
 
     Discriminating: assert the formatted line appears in stdout +
@@ -613,7 +613,7 @@ def test_per_discrepancy_call_id_printout(
 
     captured = capsys.readouterr()
     expected_substring = (
-        f"disc {disc_id} DHC (unmatched_open_fill): Pass 2 → "
+        f"disc {disc_id} DHC (unmatched_open_fill): Pass 2 -> "
         f"call_id=77;"
     )
     assert expected_substring in captured.out, (
@@ -636,7 +636,7 @@ def test_non_pass_2_outcomes_do_not_print_call_id_line(
     v19_db: sqlite3.Connection, capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Discriminating regression: a tier-2 outcome from a NON-Pass-2 path
-    (e.g., sector_tamper) MUST NOT emit the ``Pass 2 → call_id=`` line."""
+    (e.g., sector_tamper) MUST NOT emit the ``Pass 2 -> call_id=`` line."""
     run_id = _seed_reconciliation_run(v19_db)
     # Seed CVGI trade.
     cur = v19_db.execute(
@@ -675,7 +675,7 @@ def test_non_pass_2_outcomes_do_not_print_call_id_line(
         account_hash=None,
     )
     captured = capsys.readouterr()
-    assert "Pass 2 → call_id=" not in captured.out
+    assert "Pass 2 -> call_id=" not in captured.out
     out = summary.per_discrepancy_outcomes[0]
     assert out.pass_2_call_id is None
 

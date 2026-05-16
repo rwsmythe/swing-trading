@@ -497,7 +497,7 @@ def _format_pass_2_line(
     """Render the per-discrepancy Pass-2 printout line per plan §E.8 #9.
 
     Shape:
-      ``disc <id> <ticker> (<type>): Pass 2 → call_id=<int>; tier-<n>;
+      ``disc <id> <ticker> (<type>): Pass 2 -> call_id=<int>; tier-<n>;
         ambiguity_kind='<kind>'``
 
     The format is operator-facing — they copy ``call_id`` for use with
@@ -509,7 +509,7 @@ def _format_pass_2_line(
     tier_str = f"tier-{tier}" if tier is not None else "tier-?"
     return (
         f"disc {discrepancy_id} {tk} ({discrepancy_type}): "
-        f"Pass 2 → call_id={call_id}; {tier_str}; "
+        f"Pass 2 -> call_id={call_id}; {tier_str}; "
         f"ambiguity_kind={ambiguity_kind!r}"
     )
 
