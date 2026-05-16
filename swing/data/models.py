@@ -823,6 +823,14 @@ _RESOLUTION_VALUES = (
     "manual_override",
     "unresolved",
     "acknowledged_immaterial",
+    # Phase 12 Sub-bundle C T-A.5 — widened to match migration 0019 SQL CHECK
+    # (4 new resolutions for the tier-1 auto-correct + tier-2 ambiguity +
+    # tier-3 operator-override lifecycle; spec §3.3 + plan §B.2 step-3 gap
+    # closure surfaced during T-A.5 row-deserializer wiring).
+    "auto_corrected_from_schwab",
+    "pending_ambiguity_resolution",
+    "operator_resolved_ambiguity",
+    "operator_overridden",
 )
 
 
@@ -1039,9 +1047,14 @@ class ReconciliationDiscrepancy:
                     ) from None
 
         # Resolution-lifecycle invariants.
-        if self.resolution == "unresolved":
-            # When unresolved, resolved_at + resolved_by typically NULL.
-            # We don't strictly enforce NULL (operator could correct
+        # Phase 12 Sub-bundle C T-A.5 — `pending_ambiguity_resolution` is the
+        # "awaiting operator decision" intermediate state (tier-2 ambiguity
+        # surfaced by the classifier; resolved_at + resolved_by stay NULL
+        # until the operator dispositions via the CLI). Treat it as
+        # unresolved-shaped for the resolved_at/resolved_by symmetry check.
+        if self.resolution in ("unresolved", "pending_ambiguity_resolution"):
+            # When pending/unresolved, resolved_at + resolved_by typically
+            # NULL.  We don't strictly enforce NULL (operator could correct
             # mid-workflow) but we DO reject non-null resolved_at without
             # resolved_by or vice versa (asymmetry is a sign of bug).
             if (self.resolved_at is None) != (self.resolved_by is None):

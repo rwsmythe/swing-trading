@@ -35,7 +35,9 @@ _DISCREPANCY_SELECT_COLUMNS = (
     "cash_movement_id, linked_daily_management_record_id, ticker, "
     "field_name, expected_value_json, actual_value_json, delta_text, "
     "material_to_review, resolution, resolution_reason, resolved_at, "
-    "resolved_by, mistake_tag_assigned, created_at"
+    "resolved_by, mistake_tag_assigned, created_at, "
+    # Phase 12 Sub-bundle C T-A.5: ambiguity_kind column (migration 0019).
+    "ambiguity_kind"
 )
 
 
@@ -44,7 +46,9 @@ _DISCREPANCY_SELECT_COLUMNS_D_ALIAS = (
     "d.cash_movement_id, d.linked_daily_management_record_id, d.ticker, "
     "d.field_name, d.expected_value_json, d.actual_value_json, d.delta_text, "
     "d.material_to_review, d.resolution, d.resolution_reason, d.resolved_at, "
-    "d.resolved_by, d.mistake_tag_assigned, d.created_at"
+    "d.resolved_by, d.mistake_tag_assigned, d.created_at, "
+    # Phase 12 Sub-bundle C T-A.5: ambiguity_kind column (migration 0019).
+    "d.ambiguity_kind"
 )
 
 
@@ -94,6 +98,8 @@ def _row_to_discrepancy(row: tuple) -> ReconciliationDiscrepancy:
         resolved_by=row[16],
         mistake_tag_assigned=row[17],
         created_at=row[18],
+        # Phase 12 Sub-bundle C T-A.5: ambiguity_kind column (migration 0019).
+        ambiguity_kind=row[19],
     )
 
 
