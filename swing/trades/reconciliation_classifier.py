@@ -591,6 +591,133 @@ def _classify_unmatched_close_fill(
 _SUB_CLASSIFIERS["unmatched_close_fill"] = _classify_unmatched_close_fill
 
 
+# ---------------------------------------------------------------------------
+# T-B.6 — stop_mismatch sub-classifier
+# ---------------------------------------------------------------------------
+#
+# Spec §4.3.4 — tier-1 ALLOWED (unlike unmatched_*_fill).
+#
+# LOGIC:
+# - source_payload carries {"stop_price": X} for ticker + journal
+#   current_stop differs → tier-1, correction_target={'current_stop': X}.
+# - source_payload has multiple active stops → tier-2
+#   multi_match_within_window.
+# - source_payload is None OR has 0 active stops AND journal has stop →
+#   tier-2 schwab_returned_no_match.
+#
+# Tier-1 emissions DO NOT consult Phase 9 risk_policy advisory thresholds
+# (per spec §4.3.4 + §1.6 advisory-not-validator family). Advisories
+# surface at Phase 10 dashboard time.
+
+
+def _classify_stop_mismatch(
+    *,
+    discrepancy: ReconciliationDiscrepancy,
+    source_payload: Any | None,
+    journal_row: Mapping[str, Any] | None,
+) -> ClassificationResult:
+    """Spec §4.3.4 — stop_mismatch."""
+    ticker = discrepancy.ticker
+    trade_id = discrepancy.trade_id
+
+    if source_payload is None:
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="schwab_returned_no_match",
+            correction_target=None,
+            correction_reason=(
+                f"stop_mismatch on (ticker={ticker!r}, "
+                f"trade_id={trade_id}): Schwab returned no active stop "
+                f"orders for this ticker; operator dispositions via "
+                f"mark_unmatched or operator_truth"
+            ),
+            candidate_choices=_candidate_choices_schwab_returned_no_match(),
+        )
+
+    # Multi-match: list-shape with N>=2 active stops.
+    if isinstance(source_payload, list):
+        n = len(source_payload)
+        if n == 0:
+            return ClassificationResult(
+                tier=2,
+                ambiguity_kind="schwab_returned_no_match",
+                correction_target=None,
+                correction_reason=(
+                    f"stop_mismatch on (ticker={ticker!r}, "
+                    f"trade_id={trade_id}): Schwab returned 0 active "
+                    f"stops; operator dispositions via mark_unmatched "
+                    f"or operator_truth"
+                ),
+                candidate_choices=_candidate_choices_schwab_returned_no_match(),
+            )
+        if n >= 2:
+            return ClassificationResult(
+                tier=2,
+                ambiguity_kind="multi_match_within_window",
+                correction_target=None,
+                correction_reason=(
+                    f"stop_mismatch on (ticker={ticker!r}, "
+                    f"trade_id={trade_id}): Schwab returned {n} active "
+                    f"stops; operator picks the intended record"
+                ),
+                candidate_choices=_candidate_choices_multi_match_within_window(n),
+            )
+        # n == 1: unwrap to scalar-dict shape below.
+        source_payload = source_payload[0]
+
+    if not isinstance(source_payload, Mapping):
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="unsupported",
+            correction_target=None,
+            correction_reason=(
+                f"stop_mismatch on (ticker={ticker!r}, "
+                f"trade_id={trade_id}): source_payload shape "
+                f"{type(source_payload).__name__} not understood"
+            ),
+        )
+
+    source_stop = source_payload.get("stop_price")
+    if source_stop is None:
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="unsupported",
+            correction_target=None,
+            correction_reason=(
+                f"stop_mismatch on (ticker={ticker!r}, "
+                f"trade_id={trade_id}): source_payload missing "
+                f"'stop_price' key"
+            ),
+        )
+
+    journal_stop = (journal_row or {}).get("current_stop") if journal_row else None
+    try:
+        journal_stop_str = f"${float(journal_stop):.2f}"
+    except (TypeError, ValueError):
+        journal_stop_str = f"${journal_stop}"
+    try:
+        source_stop_str = f"${float(source_stop):.2f}"
+    except (TypeError, ValueError):
+        source_stop_str = f"${source_stop}"
+    return ClassificationResult(
+        tier=1,
+        ambiguity_kind=None,
+        correction_target={"current_stop": source_stop},
+        correction_reason=(
+            f"stop_mismatch on (ticker={ticker!r}, "
+            f"trade_id={trade_id}): journal stop {journal_stop_str} vs "
+            f"Schwab stop {source_stop_str}; single active stop match; "
+            f"tier-1 auto-correct (advisory-not-validator family — "
+            f"Phase 10 dashboard surfaces risk_policy advisories "
+            f"separately)"
+        ),
+        candidate_choices=None,
+    )
+
+
+_SUB_CLASSIFIERS["stop_mismatch"] = _classify_stop_mismatch
+
+
 def classify_discrepancy(
     discrepancy: ReconciliationDiscrepancy,
     *,
