@@ -1,32 +1,42 @@
 """T-C.11 — End-to-end CVGI 41 tier-1 auto-correct through the
-``run_schwab_reconciliation`` pivot + briefing-render service composition.
+``run_schwab_reconciliation`` pivot + ``_step_export`` briefing emission.
 
 Per plan §D.11 + dispatch brief §0.5 — service-composition shape,
 not CLI-driven (mirrors Sub-bundle D E2E test scope LOCKED at R1 M#4
 ACCEPT-WITH-RATIONALE).
 
+Plan §D.11 step 1 calls for full pipeline subprocess invocation
+(``--no-finviz-fetch``); this test invokes service composition +
+``_step_export`` directly to discriminate T-C.10's wiring point
+(``BriefingInputs.reconciliation_*`` counters → briefing.md
+``## Reconciliation status`` section) without requiring finviz inbox
+setup or subprocess plumbing. The T-C.10 SQL is the same code-path
+either way; the on-disk briefing.md assertion below is the binding
+discriminator for T-C.10 + T-C.9 + T-C.8 wiring as a chain.
+
 Plants the CVGI 41 fixture; runs ``run_schwab_reconciliation`` with a
-mocked Schwab orders response carrying the divergent price; asserts:
+mocked Schwab orders response carrying the divergent price; then runs
+``_step_export`` against the same DB; asserts:
   - fills.price updated end-to-end to the Schwab-canonical value.
   - reconciliation_corrections + trade_events + review_log + discrepancy
     state all transitioned per the spec §10.1 walkthrough.
-  - The briefing.md ``Reconciliation status`` section emits with the
-    Tier-1 auto-corrected count >= 1.
+  - ``_step_export``'s emitted briefing.md carries the
+    ``## Reconciliation status`` section with the
+    ``Tier-1 auto-corrected (last 7 days): 1`` literal substring.
 """
 from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date as _date
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from swing.data.db import ensure_schema
-from swing.rendering.briefing import BriefingInputs, build_briefing_view_model
-from swing.rendering.briefing_md import render_briefing_md
 from swing.trades.schwab_reconciliation import run_schwab_reconciliation
 
 
@@ -80,12 +90,78 @@ def _seed_cvgi_world(conn: sqlite3.Connection) -> dict[str, Any]:
     return {"trade_id": trade_id, "fill_id": fill_id}
 
 
-def test_phase12_bundle_c_cvgi_41_end_to_end(tmp_path: Path) -> None:
-    """Service-composition E2E: plant + reconcile + render briefing.md."""
-    db_path = tmp_path / "test.db"
-    conn = ensure_schema(db_path)
+def _seed_pipeline_run_running(conn: sqlite3.Connection) -> tuple[int, str]:
+    """A 'running' pipeline_runs row that satisfies _step_export's
+    lease.verify_held(). Mirrors
+    tests/pipeline/test_runner_export_eval_scoping.py pattern."""
+    token = str(uuid.uuid4())
+    cur = conn.execute(
+        """INSERT INTO pipeline_runs
+           (started_ts, trigger, data_asof_date, action_session_date,
+            state, lease_token, lease_heartbeat_ts)
+           VALUES ('2026-04-27T20:55:00', 'manual', '2026-04-27',
+                   '2026-04-28', 'running', ?, '2026-04-27T20:55:00')""",
+        (token,),
+    )
+    return int(cur.lastrowid), token
+
+
+def _seed_empty_evaluation_run(conn: sqlite3.Connection) -> int:
+    """Minimal evaluation_runs row so _step_export's candidates/recs
+    SELECTs return empty without raising. ZERO candidates + ZERO recs
+    is fine — the T-C.10 wiring under test reads
+    reconciliation_corrections + reconciliation_discrepancies, not
+    candidates/recs."""
+    cur = conn.execute(
+        """INSERT INTO evaluation_runs
+           (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+            tickers_evaluated, aplus_count, watch_count, skip_count,
+            excluded_count, error_count, rs_universe_version, rs_universe_hash)
+           VALUES ('2026-04-27T21:00:00', '2026-04-27', '2026-04-28', NULL,
+                   0, 0, 0, 0, 0, 0, 'v1', 'd')""",
+    )
+    return int(cur.lastrowid)
+
+
+def _make_cfg(tmp_path: Path):
+    from swing.config import load
+    from tests.cli.test_cli_eval import _minimal_config
+    project = tmp_path / "project"; project.mkdir()
+    home = tmp_path / "home"; home.mkdir()
+    cfg_path = _minimal_config(project, home)
+    cfg = load(cfg_path)
+    ensure_schema(cfg.paths.db_path).close()
+    return cfg
+
+
+def test_phase12_bundle_c_cvgi_41_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Service-composition E2E: plant + reconcile + invoke _step_export
+    + assert on-disk briefing.md carries the T-C.9/T-C.10 Reconciliation
+    status section with Tier-1 count = 1.
+
+    Plan §D.11 step 1 calls for full pipeline subprocess invocation;
+    this test invokes service composition + ``_step_export`` directly
+    to discriminate T-C.10 wiring without finviz inbox setup. Mirrors
+    Phase 11 D R1 M#4 ACCEPT-WITH-RATIONALE precedent.
+    """
+    from swing.pipeline.lease import Lease
+    from swing.pipeline.runner import _step_export
+
+    cfg = _make_cfg(tmp_path)
+    conn = sqlite3.connect(str(cfg.paths.db_path))
     try:
         world = _seed_cvgi_world(conn)
+        with conn:
+            eval_run_id = _seed_empty_evaluation_run(conn)
+            run_id, token = _seed_pipeline_run_running(conn)
+    finally:
+        conn.close()
+
+    # Re-open for reconciliation + assertions.
+    conn = sqlite3.connect(str(cfg.paths.db_path))
+    try:
         schwab_orders = [
             _SchwabOrder(
                 status="FILLED", price=5.30, quantity=100.0,
@@ -145,50 +221,40 @@ def test_phase12_bundle_c_cvgi_41_end_to_end(tmp_path: Path) -> None:
         summary = json.loads(run.summary_json)
         assert summary["tier1_applied_count"] == 1
         assert summary["tier2_pending_count"] == 0
-        # 7. Briefing.md renders the Reconciliation status section (we
-        # exercise the T-C.10 counter-read SQL directly to keep this
-        # test free of the pipeline-orchestrator lease/staging setup).
-        from datetime import timedelta as _td
-        cutoff_iso = (
-            datetime.utcnow().replace(microsecond=0) - _td(days=7)
-        ).isoformat(timespec="seconds")
-        pending = int(conn.execute(
-            "SELECT COUNT(*) FROM reconciliation_discrepancies "
-            "WHERE resolution = 'pending_ambiguity_resolution' "
-            "AND material_to_review = 1"
-        ).fetchone()[0])
-        tier1_recent = int(conn.execute(
-            "SELECT COUNT(*) FROM reconciliation_corrections "
-            "WHERE correction_action = 'auto_applied' "
-            "AND applied_at >= ?",
-            (cutoff_iso,),
-        ).fetchone()[0])
-        assert pending == 0
-        assert tier1_recent == 1
     finally:
         conn.close()
 
-    # 8. Construct a minimal BriefingInputs + render briefing.md.
-    inputs = BriefingInputs(
-        action_session_date="2026-05-16",
-        data_asof_date="2026-05-15",
-        generated_at="2026-05-16T08:00:00",
-        weather=None,
-        weather_is_stale=True,
-        equity=2000.0,
-        open_count=1,
-        soft_warn=4,
-        hard_cap=6,
-        last_pipeline_ts="never",
-        pipeline_is_stale=True,
-        current_session_match=False,
-        recommendations=[],
-        open_trades=[],
-        reconciliation_pending_count=pending,
-        reconciliation_tier1_recent_count=tier1_recent,
+    # 7. Invoke _step_export. This exercises T-C.10's BriefingInputs.
+    # reconciliation_* wiring + emits briefing.md to the staging→target
+    # path discipline. Stub the chart side-effect path; we only assert
+    # on the on-disk briefing.md content.
+    lease = Lease(db_path=cfg.paths.db_path, run_id=run_id, token=token)
+    action_session = _date(2026, 4, 28)
+    _step_export(
+        cfg=cfg, lease=lease, eval_run_id=eval_run_id,
+        action_session=action_session,
+        data_asof="2026-04-27",
+        chart_paths={},
+        fetcher=None,
     )
-    vm = build_briefing_view_model(inputs)
-    md = render_briefing_md(vm)
-    assert "## Reconciliation status" in md
-    assert "Tier-1 auto-corrected (last 7 days): 1" in md
-    assert "Tier-2 pending operator review: 0" in md
+
+    # 8. Assert briefing.md was written + carries T-C.10 wiring.
+    target_dir = cfg.paths.exports_dir / action_session.isoformat()
+    md_path = target_dir / "briefing.md"
+    assert md_path.exists(), (
+        f"_step_export did not emit briefing.md at {md_path}"
+    )
+    md = md_path.read_text(encoding="utf-8")
+    assert "## Reconciliation status" in md, (
+        "briefing.md missing T-C.9 Reconciliation status section "
+        "(T-C.8 + T-C.9 + T-C.10 wiring chain)"
+    )
+    assert "Tier-1 auto-corrected (last 7 days): 1" in md, (
+        "briefing.md does NOT carry T-C.10 tier1_recent_count=1 "
+        "rendered substring — T-C.10 BriefingInputs.reconciliation_* "
+        "wiring or T-C.9 render is broken"
+    )
+    assert "Tier-2 pending operator review: 0" in md, (
+        "briefing.md does NOT carry T-C.10 pending_count=0 rendered "
+        "substring"
+    )
