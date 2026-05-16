@@ -2386,7 +2386,23 @@ def discrepancy_resolve_ambiguity_cmd(
     # NEW C.C lesson #1 — service-owned-state rejection at the CLI
     # boundary, BEFORE the DB is even opened. Routing-hint substring in
     # the error message tells operator where to go next.
-    if choice_code in _TIER2_SERVICE_OWNED_RESOLUTION_VALUES:
+    #
+    # Codex R1 Minor #1 fix — normalize the operator-supplied --choice
+    # value (strip surrounding whitespace + lowercase) BEFORE the
+    # membership check. Without normalization a copy/paste with stray
+    # whitespace or upper-case drift (' auto_corrected_from_schwab ' /
+    # 'AUTO_CORRECTED_FROM_SCHWAB') falls through to generic-incompatible
+    # handling, losing the routing-hint substring. The downstream
+    # ``apply_tier2_resolution`` dispatch table is case-sensitive so we
+    # only apply the normalization to THIS rejection check; the original
+    # `choice_code` is passed through verbatim to the service layer
+    # (which will then surface its own incompatible-choice error if the
+    # case-drift was genuinely a typo rather than a service-owned value).
+    if (
+        choice_code is not None
+        and choice_code.strip().lower()
+        in _TIER2_SERVICE_OWNED_RESOLUTION_VALUES
+    ):
         raise click.UsageError(
             f"--choice {choice_code!r} is a service-owned resolution "
             "value and is NOT accepted on this manual surface; those "
@@ -2647,14 +2663,47 @@ def discrepancy_override_correction_cmd(
         # superseded_by_correction_id chain from the supplied id forward
         # via `list_corrections_by_discrepancy` (deterministic
         # applied_at ASC, correction_id ASC ordering).
+        #
+        # Codex R1 Minor #2 fix — defensive multi-chain-head detection.
+        # Invariant: exactly ONE row per discrepancy carries
+        # ``superseded_by_correction_id IS NULL`` (the chain head); the
+        # service-layer ``apply_tier3_override`` enforces this via the
+        # 2-step UPDATE-then-INSERT pattern. If the audit history is
+        # corrupted (e.g., manual SQL surgery, schema-rollback artifact,
+        # cycle from a future-rev override pattern), multiple chain heads
+        # may exist. Pick the HIGHEST correction_id (deterministic
+        # tiebreaker; matches the most-recent-row heuristic the service
+        # layer would attempt on insert) and surface a clear advisory to
+        # the operator so they can audit the corrupt state independently.
         sibling_rows = list_corrections_by_discrepancy(
             conn, target.discrepancy_id,
         )
+        chain_heads = [
+            r for r in sibling_rows
+            if r.superseded_by_correction_id is None
+        ]
         chain_head_id: int | None = None
-        for row in sibling_rows:
-            if row.superseded_by_correction_id is None:
-                chain_head_id = row.correction_id
-                break
+        if len(chain_heads) > 1:
+            # Sort by correction_id DESC + pick the highest.
+            chain_heads.sort(
+                key=lambda r: r.correction_id, reverse=True,
+            )
+            chain_head_id = chain_heads[0].correction_id
+            head_ids = [r.correction_id for r in chain_heads]
+            click.echo(
+                f"WARNING: discrepancy {target.discrepancy_id} has "
+                f"MULTIPLE chain heads (correction_ids={head_ids}); "
+                f"this indicates corrupted audit-chain state (expected "
+                f"exactly one row with superseded_by_correction_id "
+                f"IS NULL). Picking the highest correction_id "
+                f"({chain_head_id}) as the deterministic chain head; "
+                f"audit the corrupt state via `swing journal "
+                f"discrepancy show {target.discrepancy_id}` before "
+                f"proceeding with the override.",
+                err=True,
+            )
+        elif len(chain_heads) == 1:
+            chain_head_id = chain_heads[0].correction_id
 
         if not force:
             click.echo(

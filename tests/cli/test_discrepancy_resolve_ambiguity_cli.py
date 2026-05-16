@@ -440,6 +440,61 @@ def test_resolve_ambiguity_rejects_service_owned_state_as_choice(
     )
 
 
+@pytest.mark.parametrize("variant", [
+    " auto_corrected_from_schwab ",
+    "AUTO_CORRECTED_FROM_SCHWAB",
+    "Auto_Corrected_From_Schwab",
+    "  pending_ambiguity_resolution",
+    "OPERATOR_RESOLVED_AMBIGUITY ",
+])
+def test_resolve_ambiguity_rejects_service_owned_state_with_drift(
+    cli_workspace, variant,
+) -> None:
+    """Codex R1 Minor #1 fix — whitespace + case drift still rejected.
+
+    Without normalization, ' auto_corrected_from_schwab ' or
+    'AUTO_CORRECTED_FROM_SCHWAB' falls through to the generic
+    'choice not compatible with ambiguity_kind' branch, losing the
+    routing-hint substring. The fix normalizes (strip + lower) BEFORE
+    the service-owned membership check.
+
+    Discriminator: error message must mention the canonical-entry
+    routing hint, NOT just "not compatible".
+    """
+    runner, cfg, db_path = cli_workspace
+    conn = sqlite3.connect(db_path)
+    try:
+        run_id = _seed_reconciliation_run(conn)
+        trade_id, fill_id = _seed_trade_with_entry_fill(conn, ticker="DHC")
+        did = _plant_pending_ambiguity(
+            conn, run_id=run_id, ticker="DHC",
+            ambiguity_kind="multi_partial_vs_consolidated",
+            trade_id=trade_id, fill_id=fill_id,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    r = runner.invoke(main, [
+        "--config", str(cfg),
+        "journal", "discrepancy", "resolve-ambiguity", str(did),
+        "--choice", variant,
+        "--reason", "operator gate test",
+    ])
+    assert r.exit_code == 2, r.output
+    # The verbatim variant appears in the error message (we surface
+    # the raw operator input via {choice_code!r} formatting).
+    assert variant in r.output
+    # Routing-hint substring must fire — this is the discriminating
+    # signal vs the generic 'not compatible' fall-through path.
+    assert (
+        "service-owned" in r.output.lower()
+        or "service owned" in r.output.lower()
+    ), (
+        f"expected routing-hint substring in rejection for variant "
+        f"{variant!r}; got: {r.output!r}"
+    )
+
+
 # ===========================================================================
 # §G — --schwab-api-call-id back-link wires through to
 # schwab_api_calls.linked_correction_id.

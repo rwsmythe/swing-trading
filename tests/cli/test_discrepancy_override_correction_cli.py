@@ -407,3 +407,120 @@ def test_override_correction_validator_rejection_exits_1(
     prior = _correction_row(db_path, tier1_id)
     assert prior[5] is None
     assert _count_corrections_for_discrepancy(db_path, did) == before
+
+
+# ===========================================================================
+# §J — Codex R1 Minor #2 — Defensive multi-chain-head detection
+# ===========================================================================
+
+
+def test_multi_chain_head_emits_warning_and_picks_highest_id(
+    cli_workspace,
+) -> None:
+    """Codex R1 Minor #2 fix — multi-chain-head defensive check.
+
+    Invariant: exactly ONE row per discrepancy carries
+    ``superseded_by_correction_id IS NULL`` (the chain head). The
+    service-layer ``apply_tier3_override`` enforces this via the
+    2-step UPDATE-then-INSERT pattern. If the audit history is
+    corrupted (manual SQL surgery / schema-rollback artifact / future
+    chain pattern), multiple chain heads may exist.
+
+    Discriminator: simulate the corrupt state by inserting a SECOND
+    correction row for the same discrepancy with
+    ``superseded_by_correction_id IS NULL``. Invoke override-correction
+    with --force; the CLI MUST:
+      (a) emit a WARNING naming both chain_head correction_ids;
+      (b) pick the highest correction_id as the deterministic chain head
+          (service-layer will raise AlreadySupersededError unless the
+          supplied id IS that highest one).
+    """
+    runner, cfg, db_path = cli_workspace
+    seed = _seed_cvgi_with_tier1_correction(db_path)
+    tier1_id = seed["tier1_correction_id"]
+    did = seed["discrepancy_id"]
+
+    # Plant a SECOND chain-head correction row (simulated corruption —
+    # both rows have superseded_by_correction_id IS NULL).
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO reconciliation_corrections (
+                discrepancy_id, applied_at, applied_by,
+                correction_action, affected_table, affected_row_id,
+                field_name, pre_correction_value_json,
+                source_canonical_value_json, applied_value_json,
+                correction_reason, reconciliation_run_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                did, "2026-05-15T13:00:00", "auto",
+                "auto_applied", "fills", seed["fill_id"],
+                "price", '{"price": 5.23}', '{"price": 5.30}',
+                '{"price": 5.30}',
+                "corrupt-state probe -- second chain head",
+                seed["run_id"],
+            ),
+        )
+        spurious_head_id = int(cur.lastrowid)
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Verify both rows are chain-heads.
+    conn = sqlite3.connect(db_path)
+    try:
+        heads = conn.execute(
+            "SELECT correction_id FROM reconciliation_corrections "
+            "WHERE discrepancy_id = ? "
+            "AND superseded_by_correction_id IS NULL "
+            "ORDER BY correction_id ASC",
+            (did,),
+        ).fetchall()
+        assert len(heads) == 2
+        chain_head_ids = [row[0] for row in heads]
+    finally:
+        conn.close()
+
+    # Invoke override against the LOWER-id chain head (the one
+    # `_seed_cvgi_with_tier1_correction` created). The CLI's
+    # `list_corrections_by_discrepancy` should find both + pick the
+    # HIGHER one as the "deterministic chain head" advisory.
+    r = runner.invoke(main, [
+        "--config", str(cfg),
+        "journal", "discrepancy", "override-correction", str(tier1_id),
+        "--truth-value", '{"price": 5.25}',
+        "--reason", "Multi-chain-head defensive probe",
+        "--force",
+    ])
+    # Output must mention the multi-chain-head warning + both IDs.
+    assert "MULTIPLE chain heads" in r.output, r.output
+    # Both correction_ids appear in the warning.
+    for cid in chain_head_ids:
+        assert str(cid) in r.output
+    # The "Picking the highest correction_id (N)" advisory names the
+    # higher id as the deterministic chain head.
+    higher = max(chain_head_ids)
+    assert f"Picking the highest correction_id ({higher})" in r.output
+    # And the lower id was NOT the supplied target.
+    assert tier1_id < spurious_head_id
+    # Output emitted to stderr — operator audit gate.
+    assert "audit the corrupt state" in r.output
+
+
+def test_single_chain_head_does_not_emit_warning(cli_workspace) -> None:
+    """Sanity peer — happy-path single chain head must NOT emit warning."""
+    runner, cfg, db_path = cli_workspace
+    seed = _seed_cvgi_with_tier1_correction(db_path)
+    tier1_id = seed["tier1_correction_id"]
+
+    r = runner.invoke(main, [
+        "--config", str(cfg),
+        "journal", "discrepancy", "override-correction", str(tier1_id),
+        "--truth-value", '{"price": 5.25}',
+        "--reason", "happy path",
+        "--force",
+    ])
+    assert r.exit_code == 0, r.output
+    assert "MULTIPLE chain heads" not in r.output
