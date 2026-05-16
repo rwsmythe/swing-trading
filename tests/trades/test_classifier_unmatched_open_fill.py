@@ -330,6 +330,59 @@ def test_unmatched_open_fill_with_n3_match_window_emits_n_plus_2_choices() -> No
 
 
 # ---------------------------------------------------------------------------
+# Codex R1 Major #1 — pick_schwab_record_<N> choices require_custom_value=True
+#
+# Spec §4.3.2 LOCK + Codex R7 M#2 lock: Pass-2 candidates are order-grain
+# only; pick choices require operator-confirmed execution-level values via
+# --custom-value. The pre-Codex-R1 implementation set these to False.
+# Tests pin the True contract and the scoped-not-blanket nature of the
+# change (mark_unmatched stays False; custom stays True).
+# ---------------------------------------------------------------------------
+
+
+def test_multi_match_within_window_pick_choices_require_custom_value() -> None:
+    """All pick_schwab_record_<N> choices carry requires_custom_value=True.
+
+    Discriminating: also verify the change is SCOPED — mark_unmatched
+    remains False (no custom value needed; just an acknowledge) and
+    custom remains True (operator supplies an arbitrary payload).
+    """
+    discrepancy = _make_dhc_39_discrepancy()
+    result = classify_discrepancy(
+        discrepancy,
+        source_payload=[
+            {"quantity": 1, "price": 7.50},
+            {"quantity": 3, "price": 7.60},
+            {"quantity": 5, "price": 7.55},  # sum=9 != journal qty=39
+        ],
+        journal_row={"quantity": 39},
+        validator_chain=None,
+    )
+    assert result.tier == 2
+    assert result.ambiguity_kind == "multi_match_within_window"
+    assert result.candidate_choices is not None
+    pick_choices = [
+        c for c in result.candidate_choices
+        if c["code"].startswith("pick_schwab_record_")
+    ]
+    assert len(pick_choices) == 3
+    for c in pick_choices:
+        assert c["requires_custom_value"] is True, (
+            f"pick choice {c['code']} must require_custom_value=True per "
+            f"spec §4.3.2 LOCK"
+        )
+    # Scoped change verification: co-choices preserve original semantics.
+    mark_unmatched = next(
+        c for c in result.candidate_choices if c["code"] == "mark_unmatched"
+    )
+    assert mark_unmatched["requires_custom_value"] is False
+    custom = next(
+        c for c in result.candidate_choices if c["code"] == "custom"
+    )
+    assert custom["requires_custom_value"] is True
+
+
+# ---------------------------------------------------------------------------
 # Determinism over the sub-classifier
 # ---------------------------------------------------------------------------
 

@@ -166,9 +166,13 @@ def _classify_entry_price_mismatch(
                         "code": f"pick_schwab_record_{i + 1}",
                         "description": (
                             f"Apply Schwab record #{i + 1} as the "
-                            f"canonical source for this fill"
+                            f"canonical source for this fill (REQUIRES "
+                            f"--custom-value with operator-supplied "
+                            f"execution-level field values; Pass-2 "
+                            f"candidates are order-grain, not execution-"
+                            f"grain — per spec §4.3.2 LOCK)"
                         ),
-                        "requires_custom_value": False,
+                        "requires_custom_value": True,
                     }
                     for i in range(len(source_payload))
                 ]
@@ -469,15 +473,25 @@ def _candidate_choices_multi_partial_vs_consolidated() -> list[dict[str, Any]]:
 def _candidate_choices_multi_match_within_window(
     n: int,
 ) -> list[dict[str, Any]]:
-    """Spec §6.2.1 — N+2 choices (N pick_schwab_record_<i> + 2 fallbacks)."""
+    """Spec §6.2.1 — N+2 choices (N pick_schwab_record_<i> + 2 fallbacks).
+
+    Per Codex R1 Major #1 + spec §4.3.2 LOCK: pick_schwab_record_<N>
+    choices REQUIRE operator-supplied execution-level field values
+    because Pass-2 candidates are order-grain, not execution-grain.
+    Setting ``requires_custom_value=True`` on every pick choice signals
+    downstream CLI surfaces that ``--custom-value`` must be supplied.
+    """
     choices: list[dict[str, Any]] = [
         {
             "code": f"pick_schwab_record_{i + 1}",
             "description": (
                 f"Apply Schwab record #{i + 1} as the canonical source "
-                f"for this fill"
+                f"for this fill (REQUIRES --custom-value with operator-"
+                f"supplied execution-level field values; Pass-2 "
+                f"candidates are order-grain, not execution-grain — per "
+                f"spec §4.3.2 LOCK)"
             ),
-            "requires_custom_value": False,
+            "requires_custom_value": True,
         }
         for i in range(n)
     ]

@@ -189,6 +189,53 @@ def test_entry_price_mismatch_tier_2_when_source_payload_scalar() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Codex R1 Major #1 — entry_price_mismatch multi-match inline menu pick
+# choices require_custom_value=True (spec §4.3.2 LOCK extends to the
+# entry_price_mismatch defensive multi-match branch).
+# ---------------------------------------------------------------------------
+
+
+def test_entry_price_multi_match_pick_choices_require_custom_value() -> None:
+    """All pick_schwab_record_<N> choices require_custom_value=True.
+
+    Discriminating: scoped change — mark_unmatched stays False; custom
+    stays True.
+    """
+    discrepancy = _make_cvgi_41_discrepancy()
+    result = classify_discrepancy(
+        discrepancy,
+        source_payload=[
+            {"price": 5.30, "quantity": 50},
+            {"price": 5.32, "quantity": 50},
+            {"price": 5.28, "quantity": 100},
+        ],
+        journal_row={"price": 5.23, "quantity": 100},
+        validator_chain=None,
+    )
+    assert result.tier == 2
+    assert result.ambiguity_kind == "multi_match_within_window"
+    assert result.candidate_choices is not None
+    pick_choices = [
+        c for c in result.candidate_choices
+        if c["code"].startswith("pick_schwab_record_")
+    ]
+    assert len(pick_choices) == 3
+    for c in pick_choices:
+        assert c["requires_custom_value"] is True, (
+            f"pick choice {c['code']} must require_custom_value=True per "
+            f"spec §4.3.2 LOCK"
+        )
+    mark_unmatched = next(
+        c for c in result.candidate_choices if c["code"] == "mark_unmatched"
+    )
+    assert mark_unmatched["requires_custom_value"] is False
+    custom = next(
+        c for c in result.candidate_choices if c["code"] == "custom"
+    )
+    assert custom["requires_custom_value"] is True
+
+
+# ---------------------------------------------------------------------------
 # Codex R1 Critical #1 — (ticker, date, quantity) consistency check +
 # NaN/inf/non-numeric guard on source_price.
 #
