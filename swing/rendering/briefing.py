@@ -264,4 +264,8 @@ def build_briefing_view_model(inputs: BriefingInputs) -> BriefingViewModel:
             _daily_management_snapshots(inputs)[1]
         ),
         schwab_degraded_endpoint=inputs.schwab_degraded_endpoint,
+        reconciliation_pending_count=inputs.reconciliation_pending_count,
+        reconciliation_tier1_recent_count=(
+            inputs.reconciliation_tier1_recent_count
+        ),
     )
