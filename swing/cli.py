@@ -2314,6 +2314,199 @@ def discrepancy_resolve_ambiguity_cmd(
     )
 
 
+# ---------------------------------------------------------------------------
+# T-D.4 — `swing journal discrepancy override-correction` CLI surface
+# (per plan §E.4 + spec §6.4 + OQ-8 confirmation prompt + OQ-15
+# AlreadySupersededError chain-head guidance). Routes through the
+# canonical C.C service entry `apply_tier3_override` which owns the
+# BEGIN IMMEDIATE / COMMIT / ROLLBACK transaction envelope + validator
+# chain re-run defense-in-depth + journal mutation + audit row INSERT.
+# ---------------------------------------------------------------------------
+
+
+@discrepancy_group.command("override-correction")
+@click.argument("correction_id", type=int)
+@click.option(
+    "--truth-value", "truth_value", required=True,
+    help=(
+        "JSON payload of operator-truth field values for the override. "
+        "Parsed via json.loads; deeper shape + finiteness validation "
+        "happens at the service layer (validator chain re-run on "
+        "operator-truth BEFORE any mutation, per spec §5.7 Codex R1 "
+        "Minor #1 reorder). Example: '{\"price\": 5.25}'."
+    ),
+)
+@click.option(
+    "--reason", "reason", required=True,
+    help=(
+        "Operator-supplied free-text rationale (REQUIRED per spec §6.4 "
+        "mandatory). Persisted on the new reconciliation_corrections row "
+        "as `correction_reason`."
+    ),
+)
+@click.option(
+    "--force", "force", is_flag=True, default=False,
+    help=(
+        "Bypass the interactive confirmation prompt (non-interactive "
+        "mode; per plan §E.4 acceptance criterion #4)."
+    ),
+)
+@click.pass_context
+def discrepancy_override_correction_cmd(
+    ctx, correction_id, truth_value, reason, force,
+):
+    """Operator-override a prior tier-1 / tier-2 correction (spec §5.7).
+
+    Inserts a NEW ``reconciliation_corrections`` row with action
+    ``operator_overridden`` + ``operator_truth_value_json`` populated;
+    stamps the prior row's ``superseded_by_correction_id`` to chain the
+    audit history; UPDATEs the journal column to the operator-truth
+    value; flips the discrepancy resolution to ``operator_overridden``.
+
+    Confirmation prompt is shown by default. Use ``--force`` for
+    non-interactive automation. ``AlreadySupersededError`` is mapped to
+    a friendly CLI error naming the current chain-head correction_id so
+    the operator knows where to retarget.
+    """
+    import json as _json
+
+    from swing.data.db import connect
+    from swing.data.repos.reconciliation_corrections import (
+        get_correction,
+        list_corrections_by_discrepancy,
+    )
+    from swing.trades.reconciliation_auto_correct import (
+        AlreadySupersededError,
+        CallerHeldTransactionError,
+        ValidatorRejectedError,
+        apply_tier3_override,
+    )
+    from swing.trades.risk_policy import read_active_policy
+
+    # Parse --truth-value as JSON BEFORE opening the DB (cheap rejection
+    # of malformed payloads; exit 2 via UsageError). Per plan §E.4
+    # acceptance criterion #6 error mapping.
+    try:
+        parsed_truth = _json.loads(truth_value)
+    except _json.JSONDecodeError as e:
+        raise click.UsageError(
+            f"--truth-value is not valid JSON: {e}; expected a JSON "
+            "object like '{\"price\": X.XX}'"
+        ) from None
+    if not isinstance(parsed_truth, dict):
+        raise click.UsageError(
+            f"--truth-value must be a JSON object (got "
+            f"{type(parsed_truth).__name__}); expected shape like "
+            "'{\"price\": X.XX}'"
+        )
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        # Surface the current correction row before prompting so the
+        # operator sees what they're overriding (per plan §E.4 acceptance
+        # criterion #3).
+        target = get_correction(conn, correction_id)
+        if target is None:
+            raise click.UsageError(
+                f"correction {correction_id} not found in "
+                "reconciliation_corrections"
+            )
+
+        # Compute the chain head for friendly guidance — walk the
+        # superseded_by_correction_id chain from the supplied id forward
+        # via `list_corrections_by_discrepancy` (deterministic
+        # applied_at ASC, correction_id ASC ordering).
+        sibling_rows = list_corrections_by_discrepancy(
+            conn, target.discrepancy_id,
+        )
+        chain_head_id: int | None = None
+        for row in sibling_rows:
+            if row.superseded_by_correction_id is None:
+                chain_head_id = row.correction_id
+                break
+
+        if not force:
+            click.echo(
+                f"current correction_id={target.correction_id} "
+                f"action={target.correction_action} "
+                f"affected_table={target.affected_table} "
+                f"field={target.field_name} "
+                f"applied_value={target.applied_value_json} "
+                f"schwab_said={target.source_canonical_value_json}"
+            )
+            click.echo(f"proposed override: {parsed_truth!r}")
+            if chain_head_id == target.correction_id:
+                click.echo(
+                    f"this correction (id={target.correction_id}) IS "
+                    "the current chain head."
+                )
+            else:
+                click.echo(
+                    f"chain head: correction_id={chain_head_id} "
+                    "(supplied id is mid-chain; override will still be "
+                    "rejected by the service layer with "
+                    "AlreadySupersededError)."
+                )
+            answer = click.prompt(
+                "Override this correction? [y/N]",
+                default="N",
+                show_default=False,
+            )
+            if not answer or not answer.strip().lower().startswith("y"):
+                click.echo("(aborted)")
+                return
+
+        # Resolve active risk policy id (Phase 9 Sub-bundle A surface)
+        # for the audit-row stamp.
+        active_policy = read_active_policy(conn)
+
+        try:
+            result = apply_tier3_override(
+                conn,
+                correction_id=correction_id,
+                operator_truth_value=parsed_truth,
+                operator_reason=reason,
+                risk_policy_id=active_policy.policy_id,
+            )
+        except CallerHeldTransactionError as e:
+            raise click.ClickException(
+                f"transactional discipline violation: {e}"
+            ) from None
+        except AlreadySupersededError:
+            # Friendly message naming the chain-head correction_id per
+            # OQ-15 + plan §E.4 acceptance criterion #6 (exit 2). Use
+            # the chain head we computed above (more reliable than
+            # parsing the service-layer exception text). UsageError
+            # exits 2 vs ClickException's 1 — operator-misuse semantics
+            # match the "you targeted the wrong row" failure mode.
+            head_text = (
+                str(chain_head_id) if chain_head_id is not None
+                else "unknown"
+            )
+            raise click.UsageError(
+                f"correction {correction_id} is already superseded by "
+                f"correction {head_text}; override the chain head "
+                f"({head_text}) instead"
+            ) from None
+        except ValidatorRejectedError as e:
+            raise click.ClickException(
+                f"validator rejected the operator-truth value: {e}"
+            ) from None
+        except ValueError as e:
+            # Service-layer ValueError covers per-shape rejection /
+            # missing fields. Map to UsageError (exit 2) per plan §E.4
+            # acceptance criterion #6.
+            raise click.UsageError(str(e)) from None
+    finally:
+        conn.close()
+
+    click.echo(
+        f"override applied: prior correction_id={correction_id}; "
+        f"new correction_id={result.correction_id}"
+    )
+
+
 @discrepancy_group.command("resolve")
 @click.argument("discrepancy_id", type=int)
 @click.option(
