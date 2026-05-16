@@ -186,15 +186,16 @@ def test_inner_functions_do_not_raise_caller_held_transaction_error(
                 conn, discrepancy_id=999_999,
                 classification=tier1_classification,
             )
-        # Tier-2/3/stamp inner bodies still raise NotImplementedError
-        # in T-C.1 scope; they land in T-C.3 / T-C.3.1 / T-C.4.
-        with pytest.raises(NotImplementedError):
+        # Tier-2 inner body is populated (T-C.3): unknown id → ValueError.
+        with pytest.raises(ValueError, match="discrepancy_id"):
             _apply_tier2_resolution_inner(
                 conn,
-                discrepancy_id=1,
+                discrepancy_id=999_999,
                 choice_code="keep_journal_as_is",
                 operator_reason="x",
             )
+        # Tier-3 + stamp inner bodies still raise NotImplementedError
+        # in T-C.3 scope; they land in T-C.3.1 / T-C.4.
         with pytest.raises(NotImplementedError):
             _apply_tier3_override_inner(
                 conn,
