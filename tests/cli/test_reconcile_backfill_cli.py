@@ -747,3 +747,155 @@ def test_sandbox_env_does_not_construct_client(cli_workspace, monkeypatch):
     )
     assert r.exit_code == 0, r.output
     assert len(build_calls) == 0
+
+
+# ============================================================================
+# Codex R2 Major #1 — dry-run credential soft-fail catches ClickException
+# (the typed SchwabConfigMissingError is wrapped in ClickException by
+# ``_resolve_credentials_for_cli`` before it escapes; catching only the
+# typed exception is a no-op).
+# ============================================================================
+
+
+def test_dry_run_credential_softfail_catches_click_exception(
+    cli_workspace, monkeypatch,
+):
+    """R2 Major #1 fix — dry-run soft-fail handles ClickException.
+
+    ``_resolve_credentials_for_cli`` translates
+    ``SchwabConfigMissingError`` into ``click.ClickException`` BEFORE
+    re-raising. The original ``except SchwabConfigMissingError`` block
+    in the CLI handler never fired; missing credentials hard-failed
+    even under ``--dry-run``. The fix widens the catch to include
+    ``click.ClickException`` so dry-run surfaces an advisory and
+    continues (Pass-2-required discrepancies project as
+    ``unsupported`` / ``Pass 2 unavailable``).
+    """
+    runner, cfg, db_path = cli_workspace
+
+    # Plant ONE unmatched_open_fill discrepancy → Pass-2-required.
+    conn = sqlite3.connect(db_path)
+    try:
+        run_id = _seed_reconciliation_run(conn)
+        _plant_unresolved(
+            conn, run_id, ticker="DHC",
+            discrepancy_type="unmatched_open_fill",
+            field_name="match",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Inject account_hash via user-config.toml (Pass-2 path is reachable).
+    from pathlib import Path as _Path
+    home = _Path(str(cfg.parent.parent / "home"))
+    user_config = home / "swing-data" / "user-config.toml"
+    user_config.parent.mkdir(parents=True, exist_ok=True)
+    user_config.write_text(
+        "[integrations.schwab]\n"
+        "environment = \"production\"\n"
+        "account_hash = \"AAAAAAAA1234567890\"\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    # Critical: NO credential env vars, NO cfg client_id/secret → the
+    # cfg-cascade exhausts every tier + raises SchwabConfigMissingError
+    # which the CLI helper wraps as click.ClickException.
+    monkeypatch.delenv("SCHWAB_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SCHWAB_CLIENT_SECRET", raising=False)
+
+    # Patch the cli_schwab resolve helper to mimic the real wrapping
+    # behavior: raise click.ClickException (matching the actual
+    # production translation at swing/cli_schwab.py:126-127).
+    import click
+
+    from swing import cli_schwab as _cli_schwab
+
+    def _raise_click_exc(_cfg, _env):
+        raise click.ClickException(
+            "Schwab credentials not configured for production. Set "
+            "SCHWAB_CLIENT_ID + SCHWAB_CLIENT_SECRET (or "
+            "integrations.schwab.client_id + .client_secret in "
+            "user-config.toml).",
+        )
+
+    monkeypatch.setattr(
+        _cli_schwab, "_resolve_credentials_for_cli", _raise_click_exc,
+    )
+
+    r = runner.invoke(
+        main, [
+            "--config", str(cfg), "journal", "reconcile-backfill",
+            "--dry-run",
+        ],
+    )
+
+    # Pre-fix: exit code would be 1 (ClickException propagated as a
+    # hard error under dry-run). Post-fix: exit 0 + advisory on stderr +
+    # the discrepancy projected as Pass-2-required tier-2.
+    assert r.exit_code == 0, r.output
+    assert "(advisory) Schwab credentials unavailable" in r.output
+    # Some indication the row was projected — "DHC" appears in the row.
+    assert "DHC" in r.output
+
+
+def test_apply_credential_failure_still_hard_fails(
+    cli_workspace, monkeypatch,
+):
+    """Sanity peer to R2 Major #1 — --apply still hard-fails on missing creds.
+
+    Soft-fail is dry-run-only; --apply must continue to refuse without
+    credentials (Pass-2 dispatch would AttributeError without a real
+    schwab_client; better to fail clean at entry).
+    """
+    runner, cfg, db_path = cli_workspace
+
+    conn = sqlite3.connect(db_path)
+    try:
+        run_id = _seed_reconciliation_run(conn)
+        _plant_unresolved(
+            conn, run_id, ticker="DHC",
+            discrepancy_type="unmatched_open_fill",
+            field_name="match",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    from pathlib import Path as _Path
+    home = _Path(str(cfg.parent.parent / "home"))
+    user_config = home / "swing-data" / "user-config.toml"
+    user_config.parent.mkdir(parents=True, exist_ok=True)
+    user_config.write_text(
+        "[integrations.schwab]\n"
+        "environment = \"production\"\n"
+        "account_hash = \"AAAAAAAA1234567890\"\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("SCHWAB_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SCHWAB_CLIENT_SECRET", raising=False)
+
+    import click
+
+    from swing import cli_schwab as _cli_schwab
+
+    def _raise_click_exc(_cfg, _env):
+        raise click.ClickException(
+            "Schwab credentials not configured for production.",
+        )
+
+    monkeypatch.setattr(
+        _cli_schwab, "_resolve_credentials_for_cli", _raise_click_exc,
+    )
+
+    r = runner.invoke(
+        main, [
+            "--config", str(cfg), "journal", "reconcile-backfill",
+            "--apply",
+        ],
+    )
+    assert r.exit_code != 0
+    assert "Schwab credentials not configured" in r.output

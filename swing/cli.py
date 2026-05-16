@@ -1925,8 +1925,26 @@ def journal_reconcile_backfill_cmd(
                     client_id, client_secret = _resolve_credentials_for_cli(
                         cfg, environment,
                     )
-                except SchwabConfigMissingError as exc:
+                except (click.ClickException, SchwabConfigMissingError) as exc:
+                    # Codex R2 Major #1 fix — ``_resolve_credentials_for_cli``
+                    # translates ``SchwabConfigMissingError`` into
+                    # ``click.ClickException`` BEFORE the exception escapes
+                    # (see ``swing/cli_schwab.py:126``). Catching ONLY
+                    # ``SchwabConfigMissingError`` here was a no-op: the
+                    # original exception was already a ``ClickException``
+                    # by the time it reached this frame, so missing
+                    # credentials still hard-failed even under ``--dry-run``.
+                    # Catching both types preserves both paths:
+                    #   * ``click.ClickException`` — actual cfg-cascade
+                    #     resolution failure (what R1 surfaced).
+                    #   * ``SchwabConfigMissingError`` — defense-in-depth
+                    #     for any future surface that returns the typed
+                    #     exception unwrapped.
                     if not dry_run:
+                        # Re-raise ClickException as-is (already formatted);
+                        # wrap raw SchwabConfigMissingError for parity.
+                        if isinstance(exc, click.ClickException):
+                            raise
                         raise click.ClickException(str(exc)) from exc
                     # Dry-run soft-fail (operator may not have shell
                     # env vars set for a non-destructive preview).
@@ -1937,6 +1955,7 @@ def journal_reconcile_backfill_cmd(
                         err=True,
                     )
                     client_id = None
+                    client_secret = None
                 if client_id is not None:
                     try:
                         schwab_client = _build_schwabdev_client_for_fetch(
