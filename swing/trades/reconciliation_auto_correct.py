@@ -382,6 +382,22 @@ def _apply_tier1_correction_inner(
             notes="sandbox: domain write short-circuited",
         )
 
+    # Codex R1 Major #2 — SELECT-first idempotency. A terminal
+    # discrepancy returns its existing correction_id WITHOUT requiring a
+    # valid classification payload (stale-caller-safe). The SELECT +
+    # terminal-state check happens BEFORE any classification validation
+    # so callers replaying a completed apply can pass `None` / stale /
+    # malformed classification without getting a spurious ValueError.
+    #
+    # Step 1: SELECT discrepancy.
+    disc = _select_discrepancy(conn, discrepancy_id)
+
+    # Idempotency: terminal resolution → return existing (BEFORE
+    # classification-payload validation per Codex R1 M#2 LOCK).
+    if disc.resolution in _TERMINAL_RESOLUTIONS:
+        return _idempotent_result_for(conn, discrepancy_id)
+
+    # Classification-payload validation (post-SELECT, post-idempotency).
     if classification is None:
         raise ValueError(
             "classification is required for tier-1 correction; got None"
@@ -395,13 +411,6 @@ def _apply_tier1_correction_inner(
         raise ValueError(
             "tier-1 classification.correction_target must not be None"
         )
-
-    # Step 1: SELECT discrepancy.
-    disc = _select_discrepancy(conn, discrepancy_id)
-
-    # Idempotency: terminal resolution → return existing.
-    if disc.resolution in _TERMINAL_RESOLUTIONS:
-        return _idempotent_result_for(conn, discrepancy_id)
 
     # Step 2: resolve affected target.
     affected_table, affected_row_id = _resolve_affected_target(disc)

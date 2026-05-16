@@ -409,6 +409,66 @@ def test_apply_tier1_correction_is_idempotent_on_terminal_state(
     assert n == 1
 
 
+def test_apply_tier1_correction_is_idempotent_with_stale_classification(
+    conn: sqlite3.Connection, cvgi_world: dict[str, Any],
+) -> None:
+    """Codex R1 Major #2 — SELECT-first idempotency.
+
+    A terminal discrepancy MUST return its existing correction_id WITHOUT
+    requiring a valid classification payload. The inner is reordered so
+    SELECT discrepancy + terminal-state check happens BEFORE any
+    classification-payload validation. Pins:
+      (a) ``classification=None`` on a terminal row → idempotent return
+          (not ValueError).
+      (b) Malformed classification (tier=2) on a terminal row →
+          idempotent return (not ValueError).
+
+    Pre-fix: classification validation raised ValueError before SELECT
+    discrepancy fired, breaking idempotency for stale callers.
+    """
+    valid = ClassificationResult(
+        tier=1, ambiguity_kind=None,
+        correction_target={"price": 5.30},
+        correction_reason="initial apply",
+        candidate_choices=None,
+    )
+    first = apply_tier1_correction(
+        conn, discrepancy_id=41, classification=valid,
+        risk_policy_id=cvgi_world["active_policy_id"],
+        environment="production",
+    )
+    assert first.correction_id is not None
+
+    # (a) Caller passes None classification on a terminal row.
+    second = apply_tier1_correction(
+        conn, discrepancy_id=41, classification=None,
+        risk_policy_id=cvgi_world["active_policy_id"],
+        environment="production",
+    )
+    assert second.correction_id == first.correction_id
+
+    # (b) Caller passes a tier=2 classification on the same terminal row.
+    bad_tier = ClassificationResult(
+        tier=2, ambiguity_kind="unsupported",
+        correction_target=None,
+        correction_reason="stale tier-2",
+        candidate_choices=None,
+    )
+    third = apply_tier1_correction(
+        conn, discrepancy_id=41, classification=bad_tier,
+        risk_policy_id=cvgi_world["active_policy_id"],
+        environment="production",
+    )
+    assert third.correction_id == first.correction_id
+
+    # No extra correction rows persisted.
+    n = conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections "
+        "WHERE discrepancy_id = 41"
+    ).fetchone()[0]
+    assert n == 1
+
+
 # ---------------------------------------------------------------------------
 # Review_log supersede pointer (cadence-period anchored on close date)
 # ---------------------------------------------------------------------------
