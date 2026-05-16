@@ -202,11 +202,11 @@ def test_inner_functions_do_not_raise_caller_held_transaction_error(
                 ambiguity_kind="unsupported",
                 resolution_reason="x",
             )
-        # Tier-3 inner body still raises NotImplementedError until T-C.4.
-        with pytest.raises(NotImplementedError):
+        # Tier-3 inner body is populated (T-C.4): unknown id → ValueError.
+        with pytest.raises(ValueError, match="correction_id"):
             _apply_tier3_override_inner(
                 conn,
-                correction_id=1,
+                correction_id=999_999,
                 operator_truth_value={"price": 5.0},
                 operator_reason="x",
             )

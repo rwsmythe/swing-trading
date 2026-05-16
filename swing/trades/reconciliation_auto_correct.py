@@ -45,6 +45,7 @@ from typing import Any, Callable, Mapping, Sequence
 from swing.data.models import ReconciliationCorrection
 from swing.data.repos.fills import _recompute_aggregates, insert_fill_with_event
 from swing.data.repos.reconciliation_corrections import (
+    get_correction,
     insert_correction,
     list_corrections_by_discrepancy,
     update_superseded_by,
@@ -566,7 +567,7 @@ def _apply_tier2_resolution_inner(
     )
 
 
-def _apply_tier3_override_inner(  # pragma: no cover — populated in T-C.4
+def _apply_tier3_override_inner(
     conn: sqlite3.Connection,
     *,
     correction_id: int,
@@ -574,9 +575,147 @@ def _apply_tier3_override_inner(  # pragma: no cover — populated in T-C.4
     operator_reason: str,
     risk_policy_id: int | None = None,
 ) -> CorrectionResult:
-    """T-C.4 — spec §5.7 10-step flow + validator pre-mutation. Caller owns tx."""
-    raise NotImplementedError(
-        "_apply_tier3_override_inner body lands in T-C.4 per plan §D.4"
+    """T-C.4 — spec §5.7 + Codex R1 Minor #1 reorder (validator BEFORE mutation).
+
+    Step 1: SELECT target correction row by correction_id.
+    Step 2: Reject if superseded_by_correction_id IS NOT NULL.
+    Step 3: Validator chain re-run on operator_truth_value BEFORE any
+            mutation (defense-in-depth — operator-truth may violate
+            invariants).
+    Step 4: INSERT new correction row with correction_action=
+            'operator_overridden' + operator_truth_value_json populated.
+    Step 5: UPDATE prior row's superseded_by_correction_id = new id.
+    Step 6: UPDATE journal column to operator-truth value.
+    Step 7: _recompute_aggregates when affected_table == 'fills'.
+    Step 8: UPDATE discrepancy resolution to 'operator_overridden'.
+    Step 9: UPDATE review_log.superseded_by_correction_id (closed-trade).
+    Step 10: INSERT trade_events row.
+    """
+    target = _select_correction_row(conn, correction_id)
+
+    if target.superseded_by_correction_id is not None:
+        raise AlreadySupersededError(
+            f"correction_id={correction_id} is already superseded by "
+            f"{target.superseded_by_correction_id}; override the current "
+            f"chain head"
+        )
+
+    # Step 3: validator chain re-run on operator-truth (BEFORE mutation).
+    chain = functools.partial(
+        default_validator_chain(conn),
+        affected_table=target.affected_table,
+        affected_row_id=target.affected_row_id,
+    )
+    passes, rejection_reason = chain(operator_truth_value)
+    if not passes:
+        raise ValidatorRejectedError(
+            f"validator rejected tier-3 operator_truth for "
+            f"correction_id={correction_id} affected_table="
+            f"{target.affected_table} affected_row_id="
+            f"{target.affected_row_id}: {rejection_reason}"
+        )
+
+    # Determine the canonical field anchor.
+    field_name = (
+        "price" if "price" in operator_truth_value
+        else next(iter(operator_truth_value.keys()))
+    )
+
+    # Step 4: INSERT new correction row.
+    effective_policy_id = risk_policy_id
+    if effective_policy_id is None:
+        effective_policy_id = _maybe_get_active_risk_policy_id(conn)
+
+    operator_truth_json = json.dumps(
+        dict(operator_truth_value), sort_keys=True, default=str,
+    )
+    new_correction = ReconciliationCorrection(
+        correction_id=0,
+        discrepancy_id=target.discrepancy_id,
+        correction_action="operator_overridden",
+        correction_choice=None,
+        affected_table=target.affected_table,
+        affected_row_id=target.affected_row_id,
+        field_name=field_name,
+        pre_correction_value_json=target.applied_value_json,
+        source_canonical_value_json=target.source_canonical_value_json,
+        applied_value_json=operator_truth_json,
+        operator_truth_value_json=operator_truth_json,
+        applied_at=_utc_now_iso_ms(),
+        applied_by="operator",
+        correction_set_id=None,
+        superseded_by_correction_id=None,
+        risk_policy_id_at_correction=effective_policy_id,
+        schwab_api_call_id=None,
+        reconciliation_run_id=target.reconciliation_run_id,
+        correction_reason=operator_reason,
+        notes=None,
+    )
+    new_correction_id = insert_correction(conn, new_correction)
+
+    # Step 5: chain pointer.
+    update_superseded_by(
+        conn,
+        correction_id=correction_id,
+        superseded_by_correction_id=new_correction_id,
+    )
+
+    # Step 6: UPDATE journal column to operator-truth value(s).
+    pre_values_for_event: dict[str, Any] = {}
+    for fname, fvalue in operator_truth_value.items():
+        pre_values_for_event[fname] = _read_journal_value(
+            conn, target.affected_table, target.affected_row_id, fname,
+        )
+        _update_journal_field(
+            conn, target.affected_table, target.affected_row_id, fname, fvalue,
+        )
+
+    # Step 7: recompute aggregates for fills.
+    if target.affected_table == _AFFECTED_TABLE_FILLS:
+        trade_id = _get_fill_trade_id(conn, target.affected_row_id)
+        _recompute_aggregates(conn, trade_id)
+
+    # Step 8: UPDATE discrepancy resolution.
+    conn.execute(
+        "UPDATE reconciliation_discrepancies SET "
+        "resolution = ?, resolution_reason = ?, "
+        "resolved_at = ?, resolved_by = ? "
+        "WHERE discrepancy_id = ?",
+        (
+            "operator_overridden", operator_reason,
+            _utc_now_iso_ms(), "operator", target.discrepancy_id,
+        ),
+    )
+
+    # Step 9: review_log supersede pointer for the new correction id.
+    if target.affected_table == _AFFECTED_TABLE_FILLS:
+        trade_id = _get_fill_trade_id(conn, target.affected_row_id)
+        _supersede_review_log_for_trade_close(
+            conn, trade_id=trade_id, new_correction_id=new_correction_id,
+        )
+
+    # Step 10: trade_events emit when affected_table is fills.
+    if target.affected_table == _AFFECTED_TABLE_FILLS:
+        trade_id = _get_fill_trade_id(conn, target.affected_row_id)
+        _emit_trade_events_correction(
+            conn,
+            trade_id=trade_id,
+            correction_id=new_correction_id,
+            affected_table=target.affected_table,
+            affected_row_id=target.affected_row_id,
+            field_name=field_name,
+            pre_value=pre_values_for_event.get(field_name),
+            applied_value=operator_truth_value.get(field_name),
+        )
+
+    return CorrectionResult(
+        correction_id=new_correction_id,
+        affected_table=target.affected_table,
+        affected_row_id=target.affected_row_id,
+        field_name=field_name,
+        applied_value_json=operator_truth_json,
+        correction_action="operator_overridden",
+        notes=None,
     )
 
 
@@ -643,6 +782,19 @@ class _DiscrepancyInfo:
     field_name: str
     resolution: str
     ambiguity_kind: str | None
+
+
+def _select_correction_row(
+    conn: sqlite3.Connection, correction_id: int,
+) -> ReconciliationCorrection:
+    """Wrapper around ``get_correction`` that raises on unknown id."""
+    row = get_correction(conn, correction_id)
+    if row is None:
+        raise ValueError(
+            f"correction_id={correction_id} not found in "
+            f"reconciliation_corrections"
+        )
+    return row
 
 
 def _select_discrepancy(
