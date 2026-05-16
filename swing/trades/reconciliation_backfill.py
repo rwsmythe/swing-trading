@@ -1362,14 +1362,18 @@ def format_summary_block(summary: BackfillSummary) -> str:
     projection_*) follow on indented lines for operator triage but are
     NOT part of the §E.9 #4 binding layout.
     """
-    # Codex R2 Minor #1 — top-level Pass-2-unavailable line for
-    # dry-run / sandbox-projection paths (NOT nested under tier2_stamped
+    # Codex R2 Minor #1 — top-level Pass-2-unavailable line for the
+    # dry-run projection-failure path only (NOT nested under tier2_stamped
     # because no stamp happened); rendered only when non-zero so the
     # standard apply-mode summary stays compact.
+    # Codex R3 Minor #1 — label narrowed to the actual counter semantics:
+    # only dry-run Pass-2 fetch failures feed this counter; sandbox-skip +
+    # explicit `--no-pass-2-on-dry-run` outcomes use different counters
+    # (tier2_skipped_sandbox + projection_pass_2 respectively).
     projection_unavailable_line = ""
     if summary.pass_2_projection_unavailable:
         projection_unavailable_line = (
-            f"  Pass 2 unavailable (dry-run / sandbox / fetch skip): "
+            f"  Pass 2 unavailable (dry-run projection — fetch failed): "
             f"{summary.pass_2_projection_unavailable}\n"
         )
 
