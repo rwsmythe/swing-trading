@@ -186,15 +186,17 @@ class BackfillSummary:
     projection_tier1: int = 0
     projection_tier2: int = 0
     projection_pass_2: int = 0
-    # Codex R2 Minor #1 — distinguishes dry-run / sandbox / fetch-skip
-    # Pass-2 paths from APPLY-mode Pass-2 re-fetch failure. In R1's
-    # nested rendering the dry-run soft-fail (credentials missing) +
-    # sandbox-skip paths inflated ``pass_2_failed`` while
-    # ``tier2_stamped`` stayed at zero — visually contradictory ("of
-    # which Pass-2 re-fetch failed: N" beneath "Tier 2 stamped: 0"). The
-    # apply-mode counter ``pass_2_failed`` now ONLY counts honest
-    # re-fetch failures whose outcome was a tier-2 stamp; this counter
-    # surfaces dry-run / sandbox-skipped projections separately.
+    # Codex R2 Minor #1 + Codex R3 Minor #1 — counts ONLY dry-run
+    # projection paths where the Schwab Pass-2 fetch FAILED (raised an
+    # exception during ``--dry-run`` execution). Other Pass-2 "did not
+    # produce a useful classification" paths use distinct counters:
+    # explicit ``--no-pass-2-on-dry-run`` increments ``projection_pass_2``;
+    # sandbox-skip (apply-mode, no Schwab call) increments
+    # ``tier2_skipped_sandbox``; honest apply-mode Pass-2 fetch failures
+    # increment ``pass_2_failed`` (which IS a subset of ``tier2_stamped``).
+    # Keeping these distinct preserves R1's nested-overlap semantics for
+    # apply-mode while giving dry-run a dedicated top-level line so the
+    # operator sees that PROJECTION accuracy was lost on N rows.
     pass_2_projection_unavailable: int = 0
     # Codex R2 Major #3 — mid-iteration abort signal. Set to True when
     # ``run_backfill`` aborts because a pipeline_runs row appeared

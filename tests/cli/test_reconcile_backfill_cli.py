@@ -1233,12 +1233,12 @@ def test_cli_renders_partial_summary_on_mid_iteration_abort(
 def test_dry_run_pass_2_unavailable_distinct_from_apply_failed(
     cli_workspace, monkeypatch,
 ):
-    """R2 Minor #1 fix — dry-run unavailable routed to separate counter.
+    """R2 Minor #1 + R3 Minor #1 — dry-run unavailable routed to separate counter.
 
     Plants a Pass-2-required discrepancy. Stubs the audited wrapper
     to raise (mimics network failure under dry-run preview). Asserts
     the summary block renders the row under
-    ``Pass 2 unavailable (dry-run / sandbox / fetch skip): 1`` NOT
+    ``Pass 2 unavailable (dry-run projection — fetch failed): 1`` NOT
     under ``(of which Pass 2 re-fetch failed: 1)`` beneath
     ``Tier 2 stamped: 0``.
     """
