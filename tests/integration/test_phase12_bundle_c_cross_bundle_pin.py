@@ -22,6 +22,7 @@ against a live schema-v19 connection.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -100,10 +101,20 @@ def test_classifier_module_exists_and_returns_classification_result() -> None:
 
 
 @pytest.fixture
-def conn_pin_v19(tmp_path: Path) -> sqlite3.Connection:
-    """Schema-v19 in-disk connection (tmp_path) for chain dispatch pin tests."""
+def conn_pin_v19(tmp_path: Path) -> Iterator[sqlite3.Connection]:
+    """Schema-v19 in-disk connection (tmp_path) for chain dispatch pin tests.
+
+    Codex R2 Minor #1 — yields + closes the connection on teardown to
+    release the SQLite file handle before pytest's ``tmp_path`` cleanup
+    runs. Windows file-handle hygiene around tmp_path-backed SQLite
+    databases (open handles can block cleanup on slower runners).
+    """
     db_path = tmp_path / "test_cross_bundle_pin.db"
-    return ensure_schema(db_path)
+    conn = ensure_schema(db_path)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def test_validator_chain_dispatches_on_affected_table(
