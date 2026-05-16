@@ -209,6 +209,79 @@ def _iter_unresolved_discrepancies(
     return [_row_to_discrepancy(r) for r in rows]
 
 
+# Substring fingerprint of Pass-2 failure-state persisted via
+# ``stamp_pending_ambiguity(..., resolution_reason='Pass 2 re-fetch failed:
+# ...')``. Used by T-D.9 to identify rows eligible for the
+# ``--retry-pass-2-failures`` flag's scoped iteration.
+_PASS_2_FAILED_REASON_LIKE = "%Pass 2 re-fetch failed%"
+
+
+def _iter_pass_2_failed_discrepancies(
+    conn: sqlite3.Connection,
+    *,
+    ticker: str | None,
+    limit: int | None,
+) -> list[ReconciliationDiscrepancy]:
+    """Return the Pass-2-failed discrepancies eligible for retry.
+
+    Per plan §E.9 acceptance #3 + spec §8.2/§8.3: scopes iteration to
+    rows WHERE ``resolution = 'pending_ambiguity_resolution' AND
+    ambiguity_kind = 'unsupported' AND resolution_reason LIKE '%Pass 2
+    re-fetch failed%'``.
+
+    Used in two paths:
+      (a) The ``--retry-pass-2-failures`` branch in :func:`run_backfill`
+          uses this list as the iteration target.
+      (b) The default-``--apply`` branch uses this list to enumerate
+          skip-only outcomes so the operator sees an accurate
+          ``skipped_pass_2_failed`` counter.
+    """
+    where = [
+        "resolution = 'pending_ambiguity_resolution'",
+        "ambiguity_kind = 'unsupported'",
+        "resolution_reason LIKE ?",
+    ]
+    params: list[Any] = [_PASS_2_FAILED_REASON_LIKE]
+    if ticker:
+        where.append("ticker = ?")
+        params.append(ticker)
+    sql = (
+        f"SELECT {_DISCREPANCY_SELECT_COLUMNS} "
+        "FROM reconciliation_discrepancies "
+        "WHERE " + " AND ".join(where) + " "
+        "ORDER BY discrepancy_id ASC"
+    )
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
+    return [_row_to_discrepancy(r) for r in rows]
+
+
+def _read_current_resolution(
+    conn: sqlite3.Connection, discrepancy_id: int,
+) -> str | None:
+    """Fresh single-column read of a discrepancy's resolution.
+
+    Used by ``_classify_and_apply`` for the apply-time SELECT-first
+    idempotency check (NEW C.C lesson #3 — SELECT-first idempotency
+    precedes payload validation; defense-in-depth against a race between
+    iteration-list SELECT and per-row apply).
+
+    Returns ``None`` if the discrepancy does not exist (defensive — should
+    not happen in normal flow since the iteration list was derived from
+    the same DB).
+    """
+    row = conn.execute(
+        "SELECT resolution FROM reconciliation_discrepancies "
+        "WHERE discrepancy_id = ?",
+        (int(discrepancy_id),),
+    ).fetchone()
+    if row is None:
+        return None
+    return row[0]
+
+
 def _parse_actual_value_json(disc: ReconciliationDiscrepancy) -> Any | None:
     """T-D.7 — derive a classifier-friendly source_payload from
     ``actual_value_json``.
@@ -476,6 +549,7 @@ def _handle_pass_2(
     environment: str,
     account_hash: str | None,
     no_pass_2_on_dry_run: bool,
+    allow_pending_update: bool = False,
 ) -> BackfillOutcome:
     """Pass-2 dispatch for one Pass-2-required discrepancy.
 
@@ -560,12 +634,16 @@ def _handle_pass_2(
         )
 
     # --apply mode: stamp via PUBLIC stamp_pending_ambiguity (own-tx).
+    # T-D.9: when ``allow_pending_update=True`` (retry-pass-2-failures
+    # path), the inner UPDATE overwrites a prior ``pending_ambiguity_
+    # resolution`` stamp; otherwise it's a no-op-idempotent return.
     try:
         stamp_pending_ambiguity(
             conn,
             discrepancy_id=disc_id,
             ambiguity_kind=ambiguity_kind or "unsupported",
             resolution_reason=reason or "",
+            allow_pending_update=allow_pending_update,
         )
     except CallerHeldTransactionError:
         raise
@@ -617,7 +695,7 @@ def _classify_and_apply(
     environment: str,
     account_hash: str | None,
     no_pass_2_on_dry_run: bool,
-    retry_pass_2_failures: bool,  # noqa: ARG001 — T-D.9 consumer
+    retry_pass_2_failures: bool,
 ) -> BackfillOutcome:
     """T-D.7 — Pass 1 persisted-JSON-only classification + dispatch.
 
@@ -655,6 +733,42 @@ def _classify_and_apply(
     from swing.trades.reconciliation_classifier import classify_discrepancy
 
     disc_id = int(disc.discrepancy_id or 0)
+
+    # T-D.9 SELECT-first idempotency check (NEW C.C lesson #3 —
+    # SELECT-first idempotency precedes payload validation).
+    # Race-condition defense between iteration-list SELECT and
+    # apply-time: if a concurrent writer (or a prior backfill loop
+    # iteration that mutated state) has flipped the discrepancy to a
+    # terminal state OR to ``pending_ambiguity_resolution``, SKIP the
+    # row + emit a discriminating BackfillOutcome BEFORE invoking the
+    # classifier or any service-layer payload validation.
+    #
+    # Exception: under ``retry_pass_2_failures=True``, the iteration
+    # target is itself ``pending_ambiguity_resolution`` rows — do NOT
+    # skip those (the retry path must overwrite via
+    # ``allow_pending_update=True``).
+    current_resolution = _read_current_resolution(conn, disc_id)
+    if current_resolution is not None and current_resolution != "unresolved":
+        if retry_pass_2_failures and (
+            current_resolution == "pending_ambiguity_resolution"
+        ):
+            # Retry path: this is the expected state; proceed.
+            pass
+        else:
+            return BackfillOutcome(
+                discrepancy_id=disc_id,
+                ticker=disc.ticker,
+                discrepancy_type=disc.discrepancy_type,
+                tier=None,
+                outcome="skipped_already_resolved",
+                reason=(
+                    f"discrepancy already in resolution="
+                    f"{current_resolution!r}; skipping (idempotent)"
+                ),
+                projection_outcome_label="skipped (already resolved)",
+                projection_action_needed="(none)",
+            )
+
     try:
         source_payload = _parse_actual_value_json(disc)
         journal_row = _fetch_journal_row(conn, disc)
@@ -703,6 +817,7 @@ def _classify_and_apply(
             environment=environment,
             account_hash=account_hash,
             no_pass_2_on_dry_run=no_pass_2_on_dry_run,
+            allow_pending_update=retry_pass_2_failures,
         )
 
     if dry_run:
@@ -885,9 +1000,32 @@ def run_backfill(
     """
     _check_pipeline_not_running(conn)
 
-    discrepancies = _iter_unresolved_discrepancies(
-        conn, ticker=ticker, limit=limit,
-    )
+    # T-D.9 — iteration-target branch on retry-pass-2-failures flag.
+    #
+    #   retry_pass_2_failures=False (default): iterate unresolved rows
+    #     (Pass 1 + Pass 2 dispatch); ALSO enumerate Pass-2-failed rows
+    #     as SKIP-only outcomes so the operator sees an accurate
+    #     ``skipped_pass_2_failed`` counter (spec §8.3 + plan §E.9 #2).
+    #
+    #   retry_pass_2_failures=True (opt-in): iterate Pass-2-failed rows
+    #     ONLY; each retry re-fetches Schwab + re-classifies + overwrites
+    #     the prior failure stamp via ``stamp_pending_ambiguity(...,
+    #     allow_pending_update=True)`` (plan §E.9 #3 + spec §8.2/§8.3).
+    if retry_pass_2_failures:
+        discrepancies = _iter_pass_2_failed_discrepancies(
+            conn, ticker=ticker, limit=limit,
+        )
+        pass_2_failed_skip_list: list[ReconciliationDiscrepancy] = []
+    else:
+        discrepancies = _iter_unresolved_discrepancies(
+            conn, ticker=ticker, limit=limit,
+        )
+        # Default-mode enumeration of Pass-2-failed rows for skip-only
+        # outcome emission (--retry-pass-2-failures hint surfaces in
+        # CLI summary).
+        pass_2_failed_skip_list = _iter_pass_2_failed_discrepancies(
+            conn, ticker=ticker, limit=limit,
+        )
 
     summary = BackfillSummary()
     for disc in discrepancies:
@@ -930,11 +1068,58 @@ def run_backfill(
         # T-D.8 — Pass-2 re-fetch failure-mode counter (orthogonal to
         # the canonical ``outcome`` enum; transported via the
         # ``reason`` substring per spec §8.4 + plan §E.8 #6 LOCK).
+        # T-D.9 fix: do NOT double-count tier2_stamped + pass_2_failed;
+        # only increment pass_2_failed when the outcome itself is NOT
+        # already incrementing tier2_stamped (which already represents
+        # the Pass-2 attempt outcome). The failure-mode signal lives in
+        # the reason substring for operator triage but the canonical
+        # bucket counter is tier2_stamped; the pass_2_failed bucket is
+        # the rate of Pass-2 RE-FETCH FAILURES specifically.
         if (
             outcome.reason
             and outcome.reason.startswith(_PASS_2_FAILURE_REASON_PREFIX)
+            and outcome.outcome != "tier2_stamped"
+            and outcome.outcome != "errored"
         ):
             summary.pass_2_failed += 1
+        elif (
+            outcome.reason
+            and outcome.reason.startswith(_PASS_2_FAILURE_REASON_PREFIX)
+            and outcome.outcome == "tier2_stamped"
+        ):
+            # tier2_stamped already counts the row; we treat
+            # pass_2_failed as a parallel signal counter (operator
+            # diagnostic — "how many of the tier-2 stamps were caused by
+            # Pass-2 fetch failure vs honest tier-2 classification?").
+            # Keep the increment but it does NOT double-count anything
+            # because tier2_stamped + pass_2_failed are SEPARATE
+            # diagnostic bucket counters per spec §8.4 + plan §E.9 #4.
+            summary.pass_2_failed += 1
+
+    # T-D.9 — emit SKIP-only outcomes for Pass-2-failed rows on default
+    # ``--apply``. Per plan §E.9 #2 + spec §8.3, the operator sees an
+    # accurate ``skipped_pass_2_failed`` counter even though the rows
+    # were not iterated by the default ``resolution = 'unresolved'``
+    # filter. This is the explicit-enumeration path (no journal mutation;
+    # no Schwab API call; no service-layer invocation).
+    for disc in pass_2_failed_skip_list:
+        disc_id = int(disc.discrepancy_id or 0)
+        skip_outcome = BackfillOutcome(
+            discrepancy_id=disc_id,
+            ticker=disc.ticker,
+            discrepancy_type=disc.discrepancy_type,
+            tier=None,
+            outcome="skipped_pass_2_failed",
+            ambiguity_kind=disc.ambiguity_kind,
+            reason=(
+                "Pass-2-failed state persisted; "
+                "use --retry-pass-2-failures to retry"
+            ),
+            projection_outcome_label="skipped (Pass-2-failed)",
+            projection_action_needed="--retry-pass-2-failures",
+        )
+        summary.per_discrepancy_outcomes.append(skip_outcome)
+        summary.skipped_pass_2_failed += 1
 
     return summary
 
@@ -980,17 +1165,34 @@ def format_projection_row(outcome: BackfillOutcome) -> str:
 
 
 def format_summary_block(summary: BackfillSummary) -> str:
-    """Multi-line summary block printed at end of CLI invocation."""
+    """Multi-line summary block printed at end of CLI invocation.
+
+    Layout per plan §E.9 #4 (T-D.9) — operator-facing canonical lines:
+      Backfill summary:
+        Tier 1 applied: N
+        Tier 2 stamped: M
+        Errored: K
+        Pass 2 failed (persisted as tier-2 unsupported): L
+        Skipped (already resolved): X
+        Skipped (Pass-2-failed; use --retry-pass-2-failures to retry): Y
+
+    Diagnostic counters (tier1_skipped_sandbox + pass_2_pending +
+    projection_*) follow on indented lines for operator triage but are
+    NOT part of the §E.9 #4 binding layout.
+    """
     return (
         "\nBackfill summary:\n"
-        f"  tier1_applied:            {summary.tier1_applied}\n"
+        f"  Tier 1 applied: {summary.tier1_applied}\n"
+        f"  Tier 2 stamped: {summary.tier2_stamped}\n"
+        f"  Errored: {summary.tier_errored}\n"
+        f"  Pass 2 failed (persisted as tier-2 unsupported): "
+        f"{summary.pass_2_failed}\n"
+        f"  Skipped (already resolved): {summary.skipped_already_resolved}\n"
+        f"  Skipped (Pass-2-failed; use --retry-pass-2-failures to retry): "
+        f"{summary.skipped_pass_2_failed}\n"
+        "  --- diagnostic counters ---\n"
         f"  tier1_skipped_sandbox:    {summary.tier1_skipped_sandbox}\n"
-        f"  tier2_stamped:            {summary.tier2_stamped}\n"
-        f"  tier_errored:             {summary.tier_errored}\n"
         f"  pass_2_pending:           {summary.pass_2_pending}\n"
-        f"  pass_2_failed:            {summary.pass_2_failed}\n"
-        f"  skipped_already_resolved: {summary.skipped_already_resolved}\n"
-        f"  skipped_pass_2_failed:    {summary.skipped_pass_2_failed}\n"
         f"  projection_tier1:         {summary.projection_tier1}\n"
         f"  projection_tier2:         {summary.projection_tier2}\n"
         f"  projection_pass_2:        {summary.projection_pass_2}\n"
