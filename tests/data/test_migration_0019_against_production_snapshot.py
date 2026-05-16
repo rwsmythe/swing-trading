@@ -7,7 +7,8 @@ Per plan §B.8 in
   ``~/swing-data/swing.db`` to a tmp path, dynamically snapshots the
   pre-migration row content of `reconciliation_discrepancies` +
   `reconciliation_runs` + `review_log` + `trade_events` + `schwab_api_calls`,
-  applies migration 0019, and asserts:
+  drives migration 0019 through the canonical ``run_migrations`` runner
+  (so the Phase 12 backup gate fires), and asserts:
 
     1. schema_version transitions 18 -> 19.
     2. All snapshotted rows preserved column-by-column against the
@@ -17,6 +18,11 @@ Per plan §B.8 in
         - `schwab_api_calls.linked_correction_id`
     3. Row counts derived from the SNAPSHOT (not hardcoded), so the test
        survives production drift between plan-drafting and integration-merge.
+    4. Codex R1 Major #2 — backup gate fires through run_migrations
+       (exactly one ``swing-pre-phase12-bundle-c-migration-*.db`` file
+       lands in tmp_path; backup file's schema_version is 18 not 19,
+       discriminating that the snapshot was taken BEFORE migration 0019
+       applied; backup file contains the v18-baseline table set).
 
 Skip conditions (all `pytest.skip`, never failure):
 
@@ -36,14 +42,9 @@ from pathlib import Path
 
 import pytest
 
-from swing.data.db import _apply_migration
-
-_MIGRATION_0019_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "swing"
-    / "data"
-    / "migrations"
-    / "0019_phase12_bundle_c_auto_correct_reconciliation.sql"
+from swing.data.db import (
+    PHASE12_BUNDLE_C_PRE_MIGRATION_EXPECTED_TABLES,
+    run_migrations,
 )
 
 # Tables the migration rebuilds (reconciliation_discrepancies + trade_events)
@@ -118,8 +119,14 @@ def test_migration_0019_against_operator_production_snapshot(tmp_path: Path) -> 
             for table in _SNAPSHOT_TABLES
         }
 
-        # Apply migration 0019 atomically via the canonical runner.
-        _apply_migration(conn, _MIGRATION_0019_PATH)
+        # Codex R1 Major #2 fix: drive migration through the canonical
+        # ``run_migrations`` runner (NOT bare ``_apply_migration``) so the
+        # Phase 12 backup gate fires + the backup file lands in tmp_path.
+        # The prior version of this test bypassed the gate entirely by
+        # calling ``_apply_migration`` directly, which verified row
+        # preservation but did NOT verify backup-file emission.
+        run_migrations(conn, target_version=19, backup_dir=tmp_path)
+        conn.commit()
 
         # Assert schema_version transitions 18 -> 19.
         cur = conn.execute("SELECT version FROM schema_version")
@@ -127,6 +134,53 @@ def test_migration_0019_against_operator_production_snapshot(tmp_path: Path) -> 
         assert post_version == 19, (
             f"expected schema_version=19 after applying 0019; got {post_version}"
         )
+
+        # Codex R1 Major #2 — backup gate fired + backup file landed.
+        backups = list(
+            tmp_path.glob("swing-pre-phase12-bundle-c-migration-*.db")
+        )
+        assert len(backups) == 1, (
+            f"expected exactly 1 phase12 backup file in tmp_path; got {backups}"
+        )
+        backup_path = backups[0]
+
+        # Discriminating proof of ordering: open the backup directly and
+        # verify its schema_version is 18 (taken BEFORE migration 0019
+        # applied). If the backup was taken AFTER migration applied, this
+        # would be 19.
+        backup_conn = sqlite3.connect(backup_path)
+        try:
+            backup_version = backup_conn.execute(
+                "SELECT version FROM schema_version"
+            ).fetchone()[0]
+            assert backup_version == 18, (
+                f"backup file schema_version is {backup_version}; expected "
+                "18 (backup taken BEFORE migration 0019 applied). "
+                "schema_version=19 would indicate the backup was taken "
+                "AFTER migration applied — gate ordering violation."
+            )
+            # Backup contains the expected v18-baseline tables per
+            # PHASE12_BUNDLE_C_PRE_MIGRATION_EXPECTED_TABLES.
+            backup_tables = {
+                r[0] for r in backup_conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            missing = (
+                PHASE12_BUNDLE_C_PRE_MIGRATION_EXPECTED_TABLES - backup_tables
+            )
+            assert not missing, (
+                f"backup file missing v18-baseline tables: {sorted(missing)}"
+            )
+            # The new Phase 12 table MUST NOT appear in the backup (taken
+            # before migration applied).
+            assert "reconciliation_corrections" not in backup_tables, (
+                "backup file contains reconciliation_corrections; this "
+                "indicates the backup was taken AFTER migration 0019 "
+                "applied (table introduced by 0019)."
+            )
+        finally:
+            backup_conn.close()
 
         # Per-table assertions: row count unchanged + row content preserved for
         # the projection of pre-migration columns (new columns may be present
