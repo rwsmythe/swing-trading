@@ -1,11 +1,30 @@
 """Phase 12 Sub-bundle C — `swing journal reconcile-backfill` orchestrator.
 
-T-D.6 SCAFFOLD ONLY — establishes the iteration shell + transactional
-contract + pipeline-exclusion guard + ``BackfillSummary`` /
-``BackfillOutcome`` dataclasses + the ``_classify_and_apply`` private
-callback as a STUB. Pass-1 / Pass-2 classification + tier-1 auto-apply
-+ tier-2 stamp dispatch + idempotency are implemented in T-D.7 / T-D.8
-/ T-D.9.
+T-D.6 scaffold landed the iteration shell + transactional contract +
+pipeline-exclusion guard + ``BackfillSummary`` / ``BackfillOutcome``
+dataclasses + the ``_classify_and_apply`` private callback as a stub.
+
+T-D.7 (this task) implements **Pass 1**: persisted-JSON-only
+classification + dispatch. Reads each unresolved discrepancy's
+``expected_value_json`` + ``actual_value_json`` + the FK-referenced
+journal row, invokes :func:`swing.trades.reconciliation_classifier.classify_discrepancy`
+(with ``validator_chain=None`` — defense-in-depth is enforced at C.C
+service-layer apply-time), then branches:
+
+  * Tier-1 → :func:`swing.trades.reconciliation_auto_correct.apply_tier1_correction`
+    (public own-tx); records ``BackfillOutcome(tier=1,
+    outcome='tier1_applied', correction_id=...)``.
+  * Tier-2 (NOT ``_pass_2_required``) →
+    :func:`swing.trades.reconciliation_auto_correct.stamp_pending_ambiguity`
+    (public own-tx); records ``BackfillOutcome(tier=2,
+    outcome='tier2_stamped', ambiguity_kind=...)``.
+  * Pass-2-required (classifier emits tier-2 ``unsupported`` with
+    ``_pass_2_required=True`` substring in ``correction_reason``) →
+    Pass 1 SKIPS dispatch; records ``BackfillOutcome(tier=None,
+    outcome='pass_2_pending', ...)`` placeholder for T-D.8 to overwrite.
+
+T-D.8 will fill in Pass-2 Schwab re-fetch via
+``get_account_orders_audited`` + reclassify + dispatch.
 
 Transaction-ownership contract (Codex R2 Major #1 fix, plan §E.6 #4):
   ``run_backfill`` operates in AUTOCOMMIT MODE — it does NOT open its
@@ -20,15 +39,38 @@ Pipeline-exclusion guard (Codex R2 Major #2 fix, plan §E.6 #4):
   Mirrors ``FinvizPipelineActiveError`` (``swing/integrations/finviz_api``)
   + ``SchwabPipelineActiveError`` (``swing/integrations/schwab/client``)
   precedent.
+
+Sandbox short-circuit:
+  When ``environment='sandbox'``, tier-1 dispatch via
+  ``apply_tier1_correction`` invokes its inner short-circuit (spec §5.9
+  + C.C T-C.2 LOCK): no journal mutation; ``CorrectionResult.correction_id
+  is None``. T-D.7 records the resulting BackfillOutcome with
+  ``outcome='tier1_skipped_sandbox'`` so the counter wiring honors the
+  no-mutation invariant. Tier-2 stamp still fires under sandbox per
+  C.C contract (it's a journal-resolution flip, not a domain mutation).
 """
 from __future__ import annotations
 
+import json
+import logging
 import sqlite3
 from dataclasses import dataclass, field
 from typing import Any
 
 from swing.data.models import ReconciliationDiscrepancy
 from swing.data.repos.reconciliation import _DISCREPANCY_SELECT_COLUMNS, _row_to_discrepancy
+
+logger = logging.getLogger(__name__)
+
+
+# Substring sentinel emitted by the C.B unmatched_*_fill sub-classifier
+# in ``correction_reason`` when Pass 1 input was insufficient (persisted
+# JSON gives no candidate enumeration). Backfill T-D.7 reads this
+# substring + records a 'pass_2_pending' placeholder for T-D.8.
+#
+# Source of truth: swing/trades/reconciliation_classifier.py:742
+# ("_pass_2_required=True; backfill must re-fetch Schwab orders ...").
+_PASS_2_REQUIRED_SENTINEL = "_pass_2_required=True"
 
 
 class BackfillPipelineActiveError(RuntimeError):
@@ -47,24 +89,40 @@ class BackfillPipelineActiveError(RuntimeError):
 class BackfillOutcome:
     """One per-discrepancy outcome record aggregated into ``BackfillSummary``.
 
-    The full classification dispatch + correction lifecycle is T-D.7+;
-    T-D.6 emits ``outcome='projection'`` placeholders for the dry-run
-    iteration shell.
+    T-D.7 (Pass 1) classifies + dispatches inline. T-D.8 (Pass 2) will
+    re-fetch Schwab orders + reclassify for ``outcome='pass_2_pending'``
+    placeholders.
     """
 
     discrepancy_id: int
     ticker: str | None
     discrepancy_type: str
-    tier: int | None  # 1, 2, or None for skipped/projection
+    tier: int | None  # 1, 2, or None for skipped/projection/pass-2-pending
     outcome: str
     # ``outcome`` is one of:
-    #   'tier1_applied' | 'tier2_stamped' | 'pass_2_failed'
-    #   'skipped_already_resolved' | 'skipped_pass_2_failed'
-    #   'errored' | 'projection' (T-D.6 scaffold placeholder)
+    #   'projection_tier1' / 'projection_tier2' / 'projection_pass_2'
+    #       (dry-run mode; no journal mutation)
+    #   'tier1_applied'                  (--apply, tier-1 auto-corrected)
+    #   'tier1_skipped_sandbox'          (--apply, env='sandbox' short-circuit)
+    #   'tier2_stamped'                  (--apply, tier-2 stamp via service)
+    #   'pass_2_pending'                 (--apply, Pass-1 emitted
+    #                                     _pass_2_required; T-D.8 will retry)
+    #   'pass_2_failed'                  (T-D.8 consumer)
+    #   'skipped_already_resolved'       (idempotency early-return; T-D.9)
+    #   'skipped_pass_2_failed'          (T-D.9 consumer)
+    #   'errored'                        (classifier / service raised)
     ambiguity_kind: str | None = None
     correction_id: int | None = None
     pass_2_call_id: int | None = None
     reason: str | None = None
+    # T-D.7: rendering hints for the dry-run projection matrix.
+    # ``projection_outcome_label`` is the rendered "Projected outcome"
+    # column text per acceptance criterion #4 (e.g., "tier-1 auto-apply",
+    # "Pass 2 required (re-fetch)").
+    projection_outcome_label: str | None = None
+    # ``projection_action_needed`` is the rendered "Action needed"
+    # column text (e.g., "(none)", "--apply or --no-pass-2").
+    projection_action_needed: str | None = None
 
 
 @dataclass
@@ -77,11 +135,18 @@ class BackfillSummary:
     """
 
     tier1_applied: int = 0
+    tier1_skipped_sandbox: int = 0
     tier2_stamped: int = 0
     tier_errored: int = 0
+    pass_2_pending: int = 0
     pass_2_failed: int = 0
     skipped_already_resolved: int = 0
     skipped_pass_2_failed: int = 0
+    # Dry-run projection counters (no journal mutation; populated when
+    # ``run_backfill(dry_run=True)``).
+    projection_tier1: int = 0
+    projection_tier2: int = 0
+    projection_pass_2: int = 0
     per_discrepancy_outcomes: list[BackfillOutcome] = field(default_factory=list)
 
 
@@ -131,43 +196,311 @@ def _iter_unresolved_discrepancies(
     return [_row_to_discrepancy(r) for r in rows]
 
 
+def _parse_actual_value_json(disc: ReconciliationDiscrepancy) -> Any | None:
+    """T-D.7 — derive a classifier-friendly source_payload from
+    ``actual_value_json``.
+
+    Mirrors :func:`swing.trades.schwab_reconciliation._extract_source_payload`
+    semantics so the Pass-1 classifier receives the same shape it sees
+    during the in-pipeline pivot at C.C. The ``{"matched": null}``
+    sentinel emitted by unmatched_*_fill discrepancies maps to ``None``
+    so the classifier's None-branch fires (which produces tier-2 with
+    ``_pass_2_required`` for unmatched_*_fill, or
+    ``schwab_returned_no_match`` for entry_price_mismatch).
+    """
+    if disc.actual_value_json is None:
+        return None
+    try:
+        payload = json.loads(disc.actual_value_json)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if (
+        isinstance(payload, dict)
+        and "matched" in payload
+        and payload["matched"] is None
+        and len(payload) == 1
+    ):
+        return None
+    return payload
+
+
+def _fetch_journal_row(
+    conn: sqlite3.Connection, disc: ReconciliationDiscrepancy,
+) -> dict[str, Any] | None:
+    """T-D.7 — read the journal row associated with a discrepancy's FK.
+
+    Mirrors :func:`swing.trades.schwab_reconciliation._fetch_journal_row`
+    verbatim so the classifier sees the same shape Pass-1-in-pipeline
+    sees. Discrepancies whose FK columns are all NULL (e.g., equity_delta
+    keyed only by run_id) return ``None``.
+    """
+    if disc.fill_id is not None:
+        row = conn.execute(
+            "SELECT fill_id, trade_id, fill_datetime, action, quantity, price "
+            "FROM fills WHERE fill_id = ?",
+            (int(disc.fill_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "fill_id": row[0], "trade_id": row[1],
+            "fill_datetime": row[2], "action": row[3],
+            "quantity": row[4], "price": row[5],
+        }
+    if disc.trade_id is not None:
+        row = conn.execute(
+            "SELECT id, ticker, current_stop FROM trades WHERE id = ?",
+            (int(disc.trade_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return {"id": row[0], "ticker": row[1], "current_stop": row[2]}
+    if disc.cash_movement_id is not None:
+        row = conn.execute(
+            "SELECT id, date, kind, amount FROM cash_movements WHERE id = ?",
+            (int(disc.cash_movement_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row[0], "date": row[1], "kind": row[2], "amount": row[3],
+        }
+    return None
+
+
 def _classify_and_apply(
     conn: sqlite3.Connection,
     disc: ReconciliationDiscrepancy,
     *,
     dry_run: bool,
-    schwab_client: Any,
+    schwab_client: Any,  # noqa: ARG001 — T-D.8 consumer
     environment: str,
-    account_hash: str | None,
-    no_pass_2_on_dry_run: bool,
-    retry_pass_2_failures: bool,
+    account_hash: str | None,  # noqa: ARG001 — T-D.8 consumer
+    no_pass_2_on_dry_run: bool,  # noqa: ARG001 — T-D.8 consumer
+    retry_pass_2_failures: bool,  # noqa: ARG001 — T-D.9 consumer
 ) -> BackfillOutcome:
-    """T-D.6 STUB — returns a placeholder ``'projection'`` outcome.
+    """T-D.7 — Pass 1 persisted-JSON-only classification + dispatch.
 
-    T-D.7 + T-D.8 + T-D.9 will implement:
-      * Pass 1 — classify from persisted JSON only (no Schwab API call).
-      * Pass 2 — when Pass 1 returns ``_pass_2_required=True``, invoke
-        ``get_account_orders_audited(...)`` (T-D.6.1) + re-classify
-        with the fetched payload.
-      * Tier-1 dispatch — call PUBLIC ``apply_tier1_correction(...)``
-        (C.C; own-tx).
-      * Tier-2 dispatch — call PUBLIC ``stamp_pending_ambiguity(...)``
-        (C.C; own-tx).
-      * Idempotency — terminal-state discrepancies return early as
-        ``'skipped_already_resolved'``.
+    Flow:
+      1. Read ``expected_value_json`` + ``actual_value_json`` from the
+         discrepancy + the FK-referenced journal row.
+      2. Invoke ``classify_discrepancy`` with ``validator_chain=None``
+         (defense-in-depth re-invocation lives at C.C apply-time).
+      3. Detect the ``_pass_2_required=True`` substring in
+         ``classification.correction_reason``: that branch is the C.B
+         unmatched_*_fill sub-classifier signaling that Pass 1's
+         persisted-JSON-only input is insufficient + Pass 2 must fire.
+      4. Dispatch:
+         - Dry-run → no mutation; record projection outcome.
+         - ``--apply``, tier-1 → public ``apply_tier1_correction`` (own-tx).
+         - ``--apply``, tier-2 (NOT _pass_2_required) → public
+           ``stamp_pending_ambiguity`` (own-tx).
+         - ``--apply``, _pass_2_required → record ``'pass_2_pending'``
+           placeholder for T-D.8 to overwrite.
 
-    At T-D.6, this function returns an ``outcome='projection'`` record
-    so the iteration shell + CLI rendering + summary aggregation can be
-    exercised by tests + by operator dry-run preview before the dispatch
-    logic lands.
+    Per acceptance criterion #2 the call site MUST pass
+    ``validator_chain=None`` — Pass 1 is intentionally simpler than the
+    C.C pivot (which composes ``functools.partial(default_validator_chain
+    ...)`` for defense-in-depth). C.C re-runs the validator chain inside
+    ``_apply_tier1_correction_inner`` step 3 (spec §5.4 + lesson
+    "validator-chain re-invocation at C.C apply time defense-in-depth"),
+    so backfill doesn't need to pre-validate.
     """
+    # Lazy-import C.B + C.C to avoid cyclical imports at module load.
+    from swing.trades.reconciliation_auto_correct import (
+        CallerHeldTransactionError,
+        apply_tier1_correction,
+        stamp_pending_ambiguity,
+    )
+    from swing.trades.reconciliation_classifier import classify_discrepancy
+
+    disc_id = int(disc.discrepancy_id or 0)
+    try:
+        source_payload = _parse_actual_value_json(disc)
+        journal_row = _fetch_journal_row(conn, disc)
+        classification = classify_discrepancy(
+            disc,
+            source_payload=source_payload,
+            journal_row=journal_row,
+            validator_chain=None,  # Acceptance criterion #2 — intentional.
+        )
+    except Exception as exc:  # noqa: BLE001 — graceful degradation
+        logger.warning(
+            "backfill Pass 1 classifier exception on discrepancy %s: %s: %s",
+            disc_id, type(exc).__name__, exc,
+        )
+        return BackfillOutcome(
+            discrepancy_id=disc_id,
+            ticker=disc.ticker,
+            discrepancy_type=disc.discrepancy_type,
+            tier=None,
+            outcome="errored",
+            reason=f"classifier exception: {type(exc).__name__}: {exc}",
+            projection_outcome_label="error (classifier)",
+            projection_action_needed="investigate manually",
+        )
+
+    # Pass-2-required signal: C.B unmatched_*_fill emits tier-2
+    # 'unsupported' with `_pass_2_required=True` substring in the
+    # `correction_reason`. T-D.7 reads this signal + records a
+    # placeholder; T-D.8 will overwrite with the real Pass-2 outcome.
+    pass_2_required = (
+        classification.tier == 2
+        and _PASS_2_REQUIRED_SENTINEL in (classification.correction_reason or "")
+    )
+
+    if dry_run:
+        # No journal mutation; just build the projection record.
+        if classification.tier == 1:
+            label = "tier-1 auto-apply"
+            action = "(none)"
+            outcome = "projection_tier1"
+        elif pass_2_required:
+            label = "Pass 2 required (re-fetch)"
+            action = "--apply or --no-pass-2"
+            outcome = "projection_pass_2"
+        else:
+            label = (
+                f"tier-2 stamp ({classification.ambiguity_kind})"
+                if classification.ambiguity_kind
+                else "tier-2 stamp"
+            )
+            action = "operator resolution via `swing journal discrepancy`"
+            outcome = "projection_tier2"
+        return BackfillOutcome(
+            discrepancy_id=disc_id,
+            ticker=disc.ticker,
+            discrepancy_type=disc.discrepancy_type,
+            tier=classification.tier if not pass_2_required else None,
+            outcome=outcome,
+            ambiguity_kind=classification.ambiguity_kind,
+            reason=classification.correction_reason,
+            projection_outcome_label=label,
+            projection_action_needed=action,
+        )
+
+    # --apply mode below — dispatch to C.C public services.
+
+    if pass_2_required:
+        # T-D.7 stops short of Pass 2 — record placeholder; T-D.8 will
+        # overwrite with the actual Schwab re-fetch + reclassify path.
+        # Acceptance criterion §0 "Pass-2-required outcomes record
+        # `outcome='pass_2_pending'` placeholder for T-D.8".
+        return BackfillOutcome(
+            discrepancy_id=disc_id,
+            ticker=disc.ticker,
+            discrepancy_type=disc.discrepancy_type,
+            tier=None,
+            outcome="pass_2_pending",
+            ambiguity_kind=classification.ambiguity_kind,
+            reason=(
+                "T-D.8 will dispatch Pass 2 (Schwab re-fetch + "
+                "reclassify); Pass 1 emitted _pass_2_required"
+            ),
+            projection_outcome_label="Pass 2 pending (T-D.8)",
+            projection_action_needed="--apply with T-D.8 wired",
+        )
+
+    if classification.tier == 1:
+        try:
+            result = apply_tier1_correction(
+                conn,
+                discrepancy_id=disc_id,
+                classification=classification,
+                environment=environment,
+            )
+        except CallerHeldTransactionError:
+            # Propagate — contract violation by the orchestrator.
+            raise
+        except Exception as exc:  # noqa: BLE001 — graceful degradation
+            logger.warning(
+                "backfill Pass 1 apply_tier1_correction failed on "
+                "discrepancy %s: %s: %s",
+                disc_id, type(exc).__name__, exc,
+            )
+            return BackfillOutcome(
+                discrepancy_id=disc_id,
+                ticker=disc.ticker,
+                discrepancy_type=disc.discrepancy_type,
+                tier=1,
+                outcome="errored",
+                reason=f"apply_tier1 failed: {type(exc).__name__}: {exc}",
+                projection_outcome_label="tier-1 errored",
+                projection_action_needed="investigate manually",
+            )
+        if result.correction_id is None:
+            # Sandbox short-circuit per C.C spec §5.9 + LOCK lesson #2.
+            # No journal mutation occurred; classify as a distinct
+            # outcome so the counter wiring stays honest.
+            return BackfillOutcome(
+                discrepancy_id=disc_id,
+                ticker=disc.ticker,
+                discrepancy_type=disc.discrepancy_type,
+                tier=1,
+                outcome="tier1_skipped_sandbox",
+                reason=result.notes or "sandbox: domain write short-circuited",
+                projection_outcome_label="tier-1 (sandbox skipped)",
+                projection_action_needed="(none)",
+            )
+        return BackfillOutcome(
+            discrepancy_id=disc_id,
+            ticker=disc.ticker,
+            discrepancy_type=disc.discrepancy_type,
+            tier=1,
+            outcome="tier1_applied",
+            correction_id=result.correction_id,
+            reason=classification.correction_reason,
+            projection_outcome_label="tier-1 applied",
+            projection_action_needed="(none)",
+        )
+
+    # Tier-2, NOT pass-2-required → stamp pending_ambiguity_resolution
+    # via the public C.C service helper. The service owns its own tx;
+    # sandbox does NOT short-circuit tier-2 stamps (they're
+    # journal-resolution flips, not domain mutations — per C.C
+    # _stamp_pending_ambiguity_inner contract).
+    try:
+        stamp_pending_ambiguity(
+            conn,
+            discrepancy_id=disc_id,
+            ambiguity_kind=classification.ambiguity_kind or "unsupported",
+            resolution_reason=classification.correction_reason,
+        )
+    except CallerHeldTransactionError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — graceful degradation
+        logger.warning(
+            "backfill Pass 1 stamp_pending_ambiguity failed on "
+            "discrepancy %s: %s: %s",
+            disc_id, type(exc).__name__, exc,
+        )
+        return BackfillOutcome(
+            discrepancy_id=disc_id,
+            ticker=disc.ticker,
+            discrepancy_type=disc.discrepancy_type,
+            tier=2,
+            outcome="errored",
+            ambiguity_kind=classification.ambiguity_kind,
+            reason=f"stamp_pending failed: {type(exc).__name__}: {exc}",
+            projection_outcome_label="tier-2 errored",
+            projection_action_needed="investigate manually",
+        )
     return BackfillOutcome(
-        discrepancy_id=int(disc.discrepancy_id or 0),
+        discrepancy_id=disc_id,
         ticker=disc.ticker,
         discrepancy_type=disc.discrepancy_type,
-        tier=None,
-        outcome="projection",
-        reason="T-D.6 scaffold: per-discrepancy classification deferred to T-D.7+",
+        tier=2,
+        outcome="tier2_stamped",
+        ambiguity_kind=classification.ambiguity_kind,
+        reason=classification.correction_reason,
+        projection_outcome_label=(
+            f"tier-2 stamped ({classification.ambiguity_kind})"
+            if classification.ambiguity_kind
+            else "tier-2 stamped"
+        ),
+        projection_action_needed=(
+            "operator resolution via `swing journal discrepancy`"
+        ),
     )
 
 
@@ -237,14 +570,15 @@ def run_backfill(
             retry_pass_2_failures=retry_pass_2_failures,
         )
         summary.per_discrepancy_outcomes.append(outcome)
-        # Counter wiring — only ``projection`` placeholder fires at T-D.6
-        # (no journal mutation; no tier1/tier2/error category yet). The
-        # real counter dispatch lands at T-D.7+ once outcome categories
-        # are populated.
+        # Counter wiring — T-D.7 dispatches Pass 1 outcomes inline.
         if outcome.outcome == "tier1_applied":
             summary.tier1_applied += 1
+        elif outcome.outcome == "tier1_skipped_sandbox":
+            summary.tier1_skipped_sandbox += 1
         elif outcome.outcome == "tier2_stamped":
             summary.tier2_stamped += 1
+        elif outcome.outcome == "pass_2_pending":
+            summary.pass_2_pending += 1
         elif outcome.outcome == "pass_2_failed":
             summary.pass_2_failed += 1
         elif outcome.outcome == "skipped_already_resolved":
@@ -253,7 +587,12 @@ def run_backfill(
             summary.skipped_pass_2_failed += 1
         elif outcome.outcome == "errored":
             summary.tier_errored += 1
-        # ``projection`` is the T-D.6 scaffold placeholder — no counter.
+        elif outcome.outcome == "projection_tier1":
+            summary.projection_tier1 += 1
+        elif outcome.outcome == "projection_tier2":
+            summary.projection_tier2 += 1
+        elif outcome.outcome == "projection_pass_2":
+            summary.projection_pass_2 += 1
 
     return summary
 
@@ -264,22 +603,37 @@ def run_backfill(
 
 
 def format_projection_table_header() -> str:
-    """Header line for the dry-run projection table emitted by the CLI."""
+    """Header for the dry-run projection table per acceptance criterion #4.
+
+    5-column shape: ID | Ticker | Type | Projected outcome | Action needed.
+    """
     return (
-        f"{'ID':>5} {'Ticker':<8} {'Type':<24} "
-        f"{'Tier':<6} {'Outcome':<24} Reason"
+        f"{'ID':<4}| {'Ticker':<6} | {'Type':<22} | "
+        f"{'Projected outcome':<32} | Action needed"
+    )
+
+
+def format_projection_table_separator() -> str:
+    """Underline beneath the header to mirror acceptance-criterion-#4 sample."""
+    return (
+        f"{'-' * 4}+{'-' * 8}+{'-' * 24}+{'-' * 34}+{'-' * 26}"
     )
 
 
 def format_projection_row(outcome: BackfillOutcome) -> str:
-    """Single-row formatter for the dry-run projection table."""
-    tier_str = "-" if outcome.tier is None else str(outcome.tier)
+    """Single-row formatter for the dry-run projection table.
+
+    Reads ``projection_outcome_label`` + ``projection_action_needed``
+    populated by ``_classify_and_apply``; falls back to ``outcome`` if
+    those rendering hints are absent (e.g., legacy callers).
+    """
+    label = outcome.projection_outcome_label or outcome.outcome
+    action = outcome.projection_action_needed or "—"
     return (
-        f"{outcome.discrepancy_id:>5} "
-        f"{(outcome.ticker or '-'):<8} "
-        f"{outcome.discrepancy_type:<24} "
-        f"{tier_str:<6} {outcome.outcome:<24} "
-        f"{outcome.reason or ''}"
+        f"{outcome.discrepancy_id:<4}| "
+        f"{(outcome.ticker or '-'):<6} | "
+        f"{outcome.discrepancy_type:<22} | "
+        f"{label:<32} | {action}"
     )
 
 
@@ -287,11 +641,16 @@ def format_summary_block(summary: BackfillSummary) -> str:
     """Multi-line summary block printed at end of CLI invocation."""
     return (
         "\nBackfill summary:\n"
-        f"  tier1_applied:           {summary.tier1_applied}\n"
-        f"  tier2_stamped:           {summary.tier2_stamped}\n"
-        f"  tier_errored:            {summary.tier_errored}\n"
-        f"  pass_2_failed:           {summary.pass_2_failed}\n"
-        f"  skipped_already_resolved:{summary.skipped_already_resolved:>4}\n"
-        f"  skipped_pass_2_failed:   {summary.skipped_pass_2_failed}\n"
-        f"  total iterated:          {len(summary.per_discrepancy_outcomes)}"
+        f"  tier1_applied:            {summary.tier1_applied}\n"
+        f"  tier1_skipped_sandbox:    {summary.tier1_skipped_sandbox}\n"
+        f"  tier2_stamped:            {summary.tier2_stamped}\n"
+        f"  tier_errored:             {summary.tier_errored}\n"
+        f"  pass_2_pending:           {summary.pass_2_pending}\n"
+        f"  pass_2_failed:            {summary.pass_2_failed}\n"
+        f"  skipped_already_resolved: {summary.skipped_already_resolved}\n"
+        f"  skipped_pass_2_failed:    {summary.skipped_pass_2_failed}\n"
+        f"  projection_tier1:         {summary.projection_tier1}\n"
+        f"  projection_tier2:         {summary.projection_tier2}\n"
+        f"  projection_pass_2:        {summary.projection_pass_2}\n"
+        f"  total iterated:           {len(summary.per_discrepancy_outcomes)}"
     )

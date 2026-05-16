@@ -1823,6 +1823,7 @@ def journal_reconcile_backfill_cmd(
         BackfillPipelineActiveError,
         format_projection_row,
         format_projection_table_header,
+        format_projection_table_separator,
         format_summary_block,
         run_backfill,
     )
@@ -1872,9 +1873,13 @@ def journal_reconcile_backfill_cmd(
         click.echo("(no unresolved discrepancies)")
         return
 
-    mode_label = "dry-run" if dry_run else "apply"
-    click.echo(f"Backfill ({mode_label}) projection:\n")
+    # Acceptance criterion #4 — dry-run projection matrix preamble.
+    if dry_run:
+        click.echo("Backfill --dry-run projection:\n")
+    else:
+        click.echo("Backfill --apply results:\n")
     click.echo(format_projection_table_header())
+    click.echo(format_projection_table_separator())
     for outcome in summary.per_discrepancy_outcomes:
         click.echo(format_projection_row(outcome))
     click.echo(format_summary_block(summary))
