@@ -2050,6 +2050,270 @@ def discrepancy_show_ambiguity_cmd(ctx, discrepancy_id):
         click.echo("")
 
 
+# Phase 12 Sub-bundle C.C lesson #1 — the 4 service-owned ``resolution``
+# values must NOT be accepted as ``--choice`` values on the manual
+# resolve-ambiguity surface (per plan §E.3 acceptance criterion + brief
+# §0.5 #1 LOCK). These route through canonical C.C service entries
+# (apply_tier1_correction via the pivot dispatcher; apply_tier2_resolution
+# via this very CLI surface; apply_tier3_override via the override-
+# correction CLI at T-D.4; stamp_pending_ambiguity via the pivot stamp).
+# Mirrors ``_MANUAL_RESOLVE_ALLOWED_RESOLUTIONS`` discipline introduced
+# in C.C for ``resolve_discrepancy`` (CLAUDE.md gotcha
+# "Schema-coverage Python constant is NOT necessarily the manual-input
+# allowlist").
+_TIER2_SERVICE_OWNED_RESOLUTION_VALUES = frozenset({
+    "auto_corrected_from_schwab",
+    "pending_ambiguity_resolution",
+    "operator_resolved_ambiguity",
+    "operator_overridden",
+})
+
+
+@discrepancy_group.command("resolve-ambiguity")
+@click.argument("discrepancy_id", type=int)
+@click.option(
+    "--choice", "choice_code", required=True,
+    help=(
+        "Choice code from the per-ambiguity_kind menu surfaced by "
+        "`swing journal discrepancy show-ambiguity <id>`. Must NOT be one "
+        "of the 4 service-owned resolution values (those route through "
+        "canonical service entries, not this manual surface)."
+    ),
+)
+@click.option(
+    "--custom-value", "custom_value", default=None,
+    help=(
+        "JSON payload for choices flagged `requires_custom_value=True` "
+        "(per spec §6.2.1 menu). Parsed via json.loads; deeper shape "
+        "validation lives at service-layer apply-time per-handler."
+    ),
+)
+@click.option(
+    "--reason", "reason", required=True,
+    help=(
+        "Operator-supplied free-text rationale (REQUIRED per spec §6.4 "
+        "mandatory + §6.2 Codex R5 LOCK). Persisted on the new "
+        "reconciliation_corrections row as `correction_reason`."
+    ),
+)
+@click.option(
+    "--schwab-api-call-id", "schwab_api_call_id", type=int, default=None,
+    help=(
+        "Optional `schwab_api_calls.call_id` to back-link the new "
+        "correction row to. When supplied, the new row's "
+        "`schwab_api_call_id` populates AND "
+        "`schwab_api_calls.linked_correction_id` back-links via the C.C "
+        "audit-chain helper. Operator-facing discovery: the backfill "
+        "Pass-2 dry-run output (T-D.5) emits per-discrepancy "
+        "`call_id=<N>` lines for copy-paste."
+    ),
+)
+@click.pass_context
+def discrepancy_resolve_ambiguity_cmd(
+    ctx,
+    discrepancy_id,
+    choice_code,
+    custom_value,
+    reason,
+    schwab_api_call_id,
+):
+    """Resolve a pending_ambiguity_resolution discrepancy via operator choice.
+
+    Operator workflow (per plan §E.1 + §E.2 + §E.3):
+
+    1. ``swing journal discrepancy list-pending-ambiguities`` — surface
+       the discrepancy_id of interest.
+    2. ``swing journal discrepancy show-ambiguity <id>`` — read the
+       per-ambiguity_kind candidate choice menu (REQUIRES markers tell
+       you which need --custom-value + the expected JSON shape).
+    3. ``swing journal discrepancy resolve-ambiguity <id> --choice
+       <code> --reason '<rationale>' [--custom-value '<json>']
+       [--schwab-api-call-id <N>]`` — this surface.
+
+    The CLI delegates to ``apply_tier2_resolution`` in
+    ``swing.trades.reconciliation_auto_correct`` which owns the
+    BEGIN IMMEDIATE / COMMIT / ROLLBACK transaction envelope + the
+    per-(``ambiguity_kind``, ``choice_code``) handler dispatch + the
+    validator-chain re-invocation defense-in-depth + the journal
+    mutation + the audit row INSERT + the discrepancy resolution
+    UPDATE.
+    """
+    import json as _json
+
+    from swing.data.db import connect
+    from swing.data.repos.reconciliation import get_discrepancy
+    from swing.trades.reconciliation_ambiguity_choices import (
+        get_choice_menu,
+    )
+    from swing.trades.reconciliation_auto_correct import (
+        AlreadySupersededError,
+        CallerHeldTransactionError,
+        ValidatorRejectedError,
+        apply_tier2_resolution,
+    )
+    from swing.trades.risk_policy import read_active_policy
+
+    # NEW C.C lesson #1 — service-owned-state rejection at the CLI
+    # boundary, BEFORE the DB is even opened. Routing-hint substring in
+    # the error message tells operator where to go next.
+    if choice_code in _TIER2_SERVICE_OWNED_RESOLUTION_VALUES:
+        raise click.UsageError(
+            f"--choice {choice_code!r} is a service-owned resolution "
+            "value and is NOT accepted on this manual surface; those "
+            "values route through canonical service entries (the pivot "
+            "dispatcher in `apply_tier1_correction` / "
+            "`apply_tier2_resolution` / `apply_tier3_override` — "
+            "operator-driven via `override-correction` for "
+            "tier-3 + this `resolve-ambiguity` for tier-2). Pick a "
+            "choice from the per-ambiguity_kind menu surfaced by "
+            "`swing journal discrepancy show-ambiguity <id>`."
+        )
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        d = get_discrepancy(conn, discrepancy_id)
+        if d is None:
+            raise click.ClickException(
+                f"discrepancy {discrepancy_id} not found"
+            )
+        if d.ambiguity_kind is None:
+            raise click.UsageError(
+                f"discrepancy {discrepancy_id} has no ambiguity_kind "
+                f"(resolution={d.resolution!r}); resolve-ambiguity is "
+                f"only valid for Tier-2 pending_ambiguity_resolution "
+                f"rows. Use `swing journal discrepancy resolve` for the "
+                f"manual resolution surface, or `swing journal "
+                f"discrepancy override-correction` for tier-3 overrides."
+            )
+
+        # Validate --choice against the per-ambiguity_kind menu BEFORE
+        # touching the service layer (per plan §E.3 acceptance criterion
+        # #3 + #4). The classifier's menu for multi_match_within_window
+        # is static + parametric — for the parametric pick_schwab_record_<N>
+        # branch we delegate to the service-layer dispatcher (which has
+        # access to the actual candidate count via its handler-key
+        # parametric-prefix dispatch); here we only enforce the static
+        # member list + the per-choice --custom-value requirement.
+        menu = get_choice_menu(d.ambiguity_kind)
+        static_codes = {it.code for it in menu}
+        # Per-choice --custom-value enforcement requires the
+        # `requires_custom_value` flag from the menu entry; record it.
+        is_parametric_pick = (
+            d.ambiguity_kind == "multi_match_within_window"
+            and choice_code.startswith("pick_schwab_record_")
+        )
+
+        if choice_code in static_codes:
+            menu_item = next(it for it in menu if it.code == choice_code)
+            if menu_item.requires_custom_value and custom_value is None:
+                shape = (
+                    menu_item.expected_payload_shape_description
+                    or "<json>"
+                )
+                raise click.UsageError(
+                    f"--custom-value is required for choice "
+                    f"{choice_code!r}; expected JSON shape: {shape}"
+                )
+        elif is_parametric_pick:
+            # Parametric pick_schwab_record_<N> ALWAYS requires
+            # --custom-value (per T-D.2's parametric entry's
+            # `requires_custom_value=True`).
+            if custom_value is None:
+                raise click.UsageError(
+                    f"--custom-value is required for choice "
+                    f"{choice_code!r}; expected JSON shape: "
+                    '{"price": X.XX, "quantity": Q, '
+                    '"fill_datetime": "..."}'
+                )
+        else:
+            valid = sorted(static_codes)
+            raise click.UsageError(
+                f"--choice {choice_code!r} is not compatible with "
+                f"ambiguity_kind={d.ambiguity_kind!r}; valid choices "
+                f"per spec §6.2.1 menu: {valid}"
+            )
+
+        # Parse --custom-value as JSON (per plan §E.3 acceptance criterion
+        # #5 — shape predicate tightening lives at service layer; CLI does
+        # basic parse + service handles deeper shape rejection).
+        parsed_payload = None
+        if custom_value is not None:
+            try:
+                parsed_payload = _json.loads(custom_value)
+            except _json.JSONDecodeError as e:
+                raise click.UsageError(
+                    f"--custom-value is not valid JSON: {e}; "
+                    "expected a JSON object/array per the choice's "
+                    "expected_payload_shape_description"
+                ) from None
+
+        # Resolve active risk policy id (Phase 9 Sub-bundle A surface).
+        active_policy = read_active_policy(conn)
+
+        try:
+            result = apply_tier2_resolution(
+                conn,
+                discrepancy_id=discrepancy_id,
+                choice_code=choice_code,
+                operator_custom_payload=parsed_payload,
+                operator_reason=reason,
+                risk_policy_id=active_policy.policy_id,
+                schwab_api_call_id=schwab_api_call_id,
+            )
+            # The C.C tier-2 handlers stamp the forward FK
+            # (reconciliation_corrections.schwab_api_call_id) but only
+            # the tier-1 path invokes `_back_link_schwab_api_call`. To
+            # close the bidirectional audit chain per plan §E.3
+            # acceptance criterion #5, back-link from the CLI in a
+            # separate-but-immediate transaction. Best-effort: if the
+            # service returned a sandbox-style no-op (correction_id is
+            # None) or no --schwab-api-call-id was supplied, skip.
+            if (
+                schwab_api_call_id is not None
+                and result.correction_id is not None
+            ):
+                from swing.data.repos.schwab_api_calls import (
+                    update_call_linked_correction,
+                )
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    update_call_linked_correction(
+                        conn,
+                        call_id=schwab_api_call_id,
+                        correction_id=result.correction_id,
+                    )
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+        except CallerHeldTransactionError as e:
+            # Should not happen in the CLI path (connection is fresh) —
+            # surface as a friendly error rather than a stack trace.
+            raise click.ClickException(
+                f"transactional discipline violation: {e}"
+            ) from None
+        except AlreadySupersededError as e:
+            raise click.ClickException(str(e)) from None
+        except ValidatorRejectedError as e:
+            raise click.ClickException(
+                f"validator rejected the operator choice: {e}"
+            ) from None
+        except ValueError as e:
+            # Service-layer ValueError covers: incompatible (kind,
+            # choice); missing required payload on the handler; malformed
+            # payload at handler-level shape validation. Map to
+            # UsageError (exit 2) per plan §E.3 acceptance criterion #9.
+            raise click.UsageError(str(e)) from None
+    finally:
+        conn.close()
+
+    click.echo(
+        f"resolved discrepancy {discrepancy_id} via choice "
+        f"{choice_code!r}; correction_id={result.correction_id}"
+    )
+
+
 @discrepancy_group.command("resolve")
 @click.argument("discrepancy_id", type=int)
 @click.option(
