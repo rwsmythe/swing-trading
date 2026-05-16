@@ -899,3 +899,171 @@ def test_apply_credential_failure_still_hard_fails(
     )
     assert r.exit_code != 0
     assert "Schwab credentials not configured" in r.output
+
+
+# ============================================================================
+# Codex R2 Major #2 — per-service-write pipeline-exclusion recheck closes
+# the in-row race window. The per-iteration recheck (R1 Major #3) fires
+# BEFORE the classifier; a pipeline starting AFTER that check + BEFORE
+# the stamp_pending_ambiguity write must also raise.
+# ============================================================================
+
+
+def test_pipeline_started_between_pass_2_fetch_and_stamp(
+    cli_workspace, monkeypatch,
+):
+    """R2 Major #2 fix — pipeline-running between fetch + stamp raises.
+
+    Plants a Pass-2-required discrepancy. Stubs the audited Pass-2
+    wrapper such that AFTER it returns BUT BEFORE
+    ``stamp_pending_ambiguity`` is invoked, a ``pipeline_runs``
+    state='running' row appears. The per-write recheck inside
+    ``_handle_pass_2`` MUST raise ``BackfillPipelineActiveError``
+    cleanly + leave the discrepancy unstamped.
+    """
+    from swing.trades.reconciliation_backfill import (
+        BackfillPipelineActiveError,
+        run_backfill,
+    )
+    from swing.trades import reconciliation_backfill as _bf
+
+    _runner, _cfg, db_path = cli_workspace
+    conn = sqlite3.connect(db_path)
+    try:
+        run_id = _seed_reconciliation_run(conn)
+        disc_id = _plant_unresolved(
+            conn, run_id, ticker="DHC",
+            discrepancy_type="unmatched_open_fill",
+            field_name="match",
+        )
+        conn.commit()
+
+        # Stub the audited wrapper: returns (None call_id, []) AND
+        # plants a pipeline_runs row mid-flight so the next recheck
+        # fires. Side-channel via the conn — the same SQLite handle.
+        def _stub_audited(client, conn_arg, *args, **kwargs):
+            conn_arg.execute(
+                "INSERT INTO pipeline_runs ("
+                "  started_ts, state, trigger, data_asof_date, "
+                "  action_session_date, lease_token"
+                ") VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "2026-05-16T10:30:00", "running", "manual",
+                    "2026-05-16", "2026-05-16",
+                    "race-test-pass-2-lease",
+                ),
+            )
+            conn_arg.commit()
+            return (None, [])
+
+        monkeypatch.setattr(
+            _bf, "get_account_orders_audited", _stub_audited,
+        )
+
+        with pytest.raises(BackfillPipelineActiveError):
+            run_backfill(
+                conn,
+                dry_run=False,
+                schwab_client=object(),  # truthy stub; not actually called
+                environment="production",
+                account_hash="acct-hash",
+            )
+
+        # Verify the discrepancy is STILL ``unresolved`` (no stamp
+        # committed); the in-row recheck aborted before the stamp.
+        row = conn.execute(
+            "SELECT resolution FROM reconciliation_discrepancies "
+            "WHERE discrepancy_id = ?",
+            (disc_id,),
+        ).fetchone()
+        assert row[0] == "unresolved", (
+            f"discrepancy must remain unresolved (no stamp); got {row[0]}"
+        )
+    finally:
+        conn.close()
+
+
+def test_pipeline_started_before_tier1_apply_aborts(
+    cli_workspace, monkeypatch,
+):
+    """R2 Major #2 fix — pipeline-running before tier-1 apply raises.
+
+    Discriminating test for the per-service-write recheck on the
+    tier-1 apply branch. Plants an unresolved entry_price_mismatch
+    that classifies as tier-1; stubs the classifier such that after it
+    returns BUT before ``apply_tier1_correction`` is invoked, a
+    ``pipeline_runs`` row appears. The per-write recheck MUST raise
+    + the discrepancy must remain unresolved.
+    """
+    from swing.trades.reconciliation_backfill import (
+        BackfillPipelineActiveError,
+        run_backfill,
+    )
+    from swing.trades import reconciliation_backfill as _bf
+
+    _runner, _cfg, db_path = cli_workspace
+    conn = sqlite3.connect(db_path)
+    try:
+        run_id = _seed_reconciliation_run(conn)
+        disc_id = _plant_unresolved(
+            conn, run_id, ticker="DHC",
+            discrepancy_type="entry_price_mismatch",
+            field_name="price",
+        )
+        conn.commit()
+
+        # Stub the classifier such that after it returns tier-1, a
+        # pipeline row appears via the same conn.
+        from swing.trades.reconciliation_classifier import (
+            ClassificationResult,
+        )
+
+        def _spy_classify(disc, *, source_payload, journal_row, validator_chain):
+            # Race-window injection: mid-classify, plant the pipeline row.
+            conn.execute(
+                "INSERT INTO pipeline_runs ("
+                "  started_ts, state, trigger, data_asof_date, "
+                "  action_session_date, lease_token"
+                ") VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "2026-05-16T10:30:00", "running", "manual",
+                    "2026-05-16", "2026-05-16",
+                    "race-test-tier1-lease",
+                ),
+            )
+            conn.commit()
+            return ClassificationResult(
+                tier=1,
+                ambiguity_kind=None,
+                correction_target={"price": 5.30},
+                correction_reason="test tier-1 classification (race window)",
+            )
+
+        monkeypatch.setattr(
+            _bf, "classify_discrepancy", _spy_classify, raising=False,
+        )
+        # Also patch the lazy-import resolution path inside
+        # _classify_and_apply (it imports classify_discrepancy from
+        # the classifier module directly).
+        import swing.trades.reconciliation_classifier as _clf
+        monkeypatch.setattr(
+            _clf, "classify_discrepancy", _spy_classify,
+        )
+
+        with pytest.raises(BackfillPipelineActiveError):
+            run_backfill(
+                conn,
+                dry_run=False,
+                schwab_client=None,
+                environment="production",
+                account_hash="acct-hash",
+            )
+
+        row = conn.execute(
+            "SELECT resolution FROM reconciliation_discrepancies "
+            "WHERE discrepancy_id = ?",
+            (disc_id,),
+        ).fetchone()
+        assert row[0] == "unresolved"
+    finally:
+        conn.close()

@@ -690,6 +690,13 @@ def _handle_pass_2(
     # T-D.9: when ``allow_pending_update=True`` (retry-pass-2-failures
     # path), the inner UPDATE overwrites a prior ``pending_ambiguity_
     # resolution`` stamp; otherwise it's a no-op-idempotent return.
+    #
+    # Codex R2 Major #2 — per-service-write pipeline-exclusion recheck
+    # closes the in-row race window. A pipeline starting AFTER the
+    # Pass-2 fetch (which may have made an audited Schwab API call) +
+    # BEFORE the stamp would race against stamp_pending_ambiguity's
+    # own BEGIN IMMEDIATE. Recheck here gates the journal mutation.
+    _check_pipeline_not_running(conn)
     try:
         stamp_pending_ambiguity(
             conn,
@@ -902,6 +909,13 @@ def _classify_and_apply(
     # --apply mode below — dispatch to C.C public services.
 
     if classification.tier == 1:
+        # Codex R2 Major #2 — per-service-write pipeline-exclusion recheck
+        # closes the in-row race window. The per-iteration recheck at
+        # ``run_backfill`` fires BEFORE classifier; a pipeline starting
+        # AFTER that check + BEFORE this service-write would race against
+        # ``apply_tier1_correction``'s own BEGIN IMMEDIATE. Recheck here
+        # (~1 SELECT per write; cheap at <100 production discrepancies).
+        _check_pipeline_not_running(conn)
         try:
             result = apply_tier1_correction(
                 conn,
@@ -959,6 +973,10 @@ def _classify_and_apply(
     # sandbox does NOT short-circuit tier-2 stamps (they're
     # journal-resolution flips, not domain mutations — per C.C
     # _stamp_pending_ambiguity_inner contract).
+    #
+    # Codex R2 Major #2 — per-service-write pipeline-exclusion recheck
+    # closes the in-row race window (see apply_tier1 callsite above).
+    _check_pipeline_not_running(conn)
     try:
         stamp_pending_ambiguity(
             conn,
