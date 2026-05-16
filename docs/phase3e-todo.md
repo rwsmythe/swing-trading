@@ -6,6 +6,72 @@
 
 ---
 
+## 2026-05-15 Phase 12 Sub-sub-bundle C.A SHIPPED — Foundation (schema v18→v19 atomic migration + minimal repos for auto-correct reconciliation; 2 Codex rounds NO_NEW_CRITICAL_MAJOR; 16 commits; FIRST Phase 12 Sub-bundle C sub-sub-bundle)
+
+**Sub-sub-bundle C.A SHIPPED 2026-05-15** at `354b6c0` (integration merge of `phase12-bundle-C-A-foundation` worktree branch via `--no-ff` to preserve Codex-fix chain). Branch HEAD `56e6993` (16 commits = 9 task-impl (T-A.1..T-A.8 + T-A.7 cross-bundle pin) + 4 Codex-fix (R1 + R2) + 2 docs + 1 return-report on top of dispatch brief `3cb334d`). Operator-dispatched implementer per orchestrator brief at `3cb334d`.
+
+**2 Codex rounds → NO_NEW_CRITICAL_MAJOR** convergent tapering (R1 0C/4M/2m → R2 0C/0M/2m); **ZERO Critical findings** entire chain; **1 ACCEPT-WITH-RATIONALE banked** (R1 Major #1 — backup-gate narrowness; matches Phase 9 Sub-bundle A precedent; documenting test + extended docstring). **Ties Phase 12 Sub-bundle A precedent for fastest Phase 12 chain.**
+
+### Schema deltas (atomic v18→v19 migration at `swing/data/migrations/0019_phase12_bundle_c_auto_correct_reconciliation.sql`)
+
+1. **NEW TABLE `reconciliation_corrections`** (20 columns; audit-history forensic trail). Preserves pre-correction journal value + Schwab-said value + applied correction + operator-truth value (if any) + lifecycle metadata + per-row policy stamp `risk_policy_id_at_correction` nullable + `ON DELETE SET NULL` per Phase 9 §3.1.1 trades.risk_policy_id_at_lock precedent. Self-reference chain via `superseded_by_correction_id` for override-of-override edge case.
+2. **NEW COLUMN `reconciliation_discrepancies.ambiguity_kind`** (TEXT NULL CHECK enum) + cross-column CHECK with `resolution` enforcing tier-1 (NULL kind + auto_corrected_from_schwab resolution) vs tier-2 (non-NULL kind + pending_ambiguity_resolution OR operator_resolved_ambiguity) vs tier-3 (NULL kind + operator_overridden) invariants schema-defended.
+3. **WIDENING `reconciliation_discrepancies.resolution`** CHECK enum 5 → 9 values via table-rebuild (`+ 'auto_corrected_from_schwab' / 'pending_ambiguity_resolution' / 'operator_resolved_ambiguity' / 'operator_overridden'`; PRAGMA foreign_keys=OFF during rebuild per Phase 7 hotfix `283d4fa` discipline; preserves all 30+ existing rows).
+4. **NEW COLUMN `review_log.superseded_by_correction_id`** (INTEGER NULL FK → `reconciliation_corrections(correction_id)` ON DELETE SET NULL). Phase 6 freezing audit per spec §9.1 RETAIN-and-mark-superseded.
+5. **WIDENING `trade_events.event_type`** CHECK enum + `'reconciliation_auto_correct'` via table-rebuild.
+6. **NEW COLUMN `schwab_api_calls.linked_correction_id`** (INTEGER NULL FK → `reconciliation_corrections(correction_id)` ON DELETE SET NULL). Bidirectional provenance chase with `reconciliation_corrections` per Phase 11 source-artifact reference shape gotcha.
+
+### Operator-witnessed gate (2026-05-15 post-merge-prep; orchestrator-driven; SKIPPED-with-test-coverage per polish-bundle-2026-05-10 precedent)
+
+| Surface | Result | Key observation |
+|---|---|---|
+| S1 fast suite | ✅ | 3966 fast pass on main HEAD post-merge + 3 pre-existing failures (3 phase8 walkthrough; the 4th sentinel-leak failure at `test_schwab_setup_cli.py::test_setup_auth_failure_audit_status_and_sentinel_redaction` no longer surfacing post-merge — flaky pre-existing per writing-plans return report §7 #2) + 3 skipped (flag-classifier + C.A cross-bundle pin + 1 other) |
+| S2 db-migrate fresh DB | ✅ SKIPPED-with-test-coverage | Inline migration runner tests cover fresh-DB migration end-to-end; no new discovery via standalone CLI run |
+| S3 db-migrate production-snapshot | ✅ SKIPPED-with-test-coverage | T-A.8 slow-marked `test_migration_0019_against_production_snapshot.py` already exercised against operator's real v18 DB (full run_migrations flow including backup-gate fire); dynamic snapshot equality preserved all 30+ existing rows |
+| S4 ruff baseline | ✅ | 18 E501 unchanged |
+
+### NEW V2.1 §VII.F amendment candidates banked (per return report)
+
+1. **Spec §3.1 column-count header drift (§I.16):** header text says "Column count: 19 columns" but table-row enumeration is 20 (correction_id through notes). Plan T-A.1 LOCKED 20-column count from the table verbatim.
+2. **Plan §A.12 Phase 11 backup-gate precedent claim:** writing-plans plan referenced a Phase 11 backup-gate that does NOT exist (Codex R1 Major #1 surfaced); the actual backup-gate precedent is Phase 9 Sub-bundle A. Plan §A.12 wording amendment candidate.
+3. **Plan §B.4 SHA256 byte-equality impossibility with SQLite Connection.backup:** plan §B.4 proposed SHA256 byte-equality verification but SQLite's `Connection.backup()` API doesn't preserve bytewise SHA256 (Codex R2 Minor #1 correction at `0e26d2b`).
+4. **Dispatch brief §0.5 pre_version <= 18 vs == 18 equality form:** orchestrator brief §0.5 used `pre_version <= 18` but Phase 9 precedent uses `pre_version == (target - 1)` strict equality.
+5. **Plan §B.2 _RESOLUTION_VALUES widening fold-into T-A.2:** plan §B.2 proposed widening the Python `_RESOLUTION_VALUES` constant in a separate task; should have folded into T-A.2 dataclass task for atomic consistency.
+
+### Three highest-leverage SHIPPED deliverables
+
+1. **Schema v19 foundation** — 5 schema deltas under one atomic `BEGIN IMMEDIATE; ... COMMIT;` envelope; new audit-history table + 4 column extensions + 2 CHECK enum widenings via table-rebuild; backup-gate fires correctly at `pre_version == 18 AND post_version >= 19` boundary; 30+ existing rows preserved; `EXPECTED_SCHEMA_VERSION = 19` bumped same commit.
+2. **Cross-column CHECK schema-defended** — tier-1 / tier-2 / tier-3 invariants between `(ambiguity_kind, resolution)` enforced at schema CHECK time; app-layer enforcement in C.C service-layer is the secondary defense.
+3. **ZERO behavioral changes to existing surfaces** — C.A is consumer-side passive. Existing 30+ discrepancies + fills + trades + review_log + schwab_api_calls all preserved unchanged. New schema sits idle until C.B/C.C/C.D consumers ship.
+
+### Forward-binding lessons for C.B dispatch (per return report §11)
+
+1. Schema-CHECK + Python-validator paired work (any new column with CHECK enum at schema time + Python constant + validator in dataclass MUST land in same task for atomic consistency).
+2. Cross-column CHECK precedence at schema vs app layer (schema CHECK is defense-in-depth; app-layer enforcement in service-time is primary path).
+3. Backup-gate equality form (`pre_version == (target - 1)` strict equality NOT `pre_version <= (target - 1)`).
+4. UPDATE-self-reference anchor (`correction_set_id` two-step pattern at T-A.3 + T-C.3.4).
+5. 20-column LOCK on `reconciliation_corrections` (spec drift §I.16 documented).
+6. Lifecycle invariants as C.C service-layer concern (NOT C.B classifier; classifier produces ClassificationResult; service-layer enforces invariants).
+7. Plan-author schema additions escalation (matches NEW orchestrator-context lesson at `657b8a0`; if C.B implementer encounters need for schema element NOT in plan + spec, STOP + escalate; do NOT bank-after-write).
+
+### Production tokens DB clock awareness
+
+Refresh-token clock from Sub-bundle B S5 issuance (2026-05-15T17:05:00+00:00) is currently at ~5-6 days remaining (expires 2026-05-22). C.B dispatch likely consumes 2-3 days; C.C 3-5 days; C.D 4-7 days. **Operator may need re-auth via `/schwab/setup` web form OR `swing schwab setup` CLI before C.D gate session.** T-A.2 self-healing means recovery is one CLI/web invocation now.
+
+### Cross-references
+
+- Dispatch brief: `docs/phase12-bundle-C-A-foundation-executing-plans-dispatch-brief.md` (`3cb334d`).
+- Spec: `docs/superpowers/specs/2026-05-15-phase12-bundle-C-auto-correct-reconciliation-design.md` (`d682c25`; LOCKED post-9-round brainstorm).
+- Plan: `docs/superpowers/plans/2026-05-15-phase12-bundle-C-auto-correct-reconciliation-plan.md` (`008dfe4`; LOCKED post-6-round writing-plans).
+- Return report: `docs/phase12-bundle-C-A-return-report.md` (`56e6993`).
+- Integration merge: `354b6c0`.
+
+### Next dispatch
+
+**Phase 12 Sub-sub-bundle C.B (Classifier + validator-shim modules) UNBLOCKED.** Per plan §C decomposition: 14 tasks (T-B.1..T-B.14); +55-95 fast tests projected; classifier consumes the C.A schema; validator-shim mirrors Phase 7 fills schema invariants as importable Python predicates (per spec §5.5 LOCK + §14.OQ-14). Un-skips 2 cross-bundle pin tests at C.B T-B.1 + T-B.2. Pure logic; no journal mutations. **Recommended timing: dispatched by new-orchestrator post-handoff** per operator's session-context-budget-management decision 2026-05-15.
+
+---
+
 ## 2026-05-15 Phase 12 Sub-bundle B SHIPPED — Schwab web-UI-friendliness mini-bundle (credentials-in-file + web OAuth paste-back form; Outcome B manual token exchange; 4 Codex rounds NO_NEW_CRITICAL_MAJOR; 16 commits + 1 orchestrator-inline gate-fix; SECOND Phase 12 sub-bundle)
 
 **Sub-bundle B SHIPPED 2026-05-15** at `b09eb06` (integration merge of `phase12-bundle-B-schwab-web-ui-friendliness` worktree branch via `--no-ff` to preserve Codex-fix chain). Branch HEAD `7b75d4a` (16 implementer commits + 1 orchestrator-inline gate-fix on top of dispatch brief). Operator-dispatched implementer per orchestrator brief at `fc86b8e`.
