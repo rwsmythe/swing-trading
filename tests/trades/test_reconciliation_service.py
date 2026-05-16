@@ -511,6 +511,103 @@ def test_resolve_discrepancy_unknown_id_raises(
 
 
 # ===========================================================================
+# Codex R2 M#1 — service-owned-lifecycle-state guard.
+#
+# ``resolve_discrepancy`` is the MANUAL operator-driven entry point. The 4
+# service-owned lifecycle states added at C.A T-A.1 (RESOLUTION_TYPES
+# widening 5→9) MUST NOT be settable via this entry — they require their
+# own service paths in ``swing.trades.reconciliation_auto_correct`` which
+# enforce paired invariants (correction-row presence, ambiguity_kind
+# pairing per migration 0019 cross-column CHECK, etc.).
+#
+# Schema-CHECK coverage (RESOLUTION_TYPES; 9 values) stays the
+# source-of-truth for dataclass validation; the manual-resolve allowlist
+# is a TIGHTER subset.
+# ===========================================================================
+
+
+def test_resolve_discrepancy_rejects_auto_corrected_from_schwab(
+    conn: sqlite3.Connection,
+) -> None:
+    with pytest.raises(ValueError, match="apply_tier1_correction"):
+        resolve_discrepancy(
+            conn, discrepancy_id=1, resolution="auto_corrected_from_schwab",
+            resolution_reason="x",
+        )
+
+
+def test_resolve_discrepancy_rejects_pending_ambiguity_resolution(
+    conn: sqlite3.Connection,
+) -> None:
+    with pytest.raises(ValueError, match="stamp_pending_ambiguity"):
+        resolve_discrepancy(
+            conn, discrepancy_id=1, resolution="pending_ambiguity_resolution",
+            resolution_reason="x",
+        )
+
+
+def test_resolve_discrepancy_rejects_operator_resolved_ambiguity(
+    conn: sqlite3.Connection,
+) -> None:
+    with pytest.raises(ValueError, match="apply_tier2_resolution"):
+        resolve_discrepancy(
+            conn, discrepancy_id=1, resolution="operator_resolved_ambiguity",
+            resolution_reason="x",
+        )
+
+
+def test_resolve_discrepancy_rejects_operator_overridden(
+    conn: sqlite3.Connection,
+) -> None:
+    with pytest.raises(ValueError, match="apply_tier3_override"):
+        resolve_discrepancy(
+            conn, discrepancy_id=1, resolution="operator_overridden",
+            resolution_reason="x",
+        )
+
+
+@pytest.mark.parametrize(
+    "allowed_resolution",
+    [
+        "journal_corrected",
+        "source_treated_canonical",
+        "manual_override",
+        "unresolved",
+        "acknowledged_immaterial",
+    ],
+)
+def test_resolve_discrepancy_still_accepts_pre_v19_resolutions(
+    conn: sqlite3.Connection, tmp_path: Path, allowed_resolution: str,
+) -> None:
+    _seed_entry(
+        conn, ticker="ABC", entry_date="2026-05-12",
+        entry_price=10.05, shares=10, initial_stop=9.00,
+    )
+    csv = tmp_path / "tos.csv"
+    csv.write_text(_SIMPLE_TOS_CSV, encoding="utf-8")
+    # Bypass the auto-correct pivot per legacy resolve_discrepancy tests
+    # (resolution starts at 'unresolved' in sandbox).
+    out = run_tos_reconciliation(conn, csv_path=csv, environment="sandbox")
+    ds = recon_repo.list_discrepancies_for_run(conn, out.run_id)
+    assert len(ds) >= 1
+    target = ds[0]
+
+    # Reason required for the 3 reasoned states; unresolved +
+    # acknowledged_immaterial allow null per spec §3.3.
+    needs_reason = allowed_resolution in (
+        "journal_corrected", "source_treated_canonical", "manual_override",
+    )
+    resolve_discrepancy(
+        conn,
+        discrepancy_id=target.discrepancy_id,
+        resolution=allowed_resolution,
+        resolution_reason="r1" if needs_reason else None,
+    )
+    reloaded = recon_repo.get_discrepancy(conn, target.discrepancy_id)
+    assert reloaded.resolution == allowed_resolution
+
+
+# ===========================================================================
 # §8 — cash_movement_mismatch end-to-end (T-B.6 + tos_import detection).
 # ===========================================================================
 
