@@ -263,6 +263,104 @@ swing tos-import --csv "thinkorswim/YYYY-MM-DD-AccountStatement.csv" --auto-conf
 
 If mismatches appear (broker says X, journal says Y), **investigate before committing** — never let mismatches auto-resolve.
 
+### 9.bis Schwab reconciliation — Tier-2 ambiguity review (Phase 12 Sub-bundle C)
+
+After any Schwab reconciliation pipeline run (`swing pipeline run` with the
+Schwab integration active), tier-1 unambiguous discrepancies auto-correct
+journal-from-Schwab in-flow. Tier-2 ambiguous discrepancies (e.g., qty
+mismatches that could be a partial fill OR a missed split) land in
+`resolution='pending_ambiguity_resolution'` for operator decision.
+
+1. **Surface the tier-2 backlog:**
+
+   ```powershell
+   swing journal discrepancy list-pending-ambiguities
+   # -> filters available: --ambiguity-kind <kind>, --ticker <TICKER>, --limit <N>
+   ```
+
+2. **Inspect the per-discrepancy menu** to read the candidate choices, their
+   `requires_custom_value` flags, and expected JSON shapes:
+
+   ```powershell
+   swing journal discrepancy show-ambiguity <discrepancy_id>
+   ```
+
+3. **Decide based on operator context + broker-statement consultation.** Pick
+   a `--choice` code from the menu + supply a free-text `--reason`. Some
+   choices require `--custom-value '<json>'` per the spec §6.2.1 contract
+   (the `show-ambiguity` output flags these explicitly):
+
+   ```powershell
+   swing journal discrepancy resolve-ambiguity <discrepancy_id> `
+     --choice <code> `
+     --reason "consulted Schwab Account Activity; partial fill at 13:42" `
+     [--custom-value '{"qty": 50}']
+   ```
+
+   `--reason` is REQUIRED (spec §6.4 mandatory; persisted on the new
+   `reconciliation_corrections` row as `correction_reason`). The
+   `--schwab-api-call-id <N>` flag is optional — supply it when the backfill
+   Pass-2 dry-run output (see §9.ter) emitted a `call_id=<N>` line for the
+   discrepancy to chain the audit row.
+
+### 9.ter One-time backfill (first run after Phase 12 Sub-bundle C ships)
+
+The backfill CLI replays the auto-correct + tier-2 classifier across every
+pre-existing `resolution='unresolved'` discrepancy from before Sub-bundle C
+landed. Run it ONCE after the migration; future emits are auto-corrected
+in-flow via the reconciliation pivot.
+
+1. **Dry-run first** to preview the classification matrix without writing:
+
+   ```powershell
+   swing journal reconcile-backfill --dry-run
+   ```
+
+   Inspect the projection: tier counts (tier1 / tier2 / unsupported), per-row
+   `call_id=<N>` hints for tier-2 resolution chaining, and any Pass-2 Schwab
+   API call estimates. Add `--ticker CVGI` (or any single ticker) to scope
+   the dry-run to a single ticker for confidence.
+
+2. **Apply when ready:**
+
+   ```powershell
+   swing journal reconcile-backfill --apply
+   # or scope: swing journal reconcile-backfill --apply --ticker CVGI
+   ```
+
+   Optional flags: `--no-pass-2-on-dry-run` (skip Pass-2 Schwab calls during
+   dry-run); `--retry-pass-2-failures` (re-attempt Pass-2 on prior
+   backfill-attempt failures); `--limit <N>` (cap the iteration).
+
+### 9.quater Tier-3 operator override (rare)
+
+When the operator has ground-truth evidence that Schwab is wrong (e.g.,
+broker-statement contradicting Schwab's API response, or a prior tier-1
+auto-correction that the operator wants to revert + replace with the true
+value), use `override-correction`:
+
+1. **Identify the prior `correction_id`** via the discrepancy's audit chain:
+
+   ```powershell
+   swing journal discrepancy show <discrepancy_id>
+   # -> lists the linked reconciliation_corrections row(s)
+   ```
+
+2. **Apply the override:**
+
+   ```powershell
+   swing journal discrepancy override-correction <correction_id> `
+     --truth-value '{"price": 5.25}' `
+     --reason "operator-verified from Schwab Account Activity 2026-05-14"
+   ```
+
+   Confirmation prompt fires by default. For non-interactive automation
+   (scripted runs), add `--force`. `--truth-value` JSON is validator-chain
+   re-validated BEFORE any mutation (spec §5.7 Codex R1 Minor #1 reorder);
+   `AlreadySupersededError` surfaces as a friendly CLI error naming the
+   current chain-head correction_id when the row has already been
+   superseded.
+
 ### 10. Backup the DB
 
 ```powershell
