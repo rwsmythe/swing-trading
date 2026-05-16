@@ -284,7 +284,6 @@ def _classify_entry_price_mismatch(
     recognized_keys = tuple_keys | {"price"}
     source_keys = set(source_payload.keys())
     extra_keys = source_keys - recognized_keys
-    source_tuple_keys_present = source_keys & tuple_keys
 
     is_shape_a = source_keys == {"price"}
     # Shape B requires ticker + quantity + at least one date-form, AND no
@@ -480,9 +479,6 @@ def _classify_entry_price_mismatch(
                     f"tuple per spec §4.3.1"
                 ),
             )
-    # source_tuple_keys_present is computed for the predicate above; the
-    # variable is intentionally not consumed further (kept for clarity).
-    _ = source_tuple_keys_present
 
     journal_price = journal_row.get("price")
     # Format prices to 2 decimals so the reason string carries a stable
