@@ -1659,6 +1659,30 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
         # state is NOT degraded (false-positive guard per dispatch brief
         # §5.2 T-D.5 pre-emption).
         schwab_degraded, schwab_degraded_endpoint_name = is_schwab_degraded(conn)
+
+        # Phase 12 Sub-bundle C T-C.10 — Reconciliation status counters.
+        # ``reconciliation_pending_count`` reads the operator backlog;
+        # ``reconciliation_tier1_recent_count`` reads the last-7-day
+        # tier-1 auto-corrections. Both surface in briefing.md via the
+        # T-C.9 "Reconciliation status" section.
+        reconciliation_pending_count = int(conn.execute(
+            "SELECT COUNT(*) FROM reconciliation_discrepancies "
+            "WHERE resolution = 'pending_ambiguity_resolution' "
+            "AND material_to_review = 1"
+        ).fetchone()[0])
+        # 7-day window anchored on action_session (data_asof drift is OK
+        # — the briefing already disclaims best-effort historical
+        # accuracy per Phase 10 §A.0.1 footnote).
+        from datetime import datetime as _dtcls, timedelta as _td
+        cutoff_iso = (
+            _dtcls.utcnow().replace(microsecond=0) - _td(days=7)
+        ).isoformat(timespec="seconds")
+        reconciliation_tier1_recent_count = int(conn.execute(
+            "SELECT COUNT(*) FROM reconciliation_corrections "
+            "WHERE correction_action = 'auto_applied' "
+            "AND applied_at >= ?",
+            (cutoff_iso,),
+        ).fetchone()[0])
     finally:
         conn.close()
 
@@ -1744,6 +1768,8 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
         schwab_degraded_endpoint=(
             schwab_degraded_endpoint_name if schwab_degraded else None
         ),
+        reconciliation_pending_count=reconciliation_pending_count,
+        reconciliation_tier1_recent_count=reconciliation_tier1_recent_count,
     )
     vm = build_briefing_view_model(inputs)
 
