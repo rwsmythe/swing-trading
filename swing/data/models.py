@@ -1100,11 +1100,54 @@ class ReconciliationCorrection:
     apply), tier-2 (operator-resolved ambiguity), or tier-3 (operator
     override of a prior tier-1 correction).
 
-    Schema enums + cross-column CHECKs (correction_action vs correction_choice
-    population; affected_table membership; applied_by/correction_action
-    pinning) are enforced at the SQL layer; the dataclass is the binding
-    artifact for service-layer construction at T-A.4 (repo CRUD) / T-A.5+
-    (the auto-correct service).
+    Schema-layer enforcement (migration 0019; what the SQL CHECKs actually
+    cover):
+      - Per-column CHECK enums: ``correction_action`` (3-value:
+        ``auto_applied`` | ``operator_resolved_ambiguity`` |
+        ``operator_overridden``); ``affected_table`` (4-value: ``fills`` |
+        ``trades`` | ``cash_movements`` | ``account_equity_snapshots``);
+        ``applied_by`` (2-value: ``auto`` | ``operator``).
+      - FK relationships: ``discrepancy_id`` -> reconciliation_discrepancies;
+        ``reconciliation_run_id`` -> reconciliation_runs;
+        ``superseded_by_correction_id`` -> reconciliation_corrections (self);
+        ``risk_policy_id_at_correction`` -> risk_policy;
+        ``schwab_api_call_id`` -> schwab_api_calls.
+      - NOT NULL constraints on identity + identification columns
+        (``discrepancy_id``, ``correction_action``, ``affected_table``,
+        ``affected_row_id``, ``field_name``, ``pre_correction_value_json``,
+        ``applied_value_json``, ``applied_at``, ``applied_by``,
+        ``reconciliation_run_id``).
+
+    Schema-layer NON-enforcement (Codex R1 Major #4 docstring correction):
+      The migration intentionally does NOT add cross-column CHECK
+      constraints binding ``correction_action`` to the population of other
+      columns. The audit table will accept lifecycle-contradictory rows at
+      the SQL layer, including but not limited to:
+        - ``correction_action='auto_applied'`` paired with
+          ``applied_by='operator'`` (a tier-1 auto-correction not authored
+          by the operator);
+        - ``correction_action='operator_overridden'`` paired with
+          ``operator_truth_value_json IS NULL`` (an override carrying no
+          operator-supplied truth payload);
+        - ``correction_action='operator_resolved_ambiguity'`` paired with
+          ``correction_choice IS NULL`` (an ambiguity resolution recording
+          no choice).
+
+      These lifecycle invariants WILL be validated at the auto-correct
+      service layer in Sub-sub-bundle C.C (the next sub-bundle in the
+      plan §D task sequence after C.A foundation + C.B classifier).
+      Schema-layer CHECKs were kept minimal at C.A per dispatch-brief
+      §0.6 lesson #3 (plan-author schema additions during the
+      executing-plans cycle are escalation territory).
+
+    Forward-binding for C.C dispatch: the auto-correct service MUST
+    validate lifecycle invariants at INSERT time BEFORE calling
+    ``insert_correction(...)`` in
+    ``swing.data.repos.reconciliation_corrections``. Discriminating
+    tests at C.C MUST cover each lifecycle invariant explicitly (one
+    discriminating regression test per contradictory-pair surfaced
+    above, plus any additional invariants C.C identifies during spec
+    review).
 
     Field order matches the migration 0019 CREATE TABLE column ordering so
     that ``cursor.execute("SELECT * FROM reconciliation_corrections")`` rows
