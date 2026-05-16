@@ -54,13 +54,23 @@ DISCREPANCY_TYPES: tuple[str, ...] = (
 
 
 # Spec §3.3 CHECK enum — Phase 12 Sub-bundle C T-A.1 widened 5 → 9 values
-# at the migration 0019 schema layer; Codex R1 Major #4 (post-merge fix)
-# folds the matching widening into this Python constant so callers
-# (resolve_discrepancy validation; future CLI option-set surfacing) can
-# accept the new lifecycle states without ValueError. Mirrors
-# swing/data/models.py:_RESOLUTION_VALUES verbatim (paired schema-CHECK
-# + Python-constant + dataclass-validator discipline per CLAUDE.md
-# gotcha).
+# at the migration 0019 schema layer; Codex R1 Major #4 folded the matching
+# widening into this Python constant. ``RESOLUTION_TYPES`` is the
+# SCHEMA-COVERAGE source-of-truth: the dataclass validator at
+# ``swing/data/models.py:_RESOLUTION_VALUES`` mirrors this set verbatim so
+# reads of existing rows never raise. Paired schema-CHECK + Python-constant
+# + dataclass-validator discipline per CLAUDE.md gotcha.
+#
+# IMPORTANT (Codex R2 Major #1 + R3 Minor #1 clarification):
+# ``resolve_discrepancy`` (the manual operator-resolver service in this
+# module) does NOT accept the full 9-value set. The 4 service-owned
+# resolutions (``auto_corrected_from_schwab``, ``pending_ambiguity_resolution``,
+# ``operator_resolved_ambiguity``, ``operator_overridden``) route through
+# the auto-correct service entries in ``swing.trades.reconciliation_auto_correct``
+# (apply_tier1 / stamp_pending_ambiguity / apply_tier2 / apply_tier3) and
+# are REJECTED by ``resolve_discrepancy`` via
+# ``_MANUAL_RESOLVE_ALLOWED_RESOLUTIONS`` + ``_SERVICE_OWNED_RESOLUTIONS``
+# below.
 RESOLUTION_TYPES: tuple[str, ...] = (
     "journal_corrected",
     "source_treated_canonical",
