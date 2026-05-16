@@ -1,6 +1,7 @@
 """Phase 12 Sub-bundle C.A T-A.8 — migration 0019 against operator's production DB snapshot.
 
-Per plan §B.8 (`docs/superpowers/plans/2026-05-15-phase12-bundle-C-auto-correct-reconciliation-plan.md`):
+Per plan §B.8 in
+``docs/superpowers/plans/2026-05-15-phase12-bundle-C-auto-correct-reconciliation-plan.md``:
 
   Slow-marked regression test that copies the operator's production
   ``~/swing-data/swing.db`` to a tmp path, dynamically snapshots the
