@@ -311,4 +311,71 @@ def validate_snapshot_correction(
     return (True, None)
 
 
-# T-B.13 default_validator_chain dispatcher lands here later.
+# ---------------------------------------------------------------------------
+# T-B.13 — default_validator_chain dispatcher
+# ---------------------------------------------------------------------------
+#
+# Spec §5.5 + plan §C.13. Returns a callable that dispatches on
+# ``affected_table`` to one of the 4 shipped validators above.
+#
+# Composition contract: ``classify_discrepancy``'s dispatcher (T-B.1
+# Step 2) invokes ``validator_chain(correction_target)`` with a single
+# positional arg. To compose ``default_validator_chain`` with
+# ``classify_discrepancy``, callers MUST partially-apply ``affected_table``
+# + ``affected_row_id`` at construction time (e.g., via
+# ``functools.partial``). This composition lives in C.C's auto-correction
+# service where caller-context (the discrepancy's ``affected_table`` + the
+# journal-row PK) is known.
+#
+# The returned callable signature is:
+#   (correction_target: Mapping, *, affected_table: str,
+#    affected_row_id: int) -> (passes: bool, reason: str | None)
+
+
+def default_validator_chain(
+    conn: sqlite3.Connection,
+) -> Callable[..., tuple[bool, str | None]]:
+    """Spec §5.5 — returns a callable that dispatches on ``affected_table``.
+
+    The returned callable accepts ``correction_target`` as the first
+    positional argument plus ``affected_table`` + ``affected_row_id`` as
+    keyword-only arguments (kwargs-only per plan §C.13 #2 LOCK; preserves
+    the brain-dead-clear signature when called downstream — callers MUST
+    name the routing fields explicitly).
+
+    Composition with ``classify_discrepancy``'s single-arg
+    ``validator_chain``: bind ``affected_table`` + ``affected_row_id`` at
+    construction time via ``functools.partial(chain, affected_table=X,
+    affected_row_id=Y)``.
+    """
+    def _chain(
+        correction_target: Mapping[str, Any],
+        *,
+        affected_table: str,
+        affected_row_id: int,
+    ) -> tuple[bool, str | None]:
+        if affected_table == "fills":
+            return validate_fill_correction(
+                conn, affected_row_id, correction_target,
+            )
+        if affected_table == "trades":
+            return validate_trade_correction(
+                conn, affected_row_id, correction_target,
+            )
+        if affected_table == "cash_movements":
+            return validate_cash_movement_correction(
+                conn, affected_row_id, correction_target,
+            )
+        if affected_table == "account_equity_snapshots":
+            return validate_snapshot_correction(
+                conn, affected_row_id, correction_target,
+            )
+        return (
+            False,
+            (
+                f"default_validator_chain has no validator registered for "
+                f"affected_table={affected_table!r}"
+            ),
+        )
+
+    return _chain
