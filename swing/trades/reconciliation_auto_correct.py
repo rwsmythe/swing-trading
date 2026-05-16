@@ -174,29 +174,18 @@ def apply_tier1_correction(
     the transaction lifecycle.
 
     Sandbox short-circuit (spec §5.9): when ``environment == 'sandbox'``,
-    skip the entire inner logic (no domain writes; discrepancy stays
-    unresolved) and emit a WARNING log.
+    the INNER returns a no-op CorrectionResult (no domain writes;
+    discrepancy stays unresolved) and emits a WARNING log. Codex R1
+    Major #1 LOCK: the OUTER does NOT short-circuit — it ALWAYS opens
+    BEGIN IMMEDIATE and commits/rolls back uniformly so transactional
+    discipline applies regardless of environment. The inner's
+    short-circuit fires inside the transaction envelope; the outer
+    then commits the empty transaction and returns.
     """
     if conn.in_transaction:
         raise CallerHeldTransactionError(
             "apply_tier1_correction must be called with no open transaction; "
             "compose via _apply_tier1_correction_inner inside an existing tx"
-        )
-
-    # Sandbox short-circuit delegated to the inner per plan §D.5 step 3
-    # LOCK + spec §5.9 — the inner returns a no-op CorrectionResult when
-    # environment == 'sandbox' without journal mutation. We avoid opening
-    # a transaction at all under sandbox so the wrapper stays a pure
-    # no-op (no BEGIN IMMEDIATE / COMMIT cycle for a no-write call).
-    if environment == "sandbox":
-        return _apply_tier1_correction_inner(
-            conn,
-            discrepancy_id=discrepancy_id,
-            classification=classification,
-            schwab_api_call_id=schwab_api_call_id,
-            risk_policy_id=risk_policy_id,
-            correction_reason=correction_reason,
-            environment=environment,
         )
 
     conn.execute("BEGIN IMMEDIATE")

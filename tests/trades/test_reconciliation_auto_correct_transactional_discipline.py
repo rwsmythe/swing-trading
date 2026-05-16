@@ -300,31 +300,129 @@ def test_stamp_pending_ambiguity_rolls_back_on_inner_exception(
 
 
 # ---------------------------------------------------------------------------
-# Sandbox short-circuit on tier-1 outer (spec §5.9 LOCK)
+# Sandbox short-circuit on tier-1 inner (spec §5.9 LOCK)
 # ---------------------------------------------------------------------------
+#
+# Codex R1 Major #1 (post-merge fix-brief): the OUTER wrapper MUST own
+# ``BEGIN IMMEDIATE`` / ``COMMIT`` uniformly — the sandbox short-circuit
+# lives in the INNER (per plan §D.5 step 3 LOCK + spec §5.9). The outer
+# delegates to the inner inside the transaction envelope; the inner
+# returns the no-op CorrectionResult; the outer commits and returns.
+# This pins the contract via spying on ``conn.execute`` for the
+# "BEGIN IMMEDIATE" sentinel.
 
 
-def test_apply_tier1_correction_sandbox_short_circuits_at_outer(
+class _ExecuteSpyConn:
+    """Wrapper around sqlite3.Connection that records every SQL string
+    passed to ``execute()`` while delegating to the underlying conn.
+
+    Used by the BEGIN-IMMEDIATE sentinel test (sqlite3.Connection
+    attributes are read-only so we cannot monkeypatch directly).
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        self.executed_sql: list[str] = []
+
+    def execute(self, sql, *args, **kwargs):  # noqa: ANN001
+        self.executed_sql.append(sql)
+        return self._conn.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):  # noqa: ANN001
+        # Delegate everything else (commit, rollback, in_transaction, etc.)
+        return getattr(self._conn, name)
+
+
+def test_apply_tier1_correction_sandbox_outer_still_opens_begin_immediate(
+    conn: sqlite3.Connection,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Outer ALWAYS issues BEGIN IMMEDIATE (even under sandbox).
+
+    Codex R1 Major #1 fix-brief LOCK: the outer must NOT short-circuit
+    on environment='sandbox' before BEGIN IMMEDIATE; the sandbox
+    short-circuit lives in the inner (per plan §D.5 step 3 + spec §5.9).
+    Discriminating signal: spy on ``conn.execute`` for the
+    'BEGIN IMMEDIATE' sentinel.
+    """
+    import logging
+
+    spy = _ExecuteSpyConn(conn)
+
+    # Stub the inner to bypass the SELECT discrepancy + return a no-op
+    # directly (the inner's own sandbox short-circuit is exercised in
+    # the per-function test module).
+    from swing.trades.reconciliation_auto_correct import CorrectionResult
+    sandbox_noop = CorrectionResult(
+        correction_id=None,
+        affected_table=None,
+        affected_row_id=None,
+        field_name=None,
+        applied_value_json=None,
+        correction_action=None,
+        notes="sandbox: domain write short-circuited",
+    )
+
+    def _fake_inner(conn_, **kw):  # noqa: ANN001
+        return sandbox_noop
+
+    monkeypatch.setattr(
+        "swing.trades.reconciliation_auto_correct."
+        "_apply_tier1_correction_inner",
+        _fake_inner,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = apply_tier1_correction(
+            spy,  # spy wrapper — captures all execute() calls
+            discrepancy_id=1,
+            classification=None,
+            environment="sandbox",
+        )
+
+    # The outer issued BEGIN IMMEDIATE — discriminating signal that
+    # the sandbox short-circuit at the outer was REMOVED.
+    assert any(
+        sql.strip().upper().startswith("BEGIN IMMEDIATE")
+        for sql in spy.executed_sql
+    ), (
+        f"outer must issue BEGIN IMMEDIATE under sandbox path; "
+        f"executed_sql={spy.executed_sql!r}"
+    )
+    # Inner's sandbox no-op result propagates through the outer.
+    assert result.correction_id is None
+    assert "sandbox" in (result.notes or "").lower()
+    # Outer commits cleanly; no tx held.
+    assert conn.in_transaction is False
+
+
+def test_apply_tier1_correction_sandbox_returns_inner_no_op(
     conn: sqlite3.Connection, caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Sandbox env returns a no-op CorrectionResult BEFORE entering inner."""
+    """Sandbox returns the inner's no-op CorrectionResult AFTER the
+    outer opens + commits a transaction. The inner's sandbox short-
+    circuit (mirrored at the inner per plan §D.5 step 3 LOCK) fires
+    BEFORE SELECT discrepancy, so a nonexistent discrepancy_id remains
+    a safe no-op under sandbox (mirrors pre-Codex-R1 SC-1 behavior).
+    """
     import logging
 
     with caplog.at_level(logging.WARNING):
         result = apply_tier1_correction(
             conn,
-            discrepancy_id=999,  # nonexistent: inner would crash
+            discrepancy_id=999,  # nonexistent: inner sandbox short-circuit fires first
             classification=None,
             environment="sandbox",
         )
     assert result.correction_id is None
     assert "sandbox" in (result.notes or "").lower()
-    # WARNING log emitted with the discrepancy id:
+    # WARNING log emitted with the discrepancy id (inner emits this):
     assert any(
         "sandbox" in r.message.lower()
         and r.levelname == "WARNING"
         and "999" in r.message
         for r in caplog.records
     )
-    # No tx held + no row written.
+    # Outer committed cleanly; no tx held.
     assert conn.in_transaction is False
