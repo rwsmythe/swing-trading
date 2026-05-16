@@ -21,7 +21,14 @@ from pathlib import Path
 #   reconciliation_runs.schwab_api_call_id). Migration opens with explicit
 #   BEGIN; / COMMIT; per Codex R1 Critical #1 (executescript implicit COMMIT
 #   gotcha) — sets new discipline for all future migrations.
-EXPECTED_SCHEMA_VERSION = 18
+# phase 12 sub-bundle C.A auto-correct reconciliation (migration 0019):
+#   reconciliation_corrections audit table (20 cols + 4 indexes) +
+#   reconciliation_discrepancies rebuild (widen resolution CHECK 5→9 + new
+#   ambiguity_kind column + cross-column CHECK) + ALTER review_log ADD
+#   superseded_by_correction_id + ALTER schwab_api_calls ADD linked_correction_id +
+#   trade_events rebuild (widen event_type CHECK 6→7 to add
+#   'reconciliation_auto_correct'). Atomic BEGIN/COMMIT discipline preserved.
+EXPECTED_SCHEMA_VERSION = 19
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 # Phase 7 backup gate (spec §12.1): when migrating to schema_version >= 14,
