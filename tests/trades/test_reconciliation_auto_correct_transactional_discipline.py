@@ -34,6 +34,7 @@ from swing.trades.reconciliation_auto_correct import (
     apply_tier3_override,
     stamp_pending_ambiguity,
 )
+from swing.trades.reconciliation_classifier import ClassificationResult
 
 
 # ---------------------------------------------------------------------------
@@ -162,17 +163,31 @@ def test_stamp_pending_ambiguity_rejects_caller_held_transaction(
 def test_inner_functions_do_not_raise_caller_held_transaction_error(
     conn: sqlite3.Connection,
 ) -> None:
-    """Inner fns are caller-tx-accepting; they do NOT guard tx state."""
-    # Open a tx so we cover the inner-accepts-caller-tx path.
+    """Inner fns are caller-tx-accepting; they do NOT guard tx state.
+
+    Pins the asymmetric contract — outer wrapper is the enforcement
+    site for ``conn.in_transaction``; inner fns accept any tx state.
+    Inner fns raise either:
+      - their domain-error class (ValueError on unknown discrepancy_id;
+        not CallerHeldTransactionError);
+      - NotImplementedError for skeletons whose body still lands later.
+    """
     conn.execute("BEGIN")
     try:
-        # Skeleton bodies raise NotImplementedError, NOT
-        # CallerHeldTransactionError. The wrapper is the enforcement
-        # site; inner is composition-friendly.
-        with pytest.raises(NotImplementedError):
+        # Tier-1 inner body is populated (T-C.2): unknown id → ValueError.
+        tier1_classification = ClassificationResult(
+            tier=1, ambiguity_kind=None,
+            correction_target={"price": 5.30},
+            correction_reason="probe",
+            candidate_choices=None,
+        )
+        with pytest.raises(ValueError, match="discrepancy_id"):
             _apply_tier1_correction_inner(
-                conn, discrepancy_id=1, classification=None,
+                conn, discrepancy_id=999_999,
+                classification=tier1_classification,
             )
+        # Tier-2/3/stamp inner bodies still raise NotImplementedError
+        # in T-C.1 scope; they land in T-C.3 / T-C.3.1 / T-C.4.
         with pytest.raises(NotImplementedError):
             _apply_tier2_resolution_inner(
                 conn,
