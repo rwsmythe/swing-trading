@@ -110,10 +110,39 @@ def test_discrepancy_types_match_check_enum() -> None:
 
 
 def test_resolution_types_match_check_enum() -> None:
+    """Spec §3.3 + Phase 12 Sub-bundle C T-A.1 widening — 9 values.
+
+    Phase 12 Sub-bundle C migration 0019 widened the schema CHECK from
+    5 → 9 values to accommodate the auto-correct lifecycle (tier-1
+    auto_corrected_from_schwab; tier-2 pending_ambiguity_resolution
+    + operator_resolved_ambiguity; tier-3 operator_overridden).
+    Codex R1 Major #4 folded the matching widening into the Python
+    constant — paired schema-CHECK + Python-constant discipline per
+    CLAUDE.md gotcha 'Schema-CHECK + Python-constant + dataclass-
+    validator MUST land in the same task'.
+    """
+    # Original 5 values still present.
     assert "unresolved" in RESOLUTION_TYPES
     assert "journal_corrected" in RESOLUTION_TYPES
+    assert "source_treated_canonical" in RESOLUTION_TYPES
+    assert "manual_override" in RESOLUTION_TYPES
     assert "acknowledged_immaterial" in RESOLUTION_TYPES
-    assert len(RESOLUTION_TYPES) == 5
+    # Phase 12 Sub-bundle C 4 new values (auto-correct lifecycle).
+    assert "auto_corrected_from_schwab" in RESOLUTION_TYPES
+    assert "pending_ambiguity_resolution" in RESOLUTION_TYPES
+    assert "operator_resolved_ambiguity" in RESOLUTION_TYPES
+    assert "operator_overridden" in RESOLUTION_TYPES
+    assert len(RESOLUTION_TYPES) == 9
+
+
+def test_resolution_types_mirror_models_resolution_values() -> None:
+    """Paired schema-CHECK + Python-constant discipline — the
+    swing.trades.reconciliation.RESOLUTION_TYPES constant MUST be a
+    permutation of swing.data.models._RESOLUTION_VALUES (the
+    dataclass-validator source of truth which mirrors migration 0019
+    SQL CHECK)."""
+    from swing.data.models import _RESOLUTION_VALUES
+    assert set(RESOLUTION_TYPES) == set(_RESOLUTION_VALUES)
 
 
 def test_material_by_type_covers_all_discrepancy_types() -> None:
@@ -220,9 +249,17 @@ def test_run_tos_reconciliation_emits_discrepancies_inside_transaction(
     ds = recon_repo.list_discrepancies_for_run(conn, out.run_id)
     types = {d.discrepancy_type for d in ds}
     assert "stop_mismatch" in types
-    # discrepancies_count + unresolved counters populated.
+    # discrepancies_count populated.
     assert out.discrepancies_count >= 1
-    assert out.unresolved_discrepancies_count == out.discrepancies_count
+    # Phase 12 Sub-bundle C.C T-C.6 pivot wiring + Codex R1 Major #3
+    # post-pivot recompute: stop_mismatch is classified tier-2
+    # (spec §8.4 Pass-2-tier-1-FORBIDDEN LOCK for stop_mismatch unless
+    # operator-explicit), so the row moves to
+    # 'pending_ambiguity_resolution' and is no longer 'unresolved'.
+    # Discrepancies emitted == discrepancies_count; unresolved counter
+    # reflects post-pivot lifecycle state (0 when all stamped tier-2).
+    unresolved_actual = sum(1 for d in ds if d.resolution == "unresolved")
+    assert out.unresolved_discrepancies_count == unresolved_actual
 
 
 # ===========================================================================

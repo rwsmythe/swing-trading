@@ -53,13 +53,26 @@ DISCREPANCY_TYPES: tuple[str, ...] = (
 )
 
 
-# Spec §3.3 CHECK enum (5 values).
+# Spec §3.3 CHECK enum — Phase 12 Sub-bundle C T-A.1 widened 5 → 9 values
+# at the migration 0019 schema layer; Codex R1 Major #4 (post-merge fix)
+# folds the matching widening into this Python constant so callers
+# (resolve_discrepancy validation; future CLI option-set surfacing) can
+# accept the new lifecycle states without ValueError. Mirrors
+# swing/data/models.py:_RESOLUTION_VALUES verbatim (paired schema-CHECK
+# + Python-constant + dataclass-validator discipline per CLAUDE.md
+# gotcha).
 RESOLUTION_TYPES: tuple[str, ...] = (
     "journal_corrected",
     "source_treated_canonical",
     "manual_override",
     "unresolved",
     "acknowledged_immaterial",
+    # Phase 12 Sub-bundle C T-A.1 widening (matches migration 0019 +
+    # swing/data/models.py:_RESOLUTION_VALUES; spec §3.3 lifecycle).
+    "auto_corrected_from_schwab",
+    "pending_ambiguity_resolution",
+    "operator_resolved_ambiguity",
+    "operator_overridden",
 )
 
 
