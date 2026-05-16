@@ -76,6 +76,182 @@ ValidatorChainCallable = Callable[[Mapping[str, Any]], tuple[bool, str | None]]
 _SUB_CLASSIFIERS: dict[str, Callable[..., ClassificationResult]] = {}
 
 
+# ---------------------------------------------------------------------------
+# T-B.3 — entry_price_mismatch sub-classifier (CVGI 41 path)
+# ---------------------------------------------------------------------------
+#
+# Spec §4.3.1 + §10.1 BINDING walkthrough.
+#
+# Tier-1 path: (ticker, date, quantity) match exactly between journal and
+# source; only price differs. correction_target = {'price': source_price}.
+#
+# Tier-2 paths:
+# - source_payload is None → schwab_returned_no_match
+# - explicit multiple-match shape → multi_match_within_window (V1 default
+#   per shipped emitter is single-fill match; this branch is defensive)
+
+
+def _classify_entry_price_mismatch(
+    *,
+    discrepancy: ReconciliationDiscrepancy,
+    source_payload: Any | None,
+    journal_row: Mapping[str, Any] | None,
+) -> ClassificationResult:
+    """Spec §4.3.1 + §10.1 — CVGI 41 walkthrough.
+
+    INPUT shape (per dispatch-brief reading of spec §4.3.1):
+    - ``source_payload`` is the broker-side dict like ``{"price": 5.30}``
+      (+ optional (ticker, date, quantity) tuple keys for completeness).
+    - ``journal_row`` is the journal-side dict like ``{"price": 5.23,
+      "quantity": 100, "ticker": "CVGI", "fill_datetime": "..."}``.
+
+    LOGIC:
+    - source_payload is None → tier-2 ``schwab_returned_no_match``.
+    - source_payload signals multiple matches (list shape OR explicit
+      ``_multi_match=True``) → tier-2 ``multi_match_within_window``.
+    - Otherwise compare journal_row vs source_payload keys; if only price
+      differs (or source_payload has only ``price`` key — V1 shipped
+      emitter shape), emit tier-1 with correction_target = {'price': X}.
+    """
+    if source_payload is None:
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="schwab_returned_no_match",
+            correction_target=None,
+            correction_reason=(
+                f"entry_price_mismatch on "
+                f"(ticker={discrepancy.ticker!r}, "
+                f"fill_id={discrepancy.fill_id}): Schwab returned no "
+                f"matching record; classifier cannot disposition without "
+                f"source data; operator dispositions manually"
+            ),
+            candidate_choices=[
+                {
+                    "code": "mark_unmatched",
+                    "description": (
+                        "Acknowledge no Schwab record matches; no journal "
+                        "mutation"
+                    ),
+                    "requires_custom_value": False,
+                },
+                {
+                    "code": "operator_truth",
+                    "description": (
+                        "Operator supplies the true execution price via "
+                        "--custom-value '{\"price\": X.XX}'"
+                    ),
+                    "requires_custom_value": True,
+                },
+            ],
+        )
+
+    # Multi-match shape: list of dicts or explicit signal.
+    if isinstance(source_payload, list) and len(source_payload) > 1:
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="multi_match_within_window",
+            correction_target=None,
+            correction_reason=(
+                f"entry_price_mismatch on "
+                f"(ticker={discrepancy.ticker!r}, "
+                f"fill_id={discrepancy.fill_id}): {len(source_payload)} "
+                f"Schwab records within match window; operator picks the "
+                f"intended record"
+            ),
+            candidate_choices=(
+                [
+                    {
+                        "code": f"pick_schwab_record_{i + 1}",
+                        "description": (
+                            f"Apply Schwab record #{i + 1} as the "
+                            f"canonical source for this fill"
+                        ),
+                        "requires_custom_value": False,
+                    }
+                    for i in range(len(source_payload))
+                ]
+                + [
+                    {
+                        "code": "mark_unmatched",
+                        "description": (
+                            "Acknowledge no canonical match; no mutation"
+                        ),
+                        "requires_custom_value": False,
+                    },
+                    {
+                        "code": "custom",
+                        "description": (
+                            "Operator-supplied arbitrary payload via "
+                            "--custom-value"
+                        ),
+                        "requires_custom_value": True,
+                    },
+                ]
+            ),
+        )
+
+    # Single-match (V1 shipped emitter shape from
+    # swing/trades/schwab_reconciliation.py:469-474).
+    if not isinstance(source_payload, Mapping):
+        # Unexpected scalar / sequence shape with length<=1; treat as
+        # unsupported rather than crash.
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="unsupported",
+            correction_target=None,
+            correction_reason=(
+                f"entry_price_mismatch on "
+                f"(ticker={discrepancy.ticker!r}, "
+                f"fill_id={discrepancy.fill_id}): source_payload shape "
+                f"{type(source_payload).__name__} not understood by "
+                f"classifier"
+            ),
+        )
+
+    source_price = source_payload.get("price")
+    if source_price is None:
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="unsupported",
+            correction_target=None,
+            correction_reason=(
+                f"entry_price_mismatch on "
+                f"(ticker={discrepancy.ticker!r}, "
+                f"fill_id={discrepancy.fill_id}): source_payload missing "
+                f"'price' key; classifier cannot disposition"
+            ),
+        )
+
+    journal_price = (journal_row or {}).get("price") if journal_row else None
+    # Format prices to 2 decimals so the reason string carries a stable
+    # numeric representation regardless of Python's float repr (e.g.,
+    # 5.30 → 5.3 by default; we render 5.30 explicitly for observability).
+    try:
+        journal_price_str = f"${float(journal_price):.2f}"
+    except (TypeError, ValueError):
+        journal_price_str = f"${journal_price}"
+    try:
+        source_price_str = f"${float(source_price):.2f}"
+    except (TypeError, ValueError):
+        source_price_str = f"${source_price}"
+    return ClassificationResult(
+        tier=1,
+        ambiguity_kind=None,
+        correction_target={"price": source_price},
+        correction_reason=(
+            f"entry_price_mismatch on "
+            f"(ticker={discrepancy.ticker!r}, "
+            f"fill_id={discrepancy.fill_id}): journal {journal_price_str} "
+            f"vs Schwab {source_price_str}; single-fill match; tier-1 "
+            f"auto-correct (delta={discrepancy.delta_text})"
+        ),
+        candidate_choices=None,
+    )
+
+
+_SUB_CLASSIFIERS["entry_price_mismatch"] = _classify_entry_price_mismatch
+
+
 def classify_discrepancy(
     discrepancy: ReconciliationDiscrepancy,
     *,
