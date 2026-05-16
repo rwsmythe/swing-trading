@@ -110,10 +110,39 @@ def test_discrepancy_types_match_check_enum() -> None:
 
 
 def test_resolution_types_match_check_enum() -> None:
+    """Spec §3.3 + Phase 12 Sub-bundle C T-A.1 widening — 9 values.
+
+    Phase 12 Sub-bundle C migration 0019 widened the schema CHECK from
+    5 → 9 values to accommodate the auto-correct lifecycle (tier-1
+    auto_corrected_from_schwab; tier-2 pending_ambiguity_resolution
+    + operator_resolved_ambiguity; tier-3 operator_overridden).
+    Codex R1 Major #4 folded the matching widening into the Python
+    constant — paired schema-CHECK + Python-constant discipline per
+    CLAUDE.md gotcha 'Schema-CHECK + Python-constant + dataclass-
+    validator MUST land in the same task'.
+    """
+    # Original 5 values still present.
     assert "unresolved" in RESOLUTION_TYPES
     assert "journal_corrected" in RESOLUTION_TYPES
+    assert "source_treated_canonical" in RESOLUTION_TYPES
+    assert "manual_override" in RESOLUTION_TYPES
     assert "acknowledged_immaterial" in RESOLUTION_TYPES
-    assert len(RESOLUTION_TYPES) == 5
+    # Phase 12 Sub-bundle C 4 new values (auto-correct lifecycle).
+    assert "auto_corrected_from_schwab" in RESOLUTION_TYPES
+    assert "pending_ambiguity_resolution" in RESOLUTION_TYPES
+    assert "operator_resolved_ambiguity" in RESOLUTION_TYPES
+    assert "operator_overridden" in RESOLUTION_TYPES
+    assert len(RESOLUTION_TYPES) == 9
+
+
+def test_resolution_types_mirror_models_resolution_values() -> None:
+    """Paired schema-CHECK + Python-constant discipline — the
+    swing.trades.reconciliation.RESOLUTION_TYPES constant MUST be a
+    permutation of swing.data.models._RESOLUTION_VALUES (the
+    dataclass-validator source of truth which mirrors migration 0019
+    SQL CHECK)."""
+    from swing.data.models import _RESOLUTION_VALUES
+    assert set(RESOLUTION_TYPES) == set(_RESOLUTION_VALUES)
 
 
 def test_material_by_type_covers_all_discrepancy_types() -> None:
@@ -220,9 +249,17 @@ def test_run_tos_reconciliation_emits_discrepancies_inside_transaction(
     ds = recon_repo.list_discrepancies_for_run(conn, out.run_id)
     types = {d.discrepancy_type for d in ds}
     assert "stop_mismatch" in types
-    # discrepancies_count + unresolved counters populated.
+    # discrepancies_count populated.
     assert out.discrepancies_count >= 1
-    assert out.unresolved_discrepancies_count == out.discrepancies_count
+    # Phase 12 Sub-bundle C.C T-C.6 pivot wiring + Codex R1 Major #3
+    # post-pivot recompute: stop_mismatch is classified tier-2
+    # (spec §8.4 Pass-2-tier-1-FORBIDDEN LOCK for stop_mismatch unless
+    # operator-explicit), so the row moves to
+    # 'pending_ambiguity_resolution' and is no longer 'unresolved'.
+    # Discrepancies emitted == discrepancies_count; unresolved counter
+    # reflects post-pivot lifecycle state (0 when all stamped tier-2).
+    unresolved_actual = sum(1 for d in ds if d.resolution == "unresolved")
+    assert out.unresolved_discrepancies_count == unresolved_actual
 
 
 # ===========================================================================
@@ -388,7 +425,11 @@ def test_resolve_discrepancy_updates_lifecycle(
     )
     csv = tmp_path / "tos.csv"
     csv.write_text(_SIMPLE_TOS_CSV, encoding="utf-8")
-    out = run_tos_reconciliation(conn, csv_path=csv)
+    # Phase 12 C.C T-C.6: bypass the auto-correct pivot so this legacy
+    # test exercises ``resolve_discrepancy`` against the pre-pivot
+    # ``resolution='unresolved'`` state. The pivot is exercised end-to-end
+    # in tests/trades/test_run_tos_reconciliation_pivot.py.
+    out = run_tos_reconciliation(conn, csv_path=csv, environment="sandbox")
     ds = recon_repo.list_discrepancies_for_run(conn, out.run_id)
     assert len(ds) >= 1
     target = ds[0]
@@ -440,7 +481,12 @@ def test_resolve_discrepancy_acknowledged_immaterial_allows_null_reason(
     )
     csv = tmp_path / "tos.csv"
     csv.write_text(_SIMPLE_TOS_CSV, encoding="utf-8")
-    out = run_tos_reconciliation(conn, csv_path=csv)
+    # Phase 12 C.C T-C.6: bypass the auto-correct pivot so the test's
+    # ``acknowledged_immaterial`` resolution transition is valid (the
+    # pivot otherwise leaves the row in ``pending_ambiguity_resolution``,
+    # whose schema cross-CHECK invariant forbids transitioning directly
+    # to ``acknowledged_immaterial`` while ambiguity_kind IS NOT NULL).
+    out = run_tos_reconciliation(conn, csv_path=csv, environment="sandbox")
     ds = recon_repo.list_discrepancies_for_run(conn, out.run_id)
     target = ds[0]
     # Should not raise.
@@ -462,6 +508,103 @@ def test_resolve_discrepancy_unknown_id_raises(
             conn, discrepancy_id=99999, resolution="journal_corrected",
             resolution_reason="x",
         )
+
+
+# ===========================================================================
+# Codex R2 M#1 — service-owned-lifecycle-state guard.
+#
+# ``resolve_discrepancy`` is the MANUAL operator-driven entry point. The 4
+# service-owned lifecycle states added at C.A T-A.1 (RESOLUTION_TYPES
+# widening 5→9) MUST NOT be settable via this entry — they require their
+# own service paths in ``swing.trades.reconciliation_auto_correct`` which
+# enforce paired invariants (correction-row presence, ambiguity_kind
+# pairing per migration 0019 cross-column CHECK, etc.).
+#
+# Schema-CHECK coverage (RESOLUTION_TYPES; 9 values) stays the
+# source-of-truth for dataclass validation; the manual-resolve allowlist
+# is a TIGHTER subset.
+# ===========================================================================
+
+
+def test_resolve_discrepancy_rejects_auto_corrected_from_schwab(
+    conn: sqlite3.Connection,
+) -> None:
+    with pytest.raises(ValueError, match="apply_tier1_correction"):
+        resolve_discrepancy(
+            conn, discrepancy_id=1, resolution="auto_corrected_from_schwab",
+            resolution_reason="x",
+        )
+
+
+def test_resolve_discrepancy_rejects_pending_ambiguity_resolution(
+    conn: sqlite3.Connection,
+) -> None:
+    with pytest.raises(ValueError, match="stamp_pending_ambiguity"):
+        resolve_discrepancy(
+            conn, discrepancy_id=1, resolution="pending_ambiguity_resolution",
+            resolution_reason="x",
+        )
+
+
+def test_resolve_discrepancy_rejects_operator_resolved_ambiguity(
+    conn: sqlite3.Connection,
+) -> None:
+    with pytest.raises(ValueError, match="apply_tier2_resolution"):
+        resolve_discrepancy(
+            conn, discrepancy_id=1, resolution="operator_resolved_ambiguity",
+            resolution_reason="x",
+        )
+
+
+def test_resolve_discrepancy_rejects_operator_overridden(
+    conn: sqlite3.Connection,
+) -> None:
+    with pytest.raises(ValueError, match="apply_tier3_override"):
+        resolve_discrepancy(
+            conn, discrepancy_id=1, resolution="operator_overridden",
+            resolution_reason="x",
+        )
+
+
+@pytest.mark.parametrize(
+    "allowed_resolution",
+    [
+        "journal_corrected",
+        "source_treated_canonical",
+        "manual_override",
+        "unresolved",
+        "acknowledged_immaterial",
+    ],
+)
+def test_resolve_discrepancy_still_accepts_pre_v19_resolutions(
+    conn: sqlite3.Connection, tmp_path: Path, allowed_resolution: str,
+) -> None:
+    _seed_entry(
+        conn, ticker="ABC", entry_date="2026-05-12",
+        entry_price=10.05, shares=10, initial_stop=9.00,
+    )
+    csv = tmp_path / "tos.csv"
+    csv.write_text(_SIMPLE_TOS_CSV, encoding="utf-8")
+    # Bypass the auto-correct pivot per legacy resolve_discrepancy tests
+    # (resolution starts at 'unresolved' in sandbox).
+    out = run_tos_reconciliation(conn, csv_path=csv, environment="sandbox")
+    ds = recon_repo.list_discrepancies_for_run(conn, out.run_id)
+    assert len(ds) >= 1
+    target = ds[0]
+
+    # Reason required for the 3 reasoned states; unresolved +
+    # acknowledged_immaterial allow null per spec §3.3.
+    needs_reason = allowed_resolution in (
+        "journal_corrected", "source_treated_canonical", "manual_override",
+    )
+    resolve_discrepancy(
+        conn,
+        discrepancy_id=target.discrepancy_id,
+        resolution=allowed_resolution,
+        resolution_reason="r1" if needs_reason else None,
+    )
+    reloaded = recon_repo.get_discrepancy(conn, target.discrepancy_id)
+    assert reloaded.resolution == allowed_resolution
 
 
 # ===========================================================================
@@ -876,7 +1019,12 @@ def test_overfill_close_attributes_to_trade_id(
         "2026-05-12 15:30:00,STOCK,SELL,-8,CLOSING,OVR,,,,12.0000,12.0000,MKT\n",
         encoding="utf-8",
     )
-    out = run_tos_reconciliation(conn, csv_path=csv)
+    # Phase 12 C.C T-C.6: bypass the auto-correct pivot so the
+    # ``list_unresolved_material_for_active_trades`` canonical query
+    # (filters on resolution='unresolved') still surfaces the row. The
+    # pivot otherwise stamps it ``pending_ambiguity_resolution`` —
+    # C.D widens the canonical queries.
+    out = run_tos_reconciliation(conn, csv_path=csv, environment="sandbox")
     ds = recon_repo.list_discrepancies_for_run(conn, out.run_id)
     ucf = [d for d in ds if d.discrepancy_type == "unmatched_close_fill"]
     assert len(ucf) == 1

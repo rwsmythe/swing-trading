@@ -139,3 +139,9 @@ class BriefingViewModel:
     # composition surfaces — TestClient web fixtures, ad-hoc CLI renders —
     # do not need to populate this field; only `_step_export` does).
     schwab_degraded_endpoint: str | None = None
+    # Phase 12 Sub-bundle C T-C.8/T-C.9 — reconciliation status counters
+    # threaded from `BriefingInputs`; rendered as a separate
+    # "Reconciliation status" section by briefing_md.py when EITHER
+    # field is > 0 (avoid noise on clean runs per spec §7.5).
+    reconciliation_pending_count: int = 0
+    reconciliation_tier1_recent_count: int = 0

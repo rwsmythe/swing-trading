@@ -68,6 +68,16 @@ class BriefingInputs:
     # pipeline runner's `_step_export` populates this from
     # `swing.data.repos.schwab_api_calls.is_schwab_degraded(conn)`.
     schwab_degraded_endpoint: str | None = None
+    # Phase 12 Sub-bundle C T-C.8 — reconciliation status counters for the
+    # briefing.md "Reconciliation status" section (spec §7.5). Defaults
+    # preserve back-compat with existing call sites (none, all 0).
+    #   - reconciliation_pending_count: count of unresolved-material rows in
+    #     ``resolution = 'pending_ambiguity_resolution'`` (the operator-
+    #     resolution backlog).
+    #   - reconciliation_tier1_recent_count: count of corrections written
+    #     in the last 7 days with ``correction_action = 'auto_applied'``.
+    reconciliation_pending_count: int = 0
+    reconciliation_tier1_recent_count: int = 0
 
 
 def _sizing_implication(status: str) -> str:
@@ -254,4 +264,8 @@ def build_briefing_view_model(inputs: BriefingInputs) -> BriefingViewModel:
             _daily_management_snapshots(inputs)[1]
         ),
         schwab_degraded_endpoint=inputs.schwab_degraded_endpoint,
+        reconciliation_pending_count=inputs.reconciliation_pending_count,
+        reconciliation_tier1_recent_count=(
+            inputs.reconciliation_tier1_recent_count
+        ),
     )

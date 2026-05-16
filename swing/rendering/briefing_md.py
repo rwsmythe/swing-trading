@@ -84,6 +84,30 @@ def render_briefing_md(vm: BriefingViewModel) -> str:
     else:
         parts.append("_No open positions to manage._\n")
 
+    # Phase 12 Sub-bundle C T-C.9 — Reconciliation status section per
+    # spec §7.5. Emit ONLY when EITHER counter is > 0 (avoid noise on
+    # clean runs); the operator's daily/weekly cadence card reads from
+    # the dashboard banner; this briefing section is a written summary
+    # that pairs the actionable count with the CLI command lines so
+    # operator can copy/paste from the briefing into their terminal.
+    pending = vm.reconciliation_pending_count
+    tier1_recent = vm.reconciliation_tier1_recent_count
+    if pending > 0 or tier1_recent > 0:
+        parts.append("## Reconciliation status")
+        parts.append(f"- Tier-1 auto-corrected (last 7 days): {tier1_recent}")
+        parts.append(f"- Tier-2 pending operator review: {pending}")
+        parts.append("")
+        parts.append(
+            "View pending ambiguities: "
+            "`swing journal discrepancy list-pending-ambiguities`"
+        )
+        parts.append(
+            "Resolve a specific one: "
+            "`swing journal discrepancy resolve-ambiguity <id> "
+            "--choice <code> --reason <text>`"
+        )
+        parts.append("")
+
     if vm.watchlist:
         parts.append("## Watchlist")
         parts.append("| Flag | Ticker | Last | Pivot | %\u2192 | ADR | Stop | Status |")

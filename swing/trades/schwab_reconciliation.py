@@ -36,6 +36,7 @@ notes + spec §3.7 fill-matching subset):
 from __future__ import annotations
 
 import contextlib
+import functools as _functools
 import json
 import logging
 import sqlite3
@@ -54,6 +55,13 @@ from swing.trades.reconciliation import (
     EQUITY_DELTA_EMIT_THRESHOLD_DOLLARS,
     MATERIAL_BY_TYPE,
 )
+from swing.trades.reconciliation_auto_correct import (
+    ValidatorRejectedError,
+    _apply_tier1_correction_inner,
+    _stamp_pending_ambiguity_inner,
+)
+from swing.trades.reconciliation_classifier import classify_discrepancy
+from swing.trades.reconciliation_validators import default_validator_chain
 
 log = logging.getLogger(__name__)
 
@@ -200,6 +208,236 @@ def _emit(
     return did
 
 
+def _extract_source_payload(
+    disc: Any,
+    schwab_orders: list[Any],
+) -> Any | None:
+    """T-C.5 helper — derive a classifier-friendly source_payload from
+    the emitted discrepancy's `actual_value_json` shape.
+
+    For entry_price_mismatch / close_price_mismatch the V1 emitter
+    persists ``{"price": so.price}`` (single-match shape) so the
+    classifier reads it directly via JSON deserialization.
+
+    For unmatched_open_fill / unmatched_close_fill the emitter persists
+    ``{"matched": null}`` (spec §4 sentinel) so the classifier emits
+    tier-2 schwab_returned_no_match. We pass ``None`` as the
+    source_payload — the classifier's "None → schwab_returned_no_match"
+    fallthrough handles it (matches the spec §10.3 walkthrough shape).
+
+    For stop_mismatch / position_qty_mismatch / cash_movement_mismatch
+    / equity_delta we read the actual_value_json as-is.
+    """
+    if disc.actual_value_json is None:
+        return None
+    try:
+        payload = json.loads(disc.actual_value_json)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    # Sentinel: unmatched_*_fill emits {"matched": null} → no Schwab record.
+    # Check the "matched" key is explicitly present + null to avoid
+    # mis-classifying single-key payloads like {"price": 5.30}.
+    if (
+        isinstance(payload, dict)
+        and "matched" in payload
+        and payload["matched"] is None
+        and len(payload) == 1
+    ):
+        return None
+    return payload
+
+
+def _fetch_journal_row(
+    conn: sqlite3.Connection, disc: Any,
+) -> dict[str, Any] | None:
+    """T-C.5 helper — read the journal row associated with the
+    discrepancy's FK columns.
+
+    For fill_id → fills row; for trade_id → trades row; for
+    cash_movement_id → cash_movements row. Returns ``None`` for
+    discrepancies whose FK columns are all NULL (e.g., equity_delta
+    where the snapshot is implicit).
+    """
+    if disc.fill_id is not None:
+        row = conn.execute(
+            "SELECT fill_id, trade_id, fill_datetime, action, quantity, price "
+            "FROM fills WHERE fill_id = ?",
+            (int(disc.fill_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "fill_id": row[0], "trade_id": row[1],
+            "fill_datetime": row[2], "action": row[3],
+            "quantity": row[4], "price": row[5],
+        }
+    if disc.trade_id is not None:
+        row = conn.execute(
+            "SELECT id, ticker, current_stop FROM trades WHERE id = ?",
+            (int(disc.trade_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return {"id": row[0], "ticker": row[1], "current_stop": row[2]}
+    if disc.cash_movement_id is not None:
+        row = conn.execute(
+            "SELECT id, date, kind, amount FROM cash_movements WHERE id = ?",
+            (int(disc.cash_movement_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row[0], "date": row[1], "kind": row[2], "amount": row[3],
+        }
+    return None
+
+
+def _resolve_affected_table(disc: Any) -> str:
+    """T-C.5 helper — mirror of
+    ``swing.trades.reconciliation_auto_correct._resolve_affected_target``
+    but returns only the table name (the row_id is derived in C.C
+    inner from the FK columns directly)."""
+    if disc.fill_id is not None:
+        return "fills"
+    if disc.cash_movement_id is not None:
+        return "cash_movements"
+    if disc.trade_id is not None:
+        return "trades"
+    return "account_equity_snapshots"
+
+
+def _resolve_affected_row_id(disc: Any) -> int | None:
+    if disc.fill_id is not None:
+        return int(disc.fill_id)
+    if disc.cash_movement_id is not None:
+        return int(disc.cash_movement_id)
+    if disc.trade_id is not None:
+        return int(disc.trade_id)
+    return None
+
+
+def _pivot_classify_and_dispatch_for_run(
+    conn: sqlite3.Connection,
+    *,
+    run_id: int,
+    schwab_orders: list[Any],
+    schwab_api_call_id: int | None,
+    environment: str | None,
+    counters: dict[str, int],
+) -> None:
+    """Spec §7.1 LOCKED pivot — savepoint-per-discrepancy classify +
+    dispatch. Called inside the outer reconciliation_run transaction
+    AFTER all emitters have landed; the function NEVER raises out
+    (graceful-degradation per spec §7.4).
+    """
+    counters.setdefault("tier1_applied_count", 0)
+    counters.setdefault("tier2_pending_count", 0)
+    counters.setdefault("tier_errored_count", 0)
+
+    # Read the newly-emitted discrepancies for this run.
+    discrepancies = repo.list_discrepancies_for_run(conn, run_id=run_id)
+    if not discrepancies:
+        return
+
+    for disc in discrepancies:
+        # Only act on still-unresolved rows — pre-resolved rows (rare
+        # via pre-Phase-12 import paths) are passed-through.
+        if disc.resolution != "unresolved":
+            continue
+
+        sp_name = f"correction_sp_{disc.discrepancy_id}"
+        conn.execute(f"SAVEPOINT {sp_name}")
+        try:
+            source_payload = _extract_source_payload(disc, schwab_orders)
+            journal_row = _fetch_journal_row(conn, disc)
+            affected_table = _resolve_affected_table(disc)
+            affected_row_id = _resolve_affected_row_id(disc)
+            # Build validator chain partial (kwargs-only binding).
+            if affected_row_id is not None:
+                validator_chain = _functools.partial(
+                    default_validator_chain(conn),
+                    affected_table=affected_table,
+                    affected_row_id=affected_row_id,
+                )
+            else:
+                validator_chain = None
+
+            classification = classify_discrepancy(
+                disc,
+                source_payload=source_payload,
+                journal_row=journal_row,
+                validator_chain=validator_chain,
+            )
+
+            if classification.tier == 1:
+                try:
+                    result = _apply_tier1_correction_inner(
+                        conn,
+                        discrepancy_id=disc.discrepancy_id,
+                        classification=classification,
+                        schwab_api_call_id=schwab_api_call_id,
+                        environment=environment,
+                    )
+                    conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+                    # Plan §D.5 step 1 LOCK: increment counter ONLY when
+                    # the inner returned a real correction_id. Sandbox
+                    # short-circuit returns id=None → counter stays at 0
+                    # naturally (no journal mutation occurred).
+                    if result.correction_id is not None:
+                        counters["tier1_applied_count"] += 1
+                except ValidatorRejectedError as e:
+                    # ROLLBACK TO undoes partial UPDATEs, but does NOT
+                    # release the savepoint (SQLite semantics).
+                    conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+                    conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+                    # Fall through to tier-2 stamp in a FRESH savepoint
+                    # so failures here don't try to ROLLBACK TO an
+                    # already-released sp_name (Codex R2 Minor #1).
+                    fb_sp = f"correction_fallback_sp_{disc.discrepancy_id}"
+                    conn.execute(f"SAVEPOINT {fb_sp}")
+                    try:
+                        _stamp_pending_ambiguity_inner(
+                            conn,
+                            discrepancy_id=disc.discrepancy_id,
+                            ambiguity_kind="validator_rejected",
+                            resolution_reason=str(e),
+                        )
+                        conn.execute(f"RELEASE SAVEPOINT {fb_sp}")
+                        counters["tier2_pending_count"] += 1
+                    except Exception as fb_exc:  # noqa: BLE001
+                        with contextlib.suppress(sqlite3.Error):
+                            conn.execute(
+                                f"ROLLBACK TO SAVEPOINT {fb_sp}"
+                            )
+                            conn.execute(f"RELEASE SAVEPOINT {fb_sp}")
+                        log.warning(
+                            "tier-2 fallback stamp failed for discrepancy "
+                            "%d: %s", disc.discrepancy_id, fb_exc,
+                        )
+                        counters["tier_errored_count"] += 1
+            else:
+                # Tier-2 — stamp pending_ambiguity_resolution via the
+                # canonical service helper inside the active savepoint.
+                _stamp_pending_ambiguity_inner(
+                    conn,
+                    discrepancy_id=disc.discrepancy_id,
+                    ambiguity_kind=classification.ambiguity_kind
+                    or "unsupported",
+                    resolution_reason=classification.correction_reason,
+                )
+                conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+                counters["tier2_pending_count"] += 1
+        except Exception as e:  # noqa: BLE001 — graceful degradation
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+                conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+            log.warning(
+                "classifier or apply exception for discrepancy %d: %s",
+                disc.discrepancy_id, e,
+            )
+            counters["tier_errored_count"] += 1
+
+
 def run_schwab_reconciliation(
     conn: sqlite3.Connection,
     *,
@@ -212,6 +450,7 @@ def run_schwab_reconciliation(
     pipeline_run_id: int | None = None,
     schwab_api_call_id: int | None = None,
     price_tolerance: float = _PRICE_TOLERANCE_DEFAULT,
+    environment: str | None = None,
 ) -> Any:
     """Reconcile Schwab API responses against the journal.
 
@@ -565,15 +804,51 @@ def run_schwab_reconciliation(
                 delta_text=f"${equity_delta:+.2f} (journal minus source)",
             )
 
+        # --- 8.5. PHASE 12 C.C PIVOT: classify + dispatch per discrepancy ---
+        # Spec §7.1 LOCKED savepoint-per-discrepancy discipline. NEVER raises
+        # out (graceful degradation per spec §7.4). Plan §D.5 step 3 LOCK:
+        # under sandbox we STILL iterate + classify (so classifier counters
+        # reflect what would have happened) but pass environment='sandbox'
+        # through to `_apply_tier1_correction_inner` which short-circuits
+        # the journal mutation. tier1_applied_count stays 0 naturally
+        # because the inner returns correction_id=None and the counter
+        # increment guards on that.
+        _pivot_classify_and_dispatch_for_run(
+            conn,
+            run_id=run_id,
+            schwab_orders=schwab_orders,
+            schwab_api_call_id=schwab_api_call_id,
+            environment=environment,
+            counters=counters,
+        )
+
         # --- 9. UPDATE state='completed' ---
         finished_ts = now_ms()
         if finished_ts < started_ts:
             finished_ts = started_ts
+
+        # Codex R1 Major #3 — recompute unresolved_discrepancies_count
+        # post-pivot. _emit increments at INSERT time; the pivot flips
+        # rows OFF 'unresolved' (tier-1 → auto_corrected_from_schwab;
+        # tier-2 → pending_ambiguity_resolution). Recomputing from the
+        # canonical resolution column is more robust than tracking
+        # decrement deltas in counter state.
+        unresolved_now = conn.execute(
+            "SELECT COUNT(*) FROM reconciliation_discrepancies "
+            "WHERE run_id = ? AND resolution = 'unresolved'",
+            (run_id,),
+        ).fetchone()[0]
+        counters["unresolved_discrepancies_count"] = int(unresolved_now)
+
         summary = {
             "open_trades_checked": len(open_trades),
             "schwab_orders_checked": len(schwab_orders),
             "schwab_transactions_checked": len(schwab_transactions),
             "discrepancies_emitted": counters["discrepancies_count"],
+            "tier1_applied_count": counters.get("tier1_applied_count", 0),
+            "tier2_pending_count": counters.get("tier2_pending_count", 0),
+            "tier3_overridden_count": 0,  # always 0 — tier-3 is post-run operator-initiated
+            "tier_errored_count": counters.get("tier_errored_count", 0),
         }
         repo.update_run_completed(
             conn,

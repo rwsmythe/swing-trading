@@ -177,6 +177,29 @@ def test_phase9_full_happy_path_across_all_sub_bundles(
 
     conn = connect(db_path)
     try:
+        # Phase 12 C.C T-C.6: reset post-pivot resolutions back to
+        # ``unresolved`` so the rest of this Phase 9 e2e test exercises
+        # the legacy canonical-query + CLI resolve surface against the
+        # pre-pivot row shape. (The pivot has its own E2E test at
+        # tests/trades/test_run_tos_reconciliation_pivot.py.)
+        conn.execute(
+            "UPDATE reconciliation_discrepancies SET "
+            "resolution='unresolved', ambiguity_kind=NULL, "
+            "resolution_reason=NULL, resolved_at=NULL, resolved_by=NULL"
+        )
+        # Refresh the run's unresolved counter to match the reset state.
+        runs = recon_repo.list_recent_runs(conn, limit=5)
+        assert len(runs) == 1
+        rid_for_reset = runs[0].run_id
+        n_unresolved = conn.execute(
+            "SELECT COUNT(*) FROM reconciliation_discrepancies "
+            "WHERE run_id=?", (rid_for_reset,),
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE reconciliation_runs SET unresolved_discrepancies_count=? "
+            "WHERE run_id=?", (n_unresolved, rid_for_reset),
+        )
+        conn.commit()
         runs = recon_repo.list_recent_runs(conn, limit=5)
         assert len(runs) == 1
         run_id = runs[0].run_id

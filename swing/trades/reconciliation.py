@@ -53,13 +53,36 @@ DISCREPANCY_TYPES: tuple[str, ...] = (
 )
 
 
-# Spec §3.3 CHECK enum (5 values).
+# Spec §3.3 CHECK enum — Phase 12 Sub-bundle C T-A.1 widened 5 → 9 values
+# at the migration 0019 schema layer; Codex R1 Major #4 folded the matching
+# widening into this Python constant. ``RESOLUTION_TYPES`` is the
+# SCHEMA-COVERAGE source-of-truth: the dataclass validator at
+# ``swing/data/models.py:_RESOLUTION_VALUES`` mirrors this set verbatim so
+# reads of existing rows never raise. Paired schema-CHECK + Python-constant
+# + dataclass-validator discipline per CLAUDE.md gotcha.
+#
+# IMPORTANT (Codex R2 Major #1 + R3 Minor #1 clarification):
+# ``resolve_discrepancy`` (the manual operator-resolver service in this
+# module) does NOT accept the full 9-value set. The 4 service-owned
+# resolutions (``auto_corrected_from_schwab``, ``pending_ambiguity_resolution``,
+# ``operator_resolved_ambiguity``, ``operator_overridden``) route through
+# the auto-correct service entries in ``swing.trades.reconciliation_auto_correct``
+# (apply_tier1 / stamp_pending_ambiguity / apply_tier2 / apply_tier3) and
+# are REJECTED by ``resolve_discrepancy`` via
+# ``_MANUAL_RESOLVE_ALLOWED_RESOLUTIONS`` + ``_SERVICE_OWNED_RESOLUTIONS``
+# below.
 RESOLUTION_TYPES: tuple[str, ...] = (
     "journal_corrected",
     "source_treated_canonical",
     "manual_override",
     "unresolved",
     "acknowledged_immaterial",
+    # Phase 12 Sub-bundle C T-A.1 widening (matches migration 0019 +
+    # swing/data/models.py:_RESOLUTION_VALUES; spec §3.3 lifecycle).
+    "auto_corrected_from_schwab",
+    "pending_ambiguity_resolution",
+    "operator_resolved_ambiguity",
+    "operator_overridden",
 )
 
 
@@ -84,6 +107,57 @@ MATERIAL_BY_TYPE: dict[str, int] = {
 
 # Operator hardcoded for V1 (resolved_by audit identifier).
 _V1_RESOLVED_BY = "operator"
+
+
+# Phase 12 C.C Codex R2 M#1 — manual-resolve allowlist.
+#
+# ``RESOLUTION_TYPES`` (above) is the schema-CHECK-coverage constant
+# mirroring migration 0019's 9-value enum. It is the correct
+# source-of-truth for the dataclass validator at
+# ``swing.data.models._RESOLUTION_VALUES``.
+#
+# ``resolve_discrepancy`` is the MANUAL operator-driven entry point
+# (CLI ``swing journal discrepancy resolve``; future web counterparts).
+# The 4 service-owned lifecycle states added at C.A T-A.1 widen the
+# schema enum but MUST NOT be settable via the manual entry — each
+# requires its own service-layer path in
+# ``swing.trades.reconciliation_auto_correct`` which enforces paired
+# invariants:
+#
+#   - ``auto_corrected_from_schwab`` paired with a
+#     ``reconciliation_corrections`` audit row (apply_tier1_correction).
+#   - ``pending_ambiguity_resolution`` paired with non-NULL
+#     ``ambiguity_kind`` per migration 0019 cross-column CHECK
+#     (stamp_pending_ambiguity).
+#   - ``operator_resolved_ambiguity`` paired with non-NULL
+#     ``ambiguity_kind`` AND a correction row
+#     (apply_tier2_resolution).
+#   - ``operator_overridden`` paired with a correction row
+#     (apply_tier3_override).
+#
+# Allowing manual operator entry into any of these would (a) violate the
+# migration 0019 cross-column CHECK for tier-2 ambiguity pairs, and
+# (b) forge tier-1/tier-3 audit trails without an actual correction row.
+_MANUAL_RESOLVE_ALLOWED_RESOLUTIONS: tuple[str, ...] = (
+    "journal_corrected",
+    "source_treated_canonical",
+    "manual_override",
+    "unresolved",
+    "acknowledged_immaterial",
+)
+_SERVICE_OWNED_RESOLUTIONS: tuple[str, ...] = (
+    "auto_corrected_from_schwab",
+    "pending_ambiguity_resolution",
+    "operator_resolved_ambiguity",
+    "operator_overridden",
+)
+_SERVICE_OWNED_ROUTING_HINT: dict[str, str] = {
+    "auto_corrected_from_schwab":
+        "apply_tier1_correction (or run_*_reconciliation pivot)",
+    "pending_ambiguity_resolution": "stamp_pending_ambiguity",
+    "operator_resolved_ambiguity": "apply_tier2_resolution",
+    "operator_overridden": "apply_tier3_override",
+}
 
 
 # Phase 9 Sub-bundle C T-C.6 cross-bundle wiring (dispatch brief §0.5 #5).
@@ -121,6 +195,7 @@ def run_tos_reconciliation(
     period_start: date | str | None = None,
     notes: str | None = None,
     price_tolerance: float = 0.01,
+    environment: str | None = None,
 ) -> ReconciliationRun:
     """Orchestrate a TOS-CSV reconciliation run per spec §3.3.3 + plan §A.2.
 
@@ -387,6 +462,42 @@ def run_tos_reconciliation(
                     ),
                 )
 
+        # ----- T-C.6 (Phase 12 C.C): classify + dispatch pivot -----
+        # Spec §7.1 LOCKED savepoint-per-discrepancy discipline. Mirrors
+        # the T-C.5 pivot at `run_schwab_reconciliation` (per OQ-2 PIVOT
+        # BOTH). Skipped under sandbox per spec §5.9.
+        if environment != "sandbox":
+            from swing.trades.schwab_reconciliation import (
+                _pivot_classify_and_dispatch_for_run,
+            )
+            _pivot_classify_and_dispatch_for_run(
+                conn,
+                run_id=run_id,
+                schwab_orders=[],  # TOS-CSV has no Schwab-side orders
+                schwab_api_call_id=None,
+                environment=environment,
+                counters=counters,
+            )
+        # Augment summary with pivot counters (defaults preserve back-compat
+        # for callers that only read existing summary keys).
+        summary["tier1_applied_count"] = counters.get("tier1_applied_count", 0)
+        summary["tier2_pending_count"] = counters.get("tier2_pending_count", 0)
+        summary["tier3_overridden_count"] = 0  # always 0 — tier-3 post-run
+        summary["tier_errored_count"] = counters.get("tier_errored_count", 0)
+
+        # Codex R1 Major #3 — recompute unresolved_discrepancies_count
+        # post-pivot. _emit increments at INSERT time; the pivot loop
+        # (T-C.6 cross-bundle wiring above) flips rows OFF 'unresolved'
+        # (tier-1 → auto_corrected_from_schwab; tier-2 →
+        # pending_ambiguity_resolution). Recomputing from the canonical
+        # resolution column is more robust than tracking decrement deltas.
+        unresolved_now = conn.execute(
+            "SELECT COUNT(*) FROM reconciliation_discrepancies "
+            "WHERE run_id = ? AND resolution = 'unresolved'",
+            (run_id,),
+        ).fetchone()[0]
+        counters["unresolved_discrepancies_count"] = int(unresolved_now)
+
         finished_ts = now_ms()
         if finished_ts < started_ts:
             finished_ts = started_ts
@@ -439,7 +550,11 @@ def resolve_discrepancy(
     (CLI ``swing journal discrepancy resolve`` wraps it in T-B.7).
 
     Validation:
-        - resolution must be in ``RESOLUTION_TYPES``.
+        - resolution must be in ``_MANUAL_RESOLVE_ALLOWED_RESOLUTIONS``
+          (a TIGHTER subset of ``RESOLUTION_TYPES`` — the 4 service-owned
+          lifecycle states added at C.A T-A.1 route through
+          ``swing.trades.reconciliation_auto_correct`` entries instead
+          per Codex R2 M#1).
         - resolution_reason required for journal_corrected /
           source_treated_canonical / manual_override (acknowledged_immaterial
           allows null per spec §3.3 + dataclass validator).
@@ -452,9 +567,17 @@ def resolve_discrepancy(
             "resolve_discrepancy owns its own transaction; caller MUST NOT "
             "hold an open transaction."
         )
-    if resolution not in RESOLUTION_TYPES:
+    if resolution in _SERVICE_OWNED_RESOLUTIONS:
+        routing_hint = _SERVICE_OWNED_ROUTING_HINT[resolution]
         raise ValueError(
-            f"resolution must be one of {RESOLUTION_TYPES}; got {resolution!r}"
+            f"resolution={resolution!r} is service-owned and cannot be set "
+            f"via resolve_discrepancy; route through {routing_hint} in "
+            f"swing.trades.reconciliation_auto_correct"
+        )
+    if resolution not in _MANUAL_RESOLVE_ALLOWED_RESOLUTIONS:
+        raise ValueError(
+            f"resolution must be one of {_MANUAL_RESOLVE_ALLOWED_RESOLUTIONS}; "
+            f"got {resolution!r}"
         )
     # spec §3.3 nullability rule.
     if (
