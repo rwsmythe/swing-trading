@@ -368,8 +368,110 @@ def test_tier_1_passes_when_source_carries_persisted_json_only_shape() -> None:
 
 
 def test_tier_1_passes_when_source_keys_match_journal_explicitly() -> None:
-    """Discriminating positive case: source carries (ticker, qty, price)
-    AND they match journal_row → tier-1 emits as designed."""
+    """Discriminating positive case: source carries full match-tuple
+    (ticker, quantity, date, price) AND they match journal_row → tier-1
+    emits as designed (Shape B path per R2 Major #1).
+    """
+    discrepancy = _make_cvgi_41_discrepancy()
+    result = classify_discrepancy(
+        discrepancy,
+        source_payload={
+            "ticker": "CVGI",
+            "quantity": 100,
+            "date": "2026-04-27",
+            "price": 5.30,
+        },
+        journal_row={
+            "price": 5.23,
+            "quantity": 100,
+            "ticker": "CVGI",
+            "fill_datetime": "2026-04-27T10:00:00",
+        },
+        validator_chain=None,
+    )
+    assert result.tier == 1
+    assert result.correction_target == {"price": 5.30}
+
+
+# ---------------------------------------------------------------------------
+# Codex R2 Major #1 — entry_price_mismatch tuple check is partial.
+#
+# Spec §4.3.1 requires EITHER persisted-JSON-only ({'price'}) shape OR the
+# full match-tuple (ticker + date + quantity) for tier-1. Any partial
+# tuple-bearing shape MUST downgrade to tier-2 'unsupported' rather than
+# emit an ungrounded auto-correct on incomplete verification.
+# ---------------------------------------------------------------------------
+
+
+def test_tier_2_unsupported_on_partial_tuple_ticker_only() -> None:
+    """Source carries only 'ticker' (+ price); missing date+quantity →
+    tier-2 unsupported per R2 Major #1 tightened predicate."""
+    discrepancy = _make_cvgi_41_discrepancy()
+    result = classify_discrepancy(
+        discrepancy,
+        source_payload={"ticker": "CVGI", "price": 5.30},
+        journal_row={
+            "price": 5.23,
+            "quantity": 100,
+            "ticker": "CVGI",
+            "fill_datetime": "2026-04-27T10:00:00",
+        },
+        validator_chain=None,
+    )
+    assert result.tier == 2
+    assert result.ambiguity_kind == "unsupported"
+    assert result.correction_target is None
+    reason_lower = result.correction_reason.lower()
+    assert (
+        "ambiguous" in reason_lower
+        or "persisted-json-only" in reason_lower
+        or "match-tuple" in reason_lower
+    )
+
+
+def test_tier_2_unsupported_on_partial_tuple_quantity_only() -> None:
+    """Source carries only 'quantity' (+ price); missing ticker+date →
+    tier-2 unsupported per R2 Major #1."""
+    discrepancy = _make_cvgi_41_discrepancy()
+    result = classify_discrepancy(
+        discrepancy,
+        source_payload={"quantity": 100, "price": 5.30},
+        journal_row={
+            "price": 5.23,
+            "quantity": 100,
+            "ticker": "CVGI",
+            "fill_datetime": "2026-04-27T10:00:00",
+        },
+        validator_chain=None,
+    )
+    assert result.tier == 2
+    assert result.ambiguity_kind == "unsupported"
+    assert result.correction_target is None
+
+
+def test_tier_2_unsupported_on_partial_tuple_date_only() -> None:
+    """Source carries only 'date' (+ price); missing ticker+quantity →
+    tier-2 unsupported per R2 Major #1."""
+    discrepancy = _make_cvgi_41_discrepancy()
+    result = classify_discrepancy(
+        discrepancy,
+        source_payload={"date": "2026-04-27", "price": 5.30},
+        journal_row={
+            "price": 5.23,
+            "quantity": 100,
+            "ticker": "CVGI",
+            "fill_datetime": "2026-04-27T10:00:00",
+        },
+        validator_chain=None,
+    )
+    assert result.tier == 2
+    assert result.ambiguity_kind == "unsupported"
+    assert result.correction_target is None
+
+
+def test_tier_2_unsupported_on_ticker_and_quantity_no_date() -> None:
+    """Source carries ticker+quantity (+ price) but NO date-form →
+    tier-2 unsupported per R2 Major #1."""
     discrepancy = _make_cvgi_41_discrepancy()
     result = classify_discrepancy(
         discrepancy,
@@ -382,8 +484,109 @@ def test_tier_1_passes_when_source_keys_match_journal_explicitly() -> None:
         },
         validator_chain=None,
     )
+    assert result.tier == 2
+    assert result.ambiguity_kind == "unsupported"
+    assert result.correction_target is None
+
+
+def test_tier_1_on_full_tuple_match_with_fill_datetime_date_form() -> None:
+    """Source carries 'date' (date-only) + ticker + quantity; journal_row
+    carries 'fill_datetime' (full ISO). The first-10-chars comparison
+    matches → tier-1 emits (Shape B path; pins date-vs-fill_datetime
+    comparison logic per R2 Major #1).
+    """
+    discrepancy = _make_cvgi_41_discrepancy()
+    result = classify_discrepancy(
+        discrepancy,
+        source_payload={
+            "ticker": "CVGI",
+            "quantity": 100,
+            "date": "2026-04-27",
+            "price": 5.30,
+        },
+        journal_row={
+            "ticker": "CVGI",
+            "quantity": 100,
+            "fill_datetime": "2026-04-27T14:23:00",
+            "price": 5.23,
+        },
+        validator_chain=None,
+    )
     assert result.tier == 1
     assert result.correction_target == {"price": 5.30}
+
+
+def test_tier_1_on_full_tuple_match_with_explicit_fill_datetime_on_source() -> None:
+    """Source carries 'fill_datetime' (full ISO) + ticker + quantity →
+    tier-1 emits (Shape B path)."""
+    discrepancy = _make_cvgi_41_discrepancy()
+    result = classify_discrepancy(
+        discrepancy,
+        source_payload={
+            "ticker": "CVGI",
+            "quantity": 100,
+            "fill_datetime": "2026-04-27T14:23:00",
+            "price": 5.30,
+        },
+        journal_row={
+            "ticker": "CVGI",
+            "quantity": 100,
+            "fill_datetime": "2026-04-27T14:23:00",
+            "price": 5.23,
+        },
+        validator_chain=None,
+    )
+    assert result.tier == 1
+    assert result.correction_target == {"price": 5.30}
+
+
+def test_tier_2_unsupported_on_full_tuple_with_disagreeing_quantity() -> None:
+    """Full match-tuple present (Shape B candidate) BUT quantity disagrees
+    → tier-2 unsupported, reason mentions 'quantity'. Preserves R1 fix
+    discipline under the R2 tightened predicate.
+    """
+    discrepancy = _make_cvgi_41_discrepancy()
+    result = classify_discrepancy(
+        discrepancy,
+        source_payload={
+            "ticker": "CVGI",
+            "quantity": 200,
+            "date": "2026-04-27",
+            "price": 5.30,
+        },
+        journal_row={
+            "ticker": "CVGI",
+            "quantity": 100,
+            "fill_datetime": "2026-04-27T14:23:00",
+            "price": 5.23,
+        },
+        validator_chain=None,
+    )
+    assert result.tier == 2
+    assert result.ambiguity_kind == "unsupported"
+    assert "quantity" in result.correction_reason.lower()
+
+
+def test_tier_2_unsupported_on_extra_unrecognized_keys_in_source_payload() -> None:
+    """Source carries an unrecognized extra key alongside Shape-A 'price'
+    → reject Shape-A (keys != {'price'}); reject Shape-B (no full tuple);
+    → tier-2 unsupported per R2 Major #1.
+    """
+    discrepancy = _make_cvgi_41_discrepancy()
+    result = classify_discrepancy(
+        discrepancy,
+        source_payload={"price": 5.30, "frobnicate": "stuff"},
+        journal_row={
+            "price": 5.23,
+            "quantity": 100,
+            "ticker": "CVGI",
+            "fill_datetime": "2026-04-27T10:00:00",
+        },
+        validator_chain=None,
+    )
+    assert result.tier == 2
+    assert result.ambiguity_kind == "unsupported"
+    assert result.correction_target is None
 
 
 # ---------------------------------------------------------------------------

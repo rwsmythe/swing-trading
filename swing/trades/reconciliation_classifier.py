@@ -262,15 +262,60 @@ def _classify_entry_price_mismatch(
             ),
         )
 
-    # Codex R1 Critical #1 — (ticker, date, quantity) consistency check per
-    # spec §4.3.1 LOGIC verbatim. The persisted-JSON-only shape from the
-    # shipped emitter (swing/trades/schwab_reconciliation.py:469-474) carries
-    # ONLY a 'price' key and is verified pre-emit, so it falls through to
-    # tier-1. If a caller supplies a richer payload AND any of
-    # (ticker, date, quantity) disagrees with journal_row, downgrade to
-    # tier-2 'unsupported' rather than emit an ungrounded auto-correct.
-    # journal_row missing entirely → also tier-2 unsupported (cannot verify
-    # match tuple).
+    # Codex R2 Major #1 — explicit shape predicate per spec §4.3.1 LOCK.
+    # Tier-1 is allowed for EXACTLY TWO source_payload shapes:
+    #
+    #   Shape A (persisted-JSON-only): keys == {'price'}. This is the
+    #     shipped emitter contract from
+    #     swing/trades/schwab_reconciliation.py:469-474 (verifies the
+    #     (ticker, date, quantity) tuple pre-emit and persists only the
+    #     mismatching price).
+    #
+    #   Shape B (full match-tuple-bearing): source carries 'ticker' AND
+    #     'quantity' AND at least one date-form ('date' OR 'fill_datetime'),
+    #     and ALL three tuple components match journal_row. Recognized keys
+    #     are the union {'price', 'ticker', 'quantity', 'date',
+    #     'fill_datetime'}; any extra unrecognized keys reject.
+    #
+    # Any other shape (partial tuple, mixed unrecognized keys, journal_row
+    # missing while richer-than-Shape-A) → tier-2 'unsupported' rather than
+    # emit an ungrounded auto-correct.
+    _TUPLE_KEYS = {"ticker", "date", "fill_datetime", "quantity"}
+    _RECOGNIZED_KEYS = _TUPLE_KEYS | {"price"}
+    source_keys = set(source_payload.keys())
+    extra_keys = source_keys - _RECOGNIZED_KEYS
+    source_tuple_keys_present = source_keys & _TUPLE_KEYS
+
+    is_shape_a = source_keys == {"price"}
+    # Shape B requires ticker + quantity + at least one date-form, AND no
+    # unrecognized extra keys.
+    has_full_tuple_keys = (
+        "ticker" in source_keys
+        and "quantity" in source_keys
+        and ("date" in source_keys or "fill_datetime" in source_keys)
+    )
+    is_shape_b_candidate = (
+        has_full_tuple_keys and not extra_keys and not is_shape_a
+    )
+
+    if not is_shape_a and not is_shape_b_candidate:
+        sorted_keys = sorted(source_keys)
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="unsupported",
+            correction_target=None,
+            correction_reason=(
+                f"entry_price_mismatch on "
+                f"(ticker={discrepancy.ticker!r}, "
+                f"fill_id={discrepancy.fill_id}): source_payload shape "
+                f"ambiguous — neither persisted-JSON-only ({{'price'}}) "
+                f"nor full match-tuple (ticker+date+quantity); got "
+                f"keys={sorted_keys}"
+            ),
+        )
+
+    # journal_row missing entirely → cannot verify even Shape A's pre-emit
+    # invariant from this side. Tier-2 unsupported.
     if journal_row is None:
         return ClassificationResult(
             tier=2,
@@ -285,8 +330,11 @@ def _classify_entry_price_mismatch(
             ),
         )
 
-    # Ticker consistency: case-insensitive string equality.
-    if "ticker" in source_payload:
+    # Shape B path: verify each present tuple component matches
+    # journal_row. Any DISAGREEING field → tier-2 unsupported naming the
+    # disagreeing field (per R1 fix discipline, preserved).
+    if is_shape_b_candidate:
+        # Ticker consistency: case-insensitive string equality.
         src_ticker = source_payload.get("ticker")
         jr_ticker = journal_row.get("ticker")
         if src_ticker is None or jr_ticker is None or (
@@ -306,8 +354,7 @@ def _classify_entry_price_mismatch(
                 ),
             )
 
-    # Quantity consistency: exact equality (after numeric coercion).
-    if "quantity" in source_payload:
+        # Quantity consistency: exact equality (after numeric coercion).
         src_qty = source_payload.get("quantity")
         jr_qty = journal_row.get("quantity")
         try:
@@ -330,13 +377,12 @@ def _classify_entry_price_mismatch(
                 ),
             )
 
-    # Date consistency: ISO-date-prefix equality. source_payload may carry
-    # 'date' (date-only) OR 'fill_datetime' (full ISO); journal_row likewise.
-    # Normalize to first 10 chars and compare.
-    src_date_raw = source_payload.get("date")
-    if src_date_raw is None:
-        src_date_raw = source_payload.get("fill_datetime")
-    if src_date_raw is not None:
+        # Date consistency: ISO-date-prefix equality. source_payload may
+        # carry 'date' (date-only) OR 'fill_datetime' (full ISO);
+        # journal_row likewise. Normalize to first 10 chars and compare.
+        src_date_raw = source_payload.get("date")
+        if src_date_raw is None:
+            src_date_raw = source_payload.get("fill_datetime")
         jr_date_raw = journal_row.get("fill_datetime")
         if jr_date_raw is None:
             jr_date_raw = journal_row.get("date")
@@ -364,6 +410,9 @@ def _classify_entry_price_mismatch(
                     f"cannot verify match tuple per spec §4.3.1"
                 ),
             )
+    # source_tuple_keys_present is computed for the predicate above; the
+    # variable is intentionally not consumed further (kept for clarity).
+    _ = source_tuple_keys_present
 
     journal_price = journal_row.get("price")
     # Format prices to 2 decimals so the reason string carries a stable
