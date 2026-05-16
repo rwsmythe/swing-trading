@@ -95,7 +95,24 @@ class BackfillPipelineActiveError(RuntimeError):
     domain rows under their own transactions and Pass-2 Schwab API
     calls would compete for the same ``schwab_api_calls`` audit-row PK
     range (plan §E.6 #4 / Codex R2 Major #2).
+
+    Codex R2 Major #3 — carries the accumulated ``partial_summary`` when
+    a pipeline lands mid-iteration so the CLI can surface what was
+    already committed BEFORE the abort. The first iteration that
+    committed a tier-1 correction / tier-2 stamp remains persisted (its
+    own service-tx already COMMITed); the abort cleanly skips remaining
+    rows. ``partial_summary`` is None when the exception is raised at
+    entry (no iteration ran yet).
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        partial_summary: BackfillSummary | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.partial_summary = partial_summary
 
 
 @dataclass
@@ -169,10 +186,21 @@ class BackfillSummary:
     projection_tier1: int = 0
     projection_tier2: int = 0
     projection_pass_2: int = 0
+    # Codex R2 Major #3 — mid-iteration abort signal. Set to True when
+    # ``run_backfill`` aborts because a pipeline_runs row appeared
+    # mid-iteration; the partial summary is still returned via
+    # ``BackfillPipelineActiveError.partial_summary`` so the CLI can
+    # surface what completed BEFORE the abort.
+    aborted_mid_iteration: bool = False
+    abort_reason: str | None = None
     per_discrepancy_outcomes: list[BackfillOutcome] = field(default_factory=list)
 
 
-def _check_pipeline_not_running(conn: sqlite3.Connection) -> None:
+def _check_pipeline_not_running(
+    conn: sqlite3.Connection,
+    *,
+    partial_summary: BackfillSummary | None = None,
+) -> None:
     """Raise ``BackfillPipelineActiveError`` if a pipeline_runs row is running.
 
     Mirrors ``swing/cli_schwab.py:_check_pipeline_not_running``.
@@ -195,10 +223,20 @@ def _check_pipeline_not_running(conn: sqlite3.Connection) -> None:
         "SELECT id FROM pipeline_runs WHERE state = 'running' LIMIT 1",
     ).fetchone()
     if row is not None:
-        raise BackfillPipelineActiveError(
+        message = (
             f"Pipeline run {row[0]} is currently in flight. Refusing to "
             f"run `swing journal reconcile-backfill`. Wait for the "
-            f"pipeline to complete or kill it.",
+            f"pipeline to complete or kill it."
+        )
+        # Codex R2 Major #3 — carry partial_summary on the exception so
+        # the CLI can render rows already processed BEFORE the abort.
+        # When called at entry (no iteration yet), partial_summary is
+        # None and the exception behaves as a plain RuntimeError.
+        if partial_summary is not None:
+            partial_summary.aborted_mid_iteration = True
+            partial_summary.abort_reason = message
+        raise BackfillPipelineActiveError(
+            message, partial_summary=partial_summary,
         )
 
 
@@ -573,6 +611,7 @@ def _handle_pass_2(
     account_hash: str | None,
     no_pass_2_on_dry_run: bool,
     allow_pending_update: bool = False,
+    partial_summary: BackfillSummary | None = None,
 ) -> BackfillOutcome:
     """Pass-2 dispatch for one Pass-2-required discrepancy.
 
@@ -696,7 +735,8 @@ def _handle_pass_2(
     # Pass-2 fetch (which may have made an audited Schwab API call) +
     # BEFORE the stamp would race against stamp_pending_ambiguity's
     # own BEGIN IMMEDIATE. Recheck here gates the journal mutation.
-    _check_pipeline_not_running(conn)
+    # Codex R2 Major #3 — pass partial_summary so the abort surfaces.
+    _check_pipeline_not_running(conn, partial_summary=partial_summary)
     try:
         stamp_pending_ambiguity(
             conn,
@@ -756,6 +796,7 @@ def _classify_and_apply(
     account_hash: str | None,
     no_pass_2_on_dry_run: bool,
     retry_pass_2_failures: bool,
+    partial_summary: BackfillSummary | None = None,
 ) -> BackfillOutcome:
     """T-D.7 — Pass 1 persisted-JSON-only classification + dispatch.
 
@@ -878,6 +919,7 @@ def _classify_and_apply(
             account_hash=account_hash,
             no_pass_2_on_dry_run=no_pass_2_on_dry_run,
             allow_pending_update=retry_pass_2_failures,
+            partial_summary=partial_summary,
         )
 
     if dry_run:
@@ -915,7 +957,9 @@ def _classify_and_apply(
         # AFTER that check + BEFORE this service-write would race against
         # ``apply_tier1_correction``'s own BEGIN IMMEDIATE. Recheck here
         # (~1 SELECT per write; cheap at <100 production discrepancies).
-        _check_pipeline_not_running(conn)
+        # Codex R2 Major #3 — pass partial_summary so the abort surfaces
+        # accumulated work to the CLI.
+        _check_pipeline_not_running(conn, partial_summary=partial_summary)
         try:
             result = apply_tier1_correction(
                 conn,
@@ -976,7 +1020,8 @@ def _classify_and_apply(
     #
     # Codex R2 Major #2 — per-service-write pipeline-exclusion recheck
     # closes the in-row race window (see apply_tier1 callsite above).
-    _check_pipeline_not_running(conn)
+    # Codex R2 Major #3 — pass partial_summary so the abort surfaces.
+    _check_pipeline_not_running(conn, partial_summary=partial_summary)
     try:
         stamp_pending_ambiguity(
             conn,
@@ -1108,7 +1153,10 @@ def run_backfill(
         # ``BackfillPipelineActiveError`` and aborts further iteration;
         # rows already processed remain persisted (their own service-
         # layer txs committed end-to-end).
-        _check_pipeline_not_running(conn)
+        #
+        # Codex R2 Major #3 — pass ``partial_summary=summary`` so the
+        # exception carries the rows processed so far for CLI rendering.
+        _check_pipeline_not_running(conn, partial_summary=summary)
         outcome = _classify_and_apply(
             conn,
             disc,
@@ -1118,6 +1166,7 @@ def run_backfill(
             account_hash=account_hash,
             no_pass_2_on_dry_run=no_pass_2_on_dry_run,
             retry_pass_2_failures=retry_pass_2_failures,
+            partial_summary=summary,
         )
         summary.per_discrepancy_outcomes.append(outcome)
         # Counter wiring — T-D.7 Pass 1 outcomes + T-D.8 Pass 2 outcomes.
@@ -1277,21 +1326,35 @@ def format_summary_block(summary: BackfillSummary) -> str:
     projection_*) follow on indented lines for operator triage but are
     NOT part of the §E.9 #4 binding layout.
     """
+    # Codex R2 Major #3 — abort banner surfaces above the counters so
+    # the operator immediately sees that this is a partial summary; the
+    # numeric lines below reflect rows that DID commit before the abort.
+    abort_banner = ""
+    if summary.aborted_mid_iteration:
+        reason_suffix = (
+            f" ({summary.abort_reason})" if summary.abort_reason else ""
+        )
+        abort_banner = (
+            f"  *** ABORTED MID-ITERATION{reason_suffix}; counters "
+            f"below reflect rows processed BEFORE the abort. ***\n"
+        )
+
     return (
         "\nBackfill summary:\n"
-        f"  Tier 1 applied: {summary.tier1_applied}\n"
-        f"  Tier 2 stamped: {summary.tier2_stamped}\n"
-        f"    (of which Pass 2 re-fetch failed: {summary.pass_2_failed})\n"
-        f"  Errored: {summary.tier_errored}\n"
-        f"  Skipped (already resolved): {summary.skipped_already_resolved}\n"
-        f"  Skipped (Pass-2-failed; use --retry-pass-2-failures to retry): "
-        f"{summary.skipped_pass_2_failed}\n"
-        "  --- diagnostic counters ---\n"
-        f"  tier1_skipped_sandbox:    {summary.tier1_skipped_sandbox}\n"
-        f"  tier2_skipped_sandbox:    {summary.tier2_skipped_sandbox}\n"
-        f"  pass_2_pending:           {summary.pass_2_pending}\n"
-        f"  projection_tier1:         {summary.projection_tier1}\n"
-        f"  projection_tier2:         {summary.projection_tier2}\n"
-        f"  projection_pass_2:        {summary.projection_pass_2}\n"
-        f"  total iterated:           {len(summary.per_discrepancy_outcomes)}"
+        + abort_banner
+        + f"  Tier 1 applied: {summary.tier1_applied}\n"
+        + f"  Tier 2 stamped: {summary.tier2_stamped}\n"
+        + f"    (of which Pass 2 re-fetch failed: {summary.pass_2_failed})\n"
+        + f"  Errored: {summary.tier_errored}\n"
+        + f"  Skipped (already resolved): {summary.skipped_already_resolved}\n"
+        + "  Skipped (Pass-2-failed; use --retry-pass-2-failures to retry): "
+        + f"{summary.skipped_pass_2_failed}\n"
+        + "  --- diagnostic counters ---\n"
+        + f"  tier1_skipped_sandbox:    {summary.tier1_skipped_sandbox}\n"
+        + f"  tier2_skipped_sandbox:    {summary.tier2_skipped_sandbox}\n"
+        + f"  pass_2_pending:           {summary.pass_2_pending}\n"
+        + f"  projection_tier1:         {summary.projection_tier1}\n"
+        + f"  projection_tier2:         {summary.projection_tier2}\n"
+        + f"  projection_pass_2:        {summary.projection_pass_2}\n"
+        + f"  total iterated:           {len(summary.per_discrepancy_outcomes)}"
     )

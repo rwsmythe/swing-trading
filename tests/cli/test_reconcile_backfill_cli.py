@@ -1067,3 +1067,156 @@ def test_pipeline_started_before_tier1_apply_aborts(
         assert row[0] == "unresolved"
     finally:
         conn.close()
+
+
+# ============================================================================
+# Codex R2 Major #3 — partial-progress summary on mid-iteration abort.
+# The ``BackfillPipelineActiveError`` carries the accumulated summary so
+# the CLI can render rows already processed BEFORE the abort.
+# ============================================================================
+
+
+def test_mid_iteration_abort_carries_partial_summary(
+    cli_workspace, monkeypatch,
+):
+    """R2 Major #3 fix — exception carries partial summary.
+
+    Plants 3 discrepancies; stubs ``_classify_and_apply`` so that
+    after the FIRST iteration commits a tier-1 outcome, a pipeline
+    row appears. The next iteration's recheck raises. The exception
+    carries ``partial_summary`` with the 1 committed outcome +
+    ``aborted_mid_iteration=True`` + a populated ``abort_reason``.
+    """
+    from swing.trades.reconciliation_backfill import (
+        BackfillOutcome,
+        BackfillPipelineActiveError,
+        BackfillSummary,
+        run_backfill,
+    )
+    from swing.trades import reconciliation_backfill as _bf
+
+    _runner, _cfg, db_path = cli_workspace
+    conn = sqlite3.connect(db_path)
+    try:
+        run_id = _seed_reconciliation_run(conn)
+        _plant_unresolved(conn, run_id, ticker="DHC")
+        _plant_unresolved(conn, run_id, ticker="VSAT")
+        _plant_unresolved(conn, run_id, ticker="CVGI")
+        conn.commit()
+
+        call_count = {"n": 0}
+
+        def _spy(conn_arg, disc, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                conn_arg.execute(
+                    "INSERT INTO pipeline_runs ("
+                    "  started_ts, state, trigger, data_asof_date, "
+                    "  action_session_date, lease_token"
+                    ") VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        "2026-05-16T10:30:00", "running", "manual",
+                        "2026-05-16", "2026-05-16",
+                        "partial-summary-lease",
+                    ),
+                )
+                conn_arg.commit()
+            return BackfillOutcome(
+                discrepancy_id=int(disc.discrepancy_id or 0),
+                ticker=disc.ticker,
+                discrepancy_type=disc.discrepancy_type,
+                tier=1,
+                outcome="tier1_applied",
+            )
+
+        monkeypatch.setattr(_bf, "_classify_and_apply", _spy)
+
+        with pytest.raises(BackfillPipelineActiveError) as exc_info:
+            run_backfill(
+                conn,
+                dry_run=False,
+                schwab_client=None,
+                environment="production",
+                account_hash="acct-hash",
+            )
+
+        # R2 Major #3 binding pin: exception carries partial summary.
+        partial = exc_info.value.partial_summary
+        assert partial is not None
+        assert isinstance(partial, BackfillSummary)
+        # First iteration COMMITted before abort.
+        assert partial.tier1_applied == 1
+        assert len(partial.per_discrepancy_outcomes) == 1
+        # Aborted-flag set; reason populated.
+        assert partial.aborted_mid_iteration is True
+        assert partial.abort_reason is not None
+        assert "Pipeline run" in partial.abort_reason
+        # Exactly 1 iteration happened (2nd + 3rd skipped by recheck).
+        assert call_count["n"] == 1
+    finally:
+        conn.close()
+
+
+def test_cli_renders_partial_summary_on_mid_iteration_abort(
+    cli_workspace, monkeypatch,
+):
+    """R2 Major #3 fix — CLI prints partial summary before user-facing error.
+
+    End-to-end: plant 3 discrepancies; stub iteration to abort after
+    first row; invoke via Click runner; assert CLI output contains
+    the partial-summary table + abort banner.
+    """
+    from swing.trades.reconciliation_backfill import BackfillOutcome
+    from swing.trades import reconciliation_backfill as _bf
+
+    runner, cfg, db_path = cli_workspace
+    conn = sqlite3.connect(db_path)
+    try:
+        run_id = _seed_reconciliation_run(conn)
+        _plant_unresolved(conn, run_id, ticker="DHC")
+        _plant_unresolved(conn, run_id, ticker="VSAT")
+        _plant_unresolved(conn, run_id, ticker="CVGI")
+        conn.commit()
+    finally:
+        conn.close()
+
+    call_count = {"n": 0}
+
+    def _spy(conn_arg, disc, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            conn_arg.execute(
+                "INSERT INTO pipeline_runs ("
+                "  started_ts, state, trigger, data_asof_date, "
+                "  action_session_date, lease_token"
+                ") VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "2026-05-16T10:30:00", "running", "manual",
+                    "2026-05-16", "2026-05-16",
+                    "cli-partial-lease",
+                ),
+            )
+            conn_arg.commit()
+        return BackfillOutcome(
+            discrepancy_id=int(disc.discrepancy_id or 0),
+            ticker=disc.ticker,
+            discrepancy_type=disc.discrepancy_type,
+            tier=1,
+            outcome="tier1_applied",
+        )
+
+    monkeypatch.setattr(_bf, "_classify_and_apply", _spy)
+
+    r = runner.invoke(
+        main, [
+            "--config", str(cfg), "journal", "reconcile-backfill",
+            "--apply",
+        ],
+    )
+    # CLI exits non-zero (user-friendly error) but the partial summary
+    # is printed BEFORE the error.
+    assert r.exit_code != 0
+    assert "Backfill aborted mid-iteration" in r.output
+    assert "ABORTED MID-ITERATION" in r.output
+    # Tier 1 applied: 1 from the row that committed before the abort.
+    assert "Tier 1 applied: 1" in r.output

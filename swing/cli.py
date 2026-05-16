@@ -1993,6 +1993,21 @@ def journal_reconcile_backfill_cmd(
                 retry_pass_2_failures=retry_pass_2_failures,
             )
         except BackfillPipelineActiveError as exc:
+            # Codex R2 Major #3 — surface partial-progress summary before
+            # the user-friendly error so the operator sees which rows
+            # were already committed. The exception carries the partial
+            # summary as ``exc.partial_summary`` when the abort happened
+            # mid-iteration (rows already processed have committed via
+            # their own service-layer txs). When the abort happened at
+            # entry (no iteration ran), partial_summary is None.
+            partial = getattr(exc, "partial_summary", None)
+            if partial is not None and partial.per_discrepancy_outcomes:
+                click.echo("Backfill aborted mid-iteration:\n")
+                click.echo(format_projection_table_header())
+                click.echo(format_projection_table_separator())
+                for outcome in partial.per_discrepancy_outcomes:
+                    click.echo(format_projection_row(outcome))
+                click.echo(format_summary_block(partial))
             raise click.ClickException(str(exc)) from exc
     finally:
         conn.close()
