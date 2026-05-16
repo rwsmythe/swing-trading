@@ -6,6 +6,74 @@
 
 ---
 
+## 2026-05-15 Phase 12 Sub-sub-bundle C.B SHIPPED — Classifier + validator-shim modules (pure logic; ZERO journal mutations; 5 Codex rounds NO_NEW_CRITICAL_MAJOR; 26 commits; ZERO ACCEPT-WITH-RATIONALE — cleanest finding-disposition in Phase 12 arc; SECOND Phase 12 Sub-bundle C sub-sub-bundle)
+
+**Sub-sub-bundle C.B SHIPPED 2026-05-15** at `aacd1cd` (integration merge of `phase12-bundle-C-B-classifier-and-validator-shim` worktree branch via `--no-ff` to preserve Codex-fix chain). Branch HEAD `c48188a` post orchestrator-side rebase (26 commits = 14 task-impl + 1 UP035 ruff style + 4 Codex-R1-fix + 2 Codex-R2-fix + 1 R2-N806-style + 2 Codex-R3-fix + 1 Codex-R4-fix + 1 return-report on top of dispatch brief `fdb4276`). Operator-dispatched implementer per orchestrator brief at `fdb4276`.
+
+**5 Codex rounds → NO_NEW_CRITICAL_MAJOR** convergent tapering (R1 1C/3M/0m → R2 0C/1M/1m → R3 0C/1M/1m → R4 0C/1M/0m → R5 0C/0M/0m); **ZERO ACCEPT-WITH-RATIONALE banked** — all 1 Critical + 6 Major + 2 Minor resolved with code-content fixes. **Cleanest finding-disposition record in Phase 12 arc to date** (C.A had 1 ACCEPT-WITH-RATIONALE; Sub-bundle B had 0 but with 7 Major; C.B closes 1 Critical + 6 Major + 2 Minor with zero deferrals). R1 C#1 + R2 M#1 + R3 M#1 + R4 M#1 form a single **determinism-principle-tightening sequence on `entry_price_mismatch`** Shape B predicate — each round tightened further; R5 converged.
+
+### Orchestrator-side rebase (Co-Authored-By footer strip; operator-decision 2026-05-15)
+
+R1 fix-bundle 4 commits accidentally carried `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>` footer (CLAUDE.md says "No Claude co-author footer"). Implementer surfaced as deviation #3 in return report §5 with two options: rebase-strip pre-merge OR accept-drift into history. Operator elected **rebase-strip via AskUserQuestion 2026-05-15**. Orchestrator performed `git rebase -i fdb4276` with `GIT_SEQUENCE_EDITOR` marking the 4 commits as `reword` + `GIT_EDITOR` Python one-liner stripping the footer line + rstripping trailing whitespace. SHAs shifted (`6e4bd30→a14401c` / `fcff4d3→63909f5` / `180838e→1cd5951` / `78d98b2→69a2cc8`); 26-commit count preserved; content unchanged; ZERO footer matches on `fdb4276..HEAD` post-rebase confirmed via grep. CLAUDE.md `No Claude co-author footer` convention preserved on integrated history. **Forward-binding lesson #7 banked**: future dispatch prompts MUST explicitly suppress the footer in subagent context (passive inheritance from CLAUDE.md is insufficient because subagents have isolated context).
+
+### Code deltas (no schema; pure logic per dispatch brief §0.5 #1 LOCK)
+
+1. **NEW MODULE `swing/trades/reconciliation_classifier.py`** — 10 per-discrepancy-type sub-classifiers + dispatch table + `ClassificationResult` `@dataclass(frozen=True)` + public `classify_discrepancy(...)` entry with validator-respecting-downgrade dispatcher + 4 shared `_candidate_choices_*` helpers. Per spec §4 + §6.2.1 + §8.4 LOCKS preserved verbatim.
+2. **NEW MODULE `swing/trades/reconciliation_validators.py`** — 4 dry-run validators `validate_fill_correction` + `validate_trade_correction` + `validate_cash_movement_correction` + `validate_snapshot_correction` with `math.isfinite()` guard on all 5 numeric fields (mirrors `swing/data/models.py` REAL-field discipline) + `default_validator_chain(conn)` dispatcher composing on `affected_table` partial-application. Per spec §5.5 LOCKS preserved verbatim. SELECT-only against the conn passed in; NEVER mutates the DB.
+3. **12 NEW TEST FILES** under `tests/trades/` — one per sub-classifier + one for shim validators + one for default chain + public-entry tests + cross-bundle pin strengthening.
+4. **2 cross-bundle pin tests un-skipped at T-B.14** at `tests/integration/test_phase12_bundle_c_cross_bundle_pin.py` — both strengthened at R1 M#3 (`78d98b2`→`69a2cc8` post-rebase) to discriminatingly pin classifier + validator-chain behavior end-to-end via tmp_path schema-v19 fixture.
+
+### Operator-witnessed gate (2026-05-15 post-merge-prep; orchestrator-driven; 3 surfaces ALL PASS)
+
+| Surface | Result | Key observation |
+|---|---|---|
+| S1 fast suite | ✅ | 4110 fast pass on rebased C.B branch + 3 pre-existing phase8 walkthrough failures (unchanged from main baseline) + 5 skipped (the 2 C.A cross-bundle pin tests un-skipped at T-B.14 now PASS; 4 Schwab-fixture-not-present skips + 1 Task 7.3 flag-classifier remain) |
+| S2 classifier walkthrough | ✅ | Explicit `python -c` walkthrough invoked `classify_discrepancy` against CVGI 41 + DHC 39 + VSAT 40 fixtures per spec §10; ASSERTED expected `ClassificationResult` shapes — CVGI tier=1 `correction_target={'price': 5.30}` with reason matching spec §10.1 verbatim; DHC + VSAT both tier=2 `ambiguity_kind='unsupported'` with `_pass_2_required=True` signal in `correction_reason` matching spec §10.2/10.3 Pass-1 OUTPUT; determinism principle spot-check (CVGI fixture × 100 invocations) byte-for-byte identical via frozen dataclass equality |
+| S3 ruff baseline | ✅ | 18 E501 unchanged |
+
+### NEW V2.1 §VII.F amendment candidates banked (6 items per return report §6)
+
+1. **Spec §4.3.1 entry_price_mismatch source_payload shape** — enumerate Shape A persisted-JSON-only `{'price'}` OR Shape B full match-tuple (ticker+date+quantity) explicitly.
+2. **Spec §4.3.1 contradictory date evidence** — neither source-side nor journal-side internal date/fill_datetime divergence is addressed; C.B rejects both as tier-2 unsupported per determinism §4.4.
+3. **Plan §C.3** — pin `:.2f` rendering format for currency in `correction_reason` strings.
+4. **Plan §C.9** — enumerate canonical 4-field comparison vector (`'date'`, `'kind'`, `'amount'`, `'ref'`) for `cash_movement_mismatch` tier-1 multi-field correction.
+5. **Spec §5.5** — document `functools.partial` composition requirement between `default_validator_chain` + `classify_discrepancy` explicitly.
+6. **Spec §6.2.1** — already locks `pick_schwab_record_<N>` `requires_custom_value=True` per Codex R7 M#2; banked only for cross-reference completeness.
+
+### Three highest-leverage SHIPPED deliverables
+
+1. **Classifier + validator-shim modules as pure-logic foundation for the entire auto-correct reconciliation architecture.** ZERO journal mutations + ZERO Schwab API calls + ZERO transaction management. Sub-sub-bundle C.C will consume `classify_discrepancy` + `default_validator_chain` to build the auto-correction service; Sub-sub-bundle C.D will consume them at backfill time. Spec §4 + §5.5 LOCKS preserved verbatim.
+2. **Determinism principle enforcement (spec §4.4) discriminatingly tested.** `entry_price_mismatch` Shape A/B predicate LOCKED through 4-round Codex tightening sequence — partial-tuple OR contradictory-date-evidence (source-side OR journal-side internal inconsistency) → tier-2 `unsupported`. CVGI 100×-invocation determinism test pins reproducibility. Pass-2-tier-1-FORBIDDEN LOCK at T-B.4/T-B.5 parametrized over 6 distinct input shapes; classifier NEVER emits tier-1 from V1 order-grain mapper data.
+3. **Cross-bundle pin discipline operational** — both T-A.7 pins un-skipped at T-B.14 + strengthened to discriminatingly pin end-to-end behavior via tmp_path schema-v19 fixture. Demonstrates the project-wide "pin test ships SKIPPED at producer task; un-skips at consumer task landing" discipline working as designed for the C.A→C.B handoff.
+
+### Forward-binding lessons for C.C dispatch (per return report §11)
+
+1. Classifier output is C.B → service-layer enforcement is C.C boundary (lifecycle invariants enforced at `apply_tier1_correction` INSERT time, NOT classifier-output time).
+2. Validator chain MUST be re-invoked at C.C apply time (defense-in-depth per spec §4.6 + §5.5 BINDING — schema state may shift between classifier run + apply call).
+3. `functools.partial` composition between `default_validator_chain` + `classify_discrepancy` is non-obvious (chain's `(correction_target, *, affected_table, affected_row_id)` signature must be partial-applied to match dispatcher's `validator_chain(correction_target)` single-arg invocation). Pre-empt in C.C dispatch brief.
+4. `_pass_2_required=True` is a free-form-string convention in `correction_reason` (NOT a typed field on `ClassificationResult`). C.D backfill reads via substring match. Document exact substring in C.D dispatch brief.
+5. Shape predicate tightening discipline (R1 C#1 → R2 M#1 → R3 M#1 → R4 M#1 sequence) — C.C handlers that classify operator-supplied `--custom-value` payloads will face the same scrutiny; implement input-shape checks EXPLICITLY at handler entry; reject unrecognized key sets; reject contradictory evidence within the payload.
+6. Same-source-keys-on-source-and-journal evidence convergence pattern — when both `source_payload` AND `journal_row` carry an information field in MULTIPLE forms (e.g., `date` + `fill_datetime`), determinism principle requires each side's internal forms must agree AND both sides must agree with each other.
+7. Co-Authored-By footer drift requires EXPLICIT suppression in dispatch prompts (CLAUDE.md passive inheritance is insufficient because subagents have isolated context).
+
+### Production tokens DB clock awareness
+
+Refresh-token clock from Sub-bundle B S5 issuance (2026-05-15T17:05:00+00:00) ~5 days remaining (expires 2026-05-22T17:05:00+00:00). C.C dispatch likely consumes 3-5 days; C.D 4-7 days. **Operator may need re-auth via `/schwab/setup` web form OR `swing schwab setup` CLI before C.D gate session.** T-A.2 self-healing means recovery is one CLI/web invocation now.
+
+### Cross-references
+
+- Dispatch brief: `docs/phase12-bundle-C-B-classifier-and-validator-shim-executing-plans-dispatch-brief.md` (`fdb4276`).
+- Spec: `docs/superpowers/specs/2026-05-15-phase12-bundle-C-auto-correct-reconciliation-design.md` (`d682c25`; LOCKED post-9-round brainstorm).
+- Plan: `docs/superpowers/plans/2026-05-15-phase12-bundle-C-auto-correct-reconciliation-plan.md` (`008dfe4`; LOCKED post-6-round writing-plans) §C C.B section (lines 1068-1601).
+- Return report: `docs/phase12-bundle-C-B-return-report.md` (`c48188a` post-rebase).
+- Integration merge: `aacd1cd`.
+
+### Next dispatch
+
+**Phase 12 Sub-sub-bundle C.C (Auto-correction service + reconciliation flow pivot) UNBLOCKED.** Per plan §D decomposition: 12 tasks (T-C.1..T-C.11 + T-C.3.1); +65-115 fast tests projected; 4-6 Codex rounds expected. Will consume `classify_discrepancy` + `default_validator_chain` from C.B + `insert_correction` from C.A schema. Transactional discipline (reject caller-held tx; BEGIN IMMEDIATE / COMMIT / ROLLBACK); validator chain re-invocation at apply time; surface-aware audit attribution; flow pivot at `run_schwab_reconciliation` AND `run_tos_reconciliation` callsites. **Recommended timing: dispatched post-handoff-or-when-operator-commissions** per operator-paced cadence.
+
+---
+
 ## 2026-05-15 Phase 12 Sub-sub-bundle C.A SHIPPED — Foundation (schema v18→v19 atomic migration + minimal repos for auto-correct reconciliation; 2 Codex rounds NO_NEW_CRITICAL_MAJOR; 16 commits; FIRST Phase 12 Sub-bundle C sub-sub-bundle)
 
 **Sub-sub-bundle C.A SHIPPED 2026-05-15** at `354b6c0` (integration merge of `phase12-bundle-C-A-foundation` worktree branch via `--no-ff` to preserve Codex-fix chain). Branch HEAD `56e6993` (16 commits = 9 task-impl (T-A.1..T-A.8 + T-A.7 cross-bundle pin) + 4 Codex-fix (R1 + R2) + 2 docs + 1 return-report on top of dispatch brief `3cb334d`). Operator-dispatched implementer per orchestrator brief at `3cb334d`.
