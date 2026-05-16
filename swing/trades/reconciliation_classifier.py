@@ -452,13 +452,41 @@ def _classify_entry_price_mismatch(
                 ),
             )
 
+        # Internal journal consistency (mirrors source-side check above
+        # per R4 Major #1): if both journal forms are present, their
+        # normalized values must agree. Contradictory tuple evidence on
+        # the journal side → tier-2 unsupported (determinism principle
+        # §4.4). Checked BEFORE the source-vs-journal disagreement check
+        # so journal-internal inconsistency is reported with its
+        # specific reason rather than getting masked by the cross-side
+        # disagreement reason.
+        distinct_journal_prefixes = {prefix for _, prefix in journal_date_forms}
+        if len(distinct_journal_prefixes) > 1:
+            conflicting = ", ".join(
+                f"{key}={prefix}" for key, prefix in journal_date_forms
+            )
+            return ClassificationResult(
+                tier=2,
+                ambiguity_kind="unsupported",
+                correction_target=None,
+                correction_reason=(
+                    f"entry_price_mismatch on "
+                    f"(ticker={discrepancy.ticker!r}, "
+                    f"fill_id={discrepancy.fill_id}): contradictory "
+                    f"journal date evidence ({conflicting}); cannot verify "
+                    f"match tuple per spec §4.3.1 (determinism principle "
+                    f"§4.4 defaults to tier-2 when tuple evidence "
+                    f"conflicts)"
+                ),
+            )
+
         # Source-vs-journal date agreement: every source date form must
         # agree with at least one journal date form. Equivalently, since
         # source prefixes are unique here, the single source date prefix
         # must appear in the journal's date forms. Empty
         # journal_date_forms → no agreement possible.
         source_prefix = next(iter(distinct_source_prefixes))
-        journal_prefixes = {prefix for _, prefix in journal_date_forms}
+        journal_prefixes = distinct_journal_prefixes
         if not journal_prefixes or source_prefix not in journal_prefixes:
             src_render = ", ".join(
                 f"{key}={prefix}" for key, prefix in source_date_forms
