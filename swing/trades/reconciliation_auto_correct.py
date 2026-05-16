@@ -370,24 +370,13 @@ def _apply_tier1_correction_inner(
     Callers (the pivot dispatcher) MUST treat ``correction_id is None``
     as the no-op signal (do NOT increment ``tier1_applied_count``).
     """
-    if classification is None:
-        raise ValueError(
-            "classification is required for tier-1 correction; got None"
-        )
-    if classification.tier != 1:
-        raise ValueError(
-            f"_apply_tier1_correction_inner: classification.tier must be 1; "
-            f"got {classification.tier}"
-        )
-    if classification.correction_target is None:
-        raise ValueError(
-            "tier-1 classification.correction_target must not be None"
-        )
-
-    # Sandbox short-circuit (plan §D.5 step 3 + spec §5.9). Mirrors the
-    # outer wrapper's behavior so callers that pass the kwarg through
+    # Sandbox short-circuit (plan §D.5 step 3 + spec §5.9) FIRST — before
+    # any validation of classification fields. Mirrors the outer wrapper's
+    # pre-validation short-circuit so callers that pass the kwarg through
     # (the pivot dispatcher) get the same no-op contract without the
-    # outer's tx-management.
+    # outer's tx-management. The pre-validation order matters: under
+    # sandbox the outer never inspected classification, so a None-
+    # classification call would have returned the no-op too.
     if environment == "sandbox":
         logger.warning(
             "_apply_tier1_correction_inner short-circuited under sandbox "
@@ -402,6 +391,20 @@ def _apply_tier1_correction_inner(
             applied_value_json=None,
             correction_action=None,
             notes="sandbox: domain write short-circuited",
+        )
+
+    if classification is None:
+        raise ValueError(
+            "classification is required for tier-1 correction; got None"
+        )
+    if classification.tier != 1:
+        raise ValueError(
+            f"_apply_tier1_correction_inner: classification.tier must be 1; "
+            f"got {classification.tier}"
+        )
+    if classification.correction_target is None:
+        raise ValueError(
+            "tier-1 classification.correction_target must not be None"
         )
 
     # Step 1: SELECT discrepancy.
