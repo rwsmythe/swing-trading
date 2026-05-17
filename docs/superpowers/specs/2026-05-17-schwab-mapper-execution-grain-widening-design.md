@@ -120,13 +120,19 @@ Schwab API JSON                             V2 mapper                           
     "executionLegs": [                          ...,                                            execution_price = _vwap(so.executions)
       { "legId": 0, "price": 5.2244,           executions=[                                  else:
         "quantity": 100, "time": ... }          SchwabExecutionLeg(                            # OQ-A Path B: tier-2 `unsupported`
-    ]                                              leg_id=0, price=5.2244, qty=100, ...      reconciliation_classifier.py
-  }                                            ]                                              for unmatched_open_fill /
-]                                            )                                                unmatched_close_fill:
-                                                                                                if so.executions and matched_tuple:
-                                                                                                   tier=1 (LIFT FORBIDDEN)
-                                                                                                else:
-                                                                                                   tier=2 (preserve LOCK)
+    ]                                              leg_id=0, price=5.2244, qty=100, ...
+  }                                            ]                                            reconciliation_classifier.py
+]                                            )                                                # Pass-1 (entry_price / close_price mismatch):
+                                                                                                Shape C predicate → tier=1
+                                                                                                  (audit keys observational; preserved
+                                                                                                   on discrepancy row's actual_value_json)
+                                                                                                # Pass-2 (unmatched_open_fill /
+                                                                                                #          unmatched_close_fill):
+                                                                                                stays tier=2-always in V1
+                                                                                                  (Pass-2-tier-1-FORBIDDEN LOCK preserved;
+                                                                                                   Path B sentinel emits tier-2 `unsupported`
+                                                                                                   with clearer reason; Pass-2 LIFT entirely
+                                                                                                   deferred to OQ-F V2)
 ```
 
 ### §3.2 Module touch list
@@ -142,7 +148,7 @@ Schwab API JSON                             V2 mapper                           
 | `swing/web/templates/schwab_status.html.j2` | New template extending `base.html.j2`; inherits Phase 10 T-E.3 banner discipline. |
 | `swing/web/templates/config.html.j2` (or partial) | Add `/schwab/status` nav-link under "External integrations" section (mirrors B-`7b75d4a` precedent for `/schwab/setup`). |
 | `swing/web/routes/schwab.py` (B path) | Retarget `POST /schwab/setup` success `HX-Redirect: /config?schwab_setup=ok` → `HX-Redirect: /schwab/status` once T-B.7 lands. |
-| `CLAUDE.md` | Amend `Pass-2-tier-1-FORBIDDEN` gotcha to mark V2-RESOLVED; correct CVGI date attribution if present (§2.6 housekeeping). |
+| `CLAUDE.md` | Amend `Pass-2-tier-1-FORBIDDEN` gotcha to mark **Pass-1 limit-vs-fill V2-RESOLVED** (entry_price/close_price_mismatch family); **Pass-2 (unmatched_*_fill) remains tier-2-always in V1** with the Path B `execution_unavailable=true` sentinel as the only new classifier branch (LIFT entirely deferred OQ-F V2). Correct CVGI date attribution if present (§2.6 housekeeping). |
 | `docs/phase3e-todo.md` | Add entry on historical `reconciliation_corrections` leave-as-is + bank V2 follow-up candidates (multi-leg auto-redirect; further mapper widening). |
 
 ### §3.3 What does NOT change
@@ -779,7 +785,7 @@ Three sub-bundles, with dispatch ordering and cross-bundle dependencies:
 - `map_orders_to_fill_candidates` body extension.
 - `_compute_execution_price` comparator helper.
 - `run_schwab_reconciliation` comparator path switch (Path B per OQ-A).
-- `_classify_unmatched_fill_shared` + `_classify_entry_price_mismatch` classifier-branch addition (LIFT Pass-2-tier-1-FORBIDDEN for execution-grain matched-tuple).
+- `_classify_entry_price_mismatch` + `_classify_close_price_mismatch` classifier widening (NEW Shape C predicate → tier-1 with execution-grain `correction_target`). `_classify_unmatched_fill_shared` gains ONLY the Path B `execution_unavailable=true` sentinel recognition → tier-2 `unsupported` (Pass-2 stays tier-2-always in V1; LIFT entirely deferred OQ-F V2).
 - `_compute_execution_price` discriminating tests (single-leg + multi-leg VWAP + None-fall-through + edge cases).
 - CVGI + LION end-to-end discriminating walkthrough tests (§10).
 - Cassette-recording prerequisite per OQ-E (operator-paired session at writing-plans phase).
@@ -979,7 +985,7 @@ Variant: journal `fills.fill_id=101`: price=$10.00 (operator typed first-leg pri
 2. `_compute_execution_price(so) = None`.
 3. Path B: emit `unmatched_open_fill` with `actual_value_json={"matched": None, "execution_unavailable": True, "schwab_order_id": "...", "schwab_order_price": 8.00}`.
 
-**Classifier (`_classify_unmatched_fill_shared`):** sees `actual_value_json.execution_unavailable == True` sentinel; emits tier-2 with `ambiguity_kind='unsupported'` + `correction_reason='unmatched_open_fill: Schwab order found (order_id=..., limit_price=$8.00) but no execution-grain data available; please disposition manually per broker statement'`.
+**Classifier (`_classify_unmatched_fill_shared`):** sees `actual_value_json.execution_unavailable == True` sentinel; emits tier-2 with `ambiguity_kind='unsupported'` + `correction_reason='unmatched_open_fill: Schwab order found (order_id=..., order_price=$8.00) but no execution-grain data available; please disposition manually per broker statement'`.
 
 **Net result:** operator sees tier-2 discrepancy with clear reason; uses tier-2 CLI menu (`mark_unmatched` / `operator_truth` / etc.) per Phase 12 Sub-sub-bundle C.D workflow.
 
@@ -1024,7 +1030,7 @@ For each round, pass these as targeted prompts to `copowers:adversarial-critic`:
 6. **OQ-C tolerance window sensitivity.** With `price_tolerance=0.01`, CVGI $0.0056 + LION $0.0001 both fall under tolerance. Any operator-decided tighter tolerance is a config change. Spec MUST anchor the pick to empirical evidence (CVGI + LION sub-cent rounding).
 7. **OQ-D FIRED-stop discipline.** Comparator switches uniformly to execution-grain for FIRED orders regardless of `order_type` (LMT/MKT/STOP/STOP_LIMIT). §10.6 walks this. Discriminating test plants FIRED-STOP fixture + asserts execution-leg path.
 8. **OQ-E cassette-recording prerequisite.** §6.5 enumerates 4 minimum order types (LMT BUY, LMT SELL, STOP FIRED, MKT BUY) + 1 stretch (STOP_LIMIT FIRED). Writing-plans phase triggers operator-paired session.
-9. **OQ-F deferral rationale.** §6.6 enumerates cascade analysis required for V2 auto-redirect. V1 LIFTS LOCK ONLY for single-leg matched-tuple. Multi-leg auto-redirect deferred.
+9. **OQ-F deferral rationale.** §6.6 enumerates cascade analysis required for V2 auto-redirect. V1 does NOT lift Pass-2-tier-1-FORBIDDEN at all (Codex R2 M#1 + R3 M#1 + R4 M#1 unified policy); the V2 LIFT scope in this dispatch is **Pass-1 only** (entry/close_price_mismatch with Shape C). Pass-2 LIFT — single-leg single-matched-order AND multi-leg auto-redirect — entirely deferred OQ-F V2.
 10. **OQ-G leave-as-is rationale.** §6.7 enumerates 2 rejected alternatives + rationales. §8.3 documents the disposition for forward readers.
 11. **T-B.7 HTMX discipline.** §7.5 confirms HTMX trinity preserved (read-only V1; HX-Redirect target route registration check inherits Phase 6 I3 gotcha precedent). §7.3 retargets `/schwab/setup` success path.
 12. **NO new schema integrity check.** Spec proposes NO `CREATE TABLE` / `ALTER TABLE` / `0020_*.sql`. V2 fits in package-level dataclass extension + existing `actual_value_json` envelope.
@@ -1072,6 +1078,7 @@ For each round, pass these as targeted prompts to `copowers:adversarial-critic`:
 - **Codex R1 resolutions in-tree:** all 2 Critical + **8 Major** (Codex R2 m#1 bookkeeping fix — R1 had close_price classifier widening; quantity-grain switch; malformed-leg distinction; multi-leg Pass-1-vs-Pass-2 clarity; production-shape coverage; environment default; cassette gating; historical surfacing = 8 entries) + 2 Minor (float wording; query-param consumer retention) RESOLVED with code-content fixes. ZERO ACCEPT-WITH-RATIONALE.
 - **Codex R2 resolutions in-tree:** all 0 Critical + 3 Major (Pass-2 LIFT policy unification — §1.5 + §3.2 + §8.2 now uniformly state V1 LIFT = Pass-1 only; Shape C audit-key persistence contract — keys live in discrepancy `actual_value_json` not in `correction_reason`; historical CLI help-text genericized — no operator-local correction IDs cited) + 2 Minor (R1 fix bookkeeping; §6.5 stale wording collapse) RESOLVED with code-content fixes. ZERO ACCEPT-WITH-RATIONALE.
 - **Codex R3 resolutions in-tree:** all 0 Critical + 1 Major (stale Pass-2-lift wording cleaned up at glossary §0, §2.2 defect chain, §6.6 OQ-F — Pass-2 LIFT now uniformly described as "entirely deferred OQ-F V2") + 2 Minor (watch item #26 historical CLI note aligned to R2 M#3 ID-free help-text; `schwab_limit_price` audit key renamed to `schwab_order_price` across 10 occurrences for MKT/STOP/None tolerance + naming-rationale note added in §5.2 Notes) RESOLVED with code-content fixes. ZERO ACCEPT-WITH-RATIONALE.
+- **Codex R4 resolutions in-tree:** all 0 Critical + 1 Major (remaining stale Pass-2-lift text — architecture diagram at §3.1 rewrote Pass-2 branch to show "stays tier=2-always in V1"; §9 Sub-bundle 1 scope rewrote `_classify_unmatched_fill_shared` bullet to "Path B sentinel recognition only; Pass-2 stays tier-2-always; LIFT deferred"; §11 watch item #9 rewrote to "V1 does NOT lift Pass-2-tier-1-FORBIDDEN at all; Pass-2 LIFT — single-leg single-matched-order AND multi-leg auto-redirect — entirely deferred OQ-F V2") + 1 Minor (CLAUDE.md module touch list row reworded — "amend gotcha to mark Pass-1 limit-vs-fill V2-RESOLVED; Pass-2 remains tier-2-always in V1 with Path B sentinel as only new branch") RESOLVED with code-content fixes. Stale §10.5 walkthrough `limit_price` → `order_price` in correction_reason example string. ZERO ACCEPT-WITH-RATIONALE.
 
 ---
 
