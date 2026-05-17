@@ -6,6 +6,82 @@
 
 ---
 
+## 2026-05-17 PM Post-Phase-12 Sub-bundle 1.5 SHIPPED — Schwab mapper validator-drop fix (filledQuantity==0 early-exit gate + observability canary + diagnostic script + production-shape regression tests) — 5-surface operator-witnessed GATE ALL PASS — CLOSES Sub-bundle 1's validator-drop defect; post-Phase-12 architectural arc CLOSED
+
+**Sub-bundle 1.5 SHIPPED 2026-05-17** at `a7c1016` (integration merge of `schwab-mapper-bundle-1.5` via `--no-ff`; 13 implementer commits + 1 return-report + 1 merge; **4 Codex rounds → NO_NEW_CRITICAL_MAJOR** convergent tapering (R1 0C/6M/2m → R2 0C/2M/2m → R3 0C/0M/2m → R4 0C/0M/1m); **2 ACCEPT-WITH-RATIONALE banked** (R1 M#2 T-1.5.4 sequence-by-design + R2 M#1 canary intentionally minimal — `price > 0` strongest signal + widening false-positives on placeholder `quantity > 0`); ZERO Co-Authored-By footer drift; **+48 fast tests** (4475 → 4523); ruff 18 unchanged; schema v19 unchanged.
+
+### Architectural fix lands across 2 surfaces
+
+1. **`swing/integrations/schwab/mappers.py:_extract_executions_from_order_raw`** — 12-line additive early-exit gate when `filled_qty == 0` (EXPLICIT zero only; preserves "filledQuantity absent: permissive" stance for legacy V1 path). Returns `None` pre-empting drop+warn cascade across STOP-typed placeholder family.
+2. **`swing/integrations/schwab/mappers.py:_has_non_placeholder_leg`** — NEW module-level canary helper emits WARN inside gate when any leg in `activityType=EXECUTION` activity has `price > 0` (anomalous-shape canary for future Schwab regression where real-fill sentinel surfaces despite `filledQuantity=0`).
+
+**T-1.5.1 diagnostic infrastructure (FOLDED)**:
+- `scripts/diagnose_schwab_executionlegs.py` (859 lines + 25 tests with 5-sentinel sentinel-leak audit; 3-layer redaction Layer 0 exact-replace + Layer 1a JSON-key regex + Layer 1b 32+ hex + Layer 1c 40+ base64; ASCII-only stdout for cp1252 safety; bypasses `_audited_get_account_orders` to capture pre-validator raw shape).
+- Generalizable diagnostic-script pattern for any future Schwab API-shape investigation (forward-binding lesson #1).
+
+### Root cause (CONFIRMED via T-1.5.1 against operator's production 2026-05-17 16:52:48 UTC)
+
+H1-H5 from brief §0.1 ALL FALSIFIED. Actual root cause = **H1-extended (UNANTICIPATED family)**: Schwab emits placeholder `executionLegs[]` on STOP-typed orders that NEVER executed (status REPLACED/CANCELED/PENDING_ACTIVATION) — `filledQuantity=0` AND `executionLegs[0].price=0.0` (sentinel placeholder) AND `executionLegs[0].quantity>0` (reflects order's intended size).
+
+**Production data distribution (30-day window)**:
+- 22 total orders inspected
+- 17 with `executionLegs[]` present
+- **12 of 17 are placeholder shapes** (filledQuantity=0 / leg.price=0.0) — STOP/REPLACED/CANCELED/PENDING_ACTIVATION family
+- **5 of 17 are real FILLED LIMIT orders with `price > 0`**:
+  - CVGI @ $12.6999 (filled 2026-05-15; 18 shares)
+  - LION @ $8.585 (filled 2026-05-14; 9 shares)
+  - VIR @ $55.5337 (filled 2026-05-13; 2 shares)
+  - YOU @ $10.78 (filled 2026-05-13; 7 shares)
+  - YOU @ $11.7066 (filled 2026-05-08; 7 shares)
+
+### GATE OUTCOME (orchestrator-driven 2026-05-17 PM via implementer-paired session)
+
+- **S1 PASS** — inline `pytest -m "not slow" -q -n auto` 4523 fast + 3 pre-existing phase8 walkthrough failures unchanged + 5 skipped (~93s wall-clock).
+- **S2 PASS** — 4 new test files 23/23 regression coverage PASS.
+- **S3 PRODUCTION FETCH PASS** — `python -m swing.cli schwab fetch --orders` (worktree-side per `feedback_worktree_cli_invocation.md`) emitted reconciliation_run #14 (state=completed; tier1_applied_count=0; tier2_pending_count=2; schwab_orders_checked=30 vs Sub-bundle 1's 18; ZERO validator-drop warnings in stderr/audit; ZERO false-positive entry/close_price_mismatch — architectural fix HOLDS both negative sense AND positive sense [executions flow through extraction; 4 FILLED LIMIT orders matched cleanly via Shape A/B without needing Shape C tier-1 corrections because operator's journal prices already align]).
+- **S4 PASS** — Phase 10 banner cleared to 0 after 2 dispositions (run #14 ids 50+51 — same Pass-1-NO-MATCH DHC+VSAT family run #13 handled identically; `acknowledge` per C.D-precedent for `ambiguity_kind=unsupported`; correction_ids 15+16).
+- **S5 PASS** — ruff 18 E501 unchanged.
+
+### Production state post-gate
+
+- **ZERO unresolved-material discrepancies; banner count=0** (preserved).
+- System EXITS safe-degraded mode. V2 mapper widening's positive lift now confirmed firing on production data via Shape A/B paths.
+- 4 historical correction chains preserved (correction_ids 11+12+13+14 from Sub-bundle 1 gate + 15+16 from Sub-bundle 1.5 gate — all acknowledge-only no-mutation entries for DHC+VSAT unmatched-fill family).
+
+### Post-Phase-12 architectural arc CLOSED — Sub-bundle 2 + Phase 12.5 dispatches UNBLOCKED
+
+**Next dispatches** (Phase 12.5; operator-locked 2026-05-17):
+1. **Phase 12.5 #1: OQ-F multi-leg tier-1 auto-redirect** — direct V2-mapper-widening successor; consumes Sub-bundle 1's `_compute_execution_price` + `_resolve_match_quantity` helpers + Sub-bundle 1.5's confirmed-firing extraction path. Highest operator-fit value.
+2. **Phase 12.5 #2: Web Tier-2 discrepancy-resolution surface** — Sub-bundle C plan §I.3 V2; web counterpart of C.D's `swing journal discrepancy resolve-ambiguity` + `override-correction` CLIs.
+3. **Phase 12.5 #3: CLAUDE.md + orchestrator-context.md maintenance pass** — addresses cap-drift (~50+ entries vs ~30 cap).
+
+**Phase 13 scope LOCKED** at `docs/phase13-scope-brainstorm.md` §0.5 (operator-decided 2026-05-17); dispatch gated on Phase 12.5 close.
+
+### Worktree teardown status
+
+- Branch `schwab-mapper-bundle-1.5` merged via `--no-ff` at `a7c1016`; on-disk husk at `.worktrees/schwab-mapper-bundle-1.5/` ACL-locked pending operator's `cleanup-locked-scratch-dirs.ps1 -DeregisterFirst` pass (branch matches `schwab(?:-\w+)?-bundle-` regex per `cleanup-locked-scratch-dirs.ps1:156`).
+
+### Cross-references
+
+- Dispatch brief: `docs/post-phase12-schwab-mapper-bundle-1.5-validator-drop-fix-executing-plans-dispatch-brief.md` (`aec3019`).
+- Return report: `docs/post-phase12-schwab-mapper-bundle-1.5-return-report.md` (in `a7c1016` merge).
+- Integration merge: `a7c1016`.
+- Sub-bundle 1 SHIPPED entry below: predecessor (PASS-WITH-FINDING; closes the validator-drop defect routing).
+
+### 5 forward-binding lessons (return report §11)
+
+1. **Diagnostic-script pattern generalizable** to any future Schwab API-shape investigation (3-layer redaction + ASCII-only stdout + thin-seam helpers for mock-testability + sentinel-leak audit pattern).
+2. **TYPE-only "would_pass_validator" labels are misleading** — always discriminate type vs value-range. Codex R1 M#5 caught the diagnostic script's misleading `legs_would_pass_validator` metric → renamed `legs_would_pass_type_shape_only`.
+3. **Canary observability hooks for silently-suppressed code paths require explicit design-decision documentation** — minimal-canary + ACCEPT-WITH-RATIONALE pattern (documented inline in helper docstring) is project-canonical approach for "silent skip" semantics.
+4. **Codex-chain brittleness around line-number references** — prefer function/block names + descriptive English over file:line citations in docstrings/comments. AI-generated docstrings often pin line numbers that become stale within months.
+5. **T-1.5.4 / S3 operator-witnessed gate sequencing is post-Codex-by-design** — include "operator-witnessed gate sequencing" explicitly in §0.5 BINDING contracts of future briefs to pre-empt Codex Major finding family.
+
+### 1 V2 candidate banked
+
+1. **Separate canary helper for malformed-shape detection** (R2 Minor #2 banked V2). Current `_has_non_placeholder_leg` returns False on malformed (non-coercible) leg prices, preserving no-false-positive contract. Future hardening: separate helper / result enum distinguishing "anomalous positive-price" from "malformed/uncoercible". Documented inline in `_has_non_placeholder_leg` docstring.
+
+---
+
 ## 2026-05-17 PM Post-Phase-12 Sub-bundle 1 SHIPPED — V2 Schwab mapper execution-grain widening + classifier consumer + comparator + housekeeping (FOLDED) — GATE PASS-WITH-FINDING; Sub-bundle 1.5 follow-up dispatch UNBLOCKED
 
 **Sub-bundle 1 SHIPPED 2026-05-17** at `120c992` (integration merge of `schwab-mapper-bundle-1` via `--no-ff`; ~24 implementer commits + 1 orchestrator handoff brief at `54c7b9d`; 26 files / 5225 insertions). 5 Codex rounds NO_NEW_CRITICAL_MAJOR; **ZERO ACCEPT-WITH-RATIONALE banked**; ZERO Co-Authored-By footer drift; +115 fast tests (4360 → 4475); ruff 18 unchanged; schema v19 unchanged.
