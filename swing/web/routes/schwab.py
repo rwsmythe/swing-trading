@@ -65,10 +65,14 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# HX-Redirect target after successful setup. T-B.7 deferred → /config
-# is the V1 landing page (verified to exist via route-table assertion
-# in tests).
-_SUCCESS_REDIRECT_TARGET = "/config?schwab_setup=ok"
+# HX-Redirect target after successful setup. Post-Phase-12 Sub-bundle 2
+# Task T-2.4 retargets from /config?schwab_setup=ok → /schwab/status
+# (T-B.7 deferred is now shipped via Sub-bundle 2). Route verified to
+# exist via route-table assertion in tests; the prior /config target
+# remains a passive no-op consumer for one release window per Codex R1
+# m#2 LOCK (stale browser tabs / bookmarks with the old target still
+# render the /config page; /config does not interpret the query param).
+_SUCCESS_REDIRECT_TARGET = "/schwab/status"
 
 
 def _fetch_unresolved_material_count(db_path) -> int:
