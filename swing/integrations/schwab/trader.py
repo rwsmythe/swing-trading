@@ -376,6 +376,64 @@ def get_account_orders(
     )
 
 
+def get_account_orders_audited(
+    client: Any,
+    conn: sqlite3.Connection,
+    account_hash: str,
+    from_entered_time: datetime | str,
+    to_entered_time: datetime | str,
+    *,
+    surface: str,
+    environment: str,
+    pipeline_run_id: int | None = None,
+    status: str | None = None,
+    max_results: int | None = None,
+) -> tuple[int, list[SchwabOrderResponse]]:
+    """Phase 12 Sub-sub-bundle C.D T-D.6.1 — audited variant of
+    ``get_account_orders`` returning ``(call_id, orders)`` for Pass 2
+    backfill audit-chain linkage.
+
+    Identical to ``get_account_orders`` semantically (same schwabdev call,
+    same audit lifecycle, same mapper, same validation gates); differs ONLY
+    in the return shape — the persisted ``schwab_api_calls.call_id`` PK is
+    returned alongside the mapped order list so the backfill iteration can
+    link any subsequent ``reconciliation_corrections`` row's
+    ``schwab_api_call_id`` field to the canonical audit row.
+
+    Race-free with concurrent pipeline-initiated ``_step_schwab_orders``
+    by virtue of T-D.6's ``BackfillPipelineActiveError`` (rejects backfill
+    entry while ``pipeline_runs.state='running'``).
+
+    Raises identical exceptions to ``get_account_orders``:
+        SchwabAuthError on 401 / silent-fail / shape errors.
+        SchwabRateLimitError on 429.
+        SchwabApiError on other failures.
+        SchwabSchemaParityError on mapper rejection.
+    """
+    if not isinstance(account_hash, str) or not account_hash:
+        raise SchwabApiError(
+            0, "account_orders: account_hash must be non-empty str"
+        )
+
+    from_str = _schwab_iso(from_entered_time)
+    to_str = _schwab_iso(to_entered_time)
+
+    return _call_endpoint(
+        client_method=lambda: client.account_orders(
+            account_hash, from_str, to_str,
+            status=status, maxResults=max_results,
+        ),
+        endpoint="accounts.orders.list",
+        conn=conn,
+        surface=surface,
+        environment=environment,
+        pipeline_run_id=pipeline_run_id,
+        mapper=map_orders_to_fill_candidates,
+        client=client,
+        return_call_id=True,
+    )
+
+
 def get_account_transactions(
     client: Any,
     conn: sqlite3.Connection,
@@ -433,6 +491,7 @@ def _call_endpoint(
     pipeline_run_id: int | None,
     mapper,
     client: Any = None,
+    return_call_id: bool = False,
 ):
     """Invoke the schwabdev method + thread through the audit lifecycle.
 
@@ -451,6 +510,19 @@ def _call_endpoint(
      12. Return mapper output.
 
     The audit-success-fire happens ONLY after step 9 succeeds (M#3 family).
+
+    Phase 12 Sub-sub-bundle C.D T-D.6.1 (Codex R4 Major #3 implementation seam):
+    when ``return_call_id=True``, returns ``(call_id, mapper_output)`` so a
+    caller (currently only ``get_account_orders_audited`` consumed by Pass 2
+    backfill) can link a Schwab API response to its persisted audit row PK
+    for downstream `schwab_api_calls.linked_correction_id` provenance chains.
+    Default ``return_call_id=False`` preserves the original return shape of
+    the four shipped endpoint wrappers byte-for-byte (backward compat per
+    plan §E.6.1 acceptance #3). Race-free by virtue of T-D.6's
+    ``BackfillPipelineActiveError`` pipeline-exclusion gate: the only
+    callsites that request ``return_call_id=True`` are backfill-initiated
+    and therefore mutually-exclusive with pipeline-initiated
+    ``_step_schwab_orders`` callsites.
     """
     if surface not in ("pipeline", "cli"):
         raise SchwabApiError(
@@ -647,6 +719,8 @@ def _call_endpoint(
         status="success",
         error_message=None,
     )
+    if return_call_id:
+        return (call_id, mapped)
     return mapped
 
 
@@ -654,6 +728,7 @@ __all__ = [
     "TRANSACTION_TYPES_ALL",
     "get_account_details",
     "get_account_orders",
+    "get_account_orders_audited",
     "get_account_transactions",
     "get_accounts_linked",
 ]

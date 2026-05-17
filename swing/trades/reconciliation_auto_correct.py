@@ -814,6 +814,7 @@ class _DiscrepancyInfo:
     field_name: str
     resolution: str
     ambiguity_kind: str | None
+    expected_value_json: str | None
 
 
 def _select_correction_row(
@@ -834,7 +835,8 @@ def _select_discrepancy(
 ) -> _DiscrepancyInfo:
     row = conn.execute(
         "SELECT discrepancy_id, run_id, discrepancy_type, trade_id, "
-        "fill_id, cash_movement_id, field_name, resolution, ambiguity_kind "
+        "fill_id, cash_movement_id, field_name, resolution, ambiguity_kind, "
+        "expected_value_json "
         "FROM reconciliation_discrepancies WHERE discrepancy_id = ?",
         (discrepancy_id,),
     ).fetchone()
@@ -853,6 +855,7 @@ def _select_discrepancy(
         field_name=row[6],
         resolution=row[7],
         ambiguity_kind=row[8],
+        expected_value_json=row[9],
     )
 
 
@@ -1281,10 +1284,21 @@ def _handle_no_mutation_audit(
     """
     affected_table, affected_row_id = _resolve_affected_target(disc)
     field_name = disc.field_name
-    pre_value = _read_journal_value(
-        conn, affected_table, affected_row_id, field_name,
-    )
-    pre_json = json.dumps({field_name: pre_value}, sort_keys=True, default=str)
+    # Unmatched-fill discrepancies use a synthetic field_name='fill_match'
+    # (set by swing/trades/schwab_reconciliation.py:672 for unmatched_open_fill
+    # / unmatched_close_fill) which is NOT a real column on the fills table.
+    # For these, skip the column read and use the discrepancy's
+    # expected_value_json (the journal-recorded state at emit time) as the
+    # no-mutation audit shape per spec §6.2.1 Codex R1 Critical #1 LOCK.
+    if disc.discrepancy_type in ("unmatched_open_fill", "unmatched_close_fill"):
+        pre_json = disc.expected_value_json or json.dumps(
+            {field_name: None}, sort_keys=True,
+        )
+    else:
+        pre_value = _read_journal_value(
+            conn, affected_table, affected_row_id, field_name,
+        )
+        pre_json = json.dumps({field_name: pre_value}, sort_keys=True, default=str)
 
     if risk_policy_id is None:
         risk_policy_id = _maybe_get_active_risk_policy_id(conn)

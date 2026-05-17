@@ -1,11 +1,30 @@
 """Click CLI for swing. Phase 1 subcommands: db-migrate, eval."""
 from __future__ import annotations
 
+import io as _io
 import sqlite3
+import sys as _sys
 from dataclasses import dataclass
 from datetime import date as _date
 from datetime import datetime
 from pathlib import Path
+
+# Force UTF-8 on stdout/stderr so non-ASCII glyphs (§, →, ↔, etc.) in CLI
+# output don't crash on Windows PowerShell's default cp1252 encoder.
+# Same family as the matplotlib mathtext gotcha (CLAUDE.md): canonical fix is
+# to remove the metacharacter from rendered text, but with 100+ § refs in
+# classifier reason strings + spec citations, a systemic stdout reconfigure
+# is the lower-risk path. Defense-in-depth alongside the ASCII swap of → to
+# -> in swing/trades/reconciliation_backfill.py:_format_pass_2_line.
+# Discovered 2026-05-17 during Phase 12 Sub-sub-bundle C.D operator-witnessed
+# gate (S2 dry-run + S5 show-ambiguity both surfaced cp1252 mangling).
+try:  # pragma: no cover — environment-dependent
+    _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    _sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, _io.UnsupportedOperation):
+    # Embedded consoles / non-TextIOWrapper streams (IDE / capture fixtures)
+    # don't expose .reconfigure(); the original encoding is preserved.
+    pass
 
 import click
 import pandas as pd
@@ -1764,6 +1783,270 @@ def journal_import_tos_cmd(
     )
 
 
+@journal_group.command("reconcile-backfill")
+@click.option(
+    "--apply", "apply_flag", is_flag=True, default=False,
+    help=(
+        "Actually execute backfill (mutates journal). Mutually exclusive "
+        "with --dry-run."
+    ),
+)
+@click.option(
+    "--dry-run", "dry_run_flag", is_flag=True, default=False,
+    help=(
+        "Print projected classification only; no mutation. Mutually "
+        "exclusive with --apply. Default mode when neither flag set."
+    ),
+)
+@click.option(
+    "--ticker", "ticker", type=str, default=None,
+    help="Restrict iteration to a single ticker.",
+)
+@click.option(
+    "--limit", "limit", type=int, default=None,
+    help="Cap the number of discrepancies iterated.",
+)
+@click.option(
+    "--no-pass-2-on-dry-run", "no_pass_2_on_dry_run", is_flag=True,
+    default=False,
+    help=(
+        "Skip Pass-2 Schwab API calls during dry-run (T-D.8 consumer; "
+        "no-op at T-D.6 scaffold)."
+    ),
+)
+@click.option(
+    "--retry-pass-2-failures", "retry_pass_2_failures", is_flag=True,
+    default=False,
+    help=(
+        "Re-attempt Pass-2 on discrepancies whose previous backfill "
+        "attempt failed at Pass 2 (idempotency hook; T-D.9 consumer)."
+    ),
+)
+@click.pass_context
+def journal_reconcile_backfill_cmd(
+    ctx, apply_flag, dry_run_flag, ticker, limit,
+    no_pass_2_on_dry_run, retry_pass_2_failures,
+):
+    """Backfill auto-correct + Tier-2 stamp across unresolved discrepancies.
+
+    Phase 12 Sub-bundle C T-D.6 SCAFFOLD — iterates unresolved
+    discrepancies + emits a per-row projection table. The actual
+    Pass-1 / Pass-2 dispatch + tier-1 auto-apply + tier-2 stamp
+    lands at T-D.7 / T-D.8 / T-D.9.
+
+    Default mode is dry-run; pass ``--apply`` to actually execute.
+    The two flags are mutually exclusive.
+    """
+    from swing.data.db import connect
+    from swing.trades.reconciliation_backfill import (
+        BackfillPipelineActiveError,
+        format_projection_row,
+        format_projection_table_header,
+        format_projection_table_separator,
+        format_summary_block,
+        run_backfill,
+    )
+
+    # Mutually-exclusive --apply / --dry-run check per plan §E.6 #3.
+    if apply_flag and dry_run_flag:
+        raise click.UsageError(
+            "--apply and --dry-run are mutually exclusive. Pass exactly "
+            "one (or neither, for default dry-run).",
+        )
+    # Default behavior is dry-run unless --apply is explicit.
+    dry_run = not apply_flag
+
+    # Codex R1 Major #1 fix — apply_overrides() at CLI entry so the
+    # cfg-cascade (env vars > user-config.toml > prompt) resolves
+    # end-to-end. Mirrors Phase 12 Sub-bundle B forward-binding lesson
+    # #6 (apply_overrides discipline at Schwab entry points). Fall back
+    # to raw cfg if the helper can't operate on it (test fixtures supply
+    # SimpleNamespace cfgs that bypass the Config dataclass round-trip).
+    try:
+        from swing.config_overrides import apply_overrides
+        cfg = apply_overrides(ctx.obj["config"])
+    except (AttributeError, TypeError):
+        cfg = ctx.obj["config"]
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        environment = cfg.integrations.schwab.environment
+        account_hash = getattr(
+            cfg.integrations.schwab, "account_hash", None,
+        )
+
+        # Codex R1 Major #1 fix — construct the Schwab client at the CLI
+        # entry so Pass 2 (T-D.8) actually has a live client to call
+        # ``account_orders`` on. Without this, the previous scaffold
+        # passed ``schwab_client=None`` and Pass 2's
+        # ``get_account_orders_audited`` dereferenced ``client.account_orders``
+        # → AttributeError; production --apply for DHC/VSAT would not
+        # perform the audited Schwab re-fetch + would persist a fake
+        # Pass-2 failure instead of real tier-2 ambiguity classification.
+        #
+        # Construction is short-circuited when:
+        #   * environment == 'sandbox' (the C.C sandbox short-circuit
+        #     LOCK fires at the inner service function regardless of
+        #     whether the client was constructed — pass None to avoid
+        #     burning OAuth state on a sandbox run);
+        #   * dry_run AND no_pass_2_on_dry_run (caller opted out of
+        #     Pass 2 entirely; client construction would be pure waste
+        #     + would prompt unnecessarily when env vars are unset).
+        #
+        # Otherwise mirror ``swing schwab fetch`` preflight verbatim:
+        # preflight account_hash + resolve credentials via cfg-cascade +
+        # build schwabdev client.
+        from swing.cli_schwab import (
+            _build_schwabdev_client_for_fetch,
+            _resolve_credentials_for_cli,
+        )
+        from swing.integrations.schwab.client import (
+            SchwabAuthError,
+            SchwabConfigMissingError,
+        )
+
+        schwab_client = None
+        # Skip construction entirely under sandbox (C.C inner short-circuit
+        # fires regardless) and under --dry-run + --no-pass-2-on-dry-run
+        # (operator explicitly opted out of Pass 2).
+        skip_client_construction = (
+            environment == "sandbox"
+            or (dry_run and no_pass_2_on_dry_run)
+        )
+        if not skip_client_construction:
+            # --apply mode REQUIRES the client (Pass-2 dispatch must
+            # actually re-fetch Schwab orders). Dry-run mode without
+            # --no-pass-2-on-dry-run also wants the client (Pass 2 still
+            # fires unless explicitly skipped). For both modes,
+            # account_hash + credentials are mandatory preflight.
+            if not account_hash:
+                if not dry_run:
+                    raise click.ClickException(
+                        f"Schwab account_hash not configured. "
+                        f"Run `swing schwab setup --environment "
+                        f"{environment}` first."
+                    )
+                # Dry-run: emit advisory + leave client=None. If a
+                # Pass-2-required discrepancy is reached, dispatch will
+                # surface a Pass-2 re-fetch failure with descriptive
+                # reason. This preserves the operator's ability to run
+                # dry-run previews against pre-Phase-11 DBs where
+                # account_hash was never configured.
+                click.echo(
+                    "(advisory) Schwab account_hash not configured; "
+                    "Pass-2 dispatch will fail for unmatched_*_fill "
+                    "discrepancies. Run `swing schwab setup` to enable "
+                    "Pass-2 re-fetch.",
+                    err=True,
+                )
+            else:
+                try:
+                    client_id, client_secret = _resolve_credentials_for_cli(
+                        cfg, environment,
+                    )
+                except (click.ClickException, SchwabConfigMissingError) as exc:
+                    # Codex R2 Major #1 fix — ``_resolve_credentials_for_cli``
+                    # translates ``SchwabConfigMissingError`` into
+                    # ``click.ClickException`` BEFORE the exception escapes
+                    # (see ``swing/cli_schwab.py:126``). Catching ONLY
+                    # ``SchwabConfigMissingError`` here was a no-op: the
+                    # original exception was already a ``ClickException``
+                    # by the time it reached this frame, so missing
+                    # credentials still hard-failed even under ``--dry-run``.
+                    # Catching both types preserves both paths:
+                    #   * ``click.ClickException`` — actual cfg-cascade
+                    #     resolution failure (what R1 surfaced).
+                    #   * ``SchwabConfigMissingError`` — defense-in-depth
+                    #     for any future surface that returns the typed
+                    #     exception unwrapped.
+                    if not dry_run:
+                        # Re-raise ClickException as-is (already formatted);
+                        # wrap raw SchwabConfigMissingError for parity.
+                        if isinstance(exc, click.ClickException):
+                            raise
+                        raise click.ClickException(str(exc)) from exc
+                    # Dry-run soft-fail (operator may not have shell
+                    # env vars set for a non-destructive preview).
+                    click.echo(
+                        f"(advisory) Schwab credentials unavailable: "
+                        f"{exc}. Pass-2 dispatch will fail for "
+                        "unmatched_*_fill discrepancies.",
+                        err=True,
+                    )
+                    client_id = None
+                    client_secret = None
+                if client_id is not None:
+                    try:
+                        schwab_client = _build_schwabdev_client_for_fetch(
+                            cfg, environment, client_id, client_secret,
+                        )
+                    except SchwabAuthError as exc:
+                        if not dry_run:
+                            raise click.ClickException(
+                                f"Authentication failed: {exc}",
+                            ) from exc
+                        click.echo(
+                            f"(advisory) Schwab authentication failed: "
+                            f"{exc}. Pass-2 dispatch will fail.",
+                            err=True,
+                        )
+                    except SchwabConfigMissingError as exc:
+                        if not dry_run:
+                            raise click.ClickException(str(exc)) from exc
+                        click.echo(
+                            f"(advisory) Schwab config missing: {exc}. "
+                            "Pass-2 dispatch will fail.",
+                            err=True,
+                        )
+
+        try:
+            summary = run_backfill(
+                conn,
+                dry_run=dry_run,
+                schwab_client=schwab_client,
+                environment=environment,
+                account_hash=account_hash,
+                ticker=ticker,
+                limit=limit,
+                no_pass_2_on_dry_run=no_pass_2_on_dry_run,
+                retry_pass_2_failures=retry_pass_2_failures,
+            )
+        except BackfillPipelineActiveError as exc:
+            # Codex R2 Major #3 — surface partial-progress summary before
+            # the user-friendly error so the operator sees which rows
+            # were already committed. The exception carries the partial
+            # summary as ``exc.partial_summary`` when the abort happened
+            # mid-iteration (rows already processed have committed via
+            # their own service-layer txs). When the abort happened at
+            # entry (no iteration ran), partial_summary is None.
+            partial = getattr(exc, "partial_summary", None)
+            if partial is not None and partial.per_discrepancy_outcomes:
+                click.echo("Backfill aborted mid-iteration:\n")
+                click.echo(format_projection_table_header())
+                click.echo(format_projection_table_separator())
+                for outcome in partial.per_discrepancy_outcomes:
+                    click.echo(format_projection_row(outcome))
+                click.echo(format_summary_block(partial))
+            raise click.ClickException(str(exc)) from exc
+    finally:
+        conn.close()
+
+    if not summary.per_discrepancy_outcomes:
+        click.echo("(no unresolved discrepancies)")
+        return
+
+    # Acceptance criterion #4 — dry-run projection matrix preamble.
+    if dry_run:
+        click.echo("Backfill --dry-run projection:\n")
+    else:
+        click.echo("Backfill --apply results:\n")
+    click.echo(format_projection_table_header())
+    click.echo(format_projection_table_separator())
+    for outcome in summary.per_discrepancy_outcomes:
+        click.echo(format_projection_row(outcome))
+    click.echo(format_summary_block(summary))
+
+
 @journal_group.group("discrepancy")
 def discrepancy_group() -> None:
     """Phase 9 reconciliation discrepancy review + resolution."""
@@ -1824,6 +2107,68 @@ def discrepancy_list_cmd(ctx, unresolved, material, trade_id, limit):
         )
 
 
+@discrepancy_group.command("list-pending-ambiguities")
+@click.option(
+    "--ambiguity-kind", type=str, default=None,
+    help="Filter to a specific ambiguity_kind value.",
+)
+@click.option(
+    "--ticker", type=str, default=None,
+    help="Filter to a specific ticker.",
+)
+@click.option("--limit", type=int, default=50, help="Max rows to show.")
+@click.pass_context
+def discrepancy_list_pending_ambiguities_cmd(
+    ctx, ambiguity_kind, ticker, limit,
+):
+    """List discrepancies pending operator ambiguity resolution.
+
+    Surfaces rows in ``resolution='pending_ambiguity_resolution'`` (Phase
+    12 Sub-bundle C Tier-2 state) for operator review before invoking
+    ``resolve-ambiguity`` (T-D.3). Mirrors the existing ``discrepancy
+    list`` shape; adds an ``Ambiguity`` column for the per-row
+    ``ambiguity_kind`` discriminator.
+    """
+    from swing.data.db import connect
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        where = ["resolution = 'pending_ambiguity_resolution'"]
+        params: list = []
+        if ambiguity_kind:
+            where.append("ambiguity_kind = ?")
+            params.append(ambiguity_kind)
+        if ticker:
+            where.append("ticker = ?")
+            params.append(ticker)
+        sql = (
+            "SELECT discrepancy_id, run_id, discrepancy_type, trade_id, "
+            "ticker, field_name, ambiguity_kind, created_at "
+            "FROM reconciliation_discrepancies WHERE "
+            + " AND ".join(where)
+            + " ORDER BY discrepancy_id DESC LIMIT ?"
+        )
+        params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        click.echo("(no pending ambiguities)")
+        return
+    click.echo(
+        f"{'ID':>5} {'Run':>4} {'Type':<22} {'Trade':>6} "
+        f"{'Ticker':<8} {'Field':<14} {'Ambiguity':<32} Created"
+    )
+    for r in rows:
+        did, rid, dtype, tid, tk, fn, ak, created = r
+        click.echo(
+            f"{did:>5} {rid:>4} {dtype:<22} "
+            f"{(tid if tid is not None else '-'):>6} "
+            f"{(tk or '-'):<8} {fn:<14} {(ak or '-'):<32} {created or ''}"
+        )
+
+
 @discrepancy_group.command("show")
 @click.argument("discrepancy_id", type=int)
 @click.pass_context
@@ -1858,6 +2203,640 @@ def discrepancy_show_cmd(ctx, discrepancy_id):
     click.echo(f"resolved_by:    {d.resolved_by}")
     click.echo(f"mistake_tag:    {d.mistake_tag_assigned}")
     click.echo(f"created_at:     {d.created_at}")
+
+
+@discrepancy_group.command("show-ambiguity")
+@click.argument("discrepancy_id", type=int)
+@click.pass_context
+def discrepancy_show_ambiguity_cmd(ctx, discrepancy_id):
+    """Print discrepancy detail + the per-``ambiguity_kind`` choice menu.
+
+    Surfaces the choices the operator can pass to ``resolve-ambiguity``
+    via ``--choice <code>``. For ``multi_match_within_window``, the
+    parametric ``pick_schwab_record_<N>`` entries are constructed from
+    the candidate count parsed best-effort out of ``resolution_reason``
+    (V1 source per plan §E.2 acceptance criterion #4; no dedicated
+    ``candidate_choices_json`` column — banked V2 candidate §I.13).
+    """
+    import re
+
+    from swing.data.db import connect
+    from swing.data.repos.reconciliation import get_discrepancy
+    from swing.trades.reconciliation_ambiguity_choices import (
+        ChoiceMenuItem,
+        get_choice_menu,
+    )
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        d = get_discrepancy(conn, discrepancy_id)
+    finally:
+        conn.close()
+    if d is None:
+        raise click.ClickException(
+            f"discrepancy {discrepancy_id} not found"
+        )
+    # --- Shared discrepancy detail (mirrors discrepancy_show_cmd). ---
+    click.echo(f"discrepancy_id: {d.discrepancy_id}")
+    click.echo(f"run_id:         {d.run_id}")
+    click.echo(f"type:           {d.discrepancy_type}")
+    click.echo(f"trade_id:       {d.trade_id}")
+    click.echo(f"fill_id:        {d.fill_id}")
+    click.echo(f"ticker:         {d.ticker}")
+    click.echo(f"field:          {d.field_name}")
+    click.echo(f"material:       {d.material_to_review}")
+    click.echo(f"expected:       {d.expected_value_json}")
+    click.echo(f"actual:         {d.actual_value_json}")
+    click.echo(f"delta:          {d.delta_text}")
+    click.echo(f"resolution:     {d.resolution}")
+    click.echo(f"ambiguity_kind: {d.ambiguity_kind}")
+    click.echo(f"reason:         {d.resolution_reason}")
+    click.echo(f"created_at:     {d.created_at}")
+
+    # --- Choice menu per spec §6.2.1. ---
+    click.echo("")
+    if d.ambiguity_kind is None:
+        click.echo(
+            "(no candidate choices: discrepancy has no ambiguity_kind; "
+            "not a Tier-2 pending row)"
+        )
+        return
+
+    menu = get_choice_menu(d.ambiguity_kind)
+
+    # multi_match_within_window: prepend parametric pick_schwab_record_<N>
+    # entries derived best-effort from resolution_reason text. V1 source
+    # per plan §E.2 acceptance criterion #4 — the classifier emits
+    # ``Schwab returned <N> orders within the match window`` in the
+    # reason. Fall through to static-only menu on parse failure
+    # (defense-in-depth).
+    if d.ambiguity_kind == "multi_match_within_window":
+        parametric: list[ChoiceMenuItem] = []
+        reason = d.resolution_reason or ""
+        m = re.search(
+            r"Schwab returned\s+(\d+)\s+orders within the match window",
+            reason,
+        )
+        if m:
+            n = int(m.group(1))
+            for i in range(n):
+                parametric.append(
+                    ChoiceMenuItem(
+                        code=f"pick_schwab_record_{i + 1}",
+                        description=(
+                            f"Pick Schwab candidate #{i + 1} as the "
+                            f"canonical source for this fill (REQUIRES "
+                            f"--custom-value with operator-supplied "
+                            f"execution-level field values; Pass-2 "
+                            f"candidates are order-grain not "
+                            f"execution-grain per spec §4.3.2 LOCK)."
+                        ),
+                        requires_custom_value=True,
+                        expected_payload_shape_description=(
+                            '{"price": X.XX, "quantity": Q, '
+                            '"fill_datetime": "..."}'
+                        ),
+                    )
+                )
+        menu = parametric + menu
+
+    if not menu:
+        click.echo(
+            f"(no candidate choices for ambiguity_kind="
+            f"{d.ambiguity_kind!r}; helper module not updated for "
+            f"this kind — V1 forward-compatibility surface)"
+        )
+        return
+
+    click.echo("Candidate choices (pass to resolve-ambiguity via --choice):")
+    click.echo("")
+    # RECOMMENDED entries surface first (operator scan-first per OQ-4).
+    recommended_items = [it for it in menu if it.recommended]
+    other_items = [it for it in menu if not it.recommended]
+    for it in recommended_items + other_items:
+        prefix = "[RECOMMENDED] " if it.recommended else "  "
+        marker = " *" if it.requires_custom_value else ""
+        click.echo(f"{prefix}{it.code}{marker}")
+        click.echo(f"    {it.description}")
+        if it.requires_custom_value:
+            shape = it.expected_payload_shape_description
+            if shape is not None:
+                click.echo(
+                    f"    * REQUIRES --custom-value with shape "
+                    f"{shape}"
+                )
+            else:
+                click.echo(
+                    "    * REQUIRES --custom-value '<json>' payload"
+                )
+        click.echo("")
+
+
+# Phase 12 Sub-bundle C.C lesson #1 — the 4 service-owned ``resolution``
+# values must NOT be accepted as ``--choice`` values on the manual
+# resolve-ambiguity surface (per plan §E.3 acceptance criterion + brief
+# §0.5 #1 LOCK). These route through canonical C.C service entries
+# (apply_tier1_correction via the pivot dispatcher; apply_tier2_resolution
+# via this very CLI surface; apply_tier3_override via the override-
+# correction CLI at T-D.4; stamp_pending_ambiguity via the pivot stamp).
+# Mirrors ``_MANUAL_RESOLVE_ALLOWED_RESOLUTIONS`` discipline introduced
+# in C.C for ``resolve_discrepancy`` (CLAUDE.md gotcha
+# "Schema-coverage Python constant is NOT necessarily the manual-input
+# allowlist").
+_TIER2_SERVICE_OWNED_RESOLUTION_VALUES = frozenset({
+    "auto_corrected_from_schwab",
+    "pending_ambiguity_resolution",
+    "operator_resolved_ambiguity",
+    "operator_overridden",
+})
+
+
+@discrepancy_group.command("resolve-ambiguity")
+@click.argument("discrepancy_id", type=int)
+@click.option(
+    "--choice", "choice_code", required=True,
+    help=(
+        "Choice code from the per-ambiguity_kind menu surfaced by "
+        "`swing journal discrepancy show-ambiguity <id>`. Must NOT be one "
+        "of the 4 service-owned resolution values (those route through "
+        "canonical service entries, not this manual surface)."
+    ),
+)
+@click.option(
+    "--custom-value", "custom_value", default=None,
+    help=(
+        "JSON payload for choices flagged `requires_custom_value=True` "
+        "(per spec §6.2.1 menu). Parsed via json.loads; deeper shape "
+        "validation lives at service-layer apply-time per-handler."
+    ),
+)
+@click.option(
+    "--reason", "reason", required=True,
+    help=(
+        "Operator-supplied free-text rationale (REQUIRED per spec §6.4 "
+        "mandatory + §6.2 Codex R5 LOCK). Persisted on the new "
+        "reconciliation_corrections row as `correction_reason`."
+    ),
+)
+@click.option(
+    "--schwab-api-call-id", "schwab_api_call_id", type=int, default=None,
+    help=(
+        "Optional `schwab_api_calls.call_id` to back-link the new "
+        "correction row to. When supplied, the new row's "
+        "`schwab_api_call_id` populates AND "
+        "`schwab_api_calls.linked_correction_id` back-links via the C.C "
+        "audit-chain helper. Operator-facing discovery: the backfill "
+        "Pass-2 dry-run output (T-D.5) emits per-discrepancy "
+        "`call_id=<N>` lines for copy-paste."
+    ),
+)
+@click.pass_context
+def discrepancy_resolve_ambiguity_cmd(
+    ctx,
+    discrepancy_id,
+    choice_code,
+    custom_value,
+    reason,
+    schwab_api_call_id,
+):
+    """Resolve a pending_ambiguity_resolution discrepancy via operator choice.
+
+    Operator workflow (per plan §E.1 + §E.2 + §E.3):
+
+    1. ``swing journal discrepancy list-pending-ambiguities`` — surface
+       the discrepancy_id of interest.
+    2. ``swing journal discrepancy show-ambiguity <id>`` — read the
+       per-ambiguity_kind candidate choice menu (REQUIRES markers tell
+       you which need --custom-value + the expected JSON shape).
+    3. ``swing journal discrepancy resolve-ambiguity <id> --choice
+       <code> --reason '<rationale>' [--custom-value '<json>']
+       [--schwab-api-call-id <N>]`` — this surface.
+
+    The CLI delegates to ``apply_tier2_resolution`` in
+    ``swing.trades.reconciliation_auto_correct`` which owns the
+    BEGIN IMMEDIATE / COMMIT / ROLLBACK transaction envelope + the
+    per-(``ambiguity_kind``, ``choice_code``) handler dispatch + the
+    validator-chain re-invocation defense-in-depth + the journal
+    mutation + the audit row INSERT + the discrepancy resolution
+    UPDATE.
+    """
+    import json as _json
+
+    from swing.data.db import connect
+    from swing.data.repos.reconciliation import get_discrepancy
+    from swing.trades.reconciliation_ambiguity_choices import (
+        get_choice_menu,
+    )
+    from swing.trades.reconciliation_auto_correct import (
+        AlreadySupersededError,
+        CallerHeldTransactionError,
+        ValidatorRejectedError,
+        apply_tier2_resolution,
+    )
+    from swing.trades.risk_policy import read_active_policy
+
+    # NEW C.C lesson #1 — service-owned-state rejection at the CLI
+    # boundary, BEFORE the DB is even opened. Routing-hint substring in
+    # the error message tells operator where to go next.
+    #
+    # Codex R1 Minor #1 fix — normalize the operator-supplied --choice
+    # value (strip surrounding whitespace + lowercase) BEFORE the
+    # membership check. Without normalization a copy/paste with stray
+    # whitespace or upper-case drift (' auto_corrected_from_schwab ' /
+    # 'AUTO_CORRECTED_FROM_SCHWAB') falls through to generic-incompatible
+    # handling, losing the routing-hint substring. The downstream
+    # ``apply_tier2_resolution`` dispatch table is case-sensitive so we
+    # only apply the normalization to THIS rejection check; the original
+    # `choice_code` is passed through verbatim to the service layer
+    # (which will then surface its own incompatible-choice error if the
+    # case-drift was genuinely a typo rather than a service-owned value).
+    if (
+        choice_code is not None
+        and choice_code.strip().lower()
+        in _TIER2_SERVICE_OWNED_RESOLUTION_VALUES
+    ):
+        raise click.UsageError(
+            f"--choice {choice_code!r} is a service-owned resolution "
+            "value and is NOT accepted on this manual surface; those "
+            "values route through canonical service entries (the pivot "
+            "dispatcher in `apply_tier1_correction` / "
+            "`apply_tier2_resolution` / `apply_tier3_override` — "
+            "operator-driven via `override-correction` for "
+            "tier-3 + this `resolve-ambiguity` for tier-2). Pick a "
+            "choice from the per-ambiguity_kind menu surfaced by "
+            "`swing journal discrepancy show-ambiguity <id>`."
+        )
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        d = get_discrepancy(conn, discrepancy_id)
+        if d is None:
+            raise click.ClickException(
+                f"discrepancy {discrepancy_id} not found"
+            )
+        if d.ambiguity_kind is None:
+            raise click.UsageError(
+                f"discrepancy {discrepancy_id} has no ambiguity_kind "
+                f"(resolution={d.resolution!r}); resolve-ambiguity is "
+                f"only valid for Tier-2 pending_ambiguity_resolution "
+                f"rows. Use `swing journal discrepancy resolve` for the "
+                f"manual resolution surface, or `swing journal "
+                f"discrepancy override-correction` for tier-3 overrides."
+            )
+
+        # Validate --choice against the per-ambiguity_kind menu BEFORE
+        # touching the service layer (per plan §E.3 acceptance criterion
+        # #3 + #4). The classifier's menu for multi_match_within_window
+        # is static + parametric — for the parametric pick_schwab_record_<N>
+        # branch we delegate to the service-layer dispatcher (which has
+        # access to the actual candidate count via its handler-key
+        # parametric-prefix dispatch); here we only enforce the static
+        # member list + the per-choice --custom-value requirement.
+        menu = get_choice_menu(d.ambiguity_kind)
+        static_codes = {it.code for it in menu}
+        # Per-choice --custom-value enforcement requires the
+        # `requires_custom_value` flag from the menu entry; record it.
+        is_parametric_pick = (
+            d.ambiguity_kind == "multi_match_within_window"
+            and choice_code.startswith("pick_schwab_record_")
+        )
+
+        if choice_code in static_codes:
+            menu_item = next(it for it in menu if it.code == choice_code)
+            if menu_item.requires_custom_value and custom_value is None:
+                shape = (
+                    menu_item.expected_payload_shape_description
+                    or "<json>"
+                )
+                raise click.UsageError(
+                    f"--custom-value is required for choice "
+                    f"{choice_code!r}; expected JSON shape: {shape}"
+                )
+        elif is_parametric_pick:
+            # Parametric pick_schwab_record_<N> ALWAYS requires
+            # --custom-value (per T-D.2's parametric entry's
+            # `requires_custom_value=True`).
+            if custom_value is None:
+                raise click.UsageError(
+                    f"--custom-value is required for choice "
+                    f"{choice_code!r}; expected JSON shape: "
+                    '{"price": X.XX, "quantity": Q, '
+                    '"fill_datetime": "..."}'
+                )
+        else:
+            valid = sorted(static_codes)
+            raise click.UsageError(
+                f"--choice {choice_code!r} is not compatible with "
+                f"ambiguity_kind={d.ambiguity_kind!r}; valid choices "
+                f"per spec §6.2.1 menu: {valid}"
+            )
+
+        # Parse --custom-value as JSON (per plan §E.3 acceptance criterion
+        # #5 — shape predicate tightening lives at service layer; CLI does
+        # basic parse + service handles deeper shape rejection).
+        parsed_payload = None
+        if custom_value is not None:
+            try:
+                parsed_payload = _json.loads(custom_value)
+            except _json.JSONDecodeError as e:
+                raise click.UsageError(
+                    f"--custom-value is not valid JSON: {e}; "
+                    "expected a JSON object/array per the choice's "
+                    "expected_payload_shape_description"
+                ) from None
+
+        # Resolve active risk policy id (Phase 9 Sub-bundle A surface).
+        active_policy = read_active_policy(conn)
+
+        try:
+            result = apply_tier2_resolution(
+                conn,
+                discrepancy_id=discrepancy_id,
+                choice_code=choice_code,
+                operator_custom_payload=parsed_payload,
+                operator_reason=reason,
+                risk_policy_id=active_policy.policy_id,
+                schwab_api_call_id=schwab_api_call_id,
+            )
+            # The C.C tier-2 handlers stamp the forward FK
+            # (reconciliation_corrections.schwab_api_call_id) but only
+            # the tier-1 path invokes `_back_link_schwab_api_call`. To
+            # close the bidirectional audit chain per plan §E.3
+            # acceptance criterion #5, back-link from the CLI in a
+            # separate-but-immediate transaction. Best-effort: if the
+            # service returned a sandbox-style no-op (correction_id is
+            # None) or no --schwab-api-call-id was supplied, skip.
+            if (
+                schwab_api_call_id is not None
+                and result.correction_id is not None
+            ):
+                from swing.data.repos.schwab_api_calls import (
+                    update_call_linked_correction,
+                )
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    update_call_linked_correction(
+                        conn,
+                        call_id=schwab_api_call_id,
+                        correction_id=result.correction_id,
+                    )
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+        except CallerHeldTransactionError as e:
+            # Should not happen in the CLI path (connection is fresh) —
+            # surface as a friendly error rather than a stack trace.
+            raise click.ClickException(
+                f"transactional discipline violation: {e}"
+            ) from None
+        except AlreadySupersededError as e:
+            raise click.ClickException(str(e)) from None
+        except ValidatorRejectedError as e:
+            raise click.ClickException(
+                f"validator rejected the operator choice: {e}"
+            ) from None
+        except ValueError as e:
+            # Service-layer ValueError covers: incompatible (kind,
+            # choice); missing required payload on the handler; malformed
+            # payload at handler-level shape validation. Map to
+            # UsageError (exit 2) per plan §E.3 acceptance criterion #9.
+            raise click.UsageError(str(e)) from None
+    finally:
+        conn.close()
+
+    click.echo(
+        f"resolved discrepancy {discrepancy_id} via choice "
+        f"{choice_code!r}; correction_id={result.correction_id}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# T-D.4 — `swing journal discrepancy override-correction` CLI surface
+# (per plan §E.4 + spec §6.4 + OQ-8 confirmation prompt + OQ-15
+# AlreadySupersededError chain-head guidance). Routes through the
+# canonical C.C service entry `apply_tier3_override` which owns the
+# BEGIN IMMEDIATE / COMMIT / ROLLBACK transaction envelope + validator
+# chain re-run defense-in-depth + journal mutation + audit row INSERT.
+# ---------------------------------------------------------------------------
+
+
+@discrepancy_group.command("override-correction")
+@click.argument("correction_id", type=int)
+@click.option(
+    "--truth-value", "truth_value", required=True,
+    help=(
+        "JSON payload of operator-truth field values for the override. "
+        "Parsed via json.loads; deeper shape + finiteness validation "
+        "happens at the service layer (validator chain re-run on "
+        "operator-truth BEFORE any mutation, per spec §5.7 Codex R1 "
+        "Minor #1 reorder). Example: '{\"price\": 5.25}'."
+    ),
+)
+@click.option(
+    "--reason", "reason", required=True,
+    help=(
+        "Operator-supplied free-text rationale (REQUIRED per spec §6.4 "
+        "mandatory). Persisted on the new reconciliation_corrections row "
+        "as `correction_reason`."
+    ),
+)
+@click.option(
+    "--force", "force", is_flag=True, default=False,
+    help=(
+        "Bypass the interactive confirmation prompt (non-interactive "
+        "mode; per plan §E.4 acceptance criterion #4)."
+    ),
+)
+@click.pass_context
+def discrepancy_override_correction_cmd(
+    ctx, correction_id, truth_value, reason, force,
+):
+    """Operator-override a prior tier-1 / tier-2 correction (spec §5.7).
+
+    Inserts a NEW ``reconciliation_corrections`` row with action
+    ``operator_overridden`` + ``operator_truth_value_json`` populated;
+    stamps the prior row's ``superseded_by_correction_id`` to chain the
+    audit history; UPDATEs the journal column to the operator-truth
+    value; flips the discrepancy resolution to ``operator_overridden``.
+
+    Confirmation prompt is shown by default. Use ``--force`` for
+    non-interactive automation. ``AlreadySupersededError`` is mapped to
+    a friendly CLI error naming the current chain-head correction_id so
+    the operator knows where to retarget.
+    """
+    import json as _json
+
+    from swing.data.db import connect
+    from swing.data.repos.reconciliation_corrections import (
+        get_correction,
+        list_corrections_by_discrepancy,
+    )
+    from swing.trades.reconciliation_auto_correct import (
+        AlreadySupersededError,
+        CallerHeldTransactionError,
+        ValidatorRejectedError,
+        apply_tier3_override,
+    )
+    from swing.trades.risk_policy import read_active_policy
+
+    # Parse --truth-value as JSON BEFORE opening the DB (cheap rejection
+    # of malformed payloads; exit 2 via UsageError). Per plan §E.4
+    # acceptance criterion #6 error mapping.
+    try:
+        parsed_truth = _json.loads(truth_value)
+    except _json.JSONDecodeError as e:
+        raise click.UsageError(
+            f"--truth-value is not valid JSON: {e}; expected a JSON "
+            "object like '{\"price\": X.XX}'"
+        ) from None
+    if not isinstance(parsed_truth, dict):
+        raise click.UsageError(
+            f"--truth-value must be a JSON object (got "
+            f"{type(parsed_truth).__name__}); expected shape like "
+            "'{\"price\": X.XX}'"
+        )
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        # Surface the current correction row before prompting so the
+        # operator sees what they're overriding (per plan §E.4 acceptance
+        # criterion #3).
+        target = get_correction(conn, correction_id)
+        if target is None:
+            raise click.UsageError(
+                f"correction {correction_id} not found in "
+                "reconciliation_corrections"
+            )
+
+        # Compute the chain head for friendly guidance — walk the
+        # superseded_by_correction_id chain from the supplied id forward
+        # via `list_corrections_by_discrepancy` (deterministic
+        # applied_at ASC, correction_id ASC ordering).
+        #
+        # Codex R1 Minor #2 fix — defensive multi-chain-head detection.
+        # Invariant: exactly ONE row per discrepancy carries
+        # ``superseded_by_correction_id IS NULL`` (the chain head); the
+        # service-layer ``apply_tier3_override`` enforces this via the
+        # 2-step UPDATE-then-INSERT pattern. If the audit history is
+        # corrupted (e.g., manual SQL surgery, schema-rollback artifact,
+        # cycle from a future-rev override pattern), multiple chain heads
+        # may exist. Pick the HIGHEST correction_id (deterministic
+        # tiebreaker; matches the most-recent-row heuristic the service
+        # layer would attempt on insert) and surface a clear advisory to
+        # the operator so they can audit the corrupt state independently.
+        sibling_rows = list_corrections_by_discrepancy(
+            conn, target.discrepancy_id,
+        )
+        chain_heads = [
+            r for r in sibling_rows
+            if r.superseded_by_correction_id is None
+        ]
+        chain_head_id: int | None = None
+        if len(chain_heads) > 1:
+            # Sort by correction_id DESC + pick the highest.
+            chain_heads.sort(
+                key=lambda r: r.correction_id, reverse=True,
+            )
+            chain_head_id = chain_heads[0].correction_id
+            head_ids = [r.correction_id for r in chain_heads]
+            click.echo(
+                f"WARNING: discrepancy {target.discrepancy_id} has "
+                f"MULTIPLE chain heads (correction_ids={head_ids}); "
+                f"this indicates corrupted audit-chain state (expected "
+                f"exactly one row with superseded_by_correction_id "
+                f"IS NULL). Picking the highest correction_id "
+                f"({chain_head_id}) as the deterministic chain head; "
+                f"audit the corrupt state via `swing journal "
+                f"discrepancy show {target.discrepancy_id}` before "
+                f"proceeding with the override.",
+                err=True,
+            )
+        elif len(chain_heads) == 1:
+            chain_head_id = chain_heads[0].correction_id
+
+        if not force:
+            click.echo(
+                f"current correction_id={target.correction_id} "
+                f"action={target.correction_action} "
+                f"affected_table={target.affected_table} "
+                f"field={target.field_name} "
+                f"applied_value={target.applied_value_json} "
+                f"schwab_said={target.source_canonical_value_json}"
+            )
+            click.echo(f"proposed override: {parsed_truth!r}")
+            if chain_head_id == target.correction_id:
+                click.echo(
+                    f"this correction (id={target.correction_id}) IS "
+                    "the current chain head."
+                )
+            else:
+                click.echo(
+                    f"chain head: correction_id={chain_head_id} "
+                    "(supplied id is mid-chain; override will still be "
+                    "rejected by the service layer with "
+                    "AlreadySupersededError)."
+                )
+            answer = click.prompt(
+                "Override this correction? [y/N]",
+                default="N",
+                show_default=False,
+            )
+            if not answer or not answer.strip().lower().startswith("y"):
+                click.echo("(aborted)")
+                return
+
+        # Resolve active risk policy id (Phase 9 Sub-bundle A surface)
+        # for the audit-row stamp.
+        active_policy = read_active_policy(conn)
+
+        try:
+            result = apply_tier3_override(
+                conn,
+                correction_id=correction_id,
+                operator_truth_value=parsed_truth,
+                operator_reason=reason,
+                risk_policy_id=active_policy.policy_id,
+            )
+        except CallerHeldTransactionError as e:
+            raise click.ClickException(
+                f"transactional discipline violation: {e}"
+            ) from None
+        except AlreadySupersededError:
+            # Friendly message naming the chain-head correction_id per
+            # OQ-15 + plan §E.4 acceptance criterion #6 (exit 2). Use
+            # the chain head we computed above (more reliable than
+            # parsing the service-layer exception text). UsageError
+            # exits 2 vs ClickException's 1 — operator-misuse semantics
+            # match the "you targeted the wrong row" failure mode.
+            head_text = (
+                str(chain_head_id) if chain_head_id is not None
+                else "unknown"
+            )
+            raise click.UsageError(
+                f"correction {correction_id} is already superseded by "
+                f"correction {head_text}; override the chain head "
+                f"({head_text}) instead"
+            ) from None
+        except ValidatorRejectedError as e:
+            raise click.ClickException(
+                f"validator rejected the operator-truth value: {e}"
+            ) from None
+        except ValueError as e:
+            # Service-layer ValueError covers per-shape rejection /
+            # missing fields. Map to UsageError (exit 2) per plan §E.4
+            # acceptance criterion #6.
+            raise click.UsageError(str(e)) from None
+    finally:
+        conn.close()
+
+    click.echo(
+        f"override applied: prior correction_id={correction_id}; "
+        f"new correction_id={result.correction_id}"
+    )
 
 
 @discrepancy_group.command("resolve")

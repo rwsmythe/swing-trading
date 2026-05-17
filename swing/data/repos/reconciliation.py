@@ -457,6 +457,14 @@ def list_unresolved_material_for_active_trades(
     + stop_mismatch are MOST URGENT on live positions (broker/journal
     divergence; operator may be flying blind).
 
+    Phase 12 Sub-sub-bundle C.D T-D.10: resolution predicate widens to
+    include ``pending_ambiguity_resolution`` so tier-2 ambiguity-pending
+    discrepancies surface in the global banner count alongside true
+    unresolved rows. Terminal-state resolutions
+    (``auto_corrected_from_schwab`` / ``operator_resolved_ambiguity`` /
+    ``operator_overridden`` / ``acknowledged_immaterial`` /
+    ``journal_corrected``) remain EXCLUDED — operator action complete.
+
     Returns rows ordered by discrepancy.created_at DESC, discrepancy_id DESC
     (newest first; deterministic tiebreak via PK monotonicity).
     """
@@ -465,7 +473,7 @@ def list_unresolved_material_for_active_trades(
         "FROM reconciliation_discrepancies d "
         "JOIN trades t ON d.trade_id = t.id "
         "WHERE d.material_to_review = 1 "
-        "  AND d.resolution = 'unresolved' "
+        "  AND d.resolution IN ('unresolved', 'pending_ambiguity_resolution') "
         "  AND t.state IN ('entered', 'managing', 'partial_exited') "
         "ORDER BY d.created_at DESC, d.discrepancy_id DESC"
     ).fetchall()
@@ -481,6 +489,10 @@ def list_unresolved_material_for_closed_trades(
     trade states 'closed' / 'reviewed'. Lower urgency than CANONICAL #1;
     operator dispositions at next reconciliation review cadence.
 
+    Phase 12 Sub-sub-bundle C.D T-D.10: resolution predicate widens to
+    include ``pending_ambiguity_resolution`` (mirror of CANONICAL #1
+    widening).
+
     Returns rows ordered by discrepancy.created_at DESC, discrepancy_id DESC.
     """
     rows = conn.execute(
@@ -488,7 +500,7 @@ def list_unresolved_material_for_closed_trades(
         "FROM reconciliation_discrepancies d "
         "JOIN trades t ON d.trade_id = t.id "
         "WHERE d.material_to_review = 1 "
-        "  AND d.resolution = 'unresolved' "
+        "  AND d.resolution IN ('unresolved', 'pending_ambiguity_resolution') "
         "  AND t.state IN ('closed', 'reviewed') "
         "ORDER BY d.created_at DESC, d.discrepancy_id DESC"
     ).fetchall()

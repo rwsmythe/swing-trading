@@ -53,8 +53,17 @@ def list_unresolved_material_for_trade(
     """Per-trade unresolved-material discrepancies (T-E.6 elective).
 
     Returns discrepancies WHERE ``trade_id = ? AND material_to_review = 1
-    AND resolution = 'unresolved'``. Orphan-emit discrepancies (``trade_id
-    IS NULL``) are EXCLUDED by construction.
+    AND resolution IN ('unresolved', 'pending_ambiguity_resolution')``.
+    Orphan-emit discrepancies (``trade_id IS NULL``) are EXCLUDED by
+    construction.
+
+    Phase 12 Sub-sub-bundle C.D T-D.10: predicate widens to surface
+    tier-2 ambiguity-pending discrepancies on /trades/{id} alongside
+    true unresolved rows. Auto-corrected
+    (``auto_corrected_from_schwab``) + operator-resolved
+    (``operator_resolved_ambiguity``) + operator_overridden /
+    acknowledged_immaterial / journal_corrected remain EXCLUDED (no
+    operator action remaining).
 
     Read-only; opens no transaction. Mirrors the Phase 9 Sub-bundle B
     canonical query ordering (created_at DESC, discrepancy_id DESC) so
@@ -65,7 +74,7 @@ def list_unresolved_material_for_trade(
         "FROM reconciliation_discrepancies "
         "WHERE trade_id = ? "
         "  AND material_to_review = 1 "
-        "  AND resolution = 'unresolved' "
+        "  AND resolution IN ('unresolved', 'pending_ambiguity_resolution') "
         "ORDER BY created_at DESC, discrepancy_id DESC",
         (int(trade_id),),
     ).fetchall()
