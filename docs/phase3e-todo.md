@@ -6,6 +6,82 @@
 
 ---
 
+## 2026-05-17 PM Post-Phase-12 Sub-bundle 2 SHIPPED — /schwab/status web counterpart (T-B.7 follow-up from Phase 12 Sub-bundle B) — 5-surface orchestrator-witnessed GATE ALL PASS — CLOSES post-Phase-12 mapper-widening arc
+
+**Sub-bundle 2 SHIPPED 2026-05-17** at `690aed0` (integration merge of `schwab-mapper-bundle-2` via `--no-ff`; 13 implementer commits = 7 task-impl (T-2.0..T-2.6) + 3 Codex-fix (R1 Critical #1 + Major #1 + R2 Major #1 + R3 Minor #1) + 1 return-report + 1 merge; **3 Codex rounds → NO_NEW_CRITICAL_MAJOR** convergent tapering (R1 1C/1M → R2 0C/1M → R3 0C/0M/1m); **ZERO ACCEPT-WITH-RATIONALE banked** — all 4 findings resolved with code-content fixes; ZERO Co-Authored-By footer drift; **+52 fast tests** (4523 → 4575); ruff 18 unchanged; schema v19 unchanged consumer-side.
+
+### Architectural surface (deferred Phase 12 Sub-bundle B T-B.7 task — read-only web mirror of `swing schwab status` CLI)
+
+1. **`swing/web/view_models/schwab.py`** — NEW `SchwabStatusVM` + `SchwabCallSummary` frozen dataclasses with `__post_init__` validators (LIVE/PROVISIONAL/DEGRADED triplet per plan §A.0.1 D3 + shipped CLI; `state_reason is None iff state == 'LIVE'` invariant; 5-field base-layout VM banner pin per Phase 10 T-E.3 retrofit).
+2. **`swing/web/routes/schwab.py`** — NEW `GET /schwab/status` route handler with `apply_overrides(cfg)` discipline + case-insensitive `?environment=` query-param override + PlainTextResponse for invalid env (Codex R1 Major #7 + R2 Major #1 XSS-safe primitive) + sentinel-leak audit + `_redact_error_message_for_audit` read-time re-redactor at `build_schwab_status_vm`. EXISTING `POST /schwab/setup` HX-Redirect retarget `/config?schwab_setup=ok` → `/schwab/status` with passive no-op consumer retention one release window (Codex R1 m#2 LOCK).
+3. **`swing/web/templates/schwab_status.html.j2`** — NEW template extending `base.html.j2` + 3-state LIVE/PROVISIONAL/DEGRADED color-coded badge (`state-ok` green / `state-warn` yellow / `state-error` red) + refresh-token TTL countdown with severity styling + recent-calls table + environment switcher (`?environment=production` / `?environment=sandbox` plain anchor links) + re-auth link to `/schwab/setup` when state != LIVE + Jinja2 autoescape regression test + 4-sentinel audit-trail coverage.
+4. **`swing/web/templates/config.html.j2`** — ONE-LINE addition: second `<a>` in "External integrations" `<ul>` section linking to `/schwab/status`.
+
+### Codex chain convergence
+
+- **R1 Critical #1 (error_excerpt sentinel leakage)**: template rendered `vm.error_excerpt` directly + sentinel-leak test exempted audit `error_message` sentinel "operator-visible by design". If any historical or future audit row contained unredacted token bytes, `/schwab/status` would disclose them. **Two-layer fix**: (a) drop `error_excerpt` rendering from template per spec §7.4 OQ-D CLI 1:1 LOCK (CLI `_render_recent_calls` shows endpoint + status + http only); (b) re-redact `c.error_message` at read time in `build_schwab_status_vm` via `_redact_error_message_for_audit` (idempotent; defense-in-depth); strengthen sentinel-leak test to assert ALL 4 sentinels absent.
+- **R1 Major #1 (status enum narrower than CLI)**: `_SCHWAB_CALL_STATUSES = {'success', 'auth_failed', 'rate_limited', 'error'}` (4) silently dropped `in_flight` + `concurrent_refresh` rows. CLI renders every row regardless of status. **Fix**: widen frozenset to all 6 schema CHECK values per migration 0018 + drop now-no-op filter.
+- **R2 Major #1 (tokens_db_path leak)**: VM stored `str(tokens_path)` rendering operator's full local home (Windows `C:\Users\rwsmy\swing-data\...` / POSIX `/home/<username>/swing-data/...`). Spec §7.1 explicitly requires "display-only, masked if path contains user-profile prefix". **Fix**: mask via `Path.relative_to(home).as_posix()` prefixed with `~/` when under `_user_home()`; falls back to full path defensively. NEW discriminating regression test plants tokens DB in `tmp_path`, asserts masked form rendered + absolute form NOT in body.
+- **R3 Minor #1 (template sentinel audit narrower)**: template-surface ratchet planted tokens-DB sentinels only; plan §B T-2.2 test #10 requires both tokens DB AND `schwab_api_calls.error_message` row sentinels. Route-level T-2.1 test 13 already covers broader scope. **Fix**: extend template sentinel list to 4 (add `LEAK_TPL_AUDIT_ERROR_MESSAGE_SENTINEL`); plant via direct INSERT; assert ZERO substring matches for ALL 4.
+
+### GATE OUTCOME (orchestrator-driven 2026-05-17 PM via curl + grep on worktree web server port 8081)
+
+- **S1 PASS** — inline `pytest -m "not slow" -q -n auto` 4575 fast + 3 pre-existing phase8 walkthrough failures unchanged + 5 skipped (~85s wall-clock).
+- **S2 PASS** — `/schwab/status` HTTP 200 / 8765 bytes — `class="schwab-status-badge state-ok"` + `data-state="LIVE"` discriminating CSS marker + H1 "Schwab integration status (production)" + Refresh token TTL section + env switcher links (production + sandbox) + 6-row Recent API calls `<table class="schwab-recent-calls">` + **masked tokens_db_path (ZERO `C:\Users` occurrences in response body — Codex R2 Major #1 fix HOLDS)** + ZERO Jinja UndefinedError / TemplateSyntaxError leaks + base-layout integration intact (Metrics nav link + theme toggle).
+- **S3 PASS** — `/config` HTTP 200 / 11362 bytes — "External integrations" section + BOTH `href="/schwab/setup"` + `href="/schwab/status"` nav-links present (count=1 each; T-2.3 acceptance MET).
+- **S4 SKIPPED** per brief §3 default (refresh-token clock healthy ~5 days remaining at gate time; T-2.4 retarget covers via test).
+- **S5 PASS** — ruff 18 E501 unchanged.
+
+### Production state post-gate
+
+- **ZERO unresolved-material discrepancies; banner count=0** (preserved through Sub-bundle 1+1.5+2 ships).
+- `/schwab/status` renders LIVE for production environment with masked path; visible-only fields are derived metadata (no raw token bytes ever surface).
+- 4 historical correction chains preserved unchanged.
+
+### Post-Phase-12 mapper-widening arc CLOSED — Phase 12.5 dispatches UNBLOCKED
+
+**Arc-cumulative aggregate** (Sub-bundle 1 + 1.5 + 2):
+- ~24 + 14 + 11 = **49 commits** (28 task-impl + 13 Codex-fix + 3 return-reports + 3 merges + 2 housekeeping)
+- 5 + 4 + 3 = **12 Codex rounds total** (NO_NEW_CRITICAL_MAJOR all rounds)
+- +115 + 48 + 52 = **+215 cumulative fast tests** (~4360 → 4575)
+- 0 + 2 + 0 = **2 ACCEPT-WITH-RATIONALE banked** (both Sub-bundle 1.5; T-1.5.4 sequence + canary minimal scope)
+- 0 + 0 + 0 = **ZERO Co-Authored-By footer drift**
+- 0 + 0 + 4 = **4 V2.1 §VII.F amendments banked** (all Sub-bundle 2; spec §7.1)
+- 0 + 0 + 2 = **2 CLAUDE.md gotcha promotion candidates banked** (all Sub-bundle 2; for Phase 12.5 #3)
+- Schema v19 unchanged across entire arc
+
+**Next dispatches** (Phase 12.5; operator-locked 2026-05-17 sequencing):
+1. **Phase 12.5 #1: OQ-F multi-leg tier-1 auto-redirect** — direct V2-mapper-widening successor; consumes Sub-bundle 1's `_compute_execution_price` + `_resolve_match_quantity` helpers + Sub-bundle 1.5's confirmed-firing extraction path. **RECOMMENDED FIRST.**
+2. **Phase 12.5 #2: Web Tier-2 discrepancy-resolution surface** — Sub-bundle C plan §I.3 V2; web counterpart of C.D's CLI surface.
+3. **Phase 12.5 #3: Project hygiene maintenance pass** (5 sub-items per operator-requested 2026-05-17 expansion) — (a) CLAUDE.md archive-split + (b) orchestrator-context archive-split + (c) V2.1 §VII.F amendment batch processing + (d) Phase 8 walkthrough failing-test triage/fix + (e) Ruff 18 E501 cleanup.
+
+**Phase 13 scope LOCKED** at `docs/phase13-scope-brainstorm.md` §0.5 (operator-decided 2026-05-17); dispatch gated on Phase 12.5 close.
+
+### Worktree teardown status
+
+- Branch `schwab-mapper-bundle-2` merged via `--no-ff` at `690aed0`; on-disk husk at `.worktrees/schwab-mapper-bundle-2/` ACL-locked pending operator's `cleanup-locked-scratch-dirs.ps1 -DeregisterFirst` pass (branch matches `schwab(?:-\w+)?-bundle-` regex).
+
+### Cross-references
+
+- Dispatch brief: `docs/post-phase12-schwab-mapper-bundle-2-schwab-status-web-counterpart-executing-plans-dispatch-brief.md` (`01d2e11`).
+- Return report: `docs/post-phase12-schwab-mapper-bundle-2-return-report.md` (in `690aed0` merge).
+- Plan §B: `docs/superpowers/plans/2026-05-17-schwab-mapper-execution-grain-widening-plan.md:624-857` (T-2.0..T-2.6).
+- Integration merge: `690aed0`.
+
+### 4 V2.1 §VII.F amendments banked (return report §7)
+
+1. Spec §7.1 state-triplet misnamed (CONFIGURED/PROVISIONAL/NOT_CONFIGURED → actual LIVE/PROVISIONAL/DEGRADED per shipped CLI).
+2. Status enum widening (4 → 6 values matching schema CHECK constraint per migration 0018).
+3. `tokens_db_path` masking pattern (display-only; mask under user-home prefix; Path.relative_to fallback discipline).
+4. `error_excerpt` rendering scope per OQ-D CLI 1:1 LOCK (drop from template + read-time re-redact at VM build).
+
+### 2 CLAUDE.md gotcha promotion candidates banked for Phase 12.5 #3 triage
+
+1. **Read-time re-redactor discipline**: when a VM rendering surface exposes audit fields that flow from `*.error_message` rows, the VM-build helper MUST re-invoke the redactor at read-time (defense-in-depth against pre-redaction-discipline rows OR future write-time redactor bugs). Pattern: `vm.error_message_for_audit = _redact_error_message_for_audit(row.error_message)` at the VM construction step.
+2. **`tokens_db_path` masking pattern**: file-path fields rendered in operator-facing UI MUST mask paths under `_user_home()` prefix via `Path.relative_to(home).as_posix()` prefixed with `~/`; fall back to full path defensively when `relative_to` raises (defense against unexpected paths). Pre-empt in any new file-path-in-VM design.
+
+---
+
 ## 2026-05-17 PM Post-Phase-12 Sub-bundle 1.5 SHIPPED — Schwab mapper validator-drop fix (filledQuantity==0 early-exit gate + observability canary + diagnostic script + production-shape regression tests) — 5-surface operator-witnessed GATE ALL PASS — CLOSES Sub-bundle 1's validator-drop defect; post-Phase-12 architectural arc CLOSED
 
 **Sub-bundle 1.5 SHIPPED 2026-05-17** at `a7c1016` (integration merge of `schwab-mapper-bundle-1.5` via `--no-ff`; 13 implementer commits + 1 return-report + 1 merge; **4 Codex rounds → NO_NEW_CRITICAL_MAJOR** convergent tapering (R1 0C/6M/2m → R2 0C/2M/2m → R3 0C/0M/2m → R4 0C/0M/1m); **2 ACCEPT-WITH-RATIONALE banked** (R1 M#2 T-1.5.4 sequence-by-design + R2 M#1 canary intentionally minimal — `price > 0` strongest signal + widening false-positives on placeholder `quantity > 0`); ZERO Co-Authored-By footer drift; **+48 fast tests** (4475 → 4523); ruff 18 unchanged; schema v19 unchanged.
