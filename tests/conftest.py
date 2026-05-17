@@ -25,9 +25,16 @@ from swing.data.models import Fill, Trade
 # Schwab-shaped filter list below is a SUPERSET of the Finviz `auth` filter
 # so it works for both surfaces.
 
-# 32+ hex-char run, or 24+ base64-shaped run, in any response body chunk.
+# Token-shape substrings scrubbed via heuristic substring-pattern after the
+# JSON-value scrubbers run.
+# R4 Major #1 fix: the prior 24+ base64 threshold over-matched the legitimate
+# Schwab field-NAME `complexOrderStrategyType` (exactly 24 alphabetic chars),
+# corrupting cassette JSON KEYS into `"<REDACTED>":"NONE"`. Raised threshold to
+# 40+ base64-chars (matches typical OAuth bearer tokens; avoids any known
+# Schwab JSON field name length). 32+ hex unchanged (hex field names are rare;
+# Schwab uses camelCase identifiers, not hex strings).
 _TOKEN_HEX_PATTERN = re.compile(rb"[a-fA-F0-9]{32,}")
-_TOKEN_B64_PATTERN = re.compile(rb"[A-Za-z0-9+/=]{24,}")
+_TOKEN_B64_PATTERN = re.compile(rb"[A-Za-z0-9+/=]{40,}")
 # Field-value scrubber for token-bearing JSON keys in response bodies.
 # Sub-bundle 1 T-1.0 extension: id_token / code / client_id / bearerToken added
 # per plan §F.3 + Codex R3 Critical #1 LOCK widening.

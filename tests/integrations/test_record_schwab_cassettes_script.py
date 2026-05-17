@@ -298,6 +298,39 @@ def test_sentinel_leak_audit_catches_bare_numeric_account_number(
     assert "bare numeric" in flat or "accountnumber" in flat
 
 
+# Test 6d — R4 Major #1 regression: 24+ base64 token-shape threshold
+# previously over-matched the legitimate Schwab field NAME
+# `complexOrderStrategyType` (exactly 24 alphabetic chars), corrupting
+# cassette JSON KEYS into `"<REDACTED>":"NONE"`. Raised to 40+ chars.
+# Pin: ensure Schwab field NAMES are preserved through the scrubber.
+def test_response_body_scrubber_preserves_legitimate_schwab_field_names() -> None:
+    """Pre-R4 scrubber matched 24+ base64 chars + over-redacted Schwab
+    field names like `complexOrderStrategyType` (24 chars). R4 fix raised
+    threshold to 40+. Regression: plant a body with several known
+    Schwab field names + assert ALL preserved unchanged."""
+    from tests.conftest import _redact_schwab_response_body
+    response = {
+        "body": {
+            "string": (
+                b'{"complexOrderStrategyType":"NONE",'
+                b'"requestedDestination":"AUTO",'
+                b'"destinationLinkName":"NITE",'
+                b'"orderActivityCollection":[],'
+                b'"orderLegCollection":[]}'
+            ),
+        },
+    }
+    out = _redact_schwab_response_body(response)
+    body = out["body"]["string"]
+    if isinstance(body, str):
+        body = body.encode("utf-8")
+    assert b"complexOrderStrategyType" in body
+    assert b"requestedDestination" in body
+    assert b"destinationLinkName" in body
+    assert b"orderActivityCollection" in body
+    assert b"orderLegCollection" in body
+
+
 # Test 6c — bare-numeric accountNumber sanitization scrubber via
 # `_redact_schwab_response_body` (the recording-time scrub path).
 def test_response_body_scrubber_redacts_bare_numeric_account_number() -> None:
