@@ -545,3 +545,59 @@ def test_t25_originguard_strict_mode_allows_read_only_get(
     )
 
 
+
+
+# ---------------------------------------------------------------------------
+# Post-Phase-12 Sub-bundle 2 Task T-2.6 — OQ-D applicability (CLI 1:1 mirror)
+# ---------------------------------------------------------------------------
+#
+# Per plan §B T-2.6 (1 discriminating test) + spec §7.4 OQ-D LOCK:
+# /schwab/status is read-only V1; mirrors `swing schwab status` CLI 1:1.
+# No reconciliation actions, no FIRED-stop-specific handling, no
+# order_type-specific strings leak at this layer.
+
+
+def test_t26_no_order_type_specific_strings_in_status_page(
+    seeded_db, monkeypatch, tmp_path,
+):
+    """T-2.6 test 1 (spec §7.4 OQ-D LOCK) — recent-calls table cells
+    contain NO order_type-specific strings (LIMIT / MARKET / STOP /
+    STOP_LIMIT / FIRED) leaking from reconciliation classifier or
+    auto-correct surfaces into the read-only status page.
+
+    Operator sees raw API call status only: endpoint name +
+    success/auth_failed/rate_limited/error + http_status + optional
+    error_excerpt. The presence of any reconciliation-flow string here
+    would be a layer violation (the status page consumes the audit log
+    upstream of the reconciliation classifier; it MUST NOT surface
+    classifier-derived semantics).
+
+    Discriminating: plant a schwab_api_calls row with the audit-row
+    standard fields populated (no order_type field exists on the audit
+    row), then render the status page, then assert NONE of the
+    order-type strings appear in the page body."""
+    cfg, cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
+    _seed_schwab_api_call(
+        cfg.paths.db_path,
+        env="production",
+        endpoint="accounts.orders.list",
+        status="success",
+        http_status=200,
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/schwab/status")
+    assert r.status_code == 200
+    body = r.text
+    forbidden_strings = ("LIMIT", "MARKET", "STOP", "STOP_LIMIT", "FIRED")
+    for token in forbidden_strings:
+        # Case-sensitive substring search — these are SQL CHECK-enum
+        # values / classifier reason strings; lowercase form is OK
+        # ('limit', 'market', etc. may appear in natural prose).
+        assert token not in body, (
+            f"OQ-D violation: order_type-specific token {token!r} "
+            "leaked into /schwab/status response body; the read-only "
+            "status page MUST NOT surface reconciliation-classifier "
+            "or order_type-specific semantics (spec §7.4 OQ-D LOCK)"
+        )
