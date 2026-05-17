@@ -2622,8 +2622,96 @@ def discrepancy_resolve_ambiguity_cmd(
 # chain re-run defense-in-depth + journal mutation + audit row INSERT.
 # ---------------------------------------------------------------------------
 
+# Sub-bundle 1 T-1.12 — GENERIC + ID-FREE historical-correction addendum
+# (per spec §8.3 OQ-G + plan §A.1.12 R1 M#8 + R2 M#3 + R3 m#1 LOCK).
+#
+# Single source of truth — appears verbatim as the `--help` epilog on
+# `swing journal discrepancy show-correction` AND `override-correction`
+# subcommands. Operators reviewing pre-Sub-bundle-1 correction chains see
+# this addendum at help-time + know the V1 historical context (order-grain
+# vs execution-grain price provenance) without needing the implementer to
+# bake operator-local correction IDs into help text.
+_HISTORICAL_CORRECTION_NOTE: str = (
+    "Note: reconciliation_corrections rows recorded PRIOR to the V2 "
+    "mapper widening (swing/integrations/schwab/mappers.py extension to "
+    "surface orderActivityCollection[].executionLegs[]; design doc: "
+    "docs/superpowers/specs/2026-05-17-schwab-mapper-execution-grain-widening-design.md) "
+    "carry ORDER-grain prices in schwab_said_value_json — the V1 mapper "
+    "read order.price (LIMIT for buy/sell, trigger for stops), NOT the "
+    "actual execution price. For any correction chain you are reviewing: "
+    "the chain head's operator_truth_value_json (when the chain head's "
+    "resolution is 'operator_overridden') is the AUTHORITATIVE truth; "
+    "intermediate \"Schwab said\" values from V1-era rows may reflect "
+    "order-grain limits. From the V2 widening's ship forward, "
+    "schwab_said_value_json carries EXECUTION-grain prices via the new "
+    "SchwabExecutionLeg dataclass."
+)
 
-@discrepancy_group.command("override-correction")
+
+@discrepancy_group.command(
+    "show-correction",
+    epilog=_HISTORICAL_CORRECTION_NOTE,
+    # Prevent Click from word-wrapping the long spec path inside the epilog
+    # at terminal-width-80 (which would break the path on a hyphen and
+    # defeat substring searches in operator-actionable tooling). Per
+    # plan §A.1.12 acceptance test 4 spec-path verbatim citation lock.
+    context_settings={"max_content_width": 200},
+)
+@click.argument("correction_id", type=int)
+@click.pass_context
+def discrepancy_show_correction_cmd(ctx, correction_id):
+    """Print full detail for a single reconciliation_corrections row.
+
+    Sub-bundle 1 T-1.12 per spec §8.3 OQ-G + plan §A.1.12. Renders the
+    audit-history row (~17 columns) analogous to ``discrepancy show`` —
+    operator inspects which discrepancy was corrected, what the V1-era
+    Schwab-said value was, what the applied correction wrote, and (for
+    operator_overridden chains) what the operator-truth value is.
+
+    See the --help epilog for the generic V1 historical-context addendum
+    (ORDER-grain vs EXECUTION-grain price provenance for pre-Sub-bundle-1
+    correction chains).
+    """
+    from swing.data.db import connect
+    from swing.data.repos.reconciliation_corrections import get_correction
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        c = get_correction(conn, correction_id)
+    finally:
+        conn.close()
+    if c is None:
+        raise click.ClickException(f"correction {correction_id} not found")
+    # Render correction detail per migration 0019 + dataclass at
+    # swing/data/models.py:ReconciliationCorrection field order.
+    click.echo(f"correction_id:            {c.correction_id}")
+    click.echo(f"discrepancy_id:           {c.discrepancy_id}")
+    click.echo(f"correction_action:        {c.correction_action}")
+    click.echo(f"correction_choice:        {c.correction_choice}")
+    click.echo(f"affected_table:           {c.affected_table}")
+    click.echo(f"affected_row_id:          {c.affected_row_id}")
+    click.echo(f"field_name:               {c.field_name}")
+    click.echo(f"pre_correction_value:     {c.pre_correction_value_json}")
+    click.echo(f"source_canonical_value:   {c.source_canonical_value_json}")
+    click.echo(f"applied_value:            {c.applied_value_json}")
+    click.echo(f"operator_truth_value:     {c.operator_truth_value_json}")
+    click.echo(f"applied_at:               {c.applied_at}")
+    click.echo(f"applied_by:               {c.applied_by}")
+    click.echo(f"correction_set_id:        {c.correction_set_id}")
+    click.echo(f"superseded_by_correction: {c.superseded_by_correction_id}")
+    click.echo(f"risk_policy_id:           {c.risk_policy_id_at_correction}")
+    click.echo(f"schwab_api_call_id:       {c.schwab_api_call_id}")
+    click.echo(f"reconciliation_run_id:    {c.reconciliation_run_id}")
+    click.echo(f"correction_reason:        {c.correction_reason}")
+    click.echo(f"notes:                    {c.notes}")
+
+
+@discrepancy_group.command(
+    "override-correction",
+    epilog=_HISTORICAL_CORRECTION_NOTE,
+    context_settings={"max_content_width": 200},  # Sub-bundle 1 T-1.12 spec-path verbatim lock
+)
 @click.argument("correction_id", type=int)
 @click.option(
     "--truth-value", "truth_value", required=True,
