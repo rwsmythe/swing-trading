@@ -260,6 +260,18 @@ class SchwabOrderResponse:
     quantity: float
     order_type: str
     price: float | None
+    # Sub-bundle 1 T-1.2 — tri-valued execution-grain data:
+    #   None: ``orderActivityCollection[].executionLegs[]`` data not
+    #     available (legacy V1 mapper path / sandbox responses / mapper
+    #     coherence-check collapse case).
+    #   []: Schwab returned the field with zero legs (broker confirmed no
+    #     executions despite a populated activityType row).
+    #   [SchwabExecutionLeg, ...]: one or more legs surface execution-grain
+    #     price (consumed by `_compute_execution_price` at T-1.4 +
+    #     comparator at T-1.6).
+    # Field placed at TAIL to preserve 8-positional backward compat for
+    # Phase 11 callsites that pass positional args.
+    executions: list[SchwabExecutionLeg] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.order_id, str) or not self.order_id:
@@ -317,6 +329,22 @@ class SchwabOrderResponse:
                     f"SchwabOrderResponse.price must be non-negative finite; "
                     f"got {self.price!r}"
                 )
+        # Sub-bundle 1 T-1.2 — tri-valued executions validator.
+        # ``None`` accepted (legacy V1 path); ``[]`` accepted (Schwab no-leg
+        # response); ``[SchwabExecutionLeg, ...]`` accepted; anything else
+        # rejected (shape predicate tightening per Sub-bundle C.B lesson #5).
+        if self.executions is not None:
+            if not isinstance(self.executions, list):
+                raise ValueError(
+                    f"SchwabOrderResponse.executions must be list or None; "
+                    f"got {type(self.executions).__name__}",
+                )
+            for i, leg in enumerate(self.executions):
+                if not isinstance(leg, SchwabExecutionLeg):
+                    raise ValueError(
+                        f"SchwabOrderResponse.executions[{i}] must be "
+                        f"SchwabExecutionLeg; got {type(leg).__name__}",
+                    )
 
 
 @dataclass(frozen=True)
