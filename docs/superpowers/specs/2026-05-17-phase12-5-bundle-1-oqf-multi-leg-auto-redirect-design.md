@@ -24,7 +24,7 @@
 
 ## §1 Architecture overview
 
-**One-paragraph thesis.** When a reconciliation comparator emits an `unmatched_open_fill` / `unmatched_close_fill` discrepancy whose matched Schwab order carries `>=2` `SchwabExecutionLeg[]` (or N>=2 candidate orders whose execution legs collectively meet the predicate) AND the legs collectively VWAP-align with the journal's consolidated fill price within `$0.01` AND every individual leg's price is within `$0.01` of the VWAP, the V1 manual `multi_partial_vs_consolidated` menu surface is BYPASSED: the classifier synthesizes the `split_into_partials` payload from the execution legs, the flow-pivot loop dispatches via `apply_tier2_resolution(choice_code='split_into_partials', operator_custom_payload=synthesized, operator_reason=..., applied_by_override='auto', correction_action_override='auto_applied', resolved_by_override='auto_tier1_multi_leg', ...)`, and the dashboard surfaces a banner advisory citing the auto-correction count for operator vigilance/trust-calibration.
+**One-paragraph thesis.** When a reconciliation comparator emits an `unmatched_open_fill` / `unmatched_close_fill` discrepancy whose matched Schwab order carries `>=2` `SchwabExecutionLeg[]` (or N>=2 candidate orders whose execution legs collectively meet the predicate) AND the legs collectively VWAP-align with the journal's consolidated fill price within `$0.01` AND every individual leg's price is within `$0.01` of the VWAP, the V1 manual `multi_partial_vs_consolidated` menu surface is BYPASSED: the classifier synthesizes the `split_into_partials` payload from the execution legs, the flow-pivot loop dispatches via `apply_tier2_resolution(conn, discrepancy_id=..., choice_code='split_into_partials', operator_custom_payload=synthesized, operator_reason=..., applied_by_override='auto', correction_action_override='auto_applied', resolved_by_override='auto_tier1_multi_leg', environment=..., ...)`, and the dashboard surfaces a banner advisory citing the auto-correction count for operator vigilance/trust-calibration. (Kwarg name per Codex R3 minor 2 LOCK — `operator_custom_payload`, not `payload`.)
 
 **Architectural lift.** Pass-2 entry/close `_classify_unmatched_fill_shared` previously emitted ONLY `multi_partial_vs_consolidated` tier-2 (per spec §4.3.2/§4.3.3 + §8.4 Pass-2-tier-1-FORBIDDEN). Sub-bundle 1 widened the comparator to surface execution-grain data via Path B sentinel `execution_unavailable=true` when execution legs are absent — but tier-1 lift on multi-leg-PRESENT cases was deferred to V2 (spec §6.6 OQ-F V2). This dispatch ships that V2 lift.
 
@@ -407,32 +407,35 @@ For `n=1` with execution data PRESENT (a single Schwab order with multi-leg fill
 The outer `apply_tier2_resolution` (currently line 210 in `swing/trades/reconciliation_auto_correct.py`) gains two optional parameters with default values matching current operator-path behavior:
 
 ```python
+# Codex R3 M1 LOCK — preserve the existing positional-conn signature ordering;
+# the current shipped code (reconciliation_auto_correct.py:210) takes
+# `conn` as the first positional arg, followed by keyword-only parameters.
 def apply_tier2_resolution(
-    discrepancy_id: int,
+    conn: sqlite3.Connection,
     *,
+    discrepancy_id: int,
     choice_code: str,
     operator_custom_payload: Any = None,
     operator_reason: str,
     risk_policy_id: int | None = None,
     schwab_api_call_id: int | None = None,
-    conn: sqlite3.Connection,
     environment: str = "production",
     # NEW IN PHASE 12.5 #1:
-    applied_by_override: str | None = None,           # 'auto' for auto-redirect; None → 'operator' default
-    correction_action_override: str | None = None,    # 'auto_applied' for auto-redirect; None → 'operator_resolved_ambiguity' default
-    resolved_by_override: str | None = None,          # 'auto_tier1_multi_leg' for auto-redirect; None → 'operator' default
+    applied_by_override: str | None = None,           # 'auto' for auto-redirect; None means manual operator path
+    correction_action_override: str | None = None,    # 'auto_applied' for auto-redirect; None means 'operator_resolved_ambiguity' default
+    resolved_by_override: str | None = None,          # 'auto_tier1_multi_leg' for auto-redirect; None means 'operator' default
 ) -> CorrectionResult:
     ...
 ```
 
-The inner `_apply_tier2_resolution_inner` + `_build_tier2_correction` + every `_handle_*` helper threads these overrides through. Default callers (the existing CLI `resolve-ambiguity` path) pass None and get verbatim existing behavior.
+The inner `_apply_tier2_resolution_inner` + `_build_tier2_correction` + every `_handle_*` helper threads these overrides through with the same positional-conn ordering. Default callers (the existing CLI `resolve-ambiguity` path) pass None and get verbatim existing behavior.
 
 ### §7.2 Discrepancy state transition
 
 Auto-redirect requires the discrepancy be in `resolution='pending_ambiguity_resolution'` BEFORE `apply_tier2_resolution` runs (per existing guard at `_apply_tier2_resolution_inner` line 568). The flow-pivot loop's auto-redirect branch performs a 2-step in a SAVEPOINT:
 
 1. `_stamp_pending_ambiguity_inner(conn, discrepancy_id, ambiguity_kind='multi_partial_vs_consolidated', ...)` — transitions to `pending_ambiguity_resolution`. This is the SAME path as the operator menu would trigger.
-2. `_apply_tier2_resolution_inner(conn, discrepancy_id, choice_code='split_into_partials', payload=recipe['payload'], applied_by_override='auto', correction_action_override='auto_applied', resolved_by_override='auto_tier1_multi_leg', ...)` — finalizes the journal mutation.
+2. `_apply_tier2_resolution_inner(conn, discrepancy_id=..., choice_code='split_into_partials', operator_custom_payload=recipe['payload'], operator_reason='multi-leg auto-redirect: ...', applied_by_override='auto', correction_action_override='auto_applied', resolved_by_override='auto_tier1_multi_leg', environment=environment, ...)` — finalizes the journal mutation. (Codex R3 minor 2 LOCK — kwarg is `operator_custom_payload`, not `payload`.)
 
 Final state:
 - `discrepancy.resolution = 'operator_resolved_ambiguity'` (per existing handler discipline)
@@ -458,6 +461,26 @@ Final state has `ambiguity_kind = 'multi_partial_vs_consolidated'` (NOT NULL) + 
 - `applied_by IN ('auto', 'operator')`. Override value `'auto'` is in the enum. ✓
 
 **ZERO schema modifications required.**
+
+### §7.3.1 Service-layer hybrid-row invariant (Codex R3 M2 LOCK)
+
+The combination `correction_action='auto_applied'` + `applied_by='auto'` + `correction_choice='split_into_partials'` is a NEW row shape that did not exist pre-Phase-12.5 #1. Pre-existing assumptions in `reconciliation_auto_correct.py` + tests:
+
+- Tier-1 auto-correct path (Pass-1 auto-redirect for `entry_price_mismatch` / `close_price_mismatch`) wrote `correction_action='auto_applied'` + `applied_by='auto'` + `correction_choice IS NULL` (single-field update; no menu choice involved).
+- Tier-2 operator-driven path wrote `correction_action='operator_resolved_ambiguity'` + `applied_by='operator'` + `correction_choice` set to one of the §6.2.1 menu choices.
+
+Phase 12.5 #1 introduces a HYBRID shape: `correction_action='auto_applied'` (auto) + `applied_by='auto'` + `correction_choice='split_into_partials'` (was previously only a manual operator choice).
+
+**BINDING invariant (LOCKED):** the hybrid shape is valid IF AND ONLY IF the parent `reconciliation_discrepancies.resolved_by = 'auto_tier1_multi_leg'`. Any other `resolved_by` value paired with this hybrid shape signals a service-layer bug (e.g., misuse of the override parameters via direct CLI invocation). Writing-plans phase MUST:
+
+- Add a discriminating regression test asserting the hybrid shape is rejected at service-layer when invoked WITHOUT the auto-redirect path (e.g., operator CLI passing `--correction-action-override auto_applied --applied-by-override auto`). The CLI surface MUST NOT expose these override parameters; they are service-layer-internal kwargs.
+- Update any pre-existing test or comment that asserts "auto_applied implies correction_choice IS NULL" → narrow the assertion to "auto_applied with correction_choice IS NULL implies a tier-1 entry/close_price_mismatch correction" + add the hybrid case as a separate assertion family.
+- Document the invariant in `reconciliation_auto_correct.py` module-level docstring + at `_TIER2_HANDLERS` registry comment.
+
+**Discriminating regression test pattern (T-1.4):**
+- Test A: invoke `apply_tier2_resolution(conn, discrepancy_id=X, choice_code='split_into_partials', applied_by_override='auto', correction_action_override='auto_applied', resolved_by_override='auto_tier1_multi_leg', ...)` against a `pending_ambiguity_resolution` discrepancy → assert N+1 correction rows ALL carry the hybrid shape + parent discrepancy.resolved_by='auto_tier1_multi_leg'.
+- Test B: invoke same with `applied_by_override='operator'` (default) → assert N+1 rows carry the legacy operator shape; resolved_by='operator'. No hybrid.
+- Test C: invoke same with `applied_by_override='auto'` BUT `resolved_by_override='operator'` (mismatched intent) → service-layer raises `ValueError("hybrid row shape requires resolved_by_override='auto_tier1_multi_leg'")`. (Defensive guard at the outer service function entry.)
 
 ### §7.4 Flow-pivot loop branching
 
@@ -719,7 +742,7 @@ V1 LOCK: clears when next reconciliation_run completes (Option A from brief §1.
 
 ### §8.5 Sentinel-leak audit
 
-The banner template reads from `reconciliation_corrections` and `reconciliation_discrepancies` — both already gate `error_message` and `expected_value_json` content through Sub-bundle 2's read-time re-redactor discipline (per CLAUDE.md "Read-time re-redactor" gotcha banked). The auto-redirect counter is a COUNT(*) — no string content surfaces. ZERO sensitive data emission risk. Sentinel-leak audit test: `tests/web/test_dashboard_banner.py` plants a known sentinel substring in a correction row's `correction_reason` + asserts the banner does NOT contain the substring (only the count).
+The banner template reads from `reconciliation_corrections` and `reconciliation_discrepancies` — both already gate `error_message` and `expected_value_json` content through Sub-bundle 2's read-time re-redactor discipline (per CLAUDE.md "Read-time re-redactor" gotcha banked). The auto-redirect counter is a scalar aggregate (`COUNT(DISTINCT discrepancy_id)` per §8.2 — Codex R3 minor 1 LOCK) — no string content surfaces. ZERO sensitive data emission risk. Sentinel-leak audit test: `tests/web/test_dashboard_banner.py` plants a known sentinel substring in a correction row's `correction_reason` + asserts the banner does NOT contain the substring (only the count).
 
 ### §8.6 CLI surface availability — LOCKED IN-BUNDLE per Codex R1 M5
 
