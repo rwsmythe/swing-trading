@@ -286,6 +286,204 @@ class SchwabStatusVM:
                 )
 
 
+# ---------------------------------------------------------------------------
+# build_schwab_status_vm — composes SchwabStatusVM from CLI primitives
+# ---------------------------------------------------------------------------
+#
+# Consults the same data the CLI ``swing schwab status`` does: tokens-DB
+# metadata via ``_read_tokens_metadata`` + multi-signal state via
+# ``_compute_degraded_state`` + recent calls via ``list_recent_calls``.
+# Re-using CLI helpers preserves the 1:1 CLI/web parity LOCK (dispatch brief
+# §0.5 #14 + spec §7.4 OQ-D).
+#
+# SECURITY: consumes ONLY derived metadata — ``*_issued`` ISO timestamps,
+# computed deltas, presence-only checks on refresh_token bytes. NEVER reads
+# the actual access_token/refresh_token/id_token bytes into the VM. The
+# sentinel-leak audit test (T-2.1 #13 + T-2.2 #10) plants non-token-shaped
+# sentinels into the tokens DB + audit error_message rows and asserts ZERO
+# substring matches in the rendered response.
+
+
+def build_schwab_status_vm(
+    *,
+    cfg,
+    env: str,
+    db_path,
+    session_date: str,
+    unresolved_count: int,
+    now=None,
+):
+    """Compose SchwabStatusVM by consulting the same data the CLI does.
+
+    Per dispatch brief §0.5 #14 + spec §7.4 OQ-D LOCK: mirrors the shipped
+    CLI ``swing schwab status`` rendering 1:1.
+
+    Args:
+        cfg: applied-overrides Config object (caller invoked
+            ``apply_overrides`` at the route entry — Codex R1 Critical #1
+            discipline from Sub-bundle B).
+        env: target environment ('production' or 'sandbox'); already
+            normalized to lowercase by the route handler's case-
+            insensitive query-param validator.
+        db_path: path to the swing.db.
+        session_date: forward-looking ``action_session_for_run(now).
+            isoformat()`` string (per CLAUDE.md base-layout VM gotcha).
+        unresolved_count: pre-fetched count of unresolved-material
+            reconciliation discrepancies (Phase 10 T-E.3 retrofit).
+        now: optional ``datetime.datetime`` for the time-anchored
+            computations (severity thresholds + days-remaining); defaults
+            to ``datetime.now(UTC)``. Tests inject a frozen-time value to
+            assert severity escalation at the boundaries.
+
+    Returns:
+        SchwabStatusVM populated for the template.
+    """
+    # Local imports avoid circular-import at module load (CLI module
+    # imports schwabdev which is heavyweight; web module load shouldn't
+    # eagerly pull it).
+    import sqlite3
+    from datetime import UTC, datetime, timedelta
+
+    from swing.cli_schwab import (
+        _REFRESH_TOKEN_ERROR_THRESHOLD_SECONDS,
+        _REFRESH_TOKEN_TTL_SECONDS,
+        _REFRESH_TOKEN_WARN_THRESHOLD_SECONDS,
+        _compute_degraded_state,
+        _parse_iso_datetime,
+        _read_tokens_metadata,
+    )
+    from swing.config_user import _user_home
+    from swing.data.repos.schwab_api_calls import list_recent_calls
+
+    if now is None:
+        now = datetime.now(UTC)
+
+    tokens_path = _user_home() / "swing-data" / f"schwab-tokens.{env}.db"
+
+    conn = sqlite3.connect(db_path)
+    try:
+        # State + reason (multi-signal predicate; mirrors CLI per spec
+        # §7.4 OQ-D 1:1 LOCK).
+        state, reason = _compute_degraded_state(
+            conn, env=env, tokens_path=tokens_path, now=now,
+        )
+
+        # Recent N=5 calls (matches CLI _RECENT_CALLS_LIMIT).
+        calls = list_recent_calls(
+            conn,
+            since_ts="1970-01-01T00:00:00",
+            surface_filter=None,
+            environment_filter=env,
+            limit=5,
+        )
+        recent: list[SchwabCallSummary] = []
+        for c in calls:
+            # Audit-row status enum includes 'in_flight' (mid-request) +
+            # 'concurrent_refresh' (transient lock). Both are excluded from
+            # the operator-facing summary per CLAUDE.md
+            # "Typed SchwabApiError audit-row close discipline" — operator
+            # sees terminal outcomes only.
+            if c.status not in _SCHWAB_CALL_STATUSES:
+                continue
+            recent.append(SchwabCallSummary(
+                started_ts=c.ts,
+                endpoint=c.endpoint,
+                status=c.status,
+                http_status=c.http_status,
+                # error_message is already a redacted excerpt at write
+                # time per Sub-bundle B + R1 M#3 audit-row close
+                # discipline; VM consumes it as-is.
+                error_excerpt=c.error_message,
+            ))
+
+        # Most-recent success + failure timestamps. Two narrow SELECTs to
+        # avoid surfacing more than needed.
+        row = conn.execute(
+            "SELECT ts FROM schwab_api_calls "
+            "WHERE environment = ? AND status = 'success' "
+            "ORDER BY ts DESC, call_id DESC LIMIT 1",
+            (env,),
+        ).fetchone()
+        last_success_at = row[0] if row is not None else None
+        row = conn.execute(
+            "SELECT ts FROM schwab_api_calls "
+            "WHERE environment = ? AND status != 'success' "
+            "  AND status != 'in_flight' "
+            "ORDER BY ts DESC, call_id DESC LIMIT 1",
+            (env,),
+        ).fetchone()
+        last_failure_at = row[0] if row is not None else None
+    finally:
+        conn.close()
+
+    # Refresh-token TTL math — sources the same ``refresh_token_issued``
+    # ISO timestamp the CLI consults; NEVER reads token bytes.
+    refresh_expires_at: str | None = None
+    refresh_days_remaining: int | None = None
+    refresh_severity: str = "ok"
+    if tokens_path.exists():
+        payload, parse_err = _read_tokens_metadata(tokens_path)
+        if parse_err is None and payload is not None:
+            issued_iso = payload.get("refresh_token_issued")
+            if issued_iso:
+                issued_dt = _parse_iso_datetime(issued_iso)
+                if issued_dt is not None:
+                    if issued_dt.tzinfo is None:
+                        issued_dt = issued_dt.replace(tzinfo=UTC)
+                    expires_dt = issued_dt + timedelta(
+                        seconds=_REFRESH_TOKEN_TTL_SECONDS,
+                    )
+                    refresh_expires_at = expires_dt.isoformat(
+                        timespec="seconds",
+                    )
+                    delta_seconds = (expires_dt - now).total_seconds()
+                    # days_remaining: integer days; 0 when expired
+                    # (presented as expired state on template).
+                    if delta_seconds <= 0:
+                        refresh_days_remaining = 0
+                        refresh_severity = "error"
+                    else:
+                        refresh_days_remaining = int(
+                            delta_seconds // 86400,
+                        )
+                        # Boundary semantics inclusive at upper bound
+                        # (mirrors CLI _render_refresh_token_with_severity:
+                        # <= 2h ⇒ ERROR; <= 24h ⇒ WARN).
+                        if (
+                            delta_seconds
+                            <= _REFRESH_TOKEN_ERROR_THRESHOLD_SECONDS
+                        ):
+                            refresh_severity = "error"
+                        elif (
+                            delta_seconds
+                            <= _REFRESH_TOKEN_WARN_THRESHOLD_SECONDS
+                        ):
+                            refresh_severity = "warn"
+                        else:
+                            refresh_severity = "ok"
+
+    # degraded_banner_active mirrors briefing.md §3.4.4 logic at the web
+    # layer: fires when state is not LIVE OR severity is not 'ok'. The
+    # template uses it to decide whether to surface the re-auth link.
+    degraded_banner_active = state != "LIVE" or refresh_severity != "ok"
+
+    return SchwabStatusVM(
+        session_date=session_date,
+        environment=env,
+        state=state,
+        state_reason=reason,
+        tokens_db_path=str(tokens_path),
+        refresh_token_expires_at=refresh_expires_at,
+        refresh_token_days_remaining=refresh_days_remaining,
+        refresh_token_severity=refresh_severity,
+        recent_calls=recent,
+        last_success_at=last_success_at,
+        last_failure_at=last_failure_at,
+        degraded_banner_active=degraded_banner_active,
+        unresolved_material_discrepancies_count=unresolved_count,
+    )
+
+
 @dataclass(frozen=True)
 class SchwabSetupErrorVM:
     """VM for the user-visible error template (4xx / 5xx error response).

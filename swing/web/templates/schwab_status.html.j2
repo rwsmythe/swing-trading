@@ -1,0 +1,12 @@
+{% extends "base.html.j2" %}
+{% block title %}Schwab integration status — Swing Trading{% endblock %}
+{% block content %}
+{# Post-Phase-12 Sub-bundle 2 Task T-2.1 — minimal-template stub. T-2.2
+   fleshes out 3-state badge styling + refresh-token TTL countdown + recent-
+   calls table + environment switcher + re-auth link. #}
+<section class="schwab-status">
+  <h1>Schwab integration status ({{ vm.environment }})</h1>
+  <p data-state="{{ vm.state }}">{{ vm.state }}</p>
+  {% if vm.state_reason %}<p class="state-reason">{{ vm.state_reason }}</p>{% endif %}
+</section>
+{% endblock %}
