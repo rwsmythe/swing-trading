@@ -6,6 +6,40 @@
 
 ---
 
+## 2026-05-17 Phase 12.5 BANKED — 4-item bundle (operator-locked scope; queued post-Sub-bundle-2 ship of post-Phase-12 mapper-widening arc; sequenced AFTER Sub-bundle 2 integration merge)
+
+**Scope (operator-locked 2026-05-17 in plain chat; orchestrator-recommended priority order):**
+
+1. **OQ-F multi-leg tier-1 auto-redirect** — direct successor to V2 mapper widening. When V2 mapper exposes execution-grain data for multi-leg fills (sum of `executionLegs[].quantity` matches journal qty + per-leg VWAPs align within `price_tolerance`), classifier auto-redirects tier-2 `multi_partial_vs_consolidated` → tier-1 `split_into_partials` instead of forcing operator menu disposition. Spec §6.6 V2 LOCK + writing-plans §Z #1 V2 candidate. Cascade analysis required: confidence threshold; classifier dispatch state; auto-correct handler shape (consumes Sub-bundle C.C `apply_tier2_resolution(..., choice_code='split_into_partials', payload=...)` with operator-derived payload synthesized from execution-leg data); operator-decided UX (does the auto-redirect emit a banner advisory? Surface for review?). **Estimated 2-3 sub-bundles** (brainstorm + writing-plans + 1-2 executing-plans dispatches); **schema v19 likely unchanged** (auto-redirect consumes existing handler registry).
+2. **Fill auto-population at trade-entry time** — Sub-bundle C §1.6 explicit separate sub-bundle worth scoping at brainstorm. Closes the discrepancy stream as a CATEGORY (not one-at-a-time); prospective analog to Sub-bundle C's retroactive auto-correct surface. Trade entry form pre-populates journal fields directly from Schwab Trader API responses at entry-time + flags operator-typed-from-memory deviation. Significant scope: trade entry form refactor + new `fill_origin` enum widening on `fills` table (V2 candidate; may need schema v20) + Schwab API consumer at entry-time + operator-paired ergonomics. **Estimated 2-3 sub-bundles**.
+3. **Web Tier-2 discrepancy-resolution surface** — Sub-bundle C plan §I.3 V2. Web counterpart of C.D's `swing journal discrepancy resolve-ambiguity` + `override-correction` CLIs. Operator-facing HTMX form for tier-2 menu selection + `--custom-value` shape entry + tier-3 override workflow. Inherits Sub-bundle B + 2 web architecture (apply_overrides cascade; HTMX gotcha trinity; base-layout VM banner pin; Phase 6 I3 target-route-registered check). **Estimated 1-2 sub-bundles**; consumes existing C.C service entries + C.D CLI menu helper unchanged.
+4. **CLAUDE.md + orchestrator-context.md maintenance pass** — addresses cap-drift (CLAUDE.md ~48 entries vs ~30 cap; orchestrator-context active "Lessons captured" section growing past retention discipline cap). Archive-split for both files following 2026-05-05 archive-companion precedent. Banks SHIPPED entries to archive companions + preserves index/cross-references in active files. **Estimated 1 standalone docs-only dispatch** (no code; no tests); ZERO Codex rounds (no architectural surface).
+
+**Sequencing rationale (orchestrator-recommended):**
+- **1 first** because it's the direct architectural successor to V2 mapper widening; closes the OQ-F V2 LOCK that Sub-bundle 1 explicitly defers; Sub-bundle 1's `_compute_execution_price` + `_resolve_match_quantity` helpers are the load-bearing primitives auto-redirect consumes. Highest operator-fit value.
+- **2 second** because it's the largest scope expansion; takes longest; benefit compounds with #1 (auto-redirect is retroactive; auto-population is prospective; together they close the entire discrepancy stream).
+- **3 third** because it's smaller scope + consumes already-shipped C.C/C.D surfaces; can be parallelized with #2 if operator preference.
+- **4 fourth** because docs-only; can be scheduled opportunistically; cheap; prevents cap-drift compounding.
+
+**Pre-flight check before Phase 12.5 dispatch:**
+- Post-Phase-12 mapper-widening arc (Sub-bundle 1 + 2) MUST be SHIPPED + integration-merged. Phase 12.5 #1 (OQ-F auto-redirect) consumes Sub-bundle 1's `_compute_execution_price` + `_resolve_match_quantity` helpers; cannot dispatch before.
+- Operator confirms Phase 12.5 scope is still LIVE at dispatch time (~weeks-to-months out depending on Phase 13 sequencing decisions); may want to adjust per learnings from Sub-bundle 1+2 gates.
+- V2.1 §VII.F amendment batch processing may benefit from being folded into Phase 12.5 #4 maintenance pass — operator decision.
+
+**Cross-references:**
+- Spec §6.6 OQ-F V2 LOCK: `docs/superpowers/specs/2026-05-17-schwab-mapper-execution-grain-widening-design.md`
+- Sub-bundle C plan §I.3 (web Tier-2 V2): `docs/superpowers/plans/2026-05-15-phase12-bundle-C-auto-correct-reconciliation-plan.md`
+- Phase 12 Sub-bundle C brainstorm §1.6 (fill auto-population at entry): `docs/superpowers/specs/2026-05-15-phase12-bundle-C-auto-correct-reconciliation-design.md`
+- Writing-plans §Z V2 candidates: `docs/superpowers/plans/2026-05-17-schwab-mapper-execution-grain-widening-plan.md` §Z
+
+---
+
+## 2026-05-17 Phase 13 scope-brainstorm DOC IN PROGRESS — formal scope development while Sub-bundle 1 implementer is in execution
+
+See `docs/phase13-scope-brainstorm.md` for the surveying-categories + candidate-options + discriminating-questions doc. Operator-paced. Phase 13 candidate triage is the strategic conversation post-Phase-12 mapper-widening arc + Phase 12.5 closure.
+
+---
+
 ## 2026-05-17 Phase 12 Sub-sub-bundle C.D SHIPPED — Tier-2 CLI + reconcile-backfill + Phase 10 banner widening (CLOSES Sub-bundle C; 4 Codex rounds + 3 orchestrator-inline gate-fixes + 7 production-discrepancy dispositions; 10-surface operator-witnessed gate THE BIG ONE — largest in project history; ZERO ACCEPT-WITH-RATIONALE banked; ~33 commits; CRITICAL ARCHITECTURAL FINDING: Pass-1 tier-1 entry_price_mismatch shares limit-vs-fill defect with Pass-2-tier-1-FORBIDDEN — V2 mapper widening priority bumped)
 
 **Sub-sub-bundle C.D SHIPPED 2026-05-17** at `bd1a62b` (integration merge of `phase12-bundle-C-D-tier2-cli-and-backfill` via `--no-ff`). Branch HEAD `32812f7` (~33 commits = 15 task-impl (T-D.1..T-D.14 + T-D.6.1) + 1 pre-Codex review fix + 10 Codex-driven fixes (4 R1 + 4 R2 + 1 R3 + 1 R4) + 3 ORCHESTRATOR-INLINE GATE-FIXES + 1 return-report). Operator-dispatched implementer per orchestrator brief at `047e3db`.
