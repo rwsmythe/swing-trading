@@ -101,7 +101,7 @@ Implementation surface is bounded by §2 operator-locks. **NO mapper or comparat
 | `tests/trades/test_reconciliation_classifier.py` | **NEW** tests for multi-leg predicate + auto_redirect_recipe synthesis (~5-10 discriminating cases per §10). | ~+150 LOC. |
 | `tests/trades/test_reconciliation_auto_correct.py` | **NEW** tests for `apply_tier2_resolution` parameterized overrides + flow-pivot loop auto-redirect branch. | ~+100 LOC. |
 | `tests/web/test_view_models_base_layout.py` | **NEW** tests for the helper + every retrofitted VM populates the field. | ~+50 LOC. |
-| `tests/web/test_dashboard_banner.py` | **NEW** integration: plant a multi-leg auto-correction + assert banner fires; revert + assert banner clears. | ~+30 LOC. |
+| `tests/web/test_dashboard_banner.py` | **NEW** integration: plant a multi-leg auto-correction + assert banner fires; invoke tier-3 override on the chain head + assert banner UNCHANGED (Codex R4 minor 2 + R5 minor 1 LOCK); insert a fresh `reconciliation_run` + ZERO auto-redirects in it + assert banner clears. | ~+40 LOC. |
 
 **Surfaces NOT touched** (consumer-side only):
 
@@ -495,6 +495,7 @@ class InvalidOverrideComboError(ValueError):
 
 def _validate_override_combo(
     *,
+    choice_code: str,
     applied_by_override: str | None,
     correction_action_override: str | None,
     resolved_by_override: str | None,
@@ -512,29 +513,53 @@ def _validate_override_combo(
             f"resolved_by_override={resolved_by_override!r}"
         )
     # Symmetry: resolved_by_override='auto_tier1_multi_leg' implies the
-    # other two MUST be set to the auto-redirect values.
-    if (
-        resolved_by_override == "auto_tier1_multi_leg"
-        and (applied_by_override != "auto" or correction_action_override != "auto_applied")
-    ):
-        raise InvalidOverrideComboError(
-            f"resolved_by_override='auto_tier1_multi_leg' requires "
-            f"applied_by_override='auto' AND "
-            f"correction_action_override='auto_applied'; got "
-            f"applied_by_override={applied_by_override!r}, "
-            f"correction_action_override={correction_action_override!r}"
-        )
+    # other two MUST be set to the auto-redirect values + choice_code
+    # MUST be the only sanctioned handler path 'split_into_partials'
+    # (Codex R5 M1 LOCK — bind the override combo to the SANCTIONED
+    # handler so a developer-bug pairing 'auto_tier1_multi_leg' with
+    # some other tier-2 choice raises).
+    if resolved_by_override == "auto_tier1_multi_leg":
+        if applied_by_override != "auto" or correction_action_override != "auto_applied":
+            raise InvalidOverrideComboError(
+                f"resolved_by_override='auto_tier1_multi_leg' requires "
+                f"applied_by_override='auto' AND "
+                f"correction_action_override='auto_applied'; got "
+                f"applied_by_override={applied_by_override!r}, "
+                f"correction_action_override={correction_action_override!r}"
+            )
+        if choice_code != "split_into_partials":
+            raise InvalidOverrideComboError(
+                f"resolved_by_override='auto_tier1_multi_leg' requires "
+                f"choice_code='split_into_partials'; got "
+                f"choice_code={choice_code!r}"
+            )
 
 
-def _apply_tier2_resolution_inner(conn, *, ...):
-    # Codex R4 M1 LOCK — guard fires inside the inner (shared by all
-    # callers; outer + pivot-loop direct).
+def _apply_tier2_resolution_inner(conn, *, choice_code, applied_by_override=None,
+                                  correction_action_override=None,
+                                  resolved_by_override=None, ...):
+    # Codex R4 M1 + R5 M1 LOCK — guard fires inside the inner (shared by all
+    # callers; outer + pivot-loop direct). Choice_code bound to the
+    # sanctioned auto-redirect handler.
     _validate_override_combo(
+        choice_code=choice_code,
         applied_by_override=applied_by_override,
         correction_action_override=correction_action_override,
         resolved_by_override=resolved_by_override,
     )
-    # ... continue with SELECT-first idempotency + sandbox short-circuit
+    # Post-SELECT secondary invariant check (Codex R5 M1 LOCK):
+    disc = _select_discrepancy(conn, discrepancy_id)
+    if (
+        resolved_by_override == "auto_tier1_multi_leg"
+        and disc.ambiguity_kind != "multi_partial_vs_consolidated"
+    ):
+        raise InvalidOverrideComboError(
+            f"resolved_by_override='auto_tier1_multi_leg' requires "
+            f"discrepancy.ambiguity_kind='multi_partial_vs_consolidated'; "
+            f"got ambiguity_kind={disc.ambiguity_kind!r} on "
+            f"discrepancy_id={discrepancy_id}"
+        )
+    # ... continue with terminal-state idempotency + sandbox short-circuit
     # + handler dispatch ...
 ```
 
@@ -574,6 +599,20 @@ def _pivot_classify_and_dispatch_for_run(conn, run_id, environment, ...):
                 elif classification.tier == 2 and classification.auto_redirect_recipe is not None:
                     # NEW IN PHASE 12.5 #1: multi-leg auto-redirect path.
                     recipe = classification.auto_redirect_recipe
+                    
+                    # Codex R5 M2 LOCK — validate the override combo BEFORE
+                    # any state mutation, so an InvalidOverrideComboError
+                    # rethrow cannot leak a half-stamped discrepancy state.
+                    # This is a developer-bug guard; recipe is synthesized
+                    # by the classifier so a violation here is a CODE error,
+                    # not data. Predicate runs at trade-time but anchor here
+                    # mirrors §7.3.1.a in the pivot path.
+                    _validate_override_combo(
+                        choice_code=recipe["choice_code"],
+                        applied_by_override=recipe["applied_by_override"],
+                        correction_action_override=recipe["correction_action_override"],
+                        resolved_by_override=recipe["resolved_by"],
+                    )
                     
                     # Step 1: stamp pending_ambiguity_resolution.
                     # Codex R2 minor 1 — _stamp_pending_ambiguity_inner does
