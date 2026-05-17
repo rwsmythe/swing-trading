@@ -42,6 +42,90 @@ from swing.integrations.schwab.models import (
 _log = logging.getLogger(__name__)
 
 
+def _has_non_placeholder_leg(activities: object) -> bool:
+    """Return True if any leg in EXECUTION activities has a non-zero price.
+
+    Used by `_extract_executions_from_order_raw` to detect anomalous
+    zero-filled order shapes that include non-placeholder legs (canary
+    for future Schwab regression where a real-execution sentinel
+    surfaces despite filledQuantity=0).
+
+    Scope alignment (Sub-bundle 1.5 Codex R2 M#2): only legs under
+    activities whose ``activityType == "EXECUTION"`` participate in the
+    canary -- mirroring the non-EXECUTION silent-skip in
+    ``_extract_executions_from_order_raw``'s activity-iteration loop
+    (which ignores ``ORDER_ACTION`` and other non-execution activities).
+    Without this filter the canary could fire on data the mapper would
+    otherwise ignore, producing observability noise unrelated to the
+    execution-grain extraction path.
+
+    Design decision (Sub-bundle 1.5 Codex R2 M#1 -- ACCEPT-WITH-RATIONALE):
+    the canary is intentionally minimal. ``price > 0`` is the strongest
+    signal of a "real fill that should have been processed". Codex R2
+    suggested broadening to detect other anomalies (negative/NaN price,
+    ``executionType=FILL`` with ``filledQuantity=0``, positive quantity
+    on fill-like activities, malformed shapes). These are either:
+      (a) already caught by the mapper's existing defensive parsing
+          (non-dict / non-list / bool-as-number / non-str time / the
+          ``SchwabExecutionLeg.__post_init__`` validator rejects
+          negative + non-finite price via REAL-field guards);
+      (b) outside the current mapper contract -- the ``executionType``
+          field is not relied on by ``_extract_executions_from_order_raw``
+          and is not part of the V1 canary contract (the T-1.5.1
+          production diagnostic showed all placeholders surface as
+          ``activityType=EXECUTION`` with no ``executionType``
+          discrimination needed for the operator's data shape);
+      (c) would generate false positives -- the placeholder shape
+          ALREADY has ``leg.quantity > 0`` (reflects the order's
+          intended size, not execution); widening the canary on that
+          axis would warn on every placeholder order.
+
+    Defensive parsing: any malformed shape returns False (no false
+    positives). Skip non-list activities, non-dict activity entries,
+    non-EXECUTION activities, non-list executionLegs, non-dict legs.
+    Reject bool-as-number (Python bool is a subclass of int --
+    ``True == 1.0 > 0`` would otherwise false-positive). Ignore
+    TypeError / ValueError on float coercion of the price value.
+
+    Note (Codex R2 Minor #2 -- ADVISORY no-op): malformed prices
+    (non-numeric, bool, etc.) return False silently rather than
+    surfacing an alternate signal. Separate malformed-shape detection
+    is a V2 candidate; the V1 mapper's defensive parsing already drops
+    malformed legs at the ``SchwabExecutionLeg.__post_init__``
+    validator (which this canary bypasses by design -- the canary
+    only fires when the gate would otherwise silently swallow a
+    NON-malformed but anomalous shape).
+    """
+    if not isinstance(activities, list):
+        return False
+    for activity in activities:
+        if not isinstance(activity, dict):
+            continue
+        # Sub-bundle 1.5 Codex R2 M#2 -- align scope with the mapper's
+        # extraction loop which silently skips non-EXECUTION activities
+        # (see ``_extract_executions_from_order_raw``'s activity-iteration
+        # loop). Canary mirrors that semantic.
+        if activity.get("activityType") != "EXECUTION":
+            continue
+        legs = activity.get("executionLegs", [])
+        if not isinstance(legs, list):
+            continue
+        for leg in legs:
+            if not isinstance(leg, dict):
+                continue
+            raw_price = leg.get("price", 0)
+            # Reject bool defensively (Python bool is a subclass of int).
+            if isinstance(raw_price, bool):
+                continue
+            try:
+                price_value = float(raw_price)
+            except (TypeError, ValueError):
+                continue
+            if price_value > 0:
+                return True
+    return False
+
+
 def _require(d: Any, key: str, *, ctx: str) -> Any:
     """Return d[key] or raise SchwabSchemaParityError with a redacted message."""
     if not isinstance(d, dict):
@@ -292,6 +376,35 @@ def _extract_executions_from_order_raw(
         )
     except (TypeError, ValueError):
         filled_qty = None
+
+    # Sub-bundle 1.5 T-1.5.2 fix -- orders with EXPLICIT filledQuantity == 0
+    # are informational placeholder shapes. Schwab production emits
+    # executionLegs[0] on STOP / REPLACED / CANCELED / PENDING_ACTIVATION
+    # working orders with leg.price == 0.0 sentinel that fails the validator's
+    # price > 0 contract. Skip extraction entirely to pre-empt drop+warn noise
+    # across the uniformly-non-executing placeholder population. The
+    # permissive-when-`filledQuantity`-absent stance documented in this
+    # function's docstring is PRESERVED -- only skip on EXPLICIT zero,
+    # not on absent or missing key.
+    #
+    # Sub-bundle 1.5 Codex R1 M#1+M#6 -- observability canary. The broad
+    # gate above silently swallows ANY future order shape with
+    # filledQuantity=0; the diagnosed STOP/REPLACED/CANCELED placeholder
+    # family uniformly carries leg.price=0 sentinel. But a hypothetical
+    # future Schwab regression could emit filledQuantity=0 AND non-zero-
+    # price legs (internally-inconsistent shape). Emit a WARN BEFORE
+    # returning None so the anomaly is observable. The gate's skip
+    # behavior is unchanged.
+    if filled_qty is not None and filled_qty == 0:
+        if _has_non_placeholder_leg(activities):
+            _log.warning(
+                "map_orders_to_fill_candidates: order %s carries "
+                "filledQuantity=0 but executionLegs contain non-zero "
+                "prices; skipping extraction but flagging as anomalous "
+                "shape",
+                order_id,
+            )
+        return None
 
     collected: list[SchwabExecutionLeg] = []
     for ai, activity in enumerate(activities):
