@@ -79,6 +79,35 @@ _SUB_CLASSIFIERS: dict[str, Callable[..., ClassificationResult]] = {}
 
 
 # ---------------------------------------------------------------------------
+# Sub-bundle 1 T-1.8 — Shape C audit-key constants (post-Phase-12 mapper
+# execution-grain widening).
+# ---------------------------------------------------------------------------
+#
+# Shape C is the comparator emit shape introduced by T-1.6 when execution-
+# grain price data is available from the V2 mapper. The comparator at
+# ``swing/trades/schwab_reconciliation.py`` emits ``actual_value_json`` with
+# EXACTLY these key-sets when the journal price diverges from the
+# computed execution price (via ``_compute_execution_price`` single-leg or
+# VWAP for multi-leg).
+#
+# The classifier's Shape C branch matches this exact key-set + emits tier-1
+# with ``correction_target = {'price': source_payload['price']}``. Audit
+# keys (``execution_legs`` + ``schwab_order_id`` + ``schwab_order_price``)
+# are observational ONLY at classifier — they live in the persisted
+# ``actual_value_json`` column and are queryable via
+# ``SELECT json_extract(actual_value_json, '$.execution_legs') FROM
+# reconciliation_discrepancies WHERE id = ?``. The classifier does NOT copy
+# them into ``correction_reason`` (which would balloon the string).
+#
+# Per plan §A.1.8 + spec §3.2 + §5.2 + §10.3-§10.6.
+
+_EXECUTION_AUDIT_KEYS: frozenset[str] = frozenset({
+    "execution_legs", "schwab_order_id", "schwab_order_price",
+})
+_SHAPE_C_EXPECTED_KEYS: frozenset[str] = frozenset({"price"}) | _EXECUTION_AUDIT_KEYS
+
+
+# ---------------------------------------------------------------------------
 # T-B.3 — entry_price_mismatch sub-classifier (CVGI 41 path)
 # ---------------------------------------------------------------------------
 #
@@ -213,6 +242,36 @@ def _classify_entry_price_mismatch(
                 f"classifier"
             ),
         )
+
+    # Sub-bundle 1 T-1.8 — Shape C predicate.
+    # ADDITIONAL (not replacement): Sub-bundle C.B Shape A + Shape B
+    # predicates preserved unchanged below. Shape C matches the comparator
+    # emit shape introduced at T-1.6 when execution-grain price data is
+    # available via the V2 mapper. Strict-set equality on
+    # _SHAPE_C_EXPECTED_KEYS prevents false-positive matches on partial
+    # Shape C payloads (which fall through to the Shape A/B path → tier-2
+    # unsupported). Per plan §A.1.8 + spec §3.2 + §5.2 + §10.3-§10.6.
+    if frozenset(source_payload.keys()) == _SHAPE_C_EXPECTED_KEYS:
+        price = source_payload.get("price")
+        if (
+            isinstance(price, (int, float))
+            and not isinstance(price, bool)
+            and math.isfinite(float(price))
+        ):
+            return ClassificationResult(
+                tier=1,
+                ambiguity_kind=None,
+                correction_target={"price": float(price)},
+                correction_reason=(
+                    f"entry_price_mismatch on "
+                    f"(ticker={discrepancy.ticker!r}, "
+                    f"fill_id={discrepancy.fill_id}): Schwab execution-grain "
+                    f"price ${float(price):.4f}; auto-correct journal to "
+                    f"execution (Sub-bundle 1 T-1.8 Shape C; audit keys "
+                    f"in actual_value_json)"
+                ),
+                candidate_choices=None,
+            )
 
     source_price = source_payload.get("price")
     if source_price is None:
@@ -1107,12 +1166,52 @@ _SUB_CLASSIFIERS["position_qty_mismatch"] = _classify_position_qty_mismatch
 def _classify_close_price_mismatch(
     *,
     discrepancy: ReconciliationDiscrepancy,
-    source_payload: Any | None,  # noqa: ARG001 — V1 doesn't consult source
-    journal_row: Mapping[str, Any] | None,  # noqa: ARG001 — V1 doesn't consult journal
+    source_payload: Any | None,
+    journal_row: Mapping[str, Any] | None,  # noqa: ARG001 — Shape C path doesn't consult journal_row
 ) -> ClassificationResult:
-    """Spec §4.3.6 — close_price_mismatch (tier-2-always V1)."""
+    """Spec §4.3.6 + §3.2 + §10.6 OQ-D — close_price_mismatch.
+
+    Sub-bundle 1 T-1.8 widening: NEW Shape C branch (execution-grain audit-
+    bearing payload) → tier-1 auto-correct. Legacy V1 fall-through preserved
+    for non-Shape-C payloads (e.g., OHLCV-snapshot future consumers).
+
+    Pre-T-1.8 behavior was tier-2-always (`unknown_schwab_subtype`). Post-
+    T-1.8 the Shape C path lets the comparator's execution-grain
+    `actual_value_json` drive tier-1 auto-correct symmetrically with
+    entry_price_mismatch (per spec §10.6 OQ-D FIRED-STOP walkthrough).
+    """
     ticker = discrepancy.ticker
     trade_id = discrepancy.trade_id
+
+    # Sub-bundle 1 T-1.8 — Shape C branch (per plan §A.1.8 + spec §3.2 +
+    # §10.6 OQ-D). Insert BEFORE existing tier-2-always V1 fall-through.
+    if isinstance(source_payload, Mapping):
+        if frozenset(source_payload.keys()) == _SHAPE_C_EXPECTED_KEYS:
+            price = source_payload.get("price")
+            if (
+                isinstance(price, (int, float))
+                and not isinstance(price, bool)
+                and math.isfinite(float(price))
+            ):
+                return ClassificationResult(
+                    tier=1,
+                    ambiguity_kind=None,
+                    correction_target={"price": float(price)},
+                    correction_reason=(
+                        f"close_price_mismatch on (ticker={ticker!r}, "
+                        f"trade_id={trade_id}): Schwab execution-grain "
+                        f"price ${float(price):.4f}; auto-correct journal "
+                        f"to execution (Sub-bundle 1 T-1.8 Shape C; audit "
+                        f"keys in actual_value_json)"
+                    ),
+                    candidate_choices=None,
+                )
+        # Mixed/partial Shape C OR non-Shape-C Mapping → fall through to
+        # legacy V1 tier-2 path below (preserves OHLCV-snapshot future
+        # consumer compatibility per plan §A.1.8).
+
+    # Legacy V1 tier-2-always path preserved per plan §A.1.8 fall-through
+    # discipline.
     return ClassificationResult(
         tier=2,
         ambiguity_kind="unknown_schwab_subtype",
