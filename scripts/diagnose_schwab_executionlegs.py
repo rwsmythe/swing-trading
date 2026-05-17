@@ -154,8 +154,10 @@ def compare_leg_to_expected(leg: Any) -> dict[str, Any]:
             "none_values": [str, ...],            # expected keys present but value is None
                                                   # (excludes mismarkedQuantity + instrumentId
                                                   # which legitimately accept None)
-            "would_pass_validator": bool,         # rough estimate (does NOT replicate
-                                                  # the full dataclass __post_init__)
+            "would_pass_type_shape_only": bool,   # type-and-key-presence check
+                                                  # ONLY -- does NOT replicate the
+                                                  # dataclass __post_init__ value-
+                                                  # range guards (e.g., price > 0).
         }
 
     Defensive -- never raises on malformed input (str, None, list, etc.).
@@ -168,7 +170,7 @@ def compare_leg_to_expected(leg: Any) -> dict[str, Any]:
             "unexpected_keys": [],
             "wrong_type": {},
             "none_values": [],
-            "would_pass_validator": False,
+            "would_pass_type_shape_only": False,
         }
 
     leg_keys = set(leg.keys())
@@ -207,7 +209,13 @@ def compare_leg_to_expected(leg: Any) -> dict[str, Any]:
         "unexpected_keys": unexpected,
         "wrong_type": wrong_type,
         "none_values": none_values,
-        "would_pass_validator": would_pass,
+        # NOTE: this is a TYPE-and-KEY-presence check only. It does NOT
+        # replicate the dataclass __post_init__ value-range guards
+        # (e.g., `price > 0`, `quantity > 0`, `time` non-empty), so a
+        # placeholder shape with leg.price=0.0 would surface as True
+        # here despite being rejected at SchwabExecutionLeg construction
+        # (Codex R1 M#5 -- field rename to make the limitation honest).
+        "would_pass_type_shape_only": would_pass,
     }
 
 
@@ -356,7 +364,7 @@ def summarize_captures(captures: Sequence[dict[str, Any]]) -> dict[str, Any]:
             "total_orders_inspected": int,
             "orders_with_executions": int,
             "total_legs_captured": int,
-            "legs_would_pass_validator": int,
+            "legs_would_pass_type_shape_only": int,
             "missing_key_frequency": {key: count, ...},
             "unexpected_key_frequency": {key: count, ...},
             "wrong_type_frequency": {key: count, ...},
@@ -371,7 +379,7 @@ def summarize_captures(captures: Sequence[dict[str, Any]]) -> dict[str, Any]:
         1
         for c in captures
         for leg in c.get("legs_captured", [])
-        if leg.get("comparator_report", {}).get("would_pass_validator")
+        if leg.get("comparator_report", {}).get("would_pass_type_shape_only")
     )
     missing_freq: dict[str, int] = {}
     unexpected_freq: dict[str, int] = {}
@@ -389,7 +397,7 @@ def summarize_captures(captures: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "total_orders_inspected": total_orders,
         "orders_with_executions": orders_with_executions,
         "total_legs_captured": total_legs,
-        "legs_would_pass_validator": legs_pass,
+        "legs_would_pass_type_shape_only": legs_pass,
         "missing_key_frequency": missing_freq,
         "unexpected_key_frequency": unexpected_freq,
         "wrong_type_frequency": wrong_type_freq,
@@ -431,8 +439,8 @@ def render_report(
     )
     lines.append(f"Total legs captured:       {summary['total_legs_captured']}")
     lines.append(
-        f"Legs that would pass validator (rough): "
-        f"{summary['legs_would_pass_validator']}"
+        f"Legs that pass type+key-shape check (does NOT include "
+        f"value-range guards): {summary['legs_would_pass_type_shape_only']}"
     )
     if summary["missing_key_frequency"]:
         lines.append("Missing-key frequency:")
@@ -491,7 +499,7 @@ def render_report(
             report = leg_cap.get("comparator_report", {})
             lines.append(
                 f"    is_dict={report.get('is_dict')} "
-                f"would_pass_validator={report.get('would_pass_validator')}"
+                f"would_pass_type_shape_only={report.get('would_pass_type_shape_only')}"
             )
             if not report.get("is_dict"):
                 lines.append(
@@ -833,12 +841,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"Diagnostic: summary -- orders={summary['total_orders_inspected']} "
         f"with-executions={summary['orders_with_executions']} "
         f"legs-captured={summary['total_legs_captured']} "
-        f"would-pass-validator={summary['legs_would_pass_validator']}\n"
+        f"type-shape-pass={summary['legs_would_pass_type_shape_only']}\n"
     )
 
-    # If any leg would pass the validator, that's GOOD; if zero, that's the
-    # production-state defect we're diagnosing. Either way exit 0 -- the
-    # report itself is the deliverable.
+    # If any leg would pass the type+key-shape check, that's good for the
+    # surface diagnostic; if zero, that's the production-state defect we're
+    # diagnosing. (Note: this is a type-shape check only; dataclass
+    # __post_init__ value-range guards may still reject a "passing" leg.)
+    # Either way exit 0 -- the report itself is the deliverable.
     return 0
 
 

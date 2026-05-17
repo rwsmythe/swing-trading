@@ -181,7 +181,7 @@ def test_compare_leg_well_formed_passes_validator() -> None:
     assert report["unexpected_keys"] == []
     assert report["wrong_type"] == {}
     assert report["none_values"] == []
-    assert report["would_pass_validator"] is True
+    assert report["would_pass_type_shape_only"] is True
 
 
 def test_compare_leg_missing_time_flagged() -> None:
@@ -190,7 +190,7 @@ def test_compare_leg_missing_time_flagged() -> None:
     del leg["time"]
     report = mod.compare_leg_to_expected(leg)
     assert "time" in report["missing_keys"]
-    assert report["would_pass_validator"] is False
+    assert report["would_pass_type_shape_only"] is False
 
 
 def test_compare_leg_unexpected_orderid_key_flagged() -> None:
@@ -202,7 +202,7 @@ def test_compare_leg_unexpected_orderid_key_flagged() -> None:
     assert "orderId" in report["unexpected_keys"]
     # Unexpected keys do NOT fail the validator (it uses .get()), so this
     # would still pass.
-    assert report["would_pass_validator"] is True
+    assert report["would_pass_type_shape_only"] is True
 
 
 def test_compare_leg_wrong_type_for_price_flagged() -> None:
@@ -212,7 +212,7 @@ def test_compare_leg_wrong_type_for_price_flagged() -> None:
     report = mod.compare_leg_to_expected(leg)
     assert "price" in report["wrong_type"]
     assert "str" in report["wrong_type"]["price"]
-    assert report["would_pass_validator"] is False
+    assert report["would_pass_type_shape_only"] is False
 
 
 def test_compare_leg_bool_as_number_for_quantity_flagged() -> None:
@@ -233,7 +233,7 @@ def test_compare_leg_none_required_field_flagged() -> None:
     # `time` is required + non-empty str; None is wrong type, so it lands
     # in wrong_type (not none_values).
     assert "time" in report["wrong_type"]
-    assert report["would_pass_validator"] is False
+    assert report["would_pass_type_shape_only"] is False
 
 
 def test_compare_leg_optional_none_acceptable() -> None:
@@ -243,7 +243,7 @@ def test_compare_leg_optional_none_acceptable() -> None:
     leg["mismarkedQuantity"] = None
     leg["instrumentId"] = None
     report = mod.compare_leg_to_expected(leg)
-    assert report["would_pass_validator"] is True
+    assert report["would_pass_type_shape_only"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +256,7 @@ def test_compare_leg_handles_non_dict_input() -> None:
     for bad_input in ("not a dict", None, [], 42, 3.14):
         report = mod.compare_leg_to_expected(bad_input)
         assert report["is_dict"] is False
-        assert report["would_pass_validator"] is False
+        assert report["would_pass_type_shape_only"] is False
 
 
 def test_iterate_orders_with_legs_handles_non_dict_order() -> None:
@@ -560,7 +560,7 @@ def test_summarize_captures_aggregates_frequencies() -> None:
     assert summary["total_orders_inspected"] == 1
     assert summary["orders_with_executions"] == 1
     assert summary["total_legs_captured"] == 3
-    assert summary["legs_would_pass_validator"] == 1
+    assert summary["legs_would_pass_type_shape_only"] == 1
     assert summary["missing_key_frequency"].get("time") == 1
     assert summary["wrong_type_frequency"].get("price") == 1
 
