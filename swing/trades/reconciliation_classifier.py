@@ -781,6 +781,45 @@ def _classify_unmatched_fill_shared(
     ticker = discrepancy.ticker
     fill_id = discrepancy.fill_id
 
+    # Sub-bundle 1 T-1.9 — Path B execution_unavailable sentinel
+    # recognition (spec §5.2 + §6.1 OQ-A LOCK). Comparator T-1.6 emits
+    # unmatched_*_fill with actual_value_json={"matched": null,
+    # "execution_unavailable": True, "schwab_order_id": X,
+    # "schwab_order_price": Y} when a matched Schwab order has no
+    # execution-grain data (executions=None from V1 mapper path / sandbox
+    # / mapper-coherence-check collapse case). V1 Pass-2 STAYS
+    # tier-2-always (Pass-2-tier-1-FORBIDDEN LOCK per spec §1.5 + §6.6
+    # OQ-F V2). This branch ONLY adds clearer correction_reason citing
+    # `execution_unavailable=true` for operator-actionability — no LIFT.
+    if (
+        isinstance(source_payload, Mapping)
+        and source_payload.get("execution_unavailable") is True
+    ):
+        schwab_order_id = source_payload.get("schwab_order_id", "<unknown>")
+        schwab_order_price = source_payload.get("schwab_order_price")
+        if (
+            isinstance(schwab_order_price, (int, float))
+            and not isinstance(schwab_order_price, bool)
+        ):
+            price_text = f"${float(schwab_order_price):.4f}"
+        else:
+            price_text = "(price unavailable)"
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="unsupported",
+            correction_target=None,
+            correction_reason=(
+                f"unmatched_{direction}_fill on "
+                f"(ticker={ticker!r}, fill_id={fill_id}): Schwab order "
+                f"{schwab_order_id} (order_price={price_text}) matched on "
+                f"quantity but execution-grain data is unavailable "
+                f"(execution_unavailable=true sentinel); please disposition "
+                f"manually per broker execution statement (V1 LIFT scope = "
+                f"Pass-1 only per spec §1.5; OQ-F V2 deferred)"
+            ),
+            candidate_choices=None,
+        )
+
     # Pass-1-only or no-payload case (DHC 39 + VSAT 40 walkthrough — Pass 1
     # input shape ``actual_value_json={"matched": null}``; here we receive
     # source_payload=None OR source_payload == {"matched": None}.
