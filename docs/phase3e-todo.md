@@ -6,6 +6,87 @@
 
 ---
 
+## 2026-05-17 PM Phase 12.5 #1 brainstorm SHIPPED — OQ-F multi-leg tier-1 auto-redirect (V2 follow-up from post-Phase-12 mapper-widening spec §6.6) — 7 Codex rounds NO_NEW_CRITICAL_MAJOR — ZERO ACCEPT-WITH-RATIONALE banked across 15 Major + 10 Minor (cleanest brainstorm chain in project history)
+
+**Brainstorm SHIPPED 2026-05-17** at `a1582c0` (integration merge of `phase12-5-bundle-1-oqf-brainstorm` via `--no-ff`; 8 implementer commits = 1 draft + 6 Codex-fix + 1 return-report; **7 Codex rounds → NO_NEW_CRITICAL_MAJOR** convergent monotonic-Major taper (R1 5M/2m → R2 3M/2m → R3 2M/2m → R4 2M/2m → R5 2M/1m → R6 1M/1m → R7 0); **ZERO ACCEPT-WITH-RATIONALE banked across all 15 Major + 10 Minor findings — cleanest brainstorm chain in project history**; ZERO Critical findings entire chain; ZERO Co-Authored-By footer drift across 8 commits.
+
+### Deliverables
+
+- **Spec doc**: `docs/superpowers/specs/2026-05-17-phase12-5-bundle-1-oqf-multi-leg-auto-redirect-design.md` (1236 lines; mirrors Sub-bundle C spec format §0-§17).
+- **Return report**: `docs/phase12-5-bundle-1-oqf-multi-leg-auto-redirect-brainstorm-return-report.md`.
+- **Session state**: `%TEMP%/.copowers-session-0ca8f15d6677.json`.
+
+### 4 operator-locked decisions (§2.1-§2.4 verbatim binding clauses; preserved through all 7 Codex rounds)
+
+1. Auto-redirect posture = ON
+2. Confidence threshold = all-match-within-tolerance per spec §4.4 determinism principle
+3. Auto-correct handler shape = reuse `apply_tier2_resolution(choice_code='split_into_partials', resolved_by='auto_tier1_multi_leg', applied_by_override='auto', correction_action_override='auto_applied')`
+4. Operator-facing UX = banner advisory only
+
+### Brainstorm-locked at §15.A (Codex chain resolved during 7 rounds)
+
+- §6.5 n=1 single-order multi-leg path LOCKED YES via ambiguity_kind reclassification (Codex R1 M2)
+- §8.6 `--resolved-by <value>` CLI filter LOCKED IN-BUNDLE at T-1.10 (Codex R1 M5; banner template cites filter; both land together)
+- §7.6 sandbox short-circuit gated-on-auto-redirect + SAVEPOINT ROLLBACK pattern (Codex R1 M3)
+- §7.4 service API LOCKED to `operator_custom_payload` (existing kwarg) + new `applied_by_override` / `correction_action_override` / `resolved_by_override` overrides (Codex R1 M4)
+- §11.2 briefing.md +1 line per run for `tier1_multi_leg_redirected_count` when > 0
+- §12.3 canary observability for empty-executions case (~+5 LOC + 1 test; Sub-bundle 1.5 canary precedent)
+- §13.3 Brief §2.4 amendment banked — no `_RESOLVED_BY_VALUES` constant exists; resolved_by is free TEXT; brief writer error caught by Codex R1 M4
+
+### Schema v19 UNCHANGED LOCK
+
+Corrections + discrepancies CHECK enums already accommodate `auto_applied` + `auto` + new free-TEXT `resolved_by='auto_tier1_multi_leg'`. NO migration required.
+
+### 3 still-open operator-decision items at §15.B (writing-plans handoff)
+
+Brainstorm proposes defaults; operator may override at writing-plans-brief drafting:
+
+1. **§4.4 `price_tolerance` threshold** — brainstorm default: LOCK $0.01 absolute (matches spec §4.4 inheritance + existing codebase). Operator may override toward `max($0.01, abs(journal_price) * 0.001)` for higher-priced stocks.
+2. **§6.3 `qty_tolerance` mismatch** — brainstorm default: LOCK predicate=1e-9 (handler uses 1e-6; strictness asymmetry is safe — predicate stricter than handler).
+3. **§6.4 defensive cap on N legs** — brainstorm default: NO cap V1 (production evidence supports unbounded; mapper-coherence-check already filters pathological shapes). Operator may impose cap (e.g., 50) for memory hygiene.
+
+### Single sub-bundle ship recommended
+
+**NOT** 2-3 sub-bundle decomposition originally projected. Brainstorm consolidated to:
+- ~+320 LOC across 11 tasks
+- ~+85 fast tests + 1 slow E2E
+- 3-5 Codex rounds projected for executing-plans
+
+### 12 V2 candidates banked at §14
+
+(further widening; per-leg surfacing; multi-account variants; etc.)
+
+### 12 forward-binding lessons for writing-plans
+
+8 from spec §16 + 4 Codex-chain-surfaced in return report §8:
+1. Recipe-field discipline (auto_redirect_recipe=None default preserves existing emit paths)
+2. Override-parameter threading with verbatim-existing default values
+3. Free-text columns vs CHECK enum columns (pre-flight `grep -n CHECK` for every new string value)
+4. Cross-column CHECK invariants (`(ambiguity_kind, resolution)` pairing through service-layer)
+5. Sandbox short-circuit ALWAYS in inner (C.C lesson #2 carry-forward)
+6. Helper invocation completeness + grep retrofit test discipline (Phase 10 T-E.3 + Sub-bundle 2 precedent)
+7. ASCII-only banner text (CLAUDE.md cp1252 gotcha pre-emption)
+8. Discriminating-test patterns for predicate edge cases (Codex R2 M2 + R3 M1)
+9-12. 4 Codex-chain-surfaced lessons per return report §8
+
+### Writing-plans dispatch UNBLOCKED
+
+Consumes locked spec (§2 operator-locks + §15.A brainstorm-locks) + 12 forward-binding lessons + 3 still-open §15.B items. Expected 3-5 Codex rounds; output plan doc decomposing into 11 tasks for single-sub-bundle executing-plans dispatch.
+
+### Worktree teardown status
+
+- Branch `phase12-5-bundle-1-oqf-brainstorm` merged via `--no-ff` at `a1582c0`; on-disk husk matches cleanup-script regex `phase\d+[-_]` — operator-paired `cleanup-locked-scratch-dirs.ps1 -DeregisterFirst` pass post-merge.
+
+### Cross-references
+
+- Brainstorm dispatch brief: `docs/phase12-5-bundle-1-oqf-multi-leg-auto-redirect-brainstorm-dispatch-brief.md` (`37b584d`).
+- Spec doc: `docs/superpowers/specs/2026-05-17-phase12-5-bundle-1-oqf-multi-leg-auto-redirect-design.md` (in `a1582c0` merge).
+- Return report: `docs/phase12-5-bundle-1-oqf-multi-leg-auto-redirect-brainstorm-return-report.md` (in `a1582c0` merge).
+- Integration merge: `a1582c0`.
+- Spec §6.6 OQ-F V2 LOCK (predecessor): `docs/superpowers/specs/2026-05-17-schwab-mapper-execution-grain-widening-design.md:561-590`.
+
+---
+
 ## 2026-05-17 PM Post-Phase-12 Sub-bundle 2 SHIPPED — /schwab/status web counterpart (T-B.7 follow-up from Phase 12 Sub-bundle B) — 5-surface orchestrator-witnessed GATE ALL PASS — CLOSES post-Phase-12 mapper-widening arc
 
 **Sub-bundle 2 SHIPPED 2026-05-17** at `690aed0` (integration merge of `schwab-mapper-bundle-2` via `--no-ff`; 13 implementer commits = 7 task-impl (T-2.0..T-2.6) + 3 Codex-fix (R1 Critical #1 + Major #1 + R2 Major #1 + R3 Minor #1) + 1 return-report + 1 merge; **3 Codex rounds → NO_NEW_CRITICAL_MAJOR** convergent tapering (R1 1C/1M → R2 0C/1M → R3 0C/0M/1m); **ZERO ACCEPT-WITH-RATIONALE banked** — all 4 findings resolved with code-content fixes; ZERO Co-Authored-By footer drift; **+52 fast tests** (4523 → 4575); ruff 18 unchanged; schema v19 unchanged consumer-side.
