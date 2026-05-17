@@ -337,6 +337,7 @@ def _extract_executions_from_order_raw(
             raw_quantity = leg_raw.get("quantity", 0)
             raw_mismarked = leg_raw.get("mismarkedQuantity")
             raw_instrument_id = leg_raw.get("instrumentId")
+            raw_time = leg_raw.get("time", "")
             if (
                 isinstance(raw_leg_id, bool)
                 or isinstance(raw_price, bool)
@@ -354,6 +355,21 @@ def _extract_executions_from_order_raw(
                     order_id, ai, li,
                 )
                 continue
+            # Codex R2 Major #3 fix — preserve dataclass `time must be
+            # non-empty str` rejection contract. `str(None) == "None"` and
+            # `str(123) == "123"` would slip past the validator's
+            # `isinstance(self.time, str) and self.time` check; reject
+            # non-str OR empty-str time PRE-coercion (same pattern as the
+            # bool-as-number guard above).
+            if not isinstance(raw_time, str) or not raw_time:
+                _log.warning(
+                    "map_orders_to_fill_candidates: order %s "
+                    "activity[%d].executionLegs[%d] carries non-str / empty "
+                    "time field (defense-in-depth reject pre-coercion); "
+                    "dropping leg",
+                    order_id, ai, li,
+                )
+                continue
             try:
                 leg = SchwabExecutionLeg(
                     leg_id=int(raw_leg_id),
@@ -367,7 +383,7 @@ def _extract_executions_from_order_raw(
                         if raw_instrument_id is not None
                         else None
                     ),
-                    time=str(leg_raw.get("time", "")),
+                    time=raw_time,
                 )
             except (ValueError, TypeError) as exc:
                 # Defense-in-depth per spec §4.3 — dataclass validator

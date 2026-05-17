@@ -263,6 +263,90 @@ def test_sentinel_leak_audit_deletes_cassette_on_match(tmp_path: Path) -> None:
     assert "accountnumber" in flat or "accounthash" in flat or "access_token" in flat
 
 
+# Test 7a — Codex R2 Major #2 fix: fail-closed behavior when conftest import
+# fails (previously emitted unsafe minimal fallback dict).
+def test_shared_filter_load_fails_closed_on_conftest_import_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_load_shared_vcr_kwargs()` MUST raise SystemExit when conftest import
+    fails (NOT emit a minimal fallback dict that omits
+    before_record_request + before_record_response — which would silently
+    leak accountHash + tokens into committed cassettes)."""
+    import importlib
+    import sys as _sys
+
+    script_path = _load_script()
+    spec = importlib.util.spec_from_file_location(
+        "record_schwab_cassettes_test_mod_7a", str(script_path),
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    _sys.modules["record_schwab_cassettes_test_mod_7a"] = mod
+    spec.loader.exec_module(mod)
+
+    # Force tests.conftest import to fail by patching its `vcr_config`
+    # attribute to None — that triggers the AttributeError path inside
+    # _load_shared_vcr_kwargs.
+    import tests.conftest as conftest_mod
+    monkeypatch.setattr(conftest_mod, "vcr_config", None, raising=False)
+    with pytest.raises(SystemExit) as excinfo:
+        mod._load_shared_vcr_kwargs()
+    err_text = str(excinfo.value)
+    assert "REFUSES to fall back" in err_text or "FAILED" in err_text
+
+
+# Test 7b — Codex R2 Major #1 fix: cassette reload + parse helper.
+def test_read_cassette_response_orders_parses_persisted_yaml(
+    tmp_path: Path,
+) -> None:
+    """`_read_cassette_response_orders()` re-loads the cassette FROM DISK +
+    parses the response body for post-record validation (NOT the in-memory
+    live response). Discriminating test plants a minimal vcrpy-shape YAML
+    + asserts the orders list extracts correctly."""
+    import importlib
+    import sys as _sys
+
+    script_path = _load_script()
+    spec = importlib.util.spec_from_file_location(
+        "record_schwab_cassettes_test_mod_7b", str(script_path),
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    _sys.modules["record_schwab_cassettes_test_mod_7b"] = mod
+    spec.loader.exec_module(mod)
+
+    cassette_path = tmp_path / "test_e2e_x.yaml"
+    cassette_path.write_text(
+        "interactions:\n"
+        "- response:\n"
+        "    body:\n"
+        '      string: \'[{"orderId": "X", "status": "FILLED"}]\'\n'
+        "version: 1\n",
+        encoding="utf-8",
+    )
+    persisted = mod._read_cassette_response_orders(cassette_path)
+    assert isinstance(persisted, list)
+    assert len(persisted) == 1
+    assert persisted[0]["orderId"] == "X"
+
+
+# Test 7c — cassette reload returns empty list on absent cassette.
+def test_read_cassette_response_orders_absent_returns_empty(
+    tmp_path: Path,
+) -> None:
+    import importlib
+    import sys as _sys
+    script_path = _load_script()
+    spec = importlib.util.spec_from_file_location(
+        "record_schwab_cassettes_test_mod_7c", str(script_path),
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    _sys.modules["record_schwab_cassettes_test_mod_7c"] = mod
+    spec.loader.exec_module(mod)
+    assert mod._read_cassette_response_orders(tmp_path / "nonexistent.yaml") == []
+
+
 # Test 7 — auth + config bootstrap smoke (Codex R5 M#2 + R6 M#1 BINDING).
 def test_auth_config_bootstrap_invokes_apply_overrides_and_construct_client(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

@@ -290,3 +290,41 @@ def test_bool_as_quantity_leg_field_rejected_pre_coercion() -> None:
     )
     out = map_orders_to_fill_candidates([base])
     assert out[0].executions is None  # leg dropped → empty collected → None
+
+
+# Test 17 — Codex R2 Major #3: non-str / empty time rejected pre-coercion.
+def test_non_str_time_leg_field_rejected_pre_coercion(caplog) -> None:
+    """`str(None) == "None"` and `str(123) == "123"` would slip past the
+    dataclass validator's `isinstance(self.time, str) and self.time` check.
+    Mapper rejects non-str time BEFORE coercion (defense-in-depth)."""
+    legs = [
+        {"legId": 1, "price": 5.0, "quantity": 100,
+         "mismarkedQuantity": 0, "instrumentId": None,
+         "time": None},  # would coerce to "None" via str()
+    ]
+    base = _base_order(
+        filledQuantity=100,
+        orderActivityCollection=[_exec_activity(legs)],
+    )
+    with caplog.at_level(logging.WARNING):
+        out = map_orders_to_fill_candidates([base])
+    assert out[0].executions is None
+    assert any(
+        "non-str" in r.getMessage().lower() or "time" in r.getMessage().lower()
+        for r in caplog.records
+    )
+
+
+# Test 18 — empty-str time also rejected.
+def test_empty_str_time_leg_field_rejected_pre_coercion() -> None:
+    legs = [
+        {"legId": 1, "price": 5.0, "quantity": 100,
+         "mismarkedQuantity": 0, "instrumentId": None,
+         "time": ""},
+    ]
+    base = _base_order(
+        filledQuantity=100,
+        orderActivityCollection=[_exec_activity(legs)],
+    )
+    out = map_orders_to_fill_candidates([base])
+    assert out[0].executions is None

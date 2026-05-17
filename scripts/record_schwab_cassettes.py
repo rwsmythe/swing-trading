@@ -33,6 +33,7 @@ Per plan §A.1.0 acceptance criterion #7 + Codex R4/R5/R6 LOCKs:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import re
 import sys
@@ -335,30 +336,26 @@ def _load_shared_vcr_kwargs() -> dict[str, Any]:
             )
         return cfg
     except Exception as exc:
-        # Degenerate-context fallback per AC#7 bullet 2 — inline the same
-        # filter dict so the script remains runnable when tests/ is not
-        # importable (e.g., dropped into a sibling environment).
-        _log.warning(
-            "tests.conftest.vcr_config import failed (%s); falling back to "
-            "inline filter dict",
-            exc,
-        )
-        return {
-            "filter_headers": [
-                "authorization", "cookie", "set-cookie",
-                "schwab-client-correl-id", "schwab-client-channel",
-                "schwab-client-customerid",
-            ],
-            "filter_query_parameters": [
-                "code", "refresh_token", "client_id", "client_secret",
-                "redirect_uri", "access_token", "auth",
-                "accountNumber", "accountHash",
-            ],
-            "filter_post_data_parameters": [
-                "code", "refresh_token", "client_id", "client_secret",
-                "redirect_uri", "access_token",
-            ],
-        }
+        # Codex R2 Major #2 fix — fail closed per single-source-of-truth
+        # discipline. The previous "inline fallback dict" omitted
+        # `before_record_request` (URI accountHash path scrubbing per
+        # Codex R2 Critical #1) AND `before_record_response` (JSON-key
+        # value scrubbing for accountNumber/accountHash/access_token/
+        # refresh_token/etc.). If conftest import fails for ANY reason,
+        # recording with an incomplete filter would silently leak the
+        # operator's accountHash + tokens into committed cassettes. Refuse
+        # to proceed; surface operator-actionable error.
+        raise SystemExit(
+            f"FAILED: tests.conftest.vcr_config import failed ({exc!r}); "
+            f"the recording script REFUSES to fall back to an inline "
+            f"filter dict because that risks losing the "
+            f"before_record_request + before_record_response sanitization "
+            f"hooks (which would silently leak accountHash + tokens into "
+            f"committed cassettes). Operator action: invoke this script "
+            f"from inside the project's worktree where tests/conftest.py "
+            f"is importable, OR install pytest-recording in your env if "
+            f"the import error is dependency-related."
+        ) from exc
 
 
 def _validate_cassette_contains_order_type(
@@ -466,6 +463,56 @@ def _safe_delete_cassette(cassette_path: Path) -> None:
         _log.warning("cassette delete failed for %s: %s", cassette_path, exc)
 
 
+def _read_cassette_response_orders(
+    cassette_path: Path,
+) -> list[dict[str, Any]]:
+    """Codex R2 Major #1 fix — re-load the just-written cassette FROM DISK
+    + parse the persisted response body for post-record validation.
+
+    Plan §A.1.0 acceptance criterion #7 bullet 4 BINDING: validation MUST
+    target the persisted YAML payload, NOT the in-memory live API response.
+    This catches cassette write failures, body-sanitization mutations,
+    + path/serialization edge cases that the in-memory check cannot see.
+
+    Returns the parsed `interactions[0].response.body.string` as a list of
+    Schwab order dicts. Returns empty list on any parse error (the caller
+    treats empty as validation failure with operator-actionable message).
+    """
+    try:
+        import yaml as _yaml
+    except ImportError:
+        _log.warning(
+            "PyYAML not installed; cannot re-read cassette %s for "
+            "post-record validation; returning empty list",
+            cassette_path,
+        )
+        return []
+    if not cassette_path.exists():
+        return []
+    try:
+        with cassette_path.open(encoding="utf-8") as f:
+            cassette = _yaml.safe_load(f)
+    except (OSError, _yaml.YAMLError) as exc:
+        _log.warning(
+            "cassette re-read failed for %s: %s",
+            cassette_path, exc,
+        )
+        return []
+    interactions = (cassette or {}).get("interactions", [])
+    if not interactions:
+        return []
+    try:
+        body_str = interactions[0]["response"]["body"]["string"]
+        parsed = json.loads(body_str)
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        _log.warning(
+            "cassette body parse failed for %s: %s",
+            cassette_path, exc,
+        )
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
 # ---------------------------------------------------------------------------
 # Recording loop.
 # ---------------------------------------------------------------------------
@@ -533,11 +580,20 @@ def _record_one_order_type(
         )
         return 2
 
-    # Post-record validation gate.
+    # Post-record validation gate — Codex R2 Major #1 fix.
+    # Plan §A.1.0 acceptance criterion #7 bullet 4 requires re-loading the
+    # JUST-WRITTEN CASSETTE FROM DISK (NOT the in-memory live response) +
+    # parsing its response body for the validation. This catches:
+    # - cassette write that didn't actually serialize (vcrpy edge case)
+    # - cassette body sanitized into a non-replayable JSON shape
+    # - cassette path that points somewhere unexpected
+    # The in-memory `raw_orders` was the live API response; the post-write
+    # YAML may differ if a filter mutated the body.
+    persisted_orders = _read_cassette_response_orders(cassette_path)
     ok, msg = _validate_cassette_contains_order_type(
         cassette_path=cassette_path,
         order_type=order_type,
-        recorded_orders=raw_orders if isinstance(raw_orders, list) else [],
+        recorded_orders=persisted_orders,
     )
     if not ok:
         _safe_delete_cassette(cassette_path)
