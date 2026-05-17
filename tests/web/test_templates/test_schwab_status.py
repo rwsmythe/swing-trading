@@ -314,17 +314,24 @@ def test_autoescape_state_reason_html_payload(
 def test_sentinel_leak_audit_via_template(
     seeded_db, monkeypatch, tmp_path,
 ):
-    """Test 10 (BINDING #7 — mirror of T-2.1 test 13) — plant non-token-
-    shaped sentinels into tokens DB; assert ZERO substring matches via
-    the template's rendered response body. Defense-in-depth: T-2.1 test
-    13 covers the route surface; T-2.2 test 10 covers the template
-    surface as a separate ratchet."""
+    """Test 10 (BINDING #7 — mirror of T-2.1 test 13 + plan §B T-2.2
+    test #10) — plant sentinels into BOTH tokens DB AND a
+    schwab_api_calls.error_message row; assert ZERO substring matches
+    via the template's rendered response body. Defense-in-depth: T-2.1
+    test 13 covers the route surface; T-2.2 test 10 covers the template
+    surface as a separate ratchet.
+
+    Codex R3 Minor #1 strengthening: prior version planted token-file
+    sentinels only; plan §B T-2.2 test #10 requires both tokens DB
+    AND audit error_message row sentinels.
+    """
     cfg, cfg_path = seeded_db
     _isolate_home(monkeypatch, tmp_path)
     sentinels = [
         "LEAK_TPL_TOKEN_BYTES_ACCESS_SENTINEL",
         "LEAK_TPL_TOKEN_BYTES_REFRESH_SENTINEL",
         "LEAK_TPL_TOKEN_BYTES_ID_SENTINEL",
+        "LEAK_TPL_AUDIT_ERROR_MESSAGE_SENTINEL",
     ]
     swing_data = tmp_path / "swing-data"
     swing_data.mkdir(parents=True, exist_ok=True)
@@ -341,6 +348,24 @@ def test_sentinel_leak_audit_via_template(
         },
     }
     tokens_path.write_text(json.dumps(payload), encoding="utf-8")
+    # Plant the audit-row sentinel (the route test plants under
+    # 'production' env; planting here too preserves the per-test
+    # isolation contract; the template test's seeded_db is also fresh).
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        conn.execute(
+            "INSERT INTO schwab_api_calls "
+            "(ts, endpoint, http_status, status, error_message, "
+            " surface, environment) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "2026-05-17T12:00:00.000+00:00",
+                "accounts.orders.list", 401, "auth_failed",
+                sentinels[3], "cli", "production",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
         r = client.get("/schwab/status")
@@ -348,5 +373,6 @@ def test_sentinel_leak_audit_via_template(
     for sentinel in sentinels:
         assert sentinel not in r.text, (
             f"sentinel-leak in template render: {sentinel!r} found in "
-            "response body — VM/template surfaced raw token bytes"
+            "response body — VM/template surfaced raw token bytes OR "
+            "an unredacted audit-row sentinel"
         )
