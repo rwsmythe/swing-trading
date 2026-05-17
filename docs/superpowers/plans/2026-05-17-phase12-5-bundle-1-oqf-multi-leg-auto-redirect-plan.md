@@ -73,7 +73,8 @@
     6. Per-leg consistency: `abs(leg.price - VWAP) <= price_tolerance` for every leg.
 - Returns `(True, None)` only when ALL sub-conditions hold. Reason text on failure cites which sub-condition + the failing numeric values to aid forensic transparency (spec §5.4 correction_reason chain).
 - New pure function `_synthesize_split_into_partials_recipe(candidates: list[Mapping[str, Any]]) -> Mapping[str, Any]` returns the `auto_redirect_recipe` dict per spec §6.1 with `choice_code='split_into_partials'`, `resolved_by='auto_tier1_multi_leg'`, `applied_by_override='auto'`, `correction_action_override='auto_applied'`, and the `payload` list built from per-leg `{qty: float(leg.quantity), price: float(leg.price), fill_datetime: str(leg.time)}` dicts. PRE-CONDITION (documented in docstring): caller MUST have invoked the predicate first.
-- Both functions are pure: no DB, no API, no logging side-effects, no transaction management. They consume `Mapping` shapes (duck-typed for `SchwabExecutionLeg` instances and plain dicts).
+- Both functions are pure: no DB, no API, no logging side-effects (T-1.11 adds ONE documented `logger.warning` exception per spec §12.3), no transaction management.
+- **Classifier-boundary contract** (Codex R1 minor #1 fix): both helpers consume `Mapping` shapes ONLY — specifically dict-shaped candidates whose `executions` value is `list[Mapping]` of plain dicts. Conversion from `SchwabExecutionLeg` dataclass instances to plain dicts is the responsibility of T-1.3's `_orders_to_classifier_payload` (the backfill→classifier seam). Predicate + synthesizer test fixtures use dict-form ONLY; an additional T-1.3 test verifies dataclass→dict conversion at the boundary.
 - Both functions are at module scope — `from typing import Mapping` import (already present at line 14) is reused.
 
 **Tests added (~17):**
@@ -91,7 +92,7 @@
 - `test_predicate_declines_on_negative_price_defensive` — `leg.price=-5.30` → `(False, reason)`.
 - `test_predicate_declines_on_zero_qty_defensive` — `leg.quantity=0.0` → `(False, reason)`.
 - `test_predicate_declines_on_insufficient_total_legs` — n=1 candidate with `executions=[1 leg only]` → `(False, reason)` at sub-condition 2 (`< 2` legs).
-- `test_predicate_handles_schwab_execution_leg_instances_via_duck_typing` — pass actual `SchwabExecutionLeg` instances (not dicts) — must work via `.get('quantity')` substitute (use dict-form). NOTE: spec §4.1 lists candidates as `list[Mapping]`; ensure helpers consume `.get()` accessors; if SchwabExecutionLeg lacks `.get`, the comparator at T-1.3 is responsible for dict-conversion. Discriminating: test asserts a plain-dict synthetic input works end-to-end.
+- `test_predicate_consumes_dict_shaped_executions_only` (Codex R1 minor #1 fix) — synthesize plain-dict candidates with dict-form executions; assert predicate fires/declines as expected. T-1.3 owns the dataclass→dict conversion; predicate explicitly does NOT accept `SchwabExecutionLeg` instances directly (matches spec §4.1 `list[Mapping]` contract).
 - `test_synthesize_recipe_shape_matches_spec_6_1` — predicate True → recipe dict has all 5 expected keys + payload is a list of N partial dicts with `{qty, price, fill_datetime}` keys.
 - `test_synthesize_recipe_payload_preserves_iso_time_string` — `leg.time='2026-05-15T14:30:00+00:00'` → `payload[i]['fill_datetime'] == '2026-05-15T14:30:00+00:00'` (str preserved verbatim).
 - `test_synthesize_recipe_payload_iteration_order_matches_concatenated_executions` — N=2 candidates with [3 legs] + [2 legs] → payload has 5 entries in concatenation order.
@@ -165,7 +166,16 @@
         else None
     ),
     ```
-- For the dict branch (line 456-458, pre-converted shape from cassette/replay): leave UNCHANGED — caller already has the shape. (Note: future cassette tests for multi-leg cases will provide dicts that already include `executions` keys; the dict branch is permissive by design.)
+- For the dict branch (line 456-458, pre-converted shape from cassette/replay): **NOT UNCHANGED** per Codex R1 Major #4 fix. Plan §F invariant (NEW) requires every output dict from `_orders_to_classifier_payload` to carry an `executions` key. The dict branch MUST inject `'executions': None` when the key is absent from the input dict (defensive normalization). Implementation:
+    ```python
+    if isinstance(o, dict):
+        if "executions" not in o:
+            out.append({**o, "executions": None})
+        else:
+            out.append(o)
+        continue
+    ```
+    Rationale: cassette/replay fixtures pre-Phase-12.5 #1 do NOT include `executions` keys. Without normalization, those fixtures emit candidates with key-absent semantics — the predicate sub-condition 1 declines via `cand.get("executions")` returning None which is the same path as explicit None. While behaviorally equivalent for the predicate, the contract clarity matters for forensic transparency + cassette-vs-production shape parity per spec §3 "ZERO behavioral changes to non-touched existing surfaces" intent + spec §11.1 "ADD `executions=None` to existing Pass-2 emit fixtures" guidance.
 - The new `executions` key is `None` when `o.executions is None` (V1 mapper path / sandbox path / mapper-coherence-check collapse case per Sub-bundle 1.5 lesson) AND `[]` is preserved as `[]` (empty list — separate canary path from None per T-1.11).
 - No other key shape changes — `order_id`, `status`, `enter_time`, `instrument_symbol`, `instruction`, `quantity`, `order_type`, `price` keys preserved verbatim.
 
@@ -174,7 +184,8 @@
 - `test_orders_to_classifier_payload_includes_executions_key_when_present` — `SchwabOrderResponse(executions=[SchwabExecutionLeg(...), SchwabExecutionLeg(...)])` → output dict has `'executions'` key with 2 entries, each a plain dict with `leg_id`/`price`/`quantity`/`time` keys.
 - `test_orders_to_classifier_payload_executions_key_is_none_when_absent` — `SchwabOrderResponse(executions=None)` → output dict has `'executions': None`.
 - `test_orders_to_classifier_payload_executions_key_is_empty_list_when_explicitly_empty` — `SchwabOrderResponse(executions=[])` → output dict has `'executions': []` (preserves separation between None and [] for canary observability — T-1.11).
-- `test_orders_to_classifier_payload_dict_input_passes_through_unchanged` — pre-converted dict including an `'executions': [...]` key flows through verbatim.
+- `test_orders_to_classifier_payload_dict_input_with_executions_key_passes_through_unchanged` — pre-converted dict including an `'executions': [...]` key flows through verbatim.
+- `test_orders_to_classifier_payload_dict_input_without_executions_key_normalized_to_none` — pre-converted dict lacking `'executions'` key → output dict has `'executions': None` injected (Codex R1 Major #4 fix; ensures cassette/replay fixtures match production shape contract).
 - `test_orders_to_classifier_payload_other_keys_preserved` — assert all 8 pre-existing keys (`order_id`, `status`, `enter_time`, `instrument_symbol`, `instruction`, `quantity`, `order_type`, `price`) still emitted alongside the new `executions` key.
 
 **Commit message stem:** `feat(reconciliation): include executions[] on Pass-2 candidate dicts for multi-leg auto-redirect (Phase 12.5 #1 T-1.3)`
@@ -231,11 +242,172 @@
 
 ---
 
-### Task T-1.5 — Pivot-loop branch consuming `auto_redirect_recipe` + new counter
+### Task T-1.5 — Pivot-loop + backfill auto-redirect dispatch consuming `auto_redirect_recipe` + new counter
+
+**Codex R1 Critical #1 fix:** the initial-pivot `_pivot_classify_and_dispatch_for_run` builds `source_payload` via `_extract_source_payload` reading the persisted `actual_value_json` — for `unmatched_*_fill` discrepancies this is `{"matched": null}`, which the classifier treats as the no-payload sentinel (returns `unsupported` tier-2; recipe never synthesized). **The multi-leg auto-redirect classifier emit (n>=2 list-shape OR n=1 reclassification) can ONLY fire on the BACKFILL Pass-2 path** (`swing/trades/reconciliation_backfill.py`), where `_orders_to_classifier_payload` (T-1.3) builds the list-shape `source_payload` from freshly-fetched Schwab orders WITH execution-grain data. T-1.5 MUST wire dispatch into BOTH consumers so the recipe is consumed wherever it can be emitted.
 
 **Files:**
-- Modify: `swing/trades/schwab_reconciliation.py:418-538` `_pivot_classify_and_dispatch_for_run` — add a new branch BETWEEN the existing `if classification.tier == 1:` (line 471) and the existing `else:` tier-2 stamp (line 517) for `elif classification.tier == 2 and classification.auto_redirect_recipe is not None:` per spec §7.4.
+- Modify: `swing/trades/schwab_reconciliation.py:418-538` `_pivot_classify_and_dispatch_for_run` — add the auto-redirect branch (defensive — initial pivot CANNOT currently emit the recipe but the branch lands as future-proofing AND closes a potential regression seam if the comparator's emit shape ever widens to persist candidates).
+- Modify: `swing/trades/reconciliation_backfill.py` — add the auto-redirect branch in the Pass-2 dispatch loop. Locate the `classify_discrepancy(...)` call sites (per plan-drafting grep at lines 597-608 and 886-890) and the immediately-following dispatch logic that currently stamps tier-2 + records the no-mutation audit; insert the recipe-consumption branch BEFORE the existing default tier-2 stamp.
+- Modify: `swing/trades/schwab_reconciliation.py:418` — extend the outer `except Exception as e:` at line 529 to first do `except InvalidOverrideComboError: raise` (per Codex R1 Major #1 fix + spec §7.4 R4 M2 LOCK + plan §F invariant F16); developer-bug propagates out of the pivot loop, breaking the graceful-degradation contract documented at line 429. This is the spec-mandated behavior; the docstring at line 429 needs an explicit caveat citing the new exception class.
+- Modify: backfill orchestrator's analogous outer catch — mirror the InvalidOverrideComboError re-raise.
 - Test: `tests/trades/test_pivot_loop_auto_redirect_dispatch.py` (NEW)
+- Test: `tests/trades/test_backfill_auto_redirect_dispatch.py` (NEW)
+
+**T-1.5.B Backfill consumer acceptance criteria (Codex R2 Major #2 fix; backfill is OPERATIONAL firing site):**
+
+The backfill consumer at `swing/trades/reconciliation_backfill.py:_handle_pass_2` (lines 615-798 per plan-drafting grep) integrates the auto-redirect dispatch into its existing Pass-2 flow. `BackfillOutcome.outcome` already carries multiple values across Pass-1 + Pass-2 paths (per `swing/trades/reconciliation_backfill.py:133-144`: `projection_tier1`, `projection_tier2`, `projection_pass_2`, `tier1_applied`, `tier1_skipped_sandbox`, `tier2_stamped`, `tier2_skipped_sandbox`, `skipped_already_resolved`, `pass_2_pending`, `pass_2_failed`, `skipped_pass_2_failed`, `errored`). **Auto-redirect adds THREE new outcomes** (Codex R3 Major #2 + R4 minor #2 + R5 minor #2 fix — verify exact existing enumeration during executing-plans + add the 3 new):
+
+- `tier1_multi_leg_auto_redirected` — production `--apply` success path; new `BackfillSummary.tier1_multi_leg_auto_redirected: int = 0` counter.
+- `projection_auto_redirect` — dry-run projection path; new `BackfillSummary.projection_auto_redirect: int = 0` counter (parallel to existing `projection_pass_2`).
+- `auto_redirect_skipped_sandbox` — sandbox short-circuit path; new `BackfillSummary.auto_redirect_skipped_sandbox: int = 0` counter (parallel to existing `tier2_skipped_sandbox`).
+
+**`run_backfill` orchestrator (existing function at approximately lines 1185-1210; verify exact location during executing-plans) MUST be extended** to recognize these three new `outcome` values + increment the corresponding `BackfillSummary` counters. Discriminating test pattern: for each new outcome, plant a fixture + invoke `run_backfill` + assert the corresponding summary counter increments AND no other counter increments.
+
+**`format_summary_block` operator-facing renderer (existing function at `swing/trades/reconciliation_backfill.py:1398-1413` per plan-time grep) MUST ALSO be extended** to render the 3 new counter rows in the CLI summary output (Codex R4 Major #1 fix). Without this, the operator-facing CLI hides the auto-redirect counts even though `BackfillSummary` tracks them. New rendered lines (ASCII-only per CLAUDE.md cp1252 gotcha + F12):
+
+```
+- Multi-leg auto-redirects applied: {tier1_multi_leg_auto_redirected}
+- Multi-leg auto-redirects (dry-run projection): {projection_auto_redirect}
+- Multi-leg auto-redirects skipped (sandbox): {auto_redirect_skipped_sandbox}
+```
+
+Each row emits ONLY when its counter > 0 (matches existing per-counter suppression pattern). Discriminating test pattern: `test_format_summary_block_renders_multi_leg_counters_when_nonzero` plants a summary with all 3 counters > 0 + asserts all 3 lines present + ASCII-only; `test_format_summary_block_omits_multi_leg_counter_when_zero` plants 0 counts + asserts absence.
+
+Branch decision tree after `reclassification` is computed (line 660):
+
+```python
+if reclassification is not None and reclassification.auto_redirect_recipe is not None:
+    recipe = reclassification.auto_redirect_recipe
+
+    # Defense-in-depth: validate override combo BEFORE any mutation
+    # (matches T-1.4 service-layer guard at apply_tier2_resolution entry).
+    # InvalidOverrideComboError MUST propagate per F21.
+    from swing.trades.reconciliation_auto_correct import _validate_override_combo
+    _validate_override_combo(
+        choice_code=recipe["choice_code"],
+        applied_by_override=recipe["applied_by_override"],
+        correction_action_override=recipe["correction_action_override"],
+        resolved_by_override=recipe["resolved_by"],
+    )
+
+    if dry_run:
+        # Dry-run: do NOT mutate; project the outcome label.
+        return BackfillOutcome(
+            ..., tier=1,  # logical tier after auto-redirect (still tier-2-shape audit but operator-reads-as-tier-1-equivalent semantically)
+            outcome="projection_auto_redirect",
+            ambiguity_kind="multi_partial_vs_consolidated",
+            correction_id=None,
+            pass_2_call_id=call_id,
+            reason=f"would auto-redirect via split_into_partials: {reclassification.correction_reason}",
+            projection_outcome_label="multi-leg auto-redirect (projected)",
+            projection_action_needed="--apply will dispatch via apply_tier2_resolution(applied_by_override='auto', ...)",
+        )
+
+    if environment == "sandbox":
+        # Sandbox short-circuit per spec §7.6.1 LOCK + CLAUDE.md gotcha.
+        # Auto-redirect MUST NOT mutate under sandbox; mirrors T-1.6.
+        return BackfillOutcome(
+            ..., outcome="auto_redirect_skipped_sandbox",
+            reason="sandbox: auto-redirect short-circuited; discrepancy left unresolved",
+            ...,
+        )
+
+    # --apply, production path: 2-step own-tx sequence per spec §7.2.
+    # Codex R3 Major #4 fix — per-service-write pipeline-exclusion recheck
+    # discipline (matches existing pattern at reconciliation_backfill.py:745-751
+    # + 966-974 + 1033-1036). Recheck BEFORE EACH own-tx mutation: once before
+    # step 1, again before step 2. A pipeline starting between steps would
+    # otherwise race against apply_tier2_resolution's BEGIN IMMEDIATE.
+    _check_pipeline_not_running(conn, partial_summary=partial_summary)
+    stamp_succeeded = False
+    try:
+        # Step 1: stamp pending_ambiguity_resolution via PUBLIC own-tx helper.
+        stamp_pending_ambiguity(
+            conn,
+            discrepancy_id=disc_id,
+            ambiguity_kind="multi_partial_vs_consolidated",
+            resolution_reason=reclassification.correction_reason,
+            allow_pending_update=allow_pending_update,
+        )
+        stamp_succeeded = True
+    except InvalidOverrideComboError:
+        raise  # Developer-bug propagates per F21
+    except CallerHeldTransactionError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — stamp failure → 'errored' outcome
+        # Codex R3 Major #3 fix — stamp failure is NOT a §7.5 fallback case
+        # (the §7.5 fresh-savepoint pattern presumes stamp succeeded inside a
+        # rolled-back outer SAVEPOINT — backfill uses own-tx so no SAVEPOINT
+        # exists). Stamp failure routes to existing 'errored' outcome path.
+        logger.warning(
+            "backfill auto-redirect stamp_pending_ambiguity failed on "
+            "discrepancy %s: %s: %s",
+            disc_id, type(exc).__name__, exc,
+        )
+        return BackfillOutcome(
+            ..., outcome="errored",
+            reason=f"auto-redirect stamp failed: {type(exc).__name__}: {exc}",
+            projection_outcome_label="auto-redirect errored",
+            projection_action_needed="investigate manually",
+        )
+
+    # Codex R3 Major #4 fix — second pipeline-not-running check between
+    # stamp + apply (closes the in-row race window per the existing
+    # per-service-write recheck pattern).
+    _check_pipeline_not_running(conn, partial_summary=partial_summary)
+    try:
+        # Step 2: dispatch via PUBLIC apply_tier2_resolution own-tx with overrides.
+        # T-1.6's environment kwarg threading lands here; sandbox short-circuit
+        # at the inner is defensive belt-and-suspenders (this branch already
+        # short-circuited above for sandbox per Codex R1 M2 backfill precedent).
+        # Codex R3 Major #1 fix — thread schwab_api_call_id=call_id to preserve
+        # audit linkage from the Pass-2 Schwab refetch (operator-facing call_id
+        # printed at line 675-684 cross-references the resulting correction row).
+        result = apply_tier2_resolution(
+            conn,
+            discrepancy_id=disc_id,
+            choice_code=recipe["choice_code"],
+            operator_custom_payload=recipe["payload"],
+            operator_reason=f"multi-leg auto-redirect: {reclassification.correction_reason}",
+            applied_by_override=recipe["applied_by_override"],
+            correction_action_override=recipe["correction_action_override"],
+            resolved_by_override=recipe["resolved_by"],
+            schwab_api_call_id=call_id,
+            environment=environment,
+        )
+        return BackfillOutcome(
+            ..., outcome="tier1_multi_leg_auto_redirected",
+            correction_id=result.correction_id,
+            pass_2_call_id=call_id,
+            ...,
+        )
+    except InvalidOverrideComboError:
+        raise  # Developer-bug propagates per F21
+    except CallerHeldTransactionError:
+        raise
+    except (ValidatorRejectedError, ValueError) as exc:
+        # Per spec §7.5 fallback: stamp_succeeded is True at this point;
+        # apply_tier2_resolution own-tx rollback unwinds the apply attempt;
+        # discrepancy stays in pending_ambiguity_resolution (set by step 1).
+        # Return tier2_stamped outcome with note citing the fallback.
+        assert stamp_succeeded, "step 2 catch unreachable without step 1 success"
+        return BackfillOutcome(..., outcome="tier2_stamped", reason=f"auto-redirect declined post-stamp: {exc}", ...)
+```
+
+**9 explicit backfill acceptance criteria** (each maps to one test in `test_backfill_auto_redirect_dispatch.py`; Codex R3 Major #1 + #2 + #3 + #4 fixes):
+
+1. **Dry-run projection** — `dry_run=True, environment='production'` + multi-leg fixture → BackfillOutcome.outcome = `'projection_auto_redirect'`; ZERO `reconciliation_corrections` rows written; ZERO discrepancy state mutation; `BackfillSummary.projection_auto_redirect` increments via `run_backfill`.
+2. **Production apply** — `dry_run=False, environment='production'` + multi-leg fixture → BackfillOutcome.outcome = `'tier1_multi_leg_auto_redirected'`; N+1 correction rows written (hybrid shape per F15); parent discrepancy in `operator_resolved_ambiguity` with `resolved_by='auto_tier1_multi_leg'`; `BackfillSummary.tier1_multi_leg_auto_redirected` increments via `run_backfill`.
+3. **Sandbox no-mutation** — `dry_run=False, environment='sandbox'` + multi-leg fixture → BackfillOutcome.outcome = `'auto_redirect_skipped_sandbox'`; ZERO correction rows; discrepancy stays in `unresolved` (NOT stamped pending; the sandbox short-circuit fires BEFORE the stamp step); `BackfillSummary.auto_redirect_skipped_sandbox` increments via `run_backfill`.
+4. **InvalidOverrideComboError propagation** — plant a monkey-patched recipe with mismatched override values → `pytest.raises(InvalidOverrideComboError)` propagates out of `_handle_pass_2`; overall backfill run state per existing `run_backfill` orchestration (whichever Pass-2 failure semantics apply — operator-facing run aborts the batch).
+5. **ValidatorRejectedError post-stamp fallback** — plant a recipe whose synthesized payload trips `_handle_split_into_partials` `qty_tolerance=1e-6` → step 1 stamps `pending_ambiguity_resolution` successfully; step 2 fails; BackfillOutcome.outcome = `'tier2_stamped'`; discrepancy stays in `pending_ambiguity_resolution` (step 1 already wrote it; step 2's own-tx rollback only unwinds the apply attempt). Reason text cites `"auto-redirect declined post-stamp:"` substring.
+6. **Stamp failure routes to errored** (Codex R3 Major #3 fix) — plant a fixture causing `stamp_pending_ambiguity` to raise → BackfillOutcome.outcome = `'errored'` (NOT `'tier2_stamped'`; discrepancy was never stamped). Discriminating: monkeypatch `stamp_pending_ambiguity` to raise `ValueError` BEFORE any DB write; assert discrepancy stays in `unresolved` AND outcome reason cites `"auto-redirect stamp failed:"` substring.
+7. **schwab_api_call_id audit linkage** (Codex R3 Major #1 fix) — production apply path with mocked call_id=42 → ALL N+1 resulting correction rows have `schwab_api_call_id=42` (the Pass-2 refetch audit row); operator-facing `_format_pass_2_line` printout cites call_id=42 alongside `tier=1 (auto-redirected)`.
+8. **Mid-sequence pipeline-running race** (Codex R3 Major #4 fix) — plant a fixture that injects a `pipeline_runs` row with `state='running'` between step 1 (stamp) and step 2 (apply) via test-side fixture seam → second `_check_pipeline_not_running` call raises `BackfillPipelineActiveError` (or equivalent); discrepancy stays in `pending_ambiguity_resolution`; `partial_summary` is updated per existing pipeline-exclusion contract.
+9. **BackfillSummary counter wiring** — `BackfillSummary` gains 3 NEW counter fields (`tier1_multi_leg_auto_redirected: int = 0` + `projection_auto_redirect: int = 0` + `auto_redirect_skipped_sandbox: int = 0`); `run_backfill` orchestrator extended with 3 new `elif outcome == ...: summary.<counter> += 1` branches. **Codex review item:** verify BackfillSummary current shape during executing-plans implementation; if the dataclass shape changes, update T-1.5.B acceptance + cover with test.
+
+**Per-discrepancy Pass-2 printout** (line 675-684 currently): when outcome is `'tier1_multi_leg_auto_redirected'`, the print format string should annotate `tier=1` + `ambiguity_kind='multi_partial_vs_consolidated (auto-redirected)'` for operator forensic transparency. The existing `_format_pass_2_line` helper is extended with a new `outcome: str | None = None` kwarg that surfaces the auto-redirect path label.
 
 **Acceptance:**
 
@@ -245,8 +417,30 @@
     3. Call `_apply_tier2_resolution_inner(conn, discrepancy_id=disc.discrepancy_id, choice_code=recipe['choice_code'], operator_custom_payload=recipe['payload'], operator_reason=f"multi-leg auto-redirect: {classification.correction_reason}", applied_by_override=recipe['applied_by_override'], correction_action_override=recipe['correction_action_override'], resolved_by_override=recipe['resolved_by'], risk_policy_id=None, schwab_api_call_id=schwab_api_call_id, environment=environment)`. (T-1.6 adds `environment` kwarg to `_apply_tier2_resolution_inner`; this branch passes it from `_pivot_classify_and_dispatch_for_run`'s existing `environment` parameter at line 424.)
     4. On success: `conn.execute(f"RELEASE SAVEPOINT {sp_name}")` + `counters['tier1_multi_leg_auto_redirected_count'] += 1` (NEW counter; `setdefault(...)` at function entry — see counter init below).
     5. On `_SandboxAutoRedirectShortCircuit` exception (T-1.6 introduces): `conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")` + `conn.execute(f"RELEASE SAVEPOINT {sp_name}")` + `counters['sandbox_auto_redirect_skipped_count'] += 1` + log.warning citing discrepancy_id; discrepancy state ends in `'unresolved'` (the stamp was rolled back).
-    6. On `InvalidOverrideComboError` (subclass of `ValueError`): the SAVEPOINT rolls back via the catch at line 529 (`except Exception as e: ROLLBACK TO SAVEPOINT + RELEASE + counters['tier_errored_count'] += 1`). Discriminating test ensures the developer-bug signal propagates to log.warning + counter increment WITHOUT being absorbed as a tier-2 stamp (which would HIDE the bug). NOTE: per spec §7.4 R4 M2 LOCK + lesson #11, the developer-bug error class should re-raise out, but the pivot-loop's existing graceful-degradation `except Exception` catch at line 529 will absorb. **PLAN DECISION** (consistent with existing graceful-degradation pattern at line 529): we log+counter-increment but do NOT propagate out — this matches the documented "never raises out" contract on `_pivot_classify_and_dispatch_for_run` at line 429. The developer-bug is surfaced via the `tier_errored_count` counter increment + WARN log; T-1.4 service-layer tests catch the bug at unit-test time. Discriminating test pattern documents this trade-off explicitly.
-    7. On `ValidatorRejectedError` OR other `ValueError`: same existing catch-all path (line 529) increments `tier_errored_count`. The fall-back stamp-as-pending path of the tier-1 branch (line 487-516) does NOT apply here because the auto-redirect started from a tier-2 classification — the SAVEPOINT rollback simply preserves the discrepancy as `'unresolved'`.
+    6. On `InvalidOverrideComboError` (subclass of `ValueError`): the SAVEPOINT MUST be rolled back AND the exception MUST PROPAGATE OUT of the pivot loop per spec §7.4 R4 M2 LOCK + plan §F invariant F16 + brainstorm forward-binding lesson #11 (Codex R1 M1 fix). This BREAKS the existing graceful-degradation `"never raises out"` docstring at `schwab_reconciliation.py:429` — the docstring MUST be updated with an explicit caveat citing `InvalidOverrideComboError` as the one developer-bug exception that propagates. The outer `except Exception as e:` at line 529 MUST be replaced with a two-tier catch ladder: `except InvalidOverrideComboError: <clean savepoint>; raise` FIRST, then the generic `except Exception as e:` SECOND (per spec §7.4 R4 M2 LOCK + lesson #11 exception-specificity ordering). The developer-bug failure-fast semantic is intentional: it ensures malformed auto-redirect recipes surface at integration time, NOT hidden in `tier_errored_count` graceful-degradation. Discriminating test asserts `InvalidOverrideComboError` propagates out of `_pivot_classify_and_dispatch_for_run` (the test catches it at the test boundary).
+    7. On `ValidatorRejectedError` OR other `ValueError` (NOT `InvalidOverrideComboError`): per spec §7.5 fallback contract (Codex R2 Major #1 fix) — the SAVEPOINT MUST be rolled back AND the stamp step MUST be RE-RUN in a FRESH savepoint, leaving the discrepancy in `pending_ambiguity_resolution` for manual operator review. Pattern (mirrors the existing tier-1 fall-back at line 487-516):
+       ```python
+       except (ValidatorRejectedError, ValueError) as e:
+           conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+           conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+           fb_sp = f"correction_fallback_sp_{disc.discrepancy_id}"
+           conn.execute(f"SAVEPOINT {fb_sp}")
+           try:
+               _stamp_pending_ambiguity_inner(
+                   conn,
+                   discrepancy_id=disc.discrepancy_id,
+                   ambiguity_kind="multi_partial_vs_consolidated",
+                   resolution_reason=f"multi-leg auto-redirect declined post-classifier: {e}",
+               )
+               conn.execute(f"RELEASE SAVEPOINT {fb_sp}")
+               counters["tier2_pending_count"] += 1
+           except Exception:
+               with contextlib.suppress(sqlite3.Error):
+                   conn.execute(f"ROLLBACK TO SAVEPOINT {fb_sp}")
+                   conn.execute(f"RELEASE SAVEPOINT {fb_sp}")
+               counters["tier_errored_count"] += 1
+       ```
+       Discriminating test: plant a multi-leg fixture whose synthesized payload trips `_handle_split_into_partials`'s `qty_tolerance=1e-6` check (e.g., monkeypatch the recipe with a malformed payload) → assert discrepancy ends in `pending_ambiguity_resolution` + `counters['tier2_pending_count'] == 1` + NO `tier1_multi_leg_auto_redirected_count` increment. NOTE: `InvalidOverrideComboError` is a subclass of `ValueError`, so the catch ladder ordering rule (F21 + step 6 above) MUST place `except InvalidOverrideComboError: raise` BEFORE this generic catch.
 - Counter init at function entry (line 432-434): add `counters.setdefault("tier1_multi_leg_auto_redirected_count", 0)` and `counters.setdefault("sandbox_auto_redirect_skipped_count", 0)`.
 - `_pivot_classify_and_dispatch_for_run` signature UNCHANGED otherwise (no new kwargs; `environment` already present at line 424).
 
@@ -254,9 +448,10 @@
 
 - `test_pivot_loop_auto_redirect_recipe_present_dispatches_apply_tier2_resolution_inner` — plant a discrepancy + supply schwab_orders with multi-leg shape → assert classifier emits recipe; service is invoked with the three override kwargs; counter `tier1_multi_leg_auto_redirected_count == 1`; parent discrepancy ends in `operator_resolved_ambiguity` with `resolved_by='auto_tier1_multi_leg'`.
 - `test_pivot_loop_auto_redirect_recipe_absent_falls_through_to_tier2_stamp` — plant tier-2 multi_match_within_window (no recipe) → existing stamp path fires; `tier2_pending_count == 1`; new counter stays 0.
-- `test_pivot_loop_auto_redirect_invalid_override_combo_logs_warning_increments_tier_errored_count` — plant a synthetic state where the recipe's overrides are mismatched (test-fixture monkeypatches the classifier to return a malformed recipe) → log.warning fires; `tier_errored_count == 1`; discrepancy ends in `'unresolved'` (SAVEPOINT rolled back).
+- `test_pivot_loop_auto_redirect_invalid_override_combo_propagates_out` — plant a synthetic state where the recipe's overrides are mismatched (test-fixture monkeypatches the classifier to return a malformed recipe) → `InvalidOverrideComboError` PROPAGATES OUT of `_pivot_classify_and_dispatch_for_run` (test asserts via `pytest.raises(InvalidOverrideComboError)`); SAVEPOINT is rolled back; the overall `run_schwab_reconciliation` call FAILS (via the outer rollback per existing failure-path semantics at spec §3.3.3). Discriminating: this is the developer-bug failure-fast contract per spec §7.4 R4 M2 LOCK + plan §F invariant F16; the test catches the bug at integration time, NOT hides it in `tier_errored_count`.
+- `test_pivot_loop_outer_catch_ladder_invalid_override_first_generic_second` — verify the catch ladder ordering at `schwab_reconciliation.py:529` after T-1.5: `except InvalidOverrideComboError: raise` precedes `except Exception as e: ...`. Test plants a `ValidatorRejectedError` (subclass of `ValueError` but NOT `InvalidOverrideComboError`) → counter `tier_errored_count == 1`; no propagation. Then plants `InvalidOverrideComboError` → propagates out.
 - `test_pivot_loop_auto_redirect_sandbox_short_circuit_rolls_back_stamp` — invoke with `environment='sandbox'` + multi-leg fixture → `sandbox_auto_redirect_skipped_count == 1`; `tier1_multi_leg_auto_redirected_count == 0`; discrepancy ends in `'unresolved'` (NOT `pending_ambiguity_resolution`); no correction rows for this discrepancy.
-- `test_pivot_loop_auto_redirect_validator_rejected_falls_back_to_unresolved` — plant a recipe whose synthesized payload would trip `_handle_split_into_partials`'s `qty_tolerance=1e-6` check (e.g., manually monkeypatch the recipe with a malformed payload) → `tier_errored_count == 1`; discrepancy ends in `'unresolved'`.
+- `test_pivot_loop_auto_redirect_validator_rejected_falls_back_to_pending_ambiguity_resolution` — plant a recipe whose synthesized payload would trip `_handle_split_into_partials`'s `qty_tolerance=1e-6` check (e.g., manually monkeypatch the recipe with a malformed payload) → SAVEPOINT rolls back; fresh-savepoint stamp re-runs; discrepancy ends in `pending_ambiguity_resolution` (NOT `'unresolved'`); `counters['tier2_pending_count'] == 1`; no `tier1_multi_leg_auto_redirected_count` increment. Mirrors spec §7.5 fallback contract per Codex R2 Major #1 fix.
 - `test_pivot_loop_auto_redirect_writes_n_plus_1_correction_rows_all_hybrid_shape` — multi-leg fixture with 3 legs → `reconciliation_corrections` has 4 rows (1 anchor + 3 partials); all 4 have `applied_by='auto'` + `correction_action='auto_applied'`; parent discrepancy has `resolved_by='auto_tier1_multi_leg'`.
 - `test_pivot_loop_auto_redirect_counter_setdefault_idempotent` — invoke pivot loop twice on the same `counters` dict — counter doesn't get re-zeroed; cumulative count is correct.
 - `test_pivot_loop_auto_redirect_counter_keys_present_even_on_empty_run` — invoke with zero discrepancies → counters dict carries `tier1_multi_leg_auto_redirected_count: 0` and `sandbox_auto_redirect_skipped_count: 0` keys.
@@ -333,11 +528,16 @@
 
 ---
 
-### Task T-1.8 — `BaseLayoutVM.recent_multi_leg_auto_correction_count` + retrofit across all base-layout VMs
+### Task T-1.8 — `BaseLayoutVM.recent_multi_leg_auto_correction_count` + retrofit across all base-layout-mounted VMs
+
+**Codex R1 Major #3 fix:** retrofit scope is enumerated by **TEMPLATE-MOUNT** (`{% extends "base.html.j2" %}`), NOT by field-presence on `unresolved_material_discrepancies_count`. The CLAUDE.md "base.html.j2 is shared" gotcha + spec §3 module touch list + §16 lesson #6 require EVERY VM whose template extends `base.html.j2` to carry the new field — including VMs that DO NOT currently carry the prior banner field (e.g., `account.py:25` `AccountSnapshotFormVM` which inherits `BaseLayoutVM` but does NOT have an explicit `unresolved_material_discrepancies_count` field declaration since it inherits from base; the route at `swing/web/routes/account.py:62+82+107` populates the field at construction). The introspection test broadens to use the template-extension predicate. See §G.3 narrative below.
 
 **Files:**
-- Modify: `swing/web/view_models/metrics/shared.py:47` `BaseLayoutVM` — add `recent_multi_leg_auto_correction_count: int = 0` field.
-- Modify: ALL VMs across `swing/web/view_models/` that already carry `unresolved_material_discrepancies_count` (per Phase 10 T-E.3 retrofit + Sub-bundle C.D retrofit precedent). Grep anchor: `grep -rn "unresolved_material_discrepancies_count: int" swing/web/view_models/` — at plan-drafting time this matches 17 distinct files (see §C inventory). Each file: add the new field as a sibling default-0 field, and update the constructor/builder to populate from `count_recent_multi_leg_auto_corrections(conn)`.
+- Modify: `swing/web/view_models/metrics/shared.py:47` `BaseLayoutVM` — add `recent_multi_leg_auto_correction_count: int = 0` field. Every VM inheriting `BaseLayoutVM` gets the field by inheritance.
+- Modify: ALL VMs whose templates extend `base.html.j2` (per `grep -ln "{% extends \"base.html.j2\" %}" swing/web/templates -r` — 23 templates verified at plan-drafting time, including `account_snapshot_form.html.j2` + 9 `metrics/*.html.j2`). For each VM:
+    - If the VM subclasses `BaseLayoutVM` (e.g., `AccountSnapshotFormVM` + all `metrics/*` VMs + `SchwabStatusVM` + `SchwabSetupVM`): field inherits automatically; ALL builders/constructors invoking the VM MUST populate `recent_multi_leg_auto_correction_count=count_recent_multi_leg_auto_corrections(conn)`.
+    - If the VM does NOT subclass `BaseLayoutVM` but already carries `unresolved_material_discrepancies_count` explicitly (e.g., `DashboardVM`, `PipelineVM`, `JournalVM`, `WatchlistVM`, `ConfigPageVM`, `PageErrorVM`, the 4 `trades.py` VMs, `SchwabSetupErrorVM`): add the field as a sibling default-0 dataclass field; update builders to populate.
+- Grep anchor (canonical retrofit scope): `grep -ln "{% extends \"base.html.j2\" %}" swing/web/templates -r` at plan-drafting time matches 23 templates. The implementer enumerates EVERY template's VM via the template's route handler + asserts the VM is retrofit. **Defense-in-depth:** if any new VM lands AFTER plan time, the T-1.8 introspection test catches it.
 - The 17 files (verified via grep at plan-drafting time):
     1. `swing/web/view_models/config.py:50` (`ConfigPageVM` per Phase 10 lesson §E1) + builder at `:132`
     2. `swing/web/view_models/dashboard.py:353` (`DashboardVM`) + builder at `:1266`
@@ -356,21 +556,22 @@
     15. `swing/web/view_models/schwab.py:77` (`SchwabSetupVM`) + `:222` (`SchwabStatusVM`) + `:535` (`SchwabSetupErrorVM`) — three VMs in one file
     16. `swing/web/view_models/trades.py:662` (`ReviewVM`) + `:755` (`CadenceCompleteVM`) + `:769` (`ReviewsPendingVM`) + `:911` (`TradeDetailVM`) — four VMs in one file
     17. `swing/web/view_models/watchlist.py` (`WatchlistVM`)
-- Note: `swing/web/view_models/account.py` does NOT currently carry `unresolved_material_discrepancies_count` per grep at plan-drafting time. If the implementer's grep finds this gap (i.e., account.py templates extend `base.html.j2`), retrofit it too — defense-in-depth per the Phase 10 lesson E2 ("plan §H named 6; implementation added 4 more whose templates extend base.html.j2"). Discriminating test enumerates ALL VMs by introspection (see test below).
+- Note: `swing/web/view_models/account.py:25` `AccountSnapshotFormVM(BaseLayoutVM)` inherits `BaseLayoutVM` so the field flows through inheritance; the routes at `swing/web/routes/account.py:62 + :82 + :107` populate `unresolved_material_discrepancies_count=count_unresolved_material(conn)` at three call sites — each MUST also populate `recent_multi_leg_auto_correction_count=count_recent_multi_leg_auto_corrections(conn)` (per Codex R1 Major #3 fix scope-broadening).
 - Test: `tests/web/test_base_layout_vm_recent_multi_leg_field.py` (NEW)
 
 **Acceptance:**
 
 - `BaseLayoutVM.recent_multi_leg_auto_correction_count: int = 0` field added with default; `__post_init__` (existing at line 58) extended with `if self.recent_multi_leg_auto_correction_count < 0: raise ValueError(...)` validation (matches existing pattern at line 58).
-- Every base-layout VM dataclass that carries `unresolved_material_discrepancies_count: int = 0` ALSO carries `recent_multi_leg_auto_correction_count: int = 0` (same default, same negative-rejection invariant if `__post_init__` exists).
-- Every VM constructor/builder that calls `count_unresolved_material(conn)` ALSO calls `count_recent_multi_leg_auto_corrections(conn)` and passes the value as `recent_multi_leg_auto_correction_count=...`.
-- Discriminating regression test pattern: introspect every VM class in `swing/web/view_models/*.py` + `swing/web/view_models/metrics/*.py` that already has `unresolved_material_discrepancies_count` as a field; assert `recent_multi_leg_auto_correction_count` is also a field.
+- Every base-layout-mounted VM (template extends `base.html.j2`) ALSO carries `recent_multi_leg_auto_correction_count: int = 0`. VMs that subclass `BaseLayoutVM` get the field via inheritance; VMs that explicitly declare `unresolved_material_discrepancies_count: int = 0` as a non-inherited field add the new field as a sibling.
+- Every VM constructor/builder/route that calls `count_unresolved_material(conn)` OR rendering with `base.html.j2` ALSO calls `count_recent_multi_leg_auto_corrections(conn)` and passes the value as `recent_multi_leg_auto_correction_count=...`.
+- Discriminating regression test pattern (template-mount based; Codex R1 Major #3 fix): glob all `swing/web/templates/**/*.html.j2`; filter to those whose first 2 lines contain `{% extends "base.html.j2" %}`; for each, locate the route handler that renders the template (via grep on the template name); locate the VM dataclass passed as `vm=...`; assert the VM has `recent_multi_leg_auto_correction_count` field via `dataclasses.fields(VMClass)`. This catches account.py's `AccountSnapshotFormVM` + any future VM whose template extends base.html.j2 — independent of whether it carries the prior `unresolved_material_discrepancies_count` field directly or via inheritance.
 
 **Tests added (~9):**
 
 - `test_base_layout_vm_has_recent_multi_leg_field` — field exists on `BaseLayoutVM` with default 0.
 - `test_base_layout_vm_rejects_negative_recent_multi_leg_count` — instantiate with `recent_multi_leg_auto_correction_count=-1` → `ValueError`.
-- `test_every_vm_with_unresolved_material_field_also_has_recent_multi_leg_field` — introspect every dataclass via `dataclasses.fields(VMClass)`; if `'unresolved_material_discrepancies_count'` in field names, assert `'recent_multi_leg_auto_correction_count'` in field names. This is the LOCK pin per spec §16 lesson #6 (helper invocation completeness).
+- `test_every_base_layout_template_renders_vm_with_recent_multi_leg_field` (TEMPLATE-MOUNT introspection per Codex R1 Major #3 fix) — glob all `swing/web/templates/**/*.html.j2`; filter to those whose source contains `{% extends "base.html.j2" %}`; for each template name, grep `swing/web/routes/**` for the template-render callsite; locate the VM class passed; assert `dataclasses.fields(VMClass)` includes `'recent_multi_leg_auto_correction_count'`. Discriminating: this catches VMs that inherit `BaseLayoutVM` (e.g., `AccountSnapshotFormVM`) where the field is present via inheritance, AND catches future VMs whose templates extend base but lack inheritance.
+- `test_every_vm_with_unresolved_material_field_also_has_recent_multi_leg_field` (FIELD-PRESENCE auxiliary regression pin) — introspect every dataclass via `dataclasses.fields(VMClass)`; if `'unresolved_material_discrepancies_count'` in field names, assert `'recent_multi_leg_auto_correction_count'` in field names. Defense-in-depth complement to the template-mount test above.
 - `test_dashboard_vm_populates_recent_multi_leg_field` — build_dashboard fixture with planted multi-leg corrections → VM carries non-zero count.
 - `test_dashboard_vm_recent_multi_leg_defaults_to_zero_when_no_runs` — empty DB → VM carries 0.
 - `test_config_page_vm_populates_recent_multi_leg_field` — analogous to dashboard.
@@ -449,11 +650,11 @@
 
 **Files:**
 - Modify: `swing/trades/reconciliation_classifier.py` — extend `_multi_leg_auto_redirect_predicate` (T-1.1) to emit a `logger.warning` line when a candidate dict has `executions=[]` (empty list, NOT None) AND the predicate declines at sub-condition 1 — per spec §12.3 + Sub-bundle 1.5 canary precedent. (~+5 LOC inside the predicate.)
-- Modify: `swing/pipeline/runner.py:1668-1686` — extend the existing `reconciliation_pending_count` + `reconciliation_tier1_recent_count` block with a new SQL counter `reconciliation_tier1_multi_leg_redirected_count` reading from `reconciliation_corrections rc JOIN reconciliation_discrepancies rd ON ...` filtered by `applied_at >= cutoff_iso AND rd.resolved_by = 'auto_tier1_multi_leg'` (COUNT(DISTINCT rd.discrepancy_id) for LOGICAL semantics per spec §11.2 + lesson #8).
+- Modify: `swing/pipeline/runner.py:1668-1686` — extend the existing `reconciliation_pending_count` + `reconciliation_tier1_recent_count` block with a new SQL counter `reconciliation_tier1_multi_leg_redirected_count`. **Window is THIS RUN, NOT last-7-days** per spec §11.2 LOCK + Codex R1 Major #2 fix (the existing `reconciliation_tier1_recent_count` uses 7-day window for the legacy tier-1 line; the NEW multi-leg counter is scoped per-run). SQL: `SELECT COUNT(DISTINCT rd.discrepancy_id) FROM reconciliation_corrections rc JOIN reconciliation_discrepancies rd ON rc.discrepancy_id = rd.discrepancy_id WHERE rc.reconciliation_run_id = (SELECT run_id FROM reconciliation_runs WHERE state = 'completed' ORDER BY finished_ts DESC, run_id DESC LIMIT 1) AND rd.resolved_by = 'auto_tier1_multi_leg'` — semantically equivalent to invoking `count_recent_multi_leg_auto_corrections(conn)` from T-1.7. **PLAN DECISION:** invoke the T-1.7 helper directly (rather than inlining duplicate SQL); requires `from swing.metrics.discrepancies import count_recent_multi_leg_auto_corrections` import at top of `runner.py`.
 - Modify: `swing/rendering/briefing.py:71-80` `BriefingInputs` — add new field `reconciliation_tier1_multi_leg_redirected_count: int = 0`.
 - Modify: `swing/rendering/briefing.py:241-280` `build_briefing_view_model` — thread the new field through to the returned `BriefingViewModel` (add to constructor at line 267-270).
 - Modify: `swing/rendering/briefing.py` — `BriefingViewModel` (search for the dataclass) — add the new field with the same shape.
-- Modify: `swing/rendering/briefing_md.py:87-110` — extend the `## Reconciliation status` block to add a new line `- Multi-leg auto-redirected (last 7 days): K` IMMEDIATELY before the existing `- Tier-1 auto-corrected (last 7 days):` line. The section's outer predicate at line 95 (`if pending > 0 or tier1_recent > 0:`) is widened to `if pending > 0 or tier1_recent > 0 or tier1_multi_leg_redirected > 0:` per spec §11.2 LOCK (line emits ONLY when K > 0; the section itself emits when ANY of the three counters > 0).
+- Modify: `swing/rendering/briefing_md.py:87-110` — extend the `## Reconciliation status` block to add a new line `- Multi-leg auto-redirects applied this run: K` IMMEDIATELY before the existing `- Tier-1 auto-corrected (last 7 days):` line. **Wording is "this run" per spec §11.2 LOCK** (Codex R1 Major #2 fix; do NOT paraphrase to "last 7 days"). The section's outer predicate at line 95 (`if pending > 0 or tier1_recent > 0:`) is widened to `if pending > 0 or tier1_recent > 0 or tier1_multi_leg_redirected > 0:` per spec §11.2 LOCK (line emits ONLY when K > 0; the section itself emits when ANY of the three counters > 0).
 - Modify: `swing/pipeline/runner.py:1750-1773` `BriefingInputs(...)` construction — thread the new counter through.
 - Test: `tests/trades/test_multi_leg_predicate_empty_executions_canary.py` (NEW)
 - Test: `tests/pipeline/test_briefing_multi_leg_redirected_count.py` (NEW)
@@ -462,7 +663,7 @@
 
 - Predicate canary: when ANY candidate's `executions` value is exactly the empty list `[]` (NOT None — that's the "absent" case), the predicate emits `logger.warning("multi-leg predicate declined for ticker=%s order_id=%s: executions list is empty (canary)", ticker, order_id)` before returning `(False, ...)`. The reason text returned to the classifier is unchanged from the existing sub-condition 1 reason; the canary is observability-only (~+5 LOC).
 - The classifier passes `ticker` through to the predicate — UPDATE: predicate signature gains optional `ticker: str | None = None` kwarg (kwarg-only, defaults to None for back-compat with T-1.1 tests). The classifier sub-classifier passes `ticker=discrepancy.ticker` when invoking the predicate.
-- Briefing.md emits a new line `- Multi-leg auto-redirected (last 7 days): K` IMMEDIATELY before the existing tier-1 line per spec §11.2 — but ONLY when K > 0 (per spec §11.2 LOCK + lesson #8).
+- Briefing.md emits a new line `- Multi-leg auto-redirects applied this run: K` IMMEDIATELY before the existing tier-1 line per spec §11.2 — but ONLY when K > 0 (per spec §11.2 LOCK + F22; Codex R3 minor #1 fix — wording is "applied this run", NOT "(last 7 days)").
 - The `## Reconciliation status` SECTION emits when ANY of the three counters is > 0 (widened predicate at line 95).
 - `reconciliation_tier1_multi_leg_redirected_count` SQL uses `COUNT(DISTINCT rd.discrepancy_id)` semantics per lesson #8 (NOT `COUNT(*)` — would inflate by N+1 rows per logical redirect).
 
@@ -473,10 +674,10 @@
 - `test_predicate_no_warning_when_executions_has_legs` — `{'executions': [leg, leg]}` → no canary warning.
 - `test_briefing_inputs_has_new_counter_field` — `dataclasses.fields(BriefingInputs)` includes `'reconciliation_tier1_multi_leg_redirected_count'`.
 - `test_briefing_view_model_has_new_counter_field` — same on `BriefingViewModel`.
-- `test_briefing_md_emits_multi_leg_line_when_count_gt_zero` — `BriefingViewModel(...)` with `reconciliation_tier1_multi_leg_redirected_count=3` + other counters=0 → output contains `"## Reconciliation status"` AND `"- Multi-leg auto-redirected (last 7 days): 3"`.
-- `test_briefing_md_omits_multi_leg_line_when_count_zero` — count=0 + pending=2 → output contains `"## Reconciliation status"` BUT does NOT contain `"Multi-leg auto-redirected"` substring.
+- `test_briefing_md_emits_multi_leg_line_when_count_gt_zero` — `BriefingViewModel(...)` with `reconciliation_tier1_multi_leg_redirected_count=3` + other counters=0 → output contains `"## Reconciliation status"` AND `"- Multi-leg auto-redirects applied this run: 3"` (verbatim per spec §11.2 LOCK — wording is "this run", NOT "(last 7 days)").
+- `test_briefing_md_omits_multi_leg_line_when_count_zero` — count=0 + pending=2 → output contains `"## Reconciliation status"` BUT does NOT contain `"Multi-leg auto-redirects"` substring.
 - `test_briefing_md_omits_section_entirely_when_all_three_counters_zero` — all 0 → output does NOT contain `"## Reconciliation status"` (preserves existing predicate behavior).
-- `test_runner_reconciliation_tier1_multi_leg_redirected_count_distinct_semantics` — plant 1 multi-leg discrepancy with 4 correction rows (1 anchor + 3 partials, `resolved_by='auto_tier1_multi_leg'`) within the 7-day window → counter == 1 (NOT 4).
+- `test_runner_reconciliation_tier1_multi_leg_redirected_count_distinct_semantics` — plant 1 multi-leg discrepancy with 4 correction rows (1 anchor + 3 partials, `resolved_by='auto_tier1_multi_leg'`) ON THE LATEST `reconciliation_run` (per spec §11.2 "this run" LOCK) → counter == 1 (NOT 4). Discriminating: plant a SECOND multi-leg discrepancy with 4 correction rows on a PRIOR completed run + assert the counter is STILL 1 (banner-clears semantics per spec §8.4 + §11.2 LOCK; only the most-recent run counts).
 
 **Commit message stem:** `feat(pipeline,briefing): multi-leg auto-redirect canary + briefing.md +1 line (Phase 12.5 #1 T-1.11)`
 
@@ -486,9 +687,9 @@
 
 ### (No T-1.12 + E2E slow test)
 
-Per spec §9.2, the projection includes "1 slow E2E test" beyond the 11 fast-test tasks. **PLAN DECISION:** the E2E test is bundled into T-1.5's test file as a `@pytest.mark.slow` test exercising the full flow through `_pivot_classify_and_dispatch_for_run` end-to-end against an in-memory schema-v19 SQLite with planted Schwab order fixtures. Single integration test: `test_e2e_phase12_5_1_full_flow_through_pivot_loop_to_banner_count` — plants a `reconciliation_run` row + multi-leg discrepancy + invokes the pivot loop + asserts the full state cascade (4 correction rows + parent discrepancy in `operator_resolved_ambiguity` with `resolved_by='auto_tier1_multi_leg'` + `count_recent_multi_leg_auto_corrections(conn) == 1`).
+Per spec §9.2, the projection includes "1 slow E2E test" beyond the 11 fast-test tasks. **PLAN DECISION** (revised per Codex R1 Critical #1 + R2 Major #3 fixes): the E2E test is bundled into T-1.5's BACKFILL-side test file `tests/trades/test_backfill_auto_redirect_dispatch.py` as `@pytest.mark.slow def test_e2e_phase12_5_1_full_flow_through_backfill_to_banner_count` — plants a `reconciliation_run` row + multi-leg discrepancy + mocked `schwab_client` returning multi-leg `SchwabOrderResponse` + invokes `_handle_pass_2(dry_run=False, environment='production', ...)` + asserts the full state cascade (4 correction rows + parent discrepancy in `operator_resolved_ambiguity` with `resolved_by='auto_tier1_multi_leg'` + `count_recent_multi_leg_auto_corrections(conn) == 1` + `BackfillOutcome.outcome == 'tier1_multi_leg_auto_redirected'` + per-run briefing counter increment).
 
-This avoids creating a separate T-1.12 with only 1 test + matches Sub-bundle C.D precedent of bundling slow E2E with the closest task.
+The slow E2E lives on the operational firing site (backfill) per F20; the pivot-loop test file owns the defensive-future-proofing coverage with fast tests only. This matches Sub-bundle C.D precedent of bundling slow E2E with the closest task.
 
 ---
 
@@ -498,7 +699,7 @@ This avoids creating a separate T-1.12 with only 1 test + matches Sub-bundle C.D
 - **WORKTREE:** `.worktrees/phase12-5-bundle-1-oqf-writing-plans/` (this dispatch's worktree; the executing-plans dispatch will create a fresh `phase12-5-bundle-1-oqf-executing` worktree).
 - **BRANCH:** `phase12-5-bundle-1-oqf-writing-plans` (this dispatch). Executing-plans branch: `phase12-5-bundle-1-oqf-executing` (recommended; matches cleanup-script regex `phase\d+[-_]`).
 - **Schema:** v19, UNCHANGED through Sub-bundle 1 + 1.5 + 2 chain (verified spec §13.1 audit). Plan does NOT touch `swing/data/migrations/`.
-- **Fast-test baseline:** ~4575 fast tests on `main` HEAD (post Sub-bundle 2 ship `690aed0`); add 3 pre-existing `phase8 walkthrough` failures (acknowledged + tracked under Phase 12.5 #3 maintenance pass). Plan-projected post-ship: ~4660 (4575 + 85 new tests).
+- **Fast-test baseline:** ~4575 fast tests on `main` HEAD (post Sub-bundle 2 ship `690aed0`); add 3 pre-existing `phase8 walkthrough` failures (acknowledged + tracked under Phase 12.5 #3 maintenance pass). Plan-projected post-ship: ~4677 (4575 + ~102 new tests; per §K refined projection after Codex R1-R4 fixes).
 - **Ruff baseline:** 18 E501 (per Sub-bundle 2 ship); plan MUST NOT introduce new E501 violations. Ruff baseline must remain 18.
 - **Operator-locks already loaded (BINDING):** spec §2.1-§2.4 (4 operator-locks) + spec §15.B #1-#3 (3 operator-locks; locked 2026-05-17 post-brainstorm-merge) + spec §15.A 1-7 (7 brainstorm-locks); see §D below for the verbatim roll-up.
 
@@ -511,9 +712,9 @@ This avoids creating a separate T-1.12 with only 1 test + matches Sub-bundle C.D
 | File | Lines (current HEAD) | Touched by task |
 |---|---|---|
 | `swing/trades/reconciliation_classifier.py` | 45-64 `ClassificationResult`; 770-949 `_classify_unmatched_fill_shared` | T-1.1 + T-1.2 + T-1.11 |
-| `swing/trades/reconciliation_backfill.py` | 433-469 `_orders_to_classifier_payload` | T-1.3 |
+| `swing/trades/reconciliation_backfill.py` | 433-469 `_orders_to_classifier_payload` + Pass-2 dispatch loop (around lines 597-608 + 886-890) + outer exception catch | T-1.3 + T-1.5 (per Codex R1 Critical #1 fix — backfill is the OPERATIONAL auto-redirect dispatcher) |
 | `swing/trades/reconciliation_auto_correct.py` | 210 `apply_tier2_resolution`; 540 `_apply_tier2_resolution_inner`; 1209 `_build_tier2_correction`; 1250 `_flip_discrepancy_to_resolved_ambiguity`; 1268-1948 every `_handle_*` helper | T-1.4 + T-1.6 |
-| `swing/trades/schwab_reconciliation.py` | 418-538 `_pivot_classify_and_dispatch_for_run` | T-1.5 |
+| `swing/trades/schwab_reconciliation.py` | 418-538 `_pivot_classify_and_dispatch_for_run` (defensive future-proofing); line 429 docstring (caveat for `InvalidOverrideComboError` propagation per spec §7.4 R4 M2 LOCK); line 529 outer-catch ladder reordering (Codex R1 Major #1 fix) | T-1.5 |
 | `swing/metrics/discrepancies.py` | new function alongside `count_unresolved_material` at line 37 | T-1.7 |
 | `swing/web/view_models/metrics/shared.py` | 28+ `BaseLayoutVM` | T-1.8 |
 | `swing/web/view_models/*.py` + `swing/web/view_models/metrics/*.py` (17 files; see §A T-1.8 enumeration) | every dataclass with `unresolved_material_discrepancies_count` + every builder that populates it | T-1.8 |
@@ -532,7 +733,8 @@ This avoids creating a separate T-1.12 with only 1 test + matches Sub-bundle C.D
 | `tests/trades/test_reconciliation_classifier_pre_existing_emit_paths_recipe_none.py` | T-1.2 |
 | `tests/trades/test_reconciliation_backfill_orders_to_classifier_payload_executions.py` | T-1.3 |
 | `tests/trades/test_apply_tier2_resolution_override_kwargs.py` | T-1.4 |
-| `tests/trades/test_pivot_loop_auto_redirect_dispatch.py` | T-1.5 (includes the slow E2E test) |
+| `tests/trades/test_pivot_loop_auto_redirect_dispatch.py` | T-1.5 (initial-pivot defensive coverage) |
+| `tests/trades/test_backfill_auto_redirect_dispatch.py` | T-1.5 (Codex R1 Critical #1 fix — operational firing site; includes the slow E2E test) |
 | `tests/trades/test_apply_tier2_resolution_sandbox_short_circuit.py` | T-1.6 |
 | `tests/metrics/test_discrepancies_count_recent_multi_leg_auto_corrections.py` | T-1.7 |
 | `tests/web/test_base_layout_vm_recent_multi_leg_field.py` | T-1.8 |
@@ -624,10 +826,16 @@ These are LOCK invariants that survive across T-1.1 through T-1.11. Codex review
 | F13 | **SAVEPOINT-per-discrepancy preserved at flow-pivot.** No SAVEPOINT semantics change in `_pivot_classify_and_dispatch_for_run`. | Sub-bundle C.C R2 Minor #1 LOCK + spec §7.5 LOCK | T-1.5 acceptance: SAVEPOINT/RELEASE pattern preserved + `_SandboxAutoRedirectShortCircuit` triggers ROLLBACK TO + RELEASE. |
 | F14 | **Classifier purity preserved.** Predicate + recipe synthesizer pure; no DB / API / logging side-effects (canary `logger.warning` in T-1.11 is the ONE exception). | CLAUDE.md "Classifier is a PURE function" gotcha | T-1.1 acceptance: predicate signature accepts only Mapping + scalars; no `conn`. |
 | F15 | **Hybrid-row invariant** (`applied_by='auto'` + `correction_action='auto_applied'` + `correction_choice='split_into_partials'`) is valid IFF parent `resolved_by='auto_tier1_multi_leg'`. Enforced by `_validate_override_combo`. | Spec §7.3.1 BINDING + Codex R3 M2 LOCK | T-1.4 includes the full override-combo test matrix. |
-| F16 | **Exception specificity ordering.** `InvalidOverrideComboError` (subclass of `ValueError`) catch comes FIRST and re-raises (where applicable per T-1.5 plan decision); generic `ValueError` catch second. | Spec §7.4 R4 M2 LOCK + lesson #11 | T-1.5 includes `test_pivot_loop_auto_redirect_invalid_override_combo_logs_warning_increments_tier_errored_count`. |
+| F16 | **Exception specificity ordering.** `InvalidOverrideComboError` (subclass of `ValueError`) catch comes FIRST and re-raises per F21 (propagates out — NOT log+counter-increment); generic `ValueError` catch second per spec §7.5 fresh-savepoint fallback. | Spec §7.4 R4 M2 LOCK + spec §7.5 fallback contract + lesson #11 | T-1.5 includes `test_pivot_loop_outer_catch_ladder_invalid_override_first_generic_second` + `test_pivot_loop_auto_redirect_validator_rejected_falls_back_to_pending_ambiguity_resolution`. |
 | F17 | **Sandbox short-circuit lives in inner not outer.** C.C lesson #2 carry-forward. | Spec §7.6.1 + lesson #5 | T-1.6 includes `test_apply_tier2_resolution_inner_sandbox_short_circuits_on_auto_override_combo`. |
 | F18 | **Counter ROW-vs-LOGICAL semantics.** `COUNT(DISTINCT discrepancy_id)` for any "auto-correction count" metric. | Spec §11.2 + lesson #8 | T-1.7 + T-1.11 include planted-N+1-rows tests asserting count == 1. |
 | F19 | **Plan-author schema additions escalation.** If Codex review surfaces a need for schema addition, STOP + escalate to orchestrator BEFORE encoding in plan. | Phase 9 Sub-bundle A return report lesson #7 + spec §16 lesson #3 | Plan author cites this lock at §F19; Codex chain verifies via plan inspection. |
+| F20 | **Auto-redirect dispatch wired in BOTH initial-pivot AND backfill** (Codex R1 Critical #1 fix). The classifier recipe can ONLY be emitted via the n>=2 list-shape source_payload path; the initial pivot's `_extract_source_payload` returns None for unmatched_*_fill sentinels (recipe never synthesized at pivot). The backfill Pass-2 path is the operational firing site. T-1.5 wires consumption into BOTH `_pivot_classify_and_dispatch_for_run` (defensive future-proofing) AND `reconciliation_backfill.py` Pass-2 dispatch (operational consumer). | Codex R1 Critical #1 + spec §1 architectural lift scope | T-1.5 includes `tests/trades/test_backfill_auto_redirect_dispatch.py` covering the operational firing site end-to-end. |
+| F21 | **InvalidOverrideComboError propagates out of pivot loop AND backfill orchestrator** (Codex R1 Major #1 fix per spec §7.4 R4 M2 LOCK + lesson #11). The existing `_pivot_classify_and_dispatch_for_run` graceful-degradation `"never raises out"` docstring at line 429 is intentionally violated for the developer-bug case. Catch ladder MUST be `except InvalidOverrideComboError: raise` FIRST, then `except Exception as e: ...` graceful-degradation SECOND. | Spec §7.4 R4 M2 LOCK | T-1.5 includes `test_pivot_loop_auto_redirect_invalid_override_combo_propagates_out` + `test_pivot_loop_outer_catch_ladder_invalid_override_first_generic_second`. |
+| F22 | **Briefing.md per-run counter wording is "applied this run"** (Codex R1 Major #2 fix per spec §11.2 LOCK). Window = latest completed reconciliation_run (NOT 7-day rolling); SQL invokes the T-1.7 helper directly OR mirrors its semantics; rendered line is `- Multi-leg auto-redirects applied this run: K` verbatim. | Spec §11.2 LOCK | T-1.11 includes verbatim-substring assertions + dual-run discriminating test (banner-clears semantics). |
+| F23 | **VM retrofit scope is TEMPLATE-MOUNT, not field-presence** (Codex R1 Major #3 fix per spec §3 module touch list + spec §16 lesson #6). Every VM whose template extends `base.html.j2` carries `recent_multi_leg_auto_correction_count`, including `AccountSnapshotFormVM` which inherits via `BaseLayoutVM` without an explicit `unresolved_material_discrepancies_count` field declaration. Introspection test enumerates by template-extension grep. | Spec §3 + CLAUDE.md `base.html.j2` gotcha | T-1.8 includes `test_every_base_layout_template_renders_vm_with_recent_multi_leg_field`. |
+| F24 | **`_orders_to_classifier_payload` dict-branch normalizes absent `executions` key to None** (Codex R1 Major #4 fix). Cassette/replay fixtures pre-Phase-12.5 #1 do NOT include `executions` keys; absent normalization, dict-branch + dataclass-branch outputs diverge on shape contract. | Codex R1 Major #4 + spec §3 "ZERO behavioral changes" intent | T-1.3 includes `test_orders_to_classifier_payload_dict_input_without_executions_key_normalized_to_none`. |
+| F25 | **Predicate consumes dict-shaped executions only** (Codex R1 minor #1 fix). Conversion from `SchwabExecutionLeg` dataclass instances to plain dicts is owned by T-1.3 at the backfill→classifier seam; predicate test fixtures use dict-form ONLY. | Spec §4.1 `list[Mapping]` contract | T-1.1 includes `test_predicate_consumes_dict_shaped_executions_only`. |
 
 ---
 
@@ -748,7 +956,9 @@ else:
     counters["tier2_pending_count"] += 1
 ```
 
-The outer `except Exception as e:` at line 529 catches `InvalidOverrideComboError` (which subclasses `ValueError` → `Exception`) and `ValidatorRejectedError`. The branch sequence preserves graceful-degradation contract at line 429.
+The outer catch ladder at line 529 is REPLACED per Codex R1 Major #1 + R2 Major #3 fixes with a two-tier ordering: `except InvalidOverrideComboError: <savepoint cleanup>; raise` FIRST (propagates out per F21 — overall reconciliation_run fails-fast per spec §3.3.3); generic `except Exception as e:` SECOND (graceful-degradation increments `tier_errored_count`). For `ValidatorRejectedError` specifically inside the auto-redirect branch, follow spec §7.5 fresh-savepoint fallback (per T-1.5 step 7) so the discrepancy lands in `pending_ambiguity_resolution` for operator manual review.
+
+The line-429 docstring `"the function NEVER raises out"` is amended with explicit caveat: `"...except InvalidOverrideComboError (developer-bug signal per spec §7.4 R4 M2 LOCK; propagates to fail the reconciliation_run for integration-time fault detection)."`
 
 **Counter init pattern at line 432:**
 ```python
@@ -832,10 +1042,10 @@ Per spec §9.3 + dispatch brief §3 projection.
 ### §H.1 S1 — Inline pytest + ruff baseline
 
 - Run: `pytest -m "not slow" -q` from the executing-plans worktree root.
-- Pass criterion: ALL fast tests pass (target ~4660 = 4575 baseline + ~85 new). 3 pre-existing `phase8 walkthrough` failures acknowledged (banked under Phase 12.5 #3 maintenance dispatch); no other failures.
+- Pass criterion: ALL fast tests pass (target ~4677 = 4575 baseline + ~102 new). 3 pre-existing `phase8 walkthrough` failures acknowledged (banked under Phase 12.5 #3 maintenance dispatch); no other failures.
 - Run: `ruff check swing/`.
 - Pass criterion: ruff baseline 18 E501 UNCHANGED (per spec invariant + post-Phase-12 Sub-bundle 2 ship baseline).
-- Run: `pytest -m slow tests/trades/test_pivot_loop_auto_redirect_dispatch.py::test_e2e_phase12_5_1_full_flow_through_pivot_loop_to_banner_count`.
+- Run: `pytest -m slow tests/trades/test_backfill_auto_redirect_dispatch.py::test_e2e_phase12_5_1_full_flow_through_backfill_to_banner_count` (Codex R2 Major #3 fix — slow E2E moved to the operational firing site per F20).
 - Pass criterion: slow E2E test PASS.
 
 ### §H.2 S2 — Synthetic-fixture predicate matrix walk-through
@@ -872,7 +1082,7 @@ Per spec §9.3 + dispatch brief §3 projection.
 
 - Run pipeline: `python -m swing.cli pipeline run` from worktree (under the planted S4 state).
 - Inspect: `cat exports/<action_session_date>/briefing.md | grep -A 5 "## Reconciliation status"`.
-- Pass (when count > 0): the section contains the new `- Multi-leg auto-redirected (last 7 days): K` line; K matches the planted count.
+- Pass (when count > 0): the section contains the new `- Multi-leg auto-redirects applied this run: K` line (verbatim per spec §11.2 LOCK + F22; Codex R2 Major #3 fix — wording is "this run", NOT "last 7 days"); K matches the planted count on the latest completed reconciliation_run.
 - Pass (when count == 0; default production state): the section either absent (all 3 counters 0) OR present without the new line (other counters > 0).
 
 **SKIPPED gate surfaces** (per polish-bundle-2026-05-10 precedent + spec §9.3 budget):
@@ -919,21 +1129,22 @@ Additional amendments may be banked during the Codex chain.
 | T-1.2 | ~+30 (field + classifier branches) | ~+80 | ~14 | — |
 | T-1.3 | ~+10 (executions key) | ~+30 | ~5 | — |
 | T-1.4 | ~+120 (parameterization + validator + exception) | ~+90 | ~12 | — |
-| T-1.5 | ~+50 (pivot-loop branch) | ~+80 | ~10 + 1 slow | 1 |
+| T-1.5 | ~+80 (pivot-loop branch + backfill branch + outer-catch reorder; Codex R1 Critical #1 fix doubles consumer-site work) | ~+130 | ~14 + 1 slow | 1 |
 | T-1.6 | ~+15 (sandbox short-circuit) | ~+40 | ~6 | — |
 | T-1.7 | ~+30 (helper) | ~+40 | ~7 | — |
 | T-1.8 | ~+15 (1 LOC × ~17 VMs) | ~+50 | ~9 | — |
 | T-1.9 | ~+5 (banner block) | ~+30 | ~5 | — |
 | T-1.10 | ~+15 (CLI filter) | ~+30 | ~4 | — |
 | T-1.11 | ~+25 (canary + briefing line) | ~+50 | ~9 | — |
-| **TOTAL** | **~+405** | **~+620** | **~98** | **1** |
+| **TOTAL** | **~+435** | **~+670** | **~102** | **1** |
 
-**Net projection:** ~+405 production LOC + ~+620 test LOC = ~+1025 LOC; ~98 fast tests + 1 slow E2E test.
+**Net projection:** ~+435 production LOC + ~+670 test LOC = ~+1105 LOC; ~102 fast tests + 1 slow E2E test.
 
 **Variance from spec §9.2 projection (~+320 LOC + ~+85 fast tests + 1 slow E2E):** plan is HIGHER on both axes. Causes:
 - T-1.4 LOC inflation: spec projected ~+40 LOC but the parameterization touches 12 `_handle_*` helpers + a new validator helper + a typed exception class. Inflation absorbed by per-handler threading work.
+- T-1.5 LOC inflation (Codex R1 Critical #1 fix): backfill consumer added as second operational dispatch site; pivot-loop kept as defensive future-proofing. Doubles consumer-site work.
 - Tests above projection: the introspection-based defense-in-depth pattern in T-1.8 + the override-combo matrix in T-1.4 + the canary observability in T-1.11 each add ~3-5 tests beyond the spec's nominal projection.
-- This matches the Phase 9 / 10 / 12 overshoot precedent ("+85-130 projected → +139 actual" at C.B; "+65-115 projected → +95 actual" at C.C; "+85 projected → ~98 actual" here).
+- This matches the Phase 9 / 10 / 12 overshoot precedent ("+85-130 projected → +139 actual" at C.B; "+65-115 projected → +95 actual" at C.C; "+85 projected → ~102 actual" here).
 
 **Schema impact:** v19 UNCHANGED (LOCK per spec §13.1). NO migration files.
 
@@ -951,7 +1162,7 @@ The executing-plans dispatch brief at `docs/phase12-5-bundle-1-oqf-multi-leg-aut
 2. **§1 Pre-locked decisions** — verbatim quote of plan §D's 14 LOCKs.
 3. **§2 Task list** — references plan §A T-1.1 .. T-1.11 (dispatch order: T-1.1 → T-1.2 → T-1.3 → T-1.4 → T-1.5 → T-1.6 → T-1.7 → T-1.8 → T-1.9 → T-1.10 → T-1.11). Parallelizable: T-1.3 + T-1.7 can land before T-1.4; T-1.10 is independent of T-1.5-T-1.8.
 4. **§3 Pre-flight verifications** — grep anchors per plan §C; assert (a) schema_version == 19; (b) `_RESOLVED_BY_VALUES` constant absent (`grep -rn "_RESOLVED_BY_VALUES" swing/` returns 0); (c) `apply_tier2_resolution` signature has 7 kwargs currently (validates T-1.4 baseline); (d) `_orders_to_classifier_payload` does NOT currently include `executions` key (validates T-1.3 baseline); (e) `BaseLayoutVM` lacks `recent_multi_leg_auto_correction_count` field (validates T-1.8 baseline).
-5. **§4 Adversarial review watch items** — mirror spec §15 Codex watch items + plan §F invariants F1-F19 + the 12 forward-binding lessons from the brainstorm return report §8.
+5. **§4 Adversarial review watch items** — mirror spec §15 Codex watch items + plan §F invariants F1-F25 (the 6 added invariants F20-F25 surfaced during writing-plans Codex chain rounds 1-4) + the 12 forward-binding lessons from the brainstorm return report §8 + the 6 NEW writing-plans-surfaced lessons L-W1 through L-W6 in plan §M.
 6. **§5 Operator-witnessed gate plan** — references plan §H (6 surfaces).
 7. **§6 OUT OF SCOPE** — schema additions (per F1 + F19 escalation rule); ANY override of §D locks; phase 12.5 #2 web Tier-2 surface; phase 12.5 #3 maintenance pass; V2 candidates (spec §14 + plan §Z).
 8. **§7 If you get stuck** — mirror brainstorm-brief §7 + plan §F19 escalation rule.
@@ -959,14 +1170,25 @@ The executing-plans dispatch brief at `docs/phase12-5-bundle-1-oqf-multi-leg-aut
 
 **Commit message stem** (after Codex chain converges + plan commit lands):
 ```
-docs(phase12-5-1-oqf-plan): single-sub-bundle decomposition — N Codex rounds → NO_NEW_CRITICAL_MAJOR; 14 pre-locked decisions encoded; schema v19 unchanged; ~+85/+320 projections
+docs(phase12-5-1-oqf-plan): single-sub-bundle decomposition — N Codex rounds → NO_NEW_CRITICAL_MAJOR; 14 pre-locked decisions encoded; 25 binding invariants F1-F25; schema v19 unchanged; ~+102 fast tests + 1 slow E2E + ~+435 LOC projection
 ```
 
 ---
 
-## §M Forward-binding lessons for executing-plans (scaffold)
+## §M Forward-binding lessons for executing-plans (populated post-Codex R1)
 
-Empty at plan-drafting. Populated post-Codex-chain with discovered lessons. Likely candidates inherited from brainstorm return report §8:
+Codex R1 surfaced 1 Critical + 4 Major + 1 Minor; ALL resolved with code-content fixes in the plan (ZERO ACCEPT-WITH-RATIONALE). Lessons banked for executing-plans:
+
+**From Codex R1 chain (NEW for this plan; surfaced during writing-plans review):**
+
+- **L-W1 (R1 Critical #1):** When designing a "dispatcher pattern + recipe consumption" architecture, enumerate EVERY dispatcher consumer (not just the most obvious one). The initial pivot's source_payload derivation path matters — if it returns None for the unmatched sentinel, the dispatch consumer in that path is dead-code; the operational consumer lives ELSEWHERE. T-1.5 mitigation: wire BOTH initial-pivot AND backfill consumers; F20 invariant pins.
+- **L-W2 (R1 Major #1):** Spec-locked exception-propagation contracts (e.g., "InvalidOverrideComboError MUST propagate out") MUST be encoded as catch-ladder ordering in the plan, NOT as "PLAN DECISION" overrides. Plan-author was tempted to align with existing graceful-degradation; Codex caught the spec divergence. F21 invariant pins.
+- **L-W3 (R1 Major #2):** Spec-locked rendering text (e.g., "this run" vs "last 7 days") MUST be verbatim-asserted in tests. Plan-author lifted the 7-day window pattern from the adjacent `reconciliation_tier1_recent_count` without re-checking the spec lock. F22 invariant pins.
+- **L-W4 (R1 Major #3):** Retrofit scope predicates (e.g., "every base-layout VM") MUST be enumerated by the canonical mechanism (template-mount), NOT by a proxy that happens to overlap most cases (field-presence on the prior banner field). F23 invariant pins.
+- **L-W5 (R1 Major #4):** Helper functions that produce normalized dicts for downstream consumers MUST emit a stable key-set across ALL input branches. Permissive dict-passthrough creates shape drift between cassette/replay fixtures and production. F24 invariant pins.
+- **L-W6 (R1 minor #1):** Conversion seams (dataclass→dict at a module boundary) MUST be owned by ONE task with clear contract; consumer tests should not duck-type both shapes. F25 invariant pins.
+
+**From brainstorm return report §8 (inherited; verbatim):**
 - Recipe-field discipline.
 - Override-parameter threading.
 - Free-text vs CHECK-enum columns.
@@ -1005,4 +1227,4 @@ If the writing-plans Codex chain surfaces undecidable scope items requiring orch
 
 ---
 
-*End of plan. Phase 12.5 #1 writing-plans dispatch — 14 operator+brainstorm-locks pre-baked; single-sub-bundle decomposition; 11 tasks T-1.1 .. T-1.11; schema v19 UNCHANGED; ~+85 fast tests + 1 slow E2E + ~+320 LOC projection. Codex chain projected 3-5 rounds. Executing-plans dispatch UNBLOCKED after Codex chain converges + plan commit lands.*
+*End of plan. Phase 12.5 #1 writing-plans dispatch — 14 operator+brainstorm-locks pre-baked; 25 binding invariants F1-F25 enforced; single-sub-bundle decomposition; 11 tasks T-1.1 .. T-1.11; schema v19 UNCHANGED; ~+102 fast tests + 1 slow E2E + ~+435 LOC projection. Codex chain projected 3-5 rounds. Executing-plans dispatch UNBLOCKED after Codex chain converges + plan commit lands.*
