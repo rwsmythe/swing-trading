@@ -108,6 +108,211 @@ _SHAPE_C_EXPECTED_KEYS: frozenset[str] = frozenset({"price"}) | _EXECUTION_AUDIT
 
 
 # ---------------------------------------------------------------------------
+# Phase 12.5 #1 T-1.1 — multi-leg auto-redirect predicate + recipe synthesizer
+# ---------------------------------------------------------------------------
+#
+# Operator-locked tolerances per spec §4.4 + §15.B #1 + #2 (2026-05-17):
+# - price tolerance: $0.01 absolute (NO ``max(...)`` proportional override).
+# - quantity tolerance at predicate: 1e-9 (stricter than the
+#   ``apply_tier2_resolution`` handler's 1e-6; predicate-stricter asymmetry
+#   is safe — handler accepts everything the predicate would have).
+#
+# Predicate + synthesizer are PURE (no DB, no API, no logging). T-1.11 adds
+# the ONE documented canary ``logger.warning`` for empty-executions cases;
+# DO NOT add logging here.
+#
+# Classifier-boundary contract (F25 / L-W6): predicate consumes
+# ``Mapping``-shaped candidates ONLY — plain dicts with ``executions`` value
+# of ``list[Mapping]`` carrying ``leg_id`` / ``price`` / ``quantity`` /
+# ``time`` keys. ``SchwabExecutionLeg`` dataclass → dict conversion is
+# T-1.3's responsibility at ``_orders_to_classifier_payload``.
+
+_MULTI_LEG_PRICE_TOLERANCE: float = 0.01   # absolute $0.01; NO max(...) override path
+_MULTI_LEG_QTY_TOLERANCE: float = 1e-9     # predicate-stricter than handler's 1e-6
+
+
+def _is_positive_finite_number(x: Any) -> bool:
+    """True iff ``x`` is a real numeric value, finite, and strictly positive.
+
+    Defensive guard: ``isinstance(True, int)`` is ``True`` in Python so we
+    reject ``bool`` explicitly BEFORE the numeric check. NaN/inf rejected
+    via ``math.isfinite``.
+    """
+    if isinstance(x, bool):
+        return False
+    if not isinstance(x, (int, float)):
+        return False
+    if not math.isfinite(float(x)):
+        return False
+    return float(x) > 0.0
+
+
+def _multi_leg_auto_redirect_predicate(
+    *,
+    candidates: list[Mapping[str, Any]],
+    journal_qty: float,
+    journal_price: float,
+    price_tolerance: float = _MULTI_LEG_PRICE_TOLERANCE,
+) -> tuple[bool, str | None]:
+    """Decide whether classifier may auto-redirect this candidate set to
+    ``split_into_partials`` tier-1.
+
+    Spec §4.3 — ALL 6 sub-conditions must hold:
+
+      1. Every candidate carries a non-empty ``executions`` list.
+      2. ``sum(len(c.executions) for c in candidates) >= 2``.
+      3. Each leg's ``price`` and ``quantity`` is a real numeric value
+         (not ``bool``), finite, and strictly positive.
+      4. ``sum(leg.quantity)`` matches ``journal_qty`` within
+         ``_MULTI_LEG_QTY_TOLERANCE`` (1e-9).
+      5. ``abs(VWAP - journal_price) <= price_tolerance``. VWAP =
+         ``sum(price*qty) / sum(qty)``.
+      6. Per-leg consistency: ``abs(leg.price - VWAP) <= price_tolerance``
+         for every leg.
+
+    Sub-condition 3 executes BEFORE 4/5/6 so NaN/inf/bool inputs cannot
+    poison the arithmetic.
+
+    Returns ``(True, None)`` when ALL hold; otherwise ``(False, reason)``
+    where ``reason`` cites the failing sub-condition + relevant numeric
+    values for forensic transparency (spec §5.4).
+
+    PURE function: no DB / API / logging.
+    """
+    # Sub-condition 1: every candidate has a non-empty executions list.
+    for cand in candidates:
+        executions = cand.get("executions")
+        if executions is None or len(executions) == 0:
+            order_id = cand.get("order_id", "<unknown>")
+            return (
+                False,
+                f"sub-condition 1: candidate order_id={order_id} has no execution legs",
+            )
+
+    # Flatten all legs in input order for sub-conditions 2-6.
+    all_legs: list[Mapping[str, Any]] = []
+    for cand in candidates:
+        for leg in cand["executions"]:
+            all_legs.append(leg)
+
+    # Sub-condition 2: total leg count >= 2.
+    if len(all_legs) < 2:
+        return (
+            False,
+            f"sub-condition 2: insufficient total leg count {len(all_legs)}; need at least 2",
+        )
+
+    # Sub-condition 3: per-leg numeric/finite/positive (BEFORE arithmetic).
+    for i, leg in enumerate(all_legs, start=1):
+        price = leg.get("price")
+        qty = leg.get("quantity")
+        if isinstance(price, bool) or isinstance(qty, bool):
+            return (
+                False,
+                f"sub-condition 3: leg #{i} price={price!r} or "
+                f"quantity={qty!r} is not numeric (bool rejected)",
+            )
+        if not isinstance(price, (int, float)) or not isinstance(qty, (int, float)):
+            return (
+                False,
+                f"sub-condition 3: leg #{i} price={price!r} or "
+                f"quantity={qty!r} is not numeric",
+            )
+        if not (math.isfinite(float(price)) and math.isfinite(float(qty))):
+            return (
+                False,
+                f"sub-condition 3: leg #{i} price={price!r} or "
+                f"quantity={qty!r} is not positive finite",
+            )
+        if float(price) <= 0.0 or float(qty) <= 0.0:
+            return (
+                False,
+                f"sub-condition 3: leg #{i} price={price!r} or "
+                f"quantity={qty!r} is not positive finite",
+            )
+
+    # Sub-condition 4: qty-sum matches journal_qty within tolerance.
+    total_qty = sum(float(leg["quantity"]) for leg in all_legs)
+    if abs(total_qty - float(journal_qty)) > _MULTI_LEG_QTY_TOLERANCE:
+        return (
+            False,
+            f"sub-condition 4: execution leg qty sum {total_qty} does not "
+            f"match journal_qty {journal_qty} within tolerance "
+            f"{_MULTI_LEG_QTY_TOLERANCE}",
+        )
+
+    # Sub-condition 5: VWAP vs journal_price within tolerance.
+    vwap = sum(float(leg["price"]) * float(leg["quantity"]) for leg in all_legs) / total_qty
+    vwap_journal_delta = abs(vwap - float(journal_price))
+    if vwap_journal_delta > price_tolerance:
+        return (
+            False,
+            f"sub-condition 5: VWAP {vwap:.6f} vs journal_price "
+            f"{journal_price:.6f} delta {vwap_journal_delta:.6f} exceeds "
+            f"tolerance {price_tolerance}",
+        )
+
+    # Sub-condition 6: per-leg consistency vs VWAP. Cite the WORST outlier
+    # (max abs-delta) for forensic transparency per spec §5.4 — a uniform
+    # tolerance can fail multiple legs symmetrically; the operator wants
+    # the outlier identified, not the first-walked failure.
+    worst_idx: int | None = None
+    worst_price: float = 0.0
+    worst_delta: float = 0.0
+    for i, leg in enumerate(all_legs, start=1):
+        leg_price = float(leg["price"])
+        leg_delta = abs(leg_price - vwap)
+        if leg_delta > price_tolerance and leg_delta > worst_delta:
+            worst_idx = i
+            worst_price = leg_price
+            worst_delta = leg_delta
+    if worst_idx is not None:
+        return (
+            False,
+            f"sub-condition 6: leg #{worst_idx} price {worst_price} vs VWAP "
+            f"{vwap:.6f} delta {worst_delta:.6f} exceeds tolerance "
+            f"{price_tolerance}",
+        )
+
+    return (True, None)
+
+
+def _synthesize_split_into_partials_recipe(
+    candidates: list[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    """Build the ``auto_redirect_recipe`` dict per spec §6.1.
+
+    PRE-CONDITION: caller MUST have invoked
+    :func:`_multi_leg_auto_redirect_predicate` first and received
+    ``(True, None)``. This synthesizer is unsafe on declined inputs — it
+    does NOT re-validate numeric types / empty executions / qty sums.
+
+    Payload iteration order is the concatenation of
+    ``candidates[i].executions[j]`` preserving input order.
+
+    PURE function: no DB / API / logging.
+    """
+    payload: list[dict[str, Any]] = []
+    for cand in candidates:
+        executions = cand.get("executions") or []
+        for leg in executions:
+            payload.append(
+                {
+                    "qty": float(leg["quantity"]),
+                    "price": float(leg["price"]),
+                    "fill_datetime": str(leg["time"]),
+                }
+            )
+    return {
+        "choice_code": "split_into_partials",
+        "resolved_by": "auto_tier1_multi_leg",
+        "applied_by_override": "auto",
+        "correction_action_override": "auto_applied",
+        "payload": payload,
+    }
+
+
+# ---------------------------------------------------------------------------
 # T-B.3 — entry_price_mismatch sub-classifier (CVGI 41 path)
 # ---------------------------------------------------------------------------
 #
