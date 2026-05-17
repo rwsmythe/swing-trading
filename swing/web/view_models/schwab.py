@@ -125,16 +125,21 @@ class SchwabSetupVM:
 
 
 # Audit-row status enum per ``schwab_api_calls.status`` CHECK constraint
-# (migration 0018). Mirrors the enum exposed via the CLI's
-# ``_render_recent_calls`` consumer of ``list_recent_calls``.
+# (migration 0018). MIRRORS the schema enum verbatim per the CLI 1:1 LOCK
+# (spec §7.4 OQ-D + dispatch brief §0.5 #14) — Codex R1 Major #1 fix:
+# CLI's ``_render_recent_calls`` renders every row returned by
+# ``list_recent_calls`` regardless of status, including ``in_flight`` +
+# ``concurrent_refresh``. A narrower web-side filter would silently drop
+# rows operators see at the CLI surface — for example, a DEGRADED page
+# whose state_reason cites the most-recent call's ``in_flight`` status
+# would omit that very row from the recent-calls table.
 _SCHWAB_CALL_STATUSES = frozenset({
-    # Terminal outcomes the audit row will surface to the operator-facing
-    # status page (in_flight rows are excluded by ``list_recent_calls``'s
-    # caller since they represent a request in mid-flight, not history).
+    "in_flight",
     "success",
+    "error",
     "auth_failed",
     "rate_limited",
-    "error",
+    "concurrent_refresh",
 })
 
 _SCHWAB_STATUS_STATES = frozenset({"LIVE", "PROVISIONAL", "DEGRADED"})
@@ -377,23 +382,37 @@ def build_schwab_status_vm(
             limit=5,
         )
         recent: list[SchwabCallSummary] = []
+        # Defense-in-depth read-time re-redactor for the error_excerpt
+        # field. Codex R1 Critical #1 fix: even though
+        # ``record_call_finish`` writes a redacted excerpt at write time
+        # (per Sub-bundle B + R1 M#3 audit-row close discipline), a
+        # historical row OR a future redactor bug could persist
+        # unredacted token-shape bytes in ``error_message``. Re-applying
+        # ``_redacted_excerpt`` at read time is idempotent (no harm on
+        # already-redacted text) AND closes the leak surface. The
+        # template (T-2.2) does NOT render this field on the operator-
+        # visible page — that aligns with CLI 1:1 (spec §7.4 OQ-D LOCK;
+        # CLI ``_render_recent_calls`` shows endpoint + status + http
+        # only). The VM keeps the field for spec §7.1 completeness +
+        # any future inspection surface.
+        from swing.integrations.schwab.client import (
+            _redact_error_message_for_audit,
+        )
         for c in calls:
-            # Audit-row status enum includes 'in_flight' (mid-request) +
-            # 'concurrent_refresh' (transient lock). Both are excluded from
-            # the operator-facing summary per CLAUDE.md
-            # "Typed SchwabApiError audit-row close discipline" — operator
-            # sees terminal outcomes only.
-            if c.status not in _SCHWAB_CALL_STATUSES:
-                continue
+            err_redacted: str | None = None
+            if c.error_message:
+                try:
+                    err_redacted = _redact_error_message_for_audit(
+                        c.error_message,
+                    )
+                except Exception:  # pragma: no cover - defensive
+                    err_redacted = None
             recent.append(SchwabCallSummary(
                 started_ts=c.ts,
                 endpoint=c.endpoint,
                 status=c.status,
                 http_status=c.http_status,
-                # error_message is already a redacted excerpt at write
-                # time per Sub-bundle B + R1 M#3 audit-row close
-                # discipline; VM consumes it as-is.
-                error_excerpt=c.error_message,
+                error_excerpt=err_redacted,
             ))
 
         # Most-recent success + failure timestamps. Two narrow SELECTs to

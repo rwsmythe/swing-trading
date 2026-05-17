@@ -96,6 +96,12 @@
 
   {# Section 5 — recent API calls table. #}
   <h2>Recent API calls</h2>
+  {# CLI 1:1 LOCK (spec §7.4 OQ-D + dispatch brief §0.5 #14) — render the
+     same columns the CLI ``_render_recent_calls`` does (endpoint + status
+     + http_status); error_excerpt is INTENTIONALLY NOT rendered on the
+     operator-visible page (Codex R1 Critical #1 fix). The VM still
+     consumes the field (spec §7.1 completeness) but the template treats
+     it as sensitive-by-default + omits the column. #}
   <table class="schwab-recent-calls" data-table="schwab-recent-calls">
     <thead>
       <tr>
@@ -103,7 +109,6 @@
         <th>Endpoint</th>
         <th>Status</th>
         <th>HTTP</th>
-        <th>Error excerpt</th>
       </tr>
     </thead>
     <tbody>
@@ -114,11 +119,10 @@
           <td><code>{{ call.endpoint }}</code></td>
           <td>{{ call.status }}</td>
           <td>{% if call.http_status is not none %}{{ call.http_status }}{% else %}&mdash;{% endif %}</td>
-          <td>{% if call.error_excerpt %}{{ call.error_excerpt }}{% else %}&mdash;{% endif %}</td>
         </tr>
         {% endfor %}
       {% else %}
-        <tr><td colspan="5" class="muted">(no API calls recorded for
+        <tr><td colspan="4" class="muted">(no API calls recorded for
         environment <code>{{ vm.environment }}</code>)</td></tr>
       {% endif %}
     </tbody>

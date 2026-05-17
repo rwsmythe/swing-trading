@@ -456,15 +456,20 @@ def test_sentinel_leak_audit_no_token_bytes_in_response(
         r = client.get("/schwab/status")
     assert r.status_code == 200
     body = r.text
-    for sentinel in sentinels[:3]:
+    for sentinel in sentinels:
+        # Codex R1 Critical #1 fix (post-Sub-bundle-2 Codex chain): all
+        # 4 sentinels MUST be absent from the body. The template no
+        # longer renders error_excerpt (CLI 1:1 alignment per spec §7.4
+        # OQ-D) AND the VM re-redacts at read time via
+        # _redact_error_message_for_audit — so audit-row error_message
+        # sentinels are scrubbed even if a write-time redactor bug
+        # persists raw token-shape bytes (defense-in-depth).
         assert sentinel not in body, (
             f"sentinel-leak: {sentinel!r} found in response body — "
-            "VM/template surfaced raw token bytes (violates Phase 11 "
-            "Sub-bundle A T-A.10 D1 redaction discipline)"
+            "violates BINDING contract #7 (Phase 11 Sub-bundle A T-A.10 "
+            "D1 redaction discipline). VM/template surfaced raw token "
+            "bytes OR an unredacted audit-row sentinel."
         )
-    # NOTE: error_message sentinels are operator-visible by design
-    # (audit-row excerpts are the diagnostic surface); this audit only
-    # asserts token-byte sentinels stay out of the response body.
 
 
 # ---------------------------------------------------------------------------
