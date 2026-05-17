@@ -323,21 +323,48 @@ def _extract_executions_from_order_raw(
                     order_id, ai, li, type(leg_raw).__name__,
                 )
                 continue
+            # Codex R1 Major #2 fix — preserve dataclass bool-as-number
+            # rejection contract. `float(True)` / `int(True)` would slip
+            # past `SchwabExecutionLeg.__post_init__`'s `isinstance(x, bool)`
+            # guard, so reject bool inputs BEFORE coercion (mapper-layer
+            # defense-in-depth mirroring the spec §4.3 dataclass validator
+            # contract). Booleans here are extraordinarily unlikely in
+            # Schwab production responses (numeric fields are always
+            # numbers), but the project's pattern is to keep the validator
+            # contract honest end-to-end.
+            raw_leg_id = leg_raw.get("legId", 0)
+            raw_price = leg_raw.get("price", 0)
+            raw_quantity = leg_raw.get("quantity", 0)
+            raw_mismarked = leg_raw.get("mismarkedQuantity")
+            raw_instrument_id = leg_raw.get("instrumentId")
+            if (
+                isinstance(raw_leg_id, bool)
+                or isinstance(raw_price, bool)
+                or isinstance(raw_quantity, bool)
+                or (raw_mismarked is not None and isinstance(raw_mismarked, bool))
+                or (
+                    raw_instrument_id is not None
+                    and isinstance(raw_instrument_id, bool)
+                )
+            ):
+                _log.warning(
+                    "map_orders_to_fill_candidates: order %s "
+                    "activity[%d].executionLegs[%d] carries bool-as-number "
+                    "field (defense-in-depth reject pre-coercion); dropping leg",
+                    order_id, ai, li,
+                )
+                continue
             try:
                 leg = SchwabExecutionLeg(
-                    leg_id=int(leg_raw.get("legId", 0)),
-                    price=float(leg_raw.get("price", 0)),
-                    quantity=float(leg_raw.get("quantity", 0)),
+                    leg_id=int(raw_leg_id),
+                    price=float(raw_price),
+                    quantity=float(raw_quantity),
                     mismarked_quantity=(
-                        float(leg_raw["mismarkedQuantity"])
-                        if "mismarkedQuantity" in leg_raw
-                        and leg_raw["mismarkedQuantity"] is not None
-                        else None
+                        float(raw_mismarked) if raw_mismarked is not None else None
                     ),
                     instrument_id=(
-                        int(leg_raw["instrumentId"])
-                        if "instrumentId" in leg_raw
-                        and leg_raw["instrumentId"] is not None
+                        int(raw_instrument_id)
+                        if raw_instrument_id is not None
                         else None
                     ),
                     time=str(leg_raw.get("time", "")),

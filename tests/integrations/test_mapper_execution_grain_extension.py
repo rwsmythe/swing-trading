@@ -248,3 +248,45 @@ def test_no_filled_quantity_permissive() -> None:
     # No coherence check fires → legs preserved.
     assert out[0].executions is not None
     assert len(out[0].executions) == 2
+
+
+# Test 15 — Codex R1 Major #2: bool-as-number raw field rejected at mapper
+# layer (pre-coercion) so the dataclass validator contract stays honest.
+def test_bool_as_number_leg_field_rejected_pre_coercion(caplog) -> None:
+    """Raw JSON `{"price": true}` would coerce to `float(True)=1.0` which
+    would slip past `SchwabExecutionLeg.__post_init__`'s `isinstance(x, bool)`
+    rejection. T-1.3 mapper rejects bool BEFORE coercion (defense-in-depth
+    mirroring the dataclass contract end-to-end)."""
+    legs_with_bool_price = [
+        {"legId": 1, "price": True, "quantity": 100,
+         "mismarkedQuantity": 0, "instrumentId": None,
+         "time": "2026-05-15T14:30:00.000Z"},
+    ]
+    base = _base_order(
+        filledQuantity=100,
+        orderActivityCollection=[_exec_activity(legs_with_bool_price)],
+    )
+    with caplog.at_level(logging.WARNING):
+        out = map_orders_to_fill_candidates([base])
+    # Bool-leg dropped → executions=None (coherence-check on filledQuantity=100
+    # with empty collected legs → return None per `if not collected`).
+    assert out[0].executions is None
+    assert any(
+        "bool-as-number" in r.getMessage().lower()
+        for r in caplog.records
+    )
+
+
+# Test 16 — bool-as-quantity also rejected.
+def test_bool_as_quantity_leg_field_rejected_pre_coercion() -> None:
+    legs = [
+        {"legId": 1, "price": 5.0, "quantity": True,  # noqa
+         "mismarkedQuantity": 0, "instrumentId": None,
+         "time": "2026-05-15T14:30:00.000Z"},
+    ]
+    base = _base_order(
+        filledQuantity=100,
+        orderActivityCollection=[_exec_activity(legs)],
+    )
+    out = map_orders_to_fill_candidates([base])
+    assert out[0].executions is None  # leg dropped → empty collected → None

@@ -2636,7 +2636,7 @@ _HISTORICAL_CORRECTION_NOTE: str = (
     "mapper widening (swing/integrations/schwab/mappers.py extension to "
     "surface orderActivityCollection[].executionLegs[]; design doc: "
     "docs/superpowers/specs/2026-05-17-schwab-mapper-execution-grain-widening-design.md) "
-    "carry ORDER-grain prices in schwab_said_value_json — the V1 mapper "
+    "carry ORDER-grain prices in schwab_said_value_json -- the V1 mapper "
     "read order.price (LIMIT for buy/sell, trigger for stops), NOT the "
     "actual execution price. For any correction chain you are reviewing: "
     "the chain head's operator_truth_value_json (when the chain head's "
