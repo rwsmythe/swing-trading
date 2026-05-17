@@ -42,6 +42,45 @@ from swing.integrations.schwab.models import (
 _log = logging.getLogger(__name__)
 
 
+def _has_non_placeholder_leg(activities: object) -> bool:
+    """Return True if any leg in ``activities`` has a non-zero price.
+
+    Used by `_extract_executions_from_order_raw` to detect anomalous
+    zero-filled order shapes that include non-placeholder legs (canary
+    for future Schwab regression where a real-execution sentinel surfaces
+    despite filledQuantity=0).
+
+    Defensive parsing: any malformed shape returns False (no false
+    positives). Skip non-list activities, non-dict activity entries,
+    non-list executionLegs, non-dict legs. Reject bool-as-number (Python
+    bool is a subclass of int -- ``True == 1.0 > 0`` would otherwise
+    false-positive). Ignore TypeError / ValueError on float coercion of
+    the price value.
+    """
+    if not isinstance(activities, list):
+        return False
+    for activity in activities:
+        if not isinstance(activity, dict):
+            continue
+        legs = activity.get("executionLegs", [])
+        if not isinstance(legs, list):
+            continue
+        for leg in legs:
+            if not isinstance(leg, dict):
+                continue
+            raw_price = leg.get("price", 0)
+            # Reject bool defensively (Python bool is a subclass of int).
+            if isinstance(raw_price, bool):
+                continue
+            try:
+                price_value = float(raw_price)
+            except (TypeError, ValueError):
+                continue
+            if price_value > 0:
+                return True
+    return False
+
+
 def _require(d: Any, key: str, *, ctx: str) -> Any:
     """Return d[key] or raise SchwabSchemaParityError with a redacted message."""
     if not isinstance(d, dict):
@@ -302,7 +341,24 @@ def _extract_executions_from_order_raw(
     # permissive-when-`filledQuantity`-absent stance documented at lines
     # 275-276 above is PRESERVED -- only skip on EXPLICIT zero, not on absent
     # or missing key.
+    #
+    # Sub-bundle 1.5 Codex R1 M#1+M#6 -- observability canary. The broad
+    # gate above silently swallows ANY future order shape with
+    # filledQuantity=0; the diagnosed STOP/REPLACED/CANCELED placeholder
+    # family uniformly carries leg.price=0 sentinel. But a hypothetical
+    # future Schwab regression could emit filledQuantity=0 AND non-zero-
+    # price legs (internally-inconsistent shape). Emit a WARN BEFORE
+    # returning None so the anomaly is observable. The gate's skip
+    # behavior is unchanged.
     if filled_qty is not None and filled_qty == 0:
+        if _has_non_placeholder_leg(activities):
+            _log.warning(
+                "map_orders_to_fill_candidates: order %s carries "
+                "filledQuantity=0 but executionLegs contain non-zero "
+                "prices; skipping extraction but flagging as anomalous "
+                "shape",
+                order_id,
+            )
         return None
 
     collected: list[SchwabExecutionLeg] = []
