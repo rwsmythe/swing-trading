@@ -38,7 +38,7 @@ Per brief §0.5. Executed at HEAD `5c40286` (2026-05-16). Outcomes pin into per-
 | 4 | `swing/trades/reconciliation_classifier.py:711-880` `_classify_unmatched_fill_shared` | ✓ `direction: str` param ('open'/'close') for reason rendering. Lines 728-746 Pass-1 no-payload branch → tier-2 `unsupported`. **V2 adds ONLY Path B `execution_unavailable=true` sentinel branch BEFORE existing logic; V1 Pass-2-tier-1-FORBIDDEN LOCK preserved uniformly.** |
 | 5 | `swing/trades/reconciliation_classifier.py:96-538` `_classify_entry_price_mismatch` + `:1107-1130` `_classify_close_price_mismatch` | ✓ entry: Shape A (`{price}` only) + Shape B (full match-tuple). close: tier-2-always V1 with `noqa: ARG001` on both params. **V2 adds NEW Shape C branch to BOTH classifiers BEFORE existing predicates; legacy paths preserved.** |
 | 6 | `swing/web/routes/schwab.py:193+249` `/schwab/setup` GET+POST | ✓ Sub-bundle B routing pattern; POST uses `apply_overrides(request.app.state.cfg)` at line 254. **Sub-bundle 2 follows same shape.** |
-| 7 | `swing/cli_schwab.py:1416-1459` `swing schwab status` | ✓ `--environment` Click option + `apply_overrides(ctx.obj["config"])` at line 1440 + `env = (environment or cfg.integrations.schwab.environment).lower()` at 1441. Output via `render_status(...)` at 1449. **`SchwabStatusVM` mirrors `render_status` 1:1.** |
+| 7 | `swing/cli_schwab.py:790+` `render_status(...)` 3-state output | ✓ Shipped CLI uses **`LIVE` / `PROVISIONAL` / `DEGRADED`** (multi-signal predicate at `_compute_degraded_state`, `cli_schwab.py:615-741`) — **NOT** `CONFIGURED/PROVISIONAL/NOT_CONFIGURED`. Click command at `:1416-1459` with `--environment` + `apply_overrides(ctx.obj["config"])` at line 1440 + `env = (environment or cfg.integrations.schwab.environment).lower()` at 1441. **Plan §A.0.1 D3 deviation: spec §7.1 + §3.4.4 use the wrong state names; plan T-2.0 + T-2.1 + T-2.2 + §H.2 use the shipped `LIVE/PROVISIONAL/DEGRADED` triplet. `SchwabStatusVM` mirrors `render_status` 1:1 on the corrected state names.** |
 | 8 | base.html.j2 + Phase 10 T-E.3 base-layout VM banner pin | ✓ 10 existing base-layout VMs carry `unresolved_material_discrepancies_count: int`. SchwabSetupVM precedent in `swing/web/view_models/schwab.py:76`. **SchwabStatusVM MUST carry the field + populate via `_fetch_unresolved_material_count(cfg.paths.db_path)`.** |
 | 9 | Current `POST /schwab/setup` HX-Redirect target | ✓ `/config?schwab_setup=ok`. **Sub-bundle 2 retargets to `/schwab/status` while RETAINING `/config?schwab_setup=ok` consumer as passive no-op per Codex R1 m#2 LOCK.** |
 | 10 | `swing/web/templates/config.html.j2:58-60` "External integrations" section | ✓ `<h2>External integrations</h2>` + `<a href="/schwab/setup">...</a>`. **Sub-bundle 2 adds SECOND `<a href="/schwab/status">...</a>` in same section.** |
@@ -49,6 +49,8 @@ Per brief §0.5. Executed at HEAD `5c40286` (2026-05-16). Outcomes pin into per-
 
 - **D1 — `swing journal discrepancy show-correction <id>` subcommand does NOT exist.** Spec §8.3 references it; `swing/cli.py` has `show` (line 2172), `show-ambiguity` (line 2208), `override-correction` (line 2626). **Plan resolution:** T-1.12 adds NEW `show-correction` subcommand (parallel to `show`) reading from `reconciliation_corrections` via `get_correction` helper; addendum lands as the subcommand's Click `help=` epilog. The addendum ALSO appears in `override-correction --help` epilog for breadth via shared module-level constant `_HISTORICAL_CORRECTION_NOTE`.
 - **D2 — CVGI date typo (§8.1) is a confirmed no-op.** `grep -n "2026-04-27" CLAUDE.md` returns 0 matches at plan-drafting time. T-1.11 ships as no-op-with-note-in-commit.
+- **D3 — Spec §7.1 + §3.4.4 use wrong status state names (`CONFIGURED/PROVISIONAL/NOT_CONFIGURED`); shipped `swing schwab status` CLI uses `LIVE/PROVISIONAL/DEGRADED` (verified at `swing/cli_schwab.py:615-741+790-832`).** Plan resolution: T-2.0 `SchwabStatusVM.state` validator + T-2.1 route + T-2.2 template + §H.2 gate criteria all use `LIVE/PROVISIONAL/DEGRADED` (the shipped CLI triplet). The spec is wrong on this; plan flags as V2.1 §VII.F amendment candidate. CLI semantics 1:1 LOCK (spec §7.4) is honored via the shipped CLI triplet, not the misnamed spec triplet.
+- **D4 — Comparator candidate filter at `swing/trades/schwab_reconciliation.py:641-645` requires widening for V2.** Current filter excludes orders where `getattr(o, "price", None) is None` — this drops MARKET fills (which can carry `price=None` with `executions=[leg @ exec_price]`) AND partial-then-canceled fills (`status='CANCELED'` with `filledQuantity > 0`). Spec §5.3 explicitly calls these out as legitimate execution-grain candidates. T-1.6 + T-1.7 acceptance criteria widened to extend the candidate-status filter (include `FILLED` + `CANCELED`-with-`filledQuantity>0` + `REPLACED`-with-`filledQuantity>0`) AND the candidate-price guard (admit orders where `executions` is non-empty even when `price is None`). Discriminating tests cover MARKET BUY + CANCELED partial + REPLACED partial.
 
 ---
 
@@ -56,28 +58,50 @@ Per brief §0.5. Executed at HEAD `5c40286` (2026-05-16). Outcomes pin into per-
 
 **Scope:** the architectural fix. Surfaces execution-grain data; switches comparator price+quantity match; widens Pass-1 classifiers with NEW Shape C predicate; preserves V1 Pass-2 tier-2-always LOCK except Path B sentinel recognition; folds 3 housekeeping micro-fixes.
 
-**Dispatch order:** cassette session (operator-paired; §F) → Sub-bundle 1 executing-plans dispatch → integration merge.
+**Dispatch order (per §A.0.1 D4 + Codex R1 Major #4 fix):** Sub-bundle 1 executing-plans dispatch begins → **T-1.0 commits FIRST** (sanitization filter must exist before cassette recording) → **operator pauses dispatch + runs §F.2 cassette-recording session on the worktree branch** → operator resumes dispatch with T-1.1..T-1.13 implementation → integration merge.
 
-**Total tasks: 14** (T-1.0 … T-1.13). **Projected test delta: +50-100 fast tests.**
+**Total tasks: 14** (T-1.0 … T-1.13). **Projected test delta: +60-115 fast tests** (post Round-1/3/4/5 fixes; per §E).
 
 ---
 
-### Task T-1.0 — Cassette runbook + sanitization filter spec (DOCS ONLY; ships ahead of cassette session)
+### Task T-1.0 — Cassette runbook + sanitization filter spec (DOCS + TEST-INFRA; FIRST commit of Sub-bundle 1; lands BEFORE operator cassette session)
 
 **Files:**
 - Create: `docs/runbooks/schwab-cassette-recording.md` (~150-200 lines)
-- Modify: `tests/conftest.py` (extend `vcr_config` with Schwab-specific filter entries; ~15-25 line diff)
+- Modify: `tests/conftest.py` (extend `vcr_config` with `before_record_request` + `before_record_response` + filter additions; ~30-50 line diff)
+- Create: `scripts/record_schwab_cassettes.py` (standalone operator-paired recording script per §F.2; ~100-150 lines including CLI argparse + per-order-type recording loop + post-cassette validation gate per Codex R4 Major #2; per §F.2 BINDING)
 
 **Acceptance criteria:**
 
-1. Runbook covers 4 minimum order types per OQ-E LOCK + the stretch STOP_LIMIT FIRED. Per-type: operator workflow (place + fill in TOS/Schwab Mobile; run `swing schwab fetch --orders --environment production --days 30`; verify cassette captures `orderActivityCollection[].executionLegs[]`).
-2. Sanitization filter spec extends `tests/conftest.py:88-110` `vcr_config` mirroring §F.3 — `filter_headers` adds Schwab custom headers; `filter_query_parameters` adds `accountNumber`/`accountHash`; `filter_post_data_parameters` adds OAuth params; `before_record_response` callable scrubs `accountNumber`/`accountHash` + 32+ hex / 24+ base64 token-shape regex.
-3. Storage path locked: `tests/integrations/cassettes/schwab/<test-name>.yaml`.
+1. Runbook covers 4 REQUIRED order types per OQ-E LOCK + the OPTIONAL stretch STOP_LIMIT FIRED. Per-type: operator workflow (place + fill in TOS/Schwab Mobile within the prior 30-day window; run `python scripts/record_schwab_cassettes.py --environment production --order-types <list>`; verify cassette captures `orderActivityCollection[].executionLegs[]` via the script's post-record validation gate).
+2. Sanitization filter spec extends `tests/conftest.py:88-110` `vcr_config` mirroring §F.3 — `filter_headers` adds Schwab custom headers; `filter_query_parameters` adds `accountNumber`/`accountHash`; `filter_post_data_parameters` adds OAuth params; **`before_record_request` callable** rewrites `request.uri` to scrub `/accounts/{accountHash}` URL path segments + 32+ hex / 24+ base64 token-shape (Codex R2 Critical #1 + R4 Minor #1); `before_record_response` callable scrubs JSON-key value forms for accountNumber/accountHash/access_token/refresh_token/id_token/code/client_id/client_secret/bearerToken + 32+ hex / 24+ base64 token-shape.
+3. Storage path locked: `tests/integrations/cassettes/schwab/test_e2e_<order_type>.yaml` (filenames mirror T-1.13 pytest function names).
 4. Staleness recovery runbook (per §F.4).
 5. Cross-references CLAUDE.md "Schwab cassette runbook is V2 PLANNED" gotcha; notes this dispatch shifts bar to cassette-required.
 6. **Operator-actionability test:** runbook reads end-to-end as self-contained operator commands.
+7. **`scripts/record_schwab_cassettes.py` acceptance criteria (Codex R4 Major #1 + Major #2):**
+   - CLI argparse: `--environment {production,sandbox}` (REQUIRED); `--order-types <comma-list>` (OPTIONAL; default = `limit_buy,limit_sell,stop_fired,market_buy` REQUIRED set; `stop_limit_fired` admissible for stretch); `--days N` (OPTIONAL; default 30; lookback window for the Schwab `account_orders` call).
+   - Imports the shared sanitization filter dict from `tests.conftest.vcr_config` (via the `__wrapped__` indirection that pytest-recording fixtures use). Falls back to inlined identical filter dict if conftest import fails outside pytest context (banked as a degenerate-context defense).
+   - **Auth + config bootstrap (Codex R5 Major #2 + R6 Major #1 BINDING):** the script uses the SAME config + auth path as `swing schwab fetch` / `swing schwab status`. Specifically: (a) loads project config via `swing.config.load()`; (b) applies overrides via `from swing.config_overrides import apply_overrides; cfg = apply_overrides(cfg)` at script entry (matches `cli_schwab.py:1440` + Phase 12 Sub-bundle B forward-binding lesson #6); (c) selects per-environment tokens DB at `~/swing-data/schwab-tokens.{env}.db` (matches `cli_schwab.py:1447`); (d) resolves `account_hash` from cfg via `cfg.integrations.schwab.account_hash`; (e) **resolves `client_id` + `client_secret` via the same env-var/cfg-tier/prompt cascade `swing schwab fetch` uses** — Phase 12 Sub-bundle A `resolve_credentials_env_or_prompt(cfg, environment, allow_prompt=False)` (mirrors `swing/web/routes/schwab.py:270`); (f) constructs `schwabdev.Client(...)` via the shared helper at `swing/integrations/schwab/auth.py:694-699` with FULL signature `construct_authenticated_client(cfg=cfg, environment=env, client_id=client_id, client_secret=client_secret)` — NOT the abbreviated `(cfg, environment)` form which would fail with `TypeError: missing 2 required positional arguments` at cassette-record time. Smoke test #7 asserts the script invokes the helper with all 4 named args matching the resolved cascade outputs.
+   - Per-order-type loop: opens `vcr.use_cassette(<cassette_path>, record_mode='new_episodes', **vcr_kwargs)`; invokes `schwabdev.Client(...).account_orders(maxResults=200, fromEnteredTime=..., toEnteredTime=..., status=<status>)` filtered to the requested order type per Schwab API param shape.
+   - **Post-record validation gate (Codex R4 Major #2 BINDING):** after each cassette is written, re-load it via `vcr.use_cassette(<path>, record_mode='none')`; replay the same `account_orders` call; parse the response; assert at least ONE order in the response matches the requested order_type (e.g., `orderType == 'LIMIT'` AND `orderLegCollection[0].instruction == 'BUY'` for `limit_buy`) AND at least ONE order has non-empty `orderActivityCollection[].executionLegs[]` with at least one leg. On failure, the script exits non-zero with an OPERATOR-ACTIONABLE message: `"FAILED: cassette {path} contains no <order_type> orders with executionLegs[]. Recent recorded orders: <count>. Operator action: (a) widen --days window; (b) ensure a recent <order_type> filled within the lookback; (c) re-run after placing such an order in TOS/Schwab Mobile."`
+   - Cassette output path locked: `tests/integrations/cassettes/schwab/test_e2e_<order_type>.yaml`.
+   - Failure behavior: any vcrpy / schwabdev / network exception → non-zero exit + structured error message; cassette file deleted to avoid leaving a partial/sensitive recording on disk.
+   - Sentinel-leak audit (mirror §G.4 scan; per Codex R3 Critical #1 inheritance): script invokes the broadened pattern catalogue against the just-written cassette + exits non-zero + DELETES the cassette if any pattern matches.
 
-**Tests added:** 0 (docs-only).
+**Tests added:** 7 — focused tests for `scripts/record_schwab_cassettes.py` per Codex R5 Major #1 + Major #2 (recording script is now an executable artifact; cassette-required hard prereq depends on its correctness + auth/config bootstrap semantics). Tests use mocked `schwabdev.Client` + `tmp_path` cassette files; do NOT exercise live Schwab API. Test cases:
+
+1. CLI argparse defaults — invoking without `--order-types` defaults to `limit_buy,limit_sell,stop_fired,market_buy` (4 REQUIRED); `--days` defaults to 30; `--environment` is required.
+2. Argparse rejects unknown order-type with friendly error message + non-zero exit.
+3. Shared-filter import via `tests.conftest.vcr_config.__wrapped__()` returns the same dict structure as the live `vcr_config` fixture (smoke).
+4. Post-record validation gate failure — mock Schwab response with ZERO orders matching requested type → script exits non-zero + stderr contains "FAILED" + cassette file deleted + operator-actionable remediation text present.
+5. Post-record validation gate success — mock Schwab response with at least one matching order having non-empty `executionLegs[]` → script exits 0 + cassette file persists at expected path.
+6. Sentinel-leak audit gating — plant non-sanitized accountHash placeholder substring in mocked response body → script exits non-zero + cassette file deleted + stderr contains "sentinel-leak".
+7. **Auth + config bootstrap smoke (Codex R5 Major #2 + R6 Major #1)** — mock both `construct_authenticated_client` AND `resolve_credentials_env_or_prompt`; invoke script with `--environment sandbox`; assert: (a) `apply_overrides(cfg)` was invoked at script entry (spy pattern); (b) `resolve_credentials_env_or_prompt` invoked with `cfg, 'sandbox', allow_prompt=False` (matches Sub-bundle B precedent); (c) `construct_authenticated_client` invoked with ALL 4 named args (`cfg=<cfg>`, `environment='sandbox'`, `client_id=<resolved>`, `client_secret=<resolved>`) — NOT the abbreviated 2-arg form. Defense-in-depth: verifies the script does NOT bypass the shared auth/config path AND uses the correct helper signature (Codex R6 Major #1 — `construct_authenticated_client` requires 4 args per `swing/integrations/schwab/auth.py:694-699`).
+
+(`vcr_config` extension itself is exercised by all subsequent VCR-driven tests but adds no new test cases at T-1.0 itself.)
+
+**Dispatch-order LOCK (Codex R1 Major #4 fix):** T-1.0 lands as the **FIRST commit on the Sub-bundle 1 worktree branch**. Operator THEN runs the cassette-recording session per §F.2 against that worktree branch — the sanitization filter must exist at cassette-record time (otherwise recordings would capture unsanitized accountNumber / accountHash / token bytes that subsequently leak into git history when committed). Brief §0.6 + plan §A dispatch-order updated to reflect: T-1.0 implementation → operator cassette session → T-1.1+ implementation → integration merge.
 
 **Commit message stem:** `docs(schwab-cassette): runbook + vcr_config Schwab filter extensions (T-1.0)`.
 
@@ -292,13 +316,34 @@ if abs(execution_price - float(f.price)) > price_tolerance:
           delta_text=f"${execution_price - float(f.price):+.4f} (schwab execution minus journal)")
 ```
 
-**Existing filter at line 641 preserved** (`getattr(o, "price", None) is not None` already excludes orders lacking `price` from the candidate pool, so the Path B branch executes only for orders with `price` populated but `executions=None`/`[]` — covers older orders pre-execution-grain + sandbox responses + mapper coherence-check collapse case).
+**Existing filter at line 641-645 WIDENED for V2** (per §A.0.1 D4 deviation closing Codex R1 Major #1 + Major #2). The V1 filter excluded orders where `price is None` (drops MARKET fills which can carry `price=None` with non-empty `executions`) AND restricted to `status='FILLED'` (drops partial-then-canceled fills which have execution legs). New filter:
+
+```python
+def _is_execution_bearing_candidate(o):
+    """V2 candidate-pool guard. Admits FILLED + CANCELED/REPLACED with
+    non-empty executions. Admits orders with price=None when executions
+    is populated (MARKET fills surface execution-grain even without
+    order-grain price). Spec §5.3 + §6.4 OQ-D LOCK."""
+    status = getattr(o, "status", "")
+    if status == "FILLED":
+        return (getattr(o, "price", None) is not None
+                or bool(getattr(o, "executions", None)))
+    if status in ("CANCELED", "REPLACED"):
+        # Partial-then-canceled or partial-then-replaced — execution-bearing
+        # only when legs sum > 0 (Spec §5.3 Codex R1 M#3).
+        return bool(getattr(o, "executions", None))
+    return False
+
+schwab_filled = [o for o in schwab_orders if _is_execution_bearing_candidate(o)]
+```
+
+**Backward-compat preserved + Path B reachability documented (Codex R2 Major #2 fix):** for FILLED orders WITHOUT `executions` (pre-V2-mapper-widening + sandbox responses + mapper-coherence-check collapse case), the OR-branch on `price is not None` keeps them in the candidate pool exactly as V1 did — comparator runs `_compute_execution_price(so)` returning `None` → Path B branch emits `unmatched_*_fill` with `execution_unavailable=true` sentinel. **FILLED orders where BOTH `price is None` AND `executions is None` are REJECTED from the candidate pool entirely** (defensive — such orders carry NO data the comparator can compare against; they represent corrupt or truncated Schwab responses). This is the deliberate V1 choice: Path B requires `price` populated to write a meaningful `schwab_order_price` audit-value into `actual_value_json`. The mapper's defensive parsing (T-1.3) is upstream + already drops shape-malformed legs, so the price-AND-executions-both-None case is empirically near-zero in practice; spot-checks against operator's production data have surfaced zero such orders.
 
 **Shape C contract:** `actual_value_json` key-set is EXACTLY `{"price", "execution_legs", "schwab_order_id", "schwab_order_price"}` — classifier's NEW Shape C predicate at T-1.8 matches. Audit keys (`execution_legs` + `schwab_order_id` + `schwab_order_price`) are observational ONLY at classifier; `correction_target` carries `{'price': <execution_price>}` (Shape A-equivalent).
 
 **Naming note (R3 m#2):** `schwab_order_price` (NOT `schwab_limit_price`) — covers MKT (`None`) / STOP (trigger) / LIMIT (limit) order_types gracefully.
 
-**Discriminating tests (10 cases):**
+**Discriminating tests (12 cases):**
 
 1. Spec §10.1 CVGI single-leg within tolerance ($5.23 vs $5.2244 → delta 0.0056 < 0.01) → NO emit.
 2. Spec §10.2 LION single-leg within tolerance ($12.70 vs $12.6999 → delta 0.0001) → NO emit.
@@ -310,8 +355,10 @@ if abs(execution_price - float(f.price)) > price_tolerance:
 8. `close_price_mismatch` Shape C emit with audit keys (mirrors T-1.8 widening).
 9. Sandbox short-circuit preserved (env=sandbox → no domain-row writes regardless of Path B trigger).
 10. `delta_text` precision 4dp covers CVGI $0.0056 + LION $0.0001 sub-cent debugging signal (not rounded to $0.01 / $0.00).
+11. **MARKET BUY with `price=None` + `executions=[leg @ exec_price]`** (per §A.0.1 D4 Codex R1 Major #1): order admitted to candidate pool via OR-branch; comparator uses `_compute_execution_price` returning leg price; journal matching exec → NO emit; journal mismatching → Shape C tier-1 emit. Verifies `_is_execution_bearing_candidate` accepts MARKET FILLED-with-`price=None`-but-`executions=[...]`.
+12. **`status='CANCELED'` with `filledQuantity=50` + `executions=[leg @ exec_price, qty=50]`** (per §A.0.1 D4 Codex R1 Major #2 — partial-then-canceled execution-bearing): candidate-pool guard admits the order; matching step uses `_resolve_match_quantity` returning 50; journal `qty=50` matches; price comparator runs on execution-grain. Mirror test for `status='REPLACED'`.
 
-**Tests added:** 10.
+**Tests added:** 12.
 
 **Commit message stem:** `feat(schwab-recon): comparator switches to execution-grain VWAP + Path B sentinel emit (T-1.6)`.
 
@@ -564,10 +611,11 @@ New subcommand `show-correction <correction_id>` reads from `reconciliation_corr
 1. `test_e2e_limit_buy_no_false_positive` (LIMIT BUY cassette; journal records exec price; NO emit).
 2. `test_e2e_limit_sell_no_false_positive` (LIMIT SELL; NO emit).
 3. `test_e2e_stop_fired_no_false_positive` (FIRED STOP; execution price ≠ trigger; journal records exec → NO emit).
-4. `test_e2e_market_buy_no_false_positive` (MARKET BUY; verify executionLegs surface for MKT).
+4. `test_e2e_market_buy_no_false_positive` (MARKET BUY; verify executionLegs surface for MKT; verifies candidate-pool guard admits MARKET fill with `price=None`).
 5. `test_e2e_legitimate_typo_emits_shape_c_tier_1` (synthetic typo: journal records WRONG price → Shape C emit + tier-1 classification + audit-key persistence).
+6. **`test_e2e_path_b_execution_unavailable_full_pipeline_through_cli_show_ambiguity` (per Codex R1 Major #5 + spec §5.2 + §10.5)** — uses a constructed (non-cassette) Schwab orders fixture where `orderActivityCollection` is absent OR empty (mapper produces `SchwabOrderResponse` with `executions=None`); exercises full pipeline `run_schwab_reconciliation` → `_emit` writes `unmatched_open_fill` with `execution_unavailable=true` sentinel + Shape Path-B `actual_value_json` → `classify_discrepancy` returns tier-2 `unsupported` with operator-actionable reason → `_handle_no_mutation_audit` does NOT raise on synthetic `field_name='fill_match'` (per CLAUDE.md `synthetic-fixture-vs-production-emitter shape drift` gotcha) → `swing journal discrepancy show-ambiguity <id>` CLI invocation renders the menu with `mark_unmatched` / `operator_truth` / `custom` choices visible + the explanatory reason text. Defense-in-depth against the C.D gate-fix #2 family. Test does NOT require a Schwab cassette (uses a hand-rolled `SchwabOrderResponse` fixture with `executions=None`).
 
-**Tests added:** 5.
+**Tests added:** 6.
 
 **Commit message stem:** `test(schwab-recon): end-to-end cassette-driven 4-order-types integration test (T-1.13)`.
 
@@ -579,7 +627,7 @@ New subcommand `show-correction <correction_id>` reads from `reconciliation_corr
 
 **Dispatch order:** AFTER Sub-bundle 1 ships.
 
-**Total tasks: 7** (T-2.0 … T-2.6). **Projected test delta: +20-40 fast tests.**
+**Total tasks: 7** (T-2.0 … T-2.6). **Projected test delta: +25-45 fast tests** (post Round-1/3 fixes; per §E).
 
 ---
 
@@ -596,7 +644,8 @@ New subcommand `show-correction <correction_id>` reads from `reconciliation_corr
 `SchwabStatusVM` frozen dataclass mirroring CLI `swing schwab status` output 1:1:
 - `session_date: str`
 - `environment: Literal['production', 'sandbox']`
-- `state: Literal['CONFIGURED', 'PROVISIONAL', 'NOT_CONFIGURED']`
+- `state: Literal['LIVE', 'PROVISIONAL', 'DEGRADED']` (matches shipped CLI `swing schwab status` triplet per §A.0.1 D3 — NOT spec §7.1's misnamed `CONFIGURED/...` triplet)
+- `state_reason: str | None` (mirrors `_compute_degraded_state`'s 2-tuple `(state, reason)` return per `swing/cli_schwab.py:823-825`; `None` when state == `'LIVE'`; explanatory text otherwise)
 - `tokens_db_path: str`
 - `refresh_token_expires_at: str | None`
 - `refresh_token_days_remaining: int | None`
@@ -608,9 +657,9 @@ New subcommand `show-correction <correction_id>` reads from `reconciliation_corr
 - `nav_back_to_config_url: str = "/config"`
 - **Base-layout fields (Phase 10 T-E.3 inheritance):** `stale_banner: str | None = None`, `price_source_degraded: bool = False`, `price_source_degraded_until: str | None = None`, `ohlcv_source_degraded: bool = False`, `unresolved_material_discrepancies_count: int = 0`.
 
-`__post_init__` validates env ∈ {production, sandbox}; state ∈ {CONFIGURED, PROVISIONAL, NOT_CONFIGURED}; severity ∈ {ok, warn, error}; `unresolved_material_discrepancies_count >= 0`; `recent_calls` is list of `SchwabCallSummary`.
+`__post_init__` validates env ∈ {production, sandbox}; **state ∈ {LIVE, PROVISIONAL, DEGRADED}** (per §A.0.1 D3); severity ∈ {ok, warn, error}; `unresolved_material_discrepancies_count >= 0`; `recent_calls` is list of `SchwabCallSummary`; `state_reason` is None iff state == 'LIVE' (else non-empty str).
 
-**Discriminating tests (10 cases):**
+**Discriminating tests (12 cases):**
 
 1. Valid construction; base-layout fields default-initialized.
 2. Invalid environment ('banana') rejected.
@@ -622,8 +671,10 @@ New subcommand `show-correction <correction_id>` reads from `reconciliation_corr
 8. `SchwabCallSummary` smoke construction valid.
 9. `SchwabCallSummary` unknown status rejected.
 10. Frozen — `vm.state = 'X'` raises `AttributeError`. `nav_back_to_config_url` defaults to "/config".
+11. **`state == 'LIVE'` with non-None `state_reason` rejected** (Codex R3 Minor #2 — `state_reason is None iff state == 'LIVE'` invariant per §B T-2.0; LIVE means all signals OK so reason is None; non-None reason is contradictory).
+12. **`state in {'PROVISIONAL', 'DEGRADED'}` with `state_reason=None` or empty rejected** (mirror of #11; non-LIVE states REQUIRE a non-empty reason per `cli_schwab.py:826-831` rendering pattern + operator-actionability).
 
-**Tests added:** 10.
+**Tests added:** 12.
 
 **Commit message stem:** `feat(schwab-vm): SchwabStatusVM + SchwabCallSummary view-model (T-2.0)`.
 
@@ -641,12 +692,22 @@ Route handler:
 
 ```python
 @router.get("/schwab/status", response_class=HTMLResponse)
-async def schwab_status_get(request: Request, environment: str | None = None) -> HTMLResponse:
+async def schwab_status_get(request: Request, environment: str | None = None) -> Response:
     cfg = apply_overrides(request.app.state.cfg)
     if environment is not None:
-        if environment not in ("production", "sandbox"):
-            return HTMLResponse(f"Invalid environment {environment!r}; must be 'production' or 'sandbox'", status_code=400)
-        env = environment
+        # Case-insensitive per CLI parity (Codex R1 Minor #3 + Click option case-insensitive).
+        env_normalized = environment.strip().lower()
+        if env_normalized not in ("production", "sandbox"):
+            # XSS-safe error response per Codex R1 Major #7. PlainTextResponse
+            # avoids html-context interpolation entirely. Operator-input value
+            # is echoed back via repr() so debugging is preserved but the
+            # response is text/plain, not text/html.
+            from starlette.responses import PlainTextResponse
+            return PlainTextResponse(
+                f"Invalid environment {environment!r}; must be 'production' or 'sandbox'",
+                status_code=400,
+            )
+        env = env_normalized
     else:
         env = (cfg.integrations.schwab.environment or "production").lower()
     db_path = cfg.paths.db_path
@@ -659,20 +720,23 @@ async def schwab_status_get(request: Request, environment: str | None = None) ->
 
 `build_schwab_status_vm` helper lives in `swing/web/view_models/schwab.py`; consults same data as CLI `render_status` (recent-calls via `swing/data/repos/schwab_api_calls.py`; tokens DB metadata + refresh-token TTL via shared helper). Implementer extracts shared helpers if needed for CLI/web parity.
 
-**Discriminating tests (10 cases):**
+**Discriminating tests (13 cases):**
 
 1. Route registered in app.routes (Phase 6 I3 inheritance check).
 2. GET renders template (status 200 + 'Schwab integration status' substring).
 3. Default environment from cfg (no `?environment=` param + cfg env=sandbox → page renders sandbox).
 4. `?environment=production` overrides cfg sandbox default.
 5. `?environment=sandbox` overrides cfg production default.
-6. `?environment=banana` → 400.
-7. `apply_overrides` invoked once per request (monkeypatch spy on `apply_overrides`).
+6. `?environment=banana` → 400 + **content-type `text/plain`** (XSS-safe per Codex R1 Major #7).
+7. `apply_overrides` invoked once per request (monkeypatch spy).
 8. Base-layout banner field populated (plant 1 material discrepancy; assert response renders banner count = 1; Phase 10 T-E.3 retrofit).
 9. POST returns 405 (V1 read-only).
 10. `HX-Request` header present has no special handling (smoke: GET with + without HX-Request both 200).
+11. **XSS regression: `?environment=<script>alert(1)</script>`** → 400 + `response.headers["content-type"].startswith("text/plain")` (PlainTextResponse content-type prevents browser interpretation of any echoed value; Codex R2 Major #1 — body MAY contain the literal `<script>` substring because the route echoes the invalid value via `repr()` for debugging, but text/plain content-type is the XSS-safe primitive). Defense-in-depth: implementer MAY ALSO strip the echoed value to a safe-list (e.g., truncate non-ASCII + escape angle-brackets); test asserts content-type only.
+12. **Case-insensitive env query-param: `?environment=PRODUCTION` and `?environment=Sandbox` both accepted** (Codex R1 Minor #3; matches CLI Click option case-insensitive behavior).
+13. **Sentinel-leak audit per Phase 11 Sub-bundle A T-A.10 D1 redaction discipline** (Codex R1 Major #6): plant non-token-shaped sentinels (e.g., `LEAK_TOKEN_BYTES_ACCESS`, `LEAK_TOKEN_BYTES_REFRESH`, `LEAK_TOKEN_BYTES_ID`) into the tokens DB (access_token / refresh_token / id_token fields) AND into `schwab_api_calls.error_message` rows; render `/schwab/status`; assert ZERO substring matches in response body. Mirrors `tests/integrations/test_schwab_token_redaction_audit.py` pattern. SchwabStatusVM + template MUST consume only DERIVED METADATA (issued timestamps, expiry deltas, redacted error excerpts), never raw token bytes.
 
-**Tests added:** 10.
+**Tests added:** 13.
 
 **Commit message stem:** `feat(web): GET /schwab/status route + apply_overrides discipline (T-2.1)`.
 
@@ -686,20 +750,24 @@ async def schwab_status_get(request: Request, environment: str | None = None) ->
 
 **Acceptance criteria (per spec §7.1 + §7.2 + §7.6):**
 
-Template extends `base.html.j2`. Renders all VM fields with color-coded state badge (CONFIGURED=green, PROVISIONAL=yellow, NOT_CONFIGURED=red), refresh-token countdown with severity styling, recent-calls table, environment switcher (`?environment=production` / `?environment=sandbox` links), re-auth link to `/schwab/setup` when state != CONFIGURED OR severity != 'ok'. Inherits Phase 10 unresolved-material-discrepancies banner via base.html.j2 (VM populates field; no template handling).
+Template extends `base.html.j2`. Renders all VM fields with color-coded state badge (**LIVE=green, PROVISIONAL=yellow, DEGRADED=red** per §A.0.1 D3), `state_reason` text rendered next to badge when non-None (matches CLI `render_status` pattern at `cli_schwab.py:826-831`), refresh-token countdown with severity styling, recent-calls table, environment switcher (`?environment=production` / `?environment=sandbox` links), re-auth link to `/schwab/setup` when state != LIVE OR severity != 'ok'. Inherits Phase 10 unresolved-material-discrepancies banner via base.html.j2.
 
-**Discriminating tests (8 cases):**
+**Template MUST use Jinja2 autoescape** for all VM-derived text (Starlette + Jinja2 default; verify the template's `{% autoescape true %}` block OR ambient autoescape config) — defense-in-depth for any future field that surfaces operator-controlled or broker-error text.
+
+**Discriminating tests (10 cases):**
 
 1. Template extends base layout (response contains nav from base.html.j2).
-2. State CONFIGURED → green indicator (class="state-ok" or state="ok" attr).
-3. State PROVISIONAL → warn indicator.
-4. State NOT_CONFIGURED → error indicator.
+2. State LIVE → green indicator (class="state-ok" or state="ok" attr).
+3. State PROVISIONAL → warn indicator + `state_reason` text rendered.
+4. State DEGRADED → error indicator + `state_reason` text rendered.
 5. Refresh-token TTL countdown ("Refresh token" + "days" substring).
 6. Recent-calls table present (`<table>` + endpoint column).
 7. Environment switcher links (`?environment=production` + `?environment=sandbox`).
-8. Re-auth link `/schwab/setup` present when PROVISIONAL.
+8. Re-auth link `/schwab/setup` present when PROVISIONAL OR DEGRADED.
+9. **Autoescape regression: plant `<script>alert(1)</script>` into `state_reason`** + render → assert literal `<script>` does NOT appear; assert HTML-entity-escaped `&lt;script&gt;` DOES appear.
+10. **Sentinel-leak audit (mirror T-2.1 test 13)**: plant token-bytes sentinels in tokens DB / `schwab_api_calls.error_message`; render via this template; assert zero matches in response body.
 
-**Tests added:** 8.
+**Tests added:** 10.
 
 **Commit message stem:** `feat(web): schwab_status.html.j2 template + 3-state renderer (T-2.2)`.
 
@@ -799,7 +867,7 @@ In `POST /schwab/setup` success path, change `HX-Redirect: /config?schwab_setup=
 ### §C.2 Cassette session → Sub-bundle 1
 
 - HARD PREREQ per spec §6.5 + brief §0.6 OQ-E LOCK.
-- Cassettes ship at `tests/integrations/cassettes/schwab/test_e2e_<order_type>.yaml` covering 4 minimum + stretch.
+- Cassettes ship at `tests/integrations/cassettes/schwab/test_e2e_<order_type>.yaml` covering 4 REQUIRED order types (LIMIT BUY + LIMIT SELL + STOP FIRED + MARKET BUY); STOP_LIMIT FIRED is OPTIONAL stretch (skip-without-block).
 - T-1.13 e2e integration test consumes the cassettes.
 
 ### §C.3 Sub-bundle 1 housekeeping → CLAUDE.md gotcha review
@@ -841,7 +909,7 @@ Per Phase 9 Sub-bundle A return report lesson #7 + Phase 12 Sub-sub-bundle C.A T
 | 11 | §4.2 tri-valued executions | T-1.2 (8 tests; None/[]/list) |
 | 12-13 | §4.3-§4.4 mapper defensive parsing + backward compat | T-1.3 (14 tests) + T-1.2 8-positional test |
 | 14 | §5.1 `_compute_execution_price` | T-1.4 (10 tests) |
-| 15 | §5.2 comparator switch + Shape C audit-key contract | T-1.6 (10 tests) + T-1.8 audit-key persistence test |
+| 15 | §5.2 comparator switch + Shape C audit-key contract | T-1.6 (12 tests post-R1 D4 widening) + T-1.8 audit-key persistence test |
 | 16 | §5.3 quantity-grain switch + mapper coherence-check | T-1.5 + T-1.7 + T-1.3 |
 | 17 | §6.1 OQ-A Path B | T-1.6 sentinel emit + T-1.9 recognition |
 | 18 | §6.2 OQ-B VWAP V1 | T-1.4 VWAP; T-1.13 multi-leg cassette |
@@ -850,7 +918,7 @@ Per Phase 9 Sub-bundle A return report lesson #7 + Phase 12 Sub-sub-bundle C.A T
 | 21 | §6.5 OQ-E cassette-required | §F runbook + §G acceptance + brief §0.6 LOCK |
 | 22 | §6.6 OQ-F V2 deferral | NO task; banked §Z |
 | 23 | §6.7 OQ-G leave-as-is + generic CLI | T-1.12 implements |
-| 24 | §7.1-§7.6 T-B.7 web counterpart | T-2.0..T-2.6 (38 tests) |
+| 24 | §7.1-§7.6 T-B.7 web counterpart | T-2.0..T-2.6 (43 tests post-R2 fixes) |
 | 25 | §8.1-§8.3 housekeeping | T-1.10 + T-1.11 + T-1.12 (folded into Sub-bundle 1) |
 
 ### §D.2 Brief §0.3 operator decisions (BINDING)
@@ -870,10 +938,10 @@ Per Phase 9 Sub-bundle A return report lesson #7 + Phase 12 Sub-sub-bundle C.A T
 
 ## §E Test projection
 
-- **Sub-bundle 1:** T-1.0 (0) + T-1.1 (12) + T-1.2 (8) + T-1.3 (14) + T-1.4 (10) + T-1.5 (5) + T-1.6 (10) + T-1.7 (4) + T-1.8 (12) + T-1.9 (5) + T-1.10 (0) + T-1.11 (0) + T-1.12 (8) + T-1.13 (5) = **93 per-task projection**. Lower bound +40 (test collapse during impl); upper bound +100 (Phase 9/10/12 overshoot precedent). **Plan locks +50-100 fast tests.**
-- **Sub-bundle 2:** T-2.0 (10) + T-2.1 (10) + T-2.2 (8) + T-2.3 (3) + T-2.4 (3) + T-2.5 (3) + T-2.6 (1) = **38 per-task projection**. **Plan locks +20-40 fast tests.**
-- **Cumulative across Sub-bundle 1 + 2: +70-140 fast tests** (above brief §2.4 projection of +45-90; matches overshoot precedent at midline).
-- **Final main HEAD post-arc-merge: ~4433-4503 fast tests** (was ~4363).
+- **Sub-bundle 1:** T-1.0 (7) + T-1.1 (12) + T-1.2 (8) + T-1.3 (14) + T-1.4 (10) + T-1.5 (5) + T-1.6 (12) + T-1.7 (4) + T-1.8 (12) + T-1.9 (5) + T-1.10 (0) + T-1.11 (0) + T-1.12 (8) + T-1.13 (6) = **103 per-task projection** (Round-1 fixes added +2 to T-1.6 + +1 to T-1.13; Round-5 fix added +7 to T-1.0 for recording-script tests including auth/config bootstrap smoke). Lower bound +55; upper bound +115. **Plan locks +60-115 fast tests.**
+- **Sub-bundle 2:** T-2.0 (12) + T-2.1 (13) + T-2.2 (10) + T-2.3 (3) + T-2.4 (3) + T-2.5 (3) + T-2.6 (1) = **45 per-task projection** (Round-1 fixes +3 to T-2.1; +2 to T-2.2; Round-3 fix +2 to T-2.0 for `state_reason` invariant). **Plan locks +25-45 fast tests.**
+- **Cumulative across Sub-bundle 1 + 2: +85-160 fast tests** (above brief §2.4 projection of +45-90; matches overshoot precedent at midline; Round-1+5 fixes added ~+15-20 net to both bounds).
+- **Final main HEAD post-arc-merge: ~4448-4523 fast tests** (was ~4363).
 
 ---
 
@@ -883,45 +951,84 @@ Per Phase 9 Sub-bundle A return report lesson #7 + Phase 12 Sub-sub-bundle C.A T
 
 Per spec §6.5 OQ-E LOCK + brief §0.6:
 
-1. **LIMIT BUY** — operator's predominant; CVGI fill_id=9 family.
-2. **LIMIT SELL** — operator's predominant exit; LION fill_id=15 family.
-3. **STOP FIRED** — FIRED stop with `executionLegs[]` populated; tests OQ-D Path A.
-4. **MARKET BUY** — rare; verifies `executionLegs[]` field surfaces for MKT.
+1. **LIMIT BUY** — operator's predominant; CVGI fill_id=9 family. **REQUIRED.**
+2. **LIMIT SELL** — operator's predominant exit; LION fill_id=15 family. **REQUIRED.**
+3. **STOP FIRED** — FIRED stop with `executionLegs[]` populated; tests OQ-D Path A. **REQUIRED.**
+4. **MARKET BUY** — rare; verifies `executionLegs[]` field surfaces for MKT. **REQUIRED.**
 
-**Stretch:** STOP_LIMIT FIRED — verifies dual-tier `price` vs `stopPrice` vs `executionLegs[].price` shape.
+**Stretch (OPTIONAL; SKIP without blocking ship):** STOP_LIMIT FIRED — verifies dual-tier `price` vs `stopPrice` vs `executionLegs[].price` shape. If operator has no recent STOP_LIMIT fill within the 30-day window, this cassette is skipped + the corresponding test guarded with `pytest.mark.skipif(not Path(<cassette>).exists())`. Spec §6.5 lists this explicitly as stretch. T-1.13 test count is 6 (4 REQUIRED + 1 synthetic Shape C + 1 hand-rolled Path B); stretch STOP_LIMIT adds a 7th test conditional on cassette existence.
 
 ### §F.2 Operator-paired recording session workflow
 
-Pre-conditions: valid Schwab refresh-token (re-auth via `/schwab/setup` or CLI if expired); historical filled orders covering 4 types within last 30 days; `pytest-recording` dev dep installed.
+Pre-conditions: valid Schwab refresh-token (re-auth via `/schwab/setup` or CLI if expired); historical filled orders covering 4 REQUIRED types within last 30 days; `pytest-recording` (vcrpy) dev dep installed.
+
+**Recording uses a STANDALONE script — NOT pytest** (per Codex R3 Major #1 — at cassette-record time, the T-1.13 test file has not yet been authored AND the V2 mapper code does not yet exist, so a pytest-based recording loop is not orderable. The script invokes `schwabdev.Client` methods DIRECTLY under a manually-constructed vcrpy cassette context using the same sanitization filter dict the test suite consumes from `tests/conftest.py:vcr_config`. The script lives at `scripts/record_schwab_cassettes.py` and ships in T-1.0 alongside the sanitization filter):
+
+```python
+# scripts/record_schwab_cassettes.py — recording-time only; NOT a test
+"""Record Schwab cassettes for Sub-bundle 1 T-1.13 consumption.
+
+Recording mechanism is independent of the T-1.13 test file (which has not
+yet been authored at T-1.0-commit time) and of the V2 mapper code (which
+does not yet exist). Run this script with valid production tokens to
+populate tests/integrations/cassettes/schwab/test_e2e_<order_type>.yaml.
+
+Operator workflow (per §F.2):
+    python scripts/record_schwab_cassettes.py --environment production
+"""
+import vcr
+from tests.conftest import vcr_config
+
+_VCR_KWARGS = vcr_config.__wrapped__() if hasattr(vcr_config, "__wrapped__") else {
+    # If conftest fixture indirection breaks, inline the dict here.
+}
+
+# Per-order-type recording invocations:
+for order_type, cassette_name in [
+    ("limit_buy", "test_e2e_limit_buy_no_false_positive"),
+    ("limit_sell", "test_e2e_limit_sell_no_false_positive"),
+    ("stop_fired", "test_e2e_stop_fired_no_false_positive"),
+    ("market_buy", "test_e2e_market_buy_no_false_positive"),
+]:
+    cassette_path = f"tests/integrations/cassettes/schwab/{cassette_name}.yaml"
+    with vcr.use_cassette(cassette_path, record_mode="new_episodes", **_VCR_KWARGS):
+        # Invoke schwabdev.Client.account_orders(...) here with the appropriate
+        # date-range + filter to capture the operator's actual order of <order_type>.
+        # Implementation detail per T-1.0 script body.
+        ...
+```
 
 Steps:
 
-1. Verify production tokens DB: `swing schwab status --environment production` → CONFIGURED.
-2. Record cassettes in `new_episodes` mode:
+1. Verify production tokens DB: `swing schwab status --environment production` → **`LIVE`** (per §A.0.1 D3 — shipped CLI triplet is `LIVE/PROVISIONAL/DEGRADED`, NOT `CONFIGURED/...`).
+2. Run the standalone recording script:
    ```powershell
-   $env:VCR_RECORD = "new_episodes"
-   pytest tests/integration/test_phase12_post_schwab_mapper_widening_e2e.py -v --record-mode=new_episodes
+   python scripts/record_schwab_cassettes.py --environment production
    ```
    Cassettes land at `tests/integrations/cassettes/schwab/test_e2e_<order_type>.yaml`.
 3. Operator inspects each cassette via `git diff` for sensitive-field leakage:
    - `accountNumber` → `<account>` (or sanitization placeholder).
-   - `accountHash` → sanitized.
+   - `accountHash` → sanitized in BOTH JSON keys AND URL path segments (per §F.3 `before_record_request` + `before_record_response`).
    - `client_id` / `client_secret` / `access_token` / `refresh_token` / `code` → absent or `<masked>`.
 4. Commit sanitized cassettes:
    ```bash
    git add tests/integrations/cassettes/schwab/
    git commit -m "test(schwab-cassette): record 4 order types for Sub-bundle 1"
    ```
-5. Verify cassette replay:
+5. After T-1.13 test file exists (executing-plans phase reaches T-1.13), verify cassette replay:
    ```powershell
    $env:VCR_RECORD = "none"
    pytest tests/integration/test_phase12_post_schwab_mapper_widening_e2e.py -v
    ```
-   Expected: all 5 PASS via replay.
+   Expected: all 6 REQUIRED tests PASS via replay (4 cassette-driven order types + 1 synthetic Shape C + 1 hand-rolled Path B); +1 STOP_LIMIT FIRED if stretch cassette recorded (else `skipif` skips).
+
+**T-1.0 ships THREE artifacts atomically (per Codex R3 Major #1 fix):** (a) `docs/runbooks/schwab-cassette-recording.md` runbook; (b) `tests/conftest.py` `vcr_config` extension with both `before_record_request` + `before_record_response`; (c) `scripts/record_schwab_cassettes.py` standalone recording script. Operator can then run the recording session without requiring T-1.1..T-1.13 to exist.
 
 ### §F.3 Sanitization filter spec (extends `tests/conftest.py:88-110` `vcr_config`)
 
 ```python
+import re  # Codex R3 Minor #1 — required at module-top for _ACCOUNT_PATH_RE / _HEX_PATH_RE / _BASE64_PATH_RE
+
 @pytest.fixture(scope="session")
 def vcr_config():
     return {
@@ -937,25 +1044,60 @@ def vcr_config():
             "client_id", "client_secret", "refresh_token",
             "access_token", "code",
         ],
+        # Codex R2 Critical #1 — URI/path sanitization. Schwab account-scoped
+        # endpoints embed accountHash in the URL PATH (e.g.,
+        # /trader/v1/accounts/{accountHash}/orders). filter_query_parameters
+        # does NOT scrub path segments. The before_record_request callable
+        # rewrites the URI path before the cassette is written.
+        "before_record_request": _sanitize_schwab_request,
         "before_record_response": _sanitize_schwab_response_body,
     }
+
+
+_ACCOUNT_PATH_RE = re.compile(r"(/accounts/)[^/?#]+")
+_HEX_PATH_RE = re.compile(r"\b[a-fA-F0-9]{32,}\b")
+_BASE64_PATH_RE = re.compile(r"\b[A-Za-z0-9+/=]{24,}={0,2}\b")
+
+
+def _sanitize_schwab_request(request):
+    """Codex R2 Critical #1 — scrub accountHash + token-shape substrings
+    from request URI path BEFORE the cassette captures it. Mirrors
+    before_record_response logic but operates on request.uri."""
+    uri = request.uri or ""
+    if uri:
+        uri = _ACCOUNT_PATH_RE.sub(r"\1<account>", uri)
+        uri = _HEX_PATH_RE.sub("<hex-token>", uri)
+        uri = _BASE64_PATH_RE.sub("<base64-token>", uri)
+        request.uri = uri
+    return request
 
 
 def _sanitize_schwab_response_body(response):
     """Scrub accountNumber/accountHash + 32+ hex / 24+ base64 token-shape
     substrings from response body bytes. Per Phase 11 D redaction pattern."""
-    import re
     body_bytes = response["body"].get("string", b"")
     if not body_bytes:
         return response
     body_text = body_bytes.decode("utf-8", errors="replace")
     body_text = re.sub(r'("accountNumber"\s*:\s*)"[^"]+?"', r'\1"<account>"', body_text)
     body_text = re.sub(r'("accountHash"\s*:\s*)"[^"]+?"', r'\1"<hash>"', body_text)
-    body_text = re.sub(r'\b[a-f0-9]{32,}\b', '<hex-token>', body_text, flags=re.IGNORECASE)
-    body_text = re.sub(r'\b[A-Za-z0-9+/=]{24,}={0,2}\b', '<base64-token>', body_text)
+    # Defense-in-depth: also scrub bearer-token / access_token / refresh_token
+    # / code / client_id JSON-style key substrings whose VALUES the
+    # filter_post_data_parameters only handles when those keys appear in
+    # form-encoded POST bodies, not JSON response bodies.
+    for json_key in ("access_token", "refresh_token", "id_token", "code",
+                     "client_id", "client_secret", "bearerToken"):
+        body_text = re.sub(
+            rf'("{re.escape(json_key)}"\s*:\s*)"[^"]+?"',
+            rf'\1"<{json_key}>"', body_text,
+        )
+    body_text = _HEX_PATH_RE.sub("<hex-token>", body_text)
+    body_text = _BASE64_PATH_RE.sub("<base64-token>", body_text)
     response["body"]["string"] = body_text.encode("utf-8")
     return response
 ```
+
+**`before_record_request` URI/path sanitization is BINDING** — without it, the recorded cassette's `request.uri` would carry the operator's raw `accountHash` in path segments (Schwab Trader API endpoint pattern is `/trader/v1/accounts/{accountHash}/orders` per `swing/integrations/schwab/trader.py` empirical observation). The `filter_query_parameters` config only handles query-string params, NOT path segments — Codex R2 Critical #1 fix.
 
 ### §F.4 Staleness recovery runbook
 
@@ -974,7 +1116,13 @@ When Schwab API drifts:
 1. **Mapper byte-for-byte verification:** per cassette, `SchwabOrderResponse` mapping output asserted byte-for-byte (snapshot test). `executions` non-None for all 4 minimum types.
 2. **`SchwabExecutionLeg` dataclass shape validates:** mapper does NOT raise during cassette replay; all legs construct via `__post_init__`.
 3. **Comparator + classifier paths exercised:** each test fires `run_schwab_reconciliation` against tmp DB seeded with journal fill matching cassette's order; asserts (a) no false-positive emit when journal matches execution within tolerance; (b) Shape C tier-1 emit when journal records WRONG price; (c) Path B sentinel emit when cassette explicitly lacks `orderActivityCollection`.
-4. **Sanitization invariant:** automated post-test scan asserts cassettes contain NO substring matching `accountNumber=\d{8,}` OR `accountHash=[a-f0-9]{32,}` OR `client_secret=`. Test fails build if sanitization breaks.
+4. **Sanitization invariant (Codex R2 Minor #3 widening):** automated post-test scan asserts cassettes contain NO substring matching any of:
+   - JSON-key value forms: `"accountNumber"\s*:\s*"\d{8,}"`, `"accountHash"\s*:\s*"[a-fA-F0-9]{32,}"`, `"access_token"\s*:\s*"[^<]`, `"refresh_token"\s*:\s*"[^<]`, `"id_token"\s*:\s*"[^<]`, `"code"\s*:\s*"[^<]`, `"client_id"\s*:\s*"[^<]`, `"client_secret"\s*:\s*"[^<]`, `"bearerToken"\s*:\s*"[^<]`.
+   - Form-encoded value forms: `client_secret=[^&\s<]`, `access_token=[^&\s<]`, `refresh_token=[^&\s<]`, `code=[^&\s<]`, `client_id=[^&\s<]`.
+   - URI path segments: `/accounts/[^<][^/?#]+` (catches unsanitized accountHash in request URI; Codex R2 Critical #1).
+   - Bare token-shape: `\b[a-fA-F0-9]{32,}\b` AND `\b[A-Za-z0-9+/=]{40,}={0,2}\b` (defense-in-depth bearer-token + base64-encoded access_token shapes; tightened from 24+ to 40+ base64-chars to reduce false-positive on legitimate sanitized placeholders like `<base64-token>`).
+   - **Operator sentinel-value scan**: if the cassette session uses operator-specific test sentinels (e.g., the operator's actual account-name substring), the scan list is extended per the cassette session's recorded operator sentinels (operator informs runbook prior to recording).
+   Test fails build if any pattern matches; expected matches in shipped cassettes are ONLY the sanitization placeholders `<account>` / `<hash>` / `<access_token>` / `<refresh_token>` / `<id_token>` / `<code>` / `<client_id>` / `<client_secret>` / `<bearerToken>` / `<hex-token>` / `<base64-token>`.
 5. **Storage path:** all cassettes under `tests/integrations/cassettes/schwab/`.
 6. **VCR config inheritance:** session-scoped `vcr_config` from `tests/conftest.py`; no per-test override needed unless test-specific.
 
@@ -1005,7 +1153,7 @@ When Schwab API drifts:
 ### §H.2 Sub-bundle 2 gate (4-5 surfaces; web-driven via Chrome MCP)
 
 - **S1 — Inline test suite:** `pytest -m "not slow" -q -n auto` GREEN at ~4453-4533 fast (worktree-side; +20-40 from Sub-bundle 1 baseline). Ruff 18 unchanged.
-- **S2 — Chrome MCP `/schwab/status`:** renders production state + 3-state badge + refresh-token TTL countdown + audit summary table + environment switcher links + ZERO console errors.
+- **S2 — Chrome MCP `/schwab/status`:** renders production state + 3-state badge using shipped CLI triplet **`LIVE/PROVISIONAL/DEGRADED`** (per §A.0.1 D3; NOT `CONFIGURED/...`) + `state_reason` text when non-LIVE + refresh-token TTL countdown + audit summary table + environment switcher links + ZERO console errors. Operator verifies XSS-safe handling by inspecting `?environment=<script>alert(1)</script>` returns 400 + content-type text/plain. Operator verifies sentinel-leak audit via spot-check that no token-bytes substring appears in DevTools HTML view.
 - **S3 — Chrome MCP `/config`:** "External integrations" shows BOTH nav-links; click `/schwab/status` → navigates correctly + renders per S2.
 - **S4 — `/schwab/setup` POST + HX-Redirect to `/schwab/status`:** operator pastes fresh callback URL; browser HX-redirects to `/schwab/status` (NOT `/config?schwab_setup=ok`); tokens DB updated; page renders refreshed TTL. (Conditional on operator wanting to re-auth at gate time; T-A.2 self-healing covers stale tokens.)
 - **S5 — Ruff `swing/` reports 18 E501 unchanged.**
@@ -1064,4 +1212,4 @@ When Schwab API drifts:
 
 ---
 
-*End of plan. Sub-bundle 1 first (architectural; 14 tasks; +50-100 fast tests; cassette session HARD PREREQ); Sub-bundle 2 after (web counterpart; 7 tasks; +20-40 fast tests); total +70-140 fast tests; schema unchanged at v19; 4-5 Codex rounds expected.*
+*End of plan. Sub-bundle 1 first (architectural; 14 tasks; +60-115 fast tests; cassette session HARD PREREQ executed after T-1.0 ships); Sub-bundle 2 after (web counterpart; 7 tasks; +25-45 fast tests); cumulative +85-160 fast tests; schema unchanged at v19; 6 Codex rounds (one operator-override past default MAX_ROUNDS=5 per Phase 10 precedent).*
