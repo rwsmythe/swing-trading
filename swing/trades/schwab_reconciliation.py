@@ -92,6 +92,35 @@ _SCHWAB_WITHDRAW_TYPES = frozenset({
 _PRICE_TOLERANCE_DEFAULT: float = 0.01
 
 
+def _compute_execution_price(so: Any) -> float | None:
+    """Sub-bundle 1 T-1.4 — compute execution-grain price from a Schwab order.
+
+    Per spec §5.1 + plan §A.1.4. Pure function (no DB, no logging).
+
+    - ``so.executions is None`` OR empty → returns ``None`` (caller's
+      responsibility to fall through to Path B sentinel emit per spec §6.1
+      OQ-A LOCK).
+    - Single leg → returns leg price.
+    - Multi leg → returns VWAP across legs:
+      ``sum(leg.price * leg.quantity) / sum(leg.quantity)``.
+
+    Defensive ``total_qty <= 0`` guard is belt-and-suspenders — the
+    ``SchwabExecutionLeg.__post_init__`` validator rejects ``quantity <= 0``
+    at construction, so this branch is unreachable in practice. Retained
+    for static-analysis clarity + future-proofing if the dataclass
+    validator widens.
+    """
+    executions = getattr(so, "executions", None)
+    if executions is None or not executions:
+        return None
+    if len(executions) == 1:
+        return executions[0].price
+    total_qty = sum(leg.quantity for leg in executions)
+    if total_qty <= 0:
+        return None
+    return sum(leg.price * leg.quantity for leg in executions) / total_qty
+
+
 class CallerHeldTransactionError(RuntimeError):
     """Raised when a caller invokes `run_schwab_reconciliation` while holding
     an open transaction.
