@@ -58,11 +58,18 @@ Correction chains at `correction_id ∈ {3, 4}` (CVGI) + `{5, 6}` (LION) + `{1, 
 
 **Operator lock:** no retroactive rewriting of `reconciliation_corrections`.
 
-### §1.5 Multi-leg VWAP for V1; per-leg `multi_partial_vs_consolidated` auto-redirect is V2
+### §1.5 Multi-leg VWAP for V1 Pass-1; per-leg `multi_partial_vs_consolidated` auto-redirect for Pass-2 is V2
 
-When `len(executionLegs) >= 2` AND `sum(executionLegs[].quantity) == journal.quantity` (within tolerance), the V1 comparator uses VWAP as the single execution-grain price and feeds it to the existing comparator + classifier (tier-1 on price-match within tolerance; `entry_price_mismatch` discrepancy when outside tolerance with VWAP as the `actual_value_json.price`). Tier-2 auto-redirect to a per-leg `split_into_partials` classifier choice is DEFERRED to a follow-up V2 dispatch (OQ-F).
+**Codex R1 M#4 clarification — two distinct cases:**
 
-**Operator lock:** V1 = VWAP comparator + tier-1 on single-leg matched-tuple cases; multi-leg auto-redirect deferred.
+- **Pass-1 (`entry_price_mismatch` / `close_price_mismatch`) — single-leg AND multi-leg VWAP both eligible for tier-1.** When `len(executionLegs) >= 1` AND `sum(executionLegs[].quantity) == journal.quantity` (within tolerance) AND a single Schwab order matched the journal fill, the V1 comparator uses VWAP (degenerate-to-single-leg when N=1) as the execution-grain price; comparator emits Shape C `entry_price_mismatch` / `close_price_mismatch` when VWAP diverges from journal `f.price` outside `price_tolerance`. Classifier emits tier-1 with `correction_target={'price': VWAP}` for both single-leg AND multi-leg cases. The walkthrough at §10.4 (50@$10.00 + 50@$10.20 VWAP=$10.10) is BINDING for multi-leg Pass-1 tier-1.
+- **Pass-2 (`unmatched_open_fill` / `unmatched_close_fill`) — only single-leg single-matched-Schwab-order eligible for tier-1 LIFT.** When no Schwab order matched the journal fill by `(ticker, quantity)` tuple, the classifier's existing `_classify_unmatched_fill_shared` may have multiple candidate Schwab records to consider. V2 LIFTS Pass-2-tier-1-FORBIDDEN ONLY for the simplest case: exactly ONE matching Schwab order with `len(executions) == 1` AND quantity-match exact AND date-match exact. ANY other Pass-2 case (multi-match-within-window; multi-leg-fill-vs-journal-single-entry; partial-match) stays tier-2. The auto-redirect from tier-2 `multi_partial_vs_consolidated` → tier-1 `split_into_partials` for the multi-Schwab-order-summing-to-journal case is DEFERRED to OQ-F V2 follow-up dispatch.
+
+**Operator lock:**
+
+- V1 Pass-1 multi-leg VWAP tier-1 ALLOWED.
+- V1 Pass-2 LIFT scope is single-leg single-matched-order ONLY.
+- Pass-2 multi-leg auto-redirect deferred V2.
 
 ### §1.6 Magnitude is NOT the axis (Sub-bundle C inheritance)
 
@@ -128,9 +135,9 @@ Schwab API JSON                             V2 mapper                           
 |---|---|
 | `swing/integrations/schwab/models.py` | Add `SchwabExecutionLeg` frozen dataclass + `executions: list[SchwabExecutionLeg] \| None = None` field on `SchwabOrderResponse`. |
 | `swing/integrations/schwab/mappers.py` | Extend `map_orders_to_fill_candidates` to extract `orderActivityCollection[].executionLegs[]` per order; assemble `SchwabExecutionLeg` instances; assign to `SchwabOrderResponse.executions`. |
-| `swing/trades/schwab_reconciliation.py` | Add `_compute_execution_price(so) -> float \| None` helper (single-leg → leg price; multi-leg → VWAP; absent → None). Replace `so.price` at line 693 with `_compute_execution_price(so) or so.price` for Path A fall-back OR `_compute_execution_price(so)` with tier-2 `unsupported` emit for Path B (see §6.1 OQ-A lock). Same change for the entry_price + close_price comparator paths (line 658 quantity match is unaffected). |
-| `swing/trades/reconciliation_classifier.py` | Inside `_classify_unmatched_fill_shared` (and the helper consumed by `_classify_entry_price_mismatch`), branch on presence of source payload's `execution_price` field: when present AND quantity-matches journal fill, LIFT Pass-2-tier-1-FORBIDDEN and emit tier-1 with `correction_target = {'price': <execution_price>}`. When absent OR multi-Schwab-record ambiguous, preserve V1 tier-2 emit. |
-| `swing/web/routes/schwab.py` | Add `GET /schwab/status` route (read-only). |
+| `swing/trades/schwab_reconciliation.py` | Add `_compute_execution_price(so) -> float \| None` helper (single-leg → leg price; multi-leg → VWAP; absent → None) AND a `_resolve_match_quantity(so) -> float` helper that prefers execution-grain `sum(legs.quantity)` over order-grain `so.quantity` when executions present (closes Codex R1 M#2 fill-vs-order quantity-grain divergence). Replace `so.price` at line 693 with `_compute_execution_price(so)`; the OQ-A Path B lock at §6.1 routes the `None` case to `unmatched_*_fill` with `execution_unavailable=true` sentinel (not Path A fall-back). Same change for the entry_price + close_price comparator paths. Quantity-match step at line 658 switches to `_resolve_match_quantity(so)` (Codex R1 M#2 fix). |
+| `swing/trades/reconciliation_classifier.py` | Widen `_classify_entry_price_mismatch` Shape A predicate to recognize a NEW **Shape C — execution-grain audit-bearing**: `source_keys == {"price"} \| _EXECUTION_AUDIT_KEYS` where `_EXECUTION_AUDIT_KEYS = {"execution_legs", "schwab_order_id", "schwab_limit_price"}`; classifier emits tier-1 with `correction_target={'price': <price>}` (audit keys ignored for correction-value purposes; preserved in audit row via `_pivot_classify_and_dispatch_for_run` envelope). Add equivalent Shape C branch to `_classify_close_price_mismatch` (currently tier-2-always per spec §4.3.6 — V2 widens for execution-grain payloads with the same Shape C predicate; preserves the legacy V1 OHLCV-snapshot tier-2 path as a fall-through for pre-V2 close_price_mismatch emits with no execution-grain audit keys). Inside `_classify_unmatched_fill_shared` (consumed by `_classify_unmatched_open_fill` + `_classify_unmatched_close_fill`), recognize an `execution_unavailable=true` sentinel in `actual_value_json` (Path B); emit tier-2 `unsupported` with explanatory reason. **Do NOT** lift Pass-2-tier-1-FORBIDDEN in V1 for unmatched-fill cases — Pass-1 price-mismatch with Shape C is the only LIFT scope (multi-leg auto-redirect at tier-2 → tier-1 deferred to OQ-F V2). |
+| `swing/web/routes/schwab.py` | Add `GET /schwab/status` route (read-only). Default environment SOURCES from `cfg.integrations.schwab.environment` after `apply_overrides(cfg)` (mirrors `swing schwab status` CLI semantics); `?environment=` query-param OVERRIDES the cfg default (Codex R1 M#6 fix — preserves "CLI semantics 1:1" lock at §7.4). |
 | `swing/web/view_models/schwab.py` | Add `SchwabStatusVM` mirroring CLI's per-environment 3-state output. |
 | `swing/web/templates/schwab_status.html.j2` | New template extending `base.html.j2`; inherits Phase 10 T-E.3 banner discipline. |
 | `swing/web/templates/config.html.j2` (or partial) | Add `/schwab/status` nav-link under "External integrations" section (mirrors B-`7b75d4a` precedent for `/schwab/setup`). |
@@ -300,7 +307,7 @@ def _compute_execution_price(
 - Pure function (no DB, no logging) — testable in isolation.
 - Defensive `total_qty <= 0` guard catches the (theoretical) edge case where every leg has `quantity=0` (dataclass validator rejects `quantity <= 0` at construction, so this is belt-and-suspenders).
 - Tie-breaking is not needed (VWAP is order-independent over commutative arithmetic).
-- Floating-point precision: standard double-precision. CVGI 100-share single-leg case = $5.2244 exactly. LION 100-share single-leg case = $12.6999 exactly. A 2-leg case at 50@$10.00 + 50@$10.20 = $10.10 exactly. A 3-leg case at 33@$10.00 + 33@$10.10 + 34@$10.20 ≈ $10.10058… — within `price_tolerance=0.01` of journal's likely $10.10 entry. Catastrophic float precision is not a concern at the magnitudes the project operates in.
+- Floating-point precision: standard IEEE-754 double-precision (binary fractions — values like $5.2244 are NOT representable exactly, but the represented float is well within `price_tolerance=0.01`). Codex R1 m#1 fix: prior wording said "exactly" which is technically wrong for binary floats; corrected to "sufficiently precise for tolerance." CVGI 100-share single-leg case: stored leg.price ≈ 5.2244 + 1e-16 noise → comparison to 5.23 ≈ delta 0.0056 ± 1e-16 → well under `0.01`. LION analogous. A 2-leg case at 50@$10.00 + 50@$10.20 → VWAP ≈ $10.10 ± 1e-15. A 3-leg case at 33@$10.00 + 33@$10.10 + 34@$10.20 → VWAP ≈ $10.10058… — within `price_tolerance=0.01` of journal's likely $10.10 entry. Catastrophic float precision is not a concern at the magnitudes the project operates in.
 
 ### §5.2 Comparator path switch (price comparator)
 
@@ -382,16 +389,58 @@ if abs(execution_price - float(f.price)) > price_tolerance:
 
 **Notes:**
 
-- `actual_value_json` now carries `execution_legs` array for audit/forensics + `schwab_order_id` for chase + `schwab_limit_price` for V1-vs-V2 contrast.
+- **Shape C contract (BINDING; Codex R1 C#1 fix).** The Pass-1 `entry_price_mismatch` / `close_price_mismatch` emit at the inner branch produces `actual_value_json` with EXACTLY the key-set `{"price", "execution_legs", "schwab_order_id", "schwab_limit_price"}` — recognized at the classifier as **Shape C — execution-grain audit-bearing** (see `_EXECUTION_AUDIT_KEYS` constant per §3.2 module touch list). The Shape C predicate at the classifier sits ALONGSIDE the existing Shape A (`{"price"}`-only) + Shape B (full match-tuple) predicates per Sub-bundle C.B spec §4.3.1 — it does NOT replace them; Sub-bundle C.B tier-1 emission contracts stay intact for any caller still emitting Shape A. Audit keys (`execution_legs` + `schwab_order_id` + `schwab_limit_price`) are observational ONLY at the classifier; the `correction_target` field carries `{'price': <execution_price>}` (Shape A-equivalent) so the downstream `apply_tier1_correction` service writes a single-field price-only correction (Sub-bundle C.C contract preserved). Implementer dispatch MUST add a discriminating test: plant a Shape C payload + assert classifier returns `tier=1`, `correction_target={'price': X}`, AND the audit keys are present in the `ClassificationResult.correction_reason` substring (proof they were observed but not actioned).
+- **Production-emitter-shape-through-classifier-audit-helper coverage** (Codex R1 M#5 fix). The Path B `unmatched_*_fill` emit with `execution_unavailable=true` sentinel MUST be exercised via discriminating test through the FULL production pipeline: `_emit` → `classify_discrepancy` → `_handle_no_mutation_audit` → `swing journal discrepancy show-ambiguity` CLI rendering. This pre-empts the C.D gate-fix #2 family (synthetic-fixture-vs-production-emitter shape drift). At least 3 tests: (a) classifier returns `tier=2 ambiguity_kind='unsupported'`; (b) audit-helper handles the `field_name='fill_match'` + `actual_value_json.execution_unavailable=true` combination without column-read raise; (c) CLI menu surfaces the operator-actionable choices (mark_unmatched, operator_truth, custom).
 - `delta_text` precision widened from `:+.2f` to `:+.4f` per OQ-C inheritance (execution-grain operates at 4dp; cent-precision delta_text would round CVGI's $0.0056 to $0.01 + LION's $0.0001 to $0.00, losing the operator's debugging signal).
 - The `execution_unavailable` Path B branch emits the same `unmatched_*_fill` discrepancy_type as the quantity-mismatch case, BUT carries a `"execution_unavailable": True` sentinel in `actual_value_json` that the classifier consumes to emit tier-2 `unsupported` rather than tier-2 multi-record-match. This avoids inventing a new schema-locked discrepancy_type — the existing enum stays unchanged.
 - An ALTERNATIVE Path B emit shape (proposed at OQ-A's alternative path, considered + rejected): emit `entry_price_mismatch` with `actual_value_json.execution_unavailable=true`. Rejected because the classifier would interpret that as a Shape B match-tuple miss and may emit tier-2 `unsupported` with a confusing reason string. Routing through `unmatched_*_fill` is more semantically honest ("we found the order but cannot match prices").
 
-### §5.3 Quantity-match comparator unchanged
+### §5.3 Quantity-match comparator switches to execution-grain when available (Codex R1 M#2 fix)
 
-The `if abs(so.quantity - float(f.quantity)) > price_tolerance` at line 658 is the matching-step (find a Schwab order for this journal fill). The matching step continues to use ORDER-grain quantity (`so.quantity`) because the order envelope's `quantity` IS the operator-facing aggregate (sum of all leg quantities). For multi-leg orders, `so.quantity` equals `sum(executionLegs[].quantity)` by Schwab API contract — verified at OQ-E cassette time.
+The `if abs(so.quantity - float(f.quantity)) > price_tolerance` at line 658 is the matching-step (find a Schwab order for this journal fill). **V2 changes the matching-step to consume execution-grain quantity when `so.executions` is populated.**
 
-**Adversarial-watch:** if cassette evidence at writing-plans phase shows `so.quantity != sum(legs.quantity)` for some Schwab variant, a comparator-level coherence check would be added at the mapper layer (warn + set `executions=None` per defensive discipline). Discriminating test: plant a fixture with `so.quantity=100`, `legs=[{qty:60}, {qty:50}]`; assert mapper logs warning + sets `executions=None`.
+Rationale (Codex R1 M#2 + M#3): Schwab's order envelope distinguishes `quantity` (original order size), `filledQuantity` (actual filled quantity), and `remainingQuantity` (unfilled). For partial-then-canceled orders (`status='CANCELED'` with `filledQuantity > 0`) AND multi-execution-leg orders, the AUTHORITATIVE quantity for journal-fill matching is the SUM OF EXECUTION-LEG QUANTITIES — NOT `order.quantity`. Continuing to use `so.quantity` for matching would silently mis-fail-match against journal partial-fill entries.
+
+**`_resolve_match_quantity` helper (NEW):**
+
+```
+def _resolve_match_quantity(so: SchwabOrderResponse) -> float:
+    """Return the quantity for journal-fill matching: execution-grain
+    sum when executions populated; order-grain fall-back otherwise.
+
+    Codex R1 M#2 fix — preserves match correctness under partial-fill
+    scenarios where order.quantity > sum(executions.quantity).
+    """
+    if so.executions:
+        return sum(leg.quantity for leg in so.executions)
+    return so.quantity
+```
+
+Comparator at line 658 changes:
+
+```
+if abs(_resolve_match_quantity(so) - float(f.quantity)) > price_tolerance:
+    continue  # not a match
+```
+
+**Distinguishing malformed leg totals from legitimate partial fills (Codex R1 M#3 fix):**
+
+A LEGITIMATE partial fill is recognizable via Schwab API contract:
+
+- `order.status` ∈ {`'FILLED'` (fully filled, possibly multi-leg), `'CANCELED'` (partially-then-canceled if `filledQuantity > 0`), `'REPLACED'` (similar)}.
+- `sum(executionLegs[].quantity) == order.filledQuantity` (legs sum to broker-reported filled quantity, which may be < `order.quantity` for partial cases).
+
+A MALFORMED leg total is recognizable by:
+
+- `sum(executionLegs[].quantity)` does NOT equal `order.filledQuantity` (drift between activity-collection and order envelope).
+- OR `order.filledQuantity == 0` despite `len(executionLegs) > 0` (invalid Schwab response).
+
+**Mapper coherence-check rule:**
+
+- The mapper extracts BOTH `order.quantity` AND `order.filledQuantity` (NEW field `filled_quantity: float | None = None` on `SchwabOrderResponse`); writing-plans phase decides whether to surface `filledQuantity` as a separate field OR derive it implicitly from `sum(legs.quantity)`.
+- If executions are present AND `abs(sum(legs.quantity) - order.filledQuantity) < 1e-9`, mapper preserves `executions=[...]` (legitimate, even if partial).
+- If executions are present AND `abs(sum(legs.quantity) - order.filledQuantity) >= 1e-9`, mapper logs WARNING + sets `executions=None` (malformed — defensive collapse). Comparator falls through Path B per §6.1.
+- Discriminating tests: (a) legitimate partial-fill fixture (`order.quantity=200, filledQuantity=100, legs=[{qty:100}]`) — mapper preserves executions; comparator matches journal `quantity=100`; (b) malformed-leg-total fixture (`order.quantity=100, filledQuantity=100, legs=[{qty:60}, {qty:50}]`) — mapper logs WARNING + sets `executions=None`; comparator falls through Path B.
 
 ---
 
@@ -496,9 +545,14 @@ Stretch: STOP_LIMIT FIRED (rare; verify dual-tier price-vs-trigger field shape).
 - Save sanitized cassette under `tests/integrations/cassettes/schwab/orders-fired-stop.yaml` (etc.) — sanitize accountNumber + accountHash + Authorization header via pytest-recording filter list.
 - Writing-plans phase produces the cassette runbook + sanitization filter spec.
 
-**Cassette absence does not block writing-plans, but DOES block executing-plans Sub-bundle 1 ship.** Path: if cassettes cannot be recorded during writing-plans, the executing-plans implementer dispatch CANNOT ship Sub-bundle 1 until cassettes are recorded — OR the writing-plans phase pivots to "mocked tests only V1; cassettes V2-banked" and accepts the risk.
+**Codex R1 M#7 LOCK — decision authority + minimum shippable fallback:**
 
-**Disposition: DEFERRABLE to writing-plans phase.** Writing-plans triggers the operator-paired cassette-recording session; this brainstorm does NOT solve the cassette problem, only enumerates the order types that need coverage + flags the operator-paired session as prereq.
+- **Decision authority:** the **operator** (during writing-plans Codex review handoff to operator gate) decides between (a) cassette-required and (b) mocked-only fallback. Writing-plans phase frames the choice with risk-table; orchestrator routes the explicit operator decision into the executing-plans dispatch brief §0 LOCK.
+- **Default (in absence of operator preference):** cassette-REQUIRED for Sub-bundle 1 ship. Rationale: avoids C.D gate-fix #2 family (synthetic-fixture-vs-production-emitter shape drift) which already cost orchestrator-inline fixes 3 times in Phase 12 arc.
+- **Fallback (when operator selects mocked-only):** Sub-bundle 1 ships with mocked tests + explicit RISK ACCEPTANCE banked at `docs/phase3e-todo.md` ("Schwab cassette recording session — RISK ACCEPTED at <date>; observed-shape-drift mitigation is operator-witnessed gate review of first production reconciliation_run #N after Sub-bundle 1 ships"). Operator-witnessed gate at Sub-bundle 1 ship-time becomes the de-facto shape-drift detector. Subsequent V2 cassette dispatch removes the risk.
+- **Hard gate (regardless of cassette state):** the operator-witnessed gate at Sub-bundle 1 ship MUST exercise reconciliation against the operator's actual production Schwab data — not a dev sandbox — so any field-shape drift would surface in real reconciliation_run output BEFORE the bundle is marked closed. The C.D gate's S2/S3a/S3b/S4a/S4b/S5/S6a/S6b/S7 pattern (Phase 12 Sub-sub-bundle C.D ship 2026-05-17) provides the precedent for the gate surfaces this dispatch will need.
+
+**Disposition: DEFERRABLE to writing-plans phase (operator-decision-routed; not orchestrator-decided).** This brainstorm enumerates the order types + locks the decision rule; writing-plans phase produces the runbook and routes the operator's pick.
 
 ### §6.6 OQ-F — Tier-1 auto-redirect from tier-2 `multi_partial_vs_consolidated`
 
@@ -539,9 +593,9 @@ Stretch: STOP_LIMIT FIRED (rare; verify dual-tier price-vs-trigger field shape).
 
 **Route** (NEW in `swing/web/routes/schwab.py`):
 
-- `GET /schwab/status` — read-only; query-param `?environment=production` (default) or `?environment=sandbox`.
+- `GET /schwab/status` — read-only; query-param `?environment=production` or `?environment=sandbox` OVERRIDES the effective cfg default. **Codex R1 M#6 LOCK**: when no query-param is supplied, the route sources `effective_environment = apply_overrides(cfg).integrations.schwab.environment` — mirrors the `swing schwab status` CLI default (see `swing/cli_schwab.py:1421-1441`) so an operator configured for sandbox does NOT see production state by accident. A no-arg URL `/schwab/status` therefore renders whichever environment the operator's cfg/env-var cascade resolves to.
 - HTMX-friendly: HX-Request header processing inherited from app-level middleware; no form POST in V1.
-- Inherits `apply_overrides(cfg)` discipline at the route handler (Sub-bundle B forward-binding lesson #6) — without it, cfg-tier credentials don't resolve through this endpoint.
+- Inherits `apply_overrides(cfg)` discipline at the route handler (Sub-bundle B forward-binding lesson #6) — without it, cfg-tier credentials don't resolve through this endpoint AND the default environment selection breaks.
 
 **View-model** (NEW class `SchwabStatusVM` in `swing/web/view_models/schwab.py`):
 
@@ -580,7 +634,7 @@ Once T-B.7 lands, the `POST /schwab/setup` success path retargets from `HX-Redir
 - Updating ONE line in `swing/web/routes/schwab.py` POST handler.
 - Updating ONE test in `tests/web/test_routes/test_schwab_setup.py` (or wherever the redirect assertion lives).
 - HX-Redirect target route registered check (Phase 6 I3 gotcha) — covered by route registration in T-B.7.
-- Existing `/config?schwab_setup=ok` query-param consumer pattern can be DELETED if no other consumer exists; OR retained as a passive landing (no UI effect) if the route is still hit by stale browser tabs. **Recommendation: delete the consumer**, since `/schwab/status` shows the same state-banner info more clearly.
+- Existing `/config?schwab_setup=ok` query-param consumer pattern: **RETAINED as a passive no-op landing for ONE release window** (Codex R1 m#2 fix — safer than aggressive deletion when stale browser tabs/bookmarks may still send the param). The `/config` route already tolerates unknown query-params; the consumer that surfaces "✓ Schwab setup OK" message can stay or be silently dropped — writing-plans phase decides. Hard removal is banked as a follow-up housekeeping V2 task in `docs/phase3e-todo.md` after one release cycle has demonstrated zero stale-tab traffic.
 
 ### §7.4 OQ-D applicability — does web status need FIRED-stop awareness?
 
@@ -673,6 +727,21 @@ would emit DIFFERENT discrepancies (the V2 cases emit NONE for CVGI + LION).
 **Forward-looking:** any new reconciliation_corrections rows emitted from V2-mapper-widening-ship
 forward (Sub-bundle 1 ship date; filled at executing-plans phase) will carry EXECUTION-grain
 prices in `schwab_said_value_json`.
+
+**Operator-facing surfacing (Codex R1 M#8 fix — prevents future operator confusion when inspecting historical chains):**
+
+To avoid surprise when an operator runs `swing journal discrepancy show-correction <id>` against a V1-emitted historical row OR reads the audit log, Sub-bundle 1 ALSO ships a small CLI-help-text addendum on the `show-correction` subcommand (or equivalent operator-facing surface; writing-plans phase selects the exact insertion point):
+
+```
+Note: correction_ids 1-6 (emitted 2026-05-16 + 2026-05-17 prior to V2 mapper widening) carry
+ORDER-grain prices in schwab_said_value_json (V1 mapper read order.price; LIMIT for buy/sell,
+trigger for stops). The chain heads (correction_ids 4, 6) carry CORRECT operator-truth values
+via operator_truth_value_json. From correction_id 7 onward, schwab_said_value_json reflects
+EXECUTION-grain prices per the V2 mapper widening at
+docs/superpowers/specs/2026-05-17-schwab-mapper-execution-grain-widening-design.md.
+```
+
+The exact correction_id boundary (7) is filled at executing-plans phase against production state at ship-time. NO row mutations involved — purely a documentation surface; preserves §1.4 audit-trail integrity lock.
 ```
 
 **Rationale for `docs/phase3e-todo.md` location:** the project uses this file for cross-phase backlog + retention notes. The historical-leave-as-is entry is a forensic-honesty note that future operators may want to surface when investigating the chain heads.
@@ -814,7 +883,7 @@ This section walks the 2 historical correction chains through the V2 mapper + co
 3. `abs(5.2244 - 5.23) = 0.0056`.
 4. `0.0056 < price_tolerance (0.01)` — **NO discrepancy emit**.
 
-**Classifier expected output:** N/A (no discrepancy emitted at all; nothing to classify).
+**Classifier expected output:** N/A (no discrepancy emitted at all; nothing to classify; Shape C predicate at classifier never invoked because comparator's tolerance gate short-circuits before emit).
 
 **Net result:** CVGI's fill silently passes reconciliation. NO tier-1 wrong-correct ($5.30) emitted. NO operator workflow burden. NO new `reconciliation_corrections` rows.
 
@@ -861,7 +930,7 @@ To prove V2 still catches legitimate discrepancies, walk a synthetic example:
 3. `abs(10.25 - 10.00) = 0.25`.
 4. `0.25 > 0.01` — emit `entry_price_mismatch` with `actual_value_json={"price": 10.25, "execution_legs": [{leg_id: 0, price: 10.25, quantity: 100, time: ...}], "schwab_order_id": "...", "schwab_limit_price": <limit>}`.
 
-**Classifier:** receives Shape A payload (`actual_value_json.price=10.25`); emits tier-1 with `correction_target={'price': 10.25}` (LEGITIMATE auto-correct).
+**Classifier:** receives **Shape C** payload (Codex R1 C#1 fix — the key-set is `{"price", "execution_legs", "schwab_order_id", "schwab_limit_price"}` = `{"price"} | _EXECUTION_AUDIT_KEYS`; classifier's Shape C predicate at `_classify_entry_price_mismatch` matches; emits tier-1 with `correction_target={'price': 10.25}` — audit keys observational only); LEGITIMATE auto-correct.
 
 **Net result:** legitimate operator typo ($10.00 typed, actually filled at $10.25) is correctly auto-corrected by V2. Tier-1 emission is now SAFE because it's grounded in execution-grain data.
 
@@ -883,9 +952,9 @@ Variant: journal `fills.fill_id=101`: price=$10.00 (operator typed first-leg pri
 2. `execution_price = $10.10` (VWAP).
 3. `abs(10.10 - 10.00) = 0.10` > `0.01` — emit `entry_price_mismatch` with `actual_value_json.price=10.10` + `execution_legs=[{leg_id:0, price:10.00, qty:50, ...}, {leg_id:1, price:10.20, qty:50, ...}]`.
 
-**Classifier:** Shape A payload (`price=10.10`); emits tier-1 with `correction_target={'price': 10.10}` (LEGITIMATE auto-correct).
+**Classifier:** **Shape C** payload (key-set `{"price", "execution_legs", "schwab_order_id", "schwab_limit_price"}`); emits tier-1 with `correction_target={'price': 10.10}` (LEGITIMATE auto-correct).
 
-**Net result:** multi-leg VWAP comparison correctly catches operator's "ignored split fill" typo.
+**Net result:** multi-leg VWAP comparison correctly catches operator's "ignored split fill" typo. Note: Pass-1 multi-leg tier-1 IS allowed under §1.5 lock — the V1 deferral applies only to Pass-2 (`unmatched_*_fill`) multi-Schwab-order summing-to-journal-qty cases.
 
 ### §10.5 Hypothetical execution-unavailable walkthrough (OQ-A Path B)
 
@@ -924,8 +993,10 @@ Variant: journal `fills.fill_id=101`: price=$10.00 (operator typed first-leg pri
 **Net result:** FIRED stop correctly compared on EXECUTION price (not trigger). Slippage absorbed correctly because operator's journal-side $4.95 matches Schwab's execution $4.95.
 
 **Variant:** journal `fills.fill_id=104`: price=$5.00 (operator records the TRIGGER, not actual execution).
-**Comparator:** `abs(4.95 - 5.00) = 0.05` > `0.01` — emit `close_price_mismatch` with `actual_value_json.price=4.95` (the EXECUTION).
-**Classifier:** Shape A; tier-1; auto-correct writes fills.price=$4.95. CORRECT outcome — operator-typed-from-trigger gets corrected to actual execution price.
+**Comparator:** `abs(4.95 - 5.00) = 0.05` > `0.01` — emit `close_price_mismatch` with `actual_value_json={"price": 4.95, "execution_legs": [{"leg_id":0, "price":4.95, "quantity":100, "time": "..."}], "schwab_order_id": "<id>", "schwab_limit_price": 5.00}` (the EXECUTION).
+**Classifier:** **Shape C** payload routed through `_classify_close_price_mismatch` widened Shape C branch (Codex R1 M#1 fix per §3.2 module touch list — the existing V1 tier-2-always close-price classifier gets a Shape C branch alongside the legacy OHLCV-snapshot tier-2 path); tier-1 emit with `correction_target={'price': 4.95}`; auto-correct service writes `fills.price=4.95`. CORRECT outcome — operator-typed-from-trigger gets corrected to actual execution price.
+
+**Cross-OQ note:** §6.4 OQ-D Path A lock + §3.2 module touch list together require WIDENING `_classify_close_price_mismatch` to honor Shape C payloads emitted by the V2 comparator. The legacy tier-2-always V1 path (no source_payload consulted; see `swing/trades/reconciliation_classifier.py:1107-1127`) survives as a fall-through for any future close_price_mismatch emitter that does NOT carry the Shape C audit keys (e.g., a hypothetical OHLCV-snapshot-driven close-price reconciliation). Discriminating tests: (a) Shape C payload → tier-1 with execution-grain `correction_target`; (b) Shape A-only payload (legacy emitter) → tier-2 unknown_schwab_subtype (V1 behavior preserved).
 
 ---
 
@@ -956,8 +1027,14 @@ For each round, pass these as targeted prompts to `copowers:adversarial-critic`:
 16. **Pass-2-tier-1-FORBIDDEN gotcha amendment text** (§8.2) completeness — V1 historical context preserved + V2-RESOLVED top section + spec reference.
 17. **Convergent-chain expectation.** Codex round count 4-6; convergent shape — fix-introduced regression vs adversarial-thrash distinction documented in return report.
 18. **§1.6 fill-auto-population-at-entry scope clarity.** Spec acknowledges scope; identifies clean layering interfaces; flags V2-decision-foreclosure if any. Does NOT design fill auto-population.
-19. **Audit trail JSON shape evolution** (§5.2). The `actual_value_json` now carries `execution_legs` array + `schwab_order_id` + `schwab_limit_price`. Existing classifier consumers handle this gracefully (Sub-bundle C.B Shape A predicate only requires `price` key; additional keys are tolerated). New shape change does not regress existing Shape A tier-1 emission.
+19. **Audit trail JSON shape evolution** (§5.2). The `actual_value_json` now carries a NEW **Shape C** key-set `{"price", "execution_legs", "schwab_order_id", "schwab_limit_price"}` (Codex R1 C#1 LOCK). Classifier MUST gain a Shape C predicate alongside existing Shape A (`{"price"}` set-equality) + Shape B (full match-tuple). Existing Shape A consumers are UNAFFECTED (no caller emits the new keys without the V2 mapper widening branch). Discriminating test required: Shape A payload → tier-1 (preserved); Shape C payload → tier-1 (new branch); mixed/partial Shape C (e.g., `price` + `execution_legs` only) → tier-2 `unsupported` (predicate strictness preserved).
 20. **Sandbox short-circuit preservation.** V2 mapper widening runs as pure function regardless of environment. Auto-correct service path under sandbox short-circuits at inner per CLAUDE.md "outer-tx transactional discipline" gotcha. Spec §3.3 confirms this — no spec change here, but Codex audits.
+21. **Close_price_mismatch classifier widening (Codex R1 M#1 LOCK).** The existing `_classify_close_price_mismatch` at `swing/trades/reconciliation_classifier.py:1107-1127` is tier-2-always V1. Sub-bundle 1 ADDS a Shape C branch (mirrors the Pass-1 `_classify_entry_price_mismatch` widening). Legacy V1 tier-2 path survives for non-Shape-C payloads (preserves backward compat with any future OHLCV-snapshot-driven close-price emitter). Discriminating tests: Shape C → tier-1; Shape A or other → tier-2 unknown_schwab_subtype.
+22. **Quantity-grain switch at comparator matching step (Codex R1 M#2 + M#3 LOCK).** §5.3 widens the line-658 quantity matcher to prefer execution-grain `sum(legs.quantity)` when executions populated. Mapper coherence-check distinguishes legitimate partial fills (execution sum == filledQuantity) from malformed leg totals (execution sum != filledQuantity) — only the malformed case collapses to `executions=None`. Both `quantity` AND `filledQuantity` extracted from Schwab order envelope per spec lines 478-480; new `filled_quantity` field on `SchwabOrderResponse` OR derived implicitly (writing-plans selects).
+23. **Production-emitter-shape-through-classifier-audit-helper coverage (Codex R1 M#5 LOCK).** §5.2 Path B emit AND §10.5 walkthrough require END-TO-END test through `_emit` → `classify_discrepancy` → `_handle_no_mutation_audit` → CLI `show-ambiguity`. Pre-empts C.D gate-fix #2 family.
+24. **`/schwab/status` default-environment from cfg (Codex R1 M#6 LOCK).** §7.1 sources from `apply_overrides(cfg).integrations.schwab.environment`; query-param overrides. Mirrors CLI semantics.
+25. **Cassette gating decision authority (Codex R1 M#7 LOCK).** §6.5 operator-decided at writing-plans phase; default cassette-required for Sub-bundle 1 ship; mocked-only fallback with operator RISK ACCEPTANCE banked at `docs/phase3e-todo.md` + operator-witnessed gate becomes de-facto shape-drift detector.
+26. **Operator-facing historical-correction-chain note (Codex R1 M#8 LOCK).** §8.3 adds CLI-help-text addendum on `show-correction` subcommand to surface "correction_ids 1-6 carry V1 order-grain; 7+ carry V2 execution-grain" without mutating rows. Preserves §1.4 audit-trail integrity.
 
 ---
 
@@ -974,12 +1051,13 @@ For each round, pass these as targeted prompts to `copowers:adversarial-critic`:
 
 ## §13 Spec self-review notes (inline)
 
-- **No "TBD" / "TODO" / placeholders** — all sections complete.
-- **No internal contradictions** — §1.5 multi-leg VWAP lock consistent with §5.1 + §6.2 + §10.4. §1.4 audit-trail preserved consistent with §6.7 + §8.3. §1.2 stop_mismatch unchanged consistent with §3.3 + §6.4 (FIRED-stop is fill-grain not trigger-grain).
+- **No "TBD" / "TODO" / placeholders** — all sections complete. (Two forward-references remain explicitly bracketed for executing-plans phase to fill: §8.2 `<date-of-Sub-bundle-1-ship>` for the gotcha amendment; §8.3 correction_id boundary "7" subject to production state at ship time.)
+- **No internal contradictions** — §1.5 multi-leg VWAP lock consistent with §5.1 + §6.2 + §10.4 (Codex R1 M#4 amendment clarifies Pass-1 vs Pass-2 case split). §1.4 audit-trail preserved consistent with §6.7 + §8.3. §1.2 stop_mismatch unchanged consistent with §3.3 + §6.4 (FIRED-stop is fill-grain not trigger-grain — §10.6 walkthrough binds the close_price_mismatch Shape C path). §3.2 module touch list classifier branching keyed to Shape C predicate (Codex R1 C#2 amendment — no `execution_price` field-name mismatch).
 - **Scope:** focused single-spec, decomposed at §9 into 3 sub-bundles (one architectural; one web; one housekeeping). Ready for writing-plans.
-- **Ambiguity:** §5.2 Path B emit shape (`unmatched_*_fill` discrepancy_type + `execution_unavailable` sentinel) is the only place where the shape choice is materially ambiguous — explicitly enumerated as a design choice with rejected-alternative rationale.
-- **Line count:** ~700 lines (within brief target 600-1000).
+- **Ambiguity:** §5.2 Path B emit shape (`unmatched_*_fill` discrepancy_type + `execution_unavailable` sentinel) is the only place where the shape choice is materially ambiguous — explicitly enumerated as a design choice with rejected-alternative rationale + Codex R1 M#5 production-emitter-shape coverage requirement.
+- **Line count:** ~1010 lines post-Codex-R1 fixes (within brief target 600-1000 by a thin margin; growth driven by 2 Critical + 6 Major + 2 Minor R1 fix-text inserts at §3.2 / §5.2 / §5.3 / §6.5 / §7.1 / §8.3 / §10.3 / §10.4 / §10.6 / §11 / §13).
 - **Empirical anchoring:** CVGI + LION walkthroughs grounded in actual production correction chains (correction_ids 3+4 + 5+6) — verifiable in operator's `~/swing-data/swing.db` `reconciliation_corrections` table.
+- **Codex R1 resolutions in-tree:** all 2 Critical (Shape C predicate + classifier-field-name consistency) + 6 Major (close_price classifier widening; quantity-grain switch; malformed-leg distinction; multi-leg Pass-1-vs-Pass-2 clarity; production-shape coverage; environment default; cassette gating; historical surfacing) + 2 Minor (float wording; query-param consumer retention) RESOLVED with code-content fixes. ZERO ACCEPT-WITH-RATIONALE.
 
 ---
 
