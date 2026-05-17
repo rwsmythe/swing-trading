@@ -477,10 +477,73 @@ Phase 12.5 #1 introduces a HYBRID shape: `correction_action='auto_applied'` (aut
 - Update any pre-existing test or comment that asserts "auto_applied implies correction_choice IS NULL" → narrow the assertion to "auto_applied with correction_choice IS NULL implies a tier-1 entry/close_price_mismatch correction" + add the hybrid case as a separate assertion family.
 - Document the invariant in `reconciliation_auto_correct.py` module-level docstring + at `_TIER2_HANDLERS` registry comment.
 
+**§7.3.1.a Guard placement (Codex R4 M1 LOCK — shared helper called by BOTH outer + inner):**
+
+The override-combo invariant guard MUST live in a shared helper called at the TOP of `_apply_tier2_resolution_inner` (before any state mutation) so the pivot-loop's direct call to the inner is gated. The outer `apply_tier2_resolution` already calls the inner inside its `with conn:` envelope, so it inherits the same guard via composition. Implementation:
+
+```python
+class InvalidOverrideComboError(ValueError):
+    """Auto-redirect override kwargs are internally inconsistent.
+
+    Raised when override kwarg combinations imply the hybrid auto-tier-1
+    row shape but the resolved_by override is not 'auto_tier1_multi_leg'.
+    This is a service-layer / developer-bug signal — NOT a data
+    classification fall-back. The pivot loop SHOULD NOT catch this; let
+    it propagate so the run fails fast with an explicit attribution.
+    """
+
+
+def _validate_override_combo(
+    *,
+    applied_by_override: str | None,
+    correction_action_override: str | None,
+    resolved_by_override: str | None,
+) -> None:
+    auto_like = (
+        applied_by_override == "auto"
+        or correction_action_override == "auto_applied"
+    )
+    if auto_like and resolved_by_override != "auto_tier1_multi_leg":
+        raise InvalidOverrideComboError(
+            f"hybrid auto-tier-1 row shape requires "
+            f"resolved_by_override='auto_tier1_multi_leg'; got "
+            f"applied_by_override={applied_by_override!r}, "
+            f"correction_action_override={correction_action_override!r}, "
+            f"resolved_by_override={resolved_by_override!r}"
+        )
+    # Symmetry: resolved_by_override='auto_tier1_multi_leg' implies the
+    # other two MUST be set to the auto-redirect values.
+    if (
+        resolved_by_override == "auto_tier1_multi_leg"
+        and (applied_by_override != "auto" or correction_action_override != "auto_applied")
+    ):
+        raise InvalidOverrideComboError(
+            f"resolved_by_override='auto_tier1_multi_leg' requires "
+            f"applied_by_override='auto' AND "
+            f"correction_action_override='auto_applied'; got "
+            f"applied_by_override={applied_by_override!r}, "
+            f"correction_action_override={correction_action_override!r}"
+        )
+
+
+def _apply_tier2_resolution_inner(conn, *, ...):
+    # Codex R4 M1 LOCK — guard fires inside the inner (shared by all
+    # callers; outer + pivot-loop direct).
+    _validate_override_combo(
+        applied_by_override=applied_by_override,
+        correction_action_override=correction_action_override,
+        resolved_by_override=resolved_by_override,
+    )
+    # ... continue with SELECT-first idempotency + sandbox short-circuit
+    # + handler dispatch ...
+```
+
 **Discriminating regression test pattern (T-1.4):**
 - Test A: invoke `apply_tier2_resolution(conn, discrepancy_id=X, choice_code='split_into_partials', applied_by_override='auto', correction_action_override='auto_applied', resolved_by_override='auto_tier1_multi_leg', ...)` against a `pending_ambiguity_resolution` discrepancy → assert N+1 correction rows ALL carry the hybrid shape + parent discrepancy.resolved_by='auto_tier1_multi_leg'.
-- Test B: invoke same with `applied_by_override='operator'` (default) → assert N+1 rows carry the legacy operator shape; resolved_by='operator'. No hybrid.
-- Test C: invoke same with `applied_by_override='auto'` BUT `resolved_by_override='operator'` (mismatched intent) → service-layer raises `ValueError("hybrid row shape requires resolved_by_override='auto_tier1_multi_leg'")`. (Defensive guard at the outer service function entry.)
+- Test B: invoke same with ALL three overrides OMITTED (legacy default; per signature defaults of `None` per Codex R4 minor 1 fix) → assert N+1 rows carry the legacy operator shape; resolved_by='operator'. No hybrid.
+- Test C: invoke same with `applied_by_override='auto'` BUT `resolved_by_override='operator'` (mismatched intent) → service-layer raises `InvalidOverrideComboError` (subclass of `ValueError`). The pivot loop MUST NOT catch this specific exception; the run fails-fast.
+- Test D: invoke with `resolved_by_override='auto_tier1_multi_leg'` BUT `applied_by_override` omitted (None) → service-layer raises `InvalidOverrideComboError` (symmetric guard).
+- Test E (pivot-loop test): plant a synthetic recipe with mismatched override values → assert the pivot loop's `except ValueError` clause re-raises `InvalidOverrideComboError` (does NOT downgrade to manual tier-2 stamp; the run fails-fast).
 
 ### §7.4 Flow-pivot loop branching
 
@@ -546,8 +609,17 @@ def _pivot_classify_and_dispatch_for_run(conn, run_id, environment, ...):
                     _stamp_pending_ambiguity_inner(conn, ...)
                     counters["tier2_pending_count"] += 1
             
+            except InvalidOverrideComboError:
+                # Codex R4 M2 LOCK — developer-bug signal; DO NOT downgrade
+                # to manual tier-2 stamp. Re-raise so the run fails-fast and
+                # the integration merge cannot proceed without the bug being
+                # surfaced + fixed in writing-plans / executing-plans.
+                raise
             except (ValidatorRejectedError, ValueError) as e:
-                # Fall back to plain tier-2 stamp on validator failure (per §7.5).
+                # Data-rejection / validator-rejection fall-back per §7.5.
+                # ValueError here is the GENERIC catch — distinct from
+                # InvalidOverrideComboError (subclass of ValueError) which
+                # was caught above by exception specificity ordering.
                 _stamp_pending_ambiguity_inner(conn, ...)
                 counters["tier2_pending_count"] += 1
                 logger.warning(
@@ -790,7 +862,7 @@ Internal split would impose cross-bundle pin discipline (per Sub-bundle A → E 
 - **S1:** Inline pytest (`pytest -m "not slow" -q`) + ruff (E501 baseline 18) + slow E2E test. PASS = all tests + ruff unchanged.
 - **S2:** Synthetic-fixture predicate matrix walk-through via `python -c` — plant 5-8 distinct fixtures (per §10) + assert classifier returns expected `auto_redirect_recipe` shape.
 - **S3:** Production fetch — `python -m swing.cli schwab fetch --orders` against operator's production tokens. Either (a) production data contains a multi-leg case → auto-redirect fires + banner appears OR (b) no multi-leg case in current window → assert backward-compat negative sense (NO false-positive tier-1 auto-corrections on non-multi-leg cases). Sub-bundle 1.5 30-day production sample suggests (b) is the likely outcome at gate time.
-- **S4:** Banner UI — `swing web --port 8081` + curl `/dashboard` HTML → grep for `class="reconciliation-auto-redirect-banner"`. PASS = present when count > 0, absent when count == 0 (operator-driven flip via tier-3 override).
+- **S4:** Banner UI — `swing web --port 8081` + curl `/dashboard` HTML → grep for `class="reconciliation-auto-redirect-banner"`. PASS = present when count > 0; absent when count == 0. **Banner-clears trigger (Codex R4 minor 2 LOCK)**: V1 helper queries `COUNT(DISTINCT discrepancy_id)` for `resolved_by='auto_tier1_multi_leg'` filtered by `reconciliation_run_id == latest_completed_run_id`. The banner clears EXCLUSIVELY when the NEXT reconciliation_run completes (a new run becomes the latest; auto-redirects from the prior run no longer counted in the window). **Tier-3 override does NOT clear the banner mid-window** — `apply_tier3_override` writes a new correction row + supersedes the prior chain head but does NOT rewrite the parent `discrepancy.resolved_by`. The auto-redirect IS audit-recorded; the banner reflects "the system applied N auto-corrections this run" regardless of subsequent operator override. This is by-design + intentional (preserves vigilance signal). Discriminating test plants a multi-leg auto-correction → curls dashboard → grep banner present → invokes tier-3 override on the chain head → curls again → grep banner STILL present + count unchanged. The next reconciliation_run completion flips the helper's `latest_run_id` → banner clears.
 - **S5:** CLI filter — `swing journal discrepancy list --resolved-by auto_tier1_multi_leg` returns the auto-redirected rows.
 
 ### §9.4 Codex round projection
