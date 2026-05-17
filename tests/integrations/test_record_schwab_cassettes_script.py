@@ -314,11 +314,12 @@ def test_auth_config_bootstrap_invokes_apply_overrides_and_construct_client(
     )
 
     # Bootstrap path only — skip the actual vcr cassette recording loop.
-    result = mod._bootstrap_authenticated_client(
+    result_client, result_cfg = mod._bootstrap_authenticated_client(
         environment="sandbox",
     )
-    # Returned client is the fake.
-    assert result is fake_client
+    # Returned client is the fake; returned cfg is the post-overrides cfg.
+    assert result_client is fake_client
+    assert result_cfg is fake_cfg_post
 
     # (a) apply_overrides invoked with the loaded cfg.
     apply_overrides_spy.assert_called_once_with(fake_cfg_pre)

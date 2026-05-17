@@ -255,11 +255,15 @@ def _construct_client_thin(
 
 def _bootstrap_authenticated_client(
     *, environment: str, config_path: Path | None = None,
-) -> Any:
+) -> tuple[Any, Any]:
     """Bootstrap path — load cfg → apply overrides → resolve creds → construct.
 
     Test 7 patches the four thin helpers above + asserts this function
     invokes them in order with the exact contracts the gate documents.
+
+    Returns:
+        Tuple `(client, cfg)`. Caller derives `account_hash` +
+        per-environment paths from `cfg.integrations.schwab.*`.
     """
     cfg_pre = _load_cfg(config_path)
     cfg = _apply_overrides_thin(cfg_pre)
@@ -274,12 +278,13 @@ def _bootstrap_authenticated_client(
             "[integrations.schwab].client_id + .client_secret. "
             "See docs/runbooks/schwab-cassette-recording.md §3.",
         )
-    return _construct_client_thin(
+    client = _construct_client_thin(
         cfg=cfg,
         environment=environment,
         client_id=client_id,
         client_secret=client_secret,
     )
+    return client, cfg
 
 
 # ---------------------------------------------------------------------------
@@ -468,6 +473,7 @@ def _safe_delete_cassette(cassette_path: Path) -> None:
 def _record_one_order_type(
     *,
     client: Any,
+    account_hash: str,
     order_type: str,
     days: int,
     max_results: int,
@@ -492,12 +498,18 @@ def _record_one_order_type(
             record_mode="new_episodes",
             **vcr_kwargs,
         ):
-            # schwabdev camelCase kwargs per CLAUDE.md gotcha family.
+            # schwabdev signature per swing/integrations/schwab/trader.py:365 +
+            # tests/integrations/test_schwab_trader_kwarg_signatures.py:
+            # `Client.account_orders(account_hash, from_str, to_str,
+            # status=..., maxResults=...)` — accountHash + from + to are
+            # POSITIONAL; status + maxResults are camelCase kwargs (per
+            # CLAUDE.md gotcha family).
             response = client.account_orders(
-                maxResults=max_results,
-                fromEnteredTime=from_time,
-                toEnteredTime=to_time,
+                account_hash,
+                from_time,
+                to_time,
                 status="FILLED",
+                maxResults=max_results,
             )
             # Response is either a list (mapped) or requests.Response-like
             # (schwabdev returns the raw response object pre-mapper). We
@@ -556,16 +568,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-    client = _bootstrap_authenticated_client(
+    client, cfg = _bootstrap_authenticated_client(
         environment=args.environment,
         config_path=Path(args.config),
     )
+    account_hash = getattr(
+        getattr(cfg.integrations, "schwab", None), "account_hash", None,
+    )
+    if not account_hash or not isinstance(account_hash, str):
+        sys.stderr.write(
+            "FAILED: cfg.integrations.schwab.account_hash is unset; cannot "
+            "invoke Schwab account-scoped endpoints. Set it in "
+            "~/swing-data/user-config.toml under [integrations.schwab] OR "
+            "via `swing schwab status --environment production` which "
+            "populates the field on first link. See "
+            "docs/runbooks/schwab-cassette-recording.md §3.\n",
+        )
+        return 1
     vcr_kwargs = _load_shared_vcr_kwargs()
 
     failures = 0
     for order_type in args.order_types_list:
         rc = _record_one_order_type(
             client=client,
+            account_hash=account_hash,
             order_type=order_type,
             days=args.days,
             max_results=args.max_results,
