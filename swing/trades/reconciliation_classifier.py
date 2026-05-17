@@ -1185,30 +1185,32 @@ def _classify_close_price_mismatch(
 
     # Sub-bundle 1 T-1.8 — Shape C branch (per plan §A.1.8 + spec §3.2 +
     # §10.6 OQ-D). Insert BEFORE existing tier-2-always V1 fall-through.
-    if isinstance(source_payload, Mapping):
-        if frozenset(source_payload.keys()) == _SHAPE_C_EXPECTED_KEYS:
-            price = source_payload.get("price")
-            if (
-                isinstance(price, (int, float))
-                and not isinstance(price, bool)
-                and math.isfinite(float(price))
-            ):
-                return ClassificationResult(
-                    tier=1,
-                    ambiguity_kind=None,
-                    correction_target={"price": float(price)},
-                    correction_reason=(
-                        f"close_price_mismatch on (ticker={ticker!r}, "
-                        f"trade_id={trade_id}): Schwab execution-grain "
-                        f"price ${float(price):.4f}; auto-correct journal "
-                        f"to execution (Sub-bundle 1 T-1.8 Shape C; audit "
-                        f"keys in actual_value_json)"
-                    ),
-                    candidate_choices=None,
-                )
-        # Mixed/partial Shape C OR non-Shape-C Mapping → fall through to
-        # legacy V1 tier-2 path below (preserves OHLCV-snapshot future
-        # consumer compatibility per plan §A.1.8).
+    # Mixed/partial Shape C OR non-Shape-C Mapping falls through to legacy
+    # V1 tier-2 path below (preserves OHLCV-snapshot future consumer
+    # compatibility per plan §A.1.8).
+    if (
+        isinstance(source_payload, Mapping)
+        and frozenset(source_payload.keys()) == _SHAPE_C_EXPECTED_KEYS
+    ):
+        price = source_payload.get("price")
+        if (
+            isinstance(price, (int, float))
+            and not isinstance(price, bool)
+            and math.isfinite(float(price))
+        ):
+            return ClassificationResult(
+                tier=1,
+                ambiguity_kind=None,
+                correction_target={"price": float(price)},
+                correction_reason=(
+                    f"close_price_mismatch on (ticker={ticker!r}, "
+                    f"trade_id={trade_id}): Schwab execution-grain "
+                    f"price ${float(price):.4f}; auto-correct journal "
+                    f"to execution (Sub-bundle 1 T-1.8 Shape C; audit "
+                    f"keys in actual_value_json)"
+                ),
+                candidate_choices=None,
+            )
 
     # Legacy V1 tier-2-always path preserved per plan §A.1.8 fall-through
     # discipline.
