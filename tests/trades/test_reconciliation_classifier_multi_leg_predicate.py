@@ -262,7 +262,7 @@ def test_predicate_declines_on_nan_price_defensive():
     )
     assert ok is False
     assert reason is not None
-    assert "not positive finite" in reason.lower() or "not finite" in reason.lower()
+    assert "not finite" in reason.lower()
 
 
 def test_predicate_declines_on_negative_price_defensive():
@@ -285,7 +285,7 @@ def test_predicate_declines_on_negative_price_defensive():
     assert reason is not None
     # Must reject at sub-condition 3 (per-leg positive check), NOT at later
     # sub-conditions like VWAP-misalign.
-    assert "not positive" in reason.lower() or "positive" in reason.lower()
+    assert "not positive" in reason.lower()
 
 
 def test_predicate_declines_on_zero_qty_defensive():
@@ -306,7 +306,7 @@ def test_predicate_declines_on_zero_qty_defensive():
     )
     assert ok is False
     assert reason is not None
-    assert "not positive" in reason.lower() or "positive" in reason.lower()
+    assert "not positive" in reason.lower()
 
 
 def test_predicate_declines_on_insufficient_total_legs():

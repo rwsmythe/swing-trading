@@ -131,22 +131,6 @@ _MULTI_LEG_PRICE_TOLERANCE: float = 0.01   # absolute $0.01; NO max(...) overrid
 _MULTI_LEG_QTY_TOLERANCE: float = 1e-9     # predicate-stricter than handler's 1e-6
 
 
-def _is_positive_finite_number(x: Any) -> bool:
-    """True iff ``x`` is a real numeric value, finite, and strictly positive.
-
-    Defensive guard: ``isinstance(True, int)`` is ``True`` in Python so we
-    reject ``bool`` explicitly BEFORE the numeric check. NaN/inf rejected
-    via ``math.isfinite``.
-    """
-    if isinstance(x, bool):
-        return False
-    if not isinstance(x, (int, float)):
-        return False
-    if not math.isfinite(float(x)):
-        return False
-    return float(x) > 0.0
-
-
 def _multi_leg_auto_redirect_predicate(
     *,
     candidates: list[Mapping[str, Any]],
@@ -222,13 +206,13 @@ def _multi_leg_auto_redirect_predicate(
             return (
                 False,
                 f"sub-condition 3: leg #{i} price={price!r} or "
-                f"quantity={qty!r} is not positive finite",
+                f"quantity={qty!r} is not finite",
             )
         if float(price) <= 0.0 or float(qty) <= 0.0:
             return (
                 False,
                 f"sub-condition 3: leg #{i} price={price!r} or "
-                f"quantity={qty!r} is not positive finite",
+                f"quantity={qty!r} is not positive",
             )
 
     # Sub-condition 4: qty-sum matches journal_qty within tolerance.
