@@ -293,6 +293,18 @@ def _extract_executions_from_order_raw(
     except (TypeError, ValueError):
         filled_qty = None
 
+    # Sub-bundle 1.5 T-1.5.2 fix -- orders with EXPLICIT filledQuantity == 0
+    # are informational placeholder shapes. Schwab production emits
+    # executionLegs[0] on STOP / REPLACED / CANCELED / PENDING_ACTIVATION
+    # working orders with leg.price == 0.0 sentinel that fails the validator's
+    # price > 0 contract. Skip extraction entirely to pre-empt drop+warn noise
+    # across the uniformly-non-executing placeholder population. The
+    # permissive-when-`filledQuantity`-absent stance documented at lines
+    # 275-276 above is PRESERVED -- only skip on EXPLICIT zero, not on absent
+    # or missing key.
+    if filled_qty is not None and filled_qty == 0:
+        return None
+
     collected: list[SchwabExecutionLeg] = []
     for ai, activity in enumerate(activities):
         if not isinstance(activity, dict):
