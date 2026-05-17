@@ -43,24 +43,66 @@ _log = logging.getLogger(__name__)
 
 
 def _has_non_placeholder_leg(activities: object) -> bool:
-    """Return True if any leg in ``activities`` has a non-zero price.
+    """Return True if any leg in EXECUTION activities has a non-zero price.
 
     Used by `_extract_executions_from_order_raw` to detect anomalous
     zero-filled order shapes that include non-placeholder legs (canary
-    for future Schwab regression where a real-execution sentinel surfaces
-    despite filledQuantity=0).
+    for future Schwab regression where a real-execution sentinel
+    surfaces despite filledQuantity=0).
+
+    Scope alignment (Sub-bundle 1.5 Codex R2 M#2): only legs under
+    activities whose ``activityType == "EXECUTION"`` participate in the
+    canary -- mirroring the mapper's extraction loop at
+    ``_extract_executions_from_order_raw`` (which silently skips
+    non-EXECUTION activities like ``ORDER_ACTION``). Without this
+    filter the canary could fire on data the mapper would otherwise
+    ignore, producing observability noise unrelated to the
+    execution-grain extraction path.
+
+    Design decision (Sub-bundle 1.5 Codex R2 M#1 -- ACCEPT-WITH-RATIONALE):
+    the canary is intentionally minimal. ``price > 0`` is the strongest
+    signal of a "real fill that should have been processed". Codex R2
+    suggested broadening to detect other anomalies (negative/NaN price,
+    ``executionType=FILL`` with ``filledQuantity=0``, positive quantity
+    on fill-like activities, malformed shapes). These are either:
+      (a) already caught by the mapper's existing defensive parsing
+          (non-dict / non-list / bool-as-number / non-str time / the
+          ``SchwabExecutionLeg.__post_init__`` validator rejects
+          negative + non-finite price via REAL-field guards);
+      (b) speculative -- the T-1.5.1 production diagnostic shows ALL
+          placeholders use ``activityType=EXECUTION`` and the
+          ``executionType`` field does NOT appear in operator's
+          response data; or
+      (c) would generate false positives -- the placeholder shape
+          ALREADY has ``leg.quantity > 0`` (reflects the order's
+          intended size, not execution); widening the canary on that
+          axis would warn on every placeholder order.
 
     Defensive parsing: any malformed shape returns False (no false
     positives). Skip non-list activities, non-dict activity entries,
-    non-list executionLegs, non-dict legs. Reject bool-as-number (Python
-    bool is a subclass of int -- ``True == 1.0 > 0`` would otherwise
-    false-positive). Ignore TypeError / ValueError on float coercion of
-    the price value.
+    non-EXECUTION activities, non-list executionLegs, non-dict legs.
+    Reject bool-as-number (Python bool is a subclass of int --
+    ``True == 1.0 > 0`` would otherwise false-positive). Ignore
+    TypeError / ValueError on float coercion of the price value.
+
+    Note (Codex R2 Minor #2 -- ADVISORY no-op): malformed prices
+    (non-numeric, bool, etc.) return False silently rather than
+    surfacing an alternate signal. Separate malformed-shape detection
+    is a V2 candidate; the V1 mapper's defensive parsing already drops
+    malformed legs at the ``SchwabExecutionLeg.__post_init__``
+    validator (which this canary bypasses by design -- the canary
+    only fires when the gate would otherwise silently swallow a
+    NON-malformed but anomalous shape).
     """
     if not isinstance(activities, list):
         return False
     for activity in activities:
         if not isinstance(activity, dict):
+            continue
+        # Sub-bundle 1.5 Codex R2 M#2 -- align scope with the mapper's
+        # extraction loop which silently skips non-EXECUTION activities
+        # (mappers.py:373-377). Canary mirrors that semantic.
+        if activity.get("activityType") != "EXECUTION":
             continue
         legs = activity.get("executionLegs", [])
         if not isinstance(legs, list):

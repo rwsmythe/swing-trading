@@ -251,3 +251,89 @@ def test_has_non_placeholder_leg_missing_price_key() -> None:
         },
     ]
     assert _has_non_placeholder_leg(activities) is False
+
+
+# Test 11 (Codex R2 Major #2 BINDING) -- scope alignment with mapper
+# extraction loop. The canary must skip non-EXECUTION activities just as
+# `_extract_executions_from_order_raw` silently skips them at
+# mappers.py:373-377. Without this filter the canary would fire on data
+# the mapper would otherwise ignore (false-positive "anomalous shape"
+# WARN on non-execution payloads like ORDER_ACTION audit rows).
+def test_anomalous_shape_skips_non_execution_activity(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Plant an order with filledQuantity=0 + a NON-EXECUTION activity
+    (activityType='ORDER_ACTION') carrying a non-zero-price leg. The
+    canary MUST NOT fire because the mapper's extraction loop ignores
+    non-EXECUTION activities; the canary now mirrors that semantic.
+    """
+    order_raw = {
+        "orderId": "ORDER-ACTION-1",
+        "status": "CANCELED",
+        "orderType": "STOP",
+        "instruction": "SELL",
+        "filledQuantity": 0.0,
+        "orderActivityCollection": [
+            {
+                # NOT 'EXECUTION' -- the mapper would silently skip this
+                # activity at line 373-377 even if leg.price > 0.
+                "activityType": "ORDER_ACTION",
+                "executionLegs": [
+                    {
+                        "instrumentId": 999,
+                        "legId": 1,
+                        "mismarkedQuantity": 0.0,
+                        "price": 10.50,  # non-zero -- would-be canary signal
+                        "quantity": 5.0,
+                        "time": "2026-05-13T16:09:22+0000",
+                    },
+                ],
+            },
+        ],
+    }
+    with caplog.at_level(
+        logging.WARNING, logger="swing.integrations.schwab.mappers"
+    ):
+        result = _extract_executions_from_order_raw(
+            order_raw, order_id="ORDER-ACTION-1",
+        )
+    # Gate behavior preserved: returns None (filledQuantity=0 gate fires).
+    assert result is None
+    # Canary MUST NOT fire because the non-zero-price leg lives under a
+    # non-EXECUTION activity -- mapper extraction loop ignores it anyway.
+    assert not any(
+        "anomalous shape" in record.getMessage() for record in caplog.records
+    ), (
+        "Expected NO 'anomalous shape' WARN for non-EXECUTION activity; "
+        f"got: {[r.getMessage() for r in caplog.records]}"
+    )
+
+
+# Test 12 (Codex R2 Major #2 supporting) -- helper-level coverage of the
+# EXECUTION-only filter.
+def test_has_non_placeholder_leg_skips_non_execution_activity() -> None:
+    """Non-EXECUTION activity types are skipped regardless of leg prices."""
+    activities = [
+        {
+            "activityType": "ORDER_ACTION",
+            "executionLegs": [{"price": 99.0, "quantity": 1.0}],
+        },
+    ]
+    assert _has_non_placeholder_leg(activities) is False
+
+
+# Test 13 (Codex R2 Major #2 supporting) -- mixed: EXECUTION activity with
+# zero-price legs alongside a NON-EXECUTION activity with non-zero-price
+# legs. Canary must NOT fire (only EXECUTION-scoped legs participate).
+def test_has_non_placeholder_leg_mixed_non_execution_ignored() -> None:
+    activities = [
+        {
+            "activityType": "EXECUTION",
+            "executionLegs": [{"price": 0.0, "quantity": 5.0}],
+        },
+        {
+            "activityType": "ORDER_ACTION",
+            "executionLegs": [{"price": 99.0, "quantity": 1.0}],
+        },
+    ]
+    assert _has_non_placeholder_leg(activities) is False
