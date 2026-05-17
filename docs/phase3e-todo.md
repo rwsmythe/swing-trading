@@ -6,6 +6,90 @@
 
 ---
 
+## 2026-05-17 PM Phase 12.5 #1 writing-plans SHIPPED — OQ-F multi-leg tier-1 auto-redirect single-sub-bundle decomposition (11 tasks; ~+102 fast tests + 1 slow E2E + ~+435 LOC; schema v19 unchanged) — 5 Codex rounds NO_NEW_CRITICAL_MAJOR — 1 Critical + 12 Major + 8 Minor ALL RESOLVED; ZERO ACCEPT-WITH-RATIONALE
+
+**Writing-plans SHIPPED 2026-05-17** at `2e8b10a` (integration merge of `phase12-5-bundle-1-oqf-writing-plans` via `--no-ff`; 2 plan commits = 1 initial + 1 Codex-fix bundle; **5 Codex rounds → NO_NEW_CRITICAL_MAJOR** non-monotonic-Major shape (R1 1C/4M/1m → R2 0C/3M/1m → R3 0C/4M/2m → R4 0C/1M/2m → R5 0C/0M/2m sealed; R3 bump above R2 driven by downstream drift the R2 fixes themselves surfaced); **ZERO ACCEPT-WITH-RATIONALE banked** — all 1 Critical + 12 Major + 8 distinct Minor resolved with code-content fixes; ZERO Critical findings post-R1 resolution; ZERO Co-Authored-By footer drift across 2 commits.
+
+### Deliverable
+
+- **Plan doc**: `docs/superpowers/plans/2026-05-17-phase12-5-bundle-1-oqf-multi-leg-auto-redirect-plan.md` (1230 lines; grew from 1008 absorbing Codex chain; ~330 above 600-900 brief target — driven by R1 Critical #1 backfill-consumer scope expansion + R2-R4 acceptance-criteria depth).
+- **Return report**: `docs/phase12-5-bundle-1-oqf-multi-leg-auto-redirect-writing-plans-return-report.md`.
+
+### R1 Critical #1 — highest-value Codex catch (dead-code dispatcher prevention)
+
+Initial draft would have shipped a dead-code dispatcher — multi-leg auto-redirect can only fire on the BACKFILL Pass-2 path (`reconciliation_backfill.py:_handle_pass_2`), NOT the initial pivot (which reads persisted `actual_value_json={"matched": null}` for `unmatched_*_fill` sentinels). T-1.5 scope widened to wire BOTH consumers; slow E2E moved to the operational firing site (backfill). Initial pivot stays as defensive future-proofing.
+
+**Backfill consumer surface identified**:
+- `reconciliation_backfill.py:_handle_pass_2`
+- `reconciliation_backfill.py:run_backfill` orchestrator
+- `reconciliation_backfill.py:format_summary_block` renderer
+- `BackfillOutcome` dataclass
+- `BackfillSummary` dataclass
+
+### Single-sub-bundle decomposition LOCKED
+
+- **11 tasks T-1.1..T-1.11** per plan §A
+- **~+102 fast tests + 1 slow E2E** (refined from ~+85 pre-Codex)
+- **~+435 LOC** (refined from ~+320 pre-Codex)
+- **Schema v19 UNCHANGED** (F1 invariant + F19 plan-author schema additions escalation rule NOT triggered)
+
+### 14 pre-locked decisions verbatim-encoded in plan §D
+
+- 4 spec §2.1-§2.4 operator-locks (auto-redirect ON; all-match-within-tolerance; reuse apply_tier2_resolution; banner advisory only)
+- 3 spec §15.B operator-locks (price_tolerance=$0.01 absolute; qty_tolerance asymmetry preserved; NO N-legs cap V1)
+- 7 spec §15.A brainstorm-locks (n=1 multi-leg path; --resolved-by CLI filter; sandbox short-circuit gated; service API overrides; briefing.md +1 line; canary observability; resolved_by free TEXT)
+
+### 25 binding invariants F1-F25
+
+19 inherited + 6 NEW F20-F25 surfaced this dispatch:
+- F20+F21 backfill-consumer wiring
+- F22 service API override-parameter contracts
+- F23 dataclass→dict boundary ownership
+- F24 helper-function key-set stability
+- F25 spec-locked rendering text verbatim
+
+### 18 forward-binding lessons in plan §M (executing-plans inheritance)
+
+**12 inherited from brainstorm** (8 spec §16 + 4 return report §8):
+1-8. recipe-field discipline; override-parameter threading; free-text vs CHECK-enum distinction; cross-column CHECK invariants; sandbox short-circuit ALWAYS in inner; helper invocation completeness; ASCII-only banner text; discriminating-test patterns
+9-12. 4 chain-surfaced lessons in brainstorm return report §8
+
+**6 NEW writing-plans-surfaced L-W1..L-W6:**
+- L-W1 (R1 Critical #1): When designing a dispatcher pattern + recipe consumption, enumerate EVERY dispatcher consumer; initial pivot's source_payload derivation matters; if it returns None for unmatched sentinel, the dispatcher in that path is dead-code; operational consumer lives ELSEWHERE.
+- L-W2 (R1 Major #1): Spec-locked exception-propagation contracts MUST be encoded as catch-ladder ordering in plan tasks, NOT as "PLAN DECISION" overrides.
+- L-W3 (R1 Major #2): Spec-locked rendering text MUST be verbatim-asserted in tests; don't lift adjacent patterns without checking the new lock.
+- L-W4 (R1 Major #3): Retrofit scope predicates MUST be enumerated by canonical mechanism (template-mount), NOT proxy field-presence.
+- L-W5 (R1 Major #4): Helper functions producing normalized dicts MUST emit stable key-set across ALL input branches.
+- L-W6 (R1 minor #1): Conversion seams (dataclass→dict at module boundary) MUST be owned by ONE task with clear contract.
+
+### Comparison to precedents
+
+1C/12M mid-pack for project history:
+- C.B was 1C/6M
+- C.D was 0C/6M
+- post-Phase-12 mapper-widening ~6 rounds
+- Phase 12.5 #1 brainstorm 0C/15M (cleanest)
+
+R1 Critical was high-value architectural catch; R2-R4 absorbed downstream drift from R1 fixes themselves; R5 cleaned up final stale text.
+
+### Executing-plans dispatch UNBLOCKED
+
+Orchestrator's next deliverable: draft executing-plans dispatch brief encoding plan §A T-1.1..T-1.11 + plan §D 14 locks + plan §F 25 invariants + plan §M 18 forward-binding lessons. Per plan §L scaffold.
+
+### Worktree teardown status
+
+- Branch `phase12-5-bundle-1-oqf-writing-plans` merged via `--no-ff` at `2e8b10a`; on-disk husk at `.worktrees/phase12-5-bundle-1-oqf-writing-plans/` matches cleanup-script regex `phase\d+[-_]` — operator-paired cleanup pass post-merge.
+
+### Cross-references
+
+- Writing-plans dispatch brief: `docs/phase12-5-bundle-1-oqf-multi-leg-auto-redirect-writing-plans-dispatch-brief.md` (`5c988d2`).
+- Plan doc: `docs/superpowers/plans/2026-05-17-phase12-5-bundle-1-oqf-multi-leg-auto-redirect-plan.md` (in `2e8b10a` merge).
+- Return report: `docs/phase12-5-bundle-1-oqf-multi-leg-auto-redirect-writing-plans-return-report.md` (in `2e8b10a` merge).
+- Integration merge: `2e8b10a`.
+- Brainstorm spec (predecessor): `docs/superpowers/specs/2026-05-17-phase12-5-bundle-1-oqf-multi-leg-auto-redirect-design.md` (at `a1582c0`).
+
+---
+
 ## 2026-05-17 PM Phase 12.5 #1 brainstorm SHIPPED — OQ-F multi-leg tier-1 auto-redirect (V2 follow-up from post-Phase-12 mapper-widening spec §6.6) — 7 Codex rounds NO_NEW_CRITICAL_MAJOR — ZERO ACCEPT-WITH-RATIONALE banked across 15 Major + 10 Minor (cleanest brainstorm chain in project history)
 
 **Brainstorm SHIPPED 2026-05-17** at `a1582c0` (integration merge of `phase12-5-bundle-1-oqf-brainstorm` via `--no-ff`; 8 implementer commits = 1 draft + 6 Codex-fix + 1 return-report; **7 Codex rounds → NO_NEW_CRITICAL_MAJOR** convergent monotonic-Major taper (R1 5M/2m → R2 3M/2m → R3 2M/2m → R4 2M/2m → R5 2M/1m → R6 1M/1m → R7 0); **ZERO ACCEPT-WITH-RATIONALE banked across all 15 Major + 10 Minor findings — cleanest brainstorm chain in project history**; ZERO Critical findings entire chain; ZERO Co-Authored-By footer drift across 8 commits.
