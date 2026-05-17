@@ -92,6 +92,105 @@ _SCHWAB_WITHDRAW_TYPES = frozenset({
 _PRICE_TOLERANCE_DEFAULT: float = 0.01
 
 
+def _compute_execution_price(so: Any) -> float | None:
+    """Sub-bundle 1 T-1.4 — compute execution-grain price from a Schwab order.
+
+    Per spec §5.1 + plan §A.1.4. Pure function (no DB, no logging).
+
+    - ``so.executions is None`` OR empty → returns ``None`` (caller's
+      responsibility to fall through to Path B sentinel emit per spec §6.1
+      OQ-A LOCK).
+    - Single leg → returns leg price.
+    - Multi leg → returns VWAP across legs:
+      ``sum(leg.price * leg.quantity) / sum(leg.quantity)``.
+
+    Defensive ``total_qty <= 0`` guard is belt-and-suspenders — the
+    ``SchwabExecutionLeg.__post_init__`` validator rejects ``quantity <= 0``
+    at construction, so this branch is unreachable in practice. Retained
+    for static-analysis clarity + future-proofing if the dataclass
+    validator widens.
+    """
+    executions = getattr(so, "executions", None)
+    if executions is None or not executions:
+        return None
+    if len(executions) == 1:
+        return executions[0].price
+    total_qty = sum(leg.quantity for leg in executions)
+    if total_qty <= 0:
+        return None
+    return sum(leg.price * leg.quantity for leg in executions) / total_qty
+
+
+def _is_execution_bearing_candidate(o: Any) -> bool:
+    """Sub-bundle 1 T-1.6 — candidate-pool guard for the comparator.
+
+    Per spec §5.3 + §6.4 OQ-D LOCK + Codex R1 M#1+#2 fix + plan §A.0.1 D4
+    deviation closure.
+
+    V1 filter at ``schwab_reconciliation.py:641-645`` was
+    ``status=='FILLED' AND price is not None``, which excluded two
+    operationally-legitimate execution-bearing cases:
+
+    - **MARKET fills** with ``price=None`` AND ``executions=[leg @
+      exec_price]`` (Schwab does not surface an order-grain price for
+      MARKET orders; the execution price lives ONLY in executionLegs).
+    - **Partial-then-canceled** orders (``status='CANCELED'`` with
+      ``filledQuantity > 0`` AND ``executions=[leg, ...]``) where the
+      operator placed an order, partial-filled, then canceled the
+      remainder — Schwab keeps the executed legs visible.
+    - **Partial-then-replaced** orders (``status='REPLACED'`` mirror).
+
+    V2 filter admits:
+
+    - ``status='FILLED'`` AND (``price is not None`` OR ``executions``
+      non-empty). Preserves V1 backward-compat for FILLED-with-price +
+      ``executions=None`` (legacy mapper path / sandbox / mapper-
+      coherence-check collapse case) — Path B sentinel emit handles those
+      downstream.
+    - ``status='CANCELED'`` AND ``executions`` non-empty.
+    - ``status='REPLACED'`` AND ``executions`` non-empty.
+
+    FILLED orders where BOTH ``price is None`` AND ``executions is None``
+    are REJECTED entirely (defensive — such orders carry NO data the
+    comparator can compare against; they represent corrupt / truncated
+    Schwab responses; near-zero in operator's production data per Codex
+    R2 Major #2 fix analysis).
+    """
+    status = getattr(o, "status", "")
+    if status == "FILLED":
+        return (
+            getattr(o, "price", None) is not None
+            or bool(getattr(o, "executions", None))
+        )
+    if status in ("CANCELED", "REPLACED"):
+        return bool(getattr(o, "executions", None))
+    return False
+
+
+def _resolve_match_quantity(so: Any) -> float:
+    """Sub-bundle 1 T-1.5 — execution-grain quantity match per Codex R1 M#2.
+
+    Per spec §5.3 + plan §A.1.5. Pure function.
+
+    - ``so.executions`` populated (truthy) → returns ``sum(leg.quantity for
+      leg in executions)``. Closes the in-row quantity comparison defect
+      for partial fills where ``order.quantity`` reflects the OPEN order
+      size, not the FILLED quantity (e.g., ordered 200 shares but only 100
+      filled in a single leg of an in-flight order).
+    - else (``None`` or empty list) → returns ``so.quantity`` (V1 behavior
+      preserved for legacy V1 mapper path / sandbox / mapper-coherence-
+      check collapse case).
+
+    Comparator T-1.7 swaps the V1 ``so.quantity`` reference at
+    ``schwab_reconciliation.py:658`` for this helper to admit partial
+    fills into the match candidate pool correctly.
+    """
+    executions = getattr(so, "executions", None)
+    if executions:
+        return sum(leg.quantity for leg in executions)
+    return so.quantity
+
+
 class CallerHeldTransactionError(RuntimeError):
     """Raised when a caller invokes `run_schwab_reconciliation` while holding
     an open transaction.
@@ -637,11 +736,15 @@ def run_schwab_reconciliation(
                 )
 
         # --- 6. Fill matching (price + unmatched) ---
-        # FILLED Schwab orders are the candidates for journal-fill matching.
+        # Sub-bundle 1 T-1.6: candidate-pool widening via
+        # `_is_execution_bearing_candidate` per plan §A.0.1 D4 + Codex R1
+        # M#1+M#2. Admits MARKET fills with price=None + executions populated,
+        # AND partial-then-canceled / partial-then-replaced orders with
+        # non-empty executions, AND legacy FILLED-with-price-no-executions
+        # (V1 backward compat → Path B sentinel emit downstream).
         schwab_filled = [
             o for o in schwab_orders
-            if getattr(o, "status", "") == "FILLED"
-            and getattr(o, "price", None) is not None
+            if _is_execution_bearing_candidate(o)
         ]
         # Build a map of journal-fill identity -> matched Schwab order index.
         matched_schwab_idx: set = set()
@@ -655,7 +758,16 @@ def run_schwab_reconciliation(
                         continue
                     if so.instrument_symbol != t.ticker:
                         continue
-                    if abs(so.quantity - float(f.quantity)) > price_tolerance:
+                    # Sub-bundle 1 T-1.7: execution-grain quantity-match per
+                    # Codex R1 M#2. _resolve_match_quantity returns
+                    # sum(legs.quantity) when executions populated; else
+                    # so.quantity (V1 backward compat). Closes the in-row
+                    # quantity comparison defect for partial fills where
+                    # order.quantity reflects the OPEN order size, not the
+                    # FILLED quantity.
+                    if abs(
+                        _resolve_match_quantity(so) - float(f.quantity)
+                    ) > price_tolerance:
                         continue
                     match_idx = idx
                     break
@@ -690,11 +802,60 @@ def run_schwab_reconciliation(
                     continue
                 matched_schwab_idx.add(match_idx)
                 so = schwab_filled[match_idx]
-                if abs(so.price - float(f.price)) > price_tolerance:
+                # Sub-bundle 1 T-1.6: switch price comparison to
+                # execution-grain via `_compute_execution_price`. When
+                # `executions` is None / empty (V1 mapper / sandbox /
+                # mapper-coherence-check collapse), Path B emits
+                # unmatched_*_fill with `execution_unavailable=true`
+                # sentinel per spec §6.1 OQ-A LOCK.
+                execution_price = _compute_execution_price(so)
+                if execution_price is None:
+                    # OQ-A Path B sentinel emit.
+                    dtype_b = (
+                        "unmatched_open_fill" if f.action == "entry"
+                        else "unmatched_close_fill"
+                    )
+                    _emit(
+                        conn,
+                        run_id=run_id,
+                        discrepancy_type=dtype_b,
+                        field_name="fill_match",
+                        counters=counters,
+                        dedup_seen=dedup_seen,
+                        ticker=t.ticker,
+                        trade_id=t.id,
+                        fill_id=f.fill_id,
+                        expected_value_json=json.dumps(
+                            {
+                                "qty": float(f.quantity),
+                                "price": float(f.price),
+                                "action": f.action,
+                            },
+                            sort_keys=True,
+                        ),
+                        actual_value_json=json.dumps(
+                            {
+                                "matched": None,
+                                "execution_unavailable": True,
+                                "schwab_order_id": so.order_id,
+                                "schwab_order_price": so.price,
+                            },
+                            sort_keys=True,
+                        ),
+                    )
+                    continue
+                if abs(execution_price - float(f.price)) > price_tolerance:
                     dtype = (
                         "entry_price_mismatch" if f.action == "entry"
                         else "close_price_mismatch"
                     )
+                    # Sub-bundle 1 T-1.6 Shape C contract: actual_value_json
+                    # key-set EXACTLY {"price", "execution_legs",
+                    # "schwab_order_id", "schwab_order_price"} for the T-1.8
+                    # Pass-1 classifier predicate. Naming "schwab_order_price"
+                    # (NOT "schwab_limit_price") covers MKT (None) / STOP
+                    # (trigger) / LIMIT (limit) order_types gracefully per
+                    # plan §A.1.6 R3 m#2.
                     _emit(
                         conn,
                         run_id=run_id,
@@ -709,11 +870,27 @@ def run_schwab_reconciliation(
                             {"price": float(f.price)}, sort_keys=True,
                         ),
                         actual_value_json=json.dumps(
-                            {"price": so.price}, sort_keys=True,
+                            {
+                                "price": execution_price,
+                                "execution_legs": [
+                                    {
+                                        "leg_id": leg.leg_id,
+                                        "price": leg.price,
+                                        "quantity": leg.quantity,
+                                        "time": leg.time,
+                                    }
+                                    for leg in so.executions
+                                ],
+                                "schwab_order_id": so.order_id,
+                                "schwab_order_price": so.price,
+                            },
+                            sort_keys=True,
                         ),
+                        # 4-decimal precision per plan §A.1.6: covers
+                        # CVGI $0.0056 + LION $0.0001 sub-cent debugging.
                         delta_text=(
-                            f"${so.price - float(f.price):+.2f} "
-                            f"(schwab minus journal)"
+                            f"${execution_price - float(f.price):+.4f} "
+                            f"(schwab execution minus journal)"
                         ),
                     )
 

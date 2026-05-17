@@ -32,6 +32,7 @@ from swing.integrations.schwab.client import (
 from swing.integrations.schwab.models import (
     OhlcvBar,
     SchwabAccountResponse,
+    SchwabExecutionLeg,
     SchwabOrderResponse,
     SchwabPriceHistoryWindow,
     SchwabQuoteResponse,
@@ -229,6 +230,14 @@ def map_orders_to_fill_candidates(response: Any) -> list[SchwabOrderResponse]:
             float(price_raw) if price_raw is not None else None
         )
 
+        # Sub-bundle 1 T-1.3 — extract orderActivityCollection[].executionLegs[]
+        # per spec §4.3 + §5.3 mapper-coherence rule. Defensive parsing
+        # (never raises on malformed leg); coherence check distinguishes
+        # legitimate partial fills from malformed leg totals.
+        executions = _extract_executions_from_order_raw(
+            raw, order_id=order_id,
+        )
+
         out.append(SchwabOrderResponse(
             order_id=order_id,
             status=status,
@@ -238,8 +247,176 @@ def map_orders_to_fill_candidates(response: Any) -> list[SchwabOrderResponse]:
             quantity=quantity,
             order_type=order_type,
             price=price,
+            executions=executions,
         ))
     return out
+
+
+def _extract_executions_from_order_raw(
+    raw: dict, *, order_id: str,
+) -> list[SchwabExecutionLeg] | None:
+    """Sub-bundle 1 T-1.3 — extract orderActivityCollection[].executionLegs[]
+    legs from a single Schwab order dict.
+
+    Per spec §4.3 + §5.3 mapper-coherence rule:
+
+    1. ``orderActivityCollection`` missing / non-list / empty → ``None``
+       (V1 backward compat: legacy mapper path; sandbox; older responses).
+    2. Per activity: non-dict → skip + warn; non-EXECUTION activityType →
+       skip silently.
+    3. Per leg under EXECUTION activity: non-dict → skip + warn; dataclass
+       validator raises → drop leg + warn; remaining legs preserved.
+    4. After collecting: if collected list empty → ``None`` (no legs
+       survived).
+    5. **Coherence check (spec §5.3):** if non-empty AND ``filledQuantity``
+       is present AND ``abs(sum(legs.quantity) - filledQuantity) >= 1e-9``
+       → log WARNING (with order_id + observed sum + filledQuantity) +
+       collapse to ``None``. Otherwise return the collected list.
+    6. ``filledQuantity`` absent: permissive — treat legs as authoritative;
+       no coherence check fires.
+
+    Plan-author lock (plan §A.1.3): ``filled_quantity`` is NOT added to
+    SchwabOrderResponse — derived implicitly at mapper coherence-check time
+    + discarded. Comparator uses ``_resolve_match_quantity`` for
+    ``sum(legs.quantity)`` (T-1.5). Minimizes dataclass surface area +
+    preserves 8-positional backward compat.
+    """
+    activities = _opt(raw, "orderActivityCollection")
+    if not isinstance(activities, list) or not activities:
+        return None
+
+    filled_qty_raw = _opt(raw, "filledQuantity")
+    try:
+        filled_qty: float | None = (
+            float(filled_qty_raw) if filled_qty_raw is not None else None
+        )
+    except (TypeError, ValueError):
+        filled_qty = None
+
+    collected: list[SchwabExecutionLeg] = []
+    for ai, activity in enumerate(activities):
+        if not isinstance(activity, dict):
+            _log.warning(
+                "map_orders_to_fill_candidates: order %s activity[%d] "
+                "non-dict (%s); skipping",
+                order_id, ai, type(activity).__name__,
+            )
+            continue
+        if activity.get("activityType") != "EXECUTION":
+            # Silent skip for non-EXECUTION (ORDER_ACTION etc.) — Schwab
+            # emits these for cancel / replace events that are not
+            # execution-grain data.
+            continue
+        legs = activity.get("executionLegs", [])
+        if not isinstance(legs, list):
+            _log.warning(
+                "map_orders_to_fill_candidates: order %s activity[%d] "
+                "executionLegs non-list (%s); skipping",
+                order_id, ai, type(legs).__name__,
+            )
+            continue
+        for li, leg_raw in enumerate(legs):
+            if not isinstance(leg_raw, dict):
+                _log.warning(
+                    "map_orders_to_fill_candidates: order %s "
+                    "activity[%d].executionLegs[%d] non-dict (%s); skipping",
+                    order_id, ai, li, type(leg_raw).__name__,
+                )
+                continue
+            # Codex R1 Major #2 fix — preserve dataclass bool-as-number
+            # rejection contract. `float(True)` / `int(True)` would slip
+            # past `SchwabExecutionLeg.__post_init__`'s `isinstance(x, bool)`
+            # guard, so reject bool inputs BEFORE coercion (mapper-layer
+            # defense-in-depth mirroring the spec §4.3 dataclass validator
+            # contract). Booleans here are extraordinarily unlikely in
+            # Schwab production responses (numeric fields are always
+            # numbers), but the project's pattern is to keep the validator
+            # contract honest end-to-end.
+            raw_leg_id = leg_raw.get("legId", 0)
+            raw_price = leg_raw.get("price", 0)
+            raw_quantity = leg_raw.get("quantity", 0)
+            raw_mismarked = leg_raw.get("mismarkedQuantity")
+            raw_instrument_id = leg_raw.get("instrumentId")
+            raw_time = leg_raw.get("time", "")
+            if (
+                isinstance(raw_leg_id, bool)
+                or isinstance(raw_price, bool)
+                or isinstance(raw_quantity, bool)
+                or (raw_mismarked is not None and isinstance(raw_mismarked, bool))
+                or (
+                    raw_instrument_id is not None
+                    and isinstance(raw_instrument_id, bool)
+                )
+            ):
+                _log.warning(
+                    "map_orders_to_fill_candidates: order %s "
+                    "activity[%d].executionLegs[%d] carries bool-as-number "
+                    "field (defense-in-depth reject pre-coercion); dropping leg",
+                    order_id, ai, li,
+                )
+                continue
+            # Codex R2 Major #3 fix — preserve dataclass `time must be
+            # non-empty str` rejection contract. `str(None) == "None"` and
+            # `str(123) == "123"` would slip past the validator's
+            # `isinstance(self.time, str) and self.time` check; reject
+            # non-str OR empty-str time PRE-coercion (same pattern as the
+            # bool-as-number guard above).
+            if not isinstance(raw_time, str) or not raw_time:
+                _log.warning(
+                    "map_orders_to_fill_candidates: order %s "
+                    "activity[%d].executionLegs[%d] carries non-str / empty "
+                    "time field (defense-in-depth reject pre-coercion); "
+                    "dropping leg",
+                    order_id, ai, li,
+                )
+                continue
+            try:
+                leg = SchwabExecutionLeg(
+                    leg_id=int(raw_leg_id),
+                    price=float(raw_price),
+                    quantity=float(raw_quantity),
+                    mismarked_quantity=(
+                        float(raw_mismarked) if raw_mismarked is not None else None
+                    ),
+                    instrument_id=(
+                        int(raw_instrument_id)
+                        if raw_instrument_id is not None
+                        else None
+                    ),
+                    time=raw_time,
+                )
+            except (ValueError, TypeError) as exc:
+                # Defense-in-depth per spec §4.3 — dataclass validator
+                # rejected the leg shape. Drop + warn; remaining legs may
+                # still surface.
+                _log.warning(
+                    "map_orders_to_fill_candidates: order %s "
+                    "activity[%d].executionLegs[%d] failed validator (%s); "
+                    "dropping leg",
+                    order_id, ai, li, type(exc).__name__,
+                )
+                continue
+            collected.append(leg)
+
+    if not collected:
+        return None
+
+    # Coherence check (spec §5.3): if filledQuantity present + legs sum
+    # diverges, collapse to None + warn. Comparator's Path B branch then
+    # emits unmatched_*_fill with execution_unavailable=true sentinel
+    # rather than auto-correcting from potentially-malformed leg data.
+    if filled_qty is not None:
+        legs_sum = sum(leg.quantity for leg in collected)
+        if abs(legs_sum - filled_qty) >= 1e-9:
+            _log.warning(
+                "map_orders_to_fill_candidates: order %s coherence-check "
+                "failed: sum(legs.quantity)=%g != filledQuantity=%g; "
+                "collapsing executions=None",
+                order_id, legs_sum, filled_qty,
+            )
+            return None
+
+    return collected
 
 
 def map_transactions_to_cash_movement_candidates(
