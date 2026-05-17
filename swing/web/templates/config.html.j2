@@ -62,6 +62,17 @@
   <p class="description">
     Use weekly when the refresh token nears expiration. An existing tokens database (if any) will be safely renamed before a new one is written.
   </p>
+  {# Post-Phase-12 Sub-bundle 2 Task T-2.3 — nav-link to read-only
+     /schwab/status page (operator-facing CLI/web parity per spec §7.4
+     OQ-D LOCK + dispatch brief §0.5 #14). #}
+  <p>
+    <a href="/schwab/status">View Schwab integration status &rarr;</a>
+  </p>
+  <p class="description">
+    Read-only view: refresh-token TTL, recent API calls, last
+    success/failure timestamps, integration state (LIVE / PROVISIONAL /
+    DEGRADED).
+  </p>
 </section>
 
 {% for row in vm.rows %}
