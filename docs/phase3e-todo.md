@@ -6,6 +6,64 @@
 
 ---
 
+## 2026-05-17 Phase 12 Sub-sub-bundle C.D SHIPPED — Tier-2 CLI + reconcile-backfill + Phase 10 banner widening (CLOSES Sub-bundle C; 4 Codex rounds + 3 orchestrator-inline gate-fixes + 7 production-discrepancy dispositions; 10-surface operator-witnessed gate THE BIG ONE — largest in project history; ZERO ACCEPT-WITH-RATIONALE banked; ~33 commits; CRITICAL ARCHITECTURAL FINDING: Pass-1 tier-1 entry_price_mismatch shares limit-vs-fill defect with Pass-2-tier-1-FORBIDDEN — V2 mapper widening priority bumped)
+
+**Sub-sub-bundle C.D SHIPPED 2026-05-17** at `bd1a62b` (integration merge of `phase12-bundle-C-D-tier2-cli-and-backfill` via `--no-ff`). Branch HEAD `32812f7` (~33 commits = 15 task-impl (T-D.1..T-D.14 + T-D.6.1) + 1 pre-Codex review fix + 10 Codex-driven fixes (4 R1 + 4 R2 + 1 R3 + 1 R4) + 3 ORCHESTRATOR-INLINE GATE-FIXES + 1 return-report). Operator-dispatched implementer per orchestrator brief at `047e3db`.
+
+**4 Codex rounds → NO_NEW_CRITICAL_MAJOR** convergent tapering (R1 0C/3M/2m → R2 0C/3M/1m → R3 0C/0M/1m → R4 0C/0M/1m); **ZERO ACCEPT-WITH-RATIONALE banked** — all 14 findings resolved with code-content fixes (ties cleanest sub-sub-bundle in Phase 12 arc); ZERO Co-Authored-By footer drift across all ~33 commits (C.B forward-binding lesson #7 carry-forward worked for 2nd time); pre-Codex orchestrator-side review absorbed 1 Major + 1 Minor (NEW C.C lesson #6 validated for 2nd time).
+
+**+156 fast tests** (4204 → 4360 worktree-side; ~4363 main HEAD post-merge); ruff 18 unchanged; schema v19 unchanged consumer-side.
+
+### 10-surface operator-witnessed gate ALL PASS (orchestrator-driven 2026-05-17 — THE BIG ONE)
+
+S1 fast suite ✅ 4360 pass; S2 dry-run ✅ classification matrix showed 7 unresolved-material (4 more than handoff brief expected — Run #11 emerged between C.B+C.C merges + included NEW LION not in handoff); S3a CVGI tier-1 + S3b LION tier-1 ⚠️ APPLIED-THEN-OVERRIDE per critical operator pushback (limit-vs-fill defect surfaced — see architectural finding below); RECOVERY A1+A2+B2 via `override-correction` restored fills.price to operator's TOS Net Price values; S4a/S4b DHC+VSAT tier-2 stamps ✅; S5 show-ambiguity 39 ✅ (post-gate-fix-#3 § glyph restored); S6a synthetic-fixture acceptance ✅ 18/18 PASS in 5.64s; S6b operator-real DHC 39 `mark_unmatched` + S6b.dup DHC 42 `acknowledge`; S7 VSAT 40+43 `acknowledge`; S8 Phase 10 banner clears to ZERO ✅ via `swing web --port 8081` curl-grep; S9 ruff 18 ✅; S10 cycle-checklist + 6 CLAUDE.md gotcha additions verified ✅.
+
+### 3 ORCHESTRATOR-INLINE GATE-FIXES (committed on worktree branch + merged)
+
+1. **Gate-fix #1 `a542f65`**: swap U+2192 `→` to ASCII `->` in `_format_pass_2_line` at `swing/trades/reconciliation_backfill.py:512` — Windows PowerShell stdout cp1252 crash during S2 dry-run.
+2. **Gate-fix #2 `34d74f7`**: `_handle_no_mutation_audit` handles synthetic `field_name='fill_match'` for `unmatched_open_fill`/`unmatched_close_fill` discrepancies — `_DiscrepancyInfo` extended with `expected_value_json`; helper branches on `discrepancy_type` to skip column read.
+3. **Gate-fix #3 `32812f7`**: force UTF-8 on `sys.stdout`/`sys.stderr` at `swing/cli.py` entry — defense-in-depth covering all non-ASCII glyphs.
+
+### 7 production-discrepancy dispositions (post-gate: banner count=0)
+
+- **41 CVGI** + **44 CVGI** → `operator_overridden` chain heads correction_ids 3+4 (S3a wrong tier-1 → A1+A2 override-back to $5.23 per operator's TOS Net Price $5.2244)
+- **45 LION** → `operator_overridden` chain head correction_id 6 (B1 wrong tier-1 → B2 override-back to $12.70 per operator's TOS Net Price $12.6999)
+- **39 DHC** → `mark_unmatched` correction_id 7
+- **42 DHC**, **40 VSAT**, **43 VSAT** → `acknowledge` correction_ids 8+9+10 (pre-Phase-11 entries; Schwab order-history incomplete; journal canonical per operator's TOS context)
+
+Production fills.price restored: CVGI fill 9 = $5.23; LION fill 15 = $12.70.
+
+### CRITICAL architectural finding: Pass-1 tier-1 entry_price_mismatch limit-vs-fill defect
+
+V1 Schwab mapper at `swing/integrations/schwab/mappers.py:223-230` reads `order.price` (LIMIT or STOP TRIGGER) — NOT `orderActivityCollection[].executionLegs[].price` (EXECUTION). Reconciliation comparator at `swing/trades/schwab_reconciliation.py:693` compares `so.price` (limit) vs journal `f.price` (execution); when limit ≠ execution (typical for slippage / VWAP / partial fills), emits false `entry_price_mismatch`. Both CVGI ($5.30 limit vs $5.2244 fill) + LION ($12.75 limit vs $12.6999 fill) empirically falsified the operator-locked Pass-1 "order/limit ≈ execution" assumption. **CLAUDE.md `Pass-2-tier-1-FORBIDDEN` gotcha AMENDED at integration housekeeping to cover Pass-1 family.** `close_price_mismatch` has same defect (same code path). `stop_mismatch` is architecturally sound (trigger-vs-trigger comparison).
+
+### V2 mapper widening: priority BUMPED (operator-locked next-architectural-dispatch slot)
+
+Per OQ-4 + plan §I.1: widen mapper to expose `orderActivityCollection[].executionLegs[].price` for execution-grain comparison. Already operator-locked as next dispatch; today's gate evidence demonstrates the assumption breaks operationally + bumps priority. Pre-V2 operator workflow: `reconcile-backfill --apply` then manual TOS-audit + tier-3 `override-correction` on any wrong tier-1 corrections. **Brainstorm dispatch needed.**
+
+### 2 NEW CLAUDE.md gotcha promotions
+
+1. **Windows PowerShell stdout cp1252 family** — non-ASCII glyphs (`§`/`→`/etc.) in CLI output paths crash on Windows; canonical fix is ASCII swap + defense-in-depth UTF-8 stdout reconfigure.
+2. **Synthetic-fixture-vs-production-emitter shape drift** — test fixtures planting real column names pass; production emitter using synthetic field labels (e.g., `field_name='fill_match'`) breaks; pre-empt via discriminating tests using production-shape values.
+
+### Sub-bundle C arc closer aggregate (4 sub-sub-bundles SHIPPED 2026-05-15 → 2026-05-17)
+
+- **Cumulative commits**: ~88 (A=16 + B=26 + C=23 + D=33 - merge overhead)
+- **Cumulative Codex rounds**: 14 (A=2 + B=5 + C=3 + D=4)
+- **Cumulative fast tests**: +494 (104 + 139 + 95 + 156)
+- **Cumulative ACCEPT-WITH-RATIONALE**: 1 (C.A backup-gate; ZERO in B+C+D)
+- **Cumulative Co-Authored-By footer drift**: 0 (C.B caught + rebase-stripped pre-merge; C.C + C.D held the line via explicit dispatch-prompt citation)
+- **Schema v18 → v19** at C.A T-A.1 atomic single-file landing; consumer-side only through B+C+D
+- **CLAUDE.md gotchas promoted**: ~8 across arc (3 C.A + 1 C.B + 4 C.C + 3 C.D)
+- **V2.1 §VII.F amendments pending**: ~17 across arc (5 C.A + 6 C.B + 6 C.C + ~5 C.D)
+- **V2 candidates banked**: ~25 across arc; **headline V2 = mapper widening** (operator-locked next architectural dispatch; priority BUMPED per today's gate evidence)
+
+### Worktree teardown status
+
+Branch `phase12-bundle-C-D-tier2-cli-and-backfill` pending operator's `cleanup-locked-scratch-dirs.ps1 -DeregisterFirst`. On-disk husk at `.worktrees/phase12-bundle-C-D-tier2-cli-and-backfill/` ACL-locked; cleanup-script regex matches cleanly. **4 phase12-bundle-c-* husks total pending** (A+B+C+D).
+
+---
+
 ## 2026-05-16 Phase 12 Sub-sub-bundle C.C SHIPPED — Auto-correction service + reconciliation flow pivot (4 public service fns + 17+1 handlers + savepoint-per-discrepancy pivot at BOTH Schwab + TOS reconciliation; 3 Codex rounds NO_NEW_CRITICAL_MAJOR — ties C.A for fastest Phase 12 chain; ZERO ACCEPT-WITH-RATIONALE; ZERO Co-Authored-By footer drift; 23 commits; THIRD Phase 12 Sub-bundle C sub-sub-bundle; Sub-bundle C 75% shipped)
 
 **Sub-sub-bundle C.C SHIPPED 2026-05-16** at `0b9d253` (integration merge of `phase12-bundle-C-C-auto-correction-service-and-flow-pivot` worktree branch via `--no-ff` to preserve Codex-fix chain). Branch HEAD `97fc8b9` (23 commits = 12 task-impl T-C.1..T-C.11 + T-C.3.1 + 1 UP035/UP017/I001/F401/SIM118/B905/N802 ruff baseline-restore + 3 pre-Codex review fixes (SC-1 sandbox-threading + SC-2 T-C.11 E2E scope + SC-1 follow-up sandbox-precedence) + 4 Codex-R1-fix + 1 Codex-R2-fix + 1 Codex-R3-polish + 1 return-report on top of dispatch brief `5ed3e74`). Operator-dispatched implementer per orchestrator brief at `5ed3e74`.
