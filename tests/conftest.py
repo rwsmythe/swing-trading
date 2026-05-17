@@ -29,11 +29,15 @@ from swing.data.models import Fill, Trade
 _TOKEN_HEX_PATTERN = re.compile(rb"[a-fA-F0-9]{32,}")
 _TOKEN_B64_PATTERN = re.compile(rb"[A-Za-z0-9+/=]{24,}")
 # Field-value scrubber for token-bearing JSON keys in response bodies.
+# Sub-bundle 1 T-1.0 extension: id_token / code / client_id / bearerToken added
+# per plan §F.3 + Codex R3 Critical #1 LOCK widening.
 _RESPONSE_FIELD_SCRUBBERS: tuple[tuple[re.Pattern[bytes], bytes], ...] = (
     # Quoted JSON field values for tokens / account identifiers. The pattern
     # matches `"key"\s*:\s*"<value>"` and replaces the value slot.
     (
-        re.compile(rb'("(?:access_token|refresh_token|client_secret)"\s*:\s*")[^"]*(")'),
+        re.compile(
+            rb'("(?:access_token|refresh_token|client_secret|id_token|code|client_id|bearerToken)"\s*:\s*")[^"]*(")',
+        ),
         rb'\1<REDACTED>\2',
     ),
     (
@@ -45,6 +49,16 @@ _RESPONSE_FIELD_SCRUBBERS: tuple[tuple[re.Pattern[bytes], bytes], ...] = (
         rb'\1<HASHED_REDACTED>\2',
     ),
 )
+
+# Sub-bundle 1 T-1.0 — URI/path sanitization. Schwab Trader API account-scoped
+# endpoints embed accountHash in URL path segments (e.g.,
+# `/trader/v1/accounts/{accountHash}/orders`). `filter_query_parameters` does
+# NOT scrub path segments; Codex R2 Critical #1 + plan §F.3 LOCK require a
+# `before_record_request` callable that rewrites `request.uri` before the
+# cassette captures it.
+_ACCOUNT_PATH_PATTERN = re.compile(r"(/accounts/)[^/?#]+")
+_HEX_PATH_PATTERN = re.compile(r"\b[a-fA-F0-9]{32,}\b")
+_BASE64_PATH_PATTERN = re.compile(r"\b[A-Za-z0-9+/=]{40,}={0,2}\b")
 
 
 def _redact_schwab_response_body(response: dict) -> dict:
@@ -84,29 +98,67 @@ def _redact_schwab_response_body(response: dict) -> dict:
     return response
 
 
+def _sanitize_schwab_request(request):
+    """`before_record_request` callback (Sub-bundle 1 T-1.0; Codex R2 C#1).
+
+    Scrubs accountHash + bare token-shape substrings from `request.uri`
+    BEFORE the cassette captures the request. `filter_query_parameters` only
+    handles query-string params; Schwab Trader API embeds accountHash in URL
+    PATH segments (e.g., `/trader/v1/accounts/{accountHash}/orders`) which
+    that filter cannot reach.
+
+    Mutates the request in-place + returns it (vcrpy contract).
+    """
+    uri = getattr(request, "uri", None) or ""
+    if not uri:
+        return request
+    sanitized = _ACCOUNT_PATH_PATTERN.sub(r"\1<account>", uri)
+    sanitized = _HEX_PATH_PATTERN.sub("<hex-token>", sanitized)
+    sanitized = _BASE64_PATH_PATTERN.sub("<base64-token>", sanitized)
+    if sanitized != uri:
+        try:
+            request.uri = sanitized
+        except AttributeError:
+            # vcrpy Request is a mutable object on supported versions; in the
+            # unlikely event we're called with a read-only request shape just
+            # return the unmutated original (cassette will surface the leak
+            # via the post-record sentinel-leak audit).
+            pass
+    return request
+
+
 @pytest.fixture
 def vcr_config():
     """pytest-recording / VCR.py configuration applied to any `@pytest.mark.vcr`
     test that does NOT supply its own filter overrides.
 
-    Filters cover: Authorization / Cookie headers; OAuth query params
-    (`code`, `refresh_token`, `client_id`, `client_secret`, `redirect_uri`,
-    `access_token`, `auth`); OAuth form-body params; response-body token
-    + account-identifier substrings via `_redact_schwab_response_body`.
+    Filters cover: Authorization / Cookie / Schwab custom headers; OAuth query
+    params (`code`, `refresh_token`, `client_id`, `client_secret`,
+    `redirect_uri`, `access_token`, `auth`, `accountNumber`, `accountHash`);
+    OAuth form-body params; response-body token + account-identifier
+    substrings via `_redact_schwab_response_body`; URI/path accountHash
+    segments + bare token-shape via `_sanitize_schwab_request`.
 
-    Per plan §G.3 lines 886-905 + CLAUDE.md gotcha "Finviz Elite API token
-    storage" precedent.
+    Per plan §G.3 lines 886-905 + Sub-bundle 1 T-1.0 plan §F.3 LOCK widening
+    (Codex R2 Critical #1 + Codex R3 Critical #1 + Codex R4 Minor #1) +
+    CLAUDE.md gotcha "Finviz Elite API token storage" precedent.
     """
     return {
-        "filter_headers": ["authorization", "cookie", "set-cookie"],
+        "filter_headers": [
+            "authorization", "cookie", "set-cookie",
+            "schwab-client-correl-id", "schwab-client-channel",
+            "schwab-client-customerid",
+        ],
         "filter_query_parameters": [
             "code", "refresh_token", "client_id", "client_secret",
             "redirect_uri", "access_token", "auth",
+            "accountNumber", "accountHash",
         ],
         "filter_post_data_parameters": [
             "code", "refresh_token", "client_id", "client_secret",
-            "redirect_uri",
+            "redirect_uri", "access_token",
         ],
+        "before_record_request": _sanitize_schwab_request,
         "before_record_response": _redact_schwab_response_body,
     }
 
