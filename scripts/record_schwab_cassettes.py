@@ -180,6 +180,15 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=200,
         help="schwabdev maxResults arg for account_orders. Default 200.",
     )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="swing.config.toml",
+        help=(
+            "Path to swing.config.toml (mirrors `swing --config` CLI flag). "
+            "Default: swing.config.toml relative to cwd."
+        ),
+    )
 
     ns = parser.parse_args(argv)
     # Validate order-types post-parse.
@@ -199,10 +208,16 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 # Per Codex R5 M#2 + R6 M#1 — these are the seams Test 7 patches.
 # ---------------------------------------------------------------------------
 
-def _load_cfg() -> Any:
-    """Loads project config via `swing.config.load()`."""
+def _load_cfg(config_path: Path | None = None) -> Any:
+    """Loads project config via `swing.config.load(config_path)`.
+
+    Mirrors the `swing` CLI default (`swing.config.toml` relative to cwd
+    per `swing/cli.py:178`). Callers may override via `--config` arg.
+    """
     from swing.config import load
-    return load()
+    if config_path is None:
+        config_path = Path("swing.config.toml")
+    return load(config_path)
 
 
 def _apply_overrides_thin(cfg: Any) -> Any:
@@ -238,13 +253,15 @@ def _construct_client_thin(
     )
 
 
-def _bootstrap_authenticated_client(*, environment: str) -> Any:
+def _bootstrap_authenticated_client(
+    *, environment: str, config_path: Path | None = None,
+) -> Any:
     """Bootstrap path — load cfg → apply overrides → resolve creds → construct.
 
     Test 7 patches the four thin helpers above + asserts this function
     invokes them in order with the exact contracts the gate documents.
     """
-    cfg_pre = _load_cfg()
+    cfg_pre = _load_cfg(config_path)
     cfg = _apply_overrides_thin(cfg_pre)
     client_id, client_secret = _resolve_credentials_thin(
         cfg, environment, allow_prompt=False,
@@ -539,7 +556,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-    client = _bootstrap_authenticated_client(environment=args.environment)
+    client = _bootstrap_authenticated_client(
+        environment=args.environment,
+        config_path=Path(args.config),
+    )
     vcr_kwargs = _load_shared_vcr_kwargs()
 
     failures = 0
