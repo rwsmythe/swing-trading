@@ -18,7 +18,7 @@
 - **`split_into_partials` payload** — list of N partial-fill dicts each carrying `{qty, price, fill_datetime}` per Sub-bundle C plan §C.6 + `swing/trades/reconciliation_ambiguity_choices.py:_PARTIAL_PAYLOAD_SHAPE`.
 - **`resolved_by` string** — free-TEXT column on `reconciliation_discrepancies` (NO schema CHECK). NEW value `'auto_tier1_multi_leg'` introduced this dispatch to distinguish auto-redirect from manual `split_into_partials` (`'operator'`) and from Pass-1 auto-correct (`'auto'`).
 - **Banner advisory** — read-only badge on every base-layout-mounted page surfacing the count of multi-leg auto-corrections from the most-recent `reconciliation_run`. V1 LOCK: window = most-recent run; clears on next run. V2 window alternatives (7-day rolling / persists-until-acknowledged) banked at §14.
-- **Flow-pivot loop** — `_pivot_classify_and_dispatch_for_run` in `swing/trades/reconciliation_auto_correct.py:1102+` — shared between Schwab + TOS reconciliation per Sub-bundle C.C; iterates discrepancies under SAVEPOINT-per-discrepancy discipline.
+- **Flow-pivot loop** — `_pivot_classify_and_dispatch_for_run` in `swing/trades/schwab_reconciliation.py:418` (lazy-imported by `swing/trades/reconciliation.py:471` for the TOS reconciliation path); shared between Schwab + TOS reconciliation per Sub-bundle C.C; iterates discrepancies under SAVEPOINT-per-discrepancy discipline. (Codex R2 minor 2 — corrected from R1's stale `reconciliation_auto_correct.py` reference.)
 
 ---
 
@@ -461,7 +461,7 @@ Final state has `ambiguity_kind = 'multi_partial_vs_consolidated'` (NOT NULL) + 
 
 ### §7.4 Flow-pivot loop branching
 
-`_pivot_classify_and_dispatch_for_run` (currently at `reconciliation_auto_correct.py:1102+`) is extended:
+`_pivot_classify_and_dispatch_for_run` (lives at `swing/trades/schwab_reconciliation.py:418`; lazy-imported by `swing/trades/reconciliation.py:471` for the TOS path — Codex R1 M1 + R2 minor 2 audit) is extended:
 
 ```python
 def _pivot_classify_and_dispatch_for_run(conn, run_id, environment, ...):
@@ -490,11 +490,14 @@ def _pivot_classify_and_dispatch_for_run(conn, run_id, environment, ...):
                     recipe = classification.auto_redirect_recipe
                     
                     # Step 1: stamp pending_ambiguity_resolution.
+                    # Codex R2 minor 1 — _stamp_pending_ambiguity_inner does
+                    # NOT accept candidate_choices (current signature is
+                    # discrepancy_id + ambiguity_kind + resolution_reason +
+                    # allow_pending_update). Remove the stale kwarg.
                     _stamp_pending_ambiguity_inner(
                         conn,
                         discrepancy_id=disc.discrepancy_id,
                         ambiguity_kind=classification.ambiguity_kind,
-                        candidate_choices=classification.candidate_choices,
                         resolution_reason=classification.correction_reason,
                     )
                     
@@ -540,21 +543,37 @@ If `_apply_tier2_resolution_inner` raises (e.g., validator rejection on edge cas
 
 Per CLAUDE.md gotcha + C.C lesson #2: sandbox short-circuit MUST live in the inner (caller-tx) function, NOT outer. The existing `_apply_tier2_resolution_inner` does NOT currently sandbox-short-circuit (only `_apply_tier1_correction_inner` does — per the existing tier-1-only-domain-write story). For Phase 12.5 #1's auto-redirect path, sandbox short-circuit IS REQUIRED because the auto-redirect DOES write journal rows in production.
 
-**§7.6.1 LOCKED pattern (Codex R1 M3 fix — SAVEPOINT ROLLBACK discipline):**
+**§7.6.1 LOCKED pattern (Codex R1 M3 + R2 M2 fix — SAVEPOINT ROLLBACK discipline + explicit `environment` threading):**
 
-Add sandbox short-circuit to `_apply_tier2_resolution_inner` GATED ON `applied_by_override == 'auto'` (auto-redirect path only; manual operator path proceeds — operators on sandbox can still test the manual menu). The short-circuit pattern preserves the discrepancy's pre-pivot state via SAVEPOINT ROLLBACK:
+Add sandbox short-circuit to `_apply_tier2_resolution_inner` GATED ON `applied_by_override == 'auto'` (auto-redirect path only; manual operator path proceeds — operators on sandbox can still test the manual menu). The short-circuit pattern preserves the discrepancy's pre-pivot state via SAVEPOINT ROLLBACK.
+
+**Codex R2 M2 LOCK — `environment` threading:** the existing `_apply_tier2_resolution_inner` signature does NOT carry `environment`. T-1.4 + T-1.6 EXPLICITLY add `environment: str = 'production'` to the inner signature AND thread it from both (a) the public outer `apply_tier2_resolution` (which already accepts `environment`) AND (b) the pivot-loop callers at `_pivot_classify_and_dispatch_for_run` (currently in `schwab_reconciliation.py:418`). The pivot loop reads `environment` from its own caller-supplied parameter — schwab_reconciliation already passes environment through the run.
 
 ```python
-def _apply_tier2_resolution_inner(conn, *, discrepancy_id, ..., applied_by_override=None, ...):
+def _apply_tier2_resolution_inner(
+    conn,
+    *,
+    discrepancy_id,
+    choice_code,
+    operator_custom_payload=None,
+    operator_reason,
+    risk_policy_id=None,
+    schwab_api_call_id=None,
+    # NEW IN PHASE 12.5 #1:
+    applied_by_override=None,
+    correction_action_override=None,
+    resolved_by_override=None,
+    environment="production",          # NEW; explicit kwarg per Codex R2 M2
+):
     # SELECT discrepancy first (per Sub-bundle C.C lesson #3 SELECT-first idempotency)
     disc = _select_discrepancy(conn, discrepancy_id)
     
     # NEW: sandbox short-circuit gated on auto-redirect path.
     if applied_by_override == "auto" and environment == "sandbox":
         # Caller MUST roll back the savepoint to undo the prior
-        # _stamp_pending_ambiguity_inner mutation. Return a NO-OP result
-        # with notes carrying the rationale; the pivot-loop SAVEPOINT
-        # ROLLBACK contract (per §7.5) handles the actual rollback.
+        # _stamp_pending_ambiguity_inner mutation. Raise the typed
+        # exception; the pivot-loop SAVEPOINT ROLLBACK contract (per
+        # §7.5) handles the actual rollback.
         logger.warning(
             "auto-redirect short-circuit under sandbox for discrepancy_id=%s "
             "(applied_by_override='auto'); SAVEPOINT will be rolled back",
@@ -564,6 +583,27 @@ def _apply_tier2_resolution_inner(conn, *, discrepancy_id, ..., applied_by_overr
     
     # ... existing flow ...
 ```
+
+**Pivot-loop call-site update (T-1.5 LOCKED):**
+
+```python
+# Inside _pivot_classify_and_dispatch_for_run(conn, ..., environment, ...):
+_apply_tier2_resolution_inner(
+    conn,
+    discrepancy_id=disc.discrepancy_id,
+    choice_code=recipe["choice_code"],
+    operator_custom_payload=recipe["payload"],
+    operator_reason=f"multi-leg auto-redirect: {classification.correction_reason}",
+    applied_by_override=recipe["applied_by_override"],
+    correction_action_override=recipe["correction_action_override"],
+    resolved_by_override=recipe["resolved_by"],
+    risk_policy_id=...,
+    schwab_api_call_id=...,
+    environment=environment,           # Codex R2 M2 — thread explicitly
+)
+```
+
+**Discriminating test pattern (Case J)** — must instantiate `_apply_tier2_resolution_inner` (NOT the outer `apply_tier2_resolution`) inside a caller-tx context with `environment='sandbox'` + `applied_by_override='auto'` + assert the typed exception is raised. The outer `apply_tier2_resolution` is exercised by separate manual-tier-2 sandbox tests verifying the manual path is NOT short-circuited.
 
 **Pivot-loop branch handling** (§7.4 extension):
 
@@ -634,8 +674,16 @@ def _fetch_recent_multi_leg_auto_correction_count(
         return 0
     latest_run_id = row[0]
     
+    # Codex R2 M1 fix: use COUNT(DISTINCT rd.discrepancy_id) because
+    # _handle_split_into_partials writes N+1 correction rows per logical
+    # auto-redirect (1 deletion-anchor + N partial-insertion rows). A
+    # naive COUNT(*) would inflate the banner count and similarly inflate
+    # any briefing.md / metrics consumers that aggregate "auto-correction
+    # count" semantics. The banner counts LOGICAL corrections (one per
+    # discrepancy), not correction ROWS.
     count_row = conn.execute(
-        "SELECT COUNT(*) FROM reconciliation_corrections rc "
+        "SELECT COUNT(DISTINCT rd.discrepancy_id) "
+        "FROM reconciliation_corrections rc "
         "JOIN reconciliation_discrepancies rd "
         "ON rc.discrepancy_id = rd.discrepancy_id "
         "WHERE rc.reconciliation_run_id = ? "
@@ -736,12 +784,27 @@ Less than Sub-bundle C's 9 rounds because §1 LOCKs bound the architectural surf
 
 ## §10 Discriminating-example walkthroughs
 
-**Case A — single-order multi-leg, predicate fires (n=1, len(executions)=3):**
+**Case A — single-order multi-leg, predicate fires (n=1, len(executions)=3); reachable via Pass-1-failure-by-date-or-qty:**
 
+**Reachability scenario (Codex R2 M3 LOCK):** Pass-1 must EMIT an `unmatched_*_fill` discrepancy for the n=1 reroute path to be reached. This requires Pass-1 to find NO match. Concrete realistic scenarios:
+
+- (a) Operator typed journal `fill_datetime='2026-05-10'` but actual Schwab execution date is `'2026-05-11'` (operator typo or timezone-rollover edge). Pass-1's (ticker, date, qty) match-tuple fails on date → emit `unmatched_open_fill` with `actual_value_json={"matched": null}` (per existing Sub-bundle 1.5 emit shape).
+- (b) Operator typed journal `quantity=200` but actual Schwab `filledQuantity` is `198` due to operator estimation rounding. Pass-1's qty match fails → emit `unmatched_open_fill`.
+- (c) Operator typed journal `ticker='YOU'` but actual Schwab ticker code was `'YOU.X'` (extended-hours convention). Pass-1's ticker match fails → emit `unmatched_open_fill`.
+- (d) Sub-bundle 1 mapper-coherence-check rejection silently dropped Schwab's `executions` field for ALL Pass-1 candidates → Pass-1 falls back to order-grain logic per Path B sentinel → emits `unmatched_open_fill` despite the journal price aligning with execution VWAP. Pass-2 re-fetches with fresh window → finds the same Schwab order (now executions populated post-Sub-bundle-1.5 fix) → n=1 reroute kicks in.
+
+For Case A's specific numerics:
 - Schwab: 1 order, FILLED LIMIT, executions=[(qty=100, $5.30), (qty=50, $5.31), (qty=50, $5.30)].
-- Journal: consolidated fill qty=200 @ $5.305.
-- Predicate: total_qty=200 ✓ matches journal; VWAP = (100*5.30 + 50*5.31 + 50*5.30) / 200 = 1061 / 200 = 5.305. journal aligned ✓. All legs within $0.01 of VWAP ✓.
-- Result: tier=2, ambiguity_kind=multi_partial_vs_consolidated, auto_redirect_recipe={choice_code='split_into_partials', payload=[3 partials], resolved_by='auto_tier1_multi_leg', ...}.
+- Journal: consolidated fill qty=200 @ $5.305 (BUT one of scenarios (a)-(d) caused Pass-1 to fail).
+- Pass-2 widens match window → finds 1 candidate Schwab order.
+- Predicate fires:
+  - n=1 with `len(executions)=3 >= 2` → triggers §6.5 reroute path.
+  - total_qty=200 ✓ matches journal qty=200.
+  - VWAP = (100*5.30 + 50*5.31 + 50*5.30) / 200 = $5.3025 (NOTE: corrected from prior version's 5.305 typo) → journal aligned within $0.01 ✓.
+  - All 3 legs within $0.01 of VWAP ✓.
+- Classifier output: tier=2, ambiguity_kind RECLASSIFIED from `'unknown_schwab_subtype'` (default for n=1) to `'multi_partial_vs_consolidated'`, auto_redirect_recipe={choice_code='split_into_partials', payload=[3 partials], resolved_by='auto_tier1_multi_leg', applied_by_override='auto', correction_action_override='auto_applied'}.
+
+**Discriminating regression test:** plant the Pass-2 fixture EXPLICITLY (don't synthesize via Pass-1 invocation — that's E2E test scope at T-1.11). Test fixture supplies `source_payload=[{order_id, quantity=200, price=$5.30, executions=[3 legs]}]` + journal_row + assert classifier output shape.
 
 **Case B — multi-order single-leg-each, predicate fires (n=2, len=1+1 = 2 legs):**
 
@@ -840,6 +903,10 @@ Reconciliation status:
 - M tier-2 ambiguity discrepancies pending operator review.
 - K multi-leg auto-redirects applied this run.
 ```
+
+**Counter semantics (Codex R2 M1 — LOGICAL not ROW-level):** `K` is `COUNT(DISTINCT discrepancy_id)` for `resolved_by='auto_tier1_multi_leg'` rows in this run. `_step_export`'s inline SQL uses the same `COUNT(DISTINCT)` pattern as §8.2 to avoid double-counting `_handle_split_into_partials`'s N+1 correction rows.
+
+**Forward-binding lesson family (§16 #8):** any new metric/counter aggregating reconciliation_corrections rows MUST decide ROW-level vs LOGICAL semantics at writing-plans time. The `_handle_split_into_partials` N+1-rows-per-logical-correction shape is a recurring trap. Default to `COUNT(DISTINCT discrepancy_id)` for "auto-correction count" semantics; use `COUNT(*)` only when the metric INTENTIONALLY counts rows (e.g., total writes per run).
 
 ### §11.3 Existing test forward-compatibility
 
