@@ -121,6 +121,30 @@ def _compute_execution_price(so: Any) -> float | None:
     return sum(leg.price * leg.quantity for leg in executions) / total_qty
 
 
+def _resolve_match_quantity(so: Any) -> float:
+    """Sub-bundle 1 T-1.5 — execution-grain quantity match per Codex R1 M#2.
+
+    Per spec §5.3 + plan §A.1.5. Pure function.
+
+    - ``so.executions`` populated (truthy) → returns ``sum(leg.quantity for
+      leg in executions)``. Closes the in-row quantity comparison defect
+      for partial fills where ``order.quantity`` reflects the OPEN order
+      size, not the FILLED quantity (e.g., ordered 200 shares but only 100
+      filled in a single leg of an in-flight order).
+    - else (``None`` or empty list) → returns ``so.quantity`` (V1 behavior
+      preserved for legacy V1 mapper path / sandbox / mapper-coherence-
+      check collapse case).
+
+    Comparator T-1.7 swaps the V1 ``so.quantity`` reference at
+    ``schwab_reconciliation.py:658`` for this helper to admit partial
+    fills into the match candidate pool correctly.
+    """
+    executions = getattr(so, "executions", None)
+    if executions:
+        return sum(leg.quantity for leg in executions)
+    return so.quantity
+
+
 class CallerHeldTransactionError(RuntimeError):
     """Raised when a caller invokes `run_schwab_reconciliation` while holding
     an open transaction.
