@@ -559,6 +559,31 @@ def _apply_tier2_resolution_inner(conn, *, choice_code, applied_by_override=None
             f"got ambiguity_kind={disc.ambiguity_kind!r} on "
             f"discrepancy_id={discrepancy_id}"
         )
+    # Codex R6 M1 LOCK — terminal-state idempotency MUST be shape-aware:
+    # if the caller supplies auto-redirect override combo but the
+    # persisted discrepancy reached terminal state via the MANUAL
+    # operator-driven split_into_partials path (resolved_by='operator'),
+    # the idempotent-return path would silently succeed despite the
+    # mismatched intent. Reject with InvalidOverrideComboError.
+    _TERMINAL_RESOLUTIONS = {
+        "auto_corrected_from_schwab", "operator_resolved_ambiguity",
+        "operator_overridden", "journal_corrected", "source_treated_canonical",
+        "manual_override", "acknowledged_immaterial",
+    }
+    if (
+        resolved_by_override == "auto_tier1_multi_leg"
+        and disc.resolution in _TERMINAL_RESOLUTIONS
+        and disc.resolved_by != "auto_tier1_multi_leg"
+    ):
+        raise InvalidOverrideComboError(
+            f"resolved_by_override='auto_tier1_multi_leg' against "
+            f"terminal discrepancy_id={discrepancy_id} requires the "
+            f"persisted parent.resolved_by='auto_tier1_multi_leg'; got "
+            f"resolution={disc.resolution!r}, resolved_by={disc.resolved_by!r} — "
+            f"this likely indicates a mismatched-intent re-invocation against "
+            f"a manually-resolved discrepancy. Use tier-3 override-correction "
+            f"if the operator's correction was wrong."
+        )
     # ... continue with terminal-state idempotency + sandbox short-circuit
     # + handler dispatch ...
 ```
@@ -699,8 +724,19 @@ def _apply_tier2_resolution_inner(
     resolved_by_override=None,
     environment="production",          # NEW; explicit kwarg per Codex R2 M2
 ):
+    # Codex R6 minor 1 LOCK — guard fires BEFORE sandbox short-circuit so
+    # developer-bug override combos surface even under sandbox runs (don't
+    # silently absorb developer bugs into sandbox no-op).
+    _validate_override_combo(
+        choice_code=choice_code,
+        applied_by_override=applied_by_override,
+        correction_action_override=correction_action_override,
+        resolved_by_override=resolved_by_override,
+    )
     # SELECT discrepancy first (per Sub-bundle C.C lesson #3 SELECT-first idempotency)
     disc = _select_discrepancy(conn, discrepancy_id)
+    # Post-SELECT secondary invariant checks (R5 M1 + R6 M1 LOCK) here
+    # — same logic as §7.3.1.a; consolidated into one place at impl time.
     
     # NEW: sandbox short-circuit gated on auto-redirect path.
     if applied_by_override == "auto" and environment == "sandbox":
