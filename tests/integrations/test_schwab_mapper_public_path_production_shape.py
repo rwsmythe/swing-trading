@@ -1,4 +1,4 @@
-"""Sub-bundle 1.5 Codex R1 M#3+M#4 -- public-path integration coverage.
+"""Sub-bundle 1.5 Codex R1 M#3+M#4 + R2 m#1 -- public-path integration coverage.
 
 Existing regression tests at:
   - tests/integrations/test_schwab_mapper_filled_quantity_zero_early_exit.py
@@ -34,6 +34,10 @@ accountHash / hashValue in the envelopes); instrumentId / leg-level
 prices retained because they're shape-illustrative.
 """
 from __future__ import annotations
+
+import logging
+
+import pytest
 
 from swing.integrations.schwab.mappers import map_orders_to_fill_candidates
 from swing.integrations.schwab.models import (
@@ -228,19 +232,40 @@ def _replaced_stop_placeholder_envelope() -> dict:
     }
 
 
-# Test 1 (Major 3+4 BINDING) -- multi-order public-path round-trip.
-def test_map_orders_public_path_mixed_production_shapes() -> None:
+# Test 1 (Major 3+4 BINDING + R2 m#1 caplog assertion) -- multi-order
+# public-path round-trip with WARN-silence pin on placeholder envelopes.
+def test_map_orders_public_path_mixed_production_shapes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """Public-path integration: feed the fuller production envelopes
     (FILLED LIMIT + CANCELED STOP placeholder + REPLACED STOP placeholder)
     through `map_orders_to_fill_candidates` and assert each emerges with
     the expected `SchwabOrderResponse.executions` shape.
+
+    Codex R2 m#1 -- pins the WARN-silence contract end-to-end through the
+    PUBLIC API. The canary's 'anomalous shape' WARN must NOT fire for the
+    known-benign placeholder population (CANCELED + REPLACED STOP with
+    leg.price=0 sentinel). Previously the docstring claimed this but the
+    test did not actually exercise caplog. Now it does.
     """
     raw_orders = [
         _filled_limit_order_envelope(),
         _canceled_stop_placeholder_envelope(),
         _replaced_stop_placeholder_envelope(),
     ]
-    mapped = map_orders_to_fill_candidates(raw_orders)
+    with caplog.at_level(
+        logging.WARNING, logger="swing.integrations.schwab.mappers"
+    ):
+        mapped = map_orders_to_fill_candidates(raw_orders)
+    # R2 m#1 pin: ZERO 'anomalous shape' WARN records fire end-to-end
+    # for the placeholder population (early-exit gate silent path).
+    assert not any(
+        "anomalous shape" in record.getMessage() for record in caplog.records
+    ), (
+        "Public-path placeholder shapes must early-exit silently; "
+        f"got 'anomalous shape' WARN records: "
+        f"{[r.getMessage() for r in caplog.records if 'anomalous shape' in r.getMessage()]}"
+    )
     # All 3 orders mapped (no order envelopes dropped at the order level).
     assert len(mapped) == 3
     # Each is a SchwabOrderResponse.
