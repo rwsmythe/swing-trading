@@ -32,6 +32,7 @@ from swing.integrations.schwab.client import (
 from swing.integrations.schwab.models import (
     OhlcvBar,
     SchwabAccountResponse,
+    SchwabExecutionLeg,
     SchwabOrderResponse,
     SchwabPriceHistoryWindow,
     SchwabQuoteResponse,
@@ -229,6 +230,14 @@ def map_orders_to_fill_candidates(response: Any) -> list[SchwabOrderResponse]:
             float(price_raw) if price_raw is not None else None
         )
 
+        # Sub-bundle 1 T-1.3 — extract orderActivityCollection[].executionLegs[]
+        # per spec §4.3 + §5.3 mapper-coherence rule. Defensive parsing
+        # (never raises on malformed leg); coherence check distinguishes
+        # legitimate partial fills from malformed leg totals.
+        executions = _extract_executions_from_order_raw(
+            raw, order_id=order_id,
+        )
+
         out.append(SchwabOrderResponse(
             order_id=order_id,
             status=status,
@@ -238,8 +247,133 @@ def map_orders_to_fill_candidates(response: Any) -> list[SchwabOrderResponse]:
             quantity=quantity,
             order_type=order_type,
             price=price,
+            executions=executions,
         ))
     return out
+
+
+def _extract_executions_from_order_raw(
+    raw: dict, *, order_id: str,
+) -> list[SchwabExecutionLeg] | None:
+    """Sub-bundle 1 T-1.3 — extract orderActivityCollection[].executionLegs[]
+    legs from a single Schwab order dict.
+
+    Per spec §4.3 + §5.3 mapper-coherence rule:
+
+    1. ``orderActivityCollection`` missing / non-list / empty → ``None``
+       (V1 backward compat: legacy mapper path; sandbox; older responses).
+    2. Per activity: non-dict → skip + warn; non-EXECUTION activityType →
+       skip silently.
+    3. Per leg under EXECUTION activity: non-dict → skip + warn; dataclass
+       validator raises → drop leg + warn; remaining legs preserved.
+    4. After collecting: if collected list empty → ``None`` (no legs
+       survived).
+    5. **Coherence check (spec §5.3):** if non-empty AND ``filledQuantity``
+       is present AND ``abs(sum(legs.quantity) - filledQuantity) >= 1e-9``
+       → log WARNING (with order_id + observed sum + filledQuantity) +
+       collapse to ``None``. Otherwise return the collected list.
+    6. ``filledQuantity`` absent: permissive — treat legs as authoritative;
+       no coherence check fires.
+
+    Plan-author lock (plan §A.1.3): ``filled_quantity`` is NOT added to
+    SchwabOrderResponse — derived implicitly at mapper coherence-check time
+    + discarded. Comparator uses ``_resolve_match_quantity`` for
+    ``sum(legs.quantity)`` (T-1.5). Minimizes dataclass surface area +
+    preserves 8-positional backward compat.
+    """
+    activities = _opt(raw, "orderActivityCollection")
+    if not isinstance(activities, list) or not activities:
+        return None
+
+    filled_qty_raw = _opt(raw, "filledQuantity")
+    try:
+        filled_qty: float | None = (
+            float(filled_qty_raw) if filled_qty_raw is not None else None
+        )
+    except (TypeError, ValueError):
+        filled_qty = None
+
+    collected: list[SchwabExecutionLeg] = []
+    for ai, activity in enumerate(activities):
+        if not isinstance(activity, dict):
+            _log.warning(
+                "map_orders_to_fill_candidates: order %s activity[%d] "
+                "non-dict (%s); skipping",
+                order_id, ai, type(activity).__name__,
+            )
+            continue
+        if activity.get("activityType") != "EXECUTION":
+            # Silent skip for non-EXECUTION (ORDER_ACTION etc.) — Schwab
+            # emits these for cancel / replace events that are not
+            # execution-grain data.
+            continue
+        legs = activity.get("executionLegs", [])
+        if not isinstance(legs, list):
+            _log.warning(
+                "map_orders_to_fill_candidates: order %s activity[%d] "
+                "executionLegs non-list (%s); skipping",
+                order_id, ai, type(legs).__name__,
+            )
+            continue
+        for li, leg_raw in enumerate(legs):
+            if not isinstance(leg_raw, dict):
+                _log.warning(
+                    "map_orders_to_fill_candidates: order %s "
+                    "activity[%d].executionLegs[%d] non-dict (%s); skipping",
+                    order_id, ai, li, type(leg_raw).__name__,
+                )
+                continue
+            try:
+                leg = SchwabExecutionLeg(
+                    leg_id=int(leg_raw.get("legId", 0)),
+                    price=float(leg_raw.get("price", 0)),
+                    quantity=float(leg_raw.get("quantity", 0)),
+                    mismarked_quantity=(
+                        float(leg_raw["mismarkedQuantity"])
+                        if "mismarkedQuantity" in leg_raw
+                        and leg_raw["mismarkedQuantity"] is not None
+                        else None
+                    ),
+                    instrument_id=(
+                        int(leg_raw["instrumentId"])
+                        if "instrumentId" in leg_raw
+                        and leg_raw["instrumentId"] is not None
+                        else None
+                    ),
+                    time=str(leg_raw.get("time", "")),
+                )
+            except (ValueError, TypeError) as exc:
+                # Defense-in-depth per spec §4.3 — dataclass validator
+                # rejected the leg shape. Drop + warn; remaining legs may
+                # still surface.
+                _log.warning(
+                    "map_orders_to_fill_candidates: order %s "
+                    "activity[%d].executionLegs[%d] failed validator (%s); "
+                    "dropping leg",
+                    order_id, ai, li, type(exc).__name__,
+                )
+                continue
+            collected.append(leg)
+
+    if not collected:
+        return None
+
+    # Coherence check (spec §5.3): if filledQuantity present + legs sum
+    # diverges, collapse to None + warn. Comparator's Path B branch then
+    # emits unmatched_*_fill with execution_unavailable=true sentinel
+    # rather than auto-correcting from potentially-malformed leg data.
+    if filled_qty is not None:
+        legs_sum = sum(leg.quantity for leg in collected)
+        if abs(legs_sum - filled_qty) >= 1e-9:
+            _log.warning(
+                "map_orders_to_fill_candidates: order %s coherence-check "
+                "failed: sum(legs.quantity)=%g != filledQuantity=%g; "
+                "collapsing executions=None",
+                order_id, legs_sum, filled_qty,
+            )
+            return None
+
+    return collected
 
 
 def map_transactions_to_cash_movement_candidates(
