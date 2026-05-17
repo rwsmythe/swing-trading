@@ -363,7 +363,20 @@ def build_schwab_status_vm(
     if now is None:
         now = datetime.now(UTC)
 
-    tokens_path = _user_home() / "swing-data" / f"schwab-tokens.{env}.db"
+    home = _user_home()
+    tokens_path = home / "swing-data" / f"schwab-tokens.{env}.db"
+    # Spec §7.1 tokens_db_path field: "display-only, masked if path
+    # contains user-profile prefix." Codex R2 Major #1 fix: render the
+    # path as ``~/swing-data/schwab-tokens.{env}.db`` when it's under
+    # ``_user_home()``, hiding the operator's local username/home
+    # directory from the operator-visible page. The internal ``tokens_
+    # path`` object stays unmasked for filesystem reads (existence
+    # check + metadata parse below).
+    try:
+        rel = tokens_path.relative_to(home)
+        tokens_db_path_display = f"~/{rel.as_posix()}"
+    except ValueError:
+        tokens_db_path_display = str(tokens_path)
 
     conn = sqlite3.connect(db_path)
     try:
@@ -491,7 +504,7 @@ def build_schwab_status_vm(
         environment=env,
         state=state,
         state_reason=reason,
-        tokens_db_path=str(tokens_path),
+        tokens_db_path=tokens_db_path_display,
         refresh_token_expires_at=refresh_expires_at,
         refresh_token_days_remaining=refresh_days_remaining,
         refresh_token_severity=refresh_severity,

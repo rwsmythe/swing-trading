@@ -562,6 +562,53 @@ def test_t25_originguard_strict_mode_allows_read_only_get(
 # order_type-specific strings leak at this layer.
 
 
+def test_tokens_db_path_masked_when_under_user_home(
+    seeded_db, monkeypatch, tmp_path,
+):
+    """Codex R2 Major #1 fix — spec §7.1 ``tokens_db_path`` is
+    'display-only, masked if path contains user-profile prefix'. Render
+    the path as ``~/swing-data/schwab-tokens.{env}.db`` when it's under
+    ``_user_home()`` instead of the full local path (which would leak
+    the operator's username/home directory into the operator-visible
+    page).
+
+    Discriminating: a future fork that regressed to rendering the full
+    ``str(tokens_path)`` would surface here as a username-substring
+    leak."""
+    cfg, cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
+    # Plant a tokens DB inside the isolated home so the masking branch
+    # fires (relative_to(home) succeeds → masked path).
+    _seed_tokens_db(tmp_path, "production")
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/schwab/status")
+    assert r.status_code == 200
+    # Masked form (~/swing-data/...) renders.
+    assert "~/swing-data/schwab-tokens.production.db" in r.text, (
+        f"masked tokens_db_path not rendered; response body slice: "
+        f"{r.text[:500]!r}"
+    )
+    # Username-bearing form (tmp_path's absolute path) does NOT appear.
+    # tmp_path always lives under the pytest tmpdir which includes a
+    # POSIX-style or Windows-style absolute prefix; assert the absolute
+    # path is NOT in the response (defensive check).
+    full_path_str = str(tmp_path / "swing-data" / "schwab-tokens.production.db")
+    # Windows path separators normalize to forward slash in our
+    # masked form, but the comparison string here is the full Path
+    # repr. Assert neither the POSIX nor Windows path leak forms.
+    assert full_path_str not in r.text, (
+        "operator's local tmp_path leaked into /schwab/status response"
+    )
+    # Also check the POSIX-style sibling (in case Path normalization
+    # differs between os.path and as_posix).
+    full_path_posix = full_path_str.replace("\\", "/")
+    if full_path_posix != full_path_str:
+        assert full_path_posix not in r.text, (
+            "operator's POSIX-style tmp_path leaked into response"
+        )
+
+
 def test_t26_no_order_type_specific_strings_in_status_page(
     seeded_db, monkeypatch, tmp_path,
 ):
