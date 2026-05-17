@@ -215,7 +215,11 @@ def test_post_with_credentials_and_callback_url_returns_204_hx_redirect(
         )
     assert r.status_code == 204
     target = r.headers.get("HX-Redirect", "")
-    assert target.startswith("/config"), (
+    # Post-Phase-12 Sub-bundle 2 Task T-2.4 retargets the HX-Redirect from
+    # /config?schwab_setup=ok → /schwab/status (T-B.7 deferred is now
+    # shipped via Sub-bundle 2 — the read-only Schwab integration status
+    # page).
+    assert target == "/schwab/status", (
         f"unexpected HX-Redirect target: {target!r}"
     )
 
@@ -789,3 +793,104 @@ def test_get_existing_tokens_db_warning_false_under_isolated_home(
     assert r.status_code == 200
     # The existing-tokens-db banner is ABSENT when no DB exists.
     assert 'data-banner="schwab-setup-existing-tokens-db"' not in r.text
+
+
+# ---------------------------------------------------------------------------
+# Post-Phase-12 Sub-bundle 2 Task T-2.4 — HX-Redirect retarget to /schwab/status
+# ---------------------------------------------------------------------------
+#
+# Per plan §B T-2.4 acceptance criteria (3 discriminating tests):
+#   1. Successful POST → 204 + HX-Redirect: /schwab/status header
+#      (NOT /config?schwab_setup=ok).
+#   2. /config?schwab_setup=ok query-param still renders 200 (tolerated
+#      silently per Codex R1 m#2 LOCK — one release window for stale
+#      browser tabs / bookmarks).
+#   3. /schwab/status target registered (HX-Redirect target route check
+#      per Phase 6 I3 inheritance).
+
+
+def test_t24_post_success_hx_redirect_targets_schwab_status(
+    seeded_db, monkeypatch, tmp_path,
+):
+    """T-2.4 test 1 — successful POST returns 204 + HX-Redirect to
+    /schwab/status (NOT the prior /config?schwab_setup=ok target).
+
+    Discriminating: a future fork that re-introduces the /config
+    target would surface here. The HX-Redirect target retarget is the
+    operational reason T-B.7 (this Sub-bundle) lifted from deferred —
+    operators now land on the read-only status page after re-auth and
+    can confirm the new refresh-token TTL is live."""
+    cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
+    monkeypatch.setenv("SCHWAB_CLIENT_ID", "t24_id_value_1234567890")
+    monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "t24_secret_abc")
+
+    def _stub_service(
+        cfg_arg, environment, client_id, client_secret,
+        callback_url_with_code, conn, *, force=False, account_picker=None,
+    ):
+        return {
+            "tokens_path": "/tmp/stub.db",
+            "account_hash": "T24STUB",
+            "environment": environment,
+            "call_id_setup": 1,
+            "call_id_account_linked": 2,
+            "num_accounts": 1,
+            "oauth_http_status": 200,
+        }
+
+    import swing.web.routes.schwab as schwab_route
+    monkeypatch.setattr(
+        schwab_route,
+        "setup_paste_flow_with_callback_url",
+        _stub_service,
+    )
+
+    app = create_app(cfg, _cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/schwab/setup",
+            data={"callback_url": "https://127.0.0.1/?code=Z%40A"},
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 204
+    assert r.headers.get("HX-Redirect") == "/schwab/status"
+    # And, defensively: prior target shape is NOT emitted.
+    assert "/config?schwab_setup=ok" not in r.headers.get("HX-Redirect", "")
+
+
+def test_t24_config_query_param_still_renders_200(
+    seeded_db, monkeypatch, tmp_path,
+):
+    """T-2.4 test 2 (Codex R1 m#2 LOCK) — passive no-op consumer
+    retention: the stale browser tab / bookmark with
+    /config?schwab_setup=ok still renders 200 for one release window.
+
+    /config does not introspect the query param (no handler branch
+    consuming it); it just renders. The test pins this tolerance so a
+    future fork that adds strict query-param validation would surface
+    here."""
+    cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
+    app = create_app(cfg, _cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/config?schwab_setup=ok")
+    assert r.status_code == 200
+    # And the page renders the standard /config content (External
+    # integrations section is the closest anchor — its h2 text).
+    assert "External integrations" in r.text
+
+
+def test_t24_hx_redirect_target_route_registered(
+    seeded_db, monkeypatch, tmp_path,
+):
+    """T-2.4 test 3 (Phase 6 I3 inheritance) — the NEW HX-Redirect
+    target /schwab/status MUST be registered in app.routes. TestClient
+    verifies the header value but does NOT follow; a stale target
+    string would silently 404 the operator's browser navigation."""
+    cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
+    app = create_app(cfg, _cfg_path)
+    assert any(
+        getattr(r_, "path", None) == "/schwab/status" for r_ in app.routes
+    ), "/schwab/status not in app.routes; T-2.4 HX-Redirect would 404"

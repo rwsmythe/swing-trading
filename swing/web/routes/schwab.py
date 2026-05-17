@@ -38,7 +38,7 @@ import sqlite3
 from datetime import datetime
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 
 from swing.config_overrides import apply_overrides
 from swing.evaluation.dates import action_session_for_run
@@ -57,6 +57,7 @@ from swing.metrics.discrepancies import count_unresolved_material
 from swing.web.view_models.schwab import (
     SchwabSetupErrorVM,
     SchwabSetupVM,
+    build_schwab_status_vm,
 )
 
 log = logging.getLogger(__name__)
@@ -64,10 +65,14 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# HX-Redirect target after successful setup. T-B.7 deferred → /config
-# is the V1 landing page (verified to exist via route-table assertion
-# in tests).
-_SUCCESS_REDIRECT_TARGET = "/config?schwab_setup=ok"
+# HX-Redirect target after successful setup. Post-Phase-12 Sub-bundle 2
+# Task T-2.4 retargets from /config?schwab_setup=ok → /schwab/status
+# (T-B.7 deferred is now shipped via Sub-bundle 2). Route verified to
+# exist via route-table assertion in tests; the prior /config target
+# remains a passive no-op consumer for one release window per Codex R1
+# m#2 LOCK (stale browser tabs / bookmarks with the old target still
+# render the /config page; /config does not interpret the query param).
+_SUCCESS_REDIRECT_TARGET = "/schwab/status"
 
 
 def _fetch_unresolved_material_count(db_path) -> int:
@@ -403,3 +408,88 @@ async def schwab_setup_post(request: Request) -> Response:
             headers={"HX-Redirect": _SUCCESS_REDIRECT_TARGET},
         )
     return RedirectResponse(url=_SUCCESS_REDIRECT_TARGET, status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Post-Phase-12 Sub-bundle 2 Task T-2.1 — GET /schwab/status
+# ---------------------------------------------------------------------------
+#
+# Read-only web counterpart to ``swing schwab status`` CLI per dispatch
+# brief §0.5 #14 + spec §7.4 OQ-D LOCK. Mirrors CLI 1:1 — no Schwab API
+# calls, no auth-flow side-effects, no domain-table writes.
+#
+# BINDING contracts (from dispatch brief §0.5):
+#   #2 — state triplet LIVE/PROVISIONAL/DEGRADED (plan §A.0.1 D3; NOT spec
+#        §7.1's misnamed CONFIGURED/...). V2.1 §VII.F amendment banked.
+#   #4 — apply_overrides(cfg) at route entry (Codex R1 Critical #1
+#        inheritance from Sub-bundle B).
+#   #5 — case-insensitive env query-param.
+#   #6 — XSS-safe PlainTextResponse for invalid env (Codex R1 Major #7 +
+#        R2 Major #1).
+#   #7 — sentinel-leak audit per Phase 11 Sub-bundle A T-A.10 D1 redaction.
+#   #11 — NO Schwab API calls (read-only consumer of pre-existing audit
+#        + tokens DB metadata).
+#   #13 — base-layout VM banner pin (5 fields populated via
+#        _fetch_unresolved_material_count helper at route entry).
+
+
+@router.get("/schwab/status", response_class=HTMLResponse)
+def schwab_status_get(
+    request: Request, environment: str | None = None,
+) -> Response:
+    """GET — render the read-only Schwab integration status page."""
+    # Apply user-config.toml overrides at route entry (BINDING per dispatch
+    # brief §0.5 #4 — Codex R1 Critical #1 fix at Sub-bundle B `e418d56`
+    # added apply_overrides at all 5 Schwab entry points; preserve here).
+    cfg = apply_overrides(request.app.state.cfg)
+
+    # Resolve effective environment: explicit query-param override (case-
+    # insensitive per BINDING #5) wins over cfg default.
+    if environment is not None:
+        env_normalized = environment.strip().lower()
+        if env_normalized not in ("production", "sandbox"):
+            # XSS-safe error response per BINDING #6 (Codex R1 Major #7 +
+            # R2 Major #1). PlainTextResponse content-type 'text/plain'
+            # prevents browser interpretation of any echoed value; body
+            # MAY contain literal `<script>` substring without effect.
+            # Operator-input value is echoed via repr() for debugging.
+            return PlainTextResponse(
+                content=(
+                    f"Invalid environment {environment!r}; "
+                    "must be 'production' or 'sandbox'"
+                ),
+                status_code=400,
+            )
+        env = env_normalized
+    else:
+        env = (
+            getattr(
+                getattr(
+                    getattr(cfg, "integrations", None),
+                    "schwab",
+                    None,
+                ),
+                "environment",
+                "production",
+            )
+            or "production"
+        ).lower()
+
+    # Phase 10 Sub-bundle E T-E.3 cross-bundle pin — every base-layout
+    # page populates ``unresolved_material_discrepancies_count`` so the
+    # global banner in base.html.j2 fires when discrepancies exist.
+    unresolved_count = _fetch_unresolved_material_count(cfg.paths.db_path)
+
+    session_date = action_session_for_run(datetime.now()).isoformat()
+    vm = build_schwab_status_vm(
+        cfg=cfg,
+        env=env,
+        db_path=cfg.paths.db_path,
+        session_date=session_date,
+        unresolved_count=unresolved_count,
+    )
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "schwab_status.html.j2",
+        {"vm": vm},
+    )

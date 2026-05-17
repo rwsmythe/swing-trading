@@ -1,0 +1,135 @@
+{% extends "base.html.j2" %}
+{% block title %}Schwab integration status — Swing Trading{% endblock %}
+{% block content %}
+{# Post-Phase-12 Sub-bundle 2 Task T-2.2 — read-only Schwab integration
+   status surface; mirrors `swing schwab status` CLI 1:1 (dispatch brief
+   §0.5 #14 + spec §7.4 OQ-D LOCK).
+
+   State triplet LOCK per plan §A.0.1 D3: LIVE / PROVISIONAL / DEGRADED.
+   Color mapping:
+     LIVE        → green (state-ok)
+     PROVISIONAL → yellow (state-warn)
+     DEGRADED    → red (state-error)
+   `state_reason` rendered next to badge when non-None (Codex R3 Minor #2
+   invariant — non-LIVE REQUIRES non-empty reason).
+
+   Re-auth link surfaces when state != 'LIVE' OR severity != 'ok'
+   (`vm.degraded_banner_active`).
+
+   Jinja2 autoescape is unconditional per swing/web/app.py:81-95; every
+   VM-derived string flows through autoescape so a future field carrying
+   operator-controlled or broker-error text cannot inject HTML.
+#}
+<section class="schwab-status" data-page="schwab-status">
+  <h1>Schwab integration status ({{ vm.environment }})</h1>
+
+  {# Section 1 — state badge + reason. #}
+  {% if vm.state == "LIVE" %}
+    {% set _state_class = "state-ok" %}
+  {% elif vm.state == "PROVISIONAL" %}
+    {% set _state_class = "state-warn" %}
+  {% else %}
+    {% set _state_class = "state-error" %}
+  {% endif %}
+  <p class="schwab-status-badge {{ _state_class }}"
+     data-state="{{ vm.state }}">
+    <strong>{{ vm.state }}</strong>{% if vm.state_reason %} — <span class="state-reason">{{ vm.state_reason }}</span>{% endif %}
+  </p>
+
+  {# Section 2 — re-auth link (rendered when degraded_banner_active).
+     Phase 12 Sub-bundle B `/schwab/setup` is the V1 OAuth re-auth path. #}
+  {% if vm.degraded_banner_active %}
+  <p class="schwab-reauth-link">
+    <a href="/schwab/setup"
+       data-link="schwab-reauth">Re-authorize Schwab OAuth &rarr;</a>
+  </p>
+  {% endif %}
+
+  {# Section 3 — tokens DB + refresh-token countdown. #}
+  <dl class="schwab-tokens-meta">
+    <dt>Tokens DB</dt>
+    <dd><code>{{ vm.tokens_db_path }}</code></dd>
+
+    <dt>Refresh token</dt>
+    <dd>
+      {% if vm.refresh_token_expires_at %}
+        {% if vm.refresh_token_severity == "error" %}
+          {% set _ttl_class = "ttl-error" %}
+        {% elif vm.refresh_token_severity == "warn" %}
+          {% set _ttl_class = "ttl-warn" %}
+        {% else %}
+          {% set _ttl_class = "ttl-ok" %}
+        {% endif %}
+        <span class="schwab-refresh-ttl {{ _ttl_class }}"
+              data-severity="{{ vm.refresh_token_severity }}">
+          {% if vm.refresh_token_days_remaining is not none -%}
+            {{ vm.refresh_token_days_remaining }} days remaining
+          {%- else -%}
+            unknown TTL
+          {%- endif %}
+          (expires {{ vm.refresh_token_expires_at }})
+        </span>
+      {% else %}
+        <span class="muted">no refresh-token metadata (run
+        <code>swing schwab setup</code> to initialize)</span>
+      {% endif %}
+    </dd>
+
+    {% if vm.last_success_at %}
+    <dt>Last successful call</dt>
+    <dd>{{ vm.last_success_at }}</dd>
+    {% endif %}
+    {% if vm.last_failure_at %}
+    <dt>Last failed call</dt>
+    <dd>{{ vm.last_failure_at }}</dd>
+    {% endif %}
+  </dl>
+
+  {# Section 4 — environment switcher (sibling env link). #}
+  <p class="schwab-env-switcher">
+    <a href="/schwab/status?environment=production"
+       data-link="env-switch-production">View production</a>
+    &nbsp;|&nbsp;
+    <a href="/schwab/status?environment=sandbox"
+       data-link="env-switch-sandbox">View sandbox</a>
+  </p>
+
+  {# Section 5 — recent API calls table. #}
+  <h2>Recent API calls</h2>
+  {# CLI 1:1 LOCK (spec §7.4 OQ-D + dispatch brief §0.5 #14) — render the
+     same columns the CLI ``_render_recent_calls`` does (endpoint + status
+     + http_status); error_excerpt is INTENTIONALLY NOT rendered on the
+     operator-visible page (Codex R1 Critical #1 fix). The VM still
+     consumes the field (spec §7.1 completeness) but the template treats
+     it as sensitive-by-default + omits the column. #}
+  <table class="schwab-recent-calls" data-table="schwab-recent-calls">
+    <thead>
+      <tr>
+        <th>Started</th>
+        <th>Endpoint</th>
+        <th>Status</th>
+        <th>HTTP</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% if vm.recent_calls %}
+        {% for call in vm.recent_calls %}
+        <tr data-row="schwab-call" data-status="{{ call.status }}">
+          <td>{{ call.started_ts }}</td>
+          <td><code>{{ call.endpoint }}</code></td>
+          <td>{{ call.status }}</td>
+          <td>{% if call.http_status is not none %}{{ call.http_status }}{% else %}&mdash;{% endif %}</td>
+        </tr>
+        {% endfor %}
+      {% else %}
+        <tr><td colspan="4" class="muted">(no API calls recorded for
+        environment <code>{{ vm.environment }}</code>)</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+
+  <p class="muted">
+    <a href="{{ vm.nav_back_to_config_url }}">&larr; Back to config</a>
+  </p>
+</section>
+{% endblock %}
