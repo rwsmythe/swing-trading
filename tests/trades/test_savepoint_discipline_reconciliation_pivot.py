@@ -37,6 +37,27 @@ class _SchwabOrder:
     instrument_symbol: str
     order_type: str = "MARKET"
     instruction: str = "BUY"
+    # Sub-bundle 1 T-1.6 — execution-grain fields. Tests that exercise the
+    # tier-1 price-mismatch path under V2 semantics MUST populate `executions`
+    # with at least one SchwabExecutionLeg whose `price` is the comparator
+    # value. Default `None` preserves V1 fixture shape for tests that
+    # exercise Path B (executions=None → sentinel emit).
+    order_id: str = "ORD-test"
+    executions: object = None  # list[SchwabExecutionLeg] | None at runtime
+    enter_time: str = "2026-04-27T14:23:00.000Z"
+
+
+def _v2_leg(*, leg_id=1, price=5.30, quantity=100.0,
+            mismarked_quantity=0.0, instrument_id=None,
+            time="2026-05-15T14:30:00.000Z"):
+    """Helper: build a SchwabExecutionLeg for V2 execution-grain fixtures
+    (Sub-bundle 1 T-1.6)."""
+    from swing.integrations.schwab.models import SchwabExecutionLeg
+    return SchwabExecutionLeg(
+        leg_id=leg_id, price=price, quantity=quantity,
+        mismarked_quantity=mismarked_quantity, instrument_id=instrument_id,
+        time=time,
+    )
 
 
 @dataclass
@@ -130,11 +151,14 @@ def test_savepoint_isolates_partial_mutation_under_tier1_failure(
 
     schwab_orders = [
         _SchwabOrder(status="FILLED", price=5.10, quantity=100.0,
-                     instrument_symbol="AAA"),
+                     instrument_symbol="AAA",
+                     executions=[_v2_leg(price=5.10, quantity=100.0)]),
         _SchwabOrder(status="FILLED", price=6.10, quantity=100.0,
-                     instrument_symbol="BBB"),
+                     instrument_symbol="BBB",
+                     executions=[_v2_leg(price=6.10, quantity=100.0)]),
         _SchwabOrder(status="FILLED", price=7.10, quantity=100.0,
-                     instrument_symbol="CCC"),
+                     instrument_symbol="CCC",
+                     executions=[_v2_leg(price=7.10, quantity=100.0)]),
     ]
     run = run_schwab_reconciliation(
         conn,
@@ -177,9 +201,11 @@ def test_outer_tx_survives_multiple_per_discrepancy_failures(
     _seed_open_trade(conn, ticker="BBB", fill_price=6.0)
     schwab_orders = [
         _SchwabOrder(status="FILLED", price=5.10, quantity=100.0,
-                     instrument_symbol="AAA"),
+                     instrument_symbol="AAA",
+                     executions=[_v2_leg(price=5.10, quantity=100.0)]),
         _SchwabOrder(status="FILLED", price=6.10, quantity=100.0,
-                     instrument_symbol="BBB"),
+                     instrument_symbol="BBB",
+                     executions=[_v2_leg(price=6.10, quantity=100.0)]),
     ]
     import swing.trades.schwab_reconciliation as srx
 
@@ -242,7 +268,8 @@ def test_no_leaked_savepoints_after_pivot(
     _seed_open_trade(conn, ticker="AAA", fill_price=5.0)
     schwab_orders = [
         _SchwabOrder(status="FILLED", price=5.10, quantity=100.0,
-                     instrument_symbol="AAA"),
+                     instrument_symbol="AAA",
+                     executions=[_v2_leg(price=5.10, quantity=100.0)]),
     ]
     run = run_schwab_reconciliation(
         conn,
@@ -293,7 +320,8 @@ def test_validator_rejection_falls_through_to_fresh_fallback_savepoint(
 
     schwab_orders = [
         _SchwabOrder(status="FILLED", price=5.10, quantity=100.0,
-                     instrument_symbol="AAA"),
+                     instrument_symbol="AAA",
+                     executions=[_v2_leg(price=5.10, quantity=100.0)]),
     ]
     run = run_schwab_reconciliation(
         conn,

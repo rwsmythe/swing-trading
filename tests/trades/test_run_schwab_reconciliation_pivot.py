@@ -37,6 +37,34 @@ class _SchwabOrder:
     instrument_symbol: str
     order_type: str = "MARKET"
     instruction: str = "BUY"
+    # Sub-bundle 1 T-1.6 — execution-grain fields. Tests that exercise the
+    # tier-1 price-mismatch path under V2 semantics MUST populate `executions`
+    # with at least one SchwabExecutionLeg whose `price` is the comparator
+    # value (V1 tests used `price` field; V2 reads leg price via
+    # `_compute_execution_price`). The default-`None` preserves V1 fixture
+    # shape for tests that exercise Path B (executions=None → sentinel emit).
+    order_id: str = "ORD-test"
+    executions: object = None  # list[SchwabExecutionLeg] | None at runtime
+    enter_time: str = "2026-04-27T14:23:00.000Z"
+
+
+def _v2_leg(*, leg_id=1, price=5.30, quantity=100.0,
+            mismarked_quantity=0.0, instrument_id=None,
+            time="2026-05-15T14:30:00.000Z"):
+    """Helper: build a SchwabExecutionLeg for V2 execution-grain fixtures.
+
+    Sub-bundle 1 T-1.6 architectural shift — comparator reads leg.price
+    not order.price. Existing V1 tests that asserted tier-1 entry_price_mismatch
+    behavior with `_SchwabOrder(price=5.30)` MUST also supply
+    `executions=[_v2_leg(price=5.30)]` to exercise the same tier-1 path
+    under V2 Shape C semantics.
+    """
+    from swing.integrations.schwab.models import SchwabExecutionLeg
+    return SchwabExecutionLeg(
+        leg_id=leg_id, price=price, quantity=quantity,
+        mismarked_quantity=mismarked_quantity, instrument_id=instrument_id,
+        time=time,
+    )
 
 
 @dataclass
@@ -102,6 +130,7 @@ def test_run_schwab_reconciliation_applies_tier1_inline(
         _SchwabOrder(
             status="FILLED", price=5.30, quantity=100.0,
             instrument_symbol="CVGI",
+            executions=[_v2_leg(price=5.30, quantity=100.0)],
         ),
     ]
     schwab_account = _SchwabAccount(net_liquidating_value=2000.0, positions=[])
@@ -149,6 +178,7 @@ def test_run_schwab_reconciliation_sandbox_short_circuits(
         _SchwabOrder(
             status="FILLED", price=5.30, quantity=100.0,
             instrument_symbol="CVGI",
+            executions=[_v2_leg(price=5.30, quantity=100.0)],
         ),
     ]
     schwab_account = _SchwabAccount(net_liquidating_value=2000.0, positions=[])
@@ -234,11 +264,14 @@ def test_run_schwab_reconciliation_savepoint_isolates_failure(
     _seed_open_trade(conn, ticker="CCC", fill_price=7.0)
     schwab_orders = [
         _SchwabOrder(status="FILLED", price=5.10, quantity=100.0,
-                     instrument_symbol="AAA"),
+                     instrument_symbol="AAA",
+                     executions=[_v2_leg(price=5.10, quantity=100.0)]),
         _SchwabOrder(status="FILLED", price=6.10, quantity=100.0,
-                     instrument_symbol="BBB"),
+                     instrument_symbol="BBB",
+                     executions=[_v2_leg(price=6.10, quantity=100.0)]),
         _SchwabOrder(status="FILLED", price=7.10, quantity=100.0,
-                     instrument_symbol="CCC"),
+                     instrument_symbol="CCC",
+                     executions=[_v2_leg(price=7.10, quantity=100.0)]),
     ]
     schwab_account = _SchwabAccount(net_liquidating_value=2000.0, positions=[])
 
@@ -312,6 +345,7 @@ def test_run_schwab_reconciliation_unresolved_counter_decrements_post_pivot(
         _SchwabOrder(
             status="FILLED", price=5.30, quantity=100.0,
             instrument_symbol="CVGI",
+            executions=[_v2_leg(price=5.30, quantity=100.0)],
         ),
     ]
     schwab_account = _SchwabAccount(net_liquidating_value=2000.0, positions=[])
