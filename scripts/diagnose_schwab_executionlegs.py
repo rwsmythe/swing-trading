@@ -21,7 +21,10 @@ for each order; pretty-prints up to 3 representative leg shapes per order
 Output is written to ~/swing-data/diagnose-schwab-executionlegs-<UTC>.txt
 (operator-local; .gitignore already covers swing-data/). Redaction scrubs
 client_id / client_secret / access_token / refresh_token / accountHash /
-accountNumber + heuristic 32+ hex + 24+ base64 sequences BEFORE write.
+accountNumber + heuristic 32+ hex + 40+ base64 sequences BEFORE write
+(40-char base64 threshold tightened from a hypothetical 24 to avoid
+false-positives on legitimate `<base64-token>` placeholders -- see
+Layer 1c comment + rationale at `redact_text`).
 
 DO NOT commit the output file. The script intentionally lives separate from
 production code so it can be invoked in operator-paired session against the
