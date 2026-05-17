@@ -1,10 +1,129 @@
 # Phase 13 Scope Brainstorm — Strategic Conversation Doc
 
-**Status:** IN PROGRESS — formal scope development while post-Phase-12 Sub-bundle 1 implementer is in execution. Operator-paced. NOT a dispatch brief; NOT a binding scope LOCK. This doc enumerates candidate categories + dependencies + leverage analysis + discriminating questions to inform the operator-decided Phase 13 scope lock.
+**Status:** LOCKED 2026-05-17 — operator-locked scope + sub-bundle decomposition + dispatch sequence per §0.5 below. Sections §1-§4 retained as historical reasoning that produced the lock; superseded by §0.5 for decision-making purposes.
 
-**Sequencing:** Phase 13 dispatch is queued AFTER (a) post-Phase-12 Schwab mapper execution-grain widening arc (Sub-bundle 1 + 2) ships; (b) Phase 12.5 4-item bundle ships per `docs/phase3e-todo.md` 2026-05-17 entry. Phase 13 is the **strategic conversation** that re-anchors the next architectural arc; Phase 12.5 is the **tactical closure** that ships the queued V2 candidates from Phase 9/10/12 arc.
+**Sequencing:** Phase 13 dispatch is queued AFTER (a) post-Phase-12 Schwab mapper execution-grain widening arc (Sub-bundle 1 + 2) ships; (b) Phase 12.5 3-item bundle ships per `docs/phase3e-todo.md` 2026-05-17 entry (rescoped from 4 items; original #2 fill auto-population moved to Phase 13 Theme 3). Phase 13 is the architectural arc; Phase 12.5 is the tactical closure.
 
-**Audience:** Operator + orchestrator. Read this when you (a) want to think about Phase 13 scope; (b) want to challenge any of the enumerated candidate categories; (c) want to add a category I missed.
+**Audience:** Operator + orchestrator. Read §0.5 for locked scope; read §1-§4 for the reasoning that produced it.
+
+---
+
+## §0.5 OPERATOR-LOCKED SCOPE + DISPATCH SEQUENCE (2026-05-17)
+
+Locked via operator-orchestrator scope conversation 2026-05-17 (full transcript in conversation context; key decisions extracted below).
+
+### §0.5.1 Phase 13 themes (4 themes; operator-locked)
+
+**Theme 1 — Chart rendering deepening**
+- Charts for **full watchlist + hyp-rec list + active list** (currently partial coverage; "very basic" per operator)
+- NEW dashboard surface: **market weather trend mini-chart**
+- Unlocked by Phase 11+12: Schwab Market Data API + OhlcvCache + ohlcv_archive parquet caching means broader chart rendering no longer burns yfinance quota
+- Theme 1 tightly couples to Theme 2 deliverable: annotated charts ARE the §9.2 "Evidence to Show Reviewer" surface from chart pattern detection v2 brief (pattern boundaries + contraction markers + pivot + nearest-historical-bases overlay)
+
+**Theme 2 — Pattern recognition deepening (HEADLINE)**
+- Anchored on `reference/Future Work/Chart Pattern Detection/stock_chart_pattern_detection_ai_ingestion_v2.md` v2 brief (901 lines; operator-authored 2026-05-08; AI-ingestion-ready)
+- V1 pattern set (operator-locked): **5 buy-side patterns** — VCP + flat base + cup-with-handle + high-tight-flag + double-bottom-W (collapses brief's Phase 1 + Phase 3 into Phase 13 V1)
+- **Sell-side detector module BANKED to Phase 14** (brief's Phase 8; H&S top + climax run + Stage 4 breakdown + MA50/MA200 violations)
+- Brief's Phases 1+2+4 in Phase 13 scope: rule-based detection + template matching + closed-loop outcome surface
+- **Brief's Phase 5 drift detection BANKED to Phase 13.5** (4 surfaces: feature / pattern frequency / outcome / self-drift; benefits from baseline data accumulation that Phase 13 generates)
+- **Brief's Phase 6 ML re-ranker BANKED indefinitely** per brief §16.6 "defer 12-18 months minimum" + operator decision "locally trained and deployed ML model might be reasonable in the future, but not near-term unless clear and convincing evidence" + 7 gates G1-G7 not met
+- Schema impact: confirmed v20 (chart_pattern_evaluation widening + pattern_exemplars library table + label_source enum + ai_labeler_version tracking)
+- Algorithm posture per operator: **NO run-time AI inferencing** (Claude API in runtime pipeline NOT acceptable); rule-based geometric detection PRIMARY; template matching SECONDARY; **DEV-TIME** Claude Code subagent dispatch for AI-assisted labeling per brief §8.2 (silver-tier labels) is acceptable
+
+**Theme 3 — Auto-fill deepening across entries / exits / reviews**
+- Absorbs original Phase 12.5 #2 (fill auto-population at trade-entry)
+- Trade **entries** (Schwab Trader API fill detection + form pre-population)
+- Trade **exits** — Schwab Trader API exit fill detection + auto-population (currently operator-types-from-memory)
+- Trade **reviews** — priors from previous reviews + auto-MFE/MAE from candles
+- Period reviews — section text auto-fill from prior reviews
+- Schema impact: likely `fill_origin` enum widening + auto-fill audit columns
+
+**Theme 4 — Usability triage pass**
+- Unreported minor issues from operator (operator: "minor issues … not impact functionality, more usability")
+- Elicitation mechanism: operator drafts list at Phase 13 brainstorm time as one of the brainstorm spec inputs
+- Ships as closer polish sub-bundle (Phase 9 Sub-bundle E + Phase 10 Sub-bundle E "closer" precedent)
+
+### §0.5.2 Sub-bundle decomposition (10 sub-bundles; operator-confirmed)
+
+| SB | Theme | Scope |
+|---|---|---|
+| **T2.SB1** | Theme 2 | Dev-time labeling infrastructure (Claude Code subagent dispatch + selective Codex 2nd reviewer) + exemplar bootstrap (operator spot-check mid-dispatch pause); `pattern_exemplars` schema with silver/gold tagging + `label_source` enum + `ai_labeler_version` tracking |
+| **T3.SB1** | Theme 3 | Entry auto-fill (Schwab Trader API consumer at trade-entry handler time); absorbs Phase 12.5 #2 scope. Can dispatch CONCURRENT with T2.SB1 (independent codebase touch) |
+| **T2.SB2** | Theme 2 | Foundation primitives: smoothing + extrema extraction + zigzag adaptive-threshold + base candidate-window generator. Brief §5.2 foundation layer. Pure logic; no DB writes |
+| **T2.SB3** | Theme 2 | Rule-based detectors batch 1: VCP + flat base + cup-with-handle. AI-assisted parameter tuning DEV-TIME against curated exemplars |
+| **T3.SB2** | Theme 3 | Exit auto-fill (Schwab Trader API exit fill detection); dispatches after T2.SB3 (sequential to avoid Schwab Trader API consumer merge conflicts) |
+| **T2.SB4** | Theme 2 | Rule-based detectors batch 2: high-tight-flag + double-bottom-W. Same rule-based + template approach as T2.SB3 |
+| **T2.SB5** | Theme 2 | Template matching layer (DTW with Sakoe-Chiba constraint OR shape-based distance). Forward + reverse retrieval modes |
+| **T3.SB3** | Theme 3 | Review auto-fill (priors from previous reviews + MFE/MAE from candles + period review section text). Dispatches after T2.SB5 (consumes OHLCV cache patterns + candidate-window primitives) |
+| **T2.SB6** | Theme 2 + Theme 1 | Closed-loop surface (brief §9.2 evidence-to-show-reviewer) + annotated chart deepening (Theme 1 lands here). Outcome distributions per pattern class on Phase 10 dashboard. **Closes the Theme 1 + Theme 2 architectural arc** |
+| **T4.SB** | Theme 4 | Usability triage closer. Operator-elicited list implemented as polish bundle. Phase 13 closer |
+
+**Dispatch sequence** (one concurrent point — T2.SB1 + T3.SB1; rest serial):
+
+```
+Brainstorm phase (operator drafts unreported usability list as input)
+    ↓
+T2.SB1 (dev-time labeling infra)              ║   T3.SB1 (entry auto-fill)
+    ↓                                          ║       ↓
+T2.SB2 (foundation primitives)
+    ↓
+T2.SB3 (detectors VCP + FB + CWH)
+    ↓
+T3.SB2 (exit auto-fill)
+    ↓
+T2.SB4 (detectors HTF + DBW)
+    ↓
+T2.SB5 (template matching)
+    ↓
+T3.SB3 (review auto-fill)
+    ↓
+T2.SB6 (closed-loop surface + Theme 1 annotated charts)
+    ↓
+T4.SB (usability triage closer)
+    ↓
+Phase 13 CLOSED
+```
+
+**Estimated wall-clock**: ~3-6 weeks operator-paced (orchestrator naive estimate ~30-50 sub-bundle weeks; operator calibration shows ~3-5x overestimate per `feedback_time_estimates_overstated.md` memory entry).
+
+### §0.5.3 Operator-locked design decisions
+
+| Decision | Lock | Rationale |
+|---|---|---|
+| Algorithm posture | Rule-based PRIMARY; template matching SECONDARY; NO run-time AI inferencing | Operator: "Claude API in runtime pipeline is not acceptable"; brief §1 introspection HARD constraint |
+| Dev-time labeler | Claude Code via subagent dispatch | Reuses existing harness; reproducible via dispatch SHAs; integration cost zero |
+| Codex as second reviewer | Selective (NOT blanket) — 10-20% spot-check tier + high-stakes individual labels where Claude silver confidence diverges from rule-tier evidence | Independent labelers with different bias profiles → consensus is richer; blanket use is 2x cost for marginal value |
+| ML re-ranker | DEFERRED indefinitely | Brief §16.6 12-18 months minimum + 7 gates G1-G7 not met + operator "not near-term unless clear and convincing evidence" |
+| V1 pattern set | 5 buy-side (VCP + FB + CWH + HTF + DBW) | Operator: "extend both breadth and depth"; brief §4.1 high-tractability + medium-high tractability set |
+| Sell-side detector | BANKED Phase 14 | Brief §10 Phase 8 gated; separate detector family + own brainstorm cycle |
+| Drift detection | SPLIT to Phase 13.5 (4 surfaces) | Benefits from baseline data accumulation; Phase 13 bakes LOGGING side; Phase 13.5 ships monitoring side |
+| Exemplar bootstrap | Brief §8.2 AI-assisted labeling at scale + operator spot-check 10-20% mid-dispatch pause | Operator answered Q2 on bootstrap; standard silver-vs-gold tagging |
+| Schema appetite | Open to heavy; v20 confirmed; v21+ possible | Operator: "Open to heavy schema work for the right architectural pivot" |
+| Phase 0 universe-pipeline gaps | DEFERRED to plan-build phase | Plan author greps existing surfaces + decides; not brainstorm scope |
+| Theme 3 + Theme 4 timing | Theme 3 interleaved at natural break points; Theme 4 closer | Maximizes operator value-delivery cadence + avoids merge conflicts |
+
+### §0.5.4 What's OUT of Phase 13 scope (banked)
+
+- **Sell-side detector module** → Phase 14 (brief's Phase 8 gated; H&S top + climax run + Stage 4 breakdown + MA50/MA200 violations)
+- **Drift detection** → Phase 13.5 (brief's Phase 5; 4 surfaces feature/frequency/outcome/self-drift; benefits from Phase 13 baseline data accumulation)
+- **ML re-ranker** → indefinitely deferred per brief §16.6 + 7 gates G1-G7
+- **Matrix Profile-based exemplar retrieval at scale** → Phase 14+ (brief's Phase 7 gated; once curated exemplar set is large enough)
+- **Shapelet-based detection** → Phase 14+ (brief's §5.9 gated; later)
+- **Harmonic + candlestick + intraday patterns** → permanently out of scope (brief §4.4)
+- **Image-based CV** → permanently out of scope (brief §5.6; interpretability violation)
+- **Sequence transformers** → permanently out of scope (brief §5.7; resource + interpretability constraints)
+- **Run-time AI inferencing** → permanently out of scope (operator-locked; Claude API in runtime NOT acceptable)
+- **Intraday / live-trading integration** → Phase 14+ candidate
+- **Tax-lot accounting** → Phase 14+ candidate
+- **Multi-cohort / multi-strategy architectural deepening** → Phase 14+ candidate (sell-side detector folds into this)
+- **Branch A research-branch activation (V2.1 §V Phase 0 study completion)** → 100% operational Phase 13; research-branch deferred
+
+### §0.5.5 Next steps
+
+1. **NOW**: Update Phase 13 scope-brainstorm doc with this LOCKED scope (this commit).
+2. **NEXT**: Draft Phase 13 brainstorm dispatch brief at `docs/phase13-brainstorm-dispatch-brief.md`.
+3. **PENDING POST-PHASE-12 + PHASE 12.5 CLOSE**: Operator commissions Phase 13 brainstorm implementer.
+4. **AFTER BRAINSTORM SHIPS**: Writing-plans dispatch brief → executing-plans dispatches per §0.5.2 sequence.
 
 ---
 
