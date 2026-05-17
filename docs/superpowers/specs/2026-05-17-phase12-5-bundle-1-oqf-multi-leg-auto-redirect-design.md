@@ -17,14 +17,14 @@
 - **`price_tolerance`** — `$0.01` (LOCK; spec §4.4 determinism principle inheritance from Sub-bundle C.B; mirrors Shape A/B numeric guard discipline).
 - **`split_into_partials` payload** — list of N partial-fill dicts each carrying `{qty, price, fill_datetime}` per Sub-bundle C plan §C.6 + `swing/trades/reconciliation_ambiguity_choices.py:_PARTIAL_PAYLOAD_SHAPE`.
 - **`resolved_by` string** — free-TEXT column on `reconciliation_discrepancies` (NO schema CHECK). NEW value `'auto_tier1_multi_leg'` introduced this dispatch to distinguish auto-redirect from manual `split_into_partials` (`'operator'`) and from Pass-1 auto-correct (`'auto'`).
-- **Banner advisory** — read-only badge on every base-layout-mounted page surfacing the count of multi-leg auto-corrections from the most-recent `reconciliation_run` (operator-decision-pending: window may extend to 7 days or last-acknowledged — see §8.2 + §15).
+- **Banner advisory** — read-only badge on every base-layout-mounted page surfacing the count of multi-leg auto-corrections from the most-recent `reconciliation_run`. V1 LOCK: window = most-recent run; clears on next run. V2 window alternatives (7-day rolling / persists-until-acknowledged) banked at §14.
 - **Flow-pivot loop** — `_pivot_classify_and_dispatch_for_run` in `swing/trades/reconciliation_auto_correct.py:1102+` — shared between Schwab + TOS reconciliation per Sub-bundle C.C; iterates discrepancies under SAVEPOINT-per-discrepancy discipline.
 
 ---
 
 ## §1 Architecture overview
 
-**One-paragraph thesis.** When a reconciliation comparator emits an `unmatched_open_fill` / `unmatched_close_fill` discrepancy whose matched Schwab order carries `>=2` `SchwabExecutionLeg[]` AND the legs collectively VWAP-align with the journal's consolidated fill price within `$0.01` AND every individual leg's price is within `$0.01` of the VWAP, the V1 manual `multi_partial_vs_consolidated` menu surface is BYPASSED: the classifier synthesizes the `split_into_partials` payload from the execution legs, the flow-pivot loop dispatches via `apply_tier2_resolution(choice_code='split_into_partials', payload=synthesized, resolved_by='auto_tier1_multi_leg', ...)`, and the dashboard surfaces a banner advisory citing the auto-correction count for operator vigilance/trust-calibration.
+**One-paragraph thesis.** When a reconciliation comparator emits an `unmatched_open_fill` / `unmatched_close_fill` discrepancy whose matched Schwab order carries `>=2` `SchwabExecutionLeg[]` (or N>=2 candidate orders whose execution legs collectively meet the predicate) AND the legs collectively VWAP-align with the journal's consolidated fill price within `$0.01` AND every individual leg's price is within `$0.01` of the VWAP, the V1 manual `multi_partial_vs_consolidated` menu surface is BYPASSED: the classifier synthesizes the `split_into_partials` payload from the execution legs, the flow-pivot loop dispatches via `apply_tier2_resolution(choice_code='split_into_partials', operator_custom_payload=synthesized, operator_reason=..., applied_by_override='auto', correction_action_override='auto_applied', resolved_by_override='auto_tier1_multi_leg', ...)`, and the dashboard surfaces a banner advisory citing the auto-correction count for operator vigilance/trust-calibration.
 
 **Architectural lift.** Pass-2 entry/close `_classify_unmatched_fill_shared` previously emitted ONLY `multi_partial_vs_consolidated` tier-2 (per spec §4.3.2/§4.3.3 + §8.4 Pass-2-tier-1-FORBIDDEN). Sub-bundle 1 widened the comparator to surface execution-grain data via Path B sentinel `execution_unavailable=true` when execution legs are absent — but tier-1 lift on multi-leg-PRESENT cases was deferred to V2 (spec §6.6 OQ-F V2). This dispatch ships that V2 lift.
 
@@ -33,10 +33,10 @@
 - **Classifier purity invariant** (CLAUDE.md gotcha "Classifier is a PURE function"): the classifier consumes pre-fetched payload + journal row; it does NOT call the auto-correct service, does NOT write the DB, does NOT manage transactions. The classifier RETURNS a `ClassificationResult` carrying a NEW optional field `auto_redirect_recipe: Mapping[str, Any] | None` (see §5.1). The flow-pivot loop reads the recipe and dispatches via the service layer.
 - **Service-layer enforcement** (Sub-bundle C.C C.B forward-binding lesson #1): the auto-correct service re-validates the synthesized payload through `default_validator_chain` before mutation. The classifier's predicate is necessary but not sufficient.
 - **`apply_tier2_resolution` reuse** (operator §1.3 LOCK): the flow-pivot loop invokes the existing tier-2 handler registry entry for `("multi_partial_vs_consolidated", "split_into_partials")` — minimum new code path. The handler does the DELETE+INSERT chain via `_handle_split_into_partials`. The auto-vs-manual distinction lives in:
-  - `discrepancy.resolved_by = 'auto_tier1_multi_leg'` (NEW free-TEXT value; no schema CHECK).
+  - `discrepancy.resolved_by = 'auto_tier1_multi_leg'` (NEW free-TEXT value; no schema CHECK). NOTE: the `_handle_split_into_partials` handler currently hardcodes `applied_by='operator'` + `correction_action='operator_resolved_ambiguity'` at `_build_tier2_correction` AND on every per-partial sub-correction row (Codex R1 M4 verified). T-1.4 parameterizes these as overrides that propagate through outer → inner → `_build_tier2_correction` → every `_handle_*` callsite (N+1 correction rows for split_into_partials inherit `applied_by='auto'` + `correction_action='auto_applied'` when overrides supplied).
   - `reconciliation_corrections.applied_by = 'auto'` (CHECK enum already permits — see §7.3 for handler parameterization).
   - `reconciliation_corrections.correction_action = 'auto_applied'` (CHECK enum already permits — see §7.3).
-- **Banner advisory surface** (operator §1.4 LOCK): dashboard banner only; NO dedicated `/metrics/auto-redirects` review page; existing CLI surfaces (`swing journal discrepancy list --resolved-by auto_tier1_multi_leg`; `show-correction <id>`) carry the drill-down load.
+- **Banner advisory surface** (operator §1.4 LOCK): dashboard banner only; NO dedicated `/metrics/auto-redirects` review page; existing CLI surface `show-correction <id>` carries the per-row drill-down load. NEW CLI filter `swing journal discrepancy list --resolved-by <value>` (T-1.10) ships IN-BUNDLE — banner cites it verbatim — so the surface exists at ship time (LOCK per Codex R1 M5).
 
 **Schema impact verdict.** Schema v19 UNCHANGED. Cross-column CHECK on `reconciliation_discrepancies` (resolution + ambiguity_kind pairing) is satisfied by the natural transition path described in §7.2. NO `0020_*.sql` migration this bundle. (See §13 for the full schema audit.)
 
@@ -79,7 +79,7 @@ Rationale (LOCKED): operator wants visibility (vigilance + trust calibration); b
 
 - New `BaseLayoutVM` field `recent_multi_leg_auto_correction_count: int = 0` + helper `_fetch_recent_multi_leg_auto_correction_count(conn, window_predicate)`.
 - Predicate window LOCKED V1: **most-recent reconciliation_run** (Option A; matches Phase 10 banner precedent; clears automatically on next run; simplest semantics). Banner clears semantics: clears when next reconciliation_run completes (Option A; per banner-clears-on-fresh-run lock). 7-day rolling + persists-until-acknowledged V2 candidates banked at §14.
-- Template emits compact `<div class="reconciliation-auto-redirect-banner">⚠ N multi-leg auto-corrections in most recent reconciliation run. Review via <code>swing journal discrepancy list --resolved-by auto_tier1_multi_leg</code>.</div>` when count > 0.
+- Template emits compact `<div class="reconciliation-auto-redirect-banner">N multi-leg auto-corrections in most recent reconciliation run. Review via <code>swing journal discrepancy list --resolved-by auto_tier1_multi_leg</code>.</div>` when count > 0. (NO non-ASCII glyphs in banner text per CLAUDE.md Windows cp1252 gotcha — see §8.3 + §16 lesson #7.)
 - Banner does NOT supersede existing `unresolved_material_discrepancies_count` banner — both render side-by-side; semantically distinct.
 
 ---
@@ -90,8 +90,10 @@ Implementation surface is bounded by §2 operator-locks. **NO mapper or comparat
 
 | File | Change kind | Scope |
 |---|---|---|
-| `swing/trades/reconciliation_classifier.py` | **Modify**: extend `ClassificationResult` with `auto_redirect_recipe: Mapping[str, Any] \| None = None`; widen `_classify_unmatched_fill_shared` `n>=2` branch to compute predicate (§4) + emit recipe when satisfied. | ~+80 LOC (predicate + helper + recipe synthesis). |
-| `swing/trades/reconciliation_auto_correct.py` | **Modify**: parameterize `apply_tier2_resolution` outer + `_apply_tier2_resolution_inner` + `_build_tier2_correction` + handler signature with `applied_by_override: str \| None = None` + `correction_action_override: str \| None = None`; extend `_pivot_classify_and_dispatch_for_run` to recognize `auto_redirect_recipe` + dispatch via `apply_tier2_resolution` with overrides + auto-redirect attribution. | ~+100 LOC (parameterization + pivot branching + audit). |
+| `swing/trades/reconciliation_classifier.py` | **Modify**: extend `ClassificationResult` with `auto_redirect_recipe: Mapping[str, Any] \| None = None`; widen `_classify_unmatched_fill_shared` `n>=2` branch AND `n=1` branch (per §6.5 lock) to compute predicate (§4) + emit recipe when satisfied. The `n=1` branch reclassifies `ambiguity_kind` to `'multi_partial_vs_consolidated'` (NOT `unknown_schwab_subtype`) when `len(executions) >= 2` AND qty-aligns to journal — this satisfies the cross-column CHECK pairing + lets the existing tier-2 handler registry serve the auto-redirect path. | ~+90 LOC (predicate + helper + recipe synthesis + n=1 rerouting). |
+| `swing/trades/reconciliation_auto_correct.py` | **Modify**: parameterize `apply_tier2_resolution` outer + `_apply_tier2_resolution_inner` + `_build_tier2_correction` + EVERY `_handle_*` helper signature (per Codex R1 M4 — all currently hardcode `applied_by='operator'` + `correction_action='operator_resolved_ambiguity'`; auto-redirect needs overrides to propagate through N+1 sub-correction rows for `_handle_split_into_partials`) with `applied_by_override: str \| None = None` + `correction_action_override: str \| None = None` + `resolved_by_override: str \| None = None`. Add sandbox short-circuit branch in `_apply_tier2_resolution_inner` gated on `applied_by_override == 'auto'` (per §7.6.1) with SAVEPOINT ROLLBACK-on-short-circuit so the discrepancy returns to `unresolved` rather than persisting `pending_ambiguity_resolution` (per Codex R1 M3). | ~+120 LOC (parameterization + sandbox + audit). |
+| `swing/trades/schwab_reconciliation.py` | **Modify** (per Codex R1 M1 audit correction): `_pivot_classify_and_dispatch_for_run` LIVES HERE at line 418 (NOT in `reconciliation_auto_correct.py` — CLAUDE.md text was misleading; `reconciliation.py:471` lazy-imports). Extend the loop to recognize `classification.auto_redirect_recipe` + branch via `apply_tier2_resolution` with overrides. Also EXTEND comparator emit shape (Pass-2 candidate dicts at `unmatched_*_fill` emit site) to add `executions: list[dict] \| None` key — additive shape extension that the predicate sub-condition 1 consumes; legacy callsites with `executions` absent emit `multi_match_within_window` per pre-existing logic. The Sub-bundle 1+1.5 surfaces `_compute_execution_price` / `_resolve_match_quantity` / `_is_execution_bearing_candidate` / Path B sentinel emit remain UNCHANGED — the executions key extension is on the EMITTED CANDIDATE DICT, not those helpers. | ~+60 LOC (pivot-loop branching + comparator emit-shape extension). |
+| `swing/cli.py` | **Modify** (per Codex R1 M5): add `--resolved-by <value>` filter to `swing journal discrepancy list`. Banner template (§8.3) cites it verbatim; the filter MUST ship in this bundle. | ~+15 LOC + 3 tests. |
 | `swing/web/view_models/metrics/shared.py` | **Modify** `BaseLayoutVM`: add `recent_multi_leg_auto_correction_count: int = 0` field. | ~+1 LOC. |
 | `swing/web/view_models/discrepancies.py` (or equivalent helper module) | **NEW** helper `_fetch_recent_multi_leg_auto_correction_count(conn, *, window: Literal['most_recent_run']='most_recent_run') -> int`. Reads `reconciliation_corrections JOIN reconciliation_discrepancies` filtered by `resolved_by='auto_tier1_multi_leg'` + `reconciliation_run_id == latest_completed_run_id`. | ~+30 LOC + tests. |
 | `swing/web/view_models/dashboard.py` + `journal.py` + `pipeline.py` + `error.py` + `config.py` + `account.py` + `schwab.py` (SchwabSetupVM + SchwabStatusVM + SchwabSetupErrorVM) + `watchlist.py` + `trades.py` (ReviewVM + CadenceCompleteVM + ReviewsPendingVM + TradeDetailVM + others mounting base.html.j2) + `metrics/*.py` (all `BaseLayoutVM` subclasses) | **Modify**: every VM mounting `base.html.j2` populates the new field via the helper. Per CLAUDE.md gotcha — new `vm.foo` field requires adding to EVERY base-layout VM. | ~+1 LOC per VM × ≥13 VMs. |
@@ -105,7 +107,7 @@ Implementation surface is bounded by §2 operator-locks. **NO mapper or comparat
 
 - `swing/integrations/schwab/mappers.py` (mapper) — UNCHANGED.
 - `swing/integrations/schwab/models.py` (`SchwabExecutionLeg` + `SchwabOrderResponse`) — UNCHANGED.
-- `swing/trades/schwab_reconciliation.py` (comparator + `_compute_execution_price` + `_resolve_match_quantity` + `_is_execution_bearing_candidate`) — UNCHANGED.
+- Within `swing/trades/schwab_reconciliation.py` (which IS touched per Codex R1 M1): the helper functions `_compute_execution_price` + `_resolve_match_quantity` + `_is_execution_bearing_candidate` + the Path B `execution_unavailable=true` sentinel emit are UNCHANGED. The touched scope is narrowly (a) `_pivot_classify_and_dispatch_for_run` branching to recognize the recipe + (b) the comparator emit site that builds Pass-2 candidate dicts now adds `executions` key.
 - `swing/web/routes/schwab.py` (`/schwab/status` + `/schwab/setup`) — UNCHANGED.
 - `swing/data/migrations/0019_*.sql` (CHECK enums + cross-column CHECK) — UNCHANGED.
 - `swing/trades/reconciliation_ambiguity_choices.py` (operator menu) — UNCHANGED (menu still surfaces for tier-2 cases where predicate fails).
@@ -379,11 +381,22 @@ V1 imposes NO defensive cap. Sub-bundle 1 mapper-coherence-check ALREADY rejects
 
 (§15.7 — Codex may surface defensive cap; brainstorm recommends no V1 cap based on production-data evidence.)
 
-### §6.5 Cross-bundle interaction — single-leg single-match (`n=1` branch)
+### §6.5 Single-order multi-leg case — `n=1` rerouting (LOCKED)
 
-The classifier's `n=1` branch at line 862 emits `unknown_schwab_subtype`. Sub-bundle 1.5 production data confirmed single-leg orders work cleanly through Pass-1 (Shape A/B classifier paths) WITHOUT entering Pass-2 (matching succeeded via journal price). The `n=1` branch is reached ONLY when Pass-1 found NO match (different ticker/date/qty) and Pass-2 found exactly one candidate Schwab order in the match window.
+The classifier's existing `n=1` branch at line 862 emits `unknown_schwab_subtype` (Pass-2 single-match path). Sub-bundle 1.5 production data confirmed single-leg orders work cleanly through Pass-1 (Shape A/B classifier paths) WITHOUT entering Pass-2 (matching succeeded via journal price). The `n=1` branch is reached ONLY when Pass-1 found NO match (different ticker/date/qty) AND Pass-2 found exactly one candidate Schwab order in the match window.
 
-For `n=1` with execution data PRESENT (a single Schwab order with multi-leg fills summing to the journal qty), the predicate-equivalent should auto-redirect IF VWAP aligns. **OPERATOR DECISION ITEM §15.2**: should the predicate run on `n=1` PROVIDED `len(executions) >= 2` (single order with multi-leg fills)? Brainstorm recommends **YES** as a natural extension (the architectural reasoning is identical — VWAP across N legs vs journal price), routing through `unknown_schwab_subtype` → tier-2 → auto-redirect. Codex review SHOULD lock this.
+**LOCKED per Codex R1 M2** (brainstorm-locked, no operator-decision-pending status — moved out of §15):
+
+For `n=1` with execution data PRESENT (a single Schwab order with multi-leg fills summing to the journal qty), the classifier RECLASSIFIES the ambiguity_kind from `'unknown_schwab_subtype'` to `'multi_partial_vs_consolidated'` BEFORE emitting the result. This:
+
+- Satisfies the cross-column CHECK pairing (resolution `operator_resolved_ambiguity` ↔ ambiguity_kind `multi_partial_vs_consolidated`).
+- Routes the dispatch through the EXISTING `_TIER2_HANDLERS[("multi_partial_vs_consolidated", "split_into_partials")]` registry entry — NO new handler key needed (which would violate brief §1.3 LOCK).
+- Preserves the predicate gating: the n=1 case is auto-redirected ONLY when `len(executions) >= 2` AND qty-aligns AND VWAP-aligns AND per-leg-consistency (same predicate as n>=2 case; §4.3 sub-conditions apply uniformly).
+- Predicate failure on n=1 with multi-leg falls back to the existing `unknown_schwab_subtype` emit (preserves backward-compat for non-multi-leg n=1 cases).
+
+**Discriminating regression test (T-1.1):** plant a single Schwab order with `len(executions)=3` summing to journal qty + VWAP aligned → assert `ambiguity_kind='multi_partial_vs_consolidated'` (NOT `unknown_schwab_subtype`) + `auto_redirect_recipe` present.
+
+**Cross-references:** §10 Case A is the n=1 walkthrough — it exercises this rerouting. The brief §1.3 LOCK "DO NOT design dedicated new handler `apply_tier1_split_into_partials_auto`" is preserved (no new handler key; existing key reused via ambiguity_kind reclassification).
 
 ---
 
@@ -527,9 +540,59 @@ If `_apply_tier2_resolution_inner` raises (e.g., validator rejection on edge cas
 
 Per CLAUDE.md gotcha + C.C lesson #2: sandbox short-circuit MUST live in the inner (caller-tx) function, NOT outer. The existing `_apply_tier2_resolution_inner` does NOT currently sandbox-short-circuit (only `_apply_tier1_correction_inner` does — per the existing tier-1-only-domain-write story). For Phase 12.5 #1's auto-redirect path, sandbox short-circuit IS REQUIRED because the auto-redirect DOES write journal rows in production.
 
-**Brainstorm-recommended pattern (§7.6.1):** add sandbox short-circuit to `_apply_tier2_resolution_inner` GATED ON `applied_by_override == 'auto'` (i.e., short-circuit ONLY when auto-redirect path; manual operator path proceeds — operators on sandbox can still test the manual menu). This preserves backward-compat for manual tier-2 in sandbox + adds new gating for the auto-redirect path.
+**§7.6.1 LOCKED pattern (Codex R1 M3 fix — SAVEPOINT ROLLBACK discipline):**
 
-(§15.5 Codex review: alternative is to short-circuit ALL tier-2 in sandbox; brainstorm prefers gated.)
+Add sandbox short-circuit to `_apply_tier2_resolution_inner` GATED ON `applied_by_override == 'auto'` (auto-redirect path only; manual operator path proceeds — operators on sandbox can still test the manual menu). The short-circuit pattern preserves the discrepancy's pre-pivot state via SAVEPOINT ROLLBACK:
+
+```python
+def _apply_tier2_resolution_inner(conn, *, discrepancy_id, ..., applied_by_override=None, ...):
+    # SELECT discrepancy first (per Sub-bundle C.C lesson #3 SELECT-first idempotency)
+    disc = _select_discrepancy(conn, discrepancy_id)
+    
+    # NEW: sandbox short-circuit gated on auto-redirect path.
+    if applied_by_override == "auto" and environment == "sandbox":
+        # Caller MUST roll back the savepoint to undo the prior
+        # _stamp_pending_ambiguity_inner mutation. Return a NO-OP result
+        # with notes carrying the rationale; the pivot-loop SAVEPOINT
+        # ROLLBACK contract (per §7.5) handles the actual rollback.
+        logger.warning(
+            "auto-redirect short-circuit under sandbox for discrepancy_id=%s "
+            "(applied_by_override='auto'); SAVEPOINT will be rolled back",
+            discrepancy_id,
+        )
+        raise _SandboxAutoRedirectShortCircuit(discrepancy_id)
+    
+    # ... existing flow ...
+```
+
+**Pivot-loop branch handling** (§7.4 extension):
+
+```python
+try:
+    with savepoint(f"correction_sp_{disc.discrepancy_id}"):
+        _stamp_pending_ambiguity_inner(conn, ...)
+        _apply_tier2_resolution_inner(conn, ..., applied_by_override='auto')
+        counters["tier1_multi_leg_auto_redirected_count"] += 1
+except _SandboxAutoRedirectShortCircuit:
+    # SAVEPOINT rolled back; discrepancy returns to 'unresolved'.
+    # NO counter increment + NO banner trigger (banner queries
+    # reconciliation_corrections WHERE reconciliation_run_id = latest;
+    # nothing was written).
+    counters["sandbox_auto_redirect_skipped_count"] += 1  # NEW counter
+    logger.warning("sandbox auto-redirect skipped for discrepancy_id=%s", disc.discrepancy_id)
+```
+
+**Updated Case J expectations** (§10):
+- Discrepancy resolution AFTER the pivot: `'unresolved'` (NOT `'pending_ambiguity_resolution'`; the SAVEPOINT rolled back the stamp).
+- `reconciliation_corrections` rows for this discrepancy: ZERO.
+- Banner count for the run: ZERO.
+- `counters["sandbox_auto_redirect_skipped_count"]` for the run: 1.
+
+**Why use exception + SAVEPOINT ROLLBACK rather than early-return** (alternative considered):
+
+Early-return from `_apply_tier2_resolution_inner` would leave the `_stamp_pending_ambiguity_inner` stamp committed (per the SAVEPOINT release on successful function return). The exception path is the cleanest pattern to ROLLBACK the savepoint atomically. Codex R1 M3 LOCK.
+
+**Alternative considered + rejected** (short-circuit ALL tier-2 in sandbox): would prevent operator sandbox testing of the manual menu surface; brainstorm prefers the gated approach.
 
 ---
 
@@ -610,9 +673,13 @@ V1 LOCK: clears when next reconciliation_run completes (Option A from brief §1.
 
 The banner template reads from `reconciliation_corrections` and `reconciliation_discrepancies` — both already gate `error_message` and `expected_value_json` content through Sub-bundle 2's read-time re-redactor discipline (per CLAUDE.md "Read-time re-redactor" gotcha banked). The auto-redirect counter is a COUNT(*) — no string content surfaces. ZERO sensitive data emission risk. Sentinel-leak audit test: `tests/web/test_dashboard_banner.py` plants a known sentinel substring in a correction row's `correction_reason` + asserts the banner does NOT contain the substring (only the count).
 
-### §8.6 CLI surface availability
+### §8.6 CLI surface availability — LOCKED IN-BUNDLE per Codex R1 M5
 
-The banner suggests `swing journal discrepancy list --resolved-by auto_tier1_multi_leg`. Does this filter exist? Per Sub-bundle C.D ship (`reconciliation_backfill.py` + `discrepancy list` subcommands), the existing `swing journal discrepancy list` has filters like `--resolved`, `--unresolved`, `--material`. **Operator decision item §15.3:** does `--resolved-by <value>` exist or does this dispatch land it? Brainstorm recommends: **lands `--resolved-by <value>` filter** as a small addition (single column read; no schema impact) within Sub-bundle 12.5-1A scope. ~+15 LOC + 2 tests.
+The banner template cites `swing journal discrepancy list --resolved-by auto_tier1_multi_leg`. This filter DOES NOT currently exist on the `discrepancy list` subcommand (verified via grep). **LOCKED IN-BUNDLE:** T-1.10 lands the `--resolved-by <value>` filter on `swing/cli.py` in this bundle. The banner template will NEVER ship before the CLI filter — both ride the same integration merge.
+
+Implementation (T-1.10): add `--resolved-by <value>` click option to the existing `discrepancy list` subcommand; threads through to `list_discrepancies` (Phase 9 Sub-bundle B repo helper) as an additional WHERE-clause; ~+15 LOC + 3 tests (filter matches, filter no-match, filter combined with --material).
+
+No schema impact (column `resolved_by` already exists; free TEXT; no CHECK). No additional repo helper needed (existing helper accepts a WHERE clause). Composable with existing `--resolved` / `--unresolved` / `--material` filters.
 
 ---
 
@@ -731,13 +798,14 @@ Less than Sub-bundle C's 9 rounds because §1 LOCKs bound the architectural surf
 - Predicate: all-match within $0.01 ✓.
 - Result: auto-redirect fires; payload=[5 partials].
 
-**Case J — sandbox env (predicate satisfied but write short-circuited):**
+**Case J — sandbox env (predicate satisfied but write short-circuited; SAVEPOINT rolls back stamp per §7.6.1 LOCK):**
 
 - Same input as Case A.
 - `environment='sandbox'` flag passed to flow-pivot loop.
-- Predicate fires; recipe synthesized; `_apply_tier2_resolution_inner` invoked with `applied_by_override='auto'`.
-- Inner function short-circuits (sandbox gating per §7.6.1) → returns `CorrectionResult(correction_id=None, notes='sandbox: domain write short-circuited')`.
-- Discriminating assert: NO journal mutation; NO correction row written; banner count remains 0.
+- Predicate fires; recipe synthesized; pivot-loop stamps `pending_ambiguity_resolution` inside SAVEPOINT; `_apply_tier2_resolution_inner` invoked with `applied_by_override='auto'`.
+- Inner function raises `_SandboxAutoRedirectShortCircuit(discrepancy_id)` immediately after SELECT-first idempotency check (per §7.6.1 LOCK).
+- SAVEPOINT rolls back — the pending_ambiguity_resolution stamp is UNDONE.
+- Discriminating asserts: post-pivot `discrepancy.resolution = 'unresolved'` (NOT 'pending_ambiguity_resolution'); NO journal mutation; ZERO correction rows for this discrepancy; banner count for the run = 0; `counters["sandbox_auto_redirect_skipped_count"] == 1`; WARNING log emitted citing the discrepancy_id.
 
 ---
 
@@ -862,16 +930,29 @@ Brief §2.4 referenced extending `_RESOLVED_BY_VALUES` enum. **This constant DOE
 
 ---
 
-## §15 Operator decision items pending (Codex chain SHOULD surface answers)
+## §15 Operator decision items + Codex-confirmation triage
 
-1. **§4.4 floating-point tolerance threshold.** `price_tolerance=$0.01` LOCK per spec §4.4 inheritance — verify with Codex this is the right cadence (vs $0.001 for higher-priced stocks, or proportional). Brainstorm recommends LOCK at $0.01 absolute; Codex may push toward `max($0.01, abs(journal_price) * 0.001)`.
-2. **§6.5 n=1 single-order multi-leg path.** Should the predicate run when `n=1` AND `len(executions) >= 2` (single Schwab order with multi-leg fills)? Brainstorm recommends YES; Codex review confirms.
-3. **§8.6 CLI `--resolved-by <value>` filter.** Land in 12.5-1A scope OR defer? Brainstorm recommends LAND (small addition; banner cites it).
-4. **§6.3 `qty_tolerance` mismatch.** Predicate uses `1e-9`; `_handle_split_into_partials` uses `1e-6`. The strictness asymmetry is safe (predicate stricter) but Codex MAY ask for alignment. Brainstorm recommends LOCK at predicate=1e-9 (stricter) + leave handler tolerance unchanged (it's an intrinsic invariant).
-5. **§7.6 sandbox short-circuit gating granularity.** Gate on `applied_by_override == 'auto'` (auto-redirect only) OR gate ALL tier-2 in sandbox? Brainstorm recommends gated (preserves manual-menu sandbox testing); Codex may push otherwise.
-6. **§11.2 briefing.md format change.** Add `tier1_multi_leg_redirected_count` line to Reconciliation status section? Brainstorm recommends YES; minor addition.
-7. **§12.3 canary observability for empty-executions case.** Worth +5 LOC + 1 test? Brainstorm recommends YES (Sub-bundle 1.5 canary precedent).
-8. **§13.3 Brief §2.4 amendment.** Brief misnamed `_RESOLVED_BY_VALUES` (no such constant). Confirm spec deviates correctly + banks amendment.
+Per Codex R1 Minor 2 — split into LOCKED-by-this-brainstorm (Codex resolved or moot post-fix) vs STILL-OPEN (operator may override at writing-plans handoff).
+
+### §15.A LOCKED by this brainstorm (Codex chain resolved)
+
+These items reached design closure in Round 1 + the in-tree fixes; writing-plans inherits the locks.
+
+- **§6.5 n=1 single-order multi-leg path** — LOCKED YES via ambiguity_kind reclassification at the n=1 branch (Codex R1 M2 fix). See §6.5 binding contract.
+- **§8.6 `--resolved-by <value>` CLI filter** — LOCKED IN-BUNDLE at T-1.10 (Codex R1 M5 fix). Banner template cites it; both land together.
+- **§7.6 sandbox short-circuit gating granularity** — LOCKED gated-on-auto-redirect (Codex R1 M3 fix). See §7.6.1 SAVEPOINT ROLLBACK pattern.
+- **§7.4 service API parameter naming** — LOCKED to `operator_custom_payload` (existing kwarg) + new `applied_by_override` / `correction_action_override` / `resolved_by_override` overrides (Codex R1 M4 fix). See §7.1.
+- **§11.2 briefing.md format change** — LOCKED YES; +1 line per run for `tier1_multi_leg_redirected_count` when > 0. See §11.2.
+- **§12.3 canary observability for empty-executions case** — LOCKED YES; ~+5 LOC + 1 test (Sub-bundle 1.5 canary precedent).
+- **§13.3 Brief §2.4 amendment** — LOCKED + amendment banked (no `_RESOLVED_BY_VALUES` constant exists; resolved_by is free TEXT; brief writer error).
+
+### §15.B Still open (operator may override at writing-plans handoff)
+
+These are advisory items where brainstorm proposes a default but operator-decision-routing remains in V1 scope.
+
+1. **§4.4 floating-point tolerance threshold.** `price_tolerance=$0.01` LOCK per spec §4.4 inheritance. Operator may override toward `max($0.01, abs(journal_price) * 0.001)` for higher-priced stocks. Brainstorm default: LOCK $0.01 absolute.
+2. **§6.3 `qty_tolerance` mismatch.** Predicate uses `1e-9`; `_handle_split_into_partials` uses `1e-6`. Strictness asymmetry is safe (predicate stricter than handler). Brainstorm default: LOCK predicate=1e-9.
+3. **Defensive cap on N legs** (§6.4 + §14 #5). Brainstorm default: NO cap V1 (production evidence supports unbounded; mapper-coherence-check already prevents pathological shapes). Operator may impose cap (e.g., 50) for memory hygiene.
 
 ---
 
