@@ -130,6 +130,122 @@ class SchwabAccountResponse:
 
 
 @dataclass(frozen=True)
+class SchwabExecutionLeg:
+    """Mapped per-execution leg under
+    ``orderActivityCollection[].executionLegs[]`` for a Schwab order.
+
+    Sub-bundle 1 T-1.1 (post-Phase-12 mapper execution-grain widening).
+    Per spec §4.1 + plan §A.1.1. Frozen dataclass with 6 fields; each
+    instance corresponds to one numbered EXECUTION leg Schwab returned
+    under an order's ``orderActivityCollection[]``.
+
+    Pass-1 + Pass-2 fill-matching consume the LEG-grain price (Schwab's
+    actual execution price) rather than the order-grain ``price`` field
+    (LIMIT trigger / stop trigger / NULL for MARKET) which the V1
+    Phase-11 mapper exposed. The architectural shift closes the
+    limit-vs-fill defect family empirically falsified at Phase 12
+    Sub-sub-bundle C.D operator-witnessed gate (CVGI + LION 2026-05-17;
+    see CLAUDE.md gotcha "Pass-2-tier-1-FORBIDDEN +
+    Pass-1-tier-1-OPERATOR-LOCKED-BUT-RISKY").
+
+    Fields:
+      leg_id: Schwab's numbered position (1-indexed); ``>= 0``.
+      price: actual execution price for this leg; ``> 0``; ``math.isfinite()``.
+      quantity: shares filled at ``price``; ``> 0``; ``math.isfinite()``.
+      mismarked_quantity: Schwab's mismarked-short accounting field;
+        ``None`` when unavailable; when present, ``>= 0`` +
+        ``math.isfinite()``.
+      instrument_id: Schwab's instrument identifier; ``None`` when
+        unavailable; when present, ``>= 0``.
+      time: ISO timestamp string for the execution; non-empty.
+
+    Per Sub-bundle C.B forward-binding lesson #5 (shape predicate
+    tightening discipline) + the project's REAL-field discipline at
+    ``swing/data/models.py``: ``__post_init__`` rejects bool-as-number
+    (Python ``bool`` is a subclass of ``int``) + NaN / inf via
+    ``math.isfinite()`` + zero / negative on positive-only fields.
+    """
+
+    leg_id: int
+    price: float
+    quantity: float
+    mismarked_quantity: float | None
+    instrument_id: int | None
+    time: str
+
+    def __post_init__(self) -> None:
+        if isinstance(self.leg_id, bool) or not isinstance(self.leg_id, int):
+            raise ValueError(
+                f"SchwabExecutionLeg.leg_id must be int (not bool); "
+                f"got {type(self.leg_id).__name__}",
+            )
+        if self.leg_id < 0:
+            raise ValueError(
+                f"SchwabExecutionLeg.leg_id must be >= 0; "
+                f"got {self.leg_id!r}",
+            )
+        if isinstance(self.price, bool) or not isinstance(
+            self.price, (int, float),
+        ):
+            raise ValueError(
+                f"SchwabExecutionLeg.price must be number (not bool); "
+                f"got {type(self.price).__name__}",
+            )
+        if not math.isfinite(float(self.price)) or self.price <= 0:
+            raise ValueError(
+                f"SchwabExecutionLeg.price must be > 0 + finite; "
+                f"got {self.price!r}",
+            )
+        if isinstance(self.quantity, bool) or not isinstance(
+            self.quantity, (int, float),
+        ):
+            raise ValueError(
+                f"SchwabExecutionLeg.quantity must be number (not bool); "
+                f"got {type(self.quantity).__name__}",
+            )
+        if not math.isfinite(float(self.quantity)) or self.quantity <= 0:
+            raise ValueError(
+                f"SchwabExecutionLeg.quantity must be > 0 + finite; "
+                f"got {self.quantity!r}",
+            )
+        if self.mismarked_quantity is not None:
+            if isinstance(self.mismarked_quantity, bool) or not isinstance(
+                self.mismarked_quantity, (int, float),
+            ):
+                raise ValueError(
+                    f"SchwabExecutionLeg.mismarked_quantity must be number "
+                    f"or None (not bool); "
+                    f"got {type(self.mismarked_quantity).__name__}",
+                )
+            if (
+                not math.isfinite(float(self.mismarked_quantity))
+                or self.mismarked_quantity < 0
+            ):
+                raise ValueError(
+                    f"SchwabExecutionLeg.mismarked_quantity must be >= 0 + "
+                    f"finite or None; got {self.mismarked_quantity!r}",
+                )
+        if self.instrument_id is not None:
+            if isinstance(self.instrument_id, bool) or not isinstance(
+                self.instrument_id, int,
+            ):
+                raise ValueError(
+                    f"SchwabExecutionLeg.instrument_id must be int or None "
+                    f"(not bool); got {type(self.instrument_id).__name__}",
+                )
+            if self.instrument_id < 0:
+                raise ValueError(
+                    f"SchwabExecutionLeg.instrument_id must be >= 0 or None; "
+                    f"got {self.instrument_id!r}",
+                )
+        if not isinstance(self.time, str) or not self.time:
+            raise ValueError(
+                f"SchwabExecutionLeg.time must be non-empty str; "
+                f"got {self.time!r}",
+            )
+
+
+@dataclass(frozen=True)
 class SchwabOrderResponse:
     """Mapped single-order payload from `Client.account_orders(...)`.
 
@@ -501,6 +617,7 @@ class SchwabPriceHistoryWindow:
 __all__ = [
     "OhlcvBar",
     "SchwabAccountResponse",
+    "SchwabExecutionLeg",
     "SchwabOrderResponse",
     "SchwabPriceHistoryWindow",
     "SchwabQuoteResponse",
