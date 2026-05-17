@@ -52,11 +52,11 @@ def _has_non_placeholder_leg(activities: object) -> bool:
 
     Scope alignment (Sub-bundle 1.5 Codex R2 M#2): only legs under
     activities whose ``activityType == "EXECUTION"`` participate in the
-    canary -- mirroring the mapper's extraction loop at
-    ``_extract_executions_from_order_raw`` (which silently skips
-    non-EXECUTION activities like ``ORDER_ACTION``). Without this
-    filter the canary could fire on data the mapper would otherwise
-    ignore, producing observability noise unrelated to the
+    canary -- mirroring the non-EXECUTION silent-skip in
+    ``_extract_executions_from_order_raw``'s activity-iteration loop
+    (which ignores ``ORDER_ACTION`` and other non-execution activities).
+    Without this filter the canary could fire on data the mapper would
+    otherwise ignore, producing observability noise unrelated to the
     execution-grain extraction path.
 
     Design decision (Sub-bundle 1.5 Codex R2 M#1 -- ACCEPT-WITH-RATIONALE):
@@ -69,10 +69,12 @@ def _has_non_placeholder_leg(activities: object) -> bool:
           (non-dict / non-list / bool-as-number / non-str time / the
           ``SchwabExecutionLeg.__post_init__`` validator rejects
           negative + non-finite price via REAL-field guards);
-      (b) speculative -- the T-1.5.1 production diagnostic shows ALL
-          placeholders use ``activityType=EXECUTION`` and the
-          ``executionType`` field does NOT appear in operator's
-          response data; or
+      (b) outside the current mapper contract -- the ``executionType``
+          field is not relied on by ``_extract_executions_from_order_raw``
+          and is not part of the V1 canary contract (the T-1.5.1
+          production diagnostic showed all placeholders surface as
+          ``activityType=EXECUTION`` with no ``executionType``
+          discrimination needed for the operator's data shape);
       (c) would generate false positives -- the placeholder shape
           ALREADY has ``leg.quantity > 0`` (reflects the order's
           intended size, not execution); widening the canary on that
@@ -101,7 +103,8 @@ def _has_non_placeholder_leg(activities: object) -> bool:
             continue
         # Sub-bundle 1.5 Codex R2 M#2 -- align scope with the mapper's
         # extraction loop which silently skips non-EXECUTION activities
-        # (mappers.py:373-377). Canary mirrors that semantic.
+        # (see ``_extract_executions_from_order_raw``'s activity-iteration
+        # loop). Canary mirrors that semantic.
         if activity.get("activityType") != "EXECUTION":
             continue
         legs = activity.get("executionLegs", [])
