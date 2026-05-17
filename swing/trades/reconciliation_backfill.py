@@ -454,8 +454,26 @@ def _orders_to_classifier_payload(
         # Defensive: tolerate either dataclass-instance or pre-converted
         # dict (for cassette/replay flexibility).
         if isinstance(o, dict):
-            out.append(o)
+            # F24 LOCK (Codex R1 Major #4): every output dict MUST carry
+            # an ``executions`` key so the dict-branch + non-dict-branch
+            # outputs converge on shape contract. Cassette/replay
+            # fixtures pre-Phase-12.5 #1 do NOT include ``executions``
+            # keys; normalize to ``None`` (data-unavailable sentinel)
+            # when absent; pass through verbatim when present.
+            if "executions" not in o:
+                out.append({**o, "executions": None})
+            else:
+                out.append(o)
             continue
+        # Phase 12.5 #1 T-1.3 — tri-valued execution-grain emit
+        # (None / [] / [legs...]) so the classifier's multi-leg
+        # auto-redirect path (T-1.1 predicate) consumes leg-grain data
+        # via ``so.get('executions')`` from each source_payload entry.
+        # Leg dataclass-instances are flattened to plain dicts with the
+        # 4 plan-prescribed keys (leg_id / price / quantity / time);
+        # ``mismarked_quantity`` + ``instrument_id`` are NOT surfaced
+        # at this seam — they're not consumed by the classifier (F25:
+        # no SchwabExecutionLeg references leak out of this function).
         out.append({
             "order_id": getattr(o, "order_id", None),
             "status": getattr(o, "status", None),
@@ -465,6 +483,19 @@ def _orders_to_classifier_payload(
             "quantity": getattr(o, "quantity", None),
             "order_type": getattr(o, "order_type", None),
             "price": getattr(o, "price", None),
+            "executions": (
+                [
+                    {
+                        "leg_id": leg.leg_id,
+                        "price": leg.price,
+                        "quantity": leg.quantity,
+                        "time": leg.time,
+                    }
+                    for leg in (o.executions or [])
+                ]
+                if getattr(o, "executions", None) is not None
+                else None
+            ),
         })
     return out
 
