@@ -758,7 +758,16 @@ def run_schwab_reconciliation(
                         continue
                     if so.instrument_symbol != t.ticker:
                         continue
-                    if abs(so.quantity - float(f.quantity)) > price_tolerance:
+                    # Sub-bundle 1 T-1.7: execution-grain quantity-match per
+                    # Codex R1 M#2. _resolve_match_quantity returns
+                    # sum(legs.quantity) when executions populated; else
+                    # so.quantity (V1 backward compat). Closes the in-row
+                    # quantity comparison defect for partial fills where
+                    # order.quantity reflects the OPEN order size, not the
+                    # FILLED quantity.
+                    if abs(
+                        _resolve_match_quantity(so) - float(f.quantity)
+                    ) > price_tolerance:
                         continue
                     match_idx = idx
                     break
