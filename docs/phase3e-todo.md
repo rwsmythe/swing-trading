@@ -59,7 +59,11 @@
 
 ### Worktree teardown status
 
-- Branch `schwab-mapper-bundle-2` merged via `--no-ff` at `690aed0`; on-disk husk at `.worktrees/schwab-mapper-bundle-2/` ACL-locked pending operator's `cleanup-locked-scratch-dirs.ps1 -DeregisterFirst` pass (branch matches `schwab(?:-\w+)?-bundle-` regex).
+- Branch `schwab-mapper-bundle-2` merged via `--no-ff` at `690aed0`; on-disk husk at `.worktrees/schwab-mapper-bundle-2/` **CLEANED by operator post-merge** (`cleanup-locked-scratch-dirs.ps1 -DeregisterFirst` pass; branch matches `schwab(?:-\w+)?-bundle-` regex). All 3 post-Phase-12 husks (`schwab-mapper-bundle-1` + `schwab-mapper-bundle-1.5` + `schwab-mapper-bundle-2`) cleared in single operator pass.
+
+### S2 visual confirmation closed
+
+- The 5-surface gate was orchestrator-driven via curl + grep (per phase3e-todo gate-outcome §"GATE OUTCOME"). **S2 visual confirmation closed post-merge by operator** via Chrome MCP-equivalent browser inspection of `/schwab/status` page (LIVE state-ok badge color rendering + recent-calls table + env switcher behavior + base-layout integration all OK end-to-end). The curl+grep gate caveat from Sub-bundle 2 gate-outcome message is RESOLVED.
 
 ### Cross-references
 
