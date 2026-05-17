@@ -183,30 +183,6 @@ def test_unmatched_fill_shared_n_ge_2_per_leg_outlier_recipe_none_reason_cites_o
     source_payload = [
         _candidate(
             order_id="ORDER-C1",
-            quantity=200.0,
-            price=5.30,
-            executions=[
-                _leg(leg_id=1, price=5.30, quantity=100.0),
-                _leg(leg_id=2, price=5.30, quantity=50.0),
-                _leg(leg_id=3, price=5.50, quantity=50.0),  # outlier
-            ],
-        ),
-    ]
-    result = _classify_unmatched_fill_shared(
-        discrepancy=discrepancy,
-        source_payload=source_payload,
-        # sum=200, VWAP = (5.30*100 + 5.30*50 + 5.50*50)/200 = 5.35; journal
-        # picked so VWAP-vs-journal passes (≤$0.01) yet per-leg outlier fires.
-        journal_row={"quantity": 200, "price": 5.35, "ticker": "DHC"},
-        direction="open",
-    )
-    # n=1 candidate with 3 legs is treated by n=1 branch (len(source_payload)==1).
-    # But here we have n=1 candidate, so the n=1 branch is exercised.
-    # For test 4, we want n>=2 branch with outlier; use 2 candidates with mixed legs.
-    # Adjust: 2 candidates, second has the outlier.
-    source_payload_2 = [
-        _candidate(
-            order_id="ORDER-C1",
             quantity=150.0,
             price=5.30,
             executions=[
@@ -221,17 +197,17 @@ def test_unmatched_fill_shared_n_ge_2_per_leg_outlier_recipe_none_reason_cites_o
             executions=[_leg(leg_id=3, price=5.50, quantity=50.0)],  # outlier leg
         ),
     ]
-    result2 = _classify_unmatched_fill_shared(
+    result = _classify_unmatched_fill_shared(
         discrepancy=discrepancy,
-        source_payload=source_payload_2,
+        source_payload=source_payload,
         # total qty=200, VWAP=(5.30*150 + 5.50*50)/200 = 5.35
         journal_row={"quantity": 200, "price": 5.35, "ticker": "DHC"},
         direction="open",
     )
-    assert result2.tier == 2
-    assert result2.ambiguity_kind == "multi_partial_vs_consolidated"
-    assert result2.auto_redirect_recipe is None
-    assert "leg #3" in result2.correction_reason
+    assert result.tier == 2
+    assert result.ambiguity_kind == "multi_partial_vs_consolidated"
+    assert result.auto_redirect_recipe is None
+    assert "leg #3" in result.correction_reason
 
 
 # ---------------------------------------------------------------------------
