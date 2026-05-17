@@ -6,6 +6,71 @@
 
 ---
 
+## 2026-05-17 PM Post-Phase-12 Sub-bundle 1 SHIPPED — V2 Schwab mapper execution-grain widening + classifier consumer + comparator + housekeeping (FOLDED) — GATE PASS-WITH-FINDING; Sub-bundle 1.5 follow-up dispatch UNBLOCKED
+
+**Sub-bundle 1 SHIPPED 2026-05-17** at `120c992` (integration merge of `schwab-mapper-bundle-1` via `--no-ff`; ~24 implementer commits + 1 orchestrator handoff brief at `54c7b9d`; 26 files / 5225 insertions). 5 Codex rounds NO_NEW_CRITICAL_MAJOR; **ZERO ACCEPT-WITH-RATIONALE banked**; ZERO Co-Authored-By footer drift; +115 fast tests (4360 → 4475); ruff 18 unchanged; schema v19 unchanged.
+
+### Architectural fix lands across 4 surfaces
+
+1. **`swing/integrations/schwab/models.py`** — NEW `SchwabExecutionLeg` frozen dataclass (6 fields; `__post_init__` validators rejecting bool/NaN/inf/zero/negative) + `SchwabOrderResponse.executions: list[SchwabExecutionLeg] | None = None` tri-valued tail field (8-positional backward compat preserved).
+2. **`swing/integrations/schwab/mappers.py`** — `map_orders_to_fill_candidates` widened via NEW `_extract_executions_from_order_raw` helper with defensive parsing (non-EXECUTION skip; non-dict skip+warn; leg-validator drop+warn; empty→None collapse; `sum(legs.qty) == filledQuantity` coherence check else collapse; R2 pre-coercion bool/non-str-time rejection).
+3. **`swing/trades/schwab_reconciliation.py`** — NEW helpers `_compute_execution_price` (single-leg → leg.price; multi-leg → VWAP), `_resolve_match_quantity` (execution-grain quantity), `_is_execution_bearing_candidate` (candidate-pool widening for MARKET-with-price=None + CANCELED/REPLACED partials). Comparator switched to execution-grain price + Path B `execution_unavailable=true` sentinel emit + Shape C `actual_value_json` shape + 4dp delta_text precision.
+4. **`swing/trades/reconciliation_classifier.py`** — NEW `_EXECUTION_AUDIT_KEYS` + `_SHAPE_C_EXPECTED_KEYS` constants. Shape C branch added to `_classify_entry_price_mismatch` + `_classify_close_price_mismatch` (ADDITIVE; Shape A + B preserved). `_classify_unmatched_fill_shared` Path B sentinel recognition (V1 Pass-2 LIFT scope = Pass-1 only; OQ-F V2 deferred).
+
+**Housekeeping FOLDED** per operator decision 2026-05-17:
+- CLAUDE.md `Pass-2-tier-1-FORBIDDEN` gotcha amended V2-RESOLVED for Pass-1 family.
+- CVGI date typo verified ZERO matches in CLAUDE.md (no-op-with-note).
+- NEW `swing journal discrepancy show-correction <id>` CLI subcommand + generic ID-free `_HISTORICAL_CORRECTION_NOTE` epilog (per spec §8.3 OQ-G + plan §A.0.1 D1).
+
+**Infrastructure**: T-1.0 cassette runbook at `docs/runbooks/schwab-cassette-recording.md` + NEW `scripts/record_schwab_cassettes.py` (686 lines) + `tests/conftest.py:vcr_config` sanitization filter extension. Operator-paired cassette session `ec498fe` recorded 3 of 4 REQUIRED order types (MARKET BUY + STOP_LIMIT FIRED hand-rolled per operator history absence). Codex R3 Critical accountNumber leak + R4 over-redaction both fixed in-place across the 3 committed cassettes at `tests/integrations/cassettes/schwab/`.
+
+**E2E test (T-1.13; `tests/integration/test_phase12_post_schwab_mapper_widening_e2e.py`):** 6 slow tests exercising 3 cassette-driven + 3 hand-rolled fixtures end-to-end through the mapper → comparator → classifier → audit-row persistence pipeline.
+
+### GATE OUTCOME (orchestrator-driven 2026-05-17 PM)
+
+- **S1 PASS** — inline `pytest -m "not slow" -q -n auto` 4475 fast + 3 pre-existing phase8 walkthrough failures unchanged + 5 skipped (~93s wall-clock).
+- **S2 PASS** — 6 slow E2E tests via cassette + hand-rolled fixtures (4.35s).
+- **S3 PASS-WITH-FINDING** — `python -m swing.cli schwab fetch --orders` from worktree emitted reconciliation_run #13 (state=completed; discrepancies_emitted=2; tier1_applied_count=0; tier2_pending_count=2). **ZERO false-positive entry/close_price_mismatch** confirms architectural fix HOLDS in negative sense. **CRITICAL FINDING (routes to Sub-bundle 1.5)**: ALL 18 production orders had `orderActivityCollection[0].executionLegs[0]` uniformly rejected by `SchwabExecutionLeg.__post_init__` validator at mapper drop+warn. Positive lift NEVER FIRED on production despite cassette + hand-rolled E2E tests all passing. Root cause unknown — `schwab_api_calls` does NOT capture `response_body_json`. Hypothesis: synthetic-fixture-vs-production-emitter shape drift family (C.D-arc lesson #2 + #4 inheritance).
+- **S4 SKIPPED** operator preference (S3 sufficient).
+- **S5 PASS** — Phase 10 banner cleared to 0 after 4 dispositions (run #12 ids 46+47 + run #13 ids 48+49 — all DHC+VSAT unmatched_open_fill; `acknowledge` per C.D-precedent for `ambiguity_kind='unsupported'`; correction_ids 11+12+13+14). 4 dispositioned because run #12 fired ~3 min before our gate (per-run-vs-per-fill re-emission family).
+- **S6 + S7** deferred operator-async review (CLAUDE.md gotcha amendment text + `show-correction --help` epilog).
+- **S8 PASS** — ruff 18 E501 unchanged.
+- **S9 SKIPPED** optional.
+
+### Production state post-gate
+
+- **ZERO unresolved-material discrepancies; banner count=0.**
+- System operating in safe-degraded mode (V1-equivalent behavior + Path B sentinel emit; no false-positives; positive lift gated on Sub-bundle 1.5 fix).
+- 4 historical correction chains preserved (correction_ids 11+12+13+14 are acknowledge-only no-mutation entries for DHC fill_id=2 + VSAT fill_id=6).
+
+### Sub-bundle 1.5 follow-up dispatch UNBLOCKED — NEXT ORCHESTRATOR FIRST DELIVERABLE
+
+**Scope**: validator-drop defect investigation + fix.
+- **Diagnostic phase**: capture raw Schwab response shape for one failing order (options: temp debug logging at mapper drop-point + re-run schwab fetch; OR one-shot direct API call via schwabdev bypassing mapper; OR schema extension to capture `response_body_json` — implementer picks).
+- **Fix phase**: amend validator OR amend mapper pre-coercion OR amend field-extraction to match actual Schwab production shape. Discriminating regression test landing in cassette form.
+- **Re-verification**: re-run S3 against production; verify `tier1_applied_count > 0` IF eligible discrepancies, OR at minimum NO validator-drop warnings logged.
+
+**Dispatch metadata**:
+- Branch: `schwab-mapper-bundle-1.5` (matches cleanup-script regex `schwab(?:-\w+)?-bundle-`)
+- Worktree: `.worktrees/schwab-mapper-bundle-1.5/`
+- Codex chain budget: 2-4 rounds (focused defect fix)
+- Gate: 3-5 surfaces (S1 fast tests + S2 cassette + S3 production re-run + S4 banner + S5 ruff)
+- Schema impact: likely v19 unchanged unless schema extension chosen for diagnostic capture
+
+### Worktree teardown status
+
+- Branch `schwab-mapper-bundle-1` merged via `--no-ff` at `120c992`; on-disk husk at `.worktrees/schwab-mapper-bundle-1/` ACL-locked pending operator's `cleanup-locked-scratch-dirs.ps1 -DeregisterFirst` pass.
+
+### Cross-references
+
+- Dispatch brief: `docs/post-phase12-schwab-mapper-bundle-1-execution-grain-widening-executing-plans-dispatch-brief.md` (`e2a11bf`).
+- Plan: `docs/superpowers/plans/2026-05-17-schwab-mapper-execution-grain-widening-plan.md` (`cc6fd2d`).
+- Spec: `docs/superpowers/specs/2026-05-17-schwab-mapper-execution-grain-widening-design.md` (`dda8730`).
+- Integration merge: `120c992`.
+- Handoff brief: `docs/orchestrator-handoff-2026-05-17-post-sub-bundle-1.md` (`54c7b9d`).
+
+---
+
 ## 2026-05-17 Phase 12.5 RESCOPED — 3-item bundle (operator-locked scope; queued post-Sub-bundle-2 ship of post-Phase-12 mapper-widening arc; item #2 fill auto-population FOLDED INTO Phase 13 Theme 3 per operator decision 2026-05-17)
 
 **Scope (operator-locked 2026-05-17; rescoped 2026-05-17 to drop fill auto-population → moved to Phase 13 Theme 3 which absorbs entries + exits + reviews coherently):**

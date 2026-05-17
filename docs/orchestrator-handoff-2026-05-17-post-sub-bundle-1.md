@@ -1,12 +1,17 @@
-# Orchestrator handoff — 2026-05-17 (post-Phase-12 Sub-bundle 1 SHIPPED with validator-drop finding; Sub-bundle 1.5 dispatch queued; Phase 12.5 + Phase 13 scope LOCKED)
+# Orchestrator handoff — 2026-05-17 PM (post-Sub-bundle-1-merge + post-housekeeping; Sub-bundle 1.5 dispatch queued; Phase 12.5 + Phase 13 scope LOCKED)
 
-You are taking over as orchestrator for the Swing Trading project at the **post-Sub-bundle-1-merge** breakpoint. Sub-bundle 1 (V2 Schwab mapper execution-grain widening + classifier consumer + comparator + housekeeping FOLDED) merged 2026-05-17 at `120c992` (PASS-WITH-FINDING). Sub-bundle 1.5 follow-up dispatch is queued (root-cause + fix the validator-drop defect surfaced at S3 production gate). Phase 12.5 (3 items) + Phase 13 (4 themes; 10 sub-bundles) scope is operator-LOCKED but dispatch is gated on Sub-bundle 2 + Sub-bundle 1.5 close.
+You are taking over as orchestrator for the Swing Trading project at the **post-Sub-bundle-1-merge + post-housekeeping** breakpoint. Sub-bundle 1 (V2 Schwab mapper execution-grain widening + classifier consumer + comparator + housekeeping FOLDED) merged 2026-05-17 at `120c992` (PASS-WITH-FINDING). Sub-bundle 1.5 follow-up dispatch is queued (root-cause + fix the validator-drop defect surfaced at S3 production gate). Phase 12.5 (3 items) + Phase 13 (4 themes; 10 sub-bundles) scope is operator-LOCKED but dispatch is gated on Sub-bundle 2 + Sub-bundle 1.5 close.
 
-The prior orchestrator is handing off NOW because:
+**HOUSEKEEPING COMPLETED 2026-05-17 PM by outgoing orchestrator** (this handoff was AMENDED post-housekeeping after operator caught the ownership mistake — orchestrator-context.md is the working-memory passthrough owned by outgoing orchestrator, per §"Session-end checklist" line 587 + §"How to update this file" line 598). Updated:
+- `CLAUDE.md` status-line PARAGRAPH — appended Sub-bundle 1 SHIPPED entry with gate outcome + validator-drop finding.
+- `docs/phase3e-todo.md` — Sub-bundle 1 SHIPPED entry at top (above Phase 12.5 RESCOPED entry).
+- `docs/orchestrator-context.md` — §"Currently in-flight work" updated with post-Sub-bundle-1 state + Phase 12.5 rescope + Phase 13 scope locks + 3 NEW memory entries + Sub-bundle 1.5 dispatch readiness; §"Lessons captured" appended 4 NEW lessons (pause-means-pause + worktree-cli-invocation + time-estimates-overstated + sub-bundle-1-architectural-fix-holds-negative-positive-fails-fire + per-run-vs-per-fill re-emission family + Bash-tool-cwd-drift); §"Memory entries" updated with 3 NEW memory entries.
+
+The prior orchestrator handed off because:
 
 1. **Sub-bundle 1 merge is a clean shift boundary.** Main HEAD `120c992`; production banner=0; system in safe-degraded mode (V1-equivalent + Path B sentinel emit; no false-positives; positive lift gated on Sub-bundle 1.5 fix).
-2. **Substantial post-merge synthesis work remains** (CLAUDE.md status line update; orchestrator-context.md update with 3 new memory entries banked this session; Sub-bundle 1.5 dispatch brief drafting ~250-350 lines) — benefits from fresh context window.
-3. **Cap-drift on prior session** was real — drove a 9-surface operator-witnessed gate + 4 production-write dispositions + Phase 13 scope conversation + 3 doc commits + memory banking.
+2. **Substantial Sub-bundle 1.5 dispatch brief drafting remains** (~250-350 lines mirroring Sub-bundle 1 brief structure) — benefits from fresh context window.
+3. **Cap-drift on prior session** was real — drove a 9-surface operator-witnessed gate + 4 production-write dispositions + Phase 13 scope conversation + 4 doc commits + memory banking + housekeeping updates.
 
 ## ⚠ Critical bootstrap framing
 
@@ -168,16 +173,14 @@ Per `docs/phase13-scope-brainstorm.md` §0.5 (LOCKED 2026-05-17):
 
 ## Step 7 — Suggested orchestrator flow (your first session)
 
+**Housekeeping ALREADY COMPLETED by outgoing orchestrator** (per handoff top — operator caught ownership mistake mid-handoff; outgoing orchestrator did the work). Your first deliverable is **Sub-bundle 1.5 dispatch brief drafting** directly.
+
 1. Read this brief end-to-end.
-2. Run Step 2 bootstrap verification.
-3. Update CLAUDE.md status line with Sub-bundle 1 SHIPPED entry (merge commit content; gate outcome; validator-drop finding).
-4. Update `docs/phase3e-todo.md` with Sub-bundle 1 SHIPPED entry at top.
-5. Update `docs/orchestrator-context.md` with current-state pointer refresh + 3 NEW lessons banked (or pointers to the memory entries).
-6. Commit + push all 3 housekeeping doc updates (single commit).
-7. Draft Sub-bundle 1.5 dispatch brief at `docs/post-phase12-schwab-mapper-bundle-1.5-validator-drop-fix-executing-plans-dispatch-brief.md`.
-8. Commit + push brief.
-9. Provide inline implementer-dispatch prompt for Sub-bundle 1.5 as fenced code block.
-10. Operator commissions Sub-bundle 1.5 implementer.
+2. Run Step 2 bootstrap verification (confirm main HEAD includes the housekeeping commit + handoff brief amendment).
+3. Draft Sub-bundle 1.5 dispatch brief at `docs/post-phase12-schwab-mapper-bundle-1.5-validator-drop-fix-executing-plans-dispatch-brief.md` per §3.2 scope.
+4. Commit + push brief.
+5. Provide inline implementer-dispatch prompt for Sub-bundle 1.5 as fenced code block (per durable preference).
+6. Operator commissions Sub-bundle 1.5 implementer.
 
 ---
 
