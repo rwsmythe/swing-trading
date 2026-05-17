@@ -465,3 +465,83 @@ def test_sentinel_leak_audit_no_token_bytes_in_response(
     # NOTE: error_message sentinels are operator-visible by design
     # (audit-row excerpts are the diagnostic surface); this audit only
     # asserts token-byte sentinels stay out of the response body.
+
+
+# ---------------------------------------------------------------------------
+# Post-Phase-12 Sub-bundle 2 Task T-2.5 — HTMX trinity preservation
+# ---------------------------------------------------------------------------
+#
+# Per plan §B T-2.5 (3 regression tests pinning HTMX gotcha trinity per
+# CLAUDE.md "HTMX form-driven endpoints" + Phase 5 R1 M1 + M2 + Phase 6
+# I3 lessons). /schwab/status is GET-only, so the trinity has a softer
+# applicability here than on form-driven routes; this section pins the
+# three regression surfaces explicitly so future surface changes don't
+# regress silently.
+
+
+def test_t25_hx_request_propagation_na_for_read_only_get(
+    seeded_db, monkeypatch, tmp_path,
+):
+    """T-2.5 test 1 — HX-Request propagation gotcha (Phase 5 R1 M1) is
+    N/A for read-only GET; smoke test verifies the route handler does
+    NOT branch on HX-Request and both invocations return 200 with
+    equivalent bodies (modulo session-date timestamp drift)."""
+    cfg, cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r_plain = client.get("/schwab/status")
+        r_hx = client.get(
+            "/schwab/status", headers={"HX-Request": "true"},
+        )
+    assert r_plain.status_code == 200
+    assert r_hx.status_code == 200
+    # Both render the same template (title heading is a stable anchor).
+    assert "Schwab integration status" in r_plain.text
+    assert "Schwab integration status" in r_hx.text
+
+
+def test_t25_schwab_setup_post_hx_redirect_target_registered(
+    seeded_db, monkeypatch, tmp_path,
+):
+    """T-2.5 test 2 (Phase 6 I3 inheritance + T-2.4 cross-ref) — the new
+    HX-Redirect target /schwab/status that POST /schwab/setup emits MUST
+    be a registered route. TestClient verifies the header value but does
+    NOT follow; a stale target string would silently 404 the operator's
+    browser navigation post-OAuth-re-auth."""
+    cfg, cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
+    app = create_app(cfg, cfg_path)
+    # Inspect the route module's _SUCCESS_REDIRECT_TARGET constant +
+    # assert the target route is registered.
+    import swing.web.routes.schwab as schwab_route
+    target = schwab_route._SUCCESS_REDIRECT_TARGET
+    assert target == "/schwab/status", (
+        f"unexpected target constant: {target!r}; T-2.4 retarget regressed"
+    )
+    target_path = target.split("?", 1)[0]
+    assert any(
+        getattr(r_, "path", None) == target_path for r_ in app.routes
+    ), f"HX-Redirect target {target_path!r} not in app.routes"
+
+
+def test_t25_originguard_strict_mode_allows_read_only_get(
+    seeded_db, monkeypatch, tmp_path,
+):
+    """T-2.5 test 3 — OriginGuard strict-mode does NOT reject the
+    read-only GET /schwab/status (smoke). OriginGuard's CSRF protection
+    applies to POSTs without HX-Request header / mismatched Origin; GETs
+    are explicitly exempt. A future fork that tightened OriginGuard to
+    apply to GETs would surface here as a 403."""
+    cfg, cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        # No HX-Request header — OriginGuard MUST allow GETs through.
+        r = client.get("/schwab/status")
+    assert r.status_code == 200, (
+        f"OriginGuard rejected read-only GET (got {r.status_code}); "
+        "trinity gotcha #1 regressed"
+    )
+
+
