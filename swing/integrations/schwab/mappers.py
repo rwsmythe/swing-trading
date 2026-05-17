@@ -383,9 +383,9 @@ def _extract_executions_from_order_raw(
     # working orders with leg.price == 0.0 sentinel that fails the validator's
     # price > 0 contract. Skip extraction entirely to pre-empt drop+warn noise
     # across the uniformly-non-executing placeholder population. The
-    # permissive-when-`filledQuantity`-absent stance documented at lines
-    # 275-276 above is PRESERVED -- only skip on EXPLICIT zero, not on absent
-    # or missing key.
+    # permissive-when-`filledQuantity`-absent stance documented in this
+    # function's docstring is PRESERVED -- only skip on EXPLICIT zero,
+    # not on absent or missing key.
     #
     # Sub-bundle 1.5 Codex R1 M#1+M#6 -- observability canary. The broad
     # gate above silently swallows ANY future order shape with
