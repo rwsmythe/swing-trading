@@ -1,11 +1,30 @@
 """Click CLI for swing. Phase 1 subcommands: db-migrate, eval."""
 from __future__ import annotations
 
+import io as _io
 import sqlite3
+import sys as _sys
 from dataclasses import dataclass
 from datetime import date as _date
 from datetime import datetime
 from pathlib import Path
+
+# Force UTF-8 on stdout/stderr so non-ASCII glyphs (§, →, ↔, etc.) in CLI
+# output don't crash on Windows PowerShell's default cp1252 encoder.
+# Same family as the matplotlib mathtext gotcha (CLAUDE.md): canonical fix is
+# to remove the metacharacter from rendered text, but with 100+ § refs in
+# classifier reason strings + spec citations, a systemic stdout reconfigure
+# is the lower-risk path. Defense-in-depth alongside the ASCII swap of → to
+# -> in swing/trades/reconciliation_backfill.py:_format_pass_2_line.
+# Discovered 2026-05-17 during Phase 12 Sub-sub-bundle C.D operator-witnessed
+# gate (S2 dry-run + S5 show-ambiguity both surfaced cp1252 mangling).
+try:  # pragma: no cover — environment-dependent
+    _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    _sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, _io.UnsupportedOperation):
+    # Embedded consoles / non-TextIOWrapper streams (IDE / capture fixtures)
+    # don't expose .reconfigure(); the original encoding is preserved.
+    pass
 
 import click
 import pandas as pd
