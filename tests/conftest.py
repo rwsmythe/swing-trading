@@ -31,6 +31,12 @@ _TOKEN_B64_PATTERN = re.compile(rb"[A-Za-z0-9+/=]{24,}")
 # Field-value scrubber for token-bearing JSON keys in response bodies.
 # Sub-bundle 1 T-1.0 extension: id_token / code / client_id / bearerToken added
 # per plan §F.3 + Codex R3 Critical #1 LOCK widening.
+# Sub-bundle 1 R3 Critical #1 fix (post-recording): Schwab Trader API returns
+# `"accountNumber":27097300` as a BARE JSON NUMBER (NOT quoted string). The
+# previous quoted-only pattern silently let raw account numbers through into
+# committed cassettes. NEW pattern matches both quoted strings AND bare
+# integers/floats (defense-in-depth). Same widening for accountHash though
+# Schwab returns that as a quoted hash string in practice.
 _RESPONSE_FIELD_SCRUBBERS: tuple[tuple[re.Pattern[bytes], bytes], ...] = (
     # Quoted JSON field values for tokens / account identifiers. The pattern
     # matches `"key"\s*:\s*"<value>"` and replaces the value slot.
@@ -47,6 +53,15 @@ _RESPONSE_FIELD_SCRUBBERS: tuple[tuple[re.Pattern[bytes], bytes], ...] = (
     (
         re.compile(rb'("(?:accountHash|account_hash|hashValue)"\s*:\s*")[^"]*(")'),
         rb'\1<HASHED_REDACTED>\2',
+    ),
+    # R3 Critical #1 — BARE NUMERIC accountNumber (Schwab Trader API shape).
+    # Matches `"accountNumber":27097300` or `"account_number": 1234567` etc.
+    # Replaces with QUOTED `"<REDACTED>"` placeholder so the resulting
+    # cassette body remains parseable JSON (a bare `<REDACTED>` identifier
+    # is not valid JSON; consumers like T-1.13 json.loads the body).
+    (
+        re.compile(rb'("(?:accountNumber|account_number)"\s*:\s*)\d+(\.\d+)?'),
+        rb'\1"<REDACTED>"',
     ),
 )
 

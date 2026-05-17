@@ -263,6 +263,68 @@ def test_sentinel_leak_audit_deletes_cassette_on_match(tmp_path: Path) -> None:
     assert "accountnumber" in flat or "accounthash" in flat or "access_token" in flat
 
 
+# Test 6b — R3 Critical #1 regression: bare numeric accountNumber
+# (Schwab Trader API shape: `"accountNumber":27097300` NOT quoted) caught
+# by sentinel-leak audit.
+def test_sentinel_leak_audit_catches_bare_numeric_account_number(
+    tmp_path: Path,
+) -> None:
+    """Schwab Trader API returns `accountNumber` as a BARE JSON NUMBER
+    (NOT a quoted string). The pre-R3 quoted-only pattern missed this,
+    leaking the operator's actual 27097300 account number into 3 committed
+    cassettes (scrubbed in-place at the R3 fix commit). Regression pin: a
+    cassette containing `\"accountNumber\":27097300` MUST surface in the
+    audit findings."""
+    import importlib
+    import sys as _sys
+    script_path = _load_script()
+    spec = importlib.util.spec_from_file_location(
+        "record_schwab_cassettes_test_mod_6b", str(script_path),
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    _sys.modules["record_schwab_cassettes_test_mod_6b"] = mod
+    spec.loader.exec_module(mod)
+    cassette_dir = tmp_path / "cassettes" / "schwab"
+    cassette_dir.mkdir(parents=True)
+    cassette_path = cassette_dir / "test_e2e_bare_num.yaml"
+    cassette_path.write_text(
+        '{"orderId": "X", "accountNumber":27097300, "status":"FILLED"}',
+        encoding="utf-8",
+    )
+    matches = mod._scan_cassette_for_sentinel_leak(cassette_path)
+    assert matches, "audit should catch bare-numeric accountNumber"
+    flat = "\n".join(matches).lower()
+    assert "bare numeric" in flat or "accountnumber" in flat
+
+
+# Test 6c — bare-numeric accountNumber sanitization scrubber via
+# `_redact_schwab_response_body` (the recording-time scrub path).
+def test_response_body_scrubber_redacts_bare_numeric_account_number() -> None:
+    """`tests/conftest.py:_redact_schwab_response_body` MUST scrub bare-
+    numeric accountNumber values (Schwab Trader API shape) at recording
+    time so they NEVER hit disk. Regression pin for the R3 Critical #1
+    fix."""
+    from tests.conftest import _redact_schwab_response_body
+    response = {
+        "body": {
+            "string": (
+                b'[{"orderId":"X","accountNumber":27097300,'
+                b'"account_number":987654321,"status":"FILLED"}]'
+            ),
+        },
+    }
+    out = _redact_schwab_response_body(response)
+    body = out["body"]["string"]
+    if isinstance(body, str):
+        body = body.encode("utf-8")
+    # Both bare-numeric forms scrubbed.
+    assert b"27097300" not in body
+    assert b"987654321" not in body
+    # Placeholder present.
+    assert b"<REDACTED>" in body
+
+
 # Test 7a — Codex R2 Major #2 fix: fail-closed behavior when conftest import
 # fails (previously emitted unsafe minimal fallback dict).
 def test_shared_filter_load_fails_closed_on_conftest_import_error(

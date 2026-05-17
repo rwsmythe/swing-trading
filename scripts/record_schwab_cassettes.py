@@ -104,9 +104,16 @@ ORDER_TYPE_PREDICATES: dict[str, dict[str, Any]] = {
 
 
 # Sentinel-leak audit regex catalog (mirrors plan §G.4 + tests/conftest.py).
+# R3 Critical #1 fix: bare-numeric accountNumber pattern added (Schwab
+# Trader API returns `"accountNumber":27097300` as a JSON number, NOT a
+# quoted string; the quoted-only pattern missed it).
 _LEAK_PATTERNS: tuple[tuple[str, str], ...] = (
     # Unsanitized JSON-key value forms.
-    (r'"accountNumber"\s*:\s*"[^<][^"]{0,80}"', "accountNumber"),
+    (r'"accountNumber"\s*:\s*"[^<][^"]{0,80}"', "accountNumber (quoted)"),
+    (
+        r'"(?:accountNumber|account_number)"\s*:\s*\d+(?:\.\d+)?',
+        "accountNumber (bare numeric)",
+    ),
     (r'"accountHash"\s*:\s*"[^<][a-fA-F0-9]{16,}[^"]*"', "accountHash"),
     (r'"access_token"\s*:\s*"[^<][^"]{4,}"', "access_token"),
     (r'"refresh_token"\s*:\s*"[^<][^"]{4,}"', "refresh_token"),
@@ -532,6 +539,15 @@ def _record_one_order_type(
 
     cassette_path = _resolve_cassette_path(order_type)
     cassette_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Codex R3 Major #1 fix — DELETE any existing cassette BEFORE recording.
+    # `record_mode="new_episodes"` APPENDS new interactions to an existing
+    # cassette; on rerun the validation gate (`_read_cassette_response_orders`)
+    # would inspect `interactions[0]` which is the STALE first interaction
+    # from a prior run, NOT the newly-recorded one. Force-delete ensures
+    # every invocation produces a single-interaction cassette + the validator
+    # always sees the freshly-recorded payload.
+    _safe_delete_cassette(cassette_path)
 
     now = datetime.now(UTC)
     from_time = (now - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
