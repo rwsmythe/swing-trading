@@ -296,3 +296,15 @@ tr.tripwire-fired td:first-child { border-left: 4px solid var(--tripwire-border)
 .entry-example-aside li {
   margin-bottom: 0.25rem;
 }
+
+/* T-Q2.3 — reconcile comparison table (Journal vs Schwab side-by-side). */
+.reconcile-comparison-table {
+  border-collapse: collapse;
+  margin: 1em 0;
+}
+.reconcile-comparison-table th,
+.reconcile-comparison-table td {
+  border: 1px solid #ccc;
+  padding: 0.25em 0.75em;
+  text-align: left;
+}
