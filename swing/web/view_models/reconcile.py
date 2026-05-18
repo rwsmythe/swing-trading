@@ -731,3 +731,89 @@ def build_reconcile_discrepancy_resolve_vm(
         error_band_message=error_band_message,
         error_band_field_hint=error_band_field_hint,
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 12.5 #2 T-2.5 — `ReconcileDiscrepancyErrorVM` dataclass.
+#
+# Used by `GET /reconcile/discrepancy/{id}/resolve` route handler to render
+# the `reconcile_discrepancy_resolve_error.html.j2` template on the 404 /
+# 409 paths (T-2.5 stub branches: ``not_found`` + ``already_resolved``). T-2.6
+# extends the template with 3 additional branches (``anchor_mismatch`` /
+# ``service_error`` / ``db_unavailable``); this dataclass carries fields
+# sufficient for all 5 branches so T-2.6 does NOT need to widen it.
+#
+# Per plan §A T-2.5 acceptance + LOCK F11: standalone base-layout fields
+# (does NOT inherit BaseLayoutVM — mirrors ReconcileDiscrepancyResolveVM +
+# SchwabSetupVM precedent). T-2.10 Codex R3 M#1 LOCK: ``error_message`` is
+# REQUIRED-positional but validator DOES NOT reject empty-string (additive-
+# default-pass — not all error_kinds carry a useful message).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ReconcileDiscrepancyErrorVM:
+    """View-model for the error template at
+    ``swing/web/templates/reconcile_discrepancy_resolve_error.html.j2``.
+
+    Fields carry both the base-layout shape (8 fields, standalone per F11)
+    AND the error-specific shape (6 fields: ``error_kind`` / ``error_message``
+    / ``discrepancy_id`` / ``disc_resolution`` / ``disc_resolved_by`` /
+    ``disc_created_at``).
+
+    The 3 ``disc_*`` Optional fields are populated on the
+    ``error_kind='already_resolved'`` branch and unused (left at default
+    ``None``) on the other 4 branches.
+    """
+
+    # Base-layout fields (8 standalone, mirror BaseLayoutVM shape).
+    session_date: str
+    error_kind: str
+    error_message: str
+    stale_banner: str | None = None
+    price_source_degraded: bool = False
+    price_source_degraded_until: str | None = None
+    ohlcv_source_degraded: bool = False
+    unresolved_material_discrepancies_count: int = 0
+    recent_multi_leg_auto_correction_count: int = 0
+    banner_resolve_link: str | None = None
+
+    # Error-page-specific fields.
+    discrepancy_id: int | None = None
+    disc_resolution: str | None = None
+    disc_resolved_by: str | None = None
+    disc_created_at: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.session_date:
+            raise ValueError(
+                "ReconcileDiscrepancyErrorVM.session_date must be non-empty",
+            )
+        if self.unresolved_material_discrepancies_count < 0:
+            raise ValueError(
+                "ReconcileDiscrepancyErrorVM."
+                "unresolved_material_discrepancies_count must >= 0; got "
+                f"{self.unresolved_material_discrepancies_count!r}",
+            )
+        if self.recent_multi_leg_auto_correction_count < 0:
+            raise ValueError(
+                "ReconcileDiscrepancyErrorVM."
+                "recent_multi_leg_auto_correction_count must >= 0; got "
+                f"{self.recent_multi_leg_auto_correction_count!r}",
+            )
+        if self.banner_resolve_link is not None and (
+            not self.banner_resolve_link
+            or not self.banner_resolve_link.startswith("/")
+        ):
+            raise ValueError(
+                "ReconcileDiscrepancyErrorVM.banner_resolve_link must be "
+                f"None or a non-empty string starting with '/'; got "
+                f"{self.banner_resolve_link!r}",
+            )
+        if not self.error_kind:
+            raise ValueError(
+                "ReconcileDiscrepancyErrorVM.error_kind must be non-empty",
+            )
+        # Per T-2.10 Codex R3 M#1 LOCK: do NOT validate error_message
+        # non-empty — not all error_kinds carry a useful message; keep
+        # validator additive-default-pass.

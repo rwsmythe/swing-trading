@@ -1,0 +1,26 @@
+{% extends "base.html.j2" %}
+{% block title %}Reconcile error - {{ vm.error_kind }}{% endblock %}
+{% block content %}
+<section class="reconcile-discrepancy-resolve-error" data-error-kind="{{ vm.error_kind }}">
+  {% if vm.error_kind == 'not_found' %}
+  <h1>Discrepancy not found</h1>
+  <p>No reconciliation discrepancy exists with id <code>{{ vm.discrepancy_id }}</code>.</p>
+  <p><a href="/dashboard">Return to dashboard</a></p>
+  <p class="muted">CLI parity: <code>swing journal discrepancy show {{ vm.discrepancy_id }}</code></p>
+  {% elif vm.error_kind == 'already_resolved' %}
+  <h1>Discrepancy already resolved</h1>
+  <p>Discrepancy <code>{{ vm.discrepancy_id }}</code> is no longer in pending_ambiguity_resolution state.</p>
+  <dl>
+    <dt>Current resolution</dt><dd>{{ vm.disc_resolution or '(none)' }}</dd>
+    <dt>Resolved by</dt><dd>{{ vm.disc_resolved_by or '(none)' }}</dd>
+    <dt>Created at</dt><dd>{{ vm.disc_created_at or '(unknown)' }}</dd>
+  </dl>
+  <p><a href="/dashboard">Return to dashboard</a></p>
+  <p class="muted">CLI parity: <code>swing journal discrepancy show {{ vm.discrepancy_id }}</code></p>
+  {% else %}
+  <h1>Error</h1>
+  <p>{{ vm.error_message }}</p>
+  <p><a href="/dashboard">Return to dashboard</a></p>
+  {% endif %}
+</section>
+{% endblock %}
