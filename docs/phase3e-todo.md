@@ -6,6 +6,26 @@
 
 ---
 
+## 2026-05-18 Phase 12.5 #2 brainstorm SHIPPED at `ac6eb88` — Web Tier-2 discrepancy-resolution surface design; 6 Codex rounds NO_NEW_CRITICAL_MAJOR; 1 ACCEPT-WITH-RATIONALE banked (R1 M#4 surface attribution literal naming — schema v19 UNCHANGED; brief §2.7 conjecture corrected); 721-line spec; 8 §16 operator-decision items ALL accepted at brainstorm defaults; writing-plans dispatch UNBLOCKED
+
+**Brainstorm-merge at `ac6eb88`** (branch `phase12-5-bundle-2-web-tier2-brainstorm` via `--no-ff`; 3 commits = 1 draft + 1 Codex-R1-R6-fix-bundle + 1 return-report). 6 Codex rounds convergent monotonic-Major taper (R1 0C/5M/3m → R2 0C/3M/2m → R3 0C/3M/2m → R4 0C/1M/3m → R5 0C/1M/2m → R6 0C/0M/2m); operator-override past default MAX_ROUNDS=5 invoked at R6 per Phase 12.5 #1 brainstorm + Phase 10 writing-plans precedent given clean convergent shape. ZERO Critical findings entire chain. ZERO Co-Authored-By footer drift across 3 commits.
+
+**Key catch (R3):** brief §2.7 conjectured that `reconciliation_corrections.surface` column would need CHECK widening to permit `'web'`. **WRONG** — brainstorm verified by reading migration 0019 directly: there is NO `surface` column on `reconciliation_corrections`. Attribution achieved via existing free-TEXT `reconciliation_discrepancies.resolved_by` column with NEW value `'operator_web'`. ZERO schema work. ZERO new Python constant. ZERO new validator. **Forward-binding lesson banked**: brief-conjecture-vs-actual-schema gap → grep verify any column reference at brainstorm time (L-W1 family reapplication).
+
+**4 operator pre-locks baked verbatim** (spec §2.1-§2.4): dedicated `/reconcile/discrepancy/{id}/resolve` form page + HX-Redirect to `/dashboard?reconcile_resolved={correction_id}` on success + CLI preservation AS-IS (`surface='cli'` vs `surface='web'` distinguishable via `resolved_by`) + pre-resolution context section ABOVE choice menu.
+
+**8 §16 operator-decision items ALL ACCEPTED at brainstorm defaults** (operator-orchestrator scope conversation 2026-05-18 post-merge): (1) banner navigation target → first-pending; (2) ORDER BY ASC oldest-first; (3) NO V1 dashboard per-discrepancy list (banked V2); (4) HX-Redirect query token `?reconcile_resolved={id}` included; (5) uniform `/dashboard` HX-Redirect target; (6) 12-line inline `<script>` for custom-value toggle; (7) `_parse_parametric_pick_count` helper duplicated private in web VM (CLI refactor V2-deferred); (8) 6-surface operator-witnessed gate (S1 inline pytest+ruff + S2 banner-link nav + S3 form-render with context + S4 successful POST + HX-Redirect + S5 banner-clears + S6 CLI/web parity).
+
+**Sub-bundle decomposition recommended**: SINGLE sub-bundle with 11 tasks (T-2.1..T-2.11). Projection ~+45-75 fast tests + 1 slow E2E; 3-5 Codex rounds for executing-plans; ~6-10 hours operator-paced. Schema v19 UNCHANGED end-to-end.
+
+**13 V2 candidates banked** (§15): audit-chain show page; success toast renderer; web Tier-3 override surface; web Tier-1 auto-correct undo; `/reconcile/pending` list page; pipeline-active exclusion on Tier-2; explicit `surface` column V2 migration; etc.
+
+**8 forward-binding lessons banked** for writing-plans (return report §8): brief-conjecture-vs-actual-schema gap; BaseLayoutVM-inheritance asymmetric (13 existing VMs DO NOT inherit; carry standalone fields); hidden state anchors distinct from hidden audit fields; OriginGuard strict-vs-non-strict 303-fallback shapes; banner-link targets derive from canonical helper; audit-row parity tests use semantic-shape projection; grep-driven audits split by intent (field-declaration vs call-site); retrofit completeness is a discriminating test.
+
+**Writing-plans dispatch UNBLOCKED.**
+
+---
+
 ## 2026-05-18 Phase 12.5 #1 (OQ-F multi-leg tier-1 auto-redirect) SHIPPED at `6109261` — 4 Codex rounds NO_NEW_CRITICAL_MAJOR; 1 ACCEPT-WITH-RATIONALE banked (R1 M#3 banner-vs-briefing wording false-positive); ~+132 fast tests net (4575 → 4712); ruff/schema unchanged; 6-surface gate ALL PASS
 
 **Integration-merge at `6109261`** (branch `phase12-5-bundle-1-oqf-executing-plans` via `--no-ff`; 18 task-branch commits = 11 task-impl + 2 task-review-fixes + 1 cross-bundle-pin follow-up + 2 Codex-fix + 2 return-report + 1 in-branch merge-of-finviz-fix). Includes orchestrator-driven 6-surface operator-witnessed gate PASS: S1 4712 fast + ruff 18 + slow E2E; S2 spec §10 cases A/C/E/I + determinism × 10 identical; S3 production run #15 ZERO multi-leg fires + ZERO false-positive Pass-1 (architectural fix HOLDS in negative sense); S4 banner-fires `data-banner-count="1"` + verbatim §8.3 wording + banner-clears via planted run #16 + ASCII-only + full revert; S5 `--resolved-by` filter operational; S6 pipeline #68 from empty inbox → `briefing.md` `## Reconciliation status` section + multi-leg line correctly omitted (count=0; F22 omit-when-zero works end-to-end through T-1.11).
