@@ -37,11 +37,20 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from swing.data.models import ReconciliationDiscrepancy
+from swing.data.repos.reconciliation import get_discrepancy
+from swing.evaluation.dates import action_session_for_run
+from swing.metrics.discrepancies import (
+    count_recent_multi_leg_auto_corrections,
+    count_unresolved_material,
+)
+from swing.trades.reconciliation_ambiguity_choices import get_choice_menu
 
 
 def _parse_parametric_pick_count(resolution_reason: str | None) -> int:
@@ -580,3 +589,145 @@ def _render_pre_resolution_context(
             disc,
             parse_warning=f"missing key in payload: {exc}",
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 12.5 #2 T-2.3 — `build_reconcile_discrepancy_resolve_vm` builder.
+#
+# Per spec §5.4 (with plan §J J1 amendment kwarg
+# ``prior_ambiguity_kind_at_render``). Builder is READ-ONLY on ``conn``;
+# does NOT call ``apply_overrides`` (route owns cfg-cascade per F14);
+# does NOT open a transaction.
+# ---------------------------------------------------------------------------
+
+
+_PARAMETRIC_PICK_PAYLOAD_SHAPE = (
+    '{"price": X.XX, "quantity": Q, "fill_datetime": "..."}'
+)
+
+
+def _build_parametric_pick_entries(
+    disc: ReconciliationDiscrepancy,
+) -> tuple[ReconcileChoiceFormItem, ...]:
+    """For ``multi_match_within_window``, synthesize parametric
+    ``pick_schwab_record_<N>`` entries from the discrepancy's
+    ``resolution_reason``. Mirrors `swing/cli.py:2288-2316` byte-for-byte
+    for the description text (LOCK §1.2 #11; J3 amendment retains
+    consistency between CLI + web surfaces).
+    """
+    if disc.ambiguity_kind != "multi_match_within_window":
+        return ()
+    n = _parse_parametric_pick_count(disc.resolution_reason)
+    if n <= 0:
+        return ()
+    entries: list[ReconcileChoiceFormItem] = []
+    for i in range(n):
+        entries.append(
+            ReconcileChoiceFormItem(
+                code=f"pick_schwab_record_{i + 1}",
+                description=(
+                    f"Pick Schwab candidate #{i + 1} as the "
+                    f"canonical source for this fill (REQUIRES "
+                    f"--custom-value with operator-supplied "
+                    f"execution-level field values; Pass-2 "
+                    f"candidates are order-grain not "
+                    f"execution-grain per spec §4.3.2 LOCK)."
+                ),
+                requires_custom_value=True,
+                recommended=False,
+                expected_payload_shape_description=(
+                    _PARAMETRIC_PICK_PAYLOAD_SHAPE
+                ),
+                is_parametric_pick=True,
+            )
+        )
+    return tuple(entries)
+
+
+def build_reconcile_discrepancy_resolve_vm(
+    conn: sqlite3.Connection,
+    discrepancy_id: int,
+    *,
+    prior_choice_code: str = "",
+    prior_custom_value_raw: str = "",
+    prior_resolution_reason: str = "",
+    prior_ambiguity_kind_at_render: str = "",
+    error_band_message: str | None = None,
+    error_band_field_hint: str | None = None,
+) -> ReconcileDiscrepancyResolveVM:
+    """Assemble the VM for ``GET /reconcile/discrepancy/{id}/resolve``.
+
+    Precondition: ``discrepancy_id`` must exist and reference a row with
+    ``resolution == 'pending_ambiguity_resolution'`` AND
+    ``ambiguity_kind IS NOT NULL``. Route handler MUST verify these
+    BEFORE invoking the builder and return 404/409 directly on miss.
+    Builder raises ``ValueError`` defensively if invoked against a stale
+    state to surface a logic bug at the caller.
+
+    The ``prior_*`` kwargs preserve operator input across a 400 round-trip
+    (T-2.6 error re-render). ``prior_ambiguity_kind_at_render`` (plan §J
+    J1 amendment beyond spec §5.4) carries the hidden anchor value.
+
+    Builder is READ-ONLY on ``conn``. Does NOT call ``apply_overrides``
+    (route owns cfg-cascade per F14). Does NOT open a transaction.
+    """
+    disc = get_discrepancy(conn, discrepancy_id)
+    if disc is None:
+        raise ValueError("discrepancy not found")
+    if disc.resolution != "pending_ambiguity_resolution":
+        raise ValueError(
+            "discrepancy is not pending_ambiguity_resolution; got "
+            f"resolution={disc.resolution!r}",
+        )
+    if disc.ambiguity_kind is None:
+        raise ValueError(
+            "discrepancy has no ambiguity_kind; cannot render Tier-2 "
+            "resolve form",
+        )
+
+    pre_context = _render_pre_resolution_context(disc)
+
+    static_menu = get_choice_menu(disc.ambiguity_kind)
+    static_choices = tuple(
+        ReconcileChoiceFormItem(
+            code=item.code,
+            description=item.description,
+            requires_custom_value=item.requires_custom_value,
+            recommended=item.recommended,
+            expected_payload_shape_description=(
+                item.expected_payload_shape_description
+            ),
+            is_parametric_pick=False,
+        )
+        for item in static_menu
+    )
+    parametric_choices = _build_parametric_pick_entries(disc)
+    # Parametric entries PREPENDED (operator scan-first per spec §5.4).
+    choices = parametric_choices + static_choices
+
+    unresolved_count = count_unresolved_material(conn)
+    multi_leg_count = count_recent_multi_leg_auto_corrections(conn)
+
+    # T-2.9 will introduce ``fetch_first_pending_ambiguity_resolve_link_path``
+    # + retrofit this builder to consume it. Until then, pass None so this
+    # T-2.3 commit ships green standalone.
+    banner_resolve_link: str | None = None
+
+    session_date = action_session_for_run(datetime.now()).isoformat()
+
+    return ReconcileDiscrepancyResolveVM(
+        session_date=session_date,
+        unresolved_material_discrepancies_count=unresolved_count,
+        recent_multi_leg_auto_correction_count=multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
+        discrepancy_id=discrepancy_id,
+        form_action=f"/reconcile/discrepancy/{discrepancy_id}/resolve",
+        pre_resolution_context=pre_context,
+        choices=choices,
+        prior_choice_code=prior_choice_code,
+        prior_custom_value_raw=prior_custom_value_raw,
+        prior_resolution_reason=prior_resolution_reason,
+        prior_ambiguity_kind_at_render=prior_ambiguity_kind_at_render,
+        error_band_message=error_band_message,
+        error_band_field_hint=error_band_field_hint,
+    )
