@@ -32,7 +32,10 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-__all__ = ["render_journal_schwab_comparison_table_ascii"]
+__all__ = [
+    "render_journal_schwab_comparison_table_ascii",
+    "build_compared_pairs",
+]
 
 # Maximum rendered width (chars) of any single cell value before truncation.
 _CELL_CAP: int = 40
@@ -188,3 +191,161 @@ def render_journal_schwab_comparison_table_ascii(
     )
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# build_compared_pairs — Task T-Q2.2
+# ---------------------------------------------------------------------------
+
+def _pairs_entry_price_mismatch(
+    expected: dict[str, Any],
+    actual: dict[str, Any],
+) -> list[tuple[str, Any, Any]]:
+    pairs: list[tuple[str, Any, Any]] = [
+        ("entry price", expected["price"], actual.get("price")),
+    ]
+    j_qty = expected.get("quantity")
+    s_qty = actual.get("quantity")
+    if j_qty is not None or s_qty is not None:
+        pairs.append(("quantity", j_qty, s_qty))
+    j_dt = expected.get("fill_datetime")
+    s_dt = actual.get("fill_datetime")
+    if j_dt is not None or s_dt is not None:
+        pairs.append(("fill datetime", j_dt, s_dt))
+    return pairs
+
+
+def _pairs_close_price_mismatch(
+    expected: dict[str, Any],
+    actual: dict[str, Any],
+) -> list[tuple[str, Any, Any]]:
+    pairs: list[tuple[str, Any, Any]] = [
+        ("close price", expected["price"], actual.get("price")),
+    ]
+    j_qty = expected.get("quantity")
+    s_qty = actual.get("quantity")
+    if j_qty is not None or s_qty is not None:
+        pairs.append(("quantity", j_qty, s_qty))
+    j_dt = expected.get("fill_datetime")
+    s_dt = actual.get("fill_datetime")
+    if j_dt is not None or s_dt is not None:
+        pairs.append(("fill datetime", j_dt, s_dt))
+    return pairs
+
+
+def _pairs_stop_mismatch(
+    expected: dict[str, Any],
+    actual: dict[str, Any],
+) -> list[tuple[str, Any, Any]]:
+    return [("stop price", expected["stop_price"], actual.get("stop_price"))]
+
+
+def _pairs_position_qty_mismatch(
+    expected: dict[str, Any],
+    actual: dict[str, Any],
+) -> list[tuple[str, Any, Any]]:
+    return [("position quantity", expected["quantity"], actual.get("quantity"))]
+
+
+def _pairs_cash_movement_mismatch(
+    expected: dict[str, Any],
+    actual: dict[str, Any],
+) -> list[tuple[str, Any, Any]]:
+    return [("amount", expected["amount"], actual.get("amount"))]
+
+
+def _pairs_snapshot_mismatch(
+    expected: dict[str, Any],
+    actual: dict[str, Any],
+) -> list[tuple[str, Any, Any]]:
+    return [("equity dollars", expected["equity_dollars"], actual.get("equity_dollars"))]
+
+
+def _pairs_equity_delta(
+    expected: dict[str, Any],
+    actual: dict[str, Any],  # noqa: ARG001 — unused by design; equity_delta uses expected only
+) -> list[tuple[str, Any, Any]]:
+    return [("equity dollars", expected["journal"], expected["source"])]
+
+
+def _pairs_sector_tamper(
+    expected: dict[str, Any],
+    actual: dict[str, Any],
+) -> list[tuple[str, Any, Any]]:
+    return [
+        ("sector", expected["sector"], actual["sector"]),
+        ("industry", expected["industry"], actual["industry"]),
+    ]
+
+
+# Dispatch table — maps discrepancy_type to its pair-builder.
+# Types that intentionally return None (no tabular comparison possible) are
+# absent from this table; the dispatcher below handles the None case.
+_PAIRS_BUILDERS: dict[
+    str,
+    Any,  # Callable[[dict, dict], list[tuple[str, Any, Any]]]
+] = {
+    "entry_price_mismatch": _pairs_entry_price_mismatch,
+    "close_price_mismatch": _pairs_close_price_mismatch,
+    "stop_mismatch": _pairs_stop_mismatch,
+    "position_qty_mismatch": _pairs_position_qty_mismatch,
+    "cash_movement_mismatch": _pairs_cash_movement_mismatch,
+    "snapshot_mismatch": _pairs_snapshot_mismatch,
+    "equity_delta": _pairs_equity_delta,
+    "sector_tamper": _pairs_sector_tamper,
+}
+
+# Types for which no tabular side-by-side comparison is meaningful.
+_NO_PAIRS_TYPES: frozenset[str] = frozenset(
+    {"unmatched_open_fill", "unmatched_close_fill"}
+)
+
+
+def build_compared_pairs(
+    discrepancy_type: str,
+    expected: dict[str, Any],
+    actual: dict[str, Any],
+) -> list[tuple[str, Any, Any]] | None:
+    """Build a list of ``(field_label, journal_value, schwab_value)`` tuples.
+
+    Dispatches to a per-discrepancy-type extractor.  Returns ``None`` for
+    types where a side-by-side tabular comparison is not meaningful
+    (``unmatched_open_fill`` / ``unmatched_close_fill``) and for unknown
+    discrepancy types (graceful degradation — does NOT raise).
+
+    Parameters
+    ----------
+    discrepancy_type:
+        One of the ten canonical discrepancy type strings.
+    expected:
+        The ``expected_value_json`` envelope persisted on the discrepancy row.
+    actual:
+        The ``actual_value_json`` envelope persisted on the discrepancy row.
+
+    Returns
+    -------
+    list[tuple[str, Any, Any]] | None
+        Pairs suitable for passing to
+        ``render_journal_schwab_comparison_table_ascii``, or ``None`` when no
+        comparison table is applicable.
+
+    Raises
+    ------
+    KeyError
+        When a required key is missing from *expected* or *actual* for a
+        known discrepancy type.  Callers should catch this and fall back to
+        a generic display.
+
+    Pure-function discipline
+    ------------------------
+    ZERO database calls, ZERO Schwab API calls, ZERO file I/O.
+    """
+    if discrepancy_type in _NO_PAIRS_TYPES:
+        return None
+
+    builder = _PAIRS_BUILDERS.get(discrepancy_type)
+    if builder is None:
+        # Unknown type — graceful degradation per spec.
+        return None
+
+    return builder(expected, actual)

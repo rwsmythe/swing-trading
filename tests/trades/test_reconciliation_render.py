@@ -260,3 +260,259 @@ def test_rule_line_uses_plus_separator() -> None:
     assert "-" in rule
     # Rule must not contain '|'
     assert "|" not in rule
+
+
+# ===========================================================================
+# Part A — build_compared_pairs dispatch tests (T-Q2.2)
+# ===========================================================================
+
+from swing.trades.reconciliation_render import build_compared_pairs  # noqa: E402
+
+
+class TestBuildComparedPairsEntryPriceMismatch:
+    """Happy path and edge cases for entry_price_mismatch."""
+
+    def test_canonical_price_pair_present(self) -> None:
+        pairs = build_compared_pairs(
+            "entry_price_mismatch",
+            {"price": 5.30},
+            {"price": 5.23},
+        )
+        assert pairs is not None
+        assert len(pairs) >= 1
+        labels = [p[0] for p in pairs]
+        assert "entry price" in labels
+        idx = labels.index("entry price")
+        assert pairs[idx][1] == 5.30
+        assert pairs[idx][2] == 5.23
+
+    def test_optional_pairs_skipped_when_both_sides_missing(self) -> None:
+        """Only price on both sides — quantity and fill_datetime absent."""
+        pairs = build_compared_pairs(
+            "entry_price_mismatch",
+            {"price": 5.30},
+            {"price": 5.23},
+        )
+        assert pairs is not None
+        # Only the price pair — NO quantity or fill_datetime pair.
+        assert len(pairs) == 1
+
+    def test_optional_pair_kept_when_one_side_present(self) -> None:
+        """quantity on journal side but not schwab → pair IS included."""
+        pairs = build_compared_pairs(
+            "entry_price_mismatch",
+            {"price": 5.30, "quantity": 100},
+            {"price": 5.23},
+        )
+        assert pairs is not None
+        labels = [p[0] for p in pairs]
+        assert "quantity" in labels
+        qty_idx = labels.index("quantity")
+        assert pairs[qty_idx][1] == 100
+        assert pairs[qty_idx][2] is None  # Schwab side absent
+
+    def test_optional_pair_kept_when_both_sides_present(self) -> None:
+        """quantity on both sides → pair IS included."""
+        pairs = build_compared_pairs(
+            "entry_price_mismatch",
+            {"price": 5.30, "quantity": 100, "fill_datetime": "2026-05-15"},
+            {"price": 5.23, "quantity": 100, "fill_datetime": "2026-05-15"},
+        )
+        assert pairs is not None
+        labels = [p[0] for p in pairs]
+        assert "quantity" in labels
+        assert "fill datetime" in labels
+
+    def test_missing_required_key_raises_keyerror(self) -> None:
+        """Empty expected dict → KeyError on 'price'."""
+        import pytest
+        with pytest.raises(KeyError):
+            build_compared_pairs("entry_price_mismatch", {}, {})
+
+
+class TestBuildComparedPairsClosePriceMismatch:
+    """Happy path for close_price_mismatch."""
+
+    def test_canonical_price_pair_present(self) -> None:
+        pairs = build_compared_pairs(
+            "close_price_mismatch",
+            {"price": 12.75},
+            {"price": 12.70},
+        )
+        assert pairs is not None
+        labels = [p[0] for p in pairs]
+        assert "close price" in labels
+        idx = labels.index("close price")
+        assert pairs[idx][1] == 12.75
+        assert pairs[idx][2] == 12.70
+
+    def test_optional_pairs_skipped_when_both_absent(self) -> None:
+        pairs = build_compared_pairs(
+            "close_price_mismatch",
+            {"price": 12.75},
+            {"price": 12.70},
+        )
+        assert pairs is not None
+        assert len(pairs) == 1
+
+
+class TestBuildComparedPairsStopMismatch:
+    """Happy path for stop_mismatch."""
+
+    def test_stop_price_pair(self) -> None:
+        pairs = build_compared_pairs(
+            "stop_mismatch",
+            {"stop_price": 10.00},
+            {"stop_price": 9.90},
+        )
+        assert pairs is not None
+        labels = [p[0] for p in pairs]
+        assert "stop price" in labels
+        idx = labels.index("stop price")
+        assert pairs[idx][1] == 10.00
+        assert pairs[idx][2] == 9.90
+
+    def test_missing_required_stop_price_raises(self) -> None:
+        import pytest
+        with pytest.raises(KeyError):
+            build_compared_pairs("stop_mismatch", {}, {})
+
+
+class TestBuildComparedPairsPositionQtyMismatch:
+    """Happy path for position_qty_mismatch."""
+
+    def test_quantity_pair(self) -> None:
+        pairs = build_compared_pairs(
+            "position_qty_mismatch",
+            {"quantity": 100},
+            {"quantity": 90},
+        )
+        assert pairs is not None
+        labels = [p[0] for p in pairs]
+        assert "position quantity" in labels
+        idx = labels.index("position quantity")
+        assert pairs[idx][1] == 100
+        assert pairs[idx][2] == 90
+
+
+class TestBuildComparedPairsCashMovementMismatch:
+    """Happy path for cash_movement_mismatch."""
+
+    def test_amount_pair(self) -> None:
+        pairs = build_compared_pairs(
+            "cash_movement_mismatch",
+            {"amount": 1000.00},
+            {"amount": 999.50},
+        )
+        assert pairs is not None
+        labels = [p[0] for p in pairs]
+        assert "amount" in labels
+        idx = labels.index("amount")
+        assert pairs[idx][1] == 1000.00
+        assert pairs[idx][2] == 999.50
+
+
+class TestBuildComparedPairsSnapshotMismatch:
+    """Happy path for snapshot_mismatch."""
+
+    def test_equity_pair(self) -> None:
+        pairs = build_compared_pairs(
+            "snapshot_mismatch",
+            {"equity_dollars": 2000.00},
+            {"equity_dollars": 2034.78},
+        )
+        assert pairs is not None
+        labels = [p[0] for p in pairs]
+        assert "equity dollars" in labels
+        idx = labels.index("equity dollars")
+        assert pairs[idx][1] == 2000.00
+        assert pairs[idx][2] == 2034.78
+
+
+class TestBuildComparedPairsUnmatchedFills:
+    """unmatched_open_fill and unmatched_close_fill return None."""
+
+    def test_unmatched_open_fill_returns_none(self) -> None:
+        result = build_compared_pairs(
+            "unmatched_open_fill",
+            {"quantity": 100, "price": 5.30, "fill_datetime": "2026-05-15"},
+            {"matched": None},
+        )
+        assert result is None
+
+    def test_unmatched_close_fill_returns_none(self) -> None:
+        result = build_compared_pairs(
+            "unmatched_close_fill",
+            {"quantity": 50, "price": 12.75, "fill_datetime": "2026-05-16"},
+            {"matched": None},
+        )
+        assert result is None
+
+
+class TestBuildComparedPairsEquityDelta:
+    """equity_delta — both sides are in the expected envelope."""
+
+    def test_equity_delta_uses_expected_envelope(self) -> None:
+        """journal and source come from expected; actual is unused."""
+        pairs = build_compared_pairs(
+            "equity_delta",
+            {"journal": 2000.00, "source": 2034.78, "delta": 34.78},
+            {},  # actual unused for this type
+        )
+        assert pairs is not None
+        labels = [p[0] for p in pairs]
+        assert "equity dollars" in labels
+        idx = labels.index("equity dollars")
+        # journal side = expected["journal"], schwab side = expected["source"]
+        assert pairs[idx][1] == 2000.00
+        assert pairs[idx][2] == 2034.78
+
+
+class TestBuildComparedPairsSectorTamper:
+    """sector_tamper — sector + industry pairs."""
+
+    def test_sector_and_industry_pairs(self) -> None:
+        pairs = build_compared_pairs(
+            "sector_tamper",
+            {"sector": "Technology", "industry": "Software"},
+            {"sector": "Technology", "industry": "Hardware"},
+        )
+        assert pairs is not None
+        labels = [p[0] for p in pairs]
+        assert "sector" in labels
+        assert "industry" in labels
+        sector_idx = labels.index("sector")
+        industry_idx = labels.index("industry")
+        assert pairs[sector_idx][1] == "Technology"
+        assert pairs[sector_idx][2] == "Technology"
+        assert pairs[industry_idx][1] == "Software"
+        assert pairs[industry_idx][2] == "Hardware"
+
+
+class TestBuildComparedPairsGracefulDegradation:
+    """Unknown types return None; caller-catches KeyError for missing required."""
+
+    def test_unknown_type_returns_none(self) -> None:
+        result = build_compared_pairs("bogus_discrepancy_type", {}, {})
+        assert result is None
+
+    def test_returns_list_not_none_for_known_types(self) -> None:
+        result = build_compared_pairs(
+            "stop_mismatch",
+            {"stop_price": 10.0},
+            {"stop_price": 9.9},
+        )
+        assert result is not None
+        assert isinstance(result, list)
+
+    def test_schwab_side_none_when_key_absent_in_actual(self) -> None:
+        """Schwab side uses .get() — absent key yields None (renders as '-')."""
+        pairs = build_compared_pairs(
+            "snapshot_mismatch",
+            {"equity_dollars": 2000.00},
+            {},  # no equity_dollars on Schwab side
+        )
+        assert pairs is not None
+        labels = [p[0] for p in pairs]
+        idx = labels.index("equity dollars")
+        assert pairs[idx][2] is None
