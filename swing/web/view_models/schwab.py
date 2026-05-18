@@ -77,6 +77,9 @@ class SchwabSetupVM:
     unresolved_material_discrepancies_count: int = 0
     # Phase 12.5 #1 T-1.8 — multi-leg auto-redirect advisory banner counter.
     recent_multi_leg_auto_correction_count: int = 0
+    # Phase 12.5 #2 T-2.7 — banner link to FIRST pending-ambiguity discrepancy
+    # resolve form. None when no pending-ambiguity row exists.
+    banner_resolve_link: str | None = None
 
     # Setup-specific fields.
     environment: str = "production"
@@ -108,6 +111,21 @@ class SchwabSetupVM:
                 "SchwabSetupVM.recent_multi_leg_auto_correction_count must "
                 f">= 0; got {self.recent_multi_leg_auto_correction_count!r}",
             )
+        if self.banner_resolve_link is not None:
+            if not isinstance(self.banner_resolve_link, str):
+                raise TypeError(
+                    "SchwabSetupVM.banner_resolve_link must be str | None; "
+                    f"got {type(self.banner_resolve_link).__name__}",
+                )
+            if (
+                not self.banner_resolve_link
+                or not self.banner_resolve_link.startswith("/")
+            ):
+                raise ValueError(
+                    "SchwabSetupVM.banner_resolve_link must be None or a "
+                    "non-empty path starting with '/'; got "
+                    f"{self.banner_resolve_link!r}",
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +247,9 @@ class SchwabStatusVM:
     unresolved_material_discrepancies_count: int = 0
     # Phase 12.5 #1 T-1.8 — multi-leg auto-redirect advisory banner counter.
     recent_multi_leg_auto_correction_count: int = 0
+    # Phase 12.5 #2 T-2.7 — banner link to FIRST pending-ambiguity discrepancy
+    # resolve form. None when no pending-ambiguity row exists.
+    banner_resolve_link: str | None = None
 
     def __post_init__(self) -> None:
         if not self.session_date:
@@ -303,6 +324,21 @@ class SchwabStatusVM:
                     "SchwabStatusVM.state_reason must be a non-empty string "
                     f"when state == {self.state!r}; "
                     f"got {self.state_reason!r}",
+                )
+        if self.banner_resolve_link is not None:
+            if not isinstance(self.banner_resolve_link, str):
+                raise TypeError(
+                    "SchwabStatusVM.banner_resolve_link must be str | None; "
+                    f"got {type(self.banner_resolve_link).__name__}",
+                )
+            if (
+                not self.banner_resolve_link
+                or not self.banner_resolve_link.startswith("/")
+            ):
+                raise ValueError(
+                    "SchwabStatusVM.banner_resolve_link must be None or a "
+                    "non-empty path starting with '/'; got "
+                    f"{self.banner_resolve_link!r}",
                 )
 
 
@@ -558,6 +594,9 @@ class SchwabSetupErrorVM:
     unresolved_material_discrepancies_count: int = 0
     # Phase 12.5 #1 T-1.8 — multi-leg auto-redirect advisory banner counter.
     recent_multi_leg_auto_correction_count: int = 0
+    # Phase 12.5 #2 T-2.7 — banner link to FIRST pending-ambiguity discrepancy
+    # resolve form. None when no pending-ambiguity row exists.
+    banner_resolve_link: str | None = None
 
     def __post_init__(self) -> None:
         if not self.session_date:
@@ -568,3 +607,18 @@ class SchwabSetupErrorVM:
             raise ValueError(
                 "SchwabSetupErrorVM.error_message must be non-empty",
             )
+        if self.banner_resolve_link is not None:
+            if not isinstance(self.banner_resolve_link, str):
+                raise TypeError(
+                    "SchwabSetupErrorVM.banner_resolve_link must be str | None; "
+                    f"got {type(self.banner_resolve_link).__name__}",
+                )
+            if (
+                not self.banner_resolve_link
+                or not self.banner_resolve_link.startswith("/")
+            ):
+                raise ValueError(
+                    "SchwabSetupErrorVM.banner_resolve_link must be None or a "
+                    "non-empty path starting with '/'; got "
+                    f"{self.banner_resolve_link!r}",
+                )

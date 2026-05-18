@@ -361,6 +361,26 @@ class DashboardVM:
     # ad-hoc VM construction in tests outside the Phase 8 surface remains
     # valid without supplying the field.
     daily_management_tiles: tuple = field(default_factory=tuple)
+    # Phase 12.5 #2 T-2.7 — banner link to FIRST pending-ambiguity discrepancy
+    # resolve form. None when no pending-ambiguity row exists.
+    banner_resolve_link: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.banner_resolve_link is not None:
+            if not isinstance(self.banner_resolve_link, str):
+                raise TypeError(
+                    "DashboardVM.banner_resolve_link must be str | None; "
+                    f"got {type(self.banner_resolve_link).__name__}"
+                )
+            if (
+                not self.banner_resolve_link
+                or not self.banner_resolve_link.startswith("/")
+            ):
+                raise ValueError(
+                    "DashboardVM.banner_resolve_link must be None or a "
+                    "non-empty path starting with '/'; got "
+                    f"{self.banner_resolve_link!r}"
+                )
 
 
 def _build_active_recommendations(

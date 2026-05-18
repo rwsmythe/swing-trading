@@ -55,6 +55,13 @@ class BaseLayoutVM:
     # auto-redirects exist OR when constructed in tests outside the
     # populating builder path.
     recent_multi_leg_auto_correction_count: int = 0
+    # Phase 12.5 #2 T-2.7 -- banner link to FIRST pending-ambiguity
+    # discrepancy resolve form. None when no pending-ambiguity row in the
+    # banner-count set; URL when one exists. Populated by Pass B retrofit
+    # (T-2.9) at every base-layout-mounted VM's builder site; default None
+    # keeps the banner advisory text-only when no pending-ambiguity row
+    # exists.
+    banner_resolve_link: str | None = None
 
     def __post_init__(self) -> None:
         # Per plan §A.6 watch: lock asserts session_date is non-empty so
@@ -75,6 +82,21 @@ class BaseLayoutVM:
                 "BaseLayoutVM.recent_multi_leg_auto_correction_count must be >= 0; "
                 f"got {self.recent_multi_leg_auto_correction_count!r}"
             )
+        if self.banner_resolve_link is not None:
+            if not isinstance(self.banner_resolve_link, str):
+                raise TypeError(
+                    "BaseLayoutVM.banner_resolve_link must be str | None; "
+                    f"got {type(self.banner_resolve_link).__name__}"
+                )
+            if (
+                not self.banner_resolve_link
+                or not self.banner_resolve_link.startswith("/")
+            ):
+                raise ValueError(
+                    "BaseLayoutVM.banner_resolve_link must be None or a "
+                    "non-empty path starting with '/'; got "
+                    f"{self.banner_resolve_link!r}"
+                )
 
 
 @dataclass(frozen=True)
