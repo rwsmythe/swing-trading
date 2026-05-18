@@ -8,6 +8,45 @@
 
 ---
 
+## 2026-05-18 Phase 12.5 #3 (Project Hygiene Maintenance Pass) SHIPPED at `b436067` — CLOSES Phase 12.5 arc; 3 Codex rounds NO_NEW_CRITICAL_MAJOR; ZERO ACCEPT-WITH-RATIONALE on Majors; ZERO Co-Authored-By footer drift; orchestrator-side QA review PASS-CLEAN across 13 watch items + Q3 skipped-test audit completed; T-3.5 Bucket A landed (3 Phase 8 tests promoted to PASSING); Ruff 18 E501 → 0; schema v19 UNCHANGED; 4847 → 4850 fast pass
+
+**Integration-merge at `b436067`** (branch `phase12-5-bundle-3-project-hygiene-executing-plans` via `--no-ff`; 11 task-branch commits = 7 task-impl (T-3.1..T-3.7) + 3 Codex-fix (R1+R2+R3) + 1 return-report). 3 Codex rounds NO_NEW_CRITICAL_MAJOR convergent monotonic-Major taper (R1 0C/5M/2m → R2 0C/2M/1m → R3 0C/0M/1m). ZERO Critical findings entire chain. ZERO ACCEPT-WITH-RATIONALE on Major findings (all 7 cumulative Major resolved with code-content fixes). ZERO Co-Authored-By footer drift across all 11 commits (~165+ project-cumulative streak preserved).
+
+**Pre-Codex orchestrator-side review APPROVED_AS_IS** (C.C lesson #6 BINDING; 8th cumulative validation).
+
+**Orchestrator-side QA review PASS-CLEAN** across 13 watch items: T-3.7 3-site amendments verified file:line accurate + accurately describe shipped helper SQL semantic; T-3.5 Bucket A fix verified `datetime.now() + timedelta(days=7)` anchor at `tests/integration/test_phase8_pipeline_walkthrough.py:57` with L-E2 lesson citation + 7-day buffer per Codex R1 M#5 hardening; T-3.5 test pass verified 3 previously-failing tests promoted to PASSING (4847 → 4850 fast pass); T-3.6 Ruff cleanup verified zero E501 + zero other error classes; T-3.6 ASCII preservation honored on runtime CLI paths (1 em-dash at cli.py L1142 is in docstring NOT runtime print/echo per L-W4 scope); T-3.4 amendment inventory verified 74 rows + spot-checks resolved to correct source docs; T-3.1 CLAUDE.md status-line archive-split verified (47 entries → 18 archived; 29 retained active within plan [15,30] band); T-3.2 phase3e-todo verified (3768 lines + archive 1372 lines); T-3.3 orchestrator-context verified (715 → 698 lines + 20 lessons archived); 4 operator-locks preserved verbatim; cross-document consistency verified; ZERO red flags.
+
+**Operator-driven Q3 skipped-test audit COMPLETED** (5 skipped roster classified):
+- **1 LEGITIMATE-DEFERRED**: `tests/evaluation/patterns/test_flag_classifier_integration.py:21` "No labeled fixtures committed yet (Task 7.3 operator-only)" — Phase 13 Theme 2 territory; auto-un-skips when fixtures land.
+- **4 POTENTIALLY-STALE**: `tests/journal/test_account_summary_net_liq_extraction.py:43` parametrized over `thinkorswim/2026-04-15/-04-30/-05-08/-05-12-AccountStatement.csv` (gitignored privacy-sensitive). Sanitized fixtures exist at `tests/fixtures/tos/schwab-real-world-2026-04-15..2026-05-12.csv` (per Phase 9 Sub-bundle E ship; account-number sanitization preserves Net Liq Value).
+- **Operator-pending disposition for #2-5**: (a) UPDATE tests to use sanitized fixtures → 4 skips become PASS (baseline 4850 + 5 → 4854 + 1); (b) KEEP AS-IS as operator-environment-only smoke tests.
+- **ZERO prunable. ZERO Bucket-C-style** (T-3.5 landed Bucket A; no new skips added).
+
+**Test count**: 4847 → **4850 fast pass** (the +3 are T-3.5 promotions; ZERO new skips).
+**Ruff**: 18 E501 → **0** (acceptance LOCK met).
+**Schema**: v19 UNCHANGED.
+
+**Key shipped artifacts:**
+- `docs/v2-1-section-7f-amendments-2026-05-18.md` (NEW; 74 amendments).
+- `docs/CLAUDE.md-archive.md` (NEW; 18 entries).
+- `docs/phase3e-todo-archive.md` (extended; +23 sections via 2026-05-18 appendix).
+- `docs/orchestrator-context-archive.md` (extended; +20 lessons).
+- 3-site amendment on Phase 12.5 #1 plan §H.4 + spec §9.3 S4 + spec §5 line 104.
+- T-3.5 fix at `tests/integration/test_phase8_pipeline_walkthrough.py:57`.
+- T-3.6 18-site E501 fixes across 11 swing/ files.
+
+**Operator-paired post-merge S2-S4 gate UNBLOCKED** (S1 already PASS at 4850/5/0 + ruff 0; S2 visual archive-split boundaries + S3 amendment doc readability + S4 amendment 3-site verification — orchestrator-driven post-merge).
+
+**4 NEW forward-binding lessons L-E1..L-E4** banked at return report §9:
+- L-E1: operational-follow-through vs amendment classification.
+- L-E2: time-dependent fixture calendar-buffer ≥7d (the Bucket A fix lesson).
+- L-E3: operator-runtime-override + post-hoc audit transparency pattern.
+- L-E4: row-contract grep-verification pre-Codex.
+
+**Phase 12.5 arc CLOSED.** Aggregate across Phase 12.5 (#1 + finviz-fix + #2 + #3): ~7-8 total executing-plans dispatches if you count the brainstorm + writing-plans + executing-plans triplets; ~5 Codex chains total. **Phase 13 dispatch UNBLOCKED post**: operator-witnessed S2-S4 gate + Q1 reconciliation walkthrough + Q2 tabularize web+CLI + Q3 skipped-test disposition closures.
+
+### Predecessor (2026-05-18 AM; writing-plans)
+
 ## 2026-05-18 Queued post-Phase-12.5-#3 / pre-Phase-13 cleanup items (operator-added 2026-05-18 post-Phase-12.5-#3-writing-plans-merge)
 
 Two cleanup items operator queued for post-Phase-12.5-#3 closure, BEFORE Phase 13 commissioning. Both are bounded scope; neither is in Phase 12.5 #3 plan (intentionally separated to keep Phase 12.5 #3 scope narrow).
