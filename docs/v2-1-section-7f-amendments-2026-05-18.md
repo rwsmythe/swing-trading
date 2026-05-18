@@ -2,7 +2,7 @@
 
 This doc indexes all pending V2.1 §VII.F amendments accumulated across Phase 9 / Phase 10 / Phase 11 / Phase 12 / Phase 12.5 return reports + plan + spec + recon docs as of Phase 12.5 #3 ship. Each entry carries an `A-<phase>.<bundle>.<index>` hash for cross-reference + a 1-sentence summary + the source-of-truth doc + the line ref (where determinable). Inline supersession notes live at each affected spec/plan doc (per T-3.7 precedent for Phase 12.5 #1 plan §H.4 + spec §9.3 S4 + spec §5 line-104).
 
-**Source roster** (canonical 34 return-report files inventoried at task time; plan §A T-3.4 baseline was 33 — the 34th file is `docs/phase12-5-bundle-3-project-hygiene-writing-plans-return-report.md` for this dispatch's own writing-plans, which contains the Phase 12.5 #3 T-3.7 amendment `A-12.5.3.H4-banner-clears` already indexed below under §1 Phase 12.5 #3; no new uncatalogued amendments surfaced from that 34th file). Total **86 amendment rows** indexed (62 in initial collation + 24 net after Codex R1 Major #3 expansion of Phase 11 grouped IDs into per-row entries: removed 3 grouped lines A-11.A/B/D + added 27 per-row Phase 11 entries = +24 net).
+**Source roster** (canonical 34 return-report files inventoried at task time; plan §A T-3.4 baseline was 33 — the 34th file is `docs/phase12-5-bundle-3-project-hygiene-writing-plans-return-report.md` for this dispatch's own writing-plans, which references/banks the Phase 12.5 #3 T-3.7 amendment `A-12.5.3.H4-banner-clears` indexed below under §1 Phase 12.5 #3; the amendment's source-of-truth lives inline at the Phase 12.5 #1 plan/spec docs per T-3.7 amendment edits, NOT in the writing-plans return report; no new uncatalogued amendments surfaced from that 34th file). Total **74 amendment rows** indexed (62 in initial collation + 12 net after 2 Codex round-fix iterations: R1 Major #3 expanded Phase 11 grouped IDs into 27 per-row entries; R2 Major #1+#2 folded 12 of those (Sub-bundle D gotcha-formalizations of A-11.A.x amendments) back into a single cross-reference note since they are operational follow-through not separate routing-required amendments).
 
 **V2.1 §VII.F is the source-of-truth methodology-correction protocol** (per `reference/Future Work/2026-04-23-bifurcated-strategic-implementation-proposal-v2.1.md`). Each amendment routes through this protocol when promoted to a methodology revision. This inventory is the orchestrator's working list; promotion is a separate operator action.
 
@@ -56,7 +56,7 @@ This doc indexes all pending V2.1 §VII.F amendments accumulated across Phase 9 
 - **A-10.plan.1**: Plan §A.11 transition-history supersession — Phase 9 Sub-bundle C closed the audit-table capture gap. Source: `docs/superpowers/plans/2026-05-13-phase10-metrics-dashboard-plan.md` §A.11 inline note. Status: text-only.
 - **A-10.plan.2**: Plan §A.21 sum-metric Class assignment (mistake_cost_R_rolling_N_total rendered point-only; sum-class with bootstrap CI deferred V2). Source: same plan §A.21 inline note. Status: contract drift.
 
-### Phase 11 (Schwab API arc — 27 amendments banked across Sub-bundles A/B/C/D)
+### Phase 11 (Schwab API arc — 15 amendments banked across Sub-bundles A+B; Sub-bundle D gotcha-formalizations are operational follow-through not separate routing entries)
 
 Sub-bundle A (13 amendments banked):
 
@@ -77,24 +77,11 @@ Sub-bundle A (13 amendments banked):
 Sub-bundle B (2 amendments banked):
 
 - **A-11.B.1**: Lease status fields V2-deferred (R2 M#2 + R3 M#2 ACCEPT-WITH-RATIONALE family — combined). Source: `docs/schwab-bundle-B-return-report.md`. Status: contract drift.
-- **A-11.B.2**: `34be84e` gate-caught camelCase trader.py:362 fix (`max_results=` → `maxResults=`). Source: same. Status: cross-reference (matches A-11.A.1 family).
+- **A-11.B.2**: `34be84e` gate-caught camelCase trader.py:362 fix (`max_results=` → `maxResults=`). Source: `docs/schwab-bundle-B-return-report.md` (gate-fix section) + commit `34be84e`. Status: cross-reference (matches A-11.A.1 family).
 
 Sub-bundle C (no formally-banked amendments; defects all surfaced as Codex findings + resolved).
 
-Sub-bundle D (12 amendments banked — all CLAUDE.md gotcha promotions at T-D.4):
-
-- **A-11.D.1**: schwabdev camelCase kwarg gotcha (formalization of A-11.A.1). Source: `docs/schwab-bundle-D-return-report.md` §T-D.4.
-- **A-11.D.2**: Typed `SchwabApiError` audit-row close gotcha (formalization of A-11.A.2). Source: same.
-- **A-11.D.3**: `swing schwab setup` clean-state recovery gotcha (A-11.A.10 formalization). Source: same.
-- **A-11.D.4**: 7-day refresh-token clock gotcha (A-11.A.11 formalization). Source: same.
-- **A-11.D.5**: `Schwabdev` capital-S logger prefix gotcha (A-11.A.3 formalization). Source: same.
-- **A-11.D.6**: schwabdev silent-failure-mode gotcha (A-11.A.4 formalization). Source: same.
-- **A-11.D.7**: Tokens DB plaintext-at-rest gotcha (A-11.A.5 formalization). Source: same.
-- **A-11.D.8**: Pipeline-active CLI exclusion gotcha (A-11.A.12 formalization). Source: same.
-- **A-11.D.9**: Sandbox short-circuit gating gotcha (A-11.A.6 formalization). Source: same.
-- **A-11.D.10**: `setLogRecordFactory` content-redaction gotcha (A-11.A.7 formalization). Source: same.
-- **A-11.D.11**: Cassette runbook V2-PLANNED gotcha (A-11.A.8 formalization). Source: same.
-- **A-11.D.12**: Source-artifact reference shape gotcha (A-11.A.9 formalization). Source: same.
+Sub-bundle D — **cross-reference note (NOT separate amendment rows per Codex R2 Major #1+#2)**: Sub-bundle D T-D.4 promoted 12 CLAUDE.md gotchas that operationally formalize amendments already indexed at A-11.A.1..A-11.A.13 above (specifically A-11.A.1/2/3/4/5/6/7/8/9/10/11/12). The gotcha-promotions are operational follow-through (CLAUDE.md text already shipped at integration merge of Sub-bundle D), NOT separate amendment-routing entries. When promoting Phase 11 amendments via V2.1 §VII.F protocol, route from the A-11.A.x rows; the D-arc gotcha presence in CLAUDE.md is the operational-status checkmark, not an additional routing-required item. Source: `docs/schwab-bundle-D-return-report.md` §T-D.4.
 
 ### Phase 12 Sub-bundle A (Schwab operational pain — 0 amendments banked)
 
@@ -179,4 +166,4 @@ When an amendment is promoted to a V2.1 §VII.F methodology revision, follow the
 
 ---
 
-*End of inventory. Phase 12.5 #3 T-3.4 collation — 86 amendment rows indexed across Phase 9 + Phase 10 + Phase 11 + Phase 12 + post-Phase-12 + Phase 12.5 arcs (post Codex R1 Major #3 expansion of Phase 11 grouped IDs into per-row entries). Each amendment carries A-<phase>.<bundle>.<index> hash for cross-reference. Promotion is operator-paced via the V2.1 §VII.F protocol.*
+*End of inventory. Phase 12.5 #3 T-3.4 collation — 74 amendment rows indexed across Phase 9 + Phase 10 + Phase 11 + Phase 12 + post-Phase-12 + Phase 12.5 arcs (post Codex R1 Major #3 expansion + R2 Major #1+#2 cross-reference-fold of operational-follow-through entries). Each amendment carries A-<phase>.<bundle>.<index> hash for cross-reference. Promotion is operator-paced via the V2.1 §VII.F protocol.*
