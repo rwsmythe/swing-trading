@@ -1026,7 +1026,8 @@ def entry_post(
                     entry_date=entry_date,
                     entry_price=entry_price,
                     initial_stop=initial_stop,
-                    input_shares=shares,      # user's submitted value; suggested_shares stays as server computed
+                    # user's submitted value; suggested_shares stays as server computed
+                    input_shares=shares,
                     rationale=rationale,
                     notes=notes or "",
                 )
@@ -1098,7 +1099,8 @@ def entry_post(
             # DuplicateOpenPositionError upstream — but defense in
             # depth).
             msg = str(exc)
-            # V1: schema-message-coupled — substring-matches CHECK constraint text; forward hardening = pre-insert FK existence check
+            # V1: schema-message-coupled — substring-matches CHECK constraint
+            # text; forward hardening = pre-insert FK existence check.
             chart_pattern_check = any(col in msg for col in (
                 "chart_pattern_algo",
                 "chart_pattern_algo_confidence",

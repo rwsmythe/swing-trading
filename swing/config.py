@@ -404,12 +404,17 @@ def _user_home() -> Path:
 
 
 def _resolve_path(raw: str, home: Path, project_root: Path) -> Path:
-    """Absolute paths pass through; project-internal paths resolve against project_root; else home."""
+    """Absolute paths pass through; project-internal paths resolve against
+    project_root; else home.
+    """
     p = Path(raw)
     if p.is_absolute():
         return p
     normalized = raw.replace("\\", "/")
-    if normalized.startswith(_PROJECT_INTERNAL_PREFIXES) or normalized in ("exports", "data", "reference"):
+    if (
+        normalized.startswith(_PROJECT_INTERNAL_PREFIXES)
+        or normalized in ("exports", "data", "reference")
+    ):
         return project_root / p
     return home / p
 

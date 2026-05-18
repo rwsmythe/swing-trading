@@ -153,7 +153,9 @@ def apply_overrides(base_cfg: Config) -> Config:
     )
 
 
-def get_field_source(base_cfg: Config, field_path: str) -> Literal["default", "tracked", "override"]:
+def get_field_source(
+    base_cfg: Config, field_path: str,
+) -> Literal["default", "tracked", "override"]:
     """Report the precedence layer the field's effective value comes from.
 
     Codex watch-item #4: an explicit override at the registry default value

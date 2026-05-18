@@ -120,7 +120,10 @@ def _decisions(inputs: BriefingInputs) -> list[TodaysDecisionVM]:
         tt_score = ""
         vcp_score = ""
         if c is not None:
-            tt_pass = sum(1 for cr in c.criteria if cr.layer == "trend_template" and cr.result == "pass")
+            tt_pass = sum(
+                1 for cr in c.criteria
+                if cr.layer == "trend_template" and cr.result == "pass"
+            )
             tt_total = sum(1 for cr in c.criteria if cr.layer == "trend_template")
             vcp_pass = sum(1 for cr in c.criteria if cr.layer == "vcp" and cr.result == "pass")
             vcp_total = sum(1 for cr in c.criteria if cr.layer == "vcp")

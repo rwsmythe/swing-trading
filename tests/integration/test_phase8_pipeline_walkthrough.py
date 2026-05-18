@@ -22,6 +22,7 @@ Implementer notes (per Task 4.0 hand-off):
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -39,9 +40,22 @@ from swing.pipeline.runner import run_pipeline_internal
 
 def _synthetic_ohlcv() -> pd.DataFrame:
     """OHLCV with enough lookback for trail-MA windows + recent bars covering
-    the asof sessions exercised by the walk-through tests."""
+    the asof sessions exercised by the walk-through tests.
+
+    Anchored dynamically to ``datetime.now() + 7 calendar days`` so the
+    end-of-window covers the runner's `last_completed_session(run_now)`
+    regardless of when the test runs and tolerates midnight / DST / weekend
+    boundary effects on the runner's separate ``datetime.now()`` invocation
+    (Phase 12.5 #3 T-3.5 Bucket A fix — prior hard-coded ``end="2026-05-08"``
+    aged past the fixture's seeded anchor dates and caused
+    `compute_daily_approximate_snapshot` to return None on every run after
+    that date; 7-day buffer per Codex R1 Major #5 hardening — covers
+    weekend + Monday-holiday + DST-transition + clock-skew between fixture
+    creation and runner invocation).
+    """
     closes = [100.0 + i * 0.5 for i in range(260)]
-    idx = pd.bdate_range(end="2026-05-08", periods=len(closes))
+    end_date = (datetime.now() + timedelta(days=7)).date()
+    idx = pd.bdate_range(end=end_date, periods=len(closes))
     return pd.DataFrame({
         "Open": closes,
         "High": [c * 1.01 for c in closes],

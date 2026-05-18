@@ -891,7 +891,10 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
         click.echo(f"WARN: {result.warning}", err=True)
     if result.watchlist_archived:
         click.echo(f"Watchlist row for {ticker} archived (reason: entered)")
-    click.echo(f"Trade id {result.trade_id}: {ticker} {shares} sh @ ${entry_price:.2f}, stop ${initial_stop:.2f}")
+    click.echo(
+        f"Trade id {result.trade_id}: {ticker} {shares} sh @ "
+        f"${entry_price:.2f}, stop ${initial_stop:.2f}"
+    )
 
 
 @trade_group.command("exit")
@@ -929,7 +932,10 @@ def trade_exit_cmd(ctx, trade_id, exit_date, exit_price, shares, reason, notes):
     finally:
         conn.close()
     closed = " (FULL CLOSE)" if result.fully_closed else ""
-    click.echo(f"Exit {result.exit_id}: ${result.realized_pnl:+.2f} ({result.r_multiple:+.2f}R){closed}")
+    click.echo(
+        f"Exit {result.exit_id}: ${result.realized_pnl:+.2f} "
+        f"({result.r_multiple:+.2f}R){closed}"
+    )
     if result.fully_closed:
         from swing.trades.review import soft_warn_review_due_message
         click.echo(soft_warn_review_due_message(cfg.review.review_window_days))
@@ -965,7 +971,10 @@ def trade_list_cmd(ctx, show_all):
     if not trades:
         click.echo("(no trades)")
         return
-    click.echo(f"{'ID':>4} {'Ticker':<6} {'Date':<10} {'Entry':>8} {'Stop':>8} {'Sh':>4} {'State':<14}")
+    click.echo(
+        f"{'ID':>4} {'Ticker':<6} {'Date':<10} {'Entry':>8} "
+        f"{'Stop':>8} {'Sh':>4} {'State':<14}"
+    )
     for t in trades:
         remaining = t.initial_shares - sum(
             e.shares for e in exits_by_trade.get(t.id or 0, [])

@@ -41,9 +41,10 @@ def evaluate(ctx: CandidateContext) -> tuple[Result, ...]:
     # TT1: close > 150MA and close > 200MA
     v = f"close={last_close:.2f} 150MA={s150:.2f} 200MA={s200:.2f}"
     r = (last_close > s150) and (last_close > s200)
+    _msg = "close > 150MA AND close > 200MA"
     results.append(
-        Result.pass_(v, "close > 150MA AND close > 200MA", name=CHECK_NAMES[0], layer=LAYER)
-        if r else Result.fail_(v, "close > 150MA AND close > 200MA", name=CHECK_NAMES[0], layer=LAYER)
+        Result.pass_(v, _msg, name=CHECK_NAMES[0], layer=LAYER)
+        if r else Result.fail_(v, _msg, name=CHECK_NAMES[0], layer=LAYER)
     )
 
     # TT2: 150MA > 200MA
@@ -62,10 +63,11 @@ def evaluate(ctx: CandidateContext) -> tuple[Result, ...]:
         past = float(sma200.iloc[-(period + 1)])
         v = f"200MA now={s200:.2f} vs {period}bars ago={past:.2f}"
         rising = s200 > past
+        _msg = f"200MA rising over {period} bars"
         results.append(
-            Result.pass_(v, f"200MA rising over {period} bars", name=CHECK_NAMES[2], layer=LAYER)
+            Result.pass_(v, _msg, name=CHECK_NAMES[2], layer=LAYER)
             if rising
-            else Result.fail_(v, f"200MA rising over {period} bars", name=CHECK_NAMES[2], layer=LAYER)
+            else Result.fail_(v, _msg, name=CHECK_NAMES[2], layer=LAYER)
         )
 
     # TT4: 50MA > 150MA and 50MA > 200MA
