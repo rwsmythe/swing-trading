@@ -461,11 +461,22 @@ def _render_pre_resolution_context_equity_delta(
     expected: dict[str, Any],
     actual: dict[str, Any],
 ) -> ReconcilePreResolutionContext:
-    """Per spec §7.1: equity_delta carries journal/source/delta in the
-    expected envelope only; actual envelope is unused for this type."""
-    journal_nlv = expected["journal"]
-    schwab_nlv = expected["source"]
-    delta = expected["delta"]
+    """equity_delta production emitter shape (reconciliation.py:453-457 and
+    schwab_reconciliation.py:1119-1122):
+
+      expected_value_json = {"equity_dollars": journal_equity}
+      actual_value_json   = {"equity_dollars": source_nlv}
+
+    The earlier spec §7.1 draft incorrectly documented both values in the
+    expected envelope ("journal" / "source" / "delta"); the actual emitters
+    write equity_dollars in BOTH envelopes.  Delta is derived from the
+    persisted disc.delta_text column, not from the JSON envelope.
+
+    V2.1 amendment candidate: Phase 12.5 #2 spec §7.1 equity_delta description
+    should be updated to cite the correct production emitter shape.
+    """
+    journal_nlv = expected["equity_dollars"]
+    schwab_nlv = actual.get("equity_dollars")
     return ReconcilePreResolutionContext(
         **_base_context_kwargs(disc),
         journal_side_label="Journal NLV",
@@ -473,7 +484,7 @@ def _render_pre_resolution_context_equity_delta(
         schwab_side_label="Schwab NLV",
         schwab_side_value=_format_price(schwab_nlv),
         delta_label="Equity delta",
-        delta_value=_format_price(delta),
+        delta_value=_signed_delta(schwab_nlv, journal_nlv),
     )
 
 

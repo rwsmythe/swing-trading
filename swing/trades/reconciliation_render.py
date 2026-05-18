@@ -263,9 +263,9 @@ def _pairs_snapshot_mismatch(
 
 def _pairs_equity_delta(
     expected: dict[str, Any],
-    actual: dict[str, Any],  # noqa: ARG001 — unused by design; equity_delta uses expected only
+    actual: dict[str, Any],
 ) -> list[tuple[str, Any, Any]]:
-    return [("equity dollars", expected["journal"], expected["source"])]
+    return [("equity dollars", expected["equity_dollars"], actual.get("equity_dollars"))]
 
 
 def _pairs_sector_tamper(

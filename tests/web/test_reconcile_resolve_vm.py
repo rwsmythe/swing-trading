@@ -552,19 +552,23 @@ def test_snapshot_mismatch_populates_compared_pairs() -> None:
     assert "equity dollars" in labels
 
 
-def test_equity_delta_compared_pairs_uses_expected_envelope() -> None:
-    """equity_delta: compared_pairs carries ('equity dollars', journal, source)
-    both from the ``expected`` envelope — ``actual`` is unused.
+def test_equity_delta_compared_pairs_uses_production_emitter_shape() -> None:
+    """equity_delta: compared_pairs uses the correct production emitter shape.
 
-    The expected envelope for equity_delta requires journal + source + delta
-    (delta consumed by the label/value renderer; journal+source are the
-    compared pair values).
+    Production emitters (reconciliation.py:453-457 and
+    schwab_reconciliation.py:1119-1122) write:
+      expected_value_json = {"equity_dollars": journal_equity}
+      actual_value_json   = {"equity_dollars": source_nlv}
+
+    Earlier fixture used {"journal": ..., "source": ..., "delta": ...} in the
+    expected envelope only; that was synthetic-fixture-vs-production-emitter
+    shape drift (CLAUDE.md gotcha).  This test pins the correct emitter shape.
     """
     disc = _make_discrepancy(
         discrepancy_type="equity_delta",
         field_name="equity_dollars",
-        expected_value_json='{"journal": 2000.00, "source": 2034.78, "delta": 34.78}',
-        actual_value_json=None,
+        expected_value_json='{"equity_dollars": 2000.00}',
+        actual_value_json='{"equity_dollars": 2034.78}',
         fill_id=None,
     )
     ctx = _render_pre_resolution_context(disc)

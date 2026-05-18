@@ -304,7 +304,7 @@ tr.tripwire-fired td:first-child { border-left: 4px solid var(--tripwire-border)
 }
 .reconcile-comparison-table th,
 .reconcile-comparison-table td {
-  border: 1px solid #ccc;
+  border: 1px solid var(--border-strong);
   padding: 0.25em 0.75em;
   text-align: left;
 }

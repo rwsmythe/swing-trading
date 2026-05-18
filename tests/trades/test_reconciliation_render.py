@@ -6,8 +6,6 @@ All tests verify the ASCII-only invariant and pure-function discipline.
 
 from __future__ import annotations
 
-import sys
-
 from swing.trades.reconciliation_render import (
     render_journal_schwab_comparison_table_ascii,
 )
@@ -205,12 +203,41 @@ def test_ascii_only_audit() -> None:
 
 
 def test_zero_third_party_imports() -> None:
-    # The module must already be imported (import at top of this file triggered it)
-    forbidden = {"rich", "tabulate", "prettytable", "texttable"}
-    loaded = set(sys.modules.keys())
-    overlap = forbidden & loaded
-    assert not overlap, (
-        f"Third-party render libraries found in sys.modules: {overlap}"
+    """Verify swing.trades.reconciliation_render has zero third-party deps
+    by AST-walking its source code for import statements.
+
+    Earlier draft of this test checked sys.modules globally, but that path
+    fails under pytest-xdist (-n auto) when sibling workers transitively
+    pull in rich via pytest-rich / click. The contract we actually care
+    about is that THIS module's source code names only stdlib imports --
+    not the global runtime state of the test session.
+    """
+    import ast
+    import pathlib
+
+    src_path = (
+        pathlib.Path(__file__).parent.parent.parent
+        / "swing"
+        / "trades"
+        / "reconciliation_render.py"
+    )
+    tree = ast.parse(src_path.read_text(encoding="utf-8"))
+
+    forbidden_prefixes = {"rich", "tabulate", "prettytable", "texttable"}
+    bad_imports: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".")[0]
+                if root in forbidden_prefixes:
+                    bad_imports.append(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            root = (node.module or "").split(".")[0]
+            if root in forbidden_prefixes:
+                bad_imports.append(node.module or "")
+    assert not bad_imports, (
+        f"Third-party render libraries imported in reconciliation_render.py: "
+        f"{bad_imports}"
     )
 
 
@@ -450,22 +477,42 @@ class TestBuildComparedPairsUnmatchedFills:
 
 
 class TestBuildComparedPairsEquityDelta:
-    """equity_delta — both sides are in the expected envelope."""
+    """equity_delta — production emitter shape: equity_dollars in BOTH envelopes.
 
-    def test_equity_delta_uses_expected_envelope(self) -> None:
-        """journal and source come from expected; actual is unused."""
+    Production emitters (reconciliation.py:453-457 and
+    schwab_reconciliation.py:1119-1122) write:
+      expected_value_json = {"equity_dollars": journal_equity}
+      actual_value_json   = {"equity_dollars": source_nlv}
+    The earlier draft incorrectly wrote both values into the expected envelope
+    only, with keys "journal" / "source" / "delta".  This test pins the
+    correct production shape so fixture drift is caught immediately.
+    """
+
+    def test_equity_delta_uses_production_emitter_shape(self) -> None:
+        """Journal NLV in expected["equity_dollars"]; Schwab NLV in actual["equity_dollars"]."""
         pairs = build_compared_pairs(
             "equity_delta",
-            {"journal": 2000.00, "source": 2034.78, "delta": 34.78},
-            {},  # actual unused for this type
+            {"equity_dollars": 2000.00},  # expected = journal side
+            {"equity_dollars": 2034.78},  # actual   = Schwab side
         )
         assert pairs is not None
         labels = [p[0] for p in pairs]
         assert "equity dollars" in labels
         idx = labels.index("equity dollars")
-        # journal side = expected["journal"], schwab side = expected["source"]
+        # journal side = expected["equity_dollars"]
         assert pairs[idx][1] == 2000.00
+        # Schwab side  = actual["equity_dollars"]
         assert pairs[idx][2] == 2034.78
+
+    def test_equity_delta_actual_absent_yields_none_schwab_side(self) -> None:
+        """If actual envelope has no equity_dollars key, Schwab side is None."""
+        pairs = build_compared_pairs(
+            "equity_delta",
+            {"equity_dollars": 2000.00},
+            {},  # missing key
+        )
+        assert pairs is not None
+        assert pairs[0][2] is None
 
 
 class TestBuildComparedPairsSectorTamper:
