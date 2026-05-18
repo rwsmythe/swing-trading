@@ -168,7 +168,7 @@ Two cleanup items operator queued for post-Phase-12.5-#3 closure, BEFORE Phase 1
 - Adding NEW tests to cover gaps revealed by un-skipping.
 - Test-runtime profiling beyond skip-resolution work.
 
-**Status**: QUEUED at executing-plans return time. Orchestrator-driven; no implementer dispatch unless triage surfaces work warranting one.
+**Status**: ✅ **CLOSED 2026-05-18** at `416865f` (post-Phase-12.5-#3-merge orchestrator-paired audit). 5-skipped roster enumerated + classified: 1 LEGITIMATE-DEFERRED (`test_flag_classifier_integration.py:21` operator-only labeled fixtures pending Phase 13 Theme 2) + 4 POTENTIALLY-STALE (`test_account_summary_net_liq_extraction.py:43` parametrized over `thinkorswim/2026-*-AccountStatement.csv`). Operator-decided disposition: **update fixture paths to sanitized `tests/fixtures/tos/schwab-real-world-*.csv`** (Option A). Inline orchestrator commit at `416865f`; baseline shifts 4850/5 → 4854/1 (only Skip #1 remains). ZERO prunable; ZERO Bucket-C-style.
 
 **Cross-references:**
 - Phase 12.5 #3 T-3.5 failing-test triage (same spirit; complementary discipline).
@@ -178,11 +178,11 @@ Two cleanup items operator queued for post-Phase-12.5-#3 closure, BEFORE Phase 1
 
 ### Sequencing relative to Phase 12.5 #3 + Phase 13
 
-- **Phase 12.5 #3 executing-plans** — dispatched (UNBLOCKED post operator approval); brief at `docs/phase12-5-bundle-3-project-hygiene-executing-plans-dispatch-brief.md`.
-- **Item Q3 skipped-test audit** — orchestrator-driven at Phase 12.5 #3 executing-plans RETURN time (before merge); part of post-return QA + triage window.
+- **Phase 12.5 #3 executing-plans** — ✅ SHIPPED 2026-05-18 at `b436067` + S1-S4 operator-paired post-merge gate ALL PASS.
+- **Item Q3 skipped-test audit** — ✅ CLOSED 2026-05-18 at `416865f` (Option A: 4 skips → 4 PASS via sanitized-fixture redirect; baseline shifted 4850/5 → 4854/1).
 - **Item Q1 walkthrough** — orchestrator-paired; operator commissions on signal. May or may not lead to investigation dispatch.
 - **Item Q2** — small executing-plans dispatch; operator commissions on signal.
-- **Phase 13** — gated on Phase 12.5 closure (Phase 12.5 #3 + Q1 + Q2 + Q3). Phase 13 scope LOCKED at `docs/phase13-scope-brainstorm.md` §0.5.
+- **Phase 13** — gated on Phase 12.5 closure (Phase 12.5 #3 ✅ + Q3 ✅ + Q1 + Q2). Phase 13 scope LOCKED at `docs/phase13-scope-brainstorm.md` §0.5.
 
 ---
 
