@@ -142,9 +142,6 @@ class BackfillOutcome:
     #                                     via apply_tier2_resolution with
     #                                     auto-redirect overrides; Phase
     #                                     12.5 #1 T-1.5.B)
-    #   'auto_redirect_skipped_sandbox'  (--apply, env='sandbox' short-circuit
-    #                                     on the multi-leg auto-redirect
-    #                                     path; Phase 12.5 #1 T-1.5.B)
     #   'tier2_stamped'                  (--apply, tier-2 stamp via service)
     #   'tier2_skipped_sandbox'          (--apply, env='sandbox' Pass-2
     #                                     short-circuit — discrepancy left
@@ -224,7 +221,16 @@ class BackfillSummary:
     # Schwab orders WITH execution-grain data).
     tier1_multi_leg_auto_redirected: int = 0
     projection_auto_redirect: int = 0
-    auto_redirect_skipped_sandbox: int = 0
+    # Codex R2 Major #1 fix — removed the dedicated sandbox-skip counter
+    # for the multi-leg auto-redirect branch. The corresponding pre-check
+    # in ``_handle_pass_2`` was unreachable under real production flow
+    # because ``_pass_2_dispatch`` short-circuits sandbox BEFORE
+    # classification (per §9.7 LOCK) and returns ``reclassification=None``
+    # — the auto-redirect branch never fires under sandbox. The real
+    # sandbox outcome for a Pass-2 discrepancy is ``tier2_skipped_sandbox``
+    # (see line ~1029). T-1.6's inner-fn short-circuit in
+    # ``apply_tier2_resolution`` + pivot-loop sentinel remain as defensive
+    # future-proofing per F20 + spec §7.6 LOCK.
     per_discrepancy_outcomes: list[BackfillOutcome] = field(default_factory=list)
 
 
@@ -719,13 +725,19 @@ def _handle_pass_2(
     reclassification per spec §7.2), this helper short-circuits the
     legacy tier-2 stamp path + dispatches via
     :func:`apply_tier2_resolution` with the auto-redirect overrides.
-    Returns one of three new outcomes:
-    ``'projection_auto_redirect'`` / ``'tier1_multi_leg_auto_redirected'``
-    / ``'auto_redirect_skipped_sandbox'``. The §7.5 fallback fires when
-    ``apply_tier2_resolution`` raises ``ValidatorRejectedError`` /
-    ``ValueError`` post-stamp (e.g., qty-tolerance trip): the stamp
-    persists + the outcome is ``'tier2_stamped'`` with a reason citing
-    the auto-redirect decline.
+    Returns one of two outcomes on the auto-redirect branch:
+    ``'projection_auto_redirect'`` (dry-run) /
+    ``'tier1_multi_leg_auto_redirected'`` (apply, production).
+    The §7.5 fallback fires when ``apply_tier2_resolution`` raises
+    ``ValidatorRejectedError`` / ``ValueError`` post-stamp (e.g., qty-
+    tolerance trip): the stamp persists + the outcome is
+    ``'tier2_stamped'`` with a reason citing the auto-redirect decline.
+
+    Sandbox + apply-mode on a Pass-2 discrepancy short-circuits inside
+    ``_pass_2_dispatch`` (returns ``reclassification=None``) and falls
+    through to the legacy ``tier2_skipped_sandbox`` path; the auto-
+    redirect branch is therefore unreachable under sandbox by design
+    (Codex R2 Major #1).
     """
     from swing.trades.reconciliation_auto_correct import (
         CallerHeldTransactionError,
@@ -832,31 +844,13 @@ def _handle_pass_2(
                 ),
             )
 
-        if environment == "sandbox":
-            # Sandbox short-circuit per spec §7.6.1 LOCK + CLAUDE.md
-            # gotcha. Auto-redirect MUST NOT mutate under sandbox; this
-            # mirrors T-1.6's inner-fn short-circuit (defense-in-depth
-            # since the inner would also short-circuit if reached). The
-            # discrepancy stays in 'unresolved' (NOT stamped to
-            # pending_ambiguity_resolution).
-            return BackfillOutcome(
-                discrepancy_id=disc_id,
-                ticker=disc.ticker,
-                discrepancy_type=disc.discrepancy_type,
-                tier=1,
-                outcome="auto_redirect_skipped_sandbox",
-                ambiguity_kind=None,
-                correction_id=None,
-                pass_2_call_id=call_id,
-                reason=(
-                    "sandbox: auto-redirect short-circuited; "
-                    "discrepancy left unresolved"
-                ),
-                projection_outcome_label="auto-redirect (sandbox)",
-                projection_action_needed=(
-                    "re-run under environment='production'"
-                ),
-            )
+        # Codex R2 Major #1 fix — removed unreachable sandbox pre-check
+        # from this branch. ``_pass_2_dispatch`` short-circuits sandbox
+        # at line ~630 BEFORE classification per §9.7 LOCK; that path
+        # returns ``reclassification=None`` so this auto-redirect branch
+        # is never entered under real production flow. Defensive sandbox
+        # short-circuiting persists at T-1.6's inner-fn level + the
+        # pivot-loop sentinel per F20 / spec §7.6 LOCK.
 
         # --apply, production: 2-step own-tx sequence per spec §7.2.
         # Codex R3 Major #4 fix — per-service-write pipeline-exclusion
@@ -1523,8 +1517,6 @@ def run_backfill(
             summary.tier1_multi_leg_auto_redirected += 1
         elif outcome.outcome == "projection_auto_redirect":
             summary.projection_auto_redirect += 1
-        elif outcome.outcome == "auto_redirect_skipped_sandbox":
-            summary.auto_redirect_skipped_sandbox += 1
         # T-D.8 — Pass-2 re-fetch failure-mode counter (orthogonal to
         # the canonical ``outcome`` enum; transported via the
         # ``reason`` substring per spec §8.4 + plan §E.8 #6 LOCK).
@@ -1723,11 +1715,6 @@ def format_summary_block(summary: BackfillSummary) -> str:
         multi_leg_lines += (
             f"  Multi-leg auto-redirects (dry-run projection): "
             f"{summary.projection_auto_redirect}\n"
-        )
-    if summary.auto_redirect_skipped_sandbox:
-        multi_leg_lines += (
-            f"  Multi-leg auto-redirects skipped (sandbox): "
-            f"{summary.auto_redirect_skipped_sandbox}\n"
         )
 
     return (

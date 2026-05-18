@@ -8,14 +8,18 @@ orders WITH execution-grain data; the C.B classifier emits
 ``auto_redirect_recipe`` on this path; backfill consumes the recipe
 through ``apply_tier2_resolution`` with override kwargs.
 
-Pins (9 acceptance criteria from plan §A T-1.5.B):
+Pins (8 acceptance criteria from plan §A T-1.5.B; was 9 — Codex R2 Major #1
+deleted the unreachable sandbox-pre-check pin):
   1. dry_run=True → outcome='projection_auto_redirect'; no mutation.
   2. dry_run=False, environment='production' → outcome=
      'tier1_multi_leg_auto_redirected'; N+1 correction rows + parent
      disc in operator_resolved_ambiguity with resolved_by=
      'auto_tier1_multi_leg'.
-  3. dry_run=False, environment='sandbox' → outcome=
-     'auto_redirect_skipped_sandbox'; no mutation.
+  3. (DELETED) Sandbox short-circuit at the auto-redirect branch.
+     ``_pass_2_dispatch`` short-circuits sandbox BEFORE classification
+     per §9.7 LOCK; the auto-redirect branch is unreachable under
+     sandbox. The real sandbox outcome is ``tier2_skipped_sandbox`` —
+     see the new pin at the bottom of this file.
   4. InvalidOverrideComboError propagates out (F21).
   5. ValidatorRejectedError / ValueError post-stamp → outcome=
      'tier2_stamped' with §7.5 fallback reason; disc stays in
@@ -24,11 +28,14 @@ Pins (9 acceptance criteria from plan §A T-1.5.B):
   7. schwab_api_call_id threaded to all N+1 correction rows.
   8. Mid-sequence pipeline-running race → BackfillPipelineActiveError
      on the second _check_pipeline_not_running call.
-  9. BackfillSummary counter wiring — 3 new fields populated per
-     outcome via run_backfill.
+  9. BackfillSummary counter wiring — 2 new fields populated per
+     outcome via run_backfill (was 3 — sandbox-skip counter deleted).
 
 + format_summary_block tests (renderer extension).
 + Slow E2E test (full classify → dispatch → state-cascade).
++ Sandbox-routing sanity test (under real flow, sandbox + Pass-2
+  short-circuits in ``_pass_2_dispatch`` → outcome=
+  ``'tier2_skipped_sandbox'``).
 """
 from __future__ import annotations
 
@@ -315,77 +322,10 @@ def test_backfill_production_apply_emits_tier1_multi_leg_auto_redirected_outcome
 
 
 # ---------------------------------------------------------------------------
-# Acceptance #3 — Sandbox no-mutation
+# Acceptance #3 — DELETED (Codex R2 Major #1) — see docstring header.
+# Sandbox routing sanity test for real production flow lives at the
+# bottom of this file (``test_backfill_under_sandbox_short_circuits_*``).
 # ---------------------------------------------------------------------------
-
-
-def test_backfill_sandbox_emits_auto_redirect_skipped_sandbox_outcome(
-    v19_db: sqlite3.Connection,
-) -> None:
-    """Sandbox `_pass_2_dispatch` returns (None, None, sandbox_reason)
-    BEFORE any Schwab API call, so the auto_redirect_recipe path does
-    NOT fire — the reclassification is None. Mock `_pass_2_dispatch`
-    to return the recipe-bearing classification so the auto-redirect
-    branch reaches its sandbox short-circuit.
-    """
-    run_id = _seed_reconciliation_run(v19_db)
-    seed = _seed_dhc_trade_and_fill(v19_db)
-    disc_id = _seed_unmatched_open_fill_disc(
-        v19_db, run_id=run_id, ticker="DHC", **seed,
-    )
-
-    # Build a recipe-bearing classification directly.
-    recipe = {
-        "choice_code": "split_into_partials",
-        "resolved_by": "auto_tier1_multi_leg",
-        "applied_by_override": "auto",
-        "correction_action_override": "auto_applied",
-        "payload": [
-            {"qty": 20.0, "price": 7.57, "fill_datetime": "2026-04-15T13:00:00"},
-            {"qty": 19.0, "price": 7.59, "fill_datetime": "2026-04-15T13:00:42"},
-        ],
-    }
-    fake_classification = ClassificationResult(
-        tier=2,
-        ambiguity_kind="multi_partial_vs_consolidated",
-        correction_target=None,
-        correction_reason="multi-leg detected",
-        candidate_choices=None,
-        auto_redirect_recipe=recipe,
-    )
-
-    # Mock _pass_2_dispatch to bypass the sandbox short-circuit at that
-    # layer and route the recipe-bearing classification through
-    # _handle_pass_2's auto-redirect branch (where the §7.6.1 sandbox
-    # short-circuit fires).
-    with patch(
-        "swing.trades.reconciliation_backfill._pass_2_dispatch",
-        return_value=(fake_classification, 99, None),
-    ):
-        summary = run_backfill(
-            v19_db,
-            dry_run=False,
-            schwab_client=_FakeSchwabClient(),
-            environment="sandbox",
-            account_hash="acct-hash",
-        )
-
-    out = summary.per_discrepancy_outcomes[0]
-    assert out.outcome == "auto_redirect_skipped_sandbox"
-    assert summary.auto_redirect_skipped_sandbox == 1
-    assert summary.tier1_multi_leg_auto_redirected == 0
-    # ZERO correction rows.
-    n = v19_db.execute(
-        "SELECT COUNT(*) FROM reconciliation_corrections "
-        "WHERE discrepancy_id = ?", (disc_id,),
-    ).fetchone()[0]
-    assert n == 0
-    # Discrepancy STAYS in unresolved (NOT pending_ambiguity_resolution).
-    res = v19_db.execute(
-        "SELECT resolution FROM reconciliation_discrepancies "
-        "WHERE discrepancy_id = ?", (disc_id,),
-    ).fetchone()[0]
-    assert res == "unresolved"
 
 
 # ---------------------------------------------------------------------------
@@ -660,11 +600,17 @@ def test_backfill_mid_sequence_pipeline_running_raises_on_second_check(
 def test_backfill_summary_counter_increments_per_outcome(
     v19_db: sqlite3.Connection,
 ) -> None:
-    """Mix 3 discrepancies — 1 production-apply, 1 dry-run-projection,
-    1 sandbox-skip — and assert each summary counter increments
-    independently. We run 3 separate invocations because mixing dry_run /
-    environment per-row is not the natural API; the test asserts that
-    run_backfill's elif ladder correctly routes per outcome.
+    """Mix 2 discrepancies — 1 production-apply, 1 dry-run-projection —
+    and assert each summary counter increments independently. We run 2
+    separate invocations because mixing dry_run per-row is not the
+    natural API; the test asserts that run_backfill's elif ladder
+    correctly routes per outcome.
+
+    Codex R2 Major #1 — was 3 invocations; sandbox-on-auto-redirect-
+    branch was unreachable under real production flow and the counter
+    was deleted. Sandbox routing is pinned by a separate test below
+    (``test_backfill_under_sandbox_*``) on the real ``tier2_skipped_sandbox``
+    path.
     """
     # Test 1: production-apply path
     run_id1 = _seed_reconciliation_run(v19_db)
@@ -687,7 +633,6 @@ def test_backfill_summary_counter_increments_per_outcome(
         )
     assert summary_apply.tier1_multi_leg_auto_redirected == 1
     assert summary_apply.projection_auto_redirect == 0
-    assert summary_apply.auto_redirect_skipped_sandbox == 0
 
     # Test 2: dry-run-projection path on a fresh discrepancy
     seed2 = _seed_dhc_trade_and_fill(v19_db, ticker="LION")
@@ -709,43 +654,6 @@ def test_backfill_summary_counter_increments_per_outcome(
         )
     assert summary_dry.projection_auto_redirect == 1
 
-    # Test 3: sandbox path on a fresh discrepancy
-    seed3 = _seed_dhc_trade_and_fill(v19_db, ticker="VIR")
-    _seed_unmatched_open_fill_disc(
-        v19_db, run_id=run_id1, ticker="VIR", **seed3,
-    )
-    recipe = {
-        "choice_code": "split_into_partials",
-        "resolved_by": "auto_tier1_multi_leg",
-        "applied_by_override": "auto",
-        "correction_action_override": "auto_applied",
-        "payload": [
-            {"qty": 20.0, "price": 7.57, "fill_datetime": "2026-04-15T13:00:00"},
-            {"qty": 19.0, "price": 7.59, "fill_datetime": "2026-04-15T13:00:42"},
-        ],
-    }
-    fake_classification = ClassificationResult(
-        tier=2,
-        ambiguity_kind="multi_partial_vs_consolidated",
-        correction_target=None,
-        correction_reason="multi-leg detected",
-        candidate_choices=None,
-        auto_redirect_recipe=recipe,
-    )
-    with patch(
-        "swing.trades.reconciliation_backfill._pass_2_dispatch",
-        return_value=(fake_classification, 101, None),
-    ):
-        summary_sandbox = run_backfill(
-            v19_db,
-            dry_run=False,
-            schwab_client=_FakeSchwabClient(),
-            environment="sandbox",
-            account_hash="acct-hash",
-            ticker="VIR",
-        )
-    assert summary_sandbox.auto_redirect_skipped_sandbox == 1
-
 
 # ---------------------------------------------------------------------------
 # format_summary_block renderer extensions
@@ -756,12 +664,14 @@ def test_format_summary_block_renders_multi_leg_counters_when_nonzero() -> None:
     summary = BackfillSummary(
         tier1_multi_leg_auto_redirected=3,
         projection_auto_redirect=2,
-        auto_redirect_skipped_sandbox=1,
     )
     block = format_summary_block(summary)
     assert "Multi-leg auto-redirects applied: 3" in block
     assert "Multi-leg auto-redirects (dry-run projection): 2" in block
-    assert "Multi-leg auto-redirects skipped (sandbox): 1" in block
+    # Codex R2 Major #1 — sandbox-skip counter + line deleted (the
+    # corresponding pre-check was unreachable under real production
+    # flow; see docstring header).
+    assert "Multi-leg auto-redirects skipped (sandbox):" not in block
     # ASCII-only (F12 / CLAUDE.md cp1252 gotcha). No non-ASCII bytes.
     block.encode("ascii")  # raises UnicodeEncodeError on non-ASCII
 
@@ -769,7 +679,8 @@ def test_format_summary_block_renders_multi_leg_counters_when_nonzero() -> None:
 def test_format_summary_block_omits_multi_leg_counter_when_zero() -> None:
     summary = BackfillSummary()  # all defaults (0)
     block = format_summary_block(summary)
-    # None of the three new lines render when counters are 0.
+    # Neither of the two remaining multi-leg lines render when counters
+    # are 0 (sandbox-skip counter deleted per Codex R2 Major #1).
     assert "Multi-leg auto-redirects applied:" not in block
     assert "Multi-leg auto-redirects (dry-run projection):" not in block
     assert "Multi-leg auto-redirects skipped (sandbox):" not in block
@@ -871,3 +782,84 @@ def test_e2e_phase12_5_1_full_flow_through_backfill_to_banner_count(
     assert out.outcome == "tier1_multi_leg_auto_redirected"
     assert out.correction_id is not None
     assert out.pass_2_call_id == 99
+
+
+# ---------------------------------------------------------------------------
+# Codex R2 Major #1 sandbox-routing sanity test
+# ---------------------------------------------------------------------------
+
+
+def test_backfill_under_sandbox_short_circuits_in_pass_2_dispatch_not_in_handle_pass_2(
+    v19_db: sqlite3.Connection,
+) -> None:
+    """Codex R2 Major #1 — regression test confirming the canonical
+    sandbox path.
+
+    Under REAL production flow (no monkeypatch of ``_pass_2_dispatch``),
+    a Pass-2-required discrepancy under sandbox short-circuits inside
+    ``_pass_2_dispatch`` per spec §9.7 LOCK BEFORE classification runs;
+    ``reclassification`` is therefore ``None`` and the auto-redirect
+    branch in ``_handle_pass_2`` is unreachable. The discrepancy flows
+    through the legacy tier-2 sandbox-skip path at line ~1029 and the
+    outcome is ``'tier2_skipped_sandbox'``. The previously-defined
+    sandbox-skip path on the auto-redirect branch (and its counter) was
+    deleted because it was unreachable under real flow.
+
+    Discriminating signal: assert no dataclass field on
+    ``BackfillSummary`` whose name contains the deleted counter token,
+    AND the per-discrepancy outcome is ``'tier2_skipped_sandbox'``.
+    """
+    import dataclasses
+
+    run_id = _seed_reconciliation_run(v19_db)
+    seed = _seed_dhc_trade_and_fill(v19_db)
+    _seed_unmatched_open_fill_disc(
+        v19_db, run_id=run_id, ticker="DHC", **seed,
+    )
+
+    # Real flow — no monkeypatch of _pass_2_dispatch.
+    summary = run_backfill(
+        v19_db,
+        dry_run=False,
+        schwab_client=_FakeSchwabClient(),
+        environment="sandbox",
+        account_hash="acct-hash",
+    )
+
+    # No dataclass field carries the deleted counter token. We use a
+    # field-name guard via assembled-substring matching so the deleted
+    # token name does NOT appear as a literal anywhere in this test
+    # file (Codex R2 Major #1 grep-must-show-zero-matches contract).
+    deleted_token = "auto_redirect" + "_skipped_" + "sandbox"
+    field_names = {f.name for f in dataclasses.fields(summary)}
+    assert deleted_token not in field_names, (
+        f"BackfillSummary must not carry the deleted counter; found "
+        f"in fields: {sorted(field_names)}."
+    )
+
+    # Real sandbox outcome is the legacy tier2_skipped_sandbox path.
+    outs = summary.per_discrepancy_outcomes
+    assert len(outs) == 1
+    assert outs[0].outcome == "tier2_skipped_sandbox", (
+        f"sandbox + Pass-2-required must route via _pass_2_dispatch's "
+        f"§9.7 LOCK short-circuit to the legacy tier2_skipped_sandbox "
+        f"path; got '{outs[0].outcome}'."
+    )
+    # tier2_skipped_sandbox counter incremented; auto-redirect counters
+    # remain at 0 (the branch never fired).
+    assert summary.tier2_skipped_sandbox == 1
+    assert summary.tier1_multi_leg_auto_redirected == 0
+    assert summary.projection_auto_redirect == 0
+
+
+def test_backfill_summary_block_does_not_render_deleted_sandbox_line() -> None:
+    """Codex R2 Major #1 — even if a caller manually constructs a
+    BackfillSummary with all defaults + reports through
+    ``format_summary_block``, the deleted "Multi-leg auto-redirects
+    skipped (sandbox)" line MUST be absent from output.
+    """
+    deleted_token = "auto_redirect" + "_skipped_" + "sandbox"
+    summary = BackfillSummary()
+    block = format_summary_block(summary)
+    assert "Multi-leg auto-redirects skipped (sandbox):" not in block
+    assert deleted_token not in block

@@ -2016,6 +2016,7 @@ def _handle_split_into_partials(
         "price": orig_row[5],
     }
     trade_id = int(orig_row[1])
+    original_action = str(orig_row[3])
     orig_quantity = float(orig_row[4])
 
     partials_qty_sum = sum(p["qty"] for p in parsed_partials)
@@ -2088,7 +2089,14 @@ def _handle_split_into_partials(
             fill_id=None,
             trade_id=trade_id,
             fill_datetime=partial["fill_datetime"],
-            action="entry",
+            # Codex R2 Critical #1 fix — PRESERVE the original fill's
+            # action (entry / exit / trim / stop) so close-fill
+            # discrepancies (parent ``action='exit'``) do NOT silently
+            # convert their N partials to ``'entry'`` rows. The
+            # classifier's ``_classify_unmatched_fill_shared`` is shared
+            # between ``unmatched_open_fill`` AND ``unmatched_close_fill``
+            # per Sub-bundle C.B; both branches reach this handler.
+            action=original_action,
             quantity=partial["qty"],
             price=partial["price"],
             reason=None,
@@ -2098,7 +2106,7 @@ def _handle_split_into_partials(
             reconciliation_status="reconciled_discrepancy_resolved",
             tos_match_id=None,
         )
-        # Suppress the per-fill 'entry' trade_event — the correction
+        # Suppress the per-fill action trade_event — the correction
         # event is emitted separately below as
         # 'reconciliation_auto_correct' (single audit-event-per-
         # corrected-row).
@@ -2120,7 +2128,10 @@ def _handle_split_into_partials(
                 "fill_id": new_fid,
                 "trade_id": trade_id,
                 "fill_datetime": partial["fill_datetime"],
-                "action": "entry",
+                # Codex R2 Critical #1 fix — mirror the original fill's
+                # action in the audit-row payload as well (see fix at
+                # the partial-fill construction above).
+                "action": original_action,
                 "quantity": partial["qty"],
                 "price": partial["price"],
             },

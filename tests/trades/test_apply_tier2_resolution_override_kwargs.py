@@ -229,6 +229,105 @@ def _split_partials_payload(
     ]
 
 
+def _seed_pending_multi_partial_close_fill(
+    conn: sqlite3.Connection,
+    *,
+    ticker: str = "DHC",
+    qty: float = 39.0,
+    price: float = 7.50,
+) -> dict[str, Any]:
+    """Codex R2 Critical #1 regression-test fixture.
+
+    Plants a tier-2 pending discrepancy whose parent fill has
+    ``action='exit'`` (a CLOSE fill) — exercises the
+    ``unmatched_close_fill`` branch of the C.B shared sub-classifier
+    ``_classify_unmatched_fill_shared`` end-to-end through
+    ``_handle_split_into_partials``. The fixture mirrors
+    ``_seed_pending_multi_partial`` but with:
+      - a prior ``entry`` fill recorded so the trade has positive
+        cumulative shares to ``exit`` (state-machine invariant);
+      - the discrepancy's parent fill is the ``exit`` row;
+      - ``discrepancy_type='unmatched_close_fill'``.
+    """
+    cur = conn.execute(
+        """
+        INSERT INTO trades (
+            ticker, entry_date, entry_price, initial_shares, initial_stop,
+            current_stop, state, trade_origin, pre_trade_locked_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (ticker, "2026-04-15", price, int(qty), 6.0, 6.0, "managing",
+         "manual_off_pipeline", "2026-04-15T16:00:00"),
+    )
+    trade_id = int(cur.lastrowid)
+    # Prior entry fill so cumulative_shares is positive at exit time.
+    conn.execute(
+        """
+        INSERT INTO fills (
+            trade_id, fill_datetime, action, quantity, price,
+            reconciliation_status
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (trade_id, "2026-04-15T13:00:00", "entry", qty, price,
+         "reconciled_match"),
+    )
+    # The CLOSE fill that the discrepancy points at — operator's
+    # consolidated exit which Schwab actually emitted as N partials.
+    fcur = conn.execute(
+        """
+        INSERT INTO fills (
+            trade_id, fill_datetime, action, quantity, price,
+            reconciliation_status
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (trade_id, "2026-04-27T14:23:00", "exit", qty, price,
+         "unreconciled"),
+    )
+    fill_id = int(fcur.lastrowid)
+    from swing.data.repos.fills import _recompute_aggregates
+    _recompute_aggregates(conn, trade_id)
+    run_cur = conn.execute(
+        """
+        INSERT INTO reconciliation_runs (
+            source, started_ts, state, period_start, period_end
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        ("schwab_api", "2026-05-15T12:00:00", "running",
+         "2026-04-27", "2026-04-27"),
+    )
+    run_id = int(run_cur.lastrowid)
+    dcur = conn.execute(
+        """
+        INSERT INTO reconciliation_discrepancies (
+            run_id, discrepancy_type, trade_id, fill_id, ticker, field_name,
+            expected_value_json, actual_value_json, delta_text,
+            material_to_review, resolution, ambiguity_kind,
+            resolution_reason, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            run_id, "unmatched_close_fill", trade_id, fill_id, ticker,
+            "fill_match",
+            json.dumps({"price": price}),
+            json.dumps({"_multi_match": True, "count": 2}), "+$0.08",
+            1, "pending_ambiguity_resolution",
+            "multi_partial_vs_consolidated",
+            "Schwab returned 2 partial orders summing to journal qty",
+            "2026-05-15T12:00:00",
+        ),
+    )
+    discrepancy_id = int(dcur.lastrowid)
+    conn.commit()
+    return {
+        "trade_id": trade_id,
+        "fill_id": fill_id,
+        "run_id": run_id,
+        "discrepancy_id": discrepancy_id,
+        "pre_price": price,
+        "pre_qty": qty,
+    }
+
+
 @pytest.fixture
 def conn(tmp_path: Path) -> sqlite3.Connection:
     return ensure_schema(tmp_path / "test.db")
@@ -440,3 +539,139 @@ def test_apply_tier2_resolution_idempotent_return_on_auto_against_auto_terminal(
     # Idempotent return surfaces an existing correction id (one of the
     # N+1 rows; spec §5.3 picks the chain head).
     assert second.correction_id is not None
+
+
+# ---------------------------------------------------------------------------
+# Codex R2 Critical #1 — _handle_split_into_partials MUST preserve the
+# original fill's action so close-fill discrepancies (parent action='exit')
+# don't silently get converted to entry-fill rows. The classifier's
+# _classify_unmatched_fill_shared is shared between unmatched_open_fill AND
+# unmatched_close_fill per Sub-bundle C.B; both reach this handler.
+# ---------------------------------------------------------------------------
+
+
+def test_split_into_partials_preserves_original_fill_action_on_close_fill_discrepancy(
+    conn: sqlite3.Connection,
+) -> None:
+    """Regression test for Codex R2 Critical #1.
+
+    BEFORE FIX: the per-partial Fill construction hardcoded
+    ``action='entry'`` — invoking ``apply_tier2_resolution(
+    choice_code='split_into_partials', ...)`` on an
+    ``unmatched_close_fill`` discrepancy (parent fill ``action='exit'``)
+    would DELETE the operator's exit fill and INSERT N entry fills.
+    JOURNAL CORRUPTION.
+
+    AFTER FIX: each inserted partial fill carries the parent's original
+    action verbatim (``'exit'`` for close-fill, ``'entry'`` for
+    open-fill). Both the live ``fills.action`` column AND the persisted
+    audit-row ``applied_value_json.action`` reflect the original action.
+    """
+    seed = _seed_pending_multi_partial_close_fill(conn)
+    pre_qty = seed["pre_qty"]
+    apply_tier2_resolution(
+        conn,
+        discrepancy_id=seed["discrepancy_id"],
+        choice_code="split_into_partials",
+        operator_custom_payload=_split_partials_payload(
+            fill_datetime="2026-04-27T14:23:00",
+        ),
+        operator_reason="auto-redirect: multi-leg exit synthesized",
+        applied_by_override="auto",
+        correction_action_override="auto_applied",
+        resolved_by_override="auto_tier1_multi_leg",
+    )
+    # (a) the original consolidated exit (qty=39 @ price=7.50) is gone;
+    # the post-state shows the partials at different prices instead.
+    consolidated_remaining = conn.execute(
+        "SELECT COUNT(*) FROM fills "
+        "WHERE trade_id = ? AND action = 'exit' "
+        "AND quantity = ? AND price = ?",
+        (seed["trade_id"], pre_qty, seed["pre_price"]),
+    ).fetchone()[0]
+    assert consolidated_remaining == 0, (
+        "anchor-delete should have removed the consolidated exit fill"
+    )
+    # (b) the trade now has the original entry fill + N inserted partial
+    # exit fills (matched by fill_datetime AND payload). ALL inserted
+    # partials MUST carry action='exit', NOT 'entry'.
+    partial_rows = conn.execute(
+        "SELECT action, quantity, price FROM fills "
+        "WHERE trade_id = ? AND fill_datetime LIKE '2026-04-27%' "
+        "ORDER BY fill_datetime ASC",
+        (seed["trade_id"],),
+    ).fetchall()
+    assert len(partial_rows) == 2
+    for action, _qty, _price in partial_rows:
+        assert action == "exit", (
+            f"close-fill split_into_partials must preserve action='exit'; "
+            f"got '{action}' — regression of Codex R2 Critical #1 "
+            f"(journal corruption: operator's exit fill silently converted "
+            f"to entry fills)."
+        )
+    # (b.bis) the partials' quantities sum to the original consolidated qty.
+    assert sum(qty for _action, qty, _price in partial_rows) == pytest.approx(
+        pre_qty,
+    )
+    # (c) the persisted audit-row applied_value_json mirrors the action.
+    insert_rows = conn.execute(
+        "SELECT applied_value_json FROM reconciliation_corrections "
+        "WHERE discrepancy_id = ? AND field_name = '__insert__' "
+        "ORDER BY correction_id ASC",
+        (seed["discrepancy_id"],),
+    ).fetchall()
+    assert len(insert_rows) == 2
+    for (applied_value_json,) in insert_rows:
+        payload = json.loads(applied_value_json)
+        assert payload["action"] == "exit", (
+            f"audit-row applied_value_json.action must mirror the original "
+            f"fill action; got {payload['action']!r}."
+        )
+
+
+def test_split_into_partials_preserves_original_fill_action_on_open_fill_discrepancy(
+    conn: sqlite3.Connection,
+) -> None:
+    """Sibling test confirming the open-fill path (parent action='entry')
+    continues to insert entry-action partials (no behavior regression).
+
+    Symmetrically pins the action-preservation invariant from both sides
+    so future maintainers cannot one-way break it.
+    """
+    seed = _seed_pending_multi_partial(conn)  # parent action='entry'
+    apply_tier2_resolution(
+        conn,
+        discrepancy_id=seed["discrepancy_id"],
+        choice_code="split_into_partials",
+        operator_custom_payload=_split_partials_payload(),
+        operator_reason="auto-redirect: multi-leg entry synthesized",
+        applied_by_override="auto",
+        correction_action_override="auto_applied",
+        resolved_by_override="auto_tier1_multi_leg",
+    )
+    # Original entry fill (qty=39 @ $7.50) was deleted by the anchor;
+    # post-state has N partial entry fills summing to qty=39 with the
+    # split prices.
+    consolidated_remaining = conn.execute(
+        "SELECT COUNT(*) FROM fills "
+        "WHERE trade_id = ? AND action = 'entry' "
+        "AND quantity = ? AND price = ?",
+        (seed["trade_id"], seed["pre_qty"], seed["pre_price"]),
+    ).fetchone()[0]
+    assert consolidated_remaining == 0
+    partial_rows = conn.execute(
+        "SELECT action FROM fills WHERE trade_id = ?",
+        (seed["trade_id"],),
+    ).fetchall()
+    assert len(partial_rows) == 2
+    for (action,) in partial_rows:
+        assert action == "entry"
+    # Persisted audit shape mirrors.
+    insert_rows = conn.execute(
+        "SELECT applied_value_json FROM reconciliation_corrections "
+        "WHERE discrepancy_id = ? AND field_name = '__insert__'",
+        (seed["discrepancy_id"],),
+    ).fetchall()
+    for (applied_value_json,) in insert_rows:
+        payload = json.loads(applied_value_json)
+        assert payload["action"] == "entry"
