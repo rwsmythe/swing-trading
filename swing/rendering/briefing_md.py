@@ -29,7 +29,10 @@ def render_briefing_md(vm: BriefingViewModel) -> str:
 
     parts.append("## Account")
     a = vm.status_strip.account
-    parts.append(f"Equity ${a.equity:.2f} \u00b7 Positions {a.open_count} / {a.soft_warn} warn / {a.hard_cap} cap\n")
+    parts.append(
+        f"Equity ${a.equity:.2f} \u00b7 Positions {a.open_count} / "
+        f"{a.soft_warn} warn / {a.hard_cap} cap\n"
+    )
 
     parts.append("## Today's Decisions")
     if not vm.todays_decisions:
@@ -37,7 +40,10 @@ def render_briefing_md(vm: BriefingViewModel) -> str:
     else:
         for d in vm.todays_decisions:
             parts.append(f"### {d.ticker} \u2014 {d.action_text}")
-            parts.append(f"Risk ${d.risk_dollars:.0f} ({d.risk_pct:.2f}%) \u00b7 TT {d.tt_score} \u00b7 VCP {d.vcp_score}")
+            parts.append(
+                f"Risk ${d.risk_dollars:.0f} ({d.risk_pct:.2f}%) \u00b7 "
+                f"TT {d.tt_score} \u00b7 VCP {d.vcp_score}"
+            )
             parts.append(f"_{d.rationale}_\n")
 
     if vm.open_positions:
@@ -46,8 +52,10 @@ def render_briefing_md(vm: BriefingViewModel) -> str:
         parts.append("|---|---|---|---|---|---|---|---|")
         for p in vm.open_positions:
             parts.append(
-                f"| {p.ticker} | {p.shares} | ${p.entry_price:.2f} | ${p.current_stop:.2f} | "
-                f"${p.last_close:.2f} | ${p.unrealized_pnl:.2f} | {p.r_so_far:.2f}R | {p.days_open} |"
+                f"| {p.ticker} | {p.shares} | "
+                f"${p.entry_price:.2f} | ${p.current_stop:.2f} | "
+                f"${p.last_close:.2f} | ${p.unrealized_pnl:.2f} | "
+                f"{p.r_so_far:.2f}R | {p.days_open} |"
             )
         for p in vm.open_positions:
             for s in p.advisory:

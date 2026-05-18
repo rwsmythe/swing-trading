@@ -84,7 +84,10 @@ def build_recommendations(
             action_session_date=ctx.action_session_date,
             ticker=w.ticker, recommendation="near_trigger",
             action_text=(
-                _format_action(sizing.shares, w.entry_target, sizing.risk_dollars, not sizing.feasible)
+                _format_action(
+                    sizing.shares, w.entry_target,
+                    sizing.risk_dollars, not sizing.feasible,
+                )
                 if sizing else "Pivot reached — review setup"
             ),
             entry_target=w.entry_target, stop_target=w.initial_stop_target,

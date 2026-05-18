@@ -455,7 +455,11 @@ def build_entry_form_vm(
             initial_stop = 0.0
     else:
         # Watchlist origin: existing behavior.
-        initial_stop = wl_entry.initial_stop_target if wl_entry and wl_entry.initial_stop_target else 0.0
+        initial_stop = (
+            wl_entry.initial_stop_target
+            if wl_entry and wl_entry.initial_stop_target
+            else 0.0
+        )
 
     # entry_price fallback chain. For hyp-recs origin: live snap →
     # wl_entry.last_close → candidate.pivot → 0.0. For watchlist origin:

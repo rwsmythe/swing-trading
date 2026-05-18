@@ -79,7 +79,10 @@ def suggest_trail_ma(
         return None
     return AdvisorySuggestion(
         rule=f"trail_{ma_label.lower()}",
-        message=f"Trail stop up to ${proposed:.2f} \u2014 {buffer_pct}% below {ma_label} (${ma_value:.2f})",
+        message=(
+            f"Trail stop up to ${proposed:.2f} \u2014 "
+            f"{buffer_pct}% below {ma_label} (${ma_value:.2f})"
+        ),
     )
 
 

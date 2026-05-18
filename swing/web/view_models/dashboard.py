@@ -1395,7 +1395,10 @@ def _flag_tags(candidates_by_ticker: Mapping[str, Candidate]) -> Mapping[str, tu
     tags: dict[str, tuple[str, ...]] = {}
     for ticker, c in candidates_by_ticker.items():
         row_tags: list[str] = []
-        tt_pass = sum(1 for cr in c.criteria if cr.layer == "trend_template" and cr.result == "pass")
+        tt_pass = sum(
+            1 for cr in c.criteria
+            if cr.layer == "trend_template" and cr.result == "pass"
+        )
         if tt_pass >= 7:
             row_tags.append("TT\u2713")
         vcp_pass = sum(1 for cr in c.criteria if cr.layer == "vcp" and cr.result == "pass")
