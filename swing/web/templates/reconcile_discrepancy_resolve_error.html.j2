@@ -1,12 +1,11 @@
 {% extends "base.html.j2" %}
 {% block title %}Reconcile error - {{ vm.error_kind }}{% endblock %}
 {% block content %}
-<section class="reconcile-discrepancy-resolve-error" data-error-kind="{{ vm.error_kind }}">
+<section class="reconcile-discrepancy-resolve-error" data-error-kind="{{ vm.error_kind }}" role="alert" aria-live="polite">
   {% if vm.error_kind == 'not_found' %}
   <h1>Discrepancy not found</h1>
   <p>No reconciliation discrepancy exists with id <code>{{ vm.discrepancy_id }}</code>.</p>
   <p><a href="/dashboard">Return to dashboard</a></p>
-  <p class="muted">CLI parity: <code>swing journal discrepancy show {{ vm.discrepancy_id }}</code></p>
   {% elif vm.error_kind == 'already_resolved' %}
   <h1>Discrepancy already resolved</h1>
   <p>Discrepancy <code>{{ vm.discrepancy_id }}</code> is no longer in pending_ambiguity_resolution state.</p>
@@ -16,16 +15,15 @@
     <dt>Created at</dt><dd>{{ vm.disc_created_at or '(unknown)' }}</dd>
   </dl>
   <p><a href="/dashboard">Return to dashboard</a></p>
-  <p class="muted">CLI parity: <code>swing journal discrepancy show {{ vm.discrepancy_id }}</code></p>
   {% elif vm.error_kind == 'anchor_mismatch' %}
   <h1>Form state changed</h1>
   <p>{{ vm.error_message }}</p>
   <p><a href="/reconcile/discrepancy/{{ vm.discrepancy_id }}/resolve">Re-open the resolve form</a></p>
+  <p><a href="/dashboard">Return to dashboard</a></p>
   {% elif vm.error_kind == 'service_error' %}
   <h1>Unexpected error</h1>
   <p>{{ vm.error_message }}</p>
   <p><a href="/dashboard">Return to dashboard</a></p>
-  <p class="muted">CLI parity: <code>swing journal discrepancy show {{ vm.discrepancy_id }}</code></p>
   {% elif vm.error_kind == 'db_unavailable' %}
   <h1>Database temporarily unavailable</h1>
   <p>{{ vm.error_message or 'Database is busy; please retry in a moment.' }}</p>
@@ -35,5 +33,8 @@
   <p>{{ vm.error_message }}</p>
   <p><a href="/dashboard">Return to dashboard</a></p>
   {% endif %}
+  <footer class="reconcile-error-footer">
+    <p class="muted">For more detail, use <code>swing journal discrepancy show {{ vm.discrepancy_id or '[id]' }}</code> from the CLI.</p>
+  </footer>
 </section>
 {% endblock %}

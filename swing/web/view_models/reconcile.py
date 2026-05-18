@@ -768,6 +768,42 @@ class ReconcileDiscrepancyErrorVM:
     The 3 ``disc_*`` Optional fields are populated on the
     ``error_kind='already_resolved'`` branch and unused (left at default
     ``None``) on the other 4 branches.
+
+    Error-kind semantics (5 branches shipped at T-2.5 + T-2.6 with T-2.10
+    polish layered on top):
+
+    - ``not_found``: ``GET /reconcile/discrepancy/{id}/resolve`` 404 — no
+      row exists with the given ``discrepancy_id``. ``error_message`` is
+      typically empty (the template derives its own message from
+      ``vm.discrepancy_id``).
+
+    - ``already_resolved``: GET 409 — the discrepancy exists but is no
+      longer in ``pending_ambiguity_resolution`` state. The 3 ``disc_*``
+      fields populate the audit-context block (``disc_resolution`` /
+      ``disc_resolved_by`` / ``disc_created_at``); ``error_message`` is
+      typically empty (template-derived).
+
+    - ``anchor_mismatch``: POST 400 — the operator's submitted
+      ``ambiguity_kind_at_render`` hidden anchor does not match the
+      current DB state (TOCTOU drift between GET and POST; per F8).
+      ``error_message`` carries a descriptive sentence; the template
+      surfaces a "Re-open the resolve form" link.
+
+    - ``service_error``: POST 400 — the auto-correction service raised
+      ``ValueError`` on re-read disambiguation (per plan §J J2 14a vs 14b
+      split). ``error_message`` REQUIRED — it carries the exception text
+      verbatim for operator triage.
+
+    - ``db_unavailable``: any 503 — the SQLite connection is busy /
+      locked. ``error_message`` REQUIRED — or the template falls back
+      to a default retry hint.
+
+    Per T-2.10 Codex R3 M#1 LOCK (L-W5): ``error_message`` is REQUIRED-
+    positional but ``__post_init__`` does NOT reject empty-string —
+    not all error_kinds carry a useful message (``not_found`` and
+    ``already_resolved`` derive their own from other fields), and adding
+    a non-empty validator at T-2.10 would risk breaking T-2.5 / T-2.6
+    already-green call sites whose contract permits empty.
     """
 
     # Base-layout fields (8 standalone, mirror BaseLayoutVM shape).
