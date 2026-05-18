@@ -788,20 +788,34 @@ def test_e2e_phase12_5_1_full_flow_through_backfill_to_banner_count(
     mocked schwab_client returning multi-leg SchwabOrderResponse +
     invoke run_backfill(dry_run=False, environment='production', ...)
     + assert FULL state cascade:
-      - 3 correction rows written (1 anchor + 2 partials);
+      - 4 correction rows written (1 anchor + 3 partials) per spec §10
+        Case A canonical 3-leg multi-leg shape;
       - parent discrepancy in operator_resolved_ambiguity with
         resolved_by='auto_tier1_multi_leg';
-      - direct SQL count of distinct discrepancy_ids that auto-redirected
-        in the most recent run == 1 (T-1.7 helper not yet shipped; use
-        direct SQL).
+      - count_recent_multi_leg_auto_corrections(conn) == 1 — exercises
+        the shipped T-1.7 production helper end-to-end (LATEST-COMPLETED-RUN
+        + COUNT(DISTINCT discrepancy_id) JOIN semantics per F18 + spec §8.4
+        banner-clears LOCK).
     """
+    from swing.metrics.discrepancies import (
+        count_recent_multi_leg_auto_corrections,
+    )
+
     run_id = _seed_reconciliation_run(v19_db)
     seed = _seed_dhc_trade_and_fill(v19_db, journal_qty=39.0)
     disc_id = _seed_unmatched_open_fill_disc(
         v19_db, run_id=run_id, ticker="DHC", **seed,
     )
     _seed_schwab_api_call(v19_db, call_id=99)
-    orders = [_make_multi_leg_order()]
+    # 3-leg fixture per spec §10 Case A canonical shape (qty 13/13/13=39
+    # @ uniform $7.58 → VWAP $7.58 within $0.01 of journal $7.5797).
+    # 3 legs → 1 anchor + 3 partials = 4 correction rows.
+    three_leg_input = [
+        (13.0, 7.58, "2026-04-15T13:00:00.000Z"),
+        (13.0, 7.58, "2026-04-15T13:00:21.000Z"),
+        (13.0, 7.58, "2026-04-15T13:00:42.000Z"),
+    ]
+    orders = [_make_multi_leg_order(legs=three_leg_input)]
 
     with patch(
         "swing.trades.reconciliation_backfill.get_account_orders_audited",
@@ -815,17 +829,17 @@ def test_e2e_phase12_5_1_full_flow_through_backfill_to_banner_count(
             account_hash="acct-hash",
         )
 
-    # (a) 4 correction rows? Actually 3: 1 anchor (delete) + 2 inserts.
-    # (resolved_by lives on the parent discrepancy, not the correction
-    # rows — corrections carry applied_by + correction_action per the
-    # F15 hybrid-row invariant.)
+    # (a) 4 correction rows = 1 anchor (delete) + 3 partial inserts per
+    # _handle_split_into_partials N+1 shape (F15 hybrid-row invariant —
+    # all rows carry applied_by='auto' + correction_action='auto_applied').
+    # resolved_by lives on the parent discrepancy.
     rcs = v19_db.execute(
         "SELECT applied_by, correction_action "
         "FROM reconciliation_corrections WHERE discrepancy_id = ? "
         "ORDER BY correction_id ASC",
         (disc_id,),
     ).fetchall()
-    assert len(rcs) == 3
+    assert len(rcs) == 4
     for applied_by, correction_action in rcs:
         assert applied_by == "auto"
         assert correction_action == "auto_applied"
@@ -840,18 +854,14 @@ def test_e2e_phase12_5_1_full_flow_through_backfill_to_banner_count(
     assert parent[1] == "auto_tier1_multi_leg"
     assert parent[2] == "multi_partial_vs_consolidated"
 
-    # (c) T-1.7 helper not yet shipped — use direct SQL to count distinct
-    # discrepancy_ids that auto-redirected. `resolved_by` lives on the
-    # parent discrepancy; JOIN on discrepancy_id.
-    n_redirects = v19_db.execute(
-        "SELECT COUNT(DISTINCT rc.discrepancy_id) "
-        "FROM reconciliation_corrections rc "
-        "JOIN reconciliation_discrepancies rd "
-        "  ON rc.discrepancy_id = rd.discrepancy_id "
-        "WHERE rd.resolved_by = ?",
-        ("auto_tier1_multi_leg",),
-    ).fetchone()[0]
-    assert n_redirects == 1
+    # (c) Exercise the shipped T-1.7 production helper end-to-end. This is
+    # the actual function the banner (T-1.8/T-1.9) + briefing (T-1.11)
+    # read; using it here (NOT direct SQL) discriminatingly pins the
+    # LATEST-COMPLETED-RUN filter + COUNT(DISTINCT discrepancy_id) JOIN
+    # semantics per F18 + spec §8.4 banner-clears LOCK + Phase 10 lesson
+    # #26 deterministic tiebreaker. F18 LOCK: 4 correction rows on one
+    # logical auto-redirect must count as 1, NOT 4.
+    assert count_recent_multi_leg_auto_corrections(v19_db) == 1
 
     # (d) summary counter
     assert summary.tier1_multi_leg_auto_redirected == 1
