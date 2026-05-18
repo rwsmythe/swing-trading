@@ -106,6 +106,19 @@
     Resolve via <code>swing journal discrepancy</code> CLI.
   </aside>
   {% endif %}
+  {# Phase 12.5 #1 Task T-1.9 — multi-leg auto-correction advisory banner.
+     Renders when the latest completed reconciliation_run dispatched at
+     least one multi-leg tier-1 auto-redirect (resolved_by =
+     'auto_tier1_multi_leg'). ASCII-only per F12 LOCK (no em-dash, no
+     arrows, no unicode glyphs) -- pre-empts the CLAUDE.md cp1252-stdout
+     gotcha family at any future server-rendered surface. CLI command
+     rendered verbatim cites the T-1.10 --resolved-by filter (banner +
+     filter ship together per spec §8.6 LOCK + plan §D #9). #}
+  {% if vm.recent_multi_leg_auto_correction_count > 0 %}
+  <div class="reconciliation-auto-redirect-banner" data-banner-count="{{ vm.recent_multi_leg_auto_correction_count }}">
+    {{ vm.recent_multi_leg_auto_correction_count }} multi-leg auto-correction{{ 's' if vm.recent_multi_leg_auto_correction_count != 1 else '' }} in most recent reconciliation run. Review via <code>swing journal discrepancy list --resolved-by auto_tier1_multi_leg</code>.
+  </div>
+  {% endif %}
   <main>
     {% block content %}{% endblock %}
   </main>
