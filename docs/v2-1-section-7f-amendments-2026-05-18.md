@@ -81,7 +81,7 @@ Sub-bundle B (2 amendments banked):
 
 Sub-bundle C (no formally-banked amendments; defects all surfaced as Codex findings + resolved).
 
-Sub-bundle D — **cross-reference note (NOT separate amendment rows per Codex R2 Major #1+#2)**: Sub-bundle D T-D.4 promoted 12 CLAUDE.md gotchas that operationally formalize amendments already indexed at A-11.A.1..A-11.A.13 above (specifically A-11.A.1/2/3/4/5/6/7/8/9/10/11/12). The gotcha-promotions are operational follow-through (CLAUDE.md text already shipped at integration merge of Sub-bundle D), NOT separate amendment-routing entries. When promoting Phase 11 amendments via V2.1 §VII.F protocol, route from the A-11.A.x rows; the D-arc gotcha presence in CLAUDE.md is the operational-status checkmark, not an additional routing-required item. Source: `docs/schwab-bundle-D-return-report.md` §T-D.4.
+Sub-bundle D — **cross-reference note (NOT separate amendment rows per Codex R2 Major #1+#2)**: Sub-bundle D T-D.4 promoted 12 CLAUDE.md gotchas that operationally formalize 12 of the A-11.A.x amendments above (specifically A-11.A.1/2/3/4/5/6/7/8/9/10/11/12; A-11.A.13 force-refresh kwarg asymmetry has no D-arc gotcha counterpart since it surfaced as a code-comment + test pin not as a CLAUDE.md gotcha promotion). The gotcha-promotions are operational follow-through (CLAUDE.md text already shipped at integration merge of Sub-bundle D), NOT separate amendment-routing entries. When promoting Phase 11 amendments via V2.1 §VII.F protocol, route from the A-11.A.x rows; the D-arc gotcha presence in CLAUDE.md is the operational-status checkmark, not an additional routing-required item. Source: `docs/schwab-bundle-D-return-report.md` §T-D.4.
 
 ### Phase 12 Sub-bundle A (Schwab operational pain — 0 amendments banked)
 
