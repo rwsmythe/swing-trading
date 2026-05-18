@@ -6,6 +6,45 @@
 
 ---
 
+## 2026-05-18 Phase 12.5 #3 writing-plans SHIPPED at `fb27be2` — project-hygiene maintenance pass plan; 6 Codex rounds NO_NEW_CRITICAL_MAJOR; ZERO ACCEPT-WITH-RATIONALE on Majors; ZERO Co-Authored-By footer drift; orchestrator-side QA review PASS-CLEAN; schema v19 UNCHANGED; executing-plans dispatch UNBLOCKED
+
+**Integration-merge at `fb27be2`** (branch `phase12-5-bundle-3-project-hygiene-writing-plans` via `--no-ff`; 1 task-branch commit at `63f1943` combined plan-write + return-report). 6 Codex rounds NO_NEW_CRITICAL_MAJOR convergent monotonic-Major taper (R1 0C/4M/4m → R2 0C/3M/3m → R3 0C/3M/2m → R4 0C/1M/2m → R5 0C/1M/2m → R6 0C/0M/1m; operator-override past default MAX_ROUNDS=5 at R6 per Phase 12.5 #1+#2 brainstorm precedent). ZERO Critical findings entire chain. ZERO ACCEPT-WITH-RATIONALE on Major findings (all 12 cumulative Major resolved with code-content fixes). 2 Minor accepted as advisory (line count overshoot 1101 vs 400-700 brief target + section letter drift collapsed-gate precedent). ZERO Co-Authored-By footer drift (~165+ project-cumulative streak preserved).
+
+**Pre-Codex orchestrator-side review APPROVED_AS_IS** (NEW C.C lesson #6 BINDING; 7th cumulative validation; brief tight enough that pre-review absorbed nothing pre-chain).
+
+**Orchestrator-side QA review PASS-CLEAN** across all 10 watch items: T-3.7 amendment-target file:line accuracy verified at plan §H.4 line 1071 + spec §9.3 S4 line 940 + spec §5 line 104 + amendment text accurately describes shipped helper SQL semantic; T-3.5 Phase 8 walkthrough inventory verified 3-fail/1-pass via fresh pytest; T-3.6 18-row E501 roster byte-for-byte matches `ruff check swing/`; T-3.4 amendment-scope spot-check passed on Phase 12.5 #2 R-R §7 cross-references; T-3.1/T-3.2/T-3.3 archive-split boundary discipline coherent; 4 operator-locks preserved verbatim; schema v19 UNCHANGED LOCK + escalation rule encoded; footer suppression cited in every commit stem; cross-document consistency verified; ZERO red flags beyond known runtime-pairing points (T-3.5 Bucket C HARD STOP + T-3.3 pre-flight roster operator review).
+
+**Test count baseline correction**: 4847 fast (NOT 4851 per dispatch brief; L-W3 NEW lesson banked captures brief-baseline-vs-fresh-baseline drift family).
+
+**1101-line plan** at `docs/superpowers/plans/2026-05-18-phase12-5-bundle-3-project-hygiene-plan.md` (above 400-700 brief target; matches Phase 12.5 #1 1230 + #2 1082 overshoot precedent driven by Codex chain rigor + per-task acceptance specificity + 18-row Ruff roster verbatim + 33-file return-report grouped roster verbatim + 4-test Phase 8 walkthrough inventory verbatim).
+
+**7 tasks T-3.1..T-3.7 single-sub-bundle decomposition**:
+1. **T-3.7** (FIRST since smallest + de-risks downstream) — amend Phase 12.5 #1 plan §H.4 + spec §9.3 S4 + spec §5 line 104 amendment text (3 sites; banner clears immediately on tier-3 override per shipped helper SQL semantic).
+2. **T-3.5** Phase 8 walkthrough triage with 3-bucket disposition (Bucket A trivial fixture fix / Bucket B small runner-side adjustment / Bucket C HARD STOP requires operator approval BEFORE skip-pattern + standalone-dispatch entry).
+3. **T-3.6** Ruff 18 E501 cleanup with full 18-row roster (file:line specific) + ASCII-preservation contract on runtime-path string literals; ZERO `# noqa` without rationale.
+4. **T-3.4** V2.1 §VII.F amendment inventory at NEW `docs/v2-1-section-7f-amendments-2026-05-18.md` with canonical 33-file return-report grouped roster + grep supplement.
+5. **T-3.1** CLAUDE.md status-line archive-split (boundary 2026-05-12-inclusive + PROCEED_WITH_WRITE count gate at 15-30 active-retain band).
+6. **T-3.2** phase3e-todo archive-split (SHIPPED-only predicate + pre-write roster gate).
+7. **T-3.3** orchestrator-context archive-split (pre-flight roster + operator review BEFORE script-write).
+
+**2 operator-locks preserved verbatim**: skip-brainstorm; amend-text-only for item #5 (NO code fix to preserve banner mid-window — shipped helper SQL semantic accepted).
+
+**Schema v19 UNCHANGED LOCK** preserved (F1 + F5 + T-3.5 STOP-and-escalate rule).
+
+**4-surface operator-witnessed gate plan** (per plan §H): S1 inline pytest+ruff+per-task post-conditions; S2 visual verification of archive-split boundaries; S3 V2.1 §VII.F amendment doc readability + cross-reference accuracy; S4 Phase 12.5 #1 plan §H.4 + spec §9.3 S4 + spec §5 line-104 amendment verification.
+
+**4 NEW forward-binding lessons L-W1..L-W4** banked at return report §9 for executing-plans inheritance:
+- L-W1: Bucket-classification math requires explicit test-inventory table (compute expected counts FROM the table, NOT memory).
+- L-W2: Pre-write gate pattern for archive-split scripts (`PROCEED_WITH_WRITE = False` until operator reviews roster).
+- L-W3: Brief-baseline-vs-fresh-baseline drift verification (plan-author MUST re-verify pytest baseline at plan-write time).
+- L-W4: ASCII-only invariant scope discipline (runtime CLI paths only; documentation freely uses em-dashes + § glyphs).
+
+**Test projection** (per plan §E): ~+0 to ~+5 fast tests (most tasks text-edit zero-test-delta; possible +1-3 if T-3.5 lands fixes that need new regression pins); ~+50-200 LOC moves across archive-companion files; ruff baseline expected → 0 E501 post-T-3.6.
+
+**Executing-plans dispatch UNBLOCKED** post operator-paired plan review.
+
+### Predecessor (2026-05-18 PM; Phase 12.5 #2 executing-plans)
+
 ## 2026-05-18 Phase 12.5 #2 (Web Tier-2 discrepancy-resolution surface) SHIPPED at `0cecf28` — 5 Codex rounds NO_NEW_CRITICAL_MAJOR; ZERO ACCEPT-WITH-RATIONALE on Majors; ZERO Co-Authored-By footer drift; +135 fast tests + 1 slow E2E; schema v19 UNCHANGED; 6-surface operator-witnessed gate ALL PASS; Sub-bundle B T-B.7 PROMISE FULFILLED
 
 **Integration-merge at `0cecf28`** (branch `phase12-5-bundle-2-web-tier2-executing-plans` via `--no-ff`; 17 task-branch commits = 11 task-impl + 1 orchestrator-inline gate-fix `25f4554` (4th cumulative inline gate-fix; /dashboard route alias closing Phase 6 I3 HX-Redirect-target-unrouted gotcha) + 4 Codex-fix bundles + 1 return-report). 5 Codex rounds NO_NEW_CRITICAL_MAJOR convergent monotonic-Major taper (R1 0C/2M/1m → R2 0C/2M/0m → R3 0C/1M/1m → R4 0C/1M/0m → R5 0C/0M/0m). ZERO Critical findings entire chain. ZERO ACCEPT-WITH-RATIONALE on Majors (all 6 cumulative resolved with code-content fixes); 1 Minor accepted as advisory (L-W5 LOCK forbids `error_kind Literal` tightening). ZERO Co-Authored-By footer drift across 17 commits (~163+ project-cumulative streak preserved).
