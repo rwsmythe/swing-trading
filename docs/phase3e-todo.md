@@ -81,7 +81,11 @@ Two cleanup items operator queued for post-Phase-12.5-#3 closure, BEFORE Phase 1
 - Whether fix is V1 dispatch OR V2-deferred (depends on severity + workaround availability).
 - Whether parser fix sequencing should go BEFORE or AFTER Phase 12.5 #3 close.
 
-**Status**: QUEUED; orchestrator-paired walkthrough on operator's signal.
+**Status**: ✅ **CLOSED 2026-05-18** (operator-paired walkthrough post-Phase-12.5-#3-merge). **Diagnosis**: NOT a Schwab API response parser bug. Root cause is an **architectural window-mismatch** — reconciliation flow checks open-trade fills (any age) against Schwab orders fetched within a 7-day window (`period_end - cfg.integrations.schwab.lookback_days`). Fills with `fill_datetime < period_start` emit `unmatched_open_fill` with `ambiguity_kind='unsupported'` + `_pass_2_required=True`. 7 open discrepancies dispositioned: 4 from runs #17+#18 (54+55+56+57 → correction_ids 20+21+22+23) + 3 from run #19 fired during the cfg-edit-in-flight window (58+59+60 → correction_ids 24+25+26); all `acknowledge` per C.D-precedent. **Fix shipped (Option B near-term)**: cfg-bumped `integrations.schwab.lookback_days` from 7 to 30 in `~/swing-data/user-config.toml`. DHC (21d back) + VSAT (12d back) + CVGI (10d back) all now within new 30-day window; next pipeline run will pull fresh orders + match cleanly. **NEW V2 candidate banked** (architectural; below): dynamic lookback (auto-widen to cover oldest open-trade.entry_date) OR Schwab inception-CSV ingestion (banked since 2026-05-12) — supersedes the cfg-bump near-term workaround when operator opens a trade held >30 days. **Forward-binding lesson**: pipeline subprocess snapshots cfg at process-start (`load()` + `apply_overrides()`); cfg edits made DURING an in-flight pipeline run do NOT apply until the NEXT subprocess starts. Mid-flight cfg edits + concurrent pipeline runs can emit a "transition cohort" of discrepancies that still need dispositioning even after the cfg fix lands (this Q1 closure dispositioned 7 = 4 old-cohort + 3 transition-cohort).
+
+### NEW V2 candidate (Q1 disposition; banked 2026-05-18):
+
+**Dynamic Schwab orders-fetch window** — auto-widen `lookback_days` to cover the oldest open-trade entry_date (plus reasonable buffer) instead of a static 7/30-day default. Current static cfg works for typical hold periods but fails when operator opens a trade held longer than the configured window. Dispatch shape (when commissioned): brainstorm + writing-plans + executing-plans; touches `swing/integrations/schwab/pipeline_steps.py:_step_schwab_orders` + `swing/trades/schwab_reconciliation.py:run_schwab_reconciliation` window-derivation logic + new helper `_compute_dynamic_lookback_days(conn, cfg)` reading earliest open-trade.entry_date. Defense pattern: bound the dynamic value at a reasonable upper limit (e.g., 180 days; Schwab API supports it) to prevent pathological multi-year holds from generating very-slow API calls. Alternative or complementary: Schwab inception-CSV ingestion (banked at CLAUDE.md status-line 2026-05-12) seeds historical orders from one-time operator-paired CSV import → reconciliation matches against the inception-seeded history regardless of API window. Operator-paced; not currently blocking.
 
 ### Item Q2: Discrepancy resolution — render journal/Schwab value comparison as table on BOTH web AND CLI (presentation-only)
 
@@ -180,9 +184,9 @@ Two cleanup items operator queued for post-Phase-12.5-#3 closure, BEFORE Phase 1
 
 - **Phase 12.5 #3 executing-plans** — ✅ SHIPPED 2026-05-18 at `b436067` + S1-S4 operator-paired post-merge gate ALL PASS.
 - **Item Q3 skipped-test audit** — ✅ CLOSED 2026-05-18 at `416865f` (Option A: 4 skips → 4 PASS via sanitized-fixture redirect; baseline shifted 4850/5 → 4854/1).
-- **Item Q1 walkthrough** — orchestrator-paired; operator commissions on signal. May or may not lead to investigation dispatch.
+- **Item Q1 walkthrough** — ✅ CLOSED 2026-05-18 (NOT a parser bug; window-mismatch architectural; cfg-bumped lookback_days 7→30; 7 dispositions correction_ids 20-26; NEW V2 candidate banked for dynamic-lookback).
 - **Item Q2** — small executing-plans dispatch; operator commissions on signal.
-- **Phase 13** — gated on Phase 12.5 closure (Phase 12.5 #3 ✅ + Q3 ✅ + Q1 + Q2). Phase 13 scope LOCKED at `docs/phase13-scope-brainstorm.md` §0.5.
+- **Phase 13** — gated on Phase 12.5 closure (Phase 12.5 #3 ✅ + Q3 ✅ + Q1 ✅ + Q2). Phase 13 scope LOCKED at `docs/phase13-scope-brainstorm.md` §0.5.
 
 ---
 
