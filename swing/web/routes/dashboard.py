@@ -11,6 +11,7 @@ router = APIRouter()
 
 
 @router.get("/", response_class=HTMLResponse)
+@router.get("/dashboard", response_class=HTMLResponse)
 def index(request: Request):
     cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
