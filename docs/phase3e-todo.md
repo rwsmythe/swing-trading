@@ -6,6 +6,28 @@
 
 ---
 
+## 2026-05-18 Phase 12.5 #2 (Web Tier-2 discrepancy-resolution surface) SHIPPED at `0cecf28` — 5 Codex rounds NO_NEW_CRITICAL_MAJOR; ZERO ACCEPT-WITH-RATIONALE on Majors; ZERO Co-Authored-By footer drift; +135 fast tests + 1 slow E2E; schema v19 UNCHANGED; 6-surface operator-witnessed gate ALL PASS; Sub-bundle B T-B.7 PROMISE FULFILLED
+
+**Integration-merge at `0cecf28`** (branch `phase12-5-bundle-2-web-tier2-executing-plans` via `--no-ff`; 17 task-branch commits = 11 task-impl + 1 orchestrator-inline gate-fix `25f4554` (4th cumulative inline gate-fix; /dashboard route alias closing Phase 6 I3 HX-Redirect-target-unrouted gotcha) + 4 Codex-fix bundles + 1 return-report). 5 Codex rounds NO_NEW_CRITICAL_MAJOR convergent monotonic-Major taper (R1 0C/2M/1m → R2 0C/2M/0m → R3 0C/1M/1m → R4 0C/1M/0m → R5 0C/0M/0m). ZERO Critical findings entire chain. ZERO ACCEPT-WITH-RATIONALE on Majors (all 6 cumulative resolved with code-content fixes); 1 Minor accepted as advisory (L-W5 LOCK forbids `error_kind Literal` tightening). ZERO Co-Authored-By footer drift across 17 commits (~163+ project-cumulative streak preserved).
+
+**First operator-visible web Tier-2 surface ships** — dedicated GET/POST `/reconcile/discrepancy/{id}/resolve` form page mirrors `swing journal discrepancy resolve-ambiguity` CLI 1:1; same service entry `apply_tier2_resolution`; same choice menu; same audit shape; distinguishable via `resolved_by IN ('operator', 'operator_web')`. Dashboard banner links directly to the resolve form for the oldest pending-ambiguity discrepancy (ORDER BY ASC per LOCK #6).
+
+**Sub-bundle B T-B.7 PROMISE FULFILLED** — Phase 12 Sub-bundle B's deferred T-B.7 web counterpart to CLI Tier-2 is now SHIPPED.
+
+**6-surface operator-witnessed gate ALL PASS**: S1 inline pytest+ruff+slow E2E (4847 fast + 18 ruff + 10.59s E2E); S2 banner-link nav (/reconcile/discrepancy/52/resolve oldest ASC); S3 form-render with 10 context pairs + hidden `ambiguity_kind_at_render` anchor + custom-value textarea + F20 ASCII-only; S4 POST disc #52 → 204 + `HX-Redirect: /dashboard?reconcile_resolved=18` + correction_id=18 + `resolved_by='operator_web'` (F17 server-stamp LOCK preserved); S5 banner-clears 6 → 5 + link advances 52 → 53; S6 CLI/web parity disc 53 CLI `resolved_by='operator'` vs disc 52 web `resolved_by='operator_web'` (LOCK #3 distinguishability verified) + banner 5 → 4 post-S6.
+
+**Test delta**: +135 fast tests (4712 → 4847; vs +81 plan projection — overshoot from parametrize granularity + Codex regression pins). +1 slow E2E (Phase 12.5 #2 happy-path PASS). Ruff 18 E501 unchanged. Schema v19 UNCHANGED (F1 LOCK preserved).
+
+**3 V2.1 §VII.F amendment candidates banked** (A1 plan §C.1 class-name drift + A2 plan §K projection +81 vs actual +135 + A3 plan §A T-2.2 acceptance 14-vs-15 fields drift).
+
+**5 NEW forward-binding lessons L-E1..L-E5**: L-E1 pre-Codex orchestrator-side review absorbed 1 Major-class finding pre-chain (/dashboard unrouted) — C.C lesson #6 validated 3rd time; L-E2 `OperationalError` pre-flight scope cascades — R1 wrap revealed adjacent paths R2-R4 incrementally (Python sibling-except clauses do NOT cascade); L-E3 Builder `ValueError` cause classification belongs in shared helper — extracted at R4; L-E4 Plan-class-name drift surfaces via Pass A AST grep at task time; L-E5 Pass B grep count drifts +N during dispatch as new code lands (21 → 24; F11/F21 contract handled).
+
+**Production state post-gate**: 4 pending-ambiguity discreps remaining (54+55+56+57); operator continues dispositioning per C.D-cleanup precedent.
+
+**Phase 12.5 #3 dispatch UNBLOCKED.**
+
+### Predecessor (2026-05-18 AM; writing-plans)
+
 ## 2026-05-18 Phase 12.5 #2 writing-plans SHIPPED at `9220dac` — 5 Codex rounds + R5 confirmation NO_NEW_CRITICAL_MAJOR; ZERO ACCEPT-WITH-RATIONALE; ZERO Co-Authored-By footer drift; 1082-line plan; 11-task single-sub-bundle decomposition; 12 operator-locks + 21 invariants F1-F21 + 8+5 forward-binding lessons; schema v19 UNCHANGED; executing-plans dispatch UNBLOCKED
 
 **Writing-plans-merge at `9220dac`** (branch `phase12-5-bundle-2-web-tier2-writing-plans` via `--no-ff`; 7 commits = 1 draft + 1 pre-Codex-review-fix + 4 Codex-fix + 1 return-report). 5 Codex rounds + 1 R5 confirmation NO_NEW_CRITICAL_MAJOR convergent monotonic-Major taper (pre-Codex 0C/3M/2m → R1 0C/3M/4m → R2 0C/2M/3m → R3 0C/1M/4m → R4 0C/0M/4m → R5 0C/0M/0m). ZERO Critical findings entire chain. ZERO ACCEPT-WITH-RATIONALE (all 6 Major + 15 Minor resolved with code-content fixes). ZERO Co-Authored-By footer drift across 7 commits (~147+ project-cumulative streak preserved).
