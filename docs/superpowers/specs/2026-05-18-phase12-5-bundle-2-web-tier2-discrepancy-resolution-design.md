@@ -22,7 +22,7 @@ This spec mirrors the Phase 12.5 #1 spec format (sections §0-§16). It is consu
 | Pending-ambiguity row | A `reconciliation_discrepancies` row in `resolution='pending_ambiguity_resolution'` with non-NULL `ambiguity_kind`. Surfaced by `swing journal discrepancy list-pending-ambiguities`. |
 | Banner | Global header in `base.html.j2` that fires when `unresolved_material_discrepancies_count > 0` (Phase 10 Sub-bundle E T-E.3) AND/OR when `recent_multi_leg_auto_correction_count > 0` (Phase 12.5 #1 T-1.8). |
 | OriginGuard | The strict-mode CORS/CSRF middleware in `swing/web/middleware/origin_guard.py`. Rejects non-HTMX form submits with 403 unless the form carries `hx-headers='{"HX-Request": "true"}'`. |
-| BaseLayoutVM | `swing/web/view_models/metrics/shared.py:BaseLayoutVM` — the canonical mixin every base-layout page extends. Carries 7 fields (Phase 10 T-E.3 5 + Phase 12.5 #1 T-1.8 1 + the existing `session_date`). |
+| BaseLayoutVM | `swing/web/view_models/metrics/shared.py:BaseLayoutVM` — the canonical shared mixin for **NEW base-layout VMs that inherit it** (Phase 10 metrics-page family + the NEW `ReconcileDiscrepancyResolveVM` from this spec). **Legacy/non-metrics base-layout VMs do NOT inherit BaseLayoutVM**; they redeclare each base-layout field as a standalone dataclass field per the "Local minimal base-layout fields" pattern documented at `swing/web/view_models/schwab.py:29-33`. Phase 12.5 #2 adds 1 new field (`banner_resolve_link: str \| None = None`; §3) to BaseLayoutVM AND to each non-inheriting VM (per §3 retrofit), for a final BaseLayoutVM field count of 8 (was 7 pre-this-spec: `session_date` + 5 Phase-10 + 1 Phase-12.5-#1 = 7; +1 this spec = 8). |
 
 ---
 
@@ -50,7 +50,9 @@ NOT "stay on form with success banner". NOT HX-Redirect to `/reconcile/correctio
 
 ### §2.3 LOCK D3 — CLI counterpart preservation; surface attribution via `resolved_by`
 
-`swing journal discrepancy show-ambiguity` + `resolve-ambiguity` CLI commands stay AS-IS. Both surfaces call the same `apply_tier2_resolution` entry. **CLI continues to pass NO `resolved_by_override`** → `effective_resolved_by` defaults to `'operator'` (per existing service-layer behavior). **Web passes `resolved_by_override='operator_web'`** → discrepancy `resolved_by='operator_web'`. The `reconciliation_corrections.applied_by` column stays `'operator'` on both paths (the schema CHECK is `applied_by IN ('auto', 'operator')`; web does NOT widen it). No schema migration required (see §14).
+`swing journal discrepancy show-ambiguity` + `resolve-ambiguity` CLI commands stay AS-IS. Both surfaces call the same `apply_tier2_resolution` entry. **CLI continues to pass NO `resolved_by_override`** → `effective_resolved_by` defaults to `'operator'` (per existing service-layer behavior at `reconciliation_auto_correct.py:1692`). **Web passes `resolved_by_override='operator_web'`** → discrepancy `resolved_by='operator_web'`. The `reconciliation_corrections.applied_by` column stays `'operator'` on both paths (the schema CHECK is `applied_by IN ('auto', 'operator')`; web does NOT widen it). No schema migration required (see §14).
+
+**Brief §1.3 wording vs literal naming — ACCEPTED with rationale.** The brief author's phrasing "`surface='cli'` vs `surface='web'` distinguishable in audit" is meta-prose describing the distinguishability requirement; it does NOT mandate those literals appear in any column. The shipped distinguishability uses `resolved_by IN ('operator', 'operator_web')` (CLI keeps the pre-existing `'operator'` default; web stamps `'operator_web'`). Rationale for not renaming CLI to `'cli'`: changing the CLI default would be a behavioral change to a non-touched surface (brief §4 OUT-OF-SCOPE preservation lock). Downstream audit queries that need to enumerate "Tier-2 resolutions by surface" filter on `resolved_by` — explicit consumer language at §13.3 + §15.10 (V2 `surface` column option if operator wants stricter naming). Codex R1 M#4 ACCEPT-WITH-RATIONALE.
 
 ### §2.4 LOCK D4 — Pre-resolution context section ABOVE the choice menu
 
@@ -70,8 +72,16 @@ NEW files:
 EDITED files:
 
 * `swing/web/app.py` — register the new `reconcile` router after the existing `schwab` router.
-* `swing/web/view_models/metrics/shared.py` — **add `banner_resolve_link: str | None = None` to `BaseLayoutVM`** (NOT to `DashboardVM` alone). Per CLAUDE.md "base.html.j2 is shared" gotcha: every base-layout page extends this template, so `base.html.j2` must be able to dereference `vm.banner_resolve_link` on EVERY VM without `UndefinedError`. Inheritance via `BaseLayoutVM` propagates the default `None` to every existing base-layout VM (Phase 10 T-E.3 retrofitted 10 VMs to extend BaseLayoutVM; Phase 12.5 #1 T-1.8 used the same pattern). New `__post_init__` clause is not required (None is valid; no range check).
-* `swing/web/routes/dashboard.py` — populate `vm.banner_resolve_link` with the FIRST pending-ambiguity discrepancy's resolve-form URL when one exists (§10.2). For every OTHER base-layout-rendering route (schwab status, account snapshot, metrics, trades detail, etc.), the field stays at its `BaseLayoutVM` default `None` — they do NOT need to populate it because the banner is dashboard-centric (the link is only "actionable from the page that surfaces the unresolved count to the operator"). Defense-in-depth: the `base.html.j2` template renders the link with a Jinja truthiness check (`{% if vm.banner_resolve_link %}`), so a None value (defaulted from BaseLayoutVM) renders as a count-without-link banner exactly like the pre-Phase-12.5-#2 behavior.
+* `swing/web/view_models/metrics/shared.py` — add `banner_resolve_link: str | None = None` to `BaseLayoutVM` for NEW base-layout VMs that INHERIT it (the Phase 10 metrics-page family + the NEW `ReconcileDiscrepancyResolveVM` from this spec). **CRITICAL FINDING (Codex R3 M#1):** the EXISTING 13 base-layout VMs do NOT inherit `BaseLayoutVM` — they carry the base-layout fields as STANDALONE dataclass fields per the "Local minimal base-layout fields" pattern documented in `swing/web/view_models/schwab.py:29-33`. Verification: `grep -n "unresolved_material_discrepancies_count: int = 0" swing/web/view_models/` shows the field redeclared in each VM file individually, NOT inherited. Therefore the retrofit pattern adds the field BOTH to `BaseLayoutVM` (for new + inheriting VMs) AND independently to each non-inheriting VM (mirrors Phase 12 Sub-bundle C.D's banner-predicate widening + Phase 12.5 #1 T-1.8's `recent_multi_leg_auto_correction_count` retrofit per the same CLAUDE.md "base.html.j2 is shared" gotcha).
+* **Per-VM field additions** (the 13 non-inheriting VMs enumerated by Phase 12 Sub-bundle C.D plan §A.5 audit). Implementer MUST audit by grep `unresolved_material_discrepancies_count: int = 0` across `swing/web/view_models/` at task start to verify the inventory matches the documented "13 across 9 files" count; add `banner_resolve_link: str | None = None` field declaration AND a `__post_init__` range check (None or non-empty string only) to each match site. The audit count drives the test expectation in T-2.8 (introspection test asserts the field present on every base-layout VM).
+* **All base-layout-rendering routes** populate `vm.banner_resolve_link` via a new central helper. The helper:
+  * `swing/metrics/discrepancies.py:fetch_first_pending_ambiguity_resolve_link_path(conn) -> str | None` — returns `f'/reconcile/discrepancy/{id}/resolve'` when `list_pending_ambiguities_in_banner_set(conn)` is non-empty (using `[0].discrepancy_id` per oldest-first ORDER BY), else None.
+  * Every base-layout-emitting route gains a single-line population call: `banner_resolve_link = fetch_first_pending_ambiguity_resolve_link_path(conn)` invoked alongside the existing `count_unresolved_material(conn)` call, passed to the VM constructor (mirrors the existing `_fetch_unresolved_material_count` + `_fetch_recent_multi_leg_auto_correction_count` per-route invocation pattern from Phase 10 T-E.3 + Phase 12.5 #1 T-1.8).
+  * **Route surface enumeration is grep-driven via TWO DISTINCT PASSES** (Codex R3 M#2 + R4 M#1 audit-narrowed pattern; broad grep would match comments + tests + template reads):
+    - **Pass A — VM field declarations:** regex-tolerant `rg 'unresolved_material_discrepancies_count\s*:\s*int\s*=' swing/web/view_models/` (Codex R5 m#1 — exact-string would miss `field(default=0)` or line-wrap variants). Enumerates the dataclass declaration sites; the implementer adds a `banner_resolve_link: str | None = None` field declaration adjacent to each match. **If the VM has an existing `__post_init__`, extend it in place** (append the new `banner_resolve_link` range check after existing validation; do NOT overwrite or skip existing logic — Codex R5 m#2). New VMs that inherit `BaseLayoutVM` get the field for free via inheritance and do NOT appear in the grep.
+    - **Pass B — Builder/route population sites:** `rg 'count_unresolved_material\(' swing/web/routes/ swing/web/view_models/` (NB: function-call match — regex-escaped paren; NOT field-declaration match). Enumerates the call sites that already compute the count from an open `conn`; the implementer adds an adjacent `fetch_first_pending_ambiguity_resolve_link_path(conn)` call and threads the result into the VM constructor.
+  * The Phase 12 Sub-bundle C.D return-report's documented "13 base-layout VMs across 9 files" is a baseline-count anchor for the introspection test, NOT a hard-coded class list. If either grep audit produces a different count from the baseline, the implementer reconciles with the latest project state (a new VM may have landed between the spec's audit timestamp and the implementation start) and the introspection test asserts the post-retrofit field count.
+  * `base.html.j2` renders the link via `{% if vm.banner_resolve_link %}<a href="{{ vm.banner_resolve_link }}">{{ vm.unresolved_material_discrepancies_count }} unresolved...</a>{% else %}{{ vm.unresolved_material_discrepancies_count }} unresolved...{% endif %}` (count-with-link when a tier-2 pending row exists in the banner set; count-without-link when only `'unresolved'` rows or zero rows exist). Default `None` from per-VM field declaration keeps not-yet-retrofitted paths working defensively.
 * `swing/web/templates/base.html.j2` — when the unresolved-material banner fires (`vm.unresolved_material_discrepancies_count > 0`) AND `vm.banner_resolve_link` truthy, wrap the count text in an `<a href="{{ vm.banner_resolve_link }}">` link. The banner text stays ASCII-only.
 
 No service-layer changes. No schema changes.
@@ -84,16 +94,16 @@ No service-layer changes. No schema changes.
 
 **Responsibility:** render the form for an existing pending-ambiguity discrepancy.
 
-Flow:
+Flow (all DB reads wrapped in `try/finally: conn.close()` per Codex R3 M#3 — early-return branches MUST NOT leak SQLite connections):
 
 1. `cfg = apply_overrides(request.app.state.cfg)` (Phase 12 Sub-bundle B Codex R1 Critical #1 inheritance — required at every web entry point that consumes user-config.toml).
-2. `conn = sqlite3.connect(cfg.paths.db_path)`. NO transaction opened by route — read-only consumer.
-3. `disc = get_discrepancy(conn, id)`. If `disc is None` → 404 + `reconcile_discrepancy_resolve_error.html.j2` (`error_kind='not_found'`).
-4. If `disc.resolution != 'pending_ambiguity_resolution'` OR `disc.ambiguity_kind is None` → 409 + error template (`error_kind='already_resolved'` with `disc.resolution` + `disc.resolved_by` echoed).
+2. `conn = sqlite3.connect(cfg.paths.db_path)`. NO transaction opened by route — read-only consumer. Wrap the remaining flow in `try: ... finally: conn.close()`.
+3. `disc = get_discrepancy(conn, id)`. If `disc is None` → 404 + `reconcile_discrepancy_resolve_error.html.j2` (`error_kind='not_found'`). **Even on the 404 early-return, the `finally` clause closes `conn`.**
+4. If `disc.resolution != 'pending_ambiguity_resolution'` OR `disc.ambiguity_kind is None` → 409 + error template (`error_kind='already_resolved'` with `disc.resolution` + `disc.resolved_by` echoed). Same `finally` closure.
 5. `vm = build_reconcile_discrepancy_resolve_vm(conn, id)` — populates pre-resolution context + choices + base-layout fields.
-6. Render `reconcile_discrepancy_resolve.html.j2` with the VM.
+6. Render `reconcile_discrepancy_resolve.html.j2` with the VM. The `finally` block executes after the response is constructed (Starlette's `TemplateResponse` materializes synchronously; conn close after VM build is safe).
 
-**HTTP responses:** 200 happy path; 404 not-found; 409 already-resolved. ZERO Schwab API calls; ZERO DB writes.
+**HTTP responses:** 200 happy path; 404 not-found; 409 already-resolved. ZERO Schwab API calls; ZERO DB writes. Connection closure is guaranteed on all paths via `try/finally`.
 
 ### §4.2 `POST /reconcile/discrepancy/{id}/resolve`
 
@@ -111,9 +121,10 @@ Flow:
    a. `disc = get_discrepancy(conn, id)`. None → 404 error template.
    b. `disc.resolution != 'pending_ambiguity_resolution'` OR `disc.ambiguity_kind is None` → 409 error template (TOCTOU: a concurrent CLI resolve landed between GET and POST).
    c. **Form-render anchor check** — `disc.ambiguity_kind != ambiguity_kind_at_render` → 409 error template (anchor drift; clear explanatory text). Empty anchor → 400 (tampered POST). This anchor is the tier-2 analog of Phase 9 Sub-bundle D's `sector_industry_evaluation_run_id` hidden form anchor.
-   d. `choice_code in {item.code for item in get_choice_menu(disc.ambiguity_kind)}` OR (for `multi_match_within_window`) `choice_code.startswith('pick_schwab_record_')` → else 400 + re-render form with error band (preserve filled values).
-   e. The chosen menu item's `requires_custom_value` is True AND `custom_value_raw is None` → 400 + re-render form with error band (preserve filled values).
-   f. When `custom_value_raw is not None`: `try: custom_payload = json.loads(custom_value_raw); except json.JSONDecodeError as exc:` → 400 + re-render form with error band citing `exc.msg`.
+   d. **Static-menu branch:** `choice_code in {item.code for item in get_choice_menu(disc.ambiguity_kind)}` → `menu_item = next(item for item in menu if item.code == choice_code)`; if `menu_item.requires_custom_value and custom_value_raw is None` → 400 + re-render with shape-hint citing `menu_item.expected_payload_shape_description`.
+   e. **Parametric-pick branch** (only when `disc.ambiguity_kind == 'multi_match_within_window'`): `choice_code.startswith('pick_schwab_record_')` → parse `N` via `int(choice_code.removeprefix('pick_schwab_record_'))`. On `ValueError` (non-integer suffix) OR `N < 1` → 400 + re-render with explanatory text. When the parsed N is greater than the candidate count derived by `_parse_parametric_pick_count(disc.resolution_reason)` → 400 + re-render citing the available range. Parametric picks ALWAYS require `custom_value_raw` per §5.3's `is_parametric_pick: bool` → True default; missing → 400 + shape-hint `'{"price": X.XX, "quantity": Q, "fill_datetime": "..."}'` (mirrors CLI `cli.py:2538`). The route does NOT call the service handler for parametric picks unless N is within range — pre-flight rejection avoids a less-clear service-layer `ValueError`.
+   f. **No-match branch:** `choice_code` not in static menu AND (not parametric OR not `multi_match_within_window`) → 400 + re-render with `valid_choices = sorted(static_codes)` echoed.
+   g. When `custom_value_raw is not None`: `try: custom_payload = json.loads(custom_value_raw); except json.JSONDecodeError as exc:` → 400 + re-render form with error band citing `exc.msg`.
 4. Service call:
    ```python
    from swing.config_overrides import get_environment_for_reconciliation
@@ -139,8 +150,8 @@ Flow:
    * Bare `Exception` → 500 + error template "Unexpected error; check `swing journal discrepancy show <id>` for state".
 6. Success path:
    * `correction_id = result.correction_id` (non-None for manual tier-2 paths under both production and sandbox; sandbox short-circuit applies only to auto-redirect, which web does NOT trigger).
-   * Response: `Response(status_code=204, headers={'HX-Redirect': f'/dashboard?reconcile_resolved={correction_id}'})`.
-   * Non-HTMX clients receive `RedirectResponse('/dashboard?reconcile_resolved={correction_id}', status_code=303)` (defense in depth; the form always carries `hx-headers` so this branch is reached only when an operator submits without the JS).
+   * **HTMX submit** (`request.headers.get('HX-Request', '').lower() == 'true'`): `Response(status_code=204, headers={'HX-Redirect': f'/dashboard?reconcile_resolved={correction_id}'})`. This is the canonical operator path because the rendered form carries `hx-headers='{"HX-Request": "true"}'`.
+   * **Non-HTMX same-origin submit** (only reachable under OriginGuard NON-strict mode — `OriginGuardMiddleware.dispatch` admits same-Origin / same-Referer POSTs without HX-Request per `swing/web/middleware/origin_guard.py:41-53`): `RedirectResponse(url=f'/dashboard?reconcile_resolved={correction_id}', status_code=303)`. This mirrors Sub-bundle B `/schwab/setup:451` byte-for-byte (operator's dev / test contexts may run with strict=False; production deployment runs strict=True per `swing/web/app.py` convention). Under strict mode this branch is unreachable because OriginGuard rejects with 403 BEFORE the handler runs — preserved as defense-in-depth + Sub-bundle B parity.
 
 **Closing the connection:** `conn.close()` in a `finally` block; the service owns transaction lifecycle. **No `with conn:` wrapper at the route** — service-layer `with conn:` gotcha avoidance.
 
@@ -161,6 +172,7 @@ Fields:
 | `ohlcv_source_degraded` | `bool` | BaseLayoutVM. `False`. |
 | `unresolved_material_discrepancies_count` | `int` | BaseLayoutVM. `count_unresolved_material(conn)`. |
 | `recent_multi_leg_auto_correction_count` | `int` | BaseLayoutVM. `count_recent_multi_leg_auto_corrections(conn)`. |
+| `banner_resolve_link` | `str \| None` | BaseLayoutVM (Phase 12.5 #2 addition; §3). `fetch_first_pending_ambiguity_resolve_link_path(conn)` — returns the resolve-form URL of the oldest pending-ambiguity in the banner-count set, else None. On this VM specifically it MAY be the URL of THIS very discrepancy (the operator arrived by clicking the banner that targets this row) — the link is informational from this page (clicking it re-renders this same form). |
 | `discrepancy_id` | `int` | The route argument. |
 | `form_action` | `str` | Literal `f"/reconcile/discrepancy/{discrepancy_id}/resolve"`. Server-derived to keep the form-render and POST in sync; never operator-supplied. |
 | `pre_resolution_context` | `ReconcilePreResolutionContext` | §5.2. |
@@ -223,7 +235,7 @@ build_reconcile_discrepancy_resolve_vm(
 ```
 
 * Reads `disc = get_discrepancy(conn, id)`; raises `ValueError('discrepancy not found')` if None (the route catches this BEFORE calling the builder; the builder's precondition is "non-None disc + non-None ambiguity_kind + resolution = pending_ambiguity_resolution").
-* Calls `get_choice_menu(disc.ambiguity_kind)`. For `multi_match_within_window`, prepends parametric `pick_schwab_record_<N>` entries derived from a regex pattern that mirrors the CLI's at `cli.py:2291` BYTE-FOR-BYTE. The pattern lives in a NEW private module-level function in `swing/web/view_models/reconcile.py` named `_parse_parametric_pick_count(resolution_reason: str) -> int` (NOT a CLI refactor — the CLI surface stays AS-IS per brief §4 OUT-OF-SCOPE preservation lock). A discriminating regression test plants the same `resolution_reason` text in both code paths and asserts byte-identical N — pinning that the duplicated regex stays synchronized. If the CLI's pattern ever drifts, the test fails loudly and the operator can choose to consolidate via a separate post-Phase-12.5-#2 dispatch.
+* Calls `get_choice_menu(disc.ambiguity_kind)`. For `multi_match_within_window`, prepends parametric `pick_schwab_record_<N>` entries derived from a regex pattern that mirrors the CLI's at `cli.py:2291`. The pattern lives in a NEW private module-level function in `swing/web/view_models/reconcile.py` named `_parse_parametric_pick_count(resolution_reason: str) -> int` (NOT a CLI refactor — the CLI surface stays AS-IS per brief §4 OUT-OF-SCOPE preservation lock). A discriminating regression test exercises a shared set of `resolution_reason` strings against BOTH code paths and asserts the parsed N values match for each input — a **behavioral-equivalence test, not a source-equality test**. The implementer is expected to copy the regex content; the test will fail loudly if either side drifts in behavior. Banked V2 candidate §15.13 consolidates the regex into a single helper.
 * Computes pre-resolution context via the per-discrepancy-type render helpers in §7.
 * Reads `count_unresolved_material(conn)` + `count_recent_multi_leg_auto_corrections(conn)` for the base-layout banner fields.
 
@@ -351,7 +363,12 @@ Skeleton (200-ish lines including comments):
 
 **JS posture (per §3 OQ #7):** the choice radios carry `data-requires-custom-value` attributes; a 12-line inline `<script>` (mounted in `base.html.j2` extra-scripts block OR inlined in this template) toggles the custom-value fieldset's `display` based on the focused radio. Falling back gracefully when JS is disabled: the custom-value fieldset is ALWAYS rendered; operator can paste JSON regardless. The server enforces the per-choice `requires_custom_value` contract — JS is purely a UX nicety, not a security boundary.
 
-**No hidden audit fields** (Phase 8 R2.M2 + R3.M2 + R4.M2 LOCK family) — `surface='operator_web'` is server-stamped in the route handler (not a form input), `discrepancy_id` flows through the URL (Path parameter; server-derived from the URL pattern), `form_action` is server-rendered into the template. The form has THREE operator inputs: `choice_code`, `custom_value`, `resolution_reason`. Nothing else.
+**Field-discipline contract** (Phase 8 R2.M2 + R3.M2 + R4.M2 + Phase 9 D R2/R3 LOCK families). The form submits FOUR named values; each falls into one of two categories:
+
+* **Three operator-supplied inputs:** `choice_code` (radio), `custom_value` (textarea), `resolution_reason` (textarea). These are the only inputs whose values the operator types or selects.
+* **One server-stamped state anchor:** `ambiguity_kind_at_render` (hidden input). This is NOT operator audit metadata (timestamp / session / precision-tier — those are the "hidden audit field" gotcha family); it is a state-witness anchor the server emits at form-render time + re-validates at POST per the Phase 9 D R2/R3 hidden-anchor TOCTOU-defense gotcha. The Phase 8 "default to server-stamping at handler entry" rule applies to **fields persisted to audit columns** (timestamps, session anchors, precision-tier metadata) — `ambiguity_kind_at_render` is NOT persisted; it is consumed and discarded by the POST handler's pre-flight check.
+
+Surface attribution (`resolved_by_override='operator_web'`) is server-stamped in the route handler (NOT a form input); `discrepancy_id` flows through the URL path parameter (server-derived from the URL pattern); `form_action` is server-rendered into the template. Nothing else.
 
 ---
 
@@ -423,11 +440,16 @@ Per-discrepancy-type renderer tests (T-2.5 + T-2.6 — see §12) parametrize acr
 
 The error path passes the operator's typed values back to the builder via `prior_choice_code` / `prior_custom_value_raw` / `prior_resolution_reason`. The template re-renders the form with those values pre-filled. The `error_band_field_hint` lets the template highlight the relevant input (via CSS / aria-invalid). All three operator-supplied fields are preserved BYTE-FOR-BYTE.
 
-### §8.4 Sentinel-leak / XSS posture
+### §8.4 XSS-escape audit (NOT sentinel-leak — distinct posture)
 
-The pre-resolution context renderers render values via `:.2f` formatting OR raw stringification + Jinja autoescape. The `classifier_resolution_reason` field is a classifier-emitted string from the database (not operator-supplied, but historically classifier text contained `§` glyphs — Phase 12 C.D gate-fix #3 swapped them to ASCII). Jinja's default autoescape (already enabled in `swing/web/app.py` per project convention) handles any residual HTML metacharacters. The 4-sentinel audit pattern (Phase 12 Sub-bundle B + Sub-bundle 2 T-2.5 precedents) gets a discriminating regression test (§12.7): plant a benign sentinel string `X-RECONCILE-SENTINEL-DO-NOT-LEAK` in a discrepancy's `resolution_reason` and assert the form-render escapes it as `X-RECONCILE-SENTINEL-DO-NOT-LEAK` (literal substring) AND the response body contains ZERO `<script>` injection.
+The pre-resolution context renderers render values via `:.2f` formatting OR raw stringification + Jinja autoescape. The `classifier_resolution_reason` field is a classifier-emitted string from the database (not operator-supplied, but historically classifier text contained `§` glyphs — Phase 12 C.D gate-fix #3 swapped them to ASCII). Jinja's default autoescape (already enabled in `swing/web/app.py` per project convention) handles any residual HTML metacharacters.
 
-The `custom_value_raw` echo on the re-render path is the most direct injection surface. Jinja autoescape handles it; a discriminating test plants `<script>alert(1)</script>` in `custom_value` + asserts the rendered HTML contains the escaped form (`&lt;script&gt;...`).
+This audit is **XSS-escape verification** — distinct from the Phase 11 Sub-bundle A / Sub-bundle 2 T-2.5 sentinel-LEAK audits (which assert ZERO matches of secret-shaped sentinels in output; their purpose is to prevent credentials leaking through logs / error templates / audit rows). Phase 12.5 #2 does NOT consume any credential-bearing surface, so leak-prevention does not apply; what DOES apply is HTML-injection prevention on operator-typed `custom_value` (and database-stored `resolution_reason`) flowing through Jinja autoescape.
+
+Discriminating tests:
+
+* **Escape-active assertion:** plant `'<script>alert(1)</script>'` in a discrepancy's `resolution_reason` AND in the `custom_value` re-render path; assert the rendered HTML contains `&lt;script&gt;alert(1)&lt;/script&gt;` (literal escaped substring) AND ZERO `<script>` raw substring in the response body. Both the classifier-reason render path AND the `prior_custom_value_raw` re-render path must be exercised.
+* **Forbidden-sentinel absence assertion** (defense-in-depth — leak-style audit reused for completeness): plant a sentinel string `'COPOWERS-FORBIDDEN-RECONCILE-SENTINEL-XYZ'` in NO surface the route writes (i.e., NEVER inject the sentinel anywhere); render a discrepancy form + submit a no-op resolution; assert the sentinel does NOT appear in the response body, the new `reconciliation_corrections` row, or the new `reconciliation_discrepancies` resolved_by/reason columns. This pins that the route does not accidentally emit hard-coded operator-facing strings that could be mistaken for hidden state.
 
 ---
 
@@ -479,7 +501,18 @@ Three candidates surfaced in the brief §3 #1:
 * `f'/reconcile/discrepancy/{first_pending_id}/resolve'` when `count > 0` AND a `pending_ambiguity_resolution` discrepancy exists in the unresolved-material set.
 * `None` when the unresolved-material count is non-zero but contains ZERO `pending_ambiguity_resolution` rows (e.g., only `'unresolved'`-state material discrepancies; pre-Phase-12-Sub-bundle-C state). In that case, the banner renders the count text WITHOUT a clickable link — the operator's path is still CLI for those rows.
 
-The "first pending" selector is `SELECT discrepancy_id FROM reconciliation_discrepancies WHERE resolution = 'pending_ambiguity_resolution' AND material_to_review = 1 ORDER BY discrepancy_id ASC LIMIT 1` (oldest first; matches the operator's natural FIFO inclination + the `list-pending-ambiguities` ORDER BY DESC is intentional for CLI scan but oldest-first is more natural for "what needs my attention next"). **The selector's ORDER BY is a brainstorm decision; Codex may push back; document as §16.2.**
+The "first pending" selector MUST be derived from the same trade-attribution surface as the banner count (`count_unresolved_material` at `swing/metrics/discrepancies.py:38-48` = `list_unresolved_material_for_active_trades` ∪ `list_unresolved_material_for_closed_trades`). A naive `SELECT discrepancy_id FROM reconciliation_discrepancies WHERE resolution = 'pending_ambiguity_resolution' AND material_to_review = 1` query is a STRICT SUPERSET — it would include orphan-trade-id rows + closed-but-not-canonical-state rows that the banner does NOT count, producing the failure mode "banner link targets a discrepancy not in the displayed count" (Codex R1 M3).
+
+**Resolution: new helper `list_pending_ambiguities_in_banner_set(conn) -> list[ReconciliationDiscrepancy]` in `swing/metrics/discrepancies.py`** that:
+
+1. Unions `list_unresolved_material_for_active_trades(conn) + list_unresolved_material_for_closed_trades(conn)`.
+2. Filters to `resolution == 'pending_ambiguity_resolution'` (the existing helpers already filter `resolution IN ('unresolved', 'pending_ambiguity_resolution')` per `swing/data/repos/reconciliation.py:450-507` precedent).
+3. Sorts oldest-first (`discrepancy_id ASC` per §16.2 default; ORDER BY is locked here).
+4. Returns the full list; every base-layout-rendering route consumes the list via `fetch_first_pending_ambiguity_resolve_link_path` (which calls this helper and returns `[0].discrepancy_id` as a URL when non-empty, else None) and writes `vm.banner_resolve_link` accordingly. Per §3 retrofit pattern, this single-line call lands at every route that already populates `unresolved_material_discrepancies_count`.
+
+Discriminating test: plant 3 discrepancies — (A) `pending_ambiguity_resolution` orphan trade_id=NULL; (B) `pending_ambiguity_resolution` on an active trade; (C) `pending_ambiguity_resolution` on a closed-canonical trade. Assert the helper returns [B, C] in oldest-first order; A is excluded. Assert the dashboard banner link points to B (oldest of the in-set).
+
+**The selector's oldest-first ORDER BY is a brainstorm decision; document as §16.2 (newest-first via DESC remains an operator-decision-pending alternative).**
 
 ### §10.2 Dashboard per-discrepancy entry-point — operator decision item §16.3
 
@@ -523,9 +556,17 @@ Operator pastes malformed JSON `{"price": 5.30,}` (trailing comma). `json.loads`
 
 Operator opens the form at T₁; CLI resolves the same discrepancy at T₂ < T₃ when operator submits. POST handler reads disc → `resolution='operator_resolved_ambiguity'` (terminal) → 409 + error template. Operator returns to dashboard via the template's link.
 
-### §11.6 Choice not in menu (parametric mismatch)
+### §11.6 Choice not in menu (parametric mismatch, route pre-flight rejection)
 
-Operator manipulates the form (or browser back-button caching) and submits `choice_code='pick_schwab_record_5'` against a `multi_match_within_window` discrepancy whose `resolution_reason` parses to N=3. Route checks `startswith('pick_schwab_record_')` → True; service dispatch rejects `_resolve_handler_key('multi_match_within_window', 'pick_schwab_record_5')` → returns None → service raises `ValueError('incompatible (ambiguity_kind=...)')` → route 400 → re-render.
+Operator manipulates the form (or browser back-button caching) and submits `choice_code='pick_schwab_record_5'` against a `multi_match_within_window` discrepancy whose `resolution_reason` parses to N=3 via `_parse_parametric_pick_count`. Route §4.2 step 3e parses suffix → 5 (integer); calls helper → 3 (parsed count); `5 > 3` → 400 + re-render with explanatory text `"Choice 'pick_schwab_record_5' is out of range; Schwab returned 3 candidates within the match window. Valid range: pick_schwab_record_1 .. pick_schwab_record_3."`. The service handler is NEVER invoked for this case — pre-flight rejection avoids a less-clear service-layer `ValueError` and gives the operator an actionable error message with the valid range.
+
+Adjacent failure modes:
+
+* `pick_schwab_record_0` → suffix N=0 → route step 3e rejects with `"Pick index must be >= 1"` → 400 + re-render.
+* `pick_schwab_record_foo` → `int(...)` raises ValueError → route step 3e catches → 400 + re-render with explanatory text.
+* `pick_schwab_record_5` against an `ambiguity_kind != 'multi_match_within_window'` discrepancy → route step 3 falls through to no-match branch (§4.2 step 3f) → 400 + re-render with `valid_choices` list.
+
+Discriminating test: T-2.5 covers all four cases (N-in-range happy path + N-out-of-range + N-zero + non-integer suffix + wrong-ambiguity-kind).
 
 ### §11.7 Banner click with no pending-ambiguity discrepancies
 
@@ -563,9 +604,9 @@ Discriminating test asserts `/dashboard` is a registered route on `app.routes` (
 | T-2.4 | New `swing/web/routes/reconcile.py` GET handler. Mount in `swing/web/app.py`. | +6 |
 | T-2.5 | POST handler — form-parse + pre-flight checks + service call + error catch-ladder. | +12 |
 | T-2.6 | Error templates + 404/409/400/500/503 paths. | +6 |
-| T-2.7 | DashboardVM `banner_resolve_link` field + route population + `base.html.j2` banner link + first-pending selector helper. | +5 |
-| T-2.8 | Sentinel-leak + XSS-escape audit test + HX-Request propagation regression test + HX-Redirect target route-registration test + form-render hidden anchor tamper/drift regression test (3-case: missing / mismatched / matching). | +6 |
-| T-2.9 | `_validate_override_combo` regression test asserting `resolved_by_override='operator_web'` passes validation + audit-row shape parity test (CLI vs web produce same `reconciliation_corrections` row modulo `resolved_by`). | +4 |
+| T-2.7 | New `list_pending_ambiguities_in_banner_set` + `fetch_first_pending_ambiguity_resolve_link_path` helpers in `swing/metrics/discrepancies.py`; **populate `banner_resolve_link` across ALL grep-audited base-layout surfaces** (per §3 Pass A field declarations + Pass B call-site population; 13 surfaces baseline from Phase 12 C.D inventory but actual count driven by grep at task time); `base.html.j2` banner link block. | +12 |
+| T-2.8 | XSS-escape audit + forbidden-sentinel absence audit + HX-Request propagation regression test + HX-Redirect target route-registration test + form-render hidden anchor tamper/drift regression test (3-case: missing / mismatched / matching) + **retrofit completeness audit** (Codex R5 M#1) — discriminating test that runs the Pass A grep audit at test time and asserts EVERY matching VM class has `banner_resolve_link` declared as a field; mirrors the Phase 10 T-A.7 introspection-test pattern for cross-bundle pin discipline. If a future VM lands with `unresolved_material_discrepancies_count` but without `banner_resolve_link`, the test fails loudly. | +8 |
+| T-2.9 | `_validate_override_combo` regression test asserting `resolved_by_override='operator_web'` passes validation + audit-row semantic-shape parity test (CLI vs web produce `reconciliation_corrections` rows that match on the §13.3 semantic projection — excluding identity/time/source-row fields — AND `reconciliation_discrepancies.resolved_by` differs between the two paths: `'operator'` for CLI vs `'operator_web'` for web). | +4 |
 | T-2.10 | Slow E2E `test_phase12_5_bundle_2_web_tier2_happy_path.py` — TestClient submits real form, asserts 204 + HX-Redirect, DB state mutated end-to-end. | +1 slow |
 | T-2.11 | Cycle-checklist additions + brief deviations / V2 candidates banking + return report. | +0 |
 
@@ -587,16 +628,17 @@ The web Tier-2 form does NOT call Schwab API. Tests seed the database with a `re
 
 | Pattern | Discriminating value |
 | --- | --- |
-| CLI/web audit-row parity | Plant 2 identical discrepancies; resolve one via CLI runner + one via TestClient. Assert correction rows are byte-identical EXCEPT for the `reconciliation_discrepancies.resolved_by` column (`'operator'` vs `'operator_web'`). |
+| CLI/web audit-row semantic parity | Plant 2 structurally-identical discrepancies (same `ambiguity_kind`, same `expected_value_json` / `actual_value_json`, same `field_name`, same `discrepancy_type`); resolve one via CLI runner + one via TestClient. Compare a **semantic-shape projection** of each `reconciliation_corrections` row that EXCLUDES identity + timestamp + source-row fields (`correction_id`, `discrepancy_id`, `affected_row_id`, `applied_at`, `correction_set_id`, `reconciliation_run_id`, `schwab_api_call_id`, `superseded_by_correction_id`); include in the comparison: `correction_action`, `correction_choice`, `affected_table`, `field_name`, `pre_correction_value_json`, `source_canonical_value_json`, `applied_value_json`, `operator_truth_value_json`, `applied_by`, `correction_reason`, `notes`, `risk_policy_id_at_correction`. Assert the projections are equal. Separately assert `reconciliation_discrepancies.resolved_by` differs (`'operator'` for CLI vs `'operator_web'` for web). This pins surface-attribution distinguishability + audit-row content parity in one test. |
 | HX-Request propagation | Render the form; grep response body for `'hx-headers=\'{"HX-Request": "true"}\''`; assert present. |
 | HX-Redirect target route registration | `assert any(r.path == '/dashboard' for r in app.routes)`. |
 | `... or None` discipline | Submit with empty `custom_value` form field; if the chosen choice does NOT require custom value, assert service receives `operator_custom_payload=None` (not `""`). |
-| Sentinel leak audit | Plant `'X-RECONCILE-SENTINEL'` in `resolution_reason`; assert form-render escapes it as literal text (no `<script>` injection); separately, plant `<script>alert(1)</script>` in `custom_value_raw` re-render path; assert escaped output. |
-| Base-layout VM retrofit | Construct `ReconcileDiscrepancyResolveVM` with `session_date='2026-05-18'`; verify it inherits all 7 BaseLayoutVM fields with valid defaults (introspection test pattern from Phase 10 T-A.7). |
+| XSS-escape audit (§8.4) | Plant `'<script>alert(1)</script>'` in `resolution_reason` + `custom_value_raw` re-render path; assert rendered HTML contains literal escaped form `&lt;script&gt;` AND ZERO raw `<script>` substring. (Distinct from Sub-bundle B's sentinel-LEAK audit — Phase 12.5 #2 does not consume credentials.) |
+| Forbidden-sentinel absence (defense-in-depth) | Plant `'COPOWERS-FORBIDDEN-RECONCILE-SENTINEL-XYZ'` in NO surface; assert it does NOT appear in any response body / new audit row / resolution-reason / resolved_by column. |
+| Base-layout VM retrofit | Construct `ReconcileDiscrepancyResolveVM` with `session_date='2026-05-18'`; verify it inherits all 8 BaseLayoutVM fields (`session_date` + 5 Phase-10 + 1 Phase-12.5-#1 + 1 NEW `banner_resolve_link`) with valid defaults (introspection test pattern from Phase 10 T-A.7). |
 | OriginGuard 403 | TestClient POST without `HX-Request` header → 403. With header → service flow proceeds. |
 | TOCTOU 409 | Two test threads: thread A opens the form (read disc state); thread B resolves via CLI runner; thread A submits POST → 409. |
 | Hidden-anchor tamper / drift | Render form, capture rendered `<input type="hidden" name="ambiguity_kind_at_render" value="...">`. (a) POST with missing anchor → 400. (b) POST with mismatched anchor (manually substitute another kind) → 409. (c) POST with matching anchor → service flow proceeds. Mirrors Phase 9 D R2/R3 hidden-anchor regression-test family verbatim. |
-| Parametric-pick regex byte-equivalence | Plant `resolution_reason = "Schwab returned 3 orders within the match window"`; assert web `_parse_parametric_pick_count` returns 3 AND CLI's regex at `cli.py:2291` returns 3; assert byte-identical regex pattern source. Pins drift between the two code paths. |
+| Parametric-pick regex behavioral parity | Parametrize over a shared `(resolution_reason, expected_N)` table covering matching reasons, non-matching reasons, "0 orders" edge, and N=1 boundary. For each row, assert web `_parse_parametric_pick_count` returns `expected_N` AND the CLI parser (via `discrepancy_show_ambiguity_cmd` parametric-entry construction at `cli.py:2288-2316`) returns the SAME `expected_N`. Behavioral equivalence — no source-text comparison. Pins drift between the two code paths. |
 
 ### §13.4 Pre-existing test-baseline preservation
 
@@ -642,7 +684,7 @@ If a future dispatch needs an explicit `surface` column on `reconciliation_corre
 10. **Explicit `surface` column on `reconciliation_corrections`** — v19 → v20 migration. Avoids parsing `resolved_by` to distinguish cli/web in audit listings.
 11. **Inline HTMX swap UX** — partial-swap dashboard with per-discrepancy resolve panels. Rejected V1 (operator §1.1 LOCK); banked as V2 candidate for operator-driven reconsideration if dedicated-page UX proves friction-inducing.
 12. **JS for conditional custom-value input** — currently the spec lands a minimal 12-line inline `<script>` that toggles visibility based on the focused radio's `data-requires-custom-value`. V2 could move this to a shared `static/reconcile.js` if other reconcile surfaces ship.
-13. **DRY `_parse_parametric_pick_count` helper** — consolidate the duplicated regex (web VM + CLI) into a single `swing.trades.reconciliation_ambiguity_choices.parse_parametric_pick_count(reason: str) -> int` public function. Deferred V1 to preserve brief §4 OUT-OF-SCOPE preservation of the CLI surface (no behavioral change required but a refactor still touches CLI). V2 dispatch can land both the helper move + the CLI refactor + the existing web import together with byte-equivalence regression.
+13. **DRY `_parse_parametric_pick_count` helper** — consolidate the duplicated regex (web VM + CLI) into a single `swing.trades.reconciliation_ambiguity_choices.parse_parametric_pick_count(reason: str) -> int` public function. Deferred V1 to preserve brief §4 OUT-OF-SCOPE preservation of the CLI surface (no behavioral change required but a refactor still touches CLI). V2 dispatch can land both the helper move + the CLI refactor + the existing web import together with behavioral-parity regression already in place.
 
 ---
 
