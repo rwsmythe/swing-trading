@@ -102,6 +102,21 @@ class InvalidOverrideComboError(ValueError):
     """
 
 
+class _SandboxAutoRedirectShortCircuit(Exception):
+    """Phase 12.5 #1 T-1.6 + spec §7.6.1 — sandbox short-circuit sentinel
+    raised by :func:`_apply_tier2_resolution_inner` when the auto-redirect
+    override triple is present AND ``environment == 'sandbox'``.
+
+    Intentionally NOT a :class:`ValueError` subclass so the pivot loop's
+    ``except (ValidatorRejectedError, ValueError)`` fallback at the
+    tier-1 / multi-leg auto-redirect branch does NOT absorb it (the
+    pivot loop dispatches its own dedicated catch that rolls back the
+    SAVEPOINT + increments the sandbox-skipped counter; the §7.5
+    fresh-savepoint pending-ambiguity fallback MUST NOT fire on the
+    sandbox path because the stamp was rolled back).
+    """
+
+
 # ---------------------------------------------------------------------------
 # Return shape
 # ---------------------------------------------------------------------------
@@ -322,6 +337,7 @@ def apply_tier2_resolution(
     applied_by_override: str | None = None,
     correction_action_override: str | None = None,
     resolved_by_override: str | None = None,
+    environment: str = "production",
 ) -> CorrectionResult:
     """Spec §5.6 — operator-resolved tier-2 ambiguity.
 
@@ -336,6 +352,14 @@ def apply_tier2_resolution(
     invariant. The hybrid-row invariant is validated up-front in
     :func:`_validate_override_combo` (called from
     :func:`_apply_tier2_resolution_inner` step 0).
+
+    Phase 12.5 #1 T-1.6 — the ``environment`` kwarg (default
+    ``'production'``) threads through to the inner. When the auto-redirect
+    triple is present (``applied_by_override == 'auto'``) AND
+    ``environment == 'sandbox'``, the inner short-circuits with
+    :class:`_SandboxAutoRedirectShortCircuit` per spec §7.6.1 LOCK.
+    Manual operator paths under sandbox proceed normally — operators may
+    test the manual choice menu in sandbox.
     """
     if conn.in_transaction:
         raise CallerHeldTransactionError(
@@ -356,6 +380,7 @@ def apply_tier2_resolution(
             applied_by_override=applied_by_override,
             correction_action_override=correction_action_override,
             resolved_by_override=resolved_by_override,
+            environment=environment,
         )
         conn.commit()
         return result
@@ -667,13 +692,14 @@ def _apply_tier2_resolution_inner(
     applied_by_override: str | None = None,
     correction_action_override: str | None = None,
     resolved_by_override: str | None = None,
+    environment: str = "production",
 ) -> CorrectionResult:
     """T-C.3 — spec §5.6 per-(kind, choice_code) dispatch. Caller owns tx.
 
     Phase 12.5 #1 T-1.4 introduces three ``*_override`` kwargs (all
     default ``None``) for the multi-leg auto-redirect dispatch path. The
     inner-fn step layout reserves room for T-1.6's sandbox short-circuit
-    (between step 2 and step 3 below); T-1.4 ONLY adds steps 0 / 1.5 /
+    (between step 2.5 and step 3 below); T-1.4 ONLY adds steps 0 / 1.5 /
     2.5 — pure validation that fires before any handler dispatch.
 
     Step 0 (NEW T-1.4): :func:`_validate_override_combo` — fires BEFORE
@@ -690,8 +716,15 @@ def _apply_tier2_resolution_inner(
             terminal-state discrepancy whose chain head was NOT
             auto-resolved (``disc.resolved_by != 'auto_tier1_multi_leg'``)
             raise to prevent overwriting an operator decision.
-    Step 3 (existing; T-1.6 will add the sandbox short-circuit ABOVE
-            this step): verify resolution == 'pending_ambiguity_resolution'.
+    Step 2.6 (NEW T-1.6): sandbox short-circuit per spec §7.6.1 LOCK —
+            when ``applied_by_override == 'auto'`` AND
+            ``environment == 'sandbox'``, log a warning + raise
+            :class:`_SandboxAutoRedirectShortCircuit`. Manual operator
+            paths under sandbox proceed normally. Fires AFTER step 0
+            (developer-bug guard still fires) AND AFTER step 1
+            (SELECT-first idempotency contract honored per C.C lesson
+            #3) but BEFORE handler dispatch.
+    Step 3 (existing): verify resolution == 'pending_ambiguity_resolution'.
     Step 4 (existing): look up + dispatch handler by
             (ambiguity_kind, choice_code).
     """
@@ -735,6 +768,23 @@ def _apply_tier2_resolution_inner(
                     f"auto-redirect override"
                 )
         return _idempotent_result_for(conn, discrepancy_id)
+
+    # Step 2.6 (NEW T-1.6) — sandbox short-circuit per spec §7.6.1 LOCK.
+    # Gated on the auto-redirect path (``applied_by_override == 'auto'``):
+    # manual operator paths under sandbox proceed to the handler so
+    # operators can test the menu choices in a sandbox environment.
+    # Fires BEFORE the resolution precondition check + handler dispatch
+    # (the sandbox is read-only for auto-redirect; the pivot loop catches
+    # the sentinel + rolls back the immediately-preceding
+    # ``_stamp_pending_ambiguity_inner`` stamp within its SAVEPOINT).
+    if applied_by_override == "auto" and environment == "sandbox":
+        logger.warning(
+            "_apply_tier2_resolution_inner auto-redirect short-circuited "
+            "under sandbox environment for discrepancy_id=%d; no domain "
+            "writes",
+            discrepancy_id,
+        )
+        raise _SandboxAutoRedirectShortCircuit(discrepancy_id)
 
     if disc.resolution != "pending_ambiguity_resolution":
         raise ValueError(
