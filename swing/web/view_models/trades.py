@@ -691,6 +691,7 @@ def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
     from swing.metrics.discrepancies import (
         count_recent_multi_leg_auto_corrections,
         count_unresolved_material,
+        fetch_first_pending_ambiguity_resolve_link_path,
     )
     from swing.trades.review import (
         DISQUALIFYING_VIOLATIONS,
@@ -723,6 +724,9 @@ def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
             unresolved_material_count = count_unresolved_material(conn)
             recent_multi_leg_count = count_recent_multi_leg_auto_corrections(
                 conn,
+            )
+            banner_resolve_link = (
+                fetch_first_pending_ambiguity_resolve_link_path(conn)
             )
     finally:
         conn.close()
@@ -762,6 +766,7 @@ def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
         lucky_violation_R_display=lucky_violation_R_display,
         unresolved_material_discrepancies_count=unresolved_material_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
     )
 
 
@@ -847,6 +852,7 @@ def build_reviews_pending_vm(*, cfg: Config) -> ReviewsPendingVM:
     from swing.metrics.discrepancies import (
         count_recent_multi_leg_auto_corrections,
         count_unresolved_material,
+        fetch_first_pending_ambiguity_resolve_link_path,
     )
     conn = connect(cfg.paths.db_path)
     try:
@@ -858,6 +864,9 @@ def build_reviews_pending_vm(*, cfg: Config) -> ReviewsPendingVM:
         )
         unresolved_material_count = count_unresolved_material(conn)
         recent_multi_leg_count = count_recent_multi_leg_auto_corrections(conn)
+        banner_resolve_link = (
+            fetch_first_pending_ambiguity_resolve_link_path(conn)
+        )
     finally:
         conn.close()
     return ReviewsPendingVM(
@@ -865,6 +874,7 @@ def build_reviews_pending_vm(*, cfg: Config) -> ReviewsPendingVM:
         window_days=cfg.review.review_window_days,
         unresolved_material_discrepancies_count=unresolved_material_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
     )
 
 
@@ -874,6 +884,7 @@ def build_cadence_complete_vm(*, review_id: int, cfg: Config) -> CadenceComplete
     from swing.metrics.discrepancies import (
         count_recent_multi_leg_auto_corrections,
         count_unresolved_material,
+        fetch_first_pending_ambiguity_resolve_link_path,
     )
     conn = connect(cfg.paths.db_path)
     try:
@@ -907,6 +918,9 @@ def build_cadence_complete_vm(*, review_id: int, cfg: Config) -> CadenceComplete
         ))
         unresolved_material_count = count_unresolved_material(conn)
         recent_multi_leg_count = count_recent_multi_leg_auto_corrections(conn)
+        banner_resolve_link = (
+            fetch_first_pending_ambiguity_resolve_link_path(conn)
+        )
     finally:
         conn.close()
     return CadenceCompleteVM(
@@ -915,6 +929,7 @@ def build_cadence_complete_vm(*, review_id: int, cfg: Config) -> CadenceComplete
         trades_during_period=trades_during_period,
         unresolved_material_discrepancies_count=unresolved_material_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
     )
 
 
@@ -1107,6 +1122,7 @@ def build_trade_detail_vm(
     from swing.metrics.discrepancies import (
         count_recent_multi_leg_auto_corrections,
         count_unresolved_material,
+        fetch_first_pending_ambiguity_resolve_link_path,
         list_unresolved_material_for_trade,
     )
 
@@ -1122,6 +1138,9 @@ def build_trade_detail_vm(
             unresolved_material_count = count_unresolved_material(conn)
             recent_multi_leg_count = count_recent_multi_leg_auto_corrections(
                 conn,
+            )
+            banner_resolve_link = (
+                fetch_first_pending_ambiguity_resolve_link_path(conn)
             )
             trade_discrepancies = list_unresolved_material_for_trade(
                 conn, trade_id,
@@ -1247,6 +1266,7 @@ def build_trade_detail_vm(
         advisories=advisories,
         unresolved_material_discrepancies_count=unresolved_material_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
         unresolved_material_discrepancies=tuple(
             _to_discrepancy_display(d) for d in trade_discrepancies
         ),

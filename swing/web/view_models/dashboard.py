@@ -925,11 +925,16 @@ def build_dashboard(
             from swing.metrics.discrepancies import (
                 count_recent_multi_leg_auto_corrections,
                 count_unresolved_material,
+                fetch_first_pending_ambiguity_resolve_link_path,
             )
             unresolved_material_count = count_unresolved_material(conn)
             # Phase 12.5 #1 T-1.8 — multi-leg auto-redirect banner counter.
             recent_multi_leg_count = count_recent_multi_leg_auto_corrections(
                 conn,
+            )
+            # Phase 12.5 #2 T-2.9 — banner first-pending-ambiguity link.
+            banner_resolve_link = (
+                fetch_first_pending_ambiguity_resolve_link_path(conn)
             )
     finally:
         conn.close()
@@ -1294,6 +1299,7 @@ def build_dashboard(
         daily_management_tiles=daily_management_tiles,
         unresolved_material_discrepancies_count=unresolved_material_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
     )
 
 

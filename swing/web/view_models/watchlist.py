@@ -112,6 +112,7 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
     from swing.metrics.discrepancies import (
         count_recent_multi_leg_auto_corrections,
         count_unresolved_material,
+        fetch_first_pending_ambiguity_resolve_link_path,
     )
 
     now = datetime.now()
@@ -149,6 +150,9 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
                 classifications = {}
             unresolved = count_unresolved_material(conn)
             recent_multi_leg = count_recent_multi_leg_auto_corrections(conn)
+            banner_resolve_link = (
+                fetch_first_pending_ambiguity_resolve_link_path(conn)
+            )
     finally:
         conn.close()
     by_ticker = {c.ticker: c for c in candidates}
@@ -179,6 +183,7 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
         pattern_tags=pattern_tags,
         unresolved_material_discrepancies_count=unresolved,
         recent_multi_leg_auto_correction_count=recent_multi_leg,
+        banner_resolve_link=banner_resolve_link,
     )
 
 

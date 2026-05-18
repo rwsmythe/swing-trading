@@ -49,6 +49,7 @@ from swing.evaluation.dates import action_session_for_run
 from swing.metrics.discrepancies import (
     count_recent_multi_leg_auto_corrections,
     count_unresolved_material,
+    fetch_first_pending_ambiguity_resolve_link_path,
 )
 from swing.trades.reconciliation_ambiguity_choices import get_choice_menu
 
@@ -708,10 +709,13 @@ def build_reconcile_discrepancy_resolve_vm(
     unresolved_count = count_unresolved_material(conn)
     multi_leg_count = count_recent_multi_leg_auto_corrections(conn)
 
-    # T-2.9 will introduce ``fetch_first_pending_ambiguity_resolve_link_path``
-    # + retrofit this builder to consume it. Until then, pass None so this
-    # T-2.3 commit ships green standalone.
-    banner_resolve_link: str | None = None
+    # T-2.9 retrofit: builder now calls the helper directly. The link MAY
+    # be self-referential (operator viewing the oldest-pending row will
+    # see a banner-link that targets the same discrepancy) — informational
+    # per plan §A T-2.9 acceptance, not load-bearing.
+    banner_resolve_link = fetch_first_pending_ambiguity_resolve_link_path(
+        conn,
+    )
 
     session_date = action_session_for_run(datetime.now()).isoformat()
 

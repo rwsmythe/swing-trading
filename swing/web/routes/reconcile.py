@@ -46,6 +46,7 @@ from swing.evaluation.dates import action_session_for_run
 from swing.metrics.discrepancies import (
     count_recent_multi_leg_auto_corrections,
     count_unresolved_material,
+    fetch_first_pending_ambiguity_resolve_link_path,
 )
 from swing.trades.reconciliation_ambiguity_choices import get_choice_menu
 from swing.trades.reconciliation_auto_correct import (
@@ -75,6 +76,7 @@ def _render_error(
     discrepancy_id: int | None,
     unresolved_count: int,
     recent_multi_leg_count: int,
+    banner_resolve_link: str | None = None,
     disc_resolution: str | None = None,
     disc_resolved_by: str | None = None,
     disc_created_at: str | None = None,
@@ -97,6 +99,7 @@ def _render_error(
         disc_created_at=disc_created_at,
         unresolved_material_discrepancies_count=unresolved_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
     )
     return request.app.state.templates.TemplateResponse(
         request,
@@ -138,6 +141,9 @@ def reconcile_discrepancy_resolve_form(
     try:
         unresolved_count = count_unresolved_material(conn)
         recent_multi_leg_count = count_recent_multi_leg_auto_corrections(conn)
+        banner_resolve_link = (
+            fetch_first_pending_ambiguity_resolve_link_path(conn)
+        )
         disc = get_discrepancy(conn, discrepancy_id)
         if disc is None:
             return _render_error(
@@ -151,6 +157,7 @@ def reconcile_discrepancy_resolve_form(
                 discrepancy_id=discrepancy_id,
                 unresolved_count=unresolved_count,
                 recent_multi_leg_count=recent_multi_leg_count,
+                banner_resolve_link=banner_resolve_link,
             )
         if (
             disc.resolution != "pending_ambiguity_resolution"
@@ -170,6 +177,7 @@ def reconcile_discrepancy_resolve_form(
                 disc_created_at=disc.created_at,
                 unresolved_count=unresolved_count,
                 recent_multi_leg_count=recent_multi_leg_count,
+                banner_resolve_link=banner_resolve_link,
             )
         vm = build_reconcile_discrepancy_resolve_vm(conn, discrepancy_id)
     finally:
@@ -310,6 +318,9 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
     try:
         unresolved_count = count_unresolved_material(conn)
         recent_multi_leg_count = count_recent_multi_leg_auto_corrections(conn)
+        banner_resolve_link = (
+            fetch_first_pending_ambiguity_resolve_link_path(conn)
+        )
 
         # Step 4a — discrepancy existence
         disc = get_discrepancy(conn, discrepancy_id)
@@ -325,6 +336,7 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                 discrepancy_id=discrepancy_id,
                 unresolved_count=unresolved_count,
                 recent_multi_leg_count=recent_multi_leg_count,
+                banner_resolve_link=banner_resolve_link,
             )
 
         # Step 4b — state guard (terminal or NULL ambiguity_kind)
@@ -346,6 +358,7 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                 disc_created_at=disc.created_at,
                 unresolved_count=unresolved_count,
                 recent_multi_leg_count=recent_multi_leg_count,
+                banner_resolve_link=banner_resolve_link,
             )
 
         # Step 4c — hidden-anchor (F8 LOCK)
@@ -361,6 +374,7 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                 discrepancy_id=discrepancy_id,
                 unresolved_count=unresolved_count,
                 recent_multi_leg_count=recent_multi_leg_count,
+                banner_resolve_link=banner_resolve_link,
             )
         if disc.ambiguity_kind != ambiguity_kind_at_render:
             return _render_error(
@@ -374,6 +388,7 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                 discrepancy_id=discrepancy_id,
                 unresolved_count=unresolved_count,
                 recent_multi_leg_count=recent_multi_leg_count,
+                banner_resolve_link=banner_resolve_link,
             )
 
         # Step 4d — required choice_code
@@ -586,6 +601,7 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                 discrepancy_id=discrepancy_id,
                 unresolved_count=unresolved_count,
                 recent_multi_leg_count=recent_multi_leg_count,
+                banner_resolve_link=banner_resolve_link,
             )
         except InvalidOverrideComboError as exc:
             log.warning("InvalidOverrideComboError")
@@ -600,6 +616,7 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                 discrepancy_id=discrepancy_id,
                 unresolved_count=unresolved_count,
                 recent_multi_leg_count=recent_multi_leg_count,
+                banner_resolve_link=banner_resolve_link,
             )
         except ValidatorRejectedError as exc:
             return _render_form_with_error(
@@ -628,6 +645,7 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                 disc_created_at=disc.created_at,
                 unresolved_count=unresolved_count,
                 recent_multi_leg_count=recent_multi_leg_count,
+                banner_resolve_link=banner_resolve_link,
             )
         except ValueError as exc:
             # Plan §J J2 + L-W2 LOCK — re-read on a FRESH connection so a
@@ -654,6 +672,7 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                     disc_created_at=disc.created_at,
                     unresolved_count=unresolved_count,
                     recent_multi_leg_count=recent_multi_leg_count,
+                    banner_resolve_link=banner_resolve_link,
                 )
             return _render_form_with_error(
                 request,
@@ -678,6 +697,7 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                 discrepancy_id=discrepancy_id,
                 unresolved_count=unresolved_count,
                 recent_multi_leg_count=recent_multi_leg_count,
+                banner_resolve_link=banner_resolve_link,
             )
         except Exception as exc:  # noqa: BLE001 — defense-in-depth
             log.warning(type(exc).__name__)
@@ -691,6 +711,7 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                 discrepancy_id=discrepancy_id,
                 unresolved_count=unresolved_count,
                 recent_multi_leg_count=recent_multi_leg_count,
+                banner_resolve_link=banner_resolve_link,
             )
     finally:
         conn.close()

@@ -128,10 +128,12 @@ def build_config_vm(
     divergence: dict | None = None
     unresolved_count = 0
     recent_multi_leg_count = 0
+    banner_resolve_link: str | None = None
     if conn is not None:
         from swing.metrics.discrepancies import (
             count_recent_multi_leg_auto_corrections,
             count_unresolved_material,
+            fetch_first_pending_ambiguity_resolve_link_path,
         )
         from swing.trades.risk_policy import check_and_reconcile_toml_divergence
         try:
@@ -156,6 +158,12 @@ def build_config_vm(
             )
         except Exception:
             recent_multi_leg_count = 0
+        try:
+            banner_resolve_link = (
+                fetch_first_pending_ambiguity_resolve_link_path(conn)
+            )
+        except Exception:
+            banner_resolve_link = None
     return ConfigPageVM(
         rows=rows,
         saved=saved,
@@ -163,4 +171,5 @@ def build_config_vm(
         risk_policy_divergence=divergence,
         unresolved_material_discrepancies_count=unresolved_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
     )

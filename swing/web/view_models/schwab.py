@@ -368,6 +368,7 @@ def build_schwab_status_vm(
     session_date: str,
     unresolved_count: int,
     recent_multi_leg_count: int = 0,
+    banner_resolve_link: str | None = None,
     now=None,
 ):
     """Compose SchwabStatusVM by consulting the same data the CLI does.
@@ -572,6 +573,7 @@ def build_schwab_status_vm(
         degraded_banner_active=degraded_banner_active,
         unresolved_material_discrepancies_count=unresolved_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
     )
 
 

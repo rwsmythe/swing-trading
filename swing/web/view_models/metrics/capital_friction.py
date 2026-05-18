@@ -33,6 +33,7 @@ from swing.metrics.capital import (
 from swing.metrics.discrepancies import (
     count_recent_multi_leg_auto_corrections,
     count_unresolved_material,
+    fetch_first_pending_ambiguity_resolve_link_path,
 )
 from swing.web.view_models.metrics.shared import BaseLayoutVM
 
@@ -92,6 +93,9 @@ def build_capital_friction_vm(
     try:
         unresolved = count_unresolved_material(conn)
         recent_multi_leg = count_recent_multi_leg_auto_corrections(conn)
+        banner_resolve_link = (
+            fetch_first_pending_ambiguity_resolve_link_path(conn)
+        )
         now = datetime.now()
         asof = last_completed_session(now)
         result = compute_capital_friction(conn, asof_date=asof)
@@ -102,5 +106,6 @@ def build_capital_friction_vm(
         session_date=action_session_for_run(datetime.now()).isoformat(),
         unresolved_material_discrepancies_count=unresolved,
         recent_multi_leg_auto_correction_count=recent_multi_leg,
+        banner_resolve_link=banner_resolve_link,
         result=result,
     )

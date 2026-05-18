@@ -31,6 +31,7 @@ from swing.metrics.cohort import count_per_cohort
 from swing.metrics.discrepancies import (
     count_recent_multi_leg_auto_corrections,
     count_unresolved_material,
+    fetch_first_pending_ambiguity_resolve_link_path,
 )
 from swing.metrics.process import (
     TradeProcessMetricsResult,
@@ -137,6 +138,9 @@ def build_trade_process_card_vm(
         cohort_counts = count_per_cohort(conn)
         unresolved = count_unresolved_material(conn)
         recent_multi_leg = count_recent_multi_leg_auto_corrections(conn)
+        banner_resolve_link = (
+            fetch_first_pending_ambiguity_resolve_link_path(conn)
+        )
 
         # Order: hypothesis_registry order then any orphan labels. The
         # count_per_cohort helper iterates registry rows by id, then
@@ -187,6 +191,7 @@ def build_trade_process_card_vm(
         session_date=action_session_for_run(datetime.now()).isoformat(),
         unresolved_material_discrepancies_count=unresolved,
         recent_multi_leg_auto_correction_count=recent_multi_leg,
+        banner_resolve_link=banner_resolve_link,
         cohort_tabs=tuple(tabs),
         active_cohort_key=active_key,
     )

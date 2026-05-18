@@ -51,6 +51,7 @@ def build_pipeline(*, cfg: Config, limit: int = 10, ohlcv_degraded: bool = False
     from swing.metrics.discrepancies import (
         count_recent_multi_leg_auto_corrections,
         count_unresolved_material,
+        fetch_first_pending_ambiguity_resolve_link_path,
     )
 
     conn = connect(cfg.paths.db_path)
@@ -61,6 +62,9 @@ def build_pipeline(*, cfg: Config, limit: int = 10, ohlcv_degraded: bool = False
             stale = active if (active is not None and is_stale_eligible(active, cfg)) else None
             unresolved = count_unresolved_material(conn)
             recent_multi_leg = count_recent_multi_leg_auto_corrections(conn)
+            banner_resolve_link = (
+                fetch_first_pending_ambiguity_resolve_link_path(conn)
+            )
     finally:
         conn.close()
     return PipelineVM(
@@ -70,4 +74,5 @@ def build_pipeline(*, cfg: Config, limit: int = 10, ohlcv_degraded: bool = False
         ohlcv_source_degraded=ohlcv_degraded,            # NEW (Phase 3d §3.4)
         unresolved_material_discrepancies_count=unresolved,
         recent_multi_leg_auto_correction_count=recent_multi_leg,
+        banner_resolve_link=banner_resolve_link,
     )

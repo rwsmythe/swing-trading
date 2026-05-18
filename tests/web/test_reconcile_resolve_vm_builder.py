@@ -106,8 +106,14 @@ def test_builder_returns_vm_for_pending_ambiguity_discrepancy(
     assert vm.form_action == f"/reconcile/discrepancy/{did}/resolve"
     assert isinstance(vm.pre_resolution_context, ReconcilePreResolutionContext)
     assert vm.pre_resolution_context.ticker == "AAA"
-    # Banner link to T-2.9 helper not yet wired; pass None.
-    assert vm.banner_resolve_link is None
+    # T-2.9 retrofit: builder now calls
+    # ``fetch_first_pending_ambiguity_resolve_link_path`` directly so the
+    # banner link is populated. With this seed (a single pending-ambiguity
+    # discrepancy attributed to an active trade), the link points at
+    # the same discrepancy the operator is currently viewing — the
+    # self-referential case is acknowledged as informational per plan
+    # §A T-2.9 acceptance.
+    assert vm.banner_resolve_link == f"/reconcile/discrepancy/{did}/resolve"
     # session_date is a date isoformat string.
     assert len(vm.session_date) == 10 and vm.session_date.count("-") == 2
 
