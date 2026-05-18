@@ -180,13 +180,57 @@ Two cleanup items operator queued for post-Phase-12.5-#3 closure, BEFORE Phase 1
 - Phase 12.5 #2 cross-bundle pin (1 of the 5 baseline skipped; un-skipped during writing-plans but may or may not have landed via executing-plans merge — audit verifies).
 - `feedback_orchestrator_qa_implementer_product.md` (orchestrator QA discipline; Q3 is QA-adjacent triage).
 
+### Item Q4: Operator close-tracking flag for watchlist symbols (feature; backlog-banked 2026-05-18)
+
+**Posture:** Future feature. NOT a Phase 12.5 cleanup; not Phase 13 scope (Phase 13 is LOCKED at chart pattern detection + auto-fill themes). Could fold into Phase 13 Theme 4 (usability triage) OR be a standalone post-Phase-12.5 dispatch. **Operator-decision pending at commission**: phasing + scope.
+
+**Trigger (operator framing 2026-05-18):** Operator looking at PTEN as top watchlist symbol for 5/19 process run; PTEN just closed past its pivot value → high-probability of opening a position when markets open. NOT flagged by hyp-rec (the existing algorithm doesn't elect it as a recommendation) but visually looks like a good candidate. Operator wants a visual mechanism to flag such symbols for personal close-tracking, persisting across pipeline runs even if the watchlist algorithm decides the symbol no longer meets criteria (false-negative guard).
+
+**Two sub-use-cases**:
+1. **At-breakout** (PTEN today): symbol just crossed its pivot/trigger; immediate-action candidate; flag retains it as visually-prominent on watchlist.
+2. **Approaching-breakout**: symbol trending in correct direction but not yet at pivot; flag breaks it out from the rest of the watchlist visually + ensures it's not dropped from the surface if the watchlist algorithm next-run decides it doesn't meet criteria.
+
+**Architectural decisions (operator-decision-pending at commission)**:
+- **Schema**: NEW column on existing table (likely `candidates` or `evaluation_results`) OR NEW table for operator-flag metadata. Implications: schema v19 → v20 migration (would need to be lifted from current LOCK).
+- **Setting / unsetting UI**: web UI toggle button on watchlist row? CLI command `swing watchlist flag <ticker> --close-track`? Both? Operator preference at commission.
+- **Persistence semantics**:
+  - Per-session (operator clears at end of session)?
+  - Per-pipeline-run (auto-expire after next pipeline run)?
+  - Persistent until operator explicitly clears?
+  - Auto-expire after N days (e.g., 7-day lookback)?
+  - Auto-clear when operator opens a position in the flagged ticker (state transition triggers)?
+- **Visual rendering**:
+  - Badge on the watchlist row (e.g., 🎯 or `[FLAGGED]` ASCII marker)?
+  - Separate "Actively tracked" section above the main watchlist?
+  - Bold/colored row background?
+- **Filtering interaction**: if symbol is operator-flagged but the watchlist algorithm would drop it (no longer meets criteria), the symbol MUST be retained on the watchlist surface (false-negative guard). Per-row badge "operator-retained" to distinguish from algorithm-elected.
+- **Relation to hyp-rec**: do flagged symbols get hyp-rec treatment too (forced through the hyp-rec scoring + expanded panel)? Or is the flag purely a watchlist-surface concept separate from hyp-rec?
+- **Audit trail**: per-flag-event row (operator set/cleared timestamp + ticker + reason text)?
+
+**Estimated scope (rough; pending operator-decisions)**:
+- Schema migration (v19 → v20): 1 new column on `candidates` OR new `watchlist_close_track_flags` table.
+- Web UI: 1 new toggle action on watchlist row + 1 visual surface (badge or section).
+- CLI: 1 new subcommand under `swing watchlist` (or equivalent).
+- Tests: ~+15-30 fast tests (toggle + render + persistence + false-negative-guard).
+- Documentation: cycle-checklist additions + CLAUDE.md gotcha if any.
+- Codex chain: 2-4 rounds (brainstorm + writing-plans + executing-plans full triplet recommended given schema + UI surfaces).
+
+**Cross-references**:
+- `swing/data/repos/watchlist.py` (or wherever watchlist persistence lives) — primary touch point.
+- `swing/web/view_models/dashboard.py` + `partials/watchlist_top5_section.html.j2` — visual surface targets.
+- `swing/recommendations/hyp_recs.py` — relation-to-hyp-rec decision point.
+- Phase 13 Theme 4 usability triage scope at `docs/phase13-scope-brainstorm.md` §0.5 (potential fold-in candidate).
+
+**Status**: QUEUED; operator-decision-pending at commission. Phasing: defer to operator (fold into Phase 13 Theme 4 OR standalone post-Phase-12.5 dispatch).
+
 ### Sequencing relative to Phase 12.5 #3 + Phase 13
 
 - **Phase 12.5 #3 executing-plans** — ✅ SHIPPED 2026-05-18 at `b436067` + S1-S4 operator-paired post-merge gate ALL PASS.
 - **Item Q3 skipped-test audit** — ✅ CLOSED 2026-05-18 at `416865f` (Option A: 4 skips → 4 PASS via sanitized-fixture redirect; baseline shifted 4850/5 → 4854/1).
 - **Item Q1 walkthrough** — ✅ CLOSED 2026-05-18 (NOT a parser bug; window-mismatch architectural; cfg-bumped lookback_days 7→30; 7 dispositions correction_ids 20-26; NEW V2 candidate banked for dynamic-lookback).
-- **Item Q2** — small executing-plans dispatch; operator commissions on signal.
-- **Phase 13** — gated on Phase 12.5 closure (Phase 12.5 #3 ✅ + Q3 ✅ + Q1 ✅ + Q2). Phase 13 scope LOCKED at `docs/phase13-scope-brainstorm.md` §0.5.
+- **Item Q2** — dispatched 2026-05-18 at `50cf1b5`; tabularize web + CLI comparison rendering; brief plays plan-role; operator commissions implementer on signal.
+- **Item Q4** — operator close-tracking flag for watchlist symbols; FEATURE not cleanup; backlog-banked 2026-05-18; phasing-decision-pending (Phase 13 Theme 4 fold-in vs standalone post-Phase-12.5 dispatch). NOT gating Phase 13.
+- **Phase 13** — gated on Phase 12.5 closure (Phase 12.5 #3 ✅ + Q3 ✅ + Q1 ✅ + Q2). Q4 is NOT a gate item (operator-decided phasing at commission). Phase 13 scope LOCKED at `docs/phase13-scope-brainstorm.md` §0.5.
 
 ---
 
