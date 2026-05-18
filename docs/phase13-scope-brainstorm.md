@@ -17,7 +17,7 @@ Locked via operator-orchestrator scope conversation 2026-05-17 (full transcript 
 **Theme 1 — Chart rendering deepening**
 - Charts for **full watchlist + hyp-rec list + active list** (currently partial coverage; "very basic" per operator)
 - NEW dashboard surface: **market weather trend mini-chart**
-- Unlocked by Phase 11+12: Schwab Market Data API + OhlcvCache + ohlcv_archive parquet caching means broader chart rendering no longer burns yfinance quota
+- **Partially unlocked by Phase 11+12** (PriceCache intraday quotes + ohlcv_archive parquet caching): broader chart rendering reduces yfinance dependency for intraday data. **`_step_charts` daily-bar consumption still on yfinance via legacy `fetcher.get(ticker, ...) → swing/pipeline/ohlcv.py:fetch_daily_bars → swing/data/ohlcv_archive.py:read_or_fetch_archive` path** — per Phase 11 Sub-bundle C R1 M#5 ACCEPT-WITH-RATIONALE V1 (operator-surfaced 2026-05-18 during Phase 12.5 #1 S2 gate when CTRA-delisted yfinance error appeared). OhlcvCache is constructed with Schwab ladder hooks but NOT yet consumed by `_step_charts`. **NEW Phase 13 prerequisite sub-bundle T1.SB0** wires OhlcvCache into `_step_charts` (3-prerequisite refactor per `swing/pipeline/runner.py:620-639`: fetcher.get's weekly-refresh + archive_history_days semantics aligned to ladder's window semantics; shape reconciliation (capitalized cols + DatetimeIndex from `to_dataframe()` vs legacy fetcher's archive-managed shape); per-cache locking + lifecycle semantics for OhlcvCache (today single-threaded per request)). T1.SB0 dispatches FIRST in Phase 13 sequence (T1.SB0 → T2.SB1 → T3.SB1 → ...); Theme 2's chart pattern detection consumes the Schwab-sourced daily-bar history directly. Yfinance becomes V2-fallback only.
 - Theme 1 tightly couples to Theme 2 deliverable: annotated charts ARE the §9.2 "Evidence to Show Reviewer" surface from chart pattern detection v2 brief (pattern boundaries + contraction markers + pivot + nearest-historical-bases overlay)
 
 **Theme 2 — Pattern recognition deepening (HEADLINE)**
@@ -47,6 +47,7 @@ Locked via operator-orchestrator scope conversation 2026-05-17 (full transcript 
 
 | SB | Theme | Scope |
 |---|---|---|
+| **T1.SB0** | Theme 1 (prerequisite) | **Wire OhlcvCache into `_step_charts`** (releases Phase 11 Sub-bundle C R1 M#5 ACCEPT-WITH-RATIONALE V1 deferral; operator-directed 2026-05-18 after Phase 12.5 #1 S2 surfaced lingering yfinance dependency for daily-bar chart generation). 3-prerequisite refactor per `swing/pipeline/runner.py:620-639`: (a) align `fetcher.get`'s weekly-refresh + `archive_history_days` semantics to ladder window semantics; (b) shape reconciliation (capitalized cols + DatetimeIndex from `to_dataframe()` vs legacy fetcher's archive-managed shape); (c) per-cache locking + lifecycle semantics for OhlcvCache (today single-threaded per request). **Dispatches FIRST in Phase 13 sequence** (T1.SB0 → T2.SB1/T3.SB1 → ...). Theme 2's chart pattern detection downstream consumes Schwab-sourced daily-bar history directly. yfinance becomes V2-fallback only |
 | **T2.SB1** | Theme 2 | Dev-time labeling infrastructure (Claude Code subagent dispatch + selective Codex 2nd reviewer) + exemplar bootstrap (operator spot-check mid-dispatch pause); `pattern_exemplars` schema with silver/gold tagging + `label_source` enum + `ai_labeler_version` tracking |
 | **T3.SB1** | Theme 3 | Entry auto-fill (Schwab Trader API consumer at trade-entry handler time); absorbs Phase 12.5 #2 scope. Can dispatch CONCURRENT with T2.SB1 (independent codebase touch) |
 | **T2.SB2** | Theme 2 | Foundation primitives: smoothing + extrema extraction + zigzag adaptive-threshold + base candidate-window generator. Brief §5.2 foundation layer. Pure logic; no DB writes |
@@ -62,6 +63,8 @@ Locked via operator-orchestrator scope conversation 2026-05-17 (full transcript 
 
 ```
 Brainstorm phase (operator drafts unreported usability list as input)
+    ↓
+T1.SB0 (OhlcvCache→_step_charts wiring; releases Phase 11 Sub-bundle C R1 M#5 V1 deferral)
     ↓
 T2.SB1 (dev-time labeling infra)              ║   T3.SB1 (entry auto-fill)
     ↓                                          ║       ↓

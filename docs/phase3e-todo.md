@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-05-18 Phase 12.5 #1 (OQ-F multi-leg tier-1 auto-redirect) SHIPPED at `6109261` — 4 Codex rounds NO_NEW_CRITICAL_MAJOR; 1 ACCEPT-WITH-RATIONALE banked (R1 M#3 banner-vs-briefing wording false-positive); ~+132 fast tests net (4575 → 4712); ruff/schema unchanged; 6-surface gate ALL PASS
+
+**Integration-merge at `6109261`** (branch `phase12-5-bundle-1-oqf-executing-plans` via `--no-ff`; 18 task-branch commits = 11 task-impl + 2 task-review-fixes + 1 cross-bundle-pin follow-up + 2 Codex-fix + 2 return-report + 1 in-branch merge-of-finviz-fix). Includes orchestrator-driven 6-surface operator-witnessed gate PASS: S1 4712 fast + ruff 18 + slow E2E; S2 spec §10 cases A/C/E/I + determinism × 10 identical; S3 production run #15 ZERO multi-leg fires + ZERO false-positive Pass-1 (architectural fix HOLDS in negative sense); S4 banner-fires `data-banner-count="1"` + verbatim §8.3 wording + banner-clears via planted run #16 + ASCII-only + full revert; S5 `--resolved-by` filter operational; S6 pipeline #68 from empty inbox → `briefing.md` `## Reconciliation status` section + multi-leg line correctly omitted (count=0; F22 omit-when-zero works end-to-end through T-1.11).
+
+**Highlights:**
+- **Codex R2 surfaced a Sub-bundle C.C latent defect** — `_handle_split_into_partials` hardcoded `action="entry"` would have corrupted close-fill discrepancies via the new auto-routing path; fixed at handler (benefits both new auto-redirect path AND existing manual operator-resolved menu path) with 2 discriminating regression tests.
+- **Sandbox-skipped path infrastructure deletion** — Codex R2 Major #1 surfaced + deleted unreachable `auto_redirect_skipped_sandbox` backfill counter (collides with Sub-bundle C.D §9.7 LOCK upstream which short-circuits sandbox BEFORE classification). T-1.6 service-layer + pivot-loop counter PRESERVED per F20 + spec §7.6 LOCK.
+- **1 V2.1 §VII.F amendment candidate banked** (plan §A T-1.5.B 3-line drift after the deletion above).
+- **1 new forward-binding lesson L-X1** (handler-extension audit pattern when auto-routing widens a handler's reach).
+- **1 architectural inconsistency banked for Phase 12.5 #3** (plan §H.4 tier-3-override-no-clear semantic vs shipped helper SQL — orchestrator-spotted during S4 gate sub-test planning: shipped helper SQL queries `rd.resolved_by = 'auto_tier1_multi_leg'` directly, so `apply_tier3_override` flipping parent disc `resolved_by` to `'operator'` WOULD clear the banner immediately, contradicting plan §H.4's "STILL present + count unchanged" claim. Reasonable operator semantic, but plan wording is imprecise. Phase 12.5 #3 watch-item).
+- **Mid-gate dispatch: empty-finviz-inbox auto-fetch fix** — Phase 12.5 #1 S6 surfaced the pre-existing `phase3e-todo:940-958` bug (3rd gate-blocker occurrence). Inline-fix dispatched + shipped at `7a84942`; Phase 12.5 #1 branch merged main back in via `c406817` (in-branch merge); S6 re-ran successfully on merged state.
+- **Phase 12.5 #2 dispatch UNBLOCKED.**
+
+### Original entry (2026-05-17 PM; pre-executing-plans; superseded by SHIPPED outcome above)
+
 ## 2026-05-17 PM Phase 12.5 #1 writing-plans SHIPPED — OQ-F multi-leg tier-1 auto-redirect single-sub-bundle decomposition (11 tasks; ~+102 fast tests + 1 slow E2E + ~+435 LOC; schema v19 unchanged) — 5 Codex rounds NO_NEW_CRITICAL_MAJOR — 1 Critical + 12 Major + 8 Minor ALL RESOLVED; ZERO ACCEPT-WITH-RATIONALE
 
 **Writing-plans SHIPPED 2026-05-17** at `2e8b10a` (integration merge of `phase12-5-bundle-1-oqf-writing-plans` via `--no-ff`; 2 plan commits = 1 initial + 1 Codex-fix bundle; **5 Codex rounds → NO_NEW_CRITICAL_MAJOR** non-monotonic-Major shape (R1 1C/4M/1m → R2 0C/3M/1m → R3 0C/4M/2m → R4 0C/1M/2m → R5 0C/0M/2m sealed; R3 bump above R2 driven by downstream drift the R2 fixes themselves surfaced); **ZERO ACCEPT-WITH-RATIONALE banked** — all 1 Critical + 12 Major + 8 distinct Minor resolved with code-content fixes; ZERO Critical findings post-R1 resolution; ZERO Co-Authored-By footer drift across 2 commits.
