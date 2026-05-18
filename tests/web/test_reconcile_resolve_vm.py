@@ -554,11 +554,16 @@ def test_snapshot_mismatch_populates_compared_pairs() -> None:
 
 def test_equity_delta_compared_pairs_uses_expected_envelope() -> None:
     """equity_delta: compared_pairs carries ('equity dollars', journal, source)
-    both from the ``expected`` envelope — ``actual`` is unused."""
+    both from the ``expected`` envelope — ``actual`` is unused.
+
+    The expected envelope for equity_delta requires journal + source + delta
+    (delta consumed by the label/value renderer; journal+source are the
+    compared pair values).
+    """
     disc = _make_discrepancy(
         discrepancy_type="equity_delta",
         field_name="equity_dollars",
-        expected_value_json='{"journal": 2000.00, "source": 2034.78}',
+        expected_value_json='{"journal": 2000.00, "source": 2034.78, "delta": 34.78}',
         actual_value_json=None,
         fill_id=None,
     )

@@ -39,7 +39,7 @@ import json
 import re
 import sqlite3
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
@@ -52,6 +52,7 @@ from swing.metrics.discrepancies import (
     fetch_first_pending_ambiguity_resolve_link_path,
 )
 from swing.trades.reconciliation_ambiguity_choices import get_choice_menu
+from swing.trades.reconciliation_render import build_compared_pairs
 
 
 def _parse_parametric_pick_count(resolution_reason: str | None) -> int:
@@ -126,6 +127,12 @@ class ReconcilePreResolutionContext:
     The 15th field ``parse_warning`` is None on the happy path; non-None
     indicates the generic fallback fired (unknown discrepancy_type, malformed
     JSON, or per-type helper raised KeyError).
+
+    The 16th field ``compared_pairs`` is populated by ``build_compared_pairs``
+    from ``swing.trades.reconciliation_render`` (T-Q2.2 Part B). Each tuple
+    is ``(label, journal_value, schwab_value)`` with raw (non-formatted)
+    values for tabular rendering. None when no per-type tabular comparison is
+    meaningful (unmatched fills, unknown type, generic fallback).
     """
 
     discrepancy_type: str
@@ -143,6 +150,7 @@ class ReconcilePreResolutionContext:
     created_at: str
     run_id: int
     parse_warning: str | None = None
+    compared_pairs: tuple[tuple[str, Any, Any], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -588,7 +596,7 @@ def _render_pre_resolution_context(
             parse_warning="json envelope is not a JSON object",
         )
     try:
-        return helper(disc, expected, actual)
+        ctx = helper(disc, expected, actual)
     except KeyError as exc:
         return _render_generic_fallback(
             disc,
@@ -606,6 +614,14 @@ def _render_pre_resolution_context(
                 f"shape; rendered via generic fallback: {exc}"
             ),
         )
+    # T-Q2.2 Part B: inject compared_pairs from reconciliation_render helper.
+    # build_compared_pairs returns None for unmatched fill types + unknown
+    # types. Convert list -> tuple for frozen-dataclass hashability contract.
+    raw_pairs = build_compared_pairs(disc.discrepancy_type, expected, actual)
+    pairs: tuple[tuple[str, Any, Any], ...] | None = (
+        tuple(tuple(p) for p in raw_pairs) if raw_pairs is not None else None  # type: ignore[misc]
+    )
+    return replace(ctx, compared_pairs=pairs)
 
 
 # ---------------------------------------------------------------------------
