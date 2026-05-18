@@ -44,11 +44,31 @@ class WatchlistVM:
     unresolved_material_discrepancies_count: int = 0
     # Phase 12.5 #1 T-1.8 — multi-leg auto-redirect advisory banner counter.
     recent_multi_leg_auto_correction_count: int = 0
+    # Phase 12.5 #2 T-2.7 — banner link to FIRST pending-ambiguity discrepancy
+    # resolve form. None when no pending-ambiguity row exists.
+    banner_resolve_link: str | None = None
     # Spec §3.5 (Phase 4 Task 4.2): SIBLING to flag_tags. {ticker: 'flag (0.78)'}
     # for chart-scope tickers with detected flag patterns. Default empty dict so
     # VMs constructed without classifications (tests, fixtures, code paths
     # without a pipeline_run_id) render gracefully.
     pattern_tags: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.banner_resolve_link is not None:
+            if not isinstance(self.banner_resolve_link, str):
+                raise TypeError(
+                    "WatchlistVM.banner_resolve_link must be str | None; "
+                    f"got {type(self.banner_resolve_link).__name__}"
+                )
+            if (
+                not self.banner_resolve_link
+                or not self.banner_resolve_link.startswith("/")
+            ):
+                raise ValueError(
+                    "WatchlistVM.banner_resolve_link must be None or a "
+                    "non-empty path starting with '/'; got "
+                    f"{self.banner_resolve_link!r}"
+                )
 
 
 @dataclass(frozen=True)
@@ -92,6 +112,7 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
     from swing.metrics.discrepancies import (
         count_recent_multi_leg_auto_corrections,
         count_unresolved_material,
+        fetch_first_pending_ambiguity_resolve_link_path,
     )
 
     now = datetime.now()
@@ -129,6 +150,9 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
                 classifications = {}
             unresolved = count_unresolved_material(conn)
             recent_multi_leg = count_recent_multi_leg_auto_corrections(conn)
+            banner_resolve_link = (
+                fetch_first_pending_ambiguity_resolve_link_path(conn)
+            )
     finally:
         conn.close()
     by_ticker = {c.ticker: c for c in candidates}
@@ -159,6 +183,7 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
         pattern_tags=pattern_tags,
         unresolved_material_discrepancies_count=unresolved,
         recent_multi_leg_auto_correction_count=recent_multi_leg,
+        banner_resolve_link=banner_resolve_link,
     )
 
 

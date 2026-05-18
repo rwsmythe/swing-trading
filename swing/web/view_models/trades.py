@@ -662,6 +662,26 @@ class ReviewVM:
     unresolved_material_discrepancies_count: int = 0
     # Phase 12.5 #1 T-1.8 — multi-leg auto-redirect advisory banner counter.
     recent_multi_leg_auto_correction_count: int = 0
+    # Phase 12.5 #2 T-2.7 — banner link to FIRST pending-ambiguity discrepancy
+    # resolve form. None when no pending-ambiguity row exists.
+    banner_resolve_link: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.banner_resolve_link is not None:
+            if not isinstance(self.banner_resolve_link, str):
+                raise TypeError(
+                    "ReviewVM.banner_resolve_link must be str | None; "
+                    f"got {type(self.banner_resolve_link).__name__}"
+                )
+            if (
+                not self.banner_resolve_link
+                or not self.banner_resolve_link.startswith("/")
+            ):
+                raise ValueError(
+                    "ReviewVM.banner_resolve_link must be None or a "
+                    "non-empty path starting with '/'; got "
+                    f"{self.banner_resolve_link!r}"
+                )
 
 
 def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
@@ -671,6 +691,7 @@ def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
     from swing.metrics.discrepancies import (
         count_recent_multi_leg_auto_corrections,
         count_unresolved_material,
+        fetch_first_pending_ambiguity_resolve_link_path,
     )
     from swing.trades.review import (
         DISQUALIFYING_VIOLATIONS,
@@ -703,6 +724,9 @@ def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
             unresolved_material_count = count_unresolved_material(conn)
             recent_multi_leg_count = count_recent_multi_leg_auto_corrections(
                 conn,
+            )
+            banner_resolve_link = (
+                fetch_first_pending_ambiguity_resolve_link_path(conn)
             )
     finally:
         conn.close()
@@ -742,6 +766,7 @@ def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
         lucky_violation_R_display=lucky_violation_R_display,
         unresolved_material_discrepancies_count=unresolved_material_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
     )
 
 
@@ -764,6 +789,26 @@ class CadenceCompleteVM:
     unresolved_material_discrepancies_count: int = 0
     # Phase 12.5 #1 T-1.8 — multi-leg auto-redirect advisory banner counter.
     recent_multi_leg_auto_correction_count: int = 0
+    # Phase 12.5 #2 T-2.7 — banner link to FIRST pending-ambiguity discrepancy
+    # resolve form. None when no pending-ambiguity row exists.
+    banner_resolve_link: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.banner_resolve_link is not None:
+            if not isinstance(self.banner_resolve_link, str):
+                raise TypeError(
+                    "CadenceCompleteVM.banner_resolve_link must be str | None; "
+                    f"got {type(self.banner_resolve_link).__name__}"
+                )
+            if (
+                not self.banner_resolve_link
+                or not self.banner_resolve_link.startswith("/")
+            ):
+                raise ValueError(
+                    "CadenceCompleteVM.banner_resolve_link must be None or a "
+                    "non-empty path starting with '/'; got "
+                    f"{self.banner_resolve_link!r}"
+                )
 
 
 @dataclass(frozen=True)
@@ -780,6 +825,26 @@ class ReviewsPendingVM:
     unresolved_material_discrepancies_count: int = 0
     # Phase 12.5 #1 T-1.8 — multi-leg auto-redirect advisory banner counter.
     recent_multi_leg_auto_correction_count: int = 0
+    # Phase 12.5 #2 T-2.7 — banner link to FIRST pending-ambiguity discrepancy
+    # resolve form. None when no pending-ambiguity row exists.
+    banner_resolve_link: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.banner_resolve_link is not None:
+            if not isinstance(self.banner_resolve_link, str):
+                raise TypeError(
+                    "ReviewsPendingVM.banner_resolve_link must be str | None; "
+                    f"got {type(self.banner_resolve_link).__name__}"
+                )
+            if (
+                not self.banner_resolve_link
+                or not self.banner_resolve_link.startswith("/")
+            ):
+                raise ValueError(
+                    "ReviewsPendingVM.banner_resolve_link must be None or a "
+                    "non-empty path starting with '/'; got "
+                    f"{self.banner_resolve_link!r}"
+                )
 
 
 def build_reviews_pending_vm(*, cfg: Config) -> ReviewsPendingVM:
@@ -787,6 +852,7 @@ def build_reviews_pending_vm(*, cfg: Config) -> ReviewsPendingVM:
     from swing.metrics.discrepancies import (
         count_recent_multi_leg_auto_corrections,
         count_unresolved_material,
+        fetch_first_pending_ambiguity_resolve_link_path,
     )
     conn = connect(cfg.paths.db_path)
     try:
@@ -798,6 +864,9 @@ def build_reviews_pending_vm(*, cfg: Config) -> ReviewsPendingVM:
         )
         unresolved_material_count = count_unresolved_material(conn)
         recent_multi_leg_count = count_recent_multi_leg_auto_corrections(conn)
+        banner_resolve_link = (
+            fetch_first_pending_ambiguity_resolve_link_path(conn)
+        )
     finally:
         conn.close()
     return ReviewsPendingVM(
@@ -805,6 +874,7 @@ def build_reviews_pending_vm(*, cfg: Config) -> ReviewsPendingVM:
         window_days=cfg.review.review_window_days,
         unresolved_material_discrepancies_count=unresolved_material_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
     )
 
 
@@ -814,6 +884,7 @@ def build_cadence_complete_vm(*, review_id: int, cfg: Config) -> CadenceComplete
     from swing.metrics.discrepancies import (
         count_recent_multi_leg_auto_corrections,
         count_unresolved_material,
+        fetch_first_pending_ambiguity_resolve_link_path,
     )
     conn = connect(cfg.paths.db_path)
     try:
@@ -847,6 +918,9 @@ def build_cadence_complete_vm(*, review_id: int, cfg: Config) -> CadenceComplete
         ))
         unresolved_material_count = count_unresolved_material(conn)
         recent_multi_leg_count = count_recent_multi_leg_auto_corrections(conn)
+        banner_resolve_link = (
+            fetch_first_pending_ambiguity_resolve_link_path(conn)
+        )
     finally:
         conn.close()
     return CadenceCompleteVM(
@@ -855,6 +929,7 @@ def build_cadence_complete_vm(*, review_id: int, cfg: Config) -> CadenceComplete
         trades_during_period=trades_during_period,
         unresolved_material_discrepancies_count=unresolved_material_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
     )
 
 
@@ -939,6 +1014,26 @@ class TradeDetailVM:
     # the trade has zero unresolved material discrepancies; the template
     # hides the indicator entirely in that case.
     unresolved_material_discrepancies: tuple = field(default_factory=tuple)
+    # Phase 12.5 #2 T-2.7 — banner link to FIRST pending-ambiguity discrepancy
+    # resolve form. None when no pending-ambiguity row exists.
+    banner_resolve_link: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.banner_resolve_link is not None:
+            if not isinstance(self.banner_resolve_link, str):
+                raise TypeError(
+                    "TradeDetailVM.banner_resolve_link must be str | None; "
+                    f"got {type(self.banner_resolve_link).__name__}"
+                )
+            if (
+                not self.banner_resolve_link
+                or not self.banner_resolve_link.startswith("/")
+            ):
+                raise ValueError(
+                    "TradeDetailVM.banner_resolve_link must be None or a "
+                    "non-empty path starting with '/'; got "
+                    f"{self.banner_resolve_link!r}"
+                )
 
 
 @dataclass(frozen=True)
@@ -1027,6 +1122,7 @@ def build_trade_detail_vm(
     from swing.metrics.discrepancies import (
         count_recent_multi_leg_auto_corrections,
         count_unresolved_material,
+        fetch_first_pending_ambiguity_resolve_link_path,
         list_unresolved_material_for_trade,
     )
 
@@ -1042,6 +1138,9 @@ def build_trade_detail_vm(
             unresolved_material_count = count_unresolved_material(conn)
             recent_multi_leg_count = count_recent_multi_leg_auto_corrections(
                 conn,
+            )
+            banner_resolve_link = (
+                fetch_first_pending_ambiguity_resolve_link_path(conn)
             )
             trade_discrepancies = list_unresolved_material_for_trade(
                 conn, trade_id,
@@ -1167,6 +1266,7 @@ def build_trade_detail_vm(
         advisories=advisories,
         unresolved_material_discrepancies_count=unresolved_material_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
         unresolved_material_discrepancies=tuple(
             _to_discrepancy_display(d) for d in trade_discrepancies
         ),

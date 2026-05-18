@@ -111,6 +111,26 @@ class JournalVM:
     unresolved_material_discrepancies_count: int = 0
     # Phase 12.5 #1 T-1.8 — multi-leg auto-redirect advisory banner counter.
     recent_multi_leg_auto_correction_count: int = 0
+    # Phase 12.5 #2 T-2.7 — banner link to FIRST pending-ambiguity discrepancy
+    # resolve form. None when no pending-ambiguity row exists.
+    banner_resolve_link: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.banner_resolve_link is not None:
+            if not isinstance(self.banner_resolve_link, str):
+                raise TypeError(
+                    "JournalVM.banner_resolve_link must be str | None; "
+                    f"got {type(self.banner_resolve_link).__name__}"
+                )
+            if (
+                not self.banner_resolve_link
+                or not self.banner_resolve_link.startswith("/")
+            ):
+                raise ValueError(
+                    "JournalVM.banner_resolve_link must be None or a "
+                    "non-empty path starting with '/'; got "
+                    f"{self.banner_resolve_link!r}"
+                )
 
 
 def build_journal(*, cfg: Config, period: str = "month") -> JournalVM:
@@ -121,6 +141,7 @@ def build_journal(*, cfg: Config, period: str = "month") -> JournalVM:
     from swing.metrics.discrepancies import (
         count_recent_multi_leg_auto_corrections,
         count_unresolved_material,
+        fetch_first_pending_ambiguity_resolve_link_path,
     )
 
     today = date.today()
@@ -136,6 +157,10 @@ def build_journal(*, cfg: Config, period: str = "month") -> JournalVM:
             unresolved = count_unresolved_material(conn)
             # Phase 12.5 #1 T-1.8 — multi-leg auto-redirect banner counter.
             recent_multi_leg = count_recent_multi_leg_auto_corrections(conn)
+            # Phase 12.5 #2 T-2.9 — banner first-pending-ambiguity link.
+            banner_resolve_link = (
+                fetch_first_pending_ambiguity_resolve_link_path(conn)
+            )
     finally:
         conn.close()
     # Filter trades to the selected period.
@@ -150,4 +175,5 @@ def build_journal(*, cfg: Config, period: str = "month") -> JournalVM:
         session_date=today.isoformat(),
         unresolved_material_discrepancies_count=unresolved,
         recent_multi_leg_auto_correction_count=recent_multi_leg,
+        banner_resolve_link=banner_resolve_link,
     )

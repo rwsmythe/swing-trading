@@ -35,6 +35,7 @@ from swing.metrics.cohort import list_closed_trades_for_cohort
 from swing.metrics.discrepancies import (
     count_recent_multi_leg_auto_corrections,
     count_unresolved_material,
+    fetch_first_pending_ambiguity_resolve_link_path,
 )
 from swing.metrics.policy import (
     get_trade_policy_id_stamp,
@@ -412,6 +413,9 @@ def build_hypothesis_progress_card_vm(
     try:
         unresolved = count_unresolved_material(conn)
         recent_multi_leg = count_recent_multi_leg_auto_corrections(conn)
+        banner_resolve_link = (
+            fetch_first_pending_ambiguity_resolve_link_path(conn)
+        )
         rows = conn.execute(
             "SELECT id, name, statement, target_sample_size, "
             "decision_criteria, status, consecutive_loss_tripwire, "
@@ -426,5 +430,6 @@ def build_hypothesis_progress_card_vm(
         session_date=action_session_for_run(datetime.now()).isoformat(),
         unresolved_material_discrepancies_count=unresolved,
         recent_multi_leg_auto_correction_count=recent_multi_leg,
+        banner_resolve_link=banner_resolve_link,
         cohorts=cohorts,
     )

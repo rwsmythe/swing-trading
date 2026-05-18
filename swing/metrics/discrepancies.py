@@ -48,6 +48,62 @@ def count_unresolved_material(conn: sqlite3.Connection) -> int:
     return len(active) + len(closed)
 
 
+def list_pending_ambiguities_in_banner_set(
+    conn: sqlite3.Connection,
+) -> list[ReconciliationDiscrepancy]:
+    """Return banner-set discrepancies whose resolution is
+    ``pending_ambiguity_resolution``, oldest-first.
+
+    Phase 12.5 #2 T-2.9: powers the banner-link target on
+    ``base.html.j2``. Mirrors ``count_unresolved_material``'s
+    trade-set semantics (active + closed trades) per plan §A
+    LOCK — same UNION used by the banner count helper — then
+    narrows to the tier-2 ambiguity-pending subset so the
+    "Resolve via web" link points at the oldest still-pending
+    row.
+
+    Sort key per LOCK §1.2 #6: ``discrepancy_id ASC`` (deterministic
+    oldest-first). The underlying canonical helpers order by
+    ``created_at DESC, discrepancy_id DESC``; we resort here so the
+    caller may take ``[0]`` for the first-pending without relying on
+    DB-side ordering semantics.
+
+    Orphan-emit discrepancies (``trade_id IS NULL``) are EXCLUDED by
+    construction — the canonical helpers JOIN on the ``trades`` row.
+
+    Read-only; opens no transaction.
+    """
+    active = list_unresolved_material_for_active_trades(conn)
+    closed = list_unresolved_material_for_closed_trades(conn)
+    union = list(active) + list(closed)
+    pending = [
+        d for d in union if d.resolution == "pending_ambiguity_resolution"
+    ]
+    return sorted(pending, key=lambda d: d.discrepancy_id)
+
+
+def fetch_first_pending_ambiguity_resolve_link_path(
+    conn: sqlite3.Connection,
+) -> str | None:
+    """Return the resolve-form path for the OLDEST pending-ambiguity
+    discrepancy in the banner set, or None when the banner set carries
+    no pending-ambiguity rows.
+
+    Phase 12.5 #2 T-2.9: banner-link target consumed by every
+    base-layout VM populator across the web + metrics surfaces.
+
+    Returns ``f"/reconcile/discrepancy/{first.discrepancy_id}/resolve"``
+    when :func:`list_pending_ambiguities_in_banner_set` is non-empty;
+    None otherwise.
+
+    Read-only; opens no transaction.
+    """
+    pending = list_pending_ambiguities_in_banner_set(conn)
+    if not pending:
+        return None
+    return f"/reconcile/discrepancy/{pending[0].discrepancy_id}/resolve"
+
+
 def list_unresolved_material_for_trade(
     conn: sqlite3.Connection, trade_id: int,
 ) -> list[ReconciliationDiscrepancy]:

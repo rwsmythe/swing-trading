@@ -361,6 +361,26 @@ class DashboardVM:
     # ad-hoc VM construction in tests outside the Phase 8 surface remains
     # valid without supplying the field.
     daily_management_tiles: tuple = field(default_factory=tuple)
+    # Phase 12.5 #2 T-2.7 — banner link to FIRST pending-ambiguity discrepancy
+    # resolve form. None when no pending-ambiguity row exists.
+    banner_resolve_link: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.banner_resolve_link is not None:
+            if not isinstance(self.banner_resolve_link, str):
+                raise TypeError(
+                    "DashboardVM.banner_resolve_link must be str | None; "
+                    f"got {type(self.banner_resolve_link).__name__}"
+                )
+            if (
+                not self.banner_resolve_link
+                or not self.banner_resolve_link.startswith("/")
+            ):
+                raise ValueError(
+                    "DashboardVM.banner_resolve_link must be None or a "
+                    "non-empty path starting with '/'; got "
+                    f"{self.banner_resolve_link!r}"
+                )
 
 
 def _build_active_recommendations(
@@ -905,11 +925,16 @@ def build_dashboard(
             from swing.metrics.discrepancies import (
                 count_recent_multi_leg_auto_corrections,
                 count_unresolved_material,
+                fetch_first_pending_ambiguity_resolve_link_path,
             )
             unresolved_material_count = count_unresolved_material(conn)
             # Phase 12.5 #1 T-1.8 — multi-leg auto-redirect banner counter.
             recent_multi_leg_count = count_recent_multi_leg_auto_corrections(
                 conn,
+            )
+            # Phase 12.5 #2 T-2.9 — banner first-pending-ambiguity link.
+            banner_resolve_link = (
+                fetch_first_pending_ambiguity_resolve_link_path(conn)
             )
     finally:
         conn.close()
@@ -1274,6 +1299,7 @@ def build_dashboard(
         daily_management_tiles=daily_management_tiles,
         unresolved_material_discrepancies_count=unresolved_material_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
     )
 
 

@@ -1,0 +1,125 @@
+{% extends "base.html.j2" %}
+{% block title %}Resolve Tier-2 Discrepancy #{{ vm.discrepancy_id }}{% endblock %}
+{% block content %}
+<section class="reconcile-discrepancy-resolve">
+  <h1>Resolve Tier-2 discrepancy #{{ vm.discrepancy_id }}</h1>
+
+  {# Pre-resolution context block (spec section 1.4 LOCK D4). #}
+  <section class="pre-resolution-context" data-pre-context="true">
+    <h2>Pre-resolution context</h2>
+    <dl class="context-pairs">
+      <dt>Discrepancy type</dt><dd>{{ vm.pre_resolution_context.discrepancy_type }}</dd>
+      <dt>Ambiguity kind</dt><dd>{{ vm.pre_resolution_context.ambiguity_kind }}</dd>
+      <dt>Ticker</dt><dd>{{ vm.pre_resolution_context.ticker }}</dd>
+      <dt>Field</dt><dd>{{ vm.pre_resolution_context.field_name }}</dd>
+      <dt>{{ vm.pre_resolution_context.journal_side_label }}</dt>
+        <dd>{{ vm.pre_resolution_context.journal_side_value }}</dd>
+      <dt>{{ vm.pre_resolution_context.schwab_side_label }}</dt>
+        <dd>{{ vm.pre_resolution_context.schwab_side_value }}</dd>
+      <dt>{{ vm.pre_resolution_context.delta_label }}</dt>
+        <dd>{{ vm.pre_resolution_context.delta_value }}</dd>
+      <dt>Material</dt>
+        <dd>{% if vm.pre_resolution_context.material %}yes{% else %}no{% endif %}</dd>
+      <dt>Created at</dt><dd>{{ vm.pre_resolution_context.created_at }}</dd>
+      <dt>Reconciliation run</dt><dd>#{{ vm.pre_resolution_context.run_id }}</dd>
+    </dl>
+    <p class="muted">Classifier reason:
+      {{ vm.pre_resolution_context.classifier_resolution_reason }}</p>
+    {% if vm.pre_resolution_context.parse_warning %}
+    <p class="muted parse-warning">
+      ({{ vm.pre_resolution_context.parse_warning }})
+    </p>
+    {% endif %}
+    <p class="muted">CLI parity: <code>swing journal discrepancy
+      show-ambiguity {{ vm.discrepancy_id }}</code></p>
+  </section>
+
+  {# Error band (re-render path). #}
+  {% if vm.error_band_message %}
+  <section class="error-band" data-error-field="{{ vm.error_band_field_hint or '' }}">
+    <p>{{ vm.error_band_message }}</p>
+  </section>
+  {% endif %}
+
+  {# Form section. #}
+  <form
+    method="post"
+    action="{{ vm.form_action }}"
+    hx-post="{{ vm.form_action }}"
+    hx-headers='{"HX-Request": "true"}'
+    hx-target="body"
+    data-resolve-form="true">
+
+    <input type="hidden" name="ambiguity_kind_at_render"
+      value="{{ vm.pre_resolution_context.ambiguity_kind }}">
+
+    <fieldset>
+      <legend>Choose a resolution</legend>
+      {% for choice in vm.choices %}
+      <label class="choice-row">
+        <input type="radio" name="choice_code" value="{{ choice.code }}"
+          {% if vm.prior_choice_code == choice.code %}checked{% endif %}
+          data-requires-custom-value="{{ choice.requires_custom_value|tojson }}">
+        <span class="choice-code">{{ choice.code }}</span>
+        {% if choice.recommended %}
+        <span class="badge badge-recommended">recommended</span>
+        {% endif %}
+        {% if choice.requires_custom_value %}
+        <span class="badge badge-payload">payload required</span>
+        {% endif %}
+        <span class="choice-description">{{ choice.description }}</span>
+        {% if choice.requires_custom_value
+              and choice.expected_payload_shape_description %}
+        <p class="muted shape-hint">
+          Expected payload shape:
+          <code>{{ choice.expected_payload_shape_description }}</code>
+        </p>
+        {% endif %}
+      </label>
+      {% endfor %}
+    </fieldset>
+
+    <fieldset class="custom-value-fieldset">
+      <legend>Custom value (JSON, when required)</legend>
+      <textarea
+        name="custom_value"
+        rows="4"
+        placeholder="{}"
+        data-custom-value-input="true">{{ vm.prior_custom_value_raw }}</textarea>
+      <p class="muted">
+        Required for the choices marked "payload required". Parsed as JSON
+        via <code>json.loads</code>; deeper shape validation runs at the
+        service layer.
+      </p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Resolution reason (required)</legend>
+      <textarea name="resolution_reason" rows="3" required
+        >{{ vm.prior_resolution_reason }}</textarea>
+      <p class="muted">
+        Free-text rationale persisted as
+        <code>reconciliation_corrections.correction_reason</code>.
+      </p>
+    </fieldset>
+
+    <button type="submit" class="primary">Apply resolution</button>
+  </form>
+</section>
+
+<script>
+(function () {
+  function syncCustomFieldsetVisibility() {
+    var fieldset = document.querySelector('.custom-value-fieldset');
+    if (!fieldset) return;
+    var selected = document.querySelector('input[name="choice_code"]:checked');
+    var requires = selected && selected.getAttribute('data-requires-custom-value') === 'true';
+    fieldset.style.display = requires ? '' : 'none';
+  }
+  document.querySelectorAll('input[name="choice_code"]').forEach(function (r) {
+    r.addEventListener('change', syncCustomFieldsetVisibility);
+  });
+  syncCustomFieldsetVisibility();
+})();
+</script>
+{% endblock %}

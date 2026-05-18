@@ -39,6 +39,7 @@ from swing.evaluation.dates import (
 from swing.metrics.discrepancies import (
     count_recent_multi_leg_auto_corrections,
     count_unresolved_material,
+    fetch_first_pending_ambiguity_resolve_link_path,
 )
 from swing.trades.account_equity_snapshots import record_snapshot
 from swing.web.view_models.account import AccountSnapshotFormVM
@@ -54,6 +55,7 @@ def _render_form(
     snapshot_date_display: str,
     unresolved_count: int,
     recent_multi_leg_count: int = 0,
+    banner_resolve_link: str | None = None,
     equity_dollars_value: str = "",
     note_value: str = "",
     error_message: str | None = None,
@@ -65,6 +67,7 @@ def _render_form(
         session_date=session_date,
         unresolved_material_discrepancies_count=unresolved_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
         snapshot_date_display=snapshot_date_display,
         equity_dollars_value=equity_dollars_value,
         note_value=note_value,
@@ -86,6 +89,9 @@ def account_snapshot_form(request: Request) -> Response:
     try:
         unresolved = count_unresolved_material(conn)
         recent_multi_leg = count_recent_multi_leg_auto_corrections(conn)
+        banner_resolve_link = (
+            fetch_first_pending_ambiguity_resolve_link_path(conn)
+        )
     finally:
         conn.close()
     snapshot_date = last_completed_session(datetime.now()).isoformat()
@@ -94,6 +100,7 @@ def account_snapshot_form(request: Request) -> Response:
         snapshot_date_display=snapshot_date,
         unresolved_count=unresolved,
         recent_multi_leg_count=recent_multi_leg,
+        banner_resolve_link=banner_resolve_link,
     )
 
 
@@ -113,6 +120,9 @@ async def account_snapshot_post(request: Request) -> Response:
     try:
         unresolved = count_unresolved_material(conn)
         recent_multi_leg = count_recent_multi_leg_auto_corrections(conn)
+        banner_resolve_link = (
+            fetch_first_pending_ambiguity_resolve_link_path(conn)
+        )
     finally:
         conn.close()
 
@@ -124,6 +134,7 @@ async def account_snapshot_post(request: Request) -> Response:
             snapshot_date_display=snapshot_date,
             unresolved_count=unresolved,
             recent_multi_leg_count=recent_multi_leg,
+            banner_resolve_link=banner_resolve_link,
             equity_dollars_value=equity_raw,
             note_value=note_raw or "",
             error_message="equity_dollars must be a finite number",
@@ -148,6 +159,7 @@ async def account_snapshot_post(request: Request) -> Response:
             snapshot_date_display=snapshot_date,
             unresolved_count=unresolved,
             recent_multi_leg_count=recent_multi_leg,
+            banner_resolve_link=banner_resolve_link,
             equity_dollars_value=equity_raw,
             note_value=note_raw or "",
             error_message=str(exc),

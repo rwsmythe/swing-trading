@@ -56,6 +56,7 @@ from swing.integrations.schwab.client import (
 from swing.metrics.discrepancies import (
     count_recent_multi_leg_auto_corrections,
     count_unresolved_material,
+    fetch_first_pending_ambiguity_resolve_link_path,
 )
 from swing.web.view_models.schwab import (
     SchwabSetupErrorVM,
@@ -109,6 +110,21 @@ def _fetch_recent_multi_leg_auto_correction_count(db_path) -> int:
         conn.close()
 
 
+def _fetch_banner_resolve_link(db_path) -> str | None:
+    """Phase 12.5 #2 T-2.9 — sibling helper to
+    :func:`_fetch_unresolved_material_count`. Returns the resolve-form
+    path for the oldest pending-ambiguity discrepancy in the banner set,
+    or None when no pending-ambiguity rows exist. Powers the base-layout
+    ``vm.banner_resolve_link`` field via the Pattern-B (db_path-shape)
+    helper convention used by ``swing/web/routes/schwab.py``.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        return fetch_first_pending_ambiguity_resolve_link_path(conn)
+    finally:
+        conn.close()
+
+
 def _build_authorize_url(client_id: str, callback_url: str) -> str:
     """Construct Schwab's OAuth consent URL — mirrors
     schwabdev/tokens.py:347 ``Tokens.update_refresh_token`` URL shape:
@@ -143,6 +159,7 @@ def _render_error(
     remediation_hint: str,
     unresolved_count: int = 0,
     recent_multi_leg_count: int = 0,
+    banner_resolve_link: str | None = None,
 ) -> Response:
     try:
         session_date = action_session_for_run(datetime.now()).isoformat()
@@ -155,6 +172,7 @@ def _render_error(
         remediation_hint=remediation_hint,
         unresolved_material_discrepancies_count=unresolved_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
     )
     return request.app.state.templates.TemplateResponse(
         request,
@@ -172,6 +190,7 @@ def _build_form_vm(
     callback_url_value: str = "",
     unresolved_count: int = 0,
     recent_multi_leg_count: int = 0,
+    banner_resolve_link: str | None = None,
 ) -> SchwabSetupVM:
     """Build the SchwabSetupVM for form render.
 
@@ -214,6 +233,7 @@ def _build_form_vm(
         callback_url_value=callback_url_value,
         unresolved_material_discrepancies_count=unresolved_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
     )
 
 
@@ -237,10 +257,13 @@ def schwab_setup_form(request: Request) -> Response:
     # global banner in base.html.j2 fires when discrepancies exist.
     # Phase 12.5 #1 T-1.8 sibling pin — ``recent_multi_leg_auto_correction_count``
     # for the T-1.9 banner block.
+    # Phase 12.5 #2 T-2.9 sibling pin — ``banner_resolve_link`` for the
+    # banner-link target.
     unresolved_count = _fetch_unresolved_material_count(cfg.paths.db_path)
     recent_multi_leg_count = _fetch_recent_multi_leg_auto_correction_count(
         cfg.paths.db_path,
     )
+    banner_resolve_link = _fetch_banner_resolve_link(cfg.paths.db_path)
     # Resolve credentials WITHOUT prompting (web context has no stdin).
     # If creds are absent at every tier the form still renders, but
     # surfaces an inline banner pointing the operator at /config.
@@ -256,6 +279,7 @@ def schwab_setup_form(request: Request) -> Response:
             error_message=_redacted_excerpt(exc),
             unresolved_count=unresolved_count,
             recent_multi_leg_count=recent_multi_leg_count,
+            banner_resolve_link=banner_resolve_link,
         )
         return _render_form(request, vm=vm)
 
@@ -276,6 +300,7 @@ def schwab_setup_form(request: Request) -> Response:
         error_message=error_msg,
         unresolved_count=unresolved_count,
         recent_multi_leg_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
     )
     return _render_form(request, vm=vm)
 
@@ -299,10 +324,12 @@ async def schwab_setup_post(request: Request) -> Response:
     # global banner fires regardless of the response branch.
     # Phase 12.5 #1 T-1.8 sibling pin — recent_multi_leg_auto_correction_count
     # for the T-1.9 banner block.
+    # Phase 12.5 #2 T-2.9 sibling pin — banner_resolve_link target.
     unresolved_count = _fetch_unresolved_material_count(cfg.paths.db_path)
     recent_multi_leg_count = _fetch_recent_multi_leg_auto_correction_count(
         cfg.paths.db_path,
     )
+    banner_resolve_link = _fetch_banner_resolve_link(cfg.paths.db_path)
 
     # Tier-1: resolve credentials (no prompt in web context).
     try:
@@ -320,6 +347,7 @@ async def schwab_setup_post(request: Request) -> Response:
             ),
             unresolved_count=unresolved_count,
             recent_multi_leg_count=recent_multi_leg_count,
+            banner_resolve_link=banner_resolve_link,
         )
 
     if client_id is None or client_secret is None:
@@ -344,6 +372,7 @@ async def schwab_setup_post(request: Request) -> Response:
             ),
             unresolved_count=unresolved_count,
             recent_multi_leg_count=recent_multi_leg_count,
+            banner_resolve_link=banner_resolve_link,
         )
 
     if not callback_url_with_code:
@@ -359,6 +388,7 @@ async def schwab_setup_post(request: Request) -> Response:
             callback_url_value="",
             unresolved_count=unresolved_count,
             recent_multi_leg_count=recent_multi_leg_count,
+            banner_resolve_link=banner_resolve_link,
         )
         return _render_form(request, vm=vm, status_code=400)
 
@@ -391,6 +421,7 @@ async def schwab_setup_post(request: Request) -> Response:
             ),
             unresolved_count=unresolved_count,
             recent_multi_leg_count=recent_multi_leg_count,
+            banner_resolve_link=banner_resolve_link,
         )
     except SchwabPipelineActiveError as exc:
         return _render_error(
@@ -403,6 +434,7 @@ async def schwab_setup_post(request: Request) -> Response:
             ),
             unresolved_count=unresolved_count,
             recent_multi_leg_count=recent_multi_leg_count,
+            banner_resolve_link=banner_resolve_link,
         )
     except SchwabAuthError as exc:
         return _render_error(
@@ -416,6 +448,7 @@ async def schwab_setup_post(request: Request) -> Response:
             ),
             unresolved_count=unresolved_count,
             recent_multi_leg_count=recent_multi_leg_count,
+            banner_resolve_link=banner_resolve_link,
         )
     except Exception as exc:
         # Broad except-clause — pipeline-boundary discipline (Sub-bundle
@@ -435,6 +468,7 @@ async def schwab_setup_post(request: Request) -> Response:
             ),
             unresolved_count=unresolved_count,
             recent_multi_leg_count=recent_multi_leg_count,
+            banner_resolve_link=banner_resolve_link,
         )
     finally:
         conn.close()
@@ -521,10 +555,12 @@ def schwab_status_get(
     # global banner in base.html.j2 fires when discrepancies exist.
     # Phase 12.5 #1 T-1.8 sibling pin — recent_multi_leg_auto_correction_count
     # for the T-1.9 banner block.
+    # Phase 12.5 #2 T-2.9 sibling pin — banner_resolve_link target.
     unresolved_count = _fetch_unresolved_material_count(cfg.paths.db_path)
     recent_multi_leg_count = _fetch_recent_multi_leg_auto_correction_count(
         cfg.paths.db_path,
     )
+    banner_resolve_link = _fetch_banner_resolve_link(cfg.paths.db_path)
 
     session_date = action_session_for_run(datetime.now()).isoformat()
     vm = build_schwab_status_vm(
@@ -534,6 +570,7 @@ def schwab_status_get(
         session_date=session_date,
         unresolved_count=unresolved_count,
         recent_multi_leg_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
     )
     return request.app.state.templates.TemplateResponse(
         request,
